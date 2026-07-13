@@ -63,11 +63,11 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|land-check|action-plan|act|close-plan|close> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
-		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--json] [--dry-run]",
+		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--json] [--dry-run]",
 		Example: "compound work create-plan --owner codex --predicate \"tests pass\" --dry-run",
 	},
 	"admit-plan": {
@@ -79,7 +79,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work review-card-plan --card wrc_abc123 --json",
 	},
 	"create": {
-		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private]",
+		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)]",
 		Example: "compound work create --owner codex --predicate \"tests pass\"",
 	},
 	"import-packet": {
@@ -143,16 +143,20 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work claim work_abc123 --by codex",
 	},
 	"advance-plan": {
-		Usage:   "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]",
+		Usage:   "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]",
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--run R] [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R]",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--run R] [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)]",
 		Example: "compound work advance work_abc123 --to running --by codex",
 	},
 	"observe-run": {
 		Usage:   "usage: compound work observe-run <work_id> --trace <trace_id> [--actor A] [--note N] [--json]",
 		Example: "compound work observe-run work_abc123 --trace trace_xyz --json",
+	},
+	"land-check": {
+		Usage:   "usage: compound work land-check <work_id> --tip <full-sha> [--repo /bound/repo] [--target-ref refs/heads/main] [--actor A] [--dry-run] [--json]",
+		Example: "compound work land-check work_abc123 --tip 0123456789012345678901234567890123456789 --json",
 	},
 	"action-plan": {
 		Usage:   "usage: compound work action-plan <work_id> [--actor A] [--move-type type] [--receipt-outcome completed|failed|blocked|no_op] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]",
@@ -337,10 +341,51 @@ func cmdWork(args []string) {
 			os.Exit(1)
 		}
 	}
+	parseGitDelivery := func(usage string) *envelope.GitDeliveryContract {
+		root := strings.TrimSpace(flag("--target-worktree-root"))
+		localRef := strings.TrimSpace(flag("--target-local-ref"))
+		base := strings.TrimSpace(flag("--expected-base-sha"))
+		publicationRef := strings.TrimSpace(flag("--publication-ref"))
+		localOnly := has("--local-only")
+		declared := root != "" || localRef != "" || base != "" || publicationRef != "" || localOnly
+		if !declared {
+			return nil
+		}
+		if root == "" || localRef == "" || base == "" || (publicationRef == "" && !localOnly) || (publicationRef != "" && localOnly) {
+			fmt.Fprintln(os.Stderr, "error: Git delivery requires --target-worktree-root, --target-local-ref, --expected-base-sha, and exactly one of --publication-ref or --local-only")
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		mode := "required"
+		if localOnly {
+			mode = "local_only"
+		}
+		return &envelope.GitDeliveryContract{
+			TargetWorktreeRoot: root,
+			TargetLocalRef:     localRef,
+			ExpectedBaseSHA:    base,
+			PublicationMode:    mode,
+			PublicationRef:     publicationRef,
+		}
+	}
 
 	switch sub {
 	case "create-plan":
-		validateCreateState("usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--json] [--dry-run]", false)
+		usage := workUsage("create-plan")
+		if err := validateWorkArguments(rest, map[string]bool{
+			"--work-id": true, "--owner": true, "--predicate": true, "--outcome": true, "--by": true, "--actor": true,
+			"--state": true, "--context-pack": true, "--canonical-surface": true, "--route-decision-id": true, "--risk": true, "--privacy": true,
+			"--non-goal": true, "--non-goals": true, "--evidence-ref": true, "--evidence": true,
+			"--capability": true, "--action": true, "--mutation-class": true, "--reversibility": true, "--blast-radius": true,
+			"--target-kind": true, "--target-id": true, "--target-path": true,
+			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
+		}, map[string]bool{"--json": true, "--dry-run": true, "--local-only": true}, 0); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		validateCreateState(usage, false)
+		gitDelivery := parseGitDelivery(usage)
 		plan, err := store.CreatePlan(work.CreateInput{
 			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
@@ -352,6 +397,7 @@ func cmdWork(args []string) {
 			EvidenceRefs:     flagCSVValues(rest, "--evidence-ref", "--evidence"),
 			ContextPackID:    flag("--context-pack"),
 			RouteDecisionID:  flag("--route-decision-id"),
+			GitDelivery:      gitDelivery,
 			State:            flag("--state"),
 			Risk:             flag("--risk"),
 			Privacy:          flag("--privacy"),
@@ -435,7 +481,19 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", report.WorkPlan.PlanPath)
 		}
 	case "create":
-		validateCreateState(workUsage("create"), true)
+		usage := workUsage("create")
+		if err := validateWorkArguments(rest, map[string]bool{
+			"--work-id": true, "--owner": true, "--predicate": true, "--outcome": true, "--by": true, "--actor": true,
+			"--state": true, "--context-pack": true, "--canonical-surface": true, "--route-decision-id": true, "--risk": true, "--privacy": true,
+			"--non-goal": true, "--non-goals": true, "--evidence-ref": true, "--evidence": true,
+			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
+		}, map[string]bool{"--local-only": true}, 0); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		validateCreateState(usage, true)
+		gitDelivery := parseGitDelivery(usage)
 		requestedState := flag("--state")
 		createState := requestedState
 		actor := firstNonEmpty(flag("--by"), flag("--actor"))
@@ -455,6 +513,7 @@ func cmdWork(args []string) {
 			EvidenceRefs:     flagCSVValues(rest, "--evidence-ref", "--evidence"),
 			ContextPackID:    flag("--context-pack"),
 			RouteDecisionID:  flag("--route-decision-id"),
+			GitDelivery:      gitDelivery,
 			State:            createState,
 			Risk:             flag("--risk"),
 			Privacy:          flag("--privacy"),
@@ -1108,6 +1167,38 @@ func cmdWork(args []string) {
 		if result.ResultPath != "" {
 			fmt.Printf("result: %s\n", result.ResultPath)
 		}
+	case "land-check":
+		usage := workUsage("land-check")
+		if err := validateWorkArguments(rest,
+			map[string]bool{"--tip": true, "--repo": true, "--target-ref": true, "--actor": true},
+			map[string]bool{"--dry-run": true, "--json": true}, 1); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if strings.TrimSpace(flag("--tip")) == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		report, err := store.LandCheck(pos(), work.LandCheckOptions{
+			RepoPath:        flag("--repo"),
+			CandidateTipSHA: flag("--tip"),
+			TargetRef:       flag("--target-ref"),
+			Actor:           flag("--actor"),
+			Record:          !has("--dry-run"),
+		}, time.Now())
+		die(err)
+		if has("--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("land-check %s status=%s target=%s candidate=%s recorded=%v\n", report.WorkID, report.Status, report.TargetBranchRef, report.CandidateTipSHA, report.Recorded)
+		if report.EvidenceRef != "" {
+			fmt.Printf("evidence: %s\n", report.EvidenceRef)
+		}
+		if report.NextAction != "" {
+			fmt.Printf("next_action: %s\n", report.NextAction)
+		}
 	case "action-plan":
 		usage := "usage: compound work action-plan <work_id> [--actor A] [--move-type type] [--receipt-outcome completed|failed|blocked|no_op] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
 		for i := 0; i < len(rest); i++ {
@@ -1339,7 +1430,30 @@ func cmdWork(args []string) {
 		printJSON(res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ...")
+		fmt.Fprintln(os.Stderr, workUsage(""))
 		os.Exit(2)
 	}
+}
+
+func validateWorkArguments(args []string, valueFlags, boolFlags map[string]bool, positionalCount int) error {
+	positions := 0
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case boolFlags[arg]:
+		case valueFlags[arg]:
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+				return fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+		case strings.HasPrefix(arg, "-"):
+			return fmt.Errorf("unknown flag %s", arg)
+		default:
+			positions++
+		}
+	}
+	if positions != positionalCount {
+		return fmt.Errorf("expected %d positional argument(s), got %d", positionalCount, positions)
+	}
+	return nil
 }
