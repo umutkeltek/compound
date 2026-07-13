@@ -98,7 +98,7 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 		Model:         "offline-fixture-no-provider",
 		Candidates: []distiller.LLMCandidate{{
 			Kind:         distiller.KindMemory,
-			Entity:       "operator",
+			Entity:       "user-profile:communication-style",
 			Predicate:    "preference.communication",
 			Object:       "prefer concise progress updates while implementation is running",
 			Confidence:   &confidence,
