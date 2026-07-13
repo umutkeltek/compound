@@ -22,7 +22,7 @@ func newStore(t *testing.T) *Store {
 }
 
 func cand(entity, pred, obj, obs string) Candidate {
-	return Candidate{Entity: entity, Predicate: pred, Object: obj, ObservationDate: obs, Confidence: 0.9, Derivation: "extracted", PromotionBasis: candidates.BasisExplicitConfirmation, SourceTraceRef: "trace_x", SnippetHash: "deadbeef"}
+	return Candidate{Entity: entity, Predicate: pred, Object: obj, ObservationDate: obs, Confidence: 0.9, Derivation: "extracted", PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "trace_x", SnippetHash: "deadbeef"}
 }
 
 func TestCheapLaneCandidateRequiresAdjudicationAndPromotionPreservesLane(t *testing.T) {
@@ -35,7 +35,7 @@ func TestCheapLaneCandidateRequiresAdjudicationAndPromotionPreservesLane(t *test
 		Confidence:      1,
 		Derivation:      "extracted",
 		ProvenanceLane:  "cheap-lane",
-		PromotionBasis:  candidates.BasisExplicitConfirmation,
+		PromotionBasis:  candidates.BasisRuntimeProof,
 		SourceTraceRef:  "trace_cheap_lane",
 		SnippetHash:     "sha256:cheap_lane",
 		Visibility:      "ambient",
@@ -204,8 +204,90 @@ func TestAdjudicatePromoteRequiresPromotionBasis(t *testing.T) {
 	if err != nil || res.Claim == nil {
 		t.Fatalf("promote with valid basis should pass: %v", err)
 	}
-	if res.Claim.PromotionBasis != candidates.BasisExplicitConfirmation {
+	if res.Claim.PromotionBasis != candidates.BasisRuntimeProof {
 		t.Fatalf("claim basis = %q", res.Claim.PromotionBasis)
+	}
+}
+
+func TestAdjudicateRejectsUnprovenExplicitConfirmationBasis(t *testing.T) {
+	s := newStore(t)
+	seed := cand("operator", "preference.communication", "prefer concise updates", "")
+	seed.PromotionBasis = candidates.BasisExplicitConfirmation
+	seed.ClaimType = "preference"
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+
+	if _, err := s.Adjudicate(captured[0].ID, "promote", "work_unproven_confirmation", t0); err == nil || !strings.Contains(err.Error(), "confirmation") {
+		t.Fatalf("ordinary adjudication accepted unproven explicit confirmation: %v", err)
+	}
+	if claims, err := s.loadClaims(); err != nil || len(claims) != 0 {
+		t.Fatalf("unproven confirmation wrote claims=%d err=%v", len(claims), err)
+	}
+}
+
+func TestOperatorConfirmationEvidenceUsesReservedActorBoundDoor(t *testing.T) {
+	s := newStore(t)
+	seed := cand("operator", "preference.communication", "prefer concise updates", "")
+	seed.PromotionBasis = ""
+	seed.ClaimType = "preference"
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "park", "work_confirmation", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "operator_confirmation",
+		SourceID:   captured[0].ID,
+		QuoteText:  "Keep this preference.",
+		Actor:      "operator:forged-generic-path",
+	}, t0); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("generic evidence path accepted reserved operator confirmation: %v", err)
+	}
+	if _, err := s.RecordOperatorConfirmation(captured[0].ID, "Keep this preference.", "agent:model", t0); err == nil || !strings.Contains(err.Error(), "operator provenance") {
+		t.Fatalf("dedicated confirmation accepted non-operator actor: %v", err)
+	}
+
+	first, err := s.RecordOperatorConfirmation(captured[0].ID, "Keep this preference.", "operator:one", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.RecordOperatorConfirmation(captured[0].ID, "Keep this preference.", "operator:two", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("confirmation evidence id did not bind actor: %s", first.ID)
+	}
+	if first.Actor != "operator:one" || first.Visibility != "private" {
+		t.Fatalf("confirmation evidence provenance = %+v", first)
+	}
+}
+
+func TestOperatorConfirmationRequiresParkedCandidate(t *testing.T) {
+	for _, state := range []string{"proposed", "rejected", "no_promote"} {
+		t.Run(state, func(t *testing.T) {
+			s := newStore(t)
+			seed := cand("operator", "preference.communication", "prefer concise updates", "")
+			seed.PromotionBasis = ""
+			seed.ClaimType = "preference"
+			captured, err := s.Capture([]Candidate{seed}, t0)
+			if err != nil || len(captured) != 1 {
+				t.Fatalf("capture = %+v, err=%v", captured, err)
+			}
+			if state != "proposed" {
+				if _, err := s.Adjudicate(captured[0].ID, state, "work_confirmation_state", t0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := s.RecordOperatorConfirmation(captured[0].ID, "Keep this preference.", "operator:test", t0); err == nil || !strings.Contains(err.Error(), "parked") {
+				t.Fatalf("%s candidate accepted confirmation: %v", state, err)
+			}
+		})
 	}
 }
 
@@ -226,24 +308,20 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 		t.Fatalf("park: %v", err)
 	}
 
-	mismatched, err := s.RecordEvidence(EvidenceItem{
+	mismatched := writeRawEvidence(t, s, EvidenceItem{
+		ID:         "ev_mismatched_confirmation",
 		SourceKind: "operator_confirmation",
 		SourceID:   "cand_other",
 		QuoteText:  "Confirmed for another candidate.",
 		Actor:      "operator:test",
-	}, t0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonOperator, err := s.RecordEvidence(EvidenceItem{
+	})
+	nonOperator := writeRawEvidence(t, s, EvidenceItem{
+		ID:         "ev_non_operator_confirmation",
 		SourceKind: "operator_confirmation",
 		SourceID:   candidateID,
 		QuoteText:  "Agent attempted confirmation.",
 		Actor:      "agent:test",
-	}, t0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	})
 	wrongKind, err := s.RecordEvidence(EvidenceItem{
 		SourceKind: "session_note",
 		SourceID:   candidateID,
@@ -274,12 +352,7 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 		})
 	}
 
-	confirmation, err := s.RecordEvidence(EvidenceItem{
-		SourceKind: "operator_confirmation",
-		SourceID:   candidateID,
-		QuoteText:  "Yes, keep this as my communication preference.",
-		Actor:      "operator:test",
-	}, t0)
+	confirmation, err := s.RecordOperatorConfirmation(candidateID, "Yes, keep this as my communication preference.", "operator:test", t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,6 +372,23 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 			t.Fatalf("claim evidence[%d] = %q, want %q (%v)", i, res.Claim.EvidenceRefs[i], want, res.Claim.EvidenceRefs)
 		}
 	}
+}
+
+func writeRawEvidence(t *testing.T, s *Store, evidence EvidenceItem) EvidenceItem {
+	t.Helper()
+	if evidence.ID == "" {
+		t.Fatal("raw evidence fixture needs an id")
+	}
+	if evidence.ContentHash == "" {
+		evidence.ContentHash = "legacy-fixture"
+	}
+	if evidence.ObservedAt == "" {
+		evidence.ObservedAt = rfc3339(t0)
+	}
+	if err := appendJSONL(s.evidenceLog(), &evidence); err != nil {
+		t.Fatal(err)
+	}
+	return evidence
 }
 
 func TestOperationalDecisionFoldIgnoresGenericSameSlotShadow(t *testing.T) {
