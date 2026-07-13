@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,33 +20,37 @@ func TestWorkCreateCLIPropagatesExpectedBaseSHA(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	base := strings.Repeat("a", 40)
+	repo, base, _ := initLandingCLIRepo(t)
 
 	planOut := captureStdout(t, func() {
 		cmdWork([]string{
 			"create-plan", "--owner", "codex", "--predicate", "land exactly once",
-			"--expected-base-sha", base, "--by", "codex", "--dry-run", "--json",
+			"--target-worktree-root", repo, "--target-local-ref", "refs/heads/main",
+			"--expected-base-sha", base, "--local-only", "--by", "codex", "--dry-run", "--json",
 		})
 	})
 	var plan work.CreatePlan
 	if err := json.Unmarshal([]byte(planOut), &plan); err != nil {
 		t.Fatalf("parse create-plan JSON: %v\n%s", err, planOut)
 	}
-	if plan.Work.ExpectedBaseSHA != base {
-		t.Fatalf("planned expected_base_sha = %q, want %q", plan.Work.ExpectedBaseSHA, base)
+	if plan.Work.GitDelivery == nil || plan.Work.GitDelivery.ExpectedBaseSHA != base || plan.Work.GitDelivery.TargetWorktreeRoot != repo || plan.Work.GitDelivery.PublicationMode != "local_only" {
+		t.Fatalf("planned git_delivery = %+v", plan.Work.GitDelivery)
 	}
-	if !landingCommandHasPair(plan.CreateCommand, "--expected-base-sha", base) {
-		t.Fatalf("create command dropped expected base: %v", plan.CreateCommand)
+	if !landingCommandHasPair(plan.CreateCommand, "--expected-base-sha", base) ||
+		!landingCommandHasPair(plan.CreateCommand, "--target-worktree-root", repo) ||
+		!landingCommandHas(plan.CreateCommand, "--local-only") {
+		t.Fatalf("create command dropped git delivery contract: %v", plan.CreateCommand)
 	}
 
 	createOut := captureStdout(t, func() {
 		cmdWork([]string{
 			"create", "--owner", "codex", "--predicate", "persist exact base",
-			"--expected-base-sha", base, "--by", "codex",
+			"--target-worktree-root", repo, "--target-local-ref", "refs/heads/main",
+			"--expected-base-sha", base, "--local-only", "--by", "codex",
 		})
 	})
-	if !strings.Contains(createOut, `"expected_base_sha": "`+base+`"`) {
-		t.Fatalf("created WorkEnvelope dropped expected base:\n%s", createOut)
+	if !strings.Contains(createOut, `"git_delivery": {`) || !strings.Contains(createOut, `"expected_base_sha": "`+base+`"`) {
+		t.Fatalf("created WorkEnvelope dropped git delivery contract:\n%s", createOut)
 	}
 }
 
@@ -64,7 +69,12 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 		Owner:            "codex",
 		Actor:            "codex",
 		SuccessPredicate: "candidate is visibly ready to land",
-		ExpectedBaseSHA:  base,
+		GitDelivery: &envelope.GitDeliveryContract{
+			TargetWorktreeRoot: repo,
+			TargetLocalRef:     "refs/heads/main",
+			ExpectedBaseSHA:    base,
+			PublicationMode:   "local_only",
+		},
 	}, cliTestNow)
 	if err != nil {
 		t.Fatal(err)
@@ -75,8 +85,8 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 
 	dryOut := captureStdout(t, func() {
 		cmdWork([]string{
-			"land-check", w.ID, "--repo", repo, "--tip", tip, "--target-ref", "main",
-			"--expected-main-sha", base, "--dry-run", "--json",
+			"land-check", w.ID, "--repo", repo, "--tip", tip, "--target-ref", "refs/heads/main",
+			"--dry-run", "--json",
 		})
 	})
 	var dry work.LandCheckReport
@@ -90,7 +100,7 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 	runLandingCLIGit(t, repo, "merge", "--ff-only", tip)
 	landedOut := captureStdout(t, func() {
 		cmdWork([]string{
-			"land-check", w.ID, "--repo", repo, "--tip", tip, "--target-ref", "main", "--json",
+			"land-check", w.ID, "--tip", tip, "--actor", "codex", "--json",
 		})
 	})
 	var landed work.LandCheckReport
@@ -103,11 +113,67 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 	if _, err := os.Stat(landed.ProofPath); err != nil {
 		t.Fatalf("recorded proof missing: %v", err)
 	}
+	attached, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stringSliceContains(attached.EvidenceRefs, landed.EvidenceRef) {
+		t.Fatalf("recorded proof not discoverable from WorkEnvelope: %+v", attached.EvidenceRefs)
+	}
+}
+
+const workLandingGuardCLISubEnv = "COMPOUND_WORK_LANDING_GUARD_CLI_SUB"
+
+func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
+	if mode := os.Getenv(workLandingGuardCLISubEnv); mode != "" {
+		switch mode {
+		case "create-unknown":
+			cmdWork([]string{"create", "--owner", "codex", "--predicate", "x", "--unknown"})
+		case "create-partial-contract":
+			cmdWork([]string{"create", "--owner", "codex", "--predicate", "x", "--expected-base-sha", strings.Repeat("a", 40)})
+		case "land-unknown":
+			cmdWork([]string{"land-check", "work_x", "--tip", strings.Repeat("a", 40), "--expected-main-sha", strings.Repeat("b", 40)})
+		case "land-missing-value":
+			cmdWork([]string{"land-check", "work_x", "--tip"})
+		}
+		return
+	}
+
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"create-unknown", "create-partial-contract", "land-unknown", "land-missing-value"} {
+		t.Run(mode, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags$")
+			cmd.Env = append(os.Environ(), workLandingGuardCLISubEnv+"="+mode, "COMPOUND_HOME="+homePath)
+			output, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+				t.Fatalf("%s should exit 2, err=%v output=%s", mode, err, output)
+			}
+			if !strings.Contains(string(output), "usage: compound work") {
+				t.Fatalf("%s must print work usage, got %s", mode, output)
+			}
+		})
+	}
+	if !strings.Contains(workUsage(""), "land-check") || !strings.Contains(workUsage("land-check"), "--tip") {
+		t.Fatalf("work help must expose land-check: root=%q sub=%q", workUsage(""), workUsage("land-check"))
+	}
 }
 
 func landingCommandHasPair(command []string, flag, value string) bool {
 	for i := 0; i+1 < len(command); i++ {
 		if command[i] == flag && command[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func landingCommandHas(command []string, flag string) bool {
+	for _, item := range command {
+		if item == flag {
 			return true
 		}
 	}
