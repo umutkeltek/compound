@@ -143,7 +143,19 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		return ClosePlan{}, err
 	}
 	observations, observationWarnings := s.workbenchRunObservations(w.ID)
-	proofRefs := mergeUnique(w.ArtifactIDs, w.VerificationIDs)
+	proofRefs := mergeUnique(w.ArtifactIDs, w.VerificationIDs, landCheckEvidenceRefs(w.EvidenceRefs))
+	deliveryNoAction := ""
+	if outcome == "completed" {
+		_, _, hasCommitArtifact, _ := latestCommitArtifact(w.ArtifactIDs)
+		switch {
+		case hasCommitArtifact && w.GitDelivery == nil:
+			deliveryNoAction = "completed commit-bearing work lacks a git_delivery contract"
+		case w.GitDelivery != nil:
+			if _, err := s.recordedLandedProofForClose(w, proofRefs); err != nil {
+				deliveryNoAction = err.Error()
+			}
+		}
+	}
 	var expectedValidation []string
 	var receiptDraft envelope.Receipt
 	if actionPlan != nil {
@@ -216,6 +228,8 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		plan.NoAction = fmt.Sprintf("invalid close outcome %q", outcome)
 	case !oneOf(moveType, envelope.MoveTypes):
 		plan.NoAction = fmt.Sprintf("invalid move_type %q", moveType)
+	case deliveryNoAction != "":
+		plan.NoAction = deliveryNoAction
 	case heldReleaseErr != nil:
 		plan.NoAction = heldReleaseErr.Error()
 	case leaseStatus.Blocked:
