@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"compound/internal/candidates"
 	"compound/internal/envelope"
 )
 
@@ -414,7 +415,8 @@ func (e LLMExtractor) Extract(raw []byte, policy Policy) (Trace, error) {
 }
 
 func (e LLMExtractor) toCandidate(index int, lc LLMCandidate, response LLMExtractionResponse) (Candidate, error) {
-	if strings.TrimSpace(lc.PromotionBasis) != "" {
+	promotionBasis := strings.TrimSpace(lc.PromotionBasis)
+	if promotionBasis != "" && !strings.EqualFold(promotionBasis, candidates.BasisExplicitConfirmation) {
 		return Candidate{}, fmt.Errorf("llm candidate %d attempted promotion_basis %q; model output cannot promote memory", index, lc.PromotionBasis)
 	}
 	if lc.Confidence == nil {
