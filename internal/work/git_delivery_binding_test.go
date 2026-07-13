@@ -31,7 +31,7 @@ func TestLegacyNonterminalWorkBindsGitDeliveryThroughAdvance(t *testing.T) {
 	}
 
 	plan, err := store.AdvancePlan(w.ID, now.Add(4*time.Minute), AdvancePlanOptions{
-		Actor:       "codex",
+		Actor:       "operator:test",
 		To:          "running",
 		GitDelivery: contract,
 		Steal:       true,
