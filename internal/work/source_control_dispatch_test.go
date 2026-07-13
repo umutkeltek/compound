@@ -39,7 +39,7 @@ func TestDispatchSurfacesExpectedBaseAndWorkerLandingContract(t *testing.T) {
 	}
 	for _, want := range []string{
 		"## SOURCE CONTROL CONTRACT",
-		"target_worktree_root: " + repo,
+		"target_worktree_root: " + w.GitDelivery.TargetWorktreeRoot,
 		"target_local_ref: refs/heads/main",
 		"expected_base_sha: " + base,
 		"publication_mode: local_only",
