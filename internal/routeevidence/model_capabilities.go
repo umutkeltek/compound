@@ -140,20 +140,34 @@ type CapabilityRoutePlanOptions struct {
 	// CapacityConfig injects source paths for tests and alternate runtime projections. Nil uses
 	// the production defaults rooted at the supplied Compound home.
 	CapacityConfig *LaneCapacityConfig
+	// LatencyClass, when set (interactive|batch|overnight), enforces the worth-the-wait rule:
+	// a lane whose effective latency class is slower than the required class is vetoed (omitted)
+	// for this plan, while the same lane is admitted for a class that can afford the wait. Empty
+	// keeps today's behavior byte-identical (no latency filtering).
+	LatencyClass string
+	// LatencyBudget injects the operator worth-the-wait SLA used to classify measured probes.
+	// Nil loads registries/latency-budget.json (or the built-in operator-SLA default).
+	LatencyBudget *LatencyBudget
 }
 
 type CapabilityRoutePlan struct {
-	SchemaVersion       string                    `json:"schema_version"`
-	ID                  string                    `json:"id"`
-	CreatedAt           string                    `json:"created_at"`
-	Status              string                    `json:"status"`
-	AuthorityRef        string                    `json:"authority_ref"`
-	AuthorityPath       string                    `json:"authority_path"`
-	SourceAuthorityID   string                    `json:"source_authority_id,omitempty"`
-	SourceRevision      string                    `json:"source_revision,omitempty"`
-	CapabilityClass     string                    `json:"capability_class"`
-	PrivacySensitive    bool                      `json:"privacy_sensitive"`
-	RoutingRule         string                    `json:"routing_rule"`
+	SchemaVersion     string `json:"schema_version"`
+	ID                string `json:"id"`
+	CreatedAt         string `json:"created_at"`
+	Status            string `json:"status"`
+	AuthorityRef      string `json:"authority_ref"`
+	AuthorityPath     string `json:"authority_path"`
+	SourceAuthorityID string `json:"source_authority_id,omitempty"`
+	SourceRevision    string `json:"source_revision,omitempty"`
+	CapabilityClass   string `json:"capability_class"`
+	PrivacySensitive  bool   `json:"privacy_sensitive"`
+	RoutingRule       string `json:"routing_rule"`
+	// RequiredLatencyClass is the task worth-the-wait class this plan was filtered against
+	// (interactive|batch|overnight). Empty means no latency filtering ran.
+	RequiredLatencyClass string `json:"required_latency_class,omitempty"`
+	// LatencyBudgetSource names where the measured-speed SLA came from (default vs override),
+	// so a speed demotion is never a silent number.
+	LatencyBudgetSource string                    `json:"latency_budget_source,omitempty"`
 	LaneJustification   []string                  `json:"lane_justification"`
 	Chain               []CapabilityRouteLane     `json:"chain"`
 	Omitted             []CapabilityRouteLane     `json:"omitted,omitempty"`
@@ -193,6 +207,11 @@ type CapabilityRouteLane struct {
 	// Capacity carries the exact source-derived state used by the veto. It annotates both
 	// admitted and omitted subscription lanes and is absent for non-subscription lanes.
 	Capacity *LaneCapacity `json:"capacity,omitempty"`
+	// SpeedAdjustment records a measured-speed role change derived from lane-speed probe
+	// evidence (never from provider marketing, never a promotion). Present only when a probe's
+	// measured latency class is slower than the lane's declared class; GateRole above is then
+	// the ADJUSTED role and PriorGateRole holds what it was.
+	SpeedAdjustment *LaneSpeedAdjustment `json:"speed_adjustment,omitempty"`
 }
 
 // PendingRouteObservation is read-only review debt visible to route planners.
@@ -435,12 +454,55 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 	if opts.ExpectedMinutes > 0 {
 		capacityConfig.ExpectedMinutes = opts.ExpectedMinutes
 	}
+	// Worth-the-wait inputs: measured-speed receipts + operator SLA budget. Both are clean
+	// no-ops on a fresh home (no probes -> no demotion; empty LatencyClass -> no veto), so
+	// existing plans stay byte-identical.
+	requiredLatency, requiredLatencyOK := NormalizeLatencyClass(opts.LatencyClass)
+	if strings.TrimSpace(opts.LatencyClass) != "" && !requiredLatencyOK {
+		return CapabilityRoutePlan{}, fmt.Errorf("unknown latency class %q (want interactive|batch|overnight)", opts.LatencyClass)
+	}
+	plan.RequiredLatencyClass = string(requiredLatency)
+	latencyBudget := DefaultLatencyBudget()
+	budgetSource := "default_operator_sla"
+	if opts.LatencyBudget != nil {
+		if err := opts.LatencyBudget.validate(); err != nil {
+			return CapabilityRoutePlan{}, err
+		}
+		latencyBudget = *opts.LatencyBudget
+		budgetSource = "options"
+	} else {
+		loaded, source, err := LoadLatencyBudget(homePath)
+		if err != nil {
+			return CapabilityRoutePlan{}, err
+		}
+		latencyBudget = loaded
+		budgetSource = source
+	}
+	plan.LatencyBudgetSource = budgetSource
+	speedProbes, err := LoadLaneSpeedProbes(homePath)
+	if err != nil {
+		return CapabilityRoutePlan{}, err
+	}
 	for i, modelID := range defaults {
 		model := manifest.Models[modelID]
 		lane := capabilityRouteLane(capabilityClass, modelID, model, i)
+		// Measured speed can only DEMOTE (never auto-promote, never from marketing). Stamped on
+		// the lane before any filter so an omitted lane still carries its demotion receipt.
+		effectiveLatency, speedWarning := laneEffectiveLatency(&lane, model, speedProbes, latencyBudget)
+		if speedWarning != "" {
+			plan.Warnings = append(plan.Warnings, speedWarning)
+		}
 		if opts.PrivacySensitive && model.Tier != "local-batch" {
 			lane.OmitReason = "privacy-sensitive route requires local-batch tier"
 			plan.Omitted = append(plan.Omitted, lane)
+			continue
+		}
+		// Worth-the-wait veto: a lane slower than the task's required latency class is omitted
+		// for interactive work but admitted when the task can afford the wait.
+		if omit, reason := laneLatencyVeto(lane, effectiveLatency, requiredLatency); omit {
+			lane.OmitReason = reason
+			plan.Omitted = append(plan.Omitted, lane)
+			plan.Warnings = append(plan.Warnings, reason)
 			continue
 		}
 		accountKey, accountMapped := laneAccountProviderKey(lane)
