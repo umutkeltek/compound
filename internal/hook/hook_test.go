@@ -1368,6 +1368,19 @@ func TestPreToolUseResolvesRelativeTargetAgainstHookCwd(t *testing.T) {
 	}
 }
 
+func TestReviewedMutationOwnerMustRemainCurrent(t *testing.T) {
+	for _, state := range []string{"claimed", "running", "verifying", "held"} {
+		if !currentReviewedMutationOwnerState(state) {
+			t.Errorf("current state %q rejected", state)
+		}
+	}
+	for _, state := range []string{"", "proposed", "admitted", "ready", "blocked", "completed", "failed", "cancelled"} {
+		if currentReviewedMutationOwnerState(state) {
+			t.Errorf("non-current state %q accepted", state)
+		}
+	}
+}
+
 func TestSessionEndClosesWork(t *testing.T) {
 	store, err := work.Open(t.TempDir())
 	if err != nil {

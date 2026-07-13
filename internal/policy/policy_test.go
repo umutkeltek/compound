@@ -174,6 +174,7 @@ func TestSourceControlDirtyExactRecordedMutationReviewAvoidsOnlyDirtyEscalation(
 	if err := json.Unmarshal([]byte(`{
   "entity_ref":"repo:demo",
   "git_root":"/repo/demo",
+  "remote":"git@example.invalid/demo.git",
   "head":"abc123",
   "status":"dirty",
   "changed_paths":1,
@@ -188,6 +189,7 @@ func TestSourceControlDirtyExactRecordedMutationReviewAvoidsOnlyDirtyEscalation(
     "action_work_id":"work_test",
     "repo_id":"repo:demo",
     "git_root":"/repo/demo",
+    "remote":"git@example.invalid/demo.git",
     "head":"abc123",
     "changed_state_fingerprint":"sha256:state",
     "mutation_input_hash":"mutation-input:sha256:exact",
@@ -206,6 +208,82 @@ func TestSourceControlDirtyExactRecordedMutationReviewAvoidsOnlyDirtyEscalation(
 	}
 	if !reasonContains(pd.Reasons, "exact recorded source-control review") {
 		t.Fatalf("review allowance reason missing: %v", pd.Reasons)
+	}
+
+	mismatches := []struct {
+		name   string
+		mutate func(*envelope.ActionIntent, *SourceControlContext, *ReviewedSourceControlMutation)
+	}{
+		{"status", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.Status = "review_required"
+		}},
+		{"decision", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.Decision = "parked"
+		}},
+		{"review id", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.ReviewID = ""
+		}},
+		{"plan digest", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.PlanDigest = ""
+		}},
+		{"owner work", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.OwnerWorkID = ""
+		}},
+		{"repo", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.RepoID = "repo:other"
+		}},
+		{"root", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.GitRoot = "/repo/other"
+		}},
+		{"remote", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.Remote = "git@example.invalid/other.git"
+		}},
+		{"head", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.Head = "other"
+		}},
+		{"fingerprint", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.ChangedStateFingerprint = "sha256:other"
+		}},
+		{"action work", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.ActionWorkID = "work_other"
+		}},
+		{"capability", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.Capability = "filesystem.delete"
+		}},
+		{"action", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.Action = "delete_file"
+		}},
+		{"class", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.MutationClass = "destructive"
+		}},
+		{"target", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.TargetPaths = []string{"docs/other.md"}
+		}},
+		{"input", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.MutationInputHash = "mutation-input:sha256:other"
+		}},
+		{"unbound input", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.MutationInputHash = "mutation-input-unbound:sha256:exact"
+		}},
+		{"missing input evidence", func(a *envelope.ActionIntent, _ *SourceControlContext, _ *ReviewedSourceControlMutation) {
+			a.EvidenceRefs = nil
+		}},
+	}
+	for _, tc := range mismatches {
+		t.Run("mismatched "+tc.name, func(t *testing.T) {
+			changedAction := ai
+			changedAction.EvidenceRefs = append([]string{}, ai.EvidenceRefs...)
+			changedContext := sc
+			changedReview := *sc.ReviewedMutation
+			changedReview.TargetPaths = append([]string{}, sc.ReviewedMutation.TargetPaths...)
+			changedReview.EvidenceRefs = append([]string{}, sc.ReviewedMutation.EvidenceRefs...)
+			changedContext.ReviewedMutation = &changedReview
+			tc.mutate(&changedAction, &changedContext, &changedReview)
+			got := EvaluateWithContext(changedAction, DefaultConfig(), EvaluationContext{SourceControl: &changedContext}, fixedNow)
+			if got.Outcome != "hold" || !reasonContains(got.Reasons, "recorded review did not exactly match") {
+				t.Fatalf("mismatch %s did not fail closed: outcome=%s reasons=%v", tc.name, got.Outcome, got.Reasons)
+			}
+		})
 	}
 }
 

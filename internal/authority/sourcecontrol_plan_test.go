@@ -193,6 +193,7 @@ func TestRecordedSourceControlMutationReviewRequiresExactImmutableBinding(t *tes
 	}{
 		{"repo", func(s *SourceControlSnapshot) { s.RepoID = "repo:other" }},
 		{"root", func(s *SourceControlSnapshot) { s.GitRoot = filepath.Join(repo, "other-clone") }},
+		{"remote", func(s *SourceControlSnapshot) { s.Remote = "git@example.invalid/other.git" }},
 		{"head", func(s *SourceControlSnapshot) { s.Head = strings.Repeat("b", 40) }},
 		{"content-index fingerprint", func(s *SourceControlSnapshot) { s.ChangedStateFingerprint = "sha256:" + strings.Repeat("b", 64) }},
 	}
