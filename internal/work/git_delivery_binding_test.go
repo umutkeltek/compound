@@ -22,11 +22,20 @@ func TestLegacyNonterminalWorkBindsGitDeliveryThroughAdvance(t *testing.T) {
 	}
 	activateLandingWork(t, store, w.ID, now)
 	contract := localGitDelivery(repo, base)
+	if _, err := store.Advance(w.ID, AdvanceInput{
+		To:          "running",
+		Actor:       "codex",
+		GitDelivery: contract,
+	}, now.Add(3*time.Minute)); err == nil || !strings.Contains(err.Error(), "operator provenance") {
+		t.Fatalf("ordinary executor must not bind immutable delivery authority, got %v", err)
+	}
 
-	plan, err := store.AdvancePlan(w.ID, now.Add(3*time.Minute), AdvancePlanOptions{
+	plan, err := store.AdvancePlan(w.ID, now.Add(4*time.Minute), AdvancePlanOptions{
 		Actor:       "codex",
 		To:          "running",
 		GitDelivery: contract,
+		Steal:       true,
+		StealReason: "operator-approved legacy delivery migration",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -46,9 +55,11 @@ func TestLegacyNonterminalWorkBindsGitDeliveryThroughAdvance(t *testing.T) {
 
 	bound, err := store.Advance(w.ID, AdvanceInput{
 		To:          "running",
-		Actor:       "codex",
+		Actor:       "operator:test",
 		GitDelivery: contract,
-	}, now.Add(4*time.Minute))
+		Steal:       true,
+		StealReason: "operator-approved legacy delivery migration",
+	}, now.Add(5*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,11 +70,11 @@ func TestLegacyNonterminalWorkBindsGitDeliveryThroughAdvance(t *testing.T) {
 	if err := store.readJSON(store.envPath(bound.RunIDs[len(bound.RunIDs)-1]), &action); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(action.Preview, "bind Git delivery") || !strings.Contains(action.Preview, canonicalRepo) || !strings.Contains(action.Preview, base) {
+	if !strings.Contains(action.Preview, "bind Git delivery") || !strings.Contains(action.Preview, canonicalRepo) || !strings.Contains(action.Preview, base) || action.Reversibility != "hard" {
 		t.Fatalf("binding action does not carry exact authority: %+v", action)
 	}
 
-	if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", GitDelivery: contract}, now.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), "already has git_delivery") {
+	if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "operator:test", GitDelivery: contract}, now.Add(6*time.Minute)); err == nil || !strings.Contains(err.Error(), "already has git_delivery") {
 		t.Fatalf("delivery rebinding must fail closed, got %v", err)
 	}
 }
@@ -82,14 +93,14 @@ func TestDeliveryBindingIsSameStateAndCompleteOnly(t *testing.T) {
 	activateLandingWork(t, store, w.ID, now)
 
 	if _, err := store.AdvancePlan(w.ID, now.Add(3*time.Minute), AdvancePlanOptions{
-		Actor:       "codex",
+		Actor:       "operator:test",
 		To:          "verifying",
 		GitDelivery: localGitDelivery(repo, base),
 	}); err == nil || !strings.Contains(err.Error(), "same-state") {
 		t.Fatalf("delivery binding plus lifecycle transition should fail, got %v", err)
 	}
 	if _, err := store.AdvancePlan(w.ID, now.Add(4*time.Minute), AdvancePlanOptions{
-		Actor: "codex",
+		Actor: "operator:test",
 		To:    "running",
 		GitDelivery: &envelope.GitDeliveryContract{
 			TargetWorktreeRoot: repo,

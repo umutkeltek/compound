@@ -159,16 +159,16 @@ func TestWorkAdvanceCLIBindsLegacyGitDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Claim(w.ID, "codex", cliTestNow.Add(time.Minute)); err != nil {
+	if _, err := store.Claim(w.ID, "operator:test", cliTestNow.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow.Add(2*time.Minute)); err != nil {
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "operator:test"}, cliTestNow.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 
 	planOut := captureStdout(t, func() {
 		cmdWork([]string{
-			"advance-plan", w.ID, "--to", "running", "--actor", "codex",
+			"advance-plan", w.ID, "--to", "running", "--actor", "operator:test",
 			"--target-worktree-root", repo, "--target-local-ref", "refs/heads/main",
 			"--expected-base-sha", base, "--local-only", "--dry-run", "--json",
 		})
@@ -183,7 +183,7 @@ func TestWorkAdvanceCLIBindsLegacyGitDelivery(t *testing.T) {
 
 	captureStdout(t, func() {
 		cmdWork([]string{
-			"advance", w.ID, "--to", "running", "--by", "codex",
+			"advance", w.ID, "--to", "running", "--by", "operator:test",
 			"--target-worktree-root", repo, "--target-local-ref", "refs/heads/main",
 			"--expected-base-sha", base, "--local-only",
 		})
