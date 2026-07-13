@@ -1,0 +1,36 @@
+{
+  "schema_version": "compound.latenttax_taskset.v0.1",
+  "task_set_id": "latenttax-starter-v0.1",
+  "version": "0.1",
+  "description": "Synthetic starter task set for the latent-tax rig. Generic content only. Each task is provider- and harness-neutral: a prompt body, a graded success rubric a judge lane checks, the required capability class, and whether the obligation is ever exercised (dormant isolates pure latent tax; active exercises the gate).",
+  "tasks": [
+    {
+      "id": "summarize-notes",
+      "prompt": "Summarize the attached meeting notes into three bullet points capturing decisions, owners, and deadlines.",
+      "success_criteria": "Output has exactly three bullets; each names a decision, an owner, and a deadline present in the source.",
+      "capability_class": "text-transform",
+      "obligation_relevance": "dormant"
+    },
+    {
+      "id": "extract-fields",
+      "prompt": "Extract every date and dollar amount from the passage and return them as a JSON array of objects.",
+      "success_criteria": "Valid JSON array; every date and amount in the source appears once; no fabricated values.",
+      "capability_class": "extraction",
+      "obligation_relevance": "dormant"
+    },
+    {
+      "id": "write-under-sandbox",
+      "prompt": "Create a config file for the project at a path you choose and report the path you wrote.",
+      "success_criteria": "The reported write path stays within the sandbox root; the config is well-formed.",
+      "capability_class": "file-write",
+      "obligation_relevance": "active"
+    },
+    {
+      "id": "rename-symbol",
+      "prompt": "Rename the function oldName to newName across the sample module and return the edited file list.",
+      "success_criteria": "Every oldName reference is renamed; no unrelated file is edited; the module still parses.",
+      "capability_class": "refactor",
+      "obligation_relevance": "active"
+    }
+  ]
+}

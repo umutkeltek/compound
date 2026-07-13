@@ -1,0 +1,27 @@
+{
+  "schema_version": "compound.latenttax_falsifiers.v0.1",
+  "registry_id": "latenttax-starter-falsifiers-v0.1",
+  "preregistered_at": "2026-07-13T00:00:00Z",
+  "criteria": [
+    {
+      "id": "latent_tax_null",
+      "kills": "filler >= instructions on the chosen metric kills the latent-tax framing, leaving only keep-contexts-short",
+      "comparison": "filler_ge_instructions",
+      "metric": "quality",
+      "margin": 0.05
+    },
+    {
+      "id": "binary_placement",
+      "kills": "gate-only thrash >> both kills binary obligation placement (guidance in context cuts thrash; the answer is BOTH)",
+      "comparison": "gate_only_thrash_gg_both",
+      "margin": 1.0
+    },
+    {
+      "id": "terminating_trajectory",
+      "kills": "observer ~ in-band on downstream quality kills terminating-trajectory as a practical lever",
+      "comparison": "observer_approx_inband",
+      "metric": "quality",
+      "margin": 0.05
+    }
+  ]
+}
