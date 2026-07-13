@@ -1,6 +1,7 @@
 package work
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -117,7 +118,7 @@ func TestDeliveryBindingIsSameStateAndCompleteOnly(t *testing.T) {
 	}
 }
 
-func TestRepoScopedControlPlaneCloseRequiresDeclaredDeliveryWithoutCommitProof(t *testing.T) {
+func TestRepoScopedContextAloneDoesNotInventGitDeliveryAuthority(t *testing.T) {
 	now := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
 	repo, _ := initLandingRepo(t)
 	store, err := Open(t.TempDir())
@@ -137,7 +138,7 @@ func TestRepoScopedControlPlaneCloseRequiresDeclaredDeliveryWithoutCommitProof(t
 	}
 	w, err := store.Create(CreateInput{
 		Owner:            "codex",
-		SuccessPredicate: "repo-scoped control-plane work cannot omit delivery evidence",
+		SuccessPredicate: "repo orientation alone is not mutation evidence",
 		ContextPackID:    contextID,
 	}, now)
 	if err != nil {
@@ -153,21 +154,22 @@ func TestRepoScopedControlPlaneCloseRequiresDeclaredDeliveryWithoutCommitProof(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != "not_closeable" || len(plan.CloseCommand) != 0 || !strings.Contains(plan.NoAction, "git_delivery") || !strings.Contains(plan.NoAction, contextID) {
-		t.Fatalf("repo-scoped close plan must require declared delivery: %+v", plan)
+	if plan.Status != "close_policy_allowed" || len(plan.CloseCommand) == 0 || plan.NoAction != "" {
+		t.Fatalf("repo-scoped context alone must not invent delivery authority: %+v", plan)
 	}
-	if _, err := store.Close(w.ID, CloseInput{
+	closed, err := store.Close(w.ID, CloseInput{
 		Outcome:   "completed",
 		MoveType:  "control_plane_repair",
 		Actor:     "codex",
-		Summary:   "must not close by omitting commit proof",
+		Summary:   "orientation-only work closed without a false delivery hold",
 		ProofRefs: []string{"check:focused-tests"},
-	}, now.Add(4*time.Minute)); err == nil || !strings.Contains(err.Error(), "git_delivery") {
-		t.Fatalf("repo-scoped close omission should fail closed, got %v", err)
+	}, now.Add(4*time.Minute))
+	if err != nil || closed.Work.State != "completed" {
+		t.Fatalf("repo-scoped context-only close = %+v, err=%v", closed, err)
 	}
 }
 
-func TestRepoTargetActionRequiresDeclaredDeliveryButAuditDoesNot(t *testing.T) {
+func TestRepoTargetActionRequiresDeclaredDeliveryForEveryNonAuditMove(t *testing.T) {
 	now := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
 	repo, _ := initLandingRepo(t)
 	store, err := Open(t.TempDir())
@@ -202,7 +204,7 @@ func TestRepoTargetActionRequiresDeclaredDeliveryButAuditDoesNot(t *testing.T) {
 	}
 	if _, err := store.Close(w.ID, CloseInput{
 		Outcome:   "completed",
-		MoveType:  "control_plane_repair",
+		MoveType:  "memory_delta",
 		Actor:     "codex",
 		Summary:   "must bind repo delivery",
 		ProofRefs: []string{"check:focused-tests"},
@@ -215,6 +217,17 @@ func TestRepoTargetActionRequiresDeclaredDeliveryButAuditDoesNot(t *testing.T) {
 		t.Fatal(err)
 	}
 	activateLandingWork(t, store, audit.ID, now.Add(6*time.Minute))
+	auditAction := action
+	auditAction.Header = newHeader(envelope.SVActionIntent, "act_repo_target_audit", now.Add(9*time.Minute), audit.ID, "", "private", "tier1")
+	if err := auditAction.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeJSON(store.envPath(auditAction.ID), &auditAction); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(audit.ID, AdvanceInput{To: "running", Actor: "codex", RunID: auditAction.ID}, now.Add(9*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	closed, err := store.Close(audit.ID, CloseInput{
 		Outcome:   "completed",
 		MoveType:  "audit_only",
@@ -227,5 +240,64 @@ func TestRepoTargetActionRequiresDeclaredDeliveryButAuditDoesNot(t *testing.T) {
 	}
 	if closed.Work.State != "completed" {
 		t.Fatalf("audit close = %+v", closed.Work)
+	}
+}
+
+func TestRepoTargetActionEvidenceCannotDisappearBeforeClose(t *testing.T) {
+	for _, mutate := range []string{"missing", "mismatched"} {
+		t.Run(mutate, func(t *testing.T) {
+			now := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
+			repo, _ := initLandingRepo(t)
+			store, err := Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "recorded repo action remains inspectable"}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			activateLandingWork(t, store, w.ID, now)
+			action := envelope.ActionIntent{
+				Header:        newHeader(envelope.SVActionIntent, "act_repo_evidence_"+mutate, now.Add(3*time.Minute), w.ID, "", "private", "tier1"),
+				Actor:         "codex",
+				Capability:    "source.edit",
+				Action:        "edit_repo_file",
+				Target:        envelope.ActionTarget{Kind: "file", ID: "future.txt", Path: filepath.Join(repo, "future.txt")},
+				MutationClass: "local_reversible",
+				Reversibility: "easy",
+				BlastRadius:   "local",
+				Preview:       "edit a future repository file",
+				RollbackPlan:  "revert the file edit",
+			}
+			if err := action.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.writeJSON(store.envPath(action.ID), &action); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunID: action.ID}, now.Add(4*time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			switch mutate {
+			case "missing":
+				if err := os.Remove(store.envPath(action.ID)); err != nil {
+					t.Fatal(err)
+				}
+			case "mismatched":
+				action.IDs.WorkID = "work_other"
+				if err := store.writeJSON(store.envPath(action.ID), &action); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.Close(w.ID, CloseInput{
+				Outcome:   "completed",
+				MoveType:  "memory_delta",
+				Actor:     "codex",
+				Summary:   "corrupt action evidence must not erase delivery scope",
+				ProofRefs: []string{"check:focused-tests"},
+			}, now.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), action.ID) {
+				t.Fatalf("%s ActionIntent should fail loudly, got %v", mutate, err)
+			}
+		})
 	}
 }
