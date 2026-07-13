@@ -189,6 +189,12 @@ func normalizeTrace(t Trace, policy Policy) (Trace, error) {
 	}
 	for i := range t.Candidates {
 		c := &t.Candidates[i]
+		if policy.PromotionMode != ModeFixtureAutoPromote && strings.EqualFold(strings.TrimSpace(c.PromotionBasis), candidates.BasisExplicitConfirmation) {
+			// Explicit confirmation is authority minted only by the governed
+			// operator-confirmation adapter. Reference/model-shaped traces are
+			// evidence, so they cannot carry this reserved basis forward.
+			c.PromotionBasis = ""
+		}
 		if !contains(Kinds, c.Kind) {
 			return Trace{}, fmt.Errorf("candidate %d has unknown kind %q (allowed: %v)", i, c.Kind, Kinds)
 		}

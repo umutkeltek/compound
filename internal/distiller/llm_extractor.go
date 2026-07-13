@@ -16,6 +16,7 @@ const LLMExtractionSchemaVersion = "compound.distiller.llm_extraction.v0.1"
 type LLMExtractionRequest struct {
 	SchemaVersion      string                  `json:"schema_version"`
 	TraceRef           string                  `json:"trace_ref"`
+	SourcePrivacy      string                  `json:"source_privacy,omitempty"`
 	Policy             Policy                  `json:"policy"`
 	PriorCoverage      PriorCoverage           `json:"prior_coverage"`
 	PriorSignals       []LLMPriorSignal        `json:"prior_signals,omitempty"`
@@ -155,6 +156,7 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 		if err := src.Work.Validate(); err != nil {
 			return LLMExtractionRequest{}, fmt.Errorf("work envelope invalid: %w", err)
 		}
+		req.SourcePrivacy = mostRestrictivePrivacy(req.SourcePrivacy, src.Work.Privacy)
 		req.Work = &LLMWork{
 			ID:                 src.Work.ID,
 			Owner:              src.Work.Owner,
@@ -176,6 +178,7 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 		if err := src.ContextPack.Validate(); err != nil {
 			return LLMExtractionRequest{}, fmt.Errorf("context pack invalid: %w", err)
 		}
+		req.SourcePrivacy = mostRestrictivePrivacy(req.SourcePrivacy, src.ContextPack.Privacy)
 		req.Context = &LLMContext{
 			ID:                 src.ContextPack.ID,
 			SummaryMD:          src.ContextPack.SummaryMD,
@@ -193,6 +196,7 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 		if err := src.Receipt.Validate(); err != nil {
 			return LLMExtractionRequest{}, fmt.Errorf("receipt invalid: %w", err)
 		}
+		req.SourcePrivacy = mostRestrictivePrivacy(req.SourcePrivacy, src.Receipt.Privacy)
 		req.Receipt = &LLMReceipt{
 			ID:         src.Receipt.ID,
 			Outcome:    src.Receipt.Outcome,
@@ -216,6 +220,7 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 		if err := e.Validate(); err != nil {
 			return LLMExtractionRequest{}, fmt.Errorf("%s envelope invalid: %w", e.Kind(), err)
 		}
+		req.SourcePrivacy = mostRestrictivePrivacy(req.SourcePrivacy, envelopePrivacy(e))
 		summary := summarizeEnvelope(e)
 		req.Envelopes = append(req.Envelopes, summary)
 		addSourceRef(&req, summary.Kind+":"+summary.ID)
@@ -370,6 +375,7 @@ type LLMCandidate struct {
 type LLMExtractor struct {
 	AllowedEvidenceRefs []string
 	RequireEvidenceRefs bool
+	CandidateVisibility string
 }
 
 // NewGroundedLLMExtractor returns a request-bound extractor for eval/live extraction
@@ -380,6 +386,7 @@ func NewGroundedLLMExtractor(req LLMExtractionRequest) LLMExtractor {
 	return LLMExtractor{
 		AllowedEvidenceRefs: append([]string(nil), req.SourceRefs...),
 		RequireEvidenceRefs: true,
+		CandidateVisibility: memoryVisibilityForSourcePrivacy(req.SourcePrivacy),
 	}
 }
 
@@ -444,8 +451,55 @@ func (e LLMExtractor) toCandidate(index int, lc LLMCandidate, response LLMExtrac
 		Derivation:   derivation,
 		ClaimType:    lc.ClaimType,
 		Qualifiers:   lc.Qualifiers,
+		Visibility:   e.CandidateVisibility,
 		EvidenceRefs: evidenceRefs,
 	}, nil
+}
+
+func mostRestrictivePrivacy(current, candidate string) string {
+	rank := map[string]int{"public": 1, "private": 2, "sensitive": 3, "secret": 4}
+	if rank[candidate] > rank[current] {
+		return candidate
+	}
+	return current
+}
+
+func memoryVisibilityForSourcePrivacy(privacy string) string {
+	switch privacy {
+	case "public":
+		return "operational"
+	case "private", "sensitive", "secret":
+		return "private"
+	default:
+		return ""
+	}
+}
+
+func envelopePrivacy(e envelope.Envelope) string {
+	switch v := e.(type) {
+	case *envelope.EffectiveContract:
+		return v.Privacy
+	case *envelope.ContextRequest:
+		return v.Privacy
+	case *envelope.ContextPack:
+		return v.Privacy
+	case *envelope.WorkEnvelope:
+		return v.Privacy
+	case *envelope.ActionIntent:
+		return v.Privacy
+	case *envelope.PolicyDecision:
+		return v.Privacy
+	case *envelope.HookEvent:
+		return v.Privacy
+	case *envelope.TraceEnvelope:
+		return v.Privacy
+	case *envelope.Receipt:
+		return v.Privacy
+	case *envelope.Transition:
+		return v.Privacy
+	default:
+		return ""
+	}
 }
 
 func (e LLMExtractor) validateEvidenceRefs(index int, refs []string) error {
