@@ -43,6 +43,7 @@ type SourceManifestItem struct {
 	SourcePath       string                   `json:"source_path,omitempty"`
 	DBOnly           bool                     `json:"db_only,omitempty"`
 	PageHash         string                   `json:"page_hash,omitempty"`
+	IndexState       string                   `json:"index_state,omitempty"`
 	Chunks           []SourceManifestChunk    `json:"chunks,omitempty"`
 	Embedding        *SourceManifestEmbedding `json:"embedding,omitempty"`
 	CorpusGeneration string                   `json:"corpus_generation,omitempty"`

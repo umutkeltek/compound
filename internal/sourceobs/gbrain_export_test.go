@@ -95,6 +95,56 @@ func TestGbrainExportRejectsMissingEmbedding(t *testing.T) {
 	}
 }
 
+func TestGbrainExportAcceptsDeclaredUnindexedPageCoveredByDump(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unindexed.json")
+	body := `{
+  "schema_version": "compound.gbrain_db_export.v0.1",
+  "db_host": "db.example.invalid",
+  "db_name": "gbrain_synthetic",
+  "dump_ref": "sha256:dump",
+  "export_time": "2026-07-14T00:00:00Z",
+  "generation_label": "retirement-2026-07-14",
+  "pages": [{
+    "page_slug": "unindexed-page",
+    "db_only": true,
+    "page_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "index_state": "unindexed",
+    "chunks": [],
+    "corpus_generation": "legacy-unassigned",
+    "imported_at": "2026-07-14T00:00:00Z",
+    "source_kind": "gbrain_page"
+  }]
+}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := BuildGbrainExportManifest(path, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Items) != 1 || manifest.Items[0].IndexState != "unindexed" {
+		t.Fatalf("items = %+v", manifest.Items)
+	}
+	if manifest.Items[0].BodyPolicy != "db_export" {
+		t.Fatalf("body policy = %q, want db_export", manifest.Items[0].BodyPolicy)
+	}
+	if manifest.Items[0].Embedding != nil || len(manifest.Items[0].Chunks) != 0 {
+		t.Fatalf("unindexed page grew index metadata: %+v", manifest.Items[0])
+	}
+	home := t.TempDir()
+	if _, err := RecordSourceManifest(home, manifest); err != nil {
+		t.Fatal(err)
+	}
+	doctor, err := DoctorSourceManifest(home, GbrainDBExportManifestFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "ok" {
+		t.Fatalf("doctor = %+v", doctor)
+	}
+}
+
 func TestGbrainExportRejectsMissingChunkOrder(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "no-chunks.json")

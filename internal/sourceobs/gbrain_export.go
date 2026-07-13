@@ -36,6 +36,7 @@ type GbrainExportPage struct {
 	SourcePath       string                `json:"source_path,omitempty"`
 	DBOnly           bool                  `json:"db_only,omitempty"`
 	PageHash         string                `json:"page_hash"`
+	IndexState       string                `json:"index_state,omitempty"`
 	Chunks           []GbrainExportChunk   `json:"chunks"`
 	Embedding        GbrainExportEmbedding `json:"embedding"`
 	CorpusGeneration string                `json:"corpus_generation"`
@@ -217,22 +218,38 @@ func validateGbrainExportPage(page GbrainExportPage) error {
 	if page.DBOnly && strings.TrimSpace(page.SourcePath) != "" {
 		return fmt.Errorf("source_path must be empty when db_only is true")
 	}
-	if len(page.Chunks) == 0 {
-		return fmt.Errorf("chunks required (lossy without chunk order)")
+	indexState := strings.TrimSpace(page.IndexState)
+	if indexState == "" {
+		indexState = "indexed"
 	}
-	if err := validateGbrainChunks(page.Chunks); err != nil {
-		return err
-	}
-	if err := validateGbrainEmbedding(page.Embedding); err != nil {
-		return err
-	}
-	chunks := make([]SourceManifestChunk, 0, len(page.Chunks))
-	for _, c := range page.Chunks {
-		chunks = append(chunks, SourceManifestChunk{Ordinal: c.Ordinal, ChunkHash: c.ChunkHash})
-	}
-	expected := HashGbrainPageFromChunks(chunks)
-	if strings.TrimSpace(page.PageHash) != expected {
-		return fmt.Errorf("page_hash mismatches recorded chunk set for %q (want %s)", page.PageSlug, expected)
+	switch indexState {
+	case "indexed":
+		if len(page.Chunks) == 0 {
+			return fmt.Errorf("chunks required (lossy without chunk order)")
+		}
+		if err := validateGbrainChunks(page.Chunks); err != nil {
+			return err
+		}
+		if err := validateGbrainEmbedding(page.Embedding); err != nil {
+			return err
+		}
+		chunks := make([]SourceManifestChunk, 0, len(page.Chunks))
+		for _, c := range page.Chunks {
+			chunks = append(chunks, SourceManifestChunk{Ordinal: c.Ordinal, ChunkHash: c.ChunkHash})
+		}
+		expected := HashGbrainPageFromChunks(chunks)
+		if strings.TrimSpace(page.PageHash) != expected {
+			return fmt.Errorf("page_hash mismatches recorded chunk set for %q (want %s)", page.PageSlug, expected)
+		}
+	case "unindexed":
+		if len(page.Chunks) != 0 {
+			return fmt.Errorf("unindexed page must not carry chunks")
+		}
+		if strings.TrimSpace(page.Embedding.Provider) != "" || strings.TrimSpace(page.Embedding.Model) != "" || page.Embedding.Dims != 0 {
+			return fmt.Errorf("unindexed page must not carry embedding metadata")
+		}
+	default:
+		return fmt.Errorf("index_state must be indexed or unindexed")
 	}
 	return nil
 }
@@ -284,10 +301,17 @@ func gbrainPageToManifestItem(page GbrainExportPage) (SourceManifestItem, error)
 	sort.SliceStable(chunks, func(i, j int) bool { return chunks[i].Ordinal < chunks[j].Ordinal })
 
 	sourceRef := strings.TrimSpace(page.SourcePath)
-	bodyPolicy := "source_in_place"
+	bodyPolicy := "db_export"
 	if page.DBOnly {
 		sourceRef = "db_only:" + strings.TrimSpace(page.PageSlug)
-		bodyPolicy = "db_only"
+	}
+	indexState := strings.TrimSpace(page.IndexState)
+	if indexState == "" {
+		indexState = "indexed"
+	}
+	var embedding *SourceManifestEmbedding
+	if indexState == "indexed" {
+		embedding = &SourceManifestEmbedding{Provider: page.Embedding.Provider, Model: page.Embedding.Model, Dims: page.Embedding.Dims}
 	}
 	item := SourceManifestItem{
 		ID:               idFor("srcitem_", GbrainDBExportManifestFamily, page.CorpusGeneration, page.PageSlug),
@@ -297,13 +321,14 @@ func gbrainPageToManifestItem(page GbrainExportPage) (SourceManifestItem, error)
 		SnapshotTime:     strings.TrimSpace(page.ImportedAt),
 		Privacy:          "private",
 		BodyPolicy:       bodyPolicy,
-		EvidenceRefs:     []string{"gbrain_page:" + page.PageSlug, page.PageHash, "corpus_generation:" + page.CorpusGeneration},
+		EvidenceRefs:     []string{"gbrain_page:" + page.PageSlug, page.PageHash, "corpus_generation:" + page.CorpusGeneration, "index_state:" + indexState},
 		PageSlug:         strings.TrimSpace(page.PageSlug),
 		SourcePath:       strings.TrimSpace(page.SourcePath),
 		DBOnly:           page.DBOnly,
 		PageHash:         strings.TrimSpace(page.PageHash),
+		IndexState:       indexState,
 		Chunks:           chunks,
-		Embedding:        &SourceManifestEmbedding{Provider: page.Embedding.Provider, Model: page.Embedding.Model, Dims: page.Embedding.Dims},
+		Embedding:        embedding,
 		CorpusGeneration: strings.TrimSpace(page.CorpusGeneration),
 		ImportedAt:       strings.TrimSpace(page.ImportedAt),
 	}
@@ -330,28 +355,35 @@ func missingGbrainManifestFields(item SourceManifestItem) []string {
 	if !item.DBOnly && strings.TrimSpace(item.SourcePath) == "" && !strings.HasPrefix(item.SourceRef, "db_only:") {
 		missing = append(missing, "source_path")
 	}
-	if len(item.Chunks) == 0 {
-		missing = append(missing, "chunks")
-	} else {
-		for i, c := range item.Chunks {
-			if strings.TrimSpace(c.ChunkHash) == "" {
-				missing = append(missing, fmt.Sprintf("chunks[%d].chunk_hash", i))
+	indexState := strings.TrimSpace(item.IndexState)
+	if indexState == "" {
+		indexState = "indexed"
+	}
+	if indexState == "indexed" {
+		if len(item.Chunks) == 0 {
+			missing = append(missing, "chunks")
+		} else {
+			for i, c := range item.Chunks {
+				if strings.TrimSpace(c.ChunkHash) == "" {
+					missing = append(missing, fmt.Sprintf("chunks[%d].chunk_hash", i))
+				}
 			}
 		}
-		// ordinal order check reported via doctor checks, not missing fields
-	}
-	if item.Embedding == nil {
-		missing = append(missing, "embedding")
-	} else {
-		if strings.TrimSpace(item.Embedding.Provider) == "" {
-			missing = append(missing, "embedding.provider")
+		if item.Embedding == nil {
+			missing = append(missing, "embedding")
+		} else {
+			if strings.TrimSpace(item.Embedding.Provider) == "" {
+				missing = append(missing, "embedding.provider")
+			}
+			if strings.TrimSpace(item.Embedding.Model) == "" {
+				missing = append(missing, "embedding.model")
+			}
+			if item.Embedding.Dims <= 0 {
+				missing = append(missing, "embedding.dims")
+			}
 		}
-		if strings.TrimSpace(item.Embedding.Model) == "" {
-			missing = append(missing, "embedding.model")
-		}
-		if item.Embedding.Dims <= 0 {
-			missing = append(missing, "embedding.dims")
-		}
+	} else if indexState != "unindexed" {
+		missing = append(missing, "index_state")
 	}
 	sort.Strings(missing)
 	return missing
@@ -390,16 +422,22 @@ func doctorGbrainManifestExtras(manifest SourceManifest, report *SourceManifestD
 				report.Items[i].HashStatus = "missing_required"
 			}
 		}
-		if err := validateGbrainChunkOrder(item.Chunks); err != nil {
-			lossyChunkOrder++
-			report.Items[i].MissingFields = append(report.Items[i].MissingFields, "chunks.ordinal_order")
+		indexState := strings.TrimSpace(item.IndexState)
+		if indexState == "" {
+			indexState = "indexed"
 		}
-		if len(item.Chunks) > 0 && strings.TrimSpace(item.PageHash) != "" {
-			expected := HashGbrainPageFromChunks(item.Chunks)
-			if item.PageHash != expected {
-				chunkMismatch++
-				report.HashMismatchCount++
-				report.Items[i].HashStatus = "chunk_set_mismatch"
+		if indexState == "indexed" {
+			if err := validateGbrainChunkOrder(item.Chunks); err != nil {
+				lossyChunkOrder++
+				report.Items[i].MissingFields = append(report.Items[i].MissingFields, "chunks.ordinal_order")
+			}
+			if len(item.Chunks) > 0 && strings.TrimSpace(item.PageHash) != "" {
+				expected := HashGbrainPageFromChunks(item.Chunks)
+				if item.PageHash != expected {
+					chunkMismatch++
+					report.HashMismatchCount++
+					report.Items[i].HashStatus = "chunk_set_mismatch"
+				}
 			}
 		}
 	}
