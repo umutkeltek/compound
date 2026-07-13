@@ -297,6 +297,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-private-runtime-guard-smoke",
 		"console-move-type-drift-smoke",
 		"console-ai-boundary-smoke",
+		"console-client-bundle-guard-smoke",
 		"console-work-trace-smoke",
 		"console-generic-actions-smoke",
 		"console-view-registry-smoke",
