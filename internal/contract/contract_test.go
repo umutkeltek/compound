@@ -1740,7 +1740,7 @@ func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
 			Confidence:      1,
 			Derivation:      "deterministic",
 			ClaimType:       "preference",
-			PromotionBasis:  candidates.BasisExplicitConfirmation,
+			PromotionBasis:  candidates.BasisTrustedDeterministic,
 			SourceTraceRef:  "ev_private",
 			SnippetHash:     "sha256:private",
 			Visibility:      "private",
@@ -2065,19 +2065,19 @@ func TestPackWithCapabilitiesLegacyPositionCheckpointKeepsDecisionRef(t *testing
 		{
 			Entity: "compound", Predicate: "os_absorption_end_state", Object: "compound owns the meaning layer",
 			Confidence: 0.92, Derivation: "deterministic", ClaimType: "decision",
-			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisExplicitConfirmation,
+			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisDecisionRecord,
 			SourceTraceRef: "ev_end_state", SnippetHash: "sha256:end-state-decision", Visibility: "contextual",
 		},
 		{
 			Entity: "compound", Predicate: "os_absorption_stance", Object: "sources remain evidence",
 			Confidence: 0.92, Derivation: "deterministic", ClaimType: "decision",
-			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisExplicitConfirmation,
+			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisDecisionRecord,
 			SourceTraceRef: "ev_stance", SnippetHash: "sha256:stance-decision", Visibility: "contextual",
 		},
 		{
 			Entity: "compound", Predicate: "os_absorption_method", Object: "adapt sources through governed intake",
 			Confidence: 0.92, Derivation: "deterministic", ClaimType: "decision",
-			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisExplicitConfirmation,
+			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisDecisionRecord,
 			SourceTraceRef: "ev_method", SnippetHash: "sha256:method-decision", Visibility: "contextual",
 		},
 	}, fixedNow)
@@ -2215,7 +2215,7 @@ func TestPackWithCapabilitiesIncludesTaskRelevantMemoryBeyondEntityKey(t *testin
 			Confidence:      1,
 			Derivation:      "deterministic",
 			ClaimType:       "preference",
-			PromotionBasis:  candidates.BasisExplicitConfirmation,
+			PromotionBasis:  candidates.BasisTrustedDeterministic,
 			SourceTraceRef:  "ev_private",
 			SnippetHash:     "sha256:private",
 			Visibility:      "private",
@@ -2490,7 +2490,7 @@ func TestPackWithCapabilitiesIncludesExplicitPrivateChatGPTConversationClaim(t *
 			Object:         "An owned personal cognition runtime should answer next actions from goals, thinking patterns, and evidence.",
 			Confidence:     0.82,
 			Derivation:     "extracted",
-			PromotionBasis: candidates.BasisExplicitConfirmation,
+			PromotionBasis: "",
 			Qualifiers: map[string]string{
 				"source":        "knowledge_extraction",
 				"source_kind":   "chatgpt",
@@ -2505,9 +2505,19 @@ func TestPackWithCapabilitiesIncludesExplicitPrivateChatGPTConversationClaim(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := store.Adjudicate(got[0].ID, "promote", "operator-reviewed", fixedNow)
+	if _, err := store.Adjudicate(got[0].ID, "park", "operator-reviewed", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	confirmation, err := store.RecordOperatorConfirmation(got[0].ID, "Keep this private conversation claim.", "operator:test", fixedNow)
 	if err != nil {
 		t.Fatal(err)
+	}
+	res, err := store.AdjudicateExplicitConfirmation(got[0].ID, confirmation.ID, "operator-reviewed", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Claim == nil || res.Claim.PromotionBasis != candidates.BasisExplicitConfirmation {
+		t.Fatalf("explicit private conversation claim = %+v", res.Claim)
 	}
 	ref := "claim://" + res.Claim.ID
 	matching := Input{
@@ -2635,7 +2645,7 @@ func TestPackWithCapabilitiesRejectsLegacyKnowledgeCandidateVisibility(t *testin
 			Object:         "RepoRescue evaluates LLM agents on whole-repository compatibility rescue",
 			Confidence:     0.8,
 			Derivation:     "extracted",
-			PromotionBasis: candidates.BasisExplicitConfirmation,
+			PromotionBasis: candidates.BasisTrustedDeterministic,
 			Qualifiers: map[string]string{
 				"source":        "knowledge_extraction",
 				"source_kind":   "arxiv",
