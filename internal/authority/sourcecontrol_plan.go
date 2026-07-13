@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/policy"
 	"compound/internal/reviewartifact"
 	"gopkg.in/yaml.v3"
 )
@@ -94,6 +95,7 @@ type SourceControlReview struct {
 	Confidence    float64  `json:"confidence" yaml:"confidence"`
 	NextAction    string   `json:"next_action,omitempty" yaml:"next_action,omitempty"`
 	EvidenceRefs  []string `json:"evidence_refs" yaml:"evidence_refs"`
+	ReviewedBy    string   `json:"reviewed_by,omitempty" yaml:"reviewed_by,omitempty"`
 	ReviewedAt    string   `json:"reviewed_at,omitempty" yaml:"reviewed_at,omitempty"`
 	SourceRef     string   `json:"source_ref,omitempty" yaml:"source_ref,omitempty"`
 }
@@ -114,9 +116,13 @@ type SourceControlReviewReport struct {
 	MutationBinding         *SourceControlMutationBinding `json:"mutation_binding,omitempty"`
 	PlanDigest              string                        `json:"plan_digest,omitempty"`
 	Decision                string                        `json:"decision"`
+	ReviewedBy              string                        `json:"reviewed_by,omitempty"`
+	ReviewedAt              string                        `json:"reviewed_at,omitempty"`
 	NextAction              string                        `json:"next_action,omitempty"`
 	SourcePath              string                        `json:"source_path,omitempty"`
+	SourceDigest            string                        `json:"source_digest,omitempty"`
 	ReviewPath              string                        `json:"review_path,omitempty"`
+	AuthorizationDigest     string                        `json:"authorization_digest,omitempty"`
 	EvidenceRefs            []string                      `json:"evidence_refs,omitempty"`
 	Warnings                []string                      `json:"warnings,omitempty"`
 }
@@ -136,6 +142,9 @@ func BuildSourceControlMutationReviewPlan(snapshot SourceControlSnapshot, ownerW
 	normalized, err := normalizeSourceControlMutationBinding(snapshot, binding)
 	if err != nil {
 		return SourceControlReviewPlan{}, err
+	}
+	if !strings.HasPrefix(normalized.ActionWorkID, "work_live_") && normalized.ActionWorkID != ownerWorkID {
+		return SourceControlReviewPlan{}, fmt.Errorf("source-control mutation action work_id %q must equal owner work_id %q unless it is synthetic work_live_*", normalized.ActionWorkID, ownerWorkID)
 	}
 	return buildSourceControlReviewPlan(snapshot, ownerWorkID, &normalized, now)
 }
@@ -334,6 +343,9 @@ func RenderSourceControlReviewYAMLDraft(plan SourceControlReviewPlan) string {
 	fmt.Fprintln(&b, "decision: "+decisions)
 	fmt.Fprintln(&b, "rationale: \"\"")
 	fmt.Fprintln(&b, "confidence: -1")
+	if plan.MutationBinding != nil {
+		fmt.Fprintln(&b, "reviewed_by: TODO_operator_provenance")
+	}
 	fmt.Fprintln(&b, "next_action: \"TODO: reviewed source-control cleanup next action\"")
 	fmt.Fprintln(&b, "evidence_refs:")
 	for _, ref := range plan.EvidenceRefs {
@@ -381,6 +393,9 @@ func ValidateSourceControlReview(review SourceControlReview) error {
 	if len(reviewartifact.Unique(review.EvidenceRefs)) == 0 {
 		return fmt.Errorf("source-control review evidence_refs required")
 	}
+	if review.Decision == "authorize_mutation" && !policy.HasOperatorProvenance(review.ReviewedBy) {
+		return fmt.Errorf("source-control authorize_mutation reviewed_by with operator provenance required")
+	}
 	return nil
 }
 
@@ -395,6 +410,7 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 		ReviewID:      review.ID,
 		RepoID:        review.RepoID,
 		Decision:      review.Decision,
+		ReviewedBy:    strings.TrimSpace(review.ReviewedBy),
 		NextAction:    strings.TrimSpace(review.NextAction),
 		SourcePath:    strings.TrimSpace(sourcePath),
 		EvidenceRefs:  reviewartifact.Unique(review.EvidenceRefs),
@@ -440,6 +456,7 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 	if review.ReviewedAt == "" {
 		review.ReviewedAt = createdAt
 	}
+	review.ReviewedBy = strings.TrimSpace(review.ReviewedBy)
 	review.SourceRef = "source-control-cleanup-review:" + filepath.Base(sourcePath)
 	report.RepoID = reviewartifact.FirstNonEmpty(report.RepoID, plan.RepoID)
 	report.WorkID = plan.WorkID
@@ -449,8 +466,19 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 	report.ChangedStateFingerprint = plan.ChangedStateFingerprint
 	report.MutationBinding = cloneSourceControlMutationBinding(plan.MutationBinding)
 	report.PlanDigest = computedPlanDigest
+	report.ReviewedBy = review.ReviewedBy
+	report.ReviewedAt = review.ReviewedAt
 	report.EvidenceRefs = reviewartifact.Unique(append(append([]string{}, plan.EvidenceRefs...), report.EvidenceRefs...))
 	report.EvidenceRefs = reviewartifact.Unique(append(report.EvidenceRefs, "source-control-review:"+report.ID))
+	sourceDigest, err := writeSourceControlReviewedSource(sourcePath, review)
+	if err != nil {
+		return SourceControlReviewReport{}, err
+	}
+	report.SourceDigest = sourceDigest
+	report.EvidenceRefs = reviewartifact.Unique(append(report.EvidenceRefs, sourceDigest))
+	if review.ReviewedBy != "" {
+		report.EvidenceRefs = reviewartifact.Unique(append(report.EvidenceRefs, "source-control-reviewer:"+review.ReviewedBy))
+	}
 	if review.Decision == "authorize_mutation" {
 		report.Warnings = []string{
 			"authorizes only the exact recorded repo/head/fingerprint/work/mutation binding",
@@ -458,6 +486,7 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 		}
 	}
 	report.ReviewPath = filepath.Join(filepath.Dir(sourcePath), review.PlanID+"."+review.ID+".reviewed.json")
+	report.AuthorizationDigest = sourceControlReviewReportDigest(report)
 	if _, err := reviewartifact.WriteJSON(homePath, SourceControlCleanupReviewArea, filepath.Base(report.ReviewPath), report, " "); err != nil {
 		return SourceControlReviewReport{}, err
 	}
@@ -485,8 +514,12 @@ func FindRecordedSourceControlMutationReview(homePath string, snapshot SourceCon
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reviewed.json") {
 			continue
 		}
-		report, loadErr := LoadSourceControlReviewReport(filepath.Join(dir, entry.Name()))
+		reportPath := filepath.Join(dir, entry.Name())
+		report, loadErr := LoadSourceControlReviewReport(reportPath)
 		if loadErr != nil || report.Status != "recorded" || report.Decision != "authorize_mutation" || report.MutationBinding == nil {
+			continue
+		}
+		if filepath.Clean(report.ReviewPath) != filepath.Clean(reportPath) || !sourceControlAuthorizationReportSealed(report, dir) {
 			continue
 		}
 		plan, planErr := loadSourceControlPlanFile(filepath.Join(dir, report.PlanID+".json"))
@@ -499,6 +532,51 @@ func FindRecordedSourceControlMutationReview(homePath string, snapshot SourceCon
 		return &report, nil
 	}
 	return nil, nil
+}
+
+func writeSourceControlReviewedSource(path string, review SourceControlReview) (string, error) {
+	data, err := yaml.Marshal(review)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", digest[:]), nil
+}
+
+func sourceControlReviewReportDigest(report SourceControlReviewReport) string {
+	report.AuthorizationDigest = ""
+	encoded, _ := json.Marshal(report)
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", digest[:])
+}
+
+func sourceControlAuthorizationReportSealed(report SourceControlReviewReport, dir string) bool {
+	if !policy.HasOperatorProvenance(report.ReviewedBy) || !validSHA256(report.SourceDigest) ||
+		!validSHA256(report.AuthorizationDigest) || report.AuthorizationDigest != sourceControlReviewReportDigest(report) {
+		return false
+	}
+	expectedSourcePath := filepath.Join(dir, report.PlanID+".review.yaml")
+	if filepath.Clean(report.SourcePath) != filepath.Clean(expectedSourcePath) {
+		return false
+	}
+	data, err := os.ReadFile(expectedSourcePath)
+	if err != nil {
+		return false
+	}
+	digest := sha256.Sum256(data)
+	if report.SourceDigest != fmt.Sprintf("sha256:%x", digest[:]) {
+		return false
+	}
+	review, err := LoadSourceControlReview(expectedSourcePath)
+	if err != nil || ValidateSourceControlReview(review) != nil {
+		return false
+	}
+	return review.Decision == "authorize_mutation" && review.ID == report.ReviewID && review.PlanID == report.PlanID &&
+		review.RepoID == report.RepoID && strings.TrimSpace(review.ReviewedBy) == report.ReviewedBy &&
+		review.ReviewedAt == report.ReviewedAt && containsEvery(report.EvidenceRefs, review.EvidenceRefs)
 }
 
 func sourceControlPlanAuthorizable(plan SourceControlReviewPlan) bool {

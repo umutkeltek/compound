@@ -453,3 +453,15 @@ func gitStatusShort(t *testing.T, repo string) string {
 	}
 	return string(out)
 }
+
+func writeJSON(t *testing.T, path string, value any) {
+	t.Helper()
+	data, err := json.MarshalIndent(value, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, byte('\n'))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
