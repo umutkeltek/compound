@@ -756,6 +756,72 @@ func TestOrientOperatorCarriesSourceControlReviewProjection(t *testing.T) {
 	}
 }
 
+func TestOrientOperatorTreatsTamperedMutationAuthorizationAsOpen(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 13, 14, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	repo := initCompoundCommandGitRepo(t)
+	t.Chdir(repo)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := authority.ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatalf("read source-control snapshot: %v", err)
+	}
+	binding := authority.SourceControlMutationBinding{
+		ActionWorkID:      "work_orient_tampered_authorization",
+		MutationInputHash: "mutation-input:sha256:" + strings.Repeat("a", 64),
+		Capability:        "filesystem.write",
+		Action:            "write_file",
+		MutationClass:     "local_reversible",
+		TargetPaths:       []string{"README.md"},
+		ActionIntentIDs:   []string{"act_orient_tampered_authorization"},
+	}
+	plan, err := authority.BuildSourceControlMutationReviewPlan(snapshot, binding.ActionWorkID, binding, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatalf("build source-control mutation review plan: %v", err)
+	}
+	paths, err := authority.RecordSourceControlReviewPlan(homePath, plan)
+	if err != nil {
+		t.Fatalf("record source-control mutation review plan: %v", err)
+	}
+	report, err := authority.RecordSourceControlReview(homePath, authority.SourceControlReview{
+		SchemaVersion: authority.SourceControlReviewSchemaVersion,
+		ID:            plan.ReviewDraft.ReviewID,
+		PlanID:        plan.ID,
+		RepoID:        plan.RepoID,
+		Decision:      "authorize_mutation",
+		Rationale:     "operator reviewed the exact dirty mutation",
+		Confidence:    1,
+		EvidenceRefs:  append([]string{}, plan.EvidenceRefs...),
+		ReviewedBy:    "operator:test",
+	}, paths.ReviewYAMLPath, now.Add(-20*time.Minute))
+	if err != nil {
+		t.Fatalf("record source-control mutation authorization: %v", err)
+	}
+	report.NextAction = "tampered after authorization was sealed"
+	writeOrientJSONFixture(t, report.ReviewPath, report)
+
+	orient, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("orient operator report: %v", err)
+	}
+	source := orient.NeedsMe.SourceControl
+	if source == nil {
+		t.Fatalf("source-control projection missing: %+v", orient.NeedsMe)
+	}
+	if source.ReviewCount != 1 || source.ReviewRecordedCount != 0 || source.ReviewOpenCount != 1 || source.HeadReviewRecorded {
+		t.Fatalf("tampered authorization projection = %+v, want one open and zero recorded", source)
+	}
+	if !strings.Contains(source.NextAction, "review is open") {
+		t.Fatalf("tampered authorization next action = %q, want open review guidance", source.NextAction)
+	}
+}
+
 func TestOrientOperatorCarriesProductLoopEvidenceDebtProjection(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
