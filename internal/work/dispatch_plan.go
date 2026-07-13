@@ -132,6 +132,7 @@ type DispatchPlanItem struct {
 	WorkID           string                `json:"work_id"`
 	State            string                `json:"state"`
 	Owner            string                `json:"owner,omitempty"`
+	ExpectedBaseSHA  string                `json:"expected_base_sha,omitempty"`
 	SuccessPredicate string                `json:"success_predicate,omitempty"`
 	DesiredOutcome   string                `json:"desired_outcome,omitempty"`
 	Action           string                `json:"action"`
@@ -1522,6 +1523,7 @@ func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 		WorkID:           item.WorkID,
 		State:            item.State,
 		Owner:            item.Owner,
+		ExpectedBaseSHA:  item.ExpectedBaseSHA,
 		SuccessPredicate: item.SuccessPredicate,
 		DesiredOutcome:   item.DesiredOutcome,
 		Reason:           item.OpenReason,

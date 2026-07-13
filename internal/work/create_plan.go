@@ -538,6 +538,9 @@ func createCommandForWork(w envelope.WorkEnvelope, actor string) []string {
 	if strings.TrimSpace(w.RouteDecisionID) != "" {
 		cmd = append(cmd, "--route-decision-id", w.RouteDecisionID)
 	}
+	if strings.TrimSpace(w.ExpectedBaseSHA) != "" {
+		cmd = append(cmd, "--expected-base-sha", w.ExpectedBaseSHA)
+	}
 	if strings.TrimSpace(w.State) != "" {
 		cmd = append(cmd, "--state", w.State)
 	}

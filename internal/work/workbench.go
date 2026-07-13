@@ -163,6 +163,9 @@ type WorkbenchItem struct {
 	WorkID             string                  `json:"work_id"`
 	State              string                  `json:"state"`
 	Owner              string                  `json:"owner,omitempty"`
+	ExpectedBaseSHA    string                  `json:"expected_base_sha,omitempty"`
+	CandidateTipSHA    string                  `json:"candidate_tip_sha,omitempty"`
+	LandingStatus      string                  `json:"landing_status,omitempty"`
 	ClaimedBy          string                  `json:"claimed_by,omitempty"`
 	ClaimedAt          string                  `json:"claimed_at,omitempty"`
 	SuccessPredicate   string                  `json:"success_predicate"`
@@ -636,6 +639,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		WorkID:             w.ID,
 		State:              w.State,
 		Owner:              w.Owner,
+		ExpectedBaseSHA:    w.ExpectedBaseSHA,
 		SuccessPredicate:   w.SuccessPredicate,
 		DesiredOutcome:     w.DesiredOutcome,
 		CanonicalSurface:   w.CanonicalSurface,
@@ -649,6 +653,21 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		VerificationIDs:    append([]string{}, w.VerificationIDs...),
 		MemoryCandidateIDs: append([]string{}, w.MemoryCandidateIDs...),
 		recentAt:           w.CreatedAt,
+	}
+	if strings.TrimSpace(w.ExpectedBaseSHA) != "" {
+		_, tip, found, valid := latestCommitArtifact(w.ArtifactIDs)
+		item.CandidateTipSHA = tip
+		switch {
+		case !found:
+			item.LandingStatus = "awaiting_candidate_commit"
+		case !valid:
+			item.LandingStatus = "invalid_candidate_artifact"
+		case w.State == "verifying":
+			item.LandingStatus = "awaiting_landing"
+			item.NextAction = "run compound work land-check " + w.ID + " --repo <absolute-main-worktree> --tip " + tip + " --target-ref main"
+		default:
+			item.LandingStatus = "candidate_attached"
+		}
 	}
 	if observations, warnings := s.workbenchRunObservations(w.ID); len(observations) > 0 || len(warnings) > 0 {
 		item.RunObservations = observations

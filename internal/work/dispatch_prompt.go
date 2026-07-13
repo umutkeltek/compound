@@ -196,6 +196,9 @@ func (s *Store) dispatchTaskContract(w envelope.WorkEnvelope) (envelope.TaskCont
 
 func dispatchWorkRevision(w envelope.WorkEnvelope) string {
 	parts := []string{"state:" + w.State}
+	if w.ExpectedBaseSHA != "" {
+		parts = append(parts, "expected_base:"+w.ExpectedBaseSHA)
+	}
 	if w.PolicyDecisionID != "" {
 		parts = append(parts, "policy:"+w.PolicyDecisionID)
 	}
@@ -275,6 +278,15 @@ func renderDispatchPrompt(w envelope.WorkEnvelope, task envelope.TaskContract, o
 		for _, offer := range offers {
 			fmt.Fprintf(&b, "- %s (%s): %s\n", offer.Ref, offer.Name, firstNonEmpty(offer.Why, "surfaced by capability graph"))
 		}
+	}
+	if expectedBase := strings.TrimSpace(w.ExpectedBaseSHA); expectedBase != "" {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "## SOURCE CONTROL CONTRACT")
+		fmt.Fprintln(&b)
+		fmt.Fprintf(&b, "- expected_base_sha: %s\n", expectedBase)
+		fmt.Fprintln(&b, "- Verify the worktree contains this base before editing; if the target moved, rebase and rerun the full proof battery.")
+		fmt.Fprintln(&b, "- Attach the final verified candidate to this WorkEnvelope as commit:<full-sha>.")
+		fmt.Fprintln(&b, "- Land only from the explicit target worktree through compound work land-check; completion must cite the recorded landed proof.")
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "## TASK")
