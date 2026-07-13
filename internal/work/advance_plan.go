@@ -83,8 +83,15 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 	if err != nil {
 		return AdvancePlan{}, err
 	}
+	actor := strings.TrimSpace(opts.Actor)
+	if actor == "" {
+		actor = "codex"
+	}
 	var gitDelivery *envelope.GitDeliveryContract
 	if opts.GitDelivery != nil {
+		if !policy.HasOperatorProvenance(actor) {
+			return AdvancePlan{}, fmt.Errorf("git_delivery binding requires explicit operator provenance; actor %q is an executor", actor)
+		}
 		if terminalStates[w.State] {
 			return AdvancePlan{}, fmt.Errorf("work is terminal in state %q; cannot bind git_delivery", w.State)
 		}
@@ -110,10 +117,6 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 	}
 	if terminalStates[to] {
 		return AdvancePlan{}, terminalStateRequiresClose("advance-plan", to)
-	}
-	actor := strings.TrimSpace(opts.Actor)
-	if actor == "" {
-		actor = "codex"
 	}
 	ai := s.advanceActionIntent(w, actor, to, now, opts)
 	if err := ai.Validate(); err != nil {
@@ -230,6 +233,9 @@ func (s *Store) advanceActionIntent(w envelope.WorkEnvelope, actor, to string, n
 	targetKind := orDefault(opts.TargetKind, "work")
 	mutationClass := orDefault(opts.MutationClass, "local_reversible")
 	reversibility := orDefault(opts.Reversibility, "easy")
+	if opts.GitDelivery != nil {
+		reversibility = "hard"
+	}
 	blastRadius := orDefault(opts.BlastRadius, "local")
 	idParts := []string{capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, to}
 	preview := fmt.Sprintf("advance work %s from %s to %s actor %s", w.ID, w.State, to, actor)
