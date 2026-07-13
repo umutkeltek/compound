@@ -198,5 +198,8 @@ func DefaultRegistry() *Registry {
 	if err := r.Register(SycophancyLens{}); err != nil {
 		panic("behaviorallens: default registry registration failed: " + err.Error())
 	}
+	if err := r.Register(HedgingLens{}); err != nil {
+		panic("behaviorallens: default registry registration failed: " + err.Error())
+	}
 	return r
 }
