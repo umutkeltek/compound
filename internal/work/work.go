@@ -1239,9 +1239,9 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	}
 	var landingProof *LandCheckReport
 	if in.Outcome == "completed" {
-		_, _, hasCommitArtifact, _ := latestCommitArtifact(w.ArtifactIDs)
-		if hasCommitArtifact && w.GitDelivery == nil {
-			return res, fmt.Errorf("completed work %s carries a commit:* artifact but lacks a git_delivery contract", w.ID)
+		_, _, hasCommitProof, _ := latestCommitArtifact(mergeUnique(w.ArtifactIDs, in.ProofRefs))
+		if hasCommitProof && w.GitDelivery == nil {
+			return res, fmt.Errorf("completed work %s carries a commit:* proof but lacks a git_delivery contract", w.ID)
 		}
 		if w.GitDelivery != nil {
 			proofRefs := mergeUnique(in.ProofRefs, landCheckEvidenceRefs(w.EvidenceRefs))
