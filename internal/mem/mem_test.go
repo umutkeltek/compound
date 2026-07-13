@@ -292,8 +292,15 @@ func TestOperatorConfirmationEvidenceUsesReservedActorBoundDoor(t *testing.T) {
 }
 
 func TestOperatorConfirmationRequiresParkedCandidate(t *testing.T) {
-	for _, state := range []string{"proposed", "rejected", "no_promote"} {
-		t.Run(state, func(t *testing.T) {
+	for _, tc := range []struct {
+		state   string
+		verdict string
+	}{
+		{state: "proposed"},
+		{state: "rejected", verdict: "reject"},
+		{state: "no_promote", verdict: "no_promote"},
+	} {
+		t.Run(tc.state, func(t *testing.T) {
 			s := newStore(t)
 			seed := cand("operator", "preference.communication", "prefer concise updates", "")
 			seed.PromotionBasis = ""
@@ -302,13 +309,13 @@ func TestOperatorConfirmationRequiresParkedCandidate(t *testing.T) {
 			if err != nil || len(captured) != 1 {
 				t.Fatalf("capture = %+v, err=%v", captured, err)
 			}
-			if state != "proposed" {
-				if _, err := s.Adjudicate(captured[0].ID, state, "work_confirmation_state", t0); err != nil {
+			if tc.verdict != "" {
+				if _, err := s.Adjudicate(captured[0].ID, tc.verdict, "work_confirmation_state", t0); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if _, err := s.RecordOperatorConfirmation(captured[0].ID, "Keep this preference.", "operator:test", t0); err == nil || !strings.Contains(err.Error(), "parked") {
-				t.Fatalf("%s candidate accepted confirmation: %v", state, err)
+				t.Fatalf("%s candidate accepted confirmation: %v", tc.state, err)
 			}
 		})
 	}
