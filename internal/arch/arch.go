@@ -7,6 +7,7 @@ package arch
 
 import (
 	"context"
+	_ "embed" // for //go:embed baseline-leak-tokens.txt (armed-by-default doc-leak gate)
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,16 +129,37 @@ type Report struct {
 // never appear in a public tracked doc. Operator-SPECIFIC forbidden tokens (private tool/product
 // names) are deliberately NOT hardcoded here — putting them in public core would itself leak them.
 // They load from an optional private list (docs_private/leak-tokens.txt, one token per line) so the
-// public core stays clean while a private overlay can enforce its own vocabulary.
+// public core stays clean while a private overlay can enforce its own vocabulary. Universal
+// secret-credential shapes (API-key/token prefixes, PEM headers) ARE shipped, via the embedded
+// baseline below, so the gate is armed by default even without the private overlay.
 var genericLeak = regexp.MustCompile(`(?i)(/Users/[a-z]|/home/[a-z]|[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})`)
 var statusProofJournalLine = regexp.MustCompile(`(?i)^\s*(?:[-*]\s*)?(?:20[0-9]{2}-[0-9]{2}-[0-9]{2}\b|proof log:|verification run:|test run:|commit [0-9a-f]{7,40}\b)`)
 
-// loadPrivateLeakTokens reads operator-specific forbidden tokens from docs_private/leak-tokens.txt
-// (gitignored). It also reports whether the file was PRESENT, so the caller can fail CLOSED: an
-// absent list leaves the gate blind to operator tool/product names (it can still catch generic
-// path/email shapes), and a public release must not pass with the gate silently disarmed.
-func loadPrivateLeakTokens(repoRoot string) (toks []string, present bool) {
-	return loadLeakTokens(filepath.Join(repoRoot, "docs_private", "leak-tokens.txt"))
+// baselineLeakTokensRaw is the TRACKED, always-shipped generic leak-token list (obvious
+// secret-credential shapes only — never operator-specific names). It is embedded into the
+// binary so the doc-leak gate is armed by DEFAULT in a fresh clone/worktree, with no
+// dependency on the gitignored operator overlay: a stranger's proof-check never fails closed.
+//
+//go:embed baseline-leak-tokens.txt
+var baselineLeakTokensRaw string
+
+// baselineLeakTokens parses the embedded baseline into normalized (lowercased) substring
+// tokens. It is always present, so it is the ARMING mechanism: the operator overlay only
+// ADDS operator-specific names on top of it.
+func baselineLeakTokens() []string {
+	return parseLeakTokenLines(baselineLeakTokensRaw)
+}
+
+// loadDocLeakTokens returns the armed doc-leak token set: the always-present tracked baseline
+// plus, when present, the operator's additive docs_private/leak-tokens.txt overlay.
+// overlayPresent reports ONLY whether the operator overlay was found — the gate itself is armed
+// regardless (the baseline is embedded), so a fresh clone never fails closed while the operator
+// home keeps full strictness (baseline + overlay).
+func loadDocLeakTokens(repoRoot string) (toks []string, overlayPresent bool) {
+	toks = append(toks, baselineLeakTokens()...)
+	overlay, present := loadLeakTokens(filepath.Join(repoRoot, "docs_private", "leak-tokens.txt"))
+	toks = append(toks, overlay...)
+	return toks, present
 }
 
 func loadLeakTokens(path string) (toks []string, present bool) {
@@ -145,12 +167,19 @@ func loadLeakTokens(path string) (toks []string, present bool) {
 	if err != nil {
 		return nil, false
 	}
-	for _, line := range strings.Split(string(b), "\n") {
+	return parseLeakTokenLines(string(b)), true
+}
+
+// parseLeakTokenLines normalizes a token list body (baseline or overlay): one token per
+// line, '#' comments and blanks dropped, lowercased for case-insensitive substring match.
+func parseLeakTokenLines(raw string) []string {
+	var toks []string
+	for _, line := range strings.Split(raw, "\n") {
 		if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") {
 			toks = append(toks, strings.ToLower(t))
 		}
 	}
-	return toks, true
+	return toks
 }
 
 // ConvergePendingBudget is the RATCHET: the count of converge→retire packages must never exceed
@@ -349,27 +378,43 @@ func lineCount(b []byte) int {
 // gitignored; public core knows scan mechanics, not private names.
 func checkDocLeak(repoRoot string, strict bool) []Finding {
 	var f []Finding
-	privateToks, present := loadPrivateLeakTokens(repoRoot)
-	if !present {
-		sev := Warn
-		if strict {
-			sev = Fail
-		}
-		f = append(f, Finding{"doc-leak", sev, "private leak-token list docs_private/leak-tokens.txt MISSING — operator-token gate DISARMED (only generic path/email shapes are caught); create it (gitignored, one token per line) before any public release"})
+	// strict is unused for arming now: the embedded baseline arms the gate by default, so
+	// there is no fail-closed-on-missing-overlay branch. It is kept in the signature because
+	// the doctor threads --strict uniformly and other gates read it.
+	_ = strict
+	privateToks, overlayPresent := loadDocLeakTokens(repoRoot)
+	if !overlayPresent {
+		// The embedded baseline arms the gate, so a missing operator overlay is NOT a
+		// fail-closed condition (a fresh clone/worktree must pass proof-check). It is a
+		// non-fatal nudge to add the overlay in the operator home for operator-specific
+		// tool/product names.
+		f = append(f, Finding{"doc-leak", Info, "operator overlay docs_private/leak-tokens.txt absent; tracked baseline leak-token gate armed (" + itoa(len(baselineLeakTokens())) + " generic secret-shape tokens). Add the overlay in the operator home for operator-specific tool/product names."})
 	}
-	f = append(f, scanLeakRoots(repoRoot, []string{filepath.Join(repoRoot, "docs")}, privateToks, true)...)
+	f = append(f, scanLeakRoots(repoRoot, docLeakScanRoots(repoRoot), privateToks, true)...)
 	sourceToks, sourcePresent := loadSourceLeakTokens(repoRoot)
 	if sourcePresent {
 		f = append(f, scanLeakRoots(repoRoot, sourceLeakScanRoots(repoRoot), sourceToks, false)...)
 	}
+	// When the overlay is absent the nudge Info above already occupies the summary slot;
+	// this clean-summary fires only for the overlay-present, no-leak case (len == 0).
 	if len(f) == 0 {
-		msg := "public docs clean (generic shapes + private list)"
+		msg := "public docs + ceremonies clean (generic shapes + baseline + operator overlay list)"
 		if sourcePresent {
-			msg = "public docs and configured source surfaces clean (generic shapes + private lists)"
+			msg += "; configured source surfaces clean"
 		}
 		f = append(f, Finding{"doc-leak", Info, msg})
 	}
 	return f
+}
+
+// docLeakScanRoots are the public PROSE surfaces the generic doc-leak pass scans:
+// docs/ and the tracked build-ceremony bodies under skills/ (fresh-clone reachable,
+// so a leak into a ceremony body is caught by the same armed gate that guards docs).
+func docLeakScanRoots(repoRoot string) []string {
+	return []string{
+		filepath.Join(repoRoot, "docs"),
+		filepath.Join(repoRoot, "skills"),
+	}
 }
 
 func loadSourceLeakTokens(repoRoot string) (toks []string, present bool) {

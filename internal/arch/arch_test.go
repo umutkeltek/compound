@@ -71,6 +71,48 @@ func TestDocLeakUsesSourceLeakTokensForPublicSourceSurfaces(t *testing.T) {
 	}
 }
 
+// TestDocLeakArmedByEmbeddedBaselineWhenOperatorOverlayAbsent is the F2 falsifier:
+// a fresh clone/worktree carries no gitignored docs_private/leak-tokens.txt overlay,
+// yet the doc-leak gate must NOT fail closed under --strict. The tracked embedded
+// baseline arms the gate by default, so a stranger's `proof-check` (which runs the
+// doctor --strict) passes instead of tripping the old DISARMED failure.
+func TestDocLeakArmedByEmbeddedBaselineWhenOperatorOverlayAbsent(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// No docs_private/ overlay at all — the fresh-clone condition, under --strict.
+	for _, f := range checkDocLeak(repo, true) {
+		if f.Severity == Fail {
+			t.Fatalf("fresh clone (no operator overlay) must not fail closed under --strict; got Fail: %+v", f)
+		}
+	}
+}
+
+// TestDocLeakBaselineCatchesSecretShapeWithoutOverlay proves the baseline is armed
+// with TEETH, not merely present: an obvious secret-token shape in a tracked public
+// doc is caught even when no operator overlay exists. The generic /Users/·email regex
+// would NOT match this shape, so only the baseline token list can.
+func TestDocLeakBaselineCatchesSecretShapeWithoutOverlay(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(docs, "leak.md"), []byte("example token ghp_0123456789abcdefABCD in a doc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var caught bool
+	for _, f := range checkDocLeak(repo, false) {
+		if f.Severity == Fail && strings.Contains(f.Message, "ghp_") {
+			caught = true
+		}
+	}
+	if !caught {
+		t.Fatalf("baseline gate must catch a secret token shape (ghp_) with no operator overlay")
+	}
+}
+
 // TestPrivateSourceBodyContractCatchesPlantedBodyAndClearsWhenRemoved is J16's
 // falsifier. checkDocLeak already catches generic /Users/ path and email
 // SHAPES, but only in docs/, and its source-dir pass only matches an
