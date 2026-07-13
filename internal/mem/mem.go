@@ -220,6 +220,11 @@ type Store struct {
 	// propagated instead of being misclassified as ledger mutation. Production
 	// stores leave it nil and snapshot the owned ledger from disk.
 	ledgerDoctorSnapshotter func() (ledgerDoctorSnapshot, error)
+
+	// adjudicationCandidateWriter is a test seam for deterministic failure at
+	// the final candidate-projection write. Production stores leave it nil and
+	// persist through the candidates package's single owned write door.
+	adjudicationCandidateWriter func(id string, payload any) error
 }
 
 func Open(homePath string) (*Store, error) {
@@ -265,6 +270,14 @@ func (s *Store) HomePath() string {
 func (s *Store) candDir() string {
 	return filepath.Join(s.home, candidates.InboxDir(candidates.Memory))
 }
+
+func (s *Store) writeAdjudicatedCandidate(id string, payload any) error {
+	if s.adjudicationCandidateWriter != nil {
+		return s.adjudicationCandidateWriter(id, payload)
+	}
+	return candidates.WriteCandidate(s.home, candidates.Memory, id, payload)
+}
+
 func (s *Store) claimsLog() string          { return filepath.Join(s.home, "ledger", "claims.jsonl") }
 func (s *Store) edgesLog() string           { return filepath.Join(s.home, "ledger", "edges.jsonl") }
 func (s *Store) seqFile() string            { return filepath.Join(s.home, "ledger", "seq") }
@@ -631,23 +644,24 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 					}
 				}
 			}
-			existingTransition, transitionExists, err := s.persistedPromotionTransition(claim.ID)
+			expectedTransition := s.memoryTransition(claim, transitionPrior, transitionHasPrior, workID, now)
+			existingTransition, transitionExists, err := s.persistedPromotionTransition(expectedTransition)
 			if err != nil {
 				return err
 			}
 			if transitionExists {
 				transition = existingTransition
 			} else {
-				transition = s.memoryTransition(claim, transitionPrior, transitionHasPrior, workID, now)
+				transition = expectedTransition
 				if err := transition.Validate(); err != nil {
 					return fmt.Errorf("emitted transition invalid: %w", err)
 				}
-				if err := writeJSON(s.eventPath(transition.ID), &transition); err != nil {
+				if err := writeJSONAtomic(s.eventPath(transition.ID), &transition); err != nil {
 					return err
 				}
 			}
 			c.State = "promoted"
-			if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
+			if err := s.writeAdjudicatedCandidate(c.ID, &c); err != nil {
 				return err
 			}
 			prior = transitionPrior
@@ -663,7 +677,7 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 			dup = true
 			c.State = "rejected"
 			c.Reason = "duplicate of current claim " + prior.ID
-			return candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
+			return s.writeAdjudicatedCandidate(c.ID, &c)
 		}
 		seq, err := s.nextSeq()
 		if err != nil {
@@ -683,11 +697,11 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		if err := transition.Validate(); err != nil {
 			return fmt.Errorf("emitted transition invalid: %w", err)
 		}
-		if err := writeJSON(s.eventPath(transition.ID), &transition); err != nil {
+		if err := writeJSONAtomic(s.eventPath(transition.ID), &transition); err != nil {
 			return err
 		}
 		c.State = "promoted"
-		return candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
+		return s.writeAdjudicatedCandidate(c.ID, &c)
 	})
 	if lockErr != nil {
 		return res, lockErr
@@ -929,7 +943,7 @@ func (s *Store) memoryTransition(claim Claim, prior Claim, hasPrior bool, workID
 	return envelope.Transition{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVTransition,
-			ID:            idFor("tr_", claim.ID, ts(now)),
+			ID:            idFor("tr_", claim.ID),
 			CreatedAt:     rfc3339(now),
 			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
 			IDs:           envelope.IDs{WorkID: wid},
@@ -952,46 +966,30 @@ func (s *Store) memoryTransition(claim Claim, prior Claim, hasPrior bool, workID
 	}
 }
 
-func (s *Store) persistedPromotionTransition(claimID string) (envelope.Transition, bool, error) {
-	dir := filepath.Join(s.home, "events")
-	entries, err := os.ReadDir(dir)
+func (s *Store) persistedPromotionTransition(expected envelope.Transition) (envelope.Transition, bool, error) {
+	data, err := os.ReadFile(s.eventPath(expected.ID))
 	if os.IsNotExist(err) {
 		return envelope.Transition{}, false, nil
 	}
 	if err != nil {
 		return envelope.Transition{}, false, err
 	}
-	var found envelope.Transition
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			return envelope.Transition{}, false, err
-		}
-		var header struct {
-			SchemaVersion string `json:"schema_version"`
-		}
-		if err := json.Unmarshal(data, &header); err != nil || header.SchemaVersion != envelope.SVTransition {
-			continue
-		}
-		var transition envelope.Transition
-		if err := json.Unmarshal(data, &transition); err != nil {
-			return envelope.Transition{}, false, err
-		}
-		if !oneOf(claimID, transition.AfterRefs) || !oneOf(claimID, transition.Projections.Memory) {
-			continue
-		}
-		if err := transition.Validate(); err != nil {
-			return envelope.Transition{}, false, fmt.Errorf("persisted promotion transition %s invalid: %w", transition.ID, err)
-		}
-		if found.ID != "" && found.ID != transition.ID {
-			return envelope.Transition{}, false, fmt.Errorf("claim %s has multiple promotion transitions (%s, %s)", claimID, found.ID, transition.ID)
-		}
-		found = transition
+	var transition envelope.Transition
+	if err := json.Unmarshal(data, &transition); err != nil {
+		return envelope.Transition{}, false, fmt.Errorf("persisted promotion transition %s unreadable: %w", expected.ID, err)
 	}
-	return found, found.ID != "", nil
+	if err := transition.Validate(); err != nil {
+		return envelope.Transition{}, false, fmt.Errorf("persisted promotion transition %s invalid: %w", expected.ID, err)
+	}
+	if transition.ID != expected.ID ||
+		transition.StateDelta != expected.StateDelta ||
+		transition.Scope.EntityID != expected.Scope.EntityID ||
+		!sameStrings(transition.BeforeRefs, expected.BeforeRefs) ||
+		!sameStrings(transition.AfterRefs, expected.AfterRefs) ||
+		!sameStrings(transition.Projections.Memory, expected.Projections.Memory) {
+		return envelope.Transition{}, false, fmt.Errorf("persisted promotion transition %s does not match claim projection", expected.ID)
+	}
+	return transition, true, nil
 }
 
 // --- recall (relevance-gated, as-of-aware fold) ---
@@ -1803,6 +1801,42 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func writeJSONAtomic(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	keep := false
+	defer func() {
+		_ = tmp.Close()
+		if !keep {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	keep = true
+	return nil
 }
 
 func readJSON(path string, v any) error {

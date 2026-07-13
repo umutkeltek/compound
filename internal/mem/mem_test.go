@@ -753,12 +753,16 @@ func TestPartialPromotionRecoveryReusesPersistedTransition(t *testing.T) {
 		t.Fatalf("capture = %+v, err=%v", captured, err)
 	}
 
-	candidatePath := filepath.Join(s.candDir(), captured[0].ID+".json")
-	if err := os.Chmod(candidatePath, 0o400); err != nil {
-		t.Fatal(err)
+	writeAttempts := 0
+	s.adjudicationCandidateWriter = func(id string, payload any) error {
+		writeAttempts++
+		if writeAttempts == 1 {
+			return os.ErrPermission
+		}
+		return candidates.WriteCandidate(s.home, candidates.Memory, id, payload)
 	}
 	if _, err := s.Adjudicate(captured[0].ID, "promote", "work_projection_failure", t0); err == nil {
-		t.Fatal("promotion succeeded despite read-only candidate projection")
+		t.Fatal("promotion succeeded despite injected candidate projection failure")
 	}
 	claimsAfterFailure, err := s.loadClaims()
 	if err != nil || len(claimsAfterFailure) != 1 {
@@ -775,9 +779,6 @@ func TestPartialPromotionRecoveryReusesPersistedTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.Chmod(candidatePath, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	recovered, err := s.Adjudicate(captured[0].ID, "promote", "work_projection_failure", t0.Add(time.Second))
 	if err != nil || recovered.Claim == nil || recovered.Transition == nil {
 		t.Fatalf("projection failure did not recover: %+v, err=%v", recovered, err)
