@@ -307,14 +307,23 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 	if _, err := s.Adjudicate(candidateID, "park", "work_user_shadow", t0); err != nil {
 		t.Fatalf("park: %v", err)
 	}
+	if _, err := s.Adjudicate(candidateID, "promote", "work_user_shadow", t0); err == nil {
+		t.Fatal("ordinary promotion must fail before confirmation evidence exists")
+	}
 
-	mismatched := writeRawEvidence(t, s, EvidenceItem{
-		ID:         "ev_mismatched_confirmation",
-		SourceKind: "operator_confirmation",
-		SourceID:   "cand_other",
-		QuoteText:  "Confirmed for another candidate.",
-		Actor:      "operator:test",
-	})
+	otherSeed := seed
+	otherSeed.Object = "prefer detailed weekly reviews"
+	otherCaptured, err := s.Capture([]Candidate{otherSeed}, t0)
+	if err != nil || len(otherCaptured) != 1 {
+		t.Fatalf("capture other = %+v, err=%v", otherCaptured, err)
+	}
+	if _, err := s.Adjudicate(otherCaptured[0].ID, "park", "work_user_shadow", t0); err != nil {
+		t.Fatal(err)
+	}
+	mismatched, err := s.RecordOperatorConfirmation(otherCaptured[0].ID, "Confirmed for another candidate.", "operator:test", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	nonOperator := writeRawEvidence(t, s, EvidenceItem{
 		ID:         "ev_non_operator_confirmation",
 		SourceKind: "operator_confirmation",
@@ -331,6 +340,14 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	tampered, err := s.RecordOperatorConfirmation(candidateID, "Tamper-check confirmation.", "operator:test", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered.Actor = "operator:tampered-after-write"
+	if err := appendJSONL(s.evidenceLog(), &tampered); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -341,6 +358,7 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 		{name: "mismatched candidate", ref: mismatched.ID},
 		{name: "non operator", ref: nonOperator.ID},
 		{name: "wrong kind", ref: wrongKind.ID},
+		{name: "tampered content address", ref: tampered.ID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := s.AdjudicateExplicitConfirmation(candidateID, tc.ref, "work_user_shadow", t0); err == nil {
@@ -355,6 +373,9 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 	confirmation, err := s.RecordOperatorConfirmation(candidateID, "Yes, keep this as my communication preference.", "operator:test", t0)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(candidateID, "promote", "work_user_shadow", t0); err == nil {
+		t.Fatal("ordinary promotion must fail even after confirmation evidence exists")
 	}
 	res, err := s.AdjudicateExplicitConfirmation(candidateID, confirmation.ID, "work_user_shadow", t0)
 	if err != nil {
