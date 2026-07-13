@@ -22,7 +22,28 @@ func newStore(t *testing.T) *Store {
 }
 
 func cand(entity, pred, obj, obs string) Candidate {
-	return Candidate{Entity: entity, Predicate: pred, Object: obj, ObservationDate: obs, Confidence: 0.9, Derivation: "extracted", PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "trace_x", SnippetHash: "deadbeef"}
+	return Candidate{Entity: entity, Predicate: pred, Object: obj, ObservationDate: obs, Confidence: 0.9, Derivation: "extracted", PromotionBasis: candidates.BasisExplicitConfirmation, SourceTraceRef: "trace_x", SnippetHash: "deadbeef"}
+}
+
+func promoteForTest(t *testing.T, s *Store, candidateID, workID string, now time.Time) (AdjudicateResult, error) {
+	t.Helper()
+	candidate, err := s.getCandidate(candidateID)
+	if err != nil {
+		return AdjudicateResult{}, err
+	}
+	if candidate.PromotionBasis != candidates.BasisExplicitConfirmation {
+		return s.Adjudicate(candidateID, "promote", workID, now)
+	}
+	if candidate.State != "parked" {
+		if _, err := s.Adjudicate(candidateID, "park", workID, now); err != nil {
+			return AdjudicateResult{}, err
+		}
+	}
+	evidence, err := s.RecordOperatorConfirmation(candidateID, "test fixture confirms "+candidateID, "operator:test", now)
+	if err != nil {
+		return AdjudicateResult{}, err
+	}
+	return s.AdjudicateExplicitConfirmation(candidateID, evidence.ID, workID, now)
 }
 
 func TestCheapLaneCandidateRequiresAdjudicationAndPromotionPreservesLane(t *testing.T) {
@@ -35,7 +56,7 @@ func TestCheapLaneCandidateRequiresAdjudicationAndPromotionPreservesLane(t *test
 		Confidence:      1,
 		Derivation:      "extracted",
 		ProvenanceLane:  "cheap-lane",
-		PromotionBasis:  candidates.BasisRuntimeProof,
+		PromotionBasis:  candidates.BasisExplicitConfirmation,
 		SourceTraceRef:  "trace_cheap_lane",
 		SnippetHash:     "sha256:cheap_lane",
 		Visibility:      "ambient",
@@ -54,7 +75,7 @@ func TestCheapLaneCandidateRequiresAdjudicationAndPromotionPreservesLane(t *test
 		t.Fatalf("cheap-lane candidate surfaced before adjudication: %+v", before.Claims)
 	}
 
-	promoted, err := s.Adjudicate(captured[0].ID, "promote", "work_reviewed_cheap_lane", t0)
+	promoted, err := promoteForTest(t, s, captured[0].ID, "work_reviewed_cheap_lane", t0)
 	if err != nil {
 		t.Fatalf("promote: %v", err)
 	}
@@ -71,7 +92,7 @@ func TestDeltaLoop(t *testing.T) {
 	e, p := "project:healthapp", "backend_language"
 
 	c1, _ := s.Capture([]Candidate{cand(e, p, "node", "2026-01-01T00:00:00Z")}, t0)
-	r1, err := s.Adjudicate(c1[0].ID, "promote", "", t0)
+	r1, err := promoteForTest(t, s, c1[0].ID, "", t0)
 	if err != nil || r1.Claim == nil {
 		t.Fatalf("promote 1: %v", err)
 	}
@@ -81,7 +102,7 @@ func TestDeltaLoop(t *testing.T) {
 	seq1 := r1.Claim.Seq
 
 	c2, _ := s.Capture([]Candidate{cand(e, p, "go", "2026-06-01T00:00:00Z")}, t0)
-	r2, err := s.Adjudicate(c2[0].ID, "promote", "", t0)
+	r2, err := promoteForTest(t, s, c2[0].ID, "", t0)
 	if err != nil || r2.Claim == nil {
 		t.Fatalf("promote 2: %v", err)
 	}
@@ -124,12 +145,12 @@ func TestPositionsFoldTopicAndChain(t *testing.T) {
 	e := "project:api"
 	// topic "lang": node → go (a supersession)
 	c1, _ := s.Capture([]Candidate{cand(e, "lang", "node", "2026-01-01T00:00:00Z")}, t0)
-	r1, _ := s.Adjudicate(c1[0].ID, "promote", "", t0)
+	r1, _ := promoteForTest(t, s, c1[0].ID, "", t0)
 	c2, _ := s.Capture([]Candidate{cand(e, "lang", "go", "2026-06-01T00:00:00Z")}, t0)
-	r2, _ := s.Adjudicate(c2[0].ID, "promote", "", t0)
+	r2, _ := promoteForTest(t, s, c2[0].ID, "", t0)
 	// topic "db": a single version
 	c3, _ := s.Capture([]Candidate{cand(e, "db", "postgres", "2026-01-01T00:00:00Z")}, t0)
-	s.Adjudicate(c3[0].ID, "promote", "", t0)
+	_, _ = promoteForTest(t, s, c3[0].ID, "", t0)
 
 	pos, err := s.Positions()
 	if err != nil {
@@ -199,7 +220,9 @@ func TestAdjudicatePromoteRequiresPromotionBasis(t *testing.T) {
 		t.Fatalf("basis-less promotion wrote %d claim(s)", len(claims))
 	}
 
-	withBasis, _ := s.Capture([]Candidate{cand("e", "p", "v2", "")}, t0)
+	validBasis := cand("e", "p", "v2", "")
+	validBasis.PromotionBasis = candidates.BasisRuntimeProof
+	withBasis, _ := s.Capture([]Candidate{validBasis}, t0)
 	res, err := s.Adjudicate(withBasis[0].ID, "promote", "", t0)
 	if err != nil || res.Claim == nil {
 		t.Fatalf("promote with valid basis should pass: %v", err)
@@ -552,7 +575,7 @@ func TestOperationalDecisionFoldIgnoresGenericReviewMark(t *testing.T) {
 func TestDuplicateRejected(t *testing.T) {
 	s := newStore(t)
 	c1, _ := s.Capture([]Candidate{cand("e", "p", "same", "")}, t0)
-	s.Adjudicate(c1[0].ID, "promote", "", t0)
+	_, _ = promoteForTest(t, s, c1[0].ID, "", t0)
 	c2, _ := s.Capture([]Candidate{cand("e", "p", "same", "")}, t0)
 	if len(c2) != 0 {
 		t.Fatalf("duplicate capture should reinforce current claim without a candidate; got %d", len(c2))
@@ -567,7 +590,7 @@ func TestRecallRelevanceGate(t *testing.T) {
 	c := cand("e", "secret", "v", "")
 	c.Visibility = "retired"
 	got, _ := s.Capture([]Candidate{c}, t0)
-	s.Adjudicate(got[0].ID, "promote", "", t0)
+	_, _ = promoteForTest(t, s, got[0].ID, "", t0)
 	// retired is hidden from default recall...
 	def, _ := s.Recall("e", RecallOpts{})
 	if len(def.Claims) != 0 || def.Filtered != 1 {
@@ -583,7 +606,7 @@ func TestRecallRelevanceGate(t *testing.T) {
 func TestRecallAndTimelineResolveCanonicalEntityToken(t *testing.T) {
 	s := newStore(t)
 	c, _ := s.Capture([]Candidate{cand("compound", "capability_authority_surface", "owned graph", "")}, t0)
-	if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+	if _, err := promoteForTest(t, s, c[0].ID, "", t0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -610,7 +633,7 @@ func TestRecallResolvesEntityRegistryAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, _ := s.Capture([]Candidate{cand("project:compound", "status", "active", "")}, t0)
-	if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+	if _, err := promoteForTest(t, s, c[0].ID, "", t0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -629,7 +652,7 @@ func TestRecallPrefersUniqueCaseFoldedClaimBeforeAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, _ := s.Capture([]Candidate{cand("compound", "capability_authority_surface", "owned graph", "")}, t0)
-	if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+	if _, err := promoteForTest(t, s, c[0].ID, "", t0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -645,11 +668,11 @@ func TestRecallPrefersUniqueCaseFoldedClaimBeforeAlias(t *testing.T) {
 func TestRecallDoesNotGuessAmbiguousCaseFoldedEntity(t *testing.T) {
 	s := newStore(t)
 	first, _ := s.Capture([]Candidate{cand("compound", "status", "lower", "")}, t0)
-	if _, err := s.Adjudicate(first[0].ID, "promote", "", t0); err != nil {
+	if _, err := promoteForTest(t, s, first[0].ID, "", t0); err != nil {
 		t.Fatal(err)
 	}
 	second, _ := s.Capture([]Candidate{cand("Compound", "status", "title", "")}, t0)
-	if _, err := s.Adjudicate(second[0].ID, "promote", "", t0); err != nil {
+	if _, err := promoteForTest(t, s, second[0].ID, "", t0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -705,7 +728,7 @@ func TestRecallIncludeEvidenceSurfacesAnnotatedCandidatesOnlyWhenRequested(t *te
 func TestDoctorReportsHops(t *testing.T) {
 	s := newStore(t)
 	c, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
-	s.Adjudicate(c[0].ID, "promote", "", t0)
+	_, _ = promoteForTest(t, s, c[0].ID, "", t0)
 	r := s.Doctor()
 	if !r.OK {
 		t.Errorf("doctor should be OK after a clean promote; note=%q", r.Note)
@@ -728,7 +751,7 @@ func TestDoctorReportsHops(t *testing.T) {
 func TestDoctorReportsRecallQualityHop(t *testing.T) {
 	s := newStore(t)
 	c, _ := s.Capture([]Candidate{cand("compound", "capability_authority_surface", "owned graph", "")}, t0)
-	if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+	if _, err := promoteForTest(t, s, c[0].ID, "", t0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -788,7 +811,7 @@ func TestEngineSeam(t *testing.T) {
 	s := newStore(t)
 	for _, o := range []string{"node", "go"} { // node first, then go supersedes it → go is current
 		c, _ := s.Capture([]Candidate{cand("project:api", "language", o, "")}, t0)
-		s.Adjudicate(c[0].ID, "promote", "", t0)
+		_, _ = promoteForTest(t, s, c[0].ID, "", t0)
 	}
 	// NoEngine: breadth is unsupported, and it says so explicitly.
 	if _, err := s.QueryBreadth("language", 10, NoEngine{}); err != ErrUnsupported {
@@ -814,7 +837,7 @@ func TestEngineRelevanceGate(t *testing.T) {
 	c := cand("project:api", "secret_key", "abc123", "")
 	c.Visibility = "retired"
 	got, _ := s.Capture([]Candidate{c}, t0)
-	s.Adjudicate(got[0].ID, "promote", "", t0)
+	_, _ = promoteForTest(t, s, got[0].ID, "", t0)
 	hits, err := s.QueryBreadth("secret", 10, &LexicalEngine{})
 	if err != nil {
 		t.Fatal(err)
@@ -830,7 +853,7 @@ func TestNextSeqSelfHeal(t *testing.T) {
 	s := newStore(t)
 	promote := func(obj string) Claim {
 		c, _ := s.Capture([]Candidate{cand("e", "p", obj, "")}, t0)
-		r, err := s.Adjudicate(c[0].ID, "promote", "", t0)
+		r, err := promoteForTest(t, s, c[0].ID, "", t0)
 		if err != nil || r.Claim == nil {
 			t.Fatalf("promote %s: %v", obj, err)
 		}
@@ -858,7 +881,7 @@ func TestNextSeqSelfHeal(t *testing.T) {
 	// a corrupt (non-numeric) counter must fail loud, not reset.
 	os.WriteFile(filepath.Join(s.home, "ledger", "seq"), []byte("garbage"), 0o644)
 	c, _ := s.Capture([]Candidate{cand("e", "p", "v4", "")}, t0)
-	if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err == nil {
+	if _, err := promoteForTest(t, s, c[0].ID, "", t0); err == nil {
 		t.Error("a corrupt seq counter must fail loud, not silently reset")
 	}
 }
@@ -868,9 +891,9 @@ func TestNextSeqSelfHeal(t *testing.T) {
 func TestFoldHonorsSupersedesWithoutEdge(t *testing.T) {
 	s := newStore(t)
 	c1, _ := s.Capture([]Candidate{cand("e", "p", "v1", "")}, t0)
-	s.Adjudicate(c1[0].ID, "promote", "", t0)
+	_, _ = promoteForTest(t, s, c1[0].ID, "", t0)
 	c2, _ := s.Capture([]Candidate{cand("e", "p", "v2", "")}, t0)
-	s.Adjudicate(c2[0].ID, "promote", "", t0)
+	_, _ = promoteForTest(t, s, c2[0].ID, "", t0)
 	// drop the edges log entirely (simulate a lost/torn supersedes-edge append).
 	os.Remove(filepath.Join(s.home, "ledger", "edges.jsonl"))
 	rr, _ := s.Recall("e", RecallOpts{})
