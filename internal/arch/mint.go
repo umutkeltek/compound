@@ -120,6 +120,16 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "probe-refresh collector that re-observes current unit liveness for declared probe targets (files under COMPOUND_HOME) and refreshes the job-roster authority so job_health derives from observed state, not stale imported claims",
 		Consumer: "authority job-roster refresh surface consumed by the director job_health scanner (compound/internal/director)",
 	},
+	// behaviorallens is the composable behavioral-lens framework: a uniform observe->InferredSignal
+	// plug with visibility-gated composition and a first sycophancy (paired-stance shift) lens. It
+	// records evidence rows only — it never gates, promotes, or changes a route/role — so it is
+	// evidence, not enforcement. The governed modulator that would act on a signal is a DEFERRED
+	// enforcement-class consumer (minted only once a second lens exists — two-consumers law).
+	"organ:behaviorallens": {
+		Class:    MintEvidence,
+		Purpose:  "composable behavioral-lens framework — a uniform observe->InferredSignal plug with visibility-gated composition and a per-lane sycophancy (paired-stance endorsement shift) lens; records evidence rows only, never a gate and never auto-acting",
+		Consumer: "compound behavioral-lens CLI (list/run/compose/signals) projecting only public_safe signals for operator review; operator_private signals stay under COMPOUND_HOME; the governed modulator is the named later enforcement consumer",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law

@@ -61,6 +61,7 @@ var Classification = map[string]Class{
 	"runtimebinding": ObjectFamily,
 	// shared leaf
 	"attention":      Leaf, // ranked read-only projection over reviews/workbench/executors; owns no authority objects
+	"behaviorallens": Leaf, // composable behavioral-lens framework: uniform observe->InferredSignal plug + visibility-gated composition + sycophancy (paired-stance shift) lens; records evidence rows under COMPOUND_HOME, owns no authority object and never gates/promotes
 	"bench":          Leaf, // evaluator organ: read-only scorer over the real surfacing/recall paths; produces evidence reports, owns no object family
 	"breadth":        Leaf,
 	"candidates":     Leaf,
