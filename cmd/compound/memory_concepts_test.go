@@ -35,13 +35,13 @@ func TestMemoryConceptCLIVerbs(t *testing.T) {
 		{
 			Entity: entity, Predicate: "delivery_mode", Object: "automated", Confidence: 0.9,
 			Derivation: "deterministic", ClaimType: "architecture", Qualifiers: map[string]string{"domain": "delivery"},
-			PromotionBasis: candidates.BasisExplicitConfirmation, SourceTraceRef: "trace_cli_concept_mode",
+			PromotionBasis: candidates.BasisTrustedDeterministic, SourceTraceRef: "trace_cli_concept_mode",
 			SnippetHash: "sha256:delivery-mode", TopicRefs: []string{"topic:application-platforms"},
 		},
 		{
 			Entity: entity, Predicate: "delivery_owner", Object: "compound", Confidence: 0.9,
 			Derivation: "deterministic", ClaimType: "architecture", Qualifiers: map[string]string{"domain": "delivery"},
-			PromotionBasis: candidates.BasisExplicitConfirmation, SourceTraceRef: "trace_cli_concept_owner",
+			PromotionBasis: candidates.BasisTrustedDeterministic, SourceTraceRef: "trace_cli_concept_owner",
 			SnippetHash: "sha256:delivery-owner", TopicRefs: []string{"topic:application-platforms"},
 		},
 	}, cliTestNow)
