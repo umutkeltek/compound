@@ -553,7 +553,11 @@ func normalizeSourceControlMutationBinding(snapshot SourceControlSnapshot, bindi
 	return binding, nil
 }
 
-func canonicalSourceControlMutationTarget(root, target string) (string, error) {
+// CanonicalSourceControlMutationTarget resolves a mutation target against the
+// repository's canonical root. It preserves a future path's missing suffix
+// while resolving symlinks in its nearest existing parent, so adapters bind
+// /var and /private spellings (and equivalent worktree paths) identically.
+func CanonicalSourceControlMutationTarget(root, target string) (string, error) {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(root, target)
 	}
@@ -574,6 +578,10 @@ func canonicalSourceControlMutationTarget(root, target string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(filepath.Join(canonicalParent, rel)), nil
+}
+
+func canonicalSourceControlMutationTarget(root, target string) (string, error) {
+	return CanonicalSourceControlMutationTarget(root, target)
 }
 
 func validateNormalizedSourceControlMutationBinding(binding SourceControlMutationBinding) error {
