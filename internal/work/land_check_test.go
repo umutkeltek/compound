@@ -438,6 +438,172 @@ func TestLandingCloseGateLeavesLegacyAndFailedWorkCompatible(t *testing.T) {
 	}
 }
 
+func TestCompletedCommitArtifactWithoutGitDeliveryContractFailsClosed(t *testing.T) {
+	now := time.Date(2026, 7, 13, 22, 0, 0, 0, time.UTC)
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "legacy code cannot disappear outside delivery authority"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, w.ID, now)
+	attachLandingCommit(t, store, w.ID, strings.Repeat("a", 40), now.Add(3*time.Minute))
+
+	if _, err := store.Close(w.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Actor:     "codex",
+		Summary:   "must fail without delivery authority",
+		ProofRefs: []string{"check:focused-tests"},
+	}, now.Add(4*time.Minute)); err == nil || !strings.Contains(err.Error(), "git_delivery") {
+		t.Fatalf("commit artifact without git_delivery contract should fail closed, got %v", err)
+	}
+}
+
+func TestLandCheckRejectsWrongRepoSecondCloneAndWrongBranch(t *testing.T) {
+	now := time.Date(2026, 7, 13, 22, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	secondClone := filepath.Join(t.TempDir(), "second-clone")
+	landingGit(t, filepath.Dir(secondClone), "clone", repo, secondClone)
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "only the bound target worktree can certify delivery",
+		GitDelivery:      localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(time.Minute))
+
+	if _, err := store.LandCheck(w.ID, LandCheckOptions{
+		RepoPath:        secondClone,
+		CandidateTipSHA: candidate,
+		TargetRef:       "refs/heads/main",
+	}, now.Add(2*time.Minute)); err == nil || !strings.Contains(err.Error(), "target_worktree_root") {
+		t.Fatalf("second clone must not certify bound work, got %v", err)
+	}
+	if _, err := store.LandCheck(w.ID, LandCheckOptions{
+		RepoPath:        repo,
+		CandidateTipSHA: candidate,
+		TargetRef:       "refs/heads/feature",
+	}, now.Add(3*time.Minute)); err == nil || !strings.Contains(err.Error(), "target_local_ref") {
+		t.Fatalf("feature ref must not replace the bound target branch, got %v", err)
+	}
+
+	landingGit(t, repo, "switch", "feature")
+	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "wrong_target_worktree" {
+		t.Fatalf("feature-branch worktree must not certify the bound main target: %+v", report)
+	}
+}
+
+func TestPublicationProofIsAttachedDiscoverableAndRequiredForDispatchClose(t *testing.T) {
+	now := time.Date(2026, 7, 13, 22, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	landingGit(t, repo, "remote", "add", "origin", remote)
+	landingGit(t, repo, "push", "-u", "origin", "main")
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "candidate is on bound main and origin main before close",
+		GitDelivery:      publishedGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, w.ID, now)
+	if _, err := store.Advance(w.ID, AdvanceInput{
+		To:             "verifying",
+		Actor:          "codex",
+		ArtifactID:     "commit:" + candidate,
+		VerificationID: "check:focused-tests",
+	}, now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+
+	localOnly, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate, Record: true, Actor: "codex"}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if localOnly.Status != "awaiting_publication" || !localOnly.CandidateContainedInTarget || localOnly.CandidateContainedInPublication {
+		t.Fatalf("local-main-only state must remain actionable: %+v", localOnly)
+	}
+	beforePublish, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(beforePublish.EvidenceRefs, localOnly.EvidenceRef) {
+		t.Fatalf("non-successful land check must not become close proof: %+v", beforePublish.EvidenceRefs)
+	}
+	bench, err := store.Workbench(now.Add(5*time.Minute), WorkbenchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := findWorkbenchItem(t, bench.Open, w.ID)
+	if item.LandingStatus != "awaiting_publication" {
+		t.Fatalf("workbench must surface publication debt: %+v", item)
+	}
+	blocked, err := store.DispatchClosePlan(now.Add(6*time.Minute), DispatchClosePlanOptions{Actor: "codex", WorkID: w.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Selected != nil || blocked.ClosePlan != nil || blocked.Status != "awaiting_proof" {
+		t.Fatalf("dispatch must not offer close before discoverable current delivery proof: %+v", blocked)
+	}
+
+	landingGit(t, repo, "push", "origin", "main")
+	proof, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate, Record: true, Actor: "codex"}, now.Add(7*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.Status != "landed" || !proof.CandidateContainedInPublication {
+		t.Fatalf("published proof = %+v", proof)
+	}
+	afterPublish, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(afterPublish.EvidenceRefs, proof.EvidenceRef) {
+		t.Fatalf("successful proof must be indexed on its WorkEnvelope: %+v", afterPublish.EvidenceRefs)
+	}
+	bench, err = store.Workbench(now.Add(8*time.Minute), WorkbenchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item = findWorkbenchItem(t, bench.Open, w.ID)
+	if item.LandingStatus != "ready_to_close" || !contains(item.EvidenceRefs, proof.EvidenceRef) {
+		t.Fatalf("workbench must discover current delivery proof: %+v", item)
+	}
+	ready, err := store.DispatchClosePlan(now.Add(9*time.Minute), DispatchClosePlanOptions{Actor: "codex", WorkID: w.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Selected == nil || ready.ClosePlan == nil || !contains(ready.ClosePlan.ProofRefs, proof.EvidenceRef) {
+		t.Fatalf("dispatch close must consume the attached delivery proof: %+v", ready)
+	}
+}
+
 func activateLandingWork(t *testing.T, store *Store, workID string, now time.Time) {
 	t.Helper()
 	if _, err := store.Claim(workID, "codex", now.Add(time.Minute)); err != nil {
@@ -543,5 +709,24 @@ func writeLandingFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func localGitDelivery(repo, base string) *envelope.GitDeliveryContract {
+	return &envelope.GitDeliveryContract{
+		TargetWorktreeRoot: repo,
+		TargetLocalRef:     "refs/heads/main",
+		ExpectedBaseSHA:    base,
+		PublicationMode:   "local_only",
+	}
+}
+
+func publishedGitDelivery(repo, base string) *envelope.GitDeliveryContract {
+	return &envelope.GitDeliveryContract{
+		TargetWorktreeRoot: repo,
+		TargetLocalRef:     "refs/heads/main",
+		ExpectedBaseSHA:    base,
+		PublicationMode:   "required",
+		PublicationRef:    "refs/remotes/origin/main",
 	}
 }
