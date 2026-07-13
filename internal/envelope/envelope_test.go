@@ -151,8 +151,8 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 			TargetWorktreeRoot: repoRoot,
 			TargetLocalRef:     "refs/heads/main",
 			ExpectedBaseSHA:    baseSHA,
-			PublicationMode:   "required",
-			PublicationRef:    "refs/remotes/origin/main",
+			PublicationMode:    "required",
+			PublicationRef:     "refs/remotes/origin/main",
 		},
 	}
 	if err := RoundTrip(&w); err != nil {
@@ -177,8 +177,8 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 		TargetWorktreeRoot: repoRoot,
 		TargetLocalRef:     "refs/heads/main",
 		ExpectedBaseSHA:    "ABCDEF",
-		PublicationMode:   "required",
-		PublicationRef:    "refs/remotes/origin/main",
+		PublicationMode:    "required",
+		PublicationRef:     "refs/remotes/origin/main",
 	}
 	if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "expected_base_sha") {
 		t.Fatalf("invalid expected_base_sha should fail validation, got %v", err)
@@ -190,7 +190,7 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 		TargetWorktreeRoot: repoRoot,
 		TargetLocalRef:     "refs/heads/main",
 		ExpectedBaseSHA:    baseSHA,
-		PublicationMode:   "required",
+		PublicationMode:    "required",
 	}
 	if err := partial.Validate(); err == nil || !strings.Contains(err.Error(), "publication_ref") {
 		t.Fatalf("publication-required contract without remote-tracking ref should fail, got %v", err)
@@ -202,7 +202,7 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 		TargetWorktreeRoot: repoRoot,
 		TargetLocalRef:     "refs/heads/main",
 		ExpectedBaseSHA:    baseSHA,
-		PublicationMode:   "local_only",
+		PublicationMode:    "local_only",
 	}
 	if err := localOnly.Validate(); err != nil {
 		t.Fatalf("explicit local-only contract should validate: %v", err)
