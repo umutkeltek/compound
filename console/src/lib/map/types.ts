@@ -56,7 +56,7 @@ export type TopologyEntry = {
   projection: ProjectionKind;
   /**
    * Binds a node to its live source. For "host-reachability" it is
-   * "<bundlePath>[#probeID]" (bundle path relative to COMPOUND_HOME; an optional
+   * "<bundlePath>[#probeID]" (bundle path relative to the compound home root; an optional
    * "#probeID" selects one host, no fragment aggregates the bundle). Live status
    * is computed by the Go projection (`compound system map --json`); this field
    * is generic and other projections may reuse it.
