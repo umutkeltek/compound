@@ -12,11 +12,11 @@ func TestDispatchSurfacesExpectedBaseAndWorkerLandingContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := strings.Repeat("a", 40)
+	repo, base := initLandingRepo(t)
 	w, err := store.Create(CreateInput{
 		Owner:            "codex",
 		SuccessPredicate: "source-controlled work lands on main",
-		ExpectedBaseSHA:  base,
+		GitDelivery:      localGitDelivery(repo, base),
 	}, now)
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +39,10 @@ func TestDispatchSurfacesExpectedBaseAndWorkerLandingContract(t *testing.T) {
 	}
 	for _, want := range []string{
 		"## SOURCE CONTROL CONTRACT",
+		"target_worktree_root: " + repo,
+		"target_local_ref: refs/heads/main",
 		"expected_base_sha: " + base,
+		"publication_mode: local_only",
 		"commit:<full-sha>",
 		"compound work land-check",
 	} {
@@ -55,12 +58,13 @@ func TestWorkbenchMakesVerifiedCodeAwaitingLandingVisible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := strings.Repeat("a", 40)
-	tip := strings.Repeat("b", 40)
+	repo, base := initLandingRepo(t)
+	tip := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
 	w, err := store.Create(CreateInput{
 		Owner:            "codex",
 		SuccessPredicate: "verified code cannot disappear outside main",
-		ExpectedBaseSHA:  base,
+		GitDelivery:      localGitDelivery(repo, base),
 	}, now)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +95,7 @@ func TestWorkbenchMakesVerifiedCodeAwaitingLandingVisible(t *testing.T) {
 	if item.ExpectedBaseSHA != base || item.CandidateTipSHA != tip {
 		t.Fatalf("source-control identity missing from workbench: %+v", item)
 	}
-	if item.LandingStatus != "awaiting_landing" || !strings.Contains(item.NextAction, "land-check") {
+	if item.LandingStatus != "awaiting_local_land" || !strings.Contains(item.NextAction, "land-check") {
 		t.Fatalf("verified code must be directly visible as awaiting landing: %+v", item)
 	}
 }
