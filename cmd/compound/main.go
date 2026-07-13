@@ -1594,9 +1594,18 @@ func cmdKnowledge(args []string) {
 		}
 	case "extract":
 		rest := args[1:]
+		extractUsage := "usage: compound knowledge extract (--pending|--item <id>) (--fixtures dir | --openai-compatible-url U --model M --eval-corpus dir [--eval-root dir] [--api-key-env E]) [--source-kind K] [--limit N] [--json]"
+		limit, err := intFlag(rest, "--limit")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, extractUsage)
+			os.Exit(2)
+		}
 		opts := knowledge.ExtractOptions{
 			Pending:             hasFlag(rest, "--pending"),
 			ItemID:              flagValue(rest, "--item"),
+			Limit:               limit,
+			SourceKind:          flagValue(rest, "--source-kind"),
 			FixturesDir:         flagValue(rest, "--fixtures"),
 			OpenAICompatibleURL: flagValue(rest, "--openai-compatible-url"),
 			Model:               flagValue(rest, "--model"),
@@ -1605,7 +1614,7 @@ func cmdKnowledge(args []string) {
 			EvalRoot:            flagValue(rest, "--eval-root"),
 		}
 		if !opts.Pending && strings.TrimSpace(opts.ItemID) == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound knowledge extract (--pending|--item <id>) (--fixtures dir | --openai-compatible-url U --model M --eval-corpus dir [--eval-root dir] [--api-key-env E]) [--json]")
+			fmt.Fprintln(os.Stderr, extractUsage)
 			os.Exit(2)
 		}
 		report, err := knowledge.Extract(homePath, store, opts, time.Now())
