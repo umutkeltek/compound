@@ -234,7 +234,7 @@ func (s *Store) advanceActionIntent(w envelope.WorkEnvelope, actor, to string, n
 	mutationClass := orDefault(opts.MutationClass, "local_reversible")
 	reversibility := orDefault(opts.Reversibility, "easy")
 	if opts.GitDelivery != nil {
-		reversibility = "hard"
+		reversibility = "manual"
 	}
 	blastRadius := orDefault(opts.BlastRadius, "local")
 	idParts := []string{capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, to}

@@ -70,7 +70,7 @@ func TestLegacyNonterminalWorkBindsGitDeliveryThroughAdvance(t *testing.T) {
 	if err := store.readJSON(store.envPath(bound.RunIDs[len(bound.RunIDs)-1]), &action); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(action.Preview, "bind Git delivery") || !strings.Contains(action.Preview, canonicalRepo) || !strings.Contains(action.Preview, base) || action.Reversibility != "hard" {
+	if !strings.Contains(action.Preview, "bind Git delivery") || !strings.Contains(action.Preview, canonicalRepo) || !strings.Contains(action.Preview, base) || action.Reversibility != "manual" {
 		t.Fatalf("binding action does not carry exact authority: %+v", action)
 	}
 
