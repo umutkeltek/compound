@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/capgraph"
 	"compound/internal/laneselect"
 )
 
@@ -20,6 +21,11 @@ type PreparationLaneOptions struct {
 	Liveness map[string]string
 	// Filters are the veto seam (capacity planner, work_697dedbfca03). Nil in this packet.
 	Filters []laneselect.PreparationLaneFilter
+}
+
+type preparationAgentLaneEvidence struct {
+	NodeID   string
+	HasClass bool
 }
 
 // PlanPreparationLane reads the Compound model-router authority (fit + cost, account/privacy
@@ -42,6 +48,10 @@ func PlanPreparationLane(homePath, class string, opts PreparationLaneOptions, no
 	if err != nil {
 		return laneselect.PreparationLaneRanking{}, err
 	}
+	agentLaneEvidence, graphPresent, err := loadPreparationAgentLaneEvidence(homePath, class, plan.Chain)
+	if err != nil {
+		return laneselect.PreparationLaneRanking{}, err
+	}
 	inputs := make([]laneselect.PreparationLaneInput, 0, len(plan.Chain))
 	for _, lane := range plan.Chain {
 		tps, runs, known := laneThroughput(lane, targetStats, profileStats)
@@ -51,10 +61,18 @@ func PlanPreparationLane(homePath, class string, opts PreparationLaneOptions, no
 				liveness = laneselect.NormalizeLiveness(v)
 			}
 		}
+		claimLevel := lane.ClaimLevel
+		if evidence, ok := agentLaneEvidence[lane.ModelID]; ok && !evidence.HasClass {
+			// An exact tuple is stronger than a loose model-router claim. If that
+			// agent-lane node does not carry the requested capable_of edge, do not
+			// present the lane as proven fit. Absence of an exact tuple is merely
+			// unresolved because the two registries do not yet share a total ID.
+			claimLevel = ""
+		}
 		inputs = append(inputs, laneselect.PreparationLaneInput{
 			Lane:            lane.ModelID,
 			Label:           lane.Lane,
-			ClaimLevel:      lane.ClaimLevel,
+			ClaimLevel:      claimLevel,
 			RoutingPosition: lane.Position,
 			CostClass:       lane.CostClass,
 			Tier:            lane.Tier,
@@ -67,8 +85,78 @@ func PlanPreparationLane(homePath, class string, opts PreparationLaneOptions, no
 		})
 	}
 	ranking := laneselect.RankPreparationLanes(class, opts.FloorTokensPerSecond, inputs, opts.Filters...)
+	matched := 0
+	for i := range ranking.Candidates {
+		candidate := &ranking.Candidates[i]
+		evidence, ok := agentLaneEvidence[candidate.Lane]
+		switch {
+		case ok && evidence.HasClass:
+			matched++
+			candidate.Rationale += " agent_lane=" + evidence.NodeID + " class_fit=capable_of"
+		case ok:
+			matched++
+			candidate.Rationale += " agent_lane=" + evidence.NodeID + " class_fit=missing"
+		case graphPresent:
+			candidate.Rationale += " agent_lane=unresolved"
+		default:
+			candidate.Rationale += " agent_lane=unavailable"
+		}
+	}
+	if graphPresent {
+		ranking.Warnings = append(ranking.Warnings, fmt.Sprintf("agent-lane capability graph consumed: %d/%d exact candidate tuples matched", matched, len(ranking.Candidates)))
+	} else {
+		ranking.Warnings = append(ranking.Warnings, "agent-lane capability graph unavailable; model-router fit remains unresolved against agent-lane tuples")
+	}
 	ranking.Warnings = append(ranking.Warnings, plan.Warnings...)
 	return ranking, nil
+}
+
+// loadPreparationAgentLaneEvidence consumes the existing agent-lane CapabilityGraph surface
+// without inventing a second registry. The only lossless public join available today is the
+// exported short-lane-id resolver. An exact tuple may confirm or contradict class fit; a missing
+// tuple stays unresolved because imported harness×route×model×effort nodes and model-router IDs
+// are not yet a total one-to-one namespace.
+func loadPreparationAgentLaneEvidence(homePath, class string, lanes []CapabilityRouteLane) (map[string]preparationAgentLaneEvidence, bool, error) {
+	out := map[string]preparationAgentLaneEvidence{}
+	if !capgraph.Exists(homePath) {
+		return out, false, nil
+	}
+	store, err := capgraph.OpenReadOnly(homePath)
+	if err != nil {
+		return nil, true, fmt.Errorf("read agent-lane capability graph: %w", err)
+	}
+	nodes, err := store.List()
+	if err != nil {
+		return nil, true, fmt.Errorf("read agent-lane nodes: %w", err)
+	}
+	edges, err := store.Edges()
+	if err != nil {
+		return nil, true, fmt.Errorf("read agent-lane edges: %w", err)
+	}
+	nodesByID := map[string]capgraph.Node{}
+	for _, node := range nodes {
+		if node.Kind == "agent-lane" && !node.Retired {
+			nodesByID[node.ID] = node
+		}
+	}
+	classRef := "task-class:" + strings.ToLower(strings.TrimSpace(class))
+	capable := map[string]bool{}
+	for _, edge := range edges {
+		if edge.Kind == capgraph.EdCapableOf && strings.EqualFold(strings.TrimSpace(edge.To), classRef) {
+			capable[edge.From] = true
+		}
+	}
+	for _, lane := range lanes {
+		nodeID, ok := capgraph.AgentLaneNodeIDFromShortLaneID(lane.ModelID)
+		if !ok {
+			continue
+		}
+		if _, ok := nodesByID[nodeID]; !ok {
+			continue
+		}
+		out[lane.ModelID] = preparationAgentLaneEvidence{NodeID: nodeID, HasClass: capable[nodeID]}
+	}
+	return out, true, nil
 }
 
 type laneThroughputStat struct {
