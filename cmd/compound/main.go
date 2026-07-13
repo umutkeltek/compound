@@ -175,8 +175,6 @@ func main() {
 		cmdLaneBeliefs(os.Args[2:])
 	case "negatives":
 		cmdNegatives(os.Args[2:])
-	case "sycophancy":
-		cmdSycophancy(os.Args[2:])
 	case "architecture":
 		cmdArchitecture(os.Args[2:])
 	default:
@@ -326,7 +324,6 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound route plan --capability-class C [--privacy-sensitive] planned lane chain from Compound route authority
-  compound sycophancy <probe --transcripts FILE [--record]|asymmetry --records FILE> [--json] measure per-lane operator-stance tracking (paired-stance shift -> routeevidence.SycophancyScore) + agreement-asymmetry; file-fed, no provider calls
 	compound memory <candidate|candidates|import-page|import-topics|adjudicate|recall|timeline|fold|position|query|search --lane L|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor>
 	              spine memory: candidates, claims, positions, patterns, evidence
   compound corpus <index --lane L [--rebuild]|doctor --lane L [--json]> rebuildable corpus vector indexes
