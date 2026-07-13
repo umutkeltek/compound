@@ -69,6 +69,7 @@ var Classification = map[string]Class{
 	"hookplan":       Leaf, // desired/observed hook reconciliation model; installed-hooks ledger and harness configs retain authority
 	"jobprobe":       Leaf, // job-roster probe-refresh collector: re-observes current unit liveness for declared probe targets (files under COMPOUND_HOME) and refreshes the job-roster authority through authority's additive refresh surface; owns no authority object (authority stays the roster owner)
 	"laneselect":     Leaf, // pure preparation-lane ranking (fit/speed/cost) shared by work dispatch + routeevidence adapter; owns no authority objects, breaks the work<->routeevidence import cycle
+	"latenttax":      Leaf, // latent-tax rig: read-only factorial evaluator that DERIVES thrash/tokens/latency/success from existing ledger objects per work_id; owns only a thin run-index, produces evidence reports, no promotion path
 	"narrate":        Leaf, // composed read-only correspondent script over attention/orient-changed/receipts; owns no authority objects
 	"negatives":      Leaf, // rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient (Weng item 6)
 	"release":        Leaf,

@@ -167,6 +167,8 @@ func main() {
 		cmdCapability(os.Args[2:])
 	case "bench":
 		cmdBench(os.Args[2:])
+	case "latent-tax":
+		cmdLatentTax(os.Args[2:])
 	case "panel":
 		cmdPanel(os.Args[2:])
 	case "local-models":

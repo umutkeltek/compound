@@ -101,6 +101,16 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "deterministic correspondent script composed over the attention projection, orient changed-set, and recent receipt summaries",
 		Consumer: "compound narrate CLI and the embedded narrate field of orient --operator",
 	},
+	// latenttax is the one-week latent-tax rig: a read-only factorial evaluator that
+	// derives thrash/tokens/latency/success from existing ledger objects per work_id
+	// and evaluates the pre-registered kill-criteria. It informs the operator's
+	// obligation-placement adjudication; it blocks nothing and promotes nothing, so it
+	// is evidence, not enforcement.
+	"organ:latenttax": {
+		Class:    MintEvidence,
+		Purpose:  "factorial latent-tax rig that derives thrash/tokens/latency/task-success from existing ledger objects per work_id and evaluates three pre-registered kill-criteria against length-matched arms",
+		Consumer: "compound latent-tax report + the operator's obligation-placement-law adjudication (an adjudication REQUEST citing run receipts, never auto-promotion)",
+	},
 	// jobprobe is the job-roster probe-refresh collector: it re-observes current
 	// unit liveness for declared probe targets and refreshes the roster through
 	// authority; it informs job_health surfacing but blocks nothing, so it is
