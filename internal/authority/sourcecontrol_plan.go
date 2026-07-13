@@ -2,10 +2,12 @@ package authority
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,28 +26,44 @@ const (
 // owner-review artifact. It never stages, cleans, commits, resets, pushes, or
 // promotes source-control claims.
 type SourceControlReviewPlan struct {
-	SchemaVersion string                   `json:"schema_version"`
-	ID            string                   `json:"id"`
-	CreatedAt     string                   `json:"created_at"`
-	Status        string                   `json:"status"`
-	RepoID        string                   `json:"repo_id"`
-	WorkID        string                   `json:"work_id,omitempty"`
-	RequestedPath string                   `json:"requested_path,omitempty"`
-	GitRoot       string                   `json:"git_root"`
-	Remote        string                   `json:"remote,omitempty"`
-	Branch        string                   `json:"branch,omitempty"`
-	Head          string                   `json:"head,omitempty"`
-	Upstream      string                   `json:"upstream,omitempty"`
-	Ahead         int                      `json:"ahead"`
-	Behind        int                      `json:"behind"`
-	SourceStatus  string                   `json:"source_status"`
-	Staged        int                      `json:"staged"`
-	Unstaged      int                      `json:"unstaged"`
-	Untracked     int                      `json:"untracked"`
-	ChangedPaths  int                      `json:"changed_paths"`
-	EvidenceRefs  []string                 `json:"evidence_refs"`
-	ReviewDraft   SourceControlReviewDraft `json:"review_draft"`
-	Warnings      []string                 `json:"warnings,omitempty"`
+	SchemaVersion           string                        `json:"schema_version"`
+	ID                      string                        `json:"id"`
+	CreatedAt               string                        `json:"created_at"`
+	Status                  string                        `json:"status"`
+	RepoID                  string                        `json:"repo_id"`
+	WorkID                  string                        `json:"work_id,omitempty"`
+	RequestedPath           string                        `json:"requested_path,omitempty"`
+	GitRoot                 string                        `json:"git_root"`
+	Remote                  string                        `json:"remote,omitempty"`
+	Branch                  string                        `json:"branch,omitempty"`
+	Head                    string                        `json:"head,omitempty"`
+	Upstream                string                        `json:"upstream,omitempty"`
+	Ahead                   int                           `json:"ahead"`
+	Behind                  int                           `json:"behind"`
+	SourceStatus            string                        `json:"source_status"`
+	Staged                  int                           `json:"staged"`
+	Unstaged                int                           `json:"unstaged"`
+	Untracked               int                           `json:"untracked"`
+	ChangedPaths            int                           `json:"changed_paths"`
+	ChangedStateFingerprint string                        `json:"changed_state_fingerprint,omitempty"`
+	MutationBinding         *SourceControlMutationBinding `json:"mutation_binding,omitempty"`
+	PlanDigest              string                        `json:"plan_digest,omitempty"`
+	EvidenceRefs            []string                      `json:"evidence_refs"`
+	ReviewDraft             SourceControlReviewDraft      `json:"review_draft"`
+	Warnings                []string                      `json:"warnings,omitempty"`
+}
+
+// SourceControlMutationBinding is executable identity derived from persisted
+// ActionIntents. ActionIntentIDs are provenance; retries are matched by the
+// session-bound input hash plus action work, semantics, and the full target set.
+type SourceControlMutationBinding struct {
+	ActionWorkID      string   `json:"action_work_id"`
+	MutationInputHash string   `json:"mutation_input_hash"`
+	Capability        string   `json:"capability"`
+	Action            string   `json:"action"`
+	MutationClass     string   `json:"mutation_class"`
+	TargetPaths       []string `json:"target_paths"`
+	ActionIntentIDs   []string `json:"action_intent_ids"`
 }
 
 type SourceControlReviewDraft struct {
@@ -81,22 +99,48 @@ type SourceControlReview struct {
 }
 
 type SourceControlReviewReport struct {
-	SchemaVersion string   `json:"schema_version"`
-	ID            string   `json:"id"`
-	CreatedAt     string   `json:"created_at"`
-	Status        string   `json:"status"`
-	PlanID        string   `json:"plan_id"`
-	ReviewID      string   `json:"review_id"`
-	RepoID        string   `json:"repo_id"`
-	Decision      string   `json:"decision"`
-	NextAction    string   `json:"next_action,omitempty"`
-	SourcePath    string   `json:"source_path,omitempty"`
-	ReviewPath    string   `json:"review_path,omitempty"`
-	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
-	Warnings      []string `json:"warnings,omitempty"`
+	SchemaVersion           string                        `json:"schema_version"`
+	ID                      string                        `json:"id"`
+	CreatedAt               string                        `json:"created_at"`
+	Status                  string                        `json:"status"`
+	PlanID                  string                        `json:"plan_id"`
+	ReviewID                string                        `json:"review_id"`
+	RepoID                  string                        `json:"repo_id"`
+	WorkID                  string                        `json:"work_id,omitempty"`
+	GitRoot                 string                        `json:"git_root,omitempty"`
+	Remote                  string                        `json:"remote,omitempty"`
+	Head                    string                        `json:"head,omitempty"`
+	ChangedStateFingerprint string                        `json:"changed_state_fingerprint,omitempty"`
+	MutationBinding         *SourceControlMutationBinding `json:"mutation_binding,omitempty"`
+	PlanDigest              string                        `json:"plan_digest,omitempty"`
+	Decision                string                        `json:"decision"`
+	NextAction              string                        `json:"next_action,omitempty"`
+	SourcePath              string                        `json:"source_path,omitempty"`
+	ReviewPath              string                        `json:"review_path,omitempty"`
+	EvidenceRefs            []string                      `json:"evidence_refs,omitempty"`
+	Warnings                []string                      `json:"warnings,omitempty"`
 }
 
 func BuildSourceControlReviewPlan(snapshot SourceControlSnapshot, workID string, now time.Time) (SourceControlReviewPlan, error) {
+	return buildSourceControlReviewPlan(snapshot, strings.TrimSpace(workID), nil, now)
+}
+
+// BuildSourceControlMutationReviewPlan creates the only source-control review
+// plan that may authorize a dirty mutation. Legacy/count-only plans remain
+// cleanup evidence and can never satisfy the executable binding.
+func BuildSourceControlMutationReviewPlan(snapshot SourceControlSnapshot, ownerWorkID string, binding SourceControlMutationBinding, now time.Time) (SourceControlReviewPlan, error) {
+	ownerWorkID = strings.TrimSpace(ownerWorkID)
+	if ownerWorkID == "" {
+		return SourceControlReviewPlan{}, fmt.Errorf("source-control mutation review owner work_id required")
+	}
+	normalized, err := normalizeSourceControlMutationBinding(snapshot, binding)
+	if err != nil {
+		return SourceControlReviewPlan{}, err
+	}
+	return buildSourceControlReviewPlan(snapshot, ownerWorkID, &normalized, now)
+}
+
+func buildSourceControlReviewPlan(snapshot SourceControlSnapshot, workID string, binding *SourceControlMutationBinding, now time.Time) (SourceControlReviewPlan, error) {
 	if strings.TrimSpace(snapshot.RepoID) == "" {
 		return SourceControlReviewPlan{}, fmt.Errorf("source-control snapshot repo_id required")
 	}
@@ -106,33 +150,43 @@ func BuildSourceControlReviewPlan(snapshot SourceControlSnapshot, workID string,
 	if snapshot.Status != "dirty" || snapshot.ChangedPaths == 0 {
 		return SourceControlReviewPlan{}, fmt.Errorf("dirty source-control snapshot required")
 	}
+	if strings.TrimSpace(snapshot.Head) == "" || !validSHA256(snapshot.ChangedStateFingerprint) {
+		return SourceControlReviewPlan{}, fmt.Errorf("dirty source-control snapshot head and changed_state_fingerprint required")
+	}
 	if now.IsZero() {
 		now = time.Now()
 	}
 	evidence := snapshot.EvidenceReference()
-	key := snapshot.RepoID + snapshot.GitRoot + snapshot.Head + fmt.Sprint(snapshot.Staged, snapshot.Unstaged, snapshot.Untracked) + strings.TrimSpace(workID)
+	keyParts := []string{snapshot.RepoID, snapshot.GitRoot, snapshot.Remote, snapshot.Head, snapshot.ChangedStateFingerprint, strings.TrimSpace(workID)}
+	if binding != nil {
+		encoded, _ := json.Marshal(binding)
+		keyParts = append(keyParts, string(encoded))
+	}
+	key := strings.Join(keyParts, "\x00")
 	reviewID := "scr_" + reviewartifact.Digest12(key)
 	plan := SourceControlReviewPlan{
-		SchemaVersion: SourceControlReviewPlanSchemaVersion,
-		ID:            reviewID,
-		CreatedAt:     now.UTC().Format(time.RFC3339),
-		Status:        "review_required",
-		RepoID:        snapshot.RepoID,
-		WorkID:        strings.TrimSpace(workID),
-		RequestedPath: snapshot.RequestedPath,
-		GitRoot:       snapshot.GitRoot,
-		Remote:        snapshot.Remote,
-		Branch:        snapshot.Branch,
-		Head:          snapshot.Head,
-		Upstream:      snapshot.Upstream,
-		Ahead:         snapshot.Ahead,
-		Behind:        snapshot.Behind,
-		SourceStatus:  snapshot.Status,
-		Staged:        snapshot.Staged,
-		Unstaged:      snapshot.Unstaged,
-		Untracked:     snapshot.Untracked,
-		ChangedPaths:  snapshot.ChangedPaths,
-		EvidenceRefs:  []string{evidence},
+		SchemaVersion:           SourceControlReviewPlanSchemaVersion,
+		ID:                      reviewID,
+		CreatedAt:               now.UTC().Format(time.RFC3339),
+		Status:                  "review_required",
+		RepoID:                  snapshot.RepoID,
+		WorkID:                  strings.TrimSpace(workID),
+		RequestedPath:           snapshot.RequestedPath,
+		GitRoot:                 snapshot.GitRoot,
+		Remote:                  snapshot.Remote,
+		Branch:                  snapshot.Branch,
+		Head:                    snapshot.Head,
+		Upstream:                snapshot.Upstream,
+		Ahead:                   snapshot.Ahead,
+		Behind:                  snapshot.Behind,
+		SourceStatus:            snapshot.Status,
+		Staged:                  snapshot.Staged,
+		Unstaged:                snapshot.Unstaged,
+		Untracked:               snapshot.Untracked,
+		ChangedPaths:            snapshot.ChangedPaths,
+		ChangedStateFingerprint: snapshot.ChangedStateFingerprint,
+		MutationBinding:         binding,
+		EvidenceRefs:            []string{evidence},
 		ReviewDraft: SourceControlReviewDraft{
 			ReviewID:         reviewID,
 			Title:            "Review dirty source-control state for " + snapshot.RepoID,
@@ -156,7 +210,31 @@ func BuildSourceControlReviewPlan(snapshot SourceControlSnapshot, workID string,
 			"does not resolve policy holds by itself",
 		},
 	}
+	if binding != nil {
+		plan.EvidenceRefs = append(plan.EvidenceRefs, prefixedActionIntentRefs(binding.ActionIntentIDs)...)
+		plan.ReviewDraft.ProposedNextStep = "Review the exact persisted mutation payload and dirty snapshot. Record authorize_mutation only if this one state and payload may proceed."
+		plan.ReviewDraft.Verification = "The recorded review digest and every repo/HEAD/fingerprint/work/input/action/target field match at PreToolUse; any drift remains held."
+		plan.ReviewDraft.RequiredEvidence = append(plan.ReviewDraft.RequiredEvidence,
+			"persisted ActionIntent evidence for the complete target set",
+			"session-bound content-free mutation-input digest",
+		)
+		plan.Warnings = append(plan.Warnings,
+			"does not authorize until authorize_mutation is recorded",
+			"authorization expires on any repo state or mutation payload drift",
+		)
+	}
+	plan.PlanDigest = SourceControlReviewPlanDigest(plan)
 	return plan, nil
+}
+
+// SourceControlReviewPlanDigest is a semantic digest over the immutable plan
+// with its self-digest blanked. A reviewed report copies this digest and checks
+// it again at consumption, so editing the sibling plan after review fails shut.
+func SourceControlReviewPlanDigest(plan SourceControlReviewPlan) string {
+	plan.PlanDigest = ""
+	encoded, _ := json.Marshal(plan)
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", digest[:])
 }
 
 func RecordSourceControlReviewPlan(homePath string, plan SourceControlReviewPlan) (SourceControlReviewPlanPaths, error) {
@@ -165,6 +243,9 @@ func RecordSourceControlReviewPlan(homePath string, plan SourceControlReviewPlan
 	}
 	if strings.TrimSpace(plan.ID) == "" {
 		return SourceControlReviewPlanPaths{}, fmt.Errorf("source-control review plan id required")
+	}
+	if !validSHA256(plan.PlanDigest) || plan.PlanDigest != SourceControlReviewPlanDigest(plan) {
+		return SourceControlReviewPlanPaths{}, fmt.Errorf("source-control review plan_digest invalid")
 	}
 	paths, err := reviewartifact.Write(homePath, SourceControlCleanupReviewArea, plan.ID, plan, "  ", RenderSourceControlReviewPlan(plan))
 	if err != nil {
@@ -194,10 +275,20 @@ func RenderSourceControlReviewPlan(plan SourceControlReviewPlan) string {
 	}
 	fmt.Fprintf(&b, "- status_snapshot: %s\n", plan.SourceStatus)
 	fmt.Fprintf(&b, "- changed_paths: %d\n", plan.ChangedPaths)
+	fmt.Fprintf(&b, "- changed_state_fingerprint: %s\n", plan.ChangedStateFingerprint)
 	fmt.Fprintf(&b, "- staged: %d\n", plan.Staged)
 	fmt.Fprintf(&b, "- unstaged: %d\n", plan.Unstaged)
 	fmt.Fprintf(&b, "- untracked: %d\n", plan.Untracked)
 	fmt.Fprintf(&b, "- evidence_refs: %s\n\n", strings.Join(plan.EvidenceRefs, ", "))
+	if plan.MutationBinding != nil {
+		fmt.Fprintf(&b, "- action_work: %s\n", plan.MutationBinding.ActionWorkID)
+		fmt.Fprintf(&b, "- mutation_input_hash: %s\n", plan.MutationBinding.MutationInputHash)
+		fmt.Fprintf(&b, "- capability: %s\n", plan.MutationBinding.Capability)
+		fmt.Fprintf(&b, "- action: %s\n", plan.MutationBinding.Action)
+		fmt.Fprintf(&b, "- mutation_class: %s\n", plan.MutationBinding.MutationClass)
+		fmt.Fprintf(&b, "- target_paths: %s\n", strings.Join(plan.MutationBinding.TargetPaths, ", "))
+	}
+	fmt.Fprintf(&b, "- plan_digest: %s\n\n", plan.PlanDigest)
 	fmt.Fprintln(&b, "This owner-review artifact does not stage, reset, clean, commit, push, or promote source-control claims.")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "## Draft Review")
@@ -236,7 +327,11 @@ func RenderSourceControlReviewYAMLDraft(plan SourceControlReviewPlan) string {
 	fmt.Fprintf(&b, "id: %s\n", plan.ReviewDraft.ReviewID)
 	fmt.Fprintf(&b, "plan_id: %s\n", plan.ID)
 	fmt.Fprintf(&b, "repo_id: %q\n", plan.RepoID)
-	fmt.Fprintln(&b, "decision: TODO_decision_owner_action_required_owner_action_done_parked_no_action")
+	decisions := "TODO_decision_owner_action_required_owner_action_done_parked_no_action"
+	if plan.MutationBinding != nil {
+		decisions += "_authorize_mutation"
+	}
+	fmt.Fprintln(&b, "decision: "+decisions)
 	fmt.Fprintln(&b, "rationale: \"\"")
 	fmt.Fprintln(&b, "confidence: -1")
 	fmt.Fprintln(&b, "next_action: \"TODO: reviewed source-control cleanup next action\"")
@@ -274,8 +369,8 @@ func ValidateSourceControlReview(review SourceControlReview) error {
 	if strings.TrimSpace(review.RepoID) == "" {
 		return fmt.Errorf("source-control review repo_id required")
 	}
-	if !sourceControlReviewOneOf(review.Decision, []string{"owner_action_required", "owner_action_done", "parked", "no_action"}) {
-		return fmt.Errorf("source-control review decision must be owner_action_required|owner_action_done|parked|no_action, got %q", review.Decision)
+	if !sourceControlReviewOneOf(review.Decision, []string{"owner_action_required", "owner_action_done", "parked", "no_action", "authorize_mutation"}) {
+		return fmt.Errorf("source-control review decision must be owner_action_required|owner_action_done|parked|no_action|authorize_mutation, got %q", review.Decision)
 	}
 	if strings.TrimSpace(review.Rationale) == "" {
 		return fmt.Errorf("source-control review rationale required")
@@ -327,16 +422,230 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 		report.Status = "blocked"
 		return report, fmt.Errorf("source-control review repo_id %q does not match plan repo_id %q", review.RepoID, plan.RepoID)
 	}
+	computedPlanDigest := SourceControlReviewPlanDigest(plan)
+	if plan.PlanDigest != "" && plan.PlanDigest != computedPlanDigest {
+		report.Status = "blocked"
+		return report, fmt.Errorf("source-control review plan %s digest mismatch", plan.ID)
+	}
+	if review.Decision == "authorize_mutation" {
+		if !sourceControlPlanAuthorizable(plan) {
+			report.Status = "blocked"
+			return report, fmt.Errorf("source-control authorize_mutation requires exact fingerprint and mutation-bound plan")
+		}
+		if !containsEvery(review.EvidenceRefs, plan.EvidenceRefs) {
+			report.Status = "blocked"
+			return report, fmt.Errorf("source-control authorize_mutation evidence_refs must include every plan evidence ref")
+		}
+	}
 	if review.ReviewedAt == "" {
 		review.ReviewedAt = createdAt
 	}
 	review.SourceRef = "source-control-cleanup-review:" + filepath.Base(sourcePath)
 	report.RepoID = reviewartifact.FirstNonEmpty(report.RepoID, plan.RepoID)
+	report.WorkID = plan.WorkID
+	report.GitRoot = plan.GitRoot
+	report.Remote = plan.Remote
+	report.Head = plan.Head
+	report.ChangedStateFingerprint = plan.ChangedStateFingerprint
+	report.MutationBinding = cloneSourceControlMutationBinding(plan.MutationBinding)
+	report.PlanDigest = computedPlanDigest
+	report.EvidenceRefs = reviewartifact.Unique(append(append([]string{}, plan.EvidenceRefs...), report.EvidenceRefs...))
+	report.EvidenceRefs = reviewartifact.Unique(append(report.EvidenceRefs, "source-control-review:"+report.ID))
+	if review.Decision == "authorize_mutation" {
+		report.Warnings = []string{
+			"authorizes only the exact recorded repo/head/fingerprint/work/mutation binding",
+			"any state, session payload, action, class, capability, or target-set drift fails closed",
+		}
+	}
 	report.ReviewPath = filepath.Join(filepath.Dir(sourcePath), review.PlanID+"."+review.ID+".reviewed.json")
 	if _, err := reviewartifact.WriteJSON(homePath, SourceControlCleanupReviewArea, filepath.Base(report.ReviewPath), report, " "); err != nil {
 		return SourceControlReviewReport{}, err
 	}
 	return report, nil
+}
+
+// FindRecordedSourceControlMutationReview returns only a recorded authorization
+// whose immutable plan, live snapshot, and executable binding all match. Invalid,
+// legacy, stale, or tampered artifacts are ignored so policy keeps the dirty hold.
+func FindRecordedSourceControlMutationReview(homePath string, snapshot SourceControlSnapshot, binding SourceControlMutationBinding) (*SourceControlReviewReport, error) {
+	normalized, err := normalizeSourceControlMutationBinding(snapshot, binding)
+	if err != nil {
+		return nil, nil
+	}
+	dir := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea)
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reviewed.json") {
+			continue
+		}
+		report, loadErr := LoadSourceControlReviewReport(filepath.Join(dir, entry.Name()))
+		if loadErr != nil || report.Status != "recorded" || report.Decision != "authorize_mutation" || report.MutationBinding == nil {
+			continue
+		}
+		plan, planErr := loadSourceControlPlanFile(filepath.Join(dir, report.PlanID+".json"))
+		if planErr != nil || !recordedSourceControlReportMatchesPlan(report, plan) {
+			continue
+		}
+		if !sourceControlPlanMatchesSnapshot(plan, snapshot) || !sourceControlMutationExecutionEqual(*plan.MutationBinding, normalized) {
+			continue
+		}
+		return &report, nil
+	}
+	return nil, nil
+}
+
+func sourceControlPlanAuthorizable(plan SourceControlReviewPlan) bool {
+	return strings.TrimSpace(plan.WorkID) != "" && strings.TrimSpace(plan.RepoID) != "" && strings.TrimSpace(plan.GitRoot) != "" &&
+		strings.TrimSpace(plan.Head) != "" && validSHA256(plan.ChangedStateFingerprint) && plan.MutationBinding != nil &&
+		validateNormalizedSourceControlMutationBinding(*plan.MutationBinding) == nil && validSHA256(plan.PlanDigest) &&
+		plan.PlanDigest == SourceControlReviewPlanDigest(plan)
+}
+
+func recordedSourceControlReportMatchesPlan(report SourceControlReviewReport, plan SourceControlReviewPlan) bool {
+	return report.PlanID == plan.ID && report.RepoID == plan.RepoID && report.WorkID == plan.WorkID &&
+		filepath.Clean(report.GitRoot) == filepath.Clean(plan.GitRoot) && report.Remote == plan.Remote && report.Head == plan.Head &&
+		report.ChangedStateFingerprint == plan.ChangedStateFingerprint && report.PlanDigest == plan.PlanDigest &&
+		report.PlanDigest == SourceControlReviewPlanDigest(plan) && report.MutationBinding != nil && plan.MutationBinding != nil &&
+		sourceControlMutationArtifactEqual(*report.MutationBinding, *plan.MutationBinding)
+}
+
+func sourceControlPlanMatchesSnapshot(plan SourceControlReviewPlan, snapshot SourceControlSnapshot) bool {
+	return plan.SourceStatus == "dirty" && plan.RepoID == snapshot.RepoID && filepath.Clean(plan.GitRoot) == filepath.Clean(snapshot.GitRoot) &&
+		plan.Remote == snapshot.Remote && plan.Head == snapshot.Head && plan.ChangedStateFingerprint == snapshot.ChangedStateFingerprint
+}
+
+func normalizeSourceControlMutationBinding(snapshot SourceControlSnapshot, binding SourceControlMutationBinding) (SourceControlMutationBinding, error) {
+	binding.ActionWorkID = strings.TrimSpace(binding.ActionWorkID)
+	binding.MutationInputHash = strings.TrimSpace(binding.MutationInputHash)
+	binding.Capability = strings.TrimSpace(binding.Capability)
+	binding.Action = strings.TrimSpace(binding.Action)
+	binding.MutationClass = strings.TrimSpace(binding.MutationClass)
+	binding.ActionIntentIDs = sortedUniqueStrings(binding.ActionIntentIDs)
+	root := filepath.Clean(snapshot.GitRoot)
+	targets := make([]string, 0, len(binding.TargetPaths))
+	for _, target := range binding.TargetPaths {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(root, target)
+		}
+		target = filepath.Clean(target)
+		rel, err := filepath.Rel(root, target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return SourceControlMutationBinding{}, fmt.Errorf("source-control mutation target %q outside git root", target)
+		}
+		targets = append(targets, target)
+	}
+	binding.TargetPaths = sortedUniqueStrings(targets)
+	if err := validateNormalizedSourceControlMutationBinding(binding); err != nil {
+		return SourceControlMutationBinding{}, err
+	}
+	return binding, nil
+}
+
+func validateNormalizedSourceControlMutationBinding(binding SourceControlMutationBinding) error {
+	if binding.ActionWorkID == "" || binding.Capability == "" || binding.Action == "" || binding.MutationClass == "" {
+		return fmt.Errorf("source-control mutation binding action_work_id capability action mutation_class required")
+	}
+	if !strings.HasPrefix(binding.MutationInputHash, "mutation-input:sha256:") || !validHexDigest(strings.TrimPrefix(binding.MutationInputHash, "mutation-input:sha256:")) {
+		return fmt.Errorf("source-control mutation binding valid mutation_input_hash required")
+	}
+	if len(binding.TargetPaths) == 0 || len(binding.ActionIntentIDs) == 0 {
+		return fmt.Errorf("source-control mutation binding target_paths and action_intent_ids required")
+	}
+	return nil
+}
+
+func sourceControlMutationExecutionEqual(a, b SourceControlMutationBinding) bool {
+	return a.ActionWorkID == b.ActionWorkID && a.MutationInputHash == b.MutationInputHash && a.Capability == b.Capability &&
+		a.Action == b.Action && a.MutationClass == b.MutationClass && stringSlicesEqual(a.TargetPaths, b.TargetPaths)
+}
+
+func sourceControlMutationArtifactEqual(a, b SourceControlMutationBinding) bool {
+	return sourceControlMutationExecutionEqual(a, b) && stringSlicesEqual(a.ActionIntentIDs, b.ActionIntentIDs)
+}
+
+func cloneSourceControlMutationBinding(binding *SourceControlMutationBinding) *SourceControlMutationBinding {
+	if binding == nil {
+		return nil
+	}
+	clone := *binding
+	clone.TargetPaths = append([]string{}, binding.TargetPaths...)
+	clone.ActionIntentIDs = append([]string{}, binding.ActionIntentIDs...)
+	return &clone
+}
+
+func prefixedActionIntentRefs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, "action-intent:"+id)
+	}
+	return out
+}
+
+func sortedUniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			seen[value] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func containsEvery(have, required []string) bool {
+	set := map[string]struct{}{}
+	for _, value := range have {
+		set[value] = struct{}{}
+	}
+	for _, value := range required {
+		if _, ok := set[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validSHA256(value string) bool {
+	return strings.HasPrefix(value, "sha256:") && validHexDigest(strings.TrimPrefix(value, "sha256:"))
+}
+
+func validHexDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			return false
+		}
+	}
+	return true
 }
 
 func LoadSourceControlReviewReport(path string) (SourceControlReviewReport, error) {
