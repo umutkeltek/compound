@@ -163,34 +163,47 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 		RepoKindVia: "flag",
 		Mode:        "execute",
 	}
-	assertPackIncludesUserAwarenessClaim(t, homePath, matchingInput, claimRef)
 	claudeInput := matchingInput
 	claudeInput.Harness = "claude_code"
+	protocolLogDir := t.TempDir()
+	preRequests := filepath.Join(protocolLogDir, "pre-delete-requests.ndjson")
+	preResponses := filepath.Join(protocolLogDir, "pre-delete-responses.ndjson")
+	configureUserAwarenessBreadthSidecar(t, preRequests, preResponses)
+	assertPackIncludesUserAwarenessClaim(t, homePath, matchingInput, claimRef)
 	assertPackIncludesUserAwarenessClaim(t, homePath, claudeInput, claimRef)
+	assertUserAwarenessProtocolCycle(t, preRequests, preResponses, 2)
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
 	unrelated := matchingInput
 	unrelated.Task = "optimize database migration throughput"
 	assertPackExcludesUserAwarenessClaim(t, homePath, unrelated, claimRef)
 
-	indexPath := filepath.Join(homePath, "indexes", "breadth", "disposable", "manifest.json")
-	if err := os.MkdirAll(filepath.Dir(indexPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(indexPath, []byte(`{"schema_version":"synthetic.disposable.index"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	indexDir := assertUserAwarenessBreadthIndex(t, homePath, promoted.Claim.ID)
 	candidatePath := filepath.Join(homePath, candidates.InboxDir(candidates.Memory), parked[0].ID+".json")
 	if err := os.Remove(candidatePath); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(homePath, "indexes")); err != nil {
+	if err := os.RemoveAll(indexDir); err != nil {
 		t.Fatal(err)
 	}
 	remainingCandidates, err := memoryStore.AllCandidates()
 	if err != nil || len(remainingCandidates) != 0 {
 		t.Fatalf("candidate deletion failed: %+v err=%v", remainingCandidates, err)
 	}
+	if _, err := os.Stat(indexDir); !os.IsNotExist(err) {
+		t.Fatalf("disposable breadth index still exists after exact deletion: %s (stat=%v)", indexDir, err)
+	}
+
+	postRequests := filepath.Join(protocolLogDir, "post-delete-requests.ndjson")
+	postResponses := filepath.Join(protocolLogDir, "post-delete-responses.ndjson")
+	configureUserAwarenessBreadthSidecar(t, postRequests, postResponses)
 	assertPackIncludesUserAwarenessClaim(t, homePath, matchingInput, claimRef)
 	assertPackIncludesUserAwarenessClaim(t, homePath, claudeInput, claimRef)
+	assertUserAwarenessProtocolCycle(t, postRequests, postResponses, 2)
+	rebuiltIndexDir := assertUserAwarenessBreadthIndex(t, homePath, promoted.Claim.ID)
+	if rebuiltIndexDir != indexDir {
+		t.Fatalf("restarted engine rebuilt unexpected index path %q, want %q", rebuiltIndexDir, indexDir)
+	}
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
 	assertPackExcludesUserAwarenessClaim(t, homePath, unrelated, claimRef)
 
 	assertNoUserPromptModelArtifacts(t, homePath)
