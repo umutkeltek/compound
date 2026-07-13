@@ -1,12 +1,18 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"compound/internal/breadth"
 	"compound/internal/candidates"
 	"compound/internal/contract"
 	"compound/internal/distiller"
@@ -18,6 +24,8 @@ import (
 	"compound/internal/policy"
 	"compound/internal/work"
 )
+
+const userAwarenessEmbedderIdentity = "fixture:user-awareness:4:f32"
 
 func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(t *testing.T) {
 	homePath := t.TempDir()
@@ -227,6 +235,147 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 		}
 	}
 	assertNoUserPromptModelArtifacts(t, homePath)
+}
+
+type userAwarenessEmbedder struct{}
+
+func (userAwarenessEmbedder) Identity() string { return userAwarenessEmbedderIdentity }
+func (userAwarenessEmbedder) Dim() int         { return 4 }
+func (userAwarenessEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	vectors := make([][]float32, 0, len(texts))
+	for _, text := range texts {
+		lower := strings.ToLower(text)
+		if strings.Contains(lower, "concise") || strings.Contains(lower, "progress updates") {
+			vectors = append(vectors, []float32{1, 0, 0, 0})
+			continue
+		}
+		vectors = append(vectors, []float32{0, 1, 0, 0})
+	}
+	return vectors, nil
+}
+
+func TestUserAwarenessBreadthSidecar(t *testing.T) {
+	if os.Getenv("COMPOUND_TEST_USER_AWARENESS_BREADTH") != "1" {
+		return
+	}
+	requestLog, err := os.OpenFile(os.Getenv("COMPOUND_TEST_USER_AWARENESS_REQUEST_LOG"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	responseLog, err := os.OpenFile(os.Getenv("COMPOUND_TEST_USER_AWARENESS_RESPONSE_LOG"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		_ = requestLog.Close()
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	err = breadth.RunProtocol(
+		io.TeeReader(os.Stdin, requestLog),
+		io.MultiWriter(os.Stdout, responseLog),
+		breadth.ProtocolConfig{
+			Embedder:     userAwarenessEmbedder{},
+			CompoundHome: os.Getenv("COMPOUND_HOME"),
+			Stderr:       os.Stderr,
+		},
+	)
+	_ = requestLog.Close()
+	_ = responseLog.Close()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func configureUserAwarenessBreadthSidecar(t *testing.T, requestLog, responseLog string) {
+	t.Helper()
+	t.Setenv("COMPOUND_TEST_USER_AWARENESS_BREADTH", "1")
+	t.Setenv("COMPOUND_TEST_USER_AWARENESS_REQUEST_LOG", requestLog)
+	t.Setenv("COMPOUND_TEST_USER_AWARENESS_RESPONSE_LOG", responseLog)
+	t.Setenv("COMPOUND_MEM_ENGINE_EMBEDDER", userAwarenessEmbedderIdentity)
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", os.Args[0]+" -test.run=^TestUserAwarenessBreadthSidecar$")
+}
+
+func assertUserAwarenessProtocolCycle(t *testing.T, requestLog, responseLog string, minCycles int) {
+	t.Helper()
+	requests := readUserAwarenessProtocolLog[mem.Request](t, requestLog)
+	responses := readUserAwarenessProtocolLog[mem.Response](t, responseLog)
+	if len(requests) != len(responses) {
+		t.Fatalf("protocol transcript requests=%d responses=%d", len(requests), len(responses))
+	}
+	counts := map[string]int{}
+	for i, request := range requests {
+		response := responses[i]
+		if response.RequestID != request.RequestID || !response.OK {
+			t.Fatalf("protocol exchange %d request=%+v response=%+v", i, request, response)
+		}
+		counts[request.Op]++
+		if request.Op == mem.OpCapabilities && (response.Ready || response.CorpusGen != 0) {
+			t.Fatalf("restarted breadth engine must begin at generation zero, got ready=%t generation=%d", response.Ready, response.CorpusGen)
+		}
+	}
+	for _, op := range []string{mem.OpCapabilities, mem.OpIndex, mem.OpQuery} {
+		if counts[op] < minCycles {
+			t.Fatalf("protocol op %s count=%d, want at least %d (all=%v)", op, counts[op], minCycles, counts)
+		}
+	}
+}
+
+func readUserAwarenessProtocolLog[T any](t *testing.T, path string) []T {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var rows []T
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var row T
+		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
+			t.Fatalf("parse protocol log %s: %v\n%s", path, err, scanner.Text())
+		}
+		rows = append(rows, row)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+func assertUserAwarenessBreadthIndex(t *testing.T, homePath, claimID string) string {
+	t.Helper()
+	manifests, err := filepath.Glob(filepath.Join(homePath, "indexes", "breadth", "*", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifests) != 1 {
+		t.Fatalf("real breadth manifests = %v, want exactly one", manifests)
+	}
+	raw, err := os.ReadFile(manifests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		SchemaVersion string `json:"schema_version"`
+		CorpusGen     int64  `json:"corpus_gen"`
+		ClaimCount    int    `json:"claim_count"`
+		EmbeddedCount int    `json:"embedded_count"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SchemaVersion != "compound.breadth.index.v1" || manifest.CorpusGen <= 0 || manifest.ClaimCount != 1 || manifest.EmbeddedCount != 1 {
+		t.Fatalf("breadth manifest = %+v", manifest)
+	}
+	vectors, err := os.ReadFile(filepath.Join(filepath.Dir(manifests[0]), "vectors.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(vectors, []byte(claimID)) {
+		t.Fatalf("real vectors.bin does not contain promoted ledger claim %s", claimID)
+	}
+	return filepath.Dir(manifests[0])
 }
 
 func assertPackIncludesUserAwarenessClaim(t *testing.T, homePath string, in contract.Input, claimRef string) {
