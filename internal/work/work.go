@@ -143,10 +143,13 @@ type CreateInput struct {
 	EvidenceRefs     []string
 	ContextPackID    string
 	RouteDecisionID  string
-	ExpectedBaseSHA  string
-	State            string // default "ready"
-	Risk             string // default "tier1"
-	Privacy          string // default "private"
+	GitDelivery      *envelope.GitDeliveryContract
+	// ExpectedBaseSHA is retained only so legacy callers fail with an explicit
+	// incomplete-contract error instead of silently losing their old field.
+	ExpectedBaseSHA string
+	State           string // default "ready"
+	Risk            string // default "tier1"
+	Privacy         string // default "private"
 }
 
 // BuildWork constructs a WorkEnvelope WITHOUT persisting it — used both by Create (which
@@ -155,6 +158,11 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 	workID := strings.TrimSpace(in.WorkID)
 	if workID == "" {
 		workID = idFor("work_", in.Owner, in.SuccessPredicate, ts(now))
+	}
+	var gitDelivery *envelope.GitDeliveryContract
+	if in.GitDelivery != nil {
+		copy := *in.GitDelivery
+		gitDelivery = &copy
 	}
 	w := envelope.WorkEnvelope{
 		Header:             newHeader(envelope.SVWork, workID, now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
@@ -166,6 +174,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		SuccessPredicate:   in.SuccessPredicate,
 		NonGoals:           orEmpty(in.NonGoals),
 		ExpectedBaseSHA:    strings.TrimSpace(in.ExpectedBaseSHA),
+		GitDelivery:        gitDelivery,
 		RouteDecisionID:    strings.TrimSpace(in.RouteDecisionID),
 		RunIDs:             []string{},
 		ArtifactIDs:        []string{},
