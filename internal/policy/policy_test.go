@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,6 +164,47 @@ func TestSourceControlCleanOrReadDoesNotEscalate(t *testing.T) {
 	dirty := EvaluationContext{SourceControl: &SourceControlContext{EntityRef: "repo:demo", Status: "dirty", ChangedPaths: 3}}
 	if pd := EvaluateWithContext(mkAction("read", "easy", "docs/x.md", "repo"), DefaultConfig(), dirty, fixedNow); pd.Outcome != "allow" {
 		t.Fatalf("read action should not be blocked by dirty repo, got %q", pd.Outcome)
+	}
+}
+
+func TestSourceControlDirtyExactRecordedMutationReviewAvoidsOnlyDirtyEscalation(t *testing.T) {
+	ai := mkAction("local_reversible", "easy", "docs/x.md", "repo")
+	ai.EvidenceRefs = []string{"mutation-input:sha256:exact"}
+	var sc SourceControlContext
+	if err := json.Unmarshal([]byte(`{
+  "entity_ref":"repo:demo",
+  "git_root":"/repo/demo",
+  "head":"abc123",
+  "status":"dirty",
+  "changed_paths":1,
+  "changed_state_fingerprint":"sha256:state",
+  "evidence_refs":["source-control:repo:demo:abc123:state"],
+  "reviewed_mutation":{
+    "status":"recorded",
+    "decision":"authorize_mutation",
+    "review_id":"scrr_exact",
+    "owner_work_id":"work_owner",
+    "action_work_id":"work_test",
+    "repo_id":"repo:demo",
+    "git_root":"/repo/demo",
+    "head":"abc123",
+    "changed_state_fingerprint":"sha256:state",
+    "mutation_input_hash":"mutation-input:sha256:exact",
+    "capability":"filesystem.write",
+    "action":"write_file",
+    "mutation_class":"local_reversible",
+    "target_paths":["docs/x.md"],
+    "evidence_refs":["source-control-review:scrr_exact"]
+  }
+}`), &sc); err != nil {
+		t.Fatal(err)
+	}
+	pd := EvaluateWithContext(ai, DefaultConfig(), EvaluationContext{SourceControl: &sc}, fixedNow)
+	if pd.Outcome != "allow_with_obligations" {
+		t.Fatalf("exact recorded review should preserve baseline allow_with_obligations, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !reasonContains(pd.Reasons, "exact recorded source-control review") {
+		t.Fatalf("review allowance reason missing: %v", pd.Reasons)
 	}
 }
 

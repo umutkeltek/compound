@@ -286,6 +286,73 @@ func TestHookLiveCodexPreToolUseEmitsNativeAllowForApplyPatch(t *testing.T) {
 	}
 }
 
+func TestLiveActionIntentBindsCanonicalInputToSessionAndFullTargetSet(t *testing.T) {
+	patch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** Add File: SECOND.md\n+second\n*** End Patch"
+	in := claudeLiveHookInput{
+		SessionID: "sess_reviewed_dirty_a",
+		Cwd:       "/repo/demo",
+		ToolName:  "apply_patch",
+		ToolInput: map[string]any{"command": patch},
+	}
+	actions, err := liveActionIntents("codex", in, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) != 2 {
+		t.Fatalf("actions=%d, want two targets", len(actions))
+	}
+	wantRef := ""
+	for _, action := range actions {
+		for _, ref := range action.EvidenceRefs {
+			if strings.HasPrefix(ref, "mutation-input:sha256:") {
+				wantRef = ref
+			}
+		}
+	}
+	if wantRef == "" || !containsAllActionEvidence(actions, wantRef) {
+		t.Fatalf("batch actions do not share one mutation-input hash: %+v", actions)
+	}
+
+	otherSession := in
+	otherSession.SessionID = "sess_reviewed_dirty_b"
+	otherActions, err := liveActionIntents("codex", otherSession, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsAllActionEvidence(otherActions, wantRef) {
+		t.Fatalf("another session reused mutation-input hash %q", wantRef)
+	}
+
+	partial := in
+	partial.ToolInput = map[string]any{"command": "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch"}
+	partialActions, err := liveActionIntents("codex", partial, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsAllActionEvidence(partialActions, wantRef) {
+		t.Fatalf("partial target set reused full-batch mutation-input hash %q", wantRef)
+	}
+}
+
+func containsAllActionEvidence(actions []envelope.ActionIntent, want string) bool {
+	if len(actions) == 0 {
+		return false
+	}
+	for _, action := range actions {
+		found := false
+		for _, ref := range action.EvidenceRefs {
+			if ref == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 func TestHookLiveCodexPreToolUseDeniesWhenAnyApplyPatchTargetIsMisplacedCanon(t *testing.T) {
 	homePath := t.TempDir()
 	repo := t.TempDir()

@@ -1,6 +1,7 @@
 package authority
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +62,57 @@ func TestImportGitSnapshotCapturesDirtyRepoState(t *testing.T) {
 	}
 	if report.Status != "dirty" || report.CandidateCount != len(facts) {
 		t.Fatalf("report = %+v facts=%d", report, len(facts))
+	}
+	encoded, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"changed_state_fingerprint":"sha256:`) {
+		t.Fatalf("snapshot must carry a content/index fingerprint, got %s", encoded)
+	}
+}
+
+func TestSourceControlFingerprintChangesWithContentPathAndIndexState(t *testing.T) {
+	repo := initGitRepo(t)
+	readme := filepath.Join(repo, "README.md")
+	writeFile(t, readme, "alpha\n")
+	alpha, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, readme, "beta\n")
+	beta, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, readme, "alpha\n")
+	alphaAgain, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alpha.EvidenceRef == beta.EvidenceRef || alpha.EvidenceRef != alphaAgain.EvidenceRef {
+		t.Fatalf("content fingerprint is not deterministic/sensitive: alpha=%q beta=%q alpha_again=%q", alpha.EvidenceRef, beta.EvidenceRef, alphaAgain.EvidenceRef)
+	}
+
+	runGit(t, repo, "add", "README.md")
+	staged, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.EvidenceRef == alpha.EvidenceRef {
+		t.Fatalf("same bytes with different index state reused fingerprint %q", staged.EvidenceRef)
+	}
+
+	runGit(t, repo, "reset", "HEAD", "README.md")
+	writeFile(t, readme, "initial\n")
+	writeFile(t, filepath.Join(repo, "OTHER.md"), "alpha\n")
+	otherPath, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherPath.EvidenceRef == alpha.EvidenceRef {
+		t.Fatalf("same changed-path count/content on another path reused fingerprint %q", otherPath.EvidenceRef)
 	}
 }
 
