@@ -38,7 +38,10 @@ func TestAuthorityDirtyPlanDerivesMutationBindingFromPersistedActions(t *testing
 		})
 	})
 	var result struct {
-		Plan authority.SourceControlReviewPlan `json:"plan"`
+		Plan  authority.SourceControlReviewPlan `json:"plan"`
+		Paths struct {
+			ReviewYAMLPath string `json:"review_yaml_path"`
+		} `json:"paths"`
 	}
 	readJSONBytes(t, []byte(out), &result)
 	binding := result.Plan.MutationBinding
@@ -55,6 +58,21 @@ func TestAuthorityDirtyPlanDerivesMutationBindingFromPersistedActions(t *testing
 	}
 	if result.Plan.WorkID != "work_owner_cli_dirty" {
 		t.Fatalf("owner work provenance = %q", result.Plan.WorkID)
+	}
+	reviewOut := captureStdout(t, func() {
+		cmdAuthority([]string{
+			"dirty-review", result.Paths.ReviewYAMLPath,
+			"--decision", "authorize_mutation",
+			"--rationale", "operator reviewed exact persisted actions",
+			"--reviewed-by", "operator:test",
+			"--json",
+		})
+	})
+	var report authority.SourceControlReviewReport
+	readJSONBytes(t, []byte(reviewOut), &report)
+	if report.Decision != "authorize_mutation" || report.ReviewedBy != "operator:test" ||
+		report.AuthorizationDigest == "" || report.SourceDigest == "" {
+		t.Fatalf("dirty-review lost reviewer/seal: %+v", report)
 	}
 }
 

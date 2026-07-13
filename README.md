@@ -199,7 +199,9 @@ Execution and policy:
 - `compound authority dirty-plan <repo> --work-id <owner-work>
   --action-intent <persisted-id>...` derives an exact dirty-mutation review
   capability from persisted hook actions; it never trusts caller-authored
-  action semantics or performs source-control cleanup.
+  action semantics or performs source-control cleanup. Authorization requires
+  `dirty-review <review.yaml> --reviewed-by operator:<actor>` and a sealed,
+  source-checked report.
 - `compound policy import-placement-rules <placement-rules.json>` installs owner
   placement rules into `COMPOUND_HOME/registries/placement-rules.json`;
   `compound policy placement-authority [--json]` reports the machine-readable
