@@ -415,23 +415,7 @@ func (s *Store) AdjudicateExplicitConfirmation(candID, confirmationEvidenceID, w
 	if confirmationEvidenceID == "" {
 		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence ref required")
 	}
-	evidence, ok, err := s.GetEvidence(confirmationEvidenceID)
-	if err != nil {
-		return AdjudicateResult{}, err
-	}
-	if !ok {
-		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence %q not found", confirmationEvidenceID)
-	}
-	if evidence.SourceKind != "operator_confirmation" {
-		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence %q has source_kind %q, want operator_confirmation", confirmationEvidenceID, evidence.SourceKind)
-	}
-	if strings.TrimSpace(evidence.SourceID) != strings.TrimSpace(candID) {
-		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence %q targets %q, want candidate %q", confirmationEvidenceID, evidence.SourceID, candID)
-	}
-	if !policy.HasOperatorProvenance(evidence.Actor) {
-		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence %q requires operator provenance, got %q", confirmationEvidenceID, evidence.Actor)
-	}
-	return s.adjudicate(candID, "promote", workID, now, false, evidence.ID)
+	return s.adjudicate(candID, "promote", workID, now, false, confirmationEvidenceID)
 }
 
 // AdjudicateOperationalDecision is the dedicated claim-append door used by
@@ -475,7 +459,8 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 			return res, fmt.Errorf("explicit confirmation is only valid for ordinary memory promotion")
 		}
 		c.PromotionBasis = candidates.BasisExplicitConfirmation
-		c.EvidenceRefs = uniqueStrings(append(c.EvidenceRefs, explicitConfirmationRef))
+	} else if verdict == "promote" && c.PromotionBasis == candidates.BasisExplicitConfirmation {
+		return res, fmt.Errorf("candidate %s explicit confirmation requires governed confirmation evidence", candID)
 	}
 
 	if verdict != "promote" {
@@ -513,6 +498,40 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		hasPrior, dup bool
 	)
 	lockErr := s.withLock(func() error {
+		if explicitConfirmationRef != "" {
+			latest, err := s.getCandidate(candID)
+			if err != nil {
+				return err
+			}
+			if latest.State != "parked" {
+				return fmt.Errorf("explicit confirmation requires parked candidate %s, got state %q", candID, latest.State)
+			}
+			evidence, ok, err := s.GetEvidence(explicitConfirmationRef)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("explicit confirmation evidence %q not found", explicitConfirmationRef)
+			}
+			if err := validateEvidenceContentAddress(evidence); err != nil {
+				return fmt.Errorf("explicit confirmation: %w", err)
+			}
+			if evidence.SourceKind != OperatorConfirmationSourceKind {
+				return fmt.Errorf("explicit confirmation evidence %q has source_kind %q, want %s", explicitConfirmationRef, evidence.SourceKind, OperatorConfirmationSourceKind)
+			}
+			if strings.TrimSpace(evidence.SourceID) != strings.TrimSpace(candID) {
+				return fmt.Errorf("explicit confirmation evidence %q targets %q, want candidate %q", explicitConfirmationRef, evidence.SourceID, candID)
+			}
+			if !policy.HasOperatorProvenance(evidence.Actor) {
+				return fmt.Errorf("explicit confirmation evidence %q requires operator provenance, got %q", explicitConfirmationRef, evidence.Actor)
+			}
+			c = latest
+			c.PromotionBasis = candidates.BasisExplicitConfirmation
+			c.EvidenceRefs = uniqueStrings(append(c.EvidenceRefs, evidence.ID))
+			if err := validateVolatileWrite("candidate "+c.ID, c.Visibility, c.ExpiresAt, c.ClaimType, c.CanonClass); err != nil {
+				return err
+			}
+		}
 		if !operationalDecision && c.ClaimType == "decision" {
 			protected, err := s.protectedOperationalDecisionInSlot(c)
 			if err != nil {

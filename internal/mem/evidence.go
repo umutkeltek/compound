@@ -8,7 +8,11 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"compound/internal/policy"
 )
+
+const OperatorConfirmationSourceKind = "operator_confirmation"
 
 // Evidence source kinds are OPEN by design: any medium may record evidence through the
 // generic knowledge intake (new medium = 1 edge + 0 core changes), so there is no allowlist.
@@ -37,6 +41,40 @@ func (s *Store) evidenceLog() string { return s.home + "/ledger/evidence.jsonl" 
 // RecordEvidence stores a citable evidence item, content-addressed and idempotent (same
 // source+content → same id → no duplicate append). Returns the stored item (with id).
 func (s *Store) RecordEvidence(e EvidenceItem, now time.Time) (EvidenceItem, error) {
+	return s.recordEvidence(e, now, false)
+}
+
+// RecordOperatorConfirmation is the reserved operator-owned evidence adapter for
+// an already-parked memory candidate. Generic evidence intake cannot mint this
+// source kind, and confirmation consumption revalidates the content address and
+// candidate state before claim append.
+func (s *Store) RecordOperatorConfirmation(candidateID, confirmation, actor string, now time.Time) (EvidenceItem, error) {
+	candidateID = strings.TrimSpace(candidateID)
+	confirmation = strings.TrimSpace(confirmation)
+	actor = strings.TrimSpace(actor)
+	if !policy.HasOperatorProvenance(actor) {
+		return EvidenceItem{}, fmt.Errorf("operator confirmation requires operator provenance, got %q", actor)
+	}
+	candidate, err := s.getCandidate(candidateID)
+	if err != nil {
+		return EvidenceItem{}, err
+	}
+	if candidate.State != "parked" {
+		return EvidenceItem{}, fmt.Errorf("operator confirmation requires parked candidate %s, got state %q", candidateID, candidate.State)
+	}
+	if confirmation == "" {
+		return EvidenceItem{}, fmt.Errorf("operator confirmation text required")
+	}
+	return s.recordEvidence(EvidenceItem{
+		SourceKind: OperatorConfirmationSourceKind,
+		SourceID:   candidateID,
+		QuoteText:  confirmation,
+		Actor:      actor,
+		Visibility: "private",
+	}, now, true)
+}
+
+func (s *Store) recordEvidence(e EvidenceItem, now time.Time, allowOperatorConfirmation bool) (EvidenceItem, error) {
 	if strings.TrimSpace(e.QuoteText) == "" && strings.TrimSpace(e.SourceID) == "" {
 		return EvidenceItem{}, fmt.Errorf("evidence needs quote_text or source_id")
 	}
@@ -47,8 +85,13 @@ func (s *Store) RecordEvidence(e EvidenceItem, now time.Time) (EvidenceItem, err
 	if !evidenceSourceKindPattern.MatchString(e.SourceKind) {
 		return EvidenceItem{}, fmt.Errorf("evidence source_kind %q must be a lowercase slug (a-z0-9._:-)", e.SourceKind)
 	}
-	sum := sha256.Sum256([]byte(e.SourceKind + "\x00" + e.SourceID + "\x00" + e.QuoteText))
-	e.ContentHash = hex.EncodeToString(sum[:])
+	if e.SourceKind == OperatorConfirmationSourceKind && !allowOperatorConfirmation {
+		return EvidenceItem{}, fmt.Errorf("evidence source_kind %q is reserved; use the operator confirmation adapter", e.SourceKind)
+	}
+	if e.SourceKind == OperatorConfirmationSourceKind {
+		e.Actor = strings.TrimSpace(e.Actor)
+	}
+	e.ContentHash = evidenceContentHash(e)
 	e.ID = "ev_" + e.ContentHash[:12]
 	if e.Visibility == "" {
 		e.Visibility = "operational"
@@ -60,6 +103,24 @@ func (s *Store) RecordEvidence(e EvidenceItem, now time.Time) (EvidenceItem, err
 	}
 	e.ObservedAt = rfc3339(now)
 	return e, appendJSONL(s.evidenceLog(), &e)
+}
+
+func evidenceContentHash(e EvidenceItem) string {
+	material := e.SourceKind + "\x00" + e.SourceID + "\x00" + e.QuoteText
+	if e.SourceKind == OperatorConfirmationSourceKind {
+		material += "\x00" + e.Actor
+	}
+	sum := sha256.Sum256([]byte(material))
+	return hex.EncodeToString(sum[:])
+}
+
+func validateEvidenceContentAddress(e EvidenceItem) error {
+	wantHash := evidenceContentHash(e)
+	wantID := "ev_" + wantHash[:12]
+	if e.ContentHash != wantHash || e.ID != wantID {
+		return fmt.Errorf("evidence %q content address mismatch", e.ID)
+	}
+	return nil
 }
 
 // Evidence loads all evidence items (append-only, last-wins by id, deterministic order).
