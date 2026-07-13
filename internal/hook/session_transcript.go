@@ -28,16 +28,17 @@ var mutatingTranscriptTools = map[string]bool{
 }
 
 type sessionTranscriptSummary struct {
-	FirstUser      string
-	LastAssistant  string
-	FirstTimestamp string
-	LastTimestamp  string
-	FilesChanged   []string
-	SkillsFired    []string
-	ToolCalls      int
-	BashCalls      int
-	ConsumedRefs   []string
-	UsedDeclared   bool
+	FirstUser        string
+	LastAssistant    string
+	FirstTimestamp   string
+	LastTimestamp    string
+	FilesChanged     []string
+	SkillsFired      []string
+	OperatorSpanRefs []string
+	ToolCalls        int
+	BashCalls        int
+	ConsumedRefs     []string
+	UsedDeclared     bool
 }
 
 type transcriptEntry struct {
@@ -72,6 +73,10 @@ func buildWorklessSessionReceipt(name string, fx Fixture, now time.Time) (*envel
 		return nil, err
 	}
 	used := mergeUniqueStrings(summary.SkillsFired, summary.ConsumedRefs)
+	evidenceRefs := []string{}
+	if name == "SessionEnd" {
+		evidenceRefs = summary.OperatorSpanRefs
+	}
 	rec := &envelope.Receipt{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVReceipt,
@@ -83,7 +88,7 @@ func buildWorklessSessionReceipt(name string, fx Fixture, now time.Time) (*envel
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier0",
-			EvidenceRefs:  []string{},
+			EvidenceRefs:  evidenceRefs,
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
 		Outcome:  "completed",
@@ -313,9 +318,11 @@ func scanSessionTranscript(path string) (sessionTranscriptSummary, error) {
 	files := map[string]bool{}
 	skills := map[string]bool{}
 	reader := bufio.NewReaderSize(f, 64*1024)
+	lineNo := 0
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
+			lineNo++
 			trimmed := strings.TrimSpace(string(line))
 			if trimmed != "" {
 				for _, skill := range skillsFromLine(trimmed) {
@@ -324,6 +331,9 @@ func scanSessionTranscript(path string) (sessionTranscriptSummary, error) {
 				entry, parseErr := parseTranscriptEntry([]byte(trimmed))
 				if parseErr != nil {
 					return sessionTranscriptSummary{}, parseErr
+				}
+				if utterance, ok := operatorUtteranceFromEntry(entry, lineNo); ok {
+					out.OperatorSpanRefs = append(out.OperatorSpanRefs, transcriptSpanEvidenceRef(path, utterance))
 				}
 				out.applyEntry(entry, files, skills)
 			}
@@ -345,6 +355,10 @@ func scanSessionTranscript(path string) (sessionTranscriptSummary, error) {
 	out.ConsumedRefs = consumed
 	out.UsedDeclared = declared
 	return out, nil
+}
+
+func transcriptSpanEvidenceRef(path string, utterance OperatorUtterance) string {
+	return fmt.Sprintf("transcript-span:sha256:%s:line:%d:sha256:%s", hashStr(path), utterance.LineNo, hashStr(utterance.Text))
 }
 
 func parseTranscriptEntry(line []byte) (transcriptEntry, error) {
