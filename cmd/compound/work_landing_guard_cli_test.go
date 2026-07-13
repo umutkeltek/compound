@@ -197,6 +197,21 @@ func TestWorkAdvanceCLIBindsLegacyGitDelivery(t *testing.T) {
 	}
 }
 
+func TestWorkAdvanceHelpServesLegacyDeliveryBindingFlags(t *testing.T) {
+	for _, sub := range []string{"advance-plan", "advance"} {
+		t.Run(sub, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				cmdWork([]string{sub, "--help"})
+			})
+			for _, flag := range []string{"--target-worktree-root", "--target-local-ref", "--expected-base-sha", "--publication-ref", "--local-only"} {
+				if !strings.Contains(out, flag) {
+					t.Fatalf("%s help missing %s:\n%s", sub, flag, out)
+				}
+			}
+		})
+	}
+}
+
 const workLandingGuardCLISubEnv = "COMPOUND_WORK_LANDING_GUARD_CLI_SUB"
 
 func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
