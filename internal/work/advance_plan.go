@@ -87,32 +87,11 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 	if actor == "" {
 		actor = "codex"
 	}
-	var gitDelivery *envelope.GitDeliveryContract
-	if opts.GitDelivery != nil {
-		if !policy.HasOperatorProvenance(actor) {
-			return AdvancePlan{}, fmt.Errorf("git_delivery binding requires explicit operator provenance; actor %q is an executor", actor)
-		}
-		if terminalStates[w.State] {
-			return AdvancePlan{}, fmt.Errorf("work is terminal in state %q; cannot bind git_delivery", w.State)
-		}
-		if to != w.State {
-			return AdvancePlan{}, fmt.Errorf("git_delivery binding requires a same-state advance, got %s -> %s", w.State, to)
-		}
-		if w.GitDelivery != nil {
-			return AdvancePlan{}, fmt.Errorf("work %s already has git_delivery authority; rebinding is not allowed", w.ID)
-		}
-		candidate := w
-		contract := *opts.GitDelivery
-		if legacyBase := strings.TrimSpace(candidate.ExpectedBaseSHA); legacyBase != "" && legacyBase != strings.TrimSpace(contract.ExpectedBaseSHA) {
-			return AdvancePlan{}, fmt.Errorf("legacy expected_base_sha %s conflicts with git_delivery.expected_base_sha %s", legacyBase, strings.TrimSpace(contract.ExpectedBaseSHA))
-		}
-		candidate.ExpectedBaseSHA = ""
-		candidate.GitDelivery = &contract
-		if err := s.normalizeGitDeliveryForPlan(&candidate); err != nil {
-			return AdvancePlan{}, err
-		}
-		normalized := *candidate.GitDelivery
-		gitDelivery = &normalized
+	gitDelivery, err := s.preflightGitDeliveryBinding(w, actor, to, opts.GitDelivery)
+	if err != nil {
+		return AdvancePlan{}, err
+	}
+	if gitDelivery != nil {
 		opts.GitDelivery = gitDelivery
 	}
 	if terminalStates[to] {
@@ -202,6 +181,36 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 		plan.PlanPath = path
 	}
 	return plan, nil
+}
+
+func (s *Store) preflightGitDeliveryBinding(w envelope.WorkEnvelope, actor, to string, requested *envelope.GitDeliveryContract) (*envelope.GitDeliveryContract, error) {
+	if requested == nil {
+		return nil, nil
+	}
+	if !policy.HasOperatorProvenance(actor) {
+		return nil, fmt.Errorf("git_delivery binding requires explicit operator provenance; actor %q is an executor", actor)
+	}
+	if terminalStates[w.State] {
+		return nil, fmt.Errorf("work is terminal in state %q; cannot bind git_delivery", w.State)
+	}
+	if to != w.State {
+		return nil, fmt.Errorf("git_delivery binding requires a same-state advance, got %s -> %s", w.State, to)
+	}
+	if w.GitDelivery != nil {
+		return nil, fmt.Errorf("work %s already has git_delivery authority; rebinding is not allowed", w.ID)
+	}
+	candidate := w
+	contract := *requested
+	if legacyBase := strings.TrimSpace(candidate.ExpectedBaseSHA); legacyBase != "" && legacyBase != strings.TrimSpace(contract.ExpectedBaseSHA) {
+		return nil, fmt.Errorf("legacy expected_base_sha %s conflicts with git_delivery.expected_base_sha %s", legacyBase, strings.TrimSpace(contract.ExpectedBaseSHA))
+	}
+	candidate.ExpectedBaseSHA = ""
+	candidate.GitDelivery = &contract
+	if err := s.normalizeGitDeliveryForPlan(&candidate); err != nil {
+		return nil, err
+	}
+	normalized := *candidate.GitDelivery
+	return &normalized, nil
 }
 
 func (s *Store) RecordAdvancePlan(plan AdvancePlan) (string, error) {

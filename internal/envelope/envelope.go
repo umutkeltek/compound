@@ -512,7 +512,8 @@ func validateGitDeliveryContract(v *verr, contract GitDeliveryContract) {
 			v.addf("git_delivery.publication_ref must be a canonical remote-tracking refs/remotes/* ref")
 		} else if validBoundGitRef(localRef, "refs/heads/") {
 			branch := strings.TrimPrefix(localRef, "refs/heads/")
-			if !strings.HasSuffix(publicationRef, "/"+branch) {
+			_, publicationBranch, found := strings.Cut(strings.TrimPrefix(publicationRef, "refs/remotes/"), "/")
+			if !found || publicationBranch != branch {
 				v.addf("git_delivery.publication_ref must track the target_local_ref branch")
 			}
 		}

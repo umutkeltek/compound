@@ -844,6 +844,13 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	if err := directorProposedReleaseOperatorError(w, in.To, actor); err != nil {
 		return w, err
 	}
+	if in.GitDelivery != nil {
+		normalized, err := s.preflightGitDeliveryBinding(w, actor, in.To, in.GitDelivery)
+		if err != nil {
+			return w, err
+		}
+		in.GitDelivery = normalized
+	}
 	if err := s.leaseHolderAdvanceGate(w, actor, in, now); err != nil {
 		return w, err
 	}
