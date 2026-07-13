@@ -94,6 +94,8 @@ type ReviewedSourceControlMutation struct {
 	ReviewID                string   `json:"review_id"`
 	PlanID                  string   `json:"plan_id,omitempty"`
 	PlanDigest              string   `json:"plan_digest,omitempty"`
+	AuthorizationDigest     string   `json:"authorization_digest,omitempty"`
+	ReviewedBy              string   `json:"reviewed_by,omitempty"`
 	OwnerWorkID             string   `json:"owner_work_id"`
 	ActionWorkID            string   `json:"action_work_id"`
 	RepoID                  string   `json:"repo_id"`
@@ -325,7 +327,8 @@ func reviewedSourceControlMutationMatches(ai envelope.ActionIntent, sc SourceCon
 	if review == nil || review.Status != "recorded" || review.Decision != "authorize_mutation" {
 		return false
 	}
-	if strings.TrimSpace(review.ReviewID) == "" || strings.TrimSpace(review.PlanDigest) == "" || strings.TrimSpace(review.OwnerWorkID) == "" {
+	if strings.TrimSpace(review.ReviewID) == "" || strings.TrimSpace(review.PlanDigest) == "" || strings.TrimSpace(review.AuthorizationDigest) == "" ||
+		!HasOperatorProvenance(review.ReviewedBy) || strings.TrimSpace(review.OwnerWorkID) == "" {
 		return false
 	}
 	if review.RepoID != sc.EntityRef || strings.TrimSpace(sc.GitRoot) == "" || filepath.Clean(review.GitRoot) != filepath.Clean(sc.GitRoot) || review.Remote != sc.Remote || review.Head != sc.Head || review.ChangedStateFingerprint != sc.ChangedStateFingerprint {

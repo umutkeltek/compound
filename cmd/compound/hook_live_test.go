@@ -396,7 +396,7 @@ func TestHookLiveCodexPreToolUseAllowsOnlyExactRecordedDirtyBatch(t *testing.T) 
 		SchemaVersion: authority.SourceControlReviewSchemaVersion,
 		ID:            plan.ReviewDraft.ReviewID, PlanID: plan.ID, RepoID: plan.RepoID,
 		Decision: "authorize_mutation", Rationale: "operator reviewed this exact dirty payload",
-		Confidence: 1, EvidenceRefs: append([]string{}, plan.EvidenceRefs...),
+		Confidence: 1, ReviewedBy: "operator:test", EvidenceRefs: append([]string{}, plan.EvidenceRefs...),
 	}
 	if _, err := authority.RecordSourceControlReview(homePath, review, paths.ReviewYAMLPath, cliTestNow); err != nil {
 		t.Fatal(err)

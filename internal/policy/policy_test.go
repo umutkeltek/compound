@@ -185,6 +185,8 @@ func TestSourceControlDirtyExactRecordedMutationReviewAvoidsOnlyDirtyEscalation(
     "decision":"authorize_mutation",
     "review_id":"scrr_exact",
 	"plan_digest":"sha256:exact-plan",
+	"authorization_digest":"sha256:exact-authorization",
+	"reviewed_by":"operator:test",
     "owner_work_id":"work_owner",
     "action_work_id":"work_test",
     "repo_id":"repo:demo",
@@ -225,6 +227,12 @@ func TestSourceControlDirtyExactRecordedMutationReviewAvoidsOnlyDirtyEscalation(
 		}},
 		{"plan digest", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
 			r.PlanDigest = ""
+		}},
+		{"authorization digest", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.AuthorizationDigest = ""
+		}},
+		{"reviewer", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
+			r.ReviewedBy = "codex"
 		}},
 		{"owner work", func(_ *envelope.ActionIntent, _ *SourceControlContext, r *ReviewedSourceControlMutation) {
 			r.OwnerWorkID = ""

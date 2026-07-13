@@ -6471,22 +6471,24 @@ func cmdAuthority(args []string) {
 	if args[0] == "dirty-review" {
 		jsonOut := hasFlag(args[1:], "--json")
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--decision D --rationale R] [--json]")
+			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--decision D --rationale R --reviewed-by operator:<actor>] [--json]")
 			os.Exit(2)
 		}
-		var decision, rationale string
+		var decision, rationale, reviewedBy string
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
 			case "--json":
-			case "--decision", "--rationale":
+			case "--decision", "--rationale", "--reviewed-by":
 				if i+1 >= len(args) {
 					fmt.Fprintln(os.Stderr, "authority dirty-review: flag value required")
 					os.Exit(2)
 				}
 				if args[i] == "--decision" {
 					decision = args[i+1]
-				} else {
+				} else if args[i] == "--rationale" {
 					rationale = args[i+1]
+				} else {
+					reviewedBy = args[i+1]
 				}
 				i++
 			default:
@@ -6501,9 +6503,16 @@ func cmdAuthority(args []string) {
 			fmt.Fprintln(os.Stderr, "authority dirty-review:", err)
 			os.Exit(1)
 		}
-		if decision != "" || rationale != "" {
-			review.Decision = decision
-			review.Rationale = rationale
+		if decision != "" || rationale != "" || reviewedBy != "" {
+			if decision != "" {
+				review.Decision = decision
+			}
+			if rationale != "" {
+				review.Rationale = rationale
+			}
+			if reviewedBy != "" {
+				review.ReviewedBy = reviewedBy
+			}
 			review.Confidence = 1
 			review.ReviewedAt = time.Now().UTC().Format(time.RFC3339)
 			data, marshalErr := yaml.Marshal(review)
@@ -6531,6 +6540,12 @@ func cmdAuthority(args []string) {
 		fmt.Printf("- review: %s\n", report.ReviewID)
 		fmt.Printf("- repo: %s\n", report.RepoID)
 		fmt.Printf("- decision: %s\n", report.Decision)
+		if report.ReviewedBy != "" {
+			fmt.Printf("- reviewed_by: %s\n", report.ReviewedBy)
+		}
+		if report.AuthorizationDigest != "" {
+			fmt.Printf("- authorization_digest: %s\n", report.AuthorizationDigest)
+		}
 		if report.NextAction != "" {
 			fmt.Printf("- next_action: %s\n", report.NextAction)
 		}

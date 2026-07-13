@@ -541,6 +541,8 @@ func reviewedSourceControlMutationForBatch(deps Deps, prepared []preparedPreTool
 		ReviewID:                report.ReviewID,
 		PlanID:                  report.PlanID,
 		PlanDigest:              report.PlanDigest,
+		AuthorizationDigest:     report.AuthorizationDigest,
+		ReviewedBy:              report.ReviewedBy,
 		OwnerWorkID:             report.WorkID,
 		ActionWorkID:            recorded.ActionWorkID,
 		RepoID:                  report.RepoID,
