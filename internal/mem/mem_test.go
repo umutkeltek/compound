@@ -427,6 +427,226 @@ func TestAdjudicateExplicitConfirmationSerializesTerminalCandidateState(t *testi
 	}
 }
 
+type adjudicationOutcome struct {
+	result AdjudicateResult
+	err    error
+}
+
+func pauseAdjudicationAfterCandidateRecheck(t *testing.T, s *Store, run func() (AdjudicateResult, error)) (<-chan struct{}, func(), <-chan adjudicationOutcome) {
+	t.Helper()
+	lockAttempts := make(chan struct{}, 8)
+	s.lockAttemptObserver = func() { lockAttempts <- struct{}{} }
+	rechecked := make(chan struct{})
+	release := make(chan struct{})
+	var pauseOnce sync.Once
+	s.entityLoader = func() ([]Entity, error) {
+		pauseOnce.Do(func() {
+			close(rechecked)
+			<-release
+		})
+		return s.loadEntities()
+	}
+	var releaseOnce sync.Once
+	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseNow)
+
+	done := make(chan adjudicationOutcome, 1)
+	go func() {
+		result, err := run()
+		done <- adjudicationOutcome{result: result, err: err}
+	}()
+	select {
+	case <-lockAttempts:
+	case outcome := <-done:
+		t.Fatalf("adjudication completed before lock attempt: result=%+v err=%v", outcome.result, outcome.err)
+	}
+	select {
+	case <-rechecked:
+	case outcome := <-done:
+		t.Fatalf("adjudication completed before candidate recheck: result=%+v err=%v", outcome.result, outcome.err)
+	}
+	return lockAttempts, releaseNow, done
+}
+
+func TestConcurrentOrdinaryPromotionCannotRejectPromotedCandidate(t *testing.T) {
+	s := newStore(t)
+	seed := cand("project:api", "runtime", "go", "")
+	seed.PromotionBasis = candidates.BasisTrustedDeterministic
+	seed.ClaimType = "fact"
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+
+	lockAttempts, release, firstDone := pauseAdjudicationAfterCandidateRecheck(t, s, func() (AdjudicateResult, error) {
+		return s.Adjudicate(captured[0].ID, "promote", "work_ordinary_race", t0)
+	})
+	secondDone := make(chan adjudicationOutcome, 1)
+	go func() {
+		result, err := s.Adjudicate(captured[0].ID, "promote", "work_ordinary_race", t0)
+		secondDone <- adjudicationOutcome{result: result, err: err}
+	}()
+	select {
+	case <-lockAttempts:
+	case outcome := <-secondDone:
+		release()
+		<-firstDone
+		t.Fatalf("second promotion bypassed shared lock: result=%+v err=%v", outcome.result, outcome.err)
+	}
+	release()
+
+	first := <-firstDone
+	if first.err != nil || first.result.Claim == nil {
+		t.Fatalf("first promotion = %+v, err=%v", first.result, first.err)
+	}
+	second := <-secondDone
+	if second.err == nil || !strings.Contains(second.err.Error(), "already promoted") {
+		t.Fatalf("second promotion = %+v, err=%v", second.result, second.err)
+	}
+	latest, err := s.getCandidate(captured[0].ID)
+	if err != nil || latest.State != "promoted" {
+		t.Fatalf("candidate state = %+v, err=%v", latest, err)
+	}
+}
+
+func TestAnnotationCannotOverwriteConcurrentConfirmation(t *testing.T) {
+	s := newStore(t)
+	seed := cand("operator", "preference.communication", "prefer concise updates", "")
+	seed.PromotionBasis = ""
+	seed.ClaimType = "preference"
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "park", "work_annotation_race", t0); err != nil {
+		t.Fatal(err)
+	}
+	confirmation, err := s.RecordOperatorConfirmation(captured[0].ID, "Keep this preference.", "operator:test", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lockAttempts, release, promoteDone := pauseAdjudicationAfterCandidateRecheck(t, s, func() (AdjudicateResult, error) {
+		return s.AdjudicateExplicitConfirmation(captured[0].ID, confirmation.ID, "work_annotation_race", t0)
+	})
+	type annotationOutcome struct {
+		candidate Candidate
+		err       error
+	}
+	annotationDone := make(chan annotationOutcome, 1)
+	go func() {
+		candidate, err := s.AnnotateCandidate(captured[0].ID, CandidateAnnotation{Kind: "panel_verdict", Decision: "review"}, t0)
+		annotationDone <- annotationOutcome{candidate: candidate, err: err}
+	}()
+	select {
+	case <-lockAttempts:
+	case outcome := <-annotationDone:
+		release()
+		promoted := <-promoteDone
+		t.Fatalf("annotation bypassed mem.lock after confirmation recheck: annotation=%+v err=%v promote=%+v err=%v", outcome.candidate, outcome.err, promoted.result, promoted.err)
+	}
+	release()
+
+	promoted := <-promoteDone
+	if promoted.err != nil || promoted.result.Claim == nil {
+		t.Fatalf("confirmation = %+v, err=%v", promoted.result, promoted.err)
+	}
+	annotated := <-annotationDone
+	if annotated.err == nil || !strings.Contains(annotated.err.Error(), "already promoted") {
+		t.Fatalf("annotation after promotion = %+v, err=%v", annotated.candidate, annotated.err)
+	}
+	latest, err := s.getCandidate(captured[0].ID)
+	if err != nil || latest.State != "promoted" {
+		t.Fatalf("candidate state = %+v, err=%v", latest, err)
+	}
+}
+
+func TestDecayCannotOverwriteConcurrentConfirmation(t *testing.T) {
+	s := newStore(t)
+	seed := cand("project:api", "status", "prefer concise updates", "")
+	seed.PromotionBasis = ""
+	seed.ClaimType = "status"
+	seed.ExpiresAt = t0.Add(-time.Hour).Format(time.RFC3339)
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "park", "work_decay_race", t0); err != nil {
+		t.Fatal(err)
+	}
+	confirmation, err := s.RecordOperatorConfirmation(captured[0].ID, "Keep this preference.", "operator:test", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := s.AllCandidates()
+	if err != nil || len(snapshot) != 1 {
+		t.Fatalf("candidate snapshot = %+v, err=%v", snapshot, err)
+	}
+
+	lockAttempts, release, promoteDone := pauseAdjudicationAfterCandidateRecheck(t, s, func() (AdjudicateResult, error) {
+		return s.AdjudicateExplicitConfirmation(captured[0].ID, confirmation.ID, "work_decay_race", t0)
+	})
+	type decayOutcome struct {
+		actions []SynthesisDecayAction
+		err     error
+	}
+	decayDone := make(chan decayOutcome, 1)
+	go func() {
+		actions, err := s.decayExpiredCandidates(snapshot, t0)
+		decayDone <- decayOutcome{actions: actions, err: err}
+	}()
+	select {
+	case <-lockAttempts:
+	case outcome := <-decayDone:
+		release()
+		promoted := <-promoteDone
+		t.Fatalf("decay bypassed mem.lock after confirmation recheck: decay=%+v err=%v promote=%+v err=%v", outcome.actions, outcome.err, promoted.result, promoted.err)
+	}
+	release()
+
+	promoted := <-promoteDone
+	if promoted.err != nil || promoted.result.Claim == nil {
+		t.Fatalf("confirmation = %+v, err=%v", promoted.result, promoted.err)
+	}
+	decayed := <-decayDone
+	if decayed.err != nil || len(decayed.actions) != 0 {
+		t.Fatalf("decay after promotion = %+v, err=%v", decayed.actions, decayed.err)
+	}
+	latest, err := s.getCandidate(captured[0].ID)
+	if err != nil || latest.State != "promoted" {
+		t.Fatalf("candidate state = %+v, err=%v", latest, err)
+	}
+}
+
+func TestPromotionDoesNotMarkCandidateBeforeTransitionWrite(t *testing.T) {
+	s := newStore(t)
+	seed := cand("project:api", "runtime", "go", "")
+	seed.PromotionBasis = candidates.BasisTrustedDeterministic
+	seed.ClaimType = "fact"
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	eventsPath := filepath.Join(s.home, "events")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(eventsPath, []byte("blocks transition directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Adjudicate(captured[0].ID, "promote", "work_transition_failure", t0); err == nil {
+		t.Fatal("promotion succeeded despite blocked transition write")
+	}
+	latest, err := s.getCandidate(captured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.State == "promoted" {
+		t.Fatalf("candidate marked promoted before transition existed: %+v", latest)
+	}
+}
+
 func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testing.T) {
 	s := newStore(t)
 	spanRef := "transcript-span:sha256:session:line:1:sha256:preference"
