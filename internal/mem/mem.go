@@ -468,9 +468,23 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 	}
 
 	if verdict != "promote" {
-		c.State = nonPromoteState(verdict)
-		if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
-			return res, err
+		lockErr := s.withLock(func() error {
+			latest, err := s.getCandidate(candID)
+			if err != nil {
+				return err
+			}
+			if latest.State == "promoted" {
+				return fmt.Errorf("candidate %s already promoted", candID)
+			}
+			latest.State = nonPromoteState(verdict)
+			if err := candidates.WriteCandidate(s.home, candidates.Memory, latest.ID, &latest); err != nil {
+				return err
+			}
+			c = latest
+			return nil
+		})
+		if lockErr != nil {
+			return res, lockErr
 		}
 		res.Candidate = c
 		return res, nil
@@ -552,7 +566,9 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		prior, hasPrior = p, hp
 		if isDuplicatePromotion(c, prior, hasPrior) {
 			dup = true
-			return nil // same value already current → no redundant version
+			c.State = "rejected"
+			c.Reason = "duplicate of current claim " + prior.ID
+			return candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
 		}
 		seq, err := s.nextSeq()
 		if err != nil {
@@ -564,17 +580,17 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		}
 		if hasPrior {
 			edge := supersedesEdge(claim, prior, c, seq, now)
-			return appendJSONL(s.edgesLog(), &edge)
+			if err := appendJSONL(s.edgesLog(), &edge); err != nil {
+				return err
+			}
 		}
-		return nil
+		c.State = "promoted"
+		return candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
 	})
 	if lockErr != nil {
 		return res, lockErr
 	}
 	if dup {
-		c.State = "rejected"
-		c.Reason = "duplicate of current claim " + prior.ID
-		_ = candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
 		res.Verdict, res.Candidate, res.Note = "reject", c, "already current: "+prior.ID
 		return res, nil
 	}
@@ -591,10 +607,6 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		return res, err
 	}
 
-	c.State = "promoted"
-	if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
-		return res, err
-	}
 	res.Candidate, res.Claim, res.Transition = c, &claim, &tr
 	return res, nil
 }
