@@ -95,6 +95,7 @@ type Candidate struct {
 	ExpiresAt       string                `json:"expires_at,omitempty"`
 	PromotionBasis  string                `json:"promotion_basis,omitempty"` // WHY it may promote (candidates.PromotionBases); empty = none
 	SourceTraceRef  string                `json:"source_trace_ref"`          // provenance: where it came from
+	EvidenceRefs    []string              `json:"evidence_refs,omitempty"`   // bounded source and adjudication evidence
 	SnippetHash     string                `json:"snippet_hash"`              // bounded snippet, not the raw body
 	Visibility      string                `json:"visibility"`
 	State           string                `json:"state"` // proposed | parked | promoted | rejected
@@ -290,6 +291,7 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 			}
 		}
 		c.TopicRefs = normalizeStringRefs(c.TopicRefs)
+		c.EvidenceRefs = uniqueStrings(c.EvidenceRefs)
 		if c.Visibility == "" {
 			c.Visibility = "operational"
 		}
@@ -400,7 +402,36 @@ type AdjudicateResult struct {
 // provenance), supersedes the prior current claim if the value changed (edge, not delete),
 // and emits a Transition (memory_delta). A duplicate (same current value) is rejected.
 func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (AdjudicateResult, error) {
-	return s.adjudicate(candID, verdict, workID, now, false)
+	return s.adjudicate(candID, verdict, workID, now, false, "")
+}
+
+// AdjudicateExplicitConfirmation is the only ordinary-memory door that may
+// attach an explicit_confirmation basis to an already-parked candidate. The
+// caller must cite a content-addressed EvidenceItem bound to this candidate
+// and attributed to an operator/human actor; model output and ordinary
+// Adjudicate callers cannot mint this basis.
+func (s *Store) AdjudicateExplicitConfirmation(candID, confirmationEvidenceID, workID string, now time.Time) (AdjudicateResult, error) {
+	confirmationEvidenceID = strings.TrimSpace(confirmationEvidenceID)
+	if confirmationEvidenceID == "" {
+		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence ref required")
+	}
+	evidence, ok, err := s.GetEvidence(confirmationEvidenceID)
+	if err != nil {
+		return AdjudicateResult{}, err
+	}
+	if !ok {
+		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence %q not found", confirmationEvidenceID)
+	}
+	if evidence.SourceKind != "operator_confirmation" {
+		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence %q has source_kind %q, want operator_confirmation", confirmationEvidenceID, evidence.SourceKind)
+	}
+	if strings.TrimSpace(evidence.SourceID) != strings.TrimSpace(candID) {
+		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence %q targets %q, want candidate %q", confirmationEvidenceID, evidence.SourceID, candID)
+	}
+	if !policy.HasOperatorProvenance(evidence.Actor) {
+		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence %q requires operator provenance, got %q", confirmationEvidenceID, evidence.Actor)
+	}
+	return s.adjudicate(candID, "promote", workID, now, false, evidence.ID)
 }
 
 // AdjudicateOperationalDecision is the dedicated claim-append door used by
@@ -409,10 +440,10 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 // input under the shared autonomy-admission lock. Callers with ordinary
 // extracted/inferred memory must use Adjudicate instead.
 func (s *Store) AdjudicateOperationalDecision(candID, verdict, workID string, now time.Time) (AdjudicateResult, error) {
-	return s.adjudicate(candID, verdict, workID, now, true)
+	return s.adjudicate(candID, verdict, workID, now, true, "")
 }
 
-func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operationalDecision bool) (AdjudicateResult, error) {
+func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operationalDecision bool, explicitConfirmationRef string) (AdjudicateResult, error) {
 	var res AdjudicateResult
 	if !oneOf(verdict, Verdicts) {
 		return res, fmt.Errorf("verdict must be one of %v, got %q", Verdicts, verdict)
@@ -438,6 +469,13 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		}
 		c.Qualifiers = cloneStringMap(c.Qualifiers)
 		c.Qualifiers[OperationalDecisionAuthorityQualifier] = OperationalDecisionAuthorityValue
+	}
+	if explicitConfirmationRef != "" {
+		if verdict != "promote" || operationalDecision {
+			return res, fmt.Errorf("explicit confirmation is only valid for ordinary memory promotion")
+		}
+		c.PromotionBasis = candidates.BasisExplicitConfirmation
+		c.EvidenceRefs = uniqueStrings(append(c.EvidenceRefs, explicitConfirmationRef))
 	}
 
 	if verdict != "promote" {
@@ -673,7 +711,7 @@ func promotedClaim(c Candidate, prior Claim, hasPrior bool, seq int64, now time.
 		Qualifiers:     c.Qualifiers,
 		TopicRefs:      normalizeStringRefs(c.TopicRefs),
 		PromotionBasis: c.PromotionBasis, // carry the "why" of promotion onto the durable claim
-		EvidenceRefs:   []string{c.ID, c.SourceTraceRef},
+		EvidenceRefs:   uniqueStrings(append([]string{c.ID, c.SourceTraceRef}, c.EvidenceRefs...)),
 		Visibility:     orDef(c.Visibility, "operational"),
 		CreatedAt:      rfc3339(now),
 	}

@@ -34,6 +34,7 @@ func (s *Store) RecordStableCandidate(c Candidate) (bool, error) {
 	if c.Visibility == "" {
 		c.Visibility = "operational"
 	}
+	c.EvidenceRefs = uniqueStrings(c.EvidenceRefs)
 	if !oneOf(c.Visibility, Visibilities) {
 		return false, fmt.Errorf("candidate %s: bad visibility %q", c.ID, c.Visibility)
 	}
