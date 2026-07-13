@@ -28,6 +28,7 @@ func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
 
 		ready, err := store.LandCheck(w.ID, LandCheckOptions{
 			RepoPath:        repo,
@@ -79,6 +80,7 @@ func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
 		report, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(time.Minute))
 		if err != nil {
 			t.Fatal(err)
@@ -103,6 +105,7 @@ func TestLandCheckFailsClosedForDirtyTargetAndMovedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
 
 	report, err := store.LandCheck(w.ID, LandCheckOptions{
 		RepoPath:        repo,
@@ -147,6 +150,7 @@ func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
 	if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex"}, now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(150*time.Second))
 
 	if _, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "not landed"}, now.Add(3*time.Minute)); err == nil || !strings.Contains(err.Error(), "land-check") {
 		t.Fatalf("completed without landing proof err = %v", err)
@@ -202,6 +206,7 @@ func TestCompletedCodeWorkRevalidatesLandingProofAtClose(t *testing.T) {
 	if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex"}, now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(150*time.Second))
 	proof, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main", Record: true}, now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -233,6 +238,7 @@ func TestLandCheckRecordsMissingTipAndInvalidLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachLandingCommit(t, store, w.ID, strings.Repeat("f", 40), now.Add(30*time.Second))
 
 	missing, err := store.LandCheck(w.ID, LandCheckOptions{
 		RepoPath:        repo,
@@ -247,6 +253,7 @@ func TestLandCheckRecordsMissingTipAndInvalidLineage(t *testing.T) {
 		t.Fatalf("missing candidate report = %+v", missing)
 	}
 
+	attachLandingCommit(t, store, w.ID, unrelated, now.Add(90*time.Second))
 	invalid, err := store.LandCheck(w.ID, LandCheckOptions{
 		RepoPath:        repo,
 		CandidateTipSHA: unrelated,
@@ -262,6 +269,113 @@ func TestLandCheckRecordsMissingTipAndInvalidLineage(t *testing.T) {
 
 	if _, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: "abc123", TargetRef: "main"}, now.Add(3*time.Minute)); err == nil || !strings.Contains(err.Error(), "full") {
 		t.Fatalf("short candidate SHA err = %v", err)
+	}
+}
+
+func TestLandCheckRequiresLatestAttachedCommitArtifact(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "only the attached final tip can land", ExpectedBaseSHA: base}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main", Record: true}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.Status != "missing_candidate_artifact" || missing.NextAction == "" {
+		t.Fatalf("missing candidate artifact report = %+v", missing)
+	}
+
+	attachLandingCommit(t, store, w.ID, base, now.Add(2*time.Minute))
+	mismatch, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main", Record: true}, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mismatch.Status != "candidate_tip_mismatch" || !strings.Contains(mismatch.NextAction, "commit:"+candidate) {
+		t.Fatalf("candidate mismatch report = %+v", mismatch)
+	}
+
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(4*time.Minute))
+	ready, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status != "ready_to_land" {
+		t.Fatalf("latest attached candidate report = %+v", ready)
+	}
+
+	landingGit(t, repo, "switch", "feature")
+	writeLandingFile(t, filepath.Join(repo, "second.txt"), "second\n")
+	landingGit(t, repo, "add", "second.txt")
+	landingGit(t, repo, "commit", "-m", "second")
+	newTip := landingGitOutput(t, repo, "rev-parse", "HEAD")
+	landingGit(t, repo, "switch", "main")
+	attachLandingCommit(t, store, w.ID, newTip, now.Add(6*time.Minute))
+	old, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(7*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Status != "candidate_tip_mismatch" || !strings.Contains(old.NextAction, newTip) {
+		t.Fatalf("old candidate report = %+v", old)
+	}
+
+	attachLandingArtifact(t, store, w.ID, "commit:abc123", now.Add(8*time.Minute))
+	malformed, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: newTip, TargetRef: "main"}, now.Add(9*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if malformed.Status != "invalid_candidate_artifact" || malformed.NextAction == "" {
+		t.Fatalf("malformed candidate artifact report = %+v", malformed)
+	}
+}
+
+func TestRecordedLandCheckContentIsTamperEvident(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*landingProofFixture, *LandCheckReport)
+	}{
+		{name: "repo path", mutate: func(f *landingProofFixture, p *LandCheckReport) {
+			alias := filepath.Join(f.scratch, "repo-alias")
+			if err := os.Symlink(f.repo, alias); err != nil {
+				t.Fatal(err)
+			}
+			p.RepoPath = alias
+		}},
+		{name: "candidate tip", mutate: func(f *landingProofFixture, p *LandCheckReport) { p.CandidateTipSHA = f.base }},
+		{name: "status", mutate: func(_ *landingProofFixture, p *LandCheckReport) { p.Status = "ready_to_land" }},
+		{name: "expected base", mutate: func(_ *landingProofFixture, p *LandCheckReport) { p.ExpectedBaseSHA = strings.Repeat("a", 40) }},
+		{name: "target ref", mutate: func(_ *landingProofFixture, p *LandCheckReport) { p.TargetRef = "refs/heads/main" }},
+		{name: "target sha", mutate: func(f *landingProofFixture, p *LandCheckReport) { p.TargetSHA = f.base }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newLandingProofFixture(t, now)
+			tampered := fixture.proof
+			tc.mutate(&fixture, &tampered)
+			if err := fixture.store.writeJSON(fixture.proof.ProofPath, &tampered); err != nil {
+				t.Fatal(err)
+			}
+			_, err := fixture.store.Close(fixture.workID, CloseInput{
+				Outcome:   "completed",
+				MoveType:  "outward_delta",
+				Actor:     "codex",
+				Summary:   "tampered proof must not close",
+				ProofRefs: []string{fixture.proof.EvidenceRef},
+			}, now.Add(10*time.Minute))
+			if err == nil || !strings.Contains(err.Error(), "content digest") {
+				t.Fatalf("tampered %s close err = %v", tc.name, err)
+			}
+		})
 	}
 }
 
@@ -297,6 +411,58 @@ func activateLandingWork(t *testing.T, store *Store, workID string, now time.Tim
 		t.Fatal(err)
 	}
 	if _, err := store.Advance(workID, AdvanceInput{To: "running", Actor: "codex"}, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type landingProofFixture struct {
+	store     *Store
+	repo      string
+	base      string
+	candidate string
+	workID    string
+	proof     LandCheckReport
+	scratch   string
+}
+
+func newLandingProofFixture(t *testing.T, now time.Time) landingProofFixture {
+	t.Helper()
+	repo, base := initLandingRepo(t)
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "proof content remains exact", ExpectedBaseSHA: base}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, w.ID, now)
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(3*time.Minute))
+	proof, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main", Record: true}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.Status != "landed" {
+		t.Fatalf("fixture proof = %+v", proof)
+	}
+	return landingProofFixture{store: store, repo: repo, base: base, candidate: candidate, workID: w.ID, proof: proof, scratch: t.TempDir()}
+}
+
+func attachLandingCommit(t *testing.T, store *Store, workID, sha string, now time.Time) {
+	t.Helper()
+	attachLandingArtifact(t, store, workID, "commit:"+sha, now)
+}
+
+func attachLandingArtifact(t *testing.T, store *Store, workID, artifact string, now time.Time) {
+	t.Helper()
+	w, err := store.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(workID, AdvanceInput{To: w.State, Actor: "codex", ArtifactID: artifact}, now); err != nil {
 		t.Fatal(err)
 	}
 }
