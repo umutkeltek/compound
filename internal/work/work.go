@@ -1244,19 +1244,10 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		return res, fmt.Errorf("cannot close %s from state %q to %q", workID, w.State, in.Outcome)
 	}
 	var landingProof *LandCheckReport
-	if in.Outcome == "completed" {
-		_, _, hasCommitProof, _ := latestCommitArtifact(mergeUnique(w.ArtifactIDs, in.ProofRefs))
-		if hasCommitProof && w.GitDelivery == nil {
-			return res, fmt.Errorf("completed work %s carries a commit:* proof but lacks a git_delivery contract", w.ID)
-		}
-		if w.GitDelivery != nil {
-			proofRefs := mergeUnique(in.ProofRefs, landCheckEvidenceRefs(w.EvidenceRefs))
-			proof, err := s.recordedLandedProofForClose(w, proofRefs)
-			if err != nil {
-				return res, err
-			}
-			landingProof = &proof
-		}
+	deliveryProofRefs := mergeUnique(w.ArtifactIDs, w.VerificationIDs, in.ProofRefs, landCheckEvidenceRefs(w.EvidenceRefs))
+	landingProof, err = s.gitDeliveryProofForClose(w, in.Outcome, in.MoveType, deliveryProofRefs, now)
+	if err != nil {
+		return res, err
 	}
 	producerLaneID := strings.TrimSpace(in.LaneID)
 	if producerLaneID == "" {
@@ -1275,7 +1266,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if !oneOf(in.MoveType, envelope.MoveTypes) {
 		return res, fmt.Errorf("close --move-type must be one of %v, got %q", envelope.MoveTypes, in.MoveType)
 	}
-	plan, err := s.ClosePlan(workID, now, ClosePlanOptions{Actor: in.Actor, Outcome: in.Outcome, MoveType: in.MoveType})
+	plan, err := s.ClosePlan(workID, now, ClosePlanOptions{Actor: in.Actor, Outcome: in.Outcome, MoveType: in.MoveType, ProofRefs: in.ProofRefs})
 	if err != nil {
 		return res, err
 	}

@@ -17,6 +17,7 @@ type ClosePlanOptions struct {
 	Actor          string
 	Outcome        string
 	MoveType       string
+	ProofRefs      []string
 	ActionPlanPath string
 	Capability     string
 	Action         string
@@ -143,7 +144,7 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		return ClosePlan{}, err
 	}
 	observations, observationWarnings := s.workbenchRunObservations(w.ID)
-	proofRefs := mergeUnique(w.ArtifactIDs, w.VerificationIDs, landCheckEvidenceRefs(w.EvidenceRefs))
+	proofRefs := mergeUnique(w.ArtifactIDs, w.VerificationIDs, landCheckEvidenceRefs(w.EvidenceRefs), opts.ProofRefs)
 	var expectedValidation []string
 	var receiptDraft envelope.Receipt
 	if actionPlan != nil {
@@ -152,19 +153,8 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		receiptDraft = actionPlan.ReceiptDraft
 	}
 	deliveryNoAction := ""
-	if outcome == "completed" {
-		_, _, hasCommitProof, _ := latestCommitArtifact(proofRefs)
-		switch {
-		case hasCommitProof && w.GitDelivery == nil:
-			deliveryNoAction = "completed commit-bearing work lacks a git_delivery contract"
-		case w.GitDelivery != nil:
-			proof, err := s.recordedLandedProofForClose(w, proofRefs)
-			if err != nil {
-				deliveryNoAction = err.Error()
-			} else if err := s.revalidateLandedProof(w, proof, now); err != nil {
-				deliveryNoAction = err.Error()
-			}
-		}
+	if _, err := s.gitDeliveryProofForClose(w, outcome, moveType, proofRefs, now); err != nil {
+		deliveryNoAction = err.Error()
 	}
 	plan := ClosePlan{
 		SchemaVersion:      ClosePlanSchemaVersion,
