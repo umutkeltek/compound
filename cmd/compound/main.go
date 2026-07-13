@@ -356,7 +356,7 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
 compound capability <add|resolve|surface|observe|consume|consume-receipts|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; lifecycle-review records hash-bound operator disposition and only open_work creates proposed WorkEnvelope state; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
   compound local-models advise [--lm-studio-url U] [--required MODEL]... [--min-context MODEL=TOKENS]... [--host-context-limit N] [--idle-ttl DURATION] [--json] local model context/load/unload advice with lifecycle intents; reads configured local provider, no mutation
-  compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] [--json] | dirty-review <review.yaml> [--json] | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | resolve <token> | <entity> import/query authority through spine memory
+  compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] [--action-intent id ...] [--json] | dirty-review <review.yaml> [--json] | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] [--json] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract <yaml> | --switchback-pulse <json> | <yaml>] [--live] [--writeback] | runtime repair-plan [--project-contract <yaml> | --switchback-pulse <json> | <yaml>] [--live] | runtime repair-review <review.yaml> RuntimeBinding health/live evidence + gated writeback/review artifacts
@@ -5903,7 +5903,7 @@ func openMemStore() (*mem.Store, string) {
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
@@ -6368,32 +6368,44 @@ func cmdAuthority(args []string) {
 		return
 	}
 	if args[0] == "dirty-plan" {
+		usage := "usage: compound authority dirty-plan <repo-path> [--work-id id] [--action-intent id ...] [--json]"
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-plan <repo-path> [--work-id id] [--json]")
+			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
 		jsonOut := hasFlag(args[2:], "--json")
 		for i := 2; i < len(args); i++ {
 			switch args[i] {
 			case "--json":
-			case "--work-id":
+			case "--work-id", "--action-intent":
 				if i+1 >= len(args) {
-					fmt.Fprintln(os.Stderr, "usage: compound authority dirty-plan <repo-path> [--work-id id] [--json]")
+					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
 				}
 				i++
 			default:
-				fmt.Fprintln(os.Stderr, "usage: compound authority dirty-plan <repo-path> [--work-id id] [--json]")
+				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(2)
 			}
 		}
 		workID := flagValue(args[2:], "--work-id")
+		actionIntentIDs := valuesFlag(args[2:], "--action-intent")
 		snap, _, _, _, err := authority.ImportGitSnapshot(args[1], nil)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority dirty-plan:", err)
 			os.Exit(1)
 		}
-		plan, err := authority.BuildSourceControlReviewPlan(snap, workID, time.Now())
+		var plan authority.SourceControlReviewPlan
+		if len(actionIntentIDs) == 0 {
+			plan, err = authority.BuildSourceControlReviewPlan(snap, workID, time.Now())
+		} else {
+			binding, bindingErr := loadSourceControlMutationBinding(homePath, actionIntentIDs)
+			if bindingErr != nil {
+				fmt.Fprintln(os.Stderr, "authority dirty-plan:", bindingErr)
+				os.Exit(1)
+			}
+			plan, err = authority.BuildSourceControlMutationReviewPlan(snap, workID, binding, time.Now())
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority dirty-plan:", err)
 			os.Exit(1)
@@ -6446,6 +6458,11 @@ func cmdAuthority(args []string) {
 		fmt.Printf("- untracked: %d\n", plan.Untracked)
 		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		if plan.MutationBinding != nil {
+			fmt.Printf("- action_work: %s\n", plan.MutationBinding.ActionWorkID)
+			fmt.Printf("- action_intents: %d\n", len(plan.MutationBinding.ActionIntentIDs))
+			fmt.Printf("- mutation_bound: true\n")
+		}
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
@@ -6574,6 +6591,91 @@ func cmdAuthority(args []string) {
 	if !found {
 		fmt.Printf("(no authority claims for %s; run compound authority import first)\n", entity)
 	}
+}
+
+// loadSourceControlMutationBinding derives executable identity only from
+// persisted ActionIntents. The dirty-plan CLI accepts ids, never caller-authored
+// action/class/capability fields, so a review cannot bless fabricated semantics.
+func loadSourceControlMutationBinding(homePath string, actionIntentIDs []string) (authority.SourceControlMutationBinding, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return authority.SourceControlMutationBinding{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	if len(actionIntentIDs) == 0 {
+		return authority.SourceControlMutationBinding{}, fmt.Errorf("at least one persisted action_intent required")
+	}
+	binding := authority.SourceControlMutationBinding{}
+	seen := map[string]struct{}{}
+	for _, rawID := range actionIntentIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" || filepath.Base(id) != id || !strings.HasPrefix(id, "act_") {
+			return authority.SourceControlMutationBinding{}, fmt.Errorf("action_intent id %q must be a bare act_ id", rawID)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return authority.SourceControlMutationBinding{}, fmt.Errorf("duplicate action_intent %s", id)
+		}
+		seen[id] = struct{}{}
+		data, err := os.ReadFile(filepath.Join(homePath, "events", id+".json"))
+		if err != nil {
+			return authority.SourceControlMutationBinding{}, fmt.Errorf("read persisted action_intent %s: %w", id, err)
+		}
+		var action envelope.ActionIntent
+		if err := json.Unmarshal(data, &action); err != nil {
+			return authority.SourceControlMutationBinding{}, fmt.Errorf("decode persisted action_intent %s: %w", id, err)
+		}
+		if action.ID != id {
+			return authority.SourceControlMutationBinding{}, fmt.Errorf("persisted action_intent %s contains id %q", id, action.ID)
+		}
+		if err := action.Validate(); err != nil {
+			return authority.SourceControlMutationBinding{}, fmt.Errorf("persisted action_intent %s invalid: %w", id, err)
+		}
+		inputHash, err := persistedMutationInputHash(action)
+		if err != nil {
+			return authority.SourceControlMutationBinding{}, fmt.Errorf("persisted action_intent %s: %w", id, err)
+		}
+		if len(binding.ActionIntentIDs) == 0 {
+			binding.ActionWorkID = strings.TrimSpace(action.IDs.WorkID)
+			binding.MutationInputHash = inputHash
+			binding.Capability = strings.TrimSpace(action.Capability)
+			binding.Action = strings.TrimSpace(action.Action)
+			binding.MutationClass = strings.TrimSpace(action.MutationClass)
+		} else {
+			if strings.TrimSpace(action.IDs.WorkID) != binding.ActionWorkID {
+				return authority.SourceControlMutationBinding{}, fmt.Errorf("persisted ActionIntents must share action work_id")
+			}
+			if inputHash != binding.MutationInputHash {
+				return authority.SourceControlMutationBinding{}, fmt.Errorf("persisted ActionIntents must share mutation input hash")
+			}
+			if strings.TrimSpace(action.Capability) != binding.Capability {
+				return authority.SourceControlMutationBinding{}, fmt.Errorf("persisted ActionIntents must share capability")
+			}
+			if strings.TrimSpace(action.Action) != binding.Action {
+				return authority.SourceControlMutationBinding{}, fmt.Errorf("persisted ActionIntents must share action")
+			}
+			if strings.TrimSpace(action.MutationClass) != binding.MutationClass {
+				return authority.SourceControlMutationBinding{}, fmt.Errorf("persisted ActionIntents must share mutation class")
+			}
+		}
+		binding.TargetPaths = append(binding.TargetPaths, action.Target.Path)
+		binding.ActionIntentIDs = append(binding.ActionIntentIDs, action.ID)
+	}
+	return binding, nil
+}
+
+func persistedMutationInputHash(action envelope.ActionIntent) (string, error) {
+	value := ""
+	for _, ref := range action.EvidenceRefs {
+		if !strings.HasPrefix(ref, "mutation-input:sha256:") {
+			continue
+		}
+		if value != "" && value != ref {
+			return "", fmt.Errorf("multiple mutation-input hashes")
+		}
+		value = ref
+	}
+	if value == "" {
+		return "", fmt.Errorf("session-bound mutation-input hash required")
+	}
+	return value, nil
 }
 
 func productUsage() string {
