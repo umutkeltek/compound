@@ -22,6 +22,10 @@ func TestWorkCreateCLIPropagatesExpectedBaseSHA(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo, base, _ := initLandingCLIRepo(t)
+	canonicalRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	planOut := captureStdout(t, func() {
 		cmdWork([]string{
@@ -34,11 +38,11 @@ func TestWorkCreateCLIPropagatesExpectedBaseSHA(t *testing.T) {
 	if err := json.Unmarshal([]byte(planOut), &plan); err != nil {
 		t.Fatalf("parse create-plan JSON: %v\n%s", err, planOut)
 	}
-	if plan.Work.GitDelivery == nil || plan.Work.GitDelivery.ExpectedBaseSHA != base || plan.Work.GitDelivery.TargetWorktreeRoot != repo || plan.Work.GitDelivery.PublicationMode != "local_only" {
+	if plan.Work.GitDelivery == nil || plan.Work.GitDelivery.ExpectedBaseSHA != base || plan.Work.GitDelivery.TargetWorktreeRoot != canonicalRepo || plan.Work.GitDelivery.PublicationMode != "local_only" {
 		t.Fatalf("planned git_delivery = %+v", plan.Work.GitDelivery)
 	}
 	if !landingCommandHasPair(plan.CreateCommand, "--expected-base-sha", base) ||
-		!landingCommandHasPair(plan.CreateCommand, "--target-worktree-root", repo) ||
+		!landingCommandHasPair(plan.CreateCommand, "--target-worktree-root", canonicalRepo) ||
 		!landingCommandHas(plan.CreateCommand, "--local-only") {
 		t.Fatalf("create command dropped git delivery contract: %v", plan.CreateCommand)
 	}
@@ -111,7 +115,7 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 	if err := json.Unmarshal([]byte(dryOut), &dry); err != nil {
 		t.Fatalf("parse dry land-check JSON: %v\n%s", err, dryOut)
 	}
-	if dry.Status != "ready_to_land" || dry.Recorded || dry.RepoPath != repo {
+	if dry.Status != "ready_to_land" || dry.Recorded || dry.RepoPath != w.GitDelivery.TargetWorktreeRoot {
 		t.Fatalf("dry land-check = %+v", dry)
 	}
 
