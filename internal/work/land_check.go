@@ -1,6 +1,9 @@
 package work
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,7 +16,7 @@ import (
 )
 
 const (
-	LandCheckSchemaVersion  = "compound.work_land_check.v0.1"
+	LandCheckSchemaVersion  = "compound.work_land_check.v0.2"
 	landCheckEvidencePrefix = "land-check:"
 	landCheckIDPrefix       = "landcheck_"
 )
@@ -39,6 +42,8 @@ type LandCheckReport struct {
 	Status                          string `json:"status"`
 	RepoPath                        string `json:"repo_path"`
 	CandidateTipSHA                 string `json:"candidate_tip_sha"`
+	CandidateArtifactRef            string `json:"candidate_artifact_ref,omitempty"`
+	AttachedCandidateTipSHA         string `json:"attached_candidate_tip_sha,omitempty"`
 	ExpectedBaseSHA                 string `json:"expected_base_sha,omitempty"`
 	TargetRef                       string `json:"target_ref"`
 	TargetBranchRef                 string `json:"target_branch_ref"`
@@ -52,6 +57,7 @@ type LandCheckReport struct {
 	TargetAncestorOfCandidate       bool   `json:"target_ancestor_of_candidate"`
 	CandidateContainedInTarget      bool   `json:"candidate_contained_in_target"`
 	NextAction                      string `json:"next_action,omitempty"`
+	ContentSHA256                   string `json:"content_sha256"`
 	Recorded                        bool   `json:"recorded"`
 	EvidenceRef                     string `json:"evidence_ref,omitempty"`
 	ProofPath                       string `json:"proof_path,omitempty"`
@@ -61,6 +67,9 @@ type LandCheckReport struct {
 // A classification is not an error: dirty, stale, missing, and divergent states
 // are useful evidence. Invalid caller inputs and unreadable repositories are errors.
 func (s *Store) LandCheck(workID string, opts LandCheckOptions, now time.Time) (LandCheckReport, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
 	w, err := s.Get(strings.TrimSpace(workID))
 	if err != nil {
 		return LandCheckReport{}, err
@@ -69,7 +78,9 @@ func (s *Store) LandCheck(workID string, opts LandCheckOptions, now time.Time) (
 	if err != nil {
 		return report, err
 	}
-	report.ID = idFor(landCheckIDPrefix, w.ID, report.CandidateTipSHA, report.TargetRef, report.TargetSHA, report.Status, ts(now))
+	if err := sealLandCheckReport(&report); err != nil {
+		return report, err
+	}
 	if !opts.Record {
 		return report, nil
 	}
@@ -118,7 +129,7 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	expectedBase := strings.TrimSpace(w.ExpectedBaseSHA)
 	report := LandCheckReport{
 		SchemaVersion:        LandCheckSchemaVersion,
-		GeneratedAt:          now.UTC().Format(time.RFC3339),
+		GeneratedAt:          now.UTC().Format(time.RFC3339Nano),
 		WorkID:               w.ID,
 		RepoPath:             repoPath,
 		CandidateTipSHA:      candidate,
@@ -138,6 +149,24 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	}
 	if !validLandingObjectID(expectedBase) {
 		return report, fmt.Errorf("work %s expected_base_sha must be a lowercase full Git object id (40 or 64 hex characters)", w.ID)
+	}
+	artifactRef, attachedTip, artifactFound, artifactValid := latestCommitArtifact(w.ArtifactIDs)
+	report.CandidateArtifactRef = artifactRef
+	report.AttachedCandidateTipSHA = attachedTip
+	if !artifactFound {
+		report.Status = "missing_candidate_artifact"
+		report.NextAction = fmt.Sprintf("attach the verified final tip as commit:%s to work %s, then rerun land-check", candidate, w.ID)
+		return report, nil
+	}
+	if !artifactValid {
+		report.Status = "invalid_candidate_artifact"
+		report.NextAction = fmt.Sprintf("replace malformed latest candidate artifact %q by attaching commit:<full-sha>, then rerun land-check", artifactRef)
+		return report, nil
+	}
+	if candidate != attachedTip {
+		report.Status = "candidate_tip_mismatch"
+		report.NextAction = fmt.Sprintf("candidate %s does not match latest attached artifact commit:%s; use that verified tip, or attach commit:%s if the provided tip is the newer final work output", candidate, attachedTip, candidate)
+		return report, nil
 	}
 	if !report.TargetBranchWorktree {
 		report.Status = "wrong_target_worktree"
@@ -201,8 +230,50 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		return report, nil
 	}
 	report.Status = "rebase_required"
-	report.NextAction = fmt.Sprintf("rebase candidate %s onto current %s tip %s, retain the new full tip SHA, and rerun land-check", candidate, targetRef, targetSHA)
+	report.NextAction = fmt.Sprintf("rebase candidate %s onto current %s tip %s, attach the rebased final tip as commit:<full-sha>, and rerun land-check with that exact tip", candidate, targetRef, targetSHA)
 	return report, nil
+}
+
+func latestCommitArtifact(artifactIDs []string) (ref, sha string, found, valid bool) {
+	for i := len(artifactIDs) - 1; i >= 0; i-- {
+		candidate := artifactIDs[i]
+		if !strings.HasPrefix(candidate, "commit:") {
+			continue
+		}
+		sha = strings.TrimPrefix(candidate, "commit:")
+		return candidate, sha, true, validLandingObjectID(sha)
+	}
+	return "", "", false, false
+}
+
+func sealLandCheckReport(report *LandCheckReport) error {
+	if report == nil {
+		return fmt.Errorf("land-check report required")
+	}
+	digest, err := landCheckContentSHA256(*report)
+	if err != nil {
+		return err
+	}
+	report.ContentSHA256 = digest
+	report.ID = landCheckIDPrefix + digest[:12]
+	return nil
+}
+
+func landCheckContentSHA256(report LandCheckReport) (string, error) {
+	// Recording metadata is derived from the sealed semantic content. Excluding
+	// it avoids a circular digest while every repository, lineage, status, and
+	// work-binding field remains covered automatically as the report evolves.
+	report.ID = ""
+	report.ContentSHA256 = ""
+	report.Recorded = false
+	report.EvidenceRef = ""
+	report.ProofPath = ""
+	data, err := json.Marshal(report)
+	if err != nil {
+		return "", fmt.Errorf("marshal land-check content: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func (s *Store) recordLandCheck(report *LandCheckReport) error {
@@ -223,6 +294,12 @@ func (s *Store) recordLandCheck(report *LandCheckReport) error {
 	}
 	if err := commitStagedJSONExclusive(staged, path); err != nil {
 		_ = os.Remove(staged)
+		if errors.Is(err, os.ErrExist) {
+			var existing LandCheckReport
+			if readErr := s.readJSON(path, &existing); readErr == nil && existing.ContentSHA256 == report.ContentSHA256 && existing.ID == report.ID {
+				return nil
+			}
+		}
 		return err
 	}
 	return nil
@@ -238,11 +315,12 @@ func (s *Store) recordedLandedProofForClose(w envelope.WorkEnvelope, proofRefs [
 		}
 		seen = true
 		var report LandCheckReport
-		if err := s.readJSON(filepath.Join(s.home, "work", "land-checks", id+".json"), &report); err != nil {
+		proofPath := filepath.Join(s.home, "work", "land-checks", id+".json")
+		if err := s.readJSON(proofPath, &report); err != nil {
 			failures = append(failures, fmt.Sprintf("%s is not a recorded land-check: %v", ref, err))
 			continue
 		}
-		if err := validateRecordedLandCheck(w, ref, id, report); err != nil {
+		if err := validateRecordedLandCheck(w, ref, id, proofPath, report); err != nil {
 			failures = append(failures, err.Error())
 			continue
 		}
@@ -258,18 +336,35 @@ func (s *Store) recordedLandedProofForClose(w envelope.WorkEnvelope, proofRefs [
 	return LandCheckReport{}, fmt.Errorf("completed source-controlled work %s has no acceptable landed proof: %s", w.ID, strings.Join(failures, "; "))
 }
 
-func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id string, report LandCheckReport) error {
-	if report.SchemaVersion != LandCheckSchemaVersion || !report.Recorded {
+func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPath string, report LandCheckReport) error {
+	if !report.Recorded {
 		return fmt.Errorf("recorded land-check %s has invalid schema or recording state", id)
+	}
+	digest, err := landCheckContentSHA256(report)
+	if err != nil {
+		return fmt.Errorf("recorded land-check %s content digest: %w", id, err)
+	}
+	if report.ContentSHA256 == "" || report.ContentSHA256 != digest || id != landCheckIDPrefix+digest[:12] {
+		return fmt.Errorf("recorded land-check %s content digest mismatch; proof content was modified after recording", id)
+	}
+	if report.SchemaVersion != LandCheckSchemaVersion {
+		return fmt.Errorf("recorded land-check %s has unsupported schema %q", id, report.SchemaVersion)
 	}
 	if report.ID != id || report.EvidenceRef != evidenceRef {
 		return fmt.Errorf("recorded land-check %s identity does not match cited evidence", id)
+	}
+	if filepath.Clean(report.ProofPath) != filepath.Clean(proofPath) {
+		return fmt.Errorf("recorded land-check %s proof path does not match its recorded identity", id)
 	}
 	if report.WorkID != w.ID {
 		return fmt.Errorf("recorded land-check %s belongs to work %s, not %s", id, report.WorkID, w.ID)
 	}
 	if report.ExpectedBaseSHA != w.ExpectedBaseSHA {
 		return fmt.Errorf("recorded land-check %s expected base no longer matches work %s", id, w.ID)
+	}
+	artifactRef, attachedTip, found, valid := latestCommitArtifact(w.ArtifactIDs)
+	if !found || !valid || report.CandidateArtifactRef != artifactRef || report.AttachedCandidateTipSHA != attachedTip || report.CandidateTipSHA != attachedTip {
+		return fmt.Errorf("recorded land-check %s candidate artifact no longer matches the latest verified commit attached to work %s", id, w.ID)
 	}
 	if !validLandingObjectID(report.CandidateTipSHA) || strings.TrimSpace(report.RepoPath) == "" || strings.TrimSpace(report.TargetRef) == "" {
 		return fmt.Errorf("recorded land-check %s is missing exact repository, candidate, or target identity", id)
