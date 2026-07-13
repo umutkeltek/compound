@@ -672,6 +672,77 @@ func TestPromotionDoesNotMarkCandidateBeforeTransitionWrite(t *testing.T) {
 	}
 }
 
+func TestPartialPromotionRecoveryUsesHistoricalClaimAfterInterveningPromotion(t *testing.T) {
+	s := newStore(t)
+	first := cand("project:api", "runtime", "go", "")
+	first.PromotionBasis = candidates.BasisTrustedDeterministic
+	first.ClaimType = "status"
+	firstCaptured, err := s.Capture([]Candidate{first}, t0)
+	if err != nil || len(firstCaptured) != 1 {
+		t.Fatalf("capture first = %+v, err=%v", firstCaptured, err)
+	}
+	second := cand("project:api", "runtime", "rust", "")
+	second.PromotionBasis = candidates.BasisTrustedDeterministic
+	second.ClaimType = "status"
+	secondCaptured, err := s.Capture([]Candidate{second}, t0.Add(time.Second))
+	if err != nil || len(secondCaptured) != 1 {
+		t.Fatalf("capture second = %+v, err=%v", secondCaptured, err)
+	}
+
+	eventsPath := filepath.Join(s.home, "events")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(eventsPath, []byte("blocks first transition directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(firstCaptured[0].ID, "promote", "work_first_partial", t0); err == nil {
+		t.Fatal("first promotion succeeded despite blocked transition write")
+	}
+	partialClaims, err := s.loadClaims()
+	if err != nil || len(partialClaims) != 1 {
+		t.Fatalf("partial promotion claims = %+v, err=%v", partialClaims, err)
+	}
+	firstClaimID := partialClaims[0].ID
+
+	if err := os.Remove(eventsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(eventsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	intervening, err := s.Adjudicate(secondCaptured[0].ID, "promote", "work_second", t0.Add(time.Second))
+	if err != nil || intervening.Claim == nil {
+		t.Fatalf("intervening promotion = %+v, err=%v", intervening, err)
+	}
+	if intervening.Claim.Supersedes != firstClaimID {
+		t.Fatalf("intervening claim supersedes = %q, want %q", intervening.Claim.Supersedes, firstClaimID)
+	}
+
+	recovered, err := s.Adjudicate(firstCaptured[0].ID, "promote", "work_first_partial", t0.Add(2*time.Second))
+	if err != nil || recovered.Claim == nil || recovered.Transition == nil {
+		t.Fatalf("historical partial promotion did not recover: %+v, err=%v", recovered, err)
+	}
+	if recovered.Claim.ID != firstClaimID {
+		t.Fatalf("recovery minted another claim: recovered=%s original=%s", recovered.Claim.ID, firstClaimID)
+	}
+	claimsAfterRecovery, err := s.loadClaims()
+	if err != nil || len(claimsAfterRecovery) != 2 {
+		t.Fatalf("recovery claims = %+v, err=%v", claimsAfterRecovery, err)
+	}
+	latestFirst, err := s.getCandidate(firstCaptured[0].ID)
+	if err != nil || latestFirst.State != "promoted" {
+		t.Fatalf("recovered first candidate = %+v, err=%v", latestFirst, err)
+	}
+	current, ok, err := s.currentClusterClaim(secondCaptured[0], 0)
+	if err != nil || !ok || current.ID != intervening.Claim.ID {
+		t.Fatalf("current claim after recovery = %+v ok=%t err=%v, want %s", current, ok, err, intervening.Claim.ID)
+	}
+	if _, err := os.Stat(s.eventPath(recovered.Transition.ID)); err != nil {
+		t.Fatalf("recovered transition missing: %v", err)
+	}
+}
+
 func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testing.T) {
 	s := newStore(t)
 	spanRef := "transcript-span:sha256:session:line:1:sha256:preference"
