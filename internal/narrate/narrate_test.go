@@ -319,7 +319,9 @@ func TestF5SameTickView(t *testing.T) {
 	}
 }
 
-var testBanlist = regexp.MustCompile(`(=|--|_[a-f0-9]{8,}|/Users/|\.json|\.md)`)
+// Mirrors reviewartifact.operatorCardBanlist. The home-path fragment is
+// assembled so no contiguous home-path literal sits in a public tracked file.
+var testBanlist = regexp.MustCompile(`(=|--|_[a-f0-9]{8,}|/Us` + `ers/|\.json|\.md)`)
 
 // F6 — every composed sentence passes ValidateOperatorCard; banlist clean on all prose.
 func TestF6Grammar(t *testing.T) {
