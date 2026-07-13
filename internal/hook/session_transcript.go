@@ -75,7 +75,7 @@ func buildWorklessSessionReceipt(name string, fx Fixture, now time.Time) (*envel
 	used := mergeUniqueStrings(summary.SkillsFired, summary.ConsumedRefs)
 	evidenceRefs := []string{}
 	if name == "SessionEnd" {
-		evidenceRefs = summary.OperatorSpanRefs
+		evidenceRefs = append(evidenceRefs, summary.OperatorSpanRefs...)
 	}
 	rec := &envelope.Receipt{
 		Header: envelope.Header{
