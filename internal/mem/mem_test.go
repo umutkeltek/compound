@@ -801,6 +801,104 @@ func TestPartialPromotionRecoveryReusesPersistedTransition(t *testing.T) {
 	}
 }
 
+func TestPartialPromotionRecoveryRejectsCorruptStableTransition(t *testing.T) {
+	s := newStore(t)
+	seed := cand("project:api", "runtime", "go", "")
+	seed.PromotionBasis = candidates.BasisTrustedDeterministic
+	seed.ClaimType = "status"
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+
+	eventsPath := filepath.Join(s.home, "events")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(eventsPath, []byte("blocks first transition directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "promote", "work_corrupt_transition", t0); err == nil {
+		t.Fatal("promotion succeeded despite blocked transition write")
+	}
+	partialClaims, err := s.loadClaims()
+	if err != nil || len(partialClaims) != 1 {
+		t.Fatalf("partial promotion claims = %+v, err=%v", partialClaims, err)
+	}
+	if err := os.Remove(eventsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(eventsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stablePath := s.eventPath(idFor("tr_", partialClaims[0].ID))
+	if err := os.WriteFile(stablePath, []byte("{\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Adjudicate(captured[0].ID, "promote", "work_corrupt_transition", t0.Add(time.Second)); err == nil {
+		t.Fatal("recovery ignored corrupt stable transition")
+	}
+	events, err := os.ReadDir(eventsPath)
+	if err != nil || len(events) != 1 || events[0].Name() != filepath.Base(stablePath) {
+		t.Fatalf("corrupt recovery minted another transition: %+v, err=%v", events, err)
+	}
+	latest, err := s.getCandidate(captured[0].ID)
+	if err != nil || latest.State == "promoted" {
+		t.Fatalf("corrupt recovery promoted candidate: %+v, err=%v", latest, err)
+	}
+}
+
+func TestPartialPromotionRecoveryUsesClaimDerivedTransitionIdentity(t *testing.T) {
+	s := newStore(t)
+	seed := cand("project:api", "runtime", "go", "")
+	seed.PromotionBasis = candidates.BasisTrustedDeterministic
+	seed.ClaimType = "status"
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+
+	eventsPath := filepath.Join(s.home, "events")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(eventsPath, []byte("blocks first transition directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "promote", "work_transition_identity", t0); err == nil {
+		t.Fatal("promotion succeeded despite blocked transition write")
+	}
+	partialClaims, err := s.loadClaims()
+	if err != nil || len(partialClaims) != 1 {
+		t.Fatalf("partial promotion claims = %+v, err=%v", partialClaims, err)
+	}
+	if err := os.Remove(eventsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(eventsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := s.memoryTransition(partialClaims[0], Claim{}, false, "work_unrelated", t0.Add(time.Second))
+	unrelated.ID = "tr_unrelated"
+	if err := writeJSON(s.eventPath(unrelated.ID), &unrelated); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := s.Adjudicate(captured[0].ID, "promote", "work_transition_identity", t0.Add(2*time.Second))
+	if err != nil || recovered.Transition == nil {
+		t.Fatalf("identity recovery = %+v, err=%v", recovered, err)
+	}
+	wantID := idFor("tr_", partialClaims[0].ID)
+	if recovered.Transition.ID != wantID {
+		t.Fatalf("recovery reused unrelated transition %s, want claim-derived %s", recovered.Transition.ID, wantID)
+	}
+	events, err := os.ReadDir(eventsPath)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("identity recovery events = %+v, err=%v", events, err)
+	}
+}
+
 func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testing.T) {
 	s := newStore(t)
 	spanRef := "transcript-span:sha256:session:line:1:sha256:preference"
