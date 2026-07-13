@@ -441,10 +441,13 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 	if !found || !valid || report.CandidateArtifactRef != artifactRef || report.AttachedCandidateTipSHA != attachedTip || report.CandidateTipSHA != attachedTip {
 		return fmt.Errorf("recorded land-check %s candidate artifact no longer matches the latest verified commit attached to work %s", id, w.ID)
 	}
-	if !validLandingObjectID(report.CandidateTipSHA) || strings.TrimSpace(report.RepoPath) == "" || strings.TrimSpace(report.TargetRef) == "" || !report.CandidateContainedInTarget {
+	if !validLandingObjectID(report.CandidateTipSHA) || strings.TrimSpace(report.RepoPath) == "" || strings.TrimSpace(report.TargetRef) == "" {
 		return fmt.Errorf("recorded land-check %s is missing exact repository, candidate, or target identity", id)
 	}
-	if contract.PublicationMode == "required" && (!report.CandidateContainedInPublication || strings.TrimSpace(report.PublicationSHA) == "") {
+	if report.Status == "landed" && !report.CandidateContainedInTarget {
+		return fmt.Errorf("recorded land-check %s does not prove containment in bound target ref %s", id, contract.TargetLocalRef)
+	}
+	if report.Status == "landed" && contract.PublicationMode == "required" && (!report.CandidateContainedInPublication || strings.TrimSpace(report.PublicationSHA) == "") {
 		return fmt.Errorf("recorded land-check %s does not prove containment in bound publication ref %s", id, contract.PublicationRef)
 	}
 	return nil
