@@ -1,6 +1,7 @@
 package authority
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -145,6 +146,154 @@ func TestSourceControlReviewPlanRequiresDirtySnapshot(t *testing.T) {
 	if _, err := BuildSourceControlReviewPlan(snap, "", time.Now()); err == nil || !strings.Contains(err.Error(), "dirty source-control snapshot required") {
 		t.Fatalf("err = %v, want dirty snapshot requirement", err)
 	}
+}
+
+func TestRecordedSourceControlMutationReviewRequiresExactImmutableBinding(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	writeFile(t, filepath.Join(repo, "SECOND.md"), "second\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Head) != 40 {
+		t.Fatalf("review binding requires full immutable HEAD, got %q", snapshot.Head)
+	}
+	binding := SourceControlMutationBinding{
+		ActionWorkID:      "work_live_session_a",
+		MutationInputHash: "mutation-input:sha256:" + strings.Repeat("a", 64),
+		Capability:        "filesystem.write",
+		Action:            "multi_edit_file",
+		MutationClass:     "local_reversible",
+		TargetPaths:       []string{"README.md", "SECOND.md"},
+		ActionIntentIDs:   []string{"act_live_a", "act_live_b"},
+	}
+	plan, err := BuildSourceControlMutationReviewPlan(snapshot, "work_owner", binding, fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordSourceControlReviewPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := authorizeSourceControlMutationPlan(t, home, paths, plan)
+	if report.PlanDigest == "" || report.PlanDigest != plan.PlanDigest || report.WorkID != "work_owner" {
+		t.Fatalf("recorded report lost immutable plan/work binding: %+v", report)
+	}
+
+	matched, err := FindRecordedSourceControlMutationReview(home, snapshot, binding)
+	if err != nil || matched == nil {
+		t.Fatalf("exact recorded review did not match: report=%+v err=%v", matched, err)
+	}
+
+	stateCases := []struct {
+		name   string
+		mutate func(*SourceControlSnapshot)
+	}{
+		{"repo", func(s *SourceControlSnapshot) { s.RepoID = "repo:other" }},
+		{"root", func(s *SourceControlSnapshot) { s.GitRoot = filepath.Join(repo, "other-clone") }},
+		{"head", func(s *SourceControlSnapshot) { s.Head = strings.Repeat("b", 40) }},
+		{"content-index fingerprint", func(s *SourceControlSnapshot) { s.ChangedStateFingerprint = "sha256:" + strings.Repeat("b", 64) }},
+	}
+	for _, tc := range stateCases {
+		t.Run("mismatched "+tc.name, func(t *testing.T) {
+			changed := snapshot
+			tc.mutate(&changed)
+			if got, findErr := FindRecordedSourceControlMutationReview(home, changed, binding); findErr != nil || got != nil {
+				t.Fatalf("mismatched %s matched: report=%+v err=%v", tc.name, got, findErr)
+			}
+		})
+	}
+
+	bindingCases := []struct {
+		name   string
+		mutate func(*SourceControlMutationBinding)
+	}{
+		{"action work", func(b *SourceControlMutationBinding) { b.ActionWorkID = "work_live_other" }},
+		{"input", func(b *SourceControlMutationBinding) {
+			b.MutationInputHash = "mutation-input:sha256:" + strings.Repeat("b", 64)
+		}},
+		{"capability", func(b *SourceControlMutationBinding) { b.Capability = "filesystem.delete" }},
+		{"action", func(b *SourceControlMutationBinding) { b.Action = "edit_file" }},
+		{"class", func(b *SourceControlMutationBinding) { b.MutationClass = "destructive" }},
+		{"partial target set", func(b *SourceControlMutationBinding) { b.TargetPaths = []string{"README.md"} }},
+	}
+	for _, tc := range bindingCases {
+		t.Run("mismatched "+tc.name, func(t *testing.T) {
+			changed := binding
+			changed.TargetPaths = append([]string{}, binding.TargetPaths...)
+			changed.ActionIntentIDs = append([]string{}, binding.ActionIntentIDs...)
+			tc.mutate(&changed)
+			if got, findErr := FindRecordedSourceControlMutationReview(home, snapshot, changed); findErr != nil || got != nil {
+				t.Fatalf("mismatched %s matched: report=%+v err=%v", tc.name, got, findErr)
+			}
+		})
+	}
+
+	originalPlanBytes, err := os.ReadFile(paths.PlanPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tampered SourceControlReviewPlan
+	if err := json.Unmarshal(originalPlanBytes, &tampered); err != nil {
+		t.Fatal(err)
+	}
+	tampered.Head = strings.Repeat("c", 40)
+	tamperedBytes, err := json.MarshalIndent(tampered, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.PlanPath, tamperedBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, findErr := FindRecordedSourceControlMutationReview(home, snapshot, binding); findErr != nil || got != nil {
+		t.Fatalf("tampered plan after review matched: report=%+v err=%v", got, findErr)
+	}
+}
+
+func TestLegacyCountOnlySourceControlReviewCannotAuthorizeMutation(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_owner", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordSourceControlReviewPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := SourceControlReview{
+		SchemaVersion: SourceControlReviewSchemaVersion,
+		ID:            plan.ReviewDraft.ReviewID, PlanID: plan.ID, RepoID: plan.RepoID,
+		Decision: "authorize_mutation", Rationale: "legacy count-only plan must not authorize",
+		Confidence: 1, EvidenceRefs: append([]string{}, plan.EvidenceRefs...),
+	}
+	if _, err := RecordSourceControlReview(home, review, paths.ReviewYAMLPath, fixedSourceControlReviewTime.Add(time.Minute)); err == nil {
+		t.Fatal("legacy count-only review unexpectedly authorized a mutation")
+	}
+}
+
+var fixedSourceControlReviewTime = time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+
+func authorizeSourceControlMutationPlan(t *testing.T, home string, paths SourceControlReviewPlanPaths, plan SourceControlReviewPlan) SourceControlReviewReport {
+	t.Helper()
+	review := SourceControlReview{
+		SchemaVersion: SourceControlReviewSchemaVersion,
+		ID:            plan.ReviewDraft.ReviewID, PlanID: plan.ID, RepoID: plan.RepoID,
+		Decision: "authorize_mutation", Rationale: "exact reviewed dirty mutation may proceed once",
+		Confidence: 1, EvidenceRefs: append([]string{}, plan.EvidenceRefs...),
+	}
+	report, err := RecordSourceControlReview(home, review, paths.ReviewYAMLPath, fixedSourceControlReviewTime.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return report
 }
 
 func gitStatusShort(t *testing.T, repo string) string {
