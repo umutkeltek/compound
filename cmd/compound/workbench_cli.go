@@ -859,7 +859,7 @@ func operatorStatusForItem(item work.WorkbenchItem) string {
 }
 
 func operatorAuthorityForItem(item work.WorkbenchItem) string {
-	if operatorItemNeedsUmut(item) {
+	if operatorItemNeedsOperator(item) {
 		return "Needs operator"
 	}
 	if strings.TrimSpace(item.State) == "verifying" ||
@@ -870,7 +870,7 @@ func operatorAuthorityForItem(item work.WorkbenchItem) string {
 	return "Free to act"
 }
 
-func operatorItemNeedsUmut(item work.WorkbenchItem) bool {
+func operatorItemNeedsOperator(item work.WorkbenchItem) bool {
 	if item.State == "held" || item.State == "blocked" {
 		return true
 	}

@@ -180,7 +180,7 @@ func TestWorkbenchOperatorDefaultIsBoundedGroupedAndJSONStable(t *testing.T) {
 		t.Fatalf("default operator output must hide Advanced without explicit opt-in:\n%s", operator)
 	}
 	if strings.Contains(operator, "clear 30 blocked items") || strings.Contains(operator, "clear 30 blocked item") {
-		t.Fatalf("operator summary must not tell Umut to clear all historical holds:\n%s", operator)
+		t.Fatalf("operator summary must not tell the operator to clear all historical holds:\n%s", operator)
 	}
 	if !strings.Contains(operator, "repeated held private config gate") {
 		t.Fatalf("operator summary should name the actual top priority:\n%s", operator)
