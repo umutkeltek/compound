@@ -91,7 +91,7 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 			TargetWorktreeRoot: repo,
 			TargetLocalRef:     "refs/heads/main",
 			ExpectedBaseSHA:    base,
-			PublicationMode:   "local_only",
+			PublicationMode:    "local_only",
 		},
 	}, cliTestNow)
 	if err != nil {
