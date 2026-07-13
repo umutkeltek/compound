@@ -280,6 +280,73 @@ func TestStandingGrantScopeAndBudget(t *testing.T) {
 	}
 }
 
+// A matched standing grant on a NON-READ mutation still carries the granted class's
+// trust duties (emit a Receipt, record a rollback_plan, capture a pre-image ref): the
+// autonomous/unattended path is exactly where nothing else guards the write, so it must
+// keep its accountability. Autonomy is NOT regressed -- the decision is still Allowed(),
+// so a granted action still flows without a per-item operator gate. A granted READ needs
+// no such duty and stays a bare allow.
+func TestStandingGrantKeepsTrustObligations(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StandingGrants = []StandingGrant{{
+		ID:            "grant_ext",
+		Capability:    "deploy.run",
+		MutationClass: "external_side_effect",
+		BlastRadius:   "repo",
+		ExpiresAt:     "2027-01-01T00:00:00Z",
+	}}
+	ai := mkAction("external_side_effect", "easy", "site/index.html", "repo")
+	ai.Capability = "deploy.run"
+
+	// (a) granted external_side_effect mutation -> allowed, carrying its trust duties.
+	pd := Evaluate(ai, cfg, fixedNow)
+	if !Allowed(pd) {
+		t.Fatalf("granted external mutation should be allowed, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if pd.Outcome != "allow_with_obligations" {
+		t.Fatalf("granted external mutation should carry obligations, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	for _, want := range []string{"emit a Receipt", "record a rollback_plan", "capture pre-image artifact ref"} {
+		if !testContains(pd.Obligations, want) {
+			t.Fatalf("granted external mutation missing trust obligation %q, got %v", want, pd.Obligations)
+		}
+	}
+	if pd.StandingGrantID != "grant_ext" {
+		t.Fatalf("granted decision should keep the grant id, got %q", pd.StandingGrantID)
+	}
+	if err := pd.Validate(); err != nil {
+		t.Fatalf("granted decision must be a valid envelope: %v", err)
+	}
+
+	// (b) autonomy preserved: the same granted decision still passes the gate
+	//     (it would still flow without a per-item operator gate).
+	if err := Gate(pd); err != nil {
+		t.Fatalf("granted mutation must still flow without a per-item gate: %v", err)
+	}
+
+	// (c) an UNGRANTED external_side_effect mutation still holds (unchanged).
+	if pd := Evaluate(ai, DefaultConfig(), fixedNow); pd.Outcome != "hold" {
+		t.Fatalf("ungranted external mutation should hold, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+
+	// (d) a granted READ stays a bare allow with no rollback obligation
+	//     (the change is scoped to non-read).
+	readCfg := DefaultConfig()
+	readCfg.StandingGrants = []StandingGrant{{ID: "grant_read", Capability: "filesystem.read", MutationClass: "read"}}
+	readAI := mkAction("read", "easy", "docs/x.md", "repo")
+	readAI.Capability = "filesystem.read"
+	rpd := Evaluate(readAI, readCfg, fixedNow)
+	if rpd.Outcome != "allow" {
+		t.Fatalf("granted read should stay a bare allow, got %q reasons=%v", rpd.Outcome, rpd.Reasons)
+	}
+	if len(rpd.Obligations) != 0 {
+		t.Fatalf("granted read should carry no obligations, got %v", rpd.Obligations)
+	}
+	if rpd.StandingGrantID != "grant_read" {
+		t.Fatalf("granted read should keep the grant id, got %q", rpd.StandingGrantID)
+	}
+}
+
 // Forbidden path beats a standing grant (hard safety wins).
 func TestForbiddenBeatsGrant(t *testing.T) {
 	cfg := DefaultConfig()
