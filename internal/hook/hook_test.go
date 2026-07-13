@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/authority"
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/contract"
@@ -1337,7 +1338,10 @@ func TestPreToolUseResolvesRelativeTargetAgainstHookCwd(t *testing.T) {
 		t.Fatal(err)
 	}
 	gotAction := res.Produced[0].(*envelope.ActionIntent)
-	wantTargetPath := filepath.Join(repo, "README.md")
+	wantTargetPath, err := authority.CanonicalSourceControlMutationTarget(repo, filepath.Join(repo, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if gotAction.Target.Path != wantTargetPath {
 		t.Fatalf("produced action target path = %q, want resolved %q", gotAction.Target.Path, wantTargetPath)
 	}
