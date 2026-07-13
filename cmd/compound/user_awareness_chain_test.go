@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -383,6 +385,133 @@ func assertUserAwarenessBreadthIndex(t *testing.T, homePath, claimID string) str
 	return filepath.Dir(manifests[0])
 }
 
+type userPromptMeaningState struct {
+	Candidates        map[string]string
+	Receipts          map[string]string
+	DistillerRequests map[string]string
+	RouteEvidence     string
+	ProviderLedger    string
+}
+
+func seedUserPromptMeaningArtifacts(t *testing.T, homePath string, store *mem.Store, request distiller.LLMExtractionRequest) {
+	t.Helper()
+	captured, err := store.Capture([]mem.Candidate{{
+		Entity:         "fixture:user-prompt-isolation",
+		Predicate:      "state",
+		Object:         "parked sentinel",
+		Confidence:     0.9,
+		Derivation:     "deterministic",
+		ClaimType:      "status",
+		SourceTraceRef: "trace_user_prompt_isolation",
+		SnippetHash:    "sha256:user-prompt-isolation",
+		Visibility:     "private",
+	}}, cliTestNow)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("seed parked candidate = %+v, err=%v", captured, err)
+	}
+	if _, err := store.Adjudicate(captured[0].ID, candidates.Park, "work_user_awareness_chain", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := distiller.RecordLLMExtractionRequest(homePath, request); err != nil {
+		t.Fatal(err)
+	}
+	routeEvidence, err := distiller.BuildExecutionRouteEvidence(request, distiller.LiveExtractionReport{
+		SchemaVersion: distiller.LiveExtractionSchemaVersion,
+		Provider:      "fixture-no-call",
+		Model:         "fixture-no-call",
+		Called:        false,
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := distiller.RecordExecutionRouteEvidence(homePath, routeEvidence); err != nil {
+		t.Fatal(err)
+	}
+	providerLedgerPath := filepath.Join(homePath, "ledger", "provider-calls.ndjson")
+	providerSentinel := `{"request_id":"provider_sentinel","ts_start":"2026-07-13T01:00:00Z","ts_end":"2026-07-13T01:00:00Z","caller":"test","project":"compound","purpose":"no-call-sentinel","host":"fixture.invalid","route_alias":"none","provider":"fixture-no-call","model":"fixture-no-call","transport":"none","status":"not_called","metadata_quality":"synthetic"}` + "\n"
+	if err := os.WriteFile(providerLedgerPath, []byte(providerSentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func snapshotUserPromptMeaningState(t *testing.T, homePath string) userPromptMeaningState {
+	t.Helper()
+	return userPromptMeaningState{
+		Candidates:        snapshotUserPromptFiles(t, homePath, filepath.Join(homePath, "inbox"), nil),
+		Receipts:          snapshotUserPromptFiles(t, homePath, filepath.Join(homePath, "events"), func(data []byte) bool { return envelopeSchema(data) == envelope.SVReceipt }),
+		DistillerRequests: snapshotUserPromptFiles(t, homePath, filepath.Join(homePath, "reviews", distiller.LLMRequestRecordArea), nil),
+		RouteEvidence:     snapshotUserPromptFile(t, filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")),
+		ProviderLedger:    snapshotUserPromptFile(t, filepath.Join(homePath, "ledger", "provider-calls.ndjson")),
+	}
+}
+
+func assertUserPromptMeaningStateNonEmpty(t *testing.T, state userPromptMeaningState) {
+	t.Helper()
+	if len(state.Candidates) == 0 || len(state.Receipts) == 0 || len(state.DistillerRequests) == 0 || state.RouteEvidence == "missing" || state.ProviderLedger == "missing" {
+		t.Fatalf("meaning-state sentinels incomplete: %+v", state)
+	}
+}
+
+func assertUserPromptMeaningStateUnchanged(t *testing.T, before, after userPromptMeaningState) {
+	t.Helper()
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("production UserPromptSubmit mutated extraction/provider meaning state\nbefore=%+v\nafter=%+v", before, after)
+	}
+}
+
+func snapshotUserPromptFiles(t *testing.T, homePath, root string, include func([]byte) bool) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if include != nil && !include(data) {
+			return nil
+		}
+		rel, err := filepath.Rel(homePath, path)
+		if err != nil {
+			return err
+		}
+		files[rel] = fmt.Sprintf("%x", sha256.Sum256(data))
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func snapshotUserPromptFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "missing"
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
+func envelopeSchema(data []byte) string {
+	var probe struct {
+		SchemaVersion string `json:"schema_version"`
+	}
+	_ = json.Unmarshal(data, &probe)
+	return probe.SchemaVersion
+}
+
 func assertPackIncludesUserAwarenessClaim(t *testing.T, homePath string, in contract.Input, claimRef string) {
 	t.Helper()
 	pack, err := contract.PackWithCapabilities(in, contract.DefaultPolicy(), homePath, cliTestNow)
@@ -402,18 +531,5 @@ func assertPackExcludesUserAwarenessClaim(t *testing.T, homePath string, in cont
 	}
 	if stringSliceContains(pack.ActiveMemory, claimRef) {
 		t.Fatalf("unrelated pack active_memory = %v, must exclude %s", pack.ActiveMemory, claimRef)
-	}
-}
-
-func assertNoUserPromptModelArtifacts(t *testing.T, homePath string) {
-	t.Helper()
-	for _, path := range []string{
-		filepath.Join(homePath, "reviews", "distiller-requests"),
-		filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl"),
-		filepath.Join(homePath, "ledger", "provider-calls.ndjson"),
-	} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("UserPromptSubmit must not create distiller/provider artifact %s (stat=%v)", path, err)
-		}
 	}
 }
