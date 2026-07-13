@@ -74,10 +74,39 @@ type EvaluationContext struct {
 
 // SourceControlContext is a read-only git status observation for the action target.
 type SourceControlContext struct {
-	EntityRef    string   `json:"entity_ref,omitempty"`
-	Status       string   `json:"status,omitempty"`
-	ChangedPaths int      `json:"changed_paths,omitempty"`
-	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	EntityRef               string                         `json:"entity_ref,omitempty"`
+	GitRoot                 string                         `json:"git_root,omitempty"`
+	Remote                  string                         `json:"remote,omitempty"`
+	Head                    string                         `json:"head,omitempty"`
+	Status                  string                         `json:"status,omitempty"`
+	ChangedPaths            int                            `json:"changed_paths,omitempty"`
+	ChangedStateFingerprint string                         `json:"changed_state_fingerprint,omitempty"`
+	ReviewedMutation        *ReviewedSourceControlMutation `json:"reviewed_mutation,omitempty"`
+	EvidenceRefs            []string                       `json:"evidence_refs,omitempty"`
+}
+
+// ReviewedSourceControlMutation is an exact, recorded capability. The authority
+// adapter verifies the immutable plan/report pair before constructing it; policy
+// independently rechecks every field available on the live ActionIntent/snapshot.
+type ReviewedSourceControlMutation struct {
+	Status                  string   `json:"status"`
+	Decision                string   `json:"decision"`
+	ReviewID                string   `json:"review_id"`
+	PlanID                  string   `json:"plan_id,omitempty"`
+	PlanDigest              string   `json:"plan_digest,omitempty"`
+	OwnerWorkID             string   `json:"owner_work_id"`
+	ActionWorkID            string   `json:"action_work_id"`
+	RepoID                  string   `json:"repo_id"`
+	GitRoot                 string   `json:"git_root"`
+	Remote                  string   `json:"remote,omitempty"`
+	Head                    string   `json:"head"`
+	ChangedStateFingerprint string   `json:"changed_state_fingerprint"`
+	MutationInputHash       string   `json:"mutation_input_hash"`
+	Capability              string   `json:"capability"`
+	Action                  string   `json:"action"`
+	MutationClass           string   `json:"mutation_class"`
+	TargetPaths             []string `json:"target_paths"`
+	EvidenceRefs            []string `json:"evidence_refs,omitempty"`
 }
 
 // PlacementGuardContext is owner-placement evidence for an intended mutation.
@@ -267,11 +296,19 @@ func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionInt
 	if ai.MutationClass == "read" || strings.TrimSpace(sc.Status) != "dirty" {
 		return pd
 	}
+	if reviewedSourceControlMutationMatches(ai, sc) {
+		pd.EvidenceRefs = mergeStrings(pd.EvidenceRefs, sc.ReviewedMutation.EvidenceRefs...)
+		pd.Reasons = append(pd.Reasons, fmt.Sprintf("exact recorded source-control review %s matches repo, full HEAD, changed-state fingerprint, action work, session-bound input, action/class/capability, and target set; dirty escalation not added", sc.ReviewedMutation.ReviewID))
+		return pd
+	}
 	entity := strings.TrimSpace(sc.EntityRef)
 	if entity == "" {
 		entity = "target repo"
 	}
 	reason := fmt.Sprintf("source_control_status dirty for %s changed_paths=%d; target mutation requires clean or explicitly reviewed repo state", entity, sc.ChangedPaths)
+	if sc.ReviewedMutation != nil {
+		reason += "; recorded review did not exactly match the live state and mutation"
+	}
 	pd.Reasons = append(pd.Reasons, reason)
 	if severity[pd.Outcome] < severity["hold"] {
 		pd.Outcome = "hold"
@@ -281,6 +318,26 @@ func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionInt
 		pd.ID = idFor("pol_", ai.ID, "hold", "source-control-dirty", ts(now))
 	}
 	return pd
+}
+
+func reviewedSourceControlMutationMatches(ai envelope.ActionIntent, sc SourceControlContext) bool {
+	review := sc.ReviewedMutation
+	if review == nil || review.Status != "recorded" || review.Decision != "authorize_mutation" {
+		return false
+	}
+	if strings.TrimSpace(review.ReviewID) == "" || strings.TrimSpace(review.PlanDigest) == "" || strings.TrimSpace(review.OwnerWorkID) == "" {
+		return false
+	}
+	if review.RepoID != sc.EntityRef || strings.TrimSpace(sc.GitRoot) == "" || filepath.Clean(review.GitRoot) != filepath.Clean(sc.GitRoot) || review.Remote != sc.Remote || review.Head != sc.Head || review.ChangedStateFingerprint != sc.ChangedStateFingerprint {
+		return false
+	}
+	if review.ActionWorkID != ai.IDs.WorkID || review.Capability != ai.Capability || review.Action != ai.Action || review.MutationClass != ai.MutationClass {
+		return false
+	}
+	if !contains(review.TargetPaths, filepath.Clean(ai.Target.Path)) || !contains(ai.EvidenceRefs, review.MutationInputHash) {
+		return false
+	}
+	return strings.HasPrefix(review.MutationInputHash, "mutation-input:sha256:")
 }
 
 // Allowed reports whether a decision permits the action to proceed.
