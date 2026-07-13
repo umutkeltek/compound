@@ -8,6 +8,13 @@ makes agent work accumulate instead — every session leaves claims, receipts,
 and lenses behind, and the next session starts smarter because of them. Across
 any harness, any model, any vendor.
 
+The thesis: meta-thinking must be engineered — compounding is not a feeling
+that emerges on its own. Ideas die when they are captured wrong. Captured at
+execution-abstraction — a predicate, a falsifier, an envelope — an idea
+survives the moment it was had and reaches a factory that can act on it and
+adapt because of it. Compound is that capture format and that factory, as one
+substrate.
+
 Compound owns the spine: context, decisions, work, policy, evidence, receipts,
 transitions, memory, capabilities, products, routes, and runtime bindings.
 Executors are rented edges. Search is not truth. Model output is not canon.
