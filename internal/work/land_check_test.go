@@ -379,6 +379,36 @@ func TestRecordedLandCheckContentIsTamperEvident(t *testing.T) {
 	}
 }
 
+func TestLandCheckRecordDoesNotAcceptTamperedExistingContent(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "record collision stays tamper evident", ExpectedBaseSHA: base}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(time.Minute))
+	checkAt := now.Add(2 * time.Minute)
+	opts := LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main", Record: true}
+	proof, err := store.LandCheck(w.ID, opts, checkAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := proof
+	tampered.TargetSHA = candidate
+	if err := store.writeJSON(proof.ProofPath, &tampered); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LandCheck(w.ID, opts, checkAt); err == nil || !strings.Contains(err.Error(), "tampered existing") {
+		t.Fatalf("re-record over tampered proof err = %v", err)
+	}
+}
+
 func TestLandingCloseGateLeavesLegacyAndFailedWorkCompatible(t *testing.T) {
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	store, err := Open(t.TempDir())
