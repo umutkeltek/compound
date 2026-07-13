@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,12 @@ import (
 // selector (pure work-package tests that do not inject one) means preparation routing is
 // unavailable and dispatch falls back to the codex default.
 var PreparationLaneSelector func(homePath, class string, now time.Time) (*laneselect.PreparationLaneRanking, error)
+
+// LaneCapacityGuard is the injected route-evidence adapter that evaluates the lane selected by
+// dispatch. Keeping the seam in work avoids a work -> routeevidence import cycle; the
+// routeevidence package installs the production adapter and tests may inject fixture paths.
+// A nil guard preserves pure work-package behavior for harnesses that do not import routing.
+var LaneCapacityGuard LaneCapacityGuardFunc
 
 const DispatchPlanSchemaVersion = "compound.work_dispatch_plan.v0.1"
 const DispatchClaimSchemaVersion = "compound.work_dispatch_claim.v0.1"
@@ -45,6 +52,10 @@ type DispatchPlanOptions struct {
 	// preparation-lane selection instead of the "codex" default. Empty or non-preparation
 	// classes keep today's behavior byte-identical.
 	CapabilityClass string
+	// ExpectedMinutes is the work window checked against a lane capacity reset. Zero uses 60.
+	ExpectedMinutes int
+	// Confirm explicitly admits an unknown or expiring lane. It never overrides a wall/death.
+	Confirm bool
 }
 
 type DispatchPlan struct {
@@ -67,7 +78,40 @@ type DispatchPlan struct {
 	// Present only when a preparation-class dispatch ran the selection; omitted (and behavior
 	// byte-identical) for every other dispatch.
 	LaneSelection *laneselect.PreparationLaneRanking `json:"lane_selection,omitempty"`
+	// LaneCapacity is the capacity annotation for the selected actor. It remains visible when the
+	// actor is refused or held for confirmation; absence means no capacity adapter was installed.
+	LaneCapacity *DispatchLaneCapacity `json:"lane_capacity,omitempty"`
 }
+
+// DispatchLaneCapacity is the work-package projection of routeevidence.LaneCapacity. Times are
+// already normalized RFC3339 strings so this leaf seam stays independent of routeevidence types.
+type DispatchLaneCapacity struct {
+	Remaining  float64 `json:"remaining"`
+	ResetsAt   string  `json:"resets_at,omitempty"`
+	LastProven string  `json:"last_proven,omitempty"`
+	State      string  `json:"state"`
+	DataRef    string  `json:"data_ref,omitempty"`
+}
+
+type LaneCapacityGuardRequest struct {
+	HomePath        string
+	Lane            string
+	CapabilityClass string
+	WorkID          string
+	ExpectedMinutes int
+	Confirm         bool
+	Alternatives    []string
+	Now             time.Time
+}
+
+type LaneCapacityGuardResult struct {
+	Capacity             DispatchLaneCapacity
+	Refused              bool
+	ConfirmationRequired bool
+	Message              string
+}
+
+type LaneCapacityGuardFunc func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error)
 
 type DispatchPlanSource struct {
 	Kind         string `json:"kind"`
@@ -432,6 +476,35 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 			plan.NoAction = "open work is not ready to claim"
 		}
 	}
+	if plan.Selected != nil && LaneCapacityGuard != nil {
+		guarded, err := LaneCapacityGuard(LaneCapacityGuardRequest{
+			HomePath:        s.home,
+			Lane:            actor,
+			CapabilityClass: strings.TrimSpace(opts.CapabilityClass),
+			WorkID:          plan.Selected.WorkID,
+			ExpectedMinutes: dispatchExpectedMinutes(opts.ExpectedMinutes),
+			Confirm:         opts.Confirm,
+			Alternatives:    dispatchAlternativeLadder(laneSelection),
+			Now:             now,
+		})
+		if err != nil {
+			return DispatchPlan{}, fmt.Errorf("guard lane capacity: %w", err)
+		}
+		capacity := guarded.Capacity
+		plan.LaneCapacity = &capacity
+		switch {
+		case guarded.Refused:
+			plan.Selected = nil
+			plan.Status = "capacity_refused"
+			plan.NoAction = guarded.Message
+		case guarded.ConfirmationRequired:
+			plan.Selected = nil
+			plan.Status = "capacity_confirmation_required"
+			plan.NoAction = guarded.Message
+		case strings.TrimSpace(guarded.Message) != "":
+			plan.Warnings = append(plan.Warnings, guarded.Message)
+		}
+	}
 	if opts.Record {
 		path, err := s.RecordDispatchPlan(plan)
 		if err != nil {
@@ -440,6 +513,31 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 		plan.PlanPath = path
 	}
 	return plan, nil
+}
+
+func dispatchExpectedMinutes(value int) int {
+	if value <= 0 {
+		return 60
+	}
+	return value
+}
+
+func dispatchAlternativeLadder(selection *laneselect.PreparationLaneRanking) []string {
+	if selection == nil || len(selection.Candidates) == 0 {
+		return nil
+	}
+	candidates := append([]laneselect.PreparationLaneScore(nil), selection.Candidates...)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].RoutingPosition < candidates[j].RoutingPosition
+	})
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		lane := strings.TrimSpace(candidate.Lane)
+		if lane != "" {
+			out = append(out, lane)
+		}
+	}
+	return out
 }
 
 func (s *Store) RecordDispatchPlan(plan DispatchPlan) (string, error) {

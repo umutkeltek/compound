@@ -16,6 +16,14 @@ import (
 	"compound/internal/envelope"
 )
 
+func TestMain(m *testing.M) {
+	// External-package work tests import routeevidence through contract composition, which installs
+	// the production capacity adapter during init. Pure work tests own no capacity fixtures; the
+	// routeevidence package exercises the real adapter against injected temp paths.
+	LaneCapacityGuard = nil
+	os.Exit(m.Run())
+}
+
 func TestDispatchPlanSelectsReadyWorkWithoutClaiming(t *testing.T) {
 	s := newStore(t)
 	held, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "held needs review", State: "held"}, fixedNow)

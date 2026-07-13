@@ -9,11 +9,9 @@
 // provider-grain counts and timestamps survive. That stripping IS the feature (privacy law: this
 // repo is destined public).
 //
-// This SUPERSEDES the held capacity-gate patch (docs_private/plan/compound-authority-gate-
-// 2026-07-12.patch, UNAPPLIED, evidence only) at account grain: same fail-open / never-empty /
-// lane->provider shape, different input (accounts, not a rate-limit snapshot) and a binary (not
-// tiered near-limit/walled) admission decision — a provider either has healthy accounts or it
-// doesn't; there is no "sink to the tail" state for accounts.
+// Capacity admission consumes this projection at account grain. A provider with zero healthy
+// accounts is DEAD and fails closed; it is never resurrected into a route merely to keep the
+// chain non-empty.
 //
 // Like the held patch's capacity snapshot, this is a PROJECTION, not a governed registry: it is
 // rebuilt/overwritten wholesale on every import — no append-only evidence log.
@@ -340,31 +338,6 @@ func laneAccountProviderKey(lane CapabilityRouteLane) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-// resurrectAccountAdmissionLanes moves account-omitted lanes back into the chain when admission
-// omits alone emptied it — account admission must NEVER return zero lanes. It strips the
-// resurrected lanes from omitted and clears their OmitReason, re-appending them to the chain in
-// original order. AccountAdmission stays "omitted" on the resurrected lane (transparency: it WAS
-// refused, then forced back in) — mirrors the held patch's resurrectCapacityLanes leaving
-// CapacityState untouched after resurrection.
-func resurrectAccountAdmissionLanes(chain, omitted, accountOmitted []CapabilityRouteLane) ([]CapabilityRouteLane, []CapabilityRouteLane) {
-	resurrected := make(map[string]bool, len(accountOmitted))
-	for _, lane := range accountOmitted {
-		resurrected[lane.ModelID] = true
-	}
-	kept := make([]CapabilityRouteLane, 0, len(omitted))
-	for _, lane := range omitted {
-		if resurrected[lane.ModelID] && lane.AccountAdmission == AccountAdmissionOmitted {
-			continue
-		}
-		kept = append(kept, lane)
-	}
-	for _, lane := range accountOmitted {
-		lane.OmitReason = ""
-		chain = append(chain, lane)
-	}
-	return chain, kept
 }
 
 // atomicWriteAccountProjection writes data to path via a temp file + rename so readers never see a

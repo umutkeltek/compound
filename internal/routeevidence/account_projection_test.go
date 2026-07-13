@@ -79,6 +79,13 @@ func warningsContain(warnings []string, substr string) bool {
 	return false
 }
 
+func accountAdmissionCapacityConfig(t *testing.T, home string) LaneCapacityConfig {
+	t.Helper()
+	cfg := capacityFixtureConfig(t)
+	cfg.Paths.AccountProjectionPath = AccountProjectionPath(home)
+	return cfg
+}
+
 // (F1) valid admin-accounts@1 JSON -> projection written under temp home; identical re-import is
 // idempotent (same bytes, no duplicate report side-effects); absent projection is (_, false, nil);
 // bad schema is rejected.
@@ -153,13 +160,14 @@ func TestImportAccountProjectionRoundTrip(t *testing.T) {
 // reason; other lanes (claude healthy, switchback ungated) unaffected.
 func TestAccountAdmissionGateOmitsZeroHealthyProvider(t *testing.T) {
 	home := t.TempDir()
+	cfg := accountAdmissionCapacityConfig(t, home)
 	accountAdmissionRouteChain(t, home, []string{"codex/gpt", "claude/code", "switchback/fallback"})
 	src := filepath.Join("..", "..", "fixtures", "route", "account-projection-source.json")
 	if _, err := ImportAccountProjectionFile(home, src, t0); err != nil {
 		t.Fatalf("import: %v", err)
 	}
 
-	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{}, t0)
+	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{CapacityConfig: &cfg, Confirm: true}, t0)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -167,7 +175,7 @@ func TestAccountAdmissionGateOmitsZeroHealthyProvider(t *testing.T) {
 		t.Fatalf("zero-healthy codex must not remain in chain: %+v", plan.Chain)
 	}
 	omitted, ok := laneByID(plan.Omitted, "codex/gpt")
-	if !ok || !strings.Contains(omitted.OmitReason, "no healthy accounts") || !strings.Contains(omitted.OmitReason, "provider=codex") {
+	if !ok || omitted.Capacity == nil || omitted.Capacity.State != CapacityDead || !strings.Contains(omitted.OmitReason, "state=dead") {
 		t.Fatalf("bad codex omit reason: %+v", omitted)
 	}
 	if omitted.AccountAdmission != AccountAdmissionOmitted {
@@ -183,37 +191,35 @@ func TestAccountAdmissionGateOmitsZeroHealthyProvider(t *testing.T) {
 	}
 }
 
-// (F3) ALL providers zero-healthy -> chain resurrected with warning, not empty; status stays
-// "planned" and original order is preserved.
-func TestAccountAdmissionGateNeverEmptiesChain(t *testing.T) {
+// (F3, superseded by the capacity veto) ALL providers zero-healthy now fail closed. The old
+// account-only never-empty resurrection would dispatch a known-dead lane.
+func TestCapacityGateDeadAccountsCanEmptyChain(t *testing.T) {
 	home := t.TempDir()
+	cfg := accountAdmissionCapacityConfig(t, home)
 	accountAdmissionRouteChain(t, home, []string{"codex/gpt", "claude/code"})
 	src := filepath.Join("..", "..", "fixtures", "route", "account-projection-source-all-walled.json")
 	if _, err := ImportAccountProjectionFile(home, src, t0); err != nil {
 		t.Fatalf("import: %v", err)
 	}
 
-	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{}, t0)
+	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{CapacityConfig: &cfg, Confirm: true}, t0)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	if len(plan.Chain) != 2 {
-		t.Fatalf("account admission must not empty the chain; want 2 resurrected lanes, got %+v", plan.Chain)
+	if len(plan.Chain) != 0 || len(plan.Omitted) != 2 {
+		t.Fatalf("dead account lanes must fail closed; chain=%+v omitted=%+v", plan.Chain, plan.Omitted)
 	}
-	if plan.Status != "planned" {
-		t.Fatalf("status must stay planned after resurrection, got %q", plan.Status)
+	if plan.Status != "blocked_no_lane" {
+		t.Fatalf("all-dead route must block, got %q", plan.Status)
 	}
-	if plan.Chain[0].ModelID != "codex/gpt" || plan.Chain[1].ModelID != "claude/code" {
-		t.Fatalf("resurrected lanes must keep original order, got %+v", plan.Chain)
+	for _, modelID := range []string{"codex/gpt", "claude/code"} {
+		lane, ok := laneByID(plan.Omitted, modelID)
+		if !ok || lane.Capacity == nil || lane.Capacity.State != CapacityDead {
+			t.Fatalf("%s was not retained as a dead omitted lane: %+v", modelID, plan.Omitted)
+		}
 	}
-	if !warningsContain(plan.Warnings, "resurrected") {
-		t.Fatalf("expected loud resurrection warning, got %+v", plan.Warnings)
-	}
-	if _, ok := laneByID(plan.Omitted, "codex/gpt"); ok {
-		t.Fatalf("resurrected codex must not remain omitted: %+v", plan.Omitted)
-	}
-	if _, ok := laneByID(plan.Omitted, "claude/code"); ok {
-		t.Fatalf("resurrected claude must not remain omitted: %+v", plan.Omitted)
+	if warningsContain(plan.Warnings, "resurrected") {
+		t.Fatalf("dead lanes must not be resurrected: %+v", plan.Warnings)
 	}
 }
 
@@ -223,13 +229,14 @@ func TestAccountAdmissionGateNeverEmptiesChain(t *testing.T) {
 // feature absent" for this implementation.
 func TestAccountAdmissionGateFailOpenNoProjection(t *testing.T) {
 	home := t.TempDir()
+	cfg := accountAdmissionCapacityConfig(t, home)
 	accountAdmissionRouteChain(t, home, []string{"codex/gpt", "claude/code", "switchback/fallback"})
 
-	plan1, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{}, t0)
+	plan1, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{CapacityConfig: &cfg, Confirm: true}, t0)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	plan2, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{}, t0)
+	plan2, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{CapacityConfig: &cfg, Confirm: true}, t0)
 	if err != nil {
 		t.Fatalf("plan again: %v", err)
 	}
@@ -255,6 +262,7 @@ func TestAccountAdmissionGateFailOpenNoProjection(t *testing.T) {
 // matching the import report; an ungated lane does NOT carry one.
 func TestAccountAdmissionGateStampsRevisionOnGatedLanes(t *testing.T) {
 	home := t.TempDir()
+	cfg := accountAdmissionCapacityConfig(t, home)
 	accountAdmissionRouteChain(t, home, []string{"codex/gpt", "claude/code", "zai/lane", "switchback/fallback"})
 	src := filepath.Join("..", "..", "fixtures", "route", "account-projection-source.json")
 	report, err := ImportAccountProjectionFile(home, src, t0)
@@ -262,7 +270,7 @@ func TestAccountAdmissionGateStampsRevisionOnGatedLanes(t *testing.T) {
 		t.Fatalf("import: %v", err)
 	}
 
-	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{}, t0)
+	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{CapacityConfig: &cfg, Confirm: true}, t0)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -312,6 +320,7 @@ func assertNoAccountLeak(t *testing.T, label string, body []byte) {
 // JSON may contain a pa_ prefix, an account_id field, or an email-shaped string.
 func TestAccountAdmissionGateNoAccountLeak(t *testing.T) {
 	home := t.TempDir()
+	cfg := accountAdmissionCapacityConfig(t, home)
 	accountAdmissionRouteChain(t, home, []string{"codex/gpt", "claude/code", "switchback/fallback"})
 	src := filepath.Join("..", "..", "fixtures", "route", "account-projection-source.json")
 
@@ -332,7 +341,7 @@ func TestAccountAdmissionGateNoAccountLeak(t *testing.T) {
 	}
 	assertNoAccountLeak(t, "projection file", projectionBytes)
 
-	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{}, t0)
+	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{CapacityConfig: &cfg, Confirm: true}, t0)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -347,6 +356,7 @@ func TestAccountAdmissionGateNoAccountLeak(t *testing.T) {
 // the fail-open shape (no Account* fields stamped on any lane).
 func TestAccountAdmissionGateStaleProjectionNotGated(t *testing.T) {
 	home := t.TempDir()
+	cfg := accountAdmissionCapacityConfig(t, home)
 	accountAdmissionRouteChain(t, home, []string{"codex/gpt", "claude/code", "switchback/fallback"})
 	src := filepath.Join("..", "..", "fixtures", "route", "account-projection-source.json")
 	staleImportTime := t0.Add(-7 * time.Hour)
@@ -354,7 +364,7 @@ func TestAccountAdmissionGateStaleProjectionNotGated(t *testing.T) {
 		t.Fatalf("import: %v", err)
 	}
 
-	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{}, t0)
+	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{CapacityConfig: &cfg, Confirm: true}, t0)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}

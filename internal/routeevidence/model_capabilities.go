@@ -135,6 +135,11 @@ type ModelCapabilitiesSourceAuthority struct {
 type CapabilityRoutePlanOptions struct {
 	PrivacySensitive            bool
 	SuppressPendingObservations bool
+	ExpectedMinutes             int
+	Confirm                     bool
+	// CapacityConfig injects source paths for tests and alternate runtime projections. Nil uses
+	// the production defaults rooted at the supplied Compound home.
+	CapacityConfig *LaneCapacityConfig
 }
 
 type CapabilityRoutePlan struct {
@@ -154,6 +159,9 @@ type CapabilityRoutePlan struct {
 	Omitted             []CapabilityRouteLane     `json:"omitted,omitempty"`
 	PendingObservations []PendingRouteObservation `json:"pending_observations,omitempty"`
 	Warnings            []string                  `json:"warnings,omitempty"`
+	// CapacityConfirmationRequired means one or more otherwise-capable subscription lanes were
+	// withheld because their capacity was unknown or reset inside the expected work window.
+	CapacityConfirmationRequired bool `json:"capacity_confirmation_required,omitempty"`
 }
 
 type CapabilityRouteLane struct {
@@ -182,6 +190,9 @@ type CapabilityRouteLane struct {
 	// account, or no data for it), or "ungated" (harness maps to no gated provider). Empty when the
 	// gate did not run.
 	AccountAdmission string `json:"account_admission,omitempty"`
+	// Capacity carries the exact source-derived state used by the veto. It annotates both
+	// admitted and omitted subscription lanes and is absent for non-subscription lanes.
+	Capacity *LaneCapacity `json:"capacity,omitempty"`
 }
 
 // PendingRouteObservation is read-only review debt visible to route planners.
@@ -416,7 +427,14 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 	// (byte-identical fail-open, F4); present-but-stale (>6h by its own imported_at) -> no gate,
 	// warned (F7). See account_projection.go.
 	accountGate := resolveAccountAdmissionGate(homePath, now)
-	var accountOmitted []CapabilityRouteLane
+	capacityConfig := DefaultLaneCapacityConfig(homePath)
+	if opts.CapacityConfig != nil {
+		capacityConfig = *opts.CapacityConfig
+	}
+	capacityConfig = normalizeLaneCapacityConfig(capacityConfig, homePath)
+	if opts.ExpectedMinutes > 0 {
+		capacityConfig.ExpectedMinutes = opts.ExpectedMinutes
+	}
 	for i, modelID := range defaults {
 		model := manifest.Models[modelID]
 		lane := capabilityRouteLane(capabilityClass, modelID, model, i)
@@ -425,32 +443,58 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 			plan.Omitted = append(plan.Omitted, lane)
 			continue
 		}
+		accountKey, accountMapped := laneAccountProviderKey(lane)
 		if accountGate.active {
-			if key, ok := laneAccountProviderKey(lane); ok {
+			if accountMapped {
 				lane.AccountProjectionRevision = accountGate.projection.SourceRevision
-				if entry, present := accountGate.projection.Providers[key]; present && entry.HealthyAccountCount == 0 {
+				if entry, present := accountGate.projection.Providers[accountKey]; present && entry.HealthyAccountCount == 0 {
 					lane.AccountAdmission = AccountAdmissionOmitted
-					lane.OmitReason = fmt.Sprintf("no healthy accounts for provider=%s (total=%d, revision=%s)", key, entry.TotalAccountCount, lane.AccountProjectionRevision)
-					plan.Omitted = append(plan.Omitted, lane)
-					accountOmitted = append(accountOmitted, lane)
-					continue
+				} else {
+					lane.AccountAdmission = AccountAdmissionAdmitted
 				}
-				lane.AccountAdmission = AccountAdmissionAdmitted
 			} else {
 				lane.AccountAdmission = AccountAdmissionUngated
 			}
 		}
+		if accountMapped {
+			decision, err := GuardLaneCapacity(
+				homePath,
+				accountKey,
+				capabilityClass,
+				now,
+				opts.Confirm,
+				defaults,
+				capacityConfig,
+			)
+			if err != nil {
+				return CapabilityRoutePlan{}, fmt.Errorf("guard lane %s capacity: %w", modelID, err)
+			}
+			capacity := decision.Capacity
+			lane.Capacity = &capacity
+			switch {
+			case decision.Refused:
+				lane.OmitReason = decision.Message
+				plan.Omitted = append(plan.Omitted, lane)
+				plan.Warnings = append(plan.Warnings, decision.Message)
+				continue
+			case decision.ConfirmationRequired:
+				lane.OmitReason = decision.Message
+				plan.Omitted = append(plan.Omitted, lane)
+				plan.CapacityConfirmationRequired = true
+				plan.Warnings = append(plan.Warnings, decision.Message)
+				continue
+			case strings.TrimSpace(decision.Message) != "":
+				plan.Warnings = append(plan.Warnings, decision.Message)
+			}
+		}
+		if lane.AccountAdmission == AccountAdmissionOmitted {
+			entry := accountGate.projection.Providers[accountKey]
+			lane.OmitReason = fmt.Sprintf("no healthy accounts for provider=%s (total=%d, revision=%s)", accountKey, entry.TotalAccountCount, lane.AccountProjectionRevision)
+			plan.Omitted = append(plan.Omitted, lane)
+			continue
+		}
 		plan.Chain = append(plan.Chain, lane)
 		plan.LaneJustification = append(plan.LaneJustification, lane.Justification)
-	}
-	// Account admission must NEVER return zero lanes: if admission omits alone emptied the chain,
-	// resurrect them with a loud warning. Privacy-only emptiness still blocks below, unchanged.
-	if len(plan.Chain) == 0 && len(accountOmitted) > 0 {
-		plan.Chain, plan.Omitted = resurrectAccountAdmissionLanes(plan.Chain, plan.Omitted, accountOmitted)
-		for _, lane := range accountOmitted {
-			plan.LaneJustification = append(plan.LaneJustification, lane.Justification)
-			plan.Warnings = append(plan.Warnings, "account admission gate resurrected "+lane.ModelID+": all mapped providers have zero healthy accounts, routing anyway")
-		}
 	}
 	if accountGate.warning != "" {
 		plan.Warnings = append(plan.Warnings, accountGate.warning)
@@ -481,8 +525,13 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 	}
 	plan.Warnings = sortedStrings(plan.Warnings)
 	if len(plan.Chain) == 0 {
-		plan.Status = "blocked_no_lane"
-		plan.Warnings = append(plan.Warnings, "no lane remains after policy filters")
+		if plan.CapacityConfirmationRequired {
+			plan.Status = "capacity_confirmation_required"
+			plan.Warnings = append(plan.Warnings, "no lane remains until capacity is confirmed")
+		} else {
+			plan.Status = "blocked_no_lane"
+			plan.Warnings = append(plan.Warnings, "no lane remains after policy filters")
+		}
 	}
 	return plan, nil
 }
