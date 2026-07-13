@@ -125,6 +125,8 @@ func main() {
 		cmdWorkbench(os.Args[2:])
 	case "attention":
 		cmdAttention(os.Args[2:])
+	case "narrate":
+		cmdNarrate(os.Args[2:])
 	case "executors":
 		cmdExecutors(os.Args[2:])
 	case "proof-check":
@@ -294,6 +296,7 @@ compound home <init|doctor|where|backup|export|verify|restore|archive-history|re
 compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition
 compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional packet offers, bounded capability offers, and route plan; no dispatch
 compound attention [--json] [--home P] ranked operator-attention projection from reviews, workbench, and executors; no mutation
+compound narrate [--json|--text] [--mood decide|wander|worry] [--recent N] [--home P] deterministic correspondent script (compound.narrate.v0.1) composed over attention/orient-changed/receipts; also embedded in orient --operator; reads the orient cursor, never advances it
 compound executors [--json] read-only executor projection from Workbench, leases, and profile guide; no health overclaim
 compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/gofmt/diff/doctors/redact
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it

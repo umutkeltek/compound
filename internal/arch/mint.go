@@ -94,6 +94,13 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "infra-os services/topology registry (services.yaml) installed verbatim under COMPOUND_HOME with source hash + revision recorded",
 		Consumer: "authority os-absorption-doctor's infra_registry_authority proof mode (compound/internal/authority)",
 	},
+	// narrate is the correspondent composer: a pure read-only projection that
+	// informs the operator; it blocks nothing, so it is evidence, not enforcement.
+	"organ:narrate": {
+		Class:    MintEvidence,
+		Purpose:  "deterministic correspondent script composed over the attention projection, orient changed-set, and recent receipt summaries",
+		Consumer: "compound narrate CLI and the embedded narrate field of orient --operator",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law

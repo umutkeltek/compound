@@ -67,6 +67,7 @@ var Classification = map[string]Class{
 	"harvest":        Leaf, // ruling harvester: classifies operator utterances + reconciles them against accepted decision records through mem/decisions/candidates; owns no authority object (corroboration lands on mem, novel rulings on the decision-candidate door proposed-only)
 	"hookplan":       Leaf, // desired/observed hook reconciliation model; installed-hooks ledger and harness configs retain authority
 	"laneselect":     Leaf, // pure preparation-lane ranking (fit/speed/cost) shared by work dispatch + routeevidence adapter; owns no authority objects, breaks the work<->routeevidence import cycle
+	"narrate":        Leaf, // composed read-only correspondent script over attention/orient-changed/receipts; owns no authority objects
 	"negatives":      Leaf, // rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient (Weng item 6)
 	"release":        Leaf,
 	"reviewartifact": Leaf,
