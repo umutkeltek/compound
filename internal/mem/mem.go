@@ -595,6 +595,54 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		}
 		prior, hasPrior = p, hp
 		if isDuplicatePromotion(c, prior, hasPrior) {
+			if oneOf(c.ID, prior.EvidenceRefs) {
+				// A prior attempt may have appended the immutable claim before a
+				// later Transition or candidate projection write failed. Retry the
+				// same candidate idempotently instead of rejecting its own claim.
+				claim = prior
+				var transitionPrior Claim
+				transitionHasPrior := false
+				if claim.Supersedes != "" {
+					claims, err := s.loadClaimsRaw()
+					if err != nil {
+						return err
+					}
+					for _, existing := range claims {
+						if existing.ID == claim.Supersedes {
+							transitionPrior = existing
+							transitionHasPrior = true
+							break
+						}
+					}
+					if !transitionHasPrior {
+						return fmt.Errorf("candidate %s recovery missing superseded claim %s", c.ID, claim.Supersedes)
+					}
+					edgeExists, err := s.hasEdge(EdgeKindSupersedes, claim.ID, transitionPrior.ID)
+					if err != nil {
+						return err
+					}
+					if !edgeExists {
+						edge := supersedesEdge(claim, transitionPrior, c, claim.Seq, now)
+						if err := appendJSONL(s.edgesLog(), &edge); err != nil {
+							return err
+						}
+					}
+				}
+				transition = s.memoryTransition(claim, transitionPrior, transitionHasPrior, workID, now)
+				if err := transition.Validate(); err != nil {
+					return fmt.Errorf("emitted transition invalid: %w", err)
+				}
+				if err := writeJSON(s.eventPath(transition.ID), &transition); err != nil {
+					return err
+				}
+				c.State = "promoted"
+				if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
+					return err
+				}
+				prior = transitionPrior
+				hasPrior = transitionHasPrior
+				return nil
+			}
 			dup = true
 			c.State = "rejected"
 			c.Reason = "duplicate of current claim " + prior.ID
@@ -1512,6 +1560,21 @@ func (s *Store) loadClaimsRaw() ([]Claim, error) {
 		return nil
 	})
 	return out, err
+}
+
+func (s *Store) hasEdge(kind, from, to string) (bool, error) {
+	exists := false
+	err := readJSONL(s.edgesLog(), func(line []byte) error {
+		var edge Edge
+		if err := json.Unmarshal(line, &edge); err != nil {
+			return err
+		}
+		if edge.Kind == kind && edge.From == from && edge.To == to {
+			exists = true
+		}
+		return nil
+	})
+	return exists, err
 }
 
 type claimReviewMark struct {
