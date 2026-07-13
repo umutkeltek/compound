@@ -2006,6 +2006,10 @@ func cmdMemory(args []string) {
 		fmt.Printf("- ledger_unchanged: %t\n", report.LedgerUnchanged)
 		fmt.Printf("- owner_ledger_advanced: %t\n", report.OwnerLedgerAdvanced)
 		fmt.Printf("- retry_count: %d\n", report.RetryCount)
+		fmt.Printf("- advanced_rows: %d\n", report.AdvancedRows)
+		if report.Note != "" {
+			fmt.Printf("- note: %s\n", report.Note)
+		}
 		if report.Degraded {
 			fmt.Printf("- degraded: %s\n", report.Error)
 		}

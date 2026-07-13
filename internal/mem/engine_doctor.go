@@ -44,10 +44,17 @@ type EngineDoctorHit struct {
 	Seq       int64  `json:"seq"`
 }
 
+// ErrLedgerBusy means ownership attribution succeeded for every observed delta,
+// but the ledger advanced across both bounded attempts so current synchronization
+// could not be certified. It is not an engine-mutation verdict.
+var ErrLedgerBusy = errors.New("owned ledger remained active during engine doctor")
+
+var errLedgerChangedDuringDoctor = errors.New("owned ledger changed during engine doctor")
+
 // EngineDoctor runs one breadth query through the supplied rented engine and
-// verifies the owned ledger is byte-identical before and after the query. Missing
-// or unavailable breadth degrades explicitly; identity/protocol errors remain
-// hard failures.
+// verifies either a byte-stable ledger or that every observed delta is a governed
+// owner append. Missing or unavailable breadth degrades explicitly;
+// identity/protocol errors and engine-attributed writes remain hard failures.
 //
 // The owned ledger is live: OTHER compound processes (a governed close, a writeback
 // gate, a product signal) legitimately append rows while the doctor's query runs, so a
@@ -56,8 +63,9 @@ type EngineDoctorHit struct {
 // is append-only governed rows carrying producer provenance (plus a counter bump); an
 // engine mutation is not (a private index file dropped in the ledger, a non-append
 // rewrite, or a row without provenance). A purely-legit delta is retried ONCE against the
-// fresh generation and passes with an INFO note; an engine-attributed delta stays red and
-// names the offending path.
+// fresh generation. A second legitimate delta returns ErrLedgerBusy: ownership was
+// preserved, but current synchronization was not certified. An engine-attributed delta
+// stays red and names the offending path.
 func (s *Store) EngineDoctor(query string, k int, eng Engine) (EngineDoctorReport, error) {
 	if strings.TrimSpace(query) == "" {
 		return EngineDoctorReport{}, fmt.Errorf("query required")
@@ -67,6 +75,11 @@ func (s *Store) EngineDoctor(query string, k int, eng Engine) (EngineDoctorRepor
 	}
 	report, before, err := s.engineDoctorAttempt(query, k, eng)
 	if err == nil || report.LedgerUnchanged {
+		return report, err
+	}
+	if !errors.Is(err, errLedgerChangedDuringDoctor) {
+		// Snapshot and query errors are not ownership evidence. Preserve the real
+		// failure instead of classifying a zero/partial snapshot as engine mutation.
 		return report, err
 	}
 	if report.Error != "" && !report.Degraded {
@@ -90,6 +103,11 @@ func (s *Store) EngineDoctor(query string, k int, eng Engine) (EngineDoctorRepor
 		retry.Note = fmt.Sprintf("ledger advanced %d row(s) during doctor (concurrent legit writers); verified against fresh gen", delta.rows)
 		return retry, nil
 	}
+	if retryErr != nil && !errors.Is(retryErr, errLedgerChangedDuringDoctor) {
+		// Never turn a failed retry snapshot into a benign hot-ledger result. The
+		// caller needs the original error to know the proof did not run.
+		return retry, retryErr
+	}
 	if retry.LedgerUnchanged {
 		// A genuine (non-ledger) error surfaced on the retry.
 		return retry, retryErr
@@ -105,7 +123,8 @@ func (s *Store) EngineDoctor(query string, k int, eng Engine) (EngineDoctorRepor
 		return retry, fmt.Errorf("rented engine mutated owned ledger: %s", strings.Join(retryDelta.violations, "; "))
 	}
 	retry.AdvancedRows = delta.rows + retryDelta.rows
-	return retry, fmt.Errorf("owned ledger advanced during doctor and again during the stable retry (%d concurrent legit row(s)); no quiet window to prove ledger_unchanged", retry.AdvancedRows)
+	retry.Note = fmt.Sprintf("ledger remained active across both doctor attempts (%d concurrent legit row(s)); ownership preserved by governed append attribution; current synchronization not certified", retry.AdvancedRows)
+	return retry, fmt.Errorf("%w: %d concurrent legit row(s); current synchronization not certified", ErrLedgerBusy, retry.AdvancedRows)
 }
 
 func (s *Store) engineDoctorAttempt(query string, k int, eng Engine) (EngineDoctorReport, ledgerDoctorSnapshot, error) {
@@ -147,7 +166,7 @@ func (s *Store) engineDoctorAttempt(query string, k int, eng Engine) (EngineDoct
 	if !report.LedgerUnchanged {
 		// EngineDoctor attributes this delta (concurrent legit writers vs. an engine
 		// mutation). It is a hard failure only when the delta is engine-attributed.
-		return report, before, fmt.Errorf("rented engine mutated owned ledger")
+		return report, before, errLedgerChangedDuringDoctor
 	}
 	return report, before, nil
 }
@@ -300,6 +319,13 @@ func sha256Hex(b []byte) string {
 // shared lock. The rented query runs outside this lock; only the two observations
 // are stabilized so a real owner writer cannot advance between gen and digest.
 func (s *Store) ledgerDoctorSnapshot() (ledgerDoctorSnapshot, error) {
+	if s.ledgerDoctorSnapshotter != nil {
+		return s.ledgerDoctorSnapshotter()
+	}
+	return s.ledgerDoctorSnapshotFromDisk()
+}
+
+func (s *Store) ledgerDoctorSnapshotFromDisk() (ledgerDoctorSnapshot, error) {
 	lockPath := filepath.Join(s.home, "lock", "mem.lock")
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return ledgerDoctorSnapshot{}, err

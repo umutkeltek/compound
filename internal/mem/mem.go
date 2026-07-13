@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -209,6 +210,11 @@ type Store struct {
 	// the append-only entity registry once per claim. Production stores leave it
 	// nil and read the registry from disk through loadEntities.
 	entityLoader func() ([]Entity, error)
+
+	// ledgerDoctorSnapshotter is a test seam for proving snapshot failures are
+	// propagated instead of being misclassified as ledger mutation. Production
+	// stores leave it nil and snapshot the owned ledger from disk.
+	ledgerDoctorSnapshotter func() (ledgerDoctorSnapshot, error)
 }
 
 func Open(homePath string) (*Store, error) {
@@ -1285,6 +1291,10 @@ func (s *Store) doctorEngineHop(eng Engine, add func(name, status, detail string
 		detail += " (" + report.Note + ")"
 	}
 	if err != nil {
+		if errors.Is(err, ErrLedgerBusy) {
+			add("sync/embedding", "skipped", detail+": current synchronization not certified while governed owner writes remain active")
+			return
+		}
 		add("sync/embedding", "fail", detail+": "+err.Error())
 		return
 	}

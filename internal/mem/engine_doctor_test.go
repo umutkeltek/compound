@@ -2,6 +2,7 @@ package mem
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,6 +120,71 @@ func TestEngineDoctorRetriesWhenOwnedLedgerAdvancesDuringProbe(t *testing.T) {
 	}
 }
 
+func TestEngineDoctorReportsBusyUnderSustainedGovernedWrites(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	eng := &sustainedExternalWriterEngine{store: s}
+	report, err := s.EngineDoctor("ledger", 10, eng)
+	if !errors.Is(err, ErrLedgerBusy) {
+		t.Fatalf("sustained governed writes must return typed busy result, got %v; report=%+v", err, report)
+	}
+	if report.LedgerUnchanged {
+		t.Fatalf("hot-ledger proof must not claim a byte-stable window: %+v", report)
+	}
+	if !report.OwnerLedgerAdvanced || report.RetryCount != 1 || report.AdvancedRows < 2 {
+		t.Fatalf("expected attributed owner activity across both attempts: %+v", report)
+	}
+	if len(report.EngineViolations) != 0 {
+		t.Fatalf("governed appends are not engine violations: %+v", report)
+	}
+	if !strings.Contains(report.Note, "ownership preserved") || !strings.Contains(report.Note, "current synchronization not certified") {
+		t.Fatalf("busy result must state exactly what was and was not proved: %+v", report)
+	}
+}
+
+func TestDoctorEngineHopTreatsGovernedActivityAsSkippedNotFailed(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	var got Hop
+	s.doctorEngineHop(&sustainedExternalWriterEngine{store: s}, func(name, status, detail string) {
+		got = Hop{Name: name, Status: status, Detail: detail}
+	})
+	if got.Name != "sync/embedding" || got.Status != "skipped" {
+		t.Fatalf("normal governed activity should be non-failing but not current-ok: %+v", got)
+	}
+	if !strings.Contains(got.Detail, "owner_ledger_advanced=true") || !strings.Contains(got.Detail, "current synchronization not certified") {
+		t.Fatalf("skipped hop must explain the active-owner attribution: %+v", got)
+	}
+}
+
+func TestEngineDoctorPreservesRetrySnapshotError(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	calls := 0
+	s.ledgerDoctorSnapshotter = func() (ledgerDoctorSnapshot, error) {
+		calls++
+		if calls == 3 {
+			return ledgerDoctorSnapshot{}, errors.New("retry snapshot unavailable")
+		}
+		return s.ledgerDoctorSnapshotFromDisk()
+	}
+	report, err := s.EngineDoctor("ledger", 10, &externalWriterEngine{store: s})
+	if err == nil || !strings.Contains(err.Error(), "retry snapshot unavailable") {
+		t.Fatalf("retry snapshot failure must survive unchanged, got err=%v report=%+v", err, report)
+	}
+	if len(report.EngineViolations) != 0 {
+		t.Fatalf("snapshot failure is not an engine mutation: %+v", report)
+	}
+}
+
+func TestEngineDoctorRejectsMutationDuringRetry(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	report, err := s.EngineDoctor("ledger", 10, &retryMutatingEngine{store: s})
+	if err == nil || !strings.HasPrefix(err.Error(), "rented engine mutated owned ledger") {
+		t.Fatalf("retry mutation must remain a hard failure, got %v; report=%+v", err, report)
+	}
+	if len(report.EngineViolations) == 0 || !strings.Contains(strings.Join(report.EngineViolations, "; "), "retry-engine-owned-view") {
+		t.Fatalf("retry mutation must name the offending path: %+v", report)
+	}
+}
+
 func TestQueryBreadthRefusesEngineGenerationAheadOfOwnedLedger(t *testing.T) {
 	s := storeWith(t, "system:compound", "owner", "ledger")
 	eng := &aheadEngine{gen: s.currentGen() + 1}
@@ -209,6 +275,79 @@ type externalWriterEngine struct {
 	store *Store
 	base  LexicalEngine
 	wrote bool
+}
+
+// sustainedExternalWriterEngine models a legitimately hot ledger: a different
+// Compound owner appends a governed row during every rented-engine query.
+type sustainedExternalWriterEngine struct {
+	store  *Store
+	base   LexicalEngine
+	writes int
+}
+
+func (e *sustainedExternalWriterEngine) Capabilities() EngineCapabilities {
+	caps := e.base.Capabilities()
+	caps.Name = "sustained-external-writer-fixture"
+	return caps
+}
+
+func (e *sustainedExternalWriterEngine) Index(claims []Claim, gen int64) error {
+	return e.base.Index(claims, gen)
+}
+
+func (e *sustainedExternalWriterEngine) Query(text, gate string, allowlist []string, k int) ([]Hit, error) {
+	e.writes++
+	id := fmt.Sprintf("claim_external_legit_%d", e.writes)
+	if err := appendGovernedDoctorClaim(e.store, id); err != nil {
+		return nil, err
+	}
+	return e.base.Query(text, gate, allowlist, k)
+}
+
+// retryMutatingEngine first creates the legitimate owner-activity condition,
+// then writes an engine-owned artifact during the bounded retry.
+type retryMutatingEngine struct {
+	store   *Store
+	base    LexicalEngine
+	queries int
+}
+
+func (e *retryMutatingEngine) Capabilities() EngineCapabilities {
+	caps := e.base.Capabilities()
+	caps.Name = "retry-mutating-fixture"
+	return caps
+}
+
+func (e *retryMutatingEngine) Index(claims []Claim, gen int64) error {
+	return e.base.Index(claims, gen)
+}
+
+func (e *retryMutatingEngine) Query(text, gate string, allowlist []string, k int) ([]Hit, error) {
+	e.queries++
+	if e.queries == 1 {
+		if err := appendGovernedDoctorClaim(e.store, "claim_retry_legit"); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := os.WriteFile(filepath.Join(e.store.home, "ledger", "retry-engine-owned-view"), []byte("bad"), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return e.base.Query(text, gate, allowlist, k)
+}
+
+func appendGovernedDoctorClaim(store *Store, id string) error {
+	return store.withLock(func() error {
+		seq, err := store.nextSeq()
+		if err != nil {
+			return err
+		}
+		return appendJSONL(store.claimsLog(), Claim{
+			ID: id, Seq: seq, Entity: "other-session", Predicate: "closed",
+			Object: "governed sustained concurrent write", ValidFrom: t0.Format("2006-01-02T15:04:05Z07:00"),
+			Confidence: 1, Derivation: "deterministic", Visibility: "operational",
+		})
+	})
 }
 
 func (e *externalWriterEngine) Capabilities() EngineCapabilities {
