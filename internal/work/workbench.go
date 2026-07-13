@@ -751,10 +751,11 @@ func (s *Store) applyWorkbenchGitDelivery(item *WorkbenchItem, w envelope.WorkEn
 	if item == nil {
 		return
 	}
+	terminal := terminalStates[w.State]
 	_, tip, found, valid := latestCommitArtifact(w.ArtifactIDs)
 	item.CandidateTipSHA = tip
 	if w.GitDelivery == nil {
-		if found {
+		if found && !terminal {
 			item.LandingStatus = "missing_git_delivery_contract"
 			item.NextAction = "replace this incomplete code work with a WorkEnvelope carrying a complete git_delivery contract"
 		}
@@ -767,6 +768,9 @@ func (s *Store) applyWorkbenchGitDelivery(item *WorkbenchItem, w envelope.WorkEn
 	item.ExpectedBaseSHA = contract.ExpectedBaseSHA
 	item.PublicationMode = contract.PublicationMode
 	item.PublicationRef = contract.PublicationRef
+	if terminal {
+		return
+	}
 	switch {
 	case !found:
 		item.LandingStatus = "awaiting_candidate"
