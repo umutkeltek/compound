@@ -15,7 +15,7 @@ func TestPatternsRecurrence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+		if _, err := promoteForTest(t, s, c[0].ID, "", t0); err != nil {
 			t.Fatal(err)
 		}
 	}

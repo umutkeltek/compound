@@ -57,7 +57,7 @@ func storeWith(t *testing.T, e, p string, objs ...string) *Store {
 	s := newStore(t)
 	for _, o := range objs {
 		c, _ := s.Capture([]Candidate{cand(e, p, o, "")}, t0)
-		s.Adjudicate(c[0].ID, "promote", "", t0)
+		_, _ = promoteForTest(t, s, c[0].ID, "", t0)
 	}
 	return s
 }
@@ -70,7 +70,7 @@ func TestProtocolIndexesLedgerOwnedContext(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		res, err := s.Adjudicate(got[0].ID, "promote", "", t0)
+		res, err := promoteForTest(t, s, got[0].ID, "", t0)
 		if err != nil {
 			t.Fatal(err)
 		}

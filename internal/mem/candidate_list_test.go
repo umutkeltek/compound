@@ -24,7 +24,7 @@ func TestListCandidatesFiltersCountsAndEvidenceGate(t *testing.T) {
 	if _, err := s.Adjudicate(got[1].ID, "park", "", t0); err != nil {
 		t.Fatal(err)
 	}
-	promotedResult, err := s.Adjudicate(got[2].ID, "promote", "", t0)
+	promotedResult, err := promoteForTest(t, s, got[2].ID, "", t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestListCandidatesIncludeEvidenceAddsCardContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	promoted, err := s.Adjudicate(prior[0].ID, "promote", "", t0)
+	promoted, err := promoteForTest(t, s, prior[0].ID, "", t0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -122,7 +122,7 @@ func TestCaptureEchoReinforcesCurrentClaimWithoutNewCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	promoted, err := s.Adjudicate(first[0].ID, "promote", "", t0)
+	promoted, err := promoteForTest(t, s, first[0].ID, "", t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestCaptureChangedExactSlotWinsOverBroadEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimePrior, err := s.Adjudicate(runtimeCandidates[0].ID, "promote", "", t0)
+	runtimePrior, err := promoteForTest(t, s, runtimeCandidates[0].ID, "", t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestCaptureChangedExactSlotWinsOverBroadEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	aliasCurrent, err := s.Adjudicate(aliasCandidates[0].ID, "promote", "", t0)
+	aliasCurrent, err := promoteForTest(t, s, aliasCandidates[0].ID, "", t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestCaptureChangedExactSlotWinsOverBroadEcho(t *testing.T) {
 	if len(changedCandidates) != 1 {
 		t.Fatalf("changed exact slot returned %d candidate(s), want 1", len(changedCandidates))
 	}
-	promoted, err := s.Adjudicate(changedCandidates[0].ID, "promote", "", t0)
+	promoted, err := promoteForTest(t, s, changedCandidates[0].ID, "", t0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -258,7 +258,7 @@ func promoteTopicClaim(t *testing.T, s *Store, entity, predicate, object, topicR
 	if len(got) != 1 {
 		t.Fatalf("capture %s.%s produced %d candidates, want 1", entity, predicate, len(got))
 	}
-	res, err := s.Adjudicate(got[0].ID, "promote", "", now)
+	res, err := promoteForTest(t, s, got[0].ID, "", now)
 	if err != nil {
 		t.Fatalf("promote %s.%s: %v", entity, predicate, err)
 	}

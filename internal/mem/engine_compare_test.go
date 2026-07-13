@@ -47,12 +47,12 @@ func TestEngineCompareReportsDivergentCandidate(t *testing.T) {
 func TestEngineCompareAllowsCoveredExpansion(t *testing.T) {
 	s := newStore(t)
 	c1, _ := s.Capture([]Candidate{cand("project:api", "backend_language", "go", "")}, t0)
-	r1, err := s.Adjudicate(c1[0].ID, "promote", "", t0)
+	r1, err := promoteForTest(t, s, c1[0].ID, "", t0)
 	if err != nil || r1.Claim == nil {
 		t.Fatalf("promote backend claim: %v", err)
 	}
 	c2, _ := s.Capture([]Candidate{cand("project:api", "cache", "redis", "")}, t0)
-	r2, err := s.Adjudicate(c2[0].ID, "promote", "", t0)
+	r2, err := promoteForTest(t, s, c2[0].ID, "", t0)
 	if err != nil || r2.Claim == nil {
 		t.Fatalf("promote cache claim: %v", err)
 	}

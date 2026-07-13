@@ -109,7 +109,7 @@ func TestCanonClassSurvivesPromotion(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("captured %d", len(got))
 	}
-	res, err := s.Adjudicate(got[0].ID, "promote", "work_test_canon", t0)
+	res, err := promoteForTest(t, s, got[0].ID, "work_test_canon", t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestCanonDistributionDerivesLegacy(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range got {
-		if _, err := s.Adjudicate(c.ID, "promote", "work_dist", t0); err != nil {
+		if _, err := promoteForTest(t, s, c.ID, "work_dist", t0); err != nil {
 			t.Fatal(err)
 		}
 	}

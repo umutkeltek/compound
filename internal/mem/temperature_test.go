@@ -43,7 +43,7 @@ func tempSeedClaim(t *testing.T, s *Store, entity, pred, obj string, now time.Ti
 	if err != nil || len(got) != 1 {
 		t.Fatalf("capture %s.%s: got %d, err %v", entity, pred, len(got), err)
 	}
-	res, err := s.Adjudicate(got[0].ID, "promote", "", now)
+	res, err := promoteForTest(t, s, got[0].ID, "", now)
 	if err != nil || res.Claim == nil {
 		t.Fatalf("promote %s.%s: %v", entity, pred, err)
 	}
@@ -213,7 +213,7 @@ func TestBuildTemperatureRebuiltFromScratchDropsSupersededClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res1, err := s.Adjudicate(got1[0].ID, "promote", "", t0)
+	res1, err := promoteForTest(t, s, got1[0].ID, "", t0)
 	if err != nil || res1.Claim == nil {
 		t.Fatalf("promote v1: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestBuildTemperatureRebuiltFromScratchDropsSupersededClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res2, err := s.Adjudicate(got2[0].ID, "promote", "", t0.Add(time.Minute))
+	res2, err := promoteForTest(t, s, got2[0].ID, "", t0.Add(time.Minute))
 	if err != nil || res2.Claim == nil {
 		t.Fatalf("promote v2: %v", err)
 	}

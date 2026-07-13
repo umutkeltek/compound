@@ -10,7 +10,7 @@ func graphStore(t *testing.T) *Store {
 	s := newStore(t)
 	mk := func(e, p, o string) {
 		c, _ := s.Capture([]Candidate{cand(e, p, o, "")}, t0)
-		s.Adjudicate(c[0].ID, "promote", "", t0)
+		_, _ = promoteForTest(t, s, c[0].ID, "", t0)
 	}
 	mk("app", "lang", "go")
 	mk("auth", "lang", "go")
@@ -101,7 +101,7 @@ func TestRecallGraphFrontierRelation(t *testing.T) {
 	s := newStore(t)
 	mk := func(e string) {
 		c, _ := s.Capture([]Candidate{cand(e, "k", "v", "")}, t0)
-		s.Adjudicate(c[0].ID, "promote", "", t0)
+		_, _ = promoteForTest(t, s, c[0].ID, "", t0)
 	}
 	mk("app")
 	mk("x")
@@ -139,7 +139,7 @@ func TestRecallGraphDirectionalPartOfZoom(t *testing.T) {
 	s := newStore(t)
 	mk := func(e string) {
 		c, _ := s.Capture([]Candidate{cand(e, "kind", "industry", "")}, t0)
-		if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+		if _, err := promoteForTest(t, s, c[0].ID, "", t0); err != nil {
 			t.Fatalf("promote %s: %v", e, err)
 		}
 	}

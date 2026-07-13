@@ -43,7 +43,7 @@ func TestQueryBreadthExpansionDisabledByteIdentical(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Adjudicate(ids[0].ID, "promote", "", t0); err != nil {
+	if _, err := promoteForTest(t, s, ids[0].ID, "", t0); err != nil {
 		t.Fatal(err)
 	}
 	eng := &LexicalEngine{}
@@ -69,14 +69,14 @@ func TestQueryBreadthExpansionFindsPlantedPairWithoutDroppingPrimary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Adjudicate(sys[0].ID, "promote", "", t0); err != nil {
+	if _, err := promoteForTest(t, s, sys[0].ID, "", t0); err != nil {
 		t.Fatal(err)
 	}
 	pri, err := s.Capture([]Candidate{cand("project:x", "note", "memory layer documentation status", "")}, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Adjudicate(pri[0].ID, "promote", "", t0); err != nil {
+	if _, err := promoteForTest(t, s, pri[0].ID, "", t0); err != nil {
 		t.Fatal(err)
 	}
 

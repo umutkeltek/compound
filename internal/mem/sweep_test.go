@@ -75,7 +75,7 @@ func TestSynthesisSweepReopensPromotedClaimOnContradictingEvidence(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	promoted, err := s.Adjudicate(promotedCandidates[0].ID, "promote", "work_promote", t0)
+	promoted, err := promoteForTest(t, s, promotedCandidates[0].ID, "work_promote", t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func promoteOutcome(t *testing.T, s *Store, object string, now time.Time) Adjudi
 	if err != nil {
 		t.Fatal(err)
 	}
-	promoted, err := s.Adjudicate(got[0].ID, "promote", "work_runtime_outcome", now)
+	promoted, err := promoteForTest(t, s, got[0].ID, "work_runtime_outcome", now)
 	if err != nil {
 		t.Fatal(err)
 	}
