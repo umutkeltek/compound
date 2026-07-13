@@ -132,7 +132,9 @@ type DispatchPlanItem struct {
 	WorkID           string                `json:"work_id"`
 	State            string                `json:"state"`
 	Owner            string                `json:"owner,omitempty"`
+	GitDeliveryBound bool                  `json:"git_delivery_bound,omitempty"`
 	ExpectedBaseSHA  string                `json:"expected_base_sha,omitempty"`
+	LandingStatus    string                `json:"landing_status,omitempty"`
 	SuccessPredicate string                `json:"success_predicate,omitempty"`
 	DesiredOutcome   string                `json:"desired_outcome,omitempty"`
 	Action           string                `json:"action"`
@@ -1523,7 +1525,9 @@ func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 		WorkID:           item.WorkID,
 		State:            item.State,
 		Owner:            item.Owner,
+		GitDeliveryBound: item.GitDeliveryBound,
 		ExpectedBaseSHA:  item.ExpectedBaseSHA,
+		LandingStatus:    item.LandingStatus,
 		SuccessPredicate: item.SuccessPredicate,
 		DesiredOutcome:   item.DesiredOutcome,
 		Reason:           item.OpenReason,
@@ -1565,6 +1569,10 @@ func dispatchClosePlanCandidate(item WorkbenchItem, actor, outcome, moveType str
 		if dispatchLeaseHeldByOther(item, actor) {
 			out.Action = "held_by_other"
 			out.Reason = "lease held by " + item.ClaimedBy
+		} else if workbenchItemNeedsGitDeliveryProof(item) && item.LandingStatus != "ready_to_close" {
+			out.Action = "await_proof"
+			out.Reason = "source-controlled work is not ready to close: " + firstNonEmpty(item.LandingStatus, "missing Git delivery proof")
+			out.NextAction = item.NextAction
 		} else if hasCloseProofEvidence(item) {
 			out.Action = "plan_close"
 			out.Command = []string{"compound", "work", "close-plan", item.WorkID, "--outcome", outcome, "--move-type", moveType, "--actor", actor}
@@ -1587,6 +1595,14 @@ func dispatchClosePlanCandidate(item WorkbenchItem, actor, outcome, moveType str
 		out.Action = "review"
 	}
 	return out
+}
+
+func workbenchItemNeedsGitDeliveryProof(item WorkbenchItem) bool {
+	if item.GitDeliveryBound {
+		return true
+	}
+	_, _, found, _ := latestCommitArtifact(item.ArtifactIDs)
+	return found
 }
 
 func hasCloseProofEvidence(item WorkbenchItem) bool {
