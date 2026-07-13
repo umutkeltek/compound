@@ -203,11 +203,12 @@ func TestRepoTargetActionRequiresDeclaredDeliveryForEveryNonAuditMove(t *testing
 		t.Fatal(err)
 	}
 	if _, err := store.Close(w.ID, CloseInput{
-		Outcome:   "completed",
-		MoveType:  "memory_delta",
-		Actor:     "codex",
-		Summary:   "must bind repo delivery",
-		ProofRefs: []string{"check:focused-tests"},
+		Outcome:          "completed",
+		MoveType:         "memory_delta",
+		Actor:            "codex",
+		Summary:          "must bind repo delivery",
+		ProofRefs:        []string{"check:focused-tests"},
+		MemoryCandidates: []string{"candidate:repo-target"},
 	}, now.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), "git_delivery") || !strings.Contains(err.Error(), action.ID) {
 		t.Fatalf("repo-target action omission should fail closed, got %v", err)
 	}
@@ -290,11 +291,12 @@ func TestRepoTargetActionEvidenceCannotDisappearBeforeClose(t *testing.T) {
 				}
 			}
 			if _, err := store.Close(w.ID, CloseInput{
-				Outcome:   "completed",
-				MoveType:  "memory_delta",
-				Actor:     "codex",
-				Summary:   "corrupt action evidence must not erase delivery scope",
-				ProofRefs: []string{"check:focused-tests"},
+				Outcome:          "completed",
+				MoveType:         "memory_delta",
+				Actor:            "codex",
+				Summary:          "corrupt action evidence must not erase delivery scope",
+				ProofRefs:        []string{"check:focused-tests"},
+				MemoryCandidates: []string{"candidate:repo-evidence"},
 			}, now.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), action.ID) {
 				t.Fatalf("%s ActionIntent should fail loudly, got %v", mutate, err)
 			}
