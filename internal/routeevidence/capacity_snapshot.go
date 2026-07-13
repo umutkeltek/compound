@@ -42,6 +42,10 @@ type LaneCapacity struct {
 	State      LaneCapacityState `json:"state"`
 	Source     string            `json:"source,omitempty"`
 	DataRef    string            `json:"data_ref,omitempty"`
+	// SourceInstalled reports whether ANY configured capacity source file exists. Unknown while
+	// unwired fails OPEN (warning only) — a fresh adopter home without CodexBar/quota/projection
+	// must not demand --confirm forever; unknown while wired stays confirmation-gated.
+	SourceInstalled bool `json:"source_installed"`
 }
 
 type LaneCapacityPaths struct {
@@ -78,7 +82,11 @@ func ReadLaneCapacity(lane string, now time.Time) (LaneCapacity, error) {
 func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConfig) (LaneCapacity, error) {
 	cfg = normalizeLaneCapacityConfig(cfg, "")
 	key := normalizeLaneCapacityKey(lane)
-	capacity := LaneCapacity{State: CapacityUnknown, DataRef: "no matching capacity row"}
+	installed := capacitySourceInstalled(cfg.Paths)
+	capacity := LaneCapacity{State: CapacityUnknown, DataRef: "no matching capacity row", SourceInstalled: installed}
+	if !installed {
+		capacity.DataRef = "no capacity source installed"
+	}
 	if key == "" {
 		return capacity, nil
 	}
@@ -110,7 +118,20 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 		dead.ResetsAt = capacity.ResetsAt
 		capacity = dead
 	}
+	capacity.SourceInstalled = installed
 	return capacity, nil
+}
+
+func capacitySourceInstalled(paths LaneCapacityPaths) bool {
+	for _, path := range []string{paths.UsageHistoryPath, paths.QuotaCachePath, paths.AccountProjectionPath} {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 type codexBarCapacityRow struct {
@@ -338,6 +359,13 @@ func GuardLaneCapacity(homePath, lane, capabilityClass string, now time.Time, co
 			return LaneCapacityDecision{}, err
 		}
 	case CapacityUnknown, CapacityExpiring:
+		if capacity.State == CapacityUnknown && !capacity.SourceInstalled {
+			// Fail open when UNWIRED: no capacity source exists at all (fresh adopter home).
+			// Annotate and warn; demanding --confirm forever would gate every dispatch on a
+			// feed the home never had. Wired-but-blind lanes stay confirmation-gated below.
+			decision.Message = capacityDecisionMessage(lane, capacity, alternatives, "unguarded (no capacity source installed)")
+			break
+		}
 		if confirm {
 			decision.Message = capacityDecisionMessage(lane, capacity, alternatives, "admitted by --confirm")
 		} else {

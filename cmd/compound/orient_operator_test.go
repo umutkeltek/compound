@@ -903,6 +903,13 @@ func TestOrientOperatorSurfacesHeldValveAdjacentProgress(t *testing.T) {
 func TestOrientOperatorSuppressesResolvedDispatchStepRun(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
+	// Hermetic capacity guard: the routeevidence init() adapter reads the OPERATOR's real
+	// CodexBar/quota files, so this test's dispatch outcome would depend on the machine's live
+	// lane state (observed 2026-07-13: a genuinely walled codex 5h window refused the dispatch
+	// and emptied the wait reason). Nil restores pure work-package behavior for the test.
+	previousGuard := work.LaneCapacityGuard
+	work.LaneCapacityGuard = nil
+	t.Cleanup(func() { work.LaneCapacityGuard = previousGuard })
 	now := time.Date(2026, 7, 2, 21, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
 		t.Fatalf("init home: %v", err)

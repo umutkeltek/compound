@@ -96,7 +96,7 @@ func TestRouteAccountProjectionGatesPlanCLI(t *testing.T) {
 	if !strings.Contains(out, "# route capability-plan") {
 		t.Fatalf("bad route plan output:\n%s", out)
 	}
-	if !strings.Contains(out, "- omitted:") || !strings.Contains(out, "codex/gpt") || !strings.Contains(out, "no healthy accounts") || !strings.Contains(out, "provider=codex") {
+	if !strings.Contains(out, "- omitted:") || !strings.Contains(out, "codex/gpt") || !strings.Contains(out, "state=dead") || !strings.Contains(out, "healthy=0") || !strings.Contains(out, "provider=codex") {
 		t.Fatalf("plan output must omit codex/gpt for zero healthy accounts:\n%s", out)
 	}
 	firstLane := ""

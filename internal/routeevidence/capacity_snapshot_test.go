@@ -141,11 +141,14 @@ func TestCapacityF1DispatchPlanRefusesFreshExhaustedCodex(t *testing.T) {
 	}
 }
 
-// f2: lack of source rows is an explicit UNKNOWN, and dispatch cannot offer that lane until the
-// caller supplies --confirm. Confirmation admits the same lane without inventing health.
+// f2: lack of source rows while a capacity source IS wired is an explicit UNKNOWN, and dispatch
+// cannot offer that lane until the caller supplies --confirm. Confirmation admits the same lane
+// without inventing health. (The fully-unwired home fails OPEN — see
+// TestCapacityUnknownWithoutAnySourceFailsOpen.)
 func TestCapacityF2UnknownZaiRequiresConfirm(t *testing.T) {
 	home := t.TempDir()
 	cfg := capacityFixtureConfig(t)
+	writeCapacityUsage(t, cfg, "codex", 10, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
 	installCapacityGuard(t, cfg)
 	store := readyDispatchStore(t, home)
 
@@ -166,6 +169,48 @@ func TestCapacityF2UnknownZaiRequiresConfirm(t *testing.T) {
 	}
 	if confirmed.Status != "ready_to_claim" || confirmed.Selected == nil || confirmed.LaneCapacity == nil || confirmed.LaneCapacity.State != string(CapacityUnknown) {
 		t.Fatalf("confirmed unknown lane was not admitted with its annotation: %+v", confirmed)
+	}
+}
+
+// Fail-open when UNWIRED: a home with no capacity source installed at all (fresh adopter — no
+// CodexBar, no quota cache, no account projection) dispatches with a warning annotation instead
+// of demanding --confirm forever. This is the account-projection fail-open precedent applied to
+// the veto. Wired-but-blind (a source file exists, the lane has no rows) still requires
+// confirmation — the empty-file mutation below proves the distinction has teeth.
+func TestCapacityUnknownWithoutAnySourceFailsOpen(t *testing.T) {
+	home := t.TempDir()
+	cfg := capacityFixtureConfig(t)
+	installCapacityGuard(t, cfg)
+
+	plan, err := readyDispatchStore(t, home).DispatchPlan(capacityNow, work.DispatchPlanOptions{Actor: "zai"})
+	if err != nil {
+		t.Fatalf("dispatch plan: %v", err)
+	}
+	if plan.Status != "ready_to_claim" || plan.Selected == nil {
+		t.Fatalf("unwired home did not fail open: %+v", plan)
+	}
+	if plan.LaneCapacity == nil || plan.LaneCapacity.State != string(CapacityUnknown) {
+		t.Fatalf("unwired capacity was not annotated unknown: %+v", plan.LaneCapacity)
+	}
+	warned := false
+	for _, w := range plan.Warnings {
+		if strings.Contains(w, "no capacity source installed") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("unwired dispatch missing warning: %+v", plan.Warnings)
+	}
+
+	if err := os.WriteFile(cfg.Paths.UsageHistoryPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blind, err := readyDispatchStore(t, t.TempDir()).DispatchPlan(capacityNow, work.DispatchPlanOptions{Actor: "zai"})
+	if err != nil {
+		t.Fatalf("wired-blind dispatch plan: %v", err)
+	}
+	if blind.Status != "capacity_confirmation_required" || blind.Selected != nil {
+		t.Fatalf("wired-but-blind lane did not require confirmation: %+v", blind)
 	}
 }
 
@@ -328,6 +373,7 @@ func TestPlanCapabilityRouteFiltersAndAnnotatesCapacityWithoutSelecting(t *testi
 func TestPlanCapabilityRouteUnknownLaneRequiresAndHonorsConfirm(t *testing.T) {
 	home := t.TempDir()
 	cfg := capacityFixtureConfig(t)
+	writeCapacityUsage(t, cfg, "codex", 10, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
 	accountAdmissionRouteChain(t, home, []string{"zai/lane", "switchback/fallback"})
 
 	held, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{
