@@ -438,7 +438,11 @@ type WorkEnvelope struct {
 	// without it is ordinary work. A system-originated proposal that declares a
 	// TargetSurface is admitted only while that surface is actively whitelisted in the
 	// policy-owned editable-surfaces registry (see internal/policy/editable_surfaces.go).
-	TargetSurface      string   `json:"target_surface,omitempty"`
+	TargetSurface string `json:"target_surface,omitempty"`
+	// ExpectedBaseSHA freezes the full Git object id the executor branch must descend from.
+	// It is optional for backward compatibility and for work with no source-control delivery,
+	// but when present it is the landing invariant's authority rather than a re-derived note.
+	ExpectedBaseSHA    string   `json:"expected_base_sha,omitempty"`
 	State              string   `json:"state"`
 	DesiredOutcome     string   `json:"desired_outcome,omitempty"`
 	SuccessPredicate   string   `json:"success_predicate"`
@@ -460,7 +464,22 @@ func (e *WorkEnvelope) Validate() error {
 	v.enum("proof_medium", e.ProofMedium, ProofMedia, false)
 	v.req("owner", e.Owner)
 	v.req("success_predicate", e.SuccessPredicate)
+	if base := strings.TrimSpace(e.ExpectedBaseSHA); base != "" && !validFullGitObjectID(base) {
+		v.addf("expected_base_sha must be a lowercase full Git object id (40 or 64 hex characters)")
+	}
 	return v.result(e.Kind())
+}
+
+func validFullGitObjectID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 type ActionTarget struct {
