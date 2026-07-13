@@ -711,10 +711,6 @@ func (s *Store) raiseSeedsForCorroborations(proposals []SynthesisCorroborationPr
 // Corroborated candidates (EdgeKindCorroboration mark) NEVER expire.
 // Idempotent: already no_promote / rejected / promoted are skipped.
 func (s *Store) decayExpiredCandidates(all []Candidate, now time.Time) ([]SynthesisDecayAction, error) {
-	marks, err := s.candidateReviewMarksAsOf(0)
-	if err != nil {
-		return nil, err
-	}
 	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
 	var decayed []SynthesisDecayAction
 	for _, c := range all {
@@ -727,17 +723,17 @@ func (s *Store) decayExpiredCandidates(all []Candidate, now time.Time) ([]Synthe
 		if !candidateExpired(c, now) {
 			continue
 		}
-		// Corroboration mark = raised/needs_review path — never silently drop.
-		if mark, ok := marks[c.ID]; ok && len(mark.Refs) > 0 {
-			continue
-		}
-		if err := s.fileExpiredCandidate(c, now); err != nil {
+		filed, changed, err := s.fileExpiredCandidate(c.ID, now)
+		if err != nil {
 			return decayed, err
 		}
+		if !changed {
+			continue
+		}
 		decayed = append(decayed, SynthesisDecayAction{
-			CandidateID:   c.ID,
-			PreviousState: c.State,
-			ExpiresAt:     c.ExpiresAt,
+			CandidateID:   filed.ID,
+			PreviousState: "parked",
+			ExpiresAt:     filed.ExpiresAt,
 			Reason:        DecayReasonExpired,
 			CreatedAt:     rfc3339(now),
 		})
@@ -745,11 +741,24 @@ func (s *Store) decayExpiredCandidates(all []Candidate, now time.Time) ([]Synthe
 	return decayed, nil
 }
 
-func (s *Store) fileExpiredCandidate(c Candidate, now time.Time) error {
-	c.State = "no_promote"
-	c.Reason = DecayReasonExpired
-	// Keep ExpiresAt for audit; do not re-park.
-	return candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
+func (s *Store) fileExpiredCandidate(candID string, now time.Time) (Candidate, bool, error) {
+	return s.mutateCandidate(candID, func(c *Candidate) (bool, error) {
+		if c.State != "parked" || CanonClassOperatorPermanent(EffectiveCanonClass(c.ClaimType, c.CanonClass)) || !candidateExpired(*c, now) {
+			return false, nil
+		}
+		marks, err := s.candidateReviewMarksAsOf(0)
+		if err != nil {
+			return false, err
+		}
+		// Corroboration mark = raised/needs_review path — never silently drop.
+		if mark, ok := marks[c.ID]; ok && len(mark.Refs) > 0 {
+			return false, nil
+		}
+		c.State = "no_promote"
+		c.Reason = DecayReasonExpired
+		// Keep ExpiresAt for audit; do not re-park.
+		return true, nil
+	})
 }
 
 func uniqueStrings(values []string) []string {

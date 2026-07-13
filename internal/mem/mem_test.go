@@ -367,7 +367,7 @@ func TestAdjudicateExplicitConfirmationSerializesTerminalCandidateState(t *testi
 	}
 
 	lockAttempts := make(chan struct{}, 2)
-	s.lockAttemptObserver = func() { lockAttempts <- struct{}{} }
+	s.beforeLockObserver = func() { lockAttempts <- struct{}{} }
 	confirmationRechecked := make(chan struct{})
 	releaseConfirmation := make(chan struct{})
 	var pauseOnce sync.Once
@@ -435,7 +435,7 @@ type adjudicationOutcome struct {
 func pauseAdjudicationAfterCandidateRecheck(t *testing.T, s *Store, run func() (AdjudicateResult, error)) (<-chan struct{}, func(), <-chan adjudicationOutcome) {
 	t.Helper()
 	lockAttempts := make(chan struct{}, 8)
-	s.lockAttemptObserver = func() { lockAttempts <- struct{}{} }
+	s.beforeLockObserver = func() { lockAttempts <- struct{}{} }
 	rechecked := make(chan struct{})
 	release := make(chan struct{})
 	var pauseOnce sync.Once

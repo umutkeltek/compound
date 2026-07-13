@@ -212,9 +212,9 @@ type Store struct {
 	// nil and read the registry from disk through loadEntities.
 	entityLoader func() ([]Entity, error)
 
-	// lockAttemptObserver is a test seam for causally observing lock contention
-	// without timing assumptions. Production stores leave it nil.
-	lockAttemptObserver func()
+	// beforeLockObserver is a test seam called immediately before the advisory
+	// lock attempt. Production stores leave it nil.
+	beforeLockObserver func()
 
 	// ledgerDoctorSnapshotter is a test seam for proving snapshot failures are
 	// propagated instead of being misclassified as ledger mutation. Production
@@ -328,14 +328,35 @@ func (s *Store) getCandidate(id string) (Candidate, error) {
 	return c, err
 }
 
-func (s *Store) AnnotateCandidate(candID string, ann CandidateAnnotation, now time.Time) (Candidate, error) {
+func (s *Store) mutateCandidateLocked(candID string, mutate func(*Candidate) (bool, error)) (Candidate, bool, error) {
 	c, err := s.getCandidate(candID)
 	if err != nil {
-		return Candidate{}, err
+		return Candidate{}, false, err
 	}
-	if c.State == "promoted" {
-		return Candidate{}, fmt.Errorf("candidate %s already promoted", candID)
+	changed, err := mutate(&c)
+	if err != nil || !changed {
+		return c, changed, err
 	}
+	if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
+		return Candidate{}, false, err
+	}
+	return c, true, nil
+}
+
+func (s *Store) mutateCandidate(candID string, mutate func(*Candidate) (bool, error)) (Candidate, bool, error) {
+	var (
+		candidate Candidate
+		changed   bool
+	)
+	err := s.withLock(func() error {
+		var err error
+		candidate, changed, err = s.mutateCandidateLocked(candID, mutate)
+		return err
+	})
+	return candidate, changed, err
+}
+
+func (s *Store) AnnotateCandidate(candID string, ann CandidateAnnotation, now time.Time) (Candidate, error) {
 	if strings.TrimSpace(ann.ID) == "" {
 		ann.ID = idFor("ann_", candID, ann.Kind, ann.Decision, ts(now))
 	}
@@ -348,17 +369,20 @@ func (s *Store) AnnotateCandidate(candID string, ann CandidateAnnotation, now ti
 	if strings.TrimSpace(ann.CreatedAt) == "" {
 		ann.CreatedAt = rfc3339(now)
 	}
-	if !candidateHasAnnotation(c.Annotations, ann.ID) {
-		c.Annotations = append(c.Annotations, ann)
-	}
-	c.State = "parked"
-	if strings.TrimSpace(c.Reason) == "" {
-		c.Reason = "annotated evidence; not promoted"
-	}
-	if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
-		return Candidate{}, err
-	}
-	return c, nil
+	c, _, err := s.mutateCandidate(candID, func(c *Candidate) (bool, error) {
+		if c.State == "promoted" {
+			return false, fmt.Errorf("candidate %s already promoted", candID)
+		}
+		if !candidateHasAnnotation(c.Annotations, ann.ID) {
+			c.Annotations = append(c.Annotations, ann)
+		}
+		c.State = "parked"
+		if strings.TrimSpace(c.Reason) == "" {
+			c.Reason = "annotated evidence; not promoted"
+		}
+		return true, nil
+	})
+	return c, err
 }
 
 func candidateHasAnnotation(annotations []CandidateAnnotation, id string) bool {
@@ -455,74 +479,66 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		if c.ClaimType != "decision" {
 			return res, fmt.Errorf("candidate %s cannot receive operational decision authority: claim_type must be decision", candID)
 		}
-		c.Qualifiers = cloneStringMap(c.Qualifiers)
-		c.Qualifiers[OperationalDecisionAuthorityQualifier] = OperationalDecisionAuthorityValue
 	}
 	if explicitConfirmationRef != "" {
 		if verdict != "promote" || operationalDecision {
 			return res, fmt.Errorf("explicit confirmation is only valid for ordinary memory promotion")
 		}
-		c.PromotionBasis = candidates.BasisExplicitConfirmation
 	} else if verdict == "promote" && c.PromotionBasis == candidates.BasisExplicitConfirmation {
 		return res, fmt.Errorf("candidate %s explicit confirmation requires governed confirmation evidence", candID)
 	}
 
 	if verdict != "promote" {
-		lockErr := s.withLock(func() error {
-			latest, err := s.getCandidate(candID)
-			if err != nil {
-				return err
-			}
+		latest, _, lockErr := s.mutateCandidate(candID, func(latest *Candidate) (bool, error) {
 			if latest.State == "promoted" {
 				return fmt.Errorf("candidate %s already promoted", candID)
 			}
 			latest.State = nonPromoteState(verdict)
-			if err := candidates.WriteCandidate(s.home, candidates.Memory, latest.ID, &latest); err != nil {
-				return err
-			}
-			c = latest
-			return nil
+			return true, nil
 		})
 		if lockErr != nil {
 			return res, lockErr
 		}
-		res.Candidate = c
+		c = latest
+		res.Candidate = latest
 		return res, nil
-	}
-
-	if !candidates.ValidBasis(c.PromotionBasis) {
-		basis, err := s.corroborationPromotionBasis(c.ID)
-		if err != nil {
-			return res, err
-		}
-		c.PromotionBasis = basis
-	}
-	if !candidates.ValidBasis(c.PromotionBasis) {
-		return res, fmt.Errorf("candidate %s cannot promote without valid promotion_basis (got %q; allowed: %v)", candID, c.PromotionBasis, candidates.PromotionBases)
-	}
-	// Defense-in-depth for the single claim-append door: a clockless or
-	// doctrine-class volatile candidate that predates the Capture guard (or was
-	// hand-written) must still never become a ledger claim.
-	if err := validateVolatileWrite("candidate "+c.ID, c.Visibility, c.ExpiresAt, c.ClaimType, c.CanonClass); err != nil {
-		return res, err
 	}
 
 	// promote: the prior-lookup + seq allocation + claim/edge append run under one lock so
 	// seq stays monotonic-unique and supersession is consistent even across concurrent writers
 	// (single-writer is the norm; the lock makes MVCC-by-fold mechanically true, not just a phrase).
 	var (
-		claim         Claim
-		prior         Claim
-		hasPrior, dup bool
+		claim      Claim
+		prior      Claim
+		transition envelope.Transition
+		hasPrior   bool
+		dup        bool
 	)
 	lockErr := s.withLock(func() error {
-		if explicitConfirmationRef != "" {
-			latest, err := s.getCandidate(candID)
-			if err != nil {
-				return err
+		latest, err := s.getCandidate(candID)
+		if err != nil {
+			return err
+		}
+		if latest.State == "promoted" {
+			return fmt.Errorf("candidate %s already promoted", candID)
+		}
+		c = latest
+		if c.Qualifiers != nil && strings.TrimSpace(c.Qualifiers[OperationalDecisionAuthorityQualifier]) != "" && !operationalDecision {
+			return fmt.Errorf("candidate %s uses reserved operational decision authority qualifier; import it through the policy decisions authority", candID)
+		}
+		if !operationalDecision && isOperationalDecisionKind(c.Qualifiers["kind"]) {
+			return fmt.Errorf("candidate %s uses reserved operational decision kind %q; import it through the policy decisions authority", candID, c.Qualifiers["kind"])
+		}
+		if operationalDecision {
+			if c.ClaimType != "decision" {
+				return fmt.Errorf("candidate %s cannot receive operational decision authority: claim_type must be decision", candID)
 			}
-			if latest.State != "parked" {
-				return fmt.Errorf("explicit confirmation requires parked candidate %s, got state %q", candID, latest.State)
+			c.Qualifiers = cloneStringMap(c.Qualifiers)
+			c.Qualifiers[OperationalDecisionAuthorityQualifier] = OperationalDecisionAuthorityValue
+		}
+		if explicitConfirmationRef != "" {
+			if c.State != "parked" {
+				return fmt.Errorf("explicit confirmation requires parked candidate %s, got state %q", candID, c.State)
 			}
 			evidence, ok, err := s.GetEvidence(explicitConfirmationRef)
 			if err != nil {
@@ -543,12 +559,26 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 			if !policy.HasOperatorProvenance(evidence.Actor) {
 				return fmt.Errorf("explicit confirmation evidence %q requires operator provenance, got %q", explicitConfirmationRef, evidence.Actor)
 			}
-			c = latest
 			c.PromotionBasis = candidates.BasisExplicitConfirmation
 			c.EvidenceRefs = uniqueStrings(append(c.EvidenceRefs, evidence.ID))
-			if err := validateVolatileWrite("candidate "+c.ID, c.Visibility, c.ExpiresAt, c.ClaimType, c.CanonClass); err != nil {
+		} else if c.PromotionBasis == candidates.BasisExplicitConfirmation {
+			return fmt.Errorf("candidate %s explicit confirmation requires governed confirmation evidence", candID)
+		}
+		if !candidates.ValidBasis(c.PromotionBasis) {
+			basis, err := s.corroborationPromotionBasis(c.ID)
+			if err != nil {
 				return err
 			}
+			c.PromotionBasis = basis
+		}
+		if !candidates.ValidBasis(c.PromotionBasis) {
+			return fmt.Errorf("candidate %s cannot promote without valid promotion_basis (got %q; allowed: %v)", candID, c.PromotionBasis, candidates.PromotionBases)
+		}
+		// Defense-in-depth for the single claim-append door: a clockless or
+		// doctrine-class volatile candidate that predates the Capture guard (or was
+		// hand-written) must still never become a ledger claim.
+		if err := validateVolatileWrite("candidate "+c.ID, c.Visibility, c.ExpiresAt, c.ClaimType, c.CanonClass); err != nil {
+			return err
 		}
 		if !operationalDecision && c.ClaimType == "decision" {
 			protected, err := s.protectedOperationalDecisionInSlot(c)
@@ -584,6 +614,13 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 				return err
 			}
 		}
+		transition = s.memoryTransition(claim, prior, hasPrior, workID, now)
+		if err := transition.Validate(); err != nil {
+			return fmt.Errorf("emitted transition invalid: %w", err)
+		}
+		if err := writeJSON(s.eventPath(transition.ID), &transition); err != nil {
+			return err
+		}
 		c.State = "promoted"
 		return candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
 	})
@@ -597,17 +634,7 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 	if hasPrior {
 		res.Superseded = prior.ID
 	}
-
-	// emit the Transition (memory_delta) — memory is a projection of the spine.
-	tr := s.memoryTransition(claim, prior, hasPrior, workID, now)
-	if err := tr.Validate(); err != nil {
-		return res, fmt.Errorf("emitted transition invalid: %w", err)
-	}
-	if err := writeJSON(s.eventPath(tr.ID), &tr); err != nil {
-		return res, err
-	}
-
-	res.Candidate, res.Claim, res.Transition = c, &claim, &tr
+	res.Candidate, res.Claim, res.Transition = c, &claim, &transition
 	return res, nil
 }
 
@@ -1395,9 +1422,6 @@ func doctorEngineName(caps EngineCapabilities) string {
 // file lock under COMPOUND_HOME/lock. The lock is released when the fd closes, so a crashed
 // writer never wedges the ledger. (Darwin/Linux; compound's targets.)
 func (s *Store) withLock(fn func() error) error {
-	if s.lockAttemptObserver != nil {
-		s.lockAttemptObserver()
-	}
 	lockPath := filepath.Join(s.home, "lock", "mem.lock")
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return err
@@ -1407,6 +1431,9 @@ func (s *Store) withLock(fn func() error) error {
 		return err
 	}
 	defer f.Close()
+	if s.beforeLockObserver != nil {
+		s.beforeLockObserver()
+	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
