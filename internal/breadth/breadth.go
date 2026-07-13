@@ -185,13 +185,17 @@ func (e *Engine) semanticRanking(queryVector []float32, docs []doc, bm25, refere
 		if len(d.vector) != len(queryVector) {
 			continue
 		}
+		semanticScore := cosine(queryVector, d.vector)
+		if semanticScore <= 0 {
+			continue
+		}
 		rank, ok := lexRank[d.claim.ClaimID]
 		if !ok {
 			rank = int(^uint(0) >> 1)
 		}
 		semantic = append(semantic, semanticHit{
 			id:       d.claim.ClaimID,
-			cosine:   cosine(queryVector, d.vector),
+			cosine:   semanticScore,
 			lexScore: lexScore[d.claim.ClaimID],
 			lexRank:  rank,
 		})
