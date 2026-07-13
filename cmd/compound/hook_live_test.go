@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
+	"compound/internal/authority"
+	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/policy"
+	"compound/internal/work"
 )
 
 func TestHookLiveSessionStartEmitsAdditionalContext(t *testing.T) {
@@ -332,6 +336,163 @@ func TestLiveActionIntentBindsCanonicalInputToSessionAndFullTargetSet(t *testing
 	if containsAllActionEvidence(partialActions, wantRef) {
 		t.Fatalf("partial target set reused full-batch mutation-input hash %q", wantRef)
 	}
+}
+
+func TestHookLiveCodexPreToolUseAllowsOnlyExactRecordedDirtyBatch(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(work.CreateInput{
+		WorkID: "work_owner_reviewed_dirty", Owner: "codex", Actor: "orchestrator", State: "running",
+		SuccessPredicate: "apply the exact reviewed dirty batch", DesiredOutcome: "resolve reviewed conflicts",
+	}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := initCompoundCommandGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "SECOND.md"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** Update File: SECOND.md\n@@\n-old\n+new\n*** End Patch"
+	exactInput := codexApplyPatchInput("sess_reviewed_dirty_exact", repo, patch)
+	first := runCodexPreToolUse(t, exactInput)
+	if first.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("unreviewed dirty batch decision = %+v, want deny", first.HookSpecificOutput)
+	}
+
+	actions := readLiveMutationActions(t, homePath, "work_live_")
+	if len(actions) != 2 {
+		t.Fatalf("persisted live mutation actions=%d, want 2: %+v", len(actions), actions)
+	}
+	binding := bindingFromPersistedActions(t, actions)
+	snapshot, err := authority.ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := authority.BuildSourceControlMutationReviewPlan(snapshot, "work_owner_reviewed_dirty", binding, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := authority.RecordSourceControlReviewPlan(homePath, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := authority.SourceControlReview{
+		SchemaVersion: authority.SourceControlReviewSchemaVersion,
+		ID:            plan.ReviewDraft.ReviewID, PlanID: plan.ID, RepoID: plan.RepoID,
+		Decision: "authorize_mutation", Rationale: "operator reviewed this exact dirty payload",
+		Confidence: 1, EvidenceRefs: append([]string{}, plan.EvidenceRefs...),
+	}
+	if _, err := authority.RecordSourceControlReview(homePath, review, paths.ReviewYAMLPath, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	exact := runCodexPreToolUse(t, exactInput)
+	if exact.HookSpecificOutput.PermissionDecision == "deny" {
+		t.Fatalf("exact reviewed dirty batch remained denied: %+v", exact.HookSpecificOutput)
+	}
+	partialPatch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch"
+	partial := runCodexPreToolUse(t, codexApplyPatchInput("sess_reviewed_dirty_exact", repo, partialPatch))
+	if partial.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("partial target set decision = %+v, want deny", partial.HookSpecificOutput)
+	}
+	otherSession := runCodexPreToolUse(t, codexApplyPatchInput("sess_reviewed_dirty_other", repo, patch))
+	if otherSession.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("other session decision = %+v, want deny", otherSession.HookSpecificOutput)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("drifted after review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stale := runCodexPreToolUse(t, exactInput)
+	if stale.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("stale fingerprint decision = %+v, want deny", stale.HookSpecificOutput)
+	}
+}
+
+func codexApplyPatchInput(sessionID, cwd, patch string) string {
+	return `{"hook_event_name":"PreToolUse","session_id":` + quoteJSON(sessionID) + `,"cwd":` +
+		quoteJSON(cwd) + `,"tool_name":"apply_patch","tool_input":{"command":` + quoteJSON(patch) + `}}`
+}
+
+func runCodexPreToolUse(t *testing.T, input string) claudeLiveHookResponse {
+	t.Helper()
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "codex"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("Codex PreToolUse exit=%d\n%s", code, out)
+	}
+	var response claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("parse Codex PreToolUse response: %v\n%s", err, out)
+	}
+	return response
+}
+
+func readLiveMutationActions(t *testing.T, homePath, workPrefix string) []envelope.ActionIntent {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := []envelope.ActionIntent{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "act_live_") || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(homePath, "events", entry.Name()))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		var action envelope.ActionIntent
+		if json.Unmarshal(data, &action) == nil && strings.HasPrefix(action.IDs.WorkID, workPrefix) && action.Action == "multi_edit_file" {
+			actions = append(actions, action)
+		}
+	}
+	sort.Slice(actions, func(i, j int) bool { return actions[i].Target.Path < actions[j].Target.Path })
+	return actions
+}
+
+func bindingFromPersistedActions(t *testing.T, actions []envelope.ActionIntent) authority.SourceControlMutationBinding {
+	t.Helper()
+	if len(actions) == 0 {
+		t.Fatal("persisted actions required")
+	}
+	binding := authority.SourceControlMutationBinding{
+		ActionWorkID: actions[0].IDs.WorkID, Capability: actions[0].Capability,
+		Action: actions[0].Action, MutationClass: actions[0].MutationClass,
+	}
+	for _, action := range actions {
+		if action.IDs.WorkID != binding.ActionWorkID || action.Capability != binding.Capability || action.Action != binding.Action || action.MutationClass != binding.MutationClass {
+			t.Fatalf("batch action semantics differ: %+v", actions)
+		}
+		binding.TargetPaths = append(binding.TargetPaths, action.Target.Path)
+		binding.ActionIntentIDs = append(binding.ActionIntentIDs, action.ID)
+		for _, ref := range action.EvidenceRefs {
+			if strings.HasPrefix(ref, "mutation-input:sha256:") {
+				if binding.MutationInputHash != "" && binding.MutationInputHash != ref {
+					t.Fatalf("batch input hashes differ: %+v", actions)
+				}
+				binding.MutationInputHash = ref
+			}
+		}
+	}
+	if binding.MutationInputHash == "" {
+		t.Fatal("persisted live actions missing mutation-input hash")
+	}
+	return binding
 }
 
 func containsAllActionEvidence(actions []envelope.ActionIntent, want string) bool {
