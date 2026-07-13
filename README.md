@@ -196,6 +196,10 @@ Execution and policy:
   them.
 - `compound policy evaluate` turns ActionIntent into an enforceable
   PolicyDecision.
+- `compound authority dirty-plan <repo> --work-id <owner-work>
+  --action-intent <persisted-id>...` derives an exact dirty-mutation review
+  capability from persisted hook actions; it never trusts caller-authored
+  action semantics or performs source-control cleanup.
 - `compound policy import-placement-rules <placement-rules.json>` installs owner
   placement rules into `COMPOUND_HOME/registries/placement-rules.json`;
   `compound policy placement-authority [--json]` reports the machine-readable

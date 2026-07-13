@@ -151,6 +151,17 @@ the native Codex adapter returns `permissionDecision=deny` for a hold. `compound
 as `compound://registries/placement-rules` under `COMPOUND_HOME`; the source view is evidence/rollback
 input after import, while PreToolUse reads the Compound-owned registry.
 
+A dirty-repository mutation can proceed only through an exact recorded capability, not a general cleanup
+acknowledgement. The first blocked PreToolUse persists its ActionIntents with one session-bound,
+content-free mutation-input digest shared by the complete target batch. `compound authority dirty-plan
+<repo> --work-id <owner-work> --action-intent <id>...` loads those persisted actions and derives the
+action work id, digest, capability, action, mutation class, and canonical target set itself. The owner work
+id is provenance and must still be `claimed`, `running`, `verifying`, or `held`; executable identity is the
+live action work id plus mutation digest, exact repository/root/remote/full HEAD/dirty-state fingerprint,
+and exact target set. After an `authorize_mutation` review is recorded, PreToolUse attaches the capability
+to every action in the batch or none. A partial target set, another session, changed bytes/index state,
+tampered plan, inactive owner work, or legacy count-only review keeps the normal dirty hold.
+
 ---
 
 ## 3. Hooks are clients, not brains
@@ -174,7 +185,7 @@ harness-compatible output`. The lessons from a mature hook system map cleanly:
 ```text
 SessionStart   → ContextRequest + EffectiveContract + ContextPack + context/injections/<hook_event_id>.md   (returns a compact orientation summary and persists exact injected text, NOT a universe dump)
 UserPromptSubmit → ContextRequest + ContextPack + proposed WorkEnvelope (persists proposed work tied to context_pack_id when COMPOUND_HOME is available)
-PreToolUse     → ActionIntent + PolicyDecision (+ held WorkEnvelope review for dirty source-control holds)
+PreToolUse     → ActionIntent + PolicyDecision (+ held WorkEnvelope review or exact batch-bound capability for dirty source-control holds)
                                                                   (returns allow | allow_with_obligations | hold | deny)
 PostToolUse    → ToolEvent + ArtifactRef + VerificationCandidate
 Stop           → Receipt + Transition + MemoryCandidate/SkillCandidate/FailurePattern/RouteObservation
