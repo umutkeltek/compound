@@ -109,7 +109,7 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 	}
 	remote, _ := gitOutput(ctx, root, "config", "--get", "remote.origin.url")
 	branch, _ := gitOutput(ctx, root, "branch", "--show-current")
-	head, _ := gitOutput(ctx, root, "rev-parse", "--short=12", "HEAD")
+	head, _ := gitOutput(ctx, root, "rev-parse", "HEAD")
 	upstream, _ := gitOutput(ctx, root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	ahead, behind := 0, 0
 	if strings.TrimSpace(upstream) != "" {
@@ -127,9 +127,12 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 	if changed > 0 {
 		status = "dirty"
 	}
-	fingerprint, err := readChangedStateFingerprint(ctx, root)
-	if err != nil {
-		return SourceControlSnapshot{}, fmt.Errorf("git changed-state fingerprint: %w", err)
+	fingerprint := ""
+	if changed > 0 {
+		fingerprint, err = readChangedStateFingerprint(ctx, root)
+		if err != nil {
+			return SourceControlSnapshot{}, fmt.Errorf("git changed-state fingerprint: %w", err)
+		}
 	}
 	repositoryID := repoID(strings.TrimSpace(remote), root)
 	snap := SourceControlSnapshot{
@@ -210,7 +213,6 @@ func readChangedStateFingerprint(ctx context.Context, root string) (string, erro
 func uniqueNULPaths(raw string) []string {
 	seen := map[string]struct{}{}
 	for _, path := range strings.Split(raw, "\x00") {
-		path = strings.TrimSpace(path)
 		if path != "" {
 			seen[path] = struct{}{}
 		}
