@@ -247,7 +247,7 @@ func routeUsage(sub string) string {
 	case "promotion-record":
 		return "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]"
 	default:
-		return "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>"
+		return "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight])>"
 	}
 }
 
@@ -2700,6 +2700,9 @@ func cmdRoute(args []string) {
 	if tryRoutePromotionCommand(args, homePath) {
 		return
 	}
+	if tryRouteSpeedCommand(args, homePath) {
+		return
+	}
 	if args[0] == "evidence-authority" {
 		recent := 6
 		if v := flagValue(args[1:], "--recent"); v != "" {
@@ -2746,6 +2749,7 @@ func cmdRoute(args []string) {
 		if capabilityClass != "" {
 			plan, err := routeevidence.PlanCapabilityRoute(homePath, capabilityClass, routeevidence.CapabilityRoutePlanOptions{
 				PrivacySensitive: hasFlag(args[1:], "--privacy-sensitive"),
+				LatencyClass:     flagValue(args[1:], "--latency-class"),
 			}, time.Now())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "route plan:", err)
@@ -2764,6 +2768,9 @@ func cmdRoute(args []string) {
 			}
 			fmt.Printf("- capability_class: %s\n", plan.CapabilityClass)
 			fmt.Printf("- privacy_sensitive: %t\n", plan.PrivacySensitive)
+			if plan.RequiredLatencyClass != "" {
+				fmt.Printf("- required_latency_class: %s (budget=%s)\n", plan.RequiredLatencyClass, emptyDash(plan.LatencyBudgetSource))
+			}
 			fmt.Printf("- routing_rule: %s\n", plan.RoutingRule)
 			fmt.Printf("- chain_count: %d\n", len(plan.Chain))
 			for _, lane := range plan.Chain {
@@ -2779,6 +2786,10 @@ func cmdRoute(args []string) {
 					emptyDash(lane.EffortDefault),
 				)
 				fmt.Printf("  lane_justification: %s\n", lane.Justification)
+				if adj := lane.SpeedAdjustment; adj != nil {
+					fmt.Printf("  speed_adjustment: declared=%s measured=%s (%.2f tok/s, ttft=%dms) role %s -> %s probe=%s\n",
+						adj.DeclaredLatencyClass, adj.MeasuredLatencyClass, adj.MeasuredTokensPerSec, adj.MeasuredTTFTms, adj.PriorGateRole, adj.AdjustedGateRole, adj.ProbeID)
+				}
 			}
 			if len(plan.Omitted) > 0 {
 				fmt.Printf("- omitted_count: %d\n", len(plan.Omitted))
