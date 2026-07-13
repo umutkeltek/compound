@@ -1,10 +1,14 @@
 // Package act is compound's ONE generic governed outbound-write seam: the single
 // execute-and-receipt wrapper that makes "no external mutation without a valid
-// PolicyDecision" true BY CONSTRUCTION. An Adapter is the only thing that touches
-// the outside world; Execute is the only thing that calls it, and it refuses unless
-// handed an allowing PolicyDecision for that exact ActionIntent. Every future
-// outbound system (a config repoint, a DNS record, an API toggle) is a new Adapter
-// plus a different ActionIntent.Target — never a new governance path.
+// PolicyDecision" true BY CONSTRUCTION. An Adapter is the only thing that touches the
+// outside world, and its mutating method (write) is UNEXPORTED — an unexported
+// interface method is package-scoped, so only types declared in package act can satisfy
+// Adapter and only package act can invoke write. No external package can reach an
+// adapter's write at all: Execute is the sole caller, and it refuses unless handed an
+// allowing PolicyDecision for that exact ActionIntent. The gate is therefore the ONLY
+// reachable path to a mutation, not merely the intended one. Every future outbound
+// system (a config repoint, a DNS record, an API toggle) is a new Adapter plus a
+// different ActionIntent.Target — never a new governance path.
 // See docs/architecture/{runtime,transition}.md and internal/policy.
 package act
 
@@ -20,12 +24,17 @@ import (
 	"compound/internal/envelope"
 )
 
-// Adapter is a generic outbound target. ReadCurrent returns the current value at
-// the target (the pre-image); Write replaces it with newValue. Concrete adapters
-// stay tiny and side-effect-only: all governance lives in Execute, above them.
+// Adapter is a generic outbound target. ReadCurrent returns the current value at the
+// target (the pre-image); write replaces it with newValue. The mutating method is
+// UNEXPORTED on purpose: an unexported interface method is package-scoped, so only
+// types declared in package act can implement Adapter and only package act can call
+// write. That is the structural seal — an external package structurally cannot reach
+// an adapter's write, so the sole caller is Execute (act.go), which refuses without an
+// allowing PolicyDecision. Concrete adapters stay tiny and side-effect-only: all
+// governance lives in Execute, above them.
 type Adapter interface {
 	ReadCurrent(target envelope.ActionTarget) ([]byte, error)
-	Write(target envelope.ActionTarget, newValue []byte) error
+	write(target envelope.ActionTarget, newValue []byte) error
 }
 
 // ConfigKeyAdapter reads and writes a single dotted key (Target.ID) inside a YAML
@@ -36,6 +45,12 @@ type Adapter interface {
 type ConfigKeyAdapter struct{}
 
 var _ Adapter = ConfigKeyAdapter{}
+
+// NewConfigKeyAdapter returns a ConfigKeyAdapter as an Adapter. External callers use
+// this to OBTAIN an adapter to hand to Execute; they cannot invoke its write directly,
+// because write is unexported (package-scoped). The only path from an Adapter to a
+// mutation is Execute's PolicyDecision gate.
+func NewConfigKeyAdapter() Adapter { return ConfigKeyAdapter{} }
 
 // ReadCurrent returns the current scalar value at Target.ID as its serialized bytes
 // (e.g. "providerA", "true"). A missing file, missing key, or non-mapping node on
@@ -52,11 +67,12 @@ func (ConfigKeyAdapter) ReadCurrent(target envelope.ActionTarget) ([]byte, error
 	return marshalScalar(leaf)
 }
 
-// Write replaces the existing value at Target.ID with newValue (parsed as a YAML/JSON
+// write replaces the existing value at Target.ID with newValue (parsed as a YAML/JSON
 // scalar, so "providerB" stays a string and "false" becomes a bool) and re-serializes
 // the whole file in its original format. The key must already exist — this repoints a
-// key, it does not create one.
-func (ConfigKeyAdapter) Write(target envelope.ActionTarget, newValue []byte) error {
+// key, it does not create one. It is UNEXPORTED so it is unreachable outside package
+// act: Execute is the only caller, and only after an allowing PolicyDecision.
+func (ConfigKeyAdapter) write(target envelope.ActionTarget, newValue []byte) error {
 	root, isJSON, err := loadConfig(target.Path)
 	if err != nil {
 		return err

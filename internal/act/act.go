@@ -86,11 +86,13 @@ type Result struct {
 
 // Execute performs ONE governed outbound write and returns its receipt + transition.
 //
-// The gate is BY CONSTRUCTION: Execute refuses to call adapter.Write unless pd is a
+// The gate is BY CONSTRUCTION: Execute refuses to call adapter.write unless pd is a
 // valid PolicyDecision that authorizes THIS exact intent (pd.action_intent_id ==
 // ai.ID) and allows it. A missing, mismatched, or non-allowing decision returns an
 // error before the adapter is ever touched, so the target stays byte-identical — a
-// mutation without a matching allowing decision cannot happen.
+// mutation without a matching allowing decision cannot happen. Because write is
+// unexported (package act only), this gate is not merely the intended path but the
+// ONLY reachable one: no external package can call an adapter's write to bypass it.
 //
 // On allow it (iii) captures the pre-image via ReadCurrent into a content-addressed
 // artifact, (iv) writes, (v) reads the post-image back into an artifact, (vi) emits
@@ -118,7 +120,7 @@ func Execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd
 		return Result{}, fmt.Errorf("act: store pre-image: %w", err)
 	}
 
-	if err := adapter.Write(ai.Target, newValue); err != nil {
+	if err := adapter.write(ai.Target, newValue); err != nil {
 		return Result{}, fmt.Errorf("act: write: %w", err)
 	}
 

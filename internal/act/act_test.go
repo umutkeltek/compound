@@ -21,6 +21,16 @@ import (
 // headroom shape demonstrates outbound generality at zero schema cost. Every proof
 // mutates only a mktemp file; nothing under a real operator home is touched.
 
+// SEAL NOTE (structural proof — the guarantee is a compile error, not a runtime check):
+// Adapter.write is unexported, so an external package — e.g. `package act_test` — is
+// structurally UNABLE to call an adapter's write to mutate a config without a
+// PolicyDecision. Both `act.NewConfigKeyAdapter().write(target, b)` and
+// `act.ConfigKeyAdapter{}.write(target, b)` FAIL TO COMPILE ("write undefined (cannot
+// refer to unexported method)"). That compile failure IS the by-construction seal:
+// Execute — which refuses without an allowing PolicyDecision for the exact intent — is
+// the only reachable path to a write. The tests below only ever mutate through Execute,
+// obtaining the adapter via NewConfigKeyAdapter() exactly as an external caller must.
+
 func fixedNow() time.Time { return time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC) }
 
 func sha256Hex(s string) string {
@@ -111,7 +121,7 @@ func mustRead(t *testing.T, adapter Adapter, target envelope.ActionTarget) strin
 func TestExecuteRefusesWithoutPolicyDecision(t *testing.T) {
 	now := fixedNow()
 	path := scratch(t, "switchback.yaml", "egress:\n  auto/judge: providerA\n")
-	adapter := ConfigKeyAdapter{}
+	adapter := NewConfigKeyAdapter()
 	ai := mkIntent(t, "work_gate", "outbound.config_key.write", path, "egress.auto/judge", now)
 	before, _ := os.ReadFile(path)
 
@@ -133,7 +143,7 @@ func TestExecuteRefusesWithoutPolicyDecision(t *testing.T) {
 func TestExecuteRefusesMismatchedDecision(t *testing.T) {
 	now := fixedNow()
 	path := scratch(t, "switchback.yaml", "egress:\n  auto/judge: providerA\n")
-	adapter := ConfigKeyAdapter{}
+	adapter := NewConfigKeyAdapter()
 	ai := mkIntent(t, "work_mismatch", "outbound.config_key.write", path, "egress.auto/judge", now)
 	other := mkIntent(t, "work_other", "outbound.config_key.write", path, "egress.auto/judge", now)
 	otherPD := policy.Evaluate(other, grantConfig(other), now)
@@ -157,7 +167,7 @@ func TestExecuteRefusesMismatchedDecision(t *testing.T) {
 func TestExecuteRefusesUngranted(t *testing.T) {
 	now := fixedNow()
 	path := scratch(t, "switchback.yaml", "egress:\n  auto/judge: providerA\n")
-	adapter := ConfigKeyAdapter{}
+	adapter := NewConfigKeyAdapter()
 	ai := mkIntent(t, "work_hold", "outbound.config_key.write", path, "egress.auto/judge", now)
 
 	pd := policy.Evaluate(ai, policy.DefaultConfig(), now)
@@ -185,7 +195,7 @@ func runGovernedRoundTrip(t *testing.T, path, key, from, to string) {
 	t.Helper()
 	now := fixedNow()
 	store := newStore(t)
-	adapter := ConfigKeyAdapter{}
+	adapter := NewConfigKeyAdapter()
 	ai := mkIntent(t, "work_"+key, "outbound.config_key.write", path, key, now)
 	cfg := grantConfig(ai)
 
