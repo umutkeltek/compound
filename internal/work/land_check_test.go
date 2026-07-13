@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/envelope"
 )
 
 func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
@@ -23,7 +25,7 @@ func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
 		w, err := store.Create(CreateInput{
 			Owner:            "codex",
 			SuccessPredicate: "candidate reaches main",
-			ExpectedBaseSHA:  base,
+			GitDelivery:      localGitDelivery(repo, base),
 		}, now)
 		if err != nil {
 			t.Fatal(err)
@@ -76,7 +78,7 @@ func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "stale candidate is explicit", ExpectedBaseSHA: base}, now)
+		w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "stale candidate is explicit", GitDelivery: localGitDelivery(repo, base)}, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -101,7 +103,7 @@ func TestLandCheckFailsClosedForDirtyTargetAndMovedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "target remains exact", ExpectedBaseSHA: base}, now)
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "target remains exact", GitDelivery: localGitDelivery(repo, base)}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +142,7 @@ func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "close only after containment", ExpectedBaseSHA: base}, now)
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "close only after containment", GitDelivery: localGitDelivery(repo, base)}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +198,7 @@ func TestCompletedCodeWorkRevalidatesLandingProofAtClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "proof stays live", ExpectedBaseSHA: base}, now)
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "proof stays live", GitDelivery: localGitDelivery(repo, base)}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +236,7 @@ func TestLandCheckRecordsMissingTipAndInvalidLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "bad lineage stays actionable", ExpectedBaseSHA: base}, now)
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "bad lineage stays actionable", GitDelivery: localGitDelivery(repo, base)}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +284,7 @@ func TestLandCheckRequiresLatestAttachedCommitArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "only the attached final tip can land", ExpectedBaseSHA: base}, now)
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "only the attached final tip can land", GitDelivery: localGitDelivery(repo, base)}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +390,7 @@ func TestLandCheckRecordDoesNotAcceptTamperedExistingContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "record collision stays tamper evident", ExpectedBaseSHA: base}, now)
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "record collision stays tamper evident", GitDelivery: localGitDelivery(repo, base)}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +427,8 @@ func TestLandingCloseGateLeavesLegacyAndFailedWorkCompatible(t *testing.T) {
 		t.Fatalf("legacy completion should not require landing proof: %v", err)
 	}
 
-	code, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "failed code work reports failure", ExpectedBaseSHA: strings.Repeat("a", 40)}, now.Add(4*time.Minute))
+	repo, base := initLandingRepo(t)
+	code, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "failed code work reports failure", GitDelivery: localGitDelivery(repo, base)}, now.Add(4*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +468,7 @@ func newLandingProofFixture(t *testing.T, now time.Time) landingProofFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "proof content remains exact", ExpectedBaseSHA: base}, now)
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "proof content remains exact", GitDelivery: localGitDelivery(repo, base)}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
