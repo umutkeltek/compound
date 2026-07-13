@@ -33,7 +33,8 @@ import {
 } from "./governed-action-client";
 import { specFor } from "./decision-registry";
 import { genericActionRevision } from "./generic-actions";
-import type { Json } from "./compound";
+import { isStandingLawCandidate } from "./memory-data";
+import { str, type Json } from "./compound";
 
 type Check = { name: string; ok: boolean; detail: string };
 
@@ -762,6 +763,89 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
         pl?.headline === item.operator_summary &&
         pl?.consequences?.hold === "nothing changes; it stays in this queue and the job keeps failing silently",
       `argv=${argv?.join(" ") ?? "null"} preview=${String(jobHealth?.supportsPreview)} options=${options.map((option) => option.value).join(",")}`,
+    );
+  }
+
+  // 20. standing-law-candidate (operator-legibility fix). Parked accepted
+  //     decisions become plain-language cards whose FOUR buttons never spell a
+  //     raw verdict — the verb (promote/park/reject/no_promote) lives only in
+  //     the disclosure argv. The bespoke owner builds the EXACT bare
+  //     `memory adjudicate <id> --verdict <verdict>` pair (no --basis: the
+  //     candidate already carries promotion_basis, so a bare promote succeeds),
+  //     rejects a verdict outside the four, and keeps every id out of the
+  //     headline (that is THE CLAIM — the decision's object text).
+  {
+    const law = specFor("standing-law-candidate");
+    const item = {
+      id: "cand_lawfixture01",
+      state: "parked",
+      claim_type: "decision",
+      entity: "decision:brain-fixture01",
+      predicate: "decided",
+      object: "Decision: adopt the envelope spine (2026-06-01)",
+      promotion_basis: "decision_record",
+      created_at: "2026-06-30T14:20:51Z",
+      qualifiers: { source: "brain", decision_id: "brain-fixture01", kind: "doctrine", lifecycle_status: "accepted" },
+    } as Json;
+    const options = law?.optionsFor?.(item) ?? [];
+    const values = options.map((o) => o.value).sort().join(",");
+    const labels = options.map((o) => o.label).join("|");
+    const promoteArgv = law?.buildArgv?.({ itemId: "cand_lawfixture01", item, option: "promote", fields: {} });
+    const wantPromote = ["memory", "adjudicate", "cand_lawfixture01", "--verdict", "promote"];
+    const noPromoteArgv = law?.buildArgv?.({ itemId: "cand_lawfixture01", item, option: "no_promote", fields: {} });
+    const bogus = law?.buildArgv?.({ itemId: "cand_lawfixture01", item, option: "sudo_make_law", fields: {} });
+    const pl = law?.plainLanguage(item);
+    // A verdict verb must never appear as a button label (dual-encode contract).
+    const RAW_VERDICTS = new Set(["promote", "park", "reject", "no_promote"]);
+    const labelLeaksVerb = options.some((o) =>
+      RAW_VERDICTS.has(o.value) && new RegExp(`\\b${o.value.replace("_", "[ _]")}\\b`, "i").test(o.label),
+    );
+    push(
+      "standing-law-candidate-exact-bare-argv-dual-encoded-labels-rejects-bogus-verdict",
+      Boolean(law) &&
+        law?.source === "orient" &&
+        law?.requiresResolvedItem !== true &&
+        law?.idPattern.test("cand_lawfixture01") === true &&
+        law?.idPattern.test("cand_") === false &&
+        values === ["no_promote", "park", "promote", "reject"].join(",") &&
+        labels === ["Make it law", "Keep aside", "Discard", "Decline — stop asking"].join("|") &&
+        labelLeaksVerb === false &&
+        promoteArgv?.join(" ") === wantPromote.join(" ") &&
+        noPromoteArgv?.join(" ") === ["memory", "adjudicate", "cand_lawfixture01", "--verdict", "no_promote"].join(" ") &&
+        bogus == null &&
+        pl?.headline === "Decision: adopt the envelope spine (2026-06-01)" &&
+        /adjudicate cand_lawfixture01 --verdict/.test(`compound ${(law?.previewArgv?.(item) ?? []).join(" ")}`),
+      `values=${values} labels=${labels} promote=${promoteArgv?.join(" ") ?? "null"} bogus=${bogus ?? "null"} leak=${labelLeaksVerb}`,
+    );
+  }
+
+  // 21. Queue filter (memory page). The 18-shaped fixture (decision-typed +
+  //     entity:decision: prefix branch) enters the durable queue; parked
+  //     knowledge/x_likes rows and proposed decisions never do — proving the
+  //     clean-seam empty state cannot lie while a law candidate waits, and the
+  //     28k-row knowledge corpus cannot flood the operator's queue.
+  {
+    const lawTyped: Json = { id: "cand_l1", state: "parked", claim_type: "decision", entity: "decision:brain-a", object: "Decision: A" };
+    const lawEntityPrefix: Json = { id: "cand_l2", state: "parked", claim_type: "doctrine", entity: "decision:brain-b", object: "Decision: B" };
+    const xLikeParked: Json = { id: "cand_x1", state: "parked", claim_type: "knowledge", entity: "knowledge:x_like_1", qualifiers: { source: "knowledge_import" }, object: "a liked tweet" };
+    const proposedDecision: Json = { id: "cand_p1", state: "proposed", claim_type: "decision", entity: "decision:brain-c", object: "Decision: C" };
+    const fixture: Json[] = [
+      ...Array.from({ length: 16 }, (_, i) => ({ id: `cand_law_${i}`, state: "parked", claim_type: "decision", entity: `decision:brain-${i}`, object: `Decision ${i}` } as Json)),
+      lawTyped,
+      lawEntityPrefix,
+      ...Array.from({ length: 500 }, (_, i) => ({ id: `cand_xl_${i}`, state: "parked", claim_type: "knowledge", entity: `knowledge:x_like_${i}`, qualifiers: { source: "knowledge_import" } } as Json)),
+      proposedDecision,
+    ];
+    const queue = fixture.filter(isStandingLawCandidate);
+    push(
+      "standing-law-queue-admits-18-law-shaped-and-excludes-knowledge-and-proposed",
+      isStandingLawCandidate(lawTyped) === true &&
+        isStandingLawCandidate(lawEntityPrefix) === true &&
+        isStandingLawCandidate(xLikeParked) === false &&
+        isStandingLawCandidate(proposedDecision) === false &&
+        queue.length === 18 &&
+        queue.every((c) => str(c.entity).startsWith("decision:") || str(c.claim_type) === "decision"),
+      `typed=${isStandingLawCandidate(lawTyped)} prefix=${isStandingLawCandidate(lawEntityPrefix)} xlike=${isStandingLawCandidate(xLikeParked)} proposed=${isStandingLawCandidate(proposedDecision)} queue=${queue.length}/${fixture.length}`,
     );
   }
 

@@ -831,6 +831,71 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     },
   },
 
+  /* ----------------------------------------------------------------------
+   * standing-law-candidate (operator-legibility fix, 2026-07-13). Triaging the
+   * parked accepted decisions mined from brain/ledger used to mean CLI grep over
+   * ~28k rows + raw system verbs — a standing-legibility-law violation. This
+   * bespoke owner turns each parked decision candidate into a plain-language
+   * card whose FOUR buttons never spell a raw verdict: "Make it law" / "Keep
+   * aside" / "Discard" / "Decline — stop asking". The raw verb
+   * (promote/park/reject/no_promote) surfaces ONLY in the disclosure argv line
+   * (dual-encode). Mechanism mirrors memory-adjudicate/job-health exactly: same
+   * generic AdjudicationCard, same /api/decision/execute seam, same
+   * `memory adjudicate` allowlist — a new REGISTRY entry is all it takes.
+   *
+   * source "orient" WITHOUT requiresResolvedItem: like panel-apply, argv is
+   * built purely from itemId + option, so executeDecision skips item resolution
+   * (no 404) instead of re-projecting. The argv is the EXACT bare pair
+   * `memory adjudicate <id> --verdict <verdict>` — no --basis: these candidates
+   * already carry promotion_basis (decision_record / explicit_confirmation /
+   * runtime_proof), so the memory authority accepts a bare promote. buildArgv
+   * refuses any verdict outside the four; the execute path re-checks via
+   * optionsFor as defense in depth. The adjudicate CLI is unchanged.
+   * -------------------------------------------------------------------- */
+  "standing-law-candidate": {
+    area: "standing-law-candidate",
+    title: "Standing-law candidate",
+    glyph: "L",
+    accent: "violet",
+    source: "orient",
+    argvAllowlist: [["memory", "adjudicate"]],
+    idPattern: /^cand_[A-Za-z0-9_-]+$/,
+    options: [],
+    optionsFor: (item) => {
+      const id = str(item.id);
+      return STANDING_LAW_CHOICES.map((choice) => ({
+        ...choice,
+        argv: ["memory", "adjudicate", id, "--verdict", choice.value],
+      }));
+    },
+    defaultOption: "park",
+    plainLanguage: (item) => {
+      const qualifiers = (item.qualifiers ?? {}) as Json;
+      const chips: { label: string; tone: Accent }[] = [];
+      if (str(qualifiers.lifecycle_status)) chips.push({ label: str(qualifiers.lifecycle_status), tone: "green" });
+      if (str(qualifiers.kind)) chips.push({ label: str(qualifiers.kind), tone: "violet" });
+      return {
+        // THE CLAIM — the decision's own words. No id in the headline.
+        headline: shortText(str(item.object) || str(item.entity), 160),
+        // WHERE FROM — humanized provenance, not a system id.
+        body: standingLawProvenance(item),
+        evidence: [str(qualifiers.decision_id), str(qualifiers.source)].filter(Boolean),
+        chips,
+        consequences: {
+          approve:
+            "it becomes ambient standing law — orient cites it to every agent, so it is never re-litigated",
+          hold: "it stays parked here, waiting — invisible to agents until you rule",
+        },
+      };
+    },
+    fields: [],
+    buildArgv: (ctx) => {
+      if (!STANDING_LAW_CHOICES.some((choice) => choice.value === ctx.option)) return null;
+      return ["memory", "adjudicate", ctx.itemId, "--verdict", ctx.option];
+    },
+    previewArgv: (item) => ["memory", "adjudicate", str(item.id), "--verdict", "park"],
+  },
+
   "panel-apply": {
     area: "panel-apply",
     title: "Apply panel run",
@@ -1103,6 +1168,47 @@ const JOB_HEALTH_DECISIONS: { value: string; label: string; tone: Accent; descri
   { value: "no_action", label: "No action needed", tone: "green", description: "Nothing to do right now." },
   { value: "owner_action_done", label: "Already handled", tone: "blue", description: "Verify the owner's fix on the next run." },
 ];
+
+/** The four plain-language standing-law choices. Each `value` is the raw memory
+ * verdict (used to build argv + validate server-side); the `label` is the plain
+ * copy the operator reads — the two are deliberately different so no button ever
+ * spells a system verb (dual-encode: plain up front, grammar in the disclosure
+ * argv). Consequence copy lives in `description`, matching the operator brief. */
+const STANDING_LAW_CHOICES: { value: string; label: string; tone: Accent; description: string }[] = [
+  { value: "promote", label: "Make it law", tone: "green", description: "It becomes ambient — cited to every agent at orient, so nobody re-litigates it." },
+  { value: "park", label: "Keep aside", tone: "orange", description: "Kept as evidence, not yet ambient; it resurfaces on its own when new evidence arrives." },
+  { value: "reject", label: "Discard", tone: "red", description: "Noise — dropped so it is never recalled, mined, or re-asked." },
+  { value: "no_promote", label: "Decline — stop asking", tone: "gray", description: "Records the decline so re-mining this source stops re-asking you about it." },
+];
+
+const PROVENANCE_MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/** "2026-06-30T14:20:51Z" → "June 30" (UTC, matching the stored Z stamp). */
+function provenanceMonthDay(iso: string): string {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "";
+  return `${PROVENANCE_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
+/** Humanized "where from" line for a standing-law candidate — source + date in
+ * plain English, never a system id. Falls back through promotion_basis when the
+ * candidate carries no source (e.g. ledger-native decisions). */
+function standingLawProvenance(item: Json): string {
+  const qualifiers = (item.qualifiers ?? {}) as Json;
+  const source = str(qualifiers.source);
+  const basis = str(item.promotion_basis);
+  let origin: string;
+  if (source === "brain") origin = "Mined from your brain pages";
+  else if (source === "brain-ledger") origin = "Mined from your decision ledger";
+  else if (basis === "runtime_proof") origin = "Recorded from a runtime proof";
+  else if (basis === "explicit_confirmation") origin = "From a decision you confirmed";
+  else origin = "From a recorded decision";
+  const when = provenanceMonthDay(str(item.created_at));
+  return when ? `${origin}, ${when}.` : `${origin}.`;
+}
 
 const SOURCE_CONTROL_DECISIONS: DecisionOption[] = [
   { value: "owner_action_required", label: "Tidy it", tone: "orange", description: "Record that an owner must classify and tidy the changes. No files change now." },

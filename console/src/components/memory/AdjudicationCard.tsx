@@ -143,17 +143,17 @@ export function AdjudicationCard({
             aria-hidden
             className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-memory-line bg-memory-soft text-xs font-bold text-memory"
           >
-            M
+            {model.glyph}
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
-              <span className="text-2xs font-bold uppercase tracking-wide text-faint">Memory · adjudicate</span>
+              <span className="text-2xs font-bold uppercase tracking-wide text-faint">{model.kindLabel}</span>
             </div>
             <h3 className="mt-0.5 text-md font-semibold leading-snug text-ink">{model.headline}</h3>
           </div>
         </div>
         <span className="shrink-0 rounded-pill border border-hair bg-transparent px-2.5 py-0.5 text-xs font-semibold text-muted">
-          proposed
+          {model.stateLabel}
         </span>
       </div>
 
@@ -174,7 +174,7 @@ export function AdjudicationCard({
       {model.consequences ? (
         <div className="mt-2 rounded-md bg-soft px-3 py-2 text-xs leading-relaxed">
           <div className="text-ink">
-            <span className="font-semibold text-good">if you promote</span>
+            <span className="font-semibold text-good">if you {model.approveLabel}</span>
             <span className="text-faint"> → </span>
             {model.consequences.approve}
           </div>

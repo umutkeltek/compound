@@ -1,6 +1,9 @@
+import Link from "next/link";
+
 import { StandingLawBrowser } from "@/components/standing-law/StandingLawBrowser";
 import { FreshnessChip, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
 import { runJson, type Json } from "@/lib/compound";
+import { loadStandingLawCandidates } from "@/lib/memory-data";
 import { buildStandingLaw, type StandingLawConflict } from "@/lib/standing-law";
 
 export const dynamic = "force-dynamic";
@@ -67,7 +70,8 @@ function ConflictStrip({ conflicts }: { conflicts: StandingLawConflict[] }) {
 }
 
 export default async function StandingLaw() {
-  const model = await loadStandingLaw();
+  const [model, lawCandidates] = await Promise.all([loadStandingLaw(), loadStandingLawCandidates()]);
+  const waiting = lawCandidates.length;
 
   return (
     <div className="flex flex-col gap-8">
@@ -88,6 +92,19 @@ export default async function StandingLaw() {
         before you re-decide. Superseded records are kept for provenance but shown struck-through under their
         successor, never as live law.
       </p>
+
+      {waiting > 0 ? (
+        <Link
+          href="/memory"
+          className="inline-flex items-center gap-2 rounded-lg border border-seam-line bg-seam-soft px-4 py-2.5 text-sm font-semibold text-seam transition-colors hover:bg-seam-soft/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+        >
+          <span className="mono tabular-nums">{waiting}</span>
+          {waiting === 1
+            ? " candidate is waiting for your call"
+            : " candidates are waiting for your call"}
+          <span aria-hidden>→</span>
+        </Link>
+      ) : null}
 
       <ConflictStrip conflicts={model.conflicts} />
 

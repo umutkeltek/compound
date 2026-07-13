@@ -5,7 +5,7 @@ import { buildAdjudicationModel, type AdjudicationCardModel } from "@/components
 import { BrainIcon, DatabaseIcon, DocIcon, EmptyState, FreshnessChip, PageHeader, SectionHeader } from "@/components/kit";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
-import { loadMemoryCounts, loadProposedMemorySplit } from "@/lib/memory-data";
+import { loadMemoryCounts, loadProposedMemorySplit, loadStandingLawCandidates } from "@/lib/memory-data";
 import { loadMemoryEgoGraph, type EgoGraph } from "@/lib/map/memory-graph";
 
 export const dynamic = "force-dynamic";
@@ -36,16 +36,25 @@ export default async function Memory({
   const { graph: graphParam } = await searchParams;
   const seed = (graphParam ?? "").trim();
 
-  const [{ actionable, sourceEvidence }, counts, ego] = await Promise.all([
+  const [{ actionable, sourceEvidence }, lawCandidates, counts, ego] = await Promise.all([
     loadProposedMemorySplit(),
+    loadStandingLawCandidates(),
     loadMemoryCounts(),
     seed ? loadMemoryEgoGraph(seed, { maxNodes: 60 }) : Promise.resolve<EgoGraph | null>(null),
   ]);
 
   const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
-  const models = actionable
-    .map(buildAdjudicationModel)
+  // Parked accepted decisions (standing-law candidates) are durable verdicts the
+  // operator owes just like proposed memory — they lead the queue so the clean
+  // seam can never lie while any waits. Non-law parked rows (the 28k-row
+  // knowledge corpus) are filtered out at the loader, so they never flood in.
+  const lawModels = lawCandidates
+    .map((candidate) => buildAdjudicationModel(candidate, "standing-law-candidate"))
     .filter((m): m is AdjudicationCardModel => Boolean(m));
+  const proposedModels = actionable
+    .map((candidate) => buildAdjudicationModel(candidate))
+    .filter((m): m is AdjudicationCardModel => Boolean(m));
+  const models = [...lawModels, ...proposedModels];
 
   return (
     <div className="flex flex-col gap-8">

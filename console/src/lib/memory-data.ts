@@ -41,6 +41,22 @@ export function isActionableMemoryCandidate(candidate: Json): boolean {
   return str(candidate.state) === "proposed" && !isKnowledgeClassCandidate(candidate);
 }
 
+/**
+ * A parked STANDING-LAW candidate: an accepted decision (mined from brain pages
+ * or the decision ledger) that is sitting parked, waiting for the operator to
+ * rule "make it law". The exact predicate the operator complaint names:
+ *   state == "parked" AND (claim_type == "decision" OR entity starts "decision:")
+ * This is the authority filter — it also honors the entity-prefix branch, so a
+ * decision-shaped row whose claim_type drifted still enters the queue. Knowledge
+ * corpus rows (x_likes, imports) are parked in the tens of thousands and MUST
+ * NOT flood in: they are neither decision-typed nor decision:-entity.
+ */
+export function isStandingLawCandidate(candidate: Json): boolean {
+  if (str(candidate.state) !== "parked") return false;
+  const entity = str(candidate.entity).trim();
+  return str(candidate.claim_type).trim() === "decision" || entity.startsWith("decision:");
+}
+
 async function consoleSourceFor(candidate: Json): Promise<Json | null> {
   const qualifiers = asObject(candidate.qualifiers);
   const traceRef = str(candidate.source_trace_ref);
@@ -170,6 +186,30 @@ export async function loadProposedMemorySplit(): Promise<{
     actionable: proposed.filter(isActionableMemoryCandidate),
     sourceEvidence: proposed.filter(isKnowledgeClassCandidate),
   };
+}
+
+/**
+ * Parked standing-law candidates for the durable adjudication queue.
+ *
+ * Server-prefiltered with `--kind decision` (mem CandidateListOptions keys it on
+ * ClaimType) so the loader never pulls the full parked set — that set is ~28k
+ * rows / ~24MB locally (mostly knowledge corpus) and blows the exec timeout to
+ * find ~18. The authoritative filter is still isStandingLawCandidate applied
+ * here (it also admits the entity:decision: prefix branch). On the real home the
+ * prefilter returns exactly the decision-typed parked rows, so 18 in ⇒ 18 out.
+ */
+export async function loadStandingLawCandidates(): Promise<MemoryCandidate[]> {
+  const data = await runJson([
+    "memory", "candidates", "--json", "--state", "parked", "--kind", "decision",
+  ]);
+  const rows = data
+    ? arr(data.items)
+        .map((item) => candidateWithId(asObject(item)))
+        .filter((item): item is MemoryCandidate => Boolean(item))
+    : [];
+  const out = rows.filter(isStandingLawCandidate);
+  out.sort((a, b) => str(b.created_at).localeCompare(str(a.created_at)));
+  return out;
 }
 
 export async function loadMemoryCounts(): Promise<Record<string, number>> {

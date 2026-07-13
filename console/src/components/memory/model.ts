@@ -27,10 +27,29 @@ export type AdjudicationCardModel = {
   /** Entity slug (or claim id) to seed the embedded memory graph from this card. */
   seed: string;
   createdAt: string;
+  /** Presentation, dual-encoded per area so the same card serves the proposed
+   * memory queue and the parked standing-law queue honestly (no "proposed" lie
+   * on a parked candidate; no raw "promote" in the consequence lead). */
+  glyph: string;
+  kindLabel: string;
+  stateLabel: string;
+  approveLabel: string;
 };
 
-export function buildAdjudicationModel(candidate: MemoryCandidate): AdjudicationCardModel | null {
-  const spec = specFor(AREA);
+type Presentation = { kindLabel: string; approveLabel: string; defaultState: string };
+
+/** Per-area card chrome. glyph comes from the registry spec; these are the
+ * dual-encoded words the operator reads (the affirmative verb + the eyebrow). */
+const PRESENTATION: Record<string, Presentation> = {
+  "memory-adjudicate": { kindLabel: "Memory · adjudicate", approveLabel: "promote", defaultState: "proposed" },
+  "standing-law-candidate": { kindLabel: "Standing law · candidate", approveLabel: "make it law", defaultState: "parked" },
+};
+
+export function buildAdjudicationModel(
+  candidate: MemoryCandidate,
+  area: string = AREA,
+): AdjudicationCardModel | null {
+  const spec = specFor(area);
   if (!spec) return null;
 
   const options = spec.optionsFor ? spec.optionsFor(candidate) : spec.options;
@@ -41,6 +60,7 @@ export function buildAdjudicationModel(candidate: MemoryCandidate): Adjudication
   const argvPreview = spec.previewArgv
     ? spec.previewArgv(candidate)
     : options.find((o) => o.value === defaultOption)?.argv ?? null;
+  const presentation = PRESENTATION[area] ?? PRESENTATION[AREA];
 
   return {
     id: candidate.id,
@@ -53,5 +73,9 @@ export function buildAdjudicationModel(candidate: MemoryCandidate): Adjudication
     argvPreview,
     seed: str(candidate.entity) || candidate.id,
     createdAt: str(candidate.created_at),
+    glyph: spec.glyph,
+    kindLabel: presentation.kindLabel,
+    stateLabel: str(candidate.state) || presentation.defaultState,
+    approveLabel: presentation.approveLabel,
   };
 }
