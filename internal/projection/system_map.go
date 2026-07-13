@@ -1,14 +1,18 @@
 package projection
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"compound/internal/runtimebinding"
 )
 
 const SystemMapSchemaVersion = "compound.system_map_projection.v0.1"
@@ -35,6 +39,13 @@ type SystemMapNode struct {
 	Projection   string   `json:"projection"`
 	Volume       string   `json:"volume,omitempty"`
 	EvidenceRefs []string `json:"evidenceRefs,omitempty"`
+	// Target binds a node to the live source that hydrates it. For the
+	// "host-reachability" projection it is "<bundlePath>[#<probeID>]": the bundle
+	// path resolves against COMPOUND_HOME (or an absolute / ~-prefixed path), and
+	// an optional "#probeID" fragment selects one probe (per-host node); with no
+	// fragment the whole bundle is aggregated (e.g. "6/7 reachable"). It stays
+	// product-generic: any future projection may reuse it to point at its source.
+	Target string `json:"target,omitempty"`
 }
 
 type SystemMapEdge struct {
@@ -77,13 +88,14 @@ func BuildSystemMap(homePath, repoPath string, now time.Time) (SystemMapProjecti
 	if err != nil {
 		return SystemMapProjection{}, err
 	}
+	hosts := newHostReachability(homePath, now)
 	nodes := make([]SystemMapNode, 0, len(file.Nodes))
 	for _, node := range file.Nodes {
-		hydrateSystemMapNode(homePath, &node)
+		hydrateSystemMapNode(homePath, &node, hosts)
 		nodes = append(nodes, node)
 	}
 	stats := map[string]SystemMapStats{}
-	for _, lane := range []string{"capture", "storage", "meaning", "outward"} {
+	for _, lane := range []string{"capture", "storage", "meaning", "outward", "infra"} {
 		stats[lane] = SystemMapStats{}
 	}
 	for _, node := range nodes {
@@ -162,8 +174,10 @@ func loadSystemMapFile(homePath, repoPath string) (systemMapFile, []string, erro
 	return systemMapFile{Nodes: []SystemMapNode{}, Edges: []SystemMapEdge{}}, []string{}, nil
 }
 
-func hydrateSystemMapNode(homePath string, node *SystemMapNode) {
+func hydrateSystemMapNode(homePath string, node *SystemMapNode, hosts *hostReachability) {
 	switch strings.TrimSpace(node.Projection) {
+	case "host-reachability":
+		hydrateHostReachability(node, hosts)
 	case "capability-authority":
 		nodes := countJSONLLines(filepath.Join(homePath, "registries", "capability-nodes.jsonl"))
 		edges := countJSONLLines(filepath.Join(homePath, "registries", "capability-edges.jsonl"))
@@ -190,6 +204,123 @@ func hydrateSystemMapNode(homePath string, node *SystemMapNode) {
 			node.EvidenceRefs = append(node.EvidenceRefs, node.ReviewID)
 		}
 	}
+}
+
+// hostReachability memoizes live probe reads per bundle for one BuildSystemMap
+// call: a bundle referenced by many host nodes (per-host probes + an aggregate)
+// is loaded and probed exactly once, so a down host is dialed once, not per node.
+type hostReachability struct {
+	homePath string
+	now      time.Time
+	cache    map[string]map[string]runtimebinding.Check // resolved bundle path -> probe id -> check (nil = load failed)
+}
+
+func newHostReachability(homePath string, now time.Time) *hostReachability {
+	return &hostReachability{homePath: homePath, now: now, cache: map[string]map[string]runtimebinding.Check{}}
+}
+
+// results loads + probes a bundle once, memoizing by resolved path. ok is false
+// when the bundle could not be loaded (missing/invalid) so callers degrade to an
+// honest "unverified" status instead of claiming reachability they never proved.
+func (h *hostReachability) results(bundlePath string) (map[string]runtimebinding.Check, bool) {
+	if cached, seen := h.cache[bundlePath]; seen {
+		return cached, cached != nil
+	}
+	bundle, err := runtimebinding.Load(bundlePath)
+	if err != nil {
+		h.cache[bundlePath] = nil
+		return nil, false
+	}
+	res := runtimebinding.ProbeResults(context.Background(), bundle, h.now)
+	h.cache[bundlePath] = res
+	return res, true
+}
+
+// hydrateHostReachability turns a live probe read into a topology node's status
+// + volume. A passing probe is "live"; anything else (unreachable, missing
+// bundle, unknown probe) is "divergent" — the observed-truth signal that a host
+// the map expects to be up is not answering. Status is a free string here; the
+// console maps "live" -> green and everything else -> not-live.
+func hydrateHostReachability(node *SystemMapNode, hosts *hostReachability) {
+	bundlePath, probeID := parseHostTarget(node.Target, hosts.homePath)
+	if bundlePath == "" {
+		node.Status = "divergent"
+		node.Volume = "no probe bound"
+		return
+	}
+	results, ok := hosts.results(bundlePath)
+	if !ok {
+		node.Status = "divergent"
+		node.Volume = "probe bundle unavailable"
+		return
+	}
+	if probeID != "" {
+		check, found := results[probeID]
+		if !found {
+			node.Status = "divergent"
+			node.Volume = "probe " + probeID + " not found"
+			return
+		}
+		if check.Status == "ok" {
+			node.Status = "live"
+			node.Volume = "reachable"
+		} else {
+			node.Status = "divergent"
+			node.Volume = "unreachable"
+		}
+		node.EvidenceRefs = append(node.EvidenceRefs, "probe:"+probeID+":"+check.Status)
+		return
+	}
+	// Aggregate node: the whole bundle. Live only when every host answers.
+	total := len(results)
+	okCount := 0
+	down := make([]string, 0, total)
+	for id, check := range results {
+		if check.Status == "ok" {
+			okCount++
+		} else {
+			down = append(down, id)
+		}
+	}
+	sort.Strings(down)
+	if total > 0 && okCount == total {
+		node.Status = "live"
+	} else {
+		node.Status = "divergent"
+	}
+	node.Volume = fmt.Sprintf("%d/%d reachable", okCount, total)
+	for _, id := range down {
+		node.EvidenceRefs = append(node.EvidenceRefs, "unreachable:"+id)
+	}
+}
+
+// parseHostTarget splits a host-reachability target "<bundlePath>[#probeID]" and
+// resolves the bundle path: ~/ expands to the home dir, absolute paths pass
+// through, and a relative path resolves against COMPOUND_HOME. Probe/bundle
+// paths carry no host data into the public repo — the bundle itself is private
+// runtime state under COMPOUND_HOME.
+func parseHostTarget(target, homePath string) (bundlePath, probeID string) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", ""
+	}
+	path := target
+	if idx := strings.LastIndex(target, "#"); idx >= 0 {
+		path = strings.TrimSpace(target[:idx])
+		probeID = strings.TrimSpace(target[idx+1:])
+	}
+	if path == "" {
+		return "", probeID
+	}
+	switch {
+	case strings.HasPrefix(path, "~/"):
+		if h, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(h, strings.TrimPrefix(path, "~/"))
+		}
+	case !filepath.IsAbs(path) && strings.TrimSpace(homePath) != "":
+		path = filepath.Join(homePath, path)
+	}
+	return path, probeID
 }
 
 func countJSONLLines(path string) int {

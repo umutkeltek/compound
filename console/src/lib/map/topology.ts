@@ -11,8 +11,8 @@ import {
   getRouteAuthority,
   getSystemStatsProjection,
 } from "@/lib/map/projections";
+import { LANE_ORDER } from "@/lib/map/types";
 import type {
-  Lane,
   SystemNode,
   TopologyEdge,
   TopologyEntry,
@@ -56,6 +56,7 @@ export async function loadTopology(): Promise<TopologySnapshot> {
         storage: { live: 0, notLive: 0 },
         meaning: { live: 0, notLive: 0 },
         outward: { live: 0, notLive: 0 },
+        infra: { live: 0, notLive: 0 },
       },
       generatedAt: typeof projected.generated_at === "string" ? projected.generated_at : new Date().toISOString(),
     };
@@ -104,6 +105,12 @@ export async function loadTopology(): Promise<TopologySnapshot> {
       case "external-intake-map":
         if (entry.reviewId) evidenceRefs = [entry.reviewId];
         break;
+      case "host-reachability":
+        // Live reachability is a Go-side probe: the primary path above returns
+        // `compound system map --json` (real status/volume) directly. This
+        // CLI-unavailable fallback can't cheaply probe hosts, so it renders the
+        // last-known static status from the overlay/fixture — no false "live".
+        break;
       case "static":
       case "job-roster":
       default:
@@ -118,7 +125,7 @@ export async function loadTopology(): Promise<TopologySnapshot> {
   });
 
   const stats = {} as TopologySnapshot["stats"];
-  for (const lane of ["capture", "storage", "meaning", "outward"] as Lane[]) {
+  for (const lane of LANE_ORDER) {
     const inLane = nodes.filter((n) => n.lane === lane);
     stats[lane] = {
       live: inLane.filter((n) => n.status === "live").length,

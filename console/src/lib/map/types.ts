@@ -6,24 +6,28 @@ import type { Accent } from "@/components/ui";
  * the System Map renders.
  */
 
-export type Lane = "capture" | "storage" | "meaning" | "outward";
+export type Lane = "capture" | "storage" | "meaning" | "outward" | "infra";
 
-export const LANE_ORDER: Lane[] = ["capture", "storage", "meaning", "outward"];
+export const LANE_ORDER: Lane[] = ["capture", "storage", "meaning", "outward", "infra"];
 
 export const LANE_META: Record<Lane, { label: string; accent: Accent; glyph: string; blurb: string }> = {
   capture: { label: "Capture", accent: "orange", glyph: "↓", blurb: "Where data enters compound." },
   storage: { label: "Storage", accent: "blue", glyph: "▤", blurb: "Where raw + authority live. Bulk stays outside the core." },
   meaning: { label: "Meaning", accent: "violet", glyph: "✦", blurb: "The compound core: evidence → claim → capability." },
   outward: { label: "Outward", accent: "green", glyph: "↑", blurb: "Where compound's meaning becomes value." },
+  infra: { label: "Infra", accent: "gray", glyph: "⌂", blurb: "Where compound runs: hosts + live reachability." },
 };
 
-export type SystemStatus = "live" | "intake-only" | "reference-only" | "planned";
+export type SystemStatus = "live" | "intake-only" | "reference-only" | "planned" | "divergent";
 
 export const STATUS_META: Record<SystemStatus, { label: string; tone: Accent; dashed: boolean }> = {
   live: { label: "live", tone: "green", dashed: false },
   "intake-only": { label: "intake-only", tone: "orange", dashed: true },
   "reference-only": { label: "reference", tone: "gray", dashed: true },
   planned: { label: "planned", tone: "blue", dashed: true },
+  // A host the map expects to answer but a live probe found unreachable (or
+  // unverifiable). Red + dashed: observed truth that diverges from intent.
+  divergent: { label: "divergent", tone: "red", dashed: true },
 };
 
 export type ProjectionKind =
@@ -33,6 +37,7 @@ export type ProjectionKind =
   | "ledger-stats"
   | "knowledge-sources"
   | "external-intake-map"
+  | "host-reachability"
   | "job-roster"
   | "static";
 
@@ -49,6 +54,14 @@ export type TopologyEntry = {
   reviewId?: string;
   /** Where the loader finds the live volume + evidence. */
   projection: ProjectionKind;
+  /**
+   * Binds a node to its live source. For "host-reachability" it is
+   * "<bundlePath>[#probeID]" (bundle path relative to COMPOUND_HOME; an optional
+   * "#probeID" selects one host, no fragment aggregates the bundle). Live status
+   * is computed by the Go projection (`compound system map --json`); this field
+   * is generic and other projections may reuse it.
+   */
+  target?: string;
 };
 
 /** A data-flow edge between systems. */

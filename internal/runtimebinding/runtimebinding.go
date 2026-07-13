@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"compound/internal/writeback"
@@ -174,6 +175,34 @@ func DoctorWithLiveProbes(ctx context.Context, b Bundle, now time.Time) DoctorRe
 		report.Checks = append(report.Checks, check)
 	}
 	return report
+}
+
+// ProbeResults runs every runtime probe in the bundle concurrently and returns
+// a map keyed by probe id (falling back to a positional "<kind>-N" id when a
+// probe has no explicit id). It is the reachability read behind projections that
+// treat hosts as topology nodes: load a bundle once, fan the probes out, and let
+// the caller decide status per probe or in aggregate. Each probe still enforces
+// its own timeout, so a single unreachable host cannot stall the others.
+func ProbeResults(ctx context.Context, b Bundle, now time.Time) map[string]Check {
+	results := make(map[string]Check, len(b.RuntimeProbes))
+	if len(b.RuntimeProbes) == 0 {
+		return results
+	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i, probe := range b.RuntimeProbes {
+		i, probe := i, probe
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			check := runProbe(ctx, probe, i, now)
+			mu.Lock()
+			results[probeID(probe, i)] = check
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return results
 }
 
 func runProbe(ctx context.Context, probe RuntimeProbe, idx int, now time.Time) Check {
