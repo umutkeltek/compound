@@ -645,6 +645,31 @@ func TestPromotionDoesNotMarkCandidateBeforeTransitionWrite(t *testing.T) {
 	if latest.State == "promoted" {
 		t.Fatalf("candidate marked promoted before transition existed: %+v", latest)
 	}
+	leakedClaims, err := s.loadClaims()
+	if err != nil || len(leakedClaims) != 1 {
+		t.Fatalf("partial promotion claims = %+v, err=%v", leakedClaims, err)
+	}
+	if err := os.Remove(eventsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(eventsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := s.Adjudicate(captured[0].ID, "promote", "work_transition_failure", t0)
+	if err != nil || recovered.Claim == nil || recovered.Transition == nil {
+		t.Fatalf("partial promotion did not recover: %+v, err=%v", recovered, err)
+	}
+	if recovered.Claim.ID != leakedClaims[0].ID {
+		t.Fatalf("recovery minted another claim: recovered=%s leaked=%s", recovered.Claim.ID, leakedClaims[0].ID)
+	}
+	claimsAfterRecovery, err := s.loadClaims()
+	if err != nil || len(claimsAfterRecovery) != 1 {
+		t.Fatalf("recovery claims = %+v, err=%v", claimsAfterRecovery, err)
+	}
+	latest, err = s.getCandidate(captured[0].ID)
+	if err != nil || latest.State != "promoted" {
+		t.Fatalf("recovered candidate = %+v, err=%v", latest, err)
+	}
 }
 
 func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testing.T) {

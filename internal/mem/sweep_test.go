@@ -411,6 +411,71 @@ func TestDecaySweepSkipsOperatorPermanentCandidateEvenWhenExpired(t *testing.T) 
 	}
 }
 
+func TestRaiseSeedsRechecksCandidateAfterStaleProposal(t *testing.T) {
+	s := newStore(t)
+	seed := cand("project:api", "status", "integration risk will matter later", "")
+	seed.PromotionBasis = ""
+	seed.ClaimType = "status"
+	seed.Salience = "low"
+	seed.ExpiresAt = t0.Add(24 * time.Hour).Format(time.RFC3339)
+	seed.Expectation = &CandidateExpectation{Entity: "project:api", Predicate: "runtime_outcome", Object: "risk materialized"}
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "park", "work_corroboration_race", t0); err != nil {
+		t.Fatal(err)
+	}
+	proposal := SynthesisCorroborationProposal{
+		ID:                "synth_corroboration_stale",
+		SeedCandidateID:   captured[0].ID,
+		EvidenceClaimID:   "claim_runtime_outcome",
+		EvidenceSummary:   "project:api.runtime_outcome = risk materialized",
+		EvidenceRefs:      []string{"claim:claim_runtime_outcome", "candidate:" + captured[0].ID},
+		EvidenceCreatedAt: rfc3339(t0),
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "no_promote", "work_corroboration_race", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	raised, err := s.raiseSeedsForCorroborations([]SynthesisCorroborationProposal{proposal}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raised) != 0 {
+		t.Fatalf("stale proposal raised terminal candidate: %+v", raised)
+	}
+	marks, err := s.candidateReviewMarksAsOf(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mark, ok := marks[captured[0].ID]; ok && len(mark.Refs) > 0 {
+		t.Fatalf("stale proposal minted corroboration mark: %+v", mark)
+	}
+}
+
+func TestRaiseSeedsFailsBeforeEdgeWhenCandidateIsMissing(t *testing.T) {
+	s := newStore(t)
+	proposal := SynthesisCorroborationProposal{
+		ID:                "synth_corroboration_missing",
+		SeedCandidateID:   "cand_missing",
+		EvidenceClaimID:   "claim_runtime_outcome",
+		EvidenceSummary:   "project:api.runtime_outcome = risk materialized",
+		EvidenceRefs:      []string{"claim:claim_runtime_outcome", "candidate:cand_missing"},
+		EvidenceCreatedAt: rfc3339(t0),
+	}
+	if _, err := s.raiseSeedsForCorroborations([]SynthesisCorroborationProposal{proposal}, t0); err == nil {
+		t.Fatal("missing candidate produced a successful raised review")
+	}
+	marks, err := s.candidateReviewMarksAsOf(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mark, ok := marks[proposal.SeedCandidateID]; ok && len(mark.Refs) > 0 {
+		t.Fatalf("missing candidate minted corroboration mark: %+v", mark)
+	}
+}
+
 func parkSeed(t *testing.T, s *Store, expectation CandidateExpectation) string {
 	t.Helper()
 	seed := cand("project:alpha", "operator_stance", "integration risk will matter later", "")
