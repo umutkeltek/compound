@@ -412,10 +412,12 @@ func seedUserPromptMeaningArtifacts(t *testing.T, homePath string, store *mem.St
 	if _, err := store.Adjudicate(captured[0].ID, candidates.Park, "work_user_awareness_chain", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := distiller.RecordLLMExtractionRequest(homePath, request); err != nil {
+	recordedRequest := request
+	recordedRequest.TraceRef = "trace user prompt isolation"
+	if _, err := distiller.RecordLLMExtractionRequest(homePath, recordedRequest); err != nil {
 		t.Fatal(err)
 	}
-	routeEvidence, err := distiller.BuildExecutionRouteEvidence(request, distiller.LiveExtractionReport{
+	routeEvidence, err := distiller.BuildExecutionRouteEvidence(recordedRequest, distiller.LiveExtractionReport{
 		SchemaVersion: distiller.LiveExtractionSchemaVersion,
 		Provider:      "fixture-no-call",
 		Model:         "fixture-no-call",
