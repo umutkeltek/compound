@@ -109,6 +109,15 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "paired-stance probe harness measuring how far a judging lane's verdict shifts when only the operator's stance is inverted (the artifact held constant), plus a read-only agreement-asymmetry projection over derived judgment records",
 		Consumer: "routeevidence.SycophancyScore route evidence per lane tuple and the `compound sycophancy` CLI (orchestrator real-lane probe door)",
 	},
+	// jobprobe is the job-roster probe-refresh collector: it re-observes current
+	// unit liveness for declared probe targets and refreshes the roster through
+	// authority; it informs job_health surfacing but blocks nothing, so it is
+	// evidence, not enforcement.
+	"organ:jobprobe": {
+		Class:    MintEvidence,
+		Purpose:  "probe-refresh collector that re-observes current unit liveness for declared probe targets (files under COMPOUND_HOME) and refreshes the job-roster authority so job_health derives from observed state, not stale imported claims",
+		Consumer: "authority job-roster refresh surface consumed by the director job_health scanner (compound/internal/director)",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law
