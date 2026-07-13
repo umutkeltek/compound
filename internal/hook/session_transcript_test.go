@@ -116,6 +116,38 @@ func TestSessionEndWorklessReceiptHashesOperatorSpanEvidence(t *testing.T) {
 	}
 }
 
+func TestSessionEndWorklessReceiptPersistsEmptyEvidenceArrayWithoutOperatorSpans(t *testing.T) {
+	home := t.TempDir()
+	path := writeTranscript(t, home, strings.Join([]string{
+		`{"type":"user","timestamp":"2026-07-10T01:00:00Z","message":{"role":"user","content":[{"type":"text","text":"<task-notification>Background agent completed.</task-notification>"}]}}`,
+		`{"type":"assistant","timestamp":"2026-07-10T01:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"No operator utterance was present."}]}}`,
+	}, "\n")+"\n")
+
+	deps := baseDeps()
+	deps.HomePath = home
+	res, err := Run(Fixture{
+		Hook:           "session-end",
+		Harness:        "claude_code",
+		SessionID:      "sess_empty_span_evidence",
+		Cwd:            "/repo/product",
+		TranscriptPath: path,
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := kinds(res.Produced); len(got) != 1 || got[0] != "receipt" {
+		t.Fatalf("produced = %v, want [receipt]", got)
+	}
+	rec := res.Produced[0].(*envelope.Receipt)
+	persisted, err := os.ReadFile(filepath.Join(home, "events", rec.ID+".json"))
+	if err != nil {
+		t.Fatalf("read persisted receipt: %v", err)
+	}
+	if !strings.Contains(string(persisted), `"evidence_refs": []`) || strings.Contains(string(persisted), `"evidence_refs": null`) {
+		t.Fatalf("persisted receipt must encode an empty evidence array, got:\n%s", persisted)
+	}
+}
+
 func TestSessionEndWorklessLargeTranscriptCompletesWithinBound(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, "large-transcript.jsonl")
