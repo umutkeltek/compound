@@ -163,7 +163,12 @@ type WorkbenchItem struct {
 	WorkID             string                  `json:"work_id"`
 	State              string                  `json:"state"`
 	Owner              string                  `json:"owner,omitempty"`
+	GitDeliveryBound   bool                    `json:"git_delivery_bound,omitempty"`
+	TargetWorktreeRoot string                  `json:"target_worktree_root,omitempty"`
+	TargetLocalRef     string                  `json:"target_local_ref,omitempty"`
 	ExpectedBaseSHA    string                  `json:"expected_base_sha,omitempty"`
+	PublicationMode    string                  `json:"publication_mode,omitempty"`
+	PublicationRef     string                  `json:"publication_ref,omitempty"`
 	CandidateTipSHA    string                  `json:"candidate_tip_sha,omitempty"`
 	LandingStatus      string                  `json:"landing_status,omitempty"`
 	ClaimedBy          string                  `json:"claimed_by,omitempty"`
@@ -323,7 +328,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		if err != nil {
 			return report, err
 		}
-		item := s.workbenchItem(w, events, &report, holdEvidence)
+		item := s.workbenchItem(w, events, &report, holdEvidence, now)
 		routeOutcomes.attach(&item)
 		item.ObservatoryTags = workbenchObservatoryTags(item)
 		report.Counts.RunObservations += len(item.RunObservations)
@@ -634,7 +639,7 @@ func lastCreatePlanID(events []Event) string {
 	return ""
 }
 
-func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *WorkbenchReport, holdEvidence holdEvidenceIndex) WorkbenchItem {
+func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *WorkbenchReport, holdEvidence holdEvidenceIndex, now time.Time) WorkbenchItem {
 	item := WorkbenchItem{
 		WorkID:             w.ID,
 		State:              w.State,
@@ -654,21 +659,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		MemoryCandidateIDs: append([]string{}, w.MemoryCandidateIDs...),
 		recentAt:           w.CreatedAt,
 	}
-	if strings.TrimSpace(w.ExpectedBaseSHA) != "" {
-		_, tip, found, valid := latestCommitArtifact(w.ArtifactIDs)
-		item.CandidateTipSHA = tip
-		switch {
-		case !found:
-			item.LandingStatus = "awaiting_candidate_commit"
-		case !valid:
-			item.LandingStatus = "invalid_candidate_artifact"
-		case w.State == "verifying":
-			item.LandingStatus = "awaiting_landing"
-			item.NextAction = "run compound work land-check " + w.ID + " --repo <absolute-main-worktree> --tip " + tip + " --target-ref main"
-		default:
-			item.LandingStatus = "candidate_attached"
-		}
-	}
+	s.applyWorkbenchGitDelivery(&item, w, report, now)
 	if observations, warnings := s.workbenchRunObservations(w.ID); len(observations) > 0 || len(warnings) > 0 {
 		item.RunObservations = observations
 		for _, warning := range warnings {
@@ -754,6 +745,62 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 	}
 	item.ObservatoryTags = workbenchObservatoryTags(item)
 	return item
+}
+
+func (s *Store) applyWorkbenchGitDelivery(item *WorkbenchItem, w envelope.WorkEnvelope, report *WorkbenchReport, now time.Time) {
+	if item == nil {
+		return
+	}
+	_, tip, found, valid := latestCommitArtifact(w.ArtifactIDs)
+	item.CandidateTipSHA = tip
+	if w.GitDelivery == nil {
+		if found {
+			item.LandingStatus = "missing_git_delivery_contract"
+			item.NextAction = "replace this incomplete code work with a WorkEnvelope carrying a complete git_delivery contract"
+		}
+		return
+	}
+	contract := *w.GitDelivery
+	item.GitDeliveryBound = true
+	item.TargetWorktreeRoot = contract.TargetWorktreeRoot
+	item.TargetLocalRef = contract.TargetLocalRef
+	item.ExpectedBaseSHA = contract.ExpectedBaseSHA
+	item.PublicationMode = contract.PublicationMode
+	item.PublicationRef = contract.PublicationRef
+	switch {
+	case !found:
+		item.LandingStatus = "awaiting_candidate"
+		item.NextAction = "attach the final verified candidate as commit:<full-sha>"
+		return
+	case !valid:
+		item.LandingStatus = "invalid_candidate_artifact"
+		item.NextAction = "replace the malformed latest commit artifact with commit:<full-sha>"
+		return
+	}
+
+	live, err := s.evaluateLandCheck(w, LandCheckOptions{CandidateTipSHA: tip}, now)
+	if err != nil {
+		item.LandingStatus = "delivery_check_error"
+		item.NextAction = "repair the bound Git delivery target, then rerun compound work land-check " + w.ID + " --tip " + tip
+		report.Integrity = append(report.Integrity, w.ID+": Git delivery check failed: "+err.Error())
+		return
+	}
+	switch live.Status {
+	case "awaiting_publication":
+		item.LandingStatus = "awaiting_publication"
+		item.NextAction = live.NextAction
+	case "landed":
+		if _, err := s.recordedLandedProofForClose(w, landCheckEvidenceRefs(w.EvidenceRefs)); err != nil {
+			item.LandingStatus = "awaiting_proof_recording"
+			item.NextAction = "record the current delivery proof with compound work land-check " + w.ID + " --tip " + tip
+			return
+		}
+		item.LandingStatus = "ready_to_close"
+		item.NextAction = "close with the attached current Git delivery proof"
+	default:
+		item.LandingStatus = "awaiting_local_land"
+		item.NextAction = firstNonEmpty(live.NextAction, "land the candidate in the WorkEnvelope-bound target and rerun land-check")
+	}
 }
 
 type routeOutcomeIndex struct {
