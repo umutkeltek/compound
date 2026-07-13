@@ -157,9 +157,16 @@ func (s *Store) engineDoctorAttempt(query string, k int, eng Engine) (EngineDoct
 	report.LedgerUnchanged = before.digest == after.digest
 	if qerr != nil {
 		report.Error = qerr.Error()
-		if errors.Is(qerr, ErrUnsupported) || errors.Is(qerr, ErrEngineUnavailable) {
+		switch {
+		case errors.Is(qerr, ErrUnsupported), errors.Is(qerr, ErrEngineUnavailable):
 			report.Degraded = true
-		} else {
+		case errors.Is(qerr, ErrEngineServedUnownedClaim):
+			// A served-authority breach: the engine emitted an index_hit into a claim the owned
+			// ledger does not hold. Hard fail (never degraded) — but the ledger itself is
+			// untouched, so LedgerUnchanged stays TRUE and this populates EngineViolations.
+			report.EngineViolations = append(report.EngineViolations, qerr.Error())
+			return report, before, qerr
+		default:
 			return report, before, qerr
 		}
 	}

@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
+	"time"
+
+	"compound/internal/candidates"
 )
 
 // Engine errors are EXPLICIT and distinct so a caller can tell apart "this engine has no
@@ -18,6 +22,11 @@ var (
 	ErrEmbedderMismatch  = errors.New("engine embedder does not match the indexed embedder (refusing breadth, not degrading)")
 	ErrProtocolVersion   = errors.New("engine protocol version skew (refusing breadth, not degrading)")
 	ErrEngineAhead       = errors.New("breadth engine generation is ahead of owned ledger (refusing backward rebuild)")
+	// ErrEngineServedUnownedClaim fires when the rented engine emits an index_hit into a claim
+	// the owned ledger does not hold — the engine serving authority it does not have. Like
+	// ErrEmbedderMismatch it is fail-closed (it refuses the WHOLE query, never a silent drop),
+	// because an engine that can smuggle unowned pointers into recall has become an authority.
+	ErrEngineServedUnownedClaim = errors.New("engine returned an index_hit not in the owned ledger allowlist (serving authority it does not have)")
 )
 
 // Gate decouples the visibility decision from the allowlist CONTENTS. GateList honors the
@@ -36,11 +45,38 @@ type EngineCapabilities struct {
 	CorpusGen int64  `json:"corpus_gen"` // the generation this engine is indexed at (ledger maxSeq)
 }
 
-// Hit is a breadth-query result: a claim id + score. The ledger resolves the id to the claim;
-// the engine holds NO authority, only an index of claim ids.
+// HitKind types a breadth-query result by the AUTHORITY it claims. There are exactly two
+// legitimate shapes: an index_hit is a pointer into owned canon (it carries a ClaimID that MUST
+// resolve to a current ledger claim), and an observed_fact is a candidate-shaped proposal
+// surfaced over rented breadth that Compound does NOT own (no ClaimID, no authority). The zero
+// value ("") is index_hit, so a legacy engine that only emits resolvable pointers is unaffected.
+type HitKind string
+
+const (
+	KindIndexHit     HitKind = "index_hit"
+	KindObservedFact HitKind = "observed_fact"
+)
+
+// Hit is a breadth-query result. Its Kind declares STRUCTURALLY what authority it claims, so an
+// engine can never smuggle authority it lacks through an ambiguous drop: an index_hit that does
+// not resolve to an owned claim is a hard ErrEngineServedUnownedClaim (never a silent drop), and
+// an observed_fact carries no ClaimID and reaches canon only as an adjudicated candidate.
 type Hit struct {
-	ClaimID string  `json:"claim_id"`
-	Score   float64 `json:"score"`
+	Kind     HitKind       `json:"kind,omitempty"` // "" == index_hit (backward compat)
+	ClaimID  string        `json:"claim_id"`
+	Score    float64       `json:"score"`
+	Observed *ObservedFact `json:"observed,omitempty"` // non-nil iff Kind == observed_fact
+}
+
+// ObservedFact is a candidate-shaped proposal the rented engine SURFACED over breadth that
+// Compound does not own. It carries no ClaimID and no authority; it reaches canon ONLY as an
+// `observed`-derivation candidate in the inbox, adjudicated by code, never auto-promoted, and
+// never in ambient recall.
+type ObservedFact struct {
+	Entity    string `json:"entity"`
+	Predicate string `json:"predicate"`
+	Object    string `json:"object"`
+	Snippet   string `json:"snippet,omitempty"` // bounded evidence text, not a raw body
 }
 
 // Engine is the RENTED breadth index. Recall (exact / as-of) stays the ledger's job; the engine
@@ -178,13 +214,79 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 	} else if k > 0 && len(hits) > k {
 		hits = hits[:k]
 	}
+	// ROUTER — the single choke point (the engine-ingress face) that types each rented-engine hit
+	// by the authority it claims. An index_hit is a pointer into owned canon and MUST resolve to a
+	// current ledger claim; an unresolved one is the engine serving authority it does not have —
+	// a hard refusal (fail-closed, like ErrEmbedderMismatch), never the old silent drop. An
+	// observed_fact owns nothing and is routed to the adjudicated candidate inbox here; it is
+	// deliberately NOT appended to the returned claims, so it can never enter ambient recall.
+	engineName := eng.Capabilities().Name
 	out := make([]Claim, 0, len(hits))
 	for _, h := range hits {
-		if c, ok := byID[h.ClaimID]; ok {
+		switch h.Kind {
+		case "", KindIndexHit:
+			if h.Observed != nil {
+				return nil, fmt.Errorf("%w: index_hit %q carried an observed payload", ErrEngineServedUnownedClaim, h.ClaimID)
+			}
+			c, ok := byID[h.ClaimID]
+			if !ok {
+				return nil, fmt.Errorf("%w: %q", ErrEngineServedUnownedClaim, h.ClaimID) // was: silent drop
+			}
 			out = append(out, c)
+		case KindObservedFact:
+			if h.ClaimID != "" || h.Observed == nil || h.Observed.Entity == "" {
+				return nil, fmt.Errorf("%w: malformed observed_fact (claim_id=%q)", ErrEngineServedUnownedClaim, h.ClaimID)
+			}
+			if err := s.captureObservedFact(engineName, *h.Observed, time.Now()); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("%w: unknown hit kind %q", ErrEngineServedUnownedClaim, h.Kind)
 		}
 	}
 	return out, nil
+}
+
+// observed is the derivation minted for a fact the rented breadth engine SURFACED but Compound
+// does not own — distinct from `inferred` so provenance stays legible. It extends the
+// mem.Derivations vocabulary (defined in mem.go, owned by a parallel lane), registered here — the
+// engine ingress that produces the term — via init so the shared literal is not edited in two
+// places at once.
+const DerivationObserved = "observed"
+
+func init() { Derivations = append(Derivations, DerivationObserved) }
+
+// captureObservedFact routes an engine-surfaced ObservedFact — a fact Compound does NOT own —
+// into the memory-candidate inbox as a proposed, `observed`-derivation candidate: engine
+// provenance, promotion basis NONE, never a ledger byte. It is content-addressed on
+// entity|predicate|object and SKIPS if a candidate with that id already exists, so re-surfacing
+// the same fact never resets an in-flight adjudication verdict or spams the inbox. It writes ONLY
+// through the candidate-inbox door (never RecordEvidence / a ledger append), which is what keeps
+// EngineDoctor's ledger-digest invariant intact by construction.
+func (s *Store) captureObservedFact(engineName string, of ObservedFact, now time.Time) error {
+	id := idFor("cand_", of.Entity, of.Predicate, of.Object)
+	var existing Candidate
+	if err := candidates.ReadCandidate(s.home, candidates.Memory, id, &existing); err == nil {
+		return nil // skip-if-exists: never reset an adjudication verdict
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	c := Candidate{
+		ID:             id,
+		Entity:         of.Entity,
+		Predicate:      of.Predicate,
+		Object:         of.Object,
+		Derivation:     DerivationObserved,
+		ProvenanceLane: engineName,
+		SourceTraceRef: "engine:" + engineName + ":breadth",
+		PromotionBasis: "", // no basis — an observed fact can never auto-promote
+		State:          "proposed",
+		CreatedAt:      rfc3339(now),
+	}
+	if strings.TrimSpace(of.Snippet) != "" {
+		c.SnippetHash = shortHash(of.Snippet)
+	}
+	return candidates.WriteCandidate(s.home, candidates.Memory, id, &c)
 }
 
 // currentGen is ledger generation = max seq across claims and relation edges.

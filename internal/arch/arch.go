@@ -1880,6 +1880,8 @@ func checkMemoryEngineContract(repoRoot string) []Finding {
 	hasLedgerUnchanged := false
 	hasNoAuthority := false
 	hasCompare := false
+	hasIndexHit := false
+	hasObservedFact := false
 	docs := filepath.Join(repoRoot, "docs")
 	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
@@ -1911,10 +1913,16 @@ func checkMemoryEngineContract(repoRoot string) []Finding {
 		if strings.Contains(low, "engine-compare") {
 			hasCompare = true
 		}
+		if strings.Contains(low, "index_hit") {
+			hasIndexHit = true
+		}
+		if strings.Contains(low, "observed_fact") {
+			hasObservedFact = true
+		}
 		return nil
 	})
-	if !hasMemoryDoctor || !hasConfiguredSidecar || !hasSyncEmbedding || !hasSemanticReadiness || !hasLedgerUnchanged || !hasNoAuthority || !hasCompare {
-		return []Finding{{"memory-engine-contract", Fail, "public docs do not describe configured MemoryEngine health through memory doctor sync/embedding, semantic_readiness, ledger_unchanged proof, engine-compare swap parity, and never-authority semantics"}}
+	if !hasMemoryDoctor || !hasConfiguredSidecar || !hasSyncEmbedding || !hasSemanticReadiness || !hasLedgerUnchanged || !hasNoAuthority || !hasCompare || !hasIndexHit || !hasObservedFact {
+		return []Finding{{"memory-engine-contract", Fail, "public docs do not describe configured MemoryEngine health through memory doctor sync/embedding, semantic_readiness, ledger_unchanged proof, engine-compare swap parity, never-authority semantics, and the index_hit/observed_fact hit-authority discriminator"}}
 	}
 	return []Finding{{"memory-engine-contract", Info, "configured MemoryEngine health stays observable rented ledger-safe"}}
 }
