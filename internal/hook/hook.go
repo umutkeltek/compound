@@ -350,38 +350,77 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if fx.Action == nil {
 		return Result{}, fmt.Errorf("pre-tool-use fixture needs an action")
 	}
-	ai := *fx.Action
+	prepared, err := preparePreToolUseAction(fx, deps, *fx.Action, now)
+	if err != nil {
+		return Result{}, err
+	}
+	reviewed, err := reviewedSourceControlMutationForBatch(deps, []preparedPreToolAction{prepared})
+	if err != nil {
+		return Result{}, err
+	}
+	return evaluatePreparedPreToolUse(name, fx, deps, prepared, reviewed, now)
+}
+
+type preparedPreToolAction struct {
+	action        envelope.ActionIntent
+	placement     *policy.PlacementGuardContext
+	sourceControl *policy.SourceControlContext
+	targetGitRoot string
+	sourceEffects []string
+}
+
+// preparePreToolUseAction resolves every read-only input before policy runs.
+// A batch prepares all actions first, then either attaches one exact reviewed
+// capability to every member or to none; policy never observes a partial match.
+func preparePreToolUseAction(fx Fixture, deps Deps, action envelope.ActionIntent, now time.Time) (preparedPreToolAction, error) {
+	ai := action
 	if fx.WorkID != "" {
 		ai.IDs.WorkID = fx.WorkID
 	}
 	ai = normalizeActionTarget(fx, ai)
-	evalCtx := policy.EvaluationContext{}
-	var sourceControl *policy.SourceControlContext
-	targetGitRoot := ""
-	sideEffects := []string(nil)
+	prepared := preparedPreToolAction{action: ai}
 	if fx.Placement != nil {
-		evalCtx.Placement = fx.Placement
+		prepared.placement = fx.Placement
 	} else if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
 		placement, effects, err := policy.PlacementContextFromHome(deps.HomePath, ai.Target.Path)
 		if err == nil && placement != nil {
-			evalCtx.Placement = placement
+			prepared.placement = placement
 		}
 		if err == nil {
-			sideEffects = append(sideEffects, effects...)
+			prepared.sourceEffects = append(prepared.sourceEffects, effects...)
 		}
 	}
 	if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
-		var effects []string
-		var err error
-		sourceControl, targetGitRoot, effects, err = sourceControlContextForAction(deps.HomePath, ai.Target.Path, now)
+		sourceControl, targetGitRoot, effects, err := sourceControlContextForAction(deps.HomePath, ai.Target.Path, now)
 		if err != nil {
-			return Result{}, err
+			return preparedPreToolAction{}, err
 		}
 		if sourceControl != nil {
-			evalCtx.SourceControl = sourceControl
-			sideEffects = append(sideEffects, effects...)
+			canonical, canonicalErr := authority.CanonicalSourceControlMutationTarget(sourceControl.GitRoot, ai.Target.Path)
+			if canonicalErr != nil {
+				return preparedPreToolAction{}, canonicalErr
+			}
+			ai.Target.Path = canonical
+			prepared.action = ai
+			prepared.sourceControl = sourceControl
+			prepared.targetGitRoot = targetGitRoot
+			prepared.sourceEffects = append(prepared.sourceEffects, effects...)
 		}
 	}
+	return prepared, nil
+}
+
+func evaluatePreparedPreToolUse(name string, fx Fixture, deps Deps, prepared preparedPreToolAction, reviewed *policy.ReviewedSourceControlMutation, now time.Time) (Result, error) {
+	ai := prepared.action
+	evalCtx := policy.EvaluationContext{Placement: prepared.placement}
+	var sourceControl *policy.SourceControlContext
+	if prepared.sourceControl != nil {
+		copy := *prepared.sourceControl
+		copy.ReviewedMutation = reviewed
+		sourceControl = &copy
+		evalCtx.SourceControl = sourceControl
+	}
+	sideEffects := append([]string(nil), prepared.sourceEffects...)
 	pd := policy.EvaluateWithContext(ai, deps.Policy, evalCtx, now)
 	if deps.HomePath != "" {
 		effects, err := writeGateArtifacts(deps.HomePath, ai, pd)
@@ -392,7 +431,7 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	}
 	reviewWorkID := ""
 	if deps.Store != nil && sourceControl != nil && !policy.Allowed(pd) && strings.TrimSpace(sourceControl.Status) == "dirty" {
-		mint, err := shouldMintGateReview(deps.Store, deps.HomePath, *sourceControl, targetGitRoot)
+		mint, err := shouldMintGateReview(deps.Store, deps.HomePath, *sourceControl, prepared.targetGitRoot)
 		if err != nil {
 			return Result{}, err
 		}
@@ -432,21 +471,35 @@ func preToolUseBatch(name string, fx Fixture, deps Deps, now time.Time) (Result,
 	status := "ok"
 	summary := ""
 	workID := fx.WorkID
+	prepared := make([]preparedPreToolAction, 0, len(fx.Actions))
 
 	for i := range fx.Actions {
-		action := fx.Actions[i]
 		child := fx
 		child.Actions = nil
-		child.Action = &action
-		res, err := preToolUse(name, child, deps, now)
+		item, err := preparePreToolUseAction(child, deps, fx.Actions[i], now)
+		if err != nil {
+			return Result{}, err
+		}
+		prepared = append(prepared, item)
+	}
+	reviewed, err := reviewedSourceControlMutationForBatch(deps, prepared)
+	if err != nil {
+		return Result{}, err
+	}
+
+	for i := range prepared {
+		child := fx
+		child.Actions = nil
+		child.Action = &prepared[i].action
+		res, err := evaluatePreparedPreToolUse(name, child, deps, prepared[i], reviewed, now)
 		if err != nil {
 			return Result{}, err
 		}
 		produced = append(produced, res.Produced...)
 		sideEffects = append(sideEffects, res.Event.SideEffects...)
-		actionIDs = append(actionIDs, action.ID)
+		actionIDs = append(actionIDs, prepared[i].action.ID)
 		if workID == "" {
-			workID = action.IDs.WorkID
+			workID = prepared[i].action.IDs.WorkID
 		}
 		if hookStatusRank(res.Event.Status) > hookStatusRank(status) {
 			status = res.Event.Status
@@ -463,6 +516,118 @@ func preToolUseBatch(name string, fx Fixture, deps Deps, now time.Time) (Result,
 		Produced: produced,
 		Summary:  fmt.Sprintf("%s; evaluated %d target(s)", summary, len(fx.Actions)),
 	}, nil
+}
+
+func reviewedSourceControlMutationForBatch(deps Deps, prepared []preparedPreToolAction) (*policy.ReviewedSourceControlMutation, error) {
+	if strings.TrimSpace(deps.HomePath) == "" || deps.Store == nil || len(prepared) == 0 {
+		return nil, nil
+	}
+	snapshot, binding, ok := sourceControlMutationBatchBinding(prepared)
+	if !ok {
+		return nil, nil
+	}
+	report, err := authority.FindRecordedSourceControlMutationReview(deps.HomePath, snapshot, binding)
+	if err != nil || report == nil || report.MutationBinding == nil {
+		return nil, err
+	}
+	owner, err := deps.Store.Get(report.WorkID)
+	if err != nil || !currentReviewedMutationOwnerState(owner.State) {
+		return nil, nil
+	}
+	recorded := report.MutationBinding
+	return &policy.ReviewedSourceControlMutation{
+		Status:                  report.Status,
+		Decision:                report.Decision,
+		ReviewID:                report.ReviewID,
+		PlanID:                  report.PlanID,
+		PlanDigest:              report.PlanDigest,
+		OwnerWorkID:             report.WorkID,
+		ActionWorkID:            recorded.ActionWorkID,
+		RepoID:                  report.RepoID,
+		GitRoot:                 report.GitRoot,
+		Remote:                  report.Remote,
+		Head:                    report.Head,
+		ChangedStateFingerprint: report.ChangedStateFingerprint,
+		MutationInputHash:       recorded.MutationInputHash,
+		Capability:              recorded.Capability,
+		Action:                  recorded.Action,
+		MutationClass:           recorded.MutationClass,
+		TargetPaths:             append([]string{}, recorded.TargetPaths...),
+		EvidenceRefs:            append([]string{}, report.EvidenceRefs...),
+	}, nil
+}
+
+func sourceControlMutationBatchBinding(prepared []preparedPreToolAction) (authority.SourceControlSnapshot, authority.SourceControlMutationBinding, bool) {
+	first := prepared[0]
+	if first.sourceControl == nil || strings.TrimSpace(first.sourceControl.Status) != "dirty" {
+		return authority.SourceControlSnapshot{}, authority.SourceControlMutationBinding{}, false
+	}
+	inputHash, ok := boundMutationInputHash(first.action)
+	if !ok {
+		return authority.SourceControlSnapshot{}, authority.SourceControlMutationBinding{}, false
+	}
+	binding := authority.SourceControlMutationBinding{
+		ActionWorkID:      strings.TrimSpace(first.action.IDs.WorkID),
+		MutationInputHash: inputHash,
+		Capability:        strings.TrimSpace(first.action.Capability),
+		Action:            strings.TrimSpace(first.action.Action),
+		MutationClass:     strings.TrimSpace(first.action.MutationClass),
+	}
+	for _, item := range prepared {
+		if item.sourceControl == nil || !sameSourceControlIdentity(*first.sourceControl, *item.sourceControl) {
+			return authority.SourceControlSnapshot{}, authority.SourceControlMutationBinding{}, false
+		}
+		itemHash, hashOK := boundMutationInputHash(item.action)
+		if !hashOK || itemHash != binding.MutationInputHash || strings.TrimSpace(item.action.IDs.WorkID) != binding.ActionWorkID ||
+			strings.TrimSpace(item.action.Capability) != binding.Capability || strings.TrimSpace(item.action.Action) != binding.Action ||
+			strings.TrimSpace(item.action.MutationClass) != binding.MutationClass {
+			return authority.SourceControlSnapshot{}, authority.SourceControlMutationBinding{}, false
+		}
+		if strings.TrimSpace(item.action.ID) == "" || strings.TrimSpace(item.action.Target.Path) == "" {
+			return authority.SourceControlSnapshot{}, authority.SourceControlMutationBinding{}, false
+		}
+		binding.TargetPaths = append(binding.TargetPaths, item.action.Target.Path)
+		binding.ActionIntentIDs = append(binding.ActionIntentIDs, item.action.ID)
+	}
+	sc := first.sourceControl
+	return authority.SourceControlSnapshot{
+		SchemaVersion:           authority.SourceControlSchemaVersion,
+		RepoID:                  sc.EntityRef,
+		GitRoot:                 sc.GitRoot,
+		Remote:                  sc.Remote,
+		Head:                    sc.Head,
+		Status:                  sc.Status,
+		ChangedPaths:            sc.ChangedPaths,
+		ChangedStateFingerprint: sc.ChangedStateFingerprint,
+	}, binding, true
+}
+
+func sameSourceControlIdentity(a, b policy.SourceControlContext) bool {
+	return a.EntityRef == b.EntityRef && a.GitRoot == b.GitRoot && a.Remote == b.Remote && a.Head == b.Head &&
+		a.Status == b.Status && a.ChangedPaths == b.ChangedPaths && a.ChangedStateFingerprint == b.ChangedStateFingerprint
+}
+
+func boundMutationInputHash(ai envelope.ActionIntent) (string, bool) {
+	value := ""
+	for _, ref := range ai.EvidenceRefs {
+		if !strings.HasPrefix(ref, "mutation-input:sha256:") {
+			continue
+		}
+		if value != "" && value != ref {
+			return "", false
+		}
+		value = ref
+	}
+	return value, value != ""
+}
+
+func currentReviewedMutationOwnerState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "claimed", "running", "verifying", "held":
+		return true
+	default:
+		return false
+	}
 }
 
 func hookStatusRank(status string) int {
