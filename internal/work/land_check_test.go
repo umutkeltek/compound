@@ -148,7 +148,7 @@ func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "code_delta", Actor: "codex", Summary: "not landed"}, now.Add(3*time.Minute)); err == nil || !strings.Contains(err.Error(), "land-check") {
+	if _, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "not landed"}, now.Add(3*time.Minute)); err == nil || !strings.Contains(err.Error(), "land-check") {
 		t.Fatalf("completed without landing proof err = %v", err)
 	}
 	current, err := store.Get(w.ID)
@@ -163,7 +163,7 @@ func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "code_delta", Actor: "codex", Summary: "still not landed", ProofRefs: []string{ready.EvidenceRef}}, now.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), "not landed") {
+	if _, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "still not landed", ProofRefs: []string{ready.EvidenceRef}}, now.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), "not landed") {
 		t.Fatalf("ready-only proof close err = %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	closed, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "code_delta", Actor: "codex", Summary: "candidate is on main", ProofRefs: []string{landed.EvidenceRef}}, now.Add(7*time.Minute))
+	closed, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "candidate is on main", ProofRefs: []string{landed.EvidenceRef}}, now.Add(7*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,8 +207,97 @@ func TestCompletedCodeWorkRevalidatesLandingProofAtClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeLandingFile(t, filepath.Join(repo, "late-dirty.txt"), "dirty after proof\n")
-	if _, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "code_delta", Actor: "codex", Summary: "must recheck", ProofRefs: []string{proof.EvidenceRef}}, now.Add(4*time.Minute)); err == nil || !strings.Contains(err.Error(), "dirty_target") {
+	if _, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "must recheck", ProofRefs: []string{proof.EvidenceRef}}, now.Add(4*time.Minute)); err == nil || !strings.Contains(err.Error(), "dirty_target") {
 		t.Fatalf("close with stale proof err = %v", err)
+	}
+}
+
+func TestLandCheckRecordsMissingTipAndInvalidLineage(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	landingGit(t, repo, "switch", "--orphan", "unrelated")
+	if err := os.Remove(filepath.Join(repo, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	writeLandingFile(t, filepath.Join(repo, "unrelated.txt"), "unrelated\n")
+	landingGit(t, repo, "add", "-A")
+	landingGit(t, repo, "commit", "-m", "unrelated")
+	unrelated := landingGitOutput(t, repo, "rev-parse", "HEAD")
+	landingGit(t, repo, "switch", "main")
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "bad lineage stays actionable", ExpectedBaseSHA: base}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := store.LandCheck(w.ID, LandCheckOptions{
+		RepoPath:        repo,
+		CandidateTipSHA: strings.Repeat("f", 40),
+		TargetRef:       "main",
+		Record:          true,
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.Status != "invalid_lineage" || missing.NextAction == "" || missing.EvidenceRef == "" {
+		t.Fatalf("missing candidate report = %+v", missing)
+	}
+
+	invalid, err := store.LandCheck(w.ID, LandCheckOptions{
+		RepoPath:        repo,
+		CandidateTipSHA: unrelated,
+		TargetRef:       "main",
+		Record:          true,
+	}, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalid.Status != "invalid_lineage" || invalid.ExpectedBaseAncestorOfCandidate || invalid.NextAction == "" {
+		t.Fatalf("invalid lineage report = %+v", invalid)
+	}
+
+	if _, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: "abc123", TargetRef: "main"}, now.Add(3*time.Minute)); err == nil || !strings.Contains(err.Error(), "full") {
+		t.Fatalf("short candidate SHA err = %v", err)
+	}
+}
+
+func TestLandingCloseGateLeavesLegacyAndFailedWorkCompatible(t *testing.T) {
+	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "legacy work still closes"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, legacy.ID, now)
+	if _, err := store.Close(legacy.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "legacy completed", ProofRefs: []string{"artifact:legacy"}}, now.Add(3*time.Minute)); err != nil {
+		t.Fatalf("legacy completion should not require landing proof: %v", err)
+	}
+
+	code, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "failed code work reports failure", ExpectedBaseSHA: strings.Repeat("a", 40)}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, code.ID, now.Add(4*time.Minute))
+	if _, err := store.Close(code.ID, CloseInput{Outcome: "failed", MoveType: "audit_only", Actor: "codex", Summary: "executor failed", ProofRefs: []string{"failure:executor"}}, now.Add(7*time.Minute)); err != nil {
+		t.Fatalf("failed code work should not require landing proof: %v", err)
+	}
+}
+
+func activateLandingWork(t *testing.T, store *Store, workID string, now time.Time) {
+	t.Helper()
+	if _, err := store.Claim(workID, "codex", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(workID, AdvanceInput{To: "running", Actor: "codex"}, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
 	}
 }
 
