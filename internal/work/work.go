@@ -1238,12 +1238,19 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		return res, fmt.Errorf("cannot close %s from state %q to %q", workID, w.State, in.Outcome)
 	}
 	var landingProof *LandCheckReport
-	if in.Outcome == "completed" && strings.TrimSpace(w.ExpectedBaseSHA) != "" {
-		proof, err := s.recordedLandedProofForClose(w, in.ProofRefs)
-		if err != nil {
-			return res, err
+	if in.Outcome == "completed" {
+		_, _, hasCommitArtifact, _ := latestCommitArtifact(w.ArtifactIDs)
+		if hasCommitArtifact && w.GitDelivery == nil {
+			return res, fmt.Errorf("completed work %s carries a commit:* artifact but lacks a git_delivery contract", w.ID)
 		}
-		landingProof = &proof
+		if w.GitDelivery != nil {
+			proofRefs := mergeUnique(in.ProofRefs, landCheckEvidenceRefs(w.EvidenceRefs))
+			proof, err := s.recordedLandedProofForClose(w, proofRefs)
+			if err != nil {
+				return res, err
+			}
+			landingProof = &proof
+		}
 	}
 	producerLaneID := strings.TrimSpace(in.LaneID)
 	if producerLaneID == "" {
@@ -1283,7 +1290,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	missedCapabilities := normalizeCapabilityRefs(in.MissedCapabilities)
 	falseTriggeredCapabilities := normalizeCapabilityRefs(in.FalseTriggeredCapabilities)
 	skillProjectionRefs := mergeUnique(usedCapabilities, capabilityRefs, missedCapabilities, falseTriggeredCapabilities)
-	proofRefs := mergeUnique(in.ProofRefs, w.ArtifactIDs, w.VerificationIDs)
+	proofRefs := mergeUnique(in.ProofRefs, w.ArtifactIDs, w.VerificationIDs, landCheckEvidenceRefs(w.EvidenceRefs))
 	if err := validateProofMedium(w.ProofMedium, in.Outcome, proofRefs); err != nil {
 		return res, err
 	}
@@ -1404,6 +1411,16 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		return res, err
 	}
 	return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
+}
+
+func landCheckEvidenceRefs(refs []string) []string {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if _, ok := landCheckIDFromEvidenceRef(ref); ok {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 // --- persistence helpers ---
