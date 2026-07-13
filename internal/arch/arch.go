@@ -60,6 +60,7 @@ var Classification = map[string]Class{
 	"routeevidence":  ObjectFamily,
 	"runtimebinding": ObjectFamily,
 	// shared leaf
+	"act":            Leaf, // generic governed outbound-write seam: the one execute-and-receipt wrapper that gates every external write on a matching allowing PolicyDecision and emits pre/post-image artifacts + an outward_delta Receipt/Transition; owns no authority object (envelope/policy/work stay authority), a new outbound system is a new Adapter not a new governance path
 	"attention":      Leaf, // ranked read-only projection over reviews/workbench/executors; owns no authority objects
 	"behaviorallens": Leaf, // composable behavioral-lens framework: uniform observe->InferredSignal plug + visibility-gated composition + sycophancy (paired-stance shift) lens; records evidence rows under COMPOUND_HOME, owns no authority object and never gates/promotes
 	"bench":          Leaf, // evaluator organ: read-only scorer over the real surfacing/recall paths; produces evidence reports, owns no object family

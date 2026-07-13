@@ -73,6 +73,12 @@ func (h MintHome) Valid() bool {
 // Every new organ / registry surface / status note goes here (or is grandfathered with a dated
 // reason). Keys are "<surface>:<id>" (e.g. "organ:scratchpad").
 var mintHomes = map[string]MintHome{
+	// act is the generic governed outbound-write seam: it REFUSES to call an adapter's Write unless
+	// handed a matching allowing PolicyDecision for that exact ActionIntent, and every write it does
+	// pass carries an outward_delta Receipt (proof) plus a pre-image artifact + RevertIntent (undo).
+	// Its teeth ARE the policy gate — it is the compilation of the "no mutation without a valid
+	// PolicyDecision" ruling — so it is enforcement, not evidence.
+	"organ:act": {Class: MintEnforcement},
 	// laneselect landed the same day as the ratchet (6112375) — its registration is the ratchet's
 	// first live catch, classified rather than grandfathered.
 	"organ:laneselect": {
