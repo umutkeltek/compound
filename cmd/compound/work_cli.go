@@ -1075,7 +1075,7 @@ func cmdWork(args []string) {
 		die(err)
 		fmt.Printf("%s claimed by %s (%s) policy=%s\n", w.ID, w.Authority.Owner, w.State, w.PolicyDecisionID)
 	case "advance-plan":
-		usage := "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
+		usage := workUsage("advance-plan")
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--dry-run", "--local-only":
@@ -1133,7 +1133,7 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "advance":
-		usage := "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--run ID] [--artifact ID] [--verification ID] [--context-pack ID] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)]"
+		usage := workUsage("advance")
 		if err := validateWorkArguments(rest, map[string]bool{
 			"--to": true, "--by": true, "--actor": true, "--run": true, "--artifact": true, "--verification": true,
 			"--context-pack": true, "--note": true, "--reason": true,
