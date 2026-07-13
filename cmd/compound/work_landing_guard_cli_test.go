@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/work"
 )
@@ -51,6 +52,23 @@ func TestWorkCreateCLIPropagatesExpectedBaseSHA(t *testing.T) {
 	})
 	if !strings.Contains(createOut, `"git_delivery": {`) || !strings.Contains(createOut, `"expected_base_sha": "`+base+`"`) {
 		t.Fatalf("created WorkEnvelope dropped git delivery contract:\n%s", createOut)
+	}
+
+	runLandingCLIGit(t, repo, "update-ref", "refs/remotes/origin/main", base)
+	publishedOut := captureStdout(t, func() {
+		cmdWork([]string{
+			"create-plan", "--owner", "codex", "--predicate", "publish exact candidate",
+			"--target-worktree-root", repo, "--target-local-ref", "refs/heads/main",
+			"--expected-base-sha", base, "--publication-ref", "refs/remotes/origin/main",
+			"--by", "codex", "--dry-run", "--json",
+		})
+	})
+	var published work.CreatePlan
+	if err := json.Unmarshal([]byte(publishedOut), &published); err != nil {
+		t.Fatalf("parse publication create-plan JSON: %v\n%s", err, publishedOut)
+	}
+	if published.Work.GitDelivery == nil || published.Work.GitDelivery.PublicationMode != "required" || published.Work.GitDelivery.PublicationRef != "refs/remotes/origin/main" {
+		t.Fatalf("publication delivery contract = %+v", published.Work.GitDelivery)
 	}
 }
 
