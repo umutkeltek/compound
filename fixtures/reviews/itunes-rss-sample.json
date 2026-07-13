@@ -4,6 +4,9 @@
       "name": { "label": "iTunes Store" },
       "uri": { "label": "https://www.apple.com/itunes/" }
     },
+    "id": {
+      "label": "https://mzstoreservices.itunes.apple.com/us/rss/customerreviews/id=0000000001/sortby=mostrecent/json"
+    },
     "entry": [
       {
         "im:name": { "label": "Sample App" },
