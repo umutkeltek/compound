@@ -351,6 +351,7 @@ func sameCreatePlanWork(existing, planned envelope.WorkEnvelope) bool {
 		existing.Risk == planned.Risk &&
 		existing.Privacy == planned.Privacy &&
 		existing.CanonicalSurface == planned.CanonicalSurface &&
+		existing.ExpectedBaseSHA == planned.ExpectedBaseSHA &&
 		existing.RouteDecisionID == planned.RouteDecisionID &&
 		sameStringSlice(existing.NonGoals, planned.NonGoals) &&
 		sameStringSlice(existing.EvidenceRefs, planned.EvidenceRefs)

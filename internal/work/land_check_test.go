@@ -216,7 +216,7 @@ func TestLandCheckRecordsMissingTipAndInvalidLineage(t *testing.T) {
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
 	landingGit(t, repo, "switch", "--orphan", "unrelated")
-	if err := os.Remove(filepath.Join(repo, "README.md")); err != nil {
+	if err := os.Remove(filepath.Join(repo, "README.md")); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 	writeLandingFile(t, filepath.Join(repo, "unrelated.txt"), "unrelated\n")

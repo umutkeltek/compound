@@ -76,7 +76,7 @@ func Open(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
 	}
-	for _, d := range []string{"work/work", "work/leases", "events"} {
+	for _, d := range []string{"work/work", "work/leases", "work/land-checks", "events"} {
 		if err := os.MkdirAll(filepath.Join(homePath, d), 0o755); err != nil {
 			return nil, err
 		}
@@ -143,6 +143,7 @@ type CreateInput struct {
 	EvidenceRefs     []string
 	ContextPackID    string
 	RouteDecisionID  string
+	ExpectedBaseSHA  string
 	State            string // default "ready"
 	Risk             string // default "tier1"
 	Privacy          string // default "private"
@@ -164,6 +165,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		DesiredOutcome:     in.DesiredOutcome,
 		SuccessPredicate:   in.SuccessPredicate,
 		NonGoals:           orEmpty(in.NonGoals),
+		ExpectedBaseSHA:    strings.TrimSpace(in.ExpectedBaseSHA),
 		RouteDecisionID:    strings.TrimSpace(in.RouteDecisionID),
 		RunIDs:             []string{},
 		ArtifactIDs:        []string{},
@@ -1226,6 +1228,14 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if w.State != in.Outcome && !canTransition(w.State, in.Outcome) {
 		return res, fmt.Errorf("cannot close %s from state %q to %q", workID, w.State, in.Outcome)
 	}
+	var landingProof *LandCheckReport
+	if in.Outcome == "completed" && strings.TrimSpace(w.ExpectedBaseSHA) != "" {
+		proof, err := s.recordedLandedProofForClose(w, in.ProofRefs)
+		if err != nil {
+			return res, err
+		}
+		landingProof = &proof
+	}
 	producerLaneID := strings.TrimSpace(in.LaneID)
 	if producerLaneID == "" {
 		producerLaneID = strings.TrimSpace(in.Actor)
@@ -1347,6 +1357,11 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	}
 	if err := tr.Validate(); err != nil {
 		return res, fmt.Errorf("emitted transition invalid: %w", err)
+	}
+	if landingProof != nil {
+		if err := s.revalidateLandedProof(w, *landingProof, now); err != nil {
+			return res, err
+		}
 	}
 
 	// Persist the emitted envelopes, then land the work terminal and link the transition.
