@@ -73,7 +73,10 @@ func runBehavioralLensList(args []string, stdout, stderr io.Writer) int {
 	for _, id := range cfg.EnabledPrivateLenses {
 		enabled[strings.TrimSpace(id)] = true
 	}
-	reg := behaviorallens.DefaultRegistry()
+	// RegistryForHome layers the home's operator_private lens types onto the shipped public_safe set,
+	// so `list` shows an operator_private lens exists (marked off unless this home enabled it). Its
+	// VALUE is never computed here — only its type/visibility is listed.
+	reg := behaviorallens.RegistryForHome(cfg)
 	type row struct {
 		LensID     string `json:"lens_id"`
 		Visibility string `json:"visibility"`
@@ -122,7 +125,9 @@ func runBehavioralLensRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	reg := behaviorallens.DefaultRegistry()
+	// RegistryForHome includes this home's operator_private lens types; the visibility guard below
+	// still enforces that such a lens runs only if this home enabled it (default off, fail-closed).
+	reg := behaviorallens.RegistryForHome(cfg)
 	lens, ok := reg.Lens(lensID)
 	if !ok {
 		fmt.Fprintf(stderr, "error: no registered lens %q\n", lensID)
@@ -182,7 +187,9 @@ func runBehavioralLensCompose(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	res, err := behaviorallens.DefaultRegistry().Compose(context.Background(), obs, cfg, time.Now())
+	// RegistryForHome adds this home's operator_private lens types; Compose's cfg gate still decides
+	// whether each private lens actually runs (default off; a stranger clone runs public_safe only).
+	res, err := behaviorallens.RegistryForHome(cfg).Compose(context.Background(), obs, cfg, time.Now())
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
