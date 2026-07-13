@@ -196,8 +196,14 @@ func (s *Store) dispatchTaskContract(w envelope.WorkEnvelope) (envelope.TaskCont
 
 func dispatchWorkRevision(w envelope.WorkEnvelope) string {
 	parts := []string{"state:" + w.State}
-	if w.ExpectedBaseSHA != "" {
-		parts = append(parts, "expected_base:"+w.ExpectedBaseSHA)
+	if w.GitDelivery != nil {
+		parts = append(parts,
+			"target_root:"+w.GitDelivery.TargetWorktreeRoot,
+			"target_ref:"+w.GitDelivery.TargetLocalRef,
+			"expected_base:"+w.GitDelivery.ExpectedBaseSHA,
+			"publication_mode:"+w.GitDelivery.PublicationMode,
+			"publication_ref:"+w.GitDelivery.PublicationRef,
+		)
 	}
 	if w.PolicyDecisionID != "" {
 		parts = append(parts, "policy:"+w.PolicyDecisionID)
@@ -279,14 +285,20 @@ func renderDispatchPrompt(w envelope.WorkEnvelope, task envelope.TaskContract, o
 			fmt.Fprintf(&b, "- %s (%s): %s\n", offer.Ref, offer.Name, firstNonEmpty(offer.Why, "surfaced by capability graph"))
 		}
 	}
-	if expectedBase := strings.TrimSpace(w.ExpectedBaseSHA); expectedBase != "" {
+	if w.GitDelivery != nil {
 		fmt.Fprintln(&b)
 		fmt.Fprintln(&b, "## SOURCE CONTROL CONTRACT")
 		fmt.Fprintln(&b)
-		fmt.Fprintf(&b, "- expected_base_sha: %s\n", expectedBase)
+		fmt.Fprintf(&b, "- target_worktree_root: %s\n", w.GitDelivery.TargetWorktreeRoot)
+		fmt.Fprintf(&b, "- target_local_ref: %s\n", w.GitDelivery.TargetLocalRef)
+		fmt.Fprintf(&b, "- expected_base_sha: %s\n", w.GitDelivery.ExpectedBaseSHA)
+		fmt.Fprintf(&b, "- publication_mode: %s\n", w.GitDelivery.PublicationMode)
+		if w.GitDelivery.PublicationRef != "" {
+			fmt.Fprintf(&b, "- publication_ref: %s\n", w.GitDelivery.PublicationRef)
+		}
 		fmt.Fprintln(&b, "- Verify the worktree contains this base before editing; if the target moved, rebase and rerun the full proof battery.")
 		fmt.Fprintln(&b, "- Attach the final verified candidate to this WorkEnvelope as commit:<full-sha>.")
-		fmt.Fprintln(&b, "- Land only from the explicit target worktree through compound work land-check; completion must cite the recorded landed proof.")
+		fmt.Fprintf(&b, "- Certify only through: compound work land-check %s --tip <full-sha>; the command reads repository, target, and publication authority from this WorkEnvelope.\n", w.ID)
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "## TASK")
