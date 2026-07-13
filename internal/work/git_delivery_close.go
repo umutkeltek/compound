@@ -43,33 +43,11 @@ func (s *Store) gitDeliveryRequirementSignal(w envelope.WorkEnvelope, moveType s
 	if ref, _, found, _ := latestCommitArtifact(proofRefs); found {
 		return fmt.Sprintf("proof %s declares a Git commit", ref), nil
 	}
-	if moveType != "outward_delta" && moveType != "rule_delta" && moveType != "control_plane_repair" {
+	if moveType == "audit_only" {
 		return "", nil
-	}
-	if signal, err := gitScopedPathSignal("work canonical_surface", w.CanonicalSurface); signal != "" || err != nil {
-		return signal, err
 	}
 	if signal, err := gitScopedPathSignal("work target_surface", w.TargetSurface); signal != "" || err != nil {
 		return signal, err
-	}
-	contextPackID := strings.TrimSpace(w.IDs.ContextPackID)
-	if contextPackID != "" {
-		var pack envelope.ContextPack
-		if err := s.readJSON(filepath.Join(s.home, "context", "packs", contextPackID+".json"), &pack); err != nil {
-			if !strings.HasPrefix(err.Error(), "not found:") {
-				return "", fmt.Errorf("read ContextPack %s for git_delivery scope: %w", contextPackID, err)
-			}
-		} else {
-			if pack.ID != contextPackID {
-				return "", fmt.Errorf("ContextPack %s identity mismatch while deriving git_delivery scope", contextPackID)
-			}
-			if err := pack.Validate(); err != nil {
-				return "", fmt.Errorf("ContextPack %s invalid while deriving git_delivery scope: %w", contextPackID, err)
-			}
-			if signal, err := gitScopedPathSignal("ContextPack "+contextPackID+" scope.surface", pack.Scope.Surface); signal != "" || err != nil {
-				return signal, err
-			}
-		}
 	}
 	for _, runID := range w.RunIDs {
 		if !strings.HasPrefix(runID, "act_") {
@@ -77,12 +55,15 @@ func (s *Store) gitDeliveryRequirementSignal(w envelope.WorkEnvelope, moveType s
 		}
 		var action envelope.ActionIntent
 		if err := s.readJSON(s.envPath(runID), &action); err != nil {
-			if strings.HasPrefix(err.Error(), "not found:") {
-				continue
-			}
 			return "", fmt.Errorf("read ActionIntent %s for git_delivery scope: %w", runID, err)
 		}
-		if action.ID != runID || action.IDs.WorkID != w.ID || action.MutationClass == "read" || action.Validate() != nil {
+		if err := action.Validate(); err != nil {
+			return "", fmt.Errorf("ActionIntent %s invalid while deriving git_delivery scope: %w", runID, err)
+		}
+		if action.ID != runID || action.IDs.WorkID != w.ID {
+			return "", fmt.Errorf("ActionIntent %s identity conflicts with work %s while deriving git_delivery scope", runID, w.ID)
+		}
+		if action.MutationClass == "read" {
 			continue
 		}
 		if signal, err := gitScopedPathSignal("recorded ActionIntent "+runID+" target.path", action.Target.Path); signal != "" || err != nil {
