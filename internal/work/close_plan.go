@@ -144,24 +144,27 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	}
 	observations, observationWarnings := s.workbenchRunObservations(w.ID)
 	proofRefs := mergeUnique(w.ArtifactIDs, w.VerificationIDs, landCheckEvidenceRefs(w.EvidenceRefs))
-	deliveryNoAction := ""
-	if outcome == "completed" {
-		_, _, hasCommitArtifact, _ := latestCommitArtifact(w.ArtifactIDs)
-		switch {
-		case hasCommitArtifact && w.GitDelivery == nil:
-			deliveryNoAction = "completed commit-bearing work lacks a git_delivery contract"
-		case w.GitDelivery != nil:
-			if _, err := s.recordedLandedProofForClose(w, proofRefs); err != nil {
-				deliveryNoAction = err.Error()
-			}
-		}
-	}
 	var expectedValidation []string
 	var receiptDraft envelope.Receipt
 	if actionPlan != nil {
 		proofRefs = mergeUnique(proofRefs, actionPlan.ProofRefs, actionPlan.ReceiptDraft.ProofRefs)
 		expectedValidation = append([]string{}, actionPlan.ReceiptDraft.StateDelta.Verification...)
 		receiptDraft = actionPlan.ReceiptDraft
+	}
+	deliveryNoAction := ""
+	if outcome == "completed" {
+		_, _, hasCommitProof, _ := latestCommitArtifact(proofRefs)
+		switch {
+		case hasCommitProof && w.GitDelivery == nil:
+			deliveryNoAction = "completed commit-bearing work lacks a git_delivery contract"
+		case w.GitDelivery != nil:
+			proof, err := s.recordedLandedProofForClose(w, proofRefs)
+			if err != nil {
+				deliveryNoAction = err.Error()
+			} else if err := s.revalidateLandedProof(w, proof, now); err != nil {
+				deliveryNoAction = err.Error()
+			}
+		}
 	}
 	plan := ClosePlan{
 		SchemaVersion:      ClosePlanSchemaVersion,
