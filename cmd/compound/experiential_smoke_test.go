@@ -118,7 +118,7 @@ func TestExperientialSmokeRegressionEmitsReviewCardNamingRegression(t *testing.T
 	if _, err := os.Stat(rep.ReviewFinding.ArtifactPath); err != nil {
 		t.Fatalf("review card artifact missing on disk: %v", err)
 	}
-	if rep.ReviewFinding.PolicyOutcome != "allow" {
+	if rep.ReviewFinding.PolicyOutcome != "allow_with_obligations" {
 		t.Fatalf("review card not governed-allowed: outcome %q", rep.ReviewFinding.PolicyOutcome)
 	}
 	// The card must NAME every regressed dimension in its summary.

@@ -59,8 +59,8 @@ grants:
 	action := mkAction("local_reversible", "easy", "state/runs/demo/finding.md", "repo")
 	action.Capability = "review.finding"
 	pd := Evaluate(action, cfg, fixedNow)
-	if pd.Outcome != "allow" || pd.StandingGrantID != "grant_review_finding:review-finding" {
-		t.Fatalf("expected imported grant allow, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	if !Allowed(pd) || pd.Outcome != "allow_with_obligations" || pd.StandingGrantID != "grant_review_finding:review-finding" {
+		t.Fatalf("expected imported grant allow_with_obligations, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
 	}
 	if !contains(pd.EvidenceRefs, StandingGrantsAuthorityRef) {
 		t.Fatalf("policy decision missing standing-grants evidence: %v", pd.EvidenceRefs)
@@ -78,8 +78,8 @@ func TestStandingGrantReversibilityCeilingDoesNotOpenIrreversible(t *testing.T) 
 	allowed := mkAction("local_reversible", "easy", "repo/file.go", "repo")
 	allowed.Capability = "mechanical-edit"
 	pd := Evaluate(allowed, cfg, fixedNow)
-	if pd.Outcome != "allow" || pd.StandingGrantID != "grant_repo_edit_reversible" {
-		t.Fatalf("reversible action should be covered, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	if !Allowed(pd) || pd.Outcome != "allow_with_obligations" || pd.StandingGrantID != "grant_repo_edit_reversible" {
+		t.Fatalf("reversible action should be covered (allow_with_obligations), got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
 	}
 
 	blocked := mkAction("local_reversible", "irreversible", "repo/file.go", "repo")

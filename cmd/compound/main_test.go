@@ -5390,7 +5390,7 @@ grants:
 	if report.Status != "recorded" || report.WorkID != w.ID || report.TargetPath != target {
 		t.Fatalf("record finding report = %+v", report)
 	}
-	if report.PolicyOutcome != "allow" || report.StandingGrantID != "grant_review_finding:review-finding" {
+	if report.PolicyOutcome != "allow_with_obligations" || report.StandingGrantID != "grant_review_finding:review-finding" {
 		t.Fatalf("policy did not consume standing grant: %+v", report)
 	}
 	if len(report.SourceArtifacts) != 1 || report.SourceArtifacts[0].Path != sourceArtifact {
@@ -5498,7 +5498,7 @@ grants:
 	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
 		t.Fatalf("parse record finding report: %v\n%s", err, out)
 	}
-	if report.WorkID == "" || report.PolicyOutcome != "allow" || report.StandingGrantID == "" {
+	if report.WorkID == "" || report.PolicyOutcome != "allow_with_obligations" || report.StandingGrantID == "" {
 		t.Fatalf("auto-work report did not consume grant: %+v", report)
 	}
 	store, err := work.Open(homePath)
@@ -9130,7 +9130,7 @@ grants:
 	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
 		t.Fatalf("parse review finding report: %v\n%s", err, out)
 	}
-	if report.PolicyOutcome != "allow" || report.StandingGrantID == "" || len(report.SourceTraces) != 1 {
+	if report.PolicyOutcome != "allow_with_obligations" || report.StandingGrantID == "" || len(report.SourceTraces) != 1 {
 		t.Fatalf("review finding report = %+v", report)
 	}
 	if _, err := os.Stat(filepath.Join(runRoot, filepath.FromSlash(report.TargetPath))); err != nil {

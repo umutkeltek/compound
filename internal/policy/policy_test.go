@@ -185,8 +185,10 @@ func TestStandingGrant(t *testing.T) {
 	ai := mkAction("public", "manual", "site/index.html", "public")
 	ai.Capability = "deploy.run"
 	pd := Evaluate(ai, cfg, fixedNow)
-	if pd.Outcome != "allow" || pd.StandingGrantID != "grant_deploy" {
-		t.Errorf("matching grant should allow with grant id, got outcome=%q grant=%q", pd.Outcome, pd.StandingGrantID)
+	// A granted non-read mutation still carries its trust duties (allow_with_obligations),
+	// yet still flows (Allowed): autonomy is not regressed.
+	if !Allowed(pd) || pd.Outcome != "allow_with_obligations" || pd.StandingGrantID != "grant_deploy" {
+		t.Errorf("matching grant should allow_with_obligations and keep grant id, got outcome=%q grant=%q obligations=%v", pd.Outcome, pd.StandingGrantID, pd.Obligations)
 	}
 	// Expired grant -> falls through to baseline (hold).
 	cfg.StandingGrants[0].ExpiresAt = "2020-01-01T00:00:00Z"
@@ -214,8 +216,8 @@ func TestStandingGrantDoesNotBypassEnvelope(t *testing.T) {
 
 	cfg.StandingGrants[0].BlastRadius = "public"
 	pd = Evaluate(ai, cfg, fixedNow)
-	if pd.Outcome != "allow" || pd.StandingGrantID != "grant_loose" {
-		t.Fatalf("explicit public grant should allow, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	if !Allowed(pd) || pd.Outcome != "allow_with_obligations" || pd.StandingGrantID != "grant_loose" {
+		t.Fatalf("explicit public grant should allow_with_obligations, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
 	}
 }
 
@@ -234,8 +236,8 @@ func TestStandingGrantRequiresExplicitHumanReversibility(t *testing.T) {
 
 	cfg.StandingGrants[0].Reversibility = "irreversible"
 	pd = Evaluate(ai, cfg, fixedNow)
-	if pd.Outcome != "allow" || pd.StandingGrantID != "grant_local" {
-		t.Fatalf("explicit irreversible grant should allow, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	if !Allowed(pd) || pd.Outcome != "allow_with_obligations" || pd.StandingGrantID != "grant_local" {
+		t.Fatalf("explicit irreversible grant should allow_with_obligations, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
 	}
 }
 
@@ -266,8 +268,8 @@ func TestStandingGrantScopeAndBudget(t *testing.T) {
 	cost = 7.5
 	ai.EstimatedCost.USD = &cost
 	pd = Evaluate(ai, cfg, fixedNow)
-	if pd.Outcome != "allow" || pd.StandingGrantID != "grant_billing" {
-		t.Fatalf("in-budget scoped grant should allow, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	if !Allowed(pd) || pd.Outcome != "allow_with_obligations" || pd.StandingGrantID != "grant_billing" {
+		t.Fatalf("in-budget scoped grant should allow_with_obligations, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
 	}
 
 	ai.Target.Path = "billing/unapproved/charge.json"

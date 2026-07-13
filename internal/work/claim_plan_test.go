@@ -77,8 +77,8 @@ func TestClaimPlanReportsStandingGrantCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Policy.Outcome != "allow" || plan.Policy.StandingGrantID == "" {
-		t.Fatalf("expected standing-grant allow, got %+v", plan.Policy)
+	if plan.Policy.Outcome != "allow_with_obligations" || plan.Policy.StandingGrantID == "" {
+		t.Fatalf("expected standing-grant allow_with_obligations, got %+v", plan.Policy)
 	}
 }
 

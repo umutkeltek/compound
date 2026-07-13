@@ -100,11 +100,11 @@ func DefaultConfig() Config {
 		ClassOutcome: map[string]ClassRule{
 			"read":                 {Outcome: "allow"},
 			"local_reversible":     {Outcome: "allow_with_obligations", Obligations: []string{"emit a Receipt", "record a rollback_plan"}},
-			"external_side_effect": {Outcome: "hold"},
-			"public":               {Outcome: "hold"},
-			"destructive":          {Outcome: "hold"},
-			"financial":            {Outcome: "hold"},
-			"security":             {Outcome: "hold"},
+			"external_side_effect": {Outcome: "hold", Obligations: []string{"emit a Receipt", "record a rollback_plan", "capture pre-image artifact ref"}},
+			"public":               {Outcome: "hold", Obligations: []string{"emit a Receipt", "record a rollback_plan", "capture pre-image artifact ref"}},
+			"destructive":          {Outcome: "hold", Obligations: []string{"emit a Receipt", "record a rollback_plan", "capture pre-image artifact ref"}},
+			"financial":            {Outcome: "hold", Obligations: []string{"emit a Receipt", "record a rollback_plan", "capture pre-image artifact ref"}},
+			"security":             {Outcome: "hold", Obligations: []string{"emit a Receipt", "record a rollback_plan", "capture pre-image artifact ref"}},
 		},
 		HumanReversibilities: []string{"irreversible", "hard", "none"},
 		WideBlastRadii:       []string{"production", "public", "account", "fleet", "org", "user-data"},
@@ -174,11 +174,20 @@ func evaluateBase(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.
 
 	outcome, reasons, obligations := baselineOutcome(ai, cfg)
 
-	// 2. standing grant -> allow only inside its explicit envelope.
+	// 2. standing grant -> allow only inside its explicit envelope. A non-read grant
+	//    still carries its class's trust duties (Receipt, rollback_plan) so the
+	//    autonomous/unattended path keeps its accountability -- the one path where
+	//    nothing else guards the write. This does NOT gate autonomy: allow_with_obligations
+	//    is still Allowed(), so the granted action flows without a per-item operator gate.
+	//    A granted read needs no such duty and stays a bare allow.
 	if g, missReasons, ok := matchGrant(cfg.StandingGrants, ai, cfg, now); ok {
-		return withPolicyEvidence(mkDecision(ai, "allow",
-			[]string{fmt.Sprintf("covered by standing grant %s (capability=%q class=%q)", g.ID, g.Capability, g.MutationClass)},
-			nil, g.ID, g.ExpiresAt, now), cfg)
+		reason := fmt.Sprintf("covered by standing grant %s (capability=%q class=%q)", g.ID, g.Capability, g.MutationClass)
+		if ai.MutationClass == "read" {
+			return withPolicyEvidence(mkDecision(ai, "allow",
+				[]string{reason}, nil, g.ID, g.ExpiresAt, now), cfg)
+		}
+		return withPolicyEvidence(mkDecision(ai, "allow_with_obligations",
+			[]string{reason}, grantObligations(ai, cfg), g.ID, g.ExpiresAt, now), cfg)
 	} else if len(missReasons) > 0 {
 		reasons = append(reasons, missReasons...)
 	}
@@ -234,6 +243,20 @@ func baselineOutcome(ai envelope.ActionIntent, cfg Config) (string, []string, []
 	}
 
 	return outcome, reasons, obligations
+}
+
+// grantObligations returns the trust duties a granted non-read mutation still carries:
+// its class's baseline obligations, or at minimum a Receipt so the autonomous path stays
+// accountable (allow_with_obligations requires >= 1 obligation).
+func grantObligations(ai envelope.ActionIntent, cfg Config) []string {
+	var obligations []string
+	if rule, known := cfg.ClassOutcome[ai.MutationClass]; known {
+		obligations = append(obligations, rule.Obligations...)
+	}
+	if len(obligations) == 0 {
+		obligations = append(obligations, "emit a Receipt")
+	}
+	return obligations
 }
 
 func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionIntent, sc SourceControlContext, now time.Time) envelope.PolicyDecision {
