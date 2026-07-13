@@ -38,7 +38,8 @@ LATEST-22..24). This skill replaces re-deriving that round pattern per session. 
 
   Ordinary executor actors, partial declarations, lifecycle-transition-plus-bind, and rebinding
   are rejected. Use `--local-only` only when non-publication is an intentional task contract, not
-  as a shortcut around push proof.
+  as a shortcut around push proof. `--steal` authorizes this one binding mutation; it does not
+  transfer the lease, so subsequent lifecycle commands continue under the recorded lease holder.
 - **Footgun (2026-07-09):** `compound work dispatch-claim` with NO ARGS claims the next ready item
   for real. Never run mutation verbs argless to probe usage — read `compound work` verb list or the
   dispatch-plan JSON instead.
