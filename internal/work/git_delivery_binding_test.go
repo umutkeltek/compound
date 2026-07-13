@@ -118,6 +118,80 @@ func TestDeliveryBindingIsSameStateAndCompleteOnly(t *testing.T) {
 	}
 }
 
+func TestRejectedDeliveryBindingDoesNotRecordLeaseSteal(t *testing.T) {
+	now := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "rejected binding leaves no successful override evidence"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, w.ID, now)
+
+	before, beforeEvents, err := store.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeSHA, err := workEnvelopeSHA256(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeLease, err := store.readLease(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventFiles := func() string {
+		entries, err := os.ReadDir(filepath.Join(store.home, "events"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		return strings.Join(names, "\n")
+	}
+	beforeEventFiles := eventFiles()
+
+	if _, err := store.Advance(w.ID, AdvanceInput{
+		To:          "running",
+		Actor:       "rented-executor",
+		GitDelivery: localGitDelivery(repo, base),
+		Steal:       true,
+		StealReason: "attempt invalid legacy delivery binding",
+	}, now.Add(3*time.Minute)); err == nil || !strings.Contains(err.Error(), "operator provenance") {
+		t.Fatalf("executor delivery binding should fail operator provenance, got %v", err)
+	}
+
+	after, afterEvents, err := store.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterSHA, err := workEnvelopeSHA256(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterLease, err := store.readLease(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSHA != beforeSHA {
+		t.Fatalf("rejected binding mutated WorkEnvelope: before=%s after=%s", beforeSHA, afterSHA)
+	}
+	if afterLease != beforeLease {
+		t.Fatalf("rejected binding mutated lease: before=%+v after=%+v", beforeLease, afterLease)
+	}
+	if len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("rejected binding appended lifecycle evidence: before=%d after=%d events=%+v", len(beforeEvents), len(afterEvents), afterEvents)
+	}
+	if afterEventFiles := eventFiles(); afterEventFiles != beforeEventFiles {
+		t.Fatalf("rejected binding wrote action/policy evidence:\nbefore:\n%s\nafter:\n%s", beforeEventFiles, afterEventFiles)
+	}
+}
+
 func TestRepoScopedContextAloneDoesNotInventGitDeliveryAuthority(t *testing.T) {
 	now := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
 	repo, _ := initLandingRepo(t)

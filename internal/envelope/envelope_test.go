@@ -209,6 +209,56 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 	}
 }
 
+func TestWorkEnvelopeGitDeliveryPublicationRefMatchesWholeBranch(t *testing.T) {
+	const baseSHA = "0123456789abcdef0123456789abcdef01234567"
+	repoRoot := filepath.Join(string(filepath.Separator), "repo", "product")
+	tests := []struct {
+		name           string
+		localRef       string
+		publicationRef string
+		wantErr        bool
+	}{
+		{
+			name:           "wrong nested publication branch",
+			localRef:       "refs/heads/main",
+			publicationRef: "refs/remotes/origin/release/main",
+			wantErr:        true,
+		},
+		{
+			name:           "nested target branch",
+			localRef:       "refs/heads/release/main",
+			publicationRef: "refs/remotes/origin/release/main",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := WorkEnvelope{
+				Header:           hdr(SVWork, "work_publication_branch"),
+				Owner:            "compound",
+				State:            "ready",
+				SuccessPredicate: "candidate reaches the exact publication branch",
+				GitDelivery: &GitDeliveryContract{
+					TargetWorktreeRoot: repoRoot,
+					TargetLocalRef:     tt.localRef,
+					ExpectedBaseSHA:    baseSHA,
+					PublicationMode:    "required",
+					PublicationRef:     tt.publicationRef,
+				},
+			}
+			err := w.Validate()
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "publication_ref") {
+					t.Fatalf("wrong publication branch should fail validation, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("matching nested publication branch should validate: %v", err)
+			}
+		})
+	}
+}
+
 func TestActionIntentTargetRequiredForMutatingActions(t *testing.T) {
 	base := ActionIntent{
 		Header:        withWork(hdr(SVActionIntent, "act_target"), "work_1"),
