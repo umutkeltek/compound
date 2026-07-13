@@ -349,9 +349,15 @@ func TestHookLiveCodexPreToolUseAllowsOnlyExactRecordedDirtyBatch(t *testing.T) 
 		t.Fatal(err)
 	}
 	if _, err := store.Create(work.CreateInput{
-		WorkID: "work_owner_reviewed_dirty", Owner: "codex", Actor: "orchestrator", State: "running",
+		WorkID: "work_owner_reviewed_dirty", Owner: "codex", Actor: "orchestrator", State: "ready",
 		SuccessPredicate: "apply the exact reviewed dirty batch", DesiredOutcome: "resolve reviewed conflicts",
 	}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim("work_owner_reviewed_dirty", "orchestrator", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance("work_owner_reviewed_dirty", work.AdvanceInput{To: "running", Actor: "orchestrator"}, cliTestNow); err != nil {
 		t.Fatal(err)
 	}
 
