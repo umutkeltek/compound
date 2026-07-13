@@ -62,6 +62,11 @@ loop compound provides:
   transition-oriented, evidence-linked observation kept packet-local until it **earns promotion** — to a
   contract, script, check, decision, or recalled context — *only when a real executor will consume it.* A move
   that produces "another document" failed unless the document changes a future branch for a real executor.
+- **Agents are tunnels too:** a durable mid-work observation about an *external* surface (a product, source
+  system, or upstream repo — not compound's own architecture) does not belong in prose or a packet note; emit
+  it through the intake door as a `SourceObservation` (`compound source observe <obs.yaml>`, or
+  `observation_batch` JSON via `compound source observe-batch` for multiple) so it enters adjudication like any
+  other tunnel's evidence. Adapters observe, agents observe — nobody promotes from the field.
 
 ## Build discipline
 - The topology is the **target**, not a license to build all of it. One vertical slice, proven with a command +

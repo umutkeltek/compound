@@ -89,8 +89,8 @@ func TestSourceConnectionsTreatProductSignalsAsObservedSources(t *testing.T) {
 	if !strings.Contains(asc.NextSafeAction, "product signals") {
 		t.Fatalf("asc next action = %q", asc.NextSafeAction)
 	}
-	if projection.Counts.Observed != 1 || projection.Counts.NeedsInput != 1 {
-		t.Fatalf("source counts should show observed ASC plus chatgpt preflight input: %+v", projection.Counts)
+	if projection.Counts.Observed != 1 || projection.Counts.NeedsInput != 2 {
+		t.Fatalf("source counts should show observed ASC plus chatgpt and app-store-reviews private-config input: %+v", projection.Counts)
 	}
 }
 

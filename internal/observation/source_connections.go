@@ -459,6 +459,23 @@ func sourceConnectionDefs() []sourceConnectionDef {
 			NextSafeAction: "Observe a bounded GSC export through source intake.",
 		},
 		{
+			ID:                 "app_store_reviews",
+			Label:              "App Store customer reviews",
+			SourceKinds:        []string{"app_store_reviews"},
+			DefaultStatus:      "blocked_private_config",
+			Produces:           []string{"source observation", "product source issue evidence"},
+			NextSafeAction:     "Normalize a bounded reviews pull into an observation batch and dry-run it through source observe-batch.",
+			PrivateSetupNeeded: true,
+		},
+		{
+			ID:             "playtest_findings",
+			Label:          "Playtest findings",
+			SourceKinds:    []string{"playtest_findings", "playtest_run"},
+			DefaultStatus:  "not_connected",
+			Produces:       []string{"source observation", "ux friction evidence"},
+			NextSafeAction: "Convert a playtest run's finding files into an observation batch and dry-run it through source observe-batch.",
+		},
+		{
 			ID:                 "chatgpt_export",
 			Label:              "ChatGPT export",
 			SourceKinds:        []string{"chatgpt", "chatgpt_export", "conversation_export"},
