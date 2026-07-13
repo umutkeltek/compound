@@ -259,7 +259,7 @@ func Build(in Inputs, opt Options) (Result, error) {
 	assignSceneOrder(beats)
 
 	standing := composeStanding(folded, ackFolds, counts)
-	quiet := composeQuiet(beats, counts, in.Changed)
+	quiet := composeQuiet(beats, counts, in.Changed, anyNeedsYou(members))
 
 	script := Script{
 		SchemaVersion:   SchemaVersion,
@@ -755,9 +755,25 @@ func standingSummary(folded, watching, needsYou, filed int) string {
 	return fmt.Sprintf("%s holding steady.", plural(folded, "item is", "items are"))
 }
 
+// anyNeedsYou reports whether any member sits in the needs-you band — including
+// one that folded to residue (a needs-you item with no one-click action). Quiet
+// must never claim calm while such an item is outstanding, even unnarrated.
+func anyNeedsYou(members []member) bool {
+	for _, m := range members {
+		if m.group.Band == attention.BandNeedsYou {
+			return true
+		}
+	}
+	return false
+}
+
 // composeQuiet authors the calm end-state whenever nothing needs the operator
-// (no ask, no warn) — the quiet block is composed, never a blank beats array.
-func composeQuiet(beats []Beat, counts Counts, changed ChangedSet) *Quiet {
+// (no ask, no warn, no needs-you member at all) — the quiet block is composed,
+// never a blank beats array.
+func composeQuiet(beats []Beat, counts Counts, changed ChangedSet, needsYou bool) *Quiet {
+	if needsYou {
+		return nil
+	}
 	for _, b := range beats {
 		if b.Act == ActAsk || b.Act == ActWarn {
 			return nil

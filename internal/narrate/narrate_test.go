@@ -520,6 +520,27 @@ func TestF11MoodDeclaredOnly(t *testing.T) {
 	}
 }
 
+// Quiet must never claim calm while a needs-you item is outstanding, even when
+// that item folded to residue because it carries no one-click action.
+func TestQuietHonestAboutOutstandingNeedsYou(t *testing.T) {
+	fresh := fixtureNow().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	report := attention.Report{
+		SchemaVersion: attention.SchemaVersion,
+		GeneratedAt:   fixtureNow().UTC().Format(time.RFC3339),
+		Groups: []attention.Group{
+			// needs_you, no action, fresh, non-job-health => residue (grammar gap), still outstanding.
+			attnGroup("hold|one", attention.BandNeedsYou, attention.KindGateAdmit, "A hold is blocked on your review.", "", nil, 1, fresh),
+		},
+	}
+	res := buildOrDie(t, narrate.Inputs{Attention: report, Changed: narrate.ChangedSet{CurrentSeq: 1, FirstRun: true}, ThreadSeen: map[string]narrate.ThreadSeen{}, Now: fixtureNow()}, narrate.Options{Mood: narrate.MoodDecide})
+	if res.Script.Counts.Residue != 1 {
+		t.Fatalf("expected the actionless needs-you item to fold to residue: %+v", res.Script.Counts)
+	}
+	if res.Script.Quiet != nil {
+		t.Fatalf("quiet claimed calm while a needs-you item is outstanding: %+v", res.Script.Quiet)
+	}
+}
+
 func TestScriptFieldsStayShaped(t *testing.T) {
 	report := baselineReport()
 	res := buildOrDie(t, narrate.Inputs{Attention: report, Changed: narrate.ChangedSet{CurrentSeq: 10, FirstRun: true}, ThreadSeen: map[string]narrate.ThreadSeen{}, Now: fixtureNow()}, narrate.Options{Mood: narrate.MoodDecide})
