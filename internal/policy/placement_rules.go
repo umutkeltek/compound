@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	homepkg "compound/internal/home"
 )
 
 const (
@@ -19,6 +21,12 @@ const (
 	placementRulesFile                  = "placement-rules.json"
 	placementSourceAuthorityFile        = "placement-source-authority.jsonl"
 	placementSourceAuthorityImportedVia = "policy import-placement-rules"
+
+	// governedHomeRootID is the synthesized closed-world root that protects COMPOUND_HOME
+	// itself: a write under the home that lands in NO typed habitat dir is unowned scaffolding.
+	// A registry-declared root with this id overrides the synthesized one (lets an operator
+	// stage warn -> block, or scope the allow-set).
+	governedHomeRootID = "compound-home"
 )
 
 type PlacementRules struct {
@@ -26,6 +34,19 @@ type PlacementRules struct {
 	Note           string               `json:"note,omitempty"`
 	OpenWriteGlobs []string             `json:"open_write_globs,omitempty"`
 	Owners         []PlacementOwnerRule `json:"owners,omitempty"`
+	GovernedRoots  []GovernedRoot       `json:"governed_roots,omitempty"`
+}
+
+// GovernedRoot is a closed-world rule: any write UNDER RootGlobs that is NOT in AllowGlobs
+// (the typed/allowed sub-paths) is unowned scaffolding. This is what an open-world owner-glob
+// registry cannot express — it catches a NOVEL filename in an unclaimed location (e.g. an agent
+// inventing `<COMPOUND_HOME>/private/stray-note.md`), instead of only denying known deny-zones.
+type GovernedRoot struct {
+	ID         string   `json:"id"`
+	RootGlobs  []string `json:"root_globs,omitempty"`
+	AllowGlobs []string `json:"allow_globs,omitempty"`
+	Confidence string   `json:"confidence,omitempty"` // "" -> warn; only "warn"|"block" are valid
+	Redirect   string   `json:"redirect,omitempty"`   // where the write SHOULD go instead
 }
 
 type PlacementOwnerRule struct {
@@ -74,8 +95,8 @@ func LoadPlacementRules(path string) (PlacementRules, error) {
 }
 
 func validatePlacementRules(rules PlacementRules) error {
-	if len(rules.Owners) == 0 {
-		return fmt.Errorf("placement rules need owners")
+	if len(rules.Owners) == 0 && len(rules.GovernedRoots) == 0 {
+		return fmt.Errorf("placement rules need owners or governed_roots")
 	}
 	for _, owner := range rules.Owners {
 		if strings.TrimSpace(owner.ID) == "" {
@@ -84,6 +105,15 @@ func validatePlacementRules(rules PlacementRules) error {
 		confidence := strings.TrimSpace(owner.Confidence)
 		if confidence != "" && confidence != "warn" && confidence != "block" {
 			return fmt.Errorf("placement owner %q has invalid confidence %q", owner.ID, owner.Confidence)
+		}
+	}
+	for _, root := range rules.GovernedRoots {
+		if strings.TrimSpace(root.ID) == "" {
+			return fmt.Errorf("governed root id required")
+		}
+		confidence := strings.TrimSpace(root.Confidence)
+		if confidence != "" && confidence != "warn" && confidence != "block" {
+			return fmt.Errorf("governed root %q has invalid confidence %q", root.ID, root.Confidence)
 		}
 	}
 	return nil
@@ -190,16 +220,49 @@ func LoadPlacementSourceAuthority(homePath string) ([]PlacementSourceAuthorityRe
 func PlacementContextFromHome(homePath, targetPath string) (*PlacementGuardContext, []string, error) {
 	rules, err := LoadPlacementRulesFromHome(homePath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil, nil
+		if !os.IsNotExist(err) {
+			return nil, nil, err
 		}
-		return nil, nil, err
+		// No installed registry: still protect the governed home from nothing (fresh clone).
+		rules = PlacementRules{}
 	}
+	rules = ensureGovernedHomeRoot(rules, homePath)
 	ctx := rules.PlacementContext(targetPath)
-	if ctx == nil {
-		return nil, []string{filepath.Join("registries", placementRulesFile)}, nil
-	}
 	return ctx, []string{filepath.Join("registries", placementRulesFile)}, nil
+}
+
+// ensureGovernedHomeRoot guarantees COMPOUND_HOME is a closed-world governed root even when no
+// registry is installed, so a fresh clone protects its own home with zero setup ("works from
+// nothing"). A registry-declared root with the same id wins — the operator's escape hatch to
+// widen the allow-set or flip warn->block. Synthesized default confidence is "warn" (records,
+// never holds); the global placement_guard_mode is the observe->warn->block staging dial.
+func ensureGovernedHomeRoot(rules PlacementRules, homePath string) PlacementRules {
+	if strings.TrimSpace(homePath) == "" {
+		return rules
+	}
+	for _, gr := range rules.GovernedRoots {
+		if strings.TrimSpace(gr.ID) == governedHomeRootID {
+			return rules // registry override wins
+		}
+	}
+	rules.GovernedRoots = append(rules.GovernedRoots, GovernedRoot{
+		ID:         governedHomeRootID,
+		RootGlobs:  []string{filepath.Join(homePath, "**")},
+		AllowGlobs: homeAllowGlobs(homePath),
+		Confidence: "warn",
+		Redirect:   "resolve with `compound placement target --kind <kind>` or write under a typed COMPOUND_HOME habitat dir",
+	})
+	return rules
+}
+
+// homeAllowGlobs is the typed habitat allow-set: every dir home.Init scaffolds is a legitimate
+// write target; anything else under the home is unowned scaffolding.
+func homeAllowGlobs(homePath string) []string {
+	globs := make([]string, 0, len(homepkg.Dirs)*2)
+	for _, d := range homepkg.Dirs {
+		globs = append(globs, filepath.Join(homePath, d), filepath.Join(homePath, d, "**"))
+	}
+	return globs
 }
 
 func (rules PlacementRules) PlacementContext(targetPath string) *PlacementGuardContext {
@@ -217,6 +280,18 @@ func (rules PlacementRules) PlacementContext(targetPath string) *PlacementGuardC
 		if anyPlacementNameMatch(target, owner.CanonFilenameGlobs) && !anyPlacementPathMatch(target, owner.CanonicalWriteGlobs) {
 			return owner.placementContext(target, "canon-filename-outside-owner-home")
 		}
+	}
+	// Closed-world governed roots: a write UNDER a root but in no allowed sub-path is unowned
+	// scaffolding. This is the open-world fix — it catches novel filenames in unclaimed places,
+	// which the owner deny/canon rules above (negative collisions only) cannot see.
+	for _, gr := range rules.GovernedRoots {
+		if !anyPlacementPathMatch(target, gr.RootGlobs) {
+			continue
+		}
+		if anyPlacementPathMatch(target, gr.AllowGlobs) {
+			continue
+		}
+		return gr.placementContext(target)
 	}
 	return nil
 }
@@ -243,12 +318,44 @@ func (owner PlacementOwnerRule) placementContext(targetPath, rule string) *Place
 	}
 	ownerID := strings.TrimSpace(owner.ID)
 	return &PlacementGuardContext{
-		Confidence:   confidence,
-		OwnerRef:     "placement-owner:" + ownerID,
-		TargetRef:    targetPath,
-		Reason:       rule,
-		EvidenceRefs: []string{PlacementRulesAuthorityRef, "placement-owner:" + ownerID},
+		Confidence:     confidence,
+		OwnerRef:       "placement-owner:" + ownerID,
+		TargetRef:      targetPath,
+		Reason:         rule,
+		RedirectTarget: deglobTarget(owner.CanonicalWriteGlobs),
+		EvidenceRefs:   []string{PlacementRulesAuthorityRef, "placement-owner:" + ownerID},
 	}
+}
+
+func (gr GovernedRoot) placementContext(targetPath string) *PlacementGuardContext {
+	confidence := strings.TrimSpace(gr.Confidence)
+	if confidence == "" {
+		confidence = "warn"
+	}
+	id := strings.TrimSpace(gr.ID)
+	return &PlacementGuardContext{
+		Confidence:     confidence,
+		OwnerRef:       "governed-root:" + id,
+		TargetRef:      targetPath,
+		Reason:         "unowned-under-governed-root",
+		RedirectTarget: strings.TrimSpace(gr.Redirect),
+		EvidenceRefs:   []string{PlacementRulesAuthorityRef, "governed-root:" + id},
+	}
+}
+
+// deglobTarget turns the first canonical write glob into a concrete directory hint by stripping
+// trailing glob segments (`/**`, `/*`) — the redirect an agent can act on.
+func deglobTarget(globs []string) string {
+	for _, g := range globs {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			continue
+		}
+		g = strings.TrimSuffix(g, "/**")
+		g = strings.TrimSuffix(g, "/*")
+		return g
+	}
+	return ""
 }
 
 func placementOwnerActive(owner PlacementOwnerRule) bool {

@@ -46,6 +46,69 @@ func TestPlacementRulesContext(t *testing.T) {
 	}
 }
 
+// TestPlacementRulesGovernedRoot proves the open-world fix: a novel filename in an unclaimed
+// location under a governed root is flagged. This FAILS on pre-fix code (no GovernedRoots ->
+// PlacementContext returns nil -> the ad-hoc write sails through, exactly the itch).
+func TestPlacementRulesGovernedRoot(t *testing.T) {
+	homeRoot := t.TempDir()
+	rules := PlacementRules{
+		GovernedRoots: []GovernedRoot{{
+			ID:         "compound-home",
+			RootGlobs:  []string{filepath.Join(homeRoot, "**")},
+			AllowGlobs: []string{filepath.Join(homeRoot, "inbox", "**"), filepath.Join(homeRoot, "reviews", "**")},
+			Confidence: "block",
+			Redirect:   "compound placement target --kind operational-finding",
+		}},
+	}
+
+	// The itch: an invented path under COMPOUND_HOME that owns no typed habitat.
+	ctx := rules.PlacementContext(filepath.Join(homeRoot, "private", "stray-note.md"))
+	if ctx == nil {
+		t.Fatal("unowned write under governed root must be flagged (open-world hole)")
+	}
+	if ctx.Reason != "unowned-under-governed-root" {
+		t.Fatalf("reason = %q, want unowned-under-governed-root", ctx.Reason)
+	}
+	if ctx.RedirectTarget == "" {
+		t.Fatal("governed-root context must carry a redirect target")
+	}
+	if ctx.Confidence != "block" {
+		t.Fatalf("confidence = %q, want block", ctx.Confidence)
+	}
+
+	// A write into a typed habitat dir is allowed (not scaffolding).
+	if ctx := rules.PlacementContext(filepath.Join(homeRoot, "inbox", "memory-candidates", "m.json")); ctx != nil {
+		t.Fatalf("typed habitat write must not be flagged: %+v", ctx)
+	}
+}
+
+// TestPlacementContextFromHomeSynthesizesGovernedRoot proves "works from nothing": with NO
+// registry installed, a fresh COMPOUND_HOME still protects itself, and its typed habitat dirs
+// are allowed.
+func TestPlacementContextFromHomeSynthesizesGovernedRoot(t *testing.T) {
+	homePath := t.TempDir()
+
+	ctx, refs, err := PlacementContextFromHome(homePath, filepath.Join(homePath, "private", "note.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx == nil || ctx.Reason != "unowned-under-governed-root" {
+		t.Fatalf("fresh home must protect itself with no registry, got %+v", ctx)
+	}
+	if len(refs) == 0 {
+		t.Fatal("expected placement authority ref")
+	}
+
+	// A typed habitat dir under the same fresh home must be allowed.
+	ok, _, err := PlacementContextFromHome(homePath, filepath.Join(homePath, "reviews", "x.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok != nil {
+		t.Fatalf("typed habitat under fresh home must be allowed: %+v", ok)
+	}
+}
+
 func TestImportPlacementRulesWritesAuthorityAndSourceRecord(t *testing.T) {
 	homePath := t.TempDir()
 	sourcePath := filepath.Join(t.TempDir(), "placement-rules.json")

@@ -83,14 +83,15 @@ type SourceControlContext struct {
 // PlacementGuardContext is owner-placement evidence for an intended mutation.
 // It stages observe -> warn -> block without creating another guard path.
 type PlacementGuardContext struct {
-	Mode         string   `json:"mode,omitempty"`
-	Confidence   string   `json:"confidence,omitempty"`
-	OwnerRef     string   `json:"owner_ref,omitempty"`
-	TargetRef    string   `json:"target_ref,omitempty"`
-	Reason       string   `json:"reason,omitempty"`
-	OpenWrite    bool     `json:"open_write,omitempty"`
-	Override     bool     `json:"override,omitempty"`
-	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	Mode           string   `json:"mode,omitempty"`
+	Confidence     string   `json:"confidence,omitempty"`
+	OwnerRef       string   `json:"owner_ref,omitempty"`
+	TargetRef      string   `json:"target_ref,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
+	RedirectTarget string   `json:"redirect_target,omitempty"` // where the write SHOULD go (canonical owner home / governed door)
+	OpenWrite      bool     `json:"open_write,omitempty"`
+	Override       bool     `json:"override,omitempty"`
+	EvidenceRefs   []string `json:"evidence_refs,omitempty"`
 }
 
 // DefaultConfig returns the built-in conservative policy.
@@ -397,6 +398,9 @@ func placementGuardReason(mode, confidence string, pg PlacementGuardContext) str
 	reason := fmt.Sprintf("placement_guard mode=%s confidence=%s owner=%s target=%s", mode, confidence, owner, target)
 	if detail := strings.TrimSpace(pg.Reason); detail != "" {
 		reason += "; " + detail
+	}
+	if redirect := strings.TrimSpace(pg.RedirectTarget); redirect != "" {
+		reason += "; canonical target: " + redirect
 	}
 	return reason
 }
