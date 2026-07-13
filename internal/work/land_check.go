@@ -285,7 +285,7 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	}
 	if report.TargetAncestorOfCandidate {
 		report.Status = "ready_to_land"
-		report.NextAction = fmt.Sprintf("fast-forward %s to candidate %s, then record a fresh landed check", targetRef, candidate)
+		report.NextAction = fmt.Sprintf("fast-forward %s to candidate %s, then run compound work land-check %s --tip %s", targetRef, candidate, w.ID, candidate)
 		return report, nil
 	}
 	report.Status = "rebase_required"
