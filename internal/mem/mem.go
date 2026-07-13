@@ -589,60 +589,69 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 				return fmt.Errorf("candidate %s targets reserved operational decision slot held by %s", c.ID, protected.ID)
 			}
 		}
+		claims, err := s.loadClaimsRaw()
+		if err != nil {
+			return err
+		}
+		for _, existing := range claims {
+			if !oneOf(c.ID, existing.EvidenceRefs) || !isDuplicatePromotion(c, existing, true) {
+				continue
+			}
+			if claim.ID != "" && claim.ID != existing.ID {
+				return fmt.Errorf("candidate %s has multiple promotion claims (%s, %s)", c.ID, claim.ID, existing.ID)
+			}
+			claim = existing
+		}
+		if claim.ID != "" {
+			// A prior attempt may have appended the immutable claim before a
+			// later Transition or candidate projection write failed. Recover by
+			// candidate provenance across the full claim history: a newer claim
+			// may already have superseded this one before the retry arrives.
+			var transitionPrior Claim
+			transitionHasPrior := false
+			if claim.Supersedes != "" {
+				for _, existing := range claims {
+					if existing.ID == claim.Supersedes {
+						transitionPrior = existing
+						transitionHasPrior = true
+						break
+					}
+				}
+				if !transitionHasPrior {
+					return fmt.Errorf("candidate %s recovery missing superseded claim %s", c.ID, claim.Supersedes)
+				}
+				edgeExists, err := s.hasEdge(EdgeKindSupersedes, claim.ID, transitionPrior.ID)
+				if err != nil {
+					return err
+				}
+				if !edgeExists {
+					edge := supersedesEdge(claim, transitionPrior, c, claim.Seq, now)
+					if err := appendJSONL(s.edgesLog(), &edge); err != nil {
+						return err
+					}
+				}
+			}
+			transition = s.memoryTransition(claim, transitionPrior, transitionHasPrior, workID, now)
+			if err := transition.Validate(); err != nil {
+				return fmt.Errorf("emitted transition invalid: %w", err)
+			}
+			if err := writeJSON(s.eventPath(transition.ID), &transition); err != nil {
+				return err
+			}
+			c.State = "promoted"
+			if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
+				return err
+			}
+			prior = transitionPrior
+			hasPrior = transitionHasPrior
+			return nil
+		}
 		p, hp, err := s.currentClusterClaim(c, 0)
 		if err != nil {
 			return err
 		}
 		prior, hasPrior = p, hp
 		if isDuplicatePromotion(c, prior, hasPrior) {
-			if oneOf(c.ID, prior.EvidenceRefs) {
-				// A prior attempt may have appended the immutable claim before a
-				// later Transition or candidate projection write failed. Retry the
-				// same candidate idempotently instead of rejecting its own claim.
-				claim = prior
-				var transitionPrior Claim
-				transitionHasPrior := false
-				if claim.Supersedes != "" {
-					claims, err := s.loadClaimsRaw()
-					if err != nil {
-						return err
-					}
-					for _, existing := range claims {
-						if existing.ID == claim.Supersedes {
-							transitionPrior = existing
-							transitionHasPrior = true
-							break
-						}
-					}
-					if !transitionHasPrior {
-						return fmt.Errorf("candidate %s recovery missing superseded claim %s", c.ID, claim.Supersedes)
-					}
-					edgeExists, err := s.hasEdge(EdgeKindSupersedes, claim.ID, transitionPrior.ID)
-					if err != nil {
-						return err
-					}
-					if !edgeExists {
-						edge := supersedesEdge(claim, transitionPrior, c, claim.Seq, now)
-						if err := appendJSONL(s.edgesLog(), &edge); err != nil {
-							return err
-						}
-					}
-				}
-				transition = s.memoryTransition(claim, transitionPrior, transitionHasPrior, workID, now)
-				if err := transition.Validate(); err != nil {
-					return fmt.Errorf("emitted transition invalid: %w", err)
-				}
-				if err := writeJSON(s.eventPath(transition.ID), &transition); err != nil {
-					return err
-				}
-				c.State = "promoted"
-				if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
-					return err
-				}
-				prior = transitionPrior
-				hasPrior = transitionHasPrior
-				return nil
-			}
 			dup = true
 			c.State = "rejected"
 			c.Reason = "duplicate of current claim " + prior.ID
