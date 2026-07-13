@@ -554,8 +554,13 @@ func sourceControlReviewReportDigest(report SourceControlReviewReport) string {
 }
 
 func sourceControlAuthorizationReportSealed(report SourceControlReviewReport, dir string) bool {
-	if !policy.HasOperatorProvenance(report.ReviewedBy) || !validSHA256(report.SourceDigest) ||
-		!validSHA256(report.AuthorizationDigest) || report.AuthorizationDigest != sourceControlReviewReportDigest(report) {
+	return report.Decision == "authorize_mutation" && policy.HasOperatorProvenance(report.ReviewedBy) &&
+		sourceControlReviewReportSealed(report, dir)
+}
+
+func sourceControlReviewReportSealed(report SourceControlReviewReport, dir string) bool {
+	if !validSHA256(report.SourceDigest) || !validSHA256(report.AuthorizationDigest) ||
+		report.AuthorizationDigest != sourceControlReviewReportDigest(report) {
 		return false
 	}
 	expectedSourcePath := filepath.Join(dir, report.PlanID+".review.yaml")
@@ -574,9 +579,10 @@ func sourceControlAuthorizationReportSealed(report SourceControlReviewReport, di
 	if err != nil || ValidateSourceControlReview(review) != nil {
 		return false
 	}
-	return review.Decision == "authorize_mutation" && review.ID == report.ReviewID && review.PlanID == report.PlanID &&
+	return review.Decision == report.Decision && review.ID == report.ReviewID && review.PlanID == report.PlanID &&
 		review.RepoID == report.RepoID && strings.TrimSpace(review.ReviewedBy) == report.ReviewedBy &&
-		review.ReviewedAt == report.ReviewedAt && containsEvery(report.EvidenceRefs, review.EvidenceRefs)
+		review.ReviewedAt == report.ReviewedAt && strings.TrimSpace(review.NextAction) == report.NextAction &&
+		containsEvery(report.EvidenceRefs, review.EvidenceRefs)
 }
 
 func sourceControlPlanAuthorizable(plan SourceControlReviewPlan) bool {
@@ -587,7 +593,7 @@ func sourceControlPlanAuthorizable(plan SourceControlReviewPlan) bool {
 }
 
 func recordedSourceControlReportMatchesPlan(report SourceControlReviewReport, plan SourceControlReviewPlan) bool {
-	return report.PlanID == plan.ID && report.RepoID == plan.RepoID && report.WorkID == plan.WorkID &&
+	return report.PlanID == plan.ID && report.ReviewID == plan.ReviewDraft.ReviewID && report.RepoID == plan.RepoID && report.WorkID == plan.WorkID &&
 		filepath.Clean(report.GitRoot) == filepath.Clean(plan.GitRoot) && report.Remote == plan.Remote && report.Head == plan.Head &&
 		report.ChangedStateFingerprint == plan.ChangedStateFingerprint && report.PlanDigest == plan.PlanDigest &&
 		report.PlanDigest == SourceControlReviewPlanDigest(plan) && report.MutationBinding != nil && plan.MutationBinding != nil &&
@@ -792,10 +798,20 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 	}
 	plan, planErr := loadSourceControlPlanFile(item.JSONPath)
 	if reviewedPath := sourceControlReviewedPath(*item); reviewedPath != "" {
+		report, reportErr := LoadSourceControlReviewReport(reviewedPath)
+		if sourceControlMutationReviewNeedsValidation(plan, planErr, report, reportErr) {
+			if err := validateRecordedSourceControlMutationQueueItem(*item, plan, planErr, report, reportErr, reviewedPath); err != nil {
+				blockSourceControlMutationQueueItem(item, plan, err)
+				if planErr == nil {
+					annotateSourceControlOperatorCard(item, plan, reviewartifact.BandNeedsYou)
+				}
+				return
+			}
+		}
 		item.Status = "recorded"
 		item.Readiness = "review_recorded"
 		item.NextAction = "source-control cleanup review recorded"
-		if report, err := LoadSourceControlReviewReport(reviewedPath); err == nil {
+		if reportErr == nil {
 			item.NextAction = reviewartifact.FirstNonEmpty(report.NextAction, "source-control cleanup review recorded: "+report.Decision)
 		}
 		item.Actions = nil
@@ -837,6 +853,74 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 	}
 	item.Readiness = "ready_to_record"
 	item.NextAction = "record reviewed source-control cleanup disposition"
+}
+
+func sourceControlMutationReviewNeedsValidation(plan SourceControlReviewPlan, planErr error, report SourceControlReviewReport, reportErr error) bool {
+	return (planErr == nil && plan.MutationBinding != nil) ||
+		(reportErr == nil && (report.Decision == "authorize_mutation" || report.MutationBinding != nil))
+}
+
+func validateRecordedSourceControlMutationQueueItem(item reviewartifact.QueueItem, plan SourceControlReviewPlan, planErr error, report SourceControlReviewReport, reportErr error, reviewedPath string) error {
+	if planErr != nil {
+		return fmt.Errorf("mutation-bound plan unreadable: %w", planErr)
+	}
+	if reportErr != nil {
+		return fmt.Errorf("recorded mutation review unreadable: %w", reportErr)
+	}
+	if plan.SchemaVersion != SourceControlReviewPlanSchemaVersion || plan.Status != "review_required" || plan.SourceStatus != "dirty" ||
+		plan.ID != item.ID || strings.TrimSpace(plan.ReviewDraft.ReviewID) == "" || !sourceControlPlanAuthorizable(plan) {
+		return fmt.Errorf("mutation-bound plan identity or digest is invalid")
+	}
+	dir := filepath.Dir(item.JSONPath)
+	expectedPlanPath := filepath.Join(dir, plan.ID+".json")
+	expectedReviewYAMLPath := filepath.Join(dir, plan.ID+".review.yaml")
+	expectedReportPath := filepath.Join(dir, plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
+	if filepath.Clean(item.JSONPath) != filepath.Clean(expectedPlanPath) ||
+		filepath.Clean(sourceControlReviewYAMLPath(item)) != filepath.Clean(expectedReviewYAMLPath) ||
+		filepath.Clean(reviewedPath) != filepath.Clean(expectedReportPath) ||
+		filepath.Clean(report.ReviewPath) != filepath.Clean(expectedReportPath) {
+		return fmt.Errorf("mutation authorization artifact path or identity is invalid")
+	}
+	if report.SchemaVersion != SourceControlReviewReportSchemaVersion || report.Status != "recorded" ||
+		!recordedSourceControlReportMatchesPlan(report, plan) {
+		return fmt.Errorf("mutation authorization report does not match its plan")
+	}
+	if report.Decision == "authorize_mutation" {
+		if !sourceControlAuthorizationReportSealed(report, dir) {
+			return fmt.Errorf("mutation authorization report or reviewed source seal is invalid")
+		}
+		return nil
+	}
+	if !sourceControlReviewReportSealed(report, dir) {
+		return fmt.Errorf("mutation review report or reviewed source seal is invalid")
+	}
+	return nil
+}
+
+func blockSourceControlMutationQueueItem(item *reviewartifact.QueueItem, plan SourceControlReviewPlan, cause error) {
+	item.Status = "blocked"
+	item.Readiness = "blocked"
+	item.BlockedReason = "source-control mutation authorization invalid or stale: " + sourceControlQueueError(cause)
+	item.NextAction = "regenerate the mutation-bound dirty-plan from persisted action intents and re-review before retrying the mutation"
+	item.Actions = sourceControlMutationReviewRegenerationActions(plan)
+}
+
+func sourceControlMutationReviewRegenerationActions(plan SourceControlReviewPlan) []reviewartifact.Action {
+	if strings.TrimSpace(plan.GitRoot) == "" || strings.TrimSpace(plan.WorkID) == "" || plan.MutationBinding == nil || len(plan.MutationBinding.ActionIntentIDs) == 0 {
+		return nil
+	}
+	argv := []string{"compound", "authority", "dirty-plan", plan.GitRoot, "--work-id", plan.WorkID}
+	for _, id := range sortedUniqueStrings(plan.MutationBinding.ActionIntentIDs) {
+		argv = append(argv, "--action-intent", id)
+	}
+	argv = append(argv, "--json")
+	return []reviewartifact.Action{{
+		ID:         "regenerate_source_control_mutation_review",
+		Label:      "Regenerate mutation-bound source-control review",
+		Command:    sourceControlShellJoin(argv),
+		Argv:       argv,
+		PolicyNote: "Creates fresh review evidence only; it does not mutate the repository or authorize the mutation.",
+	}}
 }
 
 func annotateSourceControlOperatorCard(item *reviewartifact.QueueItem, plan SourceControlReviewPlan, band string) {
