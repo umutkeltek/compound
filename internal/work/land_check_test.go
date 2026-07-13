@@ -182,6 +182,14 @@ func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
 	if closed.Work.State != "completed" || !contains(closed.Receipt.ProofRefs, landed.EvidenceRef) {
 		t.Fatalf("closed result = %+v", closed)
 	}
+	bench, err := store.Workbench(now.Add(8*time.Minute), WorkbenchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := findWorkbenchItem(t, bench.Recent, w.ID)
+	if terminal.NextAction != "terminal; mine receipt and transition if useful" || terminal.LandingStatus == "ready_to_close" {
+		t.Fatalf("terminal delivery work must not be offered for close again: %+v", terminal)
+	}
 }
 
 func TestCompletedCodeWorkRevalidatesLandingProofAtClose(t *testing.T) {
@@ -211,6 +219,17 @@ func TestCompletedCodeWorkRevalidatesLandingProofAtClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeLandingFile(t, filepath.Join(repo, "late-dirty.txt"), "dirty after proof\n")
+	plan, err := store.ClosePlan(w.ID, now.Add(4*time.Minute), ClosePlanOptions{
+		Actor:    "codex",
+		Outcome:  "completed",
+		MoveType: "outward_delta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "not_closeable" || len(plan.CloseCommand) != 0 || !strings.Contains(plan.NoAction, "dirty_target") {
+		t.Fatalf("close plan must live-revalidate recorded landing proof: %+v", plan)
+	}
 	if _, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "must recheck", ProofRefs: []string{proof.EvidenceRef}}, now.Add(4*time.Minute)); err == nil || !strings.Contains(err.Error(), "dirty_target") {
 		t.Fatalf("close with stale proof err = %v", err)
 	}
@@ -456,6 +475,29 @@ func TestCompletedCommitArtifactWithoutGitDeliveryContractFailsClosed(t *testing
 		ProofRefs: []string{"check:focused-tests"},
 	}, now.Add(4*time.Minute)); err == nil || !strings.Contains(err.Error(), "git_delivery") {
 		t.Fatalf("commit artifact without git_delivery contract should fail closed, got %v", err)
+	}
+}
+
+func TestCompletedCommitProofWithoutGitDeliveryContractFailsClosed(t *testing.T) {
+	now := time.Date(2026, 7, 13, 22, 0, 0, 0, time.UTC)
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "close proof cannot hide source-controlled work"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, w.ID, now)
+
+	if _, err := store.Close(w.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Actor:     "codex",
+		Summary:   "must fail without delivery authority",
+		ProofRefs: []string{"commit:" + strings.Repeat("a", 40)},
+	}, now.Add(4*time.Minute)); err == nil || !strings.Contains(err.Error(), "git_delivery") {
+		t.Fatalf("commit proof without git_delivery contract should fail closed, got %v", err)
 	}
 }
 
