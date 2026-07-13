@@ -296,9 +296,17 @@ func (s *Store) recordLandCheck(report *LandCheckReport) error {
 		_ = os.Remove(staged)
 		if errors.Is(err, os.ErrExist) {
 			var existing LandCheckReport
-			if readErr := s.readJSON(path, &existing); readErr == nil && existing.ContentSHA256 == report.ContentSHA256 && existing.ID == report.ID {
-				return nil
+			if readErr := s.readJSON(path, &existing); readErr != nil {
+				return fmt.Errorf("land-check %s collides with unreadable existing proof: %w", report.ID, readErr)
 			}
+			existingDigest, digestErr := landCheckContentSHA256(existing)
+			if digestErr != nil || existing.ContentSHA256 != existingDigest ||
+				existing.ContentSHA256 != report.ContentSHA256 || existing.ID != report.ID ||
+				!existing.Recorded || existing.EvidenceRef != report.EvidenceRef ||
+				filepath.Clean(existing.ProofPath) != filepath.Clean(report.ProofPath) {
+				return fmt.Errorf("land-check %s collides with tampered existing proof", report.ID)
+			}
+			return nil
 		}
 		return err
 	}
