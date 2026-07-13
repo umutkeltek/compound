@@ -51,6 +51,13 @@ type JobRosterAuthority struct {
 	EnabledAgentCount        int          `json:"enabled_agent_count"`
 	HighTokenEnabledCount    int          `json:"high_token_enabled_count"`
 	TokenRiskJobs            []JobSummary `json:"token_risk_jobs,omitempty"`
+
+	// ProbeRefreshedAt records the last time a probe-refresh collector run
+	// (jobprobe) re-observed current unit liveness for declared probe targets
+	// and wrote the observed state back onto rows below. It is empty on a plain
+	// source import; the imported snapshot is a blind claim until a probe pass
+	// re-observes it.
+	ProbeRefreshedAt string `json:"probe_refreshed_at,omitempty"`
 }
 
 type JobSummary struct {
@@ -71,6 +78,16 @@ type JobSummary struct {
 	TotalTokens       int64  `json:"total_tokens,omitempty"`
 	AvgTokensPerRun   int64  `json:"avg_tokens_per_run,omitempty"`
 	RiskClass         string `json:"risk_class,omitempty"`
+
+	// ProbeState / ProbeObservedAt / ProbeDetail are the OBSERVED liveness of the
+	// row's real unit, written by a probe-refresh collector run — distinct from
+	// LastStatus/LastError, which the source import claims. A probe that observes
+	// the unit dead also bridges LastStatus to "error" so job_health derives from
+	// observed state, not the stale imported claim. These stay empty until a
+	// probe target for this row has been collected.
+	ProbeState      string `json:"probe_state,omitempty"`
+	ProbeObservedAt string `json:"probe_observed_at,omitempty"`
+	ProbeDetail     string `json:"probe_detail,omitempty"`
 }
 
 type JobRosterSourceAuthorityRecord struct {
