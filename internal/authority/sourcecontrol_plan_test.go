@@ -330,6 +330,81 @@ func TestSourceControlMutationAuthorizationRequiresReviewerAndSealedSource(t *te
 	}
 }
 
+func TestSourceControlMutationAuthorizationQueueFailsLoudlyOnTampering(t *testing.T) {
+	tests := []struct {
+		name   string
+		tamper func(*testing.T, SourceControlReviewPlanPaths, SourceControlReviewReport)
+	}{
+		{
+			name: "authorization report",
+			tamper: func(t *testing.T, _ SourceControlReviewPlanPaths, report SourceControlReviewReport) {
+				report.NextAction = "tampered after authorization was sealed"
+				writeJSON(t, report.ReviewPath, report)
+			},
+		},
+		{
+			name: "reviewed YAML",
+			tamper: func(t *testing.T, paths SourceControlReviewPlanPaths, _ SourceControlReviewReport) {
+				data, err := os.ReadFile(paths.ReviewYAMLPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(paths.ReviewYAMLPath, append(data, []byte("# tampered after authorization\n")...), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initGitRepo(t)
+			writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+			snapshot, err := ReadGitSnapshot(repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding := SourceControlMutationBinding{
+				ActionWorkID:      "work_queue_authorization",
+				MutationInputHash: "mutation-input:sha256:" + strings.Repeat("f", 64),
+				Capability:        "filesystem.write",
+				Action:            "write_file",
+				MutationClass:     "local_reversible",
+				TargetPaths:       []string{"README.md"},
+				ActionIntentIDs:   []string{"act_queue_authorization"},
+			}
+			plan, err := BuildSourceControlMutationReviewPlan(snapshot, binding.ActionWorkID, binding, fixedSourceControlReviewTime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			home := t.TempDir()
+			paths, err := RecordSourceControlReviewPlan(home, plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			report := authorizeSourceControlMutationPlan(t, home, paths, plan)
+
+			baseline := sourceControlCleanupQueue(t, home)
+			if baseline.Items[0].Status != "recorded" || baseline.Items[0].Readiness != "review_recorded" || baseline.Counts.OK != 1 {
+				t.Fatalf("valid sealed mutation authorization queue = %+v, want recorded baseline", baseline)
+			}
+
+			tc.tamper(t, paths, report)
+			queue := sourceControlCleanupQueue(t, home)
+			item := queue.Items[0]
+			if item.Status != "blocked" || item.Readiness != "blocked" || queue.Counts.OK != 0 || queue.Counts.ReviewRequired != 1 {
+				t.Fatalf("tampered mutation authorization queue = %+v, want blocked open review", queue)
+			}
+			if !strings.Contains(item.BlockedReason, "authorization") || !strings.Contains(item.NextAction, "regenerate") || !strings.Contains(item.NextAction, "re-review") {
+				t.Fatalf("tampered mutation authorization guidance = %+v, want explicit regenerate and re-review", item)
+			}
+			if len(item.Actions) != 1 || item.Actions[0].ID != "regenerate_source_control_mutation_review" || !strings.Contains(item.Actions[0].Command, "dirty-plan") {
+				t.Fatalf("tampered mutation authorization action = %+v, want one regeneration action", item.Actions)
+			}
+		})
+	}
+}
+
 func TestNonAuthorizingReportCannotBeEditedIntoAuthorization(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
@@ -442,6 +517,20 @@ func authorizeSourceControlMutationPlan(t *testing.T, home string, paths SourceC
 		t.Fatal(err)
 	}
 	return report
+}
+
+func sourceControlCleanupQueue(t *testing.T, home string) reviewartifact.QueueReport {
+	t.Helper()
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: SourceControlCleanupReviewArea}, fixedSourceControlReviewTime.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateSourceControlCleanupQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if len(queue.Items) != 1 {
+		t.Fatalf("source-control cleanup queue items = %d, want one: %+v", len(queue.Items), queue)
+	}
+	return queue
 }
 
 func gitStatusShort(t *testing.T, repo string) string {
