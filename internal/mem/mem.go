@@ -212,6 +212,10 @@ type Store struct {
 	// nil and read the registry from disk through loadEntities.
 	entityLoader func() ([]Entity, error)
 
+	// lockAttemptObserver is a test seam for causally observing lock contention
+	// without timing assumptions. Production stores leave it nil.
+	lockAttemptObserver func()
+
 	// ledgerDoctorSnapshotter is a test seam for proving snapshot failures are
 	// propagated instead of being misclassified as ledger mutation. Production
 	// stores leave it nil and snapshot the owned ledger from disk.
@@ -1379,6 +1383,9 @@ func doctorEngineName(caps EngineCapabilities) string {
 // file lock under COMPOUND_HOME/lock. The lock is released when the fd closes, so a crashed
 // writer never wedges the ledger. (Darwin/Linux; compound's targets.)
 func (s *Store) withLock(fn func() error) error {
+	if s.lockAttemptObserver != nil {
+		s.lockAttemptObserver()
+	}
 	lockPath := filepath.Join(s.home, "lock", "mem.lock")
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return err

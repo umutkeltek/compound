@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -345,6 +346,84 @@ func TestAdjudicateExplicitConfirmationRechecksParkedState(t *testing.T) {
 	}
 	if claims, err := s.loadClaims(); err != nil || len(claims) != 0 {
 		t.Fatalf("state-raced confirmation wrote claims=%d err=%v", len(claims), err)
+	}
+}
+
+func TestAdjudicateExplicitConfirmationSerializesTerminalCandidateState(t *testing.T) {
+	s := newStore(t)
+	seed := cand("operator", "preference.communication", "prefer concise updates", "")
+	seed.PromotionBasis = ""
+	seed.ClaimType = "preference"
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "park", "work_confirmation_race", t0); err != nil {
+		t.Fatal(err)
+	}
+	confirmation, err := s.RecordOperatorConfirmation(captured[0].ID, "Keep this preference.", "operator:test", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lockAttempts := make(chan struct{}, 2)
+	s.lockAttemptObserver = func() { lockAttempts <- struct{}{} }
+	confirmationRechecked := make(chan struct{})
+	releaseConfirmation := make(chan struct{})
+	var pauseOnce sync.Once
+	s.entityLoader = func() ([]Entity, error) {
+		pauseOnce.Do(func() {
+			close(confirmationRechecked)
+			<-releaseConfirmation
+		})
+		return s.loadEntities()
+	}
+
+	type adjudication struct {
+		result AdjudicateResult
+		err    error
+	}
+	promoteDone := make(chan adjudication, 1)
+	go func() {
+		result, err := s.AdjudicateExplicitConfirmation(captured[0].ID, confirmation.ID, "work_confirmation_race", t0)
+		promoteDone <- adjudication{result: result, err: err}
+	}()
+	<-lockAttempts
+	<-confirmationRechecked
+
+	rejectStarted := make(chan struct{})
+	rejectDone := make(chan adjudication, 1)
+	go func() {
+		close(rejectStarted)
+		result, err := s.Adjudicate(captured[0].ID, "reject", "work_confirmation_race", t0)
+		rejectDone <- adjudication{result: result, err: err}
+	}()
+	<-rejectStarted
+
+	select {
+	case <-lockAttempts:
+		close(releaseConfirmation)
+	case rejected := <-rejectDone:
+		close(releaseConfirmation)
+		promoted := <-promoteDone
+		t.Fatalf("reject bypassed mem.lock after confirmation recheck: reject=%+v err=%v promote=%+v err=%v", rejected.result, rejected.err, promoted.result, promoted.err)
+	}
+
+	promoted := <-promoteDone
+	if promoted.err != nil || promoted.result.Claim == nil {
+		t.Fatalf("confirmation = %+v, err=%v", promoted.result, promoted.err)
+	}
+	rejected := <-rejectDone
+	if rejected.err == nil || !strings.Contains(rejected.err.Error(), "already promoted") {
+		t.Fatalf("terminal write after promotion = %+v, err=%v", rejected.result, rejected.err)
+	}
+	latest, err := s.getCandidate(captured[0].ID)
+	if err != nil || latest.State != "promoted" {
+		t.Fatalf("candidate state = %+v, err=%v", latest, err)
+	}
+	claims, err := s.loadClaims()
+	if err != nil || len(claims) != 1 || claims[0].ID != promoted.result.Claim.ID {
+		t.Fatalf("claims = %+v, err=%v", claims, err)
 	}
 }
 
