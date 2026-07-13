@@ -157,6 +157,16 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "evidence-only collector that reads this repo's executor lanes' (Codex, Claude Code) receipts/events and builds behaviorallens Observations (public_safe hedging over output text + operator_private agreement-asymmetry over receipt verdicts), so the agents that execute compound's work are themselves measured for behavior-bending",
 		Consumer: "compound executor-lens CLI (run/subjects) composing through behaviorallens.RegistryForHome and recording signals; the outward projection is public_safe only (operator_private executor signals stay under COMPOUND_HOME); the deferred governed modulator is the later enforcement consumer",
 	},
+	// lensmodulator is the governed modulator behaviorallens named as its later enforcement consumer:
+	// it reads recorded lens signals and, when one crosses an operator-armed threshold, applies a
+	// REVERSIBLE route/role demote THROUGH act.Execute — which refuses without a matching allowing
+	// PolicyDecision. Its teeth ARE that policy gate plus the calibration guard (a threshold cannot arm
+	// on an empty signal ledger); it is the compilation of the "no route/role modulation without a
+	// valid PolicyDecision and a calibrated threshold" ruling, with a receipt (outward_delta) and undo
+	// (RevertIntent) on every act — so it is enforcement, not evidence. Consumer: compound lens-modulate
+	// CLI (arm/thresholds/modulate --confirm/revert); default off, operator_private modulations stay
+	// operator-local (never a shared route projection).
+	"organ:lensmodulator": {Class: MintEnforcement},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law

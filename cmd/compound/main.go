@@ -176,6 +176,8 @@ func main() {
 		cmdBehavioralLens(os.Args[2:])
 	case "executor-lens":
 		cmdExecutorLens(os.Args[2:])
+	case "lens-modulate":
+		cmdLensModulate(os.Args[2:])
 	case "panel":
 		cmdPanel(os.Args[2:])
 	case "local-models":
@@ -314,6 +316,7 @@ compound attention [--json] [--home P] ranked operator-attention projection from
 compound narrate [--json|--text] [--mood decide|wander|worry] [--recent N] [--home P] deterministic correspondent script (compound.narrate.v0.1) composed over attention/orient-changed/receipts; also embedded in orient --operator; reads the orient cursor, never advances it
 compound executors [--json] read-only executor projection from Workbench, leases, and profile guide; no health overclaim
 compound behavioral-lens <list|run|compose|signals> composable behavioral-lens framework (compound.behavioral_lens_signal.v0.1): uniform observe->InferredSignal plug + visibility-gated composition; sycophancy (paired-stance shift) is the first lens; evidence-only, never a gate; operator_private signals stay under $COMPOUND_HOME
+compound lens-modulate <arm|thresholds|modulate|revert> governed modulator: turns a crossing behavioral-lens signal into a REVERSIBLE, PolicyDecision-gated route/role demote through act; default off + calibration-guarded; modulate is dry-run unless --confirm; operator_private modulations stay operator-local
 compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/gofmt/diff/doctors/redact
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
