@@ -144,6 +144,59 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 	}
 }
 
+func TestWorkAdvanceCLIBindsLegacyGitDelivery(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	repo, base, _ := initLandingCLIRepo(t)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "codex", Actor: "codex", SuccessPredicate: "legacy work binds delivery", State: "ready"}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(w.ID, "codex", cliTestNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	planOut := captureStdout(t, func() {
+		cmdWork([]string{
+			"advance-plan", w.ID, "--to", "running", "--actor", "codex",
+			"--target-worktree-root", repo, "--target-local-ref", "refs/heads/main",
+			"--expected-base-sha", base, "--local-only", "--dry-run", "--json",
+		})
+	})
+	var plan work.AdvancePlan
+	if err := json.Unmarshal([]byte(planOut), &plan); err != nil {
+		t.Fatalf("parse delivery binding advance-plan: %v\n%s", err, planOut)
+	}
+	if plan.GitDelivery == nil || plan.GitDelivery.ExpectedBaseSHA != base || !landingCommandHas(plan.AdvanceCommand, "--local-only") {
+		t.Fatalf("delivery binding plan = %+v", plan)
+	}
+
+	captureStdout(t, func() {
+		cmdWork([]string{
+			"advance", w.ID, "--to", "running", "--by", "codex",
+			"--target-worktree-root", repo, "--target-local-ref", "refs/heads/main",
+			"--expected-base-sha", base, "--local-only",
+		})
+	})
+	bound, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound.GitDelivery == nil || bound.GitDelivery.ExpectedBaseSHA != base || bound.GitDelivery.PublicationMode != "local_only" {
+		t.Fatalf("CLI-bound delivery contract = %+v", bound.GitDelivery)
+	}
+}
+
 const workLandingGuardCLISubEnv = "COMPOUND_WORK_LANDING_GUARD_CLI_SUB"
 
 func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
@@ -157,6 +210,8 @@ func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
 			cmdWork([]string{"land-check", "work_x", "--tip", strings.Repeat("a", 40), "--expected-main-sha", strings.Repeat("b", 40)})
 		case "land-missing-value":
 			cmdWork([]string{"land-check", "work_x", "--tip"})
+		case "advance-partial-contract":
+			cmdWork([]string{"advance", "work_x", "--to", "running", "--expected-base-sha", strings.Repeat("a", 40)})
 		}
 		return
 	}
@@ -165,7 +220,7 @@ func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"create-unknown", "create-partial-contract", "land-unknown", "land-missing-value"} {
+	for _, mode := range []string{"create-unknown", "create-partial-contract", "land-unknown", "land-missing-value", "advance-partial-contract"} {
 		t.Run(mode, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=^TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags$")
 			cmd.Env = append(os.Environ(), workLandingGuardCLISubEnv+"="+mode, "COMPOUND_HOME="+homePath)
