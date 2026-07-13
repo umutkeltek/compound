@@ -207,6 +207,8 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory candidates --json [--state proposed|parked|promoted|rejected|no_promote|needs_review] [--limit N] [--kind K] [--include-evidence]"
 	case "adjudicate":
 		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--confirmation-ref ev_ID]"
+	case "confirmation":
+		return "usage: compound memory confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>"
 	case "graph":
 		return "usage: compound memory graph <seed> [--depth N] [--budget N] [--min-conf F] [--direction up|down] [--kind KIND[,KIND]...]"
 	case "import-topics":
@@ -232,7 +234,7 @@ func memoryUsage(sub string) string {
 	case "search":
 		return "usage: compound memory search --lane L <query> [--k N] [--json]"
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|temperature [--rebuild]|observation [--json] [--record]|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|temperature [--rebuild]|observation [--json] [--record]|doctor>"
 	}
 }
 
@@ -1829,6 +1831,17 @@ func cmdMemory(args []string) {
 		for _, r := range sg.Relations {
 			fmt.Printf("  %s -%s-> %s  (conf %.2f)\n", r.From, r.Kind, r.To, r.Confidence)
 		}
+	case "confirmation":
+		candidateID := firstPos(map[string]bool{"--quote": true, "--reviewed-by": true})
+		quote := strings.TrimSpace(flag("--quote"))
+		reviewer := strings.TrimSpace(flag("--reviewed-by"))
+		if candidateID == "" || quote == "" || reviewer == "" {
+			fmt.Fprintln(os.Stderr, memoryUsage("confirmation"))
+			os.Exit(2)
+		}
+		evidence, err := store.RecordOperatorConfirmation(candidateID, quote, reviewer, time.Now())
+		die(err)
+		fmt.Printf("%s: recorded confirmation %s reviewed_by=%s\n", candidateID, evidence.ID, evidence.Actor)
 	case "adjudicate":
 		candidateID := firstPos(map[string]bool{"--verdict": true, "--work": true, "--confirmation-ref": true})
 		verdict := flag("--verdict")
@@ -2155,7 +2168,7 @@ func cmdMemory(args []string) {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|import-page|adjudicate|recall|timeline|query|volatile-restore|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor> ...")
+		fmt.Fprintln(os.Stderr, memoryUsage(""))
 		os.Exit(2)
 	}
 }
