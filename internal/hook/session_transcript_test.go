@@ -66,6 +66,56 @@ func TestSessionEndWorklessTranscriptProducesContentReceipt(t *testing.T) {
 	}
 }
 
+func TestSessionEndWorklessReceiptHashesOperatorSpanEvidence(t *testing.T) {
+	home := t.TempDir()
+	first := "I prefer concise progress updates while implementation is still running."
+	second := "Please keep raw conversation text private and cite only stable evidence."
+	path := writeTranscript(t, home, strings.Join([]string{
+		`{"type":"user","timestamp":"2026-07-10T01:00:00Z","message":{"role":"user","content":[{"type":"text","text":"` + first + `"}]}}`,
+		`{"type":"user","timestamp":"2026-07-10T01:00:01Z","message":{"role":"user","content":[{"type":"text","text":"<task-notification>Background agent completed.</task-notification>"}]}}`,
+		`{"type":"assistant","timestamp":"2026-07-10T01:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"I will keep the receipt private."}]}}`,
+		`{"timestamp":"2026-07-10T01:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"` + second + `"}]}}`,
+	}, "\n")+"\n")
+
+	deps := baseDeps()
+	deps.HomePath = home
+	res, err := Run(Fixture{
+		Hook:           "session-end",
+		Harness:        "claude_code",
+		SessionID:      "sess_span_evidence",
+		Cwd:            "/repo/product",
+		TranscriptPath: path,
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := kinds(res.Produced); len(got) != 1 || got[0] != "receipt" {
+		t.Fatalf("produced = %v, want [receipt]", got)
+	}
+	rec := res.Produced[0].(*envelope.Receipt)
+	want := []string{
+		"transcript-span:sha256:" + hashStr(path) + ":line:1:sha256:" + hashStr(first),
+		"transcript-span:sha256:" + hashStr(path) + ":line:4:sha256:" + hashStr(second),
+	}
+	if len(rec.EvidenceRefs) != len(want) {
+		t.Fatalf("evidence refs = %v, want %v", rec.EvidenceRefs, want)
+	}
+	for i := range want {
+		if rec.EvidenceRefs[i] != want[i] {
+			t.Fatalf("evidence ref[%d] = %q, want %q", i, rec.EvidenceRefs[i], want[i])
+		}
+		if strings.Contains(rec.EvidenceRefs[i], path) || strings.Contains(rec.EvidenceRefs[i], first) || strings.Contains(rec.EvidenceRefs[i], second) {
+			t.Fatalf("evidence ref leaks raw transcript material: %q", rec.EvidenceRefs[i])
+		}
+	}
+	if len(rec.ProofRefs) != 1 || rec.ProofRefs[0] != "transcript:"+path || rec.Privacy != "private" {
+		t.Fatalf("private raw proof pointer changed: privacy=%q proof_refs=%v", rec.Privacy, rec.ProofRefs)
+	}
+	if len(rec.Memory.Candidates) != 0 || len(rec.Memory.Parked) != 0 || len(rec.Memory.Promoted) != 0 {
+		t.Fatalf("session-end evidence must not promote or propose meaning: %+v", rec.Memory)
+	}
+}
+
 func TestSessionEndWorklessLargeTranscriptCompletesWithinBound(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, "large-transcript.jsonl")
