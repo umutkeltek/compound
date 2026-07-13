@@ -91,6 +91,8 @@ func main() {
 		cmdDecisions(os.Args[2:])
 	case "director":
 		cmdDirector(os.Args[2:])
+	case "jobprobe":
+		cmdJobProbe(os.Args[2:])
 	case "runtime":
 		cmdRuntime(os.Args[2:])
 	case "projection":
