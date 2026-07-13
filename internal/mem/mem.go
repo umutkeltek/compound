@@ -631,12 +631,20 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 					}
 				}
 			}
-			transition = s.memoryTransition(claim, transitionPrior, transitionHasPrior, workID, now)
-			if err := transition.Validate(); err != nil {
-				return fmt.Errorf("emitted transition invalid: %w", err)
-			}
-			if err := writeJSON(s.eventPath(transition.ID), &transition); err != nil {
+			existingTransition, transitionExists, err := s.persistedPromotionTransition(claim.ID)
+			if err != nil {
 				return err
+			}
+			if transitionExists {
+				transition = existingTransition
+			} else {
+				transition = s.memoryTransition(claim, transitionPrior, transitionHasPrior, workID, now)
+				if err := transition.Validate(); err != nil {
+					return fmt.Errorf("emitted transition invalid: %w", err)
+				}
+				if err := writeJSON(s.eventPath(transition.ID), &transition); err != nil {
+					return err
+				}
 			}
 			c.State = "promoted"
 			if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
@@ -942,6 +950,48 @@ func (s *Store) memoryTransition(claim Claim, prior Claim, hasPrior bool, workID
 		},
 		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: true},
 	}
+}
+
+func (s *Store) persistedPromotionTransition(claimID string) (envelope.Transition, bool, error) {
+	dir := filepath.Join(s.home, "events")
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return envelope.Transition{}, false, nil
+	}
+	if err != nil {
+		return envelope.Transition{}, false, err
+	}
+	var found envelope.Transition
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return envelope.Transition{}, false, err
+		}
+		var header struct {
+			SchemaVersion string `json:"schema_version"`
+		}
+		if err := json.Unmarshal(data, &header); err != nil || header.SchemaVersion != envelope.SVTransition {
+			continue
+		}
+		var transition envelope.Transition
+		if err := json.Unmarshal(data, &transition); err != nil {
+			return envelope.Transition{}, false, err
+		}
+		if !oneOf(claimID, transition.AfterRefs) || !oneOf(claimID, transition.Projections.Memory) {
+			continue
+		}
+		if err := transition.Validate(); err != nil {
+			return envelope.Transition{}, false, fmt.Errorf("persisted promotion transition %s invalid: %w", transition.ID, err)
+		}
+		if found.ID != "" && found.ID != transition.ID {
+			return envelope.Transition{}, false, fmt.Errorf("claim %s has multiple promotion transitions (%s, %s)", claimID, found.ID, transition.ID)
+		}
+		found = transition
+	}
+	return found, found.ID != "", nil
 }
 
 // --- recall (relevance-gated, as-of-aware fold) ---
