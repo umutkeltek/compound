@@ -748,10 +748,14 @@ func sourceControlContextForAction(homePath, targetPath string, now time.Time) (
 		}
 	}
 	return &policy.SourceControlContext{
-			EntityRef:    report.EntityRef,
-			Status:       report.Status,
-			ChangedPaths: report.ChangedPaths,
-			EvidenceRefs: []string{report.EvidenceRef},
+			EntityRef:               report.EntityRef,
+			GitRoot:                 report.GitRoot,
+			Remote:                  report.Remote,
+			Head:                    report.Head,
+			Status:                  report.Status,
+			ChangedPaths:            report.ChangedPaths,
+			ChangedStateFingerprint: report.ChangedStateFingerprint,
+			EvidenceRefs:            []string{report.EvidenceRef},
 		}, report.GitRoot, []string{
 			report.EvidenceRef,
 			filepath.Join("ledger", "entities.jsonl"),
