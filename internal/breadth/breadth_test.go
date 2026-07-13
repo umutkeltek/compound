@@ -392,7 +392,7 @@ func TestVectorQueryNeverSurfacesMaskedClaim(t *testing.T) {
 	embedder := newFakeEmbedder(2)
 	embedder.vectors = map[string][]float32{
 		query:                  {1, 0},
-		wrapDocText(claims[0]): {0, 1},
+		wrapDocText(claims[0]): {1, 0},
 		wrapDocText(claims[1]): {1, 0},
 	}
 	eng, err := NewEngine(EngineConfig{Embedder: embedder, CompoundHome: t.TempDir()})
