@@ -291,7 +291,37 @@ func runProofCheckCodexPreToolUseNativeGate(repo string, step proofCheckStep) ([
 	if err := os.WriteFile(filepath.Join(tmpHome, "config", "policy.yaml"), []byte("placement_guard_mode: block\n"), 0o644); err != nil {
 		return nil, fmt.Errorf("enable placement block mode: %w", err)
 	}
-	if _, err := policy.ImportPlacementRules(tmpHome, filepath.Join(repo, "fixtures", "policy", "placement-rules.json"), time.Now().UTC()); err != nil {
+	// Augment the synthetic fixture with a block-confidence governed root for THIS home so the
+	// open-world case can be proven natively (the synthesized default root is warn, which records
+	// but does not hold). The allow-set is the home's own typed habitat dirs.
+	fixtureData, err := os.ReadFile(filepath.Join(repo, "fixtures", "policy", "placement-rules.json"))
+	if err != nil {
+		return nil, fmt.Errorf("read placement fixture: %w", err)
+	}
+	var rules policy.PlacementRules
+	if err := json.Unmarshal(fixtureData, &rules); err != nil {
+		return nil, fmt.Errorf("parse placement fixture: %w", err)
+	}
+	allowGlobs := make([]string, 0, len(home.Dirs))
+	for _, d := range home.Dirs {
+		allowGlobs = append(allowGlobs, filepath.Join(tmpHome, d, "**"))
+	}
+	rules.GovernedRoots = append(rules.GovernedRoots, policy.GovernedRoot{
+		ID:         "compound-home",
+		RootGlobs:  []string{filepath.Join(tmpHome, "**")},
+		AllowGlobs: allowGlobs,
+		Confidence: "block",
+		Redirect:   "compound placement target --kind operational-finding",
+	})
+	augmented, err := json.Marshal(rules)
+	if err != nil {
+		return nil, fmt.Errorf("marshal augmented placement rules: %w", err)
+	}
+	rulesSrc := filepath.Join(tmpRepo, "proofcheck-placement-rules.json")
+	if err := os.WriteFile(rulesSrc, augmented, 0o644); err != nil {
+		return nil, fmt.Errorf("write augmented placement rules: %w", err)
+	}
+	if _, err := policy.ImportPlacementRules(tmpHome, rulesSrc, time.Now().UTC()); err != nil {
 		return nil, fmt.Errorf("import synthetic placement rules: %w", err)
 	}
 
@@ -332,6 +362,21 @@ func runProofCheckCodexPreToolUseNativeGate(repo string, step proofCheckStep) ([
 	}
 	if blocked.HookSpecificOutput.PermissionDecision != "deny" || !strings.Contains(strings.ToLower(blocked.HookSpecificOutput.PermissionDecisionReason), "placement") {
 		return combined, fmt.Errorf("misplaced multi-target Codex apply_patch did not return native placement deny")
+	}
+
+	// Open-world case: a novel filename in an UNCLAIMED location under COMPOUND_HOME. It matches
+	// no owner deny/canon rule, so pre-fix it sailed through; the governed-root check must now hold
+	// it and hand back the redirect.
+	unownedTarget := filepath.Join(tmpHome, "private", "stray-scaffold.md")
+	unownedPatch := "*** Begin Patch\n*** Add File: " + unownedTarget + "\n+stray agent scaffolding\n*** End Patch"
+	unowned, unownedOut, err := runPatch("sess_codex_native_unowned", unownedPatch)
+	combined = bytes.Join([][]byte{combined, []byte("\nunowned:\n"), unownedOut}, nil)
+	if err != nil {
+		return combined, err
+	}
+	unownedReason := strings.ToLower(unowned.HookSpecificOutput.PermissionDecisionReason)
+	if unowned.HookSpecificOutput.PermissionDecision != "deny" || !strings.Contains(unownedReason, "unowned-under-governed-root") {
+		return combined, fmt.Errorf("unowned write under COMPOUND_HOME governed root did not return native placement deny")
 	}
 	return combined, nil
 }

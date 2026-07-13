@@ -483,6 +483,37 @@ func TestProofCheckGofmtFailsOnUnformattedTrackedGo(t *testing.T) {
 	}
 }
 
+// TestProofCheckNativeGateDeniesUnownedWrite drives the real PreToolUse hook end-to-end and
+// proves the open-world fix at the native seam: an agent inventing a file under COMPOUND_HOME
+// in no typed habitat dir is denied (not silently allowed) and told where to go. Builds the
+// binary, so it is skipped under -short.
+func TestProofCheckNativeGateDeniesUnownedWrite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the compound binary")
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Clean(filepath.Join(wd, "..", ".."))
+	exe := filepath.Join(t.TempDir(), "compound-proofcheck-exe")
+	build := exec.Command("go", "build", "-o", exe, "./cmd/compound")
+	build.Dir = repo
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build compound: %v\n%s", err, out)
+	}
+	step := proofCheckStep{
+		Name:     "codex-pretooluse-native-gate",
+		Command:  []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"},
+		ProofRef: "codex-pretooluse-native-gate-proof",
+	}
+	// A nil error means all three cases held: valid write allowed, misplaced canon denied, and
+	// (the new assertion) the unowned write under the governed home denied with the redirect.
+	if out, err := runProofCheckCodexPreToolUseNativeGate(repo, step); err != nil {
+		t.Fatalf("native gate proof failed: %v\n%s", err, out)
+	}
+}
+
 func TestSourceObserveBatchCLIRoutesFixturesWithoutApplying(t *testing.T) {
 	tests := []struct {
 		name      string
