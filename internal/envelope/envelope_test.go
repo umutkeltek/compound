@@ -2,6 +2,7 @@ package envelope
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -138,17 +139,24 @@ func TestAllKindsValidateAndRoundTrip(t *testing.T) {
 	}
 }
 
-func TestWorkEnvelopeExpectedBaseSHARoundTripsAndLegacyMissingFieldLoads(t *testing.T) {
+func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.T) {
 	const baseSHA = "0123456789abcdef0123456789abcdef01234567"
+	repoRoot := filepath.Join(string(filepath.Separator), "repo", "product")
 	w := WorkEnvelope{
 		Header:           hdr(SVWork, "work_expected_base"),
 		Owner:            "compound",
 		State:            "ready",
 		SuccessPredicate: "candidate lands from its frozen base",
-		ExpectedBaseSHA:  baseSHA,
+		GitDelivery: &GitDeliveryContract{
+			TargetWorktreeRoot: repoRoot,
+			TargetLocalRef:     "refs/heads/main",
+			ExpectedBaseSHA:    baseSHA,
+			PublicationMode:   "required",
+			PublicationRef:    "refs/remotes/origin/main",
+		},
 	}
 	if err := RoundTrip(&w); err != nil {
-		t.Fatalf("expected-base work round-trip: %v", err)
+		t.Fatalf("git-delivery work round-trip: %v", err)
 	}
 
 	legacyJSON := `{"schema_version":"compound.work.v0.1","id":"work_legacy_base","created_at":"2026-06-28T00:00:00Z","producer":{"kind":"cli","name":"compound"},"authority":{"source_class":"runtime","status":"current"},"privacy":"private","risk":"tier1","evidence_refs":[],"uncertainty":{"level":"known"},"owner":"compound","state":"ready","success_predicate":"legacy remains valid","non_goals":[],"run_ids":[],"artifact_ids":[],"verification_ids":[],"memory_candidate_ids":[]}`
@@ -156,18 +164,48 @@ func TestWorkEnvelopeExpectedBaseSHARoundTripsAndLegacyMissingFieldLoads(t *test
 	if err := json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
 		t.Fatalf("decode legacy work: %v", err)
 	}
-	if legacy.ExpectedBaseSHA != "" {
-		t.Fatalf("legacy expected_base_sha = %q, want empty", legacy.ExpectedBaseSHA)
+	if legacy.GitDelivery != nil {
+		t.Fatalf("legacy git_delivery = %+v, want nil", legacy.GitDelivery)
 	}
 	if err := legacy.Validate(); err != nil {
-		t.Fatalf("legacy work without expected_base_sha must remain valid: %v", err)
+		t.Fatalf("legacy work without git_delivery must remain valid: %v", err)
 	}
 
 	invalid := w
 	invalid.ID = "work_invalid_base"
-	invalid.ExpectedBaseSHA = "ABCDEF"
+	invalid.GitDelivery = &GitDeliveryContract{
+		TargetWorktreeRoot: repoRoot,
+		TargetLocalRef:     "refs/heads/main",
+		ExpectedBaseSHA:    "ABCDEF",
+		PublicationMode:   "required",
+		PublicationRef:    "refs/remotes/origin/main",
+	}
 	if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "expected_base_sha") {
 		t.Fatalf("invalid expected_base_sha should fail validation, got %v", err)
+	}
+
+	partial := w
+	partial.ID = "work_partial_delivery"
+	partial.GitDelivery = &GitDeliveryContract{
+		TargetWorktreeRoot: repoRoot,
+		TargetLocalRef:     "refs/heads/main",
+		ExpectedBaseSHA:    baseSHA,
+		PublicationMode:   "required",
+	}
+	if err := partial.Validate(); err == nil || !strings.Contains(err.Error(), "publication_ref") {
+		t.Fatalf("publication-required contract without remote-tracking ref should fail, got %v", err)
+	}
+
+	localOnly := w
+	localOnly.ID = "work_local_only_delivery"
+	localOnly.GitDelivery = &GitDeliveryContract{
+		TargetWorktreeRoot: repoRoot,
+		TargetLocalRef:     "refs/heads/main",
+		ExpectedBaseSHA:    baseSHA,
+		PublicationMode:   "local_only",
+	}
+	if err := localOnly.Validate(); err != nil {
+		t.Fatalf("explicit local-only contract should validate: %v", err)
 	}
 }
 
