@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -123,13 +124,14 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 		return hook.Fixture{}, fmt.Errorf("parse live hook stdin: %w", err)
 	}
 	fx := hook.Fixture{
-		Hook:    parsed.HookName,
-		Harness: normalizeLiveHarness(parsed.Harness),
-		Live:    parsed.Live,
-		Cwd:     in.Cwd,
-		Prompt:  in.Prompt,
-		Task:    liveTask(in),
-		Tool:    in.ToolName,
+		Hook:      parsed.HookName,
+		Harness:   normalizeLiveHarness(parsed.Harness),
+		Live:      parsed.Live,
+		Cwd:       in.Cwd,
+		SessionID: strings.TrimSpace(in.SessionID),
+		Prompt:    in.Prompt,
+		Task:      liveTask(in),
+		Tool:      in.ToolName,
 	}
 	if fx.Cwd == "" {
 		fx.Cwd = os.Getenv("CLAUDE_PROJECT_DIR")
@@ -238,6 +240,7 @@ func liveActionIntents(harnessName string, in claudeLiveHookInput, now time.Time
 	if workID == "" {
 		workID = "work_live_" + shortHash(in.SessionID, in.Cwd)
 	}
+	mutationInputRef := liveMutationInputReference(harnessName, in, targetPaths)
 	actions := make([]envelope.ActionIntent, 0, len(targetPaths))
 	for _, targetPath := range targetPaths {
 		id := "act_live_" + shortHash(toolName, targetPath, in.SessionID, now.UTC().Format(time.RFC3339Nano))
@@ -251,7 +254,7 @@ func liveActionIntents(harnessName string, in claudeLiveHookInput, now time.Time
 				Authority:     envelope.Authority{SourceClass: "runtime"},
 				Privacy:       "private",
 				Risk:          "tier2",
-				EvidenceRefs:  []string{},
+				EvidenceRefs:  []string{mutationInputRef},
 				Uncertainty:   envelope.Uncertainty{Level: "known"},
 			},
 			Actor:         normalizeLiveHarness(harnessName),
@@ -264,6 +267,52 @@ func liveActionIntents(harnessName string, in claudeLiveHookInput, now time.Time
 		})
 	}
 	return actions, nil
+}
+
+// liveMutationInputReference stores no patch/body content. Its digest binds the
+// real harness session, tool, canonical complete target set, and canonical tool
+// input. A different session or partial batch therefore cannot reuse a review.
+func liveMutationInputReference(harnessName string, in claudeLiveHookInput, targetPaths []string) string {
+	targets := make([]string, 0, len(targetPaths))
+	for _, target := range targetPaths {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		if !filepath.IsAbs(target) && strings.TrimSpace(in.Cwd) != "" {
+			target = filepath.Join(in.Cwd, target)
+		}
+		targets = append(targets, filepath.Clean(target))
+	}
+	sort.Strings(targets)
+	canonicalTargets := targets[:0]
+	for _, target := range targets {
+		if len(canonicalTargets) == 0 || canonicalTargets[len(canonicalTargets)-1] != target {
+			canonicalTargets = append(canonicalTargets, target)
+		}
+	}
+	toolInput, _ := json.Marshal(in.ToolInput)
+	payload, _ := json.Marshal(struct {
+		SchemaVersion string   `json:"schema_version"`
+		Harness       string   `json:"harness"`
+		SessionID     string   `json:"session_id"`
+		ToolName      string   `json:"tool_name"`
+		TargetPaths   []string `json:"target_paths"`
+		ToolInput     string   `json:"tool_input_json"`
+	}{
+		SchemaVersion: "compound.live_mutation_input.v0.1",
+		Harness:       normalizeLiveHarness(harnessName),
+		SessionID:     strings.TrimSpace(in.SessionID),
+		ToolName:      strings.TrimSpace(in.ToolName),
+		TargetPaths:   canonicalTargets,
+		ToolInput:     string(toolInput),
+	})
+	digest := sha256.Sum256(payload)
+	prefix := "mutation-input:sha256:"
+	if strings.TrimSpace(in.SessionID) == "" {
+		prefix = "mutation-input-unbound:sha256:"
+	}
+	return prefix + hex.EncodeToString(digest[:])
 }
 
 func liveToolPaths(toolName string, input map[string]any) []string {
