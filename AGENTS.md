@@ -10,9 +10,13 @@ do not become the source of truth.
 > repos a tiny client-contract instead (see `docs/architecture/runtime.md` §4) — do not confuse the two.
 
 ## Operating ceremonies
-`compound orient --harness <you> --task "<task>"` surfaces the binding ceremony for landing/executing/verifying
-work here (procedure:* offers → body under `.claude/skills/`, readable as plain markdown by any harness). No
-hook injection available? Run orient manually before orchestrating or landing — never improvise the ceremony.
+`compound orient --harness <you> --task "<task>"` serves the binding ceremonies for
+landing/executing/verifying work here as an `operating-ceremonies` context source. The ceremony bodies are
+**tracked in-repo** under [`skills/`](./skills/README.md) (`compound-execute`, `compound-land`,
+`compound-verify`, `extract-approach`) — plain markdown any harness reads directly, reachable in a fresh
+public clone with no private overlay. A harness may also mirror them as local auto-loading skills (e.g. under
+`.claude/skills/`), but that overlay is a convenience, not the source of truth. No hook injection available?
+Read `skills/README.md` (or run orient manually) before orchestrating or landing — never improvise the ceremony.
 
 ## Read first
 - `docs/ARCHITECTURE.md`, `docs/LAYERS.md` — the information kernel (monolith, deep modules, cwd-independent).

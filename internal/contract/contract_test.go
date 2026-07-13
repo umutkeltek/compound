@@ -216,6 +216,28 @@ func TestProductVsControlPlaneDifferentPacks(t *testing.T) {
 	}
 }
 
+// TestPackServesOperatingCeremoniesForFreshClone is the F3 falsifier: a fresh public
+// clone's `orient --harness claude` (no repo-kind marker → defaults to product) must
+// still SERVE the tracked build-ceremony surface, so the four ceremonies are reachable
+// without the gitignored .claude/skills overlay. The ceremony index is ambient-for-all,
+// exactly like the operating contract (AGENTS.md), so no repo-kind guess can drop it.
+func TestPackServesOperatingCeremoniesForFreshClone(t *testing.T) {
+	const ceremonyRef = "skills/README.md"
+	for _, kind := range []string{"product", "control-plane", "library"} {
+		pack := Pack(mkInput(kind), DefaultPolicy(), fixedNow)
+		found := false
+		for _, r := range pack.Included {
+			if r.Ref == ceremonyRef {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s pack must serve operating-ceremonies ref %q (fresh-clone reachable); included=%+v", kind, ceremonyRef, pack.Included)
+		}
+	}
+}
+
 func TestPackIncludesUniversalPrinciplesTier0Constitution(t *testing.T) {
 	repo := t.TempDir()
 	docPath := filepath.Join(repo, "docs", "architecture", "universal-principles.md")

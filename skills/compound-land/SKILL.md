@@ -1,0 +1,171 @@
+---
+name: compound-land
+description: The landing ceremony for getting a change onto main in the compound repo — scope claim, full verification battery, rehearsed merge, --ff-only with a fresh main-SHA guard, post-land duties. Use when committing, merging, landing an executor/worker's diff or worktree, or when asked to "land"/"commit"/"merge" anything here.
+---
+
+# compound-land — how a change actually reaches main
+
+Multiple agent lanes work this repo concurrently (an orchestrator lane, an autonomous executor
+lane, occasional workers in worktrees). The guard rails below each exist because their absence
+caused a real incident: concurrent landings caught only by the SHA guard, a doc-leak scan that
+ran blind in a fresh worktree, workers that cannot commit, double-execution of queued work.
+
+This skill replaces re-deriving the "standing session rules" from
+`docs_private/plan/HANDOFF.md` every session. It specializes the generic
+`finishing-a-development-branch` / `using-git-worktrees` skills for this repo.
+
+## 0 · Scope claim (before touching anything)
+
+- Check for a live concurrent lane: `git status --short` in the MAIN worktree (uncommitted work
+  that isn't yours = a lane mid-ceremony — coordinate, do not land on top of it), plus the
+  private worklog tail referenced from `docs_private/plan/HANDOFF.md` when present.
+- Claim a narrow scope (which packages/files you will touch) in the worklog if one is active.
+  Do not parallel-edit the same `internal/` package as a live lane.
+- Queued work discipline: **proposed ≠ held** — dispatch consumes proposed work. If you intend
+  to execute something yourself, claim it at import time; otherwise another lane will pick it
+  up and you get double execution.
+- **Stalled-WIP exception** (lived 2026-07-10, volatile land): main-tree WIP idle ≥15 min (check
+  mtimes; use a bounded watcher, not blind sleep) does NOT block a land when your merge is pure
+  ff AND `git diff --name-only <base>..<tip>` ∩ their dirty files = ∅. Then: back up their diff
+  (`git diff > /tmp/<lane>-wip-backup.patch`), land the guarded ff from MAIN as its own command,
+  verify their WIP byte-identical after (diff checksum before/after), and run the post-land
+  battery AND `./install.sh` from a clean detached worktree at the landed SHA — never from the
+  mixed tree (a binary built there would embed their half-built WIP).
+
+## 1 · Pre-flight battery (all of it, every time)
+
+Run the `compound-verify` skill. Minimum bar before any commit to main:
+
+```bash
+go run ./cmd/compound proof-check --json     # tests, vet, build, diff-check, console smokes,
+                                             # doctor --strict, workbench, memory doctor, redact
+```
+
+- Exit contract: `0` ok · `1` a gate FAILED · `2` usage. Never "fix" a red gate by weakening
+  the gate, deleting the test, or raising a budget — that is the one unforgivable move here.
+- **Remove executor build caches (`.gocache/`, `.cache/`) from the worktree before the battery** —
+  the redact gate scans untracked files; build-cache blobs carry 16-digit runs that false-positive
+  the credit-card detector (observed 2026-07-10, reconciler land: MEDIUM pii.cc on `.gocache`).
+- **Never pipe the battery through `| tail`/`| head`** (near-miss 2026-07-07). zsh has no `pipefail`,
+  so the pipeline's exit status is `tail`'s (always `0`) — a real gate failure reads as green. The
+  truncation also drops the top-of-output verdict and the `go-test`/`go-vet`/`go-build` gates. Run it
+  unpiped: `go run ./cmd/compound proof-check --json > out.json 2>&1; echo "EXIT=$?"` and read the file.
+- **Worktree caveat (real failure):** fresh worktrees do not contain the gitignored
+  `docs_private/leak-tokens.txt`. The doctor's leak gate **fails closed** under `--strict` when
+  the token list is missing. Copy the file into the worktree before running the battery there.
+- **Fresh-worktree battery needs FOUR gitignored inputs, and never via symlink** (observed
+  2026-07-07, ESM land; fourth found 2026-07-09, home-backup land): `docs_private/plan/` (arch
+  doctor's adaptation-steering test red without it), `console/node_modules` (console gates),
+  `docs_private/profiles/` (the `profiles-check` gate compares generated agents against the
+  operator overlay — red with an empty detail string without it), plus the leak tokens above.
+  Copy with APFS clones (`cp -Rc`), NOT `ln -s` — a `node_modules/` ignore pattern matches
+  directories only, so a symlink shows up as an untracked file and the redact gate EISDIRs
+  trying to read it.
+- **The Codex sandbox cannot run `git worktree add` against the main checkout** (observed
+  2026-07-09: `.git` refs are read-only to it — `cannot lock ref`). Either the ORCHESTRATOR
+  pre-creates the worktree before dispatching, or the executor falls back to a local clone
+  (fetch+ff path below). State which in the dispatch prompt; a blocked executor that stops and
+  reports (rather than improvising) is behaving correctly.
+- Landing an executor's output: workers finish with **verified uncommitted trees** (they cannot
+  write `.git/worktrees/<n>/index.lock`). You, the lander, verify EVERYTHING yourself —
+  build/tests/doctor/redact/temp-home e2e — then commit. Never commit a worker tree unverified.
+- **Before declaring a background executor's artifacts "lost," ASK THE RUNTIME where they are.**
+  A job can leave *stray edits to existing files* in the MAIN tree while its real work looks absent —
+  this reads like a lost-writeback panic. It usually is NOT: the commits are in the job's own
+  worktree/clone, and the executor runtime knows the path. Ask the runtime for the job's status,
+  read the reported worktree path → `git -C <that-path> log --oneline` →
+  `git -C <that-path> diff --stat <main>..<tip>`. A real case: a job's two commits were intact in
+  its own clone the whole time and landed clean the next session — the earlier "sandbox lost the
+  artifacts" diagnosis was WRONG. Only after the runtime-reported path is confirmed empty/absent is
+  it a real lost-writeback. To dispatch defensively, still require the worker to COMMIT + REPORT the
+  SHA; the point here is verification order — runtime-status FIRST, revert-and-re-dispatch LAST.
+- **Codex-runtime worktrees are separate CLONES, not linked worktrees** (observed 2026-07-06,
+  W1-J4). Tells: the dir is absent from `git worktree list --porcelain` in MAIN, and
+  `git cat-file -t <its-sha>` fails from MAIN (the commit lives in a different object DB). You
+  cannot `git merge <its-branch>` — the ref is invisible. Land it with
+  `git fetch <worktree-path> <branch>` then `git merge --ff-only FETCH_HEAD`. Opus/Agent-native
+  `isolation:"worktree"` trees ARE linked (normal `merge --ff-only <branch>` works).
+- **A concurrent lane moved main → rebase, don't merge.** The tell: `git diff --stat main..HEAD`
+  in the executor tree shows the OTHER lane's already-landed files as **deletions** (you branched
+  before them). `git merge` would revert their work. Rebase the executor branch onto the fresh
+  `main` SHA, re-run the battery on the combined state, THEN `--ff-only` (observed 2026-07-06:
+  the kill-switch branch would have reverted the bakeoff that landed 40 min earlier).
+
+## 2 · Commit shape
+
+- Conventional, scoped, single-concern: `feat(source): …`, `fix(console): …`,
+  `test(authority): …`. Look at `git log --oneline -20` and match it.
+- **Same-change doctrine:** the docs/contract/instruction updates a change implies land in the
+  SAME commit as the code (status.md notes, contract guards, AGENTS.md rules). A code change
+  whose doc lands "later" fails the arch doctor's contract guards now or rots.
+- Never `git add -A` / "commit all". Stage explicitly; check `git status --short` for strays
+  (`.DS_Store`, scratch files, `home/` runtime state) before staging.
+- Generated runtime state never enters the repo: anything under `COMPOUND_HOME`, `home/`,
+  `bin/`, root `./compound` binary is untracked by design — if `git status` shows it, stop.
+
+## 3 · Rehearse, then land fast-forward-only
+
+For anything beyond a trivial single commit on a quiet main:
+
+```bash
+git worktree add --detach /tmp/land-rehearsal <your-branch>
+# merge/rebase against a fresh fetch of main there; run the battery in the rehearsal tree
+```
+
+Then land on the real main:
+
+```bash
+MAIN_SHA=$(git -C <MAIN-worktree> rev-parse main)   # read from the MAIN worktree, not rehearsal
+git merge --ff-only <your-branch>                    # or push with the SHA guard
+```
+
+- The guard is the point: if main moved since `MAIN_SHA`, **stop**, rebase, re-run the battery,
+  retry. The guard has caught concurrent landings twice; treat a guard trip as normal, not an
+  error to force past.
+- **Never put cleanup (worktree remove / `branch -D`) in the same command as the guarded merge**
+  (near-miss 2026-07-09, Packet F): the guard tripped (main had moved a THIRD time that day), the
+  `&&`-chain correctly skipped the merge — but a `;`-separated tail in the same command went on to
+  battery/install/delete the UNMERGED branch and worktree. Recovery worked only because the tip SHA
+  was in the transcript (`git branch recovery-x <sha>`; Agent worktrees share the object DB, so the
+  commits survive worktree removal until gc). Rule: land = its own command; cleanup = a separate
+  command issued only after `git log` shows the branch tip on main.
+- No merge commits onto main; `--ff-only` always.
+- **Racing a fast-landing concurrent lane is how the cwd trap recurs** (observed 2026-07-09 late,
+  lane K2 — it bit AGAIN with the rule below already written): after repeated guard trips the
+  instinct is to chain rebase-in-worktree + guarded merge into ONE command to "shrink the window" —
+  that chain is exactly what puts the merge inside the worktree. The window does not need
+  shrinking: rebase/verify in the worktree first, then guard+merge as its own command from MAIN.
+  If main moves in between, the guard trips and you loop — the loop is the design.
+- **Guard SHAs are READ, never reconstructed** (self-inflicted false trip 2026-07-09 late):
+  compare against a full SHA captured from actual command output this turn (`git rev-parse main`).
+  Expanding a short SHA from memory fabricates a guard failure — or worse, a false pass.
+- **`pwd` before the guard+merge — shell cwd PERSISTS across commands** (near-miss 2026-07-07):
+  after `cd <executor-worktree>` for a battery run, a later `git merge --ff-only <branch>` runs
+  INSIDE that worktree ON the branch itself and prints "Already up to date" — a silent no-op that
+  reads as landed while main never moved. Land from the MAIN worktree with an explicit
+  `cd <MAIN> && pwd` in the same command, and verify with `git log` + tree-identity afterward.
+
+## 4 · Post-land
+
+- Re-run `go run ./cmd/compound proof-check` on landed main (cheap insurance against a
+  rehearsal/main divergence).
+- **If the land touched `cmd/compound` or `internal/{hook,harness,contract,mem,breadth}`: run
+  `./install.sh`** — hooks and external consumers use the installed binary, which self-reports its
+  build SHA since 9b5736b (`compound version`; arch doctor warns fresh/stale/missing). A stale
+  installed binary silently serves yesterday's behavior to every session.
+- Close the WorkEnvelope through the governed path (`work close-plan` → `work close`) with
+  proof refs, so Receipt + Transition exist for the landed change.
+- Update `docs_private/plan/HANDOFF.md` (when present / operator lane) with what landed, its
+  commit SHA, and any opened branch — the next session orients from it.
+- Run the `extract-approach` skill if the change solved a non-trivial problem.
+
+## 5 · Push gate (hard stop)
+
+**Never push to a public remote without explicit operator confirmation.** Before any confirmed
+push: `redact` scan clean, `release export-public` sanity if the push is release-shaped.
+Landing on local main is reversible; publishing is not.
+- **Never pipe `redact` through `| tail`/`| head`, and never chain the push after it in the same
+  command** (real incident 2026-07-10: `redact | tail -1 && git push` — the pipeline's exit was
+  tail's `0`, a MEDIUM-flagged scan read as green, and the push fired; findings were benign
+  loopback URLs, but the gate did not gate). Same zsh-no-pipefail trap as the battery (§1).
+  Run redact unpiped as its own command, READ the verdict, then push as a separate command.

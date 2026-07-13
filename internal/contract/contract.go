@@ -95,6 +95,11 @@ func DefaultPolicy() OrientationPolicy {
 		RepoKinds: all,
 		Sources: []ContextSource{
 			{Class: "operating-contract", SourceClass: "source", AmbientFor: all, Ref: "AGENTS.md"},
+			// The build ceremonies (execute/land/verify/extract-approach) are the procedural
+			// half of the operating contract. Tracked under skills/ (fresh-clone reachable, unlike
+			// the gitignored .claude/skills overlay) and ambient-for-all like AGENTS.md, so a
+			// stranger's `orient --harness claude` serves them regardless of repo-kind guess.
+			{Class: "operating-ceremonies", SourceClass: "source", AmbientFor: all, Ref: "skills/README.md"},
 			{Class: "tier0-constitution", SourceClass: "source", AmbientFor: all, Ref: universalPrinciplesRef},
 			{Class: "governance-map", SourceClass: "source", AmbientFor: []string{"control-plane"}, Ref: "control-plane://orientation-map"},
 			{Class: "governance-workflow-contract", SourceClass: "source", AmbientFor: []string{"control-plane"}, Ref: "control-plane://workflow-contract"},
@@ -3097,6 +3102,10 @@ func revisionForSource(source, cwd string) string {
 		}
 	case strings.HasPrefix(source, "control-plane://"):
 		return revisionForControlPlaneSource(source, cwd)
+	case source == "skills/README.md":
+		if p := findUp(cwd, filepath.Join("skills", "README.md")); p != "" {
+			return revisionForPath(p)
+		}
 	case source == "repo://docs":
 		if p := findUp(cwd, "docs"); p != "" {
 			return revisionForPath(p)
