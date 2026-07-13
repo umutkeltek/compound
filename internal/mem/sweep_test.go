@@ -1,6 +1,9 @@
 package mem
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -473,6 +476,87 @@ func TestRaiseSeedsFailsBeforeEdgeWhenCandidateIsMissing(t *testing.T) {
 	}
 	if mark, ok := marks[proposal.SeedCandidateID]; ok && len(mark.Refs) > 0 {
 		t.Fatalf("missing candidate minted corroboration mark: %+v", mark)
+	}
+}
+
+func TestRaiseSeedsFailsBeforeEdgeWhenCandidateProjectionWriteFails(t *testing.T) {
+	s := newStore(t)
+	seed := cand("project:api", "status", "integration risk will matter later", "")
+	seed.PromotionBasis = ""
+	seed.ClaimType = "status"
+	seed.Salience = "low"
+	seed.ExpiresAt = t0.Add(24 * time.Hour).Format(time.RFC3339)
+	seed.Expectation = &CandidateExpectation{Entity: "project:api", Predicate: "runtime_outcome", Object: "risk materialized"}
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "park", "work_corroboration_write_failure", t0); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.getCandidate(captured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := SynthesisCorroborationProposal{
+		ID:                "synth_corroboration_write_failure",
+		SeedCandidateID:   captured[0].ID,
+		EvidenceClaimID:   "claim_runtime_outcome",
+		EvidenceSummary:   "project:api.runtime_outcome = risk materialized",
+		EvidenceRefs:      []string{"claim:claim_runtime_outcome", "candidate:" + captured[0].ID},
+		EvidenceCreatedAt: rfc3339(t0),
+	}
+
+	candidatePath := filepath.Join(s.candDir(), captured[0].ID+".json")
+	info, err := os.Stat(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalMode := info.Mode().Perm()
+	if err := os.Chmod(candidatePath, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	restoreMode := func() {
+		if err := os.Chmod(candidatePath, originalMode); err != nil {
+			t.Errorf("restore candidate mode: %v", err)
+		}
+	}
+	t.Cleanup(restoreMode)
+	if _, err := s.getCandidate(captured[0].ID); err != nil {
+		t.Fatalf("candidate unreadable before projection failure: %v", err)
+	}
+
+	raised, err := s.raiseSeedsForCorroborations([]SynthesisCorroborationProposal{proposal}, t0)
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("candidate projection error = %v, want permission failure", err)
+	}
+	if len(raised) != 0 {
+		t.Fatalf("failed candidate projection raised review: %+v", raised)
+	}
+	restoreMode()
+
+	edges, err := s.loadEdges()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range edges {
+		if edge.Kind == EdgeKindCorroboration && edge.To == captured[0].ID {
+			t.Fatalf("failed candidate projection minted corroboration edge: %+v", edge)
+		}
+	}
+	marks, err := s.candidateReviewMarksAsOf(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mark, ok := marks[captured[0].ID]; ok && len(mark.Refs) > 0 {
+		t.Fatalf("failed candidate projection minted corroboration mark: %+v", mark)
+	}
+	after, err := s.getCandidate(captured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != before.State || after.ExpiresAt != before.ExpiresAt {
+		t.Fatalf("candidate changed after failed projection: before=%+v after=%+v", before, after)
 	}
 }
 
