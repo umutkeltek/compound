@@ -67,6 +67,7 @@ var Classification = map[string]Class{
 	"breadth":        Leaf,
 	"candidates":     Leaf,
 	"corpus":         Leaf, // lane-scoped corpus indexes: disposable derivatives over imported evidence; ledger stays authority, hits never ambient
+	"executorlens":   Leaf, // evidence-only collector: reads THIS repo's executor lanes' (Codex, Claude Code) receipts/events and builds behaviorallens Observations (public_safe hedging over output text + operator_private agreement-asymmetry over receipt verdicts); records evidence rows only, owns no authority object, never gates/promotes
 	"harvest":        Leaf, // ruling harvester: classifies operator utterances + reconciles them against accepted decision records through mem/decisions/candidates; owns no authority object (corroboration lands on mem, novel rulings on the decision-candidate door proposed-only)
 	"hookplan":       Leaf, // desired/observed hook reconciliation model; installed-hooks ledger and harness configs retain authority
 	"jobprobe":       Leaf, // job-roster probe-refresh collector: re-observes current unit liveness for declared probe targets (files under COMPOUND_HOME) and refreshes the job-roster authority through authority's additive refresh surface; owns no authority object (authority stays the roster owner)

@@ -136,6 +136,16 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "composable behavioral-lens framework — a uniform observe->InferredSignal plug with visibility-gated composition and a per-lane sycophancy (paired-stance endorsement shift) lens; records evidence rows only, never a gate and never auto-acting",
 		Consumer: "compound behavioral-lens CLI (list/run/compose/signals) projecting only public_safe signals for operator review; operator_private signals stay under COMPOUND_HOME; the governed modulator is the named later enforcement consumer",
 	},
+	// executorlens is the executor-receipt locator: an evidence-only collector that reads THIS repo's
+	// own executor lanes' (Codex, Claude Code) receipts/events under COMPOUND_HOME and builds
+	// behaviorallens Observations — public_safe hedging over executor output text, operator_private
+	// agreement-asymmetry over receipt verdicts. It records evidence rows only through behaviorallens
+	// and emits outward only the public projection, so it is evidence, not enforcement.
+	"organ:executorlens": {
+		Class:    MintEvidence,
+		Purpose:  "evidence-only collector that reads this repo's executor lanes' (Codex, Claude Code) receipts/events and builds behaviorallens Observations (public_safe hedging over output text + operator_private agreement-asymmetry over receipt verdicts), so the agents that execute compound's work are themselves measured for behavior-bending",
+		Consumer: "compound executor-lens CLI (run/subjects) composing through behaviorallens.RegistryForHome and recording signals; the outward projection is public_safe only (operator_private executor signals stay under COMPOUND_HOME); the deferred governed modulator is the later enforcement consumer",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law
