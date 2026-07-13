@@ -129,6 +129,32 @@ func TestClosePlanConsumesRecordedActionExecutionPlanReceiptDraft(t *testing.T) 
 	}
 }
 
+func TestClosePlanRequiresDeliveryContractForCommitProofFromActionPlan(t *testing.T) {
+	s := newStore(t)
+	_, workID := runningActionContextWork(t, s)
+	actionPlan, err := s.ActionExecutionPlan(workID, fixedNow, ActionExecutionPlanOptions{Actor: "codex", Record: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitRef := "commit:" + strings.Repeat("a", 40)
+	actionPlan.ProofRefs = mergeUnique(actionPlan.ProofRefs, []string{commitRef})
+	actionPlan.ReceiptDraft.ProofRefs = mergeUnique(actionPlan.ReceiptDraft.ProofRefs, []string{commitRef})
+	if err := s.writeJSON(actionPlan.PlanPath, &actionPlan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordAction(workID, actionPlan.ActionIntent, actionPlan.Decision, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{Actor: "codex", ActionPlanPath: actionPlan.PlanPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "not_closeable" || len(plan.CloseCommand) != 0 || !strings.Contains(plan.NoAction, "git_delivery") {
+		t.Fatalf("action-plan commit proof without delivery contract must not be closeable: %+v", plan)
+	}
+}
+
 func TestCloseRecordsPolicyAction(t *testing.T) {
 	s := newStore(t)
 	workID := readyRunningWork(t, s)
