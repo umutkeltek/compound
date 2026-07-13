@@ -130,11 +130,14 @@ success requires a state delta). Then lane normalization, the join with outcome 
 and budget enforcement.
 
 ## P11 — retirement (the step that gets skipped — don't)
-Every migrated surface gets a **retirement condition**: old brain write path retired when the compound
-writer is proven; old receipt path; old hook renderer; old dashboard; legacy recall demoted when
-compound recall quality is proven. The flat skill/capability matrix is already retired: generated
-manifests import into `CapabilityGraph`, harness-filtered offers reach `ContextPack`, and receipts
-validate used capabilities back into the graph. **Without retirement, compound becomes one more layer.**
+Every migrated surface gets a **retirement condition**: the old writer retires only when the Compound
+writer is proven; the old receipt path, hook renderer, dashboard, and recall path each require their own
+consumer proof. Follow `../operations/legacy-system-retirement.md`: preservation manifest, real-consumer
+replay, no-fallback negative control, quiet window, and verified rollback are required before a legacy
+authority is retired. Deletion is a separate operator-gated act. The flat skill/capability matrix is
+already retired: generated manifests import into `CapabilityGraph`, harness-filtered offers reach
+`ContextPack`, and receipts validate used capabilities back into the graph. **Without retirement,
+Compound becomes one more layer.**
 Hardening (Law 7/8: repeated success → infrastructure; repeated failure → rule; OS-tax receipt) runs
 continuously alongside.
 

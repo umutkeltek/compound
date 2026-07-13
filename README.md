@@ -255,6 +255,7 @@ Read in this order:
 5. `docs/architecture/contracts/README.md`
 6. `docs/memory-architecture.md`
 7. `docs/architecture/source-adapters.md`
+8. `docs/operations/legacy-system-retirement.md`
 
 Core packages:
 
