@@ -215,6 +215,7 @@ func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testi
 	seed := cand("operator", "preference.communication", "prefer concise progress updates", "")
 	seed.PromotionBasis = ""
 	seed.ClaimType = "preference"
+	seed.SourceTraceRef = ""
 	seed.EvidenceRefs = []string{spanRef, spanRef}
 	captured, err := s.Capture([]Candidate{seed}, t0)
 	if err != nil || len(captured) != 1 {
