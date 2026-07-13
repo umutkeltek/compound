@@ -186,17 +186,22 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   `./install.sh`** — hooks and external consumers use the installed binary, which self-reports its
   build SHA since 9b5736b (`compound version`; arch doctor warns fresh/stale/missing). A stale
   installed binary silently serves yesterday's behavior to every session.
+- For a source-controlled WorkEnvelope, run `compound work land-check <work_id> --tip
+  <full-candidate-sha> --actor <lease-holder>` after local landing and after the normal push when
+  publication is required. It certifies only the envelope-bound canonical worktree, local target
+  ref, and remote-tracking publication ref; a feature worktree, second clone, or local-only main
+  cannot supply close proof.
 - Close the WorkEnvelope through the governed path (`work close-plan` → `work close`) with
   proof refs, so Receipt + Transition exist for the landed change.
 - Update `docs_private/plan/HANDOFF.md` (when present / operator lane) with what landed, its
   commit SHA, and any opened branch — the next session orients from it.
 - Run the `extract-approach` skill if the change solved a non-trivial problem.
 
-## 5 · Push gate (hard stop)
+## 5 · Push floor
 
-**Never push to a public remote without explicit operator confirmation.** Before any confirmed
-push: `redact` scan clean, `release export-public` sanity if the push is release-shaped.
-Landing on local main is reversible; publishing is not.
+Normal `git push` of committed work to the existing remote is covered by the standing operator
+grant. Before a public push: run `redact` clean; add `release export-public` sanity when the push is
+release-shaped. Force-push, history rewrite, or a new remote still requires explicit confirmation.
 - **Never pipe `redact` through `| tail`/`| head`, and never chain the push after it in the same
   command** (real incident 2026-07-10: `redact | tail -1 && git push` — the pipeline's exit was
   tail's `0`, a MEDIUM-flagged scan read as green, and the push fired; findings were benign
