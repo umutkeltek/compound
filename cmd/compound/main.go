@@ -206,7 +206,7 @@ func memoryUsage(sub string) string {
 	case "candidates":
 		return "usage: compound memory candidates --json [--state proposed|parked|promoted|rejected|no_promote|needs_review] [--limit N] [--kind K] [--include-evidence]"
 	case "adjudicate":
-		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W]"
+		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--confirmation-ref ev_ID]"
 	case "graph":
 		return "usage: compound memory graph <seed> [--depth N] [--budget N] [--min-conf F] [--direction up|down] [--kind KIND[,KIND]...]"
 	case "import-topics":
@@ -1830,7 +1830,23 @@ func cmdMemory(args []string) {
 			fmt.Printf("  %s -%s-> %s  (conf %.2f)\n", r.From, r.Kind, r.To, r.Confidence)
 		}
 	case "adjudicate":
-		res, err := store.Adjudicate(firstPos(map[string]bool{"--verdict": true, "--work": true}), flag("--verdict"), flag("--work"), time.Now())
+		candidateID := firstPos(map[string]bool{"--verdict": true, "--work": true, "--confirmation-ref": true})
+		verdict := flag("--verdict")
+		confirmationRef := flag("--confirmation-ref")
+		if has("--confirmation-ref") && confirmationRef == "" {
+			fmt.Fprintln(os.Stderr, "usage: --confirmation-ref requires a content-addressed evidence id")
+			os.Exit(2)
+		}
+		if confirmationRef != "" && verdict != candidates.Promote {
+			fmt.Fprintln(os.Stderr, "usage: --confirmation-ref is valid only with --verdict promote")
+			os.Exit(2)
+		}
+		var res mem.AdjudicateResult
+		if confirmationRef != "" {
+			res, err = store.AdjudicateExplicitConfirmation(candidateID, confirmationRef, flag("--work"), time.Now())
+		} else {
+			res, err = store.Adjudicate(candidateID, verdict, flag("--work"), time.Now())
+		}
 		die(err)
 		if res.Claim != nil {
 			line := fmt.Sprintf("%s: promoted claim %s (seq %d)", res.Candidate.ID, res.Claim.ID, res.Claim.Seq)
