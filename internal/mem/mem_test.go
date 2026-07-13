@@ -291,6 +291,33 @@ func TestOperatorConfirmationRequiresParkedCandidate(t *testing.T) {
 	}
 }
 
+func TestAdjudicateExplicitConfirmationRechecksParkedState(t *testing.T) {
+	s := newStore(t)
+	seed := cand("operator", "preference.communication", "prefer concise updates", "")
+	seed.PromotionBasis = ""
+	seed.ClaimType = "preference"
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "park", "work_confirmation_state", t0); err != nil {
+		t.Fatal(err)
+	}
+	confirmation, err := s.RecordOperatorConfirmation(captured[0].ID, "Keep this preference.", "operator:test", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "reject", "work_confirmation_state", t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AdjudicateExplicitConfirmation(captured[0].ID, confirmation.ID, "work_confirmation_state", t0); err == nil || !strings.Contains(err.Error(), "parked") {
+		t.Fatalf("confirmation consumption accepted candidate after state changed: %v", err)
+	}
+	if claims, err := s.loadClaims(); err != nil || len(claims) != 0 {
+		t.Fatalf("state-raced confirmation wrote claims=%d err=%v", len(claims), err)
+	}
+}
+
 func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testing.T) {
 	s := newStore(t)
 	spanRef := "transcript-span:sha256:session:line:1:sha256:preference"
