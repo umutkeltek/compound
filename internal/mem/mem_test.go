@@ -472,7 +472,7 @@ func TestConcurrentOrdinaryPromotionCannotRejectPromotedCandidate(t *testing.T) 
 	s := newStore(t)
 	seed := cand("project:api", "runtime", "go", "")
 	seed.PromotionBasis = candidates.BasisTrustedDeterministic
-	seed.ClaimType = "fact"
+	seed.ClaimType = "status"
 	captured, err := s.Capture([]Candidate{seed}, t0)
 	if err != nil || len(captured) != 1 {
 		t.Fatalf("capture = %+v, err=%v", captured, err)
@@ -622,7 +622,7 @@ func TestPromotionDoesNotMarkCandidateBeforeTransitionWrite(t *testing.T) {
 	s := newStore(t)
 	seed := cand("project:api", "runtime", "go", "")
 	seed.PromotionBasis = candidates.BasisTrustedDeterministic
-	seed.ClaimType = "fact"
+	seed.ClaimType = "status"
 	captured, err := s.Capture([]Candidate{seed}, t0)
 	if err != nil || len(captured) != 1 {
 		t.Fatalf("capture = %+v, err=%v", captured, err)
