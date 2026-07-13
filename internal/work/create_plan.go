@@ -111,6 +111,9 @@ type AdmitCreatePlanReport struct {
 
 func (s *Store) CreatePlan(in CreateInput, now time.Time, opts CreatePlanOptions) (CreatePlan, error) {
 	w := BuildWork(in, now)
+	if err := s.normalizeGitDeliveryForPlan(&w); err != nil {
+		return CreatePlan{}, err
+	}
 	if strings.TrimSpace(w.State) == "running" {
 		return CreatePlan{}, fmt.Errorf("create at ready, then claim and advance to preserve lease proof")
 	}
@@ -153,6 +156,9 @@ func (s *Store) AdmitCreatePlanPath(path string, now time.Time, opts AdmitCreate
 func (s *Store) AdmitCreatePlan(plan CreatePlan, planPath string, now time.Time, opts AdmitCreatePlanOptions) (AdmitCreatePlanReport, error) {
 	if err := validateCreatePlanForAdmission(plan); err != nil {
 		return AdmitCreatePlanReport{}, err
+	}
+	if err := s.validateBoundGitDelivery(plan.Work); err != nil {
+		return AdmitCreatePlanReport{}, fmt.Errorf("create-plan %s git delivery admission: %w", plan.ID, err)
 	}
 	var report AdmitCreatePlanReport
 	err := s.withCreatePlanAdmissionLock(plan.WorkID, func() error {
@@ -298,6 +304,9 @@ func validateCreatePlanForAdmission(plan CreatePlan) error {
 	if err := plan.Work.Validate(); err != nil {
 		return fmt.Errorf("create-plan %s work invalid: %w", plan.ID, err)
 	}
+	if err := validateNewGitDeliveryDeclaration(plan.Work); err != nil {
+		return fmt.Errorf("create-plan %s work invalid: %w", plan.ID, err)
+	}
 	if err := validateDirectorProposalInitialState(plan.Work); err != nil {
 		return fmt.Errorf("create-plan %s: %w", plan.ID, err)
 	}
@@ -352,6 +361,7 @@ func sameCreatePlanWork(existing, planned envelope.WorkEnvelope) bool {
 		existing.Privacy == planned.Privacy &&
 		existing.CanonicalSurface == planned.CanonicalSurface &&
 		existing.ExpectedBaseSHA == planned.ExpectedBaseSHA &&
+		sameGitDeliveryContract(existing.GitDelivery, planned.GitDelivery) &&
 		existing.RouteDecisionID == planned.RouteDecisionID &&
 		sameStringSlice(existing.NonGoals, planned.NonGoals) &&
 		sameStringSlice(existing.EvidenceRefs, planned.EvidenceRefs)
@@ -374,6 +384,12 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 		return CreatePlan{}, terminalStateRequiresClose("create", w.State)
 	}
 	if err := w.Validate(); err != nil {
+		return CreatePlan{}, err
+	}
+	if err := validateNewGitDeliveryDeclaration(w); err != nil {
+		return CreatePlan{}, err
+	}
+	if err := s.validateBoundGitDelivery(w); err != nil {
 		return CreatePlan{}, err
 	}
 	if err := validateDirectorProposalInitialState(w); err != nil {
@@ -468,6 +484,9 @@ func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, ext
 	if err := validateDirectorProposalInitialState(w); err != nil {
 		return w, err
 	}
+	if err := s.validateBoundGitDelivery(w); err != nil {
+		return w, err
+	}
 	// The existence check must live inside the same critical section as the
 	// write. A CreatePlan can be prepared before another process creates and
 	// auto-admits the same work id; replaying that stale plan must never write
@@ -538,8 +557,17 @@ func createCommandForWork(w envelope.WorkEnvelope, actor string) []string {
 	if strings.TrimSpace(w.RouteDecisionID) != "" {
 		cmd = append(cmd, "--route-decision-id", w.RouteDecisionID)
 	}
-	if strings.TrimSpace(w.ExpectedBaseSHA) != "" {
-		cmd = append(cmd, "--expected-base-sha", w.ExpectedBaseSHA)
+	if w.GitDelivery != nil {
+		cmd = append(cmd,
+			"--target-worktree-root", w.GitDelivery.TargetWorktreeRoot,
+			"--target-local-ref", w.GitDelivery.TargetLocalRef,
+			"--expected-base-sha", w.GitDelivery.ExpectedBaseSHA,
+		)
+		if w.GitDelivery.PublicationMode == "local_only" {
+			cmd = append(cmd, "--local-only")
+		} else {
+			cmd = append(cmd, "--publication-ref", w.GitDelivery.PublicationRef)
+		}
 	}
 	if strings.TrimSpace(w.State) != "" {
 		cmd = append(cmd, "--state", w.State)
@@ -551,6 +579,83 @@ func createCommandForWork(w envelope.WorkEnvelope, actor string) []string {
 		cmd = append(cmd, "--privacy", w.Privacy)
 	}
 	return cmd
+}
+
+func sameGitDeliveryContract(a, b *envelope.GitDeliveryContract) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func validateNewGitDeliveryDeclaration(w envelope.WorkEnvelope) error {
+	if strings.TrimSpace(w.ExpectedBaseSHA) != "" {
+		return fmt.Errorf("legacy expected_base_sha cannot admit new work; declare a complete git_delivery contract")
+	}
+	return nil
+}
+
+func (s *Store) normalizeGitDeliveryForPlan(w *envelope.WorkEnvelope) error {
+	if w == nil || w.GitDelivery == nil {
+		if w != nil {
+			return validateNewGitDeliveryDeclaration(*w)
+		}
+		return nil
+	}
+	root, err := canonicalLandingRepo(w.GitDelivery.TargetWorktreeRoot)
+	if err != nil {
+		return fmt.Errorf("git_delivery.target_worktree_root: %w", err)
+	}
+	_, localRef, err := normalizeLandingTargetRef(root, w.GitDelivery.TargetLocalRef)
+	if err != nil {
+		return fmt.Errorf("git_delivery.target_local_ref: %w", err)
+	}
+	w.GitDelivery.TargetWorktreeRoot = root
+	w.GitDelivery.TargetLocalRef = localRef
+	w.GitDelivery.ExpectedBaseSHA = strings.TrimSpace(w.GitDelivery.ExpectedBaseSHA)
+	w.GitDelivery.PublicationMode = strings.TrimSpace(w.GitDelivery.PublicationMode)
+	w.GitDelivery.PublicationRef = strings.TrimSpace(w.GitDelivery.PublicationRef)
+	if err := w.Validate(); err != nil {
+		return err
+	}
+	return s.validateBoundGitDelivery(*w)
+}
+
+func (s *Store) validateBoundGitDelivery(w envelope.WorkEnvelope) error {
+	if w.GitDelivery == nil {
+		return validateNewGitDeliveryDeclaration(w)
+	}
+	contract := *w.GitDelivery
+	root, err := canonicalLandingRepo(contract.TargetWorktreeRoot)
+	if err != nil {
+		return fmt.Errorf("git_delivery.target_worktree_root: %w", err)
+	}
+	if root != contract.TargetWorktreeRoot {
+		return fmt.Errorf("git_delivery.target_worktree_root %q is not the exact canonical root %q", contract.TargetWorktreeRoot, root)
+	}
+	_, localRef, err := normalizeLandingTargetRef(root, contract.TargetLocalRef)
+	if err != nil {
+		return fmt.Errorf("git_delivery.target_local_ref: %w", err)
+	}
+	if localRef != contract.TargetLocalRef {
+		return fmt.Errorf("git_delivery.target_local_ref %q is not canonical %q", contract.TargetLocalRef, localRef)
+	}
+	if _, err := runLandingGitOutput(root, "rev-parse", "--verify", localRef+"^{commit}"); err != nil {
+		return fmt.Errorf("git_delivery.target_local_ref does not resolve: %w", err)
+	}
+	baseExists, err := landingCommitExists(root, contract.ExpectedBaseSHA)
+	if err != nil {
+		return err
+	}
+	if !baseExists {
+		return fmt.Errorf("git_delivery.expected_base_sha %s does not exist in bound repository", contract.ExpectedBaseSHA)
+	}
+	if contract.PublicationMode == "required" {
+		if _, err := runLandingGitOutput(root, "rev-parse", "--verify", contract.PublicationRef+"^{commit}"); err != nil {
+			return fmt.Errorf("git_delivery.publication_ref does not resolve: %w", err)
+		}
+	}
+	return nil
 }
 
 func normalizeWorkActionContext(ctx *WorkActionContext) *WorkActionContext {
