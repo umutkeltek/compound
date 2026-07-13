@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	LandCheckSchemaVersion  = "compound.work_land_check.v0.2"
+	LandCheckSchemaVersion  = "compound.work_land_check.v0.3"
 	landCheckEvidencePrefix = "land-check:"
 	landCheckIDPrefix       = "landcheck_"
 )
@@ -24,10 +24,15 @@ const (
 // LandCheckOptions names every source-control input explicitly. In particular,
 // RepoPath is never inferred from the process working directory.
 type LandCheckOptions struct {
+	// RepoPath and TargetRef are optional caller assertions. They are never
+	// authority: when present they must equal the WorkEnvelope-bound contract.
 	RepoPath        string
 	CandidateTipSHA string
 	TargetRef       string
+	// ExpectedMainSHA is retained as a source-compatible tombstone. A caller
+	// snapshot cannot replace the WorkEnvelope contract and is rejected.
 	ExpectedMainSHA string
+	Actor           string
 	Record          bool
 }
 
@@ -49,6 +54,9 @@ type LandCheckReport struct {
 	TargetBranchRef                 string `json:"target_branch_ref"`
 	ExpectedMainSHA                 string `json:"expected_main_sha,omitempty"`
 	TargetSHA                       string `json:"target_sha"`
+	PublicationMode                 string `json:"publication_mode"`
+	PublicationRef                  string `json:"publication_ref,omitempty"`
+	PublicationSHA                  string `json:"publication_sha,omitempty"`
 	CandidateExists                 bool   `json:"candidate_exists"`
 	ExpectedBaseExists              bool   `json:"expected_base_exists"`
 	CleanTarget                     bool   `json:"clean_target"`
@@ -56,6 +64,7 @@ type LandCheckReport struct {
 	ExpectedBaseAncestorOfCandidate bool   `json:"expected_base_ancestor_of_candidate"`
 	TargetAncestorOfCandidate       bool   `json:"target_ancestor_of_candidate"`
 	CandidateContainedInTarget      bool   `json:"candidate_contained_in_target"`
+	CandidateContainedInPublication bool   `json:"candidate_contained_in_publication"`
 	NextAction                      string `json:"next_action,omitempty"`
 	ContentSHA256                   string `json:"content_sha256"`
 	Recorded                        bool   `json:"recorded"`
@@ -87,6 +96,23 @@ func (s *Store) LandCheck(workID string, opts LandCheckOptions, now time.Time) (
 	if err := s.recordLandCheck(&report); err != nil {
 		return report, err
 	}
+	if report.Status == "landed" {
+		current, err := s.Get(w.ID)
+		if err != nil {
+			return report, err
+		}
+		if !stringIn(current.EvidenceRefs, report.EvidenceRef) {
+			actor := firstNonEmpty(strings.TrimSpace(opts.Actor), strings.TrimSpace(current.Authority.Owner), strings.TrimSpace(current.Owner), "compound")
+			if _, err := s.Advance(current.ID, AdvanceInput{
+				To:           current.State,
+				Actor:        actor,
+				EvidenceRefs: []string{report.EvidenceRef},
+				Note:         "attached current Git delivery proof",
+			}, now); err != nil {
+				return report, fmt.Errorf("attach land-check proof to work %s: %w", current.ID, err)
+			}
+		}
+	}
 	return report, nil
 }
 
@@ -94,21 +120,50 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	if now.IsZero() {
 		now = time.Now()
 	}
-	repoPath, err := canonicalLandingRepo(opts.RepoPath)
-	if err != nil {
-		return LandCheckReport{}, err
-	}
 	candidate := strings.TrimSpace(opts.CandidateTipSHA)
 	if !validLandingObjectID(candidate) {
 		return LandCheckReport{}, fmt.Errorf("candidate tip SHA must be a lowercase full Git object id (40 or 64 hex characters)")
 	}
-	expectedMain := strings.TrimSpace(opts.ExpectedMainSHA)
-	if expectedMain != "" && !validLandingObjectID(expectedMain) {
-		return LandCheckReport{}, fmt.Errorf("expected main SHA must be a lowercase full Git object id (40 or 64 hex characters)")
+	if strings.TrimSpace(opts.ExpectedMainSHA) != "" {
+		return LandCheckReport{}, fmt.Errorf("expected main SHA caller argument is not delivery authority; use the WorkEnvelope git_delivery contract")
 	}
-	targetRef, targetBranchRef, err := normalizeLandingTargetRef(repoPath, opts.TargetRef)
+	if w.GitDelivery == nil {
+		report := LandCheckReport{
+			SchemaVersion:   LandCheckSchemaVersion,
+			GeneratedAt:     now.UTC().Format(time.RFC3339Nano),
+			WorkID:          w.ID,
+			CandidateTipSHA: candidate,
+			Status:          "missing_git_delivery_contract",
+			NextAction:      "replace the incomplete source-controlled work with a WorkEnvelope carrying a complete git_delivery contract",
+		}
+		return report, nil
+	}
+	if err := s.validateBoundGitDelivery(w); err != nil {
+		return LandCheckReport{}, err
+	}
+	contract := *w.GitDelivery
+	repoPath := contract.TargetWorktreeRoot
+	if assertedRepo := strings.TrimSpace(opts.RepoPath); assertedRepo != "" {
+		canonicalAssertion, err := canonicalLandingRepo(assertedRepo)
+		if err != nil {
+			return LandCheckReport{}, err
+		}
+		if canonicalAssertion != repoPath {
+			return LandCheckReport{}, fmt.Errorf("caller repository %s does not match WorkEnvelope git_delivery.target_worktree_root %s", canonicalAssertion, repoPath)
+		}
+	}
+	targetRef, targetBranchRef, err := normalizeLandingTargetRef(repoPath, contract.TargetLocalRef)
 	if err != nil {
 		return LandCheckReport{}, err
+	}
+	if assertedRef := strings.TrimSpace(opts.TargetRef); assertedRef != "" {
+		_, normalizedAssertion, err := normalizeLandingTargetRef(repoPath, assertedRef)
+		if err != nil {
+			return LandCheckReport{}, err
+		}
+		if normalizedAssertion != targetBranchRef {
+			return LandCheckReport{}, fmt.Errorf("caller target ref %s does not match WorkEnvelope git_delivery.target_local_ref %s", normalizedAssertion, targetBranchRef)
+		}
 	}
 	targetSHA, err := runLandingGitOutput(repoPath, "rev-parse", "--verify", targetBranchRef+"^{commit}")
 	if err != nil {
@@ -126,7 +181,7 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		return LandCheckReport{}, fmt.Errorf("inspect target worktree status: %w", err)
 	}
 
-	expectedBase := strings.TrimSpace(w.ExpectedBaseSHA)
+	expectedBase := strings.TrimSpace(contract.ExpectedBaseSHA)
 	report := LandCheckReport{
 		SchemaVersion:        LandCheckSchemaVersion,
 		GeneratedAt:          now.UTC().Format(time.RFC3339Nano),
@@ -136,20 +191,13 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		ExpectedBaseSHA:      expectedBase,
 		TargetRef:            targetRef,
 		TargetBranchRef:      targetBranchRef,
-		ExpectedMainSHA:      expectedMain,
 		TargetSHA:            targetSHA,
+		PublicationMode:      contract.PublicationMode,
+		PublicationRef:       contract.PublicationRef,
 		CleanTarget:          statusOutput == "",
 		TargetBranchWorktree: currentBranchRef == targetBranchRef,
 	}
 
-	if expectedBase == "" {
-		report.Status = "missing_expected_base"
-		report.NextAction = "attach a lowercase full expected_base_sha to the WorkEnvelope before source-controlled execution"
-		return report, nil
-	}
-	if !validLandingObjectID(expectedBase) {
-		return report, fmt.Errorf("work %s expected_base_sha must be a lowercase full Git object id (40 or 64 hex characters)", w.ID)
-	}
 	artifactRef, attachedTip, artifactFound, artifactValid := latestCommitArtifact(w.ArtifactIDs)
 	report.CandidateArtifactRef = artifactRef
 	report.AttachedCandidateTipSHA = attachedTip
@@ -206,12 +254,6 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		report.NextAction = fmt.Sprintf("make the %s target worktree clean without discarding unrelated work, then rerun land-check", targetRef)
 		return report, nil
 	}
-	if expectedMain != "" && targetSHA != expectedMain {
-		report.Status = "main_moved"
-		report.NextAction = fmt.Sprintf("target %s moved from expected %s to %s; refresh the snapshot and reevaluate the candidate", targetRef, expectedMain, targetSHA)
-		return report, nil
-	}
-
 	report.CandidateContainedInTarget, err = landingIsAncestor(repoPath, candidate, targetSHA)
 	if err != nil {
 		return report, err
@@ -221,6 +263,23 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		return report, err
 	}
 	if report.CandidateContainedInTarget {
+		if contract.PublicationMode == "required" {
+			report.PublicationSHA, err = runLandingGitOutput(repoPath, "rev-parse", "--verify", contract.PublicationRef+"^{commit}")
+			if err != nil {
+				return report, fmt.Errorf("resolve publication ref %s: %w", contract.PublicationRef, err)
+			}
+			report.CandidateContainedInPublication, err = landingIsAncestor(repoPath, candidate, report.PublicationSHA)
+			if err != nil {
+				return report, err
+			}
+			if !report.CandidateContainedInPublication {
+				report.Status = "awaiting_publication"
+				report.NextAction = fmt.Sprintf("publish %s containing candidate %s to %s, then record a fresh land-check", targetBranchRef, candidate, contract.PublicationRef)
+				return report, nil
+			}
+		} else {
+			report.CandidateContainedInPublication = true
+		}
 		report.Status = "landed"
 		return report, nil
 	}
@@ -367,24 +426,33 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 	if report.WorkID != w.ID {
 		return fmt.Errorf("recorded land-check %s belongs to work %s, not %s", id, report.WorkID, w.ID)
 	}
-	if report.ExpectedBaseSHA != w.ExpectedBaseSHA {
+	if w.GitDelivery == nil {
+		return fmt.Errorf("recorded land-check %s cannot satisfy work %s without git_delivery authority", id, w.ID)
+	}
+	contract := *w.GitDelivery
+	if report.ExpectedBaseSHA != contract.ExpectedBaseSHA {
 		return fmt.Errorf("recorded land-check %s expected base no longer matches work %s", id, w.ID)
+	}
+	if report.RepoPath != contract.TargetWorktreeRoot || report.TargetBranchRef != contract.TargetLocalRef ||
+		report.PublicationMode != contract.PublicationMode || report.PublicationRef != contract.PublicationRef {
+		return fmt.Errorf("recorded land-check %s repository, target, or publication identity no longer matches work %s", id, w.ID)
 	}
 	artifactRef, attachedTip, found, valid := latestCommitArtifact(w.ArtifactIDs)
 	if !found || !valid || report.CandidateArtifactRef != artifactRef || report.AttachedCandidateTipSHA != attachedTip || report.CandidateTipSHA != attachedTip {
 		return fmt.Errorf("recorded land-check %s candidate artifact no longer matches the latest verified commit attached to work %s", id, w.ID)
 	}
-	if !validLandingObjectID(report.CandidateTipSHA) || strings.TrimSpace(report.RepoPath) == "" || strings.TrimSpace(report.TargetRef) == "" {
+	if !validLandingObjectID(report.CandidateTipSHA) || strings.TrimSpace(report.RepoPath) == "" || strings.TrimSpace(report.TargetRef) == "" || !report.CandidateContainedInTarget {
 		return fmt.Errorf("recorded land-check %s is missing exact repository, candidate, or target identity", id)
+	}
+	if contract.PublicationMode == "required" && (!report.CandidateContainedInPublication || strings.TrimSpace(report.PublicationSHA) == "") {
+		return fmt.Errorf("recorded land-check %s does not prove containment in bound publication ref %s", id, contract.PublicationRef)
 	}
 	return nil
 }
 
 func (s *Store) revalidateLandedProof(w envelope.WorkEnvelope, proof LandCheckReport, now time.Time) error {
 	current, err := s.evaluateLandCheck(w, LandCheckOptions{
-		RepoPath:        proof.RepoPath,
 		CandidateTipSHA: proof.CandidateTipSHA,
-		TargetRef:       proof.TargetRef,
 	}, now)
 	if err != nil {
 		return fmt.Errorf("land-check %s live revalidation failed: %w", proof.ID, err)
