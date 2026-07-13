@@ -491,7 +491,7 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 	if verdict != "promote" {
 		latest, _, lockErr := s.mutateCandidate(candID, func(latest *Candidate) (bool, error) {
 			if latest.State == "promoted" {
-				return fmt.Errorf("candidate %s already promoted", candID)
+				return false, fmt.Errorf("candidate %s already promoted", candID)
 			}
 			latest.State = nonPromoteState(verdict)
 			return true, nil
