@@ -41,6 +41,7 @@ import (
 	"compound/internal/policy"
 	"compound/internal/product"
 	"compound/internal/projection"
+	"compound/internal/retrievalparity"
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
 	"compound/internal/runtimebinding"
@@ -249,12 +250,16 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory engine-config [--profile generic|memory-cli|gbrain|breadth] [--clear] [--json]"
 	case "bakeoff":
 		return "usage: compound memory bakeoff <init [--queries file] [--force]|run --queries file [--engine bin] [--k N] [--json]>"
+	case "parity-replay":
+		return "usage: compound memory parity-replay --fixture <file.json> --consumer orient|query [--k N (query only)] [--json]"
+	case "parity-freeze":
+		return "usage: compound memory parity-freeze --from-journal --window-days N [--out <home-relative path>]"
 	case "search":
 		return "usage: compound memory search --lane L <query> [--k N] [--json]"
 	case "show-output":
 		return "usage: compound memory show-output <cid>  (writes the exact externalized tool-output body for sha256:<hex> to stdout)"
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|temperature [--rebuild]|observation [--json] [--record]|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|parity-replay --fixture F --consumer orient|query|parity-freeze --from-journal --window-days N|temperature [--rebuild]|observation [--json] [--record]|doctor>"
 	}
 }
 
@@ -1905,9 +1910,13 @@ func cmdMemory(args []string) {
 			fmt.Printf("%s: %s%s\n", res.Candidate.ID, res.Verdict, dashNote(res.Note))
 		}
 	case "recall":
-		cmdMemoryRecall(store, rest)
+		cmdMemoryRecall(homePath, store, rest)
 	case "bakeoff":
 		cmdMemoryBakeoff(store, rest, memBreadthEngine)
+	case "parity-replay":
+		cmdMemoryParityReplay(homePath, store, rest)
+	case "parity-freeze":
+		cmdMemoryParityFreeze(homePath, rest)
 	case "search":
 		if flag("--lane") == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound memory search --lane L <query> [--k N] [--json]")
@@ -2033,8 +2042,10 @@ func cmdMemory(args []string) {
 		// set, drive the sidecar (e.g. turbovec) over the protocol via a warm held coprocess;
 		// otherwise the in-process lexical engine. A model swap is a HARD refuse, not a degrade.
 		eng, closeEng := memBreadthEngine()
+		retrievalStarted := time.Now()
 		claims, err := store.QueryBreadth(pos(), 10, eng)
 		closeEng() // tear down the held engine BEFORE any exit/return (os.Exit skips defers)
+		retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerQuery, pos(), parityClaimRefs(claims), time.Since(retrievalStarted), err == nil, time.Now()))
 		switch {
 		case errors.Is(err, mem.ErrUnsupported), errors.Is(err, mem.ErrEngineUnavailable):
 			fmt.Println("# no breadth engine — exact/as-of recall available via `compound memory recall`")
@@ -5558,7 +5569,9 @@ func cmdOrient(args []string) {
 	die(err)
 	_, err = contract.RecordEffectiveContract(homePath, ec)
 	die(err)
+	retrievalStarted := time.Now()
 	pack, err := contract.PackWithCapabilities(in, orientPolicy(), homePath, now)
+	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerOrient, in.Task, pack.ActiveMemory, time.Since(retrievalStarted), err == nil, time.Now()))
 	die(err)
 	if pack.IDs.ContractID != ec.ID {
 		die(fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID))

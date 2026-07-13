@@ -6,10 +6,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"compound/internal/breadth"
 	"compound/internal/corpus"
 	"compound/internal/home"
+	"compound/internal/retrievalparity"
 )
 
 func cmdCorpus(args []string) {
@@ -118,11 +120,13 @@ func cmdMemoryCorpusSearch(homePath string, args []string) {
 		}
 		k = n
 	}
+	retrievalStarted := time.Now()
 	report, err := corpus.Query(context.Background(), homePath, lane, embedder, query, k)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "memory search:", err)
 		os.Exit(1)
 	}
+	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerSearch, query, parityCorpusRefs(report), time.Since(retrievalStarted), true, time.Now()))
 	if boolFlag(args, "--json") {
 		printJSON(report)
 		return

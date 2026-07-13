@@ -11,6 +11,7 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/mem"
+	"compound/internal/retrievalparity"
 )
 
 func cmdMemoryImportTopics(store *mem.Store, args []string) {
@@ -88,10 +89,11 @@ func cmdMemoryPosition(store *mem.Store, args []string) {
 	}
 }
 
-func cmdMemoryRecall(store *mem.Store, args []string) {
+func cmdMemoryRecall(homePath string, store *mem.Store, args []string) {
 	asOf, err := parseMemoryAsOf(args)
 	die(err)
 	entity := firstMemoryPos(args, map[string]bool{"--as-of": true, "--topic": true})
+	retrievalStarted := time.Now()
 	rr, err := store.Recall(entity, mem.RecallOpts{
 		AsOfSeq:            asOf,
 		IncludeRetired:     hasFlag(args, "--include-retired"),
@@ -100,6 +102,7 @@ func cmdMemoryRecall(store *mem.Store, args []string) {
 		Topic:              valueFlag(args, "--topic"),
 	})
 	die(err)
+	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerRecall, entity, parityRecallRefs(rr), time.Since(retrievalStarted), true, time.Now()))
 	if hasFlag(args, "--json") {
 		printJSON(rr)
 		return
