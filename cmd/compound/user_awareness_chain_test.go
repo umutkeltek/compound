@@ -214,27 +214,32 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
 	assertPackExcludesUserAwarenessClaim(t, homePath, unrelated, claimRef)
 
-	assertNoUserPromptModelArtifacts(t, homePath)
-	promptResult, err := hook.Run(hook.Fixture{
-		Hook:      "user-prompt-submit",
-		Harness:   "codex",
-		SessionID: "sess_user_awareness_chain",
-		TurnID:    "turn_after_confirmation",
-		Cwd:       "/repo/compound",
-		Task:      matchingInput.Task,
-		Mode:      "execute",
-		RepoKind:  "control-plane",
-		Prompt:    "Please continue.",
-	}, deps, cliTestNow)
-	if err != nil {
-		t.Fatal(err)
+	seedUserPromptMeaningArtifacts(t, homePath, memoryStore, request)
+	beforePrompt := snapshotUserPromptMeaningState(t, homePath)
+	assertUserPromptMeaningStateNonEmpty(t, beforePrompt)
+	hookRequests := filepath.Join(protocolLogDir, "hook-command-requests.ndjson")
+	hookResponses := filepath.Join(protocolLogDir, "hook-command-responses.ndjson")
+	configureUserAwarenessBreadthSidecar(t, hookRequests, hookResponses)
+	liveInput := `{"hook_event_name":"UserPromptSubmit","session_id":"sess_user_awareness_chain","turn_id":"turn_after_confirmation","cwd":"/repo/compound","prompt":"give concise progress updates while implementation is running"}`
+	var hookCode int
+	hookOutput := captureStdout(t, func() {
+		withStdin(t, liveInput, func() {
+			hookCode = runHookCommand([]string{"user-prompt-submit", "--live", "--harness", "codex"})
+		})
+	})
+	if hookCode != 0 {
+		t.Fatalf("production UserPromptSubmit exit=%d output=%s", hookCode, hookOutput)
 	}
-	for _, produced := range promptResult.Produced {
-		if produced.Kind() == "receipt" || produced.Kind() == "memory_candidate" {
-			t.Fatalf("UserPromptSubmit produced forbidden meaning/model artifact %s", produced.Kind())
-		}
+	var hookResponse codexLiveHookResponse
+	if err := json.Unmarshal([]byte(hookOutput), &hookResponse); err != nil {
+		t.Fatalf("parse production UserPromptSubmit response: %v\n%s", err, hookOutput)
 	}
-	assertNoUserPromptModelArtifacts(t, homePath)
+	if hookResponse.HookName != "UserPromptSubmit" || hookResponse.Status != "ok" || strings.TrimSpace(hookResponse.AdditionalContext) == "" {
+		t.Fatalf("production UserPromptSubmit response = %+v", hookResponse)
+	}
+	assertUserAwarenessProtocolCycle(t, hookRequests, hookResponses, 1)
+	afterPrompt := snapshotUserPromptMeaningState(t, homePath)
+	assertUserPromptMeaningStateUnchanged(t, beforePrompt, afterPrompt)
 }
 
 type userAwarenessEmbedder struct{}
