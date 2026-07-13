@@ -753,6 +753,7 @@ func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEn
 type AdvanceInput struct {
 	To             string
 	Actor          string
+	GitDelivery    *envelope.GitDeliveryContract
 	RunID          string
 	ArtifactID     string
 	VerificationID string
@@ -860,7 +861,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 	} else if ok {
 		return recovered, nil
 	}
-	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To})
+	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To, GitDelivery: in.GitDelivery})
 	if err != nil {
 		return w, err
 	}
@@ -876,6 +877,11 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 	}
 	from := w.State
 	w.State = in.To
+	if plan.GitDelivery != nil {
+		contract := *plan.GitDelivery
+		w.GitDelivery = &contract
+		w.ExpectedBaseSHA = ""
+	}
 	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
 	attached := []string{plan.ActionIntent.ID, plan.Decision.ID}

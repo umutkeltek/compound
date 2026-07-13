@@ -1075,11 +1075,11 @@ func cmdWork(args []string) {
 		die(err)
 		fmt.Printf("%s claimed by %s (%s) policy=%s\n", w.ID, w.Authority.Owner, w.State, w.PolicyDecisionID)
 	case "advance-plan":
-		usage := "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
+		usage := "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
-			case "--json", "--dry-run":
-			case "--to", "--actor", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path":
+			case "--json", "--dry-run", "--local-only":
+			case "--to", "--actor", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path", "--target-worktree-root", "--target-local-ref", "--expected-base-sha", "--publication-ref":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
@@ -1096,9 +1096,11 @@ func cmdWork(args []string) {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
+		gitDelivery := parseGitDelivery(usage)
 		plan, err := store.AdvancePlan(pos(), time.Now(), work.AdvancePlanOptions{
 			Actor:         flag("--actor"),
 			To:            flag("--to"),
+			GitDelivery:   gitDelivery,
 			Capability:    flag("--capability"),
 			Action:        flag("--action"),
 			MutationClass: flag("--mutation-class"),
@@ -1131,9 +1133,25 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "advance":
+		usage := "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--run ID] [--artifact ID] [--verification ID] [--context-pack ID] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)]"
+		if err := validateWorkArguments(rest, map[string]bool{
+			"--to": true, "--by": true, "--actor": true, "--run": true, "--artifact": true, "--verification": true,
+			"--context-pack": true, "--note": true, "--reason": true,
+			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
+		}, map[string]bool{"--steal": true, "--local-only": true}, 1); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if pos() == "" || flag("--to") == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		gitDelivery := parseGitDelivery(usage)
 		w, err := store.Advance(pos(), work.AdvanceInput{
 			To:             flag("--to"),
 			Actor:          firstNonEmpty(flag("--by"), flag("--actor")),
+			GitDelivery:    gitDelivery,
 			RunID:          flag("--run"),
 			ArtifactID:     flag("--artifact"),
 			VerificationID: flag("--verification"),
