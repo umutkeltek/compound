@@ -171,6 +171,8 @@ func main() {
 		cmdLatentTax(os.Args[2:])
 	case "behavioral-lens":
 		cmdBehavioralLens(os.Args[2:])
+	case "executor-lens":
+		cmdExecutorLens(os.Args[2:])
 	case "panel":
 		cmdPanel(os.Args[2:])
 	case "local-models":
