@@ -448,6 +448,38 @@ func TestVectorSemanticCosineRanksLexicallyNonmatchingClaimTop(t *testing.T) {
 	}
 }
 
+func TestVectorSemanticQueryExcludesOrthogonalLexicallyUnrelatedClaim(t *testing.T) {
+	claims := []mem.ClaimText{
+		{ClaimID: "relevant", Entity: "communication", ClaimType: "preference", Text: "concise progress reports"},
+		{ClaimID: "orthogonal", Entity: "storage", ClaimType: "fact", Text: "database migration throughput"},
+	}
+	query := "notify during execution"
+	embedder := newFakeEmbedder(2)
+	embedder.vectors = map[string][]float32{
+		query:                  {1, 0},
+		wrapDocText(claims[0]): {1, 0},
+		wrapDocText(claims[1]): {0, 1},
+	}
+	eng, err := NewEngine(EngineConfig{Embedder: embedder, CompoundHome: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.IndexWithError(claims, 1); err != nil {
+		t.Fatal(err)
+	}
+	docs := docsFromClaims(claims)
+	if got := eng.bm25(query, docs); len(got) != 0 {
+		t.Fatalf("test requires no lexical hits, got %+v", got)
+	}
+	if got := referenceContains(query, docs); len(got) != 0 {
+		t.Fatalf("test requires no reference hits, got %+v", got)
+	}
+	got := eng.Query(query, mem.GateList, []string{"relevant", "orthogonal"}, 2)
+	if len(got) != 1 || got[0].ClaimID != "relevant" || got[0].Score <= 0 {
+		t.Fatalf("semantic query admitted a nonpositive unrelated claim: %+v", got)
+	}
+}
+
 func TestVectorSemanticBeatsSubstringDecoy(t *testing.T) {
 	// Regression guard for the 2026-07-07 reference-reservation bug: substring/reference
 	// hits must NOT be reserved ahead of a stronger semantic hit. A decoy that merely

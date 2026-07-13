@@ -182,10 +182,10 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 	assertPackIncludesUserAwarenessClaim(t, homePath, matchingInput, claimRef)
 	assertPackIncludesUserAwarenessClaim(t, homePath, claudeInput, claimRef)
 	assertUserAwarenessProtocolCycle(t, preRequests, preResponses, 2)
-	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
 	unrelated := matchingInput
 	unrelated.Task = "optimize database migration throughput"
 	assertPackExcludesUserAwarenessClaim(t, homePath, unrelated, claimRef)
+	assertUserAwarenessProtocolCycle(t, preRequests, preResponses, 3)
 
 	indexDir := assertUserAwarenessBreadthIndex(t, homePath, promoted.Claim.ID)
 	candidatePath := filepath.Join(homePath, candidates.InboxDir(candidates.Memory), parked[0].ID+".json")
@@ -213,8 +213,8 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 	if rebuiltIndexDir != indexDir {
 		t.Fatalf("restarted engine rebuilt unexpected index path %q, want %q", rebuiltIndexDir, indexDir)
 	}
-	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
 	assertPackExcludesUserAwarenessClaim(t, homePath, unrelated, claimRef)
+	assertUserAwarenessProtocolCycle(t, postRequests, postResponses, 3)
 
 	seedUserPromptMeaningArtifacts(t, homePath, memoryStore, request)
 	beforePrompt := snapshotUserPromptMeaningState(t, homePath)
