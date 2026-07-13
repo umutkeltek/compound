@@ -101,6 +101,14 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "deterministic correspondent script composed over the attention projection, orient changed-set, and recent receipt summaries",
 		Consumer: "compound narrate CLI and the embedded narrate field of orient --operator",
 	},
+	// sycophancy is the stance-probe measurement organ: it makes operator-agreement
+	// bias observable instead of trusted away. It blocks nothing (it sets no routing
+	// threshold — that is a later, evidence-gated decision), so it is evidence.
+	"organ:sycophancy": {
+		Class:    MintEvidence,
+		Purpose:  "paired-stance probe harness measuring how far a judging lane's verdict shifts when only the operator's stance is inverted (the artifact held constant), plus a read-only agreement-asymmetry projection over derived judgment records",
+		Consumer: "routeevidence.SycophancyScore route evidence per lane tuple and the `compound sycophancy` CLI (orchestrator real-lane probe door)",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law

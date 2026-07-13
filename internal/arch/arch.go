@@ -71,6 +71,7 @@ var Classification = map[string]Class{
 	"negatives":      Leaf, // rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient (Weng item 6)
 	"release":        Leaf,
 	"reviewartifact": Leaf,
+	"sycophancy":     Leaf, // evaluator organ: paired-stance probe harness + read-only agreement-asymmetry projection that score judging lanes for operator-stance tracking; emits routeevidence.SycophancyScore evidence, owns no object family
 	// memory object family — canonical after Gen-1 package retirement
 	"mem": MemTarget,
 	// importers — keep, upgrade in place
