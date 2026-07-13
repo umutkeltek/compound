@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -180,8 +181,17 @@ func (r ExtractionRequest) Validate() error {
 }
 
 type ExtractOptions struct {
-	Pending             bool
-	ItemID              string
+	Pending bool
+	ItemID  string
+	// Limit bounds a --pending batch: 0 or absent = unlimited; a negative value
+	// is a deterministic usage error (nothing processed). It caps the number of
+	// in-scope pending items attempted this run, so an idle-lane dispatcher can
+	// burn a large queue in bounded, receipted batches.
+	Limit int
+	// SourceKind, when non-empty, restricts a --pending batch to requests whose
+	// source_kind matches exactly. Out-of-scope requests are invisible to the
+	// batch (neither processed nor skipped), like the item path's non-match.
+	SourceKind          string
 	FixturesDir         string
 	OpenAICompatibleURL string
 	Model               string
@@ -454,6 +464,11 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 	if store == nil {
 		return ExtractReport{}, fmt.Errorf("memory store required")
 	}
+	if opts.Limit < 0 {
+		// Deterministic usage error before any work: a bounded batch cannot have
+		// a negative bound.
+		return ExtractReport{}, fmt.Errorf("--limit must be non-negative, got %d", opts.Limit)
+	}
 	if !opts.Pending && strings.TrimSpace(opts.ItemID) == "" {
 		return ExtractReport{}, fmt.Errorf("use --pending or --item")
 	}
@@ -464,8 +479,20 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 	if err != nil {
 		return ExtractReport{}, err
 	}
+	// Deterministic selection order (created_at, then id) so concurrent bounded
+	// batch runners pick the same items in the same order instead of shuffling
+	// with directory-read order — otherwise `--limit` selects a nondeterministic
+	// slice across runners.
+	sortExtractionRequests(requests)
 	report := ExtractReport{CandidateIDs: []string{}, ExtractionIDs: []string{}}
+	attempted := 0
 	for _, req := range requests {
+		// Source-kind filter restricts a --pending batch's working set to one
+		// exact kind; out-of-scope requests are invisible to this batch (neither
+		// processed nor skipped), mirroring the item path's non-match continue.
+		if opts.Pending && strings.TrimSpace(opts.SourceKind) != "" && req.SourceKind != opts.SourceKind {
+			continue
+		}
 		if !opts.Pending && !matchesExtractionItem(req, opts.ItemID) {
 			continue
 		}
@@ -479,6 +506,13 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 			report.ExtractionIDs = append(report.ExtractionIDs, req.ID)
 			continue
 		}
+		// Limit bounds the batch: stop once we have attempted Limit in-scope
+		// items this run (a failed attempt still consumes the bound so a poison
+		// item cannot make a bounded batch process an unbounded tail).
+		if opts.Limit > 0 && attempted >= opts.Limit {
+			break
+		}
+		attempted++
 		candidateIDs, route, err := extractOne(homePath, store, &req, opts, now)
 		if err != nil {
 			// Fail soft per item: one bad model response must not strand the
@@ -1224,6 +1258,26 @@ func loadExtractionRequests(homePath string) ([]ExtractionRequest, error) {
 		}
 	}
 	return out, nil
+}
+
+// sortExtractionRequests orders requests deterministically by created_at then id
+// so bounded batches (`--limit`) select a stable prefix regardless of the
+// directory-read order returned by the filesystem. created_at is compared as an
+// RFC3339 instant when both parse; otherwise it falls back to a lexical compare
+// so a malformed timestamp still yields a total, stable order.
+func sortExtractionRequests(requests []ExtractionRequest) {
+	sort.SliceStable(requests, func(i, j int) bool {
+		ci, cj := requests[i].CreatedAt, requests[j].CreatedAt
+		ti, ei := time.Parse(time.RFC3339, ci)
+		tj, ej := time.Parse(time.RFC3339, cj)
+		if ei == nil && ej == nil && !ti.Equal(tj) {
+			return ti.Before(tj)
+		}
+		if ci != cj {
+			return ci < cj
+		}
+		return requests[i].ID < requests[j].ID
+	})
 }
 
 func matchesExtractionItem(req ExtractionRequest, item string) bool {
