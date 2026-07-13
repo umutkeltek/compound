@@ -19,6 +19,7 @@ import (
 	"compound/internal/decisions"
 	"compound/internal/envelope"
 	"compound/internal/mem"
+	"compound/internal/narrate"
 	"compound/internal/observation"
 	panelpkg "compound/internal/panel"
 	"compound/internal/product"
@@ -37,8 +38,13 @@ type orientOperatorReport struct {
 	SessionContext *orientSessionContext `json:"session_context,omitempty"`
 	ProductLoops   *orientProductLoops   `json:"product_loops,omitempty"`
 	Changed        orientChanged         `json:"changed"`
-	DrillDown      []orientDrillDown     `json:"drill_down"`
-	Warnings       []string              `json:"warnings,omitempty"`
+	// Narrate embeds the served compound.narrate.v0.1 correspondent script,
+	// produced by the SAME builder `compound narrate` uses (buildNarrateScript),
+	// so orient stays the named consumer surface of the narration law (spec §1).
+	// Additive + omitempty: absent on any build error (recorded in Warnings).
+	Narrate   *narrate.Script   `json:"narrate,omitempty"`
+	DrillDown []orientDrillDown `json:"drill_down"`
+	Warnings  []string          `json:"warnings,omitempty"`
 }
 
 type orientSessionContext struct {
@@ -468,6 +474,16 @@ func buildOrientOperatorReport(homePath string, recent int, now time.Time) (orie
 			Label:   "product loops",
 			Command: productLoops.DrillDownCommand,
 		})
+	}
+	// Embed the correspondent script (additive, best-effort). buildNarrateScript
+	// reads the cursor/changed-set read-only — it must run BEFORE the cursor
+	// advance below so it sees the same last-seen watermark buildOrientChanged
+	// used, and it never persists the narrate emphasis sidecar from this path.
+	if narrateRes, err := buildNarrateScript(homePath, narrate.MoodDecide, recent, now); err != nil {
+		report.Warnings = append(report.Warnings, "narrate: "+err.Error())
+	} else {
+		script := narrateRes.Script
+		report.Narrate = &script
 	}
 	if err := writeOrientOperatorCursor(homePath, currentSeq, now); err != nil {
 		return orientOperatorReport{}, err
