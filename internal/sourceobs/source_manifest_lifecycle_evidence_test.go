@@ -41,3 +41,25 @@ func TestSourceManifestLifecycleRejectsDanglingHighRiskEvidenceWithoutMutation(t
 		t.Fatal("test manifest lost authority ref")
 	}
 }
+
+func TestSourceManifestLifecycleRejectsAssertionShapedHighRiskProofs(t *testing.T) {
+	homePath, family, _ := lifecycleOwnedManifest(t)
+	mustAdvanceLifecycle(t, homePath, family, SourceLifecycleCapturing, lifecycleProofs(SourceLifecycleGateSourceInventory), nil, lifecycleTestNow)
+	mustAdvanceLifecycle(t, homePath, family, SourceLifecycleOwnedSnapshot, lifecycleProofs(SourceLifecycleGateExactCustody), nil, lifecycleTestNow.Add(time.Minute))
+
+	proofs := lifecycleProofs(
+		SourceLifecycleGateIsolatedRestore,
+		SourceLifecycleGateSemanticParity,
+		SourceLifecycleGateRealConsumerReplay,
+		SourceLifecycleGateLegacyUnavailableNegativeControl,
+	)
+	assertLifecycleAdvanceFailsUnchanged(
+		t,
+		homePath,
+		family,
+		SourceLifecycleVerified,
+		proofs,
+		nil,
+		"requires transition:<id> evidence",
+	)
+}
