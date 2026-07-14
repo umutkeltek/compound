@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/home"
 	"compound/internal/policy"
 )
 
@@ -268,7 +269,10 @@ func (s *Store) RecordClosePlan(plan ClosePlan) (string, error) {
 	if strings.TrimSpace(plan.ID) == "" {
 		return "", os.ErrInvalid
 	}
-	dir := filepath.Join(s.home, "close-plans")
+	dir, err := home.HabitatPath(s.home, home.HabitatClosePlans)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
