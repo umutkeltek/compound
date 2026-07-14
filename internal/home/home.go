@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"compound/internal/candidates"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,34 +30,9 @@ const (
 	BackupFreshnessMaxAge   = 48 * time.Hour
 )
 
-// Dirs is the typed habitat — each entry is a subdir compound owns under the home. The candidate
-// inbox dirs are NOT hand-listed here: they are derived from internal/candidates (the single
-// source of truth), so the home can never create a dir the producers don't write to, or miss one
-// they do. Operational sub-states (parked/rejected/contradictions) are added on top.
-var Dirs = func() []string {
-	d := []string{
-		"lock",
-		"config", "config/overlays", "config/harnesses", "config/adapters",
-		"contracts/effective", "contracts/schemas",
-		"events",
-		"work", "work/work", "work/runs", "work/leases", "work/checkpoints",
-		"context/requests", "context/packs", "context/injections",
-		"inbox/knowledge-extractions",
-		"ledger",
-		"observed/tool-output", // rebuildable, content-addressed externalized tool-output bodies (C3); NEVER under ledger
-		"observed/findings",    // direct-write, content-addressed agent-authored operational findings; NEVER under ledger
-		"registries",
-		"artifacts/sha256", "artifacts/refs",
-		"indexes",
-		"projections",
-		"reviews",
-		"exports",
-		"tmp",
-	}
-	d = append(d, candidates.AllInboxDirs()...)                             // one canonical dir per candidate kind
-	d = append(d, "inbox/parked", "inbox/rejected", "inbox/contradictions") // adjudication sub-states
-	return d
-}()
+// Dirs is a compatibility projection of HabitatCatalog's scaffold policy.
+// HabitatCatalog is the owner; callers that need a fresh copy use HabitatDirs.
+var Dirs = HabitatDirs()
 
 // Manifest is the home's identity record.
 type Manifest struct {
@@ -222,6 +196,8 @@ type Report struct {
 	Manifest       Manifest
 	Dirs           []CheckItem
 	DirsOK         int
+	Habitat        HabitatInventory
+	HabitatOK      bool
 	InsideGitRepo  bool        // a global home inside a git repo is a "generated-state-in-source" smell
 	Hygiene        []CheckItem // operational hygiene: terminal work swept, leases live-only
 	HygieneOK      bool
@@ -265,12 +241,16 @@ func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
 		}
 		r.Dirs = append(r.Dirs, CheckItem{Name: d, OK: ok})
 	}
+	if habitat, err := InspectHabitat(homePath); err == nil {
+		r.Habitat = habitat
+		r.HabitatOK = habitat.OK
+	}
 	r.InsideGitRepo = underGitRepo(homePath)
 	r.Hygiene, r.HygieneOK = hygieneChecks(homePath)
 	r.BackupWarnings = backupFreshnessWarnings(homePath, now)
 	r.Setup = DoctorSetup(SetupOptions{})
 	r.SetupOK = r.Setup.OK
-	r.OK = r.ManifestOK && r.DirsOK == len(Dirs) && r.SetupOK
+	r.OK = r.ManifestOK && r.DirsOK == len(Dirs) && r.HabitatOK && r.SetupOK
 	return r
 }
 
