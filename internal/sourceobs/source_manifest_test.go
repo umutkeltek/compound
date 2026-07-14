@@ -2,6 +2,7 @@ package sourceobs
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,6 +171,64 @@ func TestOwnedSourceManifestDeduplicatesBodiesAndRefusesDestructiveMaterialize(t
 	}
 	if _, err := MaterializeSourceManifestItem(homePath, manifest.SourceFamily, manifest.Items[0].ID, target); err != nil {
 		t.Fatalf("byte-identical materialize must be idempotent: %v", err)
+	}
+}
+
+func TestOwnedSourceManifestPreservesVersionHistoryAcrossCaptures(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(t.TempDir(), "compound.md")
+	versions := [][]byte{[]byte("# Compound v1\n"), []byte("# Compound v2\n")}
+	var itemIDs []string
+	for _, body := range versions {
+		if err := os.WriteFile(sourcePath, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := BuildOwnedSourceManifest(homePath, "versioned_source", []string{sourcePath}, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		itemIDs = append(itemIDs, manifest.Items[0].ID)
+		if _, err := RecordSourceManifest(homePath, manifest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if itemIDs[0] == itemIDs[1] {
+		t.Fatalf("different source bytes reused one version id %q", itemIDs[0])
+	}
+
+	manifest, err := LoadSourceManifest(homePath, "versioned_source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Items) != 2 {
+		t.Fatalf("version history items = %d, want 2: %+v", len(manifest.Items), manifest.Items)
+	}
+	byID := map[string]SourceManifestItem{}
+	for _, item := range manifest.Items {
+		byID[item.ID] = item
+	}
+	first, second := byID[itemIDs[0]], byID[itemIDs[1]]
+	if first.SourceKey == "" || first.SourceKey != second.SourceKey {
+		t.Fatalf("stable source identity missing: first=%+v second=%+v", first, second)
+	}
+	if first.VersionState != "superseded" || first.SupersededBy != second.ID || second.VersionState != "current" || second.Supersedes != first.ID {
+		t.Fatalf("bad version lineage: first=%+v second=%+v", first, second)
+	}
+	for i, itemID := range itemIDs {
+		target := filepath.Join(t.TempDir(), fmt.Sprintf("v%d.md", i+1))
+		if _, err := MaterializeSourceManifestItem(homePath, manifest.SourceFamily, itemID, target); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, versions[i]) {
+			t.Fatalf("version %d bytes = %q, want %q", i+1, got, versions[i])
+		}
 	}
 }
 

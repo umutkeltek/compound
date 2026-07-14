@@ -33,6 +33,10 @@ type SourceManifest struct {
 
 type SourceManifestItem struct {
 	ID                 string                   `json:"id"`
+	SourceKey          string                   `json:"source_key,omitempty"`
+	VersionState       string                   `json:"version_state,omitempty"`
+	Supersedes         string                   `json:"supersedes,omitempty"`
+	SupersededBy       string                   `json:"superseded_by,omitempty"`
 	SourceKind         string                   `json:"source_kind"`
 	SourceRef          string                   `json:"source_ref"`
 	FileHash           string                   `json:"file_hash"`
@@ -184,6 +188,7 @@ func BuildOwnedSourceManifest(homePath, sourceFamily string, paths []string, now
 		manifest.Items[i].BodyBytes = int64(len(body))
 		manifest.Items[i].MediaType = inferMediaType(manifest.Items[i].SourceRef)
 		manifest.Items[i].EvidenceRefs = append(manifest.Items[i].EvidenceRefs, ref)
+		manifest.Items[i].ID = idFor("srcitem_", sourceFamily, manifest.Items[i].SourceKey, manifest.Items[i].FileHash)
 	}
 	return manifest, nil
 }
@@ -199,14 +204,132 @@ func RecordSourceManifest(homePath string, manifest SourceManifest) (SourceManif
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return SourceManifestReport{}, err
 	}
+	if existing, err := LoadSourceManifest(homePath, manifest.SourceFamily); err == nil {
+		manifest = mergeSourceManifest(existing, manifest)
+	} else if !os.IsNotExist(err) {
+		return SourceManifestReport{}, err
+	}
+	manifest.SchemaVersion = SourceManifestSchemaVersion
+	manifest.GeneratedAt = sourceManifestGeneratedAt(manifest.Items, time.Time{})
 	body, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return SourceManifestReport{}, err
 	}
-	if err := os.WriteFile(path, append(body, '\n'), 0o644); err != nil {
+	if err := writeSourceManifestAtomic(path, append(body, '\n')); err != nil {
 		return SourceManifestReport{}, err
 	}
 	return SourceManifestReport{ManifestID: manifest.ID, ManifestPath: path, AuthorityRef: manifest.AuthorityRef, ItemCount: len(manifest.Items)}, nil
+}
+
+func mergeSourceManifest(existing, incoming SourceManifest) SourceManifest {
+	merged := existing
+	merged.SchemaVersion = SourceManifestSchemaVersion
+	merged.AuthorityRef = incoming.AuthorityRef
+	if incoming.FamilyMeta != nil {
+		merged.FamilyMeta = incoming.FamilyMeta
+	}
+	for i := range merged.Items {
+		normalizeSourceManifestItem(&merged.Items[i], existing.SourceFamily)
+	}
+	for _, next := range incoming.Items {
+		normalizeSourceManifestItem(&next, incoming.SourceFamily)
+		matched := -1
+		for i := range merged.Items {
+			if merged.Items[i].ID == next.ID || (merged.Items[i].SourceKey == next.SourceKey && merged.Items[i].FileHash == next.FileHash) {
+				matched = i
+				break
+			}
+		}
+		if matched >= 0 {
+			// Same version: enrich legacy inventory with owned custody without
+			// destroying its stable compact row id.
+			next.ID = merged.Items[matched].ID
+			next.Supersedes = merged.Items[matched].Supersedes
+			next.SupersededBy = merged.Items[matched].SupersededBy
+			if next.SupersededBy != "" {
+				next.VersionState = "superseded"
+			}
+			merged.Items[matched] = next
+			continue
+		}
+		latest := -1
+		for i := range merged.Items {
+			if merged.Items[i].SourceKey != next.SourceKey || merged.Items[i].VersionState == "superseded" {
+				continue
+			}
+			if latest < 0 || merged.Items[i].SnapshotTime > merged.Items[latest].SnapshotTime {
+				latest = i
+			}
+		}
+		if latest >= 0 {
+			next.Supersedes = merged.Items[latest].ID
+			for i := range merged.Items {
+				if merged.Items[i].SourceKey == next.SourceKey && merged.Items[i].VersionState != "superseded" {
+					merged.Items[i].VersionState = "superseded"
+					merged.Items[i].SupersededBy = next.ID
+				}
+			}
+		}
+		next.VersionState = "current"
+		merged.Items = append(merged.Items, next)
+	}
+	sort.SliceStable(merged.Items, func(i, j int) bool {
+		if merged.Items[i].SourceKey != merged.Items[j].SourceKey {
+			return merged.Items[i].SourceKey < merged.Items[j].SourceKey
+		}
+		if merged.Items[i].SnapshotTime != merged.Items[j].SnapshotTime {
+			return merged.Items[i].SnapshotTime < merged.Items[j].SnapshotTime
+		}
+		return merged.Items[i].ID < merged.Items[j].ID
+	})
+	return merged
+}
+
+func normalizeSourceManifestItem(item *SourceManifestItem, sourceFamily string) {
+	if strings.TrimSpace(item.SourceKey) == "" {
+		identity := item.SourceRef
+		if len(item.CompoundEntityRefs) > 0 {
+			identity = strings.Join(item.CompoundEntityRefs, "|")
+		}
+		item.SourceKey = idFor("source_", sourceFamily, identity)
+	}
+	if strings.TrimSpace(item.VersionState) == "" {
+		item.VersionState = "current"
+	}
+}
+
+func writeSourceManifestAtomic(path string, body []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".source-manifest-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func LoadSourceManifest(homePath, sourceFamily string) (SourceManifest, error) {
@@ -482,6 +605,7 @@ func buildSourceManifestItem(sourceFamily, sourcePath string) (SourceManifestIte
 		CompoundEntityRefs: inferCompoundEntityRefs(sourcePath),
 		EvidenceRefs:       []string{"source:" + sourcePath, hash},
 	}
+	normalizeSourceManifestItem(&item, sourceFamily)
 	return item, nil
 }
 
