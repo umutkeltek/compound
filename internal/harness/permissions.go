@@ -194,6 +194,37 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 	return PermissionRender{TargetPath: policy.TargetPath, Changed: !jsonEquivalent(before, content), Content: content, Artifact: artifact, Details: permissionDelta(previous, policy)}, nil
 }
 
+var writeHarnessArtifactManifestForApply = WriteHarnessArtifactManifest
+
+// ApplyPermissions reconciles only Compound-managed permission entries, writes
+// the target atomically, and records the exact authority revision/content hash.
+// If provenance persistence fails after the target write, the target is restored
+// to its pre-image so a clean drift report can never outpace its artifact record.
+func ApplyPermissions(homePath, harness string) (PermissionRender, error) {
+	render, err := RenderPermissions(homePath, harness)
+	if err != nil {
+		return PermissionRender{}, err
+	}
+	before, readErr := os.ReadFile(render.TargetPath)
+	beforeExisted := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return PermissionRender{}, fmt.Errorf("read settings pre-image %s: %w", render.TargetPath, readErr)
+	}
+	if render.Changed {
+		if err := writePermissionFileAtomic(render.TargetPath, render.Content); err != nil {
+			return PermissionRender{}, fmt.Errorf("write settings target %s: %w", render.TargetPath, err)
+		}
+	}
+	if err := writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact}); err != nil {
+		restoreErr := restorePermissionPreimage(render.TargetPath, before, beforeExisted)
+		if restoreErr != nil {
+			return PermissionRender{}, fmt.Errorf("write harness artifact manifest: %v; restore settings pre-image: %w", err, restoreErr)
+		}
+		return PermissionRender{}, fmt.Errorf("write harness artifact manifest: %w; settings pre-image restored", err)
+	}
+	return render, nil
+}
+
 func PermissionDrift(homePath, harness string) (PermissionDriftReport, error) {
 	render, err := RenderPermissions(homePath, harness)
 	if err != nil {
@@ -251,10 +282,51 @@ func WriteHarnessArtifactManifest(homePath string, artifacts []HarnessArtifact) 
 		}
 	}
 	path := HarnessArtifactManifestPath(homePath)
+	return writePermissionFileAtomic(path, body.Bytes())
+}
+
+func restorePermissionPreimage(path string, body []byte, existed bool) error {
+	if existed {
+		return writePermissionFileAtomic(path, body)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func writePermissionFileAtomic(path string, body []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, body.Bytes(), 0o644)
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(mode); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(body); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
 }
 
 func loadHarnessArtifacts(homePath string) ([]HarnessArtifact, error) {
