@@ -1080,6 +1080,113 @@ func TestParityReplayCheckpointResumeRejectsTamperAndWrongIdentity(t *testing.T)
 	}
 }
 
+func TestParityReplayCheckpointBindsExactFixturePrefix(t *testing.T) {
+	now := time.Now().UTC()
+	claimA := "claim://claim_aaaaaaaaaaaa"
+	claimB := "claim://claim_bbbbbbbbbbbb"
+	tests := []struct {
+		name     string
+		consumer string
+		mutate   func(*retrievalparity.Checkpoint, retrievalparity.FixtureRow)
+	}{
+		{
+			name:     "coverage",
+			consumer: retrievalparity.ConsumerQuery,
+			mutate: func(checkpoint *retrievalparity.Checkpoint, _ retrievalparity.FixtureRow) {
+				checkpoint.Coverage.KnownGaps = []string{"query_engine_unavailable"}
+			},
+		},
+		{
+			name:     "query identity",
+			consumer: retrievalparity.ConsumerQuery,
+			mutate: func(checkpoint *retrievalparity.Checkpoint, _ retrievalparity.FixtureRow) {
+				checkpoint.Rows[0].QuerySHA256 = retrievalparity.HashQuery("synthetic checkpoint impostor")
+			},
+		},
+		{
+			name:     "expected refs",
+			consumer: retrievalparity.ConsumerQuery,
+			mutate: func(checkpoint *retrievalparity.Checkpoint, fixtureRow retrievalparity.FixtureRow) {
+				fixtureRow.ExpectedRefs = []string{claimA}
+				checkpoint.Rows[0] = retrievalparity.NewReplayRow(fixtureRow, nil, time.Millisecond, true)
+			},
+		},
+		{
+			name:     "negative control",
+			consumer: retrievalparity.ConsumerQuery,
+			mutate: func(checkpoint *retrievalparity.Checkpoint, fixtureRow retrievalparity.FixtureRow) {
+				fixtureRow.NegativeControl = &retrievalparity.NegativeControl{MaskedRef: claimB}
+				checkpoint.Rows[0] = retrievalparity.NewReplayRow(fixtureRow, nil, time.Millisecond, true)
+			},
+		},
+		{
+			name:     "orient input",
+			consumer: retrievalparity.ConsumerOrient,
+			mutate: func(checkpoint *retrievalparity.Checkpoint, _ retrievalparity.FixtureRow) {
+				checkpoint.Rows[0].InputSHA256 = retrievalparity.HashQuery("synthetic checkpoint wrong orient input")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := newParityTestHome(t, now)
+			fixtureRow := retrievalparity.FixtureRow{
+				Consumer:        tt.consumer,
+				Query:           "synthetic checkpoint exact prefix",
+				ExpectedRefs:    []string{claimA, claimB},
+				NegativeControl: &retrievalparity.NegativeControl{MaskedRef: claimA},
+			}
+			if tt.consumer == retrievalparity.ConsumerOrient {
+				fixtureRow.OrientInput = parityTestOrientInput(t, homePath)
+				fixtureRow.ExpectedRefs = nil
+				fixtureRow.NegativeControl = nil
+			}
+			fixture := retrievalparity.Fixture{
+				SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+				ClassifierVersion: retrievalparity.ClassifierVersion,
+				Coverage:          retrievalparity.Coverage{KnownGaps: []string{}},
+				Rows: []retrievalparity.FixtureRow{
+					fixtureRow,
+					fixtureRow,
+				},
+			}
+			fixture.Rows[1].Query = "synthetic checkpoint remaining row"
+			fixturePath := writeParityFixture(t, homePath, fixture)
+			_, fixtureRef, err := retrievalparity.LoadFixture(fixturePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			k := 0
+			if tt.consumer == retrievalparity.ConsumerQuery {
+				k = 10
+			}
+			identity := retrievalparity.NewReplayIdentity(fixtureRef, tt.consumer, k)
+			checkpoint := retrievalparity.NewCheckpoint(identity, fixture.Coverage)
+			checkpoint.Rows = []retrievalparity.ReplayRow{
+				retrievalparity.NewReplayRow(fixtureRow, nil, time.Millisecond, true),
+			}
+			checkpoint.Completed = 1
+			tt.mutate(&checkpoint, fixtureRow)
+			if err := retrievalparity.WriteCheckpoint(homePath, &checkpoint); err != nil {
+				t.Fatalf("write validly sealed mismatched checkpoint: %v", err)
+			}
+			store, err := mem.Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpointPath := retrievalparity.CheckpointPath(homePath, identity)
+			_, reportPath, code, err := runMemoryParityReplay(homePath, store, []string{
+				"--fixture", fixturePath,
+				"--consumer", tt.consumer,
+				"--resume-from", checkpointPath,
+			}, now)
+			if err == nil || code == 0 || reportPath != "" || !strings.Contains(err.Error(), "checkpoint") {
+				t.Fatalf("mismatched %s checkpoint code=%d report=%q err=%v", tt.name, code, reportPath, err)
+			}
+		})
+	}
+}
+
 func newParityTestHome(t *testing.T, now time.Time) string {
 	t.Helper()
 	homePath := filepath.Join(t.TempDir(), "home")
