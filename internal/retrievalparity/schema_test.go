@@ -1,0 +1,267 @@
+package retrievalparity
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"compound/internal/home"
+)
+
+var parityTestNow = time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+
+func TestOrientInputStaysHomeLocalAndReportCarriesOnlyItsHash(t *testing.T) {
+	input := OrientInput{
+		Harness:     "claude_code",
+		Cwd:         "/workspace/synthetic-library",
+		RepoKind:    "library",
+		RepoKindVia: "flag",
+		Mode:        "review",
+		Topic:       "topic:synthetic",
+	}
+	query := "preserve the exact orient tuple"
+	journalRow := NewOrientRow(query, input, []string{"claim://claim_aaaaaaaaaaaa"}, time.Millisecond, true, parityTestNow)
+	if journalRow.OrientInput == nil || *journalRow.OrientInput != normalizeOrientInput(input) {
+		t.Fatalf("journal orient input = %+v", journalRow.OrientInput)
+	}
+
+	replay := NewReplayRow(FixtureRow{
+		Consumer:     ConsumerOrient,
+		Query:        query,
+		OrientInput:  &input,
+		ExpectedRefs: journalRow.ResultRefs,
+	}, journalRow.ResultRefs, time.Millisecond, true)
+	want := HashOrientInput(input, query)
+	if replay.InputSHA256 != want {
+		t.Fatalf("input hash = %q, want %q", replay.InputSHA256, want)
+	}
+	persisted, err := json.Marshal(replay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{input.Cwd, input.Harness, input.Topic, query} {
+		if strings.Contains(string(persisted), raw) {
+			t.Fatalf("report row leaked raw orient input %q: %s", raw, persisted)
+		}
+	}
+	changed := input
+	changed.Topic = "topic:other"
+	if HashOrientInput(changed, query) == want {
+		t.Fatal("topic did not participate in orient input identity")
+	}
+}
+
+func TestFreezeKeepsSameOrientQueryWithDistinctExactTuples(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	controlPath := writeValidControlReport(t, homePath)
+	query := "same query, different context"
+	first := OrientInput{Harness: "codex", Cwd: "/workspace/one", RepoKind: "product", RepoKindVia: "detect", Mode: "execute", Topic: "topic:one"}
+	second := first
+	second.Mode = "review"
+	second.Topic = "topic:two"
+	Record(homePath, NewOrientRow(query, first, []string{"claim://claim_aaaaaaaaaaaa"}, time.Millisecond, true, parityTestNow))
+	Record(homePath, NewOrientRow(query, second, []string{"claim://claim_bbbbbbbbbbbb"}, time.Millisecond, true, parityTestNow))
+
+	fixture, _, err := FreezeFromJournal(homePath, 1, "", controlPath, parityTestNow)
+	if err != nil {
+		t.Fatalf("freeze exact tuples: %v", err)
+	}
+	if len(fixture.Rows) != 2 {
+		t.Fatalf("frozen rows = %d, want 2: %+v", len(fixture.Rows), fixture.Rows)
+	}
+	identities := map[string]bool{}
+	for _, row := range fixture.Rows {
+		if row.OrientInput == nil {
+			t.Fatalf("frozen orient row lost tuple: %+v", row)
+		}
+		identities[HashOrientInput(*row.OrientInput, row.Query)] = true
+	}
+	if !identities[HashOrientInput(first, query)] || !identities[HashOrientInput(second, query)] {
+		t.Fatalf("frozen identities = %v", identities)
+	}
+}
+
+func TestLegacyClaimRefsAreFixtureSafeButReportHashed(t *testing.T) {
+	legacy := "claim://brain-D1"
+	fixture := Fixture{
+		SchemaVersion:     FixtureSchemaVersion,
+		ClassifierVersion: ClassifierVersion,
+		Coverage:          Coverage{KnownGaps: []string{}},
+		Rows: []FixtureRow{{
+			Consumer:     ConsumerQuery,
+			Query:        "legacy evidence",
+			ExpectedRefs: []string{legacy},
+		}},
+	}
+	if err := ValidateFixture(fixture); err != nil {
+		t.Fatalf("safe legacy fixture: %v", err)
+	}
+	replay := NewReplayRow(fixture.Rows[0], []string{legacy}, time.Millisecond, true)
+	want := HashQuery(legacy)
+	if len(replay.ExpectedRefs) != 1 || replay.ExpectedRefs[0] != want || len(replay.ResultRefs) != 1 || replay.ResultRefs[0] != want {
+		t.Fatalf("persisted legacy refs = %+v, want %q", replay, want)
+	}
+}
+
+func TestFreezeValidatesWindowEndpointsBeforeReadingOrWriting(t *testing.T) {
+	tests := []struct {
+		name string
+		days int
+		now  time.Time
+		want string
+	}{
+		{name: "overflowed start", days: int(^uint(0) >> 1), now: parityTestNow, want: "window_start"},
+		{name: "invalid end", days: 1, now: time.Date(10000, 1, 2, 0, 0, 0, 0, time.UTC), want: "window_end"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := filepath.Join(t.TempDir(), "missing-home")
+			_, _, err := FreezeFromJournal(homePath, tt.days, "", "", tt.now)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("freeze error = %v, want endpoint %q", err, tt.want)
+			}
+			if _, statErr := os.Stat(filepath.Join(homePath, "reviews")); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid freeze created artifacts: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestReportSeparatesParityFromNegativeControlValidity(t *testing.T) {
+	masked := "claim://claim_aaaaaaaaaaaa"
+	control := NewReplayRow(FixtureRow{
+		Consumer:        ConsumerQuery,
+		Query:           "negative control",
+		ExpectedRefs:    []string{masked},
+		NegativeControl: &NegativeControl{MaskedRef: masked},
+	}, nil, time.Millisecond, true)
+	report := BuildReport(HashQuery("fixture"), ConsumerQuery, 10, Coverage{}, []ReplayRow{control}, parityTestNow)
+	if report.ParityPassed {
+		t.Fatal("negative control loss was incorrectly reported as parity success")
+	}
+	if report.NegativeControlValid == nil || !*report.NegativeControlValid {
+		t.Fatalf("negative control validity = %v, want true", report.NegativeControlValid)
+	}
+
+	unmasked := NewReplayRow(FixtureRow{Consumer: ConsumerQuery, Query: "normal"}, nil, time.Millisecond, true)
+	normal := BuildReport(HashQuery("fixture-normal"), ConsumerQuery, 10, Coverage{}, []ReplayRow{unmasked}, parityTestNow)
+	if !normal.ParityPassed || normal.NegativeControlValid != nil {
+		t.Fatalf("normal report parity=%t control=%v", normal.ParityPassed, normal.NegativeControlValid)
+	}
+}
+
+func TestUnavailableEngineFailsParityEvenWithNoExpectedRefs(t *testing.T) {
+	row := NewReplayRow(FixtureRow{Consumer: ConsumerQuery, Query: "empty expected"}, nil, 0, false)
+	if row.ParityPassed {
+		t.Fatal("unavailable engine passed an empty-expected parity row")
+	}
+}
+
+func TestFreezeRequiresStrictValidControlReportAndPinsItsHash(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	controlPath := writeValidControlReport(t, homePath)
+	controlBytes, err := os.ReadFile(controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	Record(homePath, NewRow(ConsumerQuery, "traffic", []string{"claim://claim_aaaaaaaaaaaa"}, time.Millisecond, true, parityTestNow))
+	fixture, fixturePath, err := FreezeFromJournal(homePath, 1, "", controlPath, parityTestNow)
+	if err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	if fixturePath == "" || fixture.ControlReportRef != hashBytes(controlBytes) {
+		t.Fatalf("control report ref = %q, want %q", fixture.ControlReportRef, hashBytes(controlBytes))
+	}
+
+	invalidPath := filepath.Join(t.TempDir(), "invalid-control.json")
+	invalid := append([]byte(strings.TrimSpace(string(controlBytes))), []byte(` {"extra":true}`)...)
+	if err := os.WriteFile(invalidPath, invalid, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := FreezeFromJournal(homePath, 1, "other.json", invalidPath, parityTestNow); err == nil {
+		t.Fatal("freeze accepted a control report with trailing JSON")
+	}
+}
+
+func TestCheckpointSealsIdentityCoverageAndPartialProgress(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	identity := NewReplayIdentity(HashQuery("fixture"), ConsumerQuery, 10)
+	checkpoint := NewCheckpoint(identity, Coverage{KnownGaps: []string{"query_engine_unavailable"}})
+	checkpoint.Rows = append(checkpoint.Rows, NewReplayRow(FixtureRow{Consumer: ConsumerQuery, Query: "one"}, nil, 0, false))
+	checkpoint.Completed = len(checkpoint.Rows)
+	if err := WriteCheckpoint(homePath, &checkpoint); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	path := CheckpointPath(homePath, identity)
+	loaded, err := LoadCheckpoint(path, identity)
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if loaded.Completed != 1 || len(loaded.Rows) != 1 || len(loaded.Coverage.KnownGaps) != 1 {
+		t.Fatalf("partial checkpoint not preserved: %+v", loaded)
+	}
+	if temps, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".*.tmp-*")); len(temps) != 0 {
+		t.Fatalf("atomic write left temporary files: %v", temps)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["completed"] = float64(0)
+	tampered, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(tampered, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadCheckpoint(path, identity); err == nil || !strings.Contains(err.Error(), "tampered") {
+		t.Fatalf("tampered checkpoint error = %v", err)
+	}
+
+	if err := WriteCheckpoint(homePath, &checkpoint); err != nil {
+		t.Fatalf("restore checkpoint: %v", err)
+	}
+	wrong := NewReplayIdentity(HashQuery("other-fixture"), ConsumerQuery, 10)
+	if _, err := LoadCheckpoint(path, wrong); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("wrong identity error = %v", err)
+	}
+	checkpoint.Completed = 0
+	if err := WriteCheckpoint(homePath, &checkpoint); err == nil {
+		t.Fatal("checkpoint accepted completed != len(rows)")
+	}
+}
+
+func writeValidControlReport(t *testing.T, homePath string) string {
+	t.Helper()
+	masked := "claim://claim_aaaaaaaaaaaa"
+	row := NewReplayRow(FixtureRow{
+		Consumer:        ConsumerQuery,
+		Query:           "control",
+		ExpectedRefs:    []string{masked},
+		NegativeControl: &NegativeControl{MaskedRef: masked},
+	}, nil, time.Millisecond, true)
+	report := BuildReport(HashQuery("control-fixture"), ConsumerQuery, 10, Coverage{}, []ReplayRow{row}, parityTestNow)
+	path, err := WriteReport(homePath, report)
+	if err != nil {
+		t.Fatalf("write control report: %v", err)
+	}
+	return path
+}
+
+func newParityPackageHome(t *testing.T) string {
+	t.Helper()
+	homePath := filepath.Join(t.TempDir(), "home")
+	if err := home.Init(homePath, "test", parityTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	return homePath
+}
