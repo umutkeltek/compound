@@ -346,6 +346,36 @@ func TestOSAbsorptionOSCapabilityProofBindsCompoundOnlyProjection(t *testing.T) 
 	}
 }
 
+// TestOSAbsorptionOSCapabilityProofSkipsWhenNoAbsorbedOSConfigured is the
+// public-clone falsifier for this wrapper proof: the fixture installs real
+// os/bun/compound shims and entrypoint files on disk (so a bug that ignores
+// the resolver and falls back to a hardcoded path would still find files to
+// read), but never seeds the absorbed_os path-authority registry into mem.
+// The proof must skip — never fail, never fabricate an ok — and must not
+// move AutoProofCount or FailedAutoProofCount.
+func TestOSAbsorptionOSCapabilityProofSkipsWhenNoAbsorbedOSConfigured(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{skipAbsorbedOSSeed: true})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "skipped" {
+		t.Fatalf("no absorbed-OS root declared should skip, not %q: %+v", got.ProofStatus, got)
+	}
+	if !strings.Contains(got.ProofDetail, "no absorbed-OS root declared") {
+		t.Fatalf("skip detail should explain the missing absorbed_os declaration: %+v", got)
+	}
+
+	report, err := OSAbsorptionDoctor(fixture.compoundHome)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if report.AutoProofCount != 0 || report.FailedAutoProofCount != 0 {
+		t.Fatalf("a skip must not move auto_proof_count/failed_auto_proof_count: auto=%d failed=%d", report.AutoProofCount, report.FailedAutoProofCount)
+	}
+	if report.SkippedProofCount == 0 {
+		t.Fatalf("a skip must increment SkippedProofCount: %+v", report)
+	}
+}
+
 func TestOSAbsorptionOSCapabilityProofRejectsFixedTaskOnlyProxy(t *testing.T) {
 	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{nonceWrapperOfferID: "skill:renamed-independent-resolver"})
 	got := doctorOSCapabilityRow(t, fixture.compoundHome)
@@ -396,7 +426,7 @@ func TestOSAbsorptionOSCapabilityProofRejectsTransientProjectionModuleShadow(t *
 func TestOSAbsorptionOSCapabilityProofRejectsAlternateSyntaxAfterReviewedHash(t *testing.T) {
 	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{})
 	reviewedRefs := osCapabilityFixtureSourceDigestRefs(t)
-	entrypointPath := filepath.Join(os.Getenv("HOME"), "Projects", "operating-system", "umut-os", "exec-lane", "os.ts")
+	entrypointPath := filepath.Join(os.Getenv("HOME"), "absorbed-os", "exec-lane", "os.ts")
 	body, err := os.ReadFile(entrypointPath)
 	if err != nil {
 		t.Fatal(err)

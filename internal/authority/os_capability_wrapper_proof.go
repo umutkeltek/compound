@@ -113,6 +113,13 @@ type osCapabilityProbe struct {
 }
 
 func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
+	absorbedOSRoot, skip, err := resolveAbsorbedOSRootForProof(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "os capability absorbed-OS root: " + err.Error()}
+	}
+	if skip != nil {
+		return *skip
+	}
 	for _, required := range []string{
 		routeevidence.CapabilityTaskClassifierAuthorityRef,
 		capgraph.CapabilityGraphAuthorityRef,
@@ -126,7 +133,7 @@ func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) o
 	if err != nil {
 		return osAbsorptionProofResult{reason: "os capability expected source binding: " + err.Error()}
 	}
-	source, osPath, err := resolveInstalledOSCapabilitySource()
+	source, osPath, err := resolveInstalledOSCapabilitySource(absorbedOSRoot)
 	if err != nil {
 		return osAbsorptionProofResult{reason: "os capability source binding: " + err.Error()}
 	}
@@ -317,7 +324,7 @@ func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) o
 	return osAbsorptionProofResult{ok: true, proofRef: proofRef}
 }
 
-func resolveInstalledOSCapabilitySource() (osCapabilitySourceSnapshot, string, error) {
+func resolveInstalledOSCapabilitySource(absorbedOSRoot string) (osCapabilitySourceSnapshot, string, error) {
 	osPath, err := exec.LookPath("os")
 	if err != nil {
 		return osCapabilitySourceSnapshot{}, "", err
@@ -339,11 +346,11 @@ func resolveInstalledOSCapabilitySource() (osCapabilitySourceSnapshot, string, e
 		return osCapabilitySourceSnapshot{}, "", err
 	}
 	relSource := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(relSourceText, "/")))
-	expected := filepath.Join("Projects", "operating-system", "umut-os", "exec-lane", "os.ts")
-	if relSource != expected {
+	entrypointPath := filepath.Join(homePath, relSource)
+	wantEntrypoint := filepath.Clean(filepath.Join(absorbedOSRoot, filepath.FromSlash(AbsorbedOSExecLaneEntrypoint)))
+	if filepath.Clean(entrypointPath) != wantEntrypoint {
 		return osCapabilitySourceSnapshot{}, "", fmt.Errorf("installed os shim targets unexpected entrypoint")
 	}
-	entrypointPath := filepath.Join(homePath, relSource)
 	entrypoint, entrypointInfo, err := readRegularBoundedSnapshot(entrypointPath, maxOSCapabilityEntrypointBytes)
 	if err != nil {
 		return osCapabilitySourceSnapshot{}, "", err

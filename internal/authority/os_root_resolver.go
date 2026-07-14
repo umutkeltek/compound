@@ -70,12 +70,39 @@ func ResolveAbsorbedOSEntrypoint(compoundHome, subPath string) (string, bool, er
 	if err != nil {
 		return "", false, err
 	}
-	if !ok {
-		return "", false, nil
-	}
-	info, statErr := os.Stat(root)
-	if statErr != nil || !info.IsDir() {
+	if !ok || !absorbedOSRootPresentOnDisk(root) {
 		return "", false, nil
 	}
 	return filepath.Join(root, filepath.FromSlash(subPath)), true, nil
+}
+
+// absorbedOSRootPresentOnDisk reports whether a declared absorbed-OS root
+// actually exists as a directory. A declared-but-absent root (stale or moved
+// registry entry) is treated identically to an absent declaration.
+func absorbedOSRootPresentOnDisk(root string) bool {
+	info, err := os.Stat(root)
+	return err == nil && info.IsDir()
+}
+
+// osAbsorptionAbsorbedOSSkipReason is the standard proof_detail every
+// OS-absorption wrapper proof reports when it declines to run because no
+// absorbed-OS root is configured on this machine (the public-clone case).
+const osAbsorptionAbsorbedOSSkipReason = "no absorbed-OS root declared (os-path-authority key 'absorbed_os' absent or path missing) — OS-absorption proofs skipped"
+
+// resolveAbsorbedOSRootForProof is the shared entry check every OS-absorption
+// wrapper proof (os_capability, os_skills, os_status) calls first: it
+// resolves the declared root and confirms it is present on disk, folding
+// "not declared" and "declared but absent" into the same skipped outcome
+// (returned via skip, never via err) so a public clone with no absorbed-OS
+// root imported skips these proofs instead of failing them. err is reserved
+// for a genuine resolver fault (e.g. an unreadable ledger).
+func resolveAbsorbedOSRootForProof(compoundHome string) (root string, skip *osAbsorptionProofResult, err error) {
+	root, found, err := ResolveAbsorbedOSRoot(compoundHome)
+	if err != nil {
+		return "", nil, err
+	}
+	if !found || !absorbedOSRootPresentOnDisk(root) {
+		return "", &osAbsorptionProofResult{skipped: true, reason: osAbsorptionAbsorbedOSSkipReason}, nil
+	}
+	return root, nil, nil
 }

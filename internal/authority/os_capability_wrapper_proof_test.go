@@ -37,6 +37,7 @@ type osCapabilityProofFixture struct {
 	mutateCompoundBinary      bool
 	mutateRestoreCompound     bool
 	resolutionMutator         func(map[string]any)
+	skipAbsorbedOSSeed        bool
 }
 
 type installedOSCapabilityProofFixture struct {
@@ -49,7 +50,7 @@ func installOSCapabilityProofFixture(t *testing.T, opts osCapabilityProofFixture
 	userHome := filepath.Join(root, "home")
 	compoundHome := filepath.Join(root, "compound-home")
 	binDir := filepath.Join(root, "bin")
-	osRoot := filepath.Join(userHome, "Projects", "operating-system", "umut-os")
+	osRoot := filepath.Join(userHome, "absorbed-os")
 	execLane := filepath.Join(osRoot, "exec-lane")
 	for _, dir := range []string{filepath.Join(userHome, ".local", "bin"), filepath.Join(userHome, ".bun", "bin"), binDir, execLane} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -58,6 +59,9 @@ func installOSCapabilityProofFixture(t *testing.T, opts osCapabilityProofFixture
 	}
 	if err := home.Init(compoundHome, "test", time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
+	}
+	if !opts.skipAbsorbedOSSeed {
+		seedAbsorbedOSRegistry(t, compoundHome, osRoot)
 	}
 
 	dispatch := `else if (cmd === "capability") exit = await runCapabilityProxy(rest);`
@@ -88,7 +92,7 @@ export async function runCapabilityProxy() {
 
 	shim := `#!/bin/sh
 ` + opts.shimPoison + `
-exec "${HOME}/.bun/bin/bun" "${HOME}/Projects/operating-system/umut-os/exec-lane/os.ts" "$@"
+exec "${HOME}/.bun/bin/bun" "${HOME}/absorbed-os/exec-lane/os.ts" "$@"
 `
 	writeExecutableFixture(t, filepath.Join(userHome, ".local", "bin", "os"), shim)
 
@@ -335,8 +339,8 @@ func osCapabilityFixtureSourceDigestRefs(t *testing.T) []string {
 		path   string
 	}{
 		{prefix: osCapabilityShimDigestRef, path: filepath.Join(homePath, ".local", "bin", "os")},
-		{prefix: osCapabilityEntrypointDigestRef, path: filepath.Join(homePath, "Projects", "operating-system", "umut-os", "exec-lane", "os.ts")},
-		{prefix: osCapabilityProjectionDigestRef, path: filepath.Join(homePath, "Projects", "operating-system", "umut-os", "exec-lane", "os-capability-proxy.ts")},
+		{prefix: osCapabilityEntrypointDigestRef, path: filepath.Join(homePath, "absorbed-os", "exec-lane", "os.ts")},
+		{prefix: osCapabilityProjectionDigestRef, path: filepath.Join(homePath, "absorbed-os", "exec-lane", "os-capability-proxy.ts")},
 		{prefix: osCapabilityBunDigestRef, path: filepath.Join(homePath, ".bun", "bin", "bun")},
 	}
 	refs := make([]string, 0, len(paths))
