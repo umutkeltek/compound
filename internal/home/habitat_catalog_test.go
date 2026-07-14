@@ -78,3 +78,37 @@ func TestBackupRestoresBehaviorBearingProjectionExceptionsOnly(t *testing.T) {
 	}
 	assertMissing(t, filepath.Join(restored, "projections", "rebuildable-view.json"))
 }
+
+func TestHabitatCatalogClassifiesEveryKnownRootAndMakesBridgeDebtExplicit(t *testing.T) {
+	entries := HabitatEntries()
+	if len(entries) == 0 {
+		t.Fatal("habitat catalog is empty")
+	}
+	knownRoots := []string{
+		"action-execution-plans", "advance-plans", "archives", "artifacts", "bench-suites",
+		"claim-plans", "close-plans", "config", "context", "continue-runs", "continues",
+		"contracts", "create-plans", "credit-harvest", "decisions", "dispatch-advances",
+		"dispatch-claims", "dispatch-plans", "dispatch-step-runs", "dispatch-steps", "distill",
+		"events", "evidence", "exports", "imports", "inbox", "indexes", "lanebeliefs",
+		"ledger", "lock", "logs", "observed", "packs", "panel-runs", "private",
+		"projections", "registries", "reports", "reviewed-fixtures", "reviews",
+		"run-observations", "runs", "runtime", "snapshots", "sources", "state", "tmp", "work",
+	}
+	for _, root := range knownRoots {
+		entry, ok := HabitatForPath(root)
+		if !ok || entry.Prefix != root {
+			t.Fatalf("known root %q is not owned by its catalog entry: %+v ok=%t", root, entry, ok)
+		}
+	}
+	for _, entry := range entries {
+		if entry.Status == HabitatStatusBridge && (entry.CanonicalPrefix == "" || entry.RetirementCondition == "") {
+			t.Fatalf("bridge %s hides migration debt: %+v", entry.ID, entry)
+		}
+		if entry.Compact && entry.Class != HabitatClassRebuildable && entry.Class != HabitatClassTransient {
+			t.Fatalf("behavior-bearing habitat is compactable: %+v", entry)
+		}
+		if strings.HasPrefix(entry.Prefix, "projections/") && entry.Backup && entry.Compact {
+			t.Fatalf("protected projection cannot also be compactable: %+v", entry)
+		}
+	}
+}
