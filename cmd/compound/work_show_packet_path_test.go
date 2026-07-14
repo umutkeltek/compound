@@ -89,8 +89,16 @@ Prove packet path resolution without COMPOUND_PACKET_DIR.
 	if shown.PacketPath == importedPacketPath {
 		t.Fatalf("packet_path reused deleted import path %q", importedPacketPath)
 	}
-	if shown.PacketPath != canonicalPacketPath {
-		t.Fatalf("packet_path = %q, want canonical current path %q", shown.PacketPath, canonicalPacketPath)
+	shownInfo, err := os.Stat(shown.PacketPath)
+	if err != nil {
+		t.Fatalf("stat shown packet path: %v", err)
+	}
+	canonicalInfo, err := os.Stat(canonicalPacketPath)
+	if err != nil {
+		t.Fatalf("stat canonical packet path: %v", err)
+	}
+	if !os.SameFile(shownInfo, canonicalInfo) {
+		t.Fatalf("packet_path = %q, want canonical current file %q", shown.PacketPath, canonicalPacketPath)
 	}
 	if _, err := os.Stat(shown.PacketPath); err != nil {
 		t.Fatalf("packet_path does not exist: %v", err)
