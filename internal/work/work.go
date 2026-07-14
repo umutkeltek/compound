@@ -1381,41 +1381,83 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err := tr.Validate(); err != nil {
 		return res, fmt.Errorf("emitted transition invalid: %w", err)
 	}
+	var referenceTransaction gitReferenceTransaction
 	if landingProof != nil {
-		if err := s.revalidateLandedProof(w, *landingProof, now); err != nil {
+		currentProof, err := s.revalidateLandedProof(w, *landingProof, now)
+		if err != nil {
 			return res, err
 		}
+		expectations := []gitReferenceExpectation{{
+			Ref: currentProof.TargetBranchRef,
+			SHA: currentProof.TargetSHA,
+		}}
+		if currentProof.PublicationMode == "required" {
+			expectations = append(expectations, gitReferenceExpectation{
+				Ref: currentProof.PublicationRef,
+				SHA: currentProof.PublicationSHA,
+			})
+		}
+		referenceTransaction, err = startGitReferenceTransaction(currentProof.RepoPath, expectations)
+		if err != nil {
+			return res, fmt.Errorf("prepare Git reference transaction: %w", err)
+		}
+	}
+	referenceTransactionFinished := false
+	defer func() {
+		// An unexpected panic must not strand Git ref locks. Ordinary persistence
+		// failures abort explicitly below so an abort failure can be reported.
+		if referenceTransaction != nil && !referenceTransactionFinished {
+			_ = referenceTransaction.Abort()
+		}
+	}()
+	abortReferenceTransaction := func(cause error) error {
+		if referenceTransaction == nil {
+			return cause
+		}
+		abortErr := referenceTransaction.Abort()
+		referenceTransactionFinished = true
+		if abortErr != nil {
+			return errors.Join(cause, fmt.Errorf("abort Git reference transaction: %w", abortErr))
+		}
+		return cause
 	}
 
 	// Persist the emitted envelopes, then land the work terminal and link the transition.
 	if err := s.writeJSON(s.envPath(plan.ActionIntent.ID), &plan.ActionIntent); err != nil {
-		return res, err
+		return res, abortReferenceTransaction(err)
 	}
 	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
-		return res, err
+		return res, abortReferenceTransaction(err)
 	}
 	if err := s.writeJSON(s.envPath(rec.ID), &rec); err != nil {
-		return res, err
+		return res, abortReferenceTransaction(err)
 	}
 	if err := s.writeJSON(s.envPath(tr.ID), &tr); err != nil {
-		return res, err
+		return res, abortReferenceTransaction(err)
 	}
 	from := w.State
 	w.State = in.Outcome
 	w.IDs.TransitionID = tr.ID
 	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
-		return res, err
+		return res, abortReferenceTransaction(err)
 	}
 	workSHA256, err := workEnvelopeSHA256(w)
 	if err != nil {
-		return res, err
+		return res, abortReferenceTransaction(err)
 	}
 	receiptSHA256, err := receiptEnvelopeSHA256(rec)
 	if err != nil {
-		return res, err
+		return res, abortReferenceTransaction(err)
 	}
 	if err := s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")", Attached: []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID}, WorkSHA256: workSHA256, ReceiptSHA256: receiptSHA256}); err != nil {
-		return res, err
+		return res, abortReferenceTransaction(err)
+	}
+	if referenceTransaction != nil {
+		if err := referenceTransaction.Commit(); err != nil {
+			referenceTransactionFinished = true
+			return res, fmt.Errorf("commit Git reference transaction: %w", err)
+		}
+		referenceTransactionFinished = true
 	}
 	return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
 }

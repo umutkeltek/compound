@@ -458,17 +458,17 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 	return nil
 }
 
-func (s *Store) revalidateLandedProof(w envelope.WorkEnvelope, proof LandCheckReport, now time.Time) error {
+func (s *Store) revalidateLandedProof(w envelope.WorkEnvelope, proof LandCheckReport, now time.Time) (LandCheckReport, error) {
 	current, err := s.evaluateLandCheck(w, LandCheckOptions{
 		CandidateTipSHA: proof.CandidateTipSHA,
 	}, now)
 	if err != nil {
-		return fmt.Errorf("land-check %s live revalidation failed: %w", proof.ID, err)
+		return LandCheckReport{}, fmt.Errorf("land-check %s live revalidation failed: %w", proof.ID, err)
 	}
 	if current.Status != "landed" {
-		return fmt.Errorf("land-check %s live revalidation status %s: %s", proof.ID, current.Status, current.NextAction)
+		return LandCheckReport{}, fmt.Errorf("land-check %s live revalidation status %s: %s", proof.ID, current.Status, current.NextAction)
 	}
-	return nil
+	return current, nil
 }
 
 func landCheckIDFromEvidenceRef(ref string) (string, bool) {

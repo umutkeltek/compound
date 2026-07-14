@@ -33,7 +33,7 @@ func (s *Store) gitDeliveryProofForClose(w envelope.WorkEnvelope, outcome, moveT
 	if err != nil {
 		return nil, err
 	}
-	if err := s.revalidateLandedProof(w, proof, now); err != nil {
+	if _, err := s.revalidateLandedProof(w, proof, now); err != nil {
 		return nil, err
 	}
 	return &proof, nil
