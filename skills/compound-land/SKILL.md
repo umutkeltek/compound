@@ -19,6 +19,11 @@ This skill replaces re-deriving the "standing session rules" from
 - Check for a live concurrent lane: `git status --short` in the MAIN worktree (uncommitted work
   that isn't yours = a lane mid-ceremony — coordinate, do not land on top of it), plus the
   private worklog tail referenced from `docs_private/plan/HANDOFF.md` when present.
+- Check the land-lease: `compound land-lease status --json` — read `holder`, `held`, `is_expired`,
+  and (if present) `prior_holder`/`steal_reason` before starting. `free` (no holder) means clear to
+  proceed to §3's acquire; `held by <holder>` means another lane is mid-ceremony — coordinate, or
+  let §3's `--wait` block for it; a holder with no matching live lane and a stale/expired lease is
+  a candidate for `steal --reason` in §3, not a silent land on top of it.
 - Claim a narrow scope (which packages/files you will touch) in the worklog if one is active.
   Do not parallel-edit the same `internal/` package as a live lane.
 - Queued work discipline: **proposed ≠ held** — dispatch consumes proposed work. If you intend
@@ -112,6 +117,24 @@ git worktree add --detach /tmp/land-rehearsal <your-branch>
 # merge/rebase against a fresh fetch of main there; run the battery in the rehearsal tree
 ```
 
+Acquire the land-lease before touching the real main — it serializes the landing window itself
+(complementary to, not a replacement for, the `MAIN_SHA` guard below, which is the real
+correctness check):
+
+```bash
+compound land-lease acquire --holder "<harness>:<session>:<work_id>" --wait --timeout 120
+```
+
+Use a structured holder string — `<harness>:<session>:<work_id>` (e.g.
+`claude:fable-2026-07-14:work_af4c4bb47e0`), never a bare `"codex"`/`"claude"` — a bare name can't
+be traced back to a lane or reasoned about later if it goes stale. A LIVE competing holder makes
+`acquire` refuse outright (non-zero exit, current holder printed on stderr) or, with `--wait`, poll
+until the lease frees or `--timeout` elapses — either way you are blocked from landing until it
+clears; that block is the point, not a bug to route around. If the printed holder is provably
+stale (its lane is dead/gone), the escape hatch is
+`compound land-lease steal --holder "<harness>:<session>:<work_id>" --reason "<why>"` — a reason is
+required and the steal is auditable (`prior_holder`/`steal_reason` show up in the next `status`).
+
 Then land on the real main:
 
 ```bash
@@ -147,6 +170,16 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
 
 ## 4 · Post-land
 
+- Release the land-lease with the SAME holder string used to acquire it, right after the guarded
+  merge/push succeeds and before the rest of post-land duties, so the next lane's `status`/`acquire`
+  sees it free:
+  ```bash
+  compound land-lease release --holder "<harness>:<session>:<work_id>"
+  ```
+  A non-holder release is refused (someone else's lease is never dropped by accident), and
+  releasing with nothing held is an idempotent no-op — safe to run even if acquire never happened
+  (e.g. a trivial single-commit land that skipped §3). `steal --reason` (§3) remains the escape
+  hatch if a DIFFERENT lane needs to take over a lease this one abandoned without releasing.
 - Re-run `go run ./cmd/compound proof-check` on landed main (cheap insurance against a
   rehearsal/main divergence).
 - **If the land touched `cmd/compound` or `internal/{hook,harness,contract,mem,breadth}`: run

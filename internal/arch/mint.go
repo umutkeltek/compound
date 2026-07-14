@@ -157,7 +157,7 @@ var mintHomes = map[string]MintHome{
 	"organ:landlease": {
 		Class:    MintEvidence,
 		Purpose:  "single-holder, TTL-bounded, steal-with-reason advisory mutex over the ACT of landing to main (a flock-guarded JSON lease under COMPOUND_HOME) so concurrent executor lanes serialize the fast-forward-merge window instead of colliding; records who holds the right to land, never mutates repo state and emits no PolicyDecision/Receipt",
-		Consumer: "the compound-land ceremony (skills/compound-land) — a lane acquires the lease before its ff-merge and releases after, with `compound land-lease status --json` as the orchestrator/operator read surface; steal-with-reason is the auditable override",
+		Consumer: "the compound-land ceremony (skills/compound-land) — a lane reads `compound land-lease status --json` at scope-claim (§0), acquires it with holder `<harness>:<session>:<work_id>` immediately before the ff-merge (§3, `--wait --timeout 120`), and releases it with the same holder string right after the guarded merge lands (§4); steal-with-reason is the auditable override for a stale holder",
 	},
 	// executorlens is the executor-receipt locator: an evidence-only collector that reads THIS repo's
 	// own executor lanes' (Codex, Claude Code) receipts/events under COMPOUND_HOME and builds
