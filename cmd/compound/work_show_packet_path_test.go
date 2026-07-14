@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"compound/internal/home"
@@ -129,5 +131,76 @@ func TestWorkShowOmitsPacketPathForNonPacketWork(t *testing.T) {
 	}
 	if _, ok := shown["packet_path"]; ok {
 		t.Fatalf("non-packet work emitted packet_path:\n%s", out)
+	}
+}
+
+// workShowDanglingPacketChildEnv, when set to a work id, tells this test binary to run as
+// the `compound work show` child process instead of the driving test — the same
+// self-exec pattern used by TestHomeDoctorJSONFailureExitsNonZero, needed because the
+// current (pre-fix) code path calls os.Exit(1) on a dangling packet pointer and an
+// in-process os.Exit would kill the whole test binary.
+const workShowDanglingPacketChildEnv = "COMPOUND_TEST_WORK_SHOW_DANGLING_PACKET_CHILD"
+
+// TestWorkShowSurvivesDanglingPacketPointer is the work_a55bb058f583 regression falsifier:
+// `compound work show` on an envelope whose packet artifact/surface no longer matches any
+// current workbench packet must still render the full envelope and exit 0, with an explicit
+// packet_status note carrying the underlying reason — not hard-fail. RED on current code
+// (non-zero exit, no envelope rendered); GREEN after the fix (exit 0, envelope + note).
+func TestWorkShowSurvivesDanglingPacketPointer(t *testing.T) {
+	if childID := os.Getenv(workShowDanglingPacketChildEnv); childID != "" {
+		cmdWork([]string{"show", childID, "--json"})
+		return
+	}
+
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	created, err := store.Create(work.CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "work show survives a dangling packet pointer",
+		CanonicalSurface: "packet:dangling-pointer-example",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+
+	// A real, existing, but empty packet dir: the envelope's packet:<slug> surface has no
+	// matching current workbench packet — a dangling pointer, not a missing directory.
+	emptyPacketDir := t.TempDir()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkShowSurvivesDanglingPacketPointer$")
+	cmd.Env = append(os.Environ(),
+		workShowDanglingPacketChildEnv+"="+created.ID,
+		"COMPOUND_HOME="+homePath,
+		"COMPOUND_PACKET_DIR="+emptyPacketDir,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("work show on a dangling packet pointer did not exit 0: %v\noutput:\n%s", err, out)
+	}
+
+	var shown struct {
+		ID           string `json:"id"`
+		State        string `json:"state"`
+		PacketPath   string `json:"packet_path,omitempty"`
+		PacketStatus string `json:"packet_status,omitempty"`
+	}
+	if err := json.Unmarshal(out, &shown); err != nil {
+		t.Fatalf("decode work show: %v\noutput:\n%s", err, out)
+	}
+	if shown.ID != created.ID || shown.State == "" {
+		t.Fatalf("work show did not render the full envelope for a dangling packet pointer:\n%s", out)
+	}
+	if shown.PacketPath != "" {
+		t.Fatalf("work show emitted a packet_path for a dangling pointer:\n%s", out)
+	}
+	wantReason := "no current workbench packet matches packet:dangling-pointer-example"
+	if !strings.Contains(shown.PacketStatus, "unavailable") || !strings.Contains(shown.PacketStatus, wantReason) {
+		t.Fatalf("work show packet_status = %q, want an unavailable note containing %q\noutput:\n%s", shown.PacketStatus, wantReason, out)
 	}
 }
