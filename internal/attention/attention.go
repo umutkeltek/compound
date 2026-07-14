@@ -127,6 +127,7 @@ var knownAreaClassifications = map[string]areaClassification{
 	"distiller-requests":             {Kind: KindIntake},
 	"parity":                         {Kind: KindHygiene},
 	"route-remorse":                  {Kind: KindContradiction},
+	"lease-hygiene":                  {Kind: KindHygiene, BlastRadius: BlastLocalReversible, Reversibility: Reversible},
 }
 
 func Build(in Inputs, now time.Time) Report {
@@ -271,6 +272,9 @@ func groupsFromWorkbench(report work.WorkbenchReport, now time.Time) []Group {
 func groupsFromExecutors(report work.ExecutorsProjection, now time.Time) []Group {
 	freshness := Freshness{GeneratedAt: firstNonEmpty(report.GeneratedAt, now.UTC().Format(time.RFC3339)), Source: SourceExecutor}
 	var out []Group
+	if group := leaseHygieneGroup(report, freshness); group != nil {
+		out = append(out, *group)
+	}
 	for _, row := range report.Executors {
 		count, itemIDs := executorOwnedBurden(row)
 		if count <= 0 {
@@ -281,6 +285,11 @@ func groupsFromExecutors(report work.ExecutorsProjection, now time.Time) []Group
 			summary = row.ID
 		}
 		summary = summary + " needs operator attention."
+		// Prefer the plain-language reason on the burden item itself (e.g. "executor
+		// died — re-dispatch or release") over row.WaitReason, which can carry a raw
+		// internal dispatch token (e.g. "proof_ready_close") that must never render
+		// on a needs_you card.
+		unlock := firstNonEmpty(firstBurdenNeedsMeReason(row), row.WaitReason, row.ProjectionNote)
 		out = append(out, Group{
 			Key:             "executor:" + firstNonEmpty(row.ID, row.Label),
 			Area:            "job-health",
@@ -289,14 +298,64 @@ func groupsFromExecutors(report work.ExecutorsProjection, now time.Time) []Group
 			Kind:            KindJobHealth,
 			Count:           count,
 			OperatorSummary: summary,
-			OperatorUnlock:  firstNonEmpty(row.WaitReason, row.ProjectionNote),
+			OperatorUnlock:  unlock,
 			OldestCreatedAt: oldestExecutorTime(row, freshness.GeneratedAt, now),
-			TerminalReason:  firstNonEmpty(row.WaitReason, row.ProjectionNote),
+			TerminalReason:  unlock,
 			ItemIDs:         itemIDs,
 			Freshness:       freshness,
 		})
 	}
 	return out
+}
+
+// leaseHygieneGroup collapses stale-lease residue across every executor row
+// into ONE cross-executor needs_you group carrying the governed sweep
+// (`compound home archive-history --kind lease`), instead of four
+// per-executor "needs operator attention" cards for work that is already
+// terminal. Returns nil when nothing is stale.
+func leaseHygieneGroup(report work.ExecutorsProjection, freshness Freshness) *Group {
+	count := 0
+	var itemIDs []string
+	for _, row := range report.Executors {
+		count += row.StaleLeaseCount
+		itemIDs = append(itemIDs, row.StaleLeaseWorkIDs...)
+	}
+	if count <= 0 {
+		return nil
+	}
+	summaryText := "finished job(s) still hold their claim tags."
+	return &Group{
+		Key:             "lease-hygiene",
+		Area:            "lease-hygiene",
+		Band:            BandNeedsYou,
+		Source:          SourceExecutor,
+		Kind:            KindHygiene,
+		Count:           count,
+		OperatorSummary: plural(count, summaryText, summaryText),
+		OperatorUnlock:  "Sweep them into the archive — live claims are kept, and the sweep can be restored.",
+		ItemIDs:         uniqueStrings(itemIDs),
+		Freshness:       freshness,
+		Action: &Action{
+			ID:                   "lease-hygiene.sweep",
+			Label:                "Sweep leftover claim tags",
+			Argv:                 []string{"compound", "home", "archive-history", "--kind", "lease"},
+			Kind:                 ActionBatch,
+			RequiresConfirmation: true,
+		},
+	}
+}
+
+// firstBurdenNeedsMeReason returns the first plain-language NeedsMe reason
+// carried by the row's own current-work burden items (dead-executor cards),
+// so the group's operator-facing text never falls back to a raw internal
+// dispatch token.
+func firstBurdenNeedsMeReason(row work.ExecutorRow) string {
+	for _, ref := range row.CurrentWork {
+		if strings.TrimSpace(ref.NeedsMe) != "" {
+			return ref.NeedsMe
+		}
+	}
+	return ""
 }
 
 func normalizeGroup(g *Group, generatedAt string, now time.Time) {
@@ -730,6 +789,11 @@ func workbenchItemIDs(items []work.WorkbenchItem) []string {
 	return out
 }
 
+// executorOwnedBurden is the per-executor "needs operator attention" burden:
+// dead-executor needs_me items and stalled jobs ONLY. Stale leases are
+// terminal-work residue, not something the executor is doing wrong — they
+// contribute nothing here; the cross-executor lease-hygiene group (see
+// leaseHygieneGroup) owns them instead.
 func executorOwnedBurden(row work.ExecutorRow) (int, []string) {
 	workbenchHeld := 0
 	var out []string
@@ -746,15 +810,10 @@ func executorOwnedBurden(row work.ExecutorRow) (int, []string) {
 	if executorNeeds < 0 {
 		executorNeeds = 0
 	}
-	for _, lease := range row.Leases {
-		if row.StaleLeaseCount > 0 {
-			out = append(out, lease.WorkID)
-		}
-	}
 	for _, job := range row.StalledJobs {
 		out = append(out, firstNonEmpty(job.WorkID, job.JobID))
 	}
-	return executorNeeds + row.StaleLeaseCount + len(row.StalledJobs), uniqueStrings(out)
+	return executorNeeds + len(row.StalledJobs), uniqueStrings(out)
 }
 
 func firstWorkbenchReason(items []work.WorkbenchItem) string {

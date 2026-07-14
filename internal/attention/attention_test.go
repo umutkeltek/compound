@@ -96,6 +96,143 @@ func TestExecutorProjectionKeepsIndependentDeadExecutorBurden(t *testing.T) {
 	}
 }
 
+// F1: stale leases across executors collapse into ONE cross-executor
+// lease-hygiene needs_you group carrying the governed sweep action, while
+// each row's own job-health group counts ONLY its real burden (dead
+// executors, stalled jobs) -- never the stale-lease residue.
+func TestLeaseHygieneGroupSweepsStaleLeasesAcrossExecutorsWithoutDoubleCounting(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	staleIDs := []string{"work_stale_1", "work_stale_2", "work_stale_3", "work_stale_4", "work_stale_5"}
+	activeIDs := []string{"work_active_1", "work_active_2", "work_active_3"}
+	report := Build(Inputs{
+		Executors: &work.ExecutorsProjection{
+			GeneratedAt: now.Format(time.RFC3339),
+			Executors: []work.ExecutorRow{
+				{
+					ID: "codex", Label: "Codex",
+					StaleLeaseCount:   3,
+					StaleLeaseWorkIDs: []string{staleIDs[0], staleIDs[1], staleIDs[2]},
+					Leases: []work.ExecutorLeaseRef{
+						{WorkID: activeIDs[0]},
+						{WorkID: activeIDs[1]},
+					},
+					NeedsMeCount: 1,
+					CurrentWork: []work.ExecutorWorkRef{
+						{WorkID: "work_dead_executor", State: "running", NeedsMe: "executor died — re-dispatch or release"},
+					},
+					// The raw dispatch token must never leak onto a needs_you card (F3).
+					WaitReason: "proof_ready_close",
+				},
+				{
+					ID: "claude_code", Label: "Claude Code",
+					StaleLeaseCount:   2,
+					StaleLeaseWorkIDs: []string{staleIDs[3], staleIDs[4]},
+					Leases: []work.ExecutorLeaseRef{
+						{WorkID: activeIDs[2]},
+					},
+				},
+			},
+		},
+	}, now)
+
+	lease := groupByKey(t, report, "lease-hygiene")
+	if lease.Band != BandNeedsYou || lease.Source != SourceExecutor || lease.Kind != KindHygiene {
+		t.Fatalf("lease-hygiene group shape = %+v, want band=%q source=%q kind=%q", lease, BandNeedsYou, SourceExecutor, KindHygiene)
+	}
+	if lease.Count != 5 || !sameStringSet(lease.ItemIDs, staleIDs) {
+		t.Fatalf("lease-hygiene count/ids = %d %v, want 5 %v", lease.Count, lease.ItemIDs, staleIDs)
+	}
+	for _, activeID := range activeIDs {
+		for _, id := range lease.ItemIDs {
+			if id == activeID {
+				t.Fatalf("active lease id %q leaked into lease-hygiene item_ids: %v", activeID, lease.ItemIDs)
+			}
+		}
+	}
+	if lease.Action == nil {
+		t.Fatal("lease-hygiene group must carry the governed sweep action")
+	}
+	wantArgv := []string{"compound", "home", "archive-history", "--kind", "lease"}
+	if !sameStringSlice(lease.Action.Argv, wantArgv) {
+		t.Fatalf("lease-hygiene action argv = %v, want %v", lease.Action.Argv, wantArgv)
+	}
+	if lease.Action.Kind != ActionBatch || !lease.Action.RequiresConfirmation {
+		t.Fatalf("lease-hygiene action = %+v, want kind=%q requires_confirmation=true", lease.Action, ActionBatch)
+	}
+
+	executorGroup := groupByKey(t, report, "executor:codex")
+	if executorGroup.Count != 1 || !sameStringSet(executorGroup.ItemIDs, []string{"work_dead_executor"}) {
+		t.Fatalf("executor:codex burden = count %d ids %v, want the dead executor only (stale leases must not double-count)", executorGroup.Count, executorGroup.ItemIDs)
+	}
+
+	if report.Counts.ActionableNow < 1 {
+		t.Fatalf("counts.actionable_now = %d, want the lease-hygiene batch action counted", report.Counts.ActionableNow)
+	}
+
+	// F3: no needs_you group anywhere may surface the raw dispatch token.
+	for _, g := range report.Groups {
+		if g.Band != BandNeedsYou {
+			continue
+		}
+		if g.OperatorUnlock == "proof_ready_close" || g.TerminalReason == "proof_ready_close" {
+			t.Fatalf("group %q leaked the raw dispatch token proof_ready_close: unlock=%q terminal=%q", g.Key, g.OperatorUnlock, g.TerminalReason)
+		}
+	}
+}
+
+// F2: with zero stale leases, no lease-hygiene group appears and no active
+// lease id ever surfaces in a needs_you group's item_ids -- the negative
+// control pinning the bug (active leases masquerading as needing attention).
+func TestNoLeaseHygieneGroupOrActiveLeaseLeakWhenNoStaleLeases(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	report := Build(Inputs{
+		Executors: &work.ExecutorsProjection{
+			GeneratedAt: now.Format(time.RFC3339),
+			Executors: []work.ExecutorRow{
+				{
+					ID: "codex", Label: "Codex",
+					NeedsMeCount: 1,
+					CurrentWork: []work.ExecutorWorkRef{
+						{WorkID: "work_dead", State: "running", NeedsMe: "executor died — re-dispatch or release"},
+					},
+					Leases: []work.ExecutorLeaseRef{
+						{WorkID: "work_active_only_1"},
+						{WorkID: "work_active_only_2"},
+					},
+				},
+			},
+		},
+	}, now)
+
+	for _, g := range report.Groups {
+		if g.Key == "lease-hygiene" || g.Area == "lease-hygiene" {
+			t.Fatalf("lease-hygiene group must not appear when no leases are stale: %+v", g)
+		}
+	}
+	for _, g := range report.Groups {
+		if g.Band != BandNeedsYou {
+			continue
+		}
+		for _, id := range g.ItemIDs {
+			if id == "work_active_only_1" || id == "work_active_only_2" {
+				t.Fatalf("active lease id %q leaked into needs_you group %q: %v", id, g.Key, g.ItemIDs)
+			}
+		}
+	}
+}
+
+func sameStringSlice(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func groupByKey(t *testing.T, report Report, key string) Group {
 	t.Helper()
 	for _, group := range report.Groups {
@@ -265,6 +402,7 @@ func TestAreaMappingCoversKnownAreasAndUnknownDefault(t *testing.T) {
 		"distiller-requests",
 		"parity",
 		"route-remorse",
+		"lease-hygiene",
 	}
 	if len(knownAreaClassifications) != len(known) {
 		t.Fatalf("knownAreaClassifications has %d entries, want %d", len(knownAreaClassifications), len(known))
