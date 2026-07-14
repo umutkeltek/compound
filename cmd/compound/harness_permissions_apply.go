@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -124,7 +125,8 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 		fmt.Fprintf(stderr, "refused: policy %s (%s)\n", decision.Outcome, strings.Join(decision.Reasons, "; "))
 		return 1
 	}
-	applied, err := applyHarnessPermissions(homePath, render, action, decision)
+	authorize := permissionApplyAuthorization(store, homePath, workID)
+	applied, err := applyHarnessPermissions(homePath, render, action, decision, authorize)
 	if err != nil {
 		postImageRef := observedPermissionTargetRef(render.TargetPath, render.Preimage)
 		changed := postImageRef != preImageRef
@@ -198,6 +200,56 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 	fmt.Fprintf(stdout, "- transition: %s\n", report.TransitionID)
 	fmt.Fprintf(stdout, "- content_sha256: %s\n", report.Artifact.ContentSHA256)
 	return 0
+}
+
+func permissionApplyAuthorization(store *work.Store, homePath, workID string) harness.PermissionApplyAuthorization {
+	return func(action envelope.ActionIntent, approved envelope.PolicyDecision, now time.Time) error {
+		currentWork, err := store.Get(workID)
+		if err != nil {
+			return fmt.Errorf("reload work %s: %w", workID, err)
+		}
+		if currentWork.State != "running" {
+			return fmt.Errorf("work %s is %s; permission apply requires running work", workID, currentWork.State)
+		}
+		leases, err := store.ListLeases()
+		if err != nil {
+			return fmt.Errorf("reload work lease: %w", err)
+		}
+		leaseHolder := ""
+		for _, lease := range leases {
+			if lease.WorkID == workID {
+				leaseHolder = lease.By
+				break
+			}
+		}
+		if leaseHolder == "" || leaseHolder != action.Actor {
+			return fmt.Errorf("action actor %q does not match current work lease holder %q", action.Actor, leaseHolder)
+		}
+		if expiresAt := strings.TrimSpace(approved.ExpiresAt); expiresAt != "" {
+			expires, err := time.Parse(time.RFC3339, expiresAt)
+			if err != nil {
+				return fmt.Errorf("approved permission policy expires_at invalid: %w", err)
+			}
+			if !now.Before(expires) {
+				return fmt.Errorf("approved permission policy expired at %s", expiresAt)
+			}
+		}
+		cfg, _, err := policy.LoadConfig(homePath)
+		if err != nil {
+			return fmt.Errorf("reload permission policy: %w", err)
+		}
+		current := policy.Evaluate(action, cfg, now)
+		if !policy.Allowed(current) {
+			return fmt.Errorf("current permission policy %s (%s)", current.Outcome, strings.Join(current.Reasons, "; "))
+		}
+		if current.StandingGrantID != approved.StandingGrantID {
+			return fmt.Errorf("current standing grant %q does not match approved standing grant %q", current.StandingGrantID, approved.StandingGrantID)
+		}
+		if current.Outcome != approved.Outcome || current.ExpiresAt != approved.ExpiresAt || !reflect.DeepEqual(current.Obligations, approved.Obligations) {
+			return fmt.Errorf("current permission policy outcome or obligations no longer match the approved decision")
+		}
+		return nil
+	}
 }
 
 func permissionApplyDigest(body []byte) string {
