@@ -434,7 +434,7 @@ func DoctorSourceManifest(homePath, sourceFamily string) (SourceManifestDoctorRe
 		sourceManifestStatusCheck("physical_custody", report.CustodyComplete, fmt.Sprintf("owned=%d inventory_only=%d", report.OwnedBodyCount, report.InventoryOnlyCount)),
 	)
 	if manifest.SourceFamily == GbrainDBExportManifestFamily {
-		doctorGbrainManifestExtras(manifest, &report)
+		doctorGbrainManifestExtras(homePath, manifest, &report)
 	}
 	report.Status = "ok"
 	for _, check := range report.Checks {

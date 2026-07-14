@@ -45,6 +45,8 @@ func cmdSource(args []string) {
 		cmdSourceManifestDrilldown(args[1:])
 	case "manifest-materialize":
 		cmdSourceManifestMaterialize(args[1:])
+	case "manifest-materialize-dump":
+		cmdSourceManifestMaterializeDump(args[1:])
 	case "observation-verdict-plan":
 		cmdSourceObservationVerdictPlan(args[1:])
 	case "observation-verdict-review":
@@ -56,7 +58,7 @@ func cmdSource(args []string) {
 }
 
 func sourceUsage() string {
-	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json>) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | manifest-materialize-dump <family> --target <path> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
 func cmdSourceObserve(args []string) {
@@ -364,10 +366,11 @@ func cmdSourceIntakeWorkPlan(args []string) {
 func cmdSourceManifestCreate(args []string) {
 	family := ""
 	fromExport := ""
+	dumpPath := ""
 	sourceInPlace := false
 	jsonOut := false
 	var paths []string
-	usage := "usage: compound source manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json>) [--json]"
+	usage := "usage: compound source manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
@@ -387,6 +390,13 @@ func cmdSourceManifestCreate(args []string) {
 				os.Exit(2)
 			}
 			fromExport = args[i+1]
+			i++
+		case "--dump":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			dumpPath = args[i+1]
 			i++
 		default:
 			if strings.HasPrefix(args[i], "-") {
@@ -408,6 +418,10 @@ func cmdSourceManifestCreate(args []string) {
 		fmt.Fprintln(os.Stderr, "source manifest-create: --source-in-place cannot be used with --from-export")
 		os.Exit(2)
 	}
+	if strings.TrimSpace(dumpPath) != "" && strings.TrimSpace(fromExport) == "" {
+		fmt.Fprintln(os.Stderr, "source manifest-create: --dump requires --from-export")
+		os.Exit(2)
+	}
 	if strings.TrimSpace(fromExport) == "" && len(paths) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -423,7 +437,11 @@ func cmdSourceManifestCreate(args []string) {
 			fmt.Fprintf(os.Stderr, "source manifest-create: --from-export currently supports family %s only\n", sourceobs.GbrainDBExportManifestFamily)
 			os.Exit(2)
 		}
-		manifest, err = sourceobs.BuildGbrainExportManifest(fromExport, time.Now())
+		if strings.TrimSpace(dumpPath) != "" {
+			manifest, err = sourceobs.BuildOwnedGbrainExportManifest(homePath, fromExport, dumpPath, time.Now())
+		} else {
+			manifest, err = sourceobs.BuildGbrainExportManifest(fromExport, time.Now())
+		}
 	} else if sourceInPlace {
 		manifest, err = sourceobs.BuildSourceManifest(family, paths, time.Now())
 	} else {
@@ -646,6 +664,52 @@ func cmdSourceManifestMaterialize(args []string) {
 		return
 	}
 	fmt.Printf("materialized: %s\n", report.TargetPath)
+	fmt.Printf("body: %s bytes=%d already_exists=%t\n", report.BodyRef, report.Bytes, report.AlreadyExists)
+}
+
+func cmdSourceManifestMaterializeDump(args []string) {
+	jsonOut := false
+	family := ""
+	targetPath := ""
+	usage := "usage: compound source manifest-materialize-dump <family> --target <path> [--json]"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--target":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			targetPath = args[i+1]
+			i++
+		default:
+			if strings.HasPrefix(args[i], "-") || family != "" {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			family = args[i]
+		}
+	}
+	if strings.TrimSpace(family) == "" || strings.TrimSpace(targetPath) == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	report, err := sourceobs.MaterializeGbrainDump(homePath, family, targetPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source manifest-materialize-dump:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+		return
+	}
+	fmt.Printf("materialized dump: %s\n", report.TargetPath)
 	fmt.Printf("body: %s bytes=%d already_exists=%t\n", report.BodyRef, report.Bytes, report.AlreadyExists)
 }
 

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/home"
 )
 
 // GbrainDBExportManifestFamily is the lossless source-manifest family for
@@ -63,6 +65,8 @@ type SourceManifestFamilyMeta struct {
 	DBHost          string `json:"db_host,omitempty"`
 	DBName          string `json:"db_name,omitempty"`
 	DumpRef         string `json:"dump_ref,omitempty"`
+	DumpBodyRef     string `json:"dump_body_ref,omitempty"`
+	DumpBytes       int64  `json:"dump_bytes,omitempty"`
 	ExportTime      string `json:"export_time,omitempty"`
 	GenerationLabel string `json:"generation_label,omitempty"`
 }
@@ -132,6 +136,39 @@ func BuildGbrainExportManifest(exportPath string, now time.Time) (SourceManifest
 	if strings.TrimSpace(manifest.GeneratedAt) == "" {
 		manifest.GeneratedAt = now.UTC().Format(time.RFC3339)
 	}
+	return manifest, nil
+}
+
+// BuildOwnedGbrainExportManifest binds an export inventory to the exact
+// PostgreSQL dump named by dump_ref and captures that dump into Compound's
+// immutable artifact store. Dump capture is streamed so database size does not
+// determine process memory use.
+func BuildOwnedGbrainExportManifest(homePath, exportPath, dumpPath string, now time.Time) (SourceManifest, error) {
+	manifest, err := BuildGbrainExportManifest(exportPath, now)
+	if err != nil {
+		return SourceManifest{}, err
+	}
+	if manifest.FamilyMeta == nil {
+		return SourceManifest{}, fmt.Errorf("gbrain export family_meta required")
+	}
+	dumpRef := strings.TrimSpace(manifest.FamilyMeta.DumpRef)
+	if !strings.HasPrefix(dumpRef, "sha256:") {
+		return SourceManifest{}, fmt.Errorf("gbrain export dump_ref must be sha256:<64 hex>, got %q", dumpRef)
+	}
+	artifactRef := "artifact:" + dumpRef
+	if _, err := home.ArtifactHex(artifactRef); err != nil {
+		return SourceManifest{}, fmt.Errorf("gbrain export dump_ref: %w", err)
+	}
+	store, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		return SourceManifest{}, err
+	}
+	ref, size, err := store.PutFileExpected(dumpPath, artifactRef)
+	if err != nil {
+		return SourceManifest{}, fmt.Errorf("capture gbrain dump %s: %w", dumpPath, err)
+	}
+	manifest.FamilyMeta.DumpBodyRef = ref
+	manifest.FamilyMeta.DumpBytes = size
 	return manifest, nil
 }
 
@@ -389,7 +426,7 @@ func missingGbrainManifestFields(item SourceManifestItem) []string {
 	return missing
 }
 
-func doctorGbrainManifestExtras(manifest SourceManifest, report *SourceManifestDoctorReport) {
+func doctorGbrainManifestExtras(homePath string, manifest SourceManifest, report *SourceManifestDoctorReport) {
 	metaOK := manifest.FamilyMeta != nil &&
 		strings.TrimSpace(manifest.FamilyMeta.GenerationLabel) != "" &&
 		strings.TrimSpace(manifest.FamilyMeta.DumpRef) != "" &&
@@ -446,6 +483,91 @@ func doctorGbrainManifestExtras(manifest SourceManifest, report *SourceManifestD
 		sourceManifestCheck("gbrain_page_chunk_match", chunkMismatch == 0, fmt.Sprintf("chunk_set_mismatch=%d", chunkMismatch)),
 		sourceManifestCheck("gbrain_generation_label", metaOK && manifest.FamilyMeta != nil && strings.TrimSpace(manifest.FamilyMeta.GenerationLabel) != "", "generation_label present"),
 	)
+	doctorGbrainDumpCustody(homePath, manifest, report)
+}
+
+func doctorGbrainDumpCustody(homePath string, manifest SourceManifest, report *SourceManifestDoctorReport) {
+	if manifest.FamilyMeta == nil {
+		return
+	}
+	meta := manifest.FamilyMeta
+	bodyRef := strings.TrimSpace(meta.DumpBodyRef)
+	if bodyRef == "" && meta.DumpBytes == 0 {
+		report.Checks = append(report.Checks, sourceManifestStatusCheck("gbrain_dump_custody", false, "inventory-only; exact dump artifact not captured"))
+		return
+	}
+	ok := true
+	detail := ""
+	expectedRef := "artifact:" + strings.TrimSpace(meta.DumpRef)
+	if bodyRef == "" || meta.DumpBytes <= 0 || bodyRef != expectedRef {
+		ok = false
+		detail = "dump_body_ref/dump_bytes do not exactly bind dump_ref"
+	} else if _, err := home.ArtifactHex(bodyRef); err != nil {
+		ok = false
+		detail = err.Error()
+	} else if store, err := home.NewArtifactStore(homePath); err != nil {
+		ok = false
+		detail = err.Error()
+	} else if size, err := store.Verify(bodyRef); err != nil {
+		ok = false
+		detail = err.Error()
+	} else if size != meta.DumpBytes {
+		ok = false
+		detail = fmt.Sprintf("dump size mismatch: artifact=%d manifest=%d", size, meta.DumpBytes)
+	} else {
+		detail = fmt.Sprintf("artifact=%s bytes=%d; restore/read cutover not proven", bodyRef, size)
+	}
+	if !ok {
+		report.HashMismatchCount++
+		report.CustodyComplete = false
+	} else {
+		report.CustodyComplete = report.MissingFieldCount == 0 && report.HashMismatchCount == 0
+	}
+	report.Checks = append(report.Checks, sourceManifestCheck("gbrain_dump_custody", ok, detail))
+	for i := range report.Checks {
+		if report.Checks[i].Name == "physical_custody" {
+			report.Checks[i] = sourceManifestStatusCheck("physical_custody", report.CustodyComplete, detail)
+		}
+	}
+}
+
+// MaterializeGbrainDump restores the exact Compound-owned database dump. It
+// proves byte custody only; it does not claim a successful database restore,
+// consumer replay, read cutover, or retirement.
+func MaterializeGbrainDump(homePath, sourceFamily, targetPath string) (SourceManifestMaterializeReport, error) {
+	if strings.TrimSpace(sourceFamily) != GbrainDBExportManifestFamily {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("dump materialization supports family %s only", GbrainDBExportManifestFamily)
+	}
+	manifest, err := LoadSourceManifest(homePath, sourceFamily)
+	if err != nil {
+		return SourceManifestMaterializeReport{}, err
+	}
+	if manifest.FamilyMeta == nil || strings.TrimSpace(manifest.FamilyMeta.DumpBodyRef) == "" || manifest.FamilyMeta.DumpBytes <= 0 {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("gbrain manifest has no Compound-owned dump")
+	}
+	expectedRef := "artifact:" + strings.TrimSpace(manifest.FamilyMeta.DumpRef)
+	if manifest.FamilyMeta.DumpBodyRef != expectedRef {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("gbrain dump body ref does not match dump_ref")
+	}
+	store, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		return SourceManifestMaterializeReport{}, err
+	}
+	bytes, alreadyExists, err := store.Materialize(expectedRef, targetPath, 0o600)
+	if err != nil {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize gbrain dump %s: %w", expectedRef, err)
+	}
+	if bytes != manifest.FamilyMeta.DumpBytes {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize gbrain dump %s: manifest/body size mismatch", expectedRef)
+	}
+	return SourceManifestMaterializeReport{
+		ManifestRef:   manifest.AuthorityRef,
+		ItemID:        "gbrain_dump",
+		BodyRef:       expectedRef,
+		TargetPath:    strings.TrimSpace(targetPath),
+		Bytes:         bytes,
+		AlreadyExists: alreadyExists,
+	}, nil
 }
 
 func validateGbrainChunkOrder(chunks []SourceManifestChunk) error {
