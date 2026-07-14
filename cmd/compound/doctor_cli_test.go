@@ -40,14 +40,14 @@ func TestDoctorComposesOrganState(t *testing.T) {
 	if rep.LeaseHeld {
 		t.Fatal("no lease should be held")
 	}
-	// The LOADED default (policy.LoadConfig) is "block" (fail-closed) — asserted authoritatively by
-	// internal/policy policy_test.go and confirmed empirically for an empty home. Doctor reports the
-	// loaded mode; the fail-open note fires only when an operator has explicitly relaxed it to observe.
-	if rep.PlacementMode != "block" {
-		t.Fatalf("empty-home loaded placement mode should be block (fail-closed), got %q", rep.PlacementMode)
+	// policy.DefaultConfig and an empty-home policy.LoadConfig use observe. The block assertion in
+	// TestLoadConfigOverlaysDefaultPolicy follows an explicit policy.yaml fixture; it is not the
+	// built-in default. Doctor must report the loaded mode and make fail-open staging explicit.
+	if rep.PlacementMode != "observe" {
+		t.Fatalf("empty-home placement mode should be observe, got %q", rep.PlacementMode)
 	}
-	if rep.PlacementNote != "" {
-		t.Fatalf("block mode must not carry the observe fail-open note, got %q", rep.PlacementNote)
+	if rep.PlacementNote == "" {
+		t.Fatal("observe mode should carry an explicit fail-open warning")
 	}
 	if rep.FindingsTotal != 0 {
 		t.Fatalf("no findings expected, got %d", rep.FindingsTotal)
