@@ -133,6 +133,8 @@ func main() {
 		cmdAttention(os.Args[2:])
 	case "narrate":
 		cmdNarrate(os.Args[2:])
+	case "stream":
+		cmdStream(os.Args[2:])
 	case "executors":
 		cmdExecutors(os.Args[2:])
 	case "proof-check":
@@ -334,6 +336,7 @@ compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S]
 compound attention [--json] [--home P] ranked operator-attention projection from reviews, workbench, and executors; no mutation
 compound narrate [--json|--text] [--mood decide|wander|worry] [--recent N] [--home P] deterministic correspondent script (compound.narrate.v0.1) composed over attention/orient-changed/receipts; also embedded in orient --operator; reads the orient cursor, never advances it
 compound executors [--json] read-only executor projection from Workbench, leases, and profile guide; no health overclaim
+compound stream (--once [--backlog N] | --follow [--cursor BYTE]) [--json] [--home P] read-only byte-cursor tail over events/work.jsonl + ledger/seq; --once is a bounded snapshot (last N + end-of-log cursor + seq + generated_at), --follow is a live JSONL tail; never takes the work-event write lock
 compound behavioral-lens <list|run|compose|signals> composable behavioral-lens framework (compound.behavioral_lens_signal.v0.1): uniform observe->InferredSignal plug + visibility-gated composition; sycophancy (paired-stance shift) is the first lens; evidence-only, never a gate; operator_private signals stay under $COMPOUND_HOME
 compound lens-modulate <arm|thresholds|modulate|revert> governed modulator: turns a crossing behavioral-lens signal into a REVERSIBLE, PolicyDecision-gated route/role demote through act; default off + calibration-guarded; modulate is dry-run unless --confirm; operator_private modulations stay operator-local
 compound act repoint --target-path P --target-id KEY --value V --work W [--confirm] [--capability CAP] generic governed OUTBOUND write through the act seam (config-key repoint); dry-run unless --confirm; requires an allowing PolicyDecision; pre/post images + receipt land in $COMPOUND_HOME/events
