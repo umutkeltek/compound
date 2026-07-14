@@ -181,18 +181,68 @@ func Acquire(home, holder string, ttl time.Duration, now time.Time) (Lease, erro
 	return acquired, nil
 }
 
-// AcquireWait polls Acquire until the lease is free/held-by-us or the timeout elapses. It returns
-// promptly on the first successful acquire. The poll is CHEAP — it just re-reads the lock file; there
-// is no provider/LLM call. A non-"held" error (e.g. a disk error) is surfaced immediately rather than
-// retried. Time advances through the injected Clock, so the loop is deterministic under a fake clock
-// (production passes RealClock{}). A poll <= 0 falls back to a one-second cadence.
+// errWatchUnsupported is returned by newLeaseWatcher on a platform with no supported file-event
+// primitive (compound targets Darwin/kqueue and Linux/inotify). A waiter that cannot build a watcher
+// degrades cleanly to the clock-driven bounded poll — the watch is a fast path, never the sole liveness.
+var errWatchUnsupported = errors.New("land-lease: no supported file watcher on this platform")
+
+// leaseWatcher is a BOUNDED OS file-event wait over the land-lease state DIRECTORY. wait blocks until the
+// directory changes (the atomic temp-file rename in writeLeaseAtomic, or the os.Remove in Release, mutates
+// the directory) OR the supplied bound elapses — whichever is first — then returns so the caller
+// re-attempts Acquire. It is an OPTIMIZATION: a missed/coalesced event is harmless because every wait is
+// bounded and the caller always re-checks the real lease under the flock afterward, so the watcher can
+// NEVER wedge a waiter past its deadline. close releases the OS resources. Real implementations live in the
+// platform files (watch_darwin.go / watch_linux.go); watch_other.go degrades to the poll.
+type leaseWatcher interface {
+	wait(bound time.Duration) error
+	close() error
+}
+
+// watcherFactory builds a leaseWatcher for the state directory. Production wires newLeaseWatcher (a real
+// kqueue/inotify watcher); tests inject a fake or nil (nil ⇒ pure clock-driven poll). A factory error is
+// non-fatal — the caller degrades to the bounded poll.
+type watcherFactory func(stateDir string) (leaseWatcher, error)
+
+// AcquireWait waits for the land-lease to become free/held-by-us, or the timeout to elapse. A waiter
+// blocked on a live lease wakes the MOMENT the holder Releases (or Steals/expires-and-is-taken) via an OS
+// file-watch of the state directory (kqueue on Darwin, inotify on Linux), instead of on its next fixed
+// poll tick — while a BOUNDED poll remains the safety net so a missed event or an unsupported platform can
+// never hang the waiter past its timeout. It returns promptly on the first successful acquire. A non-"held"
+// error (e.g. a disk error) is surfaced immediately rather than retried. All deadline/bound math takes the
+// INJECTED Clock, so the loop is deterministic under a fake clock (production passes RealClock{}); the
+// file-watch itself is real OS I/O layered on top as a fast path. A poll <= 0 falls back to a one-second
+// cadence. There is no provider/LLM/network call. The signature is unchanged, so the CLI caller is untouched.
 func AcquireWait(home, holder string, ttl time.Duration, clk Clock, timeout, poll time.Duration) (Lease, error) {
+	return acquireWait(home, holder, ttl, clk, timeout, poll, newLeaseWatcher)
+}
+
+// acquireWait is the testable core of AcquireWait: the watcher is INJECTED (factory) so deterministic tests
+// exercise the bounded-poll path with a fake clock (nil / erroring factory, or a fake watcher) while the
+// real kqueue/inotify path is proven by an integration test. The watcher is created LAZILY on first
+// contention (no syscall cost on an uncontended acquire) and torn down on return. The clock-injected
+// `bound` is the safety net: no single wait can exceed one poll interval or overshoot the deadline, even
+// with the watch armed — so a broken/missed watch can never hang the waiter.
+func acquireWait(home, holder string, ttl time.Duration, clk Clock, timeout, poll time.Duration, factory watcherFactory) (Lease, error) {
 	if clk == nil {
 		return Lease{}, fmt.Errorf("land-lease AcquireWait requires a clock")
 	}
 	if poll <= 0 {
 		poll = time.Second
 	}
+	statePath, err := statePath(home)
+	if err != nil {
+		return Lease{}, err
+	}
+	stateDir := filepath.Dir(statePath)
+
+	var w leaseWatcher
+	watcherTried := false
+	defer func() {
+		if w != nil {
+			_ = w.close()
+		}
+	}()
+
 	deadline := clk.Now().Add(timeout)
 	for {
 		lease, err := Acquire(home, holder, ttl, clk.Now())
@@ -203,10 +253,37 @@ func AcquireWait(home, holder string, ttl time.Duration, clk Clock, timeout, pol
 		if !errors.As(err, &held) {
 			return Lease{}, err // a real error, not contention — surface it
 		}
-		if !clk.Now().Before(deadline) {
+		now := clk.Now()
+		if !now.Before(deadline) {
 			return Lease{}, fmt.Errorf("land-lease acquire timed out after %s waiting for holder %q: %w", timeout, held.Holder, err)
 		}
-		clk.Sleep(poll)
+		// Bound this wait: at most one poll interval, and never past the deadline. This bound is the
+		// SAFETY NET — even with the watch armed, no single wait can exceed it, so a missed/coalesced
+		// event can never hang the waiter.
+		bound := poll
+		if remaining := deadline.Sub(now); remaining < bound {
+			bound = remaining
+		}
+		// Lazily arm the watcher on first contention (fast path); on failure, stay on the clock poll.
+		if factory != nil && !watcherTried {
+			watcherTried = true
+			_ = os.MkdirAll(stateDir, 0o755) // best-effort: the dir must exist to attach the watch
+			if ww, werr := factory(stateDir); werr == nil {
+				w = ww
+			}
+		}
+		if w != nil {
+			// FAST PATH: block in the kernel until the state directory changes OR bound elapses. On a
+			// watcher error mid-flight, drop it and fall back to the clock-driven bounded sleep so the
+			// loop can never hang on a broken watch.
+			if werr := w.wait(bound); werr != nil {
+				_ = w.close()
+				w = nil
+				clk.Sleep(bound)
+			}
+		} else {
+			clk.Sleep(bound) // SAFETY NET: deterministic, clock-injected bound (no busy-spin)
+		}
 	}
 }
 
