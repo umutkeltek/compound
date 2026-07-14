@@ -493,6 +493,38 @@ func TestProofCheckMissingConsoleSmokeDependencyEmitsSkipReason(t *testing.T) {
 	}
 }
 
+func TestProofCheckHumanOutputIncludesOnlyFailedStepTail(t *testing.T) {
+	report := proofCheckReport{
+		Status: "failed",
+		Repo:   "/repo",
+		Steps: []proofCheckStep{
+			{
+				Name:       "go-test",
+				Command:    []string{"go", "test", "-count=1", "./..."},
+				ProofRef:   "go-test-count-1-all",
+				Status:     "failed",
+				OutputTail: "--- FAIL: TestLinuxOnly\n    linux_only_test.go:42: exact failure evidence\nFAIL",
+			},
+			{
+				Name:       "go-vet",
+				Command:    []string{"go", "vet", "./..."},
+				ProofRef:   "go-vet-all",
+				Status:     "ok",
+				OutputTail: "successful step chatter must stay hidden",
+			},
+		},
+	}
+	out := captureStdout(t, func() { printProofCheck(report) })
+	for _, want := range []string{"output_tail:", "--- FAIL: TestLinuxOnly", "linux_only_test.go:42: exact failure evidence", "FAIL"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("proof-check human output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "successful step chatter must stay hidden") {
+		t.Fatalf("proof-check human output printed a successful step tail:\n%s", out)
+	}
+}
+
 func TestProofCheckChangedFilesIncludesCleanCommittedRange(t *testing.T) {
 	repo := initCompoundCommandGitRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "console.ts"), []byte("console.log('ok')\n"), 0o644); err != nil {
