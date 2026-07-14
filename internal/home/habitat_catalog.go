@@ -42,6 +42,7 @@ type HabitatEntry struct {
 	Class               HabitatClass  `json:"class"`
 	Status              HabitatStatus `json:"status"`
 	Scaffold            bool          `json:"scaffold,omitempty"`
+	TopLevelFile        bool          `json:"top_level_file,omitempty"`
 	Backup              bool          `json:"backup"`
 	Compact             bool          `json:"compact"`
 	PlacementAllowed    bool          `json:"placement_allowed"`
@@ -77,6 +78,7 @@ func buildHabitatEntries() []HabitatEntry {
 	}
 
 	entries := []HabitatEntry{
+		{ID: "public-fixture-summary", Prefix: PublicFixtureSummaryName, Class: HabitatClassExport, Status: HabitatStatusActive, TopLevelFile: true, Backup: true},
 		active("lock", "lock", HabitatClassTransient, true, false, false),
 		active("config", "config", HabitatClassConfig, true, true, false),
 		child("config.overlays", "config/overlays", HabitatClassConfig, true, true, false),
@@ -187,6 +189,9 @@ func validateHabitatEntries(entries []HabitatEntry) error {
 		if entry.Compact && entry.Class != HabitatClassRebuildable && entry.Class != HabitatClassTransient {
 			return fmt.Errorf("habitat %s is behavior-bearing but compactable", entry.ID)
 		}
+		if entry.TopLevelFile && (strings.Contains(entry.Prefix, "/") || entry.Scaffold || entry.PlacementAllowed || entry.Compact) {
+			return fmt.Errorf("top-level habitat file %s has directory policy", entry.ID)
+		}
 	}
 	return nil
 }
@@ -222,7 +227,7 @@ func HabitatDirs() []string {
 func HabitatPlacementDirs() []string {
 	var dirs []string
 	for _, entry := range habitatEntries {
-		if entry.PlacementAllowed && !strings.Contains(entry.Prefix, "/") {
+		if entry.PlacementAllowed && !entry.TopLevelFile && !strings.Contains(entry.Prefix, "/") {
 			dirs = append(dirs, entry.Prefix)
 		}
 	}
@@ -262,7 +267,12 @@ func InspectHabitat(homePath string) (HabitatInventory, error) {
 		return HabitatInventory{}, err
 	}
 	knownRoots := map[string]HabitatEntry{}
+	knownFiles := map[string]HabitatEntry{}
 	for _, entry := range habitatEntries {
+		if entry.TopLevelFile {
+			knownFiles[entry.Prefix] = entry
+			continue
+		}
 		root := strings.Split(entry.Prefix, "/")[0]
 		if _, exists := knownRoots[root]; !exists || entry.Prefix == root {
 			knownRoots[root] = entry
@@ -271,6 +281,9 @@ func InspectHabitat(homePath string) (HabitatInventory, error) {
 	var inventory HabitatInventory
 	for _, entry := range entries {
 		if entry.Name() == ManifestName && entry.Type().IsRegular() {
+			continue
+		}
+		if _, ok := knownFiles[entry.Name()]; ok && entry.Type().IsRegular() {
 			continue
 		}
 		owned, ok := knownRoots[entry.Name()]
@@ -316,7 +329,7 @@ func habitatBackupIncluded(rel string, isDir bool) bool {
 func habitatBackupExcludedRoots() []string {
 	var out []string
 	for _, entry := range habitatEntries {
-		if strings.Contains(entry.Prefix, "/") || entry.Backup {
+		if entry.TopLevelFile || strings.Contains(entry.Prefix, "/") || entry.Backup {
 			continue
 		}
 		out = append(out, entry.Prefix)
@@ -328,7 +341,7 @@ func habitatBackupExcludedRoots() []string {
 func habitatCompactRoots(rebuildable bool) []string {
 	var out []string
 	for _, entry := range habitatEntries {
-		if !entry.Compact || strings.Contains(entry.Prefix, "/") {
+		if entry.TopLevelFile || !entry.Compact || strings.Contains(entry.Prefix, "/") {
 			continue
 		}
 		if entry.Class == HabitatClassRebuildable && !rebuildable {
