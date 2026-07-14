@@ -846,6 +846,9 @@ func validateReport(report Report) error {
 			return fmt.Errorf("parity report class %d classification invalid", i+1)
 		}
 	}
+	if !equalClassSummaries(report.Classes, summarizeClasses(report.Rows)) {
+		return fmt.Errorf("parity report classes do not match rows")
+	}
 	if !report.Privacy.RawQueryExcluded || !report.Privacy.QueryRefsHashed || !allRowsHashed(report.Rows) {
 		return fmt.Errorf("parity report privacy check failed")
 	}
@@ -967,6 +970,18 @@ func summarizeClasses(rows []ReplayRow) []ClassSummary {
 		return out[i].QueryClass < out[j].QueryClass
 	})
 	return out
+}
+
+func equalClassSummaries(left, right []ClassSummary) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func allRowsHashed(rows []ReplayRow) bool {
