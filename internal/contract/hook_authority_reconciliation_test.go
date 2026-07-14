@@ -213,6 +213,89 @@ func TestHookPlanSkipsRetiredInstalledRows(t *testing.T) {
 	}
 }
 
+func TestImportHookRegistrationPreservesExternalRowsAcrossNarrowReimport(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	t.Setenv("HOME", harnessHome)
+	for path, body := range map[string]string{
+		filepath.Join(harnessHome, ".claude", "hooks", "RecallContext.hook.ts"):   "#!/usr/bin/env bun\nprocess.stdout.write('{}')",
+		filepath.Join(harnessHome, ".claude", "hooks", "IntentRecall.hook.ts"):    "#!/usr/bin/env bun\nprocess.stdout.write('{}')",
+		filepath.Join(harnessHome, ".claude", "hooks", "KittyEnvPersist.hook.ts"): "#!/usr/bin/env bun\nprocess.stdout.write('{}')",
+	} {
+		writeHarnessHookConfig(t, path, body)
+	}
+	broadSourcePath := filepath.Join(t.TempDir(), "hook-registration.ts")
+	broadSource := `export const HOOK_REGISTRATIONS = [
+  { harness: "claude", event: "SessionStart", file: "RecallContext.hook.ts", command: ` + "`\"$HOME/.claude/hooks/RecallContext.hook.ts\"`" + ` },
+  { harness: "claude", event: "UserPromptSubmit", file: "IntentRecall.hook.ts", command: ` + "`\"$HOME/.claude/hooks/IntentRecall.hook.ts\"`" + ` },
+  { harness: "claude", event: "SessionStart", file: "KittyEnvPersist.hook.ts", command: ` + "`\"$HOME/.claude/hooks/KittyEnvPersist.hook.ts\"`" + `, status: "preserved_external" },
+];`
+	if err := os.WriteFile(broadSourcePath, []byte(broadSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportHookRegistrationTS(compoundHome, broadSourcePath, time.Date(2026, 7, 14, 20, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("broad ImportHookRegistrationTS() error = %v", err)
+	}
+
+	narrowSourcePath := filepath.Join(t.TempDir(), "hook-registration.ts")
+	narrowSource := `export const HOOK_REGISTRATIONS = [
+  { harness: "claude", event: "SessionStart", file: "RecallContext.hook.ts", command: ` + "`\"$HOME/.claude/hooks/RecallContext.hook.ts\"`" + ` },
+];`
+	if err := os.WriteFile(narrowSourcePath, []byte(narrowSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reimported, err := ImportHookRegistrationTS(compoundHome, narrowSourcePath, time.Date(2026, 7, 14, 20, 5, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("narrow ImportHookRegistrationTS() error = %v", err)
+	}
+	if reimported.HookCount != 2 {
+		t.Fatalf("narrow re-import hook count = %d, want current source row plus preserved declaration", reimported.HookCount)
+	}
+	manifest, err := LoadInstalledHooksManifest(compoundHome)
+	if err != nil {
+		t.Fatalf("LoadInstalledHooksManifest() error = %v", err)
+	}
+	if len(manifest.Hooks) != 2 {
+		t.Fatalf("merged installed hooks = %+v, want narrow managed authority plus preserved declaration", manifest.Hooks)
+	}
+	preserved := installedHookByRefSuffix(manifest, "/.claude/hooks/KittyEnvPersist.hook.ts")
+	if preserved == nil || preserved.Status != "preserved_external" {
+		t.Fatalf("preserved external row after re-import = %+v", preserved)
+	}
+	if intent := installedHookByRefSuffix(manifest, "/.claude/hooks/IntentRecall.hook.ts"); intent != nil {
+		t.Fatalf("managed row omitted by authoritative re-import was retained: %+v", intent)
+	}
+
+	writeHarnessHookConfig(t, filepath.Join(harnessHome, ".claude", "settings.json"), `{
+  "hooks": {
+    "SessionStart": [{"hooks":[
+      {"type":"command","command":"\"$HOME/.claude/hooks/RecallContext.hook.ts\""},
+      {"type":"command","command":"\"$HOME/.claude/hooks/KittyEnvPersist.hook.ts\""}
+    ]}],
+    "UserPromptSubmit": [{"hooks":[{"type":"command","command":"\"$HOME/.claude/hooks/IntentRecall.hook.ts\""}]}]
+  }
+}`)
+	reconciled, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("ReconcileInstalledHooks() error = %v", err)
+	}
+	if len(reconciled.Plan.Bindings) != 1 || len(reconciled.Plan.PreservedBindings) != 1 {
+		t.Fatalf("desired/preserved plan split = desired:%+v preserved:%+v", reconciled.Plan.Bindings, reconciled.Plan.PreservedBindings)
+	}
+	if delta := hookReconciliationDeltaByRef(reconciled.Reconciliation, "$HOME/.claude/hooks/KittyEnvPersist.hook.ts"); delta == nil || delta.State != hookplan.StateExternalPreserved {
+		t.Fatalf("KittyEnvPersist reconciliation = %+v, want external_preserved", delta)
+	}
+
+	in := Input{Harness: "claude_code", Cwd: t.TempDir(), Task: "use session hooks", RepoKind: "product", Mode: "execute"}
+	contract, err := CompileWithRuntime(in, DefaultPolicy(), compoundHome, time.Date(2026, 7, 14, 20, 10, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("CompileWithRuntime() error = %v", err)
+	}
+	if len(contract.ActiveHooks) != 1 || countString(contract.ActiveHooks, "hook://claude_code/SessionStart") != 1 {
+		t.Fatalf("preserved external row leaked into active_hooks: %+v", contract.ActiveHooks)
+	}
+}
+
 func TestReconcileInstalledHooksWithoutPlanStillReportsObservedExtras(t *testing.T) {
 	compoundHome := t.TempDir()
 	harnessHome := t.TempDir()
@@ -346,4 +429,32 @@ func hookReconciliationDelta(reconciliation hookplan.Reconciliation, harnessName
 		}
 	}
 	return nil
+}
+
+func hookReconciliationDeltaByRef(reconciliation hookplan.Reconciliation, ref string) *hookplan.Delta {
+	for i := range reconciliation.Deltas {
+		if reconciliation.Deltas[i].ObservedHandlerRef == ref {
+			return &reconciliation.Deltas[i]
+		}
+	}
+	return nil
+}
+
+func installedHookByRefSuffix(manifest InstalledHooksManifest, suffix string) *InstalledHook {
+	for i := range manifest.Hooks {
+		if strings.HasSuffix(manifest.Hooks[i].Ref, suffix) {
+			return &manifest.Hooks[i]
+		}
+	}
+	return nil
+}
+
+func countString(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
 }

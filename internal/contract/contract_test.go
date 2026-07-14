@@ -78,6 +78,27 @@ func TestInstalledHookRuntimeReadinessRowsExposeFixtureAndLiveGaps(t *testing.T)
 	}
 }
 
+func TestPreservedExternalInstalledHooksDoNotSurfaceReadiness(t *testing.T) {
+	manifest := InstalledHooksManifest{
+		SchemaVersion: installedHooksSchemaVersion,
+		Hooks: []InstalledHook{
+			{
+				Harness: "claude_code",
+				Name:    "SessionStart",
+				Event:   "SessionStart",
+				Ref:     "$HOME/.claude/hooks/KittyEnvPersist.hook.ts",
+				Status:  "preserved_external",
+			},
+		},
+	}
+	if rows := InstalledHookRuntimeReadinessRows(manifest, nil); len(rows) != 0 {
+		t.Fatalf("runtime readiness surfaced preserved external row: %+v", rows)
+	}
+	if rows := InstalledHookGateReadiness(manifest, map[string]bool{}); len(rows) != 0 {
+		t.Fatalf("gate readiness surfaced harness known only through preserved external row: %+v", rows)
+	}
+}
+
 func TestModeAffectsContractAndContextPackIDs(t *testing.T) {
 	in := mkInput("control-plane")
 	in.Task = "same task"

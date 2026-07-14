@@ -61,6 +61,129 @@ func TestReconcileObservedExtraNeverBecomesDesired(t *testing.T) {
 	}
 }
 
+func TestReconcilePreservedExternalCoexistsWithDesiredBindingInSameSlot(t *testing.T) {
+	plan := HookPlan{
+		SchemaVersion: HookPlanSchemaVersion,
+		ID:            "hook-plan",
+		Bindings: []Binding{
+			{
+				ID:                 "recall",
+				Harness:            "claude_code",
+				Event:              "SessionStart",
+				HandlerRef:         "$HOME/.claude/hooks/RecallContext.hook.ts",
+				InvocationRevision: "sha256:recall-invocation",
+				HandlerRevision:    "sha256:recall-content",
+			},
+		},
+		PreservedBindings: []Binding{
+			{
+				ID:                 "kitty-env",
+				Harness:            "claude_code",
+				Event:              "SessionStart",
+				HandlerRef:         "$HOME/.claude/hooks/KittyEnvPersist.hook.ts",
+				InvocationRevision: "sha256:kitty-invocation",
+				HandlerRevision:    "sha256:kitty-content",
+			},
+		},
+	}
+	observed := InstallationSnapshot{
+		SchemaVersion: InstallationSnapshotSchemaVersion,
+		Bindings: []ObservedBinding{
+			{
+				Harness:            "claude_code",
+				Event:              "SessionStart",
+				HandlerRef:         "$HOME/.claude/hooks/KittyEnvPersist.hook.ts",
+				InvocationRevision: "sha256:kitty-invocation",
+				HandlerRevision:    "sha256:kitty-content",
+				Active:             true,
+			},
+			{
+				Harness:            "claude_code",
+				Event:              "SessionStart",
+				HandlerRef:         "$HOME/.claude/hooks/RecallContext.hook.ts",
+				InvocationRevision: "sha256:recall-invocation",
+				HandlerRevision:    "sha256:recall-content",
+				Active:             true,
+			},
+			{
+				Harness:    "claude_code",
+				Event:      "SessionEnd",
+				HandlerRef: "$HOME/.claude/hooks/UnknownExtra.hook.ts",
+				Active:     true,
+			},
+		},
+	}
+
+	got, err := Reconcile(plan, observed, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if delta := reconciliationDeltaByID(got, "recall"); delta == nil || delta.State != StateReady {
+		t.Fatalf("desired RecallContext delta = %+v, want ready", delta)
+	}
+	if delta := reconciliationDeltaByID(got, "kitty-env"); delta == nil || delta.State != StateExternalPreserved {
+		t.Fatalf("preserved KittyEnvPersist delta = %+v, want external_preserved", delta)
+	}
+	if len(got.Deltas) != 3 || got.Deltas[2].State != StateExtraUnowned || got.Deltas[2].Event != "SessionEnd" {
+		t.Fatalf("reconciliation deltas = %+v, want desired + preserved + unknown extra", got.Deltas)
+	}
+}
+
+func TestReconcileDoesNotPreserveExternalHookWithAttestationDrift(t *testing.T) {
+	tests := []struct {
+		name     string
+		observed ObservedBinding
+	}{
+		{
+			name: "invocation",
+			observed: ObservedBinding{
+				Harness:            "claude_code",
+				Event:              "SessionStart",
+				HandlerRef:         "$HOME/.claude/hooks/KittyEnvPersist.hook.ts",
+				InvocationRevision: "sha256:changed-invocation",
+				HandlerRevision:    "sha256:kitty-content",
+				Active:             true,
+			},
+		},
+		{
+			name: "content",
+			observed: ObservedBinding{
+				Harness:            "claude_code",
+				Event:              "SessionStart",
+				HandlerRef:         "$HOME/.claude/hooks/KittyEnvPersist.hook.ts",
+				InvocationRevision: "sha256:kitty-invocation",
+				HandlerRevision:    "sha256:changed-content",
+				Active:             true,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan := HookPlan{
+				SchemaVersion: HookPlanSchemaVersion,
+				ID:            "hook-plan",
+				PreservedBindings: []Binding{
+					{
+						ID:                 "kitty-env",
+						Harness:            "claude_code",
+						Event:              "SessionStart",
+						HandlerRef:         "$HOME/.claude/hooks/KittyEnvPersist.hook.ts",
+						InvocationRevision: "sha256:kitty-invocation",
+						HandlerRevision:    "sha256:kitty-content",
+					},
+				},
+			}
+			got, err := Reconcile(plan, InstallationSnapshot{Bindings: []ObservedBinding{test.observed}}, harness.DefaultRegistry())
+			if err != nil {
+				t.Fatalf("Reconcile() error = %v", err)
+			}
+			if len(got.Deltas) != 1 || got.Deltas[0].State != StateExtraUnowned {
+				t.Fatalf("Reconcile() deltas = %+v, want attestation drift to remain extra_unowned", got.Deltas)
+			}
+		})
+	}
+}
+
 func TestReconcileKeepsMissingDriftActivationAndCapabilityFailuresDistinct(t *testing.T) {
 	registry := harness.DefaultRegistry()
 	registry.Harnesses["observe_only"] = harness.Harness{
