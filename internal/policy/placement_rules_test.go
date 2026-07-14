@@ -107,6 +107,16 @@ func TestPlacementContextFromHomeSynthesizesGovernedRoot(t *testing.T) {
 	if ok != nil {
 		t.Fatalf("typed habitat under fresh home must be allowed: %+v", ok)
 	}
+
+	// A cataloged bridge is preserved by doctor/backup but is not a canonical
+	// placement target. New writes remain redirected until its consumer cutover.
+	bridge, _, err := PlacementContextFromHome(homePath, filepath.Join(homePath, "close-plans", "plan.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bridge == nil || bridge.Reason != "unowned-under-governed-root" {
+		t.Fatalf("legacy bridge must remain non-canonical for new writes: %+v", bridge)
+	}
 }
 
 func TestImportPlacementRulesWritesAuthorityAndSourceRecord(t *testing.T) {

@@ -112,3 +112,22 @@ func TestHabitatCatalogClassifiesEveryKnownRootAndMakesBridgeDebtExplicit(t *tes
 		}
 	}
 }
+
+func TestHabitatPathMakesLegacyWriterDebtExplicitAndRejectsTraversal(t *testing.T) {
+	h := filepath.Join(string(os.PathSeparator), "owned", ".compound")
+	got, err := HabitatPath(h, HabitatClosePlans, "plan.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(h, "close-plans", "plan.json")
+	if got != want {
+		t.Fatalf("close-plan habitat path = %q, want %q", got, want)
+	}
+	entry, ok := HabitatForPath("close-plans/plan.json")
+	if !ok || entry.Status != HabitatStatusBridge || entry.CanonicalPrefix != "work/plans/close" {
+		t.Fatalf("close-plan writer lost bridge debt: %+v ok=%t", entry, ok)
+	}
+	if _, err := HabitatPath(h, HabitatClosePlans, "../escape.json"); err == nil {
+		t.Fatal("habitat path accepted traversal")
+	}
+}
