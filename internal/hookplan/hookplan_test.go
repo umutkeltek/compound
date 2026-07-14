@@ -129,6 +129,87 @@ func TestReconcilePreservedExternalCoexistsWithDesiredBindingInSameSlot(t *testi
 	}
 }
 
+func TestReconcileReservesExactPreservedObservationWhenManagedSameSlotIsMissing(t *testing.T) {
+	plan := HookPlan{
+		SchemaVersion: HookPlanSchemaVersion,
+		ID:            "hook-plan",
+		Bindings: []Binding{
+			{
+				ID:                 "recall",
+				Harness:            "claude_code",
+				Event:              "SessionStart",
+				HandlerRef:         "$HOME/.claude/hooks/RecallContext.hook.ts",
+				InvocationRevision: "sha256:recall-invocation",
+			},
+		},
+		PreservedBindings: []Binding{
+			{
+				ID:                 "kitty-env",
+				Harness:            "claude_code",
+				Event:              "SessionStart",
+				HandlerRef:         "$HOME/.claude/hooks/KittyEnvPersist.hook.ts",
+				InvocationRevision: "sha256:kitty-invocation",
+				HandlerRevision:    "sha256:kitty-content",
+			},
+		},
+	}
+	observed := InstallationSnapshot{Bindings: []ObservedBinding{
+		{
+			Harness:            "claude_code",
+			Event:              "SessionStart",
+			HandlerRef:         "$HOME/.claude/hooks/KittyEnvPersist.hook.ts",
+			InvocationRevision: "sha256:kitty-invocation",
+			HandlerRevision:    "sha256:kitty-content",
+			Active:             true,
+		},
+	}}
+
+	got, err := Reconcile(plan, observed, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if managed := reconciliationDeltaByID(got, "recall"); managed == nil || managed.State != StateMissing || managed.ObservedHandlerRef != "" {
+		t.Fatalf("missing managed same-slot delta = %+v, want missing without stolen preserved observation", managed)
+	}
+	if preserved := reconciliationDeltaByID(got, "kitty-env"); preserved == nil || preserved.State != StateExternalPreserved {
+		t.Fatalf("exact preserved same-slot delta = %+v, want external_preserved", preserved)
+	}
+	if len(got.Deltas) != 2 {
+		t.Fatalf("Reconcile() deltas = %+v, want managed missing + external preserved", got.Deltas)
+	}
+}
+
+func TestReconcileDesiredSameSlotFallbackStillReportsUnownedMismatchAsDrifted(t *testing.T) {
+	plan := HookPlan{
+		SchemaVersion: HookPlanSchemaVersion,
+		ID:            "hook-plan",
+		Bindings: []Binding{
+			{
+				ID:         "recall",
+				Harness:    "claude_code",
+				Event:      "SessionStart",
+				HandlerRef: "$HOME/.claude/hooks/RecallContext.hook.ts",
+			},
+		},
+	}
+	observed := InstallationSnapshot{Bindings: []ObservedBinding{
+		{
+			Harness:    "claude_code",
+			Event:      "SessionStart",
+			HandlerRef: "$HOME/.claude/hooks/UnknownSameSlot.hook.ts",
+			Active:     true,
+		},
+	}}
+
+	got, err := Reconcile(plan, observed, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(got.Deltas) != 1 || got.Deltas[0].State != StateDrifted || got.Deltas[0].ObservedHandlerRef != "$HOME/.claude/hooks/UnknownSameSlot.hook.ts" {
+		t.Fatalf("Reconcile() deltas = %+v, want legacy single-slot fallback drift", got.Deltas)
+	}
+}
+
 func TestReconcileDoesNotPreserveExternalHookWithAttestationDrift(t *testing.T) {
 	tests := []struct {
 		name     string
