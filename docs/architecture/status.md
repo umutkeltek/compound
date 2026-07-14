@@ -124,6 +124,7 @@ This table is SINGLE-SOURCED from `arch.Classification` (`internal/arch/arch.go`
 | `runtimebinding` | object-family | models where a service actually runs and how to check it; RuntimeBinding/ServiceContract bundle, doctor, project-contract adapter, and gated repair-plan review artifacts |
 | `schema` | spine | exports machine-readable contract schemas and validates concrete documents through the same package validators Compound uses at run time; JSON Schema documents are structural, Validate is the semantic gate |
 | `sourceobs` | importer | SourceObservation records map generated/source views into candidate inboxes plus no-promote decisions; observation only, never promotion |
+| `stream` | leaf | read-only byte-cursor tail organ over events/work.jsonl + ledger/seq; opens the log read-only and NEVER takes the work-event write lock; emits JSONL frames (a finite --once snapshot with an end-of-log cursor, or a --follow live tail) the console SSE route translates; owns no authority object and promotes nothing |
 | `tooltopology` | importer | Tool/MCP topology observations import normalized YAML or generated resolver JSON into CLI/MCP/adapter nodes and fallback recommendations in CapabilityGraph, and record source-view no-promote evidence; offers only, never executes |
 | `work` | spine | the lifecycle store that threads ONE work_id through the whole chain: intent (WorkEnvelope) -> context (pack id) -> action (run ids) -> close, where close emits the Receipt and the apex Transition |
 | `writeback` | spine | governs candidate updates to owner surfaces: the first OwnerWritebackGate/NoPromoteDecision slice — observations and candidates do not become owner writes or repeat promotion without passing through this gate |
@@ -226,8 +227,7 @@ Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recr
 - candidate-map integrity: every candidate kind has exactly one created inbox dir and consumer;
 - package classification totality: every `internal/` directory is classified, and every classified package exists;
 - public leak gate: docs scan generic path/email leaks plus private leak-token list; optional private source-leak token list scans public fixtures/tests/source examples without hardcoding operator names into public core;
-- status-hot-path guard: `docs/architecture/status.md` must stay at or below 250 lines, with proof journals archived out of the hot path;
-- retired-surface guard: old skill-matrix debt cannot reappear in public docs;
+- status-hot-path guard: `docs/architecture/status.md` must stay at or below 250 lines, with proof journals archived out of the hot path; retired-surface guard: old skill-matrix debt cannot reappear in public docs;
 - distiller-contract guard: duplicate candidate anti-churn must remain documented beyond memory-only duplicates;
 - llm-grounding-contract guard: request-grounded candidate `evidence_refs[]` / request `source_refs[]` gating must remain documented for eval/live/offline replay extraction;
 - distiller-shape-contract guard: memory candidate `entity`/`predicate`/`object` and non-memory `subject`/`statement` shape must remain documented before inbox write;

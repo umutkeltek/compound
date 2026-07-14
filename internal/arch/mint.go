@@ -184,6 +184,15 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "privacy-bounded retrieval traffic and replay comparisons over production consumer paths",
 		Consumer: "compound memory parity-replay and parity-freeze operator review",
 	},
+	// stream is the read-only tail organ over the work-event log + ledger seq: it emits JSONL frames
+	// (a finite --once snapshot with an end-of-log cursor + generated_at, or a long-running --follow
+	// tail) that a client translates. It blocks nothing, promotes nothing, and opens the log read-only
+	// (it never takes the work-event write lock), so it is evidence, not enforcement.
+	"organ:stream": {
+		Class:    MintEvidence,
+		Purpose:  "read-only byte-cursor tail over events/work.jsonl + ledger/seq that emits JSONL frames (a finite --once snapshot with an end-of-log cursor + generated_at, or a --follow live tail) without ever taking the work-event write lock",
+		Consumer: "the console live stream route (console/src/app/api/stream/route.ts) spawns `compound stream --follow` per SSE client and seeds backlog through the stream-snapshot door (`compound stream --once --json`, console/src/lib/doors.ts); frames translate into the existing ready/transition/memory-pulse SSE vocabulary",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law
