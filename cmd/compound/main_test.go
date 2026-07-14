@@ -269,6 +269,21 @@ func TestHomeArchiveCommandsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHomeInitHelpIsReadOnly(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	t.Setenv("COMPOUND_HOME", homePath)
+
+	out := captureStdout(t, func() {
+		cmdHome([]string{"init", "--help"})
+	})
+	if !strings.Contains(out, "usage: compound home") {
+		t.Fatalf("home init --help should print usage, got:\n%s", out)
+	}
+	if _, err := os.Stat(homePath); !os.IsNotExist(err) {
+		t.Fatalf("home init --help mutated COMPOUND_HOME, stat err=%v", err)
+	}
+}
+
 func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdProofCheck([]string{"--dry-run", "--json", "--repo", "."})
