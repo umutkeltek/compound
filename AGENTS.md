@@ -71,6 +71,16 @@ loop compound provides:
   it through the intake door as a `SourceObservation` (`compound source observe <obs.yaml>`, or
   `observation_batch` JSON via `compound source observe-batch` for multiple) so it enters adjudication like any
   other tunnel's evidence. Adapters observe, agents observe — nobody promotes from the field.
+- **Where an agent-authored finding lands (placement grammar):** never invent a path under
+  `COMPOUND_HOME` — the PreToolUse guard denies an unowned write and hands back a redirect. For a
+  durable *operational* note (a runbook fact, an ops observation) that is neither a compound-architecture
+  fact (→ a contract/doc) nor a reusable procedure (→ a skill), and isn't worth adjudication latency,
+  use the direct-write finding home: `compound finding record --topic T --body B` (recall via
+  `compound finding list|show`; it is `source_class=evidence`, never a ledger byte, never a promoted
+  Claim — promotion to canon stays the governed memory-candidate door). Unsure where *any* write goes?
+  Ask the resolver: `compound placement target --kind <operational-finding|memory|…>`, or
+  `compound placement resolve <path>` to check a path. These are plain `compound` CLI verbs — identical
+  for every harness; the guard + resolver + finding home all live in the binary, not in one harness.
 
 ## Build discipline
 - The topology is the **target**, not a license to build all of it. One vertical slice, proven with a command +

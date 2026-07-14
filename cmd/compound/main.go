@@ -35,6 +35,7 @@ import (
 	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/hookplan"
 	"compound/internal/knowledge"
 	"compound/internal/mem"
 	"compound/internal/policy"
@@ -3217,8 +3218,80 @@ func fallbackTag(b bool) string {
 // cmdHook runs one lifecycle hook over a fixture, producing typed envelopes. Capability-
 // aware per harness; no live install (docs/architecture/runtime.md §3, roadmap P5).
 func cmdHook(args []string) {
+	if len(args) > 0 && args[0] == "install" {
+		cmdHookInstall(args[1:])
+		return
+	}
 	if code := runHookCommand(args); code != 0 {
 		os.Exit(code)
+	}
+}
+
+// cmdHookInstall is the missing installer: it wires compound's PreToolUse gate into a harness config
+// (Claude Code and/or Codex) so the guard actually runs — dual-harness, no-clobber, works from
+// nothing. It does NOT change the guard stage (placement_guard_mode); install starts recording.
+func cmdHookInstall(args []string) {
+	check := hasFlag(args, "--check")
+	jsonOut := hasFlag(args, "--json")
+
+	scope := strings.TrimSpace(valueFlag(args, "--scope"))
+	if scope == "" {
+		scope = "global"
+	}
+	if scope != "global" && scope != "project" {
+		fmt.Fprintln(os.Stderr, "error: --scope must be global or project")
+		os.Exit(2)
+	}
+
+	var harnesses []string
+	switch h := strings.TrimSpace(valueFlag(args, "--harness")); h {
+	case "", "all":
+		harnesses = nil // both
+	case "claude-code", "codex":
+		harnesses = []string{h}
+	default:
+		fmt.Fprintln(os.Stderr, "error: --harness must be claude-code, codex, or all")
+		os.Exit(2)
+	}
+
+	base := strings.TrimSpace(valueFlag(args, "--base"))
+	if base == "" {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		base = h
+	}
+	binary := strings.TrimSpace(valueFlag(args, "--binary"))
+	if binary == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		binary = exe
+	}
+
+	rep, err := hookplan.InstallHooks(base, binary, scope, harnesses, check)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(rep)
+		return
+	}
+	head := "installed"
+	if check {
+		head = "check"
+	}
+	fmt.Printf("hook %s (scope=%s):\n", head, rep.Scope)
+	for _, e := range rep.Entries {
+		fmt.Printf("- %s: %s -> %s [%s]\n", e.Harness, e.Action, e.ConfigPath, e.Matcher)
+	}
+	if !check {
+		fmt.Println("\nstage is placement_guard_mode in COMPOUND_HOME/config/policy.yaml (observe->warn->block); install starts recording, not blocking.")
 	}
 }
 

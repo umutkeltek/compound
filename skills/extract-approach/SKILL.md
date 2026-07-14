@@ -37,9 +37,10 @@ notes-to-nobody.
 5. **It's a durable fact/decision about the system** → a compound memory/decision candidate
    through the governed door (`go run ./cmd/compound memory candidate …` or the distiller
    path). Candidates park; they never self-promote — the operator adjudicates.
-6. **It's a reusable multi-step procedure** → a skill next to this one (`.claude/skills/`),
-   or a CapabilityGraph candidate via the intake path (`capability skill-plan`) if it should
-   surface to other harnesses. Never hand-edit the graph.
+6. **It's a reusable multi-step procedure** → a skill in the tracked `skills/` tree (the source of
+   truth; a harness may auto-load it — e.g. Claude Code via `.claude/skills/` — but that overlay is a
+   convenience, not the home), or a CapabilityGraph candidate via the intake path (`capability
+   skill-plan`) if it should surface to other harnesses. Never hand-edit the graph.
 7. **It's an operational finding / runbook note** — a durable operational fact (how a system is
    run, a verb, a gotcha) that is neither a compound-architecture fact nor a reusable procedure,
    and isn't worth adjudication latency → the direct-write finding home: `compound finding record
