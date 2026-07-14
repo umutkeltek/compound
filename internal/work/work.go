@@ -163,6 +163,10 @@ type CreateInput struct {
 	State           string // default "ready"
 	Risk            string // default "tier1"
 	Privacy         string // default "private"
+	// Prediction is an optional stake of how this work is expected to CLOSE (see
+	// envelope.WorkPrediction). Staked at create time only -- there is no restaking at
+	// Claim/Advance in v1.
+	Prediction *envelope.WorkPrediction
 }
 
 // BuildWork constructs a WorkEnvelope WITHOUT persisting it — used both by Create (which
@@ -176,6 +180,11 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 	if in.GitDelivery != nil {
 		copy := *in.GitDelivery
 		gitDelivery = &copy
+	}
+	var prediction *envelope.WorkPrediction
+	if in.Prediction != nil {
+		copy := *in.Prediction
+		prediction = &copy
 	}
 	w := envelope.WorkEnvelope{
 		Header:             newHeader(envelope.SVWork, workID, now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
@@ -193,6 +202,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		ArtifactIDs:        []string{},
 		VerificationIDs:    []string{},
 		MemoryCandidateIDs: []string{},
+		Prediction:         prediction,
 	}
 	w.EvidenceRefs = orEmpty(in.EvidenceRefs)
 	return w
@@ -1332,6 +1342,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		return res, err
 	}
 	memoryCandidates := mergeUnique(w.MemoryCandidateIDs, in.MemoryCandidates)
+	surprise := surpriseOnClose(w, in)
 
 	// Receipt — how the run is learned from.
 	rOut := receiptOutcome[in.Outcome]
@@ -1339,6 +1350,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		Header:   newHeader(envelope.SVReceipt, idFor("rec_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
 		Outcome:  rOut,
 		MoveType: in.MoveType,
+		Surprise: surprise,
 		StateDelta: envelope.StateDelta{
 			Changed:      in.Changed,
 			Summary:      in.Summary,
@@ -2142,6 +2154,30 @@ func orEmpty(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// surpriseOnClose diffs a staked WorkPrediction (envelope.WorkEnvelope.Prediction) against the
+// actual close, mirroring shouldHardenOnClose as a small pure close-time helper. Nil when the
+// work staked no prediction. When staked, it ALWAYS returns a signal -- Diverged=false (a
+// confirmed prediction) is signal too, not merely the absence of a divergence flag. A prediction
+// dimension left unstaked (empty MoveType) is not compared and can never itself cause
+// Diverged=true.
+func surpriseOnClose(w envelope.WorkEnvelope, in CloseInput) *envelope.SurpriseSignal {
+	p := w.Prediction
+	if p == nil {
+		return nil
+	}
+	diverged := p.Outcome != in.Outcome
+	if !diverged && p.MoveType != "" {
+		diverged = p.MoveType != in.MoveType
+	}
+	return &envelope.SurpriseSignal{
+		PredictedOutcome:  p.Outcome,
+		PredictedMoveType: p.MoveType,
+		ActualOutcome:     in.Outcome,
+		ActualMoveType:    in.MoveType,
+		Diverged:          diverged,
+	}
 }
 
 // shouldHardenOnClose reports whether a close should stamp

@@ -1,6 +1,7 @@
 package work
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,6 +110,94 @@ func TestWorkLifecycleThreadsOneID(t *testing.T) {
 			t.Errorf("event[%d] = %q, want %q", i, gotStates[i], want[i])
 		}
 	}
+}
+
+// TestWorkPredictionSurpriseOnClose covers F1: a staked WorkPrediction diffs against the actual
+// close and bakes a Receipt.Surprise -- diverged, confirmed (Diverged=false is signal too), and
+// entirely absent when no prediction was staked (the marshaled JSON must lack "surprise", never
+// serialize a zero-value struct).
+func TestWorkPredictionSurpriseOnClose(t *testing.T) {
+	lifecycleToVerifying := func(t *testing.T, s *Store, prediction *envelope.WorkPrediction) envelope.WorkEnvelope {
+		t.Helper()
+		w, err := s.Create(CreateInput{
+			Owner:            "memory-lane",
+			SuccessPredicate: "surprise diffs correctly",
+			Prediction:       prediction,
+		}, fixedNow)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := s.Claim(w.ID, "claude_code", fixedNow); err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "claude_code"}, fixedNow); err != nil {
+			t.Fatalf("advance running: %v", err)
+		}
+		if _, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "claude_code"}, fixedNow); err != nil {
+			t.Fatalf("advance verifying: %v", err)
+		}
+		return w
+	}
+
+	t.Run("diverged", func(t *testing.T) {
+		s := newStore(t)
+		w := lifecycleToVerifying(t, s, &envelope.WorkPrediction{Outcome: "completed", MoveType: "rule_delta"})
+		res, err := s.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "control_plane_repair", Actor: "claude_code", ProofRefs: []string{"check:proof"}}, fixedNow)
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		surprise := res.Receipt.Surprise
+		if surprise == nil {
+			t.Fatal("want non-nil Surprise on a diverged close")
+		}
+		if !surprise.Diverged {
+			t.Error("want Diverged=true")
+		}
+		if surprise.PredictedOutcome != "completed" || surprise.PredictedMoveType != "rule_delta" {
+			t.Errorf("predicted = %s/%s, want completed/rule_delta", surprise.PredictedOutcome, surprise.PredictedMoveType)
+		}
+		if surprise.ActualOutcome != "completed" || surprise.ActualMoveType != "control_plane_repair" {
+			t.Errorf("actual = %s/%s, want completed/control_plane_repair", surprise.ActualOutcome, surprise.ActualMoveType)
+		}
+	})
+
+	t.Run("confirmed", func(t *testing.T) {
+		s := newStore(t)
+		w := lifecycleToVerifying(t, s, &envelope.WorkPrediction{Outcome: "completed", MoveType: "rule_delta"})
+		res, err := s.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "rule_delta", Actor: "claude_code", ProofRefs: []string{"check:proof"}}, fixedNow)
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		surprise := res.Receipt.Surprise
+		if surprise == nil {
+			t.Fatal("want non-nil Surprise even on a matching close (confirmations are signal too)")
+		}
+		if surprise.Diverged {
+			t.Error("want Diverged=false on a matching close")
+		}
+		if surprise.PredictedOutcome != surprise.ActualOutcome || surprise.PredictedMoveType != surprise.ActualMoveType {
+			t.Errorf("matching close fields should be equal: %+v", surprise)
+		}
+	})
+
+	t.Run("no prediction staked", func(t *testing.T) {
+		s := newStore(t)
+		w := lifecycleToVerifying(t, s, nil)
+		res, err := s.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "claude_code", Changed: true}, fixedNow)
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if res.Receipt.Surprise != nil {
+			t.Fatalf("want nil Surprise when no prediction staked, got %+v", res.Receipt.Surprise)
+		}
+		raw, err := json.Marshal(res.Receipt)
+		if err != nil {
+			t.Fatalf("marshal receipt: %v", err)
+		}
+		if strings.Contains(string(raw), "surprise") {
+			t.Fatalf("marshaled receipt JSON must omit surprise entirely when unset: %s", raw)
+		}
+	})
 }
 
 func TestIllegalTransitionRejected(t *testing.T) {
