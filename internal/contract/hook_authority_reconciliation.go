@@ -310,11 +310,16 @@ func installedHookHandlerRevision(handlerRef, harnessHome string) string {
 			path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
 		}
 	}
-	data, err := os.ReadFile(filepath.Clean(path))
+	path = filepath.Clean(path)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	return "sha256:" + hashBytes(data)
+	return "sha256:" + hashBytesFull(data)
 }
 
 // canonicalHookCommandFields tokenizes a hook command the way a POSIX shell would: whitespace

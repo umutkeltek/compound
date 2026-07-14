@@ -88,7 +88,7 @@ func TestImportAndObserveInstalledHookContentAreIndependentAttestations(t *testi
 	if err != nil {
 		t.Fatalf("ImportHookRegistrationTS() error = %v", err)
 	}
-	if len(imported.Manifest.Hooks) != 1 || !strings.HasPrefix(imported.Manifest.Hooks[0].Revision, "sha256:") {
+	if len(imported.Manifest.Hooks) != 1 || len(imported.Manifest.Hooks[0].Revision) != len("sha256:")+64 || !strings.HasPrefix(imported.Manifest.Hooks[0].Revision, "sha256:") {
 		t.Fatalf("imported handler content was not attested: %+v", imported.Manifest.Hooks)
 	}
 	desiredRevision := imported.Manifest.Hooks[0].Revision
@@ -128,6 +128,20 @@ func TestImportAndObserveInstalledHookContentAreIndependentAttestations(t *testi
 	delta = hookReconciliationDelta(missing.Reconciliation, "claude_code", "SessionStart")
 	if delta == nil || delta.State != hookplan.StateDrifted {
 		t.Fatalf("missing known handler = %+v, want drifted", delta)
+	}
+
+	realHandlerPath := filepath.Join(harnessHome, ".claude", "hooks", "real-recall.ts")
+	writeHarnessHookConfig(t, realHandlerPath, "#!/usr/bin/env bun\nprocess.stdout.write('{}')")
+	if err := os.Symlink(realHandlerPath, handlerPath); err != nil {
+		t.Fatal(err)
+	}
+	symlinked, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("ReconcileInstalledHooks() symlink error = %v", err)
+	}
+	delta = hookReconciliationDelta(symlinked.Reconciliation, "claude_code", "SessionStart")
+	if delta == nil || delta.State != hookplan.StateDrifted {
+		t.Fatalf("symlinked known handler = %+v, want drifted", delta)
 	}
 }
 

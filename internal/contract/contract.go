@@ -3181,6 +3181,11 @@ func hashBytes(data []byte) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+func hashBytesFull(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 func hashDir(root string) string {
 	var rows []string
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
