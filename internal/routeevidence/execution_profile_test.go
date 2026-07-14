@@ -96,6 +96,21 @@ func TestResolveExecutionProfileKeepsUltracodeInOrchestrationOnly(t *testing.T) 
 	}
 }
 
+func TestResolveExecutionProfileSemanticOverrideRemapsThroughAdapter(t *testing.T) {
+	plan, err := ResolveExecutionProfile(ExecutionProfileIntent{
+		ProfileID:       "coding-implementation",
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+		SemanticEffort:  "balanced",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SemanticEffort != "balanced" || plan.NativeEffort.Requested != "medium" || plan.NativeEffort.Disposition != "translated" {
+		t.Fatalf("semantic override did not remap through the Codex adapter: %+v", plan)
+	}
+}
+
 func TestResolveExecutionProfileRejectsIncompatibleOrUnownedSelectors(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -123,6 +138,17 @@ func TestResolveExecutionProfileRejectsIncompatibleOrUnownedSelectors(t *testing
 			},
 			wantPath: "requested_intent.client_harness_id",
 			wantText: "transport",
+		},
+		{
+			name: "ultracode injected into ordinary profile",
+			intent: ExecutionProfileIntent{
+				ProfileID:           "coding-implementation",
+				ClientHarnessID:     "codex",
+				TransportID:         "native",
+				OrchestrationPolicy: "ultracode",
+			},
+			wantPath: "requested_intent.orchestration_policy",
+			wantText: "explicit profile",
 		},
 		{
 			name: "terra alias",
