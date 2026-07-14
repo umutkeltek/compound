@@ -24,8 +24,10 @@ import (
 	"time"
 )
 
-// findingsDir is the direct-write, content-addressed home for operational findings.
-const findingsDir = "observed/findings"
+// Subdir is the direct-write, content-addressed home for operational findings, relative to
+// COMPOUND_HOME. Exported so the placement resolver can compose it as the operational-finding target
+// without re-authoring the path (a read facade over the real owner).
+const Subdir = "observed/findings"
 
 // Finding is one agent-authored operational note. It is append-only with supersession (a revised
 // finding carries Supersedes = the prior id), mirroring the ledger's discipline without being in
@@ -74,7 +76,7 @@ func Record(homePath string, f Finding, now time.Time) (Finding, error) {
 		f.CreatedAt = now.UTC().Format(time.RFC3339)
 	}
 	f.EvidenceRefs = dedupe(f.EvidenceRefs)
-	dir := filepath.Join(homePath, findingsDir)
+	dir := filepath.Join(homePath, Subdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return Finding{}, err
 	}
@@ -93,7 +95,7 @@ func Show(homePath, id string) (Finding, error) {
 	if err := validID(id); err != nil {
 		return Finding{}, err
 	}
-	b, err := os.ReadFile(filepath.Join(homePath, findingsDir, id+".json"))
+	b, err := os.ReadFile(filepath.Join(homePath, Subdir, id+".json"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Finding{}, fmt.Errorf("finding %s not found", id)
@@ -110,7 +112,7 @@ func Show(homePath, id string) (Finding, error) {
 // List returns findings, optionally filtered by a topic/body substring (case-insensitive), newest
 // first. A missing findings dir is the empty no-op, not an error.
 func List(homePath, filter string) ([]Finding, error) {
-	dir := filepath.Join(homePath, findingsDir)
+	dir := filepath.Join(homePath, Subdir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

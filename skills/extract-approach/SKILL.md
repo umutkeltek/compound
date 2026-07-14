@@ -40,6 +40,13 @@ notes-to-nobody.
 6. **It's a reusable multi-step procedure** → a skill next to this one (`.claude/skills/`),
    or a CapabilityGraph candidate via the intake path (`capability skill-plan`) if it should
    surface to other harnesses. Never hand-edit the graph.
+7. **It's an operational finding / runbook note** — a durable operational fact (how a system is
+   run, a verb, a gotcha) that is neither a compound-architecture fact nor a reusable procedure,
+   and isn't worth adjudication latency → the direct-write finding home: `compound finding record
+   --topic T --body B`. **Do NOT invent a path** under `COMPOUND_HOME` (the placement guard denies
+   it); if unsure where a write goes, ask the resolver: `compound placement target --kind
+   operational-finding` (or `--kind <candidate-kind>`). Findings are `source_class=evidence` and
+   recallable via `compound finding list/show`; promotion to canon stays door 5.
 
 One destination per learning — the first match, not all matches. Duplicating a learning into
 three homes creates the parallel-authority disease this repo exists to kill.

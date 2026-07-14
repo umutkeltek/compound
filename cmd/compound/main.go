@@ -144,6 +144,8 @@ func main() {
 		cmdFinding(os.Args[2:])
 	case "policy":
 		cmdPolicy(os.Args[2:])
+	case "placement":
+		cmdPlacement(os.Args[2:])
 	case "hook":
 		cmdHook(os.Args[2:])
 	case "harness":
@@ -4359,6 +4361,93 @@ func cmdFindingShow(args []string) {
 	}
 	fmt.Print("\n\n")
 	fmt.Println(f.Body)
+}
+
+func cmdPlacement(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound placement <target|resolve> ...")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "target":
+		cmdPlacementTarget(args[1:])
+	case "resolve":
+		cmdPlacementResolve(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound placement <target|resolve> ...")
+		os.Exit(2)
+	}
+}
+
+func cmdPlacementTarget(args []string) {
+	jsonOut := hasFlag(args, "--json")
+	kind := valueFlag(args, "--kind")
+	owner := valueFlag(args, "--owner")
+	var (
+		res policy.ResolvedTarget
+		err error
+	)
+	switch {
+	case strings.TrimSpace(kind) != "":
+		res, err = policy.ResolveKind(kind)
+	case strings.TrimSpace(owner) != "":
+		homePath, herr := home.Resolve("")
+		if herr != nil {
+			fmt.Fprintln(os.Stderr, "error:", herr, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		res, err = policy.ResolveOwner(homePath, owner)
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound placement target (--kind K | --owner O) [--json]")
+		os.Exit(2)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(res)
+		return
+	}
+	label := res.Kind
+	if label == "" {
+		label = res.Owner
+	}
+	fmt.Printf("%s -> %s (mode=%s source=%s)\n", label, res.Target, res.Mode, res.Source)
+}
+
+func cmdPlacementResolve(args []string) {
+	jsonOut := hasFlag(args, "--json")
+	path := ""
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			path = a
+			break
+		}
+	}
+	if strings.TrimSpace(path) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound placement resolve <path> [--json]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	res, err := policy.ResolvePath(homePath, path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(res)
+		return
+	}
+	if res.Allowed {
+		fmt.Printf("allowed: %s\n", res.Path)
+		return
+	}
+	fmt.Printf("blocked: %s (%s) -> %s\n", res.Path, res.Reason, res.Redirect)
 }
 
 func cmdReviews(args []string) {
