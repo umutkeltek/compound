@@ -1150,7 +1150,7 @@ func TestParityReplayCheckpointResumesAfterRecordedRuntimeGap(t *testing.T) {
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 		ClassifierVersion: retrievalparity.ClassifierVersion,
 		Coverage: retrievalparity.Coverage{
-			KnownGaps: []string{"fixture_baseline_gap"},
+			KnownGaps: []string{"fixture_window_unrecorded"},
 		},
 		Rows: []retrievalparity.FixtureRow{
 			{Consumer: retrievalparity.ConsumerQuery, Query: "synthetic unavailable checkpoint one"},
@@ -1167,7 +1167,7 @@ func TestParityReplayCheckpointResumesAfterRecordedRuntimeGap(t *testing.T) {
 		"--consumer", retrievalparity.ConsumerQuery,
 	}, now)
 	if err != nil || code == 0 || len(initial.Rows) != 2 ||
-		!slices.Contains(initial.Coverage.KnownGaps, "fixture_baseline_gap") ||
+		!slices.Contains(initial.Coverage.KnownGaps, "fixture_window_unrecorded") ||
 		!slices.Contains(initial.Coverage.KnownGaps, "query_engine_unavailable") {
 		t.Fatalf("initial unavailable replay code=%d err=%v report=%+v", code, err, initial)
 	}
@@ -1196,7 +1196,7 @@ func TestParityReplayCheckpointResumesAfterRecordedRuntimeGap(t *testing.T) {
 	if err != nil || code == 0 || reportPath == "" || len(resumed.Rows) != 2 {
 		t.Fatalf("resume unavailable checkpoint code=%d report=%q err=%v rows=%d", code, reportPath, err, len(resumed.Rows))
 	}
-	if !slices.Contains(resumed.Coverage.KnownGaps, "fixture_baseline_gap") ||
+	if !slices.Contains(resumed.Coverage.KnownGaps, "fixture_window_unrecorded") ||
 		!slices.Contains(resumed.Coverage.KnownGaps, "query_engine_unavailable") {
 		t.Fatalf("resumed coverage lost baseline/runtime gaps: %+v", resumed.Coverage)
 	}
