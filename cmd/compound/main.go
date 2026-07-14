@@ -3929,6 +3929,7 @@ func cmdPolicy(args []string) {
 		}
 		type operatorAuthorityReport struct {
 			AuthorityRef     string                                      `json:"authority_ref"`
+			GeneratedAt      string                                      `json:"generated_at"`
 			AuthorityPath    string                                      `json:"authority_path"`
 			Installed        bool                                        `json:"installed"`
 			AutonomyLevel    string                                      `json:"autonomy_level,omitempty"`
@@ -3940,6 +3941,7 @@ func cmdPolicy(args []string) {
 		}
 		report := operatorAuthorityReport{
 			AuthorityRef:     policy.OperatorStateAuthorityRef,
+			GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
 			AuthorityPath:    policy.OperatorStatePath(homePath),
 			SourceRecordPath: policy.OperatorStateSourceAuthorityPath(homePath),
 		}
