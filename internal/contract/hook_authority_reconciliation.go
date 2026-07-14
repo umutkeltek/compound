@@ -59,7 +59,8 @@ func hookPlanFromInstalledManifest(manifest InstalledHooksManifest, harnessHome 
 		AuthorityRef:  InstalledHooksAuthorityRef,
 	}
 	for _, hook := range manifest.Hooks {
-		if !desiredHookStatus(hook.Status) {
+		status := strings.TrimSpace(hook.Status)
+		if !desiredHookStatus(status) && status != "preserved_external" {
 			continue
 		}
 		event := strings.TrimSpace(hook.Event)
@@ -73,8 +74,15 @@ func hookPlanFromInstalledManifest(manifest InstalledHooksManifest, harnessHome 
 			HandlerRef:         canonicalHookHandlerRef(hook.Ref, harnessHome),
 			InvocationRevision: strings.TrimSpace(hook.InvocationRevision),
 			HandlerRevision:    strings.TrimSpace(hook.Revision),
-			Activation:         hookActivation(hook.Status),
+			Activation:         hookActivation(status),
 			Blocking:           event == "PreToolUse",
+		}
+		if status == "preserved_external" {
+			binding.ID = preservedHookBindingID(binding)
+			binding.Activation = ""
+			binding.Blocking = false
+			plan.PreservedBindings = append(plan.PreservedBindings, binding)
+			continue
 		}
 		binding.ID = desiredHookBindingID(binding)
 		plan.Bindings = append(plan.Bindings, binding)
@@ -82,7 +90,13 @@ func hookPlanFromInstalledManifest(manifest InstalledHooksManifest, harnessHome 
 	sort.SliceStable(plan.Bindings, func(i, j int) bool {
 		return desiredHookBindingSortKey(plan.Bindings[i]) < desiredHookBindingSortKey(plan.Bindings[j])
 	})
-	encoded, err := json.Marshal(plan.Bindings)
+	sort.SliceStable(plan.PreservedBindings, func(i, j int) bool {
+		return desiredHookBindingSortKey(plan.PreservedBindings[i]) < desiredHookBindingSortKey(plan.PreservedBindings[j])
+	})
+	encoded, err := json.Marshal(struct {
+		Bindings          []hookplan.Binding `json:"bindings"`
+		PreservedBindings []hookplan.Binding `json:"preserved_bindings"`
+	}{Bindings: plan.Bindings, PreservedBindings: plan.PreservedBindings})
 	if err != nil {
 		return hookplan.HookPlan{}, fmt.Errorf("marshal desired hook plan: %w", err)
 	}
@@ -114,6 +128,12 @@ func desiredHookBindingID(binding hookplan.Binding) string {
 		id += "?matcher=" + hashBytes([]byte(binding.Matcher))
 	}
 	return id
+}
+
+func preservedHookBindingID(binding hookplan.Binding) string {
+	id := "external-hook://" + binding.Harness + "/" + binding.Event
+	identity := strings.Join([]string{binding.Matcher, binding.HandlerRef, binding.InvocationRevision}, "\x00")
+	return id + "?identity=" + hashBytes([]byte(identity))
 }
 
 func desiredHookBindingSortKey(binding hookplan.Binding) string {

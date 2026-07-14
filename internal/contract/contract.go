@@ -2131,6 +2131,12 @@ func importInstalledHooks(homePath, sourcePath string, data []byte, manifest Ins
 		return InstalledHooksImportReport{}, err
 	}
 	authorityPath := InstalledHooksPath(homePath)
+	if existing, err := loadInstalledHooksManifest(authorityPath); err == nil {
+		manifest = mergeInstalledHooksManifest(existing, manifest)
+	} else if !os.IsNotExist(err) {
+		return InstalledHooksImportReport{}, err
+	}
+	manifest.SchemaVersion = installedHooksSchemaVersion
 	manifestData, err := yaml.Marshal(manifest)
 	if err != nil {
 		return InstalledHooksImportReport{}, err
@@ -2170,6 +2176,46 @@ func importInstalledHooks(homePath, sourcePath string, data []byte, manifest Ins
 	}, nil
 }
 
+// mergeInstalledHooksManifest treats an import as authoritative for managed
+// rows. Preserved external declarations are the one exception: they survive a
+// narrower import until an incoming row with the same stable identity replaces
+// them explicitly.
+func mergeInstalledHooksManifest(existing, incoming InstalledHooksManifest) InstalledHooksManifest {
+	byIdentity := map[string]InstalledHook{}
+	for _, hook := range incoming.Hooks {
+		byIdentity[installedHookStableIdentity(hook)] = hook
+	}
+	for _, hook := range existing.Hooks {
+		if strings.TrimSpace(hook.Status) != "preserved_external" {
+			continue
+		}
+		identity := installedHookStableIdentity(hook)
+		if _, replaced := byIdentity[identity]; !replaced {
+			byIdentity[identity] = hook
+		}
+	}
+	identities := make([]string, 0, len(byIdentity))
+	for identity := range byIdentity {
+		identities = append(identities, identity)
+	}
+	sort.Strings(identities)
+	merged := InstalledHooksManifest{SchemaVersion: installedHooksSchemaVersion, Hooks: make([]InstalledHook, 0, len(identities))}
+	for _, identity := range identities {
+		merged.Hooks = append(merged.Hooks, byIdentity[identity])
+	}
+	return merged
+}
+
+func installedHookStableIdentity(hook InstalledHook) string {
+	event := firstNonEmpty(strings.TrimSpace(hook.Event), strings.TrimSpace(hook.Name))
+	return strings.Join([]string{
+		strings.TrimSpace(hook.Harness),
+		event,
+		strings.TrimSpace(hook.Matcher),
+		strings.TrimSpace(hook.Ref),
+	}, "\x00")
+}
+
 func parseHookRegistrationTS(data []byte) (InstalledHooksManifest, error) {
 	body, err := hookRegistrationArrayBody(string(data))
 	if err != nil {
@@ -2200,11 +2246,15 @@ func parseHookRegistrationTS(data []byte) (InstalledHooksManifest, error) {
 			return InstalledHooksManifest{}, fmt.Errorf("hook registration %d missing command", i+1)
 		}
 		matcher, _ := tsStringField(obj, "matcher")
+		status, _ := tsStringField(obj, "status")
+		if status == "" {
+			status = "current"
+		}
 		ref := expandHomeRef(hookRefFromCommand(command))
 		if ref == "" {
 			ref = hookRefFromHarnessFile(rawHarness, file)
 		}
-		key := strings.Join([]string{harness, event, ref}, "\x00")
+		key := strings.Join([]string{harness, event, matcher, ref}, "\x00")
 		if seen[key] {
 			continue
 		}
@@ -2216,7 +2266,7 @@ func parseHookRegistrationTS(data []byte) (InstalledHooksManifest, error) {
 			Matcher:            matcher,
 			Ref:                ref,
 			InvocationRevision: canonicalHookInvocationRevision(command, ""),
-			Status:             "current",
+			Status:             status,
 		})
 	}
 	if len(manifest.Hooks) == 0 {
@@ -2745,6 +2795,9 @@ func writeScopedHookHarnesses(manifest InstalledHooksManifest) []string {
 func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUseBlock map[string]bool) []HookGateReadiness {
 	harnesses := map[string]bool{}
 	for _, hook := range manifest.Hooks {
+		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
+			continue
+		}
 		harness := strings.TrimSpace(hook.Harness)
 		if harness != "" {
 			harnesses[harness] = true

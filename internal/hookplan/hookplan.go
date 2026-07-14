@@ -26,6 +26,7 @@ const (
 	StateReady              = "ready"
 	StateMissing            = "missing"
 	StateExtraUnowned       = "extra_unowned"
+	StateExternalPreserved  = "external_preserved"
 	StateDrifted            = "drifted"
 	StateActivationRequired = "activation_required"
 	StateUnsupported        = "unsupported"
@@ -34,11 +35,12 @@ const (
 // HookPlan is desired authority. It is intentionally a different type from
 // InstallationSnapshot so observations cannot be promoted by assignment.
 type HookPlan struct {
-	SchemaVersion string    `json:"schema_version" yaml:"schema_version"`
-	ID            string    `json:"id" yaml:"id"`
-	AuthorityRef  string    `json:"authority_ref,omitempty" yaml:"authority_ref,omitempty"`
-	Revision      string    `json:"revision" yaml:"revision"`
-	Bindings      []Binding `json:"bindings" yaml:"bindings"`
+	SchemaVersion     string    `json:"schema_version" yaml:"schema_version"`
+	ID                string    `json:"id" yaml:"id"`
+	AuthorityRef      string    `json:"authority_ref,omitempty" yaml:"authority_ref,omitempty"`
+	Revision          string    `json:"revision" yaml:"revision"`
+	Bindings          []Binding `json:"bindings" yaml:"bindings"`
+	PreservedBindings []Binding `json:"preserved_bindings,omitempty" yaml:"preserved_bindings,omitempty"`
 }
 
 // Binding is one desired harness event binding.
@@ -112,12 +114,16 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 		ObservationRevision: observed.Revision,
 	}
 	desiredBindings := append([]Binding(nil), plan.Bindings...)
+	preservedBindings := append([]Binding(nil), plan.PreservedBindings...)
 	observedBindings := append([]ObservedBinding(nil), observed.Bindings...)
 	sort.SliceStable(desiredBindings, func(i, j int) bool {
 		return bindingSortKey(desiredBindings[i]) < bindingSortKey(desiredBindings[j])
 	})
 	sort.SliceStable(observedBindings, func(i, j int) bool {
 		return observedBindingSortKey(observedBindings[i]) < observedBindingSortKey(observedBindings[j])
+	})
+	sort.SliceStable(preservedBindings, func(i, j int) bool {
+		return bindingSortKey(preservedBindings[i]) < bindingSortKey(preservedBindings[j])
 	})
 	if err := validateDesiredBindings(desiredBindings); err != nil {
 		return Reconciliation{}, err
@@ -193,6 +199,33 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 		}
 		out.Deltas = append(out.Deltas, delta)
 	}
+	for _, preserved := range preservedBindings {
+		matched := -1
+		for i, actual := range observedBindings {
+			if consumed[i] || !preservedBindingMatches(preserved, actual) {
+				continue
+			}
+			matched = i
+			break
+		}
+		if matched < 0 {
+			continue
+		}
+		actual := observedBindings[matched]
+		consumed[matched] = true
+		out.Deltas = append(out.Deltas, Delta{
+			BindingID:                  preserved.ID,
+			Harness:                    actual.Harness,
+			Event:                      actual.Event,
+			Matcher:                    actual.Matcher,
+			State:                      StateExternalPreserved,
+			ObservedHandlerRef:         actual.HandlerRef,
+			ObservedInvocationRevision: actual.InvocationRevision,
+			ObservedHandlerRevision:    actual.HandlerRevision,
+			ObservedSourceRef:          actual.SourceRef,
+			Reason:                     "observed external hook exactly matches preserved declaration",
+		})
+	}
 	for i, actual := range observedBindings {
 		if consumed[i] {
 			continue
@@ -205,6 +238,7 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 			State:                      StateExtraUnowned,
 			ObservedHandlerRef:         actual.HandlerRef,
 			ObservedInvocationRevision: actual.InvocationRevision,
+			ObservedHandlerRevision:    actual.HandlerRevision,
 			ObservedSourceRef:          actual.SourceRef,
 		})
 	}
@@ -237,6 +271,13 @@ func bindingSlotKey(harnessName, event, matcher string) string {
 
 func sameSlot(desired Binding, actual ObservedBinding) bool {
 	return desired.Harness == actual.Harness && desired.Event == actual.Event && desired.Matcher == actual.Matcher
+}
+
+func preservedBindingMatches(preserved Binding, actual ObservedBinding) bool {
+	if !sameSlot(preserved, actual) || preserved.HandlerRef != actual.HandlerRef || preserved.InvocationRevision != actual.InvocationRevision {
+		return false
+	}
+	return preserved.HandlerRevision == "" || preserved.HandlerRevision == actual.HandlerRevision
 }
 
 func bindingSupported(binding Binding, registry harness.Registry) bool {
