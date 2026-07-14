@@ -41,6 +41,8 @@ func cmdSource(args []string) {
 		cmdSourceManifestShow(args[1:])
 	case "manifest-doctor":
 		cmdSourceManifestDoctor(args[1:])
+	case "manifest-advance":
+		cmdSourceManifestLifecycleAdvance(args[1:])
 	case "manifest-drilldown":
 		cmdSourceManifestDrilldown(args[1:])
 	case "manifest-materialize":
@@ -58,7 +60,7 @@ func cmdSource(args []string) {
 }
 
 func sourceUsage() string {
-	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | manifest-materialize-dump <family> --target <path> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-advance <family> --to <state> --work <id> --by <actor> --proof <gate>=<ref>... [--confirm] [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | manifest-materialize-dump <family> --target <path> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
 func cmdSourceObserve(args []string) {
@@ -510,6 +512,11 @@ func cmdSourceManifestShow(args []string) {
 		}
 	}
 	fmt.Printf("items: %d\n", len(manifest.Items))
+	lifecycle := sourceobs.SourceManifestLifecycleStatus(manifest)
+	fmt.Printf("lifecycle: %s revision=%d read=%s write=%s\n", lifecycle.State, lifecycle.Revision, lifecycle.ReadPosture, lifecycle.WritePosture)
+	if lifecycle.NextState != "" {
+		fmt.Printf("next_state: %s gates=%s\n", lifecycle.NextState, strings.Join(lifecycle.RequiredGates, ","))
+	}
 	for _, item := range manifest.Items {
 		if strings.TrimSpace(item.PageSlug) != "" {
 			fmt.Printf("- %s gen=%s slug=%s %s\n", item.ID, item.CorpusGeneration, item.PageSlug, item.FileHash)
@@ -557,6 +564,8 @@ func cmdSourceManifestDoctor(args []string) {
 	}
 	fmt.Printf("source manifest doctor: %s\n", report.Status)
 	fmt.Printf("items: %d missing=%d hash_mismatch=%d\n", report.ItemCount, report.MissingFieldCount, report.HashMismatchCount)
+	fmt.Printf("lifecycle: %s revision=%d next=%s read=%s write=%s\n", report.Lifecycle.State, report.Lifecycle.Revision, report.Lifecycle.NextState, report.Lifecycle.ReadPosture, report.Lifecycle.WritePosture)
+	fmt.Printf("next_safe_action: %s\n", report.Lifecycle.NextSafeAction)
 	for _, check := range report.Checks {
 		fmt.Printf("- %s: %s", check.Name, check.Status)
 		if check.Detail != "" {

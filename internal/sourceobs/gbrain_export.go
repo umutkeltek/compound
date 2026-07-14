@@ -111,6 +111,7 @@ func BuildGbrainExportManifest(exportPath string, now time.Time) (SourceManifest
 		ID:            "srcman_" + safeManifestName(GbrainDBExportManifestFamily),
 		SourceFamily:  GbrainDBExportManifestFamily,
 		AuthorityRef:  "compound://registries/source-manifests/" + safeManifestName(GbrainDBExportManifestFamily),
+		Lifecycle:     defaultSourceManifestLifecycle(),
 		FamilyMeta: &SourceManifestFamilyMeta{
 			DBHost:          strings.TrimSpace(exp.DBHost),
 			DBName:          strings.TrimSpace(exp.DBName),

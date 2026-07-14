@@ -18,9 +18,11 @@ import (
 	"compound/internal/home"
 )
 
-const SourceManifestSchemaVersion = "compound.source_manifest.v0.2"
+const SourceManifestSchemaVersion = "compound.source_manifest.v0.3"
 
 const legacySourceManifestSchemaVersion = "compound.source_manifest.v0.1"
+
+const custodySourceManifestSchemaVersion = "compound.source_manifest.v0.2"
 
 type SourceManifest struct {
 	SchemaVersion string                    `json:"schema_version"`
@@ -28,6 +30,7 @@ type SourceManifest struct {
 	GeneratedAt   string                    `json:"generated_at"`
 	SourceFamily  string                    `json:"source_family"`
 	AuthorityRef  string                    `json:"authority_ref"`
+	Lifecycle     *SourceManifestLifecycle  `json:"lifecycle,omitempty"`
 	FamilyMeta    *SourceManifestFamilyMeta `json:"family_meta,omitempty"`
 	Items         []SourceManifestItem      `json:"items"`
 }
@@ -89,6 +92,7 @@ type SourceManifestDoctorReport struct {
 	OwnedBodyCount     int                         `json:"owned_body_count"`
 	InventoryOnlyCount int                         `json:"inventory_only_count"`
 	CustodyComplete    bool                        `json:"custody_complete"`
+	Lifecycle          SourceLifecycleStatus       `json:"lifecycle"`
 	Checks             []SourceManifestDoctorCheck `json:"checks"`
 	Items              []SourceManifestDoctorItem  `json:"items,omitempty"`
 }
@@ -150,6 +154,7 @@ func BuildSourceManifest(sourceFamily string, paths []string, now time.Time) (So
 		ID:            "srcman_" + safeManifestName(sourceFamily),
 		SourceFamily:  sourceFamily,
 		AuthorityRef:  "compound://registries/source-manifests/" + safeManifestName(sourceFamily),
+		Lifecycle:     defaultSourceManifestLifecycle(),
 	}
 	for _, sourcePath := range paths {
 		item, err := buildSourceManifestItem(sourceFamily, sourcePath)
@@ -211,6 +216,9 @@ func RecordSourceManifest(homePath string, manifest SourceManifest) (SourceManif
 		return SourceManifestReport{}, err
 	}
 	manifest.SchemaVersion = SourceManifestSchemaVersion
+	if manifest.Lifecycle == nil {
+		manifest.Lifecycle = defaultSourceManifestLifecycle()
+	}
 	manifest.GeneratedAt = sourceManifestGeneratedAt(manifest.Items, time.Time{})
 	// Merge can introduce lineage and normalize a legacy v0.1 manifest. Treat
 	// that result as a new authority publication and validate the exact object
@@ -232,6 +240,9 @@ func mergeSourceManifest(existing, incoming SourceManifest) SourceManifest {
 	merged := existing
 	merged.SchemaVersion = SourceManifestSchemaVersion
 	merged.AuthorityRef = incoming.AuthorityRef
+	if merged.Lifecycle == nil {
+		merged.Lifecycle = cloneSourceManifestLifecycle(incoming.Lifecycle)
+	}
 	if incoming.FamilyMeta != nil {
 		merged.FamilyMeta = incoming.FamilyMeta
 	}
@@ -351,6 +362,9 @@ func LoadSourceManifest(homePath, sourceFamily string) (SourceManifest, error) {
 	if err := validateSourceManifest(manifest); err != nil {
 		return SourceManifest{}, err
 	}
+	if manifest.Lifecycle == nil {
+		manifest.Lifecycle = defaultSourceManifestLifecycle()
+	}
 	return manifest, nil
 }
 
@@ -371,6 +385,7 @@ func DoctorSourceManifest(homePath, sourceFamily string) (SourceManifestDoctorRe
 	report.ManifestID = manifest.ID
 	report.AuthorityRef = manifest.AuthorityRef
 	report.ItemCount = len(manifest.Items)
+	report.Lifecycle = SourceManifestLifecycleStatus(manifest)
 	store, storeErr := home.NewArtifactStore(homePath)
 	for _, item := range manifest.Items {
 		di := SourceManifestDoctorItem{ID: item.ID, SourceRef: item.SourceRef, HashStatus: "unchecked", BodyStatus: "not_owned"}
@@ -432,6 +447,7 @@ func DoctorSourceManifest(homePath, sourceFamily string) (SourceManifestDoctorRe
 		sourceManifestCheck("required_fields", report.MissingFieldCount == 0, fmt.Sprintf("missing=%d", report.MissingFieldCount)),
 		sourceManifestCheck("source_recovery", report.HashMismatchCount == 0, fmt.Sprintf("hash_mismatch=%d", report.HashMismatchCount)),
 		sourceManifestStatusCheck("physical_custody", report.CustodyComplete, fmt.Sprintf("owned=%d inventory_only=%d", report.OwnedBodyCount, report.InventoryOnlyCount)),
+		sourceManifestStatusCheck("retirement_lifecycle", report.Lifecycle.Terminal, fmt.Sprintf("state=%s next=%s read=%s write=%s", report.Lifecycle.State, report.Lifecycle.NextState, report.Lifecycle.ReadPosture, report.Lifecycle.WritePosture)),
 	)
 	if manifest.SourceFamily == GbrainDBExportManifestFamily {
 		doctorGbrainManifestExtras(homePath, manifest, &report)
@@ -651,7 +667,7 @@ func sourceManifestGeneratedAt(items []SourceManifestItem, fallback time.Time) s
 }
 
 func validateSourceManifest(manifest SourceManifest) error {
-	if manifest.SchemaVersion != SourceManifestSchemaVersion && manifest.SchemaVersion != legacySourceManifestSchemaVersion {
+	if manifest.SchemaVersion != SourceManifestSchemaVersion && manifest.SchemaVersion != legacySourceManifestSchemaVersion && manifest.SchemaVersion != custodySourceManifestSchemaVersion {
 		return fmt.Errorf("unsupported schema_version %q", manifest.SchemaVersion)
 	}
 	if strings.TrimSpace(manifest.ID) == "" || strings.TrimSpace(manifest.SourceFamily) == "" {
@@ -659,6 +675,9 @@ func validateSourceManifest(manifest SourceManifest) error {
 	}
 	if len(manifest.Items) == 0 {
 		return fmt.Errorf("source manifest requires items")
+	}
+	if err := validateSourceManifestLifecycle(manifest); err != nil {
+		return err
 	}
 	seen := map[string]bool{}
 	for _, item := range manifest.Items {

@@ -407,7 +407,7 @@ func TestSourceManifestLifecycleCLIIsDryRunByDefaultAndRecordsGovernedTransition
 	if err != nil {
 		t.Fatal(err)
 	}
-	if doctor.Lifecycle.State != sourceobs.SourceLifecycleCapturing || doctor.Lifecycle.NextState != sourceobs.SourceLifecycleOwnedSnapshot || doctor.Lifecycle.ReadPosture != "compound_recovery_legacy_available" {
+	if doctor.Lifecycle.State != sourceobs.SourceLifecycleCapturing || doctor.Lifecycle.NextState != sourceobs.SourceLifecycleOwnedSnapshot || doctor.Lifecycle.ReadPosture != "legacy_primary_compound_inventory" {
 		t.Fatalf("doctor lifecycle = %+v", doctor.Lifecycle)
 	}
 }
