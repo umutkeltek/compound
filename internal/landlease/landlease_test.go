@@ -3,8 +3,12 @@ package landlease
 import (
 	"encoding/json"
 	"errors"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -211,8 +215,11 @@ func TestReleaseIsHolderScoped(t *testing.T) {
 	}
 }
 
-// AcquireWait: A holds; the injected clock advances past A's expiry during the poll loop, and B
-// acquires CLEANLY (no steal) within the timeout.
+// AcquireWait (bounded-poll fallback, nil watcher): A holds; the injected clock advances past A's expiry
+// during the poll loop, and B acquires CLEANLY (no steal) within the timeout. This exercises the SAFETY-NET
+// path deterministically (a nil factory ⇒ no OS watch, pure clock-driven poll) — the same path a platform
+// with no supported watcher, or a failed watcher build, degrades to. The real watch fast path is proven by
+// TestAcquireWaitWatchWakesInstantly* below.
 func TestAcquireWaitAcquiresAfterHolderExpires(t *testing.T) {
 	home := t.TempDir()
 	ttl := 10 * time.Second
@@ -221,7 +228,7 @@ func TestAcquireWaitAcquiresAfterHolderExpires(t *testing.T) {
 		t.Fatalf("A acquire: %v", err)
 	}
 	clk := &fakeClock{t: baseNow}
-	lease, err := AcquireWait(home, laneBeta, ttl, clk, 60*time.Second, 2*time.Second)
+	lease, err := acquireWait(home, laneBeta, ttl, clk, 60*time.Second, 2*time.Second, nil)
 	if err != nil {
 		t.Fatalf("AcquireWait should succeed once A expires within the timeout: %v", err)
 	}
@@ -233,8 +240,8 @@ func TestAcquireWaitAcquiresAfterHolderExpires(t *testing.T) {
 	}
 }
 
-// AcquireWait: A holds far longer than the wait window; B times out instead of stealing or blocking
-// forever.
+// AcquireWait (bounded-poll fallback, nil watcher): A holds far longer than the wait window; B times out
+// instead of stealing or blocking forever — the bound guarantees the fallback can never hang past timeout.
 func TestAcquireWaitTimesOut(t *testing.T) {
 	home := t.TempDir()
 	ttl := 3600 * time.Second // A holds for an hour
@@ -243,7 +250,7 @@ func TestAcquireWaitTimesOut(t *testing.T) {
 		t.Fatalf("A acquire: %v", err)
 	}
 	clk := &fakeClock{t: baseNow}
-	_, err := AcquireWait(home, laneBeta, ttl, clk, 30*time.Second, 5*time.Second)
+	_, err := acquireWait(home, laneBeta, ttl, clk, 30*time.Second, 5*time.Second, nil)
 	if err == nil {
 		t.Fatalf("AcquireWait must time out while A holds well past the wait window")
 	}
@@ -311,5 +318,274 @@ func TestPersistedLeaseShape(t *testing.T) {
 	}
 	if got := exp.Sub(acq); got != 45*time.Second {
 		t.Fatalf("expires_at - acquired_at = %s, want 45s", got)
+	}
+}
+
+// ---- INSTANT-NOTIFY-TAP falsifiers (watch-then-retry with a bounded-poll safety net) ----
+
+// fakeWatcher is a deterministic leaseWatcher: wait invokes an injected hook so a single-threaded test can
+// model an event (return without advancing the clock ⇒ instant wake), a timeout (advance the clock by the
+// bound ⇒ the bounded wait elapsed), or a broken watch (return an error ⇒ the loop must degrade to poll).
+type fakeWatcher struct {
+	waits  int
+	closed bool
+	onWait func(bound time.Duration) error
+}
+
+func (w *fakeWatcher) wait(bound time.Duration) error {
+	w.waits++
+	if w.onWait != nil {
+		return w.onWait(bound)
+	}
+	return nil
+}
+func (w *fakeWatcher) close() error { w.closed = true; return nil }
+
+// countingClock is a fakeClock that counts Sleep calls, so a test can prove the wait BLOCKS a bounded
+// number of times (no busy-spin, no sub-poll tight loop) rather than spinning.
+type countingClock struct {
+	t      time.Time
+	sleeps int
+}
+
+func (c *countingClock) Now() time.Time { return c.t }
+func (c *countingClock) Sleep(d time.Duration) {
+	c.sleeps++
+	c.t = c.t.Add(d)
+}
+
+// Falsifier 1 (INSTANT WAKE — deterministic): a waiter blocked on a lease that A holds for an HOUR (so
+// expiry can never be the cause) acquires the instant the watch fires on A's Release — WITHOUT the poll
+// bound elapsing. The fake watcher models the holder releasing while the waiter blocks, then returns
+// (event, not timeout) without advancing the clock. If the loop ignored the watcher, onWait would never
+// run, A would hold the full hour, and the waiter would time out — so this fails RED without the tap.
+func TestAcquireWaitWatchWakesInstantly(t *testing.T) {
+	home := t.TempDir()
+	ttl := 3600 * time.Second // A holds for an hour: expiry cannot be the wake cause
+	if _, err := Acquire(home, laneAlpha, ttl, baseNow); err != nil {
+		t.Fatalf("A acquire: %v", err)
+	}
+	clk := &fakeClock{t: baseNow}
+	fw := &fakeWatcher{}
+	released := false
+	fw.onWait = func(bound time.Duration) error {
+		// Model the holder releasing WHILE we block: the watch fires immediately (no clock advance).
+		if !released {
+			if _, err := Release(home, laneAlpha, clk.Now()); err != nil {
+				return err
+			}
+			released = true
+		}
+		return nil
+	}
+	factory := func(stateDir string) (leaseWatcher, error) { return fw, nil }
+
+	// Poll bound is 25s and timeout 30s: if the wake came from the poll (not the watch), the clock would
+	// have advanced by at least one 25s bound.
+	start := clk.Now()
+	lease, err := acquireWait(home, laneBeta, ttl, clk, 30*time.Second, 25*time.Second, factory)
+	if err != nil {
+		t.Fatalf("waiter should wake and acquire the instant the watch fires: %v", err)
+	}
+	if advanced := clk.Now().Sub(start); advanced >= 25*time.Second {
+		t.Fatalf("waiter waited the full %s poll bound (clock advanced %s) — the watch did NOT wake it", 25*time.Second, advanced)
+	}
+	if lease.Holder != laneBeta {
+		t.Fatalf("waiter holder = %q, want %q", lease.Holder, laneBeta)
+	}
+	if lease.PriorHolder != "" || lease.StealReason != "" {
+		t.Fatalf("a released lease must be CLEAN-acquired, not stolen: %+v", lease)
+	}
+	if fw.waits != 1 {
+		t.Fatalf("watch should have been consulted exactly once, got %d", fw.waits)
+	}
+	if !fw.closed {
+		t.Fatalf("watcher must be closed on return")
+	}
+}
+
+// Falsifier 1 (INSTANT WAKE — REAL OS watch, real timing): the headline claim proven end-to-end through
+// the EXPORTED AcquireWait with RealClock and a real kqueue/inotify watcher. A holds for an hour; a
+// goroutine Releases after a short real delay; the waiter — with a DELIBERATELY HIGH poll (30s, larger
+// than the whole test budget) — must acquire within a few hundred ms. Because the poll bound is 30s, a
+// sub-second wake can ONLY come from the OS watch, not the next poll tick. This is the falsifier that
+// would go RED if AcquireWait still slept a fixed interval.
+func TestAcquireWaitWatchWakesInstantlyIntegration(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("real file-watch integration test needs kqueue/inotify; GOOS=%s degrades to poll", runtime.GOOS)
+	}
+	home := t.TempDir()
+	ttl := 3600 * time.Second // A holds for an hour: expiry cannot be the wake cause
+	if _, err := Acquire(home, laneAlpha, ttl, time.Now()); err != nil {
+		t.Fatalf("A acquire: %v", err)
+	}
+
+	const releaseAfter = 150 * time.Millisecond
+	const highPoll = 30 * time.Second // >> releaseAfter, so a fast wake must be the watch, not the poll
+	go func() {
+		time.Sleep(releaseAfter)
+		if _, err := Release(home, laneAlpha, time.Now()); err != nil {
+			t.Errorf("background release: %v", err)
+		}
+	}()
+
+	start := time.Now()
+	lease, err := AcquireWait(home, laneBeta, ttl, RealClock{}, 30*time.Second, highPoll)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("waiter should acquire soon after the real Release: %v (elapsed %s)", err, elapsed)
+	}
+	if lease.Holder != laneBeta {
+		t.Fatalf("waiter holder = %q, want %q", lease.Holder, laneBeta)
+	}
+	if lease.PriorHolder != "" || lease.StealReason != "" {
+		t.Fatalf("a released lease must be CLEAN-acquired, not stolen: %+v", lease)
+	}
+	// The wake must beat the poll interval by a wide margin: releaseAfter=150ms, poll=30s. A generous 5s
+	// ceiling still cleanly separates "watch woke it (~150ms)" from "poll woke it (~30s)".
+	if elapsed >= 5*time.Second {
+		t.Fatalf("waiter took %s — with a %s poll, only the OS watch can wake it fast; it appears to have polled", elapsed, highPoll)
+	}
+	t.Logf("instant wake: acquired %s after start (release at %s, poll bound %s) — watch beat the poll", elapsed, releaseAfter, highPoll)
+}
+
+// Falsifier 2a (FALLBACK when watcher build FAILS): a factory that returns an error must degrade cleanly
+// to the clock-driven bounded poll and still acquire after A expires — never hang. Proves the watch is an
+// optimization, not the sole liveness.
+func TestAcquireWaitDegradesToPollWhenWatcherUnavailable(t *testing.T) {
+	home := t.TempDir()
+	ttl := 10 * time.Second
+	if _, err := Acquire(home, laneAlpha, ttl, baseNow); err != nil {
+		t.Fatalf("A acquire: %v", err)
+	}
+	clk := &fakeClock{t: baseNow}
+	factoryCalls := 0
+	factory := func(stateDir string) (leaseWatcher, error) {
+		factoryCalls++
+		return nil, errors.New("watch unavailable on this box")
+	}
+	lease, err := acquireWait(home, laneBeta, ttl, clk, 60*time.Second, 2*time.Second, factory)
+	if err != nil {
+		t.Fatalf("must degrade to poll and acquire after A expires: %v", err)
+	}
+	if lease.Holder != laneBeta {
+		t.Fatalf("waiter holder = %q, want %q", lease.Holder, laneBeta)
+	}
+	if factoryCalls != 1 {
+		t.Fatalf("factory should be tried exactly once (lazily, on first contention), got %d", factoryCalls)
+	}
+}
+
+// Falsifier 2b (FALLBACK when watcher breaks MID-FLIGHT): a watcher whose wait errors must be dropped and
+// the loop must fall back to the clock poll for the rest of the wait — still acquiring after A expires,
+// never hanging on the broken watch.
+func TestAcquireWaitWatcherErrorMidFlightFallsBackToPoll(t *testing.T) {
+	home := t.TempDir()
+	ttl := 10 * time.Second
+	if _, err := Acquire(home, laneAlpha, ttl, baseNow); err != nil {
+		t.Fatalf("A acquire: %v", err)
+	}
+	clk := &fakeClock{t: baseNow}
+	fw := &fakeWatcher{onWait: func(bound time.Duration) error { return errors.New("watch broke mid-flight") }}
+	factory := func(stateDir string) (leaseWatcher, error) { return fw, nil }
+
+	lease, err := acquireWait(home, laneBeta, ttl, clk, 60*time.Second, 2*time.Second, factory)
+	if err != nil {
+		t.Fatalf("a broken watcher must fall back to poll and still acquire: %v", err)
+	}
+	if lease.Holder != laneBeta {
+		t.Fatalf("waiter holder = %q, want %q", lease.Holder, laneBeta)
+	}
+	if fw.waits != 1 {
+		t.Fatalf("a broken watcher should be consulted once then dropped, got %d waits", fw.waits)
+	}
+	if !fw.closed {
+		t.Fatalf("a dropped watcher must be closed")
+	}
+}
+
+// The watch fast path ALSO honors the clock-injected bound: a fake watcher that models a pure timeout
+// (advance the clock by the bound, no event) must still terminate deterministically and acquire once A's
+// virtual expiry passes. Proves the bound is real even on the watch path (belt-and-suspenders no-hang).
+func TestAcquireWaitWatchPathRespectsBound(t *testing.T) {
+	home := t.TempDir()
+	ttl := 10 * time.Second
+	if _, err := Acquire(home, laneAlpha, ttl, baseNow); err != nil {
+		t.Fatalf("A acquire: %v", err)
+	}
+	clk := &fakeClock{t: baseNow}
+	fw := &fakeWatcher{onWait: func(bound time.Duration) error {
+		clk.t = clk.t.Add(bound) // model "the bound elapsed with no event"
+		return nil
+	}}
+	factory := func(stateDir string) (leaseWatcher, error) { return fw, nil }
+
+	lease, err := acquireWait(home, laneBeta, ttl, clk, 60*time.Second, 2*time.Second, factory)
+	if err != nil {
+		t.Fatalf("watch path must still terminate via the bound and acquire after expiry: %v", err)
+	}
+	if lease.Holder != laneBeta {
+		t.Fatalf("waiter holder = %q, want %q", lease.Holder, laneBeta)
+	}
+	if fw.waits == 0 {
+		t.Fatalf("the watch path should have been used")
+	}
+}
+
+// Falsifier 3a (NO BUSY-SPIN): a timed-out fallback wait must BLOCK a BOUNDED number of times
+// (~ceil(timeout/poll)), never tight-loop. A busy-spin would either never Sleep (sleeps==0) or Sleep far
+// more than the bound implies.
+func TestAcquireWaitFallbackDoesNotBusySpin(t *testing.T) {
+	home := t.TempDir()
+	ttl := 3600 * time.Second
+	if _, err := Acquire(home, laneAlpha, ttl, baseNow); err != nil {
+		t.Fatalf("A acquire: %v", err)
+	}
+	clk := &countingClock{t: baseNow}
+	if _, err := acquireWait(home, laneBeta, ttl, clk, 30*time.Second, 5*time.Second, nil); err == nil {
+		t.Fatalf("should time out while A holds for an hour")
+	}
+	if clk.sleeps == 0 {
+		t.Fatalf("the wait never blocked — that is a busy-spin")
+	}
+	// 30s timeout / 5s poll ⇒ ~6 bounded sleeps; allow a small margin. Thousands would be a spin.
+	if clk.sleeps > 8 {
+		t.Fatalf("slept %d times for a 30s/5s wait — expected ~ceil(timeout/poll); possible sub-poll spin", clk.sleeps)
+	}
+}
+
+// Falsifier 3b (NO NETWORK): the landlease package (including the platform watch files) must import NO
+// network package — the coordination hint is pure local file+syscall I/O, never a provider/LLM/net call.
+func TestNoNetworkImports(t *testing.T) {
+	fset := token.NewFileSet()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	forbidden := []string{"net", "net/http", "net/url", "net/rpc", "crypto/tls"}
+	checked := 0
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		// ImportsOnly parses regardless of build tags, so watch_darwin.go / watch_linux.go /
+		// watch_other.go are all covered even though only one compiles on this GOOS.
+		f, perr := parser.ParseFile(fset, name, nil, parser.ImportsOnly)
+		if perr != nil {
+			t.Fatalf("parse %s: %v", name, perr)
+		}
+		checked++
+		for _, imp := range f.Imports {
+			path := strings.Trim(imp.Path.Value, `"`)
+			for _, bad := range forbidden {
+				if path == bad {
+					t.Fatalf("%s imports forbidden network package %q — land-lease is a local coordination hint, no net call", name, path)
+				}
+			}
+		}
+	}
+	if checked < 4 {
+		t.Fatalf("expected to scan landlease.go + the 3 platform watch files, only scanned %d", checked)
 	}
 }
