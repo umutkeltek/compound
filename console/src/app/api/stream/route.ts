@@ -1,33 +1,28 @@
-import { watch, type FSWatcher } from "node:fs";
-import { open, readFile, stat } from "node:fs/promises";
-import path from "node:path";
+import { spawn } from "node:child_process";
 
-import { COMPOUND_HOME, privateFallbacksEnabled } from "@/lib/compound";
-import { feedLines, parseWorkEventLine, resolveReadOffset } from "@/lib/stream/tail-parser";
+import { COMPOUND_BIN, COMPOUND_HOME, runJson } from "@/lib/compound";
+import { dedupeKey, parseWorkEventLine } from "@/lib/stream/tail-parser";
 
 /*
  * Live envelope-spine stream (DESIGN.md §9.6 "Information flow") — Server-Sent
- * Events tailing $COMPOUND_HOME/events/work.jsonl from a byte cursor, plus a
- * lightweight "memory-pulse" whenever $COMPOUND_HOME/ledger/seq changes.
- * GET only, no mutation, ever.
+ * Events over the governed `compound stream` read-only verb. GET only, no
+ * mutation, ever.
  *
- * Raw tailing has no `compound … --json` verb behind it (there is no
- * streaming CLI surface), so — matching every other raw ledger/projection
- * read in this console (route-evidence.ts, map/projections.ts,
- * memory-data.ts) — it is gated behind privateFallbacksEnabled(). Disabled:
- * the connection still opens and stays alive (a heartbeat only), so the
- * client hook never sees a hard failure; it just never receives transition
- * events and the ticker stays in its honest empty state.
+ * This path NO LONGER depends on privateFallbacksEnabled(): the raw-tail
+ * fallback is retired. Instead the console drives a first-class CLI surface —
+ *   - backlog seed: the `stream --once --json` door (bounded, memoized,
+ *     doors-budgeted) returns the last N events + the end-of-log byte cursor;
+ *   - live tail: one per-client `compound stream --follow --cursor <cursor>`
+ *     child, which opens events/work.jsonl READ-ONLY (never the work-event
+ *     write lock) and emits JSONL frames. The child is killed on client
+ *     disconnect.
+ * The child's JSONL frames are translated back into the SAME SSE vocabulary the
+ * client hook (useEnvelopeStream) already speaks — ready / transition /
+ * memory-pulse / heartbeat — so the hook needs no changes.
  */
 
 export const dynamic = "force-dynamic";
 
-const WORK_EVENTS_FILE = path.join(COMPOUND_HOME, "events", "work.jsonl");
-const SEQ_FILE = path.join(COMPOUND_HOME, "ledger", "seq");
-
-const BACKLOG_LINES = 25;
-const EVENTS_POLL_MS = 2_000; // slow fallback alongside fs.watch (watch is unreliable on some FS/host combos)
-const SEQ_POLL_MS = 4_000;
 const HEARTBEAT_MS = 25_000;
 
 function sseFrame(event: string, data: unknown, id?: string): string {
@@ -37,31 +32,30 @@ function sseFrame(event: string, data: unknown, id?: string): string {
   return lines.join("\n");
 }
 
-async function readSeq(): Promise<string | null> {
-  try {
-    return (await readFile(SEQ_FILE, "utf8")).trim();
-  } catch {
-    return null;
-  }
-}
-
-async function readSlice(file: string, position: number, length: number): Promise<string> {
-  if (length <= 0) return "";
-  const handle = await open(file, "r");
-  try {
-    const buffer = Buffer.alloc(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, position);
-    return buffer.subarray(0, bytesRead).toString("utf8");
-  } finally {
-    await handle.close();
-  }
-}
-
 export async function GET(request: Request) {
   const encoder = new TextEncoder();
   let closed = false;
-  const timers: Array<ReturnType<typeof setInterval>> = [];
-  let watcher: FSWatcher | null = null;
+  let child: ReturnType<typeof spawn> | null = null;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+  // Teardown shared by the abort listener and the stream's cancel(): stop the
+  // heartbeat and kill the per-client follow child so no orphaned `compound
+  // stream --follow` process survives a disconnect.
+  const teardown = () => {
+    closed = true;
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+    if (child) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already gone */
+      }
+      child = null;
+    }
+  };
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -70,15 +64,13 @@ export async function GET(request: Request) {
         try {
           controller.enqueue(encoder.encode(chunk));
         } catch {
-          /* client already gone; abort handler below finishes the cleanup */
+          /* client already gone; the abort handler finishes cleanup */
         }
       };
 
       const cleanup = () => {
         if (closed) return;
-        closed = true;
-        for (const timer of timers) clearInterval(timer);
-        watcher?.close();
+        teardown();
         try {
           controller.close();
         } catch {
@@ -88,85 +80,61 @@ export async function GET(request: Request) {
       request.signal.addEventListener("abort", cleanup);
 
       send(`retry: 3000\n\n`);
-
-      if (!privateFallbacksEnabled()) {
-        send(sseFrame("ready", { streaming: false }));
-        timers.push(setInterval(() => send(`: heartbeat\n\n`), HEARTBEAT_MS));
-        return;
-      }
-
+      // A follow child is always spawned below, so streaming is live in the
+      // DEFAULT launch — no private-fallback gate on this path anymore.
       send(sseFrame("ready", { streaming: true }));
 
-      let offset = 0;
-      let remainder = "";
-
-      // Seed the backlog so first paint isn't empty (mirrors useLensData's
-      // SSR-seed pattern), then set the cursor to end-of-file so live tailing
-      // picks up exactly where the backlog left off — no duplicate emission.
+      // Seed the backlog through the --once door so first paint isn't empty; its
+      // cursor is exactly where live tailing resumes. Anything appended in the
+      // gap between the snapshot and the follow child is re-emitted by the
+      // child from that cursor and deduped client-side by ts:work_id:to — so the
+      // seam is lossless without double-showing a chip.
+      let cursor = 0;
       try {
-        const st = await stat(WORK_EVENTS_FILE);
-        const text = await readSlice(WORK_EVENTS_FILE, 0, st.size);
-        offset = st.size;
-        const lines = text.split("\n").filter((l) => l.trim().length > 0);
-        for (const line of lines.slice(-BACKLOG_LINES)) {
-          const parsed = parseWorkEventLine(line);
-          if (parsed) send(sseFrame("transition", parsed, `${parsed.ts}:${parsed.work_id}:${parsed.to}`));
+        const snap = await runJson(["stream", "--once", "--json"]);
+        if (snap && typeof snap.cursor === "number") cursor = snap.cursor;
+        const events = Array.isArray(snap?.events) ? snap.events : [];
+        for (const raw of events) {
+          const parsed = parseWorkEventLine(JSON.stringify(raw));
+          if (parsed) send(sseFrame("transition", parsed, dedupeKey(parsed)));
         }
       } catch {
-        offset = 0; // file not written yet: tailing below picks it up once it exists
+        cursor = 0; // snapshot failed: follow from the top; dedupe covers overlap
       }
 
-      let lastSeq = await readSeq();
+      child = spawn(COMPOUND_BIN, ["stream", "--follow", "--cursor", String(cursor), "--json"], {
+        env: { ...process.env, COMPOUND_HOME },
+        stdio: ["ignore", "pipe", "ignore"],
+      });
 
-      const tailEvents = async () => {
-        let size: number;
-        try {
-          size = (await stat(WORK_EVENTS_FILE)).size;
-        } catch {
-          return; // file still absent
-        }
-        const resolved = resolveReadOffset(offset, size);
-        if (resolved.truncated) remainder = ""; // rotation/compaction: drop any half-buffered line
-
-        if (size <= resolved.offset) {
-          offset = resolved.offset;
-          return;
-        }
-
-        const chunk = await readSlice(WORK_EVENTS_FILE, resolved.offset, size - resolved.offset);
-        offset = size;
-        const { lines, remainder: nextRemainder } = feedLines(remainder, chunk);
-        remainder = nextRemainder;
-        for (const line of lines) {
-          const parsed = parseWorkEventLine(line);
-          if (parsed) send(sseFrame("transition", parsed, `${parsed.ts}:${parsed.work_id}:${parsed.to}`));
-        }
-      };
-
-      const tailSeq = async () => {
-        const seq = await readSeq();
-        if (seq !== null && seq !== lastSeq) {
-          lastSeq = seq;
-          send(sseFrame("memory-pulse", { seq }));
-        }
-      };
-
-      try {
-        watcher = watch(path.dirname(WORK_EVENTS_FILE), (_type, filename) => {
-          if (filename === path.basename(WORK_EVENTS_FILE)) tailEvents().catch(() => {});
-        });
-      } catch {
-        watcher = null; // fs.watch unsupported here: the poll fallback below still covers it
+      const out = child.stdout;
+      if (!out) {
+        cleanup();
+        return;
       }
+      out.setEncoding("utf8");
+      let buffer = "";
+      out.on("data", (piece: string) => {
+        buffer += piece;
+        let nl = buffer.indexOf("\n");
+        while (nl >= 0) {
+          const line = buffer.slice(0, nl);
+          buffer = buffer.slice(nl + 1);
+          translateFrame(line, send);
+          nl = buffer.indexOf("\n");
+        }
+      });
+      // The child ending (exit / spawn error) is a real end of the live tail:
+      // close the SSE so the client hook reconnects rather than hanging.
+      child.on("error", cleanup);
+      child.on("close", cleanup);
 
-      timers.push(setInterval(() => tailEvents().catch(() => {}), EVENTS_POLL_MS));
-      timers.push(setInterval(() => tailSeq().catch(() => {}), SEQ_POLL_MS));
-      timers.push(setInterval(() => send(`: heartbeat\n\n`), HEARTBEAT_MS));
+      // Client-facing heartbeat keeps the connection warm independent of the
+      // child's own (slower) heartbeat frames, which we drop below.
+      heartbeat = setInterval(() => send(`: heartbeat\n\n`), HEARTBEAT_MS);
     },
     cancel() {
-      closed = true;
-      for (const timer of timers) clearInterval(timer);
-      watcher?.close();
+      teardown();
     },
   });
 
@@ -178,4 +146,36 @@ export async function GET(request: Request) {
       "X-Accel-Buffering": "no",
     },
   });
+}
+
+/**
+ * Translates one JSONL frame from `compound stream --follow` into the SSE
+ * vocabulary the client hook speaks. work_event -> transition (re-normalized
+ * through parseWorkEventLine so the wire stays the clean WorkEvent shape, SHA
+ * fields stripped); seq_pulse -> memory-pulse. heartbeat/warning frames are the
+ * CLI's concern (the route runs its own heartbeat and the ticker has no warning
+ * channel), so they are dropped.
+ */
+function translateFrame(line: string, send: (chunk: string) => void): void {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  let frame: { kind?: string; event?: unknown; seq?: unknown };
+  try {
+    frame = JSON.parse(trimmed);
+  } catch {
+    return; // never crash the tail on a partial/garbled frame
+  }
+  if (!frame || typeof frame !== "object") return;
+  switch (frame.kind) {
+    case "work_event": {
+      const parsed = parseWorkEventLine(JSON.stringify(frame.event));
+      if (parsed) send(sseFrame("transition", parsed, dedupeKey(parsed)));
+      break;
+    }
+    case "seq_pulse":
+      if (typeof frame.seq === "string") send(sseFrame("memory-pulse", { seq: frame.seq }));
+      break;
+    default:
+      break; // heartbeat / warning: intentionally not forwarded
+  }
 }

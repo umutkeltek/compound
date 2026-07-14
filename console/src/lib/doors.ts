@@ -49,4 +49,11 @@ export const DOORS: Door[] = [
     budgetMs: 500,
     readOnly: true,
   },
+  {
+    id: "stream-snapshot",
+    label: "Live stream snapshot",
+    argv: ["stream", "--once", "--json"],
+    budgetMs: 500,
+    readOnly: true,
+  },
 ];
