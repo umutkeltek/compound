@@ -118,6 +118,10 @@ func TestParityReplayNegativeControlMasksData(t *testing.T) {
 			},
 		}},
 	})
+	failedControlExit, failedControlReport := runParityReplayCLI(t, unmaskedHome, controlFixturePath, retrievalparity.ConsumerQuery)
+	if failedControlExit == 0 || !failedControlReport.ParityPassed || failedControlReport.NegativeControlValid == nil || *failedControlReport.NegativeControlValid {
+		t.Fatalf("failed control replay exit=%d report=%+v, want nonzero with negative_control_valid=false", failedControlExit, failedControlReport)
+	}
 	maskedHome := cloneParityHomeWithoutClaim(t, unmaskedHome, strings.TrimPrefix(wantRef, "claim://"), now)
 	maskedExit, maskedReport := runParityReplayCLI(t, maskedHome, controlFixturePath, retrievalparity.ConsumerQuery)
 	if maskedExit == 0 || maskedReport.ParityPassed || maskedReport.NegativeControlValid == nil || !*maskedReport.NegativeControlValid || len(maskedReport.Rows) != 1 {
