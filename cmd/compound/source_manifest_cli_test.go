@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/home"
 	"compound/internal/sourceobs"
+	"compound/internal/work"
 )
 
 func TestSourceManifestGbrainCapturesMatchingDumpIntoArtifactCustody(t *testing.T) {
@@ -298,5 +301,198 @@ func TestSourceManifestCLISourceInPlaceIsExplicitAndCustodyIncomplete(t *testing
 	}
 	if doctor.Status != "ok" || doctor.CustodyComplete || doctor.InventoryOnlyCount != 1 {
 		t.Fatalf("legacy doctor = %+v", doctor)
+	}
+}
+
+func TestSourceManifestLifecycleCLIIsDryRunByDefaultAndRecordsGovernedTransition(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(t.TempDir(), "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# Governed source lifecycle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sourceobs.BuildOwnedSourceManifest(homePath, "governed_family", []string{sourcePath}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sourceobs.RecordSourceManifest(homePath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "sourceobs", Actor: "codex:lifecycle", SuccessPredicate: "advance governed source lifecycle", State: "ready"}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(w.ID, "codex:lifecycle", cliTestNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex:lifecycle"}, cliTestNow.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestPath := sourceobs.SourceManifestPath(homePath, "governed_family")
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := runSourceManifestLifecycleAdvance([]string{
+		"governed_family", "--to", sourceobs.SourceLifecycleCapturing,
+		"--work", w.ID, "--by", "codex:lifecycle",
+		"--proof", sourceobs.SourceLifecycleGateSourceInventory + "=check://complete-roster",
+		"--json",
+	}, &stdout, &stderr, cliTestNow.Add(3*time.Second))
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("dry-run code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var dry map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &dry); err != nil {
+		t.Fatalf("parse dry-run: %v\n%s", err, stdout.String())
+	}
+	if dry["mode"] != "dry-run" || dry["policy_allowed"] != true || dry["from_state"] != sourceobs.SourceLifecycleRegistered || dry["to_state"] != sourceobs.SourceLifecycleCapturing {
+		t.Fatalf("dry-run report = %+v", dry)
+	}
+	afterDry, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, afterDry) {
+		t.Fatal("dry-run mutated source manifest")
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runSourceManifestLifecycleAdvance([]string{
+		"governed_family", "--to", sourceobs.SourceLifecycleCapturing,
+		"--work", w.ID, "--by", "codex:lifecycle",
+		"--proof", sourceobs.SourceLifecycleGateSourceInventory + "=check://complete-roster",
+		"--confirm", "--json",
+	}, &stdout, &stderr, cliTestNow.Add(4*time.Second))
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("confirm code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var applied map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &applied); err != nil {
+		t.Fatalf("parse apply: %v\n%s", err, stdout.String())
+	}
+	if applied["mode"] != "confirmed" || applied["applied"] != true || applied["action_intent_id"] == "" || applied["policy_decision_id"] == "" {
+		t.Fatalf("applied report = %+v", applied)
+	}
+	loaded, err := sourceobs.LoadSourceManifest(homePath, "governed_family")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Lifecycle.State != sourceobs.SourceLifecycleCapturing || loaded.Lifecycle.Revision != 1 || len(loaded.Lifecycle.History) != 1 {
+		t.Fatalf("lifecycle after apply = %+v", loaded.Lifecycle)
+	}
+	transition := loaded.Lifecycle.History[0]
+	if transition.WorkID != w.ID || transition.ActionIntentID != applied["action_intent_id"] || transition.PolicyDecisionID != applied["policy_decision_id"] {
+		t.Fatalf("transition governance links = %+v report=%+v", transition, applied)
+	}
+	afterWork, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterWork.PolicyDecisionID != transition.PolicyDecisionID || !stringSliceContains(afterWork.RunIDs, transition.ActionIntentID) {
+		t.Fatalf("work did not retain governed action: %+v", afterWork)
+	}
+
+	doctor, err := sourceobs.DoctorSourceManifest(homePath, "governed_family")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Lifecycle.State != sourceobs.SourceLifecycleCapturing || doctor.Lifecycle.NextState != sourceobs.SourceLifecycleOwnedSnapshot || doctor.Lifecycle.ReadPosture != "compound_recovery_legacy_available" {
+		t.Fatalf("doctor lifecycle = %+v", doctor.Lifecycle)
+	}
+}
+
+func TestSourceManifestLifecycleCLIHoldsWriterCutoverWithoutExplicitPolicyAuthority(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(t.TempDir(), "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# Writer cutover\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sourceobs.BuildOwnedSourceManifest(homePath, "cutover_family", []string{sourcePath}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sourceobs.RecordSourceManifest(homePath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	advance := func(to string, gates ...string) {
+		loaded, loadErr := sourceobs.LoadSourceManifest(homePath, "cutover_family")
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		proofs := make([]sourceobs.SourceLifecycleProof, 0, len(gates))
+		for _, gate := range gates {
+			proofs = append(proofs, sourceobs.SourceLifecycleProof{Gate: gate, EvidenceRef: "check://" + gate})
+		}
+		if _, advanceErr := sourceobs.AdvanceSourceManifestLifecycle(homePath, "cutover_family", sourceobs.SourceManifestLifecycleAdvanceRequest{
+			ToState: to, ExpectedRevision: loaded.Lifecycle.Revision, WorkID: "work_setup", Actor: "codex:test",
+			ActionIntentID: "act_setup_" + to, PolicyDecisionID: "pol_setup_" + to, Proofs: proofs,
+		}, cliTestNow); advanceErr != nil {
+			t.Fatalf("setup advance to %s: %v", to, advanceErr)
+		}
+	}
+	advance(sourceobs.SourceLifecycleCapturing, sourceobs.SourceLifecycleGateSourceInventory)
+	advance(sourceobs.SourceLifecycleOwnedSnapshot, sourceobs.SourceLifecycleGateExactCustody)
+	advance(sourceobs.SourceLifecycleVerified,
+		sourceobs.SourceLifecycleGateIsolatedRestore,
+		sourceobs.SourceLifecycleGateSemanticParity,
+		sourceobs.SourceLifecycleGateRealConsumerReplay,
+		sourceobs.SourceLifecycleGateLegacyUnavailableNegativeControl,
+	)
+
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "sourceobs", Actor: "codex:lifecycle", SuccessPredicate: "writer cutover stays held", State: "ready"}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(w.ID, "codex:lifecycle", cliTestNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex:lifecycle"}, cliTestNow.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(sourceobs.SourceManifestPath(homePath, "cutover_family"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{
+		"cutover_family", "--to", sourceobs.SourceLifecycleCompoundPrimaryWriter,
+		"--work", w.ID, "--by", "codex:lifecycle",
+		"--proof", sourceobs.SourceLifecycleGateWriterRoster + "=check://writer-roster",
+		"--proof", sourceobs.SourceLifecycleGateWriterDestination + "=check://writer-destination",
+		"--proof", sourceobs.SourceLifecycleGateRollbackRehearsal + "=check://rollback",
+		"--proof", sourceobs.SourceLifecycleGatePrimaryWriterCutover + "=check://cutover",
+		"--legacy-writer", "writer://legacy", "--compound-writer", "compound://writer",
+		"--rollback", "runbook://rollback", "--writer-fence", "lease://epoch-1",
+		"--writer-epoch", "1", "--quiet-window", "1h", "--confirm", "--json",
+	}
+	var stdout, stderr bytes.Buffer
+	code := runSourceManifestLifecycleAdvance(args, &stdout, &stderr, cliTestNow.Add(3*time.Second))
+	if code == 0 || !strings.Contains(stderr.String(), "policy hold") {
+		t.Fatalf("cutover should be policy-held: code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	after, err := os.ReadFile(sourceobs.SourceManifestPath(homePath, "cutover_family"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("policy-held cutover mutated source manifest")
 	}
 }
