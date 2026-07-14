@@ -429,6 +429,7 @@ func TestSourceManifestLifecycleCLIHoldsWriterCutoverWithoutExplicitPolicyAuthor
 	if _, err := sourceobs.RecordSourceManifest(homePath, manifest); err != nil {
 		t.Fatal(err)
 	}
+	evidenceByState := map[string]string{}
 	advance := func(to string, gates ...string) {
 		loaded, loadErr := sourceobs.LoadSourceManifest(homePath, "cutover_family")
 		if loadErr != nil {
@@ -436,7 +437,11 @@ func TestSourceManifestLifecycleCLIHoldsWriterCutoverWithoutExplicitPolicyAuthor
 		}
 		proofs := make([]sourceobs.SourceLifecycleProof, 0, len(gates))
 		for _, gate := range gates {
-			proofs = append(proofs, sourceobs.SourceLifecycleProof{Gate: gate, EvidenceRef: "check://" + gate})
+			evidenceRef := "check://" + gate
+			if bound := evidenceByState[to]; bound != "" {
+				evidenceRef = bound
+			}
+			proofs = append(proofs, sourceobs.SourceLifecycleProof{Gate: gate, EvidenceRef: evidenceRef})
 		}
 		if _, advanceErr := sourceobs.AdvanceSourceManifestLifecycle(homePath, "cutover_family", sourceobs.SourceManifestLifecycleAdvanceRequest{
 			ToState: to, ExpectedRevision: loaded.Lifecycle.Revision, WorkID: "work_setup", Actor: "codex:test",
@@ -447,11 +452,15 @@ func TestSourceManifestLifecycleCLIHoldsWriterCutoverWithoutExplicitPolicyAuthor
 	}
 	advance(sourceobs.SourceLifecycleCapturing, sourceobs.SourceLifecycleGateSourceInventory)
 	advance(sourceobs.SourceLifecycleOwnedSnapshot, sourceobs.SourceLifecycleGateExactCustody)
-	advance(sourceobs.SourceLifecycleVerified,
+	verifiedGates := []string{
 		sourceobs.SourceLifecycleGateIsolatedRestore,
 		sourceobs.SourceLifecycleGateSemanticParity,
 		sourceobs.SourceLifecycleGateRealConsumerReplay,
 		sourceobs.SourceLifecycleGateLegacyUnavailableNegativeControl,
+	}
+	evidenceByState[sourceobs.SourceLifecycleVerified] = recordCLISourceLifecycleEvidence(t, homePath, "cutover_family", verifiedGates)
+	advance(sourceobs.SourceLifecycleVerified,
+		verifiedGates...,
 	)
 
 	store, err := work.Open(homePath)
@@ -472,13 +481,20 @@ func TestSourceManifestLifecycleCLIHoldsWriterCutoverWithoutExplicitPolicyAuthor
 	if err != nil {
 		t.Fatal(err)
 	}
+	writerGates := []string{
+		sourceobs.SourceLifecycleGateWriterRoster,
+		sourceobs.SourceLifecycleGateWriterDestination,
+		sourceobs.SourceLifecycleGateRollbackRehearsal,
+		sourceobs.SourceLifecycleGatePrimaryWriterCutover,
+	}
+	writerEvidenceRef := recordCLISourceLifecycleEvidence(t, homePath, "cutover_family", writerGates)
 	args := []string{
 		"cutover_family", "--to", sourceobs.SourceLifecycleCompoundPrimaryWriter,
 		"--work", w.ID, "--by", "codex:lifecycle",
-		"--proof", sourceobs.SourceLifecycleGateWriterRoster + "=check://writer-roster",
-		"--proof", sourceobs.SourceLifecycleGateWriterDestination + "=check://writer-destination",
-		"--proof", sourceobs.SourceLifecycleGateRollbackRehearsal + "=check://rollback",
-		"--proof", sourceobs.SourceLifecycleGatePrimaryWriterCutover + "=check://cutover",
+		"--proof", sourceobs.SourceLifecycleGateWriterRoster + "=" + writerEvidenceRef,
+		"--proof", sourceobs.SourceLifecycleGateWriterDestination + "=" + writerEvidenceRef,
+		"--proof", sourceobs.SourceLifecycleGateRollbackRehearsal + "=" + writerEvidenceRef,
+		"--proof", sourceobs.SourceLifecycleGatePrimaryWriterCutover + "=" + writerEvidenceRef,
 		"--legacy-writer", "writer://legacy", "--compound-writer", "compound://writer",
 		"--rollback", "runbook://rollback", "--writer-fence", "lease://epoch-1",
 		"--writer-epoch", "1", "--quiet-window", "1h", "--confirm", "--json",
@@ -495,4 +511,46 @@ func TestSourceManifestLifecycleCLIHoldsWriterCutoverWithoutExplicitPolicyAuthor
 	if !bytes.Equal(before, after) {
 		t.Fatal("policy-held cutover mutated source manifest")
 	}
+}
+
+func recordCLISourceLifecycleEvidence(t *testing.T, homePath, family string, gates []string) string {
+	t.Helper()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := "codex:source-evidence"
+	now := cliTestNow.Add(time.Duration(len(strings.Join(gates, "|"))) * time.Second)
+	w, err := store.Create(work.CreateInput{
+		Owner:            "source-evidence",
+		Actor:            actor,
+		CanonicalSurface: family,
+		SuccessPredicate: "prove " + strings.Join(gates, ","),
+		State:            "ready",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(w.ID, actor, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: actor}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	proofRefs := make([]string, 0, len(gates))
+	for _, gate := range gates {
+		proofRefs = append(proofRefs, sourceobs.SourceLifecycleGateEvidenceRef(family, gate))
+	}
+	closed, err := store.Close(w.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Actor:     actor,
+		Summary:   "synthetic lifecycle gate evidence",
+		Changed:   true,
+		ProofRefs: proofRefs,
+	}, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "transition:" + closed.Transition.ID
 }
