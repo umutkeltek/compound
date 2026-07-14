@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"compound/internal/envelope"
@@ -13,21 +14,193 @@ import (
 	"compound/internal/work"
 )
 
-func workUsage(sub string) string {
-	switch sub {
-	case "admit-plan":
-		return "usage: compound work admit-plan --plan <create-plan.json> [--by A] [--json]"
-	case "review-card-plan":
-		return "usage: compound work review-card-plan --card <workbench_review_card_id> [--actor A] [--json]"
-	case "create":
-		return "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private]"
-	case "import-packet":
-		return "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]"
-	case "leases":
-		return "usage: compound work leases [--json]"
-	default:
-		return "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ..."
+type workShowOutput struct {
+	envelope.WorkEnvelope
+	PacketPath string       `json:"packet_path,omitempty"`
+	Lifecycle  []work.Event `json:"lifecycle"`
+}
+
+func packetPathForWork(w envelope.WorkEnvelope) (string, error) {
+	surface := strings.TrimSpace(w.CanonicalSurface)
+	if !strings.HasPrefix(surface, "packet:") {
+		return "", nil
 	}
+	packetDir := defaultWorkbenchPacketDir()
+	if packetDir == "" {
+		return "", fmt.Errorf("packet path unavailable for %s: workbench packet directory is not configured", w.ID)
+	}
+	offered, err := work.OfferedPackets(packetDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve workbench packet directory: %w", err)
+	}
+	digest := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(w.Authority.SourceRevision), "sha256:"))
+	matches := make([]work.OfferedPacketItem, 0, 1)
+	for _, item := range offered.Items {
+		if item.CanonicalSurface != surface {
+			continue
+		}
+		if digest != "" && item.SourceDigest != digest {
+			continue
+		}
+		matches = append(matches, item)
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0].Path, nil
+	case 0:
+		return "", fmt.Errorf("packet path unavailable for %s: no current workbench packet matches %s", w.ID, surface)
+	default:
+		return "", fmt.Errorf("packet path ambiguous for %s: %d current workbench packets match %s", w.ID, len(matches), surface)
+	}
+}
+
+type workVerbHelp struct {
+	Usage   string
+	Example string
+}
+
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ..."
+
+var workVerbHelpByName = map[string]workVerbHelp{
+	"create-plan": {
+		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--json] [--dry-run]",
+		Example: "compound work create-plan --owner codex --predicate \"tests pass\" --dry-run",
+	},
+	"admit-plan": {
+		Usage:   "usage: compound work admit-plan --plan <create-plan.json> [--by A] [--json]",
+		Example: "compound work admit-plan --plan create-plans/wcp_123.json --by codex",
+	},
+	"review-card-plan": {
+		Usage:   "usage: compound work review-card-plan --card <workbench_review_card_id> [--actor A] [--json]",
+		Example: "compound work review-card-plan --card wrc_abc123 --json",
+	},
+	"create": {
+		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private]",
+		Example: "compound work create --owner codex --predicate \"tests pass\"",
+	},
+	"import-packet": {
+		Usage:   "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]",
+		Example: "compound work import-packet docs_private/plan/packets/example.md --owner codex",
+	},
+	"show": {
+		Usage:   "usage: compound work show <work_id> [--json]",
+		Example: "compound work show work_abc123 --json",
+	},
+	"list": {
+		Usage:   "usage: compound work list",
+		Example: "compound work list",
+	},
+	"leases": {
+		Usage:   "usage: compound work leases [--json]",
+		Example: "compound work leases --json",
+	},
+	"active-packet-proof": {
+		Usage:   "usage: compound work active-packet-proof [--surface canonical_surface] [--source-packet packet.md] [--json]",
+		Example: "compound work active-packet-proof --json",
+	},
+	"proof-chain-doctor": {
+		Usage:   "usage: compound work proof-chain-doctor [--include-archived] [--json]",
+		Example: "compound work proof-chain-doctor --json",
+	},
+	"continue": {
+		Usage:   "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--json]",
+		Example: "compound work continue --actor codex --until-wait --json",
+	},
+	"dispatch-plan": {
+		Usage:   "usage: compound work dispatch-plan [--actor A] [--capability-class classify-extract|draft-prose] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]",
+		Example: "compound work dispatch-plan --actor codex --dry-run --json",
+	},
+	"dispatch-claim": {
+		Usage:   "usage: compound work dispatch-claim [--next|<work_id>] [--confirm] [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json]\n  without --confirm previews; with --confirm claims",
+		Example: "compound work dispatch-claim --next --actor codex --json",
+	},
+	"dispatch-advance": {
+		Usage:   "usage: compound work dispatch-advance (--next|<work_id>) [--actor A] [--json]",
+		Example: "compound work dispatch-advance --next --actor codex --json",
+	},
+	"dispatch-close-plan": {
+		Usage:   "usage: compound work dispatch-close-plan (--next|<work_id>) [--actor A] [--outcome completed|failed|cancelled] [--move-type type] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json]",
+		Example: "compound work dispatch-close-plan --next --outcome completed --move-type outward_delta --json",
+	},
+	"dispatch-close": {
+		Usage:   "usage: compound work dispatch-close (--next|<work_id>) [--actor A] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--json]",
+		Example: "compound work dispatch-close --next --outcome completed --move-type outward_delta",
+	},
+	"dispatch-step": {
+		Usage:   "usage: compound work dispatch-step [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--json]",
+		Example: "compound work dispatch-step --actor codex --until-wait --json",
+	},
+	"claim-plan": {
+		Usage:   "usage: compound work claim-plan <work_id> [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]",
+		Example: "compound work claim-plan work_abc123 --actor codex --dry-run",
+	},
+	"claim": {
+		Usage:   "usage: compound work claim <work_id> --by A",
+		Example: "compound work claim work_abc123 --by codex",
+	},
+	"advance-plan": {
+		Usage:   "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]",
+		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
+	},
+	"advance": {
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--run R] [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R]",
+		Example: "compound work advance work_abc123 --to running --by codex",
+	},
+	"observe-run": {
+		Usage:   "usage: compound work observe-run <work_id> --trace <trace_id> [--actor A] [--note N] [--json]",
+		Example: "compound work observe-run work_abc123 --trace trace_xyz --json",
+	},
+	"action-plan": {
+		Usage:   "usage: compound work action-plan <work_id> [--actor A] [--move-type type] [--receipt-outcome completed|failed|blocked|no_op] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]",
+		Example: "compound work action-plan work_abc123 --dry-run --json",
+	},
+	"act": {
+		Usage:   "usage: compound work act <work_id> (--intent <action-intent.json> | --plan <action-execution-plan.json>)",
+		Example: "compound work act work_abc123 --plan action-plans/aep_123.json",
+	},
+	"close-plan": {
+		Usage:   "usage: compound work close-plan <work_id> (--action-plan <action-execution-plan.json> | --outcome completed|failed|cancelled --move-type <type>) [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--steal --reason R] [--json] [--dry-run]",
+		Example: "compound work close-plan work_abc123 --outcome completed --move-type outward_delta --dry-run",
+	},
+	"close": {
+		Usage:   "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--steal --reason R]",
+		Example: "compound work close work_abc123 --outcome completed --move-type outward_delta --summary \"shipped\" --changed",
+	},
+}
+
+func workUsage(sub string) string {
+	if help, ok := workVerbHelpByName[sub]; ok {
+		return help.Usage
+	}
+	return genericWorkUsage
+}
+
+func workHelpText(sub string) string {
+	help, ok := workVerbHelpByName[sub]
+	if !ok {
+		return genericWorkUsage
+	}
+	return help.Usage + "\nexample: " + help.Example
+}
+
+var dispatchClaimPreviewMu sync.Mutex
+
+func previewDispatchClaim(store *work.Store, now time.Time, opts work.DispatchPlanOptions) (work.DispatchPlan, error) {
+	// A CLI command is one process/one operation. Temporarily remove the injected capacity
+	// adapter so a preview cannot record refusal evidence in COMPOUND_HOME. The confirmed path
+	// below still executes the adapter normally.
+	dispatchClaimPreviewMu.Lock()
+	defer dispatchClaimPreviewMu.Unlock()
+	guard := work.LaneCapacityGuard
+	work.LaneCapacityGuard = nil
+	defer func() { work.LaneCapacityGuard = guard }()
+	opts.Record = false
+	opts.Confirm = false
+	plan, err := store.DispatchPlan(now, opts)
+	if err == nil {
+		plan.Warnings = append(plan.Warnings, "capacity is evaluated when the claim is confirmed")
+	}
+	return plan, err
 }
 
 func cmdWork(args []string) {
@@ -36,7 +209,7 @@ func cmdWork(args []string) {
 		os.Exit(2)
 	}
 	if hasUsageFlag(args) {
-		fmt.Println(workUsage(args[0]))
+		fmt.Println(workHelpText(args[0]))
 		return
 	}
 	homePath, err := home.Resolve("")
@@ -112,6 +285,42 @@ func cmdWork(args []string) {
 			os.Exit(2)
 		}
 		return targetWorkID
+	}
+	parseDispatchClaimTarget := func(usage string) (targetWorkID string, confirmed bool) {
+		valueFlags := map[string]bool{
+			"--actor": true, "--source-packet": true, "--source-state": true,
+			"--source-owner": true, "--source-context-pack": true,
+			"--source-risk": true, "--source-privacy": true,
+		}
+		next := false
+		for i := 0; i < len(rest); i++ {
+			arg := rest[i]
+			switch {
+			case arg == "--next":
+				next = true
+			case arg == "--confirm":
+				confirmed = true
+			case arg == "--json":
+			case valueFlags[arg]:
+				if i+1 >= len(rest) {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				i++
+			default:
+				if strings.HasPrefix(arg, "-") || targetWorkID != "" {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				targetWorkID = arg
+			}
+		}
+		if targetWorkID != "" && next {
+			fmt.Fprintln(os.Stderr, "error: pass either --next or <work_id>, not both")
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		return targetWorkID, confirmed
 	}
 	validateCreateState := func(usage string, allowTestRunning bool) {
 		state := strings.TrimSpace(flag("--state"))
@@ -289,7 +498,16 @@ func cmdWork(args []string) {
 	case "show":
 		w, evs, err := store.Show(pos())
 		die(err)
+		packetPath, err := packetPathForWork(w)
+		die(err)
+		if has("--json") {
+			printJSON(workShowOutput{WorkEnvelope: w, PacketPath: packetPath, Lifecycle: evs})
+			return
+		}
 		printJSON(w)
+		if packetPath != "" {
+			fmt.Printf("packet_path: %s\n", packetPath)
+		}
 		fmt.Println("--- lifecycle ---")
 		for _, e := range evs {
 			fmt.Printf("%s -> %s  %s %s\n", emptyDash(e.From), e.To, e.By, e.Note)
@@ -540,14 +758,11 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "dispatch-claim":
-		usage := "usage: compound work dispatch-claim (--next|<work_id>) [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json]"
-		targetWorkID := parseExplicitDispatchTarget(
-			usage,
-			map[string]bool{"--actor": true, "--source-packet": true, "--source-state": true, "--source-owner": true, "--source-context-pack": true, "--source-risk": true, "--source-privacy": true},
-			map[string]bool{"--json": true},
-		)
-		result, err := store.DispatchClaim(time.Now(), work.DispatchPlanOptions{
+		usage := workUsage("dispatch-claim") + "\n  (omit --confirm to preview only; --next and <work_id> are mutually exclusive)"
+		targetWorkID, confirmed := parseDispatchClaimTarget(usage)
+		dispatchOpts := work.DispatchPlanOptions{
 			Actor:                 flag("--actor"),
+			Confirm:               confirmed,
 			WorkID:                targetWorkID,
 			SourcePacketPath:      flag("--source-packet"),
 			SourcePacketState:     flag("--source-state"),
@@ -555,7 +770,25 @@ func cmdWork(args []string) {
 			SourcePacketRisk:      flag("--source-risk"),
 			SourcePacketPrivacy:   flag("--source-privacy"),
 			SourcePacketContextID: flag("--source-context-pack"),
-		})
+		}
+		if !confirmed {
+			preview, err := previewDispatchClaim(store, time.Now(), dispatchOpts)
+			die(err)
+			if has("--json") {
+				printJSON(preview)
+			} else {
+				fmt.Printf("dispatch-claim PREVIEW %s status=%s\n", preview.ID, preview.Status)
+				if preview.Selected != nil {
+					fmt.Printf("would_claim: %s by=%s\n", preview.Selected.WorkID, preview.Actor)
+				}
+				if preview.NoAction != "" {
+					fmt.Printf("no_action: %s\n", preview.NoAction)
+				}
+				fmt.Println("nothing claimed; re-run with --confirm to perform the claim")
+			}
+			os.Exit(1)
+		}
+		result, err := store.DispatchClaim(time.Now(), dispatchOpts)
 		die(err)
 		if has("--json") {
 			printJSON(result)
