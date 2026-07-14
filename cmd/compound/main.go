@@ -269,8 +269,10 @@ func routeUsage(sub string) string {
 		return "usage: compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]"
 	case "promotion-record":
 		return "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]"
+	case "execution-profile":
+		return "usage: compound route execution-profile (--list|--profile ID [--role R] [--capability-class C] [--harness claude-code|codex|worker] [--transport native|switchback|local] [--route-alias A] [--model provider/model] [--semantic-effort economy|balanced|deep|max] [--effort E] [--orchestration direct|standard|ultracode]) [--json]"
 	default:
-		return "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight])>"
+		return "usage: compound route <execution-profile (--list|--profile ID) [--json]|evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight])>"
 	}
 }
 
