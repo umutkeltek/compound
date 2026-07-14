@@ -493,10 +493,25 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 	return report, nil
 }
 
-// FindRecordedSourceControlMutationReview returns only a recorded authorization
-// whose immutable plan, live snapshot, and executable binding all match. Invalid,
-// legacy, stale, or tampered artifacts are ignored so policy keeps the dirty hold.
+// FindRecordedSourceControlMutationReview returns the newest recorded
+// authorization whose immutable plan, live snapshot, and executable binding all
+// match. Invalid, legacy, stale, or tampered artifacts are ignored so policy
+// keeps the dirty hold.
 func FindRecordedSourceControlMutationReview(homePath string, snapshot SourceControlSnapshot, binding SourceControlMutationBinding) (*SourceControlReviewReport, error) {
+	reports, err := ListRecordedSourceControlMutationReviews(homePath, snapshot, binding)
+	if err != nil || len(reports) == 0 {
+		return nil, err
+	}
+	report := reports[0]
+	return &report, nil
+}
+
+// ListRecordedSourceControlMutationReviews enumerates every semantically exact,
+// sealed authorization newest-first. Owner lifecycle is deliberately checked by
+// the hook/CLI boundary that owns the WorkEnvelope store; keeping all exact
+// historical reports visible lets that boundary skip an unusable owner without
+// deleting or rewriting immutable review evidence.
+func ListRecordedSourceControlMutationReviews(homePath string, snapshot SourceControlSnapshot, binding SourceControlMutationBinding) ([]SourceControlReviewReport, error) {
 	normalized, err := normalizeSourceControlMutationBinding(snapshot, binding)
 	if err != nil {
 		return nil, nil
@@ -509,7 +524,7 @@ func FindRecordedSourceControlMutationReview(homePath string, snapshot SourceCon
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
+	matches := make([]SourceControlReviewReport, 0)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reviewed.json") {
 			continue
@@ -529,9 +544,34 @@ func FindRecordedSourceControlMutationReview(homePath string, snapshot SourceCon
 		if !sourceControlPlanMatchesSnapshot(plan, snapshot) || !sourceControlMutationExecutionEqual(*plan.MutationBinding, normalized) {
 			continue
 		}
-		return &report, nil
+		if _, parseErr := time.Parse(time.RFC3339Nano, report.CreatedAt); parseErr != nil {
+			continue
+		}
+		matches = append(matches, report)
 	}
-	return nil, nil
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].CreatedAt != matches[j].CreatedAt {
+			return matches[i].CreatedAt > matches[j].CreatedAt
+		}
+		return matches[i].ID > matches[j].ID
+	})
+	return matches, nil
+}
+
+// SourceControlMutationOwnerCurrent is the one lifecycle predicate shared by
+// mutation-review creation and consumption. work_live_* identifies a synthetic
+// hook/session correlation id, never a durable owner WorkEnvelope.
+func SourceControlMutationOwnerCurrent(workID, state string) bool {
+	workID = strings.TrimSpace(workID)
+	if workID == "" || !strings.HasPrefix(workID, "work_") || strings.HasPrefix(workID, "work_live_") {
+		return false
+	}
+	switch strings.TrimSpace(state) {
+	case "claimed", "running", "verifying", "held":
+		return true
+	default:
+		return false
+	}
 }
 
 func writeSourceControlReviewedSource(path string, review SourceControlReview) (string, error) {
