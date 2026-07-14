@@ -8,10 +8,13 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/authority"
+	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/home"
+	"compound/internal/hook"
 	"compound/internal/policy"
 	"compound/internal/retrievalparity"
 	"compound/internal/work"
@@ -247,6 +250,28 @@ func TestHookLiveContextRetrievalJournalsAfterSuccessfulBreakers(t *testing.T) {
 		if row.OrientInput.Harness != "codex" || row.OrientInput.Cwd != repoPath || row.OrientInput.Mode != inputs[i].mode {
 			t.Fatalf("live-hook row %d tuple=%+v", i, row.OrientInput)
 		}
+	}
+}
+
+func TestLiveHookParityJournalUsesCapturedRetrievalLatency(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	res := hook.Result{Context: &hook.ContextObservation{
+		Input:            contract.Input{Harness: "codex", Cwd: "/repo/product", Task: "synthetic delayed persistence", Mode: "observe"},
+		Pack:             envelope.ContextPack{ActiveMemory: []string{"claim://claim_aaaaaaaaaaaa"}},
+		RetrievalLatency: 4 * time.Millisecond,
+	}}
+
+	time.Sleep(20 * time.Millisecond)
+	recordLiveHookRetrieval(homePath, hookCommandArgs{Live: true, HookName: "session-start"}, res, cliTestNow)
+	rows, err := retrievalparity.LoadJournal(homePath)
+	if err != nil {
+		t.Fatalf("load retrieval journal: %v", err)
+	}
+	if len(rows) != 1 || rows[0].LatencyMS != 4 {
+		t.Fatalf("delayed journal row=%+v, want captured retrieval latency 4ms", rows)
 	}
 }
 

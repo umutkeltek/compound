@@ -68,6 +68,45 @@ func TestSessionStartProducesContract(t *testing.T) {
 	}
 }
 
+func TestContextObservationExcludesArtifactPersistenceLatency(t *testing.T) {
+	deps := baseDeps()
+	deps.HomePath = t.TempDir()
+	clockCalls := 0
+	deps.Now = func() time.Time {
+		clockCalls++
+		switch clockCalls {
+		case 1:
+			return fixedNow
+		case 2:
+			return fixedNow.Add(time.Millisecond)
+		case 3:
+			return fixedNow.Add(8 * time.Millisecond)
+		default:
+			return fixedNow.Add(10 * time.Millisecond)
+		}
+	}
+	persisted := false
+	deps.BeforeContextPersist = func() {
+		time.Sleep(20 * time.Millisecond)
+		persisted = true
+	}
+
+	started := time.Now()
+	res, err := Run(Fixture{
+		Hook: "session-start", Harness: "codex", Cwd: "/repo/x",
+		Task: "audit", RepoKind: "product", Live: true,
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !persisted || time.Since(started) < 20*time.Millisecond {
+		t.Fatal("test did not exercise delayed context artifact persistence")
+	}
+	if res.Context == nil || res.Context.RetrievalLatency != 7*time.Millisecond {
+		t.Fatalf("context observation=%+v, want retrieval_latency=7ms", res.Context)
+	}
+}
+
 func TestLiveContextInjectionTimeoutTripsBreaker(t *testing.T) {
 	homePath := t.TempDir()
 	deps := baseDeps()
