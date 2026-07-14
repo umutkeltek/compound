@@ -195,7 +195,12 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   <full-candidate-sha> --actor <lease-holder>` after local landing and after the normal push when
   publication is required. It certifies only the envelope-bound canonical worktree, local target
   ref, and remote-tracking publication ref; a feature worktree, second clone, or local-only main
-  cannot supply close proof.
+  cannot supply close proof. The §3 read-not-reconstruct rule applies to the `--tip` SHA too:
+  capture it from `git rev-parse` output THIS turn (`TIP=$(git rev-parse main)`), never expand a
+  short SHA from memory — a fabricated tip reads as `invalid_lineage` "recover candidate tip"
+  (caught live 2026-07-15: a hand-expanded tip tail sent land-check hunting a phantom commit;
+  the correct read SHA certified `landed` immediately). Attach the SAME captured variable as the
+  `commit:` artifact.
 - Close the WorkEnvelope through the governed path (`work close-plan` → `work close`) with
   proof refs, so Receipt + Transition exist for the landed change.
 - Update `docs_private/plan/HANDOFF.md` (when present / operator lane) with what landed, its
