@@ -23,6 +23,56 @@ gateway asks:   Given this request shape and policy, which provider/model/accoun
 If compound absorbs provider routing it becomes bloated and fragile. If the gateway absorbs
 memory/product/skill/taste it becomes a generic router pretending to understand the work. Both wrong.
 
+## The execution handshake
+
+A harness is not a model; a provider is not a transport; native inference effort is not orchestration; a route
+alias is not an observed model identity. Compound stores these axes independently and never derives one from
+another.
+
+`ExecutionProfile` is the Compound-owned semantic request. It carries role/capability class, harness requirements,
+privacy/risk, semantic effort, optional native-effort constraint, orchestration policy, candidate bounds, tools,
+permissions, and request/token/time/cost ceilings. It is a plan, not evidence that a call occurred. The read-only
+`compound route execution-profile` resolver proves profile coherence without contacting a provider or changing
+gateway/harness configuration.
+
+The gateway publishes a revisioned, non-secret conformance view: protocols, route aliases, provider/model
+resolution rules, supported native effort per adapter/protocol, cost/account classes, and catalog/adapter revision.
+Compound admits a profile only against a specific conformance revision. The gateway then returns observed route
+evidence bound to that request and revision:
+
+```text
+Compound: requested profile + PolicyDecision + reserved ceilings
+  → gateway: admitted route envelope + conformance revision
+  → harness/adapter: requested native controls
+  → gateway: resolved provider/model/account class + effective controls + attempts/fallbacks
+  → Compound: ExecutionRouteEvidence + Receipt cost/outcome reconciliation
+```
+
+Requested and effective values are both durable. A gateway may translate a semantic effort into a different
+harness-native value only when the profile allows that translation; the evidence records requested value,
+effective value, disposition, and reason. Unsupported explicit combinations fail before provider contact. Alias or
+adapter changes create a new revision and never rewrite historical plans.
+
+Children receive new profiles. They inherit ceilings—privacy, targets, tools, mutation classes, and remaining
+budget—but not provider, model, transport, account, native effort, or orchestration. Independent review is checked
+against observed provider/model identity, not different selector labels.
+
+Failure identity is part of the interface. Do not flatten these into `no eligible target` or an untyped 400:
+
+| Failure class | Meaning / next branch |
+|---|---|
+| `unsupported_combination` | selected harness/transport/model/effort cannot faithfully apply the request; choose an allowed translation or another profile |
+| `no_capable_target` | no candidate satisfies declared capabilities; change constraints or capability evidence |
+| `no_account_or_quota` | a capable route exists but no admitted account/capacity is available; wait, reserve, or select another economics class |
+| `circuit_open` | route is temporarily unhealthy; obey bounded retry/fallback policy |
+| `provider_rejected` | provider received and rejected the request; preserve provider status/reason without relabeling it as capability absence |
+| `transport_failed` | codec, relay, network, or persistence path failed before a trustworthy provider result |
+| `unknown_effective_parameters` | execution may have happened but the adapter cannot attest what actually ran; evidence remains non-deciding |
+
+The rollout order is conformance before enforcement: first prove the gateway's typed lane and requested/effective
+receipt; then let Compound profiles authorize one shadow consumer; then enforce one bounded real consumer. A good
+resolver or gateway doctor without that consumer is bench-only.
+
 ## Route evidence is a projection, not a verdict
 
 > A gateway `RouteDecision` is **execution-route evidence, NOT proof of task success.**
