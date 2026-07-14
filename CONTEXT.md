@@ -44,13 +44,56 @@ The recorded evidence that a task changed state or produced a result.
 Evidence-backed claims and positions that can be recalled later. Stored does not
 mean true; it means Compound has a claim with provenance.
 
+**Custody**
+The ability to recover an exact durable information body without depending on
+the place it originally came from. Custody preserves bytes and provenance; it
+does not make the body true or relevant.
+
+**Projection**
+A rebuildable form of owned information for a person or client, such as a note,
+dashboard, settings screen, harness file, or timeline. A projection can be
+edited, but it does not become a second authority.
+
+**Index**
+A replaceable search or ranking aid over owned references. An index can help
+find information; it cannot decide what is current, visible, or true.
+
+**Setting**
+An explicit, current choice that affects behavior within a named scope. A
+setting is versioned and explainable; it is not inferred from observed habits.
+
+**Preference**
+Something the user appears to or explicitly says they favor. An inferred
+preference remains a reviewable claim until the user accepts it as a setting.
+
+**Lifecycle intention**
+A behavior needed around a task or session—prepare context, guard a change,
+observe an outcome, preserve work, or close with proof—independent of the event
+names exposed by a particular harness.
+
+**Hook plan**
+A harness-specific projection of lifecycle intentions. It states which native
+event or fallback can realize each intention and makes unsupported behavior
+visible.
+
+**Execution profile**
+The semantic constraints for an execution: its role, capability, effort,
+privacy, permissions, and budget. It does not claim which provider, model, or
+account actually ran; observed execution evidence does that.
+
+**Retirement**
+The verified end of an old path's normal use after its information, consumers,
+writes, rollback, and negative controls have transferred. Retirement is not
+deletion.
+
 **Product loop**
 The path from outside-world signal to reviewed action and later outcome.
 
 **Private overlay**
 User data, private adapters, credentials, personal doctrine, local paths, and
 product-specific sources outside public core. Public Compound must work with
-synthetic fixtures without this overlay.
+synthetic fixtures without this overlay. The overlay configures ingress and
+secrets; it is not a second memory or truth owner.
 
 ## Design Distinctions
 
