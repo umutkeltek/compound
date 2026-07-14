@@ -567,6 +567,84 @@ func TestDeriveChildExecutionProfileExplicitZeroUSDNarrowsParent(t *testing.T) {
 	}
 }
 
+func TestResolveExecutionProfileCarriesValidatedPrivacyCeiling(t *testing.T) {
+	plan, err := ResolveExecutionProfile(ExecutionProfileIntent{
+		ProfileID:       "coding-implementation",
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+		PrivacyCeiling:  "sensitive",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.PrivacyCeiling != "sensitive" || plan.RequestedIntent.PrivacyCeiling != "sensitive" {
+		t.Fatalf("root privacy ceiling was not preserved: %+v", plan)
+	}
+
+	_, err = ResolveExecutionProfile(ExecutionProfileIntent{
+		ProfileID:       "coding-implementation",
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+		PrivacyCeiling:  "confidential",
+	})
+	if err == nil || !strings.Contains(err.Error(), "requested_intent.privacy_ceiling") {
+		t.Fatalf("invalid root privacy ceiling error = %v", err)
+	}
+}
+
+func TestDeriveChildExecutionProfileOnlyNarrowsPrivacyCeiling(t *testing.T) {
+	parent, err := ResolveExecutionProfile(ExecutionProfileIntent{
+		ProfileID:       "coding-implementation",
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+		PrivacyCeiling:  "private",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		privacy     string
+		wantPrivacy string
+		wantErr     bool
+	}{
+		{name: "omitted inherits", wantPrivacy: "private"},
+		{name: "equal is allowed", privacy: "private", wantPrivacy: "private"},
+		{name: "public narrows private", privacy: "public", wantPrivacy: "public"},
+		{name: "sensitive expands private", privacy: "sensitive", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			remaining := parent.Budget
+			plan, err := DeriveChildExecutionProfile(parent, ChildExecutionProfileIntent{
+				ClientHarnessID: "codex",
+				TransportID:     "native",
+				SemanticEffort:  "balanced",
+				NativeEffort:    "medium",
+				PrivacyCeiling:  tt.privacy,
+				RemainingBudget: &remaining,
+			})
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "child_intent.privacy_ceiling") {
+					t.Fatalf("privacy expansion error = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.PrivacyCeiling != tt.wantPrivacy {
+				t.Fatalf("child privacy = %q, want %q", plan.PrivacyCeiling, tt.wantPrivacy)
+			}
+			if !strings.Contains(strings.Join(plan.InheritedCeilings, "\n"), "privacy_ceiling") {
+				t.Fatalf("privacy ceiling absent from inherited ceilings: %v", plan.InheritedCeilings)
+			}
+		})
+	}
+}
+
 func TestExecutionProfilePlanIDPropagatesMarshalErrors(t *testing.T) {
 	_, err := executionProfilePlanID(ExecutionProfilePlan{
 		Budget: ExecutionBudget{MaxUSD: executionBudgetUSD(math.NaN())},
