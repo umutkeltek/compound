@@ -70,7 +70,7 @@ type PermissionRender struct {
 	Details    []string        `json:"details,omitempty"`
 }
 
-const permissionApplyPendingSchemaVersion = "compound.harness_permission_apply_pending.v0.1"
+const permissionApplyPendingSchemaVersion = "compound.harness_permission_apply_pending.v0.2"
 
 type permissionApplyPending struct {
 	SchemaVersion      string `json:"schema_version"`
@@ -368,6 +368,9 @@ func recoverPermissionApplyPending(homePath, harness string) error {
 	if pending.SchemaVersion != permissionApplyPendingSchemaVersion || pending.Harness != harness || strings.TrimSpace(pending.TargetPath) == "" {
 		return fmt.Errorf("pending permission apply transaction identity is invalid")
 	}
+	if pending.RecoveryName != "" && (filepath.Base(pending.RecoveryName) != pending.RecoveryName || !filepath.IsLocal(pending.RecoveryName)) {
+		return fmt.Errorf("pending permission apply recovery name must be a local leaf")
+	}
 	policyAuthority, sourceRevision, err := LoadPermissionAuthority(homePath, harness)
 	if err != nil {
 		return fmt.Errorf("validate pending permission apply authority: %w", err)
@@ -397,7 +400,12 @@ func recoverPermissionApplyPending(homePath, harness string) error {
 	}
 	if currentIsBefore {
 		if pending.RecoveryName != "" {
-			_ = os.Remove(filepath.Join(filepath.Dir(pending.TargetPath), pending.RecoveryName))
+			if err := os.Remove(filepath.Join(filepath.Dir(pending.TargetPath), pending.RecoveryName)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove unused permission target recovery entry: %w", err)
+			}
+			if err := syncPermissionParentDirectory(pending.TargetPath); err != nil {
+				return fmt.Errorf("sync unused permission target recovery removal: %w", err)
+			}
 		}
 		return removePermissionPending(path)
 	}
@@ -719,16 +727,6 @@ func WriteHarnessArtifactManifest(homePath string, artifacts []HarnessArtifact) 
 	return writePermissionFileAtomic(path, body.Bytes())
 }
 
-func restorePermissionPreimage(path string, body []byte, existed bool) error {
-	if existed {
-		return writePermissionFileAtomic(path, body)
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
 func writePermissionFileAtomic(path string, body []byte) error {
 	return writePermissionFileAtomicMode(path, body, 0o644)
 }
@@ -767,48 +765,6 @@ func writePermissionFileAtomicMode(path string, body []byte, defaultMode os.File
 	}
 	if err := temp.Close(); err != nil {
 		return err
-	}
-	return os.Rename(tempPath, path)
-}
-
-func writePermissionFileAtomicCAS(path string, body, expected []byte, expectedExisted bool) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	mode := os.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tempPath := temp.Name()
-	defer os.Remove(tempPath)
-	if err := temp.Chmod(mode); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if _, err := temp.Write(body); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	current, readErr := os.ReadFile(path)
-	currentExisted := readErr == nil
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return readErr
-	}
-	if currentExisted != expectedExisted || (currentExisted && !bytes.Equal(current, expected)) {
-		return fmt.Errorf("settings target %s changed during permission apply; refusing to overwrite concurrent state", path)
 	}
 	return os.Rename(tempPath, path)
 }

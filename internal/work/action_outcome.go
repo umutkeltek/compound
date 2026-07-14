@@ -194,8 +194,12 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if !explicitDecision {
 		changed = true
 	}
-	receiptID := idFor("rec_", "receipted-action", workID, action.ID, decisionID, outcome)
-	transitionID := idFor("tr_", "receipted-action", workID, action.ID, decisionID, outcome)
+	receiptID := idFor("rec_", "receipted-action", workID, action.ID, claimID)
+	transitionID := idFor("tr_", "receipted-action", workID, action.ID, claimID)
+	if explicitDecision {
+		receiptID = idFor("rec_", "receipted-action", workID, action.ID, decisionID, outcome)
+		transitionID = idFor("tr_", "receipted-action", workID, action.ID, decisionID, outcome)
+	}
 	decision := currentDecision
 	if !explicitDecision {
 		decision.ID = decisionID
