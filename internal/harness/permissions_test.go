@@ -170,6 +170,10 @@ func TestApplyPermissionsWritesManagedRulesAndArtifactIdempotently(t *testing.T)
 	if artifact.ContentSHA256 != first.Artifact.ContentSHA256 {
 		t.Fatalf("artifact sha = %q, want %q", artifact.ContentSHA256, first.Artifact.ContentSHA256)
 	}
+	manifestBefore, err := os.ReadFile(HarnessArtifactManifestPath(homePath))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	second, err := ApplyPermissions(homePath, "claude_code")
 	if err != nil {
@@ -177,6 +181,13 @@ func TestApplyPermissionsWritesManagedRulesAndArtifactIdempotently(t *testing.T)
 	}
 	if second.Changed {
 		t.Fatal("second apply changed = true, want idempotent false")
+	}
+	manifestAfter, err := os.ReadFile(HarnessArtifactManifestPath(homePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(manifestAfter, manifestBefore) {
+		t.Fatalf("second apply rewrote identical manifest:\n%s\n---\n%s", manifestBefore, manifestAfter)
 	}
 }
 
@@ -203,6 +214,62 @@ func TestApplyPermissionsRollsBackSettingsWhenArtifactManifestFails(t *testing.T
 	}
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("settings changed after manifest failure:\n%s\n---\n%s", before, after)
+	}
+}
+
+func TestApplyPermissionsInterruptedWriteIsVisibleAndRecovered(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	previousHook := applyPermissionsAfterTargetWrite
+	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
+	if _, err := ApplyPermissions(homePath, "claude_code"); err == nil {
+		t.Fatal("interrupted apply error = nil")
+	}
+	report, err := PermissionDrift(homePath, "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Drifted || !strings.Contains(strings.Join(report.Details, " "), "incomplete permission apply transaction") {
+		t.Fatalf("interrupted drift = %+v", report)
+	}
+
+	applyPermissionsAfterTargetWrite = previousHook
+	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
+	if _, err := ApplyPermissions(homePath, "claude_code"); err != nil {
+		t.Fatalf("recover apply: %v", err)
+	}
+	report, err = PermissionDrift(homePath, "claude_code")
+	if err != nil || report.Drifted {
+		t.Fatalf("drift after recovery = %+v err=%v", report, err)
+	}
+	if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); !os.IsNotExist(err) {
+		t.Fatalf("pending transaction remains after recovery: %v", err)
+	}
+}
+
+func TestApplyPermissionsRefusesConcurrentTargetChange(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	previousHook := applyPermissionsBeforeTargetCommit
+	applyPermissionsBeforeTargetCommit = func() {
+		writeTestJSON(t, targetPath, map[string]any{"theme": "manual-change"})
+	}
+	t.Cleanup(func() { applyPermissionsBeforeTargetCommit = previousHook })
+
+	if _, err := ApplyPermissions(homePath, "claude_code"); err == nil || !strings.Contains(err.Error(), "changed during permission apply") {
+		t.Fatalf("apply error = %v, want contention refusal", err)
+	}
+	body, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeTestJSON(t, body)["theme"]; got != "manual-change" {
+		t.Fatalf("concurrent edit overwritten: theme=%v", got)
+	}
+	if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); !os.IsNotExist(err) {
+		t.Fatalf("contention left pending transaction: %v", err)
 	}
 }
 
