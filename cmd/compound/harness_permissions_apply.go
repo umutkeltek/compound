@@ -1,9 +1,11 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -24,29 +26,27 @@ type harnessPermissionApplyReport struct {
 	ActionIntentID   string                  `json:"action_intent_id"`
 	PolicyDecisionID string                  `json:"policy_decision_id"`
 	PolicyOutcome    string                  `json:"policy_outcome"`
+	ReceiptID        string                  `json:"receipt_id"`
+	TransitionID     string                  `json:"transition_id"`
+	PreImageRef      string                  `json:"pre_image_ref"`
+	PostImageRef     string                  `json:"post_image_ref"`
 	Artifact         harness.HarnessArtifact `json:"artifact"`
 	Details          []string                `json:"details,omitempty"`
 }
+
+var applyHarnessPermissions = harness.ApplyPermissions
 
 func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.Time) int {
 	harnessName := strings.TrimSpace(flagValue(args, "--harness"))
 	workID := strings.TrimSpace(flagValue(args, "--work"))
 	actor := strings.TrimSpace(flagValue(args, "--actor"))
-	if harnessName == "" || workID == "" {
-		fmt.Fprintln(stderr, "usage: compound harness generate --harness <name> --apply --work <work_id> [--actor A] [--json]")
+	if harnessName == "" || workID == "" || actor == "" {
+		fmt.Fprintln(stderr, "usage: compound harness generate --harness <name> --apply --work <work_id> --actor <operator> [--json]")
 		return 2
-	}
-	if actor == "" {
-		actor = "operator"
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err, "(set COMPOUND_HOME)")
-		return 1
-	}
-	render, err := harness.RenderPermissions(homePath, harnessName)
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
 	store, err := work.Open(homePath)
@@ -54,10 +54,42 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	if _, err := store.Get(workID); err != nil {
+	w, err := store.Get(workID)
+	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	if w.State != "running" {
+		fmt.Fprintf(stderr, "refused: work %s is %s; permission apply requires running work\n", workID, w.State)
+		return 1
+	}
+	if !policy.HasOperatorProvenance(actor) {
+		fmt.Fprintf(stderr, "refused: --actor %q lacks operator provenance\n", actor)
+		return 1
+	}
+	leases, err := store.ListLeases()
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	leaseHolder := ""
+	for _, lease := range leases {
+		if lease.WorkID == workID {
+			leaseHolder = lease.By
+			break
+		}
+	}
+	if leaseHolder == "" || leaseHolder != actor {
+		fmt.Fprintf(stderr, "refused: --actor %q does not match work lease holder %q\n", actor, leaseHolder)
+		return 1
+	}
+	render, err := harness.RenderPermissions(homePath, harnessName)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	preImageRef := "sha256:" + permissionApplyDigest(render.Preimage)
+	approvedPostImageRef := render.Artifact.ContentSHA256
 	createdAt := now.UTC().Format(time.RFC3339Nano)
 	action := envelope.ActionIntent{
 		Header: envelope.Header{
@@ -69,14 +101,14 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 			Authority:     envelope.Authority{SourceClass: "runtime", Owner: "compound", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier1",
-			EvidenceRefs:  []string{render.Artifact.SourceAuthorityRef, render.Artifact.SourceRevision},
+			EvidenceRefs:  []string{render.Artifact.SourceAuthorityRef, render.Artifact.SourceRevision, preImageRef, approvedPostImageRef},
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
 		Actor:         actor,
 		Capability:    "harness.permissions.apply",
 		Action:        "reconcile_harness_permissions",
 		Target:        envelope.ActionTarget{Kind: "harness_settings", ID: harnessName, Path: render.TargetPath},
-		MutationClass: "local_reversible",
+		MutationClass: "security",
 		Reversibility: "easy",
 		BlastRadius:   "local",
 		Preview:       fmt.Sprintf("reconcile Compound-managed permissions for %s at %s", harnessName, render.TargetPath),
@@ -92,13 +124,43 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 		fmt.Fprintf(stderr, "refused: policy %s (%s)\n", decision.Outcome, strings.Join(decision.Reasons, "; "))
 		return 1
 	}
-	if _, err := store.RecordAction(workID, action, decision, now); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
+	applied, err := applyHarnessPermissions(homePath, render, action, decision)
+	if err != nil {
+		postImageRef := observedPermissionTargetRef(render.TargetPath, render.Preimage)
+		changed := postImageRef != preImageRef
+		filesChanged := []string{}
+		if changed {
+			filesChanged = []string{render.TargetPath}
+		}
+		outcome, recordErr := store.RecordReceiptedAction(workID, work.ReceiptedActionInput{
+			Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
+			Outcome: "failed", Changed: changed, Summary: "permission activation failed: " + err.Error(), MoveType: "control_plane_repair",
+			ProofRefs: []string{render.Artifact.SourceAuthorityRef, render.Artifact.SourceRevision}, BeforeRefs: []string{preImageRef}, AfterRefs: []string{postImageRef},
+			FilesChanged: filesChanged, FailureCause: &envelope.FailureCause{SurfaceOutcome: err.Error(), Mechanism: "governed permission activation failed after policy allowance"},
+		}, now)
+		if recordErr != nil {
+			fmt.Fprintf(stderr, "error: permission apply failed: %v; record failed outcome: %v\n", err, recordErr)
+			return 1
+		}
+		fmt.Fprintf(stderr, "error: permission apply failed and was receipted as %s/%s: %v\n", outcome.Receipt.ID, outcome.Transition.ID, err)
 		return 1
 	}
-	applied, err := harness.ApplyPermissions(homePath, harnessName)
+	postImageRef := applied.Artifact.ContentSHA256
+	receiptOutcome := "completed"
+	filesChanged := []string{}
+	if !applied.Changed {
+		receiptOutcome = "no_op"
+	} else {
+		filesChanged = []string{applied.TargetPath}
+	}
+	outcome, err := store.RecordReceiptedAction(workID, work.ReceiptedActionInput{
+		Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
+		Outcome: receiptOutcome, Changed: applied.Changed, Summary: "permission activation " + receiptOutcome, MoveType: "control_plane_repair",
+		ProofRefs: []string{applied.Artifact.SourceAuthorityRef, applied.Artifact.SourceRevision}, BeforeRefs: []string{preImageRef}, AfterRefs: []string{postImageRef},
+		FilesChanged: filesChanged,
+	}, now)
 	if err != nil {
-		fmt.Fprintln(stderr, "error: governed action recorded but permission apply failed:", err)
+		fmt.Fprintln(stderr, "error: permission activation published but outcome receipt failed:", err)
 		return 1
 	}
 	report := harnessPermissionApplyReport{
@@ -111,6 +173,10 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 		ActionIntentID:   action.ID,
 		PolicyDecisionID: decision.ID,
 		PolicyOutcome:    decision.Outcome,
+		ReceiptID:        outcome.Receipt.ID,
+		TransitionID:     outcome.Transition.ID,
+		PreImageRef:      preImageRef,
+		PostImageRef:     postImageRef,
 		Artifact:         applied.Artifact,
 		Details:          applied.Details,
 	}
@@ -128,6 +194,21 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 	fmt.Fprintf(stdout, "- work: %s\n", report.WorkID)
 	fmt.Fprintf(stdout, "- action_intent: %s\n", report.ActionIntentID)
 	fmt.Fprintf(stdout, "- policy: %s (%s)\n", report.PolicyOutcome, report.PolicyDecisionID)
+	fmt.Fprintf(stdout, "- receipt: %s\n", report.ReceiptID)
+	fmt.Fprintf(stdout, "- transition: %s\n", report.TransitionID)
 	fmt.Fprintf(stdout, "- content_sha256: %s\n", report.Artifact.ContentSHA256)
 	return 0
+}
+
+func permissionApplyDigest(body []byte) string {
+	digest := sha256.Sum256(body)
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func observedPermissionTargetRef(path string, fallback []byte) string {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		body = fallback
+	}
+	return "sha256:" + permissionApplyDigest(body)
 }

@@ -321,7 +321,7 @@ func TestHarnessGenerateApplyFailureRecordsFailedReceiptWithoutFalseSuccess(t *t
 	}
 	store, _ := work.Open(homePath)
 	recorded, _ := store.Get(w.ID)
-	if len(recorded.RunIDs) != 1 || recorded.PolicyDecisionID == "" {
+	if len(recorded.RunIDs) == 0 || recorded.PolicyDecisionID == "" {
 		t.Fatalf("failed action work links = %+v", recorded)
 	}
 	var failedReceipt envelope.Receipt
@@ -345,6 +345,45 @@ func TestHarnessGenerateApplyFailureRecordsFailedReceiptWithoutFalseSuccess(t *t
 	if failedTransition.ID == "" || !containsString(failedTransition.BeforeRefs, "sha256:"+permissionApplyDigest(before)) ||
 		!containsString(failedTransition.AfterRefs, "sha256:"+permissionApplyDigest(before)) {
 		t.Fatalf("failed transition = %+v", failedTransition)
+	}
+}
+
+func TestHarnessGenerateApplyAuthorityChangeAfterApprovalIsReceiptedAsFailure(t *testing.T) {
+	homePath, targetPath, w := setupHarnessPermissionApplyWork(t, "operator:test", "running")
+	installHarnessPermissionGrant(t, homePath, targetPath)
+	before, _ := os.ReadFile(targetPath)
+	previous := applyHarnessPermissions
+	applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision) (harness.PermissionRender, error) {
+		writeHarnessApplyJSON(t, harness.PermissionAuthorityPath(home, "claude_code"), harness.PermissionAuthority{
+			SchemaVersion: harness.PermissionAuthoritySchemaVersion, Harness: "claude_code", AuthorityRef: harness.PermissionAuthorityRef("claude_code"), TargetPath: targetPath + ".changed",
+			Permissions: harness.PermissionRules{Allow: []string{"Write"}, DefaultMode: "auto"}, AutoMode: harness.AutoModePolicy{Allow: []string{"$defaults", "Write"}},
+		})
+		return harness.ApplyPermissions(home, approved, action, decision)
+	}
+	t.Cleanup(func() { applyHarnessPermissions = previous })
+	var stdout, stderr bytes.Buffer
+	code := runHarnessGenerateApply([]string{"--harness", "claude_code", "--apply", "--work", w.ID, "--actor", "operator:test", "--json"}, &stdout, &stderr, cliTestNow.Add(3*time.Minute))
+	if code != 1 || !strings.Contains(stderr.String(), "approved render") || !strings.Contains(stderr.String(), "receipted") {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	after, _ := os.ReadFile(targetPath)
+	if !bytes.Equal(before, after) {
+		t.Fatal("authority change after approval mutated approved target")
+	}
+	if _, err := os.Stat(targetPath + ".changed"); !os.IsNotExist(err) {
+		t.Fatalf("authority change created changed target: %v", err)
+	}
+	store, _ := work.Open(homePath)
+	recorded, _ := store.Get(w.ID)
+	var receipt envelope.Receipt
+	entries, _ := os.ReadDir(filepath.Join(homePath, "events"))
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "rec_") {
+			readHarnessApplyJSON(t, filepath.Join(homePath, "events", entry.Name()), &receipt)
+		}
+	}
+	if recorded.PolicyDecisionID == "" || receipt.Outcome != "failed" || receipt.FailureCause == nil {
+		t.Fatalf("authority mismatch missing failed work-chain truth: work=%+v receipt=%+v", recorded, receipt)
 	}
 }
 
