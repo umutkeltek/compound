@@ -88,7 +88,7 @@ export function MemoryGraphPanel({
         ) : (
           <div className="rounded-md border border-dashed border-hair bg-page px-4 py-10 text-center text-sm text-muted">
             No entity or claim matches <code className="mono text-ink">{seed}</code>. Try a slug like{" "}
-            <code className="mono text-ink">umut-os</code> or a claim id.
+            <code className="mono text-ink">example-os</code> or a claim id.
           </div>
         )}
 

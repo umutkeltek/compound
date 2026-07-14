@@ -27,7 +27,7 @@ export function GraphSeedSearch({ initial }: { initial: string }) {
         value={q}
         onChange={(e) => setQ(e.target.value)}
         aria-label="Graph seed"
-        placeholder="seed: an entity slug (umut-os, knowledge:arxiv:…) or a claim id (cl_…)"
+        placeholder="seed: an entity slug (example-os, knowledge:arxiv:…) or a claim id (cl_…)"
         className="min-w-0 flex-1 rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
       />
       <Button type="submit" variant="primary">
