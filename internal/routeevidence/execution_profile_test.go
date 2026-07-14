@@ -307,7 +307,7 @@ func TestResolveExecutionProfileKeepsHarnessTransportAndModelDistinct(t *testing
 	}
 }
 
-func TestResolveExecutionProfileMiningIsBoundedAndCheckpointed(t *testing.T) {
+func TestResolveExecutionProfileMiningConstructsBoundedCheckpointedPlan(t *testing.T) {
 	plan, err := ResolveExecutionProfile(ExecutionProfileIntent{
 		ProfileID:       "mining-bulk",
 		ClientHarnessID: "codex",
@@ -326,6 +326,9 @@ func TestResolveExecutionProfileMiningIsBoundedAndCheckpointed(t *testing.T) {
 	}
 	if len(plan.Candidates) == 0 || plan.Candidates[0].ClientHarnessID != "codex" || plan.Candidates[0].TransportID != "switchback" {
 		t.Fatalf("mining plan lacks Codex/Switchback alternative: %+v", plan.Candidates)
+	}
+	if explanation := plan.Candidates[0].Explanation; !strings.Contains(explanation, "construction") || strings.Contains(explanation, "provider call") {
+		t.Fatalf("candidate explanation overclaims proof beyond construction: %q", explanation)
 	}
 }
 

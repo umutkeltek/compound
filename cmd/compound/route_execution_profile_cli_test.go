@@ -11,7 +11,7 @@ import (
 	"compound/internal/routeevidence"
 )
 
-func TestRouteExecutionProfileJSONIsStandaloneAndReadOnly(t *testing.T) {
+func TestRouteExecutionProfileJSONDoesNotCreateCOMPOUNDHOME(t *testing.T) {
 	missingHome := filepath.Join(t.TempDir(), "must-remain-absent")
 	t.Setenv("COMPOUND_HOME", missingHome)
 
@@ -28,7 +28,7 @@ func TestRouteExecutionProfileJSONIsStandaloneAndReadOnly(t *testing.T) {
 		})
 	})
 	if _, err := os.Stat(missingHome); !os.IsNotExist(err) {
-		t.Fatalf("read-only execution-profile command mutated COMPOUND_HOME: %v", err)
+		t.Fatalf("execution-profile command created COMPOUND_HOME: %v", err)
 	}
 
 	var plan routeevidence.ExecutionProfilePlan
