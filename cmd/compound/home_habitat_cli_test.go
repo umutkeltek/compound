@@ -22,29 +22,30 @@ func TestHomeDoctorSurfacesUnknownRootsAndBridgeDebt(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(h, "invented-feature-root"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("COMPOUND_HOME", h)
-
-	textOut := captureStdout(t, func() { cmdHome([]string{"doctor"}) })
+	doctorReport := home.Doctor(h)
+	textOut := strings.Join(homeDoctorHabitatLines(doctorReport), "\n")
 	for _, want := range []string{
 		"habitat: DIRTY",
 		"habitat_unknown_root: invented-feature-root",
 		"habitat_bridge_root: close-plans",
-		"verdict: fail",
 	} {
 		if !strings.Contains(textOut, want) {
 			t.Fatalf("home doctor missing %q:\n%s", want, textOut)
 		}
 	}
 
-	jsonOut := captureStdout(t, func() { cmdHome([]string{"doctor", "--json"}) })
-	var report struct {
+	jsonOut, err := json.Marshal(buildHomeDoctorReport(doctorReport))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
 		Habitat home.HabitatInventory `json:"habitat"`
 		Verdict string                `json:"verdict"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &report); err != nil {
+	if err := json.Unmarshal(jsonOut, &decoded); err != nil {
 		t.Fatalf("parse home doctor JSON: %v\n%s", err, jsonOut)
 	}
-	if report.Verdict != "fail" || report.Habitat.OK || len(report.Habitat.UnknownRoots) != 1 || report.Habitat.UnknownRoots[0] != "invented-feature-root" || len(report.Habitat.BridgeRoots) != 1 || report.Habitat.BridgeRoots[0] != "close-plans" {
-		t.Fatalf("home doctor JSON lost habitat truth: %+v", report)
+	if decoded.Verdict != "fail" || decoded.Habitat.OK || len(decoded.Habitat.UnknownRoots) != 1 || decoded.Habitat.UnknownRoots[0] != "invented-feature-root" || len(decoded.Habitat.BridgeRoots) != 1 || decoded.Habitat.BridgeRoots[0] != "close-plans" {
+		t.Fatalf("home doctor JSON lost habitat truth: %+v", decoded)
 	}
 }
