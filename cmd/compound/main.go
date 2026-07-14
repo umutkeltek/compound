@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,6 +187,8 @@ func main() {
 		cmdLensModulate(os.Args[2:])
 	case "act":
 		cmdAct(os.Args[2:])
+	case "capture":
+		cmdCapture(os.Args[2:])
 	case "land-lease":
 		cmdLandLease(os.Args[2:])
 	case "panel":
@@ -336,6 +339,7 @@ compound lens-modulate <arm|thresholds|modulate|revert> governed modulator: turn
 compound act repoint --target-path P --target-id KEY --value V --work W [--confirm] [--capability CAP] generic governed OUTBOUND write through the act seam (config-key repoint); dry-run unless --confirm; requires an allowing PolicyDecision; pre/post images + receipt land in $COMPOUND_HOME/events
 compound land-lease <acquire|release|status|steal> TTL-bounded single-holder landing mutex under $COMPOUND_HOME; steal records a reason + prior holder
 compound finding <record|list|show|doctor> direct-write home for durable operational findings (evidence-class, never ledger); doctor flags superseded/stale
+compound capture --source S [--text T] [--work W] | capture show <cid> gesture-fired capture front door: content-addressed body under observed/capture/ (never ledger), mints ONE observed-class proposed candidate (never auto-promotable); day-salted dedup
 compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
 compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hook install/drift, land-lease state, pending findings, placement guard mode; writes nothing
 compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/gofmt/diff/doctors/redact
@@ -4533,6 +4537,118 @@ func cmdFindingShow(args []string) {
 	}
 	fmt.Print("\n\n")
 	fmt.Println(f.Body)
+}
+
+const captureUsage = "usage: compound capture --source <label> [--text <body>] [--work <work_id>] | compound capture show <cid>"
+
+// cmdCapture is the top-level front door for claim_933958b8cad4
+// (compound.conversation_capture_posture): a gesture-fired text body (stdin or --text) becomes a
+// content-addressed blob under COMPOUND_HOME/observed/capture/ (never the ledger) plus exactly
+// ONE observed-class 'proposed' memory candidate carrying a bounded pointer. See
+// internal/mem/capture.go (Store.CaptureExhaust) for the write-door contract.
+func cmdCapture(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, captureUsage)
+		os.Exit(2)
+	}
+	if args[0] == "show" {
+		cmdCaptureShow(args[1:])
+		return
+	}
+	if hasUsageFlag(args) {
+		fmt.Println(captureUsage)
+		return
+	}
+	cmdCaptureRecord(args)
+}
+
+func cmdCaptureRecord(args []string) {
+	source := strings.TrimSpace(valueFlag(args, "--source"))
+	if source == "" {
+		fmt.Fprintln(os.Stderr, captureUsage)
+		os.Exit(2)
+	}
+	workID := valueFlag(args, "--work")
+
+	var body string
+	if hasFlag(args, "--text") {
+		body = valueFlag(args, "--text")
+	} else {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error: read stdin:", err)
+			os.Exit(1)
+		}
+		body = string(data)
+	}
+	if strings.TrimSpace(body) == "" {
+		fmt.Fprintln(os.Stderr, "error: capture body is empty")
+		fmt.Fprintln(os.Stderr, captureUsage)
+		os.Exit(2)
+	}
+
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	now := time.Now().UTC()
+	// Check candidate pre-existence BEFORE the write so the success line can distinguish a fresh
+	// mint from CaptureExhaust's skip-if-exists day-salted dedup, without CaptureExhaust itself
+	// needing to widen its settled (cid, pointer, err) return shape.
+	candID := mem.CaptureCandidateID(mem.ToolOutputCID([]byte(body)), now)
+	var existing mem.Candidate
+	preExisted := candidates.ReadCandidate(homePath, candidates.Memory, candID, &existing) == nil
+
+	cid, _, err := store.CaptureExhaust(source, workID, body, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	state := "proposed"
+	if preExisted {
+		state = "skipped-existing"
+	}
+	fmt.Printf("captured %s source=%s bytes=%d candidate=%s (%s)\n", cid, source, len(body), candID, state)
+}
+
+func cmdCaptureShow(args []string) {
+	cid := ""
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			cid = a
+			break
+		}
+	}
+	if strings.TrimSpace(cid) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound capture show <cid>")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	body, err := store.ReadCapture(cid)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if _, err := os.Stdout.Write(body); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 }
 
 func cmdPlacement(args []string) {
