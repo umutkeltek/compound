@@ -148,6 +148,72 @@ func List(homePath, filter string) ([]Finding, error) {
 	return out, nil
 }
 
+// FindingDigest is one finding in a lifecycle report — enough to identify and act on it without the
+// full body.
+type FindingDigest struct {
+	ID           string `json:"id"`
+	Topic        string `json:"topic"`
+	CreatedAt    string `json:"created_at"`
+	SupersededBy string `json:"superseded_by,omitempty"`
+	AgeDays      int    `json:"age_days,omitempty"`
+}
+
+// FindingReport is Doctor's read-only lifecycle view: how many findings exist, how many are live,
+// which are superseded (their id is named by a later finding's Supersedes), and which live findings
+// are stale (older than the age threshold). It NEVER promotes, archives, or deletes — visibility only,
+// so the direct-write home stays accountable without a second authority.
+type FindingReport struct {
+	Total      int             `json:"total"`
+	Live       int             `json:"live"`
+	StaleDays  int             `json:"stale_days"`
+	Superseded []FindingDigest `json:"superseded"`
+	Stale      []FindingDigest `json:"stale"`
+}
+
+// Doctor reports finding-home lifecycle hygiene: superseded records (an id named by a later finding's
+// Supersedes) and stale LIVE records (CreatedAt older than staleDays; staleDays<=0 disables the age
+// axis). It reads only — it never promotes, archives, or deletes. It deliberately does NOT report
+// "unreferenced": findings are referenced BY nothing inward by design (their EvidenceRefs point
+// outward), so an unreferenced axis would be fabricated noise rather than a real signal.
+func Doctor(homePath string, now time.Time, staleDays int) (FindingReport, error) {
+	all, err := List(homePath, "")
+	if err != nil {
+		return FindingReport{}, err
+	}
+	supersededBy := map[string]string{} // superseded id -> the finding id that revises it
+	for _, f := range all {
+		if s := strings.TrimSpace(f.Supersedes); s != "" {
+			supersededBy[s] = f.ID
+		}
+	}
+	rep := FindingReport{Total: len(all), StaleDays: staleDays}
+	for _, f := range all {
+		if by, ok := supersededBy[f.ID]; ok {
+			rep.Superseded = append(rep.Superseded, FindingDigest{ID: f.ID, Topic: f.Topic, CreatedAt: f.CreatedAt, SupersededBy: by})
+			continue
+		}
+		rep.Live++
+		if staleDays > 0 {
+			if age, ok := ageDays(f.CreatedAt, now); ok && age >= staleDays {
+				rep.Stale = append(rep.Stale, FindingDigest{ID: f.ID, Topic: f.Topic, CreatedAt: f.CreatedAt, AgeDays: age})
+			}
+		}
+	}
+	return rep, nil
+}
+
+func ageDays(createdAt string, now time.Time) (int, bool) {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(createdAt))
+	if err != nil {
+		return 0, false
+	}
+	d := now.Sub(t)
+	if d < 0 {
+		return 0, true
+	}
+	return int(d.Hours() / 24), true
+}
+
 // validID keeps a crafted id from escaping the findings dir (the id keys a filename).
 func validID(id string) error {
 	id = strings.TrimSpace(id)

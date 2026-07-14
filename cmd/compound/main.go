@@ -4355,8 +4355,9 @@ func validateKnownFlags(args []string, valueFlags, boolFlags map[string]bool) er
 }
 
 func cmdFinding(args []string) {
+	const usage = "usage: compound finding <record|list|show|doctor> ..."
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound finding <record|list|show> ...")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -4366,9 +4367,55 @@ func cmdFinding(args []string) {
 		cmdFindingList(args[1:])
 	case "show":
 		cmdFindingShow(args[1:])
+	case "doctor":
+		cmdFindingDoctor(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound finding <record|list|show> ...")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
+	}
+}
+
+// cmdFindingDoctor is the read-only lifecycle surface for the direct-write finding home: it flags
+// superseded records (an id revised by a later finding) and stale live records (older than
+// --stale-days), so the "junk drawer" risk of a convenient direct-write home stays visible. It never
+// promotes, archives, or deletes.
+func cmdFindingDoctor(args []string) {
+	jsonOut := hasFlag(args, "--json")
+	staleDays := 0
+	if v := strings.TrimSpace(valueFlag(args, "--stale-days")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			fmt.Fprintln(os.Stderr, "error: --stale-days must be a non-negative integer")
+			os.Exit(2)
+		}
+		staleDays = n
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	rep, err := finding.Doctor(homePath, time.Now().UTC(), staleDays)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(rep)
+		return
+	}
+	fmt.Printf("# finding doctor: %d total (%d live, %d superseded)\n", rep.Total, rep.Live, len(rep.Superseded))
+	for _, d := range rep.Superseded {
+		fmt.Printf("- superseded %s topic=%q by=%s\n", d.ID, d.Topic, d.SupersededBy)
+	}
+	if rep.StaleDays > 0 {
+		fmt.Printf("# stale live findings (>= %d days)\n", rep.StaleDays)
+		if len(rep.Stale) == 0 {
+			fmt.Println("- none")
+		}
+		for _, d := range rep.Stale {
+			fmt.Printf("- stale %s topic=%q age=%dd\n", d.ID, d.Topic, d.AgeDays)
+		}
 	}
 }
 
