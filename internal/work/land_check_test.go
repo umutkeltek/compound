@@ -1,6 +1,7 @@
 package work
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -395,6 +396,46 @@ func TestRecordedLandCheckContentIsTamperEvident(t *testing.T) {
 				t.Fatalf("tampered %s close err = %v", tc.name, err)
 			}
 		})
+	}
+}
+
+func TestLegacyLandCheckV03RequiresFreshCheckWithoutTamperAccusation(t *testing.T) {
+	// Frozen output from the v0.3 sealer before repository_fingerprint entered
+	// LandCheckReport. Its digest is valid for that historical payload shape.
+	const legacyJSON = `{"schema_version":"compound.work_land_check.v0.3","id":"landcheck_305a66dfcdec","generated_at":"2026-07-13T22:00:00Z","work_id":"work_legacy_landcheck","status":"landed","repo_path":"/repo/product","candidate_tip_sha":"1111111111111111111111111111111111111111","candidate_artifact_ref":"commit:1111111111111111111111111111111111111111","attached_candidate_tip_sha":"1111111111111111111111111111111111111111","expected_base_sha":"0000000000000000000000000000000000000000","target_ref":"main","target_branch_ref":"refs/heads/main","target_sha":"1111111111111111111111111111111111111111","publication_mode":"local_only","candidate_exists":true,"expected_base_exists":true,"clean_target":true,"target_branch_worktree":true,"expected_base_ancestor_of_candidate":true,"target_ancestor_of_candidate":true,"candidate_contained_in_target":true,"candidate_contained_in_publication":true,"content_sha256":"305a66dfcdecdedab0e88c8b48143412b0ad58d8f95e17dc75c8f21c20658c11","recorded":true,"evidence_ref":"land-check:landcheck_305a66dfcdec","proof_path":"/compound/home/work/land-checks/landcheck_305a66dfcdec.json"}`
+	var legacy LandCheckReport
+	if err := json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	w := envelope.WorkEnvelope{
+		Header: newHeader(envelope.SVWork, legacy.WorkID, time.Date(2026, 7, 13, 21, 0, 0, 0, time.UTC), "", "", "private", "tier1"),
+		Owner:  "codex", State: "verifying", SuccessPredicate: "fresh repository identity proof is required",
+		GitDelivery: &envelope.GitDeliveryContract{
+			TargetWorktreeRoot: "/repo/product", RepositoryFingerprint: strings.Repeat("a", 64), TargetLocalRef: "refs/heads/main",
+			ExpectedBaseSHA: strings.Repeat("0", 40), PublicationMode: "local_only",
+		},
+		ArtifactIDs: []string{"commit:" + strings.Repeat("1", 40)},
+	}
+	err := validateRecordedLandCheck(w, legacy.EvidenceRef, legacy.ID, legacy.ProofPath, legacy)
+	if err == nil {
+		t.Fatal("legacy v0.3 land-check unexpectedly satisfied current close proof")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "legacy") || !strings.Contains(message, "fresh") || !strings.Contains(message, "v0.4") {
+		t.Fatalf("legacy land-check classification = %v", err)
+	}
+	if strings.Contains(message, "content digest") || strings.Contains(message, "modified after recording") || strings.Contains(message, "tamper") {
+		t.Fatalf("valid historical v0.3 proof was falsely accused of tampering: %v", err)
+	}
+}
+
+func TestRepositoryFingerprintLandCheckUsesV04Schema(t *testing.T) {
+	fixture := newLandingProofFixture(t, time.Date(2026, 7, 14, 6, 0, 0, 0, time.UTC))
+	if fixture.proof.SchemaVersion != "compound.work_land_check.v0.4" {
+		t.Fatalf("repository fingerprint changed sealed land-check content without a schema bump: %s", fixture.proof.SchemaVersion)
+	}
+	if fixture.proof.RepositoryFingerprint == "" {
+		t.Fatal("v0.4 land-check did not seal repository fingerprint")
 	}
 }
 
