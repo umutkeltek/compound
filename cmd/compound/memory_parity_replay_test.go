@@ -316,6 +316,55 @@ func TestRetrievalJournalCLIAndBestEffortFailure(t *testing.T) {
 	t.Logf("f3 journal_rows=%d consumers=%v best_effort_stdout_equal=%t warnings=1", len(rows), []string{retrievalparity.ConsumerOrient, retrievalparity.ConsumerQuery}, brokenQueryOut == healthyQueryOut)
 }
 
+func TestRecallFailureJournalsUnavailableObservationBeforeExit(t *testing.T) {
+	homePath := newParityTestHome(t, time.Now().UTC())
+	query := "synthetic recall failure marker"
+	claimsPath := filepath.Join(homePath, "ledger", "claims.jsonl")
+	if err := os.WriteFile(claimsPath, []byte("not-json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exitCode, output := runParityFailureCLI(t, homePath, retrievalparity.ConsumerRecall, query)
+	if exitCode != 1 || !strings.Contains(output, "error:") {
+		t.Fatalf("recall failure exit=%d output=%q, want existing exit 1 and error output", exitCode, output)
+	}
+	assertUnavailableParityRow(t, homePath, retrievalparity.ConsumerRecall, query)
+}
+
+func TestSearchFailureJournalsUnavailableObservationBeforeExit(t *testing.T) {
+	homePath := newParityTestHome(t, time.Now().UTC())
+	query := "synthetic corpus failure marker"
+	configPath := memoryEngineConfigPath(homePath)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `schema_version: compound.memory_engine_config.v0.1
+corpus_lanes:
+  - lane: corpus-fixture
+    source_family: synthetic_import
+    privacy: private
+    embedder:
+      provider: ollama
+      model: fixture-embed
+      dims: 3
+      bits: f32
+    chunk:
+      unit: runes
+      size: 64
+      overlap: 8
+      boundary: structure
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exitCode, output := runParityFailureCLI(t, homePath, retrievalparity.ConsumerSearch, query)
+	if exitCode != 1 || !strings.Contains(output, "memory search:") {
+		t.Fatalf("search failure exit=%d output=%q, want existing exit 1 and error output", exitCode, output)
+	}
+	assertUnavailableParityRow(t, homePath, retrievalparity.ConsumerSearch, query)
+}
+
 func TestParityReportPrivacy(t *testing.T) {
 	now := time.Now().UTC()
 	homePath := newParityTestHome(t, now)
@@ -1380,6 +1429,41 @@ func runParityReplayCLI(t *testing.T, homePath, fixturePath, consumer string) (i
 		t.Fatalf("parse parity CLI report (exit=%d): %v\n%s", exitCode, jsonErr, out)
 	}
 	return exitCode, report
+}
+
+func runParityFailureCLI(t *testing.T, homePath, consumer, query string) (int, string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestParityFailureCLIHelper$")
+	cmd.Env = parityTestEnv(os.Environ(), map[string]string{
+		parityFailureHelperEnv:    consumer,
+		parityFailureHelperQuery:  query,
+		"COMPOUND_HOME":           homePath,
+		"COMPOUND_MEM_ENGINE_BIN": "",
+	})
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return 0, string(out)
+	}
+	var exitErr *exec.ExitError
+	if !asExitError(err, &exitErr) {
+		t.Fatalf("run parity failure helper: %v\n%s", err, out)
+	}
+	return exitErr.ExitCode(), string(out)
+}
+
+func assertUnavailableParityRow(t *testing.T, homePath, consumer, query string) {
+	t.Helper()
+	rows, err := retrievalparity.LoadJournal(homePath)
+	if err != nil {
+		t.Fatalf("load failure journal: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("failure journal rows=%d, want 1: %+v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.Consumer != consumer || row.Query != query || row.EngineAvailable || len(row.ResultRefs) != 0 || row.ResultCount != 0 {
+		t.Fatalf("failure journal row=%+v, want unavailable %s observation with zero refs", row, consumer)
+	}
 }
 
 func asExitError(err error, target **exec.ExitError) bool {
