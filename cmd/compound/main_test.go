@@ -3696,7 +3696,7 @@ func TestWorkDispatchClaimCommandClaimsSelectedWork(t *testing.T) {
 		t.Fatalf("create work: %v", err)
 	}
 	out := captureStdout(t, func() {
-		cmdWork([]string{"dispatch-claim", "--next", "--actor", "codex", "--json"})
+		cmdWork([]string{"dispatch-claim", "--next", "--confirm", "--actor", "codex", "--json"})
 	})
 	start := strings.Index(out, "{")
 	if start < 0 {
@@ -3746,7 +3746,7 @@ func TestWorkDispatchClaimCommandClaimsExplicitWork(t *testing.T) {
 		t.Fatalf("create second work: %v", err)
 	}
 	out := captureStdout(t, func() {
-		cmdWork([]string{"dispatch-claim", second.ID, "--actor", "codex", "--json"})
+		cmdWork([]string{"dispatch-claim", second.ID, "--confirm", "--actor", "codex", "--json"})
 	})
 	start := strings.Index(out, "{")
 	if start < 0 {
@@ -3768,8 +3768,9 @@ func TestWorkDispatchClaimCommandClaimsExplicitWork(t *testing.T) {
 	}
 }
 
-func TestWorkDispatchClaimCommandRequiresExplicitNextOrWorkID(t *testing.T) {
-	if os.Getenv(workCLIBoundarySubEnv) == "dispatch-claim" {
+func TestWorkDispatchClaimCommandArglessPreviewsWithoutClaiming(t *testing.T) {
+	if os.Getenv(workCLIBoundarySubEnv) == "dispatch-claim-preview" {
+		work.LaneCapacityGuard = nil
 		cmdWork([]string{"dispatch-claim", "--actor", "codex", "--json"})
 		return
 	}
@@ -3777,18 +3778,37 @@ func TestWorkDispatchClaimCommandRequiresExplicitNextOrWorkID(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkDispatchClaimCommandRequiresExplicitNextOrWorkID$")
-	cmd.Env = append(os.Environ(), workCLIBoundarySubEnv+"=dispatch-claim", "COMPOUND_HOME="+homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "argless preview does not claim"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkDispatchClaimCommandArglessPreviewsWithoutClaiming$")
+	cmd.Env = append(os.Environ(), workCLIBoundarySubEnv+"=dispatch-claim-preview", "COMPOUND_HOME="+homePath)
 	output, err := cmd.CombinedOutput()
 	exitErr, ok := err.(*exec.ExitError)
 	if !ok {
-		t.Fatalf("dispatch-claim should exit non-zero, got err=%v output=%s", err, output)
+		t.Fatalf("unconfirmed dispatch-claim should exit non-zero, got err=%v output=%s", err, output)
 	}
-	if exitErr.ExitCode() != 2 {
-		t.Fatalf("dispatch-claim should exit 2, got %d output=%s", exitErr.ExitCode(), output)
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("unconfirmed dispatch-claim should exit 1, got %d output=%s", exitErr.ExitCode(), output)
 	}
-	if !strings.Contains(string(output), "requires --next or <work_id>") {
-		t.Fatalf("dispatch-claim usage did not explain explicit target requirement:\n%s", output)
+	var preview work.DispatchPlan
+	if err := json.Unmarshal(output, &preview); err != nil {
+		t.Fatalf("decode dispatch preview: %v\n%s", err, output)
+	}
+	if preview.Selected == nil || preview.Selected.WorkID != ready.ID {
+		t.Fatalf("argless preview selected %+v, want %s", preview.Selected, ready.ID)
+	}
+	after, err := store.Get(ready.ID)
+	if err != nil {
+		t.Fatalf("get work after preview: %v", err)
+	}
+	if after.State != "ready" {
+		t.Fatalf("argless preview changed work state to %s", after.State)
 	}
 }
 
