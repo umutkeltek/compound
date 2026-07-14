@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/finding"
 	"compound/internal/home"
 	"compound/internal/policy"
 )
@@ -45,6 +46,75 @@ func recordEnvelope(home, id string, v any) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, id+".json"), append(b, '\n'), 0o644)
+}
+
+// recordEnvelopeFn indirects recordEnvelope so a test can force the post-write persistence failure
+// (the F2 rollback / F3 recovery-finding paths) that the real filesystem will not produce once
+// preflight has proven the event store writable. It is unexported and swapped ONLY in tests; the
+// production path always calls the real recordEnvelope.
+var recordEnvelopeFn = recordEnvelope
+
+// preflightEventStore proves the home's canonical event store is writable BEFORE any target
+// mutation, by ensuring home/events exists and round-tripping a uniquely-named probe file. It
+// converts the common post-write persistence failures (a missing or unwritable events dir) into a
+// pre-write abort, so a governed write cannot leave a mutated-but-unreceipted target. A leftover
+// probe cleanup error is non-fatal: writability is already proven, and the probe name never ends in
+// ".json" so the event readers ignore it.
+func preflightEventStore(homePath string) error {
+	if strings.TrimSpace(homePath) == "" {
+		return fmt.Errorf("act: cannot preflight event store without a home")
+	}
+	dir := filepath.Join(homePath, "events")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("act: event store not writable: %w", err)
+	}
+	probe, err := os.CreateTemp(dir, ".act-preflight-*")
+	if err != nil {
+		return fmt.Errorf("act: event store not writable: %w", err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return nil
+}
+
+// afterWriteFailure handles any failure that occurs AFTER a successful adapter.write: it attempts a
+// best-effort rollback to the captured pre-image, and if that ALSO fails records a durable
+// act-recovery finding so an unreceipted, un-rolled-back mutation is never silent.
+//
+// The rollback is a DIRECT adapter.write of the pre-image inside THIS admitted action's failure
+// path. The original PolicyDecision that authorized the forward write already covers restoring that
+// write's own pre-image, so this is NOT a new governed act (it is deliberately not re-gated): it is
+// the obligation-bound cleanup of the mutation we just performed under that decision.
+func afterWriteFailure(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, preRef, postRef string, pre []byte, cause error, now time.Time) error {
+	if rbErr := adapter.write(ai.Target, pre); rbErr != nil {
+		return recordRecoveryFinding(store.Home(), ai, preRef, postRef, cause, rbErr, now)
+	}
+	return fmt.Errorf("act: %w — target rolled back to pre-image %s", cause, preRef)
+}
+
+// recordRecoveryFinding lands a durable, operator-visible act-recovery marker when a governed write
+// could neither be receipted NOR rolled back — the manual-recovery case. The finding is
+// evidence-class (never a ledger byte) and is surfaced by compound doctor's finding counts for
+// free. If even the finding cannot be persisted, the returned error itself carries the pre-image
+// ref and both error chains, so the manual-recovery material is never swallowed.
+func recordRecoveryFinding(homePath string, ai envelope.ActionIntent, preRef, postRef string, cause, rbErr error, now time.Time) error {
+	body := fmt.Sprintf(
+		"governed outbound write left UNRECEIPTED and rollback FAILED — manual recovery required.\n"+
+			"action_intent: %s\ntarget_kind: %s\ntarget_id: %s\ntarget_path: %s\n"+
+			"pre_image_ref: %s\npost_image_ref: %s\npersistence_error: %v\nrollback_error: %v\n",
+		ai.ID, ai.Target.Kind, ai.Target.ID, ai.Target.Path, preRef, postRef, cause, rbErr)
+	rec, ferr := finding.Record(homePath, finding.Finding{
+		Topic:        "act-recovery/" + strings.TrimSpace(ai.Target.Kind),
+		Body:         body,
+		ProducedBy:   "internal/act",
+		WorkID:       ai.IDs.WorkID,
+		EvidenceRefs: []string{preRef},
+	}, now)
+	if ferr != nil {
+		return fmt.Errorf("act: write persistence FAILED (%v), rollback FAILED (%v), AND recovery finding could not be recorded (%v) — target left mutated; pre-image ref %s; MANUAL RECOVERY REQUIRED", cause, rbErr, ferr, preRef)
+	}
+	return fmt.Errorf("act: write persistence FAILED (%v) and rollback FAILED (%v) — recorded recovery finding %s (pre-image ref %s); MANUAL RECOVERY REQUIRED", cause, rbErr, rec.ID, preRef)
 }
 
 // Result is the receipted outcome of one governed outbound write.
@@ -84,6 +154,13 @@ func Execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd
 		return Result{}, err
 	}
 
+	// PREFLIGHT before any mutation: prove the canonical event store is writable, so a persistence
+	// failure that would otherwise strand a mutated-but-unreceipted target becomes a pre-write abort.
+	// On failure the target is byte-identical — the adapter was never touched.
+	if err := preflightEventStore(store.Home()); err != nil {
+		return Result{}, err
+	}
+
 	pre, err := adapter.ReadCurrent(ai.Target)
 	if err != nil {
 		return Result{}, fmt.Errorf("act: capture pre-image: %w", err)
@@ -97,31 +174,35 @@ func Execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd
 		return Result{}, fmt.Errorf("act: write: %w", err)
 	}
 
+	// From here the target is MUTATED. Every failure below is routed through afterWriteFailure, which
+	// rolls the target back to the pre-image (or, if rollback also fails, lands a durable recovery
+	// finding) — so no path returns an error with the target left silently mutated and unreceipted.
 	post, err := adapter.ReadCurrent(ai.Target)
 	if err != nil {
-		return Result{}, fmt.Errorf("act: read-back post-image: %w", err)
+		return Result{}, afterWriteFailure(store, adapter, ai, preRef, "", pre, fmt.Errorf("act: read-back post-image: %w", err), now)
 	}
 	postRef, err := store.Put(post)
 	if err != nil {
-		return Result{}, fmt.Errorf("act: store post-image: %w", err)
+		return Result{}, afterWriteFailure(store, adapter, ai, preRef, "", pre, fmt.Errorf("act: store post-image: %w", err), now)
 	}
 
 	receipt, transition := receiptAndTransition(ai, preRef, postRef, pre, post, now)
 	if err := receipt.Validate(); err != nil {
-		return Result{}, fmt.Errorf("act: emitted receipt invalid: %w", err)
+		return Result{}, afterWriteFailure(store, adapter, ai, preRef, postRef, pre, fmt.Errorf("act: emitted receipt invalid: %w", err), now)
 	}
 	if err := transition.Validate(); err != nil {
-		return Result{}, fmt.Errorf("act: emitted transition invalid: %w", err)
+		return Result{}, afterWriteFailure(store, adapter, ai, preRef, postRef, pre, fmt.Errorf("act: emitted transition invalid: %w", err), now)
 	}
 	// RECORD the receipt and transition to the home's canonical event store, so the returned
 	// ids are resolvable envelope files the event readers (executorlens, eventsource, capgraph,
 	// distiller) can see — not a dangling in-memory reference. A governed write that cannot be
-	// recorded is a failed governed write, so a persistence error surfaces here.
-	if err := recordEnvelope(store.Home(), receipt.ID, &receipt); err != nil {
-		return Result{}, fmt.Errorf("act: record receipt %s: %w", receipt.ID, err)
+	// recorded is a failed governed write; preflight makes this near-impossible, but if it still
+	// fails the target is rolled back rather than left mutated-but-unreceipted.
+	if err := recordEnvelopeFn(store.Home(), receipt.ID, &receipt); err != nil {
+		return Result{}, afterWriteFailure(store, adapter, ai, preRef, postRef, pre, fmt.Errorf("act: record receipt %s: %w", receipt.ID, err), now)
 	}
-	if err := recordEnvelope(store.Home(), transition.ID, &transition); err != nil {
-		return Result{}, fmt.Errorf("act: record transition %s: %w", transition.ID, err)
+	if err := recordEnvelopeFn(store.Home(), transition.ID, &transition); err != nil {
+		return Result{}, afterWriteFailure(store, adapter, ai, preRef, postRef, pre, fmt.Errorf("act: record transition %s: %w", transition.ID, err), now)
 	}
 	return Result{
 		Receipt:      receipt,
