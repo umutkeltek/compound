@@ -902,7 +902,7 @@ func osAdaptationSteeringOffer(in Input) (envelope.CapabilityOffer, envelope.Sou
 			{
 				Kind:       "trigger",
 				Ref:        "context://old-system-adaptation-task",
-				Detail:     "load only when a control-plane task explicitly adapts, migrates, ports, or translates old operating-system, umut-os, brain, skill, hook, registry, or instruction material into Compound",
+				Detail:     "load only when a control-plane task explicitly adapts, migrates, ports, or translates old operating-system, brain, skill, hook, registry, or instruction material into Compound",
 				Confidence: 1,
 			},
 			{
@@ -1072,7 +1072,7 @@ func shouldOfferOSAdaptationSteering(in Input) bool {
 		return false
 	}
 	task := strings.ToLower(in.Task)
-	if !containsAny(task, []string{"umut-os", "operating-system", "old os", "old operating", "legacy os", "brain"}) {
+	if !containsAny(task, []string{"operating-system", "old os", "old operating", "legacy os", "brain"}) {
 		return false
 	}
 	return containsAny(task, []string{

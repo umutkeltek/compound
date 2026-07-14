@@ -74,9 +74,9 @@ const (
 	// projected Status says "operator_approval_frontier_failed" — ownership
 	// and health are different axes).
 	osAbsorptionProofModeRegistryOwnership = "registry_ownership_authority"
-	// osAbsorptionProofModeEventSource proves an events_dir row (the umut-os
-	// events/ directory): every live .ndjson file under source_ref (README.md
-	// and any non-.ndjson file excluded) has at least one
+	// osAbsorptionProofModeEventSource proves an events_dir row (an absorbed
+	// operating system's events/ directory): every live .ndjson file under
+	// source_ref (README.md and any non-.ndjson file excluded) has at least one
 	// compound/internal/eventsource source-authority record, the highest
 	// historical Imported+Skipped total ever recorded for that file covers its
 	// CURRENT non-blank line count (a file that grew since the last `event

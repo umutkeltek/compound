@@ -57,8 +57,9 @@ type workbenchCLIOutput struct {
 // from review-artifact status anymore — it is overwritten with the attention
 // projection's needs_you count (internal/attention) so this surface never
 // disagrees with `compound attention`. The JSON field name stays stable for
-// existing consumers (e.g. the umut-os session-start digest hook reads
-// workbench.review_queue.counts.review_required); only its source changed.
+// existing consumers (e.g. an absorbed operating system's session-start
+// digest hook reads workbench.review_queue.counts.review_required); only
+// its source changed.
 // BlockedOnYou is additive detail from the same projection, never a
 // different total. If the attention projection's inputs cannot be read,
 // AttentionUnavailable is set and Counts.ReviewRequired keeps the last-known

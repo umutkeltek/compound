@@ -2,14 +2,15 @@
 /**
  * skill_surfacing_feedback_bridge.ts — compound-native door for skill surfacing feedback.
  *
- * Replaces the umut-os skill_surfacing_detector.ts *import path* (not the optional LLM batch
+ * Replaces an external skill_surfacing_detector.ts *import path* (not the optional LLM batch
  * body): normalizes feedback reports into the shape consumed by
  *   compound capability import-surfacing-misses <file>
- * and writes under COMPOUND_HOME/reviews/skill-surfacing/ (compound-owned, never ~/brain).
+ * and writes under COMPOUND_HOME/reviews/skill-surfacing/ (compound-owned, never an external
+ * personal notes tree).
  *
  * Propose-only: never mutates CapabilityGraph by itself — import-surfacing-misses does.
  *
- *   bun tools/skill_surfacing_feedback_bridge.ts [--from-proposals PATH] [--out PATH]
+ *   bun tools/skill_surfacing_feedback_bridge.ts --from-proposals PATH [--out PATH]
  *   bun tools/skill_surfacing_feedback_bridge.ts --from-usage
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -19,10 +20,6 @@ import { spawnSync } from "node:child_process";
 
 const HOME = process.env.COMPOUND_HOME?.trim() || join(homedir(), ".compound");
 const DEFAULT_OUT_DIR = join(HOME, "reviews", "skill-surfacing");
-const DEFAULT_UMUT_PROPOSALS = join(
-  homedir(),
-  "Projects/operating-system/umut-os/state/skill-surfacing-proposals.json",
-);
 
 function arg(name: string, fallback = ""): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -135,7 +132,7 @@ function fromUsage(): Entry[] {
 }
 
 function main() {
-  const fromPath = arg("from-proposals", has("from-usage") ? "" : DEFAULT_UMUT_PROPOSALS);
+  const fromPath = arg("from-proposals", "");
   const useUsage = has("from-usage") || !fromPath;
   const outPath =
     arg("out") ||

@@ -1,8 +1,9 @@
 // system_status.go — the system-status projection (W5 J4).
 //
 // A rebuildable, READ-ONLY fold of the existing owned authorities into ONE
-// status report so the legacy `os status` reader (umut-os/exec-lane/os.ts) can
-// become a passthrough over `compound://projections/system-status` (W5 J8) and
+// status report so the legacy `os status` reader (an absorbed operating
+// system's exec-lane/os.ts) can become a passthrough over
+// `compound://projections/system-status` (W5 J8) and
 // the console home-briefing can consume the SAME projection (W5 G2 — one
 // projection, not two).
 //

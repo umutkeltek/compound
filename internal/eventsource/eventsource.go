@@ -108,9 +108,10 @@ type osEvent struct {
 	Project         string         `json:"project"`
 	Artifact        string         `json:"artifact"`
 	Actor           string         `json:"actor"`
-	// agent-run stream shape (umut-os/events/agent-runs.ndjson): identity is
-	// task_id, timestamp is started_at, class is task_class, evidence is a
-	// string (or []string) ref list rather than {kind,value} objects.
+	// agent-run stream shape (an absorbed operating system's
+	// events/agent-runs.ndjson): identity is task_id, timestamp is
+	// started_at, class is task_class, evidence is a string (or []string)
+	// ref list rather than {kind,value} objects.
 	TaskID          string `json:"task_id"`
 	StartedAt       string `json:"started_at"`
 	TaskClass       string `json:"task_class"`
@@ -605,7 +606,8 @@ func LoadAuthority(homePath string, recentLimit int) (AuthorityReport, error) {
 // (stream + append-only source path/line) so a reader can drill from compound
 // straight back to the exact line in the append-only OS event stream. This is
 // the read that lets the source stream retire to evidence: historical event
-// reads are served from COMPOUND_HOME, not the umut-os stream.
+// reads are served from COMPOUND_HOME, not the absorbed operating system's
+// stream.
 type TraceDetail struct {
 	SchemaVersion string                 `json:"schema_version"`
 	Status        string                 `json:"status"`

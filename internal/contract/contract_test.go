@@ -304,7 +304,7 @@ func TestPackWithCapabilitiesOffersOSAdaptationSteeringForControlPlaneTask(t *te
 	in := Input{
 		Harness:     "codex",
 		Cwd:         repo,
-		Task:        "adapt one umut-os capability into Compound context-aware authority",
+		Task:        "adapt one operating-system capability into Compound context-aware authority",
 		RepoKind:    "control-plane",
 		RepoKindVia: "flag",
 		Mode:        "execute",
@@ -374,7 +374,7 @@ func TestPackWithCapabilitiesOSAdaptationSteeringStaysSilentForProductContext(t 
 	in := Input{
 		Harness:     "codex",
 		Cwd:         repo,
-		Task:        "adapt one umut-os capability into Compound context-aware authority",
+		Task:        "adapt one operating-system capability into Compound context-aware authority",
 		RepoKind:    "product",
 		RepoKindVia: "flag",
 		Mode:        "execute",
