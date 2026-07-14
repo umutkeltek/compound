@@ -58,15 +58,28 @@ func TestSourceManifestLifecycleRejectsAssertionShapedHighRiskProofs(t *testing.
 		SourceLifecycleGateRealConsumerReplay,
 		SourceLifecycleGateLegacyUnavailableNegativeControl,
 	)
-	assertLifecycleAdvanceFailsUnchanged(
-		t,
-		homePath,
-		family,
-		SourceLifecycleVerified,
-		proofs,
-		nil,
-		"requires transition:<id> evidence",
-	)
+	manifestPath := SourceManifestPath(homePath, family)
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := LoadSourceManifest(homePath, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = AdvanceSourceManifestLifecycle(homePath, family, SourceManifestLifecycleAdvanceRequest{
+		ToState:          SourceLifecycleVerified,
+		ExpectedRevision: manifest.Lifecycle.Revision,
+		WorkID:           "work_assertion_shaped",
+		Actor:            "codex:test",
+		ActionIntentID:   "act_assertion_shaped",
+		PolicyDecisionID: "pol_assertion_shaped",
+		Proofs:           proofs,
+	}, lifecycleTestNow.Add(2*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "requires transition:<id> evidence") {
+		t.Fatalf("assertion-shaped proof error = %v", err)
+	}
+	assertFileBytes(t, manifestPath, before)
 }
 
 func TestSourceManifestLifecycleBindsCompletedEvidencePairToEveryHighRiskGate(t *testing.T) {
