@@ -306,7 +306,7 @@ func TestHarnessGenerateApplyFailureRecordsFailedReceiptWithoutFalseSuccess(t *t
 	installHarnessPermissionGrant(t, homePath, targetPath)
 	before, _ := os.ReadFile(targetPath)
 	previous := applyHarnessPermissions
-	applyHarnessPermissions = func(string, harness.PermissionRender, envelope.ActionIntent, envelope.PolicyDecision) (harness.PermissionRender, error) {
+	applyHarnessPermissions = func(string, harness.PermissionRender, envelope.ActionIntent, envelope.PolicyDecision, harness.PermissionApplyAuthorization) (harness.PermissionRender, error) {
 		return harness.PermissionRender{}, errors.New("injected permission apply failure")
 	}
 	t.Cleanup(func() { applyHarnessPermissions = previous })
@@ -353,12 +353,12 @@ func TestHarnessGenerateApplyAuthorityChangeAfterApprovalIsReceiptedAsFailure(t 
 	installHarnessPermissionGrant(t, homePath, targetPath)
 	before, _ := os.ReadFile(targetPath)
 	previous := applyHarnessPermissions
-	applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision) (harness.PermissionRender, error) {
+	applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization) (harness.PermissionRender, error) {
 		writeHarnessApplyJSON(t, harness.PermissionAuthorityPath(home, "claude_code"), harness.PermissionAuthority{
 			SchemaVersion: harness.PermissionAuthoritySchemaVersion, Harness: "claude_code", AuthorityRef: harness.PermissionAuthorityRef("claude_code"), TargetPath: targetPath + ".changed",
 			Permissions: harness.PermissionRules{Allow: []string{"Write"}, DefaultMode: "auto"}, AutoMode: harness.AutoModePolicy{Allow: []string{"$defaults", "Write"}},
 		})
-		return harness.ApplyPermissions(home, approved, action, decision)
+		return harness.ApplyPermissions(home, approved, action, decision, authorize)
 	}
 	t.Cleanup(func() { applyHarnessPermissions = previous })
 	var stdout, stderr bytes.Buffer
@@ -384,6 +384,121 @@ func TestHarnessGenerateApplyAuthorityChangeAfterApprovalIsReceiptedAsFailure(t 
 	}
 	if recorded.PolicyDecisionID == "" || receipt.Outcome != "failed" || receipt.FailureCause == nil {
 		t.Fatalf("authority mismatch missing failed work-chain truth: work=%+v receipt=%+v", recorded, receipt)
+	}
+}
+
+func TestHarnessGenerateApplyRevalidatesWorkLeaseAndGrantInsideMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		wantText string
+		mutate   func(t *testing.T, homePath, workID, targetPath string)
+	}{
+		{
+			name:     "work no longer running",
+			wantText: "requires running work",
+			mutate: func(t *testing.T, homePath, workID, _ string) {
+				var current envelope.WorkEnvelope
+				path := filepath.Join(homePath, "work", "work", workID+".json")
+				readHarnessApplyJSON(t, path, &current)
+				current.State = "held"
+				writeHarnessApplyJSON(t, path, current)
+			},
+		},
+		{
+			name:     "lease holder changed",
+			wantText: "lease holder",
+			mutate: func(t *testing.T, homePath, workID, _ string) {
+				var lease work.Lease
+				path := filepath.Join(homePath, "work", "leases", workID+".json")
+				readHarnessApplyJSON(t, path, &lease)
+				lease.By = "operator:replacement"
+				writeHarnessApplyJSON(t, path, lease)
+			},
+		},
+		{
+			name:     "standing grant changed",
+			wantText: "standing grant",
+			mutate: func(t *testing.T, homePath, _ string, targetPath string) {
+				cfg := policy.DefaultConfig()
+				cfg.StandingGrants = []policy.StandingGrant{{
+					ID: "grant_replacement", Capability: "harness.permissions.apply", MutationClass: "security",
+					Reversibility: "easy", BlastRadius: "local", TargetPath: targetPath,
+				}}
+				writeHarnessApplyJSON(t, filepath.Join(homePath, "config", "policy.yaml"), cfg)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath, targetPath, w := setupHarnessPermissionApplyWork(t, "operator:test", "running")
+			installHarnessPermissionGrant(t, homePath, targetPath)
+			before, err := os.ReadFile(targetPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			previous := applyHarnessPermissions
+			applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization) (harness.PermissionRender, error) {
+				tc.mutate(t, home, w.ID, targetPath)
+				return previous(home, approved, action, decision, authorize)
+			}
+			t.Cleanup(func() { applyHarnessPermissions = previous })
+
+			var stdout, stderr bytes.Buffer
+			code := runHarnessGenerateApply([]string{
+				"--harness", "claude_code", "--apply", "--work", w.ID, "--actor", "operator:test", "--json",
+			}, &stdout, &stderr, cliTestNow.Add(3*time.Minute))
+			if code != 1 || !strings.Contains(strings.ToLower(stderr.String()), tc.wantText) {
+				t.Fatalf("code=%d stderr=%s want=%q", code, stderr.String(), tc.wantText)
+			}
+			after, err := os.ReadFile(targetPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("in-lock authorization refusal mutated settings")
+			}
+			if _, err := os.Stat(harness.HarnessArtifactManifestPath(homePath)); !os.IsNotExist(err) {
+				t.Fatalf("in-lock authorization refusal wrote manifest: %v", err)
+			}
+		})
+	}
+}
+
+func TestHarnessGenerateApplyRevalidatesDecisionExpiryInsideMutation(t *testing.T) {
+	homePath, targetPath, w := setupHarnessPermissionApplyWork(t, "operator:test", "running")
+	runNow := cliTestNow.Add(3 * time.Minute)
+	cfg := policy.DefaultConfig()
+	cfg.StandingGrants = []policy.StandingGrant{{
+		ID: "grant_harness_permission_apply", Capability: "harness.permissions.apply", MutationClass: "security",
+		Reversibility: "easy", BlastRadius: "local", TargetPath: targetPath,
+		ExpiresAt: runNow.Add(time.Hour).Format(time.RFC3339),
+	}}
+	writeHarnessApplyJSON(t, filepath.Join(homePath, "config", "policy.yaml"), cfg)
+	before, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := applyHarnessPermissions
+	applyHarnessPermissions = func(_ string, _ harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization) (harness.PermissionRender, error) {
+		return harness.PermissionRender{}, authorize(action, decision, runNow.Add(2*time.Hour))
+	}
+	t.Cleanup(func() { applyHarnessPermissions = previous })
+
+	var stdout, stderr bytes.Buffer
+	code := runHarnessGenerateApply([]string{
+		"--harness", "claude_code", "--apply", "--work", w.ID, "--actor", "operator:test", "--json",
+	}, &stdout, &stderr, runNow)
+	if code != 1 || !strings.Contains(strings.ToLower(stderr.String()), "expired") {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	after, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("expired decision mutated settings")
+	}
+	if _, err := os.Stat(harness.HarnessArtifactManifestPath(homePath)); !os.IsNotExist(err) {
+		t.Fatalf("expired decision wrote manifest: %v", err)
 	}
 }
 
