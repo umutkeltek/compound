@@ -3137,6 +3137,7 @@ func canonicalHookEvent(value string) string {
 }
 
 func installedWriteGateForHarness(manifest InstalledHooksManifest, harness string) (installed, unavailable bool, ref string) {
+	installedRef := ""
 	for _, hook := range manifest.Hooks {
 		if strings.TrimSpace(hook.Name) == "" {
 			continue
@@ -3154,7 +3155,12 @@ func installedWriteGateForHarness(manifest InstalledHooksManifest, harness strin
 		if installedHookHandlerUnavailable(hook) {
 			return false, true, ref
 		}
-		return true, false, ref
+		if installedRef == "" {
+			installedRef = ref
+		}
+	}
+	if installedRef != "" {
+		return true, false, installedRef
 	}
 	return false, false, ""
 }
