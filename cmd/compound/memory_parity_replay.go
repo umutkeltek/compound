@@ -147,7 +147,7 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 	if err != nil {
 		return report, "", 1, err
 	}
-	if !report.ParityPassed {
+	if !report.ParityPassed || (report.NegativeControlValid != nil && !*report.NegativeControlValid) {
 		return report, reportPath, 1, nil
 	}
 	return report, reportPath, 0, nil
