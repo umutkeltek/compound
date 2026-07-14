@@ -11,13 +11,9 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/home"
 	"compound/internal/policy"
 )
-
-// artifactRefPrefix is the content-addressed ref shape for pre/post images:
-// "artifact:sha256:<hex>". It combines the repo's "artifact:" proof-ref convention
-// with the mem-layer "sha256:<hex>" content id.
-const artifactRefPrefix = "artifact:sha256:"
 
 // ArtifactStore is the content-addressed blob store the outbound wrapper writes
 // pre/post images to, under COMPOUND_HOME/artifacts/sha256 (the home's declared
@@ -25,43 +21,11 @@ const artifactRefPrefix = "artifact:sha256:"
 // idempotent and a revert can restore the exact pre-image bytes by ref. It also carries
 // the home root so Execute can RECORD each governed write's receipt/transition to the
 // canonical event store (home/events), keeping the returned ids resolvable.
-type ArtifactStore struct {
-	dir  string
-	home string
-}
+type ArtifactStore = home.ArtifactStore
 
 // NewArtifactStore roots the store at COMPOUND_HOME/artifacts/sha256, creating it.
-func NewArtifactStore(home string) (*ArtifactStore, error) {
-	if strings.TrimSpace(home) == "" {
-		return nil, fmt.Errorf("artifact store requires COMPOUND_HOME")
-	}
-	dir := filepath.Join(home, "artifacts", "sha256")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	return &ArtifactStore{dir: dir, home: home}, nil
-}
-
-// Put stores body content-addressed and returns its "artifact:sha256:<hex>" ref.
-// Idempotent: re-storing identical bytes rewrites the identical blob.
-func (a *ArtifactStore) Put(body []byte) (string, error) {
-	sum := sha256.Sum256(body)
-	h := hex.EncodeToString(sum[:])
-	if err := os.WriteFile(filepath.Join(a.dir, h), body, 0o644); err != nil {
-		return "", err
-	}
-	return artifactRefPrefix + h, nil
-}
-
-// Get returns the bytes for a ref produced by Put. The ref is validated to the exact
-// "artifact:sha256:<64 hex>" shape before any read, so a crafted value can never
-// escape the blob dir.
-func (a *ArtifactStore) Get(ref string) ([]byte, error) {
-	h, err := artifactHex(ref)
-	if err != nil {
-		return nil, err
-	}
-	return os.ReadFile(filepath.Join(a.dir, h))
+func NewArtifactStore(homePath string) (*ArtifactStore, error) {
+	return home.NewArtifactStore(homePath)
 }
 
 // recordEnvelope persists a validated receipt/transition to the home's canonical event store at
@@ -81,22 +45,6 @@ func recordEnvelope(home, id string, v any) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, id+".json"), append(b, '\n'), 0o644)
-}
-
-func artifactHex(ref string) (string, error) {
-	if !strings.HasPrefix(ref, artifactRefPrefix) {
-		return "", fmt.Errorf("artifact ref must be %q-prefixed, got %q", artifactRefPrefix, ref)
-	}
-	h := ref[len(artifactRefPrefix):]
-	if len(h) != 64 {
-		return "", fmt.Errorf("artifact ref must be %s<64 hex>, got %q", artifactRefPrefix, ref)
-	}
-	for _, r := range h {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
-			return "", fmt.Errorf("artifact ref has a non-hex character: %q", ref)
-		}
-	}
-	return h, nil
 }
 
 // Result is the receipted outcome of one governed outbound write.
@@ -169,10 +117,10 @@ func Execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd
 	// ids are resolvable envelope files the event readers (executorlens, eventsource, capgraph,
 	// distiller) can see — not a dangling in-memory reference. A governed write that cannot be
 	// recorded is a failed governed write, so a persistence error surfaces here.
-	if err := recordEnvelope(store.home, receipt.ID, &receipt); err != nil {
+	if err := recordEnvelope(store.Home(), receipt.ID, &receipt); err != nil {
 		return Result{}, fmt.Errorf("act: record receipt %s: %w", receipt.ID, err)
 	}
-	if err := recordEnvelope(store.home, transition.ID, &transition); err != nil {
+	if err := recordEnvelope(store.Home(), transition.ID, &transition); err != nil {
 		return Result{}, fmt.Errorf("act: record transition %s: %w", transition.ID, err)
 	}
 	return Result{

@@ -1,11 +1,177 @@
 package sourceobs
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/home"
 )
+
+func TestOwnedSourceManifestSurvivesOriginalLossAndMaterializesExactBytes(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", time.Date(2026, 7, 14, 5, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	sourceDir := t.TempDir()
+	sourcePath := filepath.Join(sourceDir, "compound.md")
+	body := []byte("---\ntitle: Compound\n---\n# Compound\n\nPhysical custody is not semantic promotion.\n")
+	if err := os.WriteFile(sourcePath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, err := BuildOwnedSourceManifest(homePath, "brain_custody_canary", []string{sourcePath}, time.Date(2026, 7, 14, 5, 31, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Items) != 1 {
+		t.Fatalf("items = %d", len(manifest.Items))
+	}
+	item := manifest.Items[0]
+	if item.BodyPolicy != "owned_snapshot" || !strings.HasPrefix(item.BodyRef, "artifact:sha256:") {
+		t.Fatalf("owned item = %+v", item)
+	}
+	if item.BodyBytes != int64(len(body)) || item.MediaType != "text/markdown" {
+		t.Fatalf("body metadata = %+v", item)
+	}
+	if _, err := RecordSourceManifest(homePath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sourcePath); err != nil {
+		t.Fatal(err)
+	}
+
+	doctor, err := DoctorSourceManifest(homePath, manifest.SourceFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "ok" || !doctor.CustodyComplete || doctor.OwnedBodyCount != 1 {
+		t.Fatalf("doctor after source loss = %+v", doctor)
+	}
+	if len(doctor.Items) != 1 || doctor.Items[0].BodyStatus != "ok" || doctor.Items[0].SourceStatus != "source_unavailable" {
+		t.Fatalf("doctor item after source loss = %+v", doctor.Items)
+	}
+
+	target := filepath.Join(t.TempDir(), "restored", "compound.md")
+	report, err := MaterializeSourceManifestItem(homePath, manifest.SourceFamily, item.ID, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.BodyRef != item.BodyRef || report.Bytes != int64(len(body)) || report.TargetPath != target {
+		t.Fatalf("materialize report = %+v", report)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("materialized bytes differ:\ngot  %q\nwant %q", got, body)
+	}
+}
+
+func TestOwnedSourceManifestDoctorFailsMissingOrCorruptBody(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, path string)
+		want   string
+	}{
+		{
+			name: "missing",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "body_unavailable",
+		},
+		{
+			name: "corrupt",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("corrupt"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "body_hash_mismatch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			sourcePath := filepath.Join(t.TempDir(), "source.md")
+			if err := os.WriteFile(sourcePath, []byte("# body\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := BuildOwnedSourceManifest(homePath, "custody_failure", []string{sourcePath}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := RecordSourceManifest(homePath, manifest); err != nil {
+				t.Fatal(err)
+			}
+			artifactPath := filepath.Join(homePath, "artifacts", "sha256", strings.TrimPrefix(manifest.Items[0].BodyRef, "artifact:sha256:"))
+			tt.mutate(t, artifactPath)
+
+			doctor, err := DoctorSourceManifest(homePath, manifest.SourceFamily)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doctor.Status != "fail" || doctor.CustodyComplete || doctor.HashMismatchCount != 1 {
+				t.Fatalf("doctor = %+v", doctor)
+			}
+			if got := doctor.Items[0].BodyStatus; got != tt.want {
+				t.Fatalf("body_status = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOwnedSourceManifestDeduplicatesBodiesAndRefusesDestructiveMaterialize(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("same body\n")
+	var paths []string
+	for _, name := range []string{"one.md", "two.md"} {
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	manifest, err := BuildOwnedSourceManifest(homePath, "dedupe", paths, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Items[0].BodyRef != manifest.Items[1].BodyRef {
+		t.Fatalf("same bytes produced different refs: %q != %q", manifest.Items[0].BodyRef, manifest.Items[1].BodyRef)
+	}
+	if _, err := RecordSourceManifest(homePath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "target.md")
+	if err := os.WriteFile(target, []byte("different\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MaterializeSourceManifestItem(homePath, manifest.SourceFamily, manifest.Items[0].ID, target); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("destructive materialize err = %v", err)
+	}
+	if err := os.WriteFile(target, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MaterializeSourceManifestItem(homePath, manifest.SourceFamily, manifest.Items[0].ID, target); err != nil {
+		t.Fatalf("byte-identical materialize must be idempotent: %v", err)
+	}
+}
 
 func TestSourceManifestDoctorAndDrilldown(t *testing.T) {
 	home := t.TempDir()
@@ -60,6 +226,9 @@ func TestSourceManifestDoctorAndDrilldown(t *testing.T) {
 	}
 	if doctor.Status != "ok" || doctor.HashMismatchCount != 0 {
 		t.Fatalf("doctor = %+v", doctor)
+	}
+	if doctor.CustodyComplete || doctor.OwnedBodyCount != 0 || doctor.InventoryOnlyCount != 1 {
+		t.Fatalf("source-in-place must remain inventory-only: %+v", doctor)
 	}
 	drilldown, err := DrilldownSourceManifest(home, "brain_source_manifest", item.ID)
 	if err != nil {

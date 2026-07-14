@@ -1,6 +1,7 @@
 package sourceobs
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,9 +13,13 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"compound/internal/home"
 )
 
-const SourceManifestSchemaVersion = "compound.source_manifest.v0.1"
+const SourceManifestSchemaVersion = "compound.source_manifest.v0.2"
+
+const legacySourceManifestSchemaVersion = "compound.source_manifest.v0.1"
 
 type SourceManifest struct {
 	SchemaVersion string                    `json:"schema_version"`
@@ -35,6 +40,10 @@ type SourceManifestItem struct {
 	SnapshotTime       string                   `json:"snapshot_time"`
 	Privacy            string                   `json:"privacy"`
 	BodyPolicy         string                   `json:"body_policy"`
+	BodyRef            string                   `json:"body_ref,omitempty"`
+	BodyBytes          int64                    `json:"body_bytes,omitempty"`
+	MediaType          string                   `json:"media_type,omitempty"`
+	FileMode           string                   `json:"file_mode,omitempty"`
 	StructureOverlays  []SourceStructureOverlay `json:"structure_overlays,omitempty"`
 	CompoundEntityRefs []string                 `json:"compound_entity_refs,omitempty"`
 	EvidenceRefs       []string                 `json:"evidence_refs,omitempty"`
@@ -64,16 +73,19 @@ type SourceManifestReport struct {
 }
 
 type SourceManifestDoctorReport struct {
-	SchemaVersion     string                      `json:"schema_version"`
-	Status            string                      `json:"status"`
-	ManifestID        string                      `json:"manifest_id,omitempty"`
-	ManifestPath      string                      `json:"manifest_path"`
-	AuthorityRef      string                      `json:"authority_ref,omitempty"`
-	ItemCount         int                         `json:"item_count"`
-	MissingFieldCount int                         `json:"missing_field_count"`
-	HashMismatchCount int                         `json:"hash_mismatch_count"`
-	Checks            []SourceManifestDoctorCheck `json:"checks"`
-	Items             []SourceManifestDoctorItem  `json:"items,omitempty"`
+	SchemaVersion      string                      `json:"schema_version"`
+	Status             string                      `json:"status"`
+	ManifestID         string                      `json:"manifest_id,omitempty"`
+	ManifestPath       string                      `json:"manifest_path"`
+	AuthorityRef       string                      `json:"authority_ref,omitempty"`
+	ItemCount          int                         `json:"item_count"`
+	MissingFieldCount  int                         `json:"missing_field_count"`
+	HashMismatchCount  int                         `json:"hash_mismatch_count"`
+	OwnedBodyCount     int                         `json:"owned_body_count"`
+	InventoryOnlyCount int                         `json:"inventory_only_count"`
+	CustodyComplete    bool                        `json:"custody_complete"`
+	Checks             []SourceManifestDoctorCheck `json:"checks"`
+	Items              []SourceManifestDoctorItem  `json:"items,omitempty"`
 }
 
 type SourceManifestDoctorCheck struct {
@@ -86,6 +98,8 @@ type SourceManifestDoctorItem struct {
 	ID            string   `json:"id"`
 	SourceRef     string   `json:"source_ref"`
 	HashStatus    string   `json:"hash_status"`
+	BodyStatus    string   `json:"body_status,omitempty"`
+	SourceStatus  string   `json:"source_status,omitempty"`
 	MissingFields []string `json:"missing_fields,omitempty"`
 }
 
@@ -96,11 +110,23 @@ type SourceManifestDrilldown struct {
 	FileHash           string                   `json:"file_hash"`
 	GitRevision        string                   `json:"git_revision,omitempty"`
 	BodyPolicy         string                   `json:"body_policy"`
+	BodyRef            string                   `json:"body_ref,omitempty"`
+	BodyAvailable      bool                     `json:"body_available"`
+	BodyMatches        bool                     `json:"body_matches"`
 	SourceAvailable    bool                     `json:"source_available"`
 	HashMatches        bool                     `json:"hash_matches"`
 	StructureOverlays  []SourceStructureOverlay `json:"structure_overlays,omitempty"`
 	CompoundEntityRefs []string                 `json:"compound_entity_refs,omitempty"`
 	DrilldownPath      []string                 `json:"drilldown_path"`
+}
+
+type SourceManifestMaterializeReport struct {
+	ManifestRef   string `json:"manifest_ref"`
+	ItemID        string `json:"item_id"`
+	BodyRef       string `json:"body_ref"`
+	TargetPath    string `json:"target_path"`
+	Bytes         int64  `json:"bytes"`
+	AlreadyExists bool   `json:"already_exists"`
 }
 
 func BuildSourceManifest(sourceFamily string, paths []string, now time.Time) (SourceManifest, error) {
@@ -129,6 +155,36 @@ func BuildSourceManifest(sourceFamily string, paths []string, now time.Time) (So
 	}
 	sort.SliceStable(manifest.Items, func(i, j int) bool { return manifest.Items[i].ID < manifest.Items[j].ID })
 	manifest.GeneratedAt = sourceManifestGeneratedAt(manifest.Items, now)
+	return manifest, nil
+}
+
+// BuildOwnedSourceManifest captures exact source bytes into Compound's immutable
+// artifact store. SourceRef remains provenance; it is no longer needed to recover
+// the body after this function succeeds.
+func BuildOwnedSourceManifest(homePath, sourceFamily string, paths []string, now time.Time) (SourceManifest, error) {
+	manifest, err := BuildSourceManifest(sourceFamily, paths, now)
+	if err != nil {
+		return SourceManifest{}, err
+	}
+	store, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		return SourceManifest{}, err
+	}
+	for i := range manifest.Items {
+		body, err := os.ReadFile(manifest.Items[i].SourceRef)
+		if err != nil {
+			return SourceManifest{}, fmt.Errorf("capture source %s: %w", manifest.Items[i].SourceRef, err)
+		}
+		ref, err := store.Put(body)
+		if err != nil {
+			return SourceManifest{}, fmt.Errorf("capture source %s: %w", manifest.Items[i].SourceRef, err)
+		}
+		manifest.Items[i].BodyPolicy = "owned_snapshot"
+		manifest.Items[i].BodyRef = ref
+		manifest.Items[i].BodyBytes = int64(len(body))
+		manifest.Items[i].MediaType = inferMediaType(manifest.Items[i].SourceRef)
+		manifest.Items[i].EvidenceRefs = append(manifest.Items[i].EvidenceRefs, ref)
+	}
 	return manifest, nil
 }
 
@@ -185,39 +241,74 @@ func DoctorSourceManifest(homePath, sourceFamily string) (SourceManifestDoctorRe
 	report.ManifestID = manifest.ID
 	report.AuthorityRef = manifest.AuthorityRef
 	report.ItemCount = len(manifest.Items)
+	store, storeErr := home.NewArtifactStore(homePath)
 	for _, item := range manifest.Items {
-		di := SourceManifestDoctorItem{ID: item.ID, SourceRef: item.SourceRef, HashStatus: "unchecked"}
+		di := SourceManifestDoctorItem{ID: item.ID, SourceRef: item.SourceRef, HashStatus: "unchecked", BodyStatus: "not_owned"}
 		di.MissingFields = missingSourceManifestFields(item)
 		if len(di.MissingFields) > 0 {
 			report.MissingFieldCount++
 			di.HashStatus = "missing_required"
-		} else if item.BodyPolicy == "source_in_place" {
-			hash, err := hashFile(item.SourceRef)
+		}
+		sourceHash, sourceErr := hashFile(item.SourceRef)
+		switch {
+		case sourceErr != nil:
+			di.SourceStatus = "source_unavailable"
+		case sourceHash != item.FileHash:
+			di.SourceStatus = "source_changed"
+		default:
+			di.SourceStatus = "ok"
+		}
+		switch item.BodyPolicy {
+		case "owned_snapshot":
+			report.OwnedBodyCount++
+			if storeErr != nil {
+				report.HashMismatchCount++
+				di.HashStatus, di.BodyStatus = "body_unavailable", "body_unavailable"
+				break
+			}
+			body, err := store.Get(item.BodyRef)
 			switch {
+			case err != nil && os.IsNotExist(err):
+				report.HashMismatchCount++
+				di.HashStatus, di.BodyStatus = "body_unavailable", "body_unavailable"
 			case err != nil:
 				report.HashMismatchCount++
-				di.HashStatus = "source_unavailable"
-			case hash != item.FileHash:
+				di.HashStatus, di.BodyStatus = "body_hash_mismatch", "body_hash_mismatch"
+			case hashBytes(body) != item.FileHash:
 				report.HashMismatchCount++
-				di.HashStatus = "mismatch"
+				di.HashStatus, di.BodyStatus = "body_hash_mismatch", "body_hash_mismatch"
+			case int64(len(body)) != item.BodyBytes:
+				report.HashMismatchCount++
+				di.HashStatus, di.BodyStatus = "body_size_mismatch", "body_size_mismatch"
 			default:
-				di.HashStatus = "ok"
+				di.HashStatus, di.BodyStatus = "ok", "ok"
 			}
+		case "source_in_place":
+			report.InventoryOnlyCount++
+			di.HashStatus = di.SourceStatus
+			if sourceErr != nil || sourceHash != item.FileHash {
+				report.HashMismatchCount++
+			}
+		default:
+			report.InventoryOnlyCount++
+			di.HashStatus = "inventory_only"
 		}
 		report.Items = append(report.Items, di)
 	}
+	report.CustodyComplete = report.ItemCount > 0 && report.OwnedBodyCount == report.ItemCount && report.HashMismatchCount == 0 && report.MissingFieldCount == 0
 	report.Checks = append(report.Checks,
 		sourceManifestCheck("installed", true, report.ManifestPath),
 		sourceManifestCheck("items", report.ItemCount > 0, fmt.Sprintf("items=%d", report.ItemCount)),
 		sourceManifestCheck("required_fields", report.MissingFieldCount == 0, fmt.Sprintf("missing=%d", report.MissingFieldCount)),
 		sourceManifestCheck("source_recovery", report.HashMismatchCount == 0, fmt.Sprintf("hash_mismatch=%d", report.HashMismatchCount)),
+		sourceManifestStatusCheck("physical_custody", report.CustodyComplete, fmt.Sprintf("owned=%d inventory_only=%d", report.OwnedBodyCount, report.InventoryOnlyCount)),
 	)
 	if manifest.SourceFamily == GbrainDBExportManifestFamily {
 		doctorGbrainManifestExtras(manifest, &report)
 	}
 	report.Status = "ok"
 	for _, check := range report.Checks {
-		if check.Status != "ok" {
+		if check.Status == "fail" {
 			report.Status = "fail"
 			break
 		}
@@ -254,6 +345,15 @@ func DrilldownSourceManifest(homePath, sourceFamily, itemID string) (SourceManif
 		hash, err := hashFile(item.SourceRef)
 		available := err == nil
 		matches := available && hash == item.FileHash
+		bodyAvailable, bodyMatches := false, false
+		if item.BodyPolicy == "owned_snapshot" {
+			if store, storeErr := home.NewArtifactStore(homePath); storeErr == nil {
+				if body, bodyErr := store.Get(item.BodyRef); bodyErr == nil {
+					bodyAvailable = true
+					bodyMatches = hashBytes(body) == item.FileHash && int64(len(body)) == item.BodyBytes
+				}
+			}
+		}
 		compactRef := "source-manifest:" + manifest.SourceFamily + "#" + item.ID
 		manifestRef := manifest.AuthorityRef + "#" + item.ID
 		return SourceManifestDrilldown{
@@ -263,6 +363,9 @@ func DrilldownSourceManifest(homePath, sourceFamily, itemID string) (SourceManif
 			FileHash:           item.FileHash,
 			GitRevision:        item.GitRevision,
 			BodyPolicy:         item.BodyPolicy,
+			BodyRef:            item.BodyRef,
+			BodyAvailable:      bodyAvailable,
+			BodyMatches:        bodyMatches,
 			SourceAvailable:    available,
 			HashMatches:        matches,
 			StructureOverlays:  item.StructureOverlays,
@@ -275,6 +378,73 @@ func DrilldownSourceManifest(homePath, sourceFamily, itemID string) (SourceManif
 		}, nil
 	}
 	return SourceManifestDrilldown{}, fmt.Errorf("manifest item %q not found", itemID)
+}
+
+func MaterializeSourceManifestItem(homePath, sourceFamily, itemID, targetPath string) (SourceManifestMaterializeReport, error) {
+	manifest, err := LoadSourceManifest(homePath, sourceFamily)
+	if err != nil {
+		return SourceManifestMaterializeReport{}, err
+	}
+	var item *SourceManifestItem
+	for i := range manifest.Items {
+		if manifest.Items[i].ID == itemID {
+			item = &manifest.Items[i]
+			break
+		}
+	}
+	if item == nil {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("manifest item %q not found", itemID)
+	}
+	if item.BodyPolicy != "owned_snapshot" || strings.TrimSpace(item.BodyRef) == "" {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("manifest item %q has no Compound-owned body", itemID)
+	}
+	store, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		return SourceManifestMaterializeReport{}, err
+	}
+	body, err := store.Get(item.BodyRef)
+	if err != nil {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize %s: %w", item.BodyRef, err)
+	}
+	if hashBytes(body) != item.FileHash || int64(len(body)) != item.BodyBytes {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize %s: manifest/body mismatch", item.BodyRef)
+	}
+	targetPath = strings.TrimSpace(targetPath)
+	if targetPath == "" {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize target required")
+	}
+	report := SourceManifestMaterializeReport{ManifestRef: manifest.AuthorityRef, ItemID: item.ID, BodyRef: item.BodyRef, TargetPath: targetPath, Bytes: int64(len(body))}
+	if existing, readErr := os.ReadFile(targetPath); readErr == nil {
+		if !bytes.Equal(existing, body) {
+			return SourceManifestMaterializeReport{}, fmt.Errorf("refusing to overwrite non-identical target %s", targetPath)
+		}
+		report.AlreadyExists = true
+		return report, nil
+	} else if !os.IsNotExist(readErr) {
+		return SourceManifestMaterializeReport{}, readErr
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return SourceManifestMaterializeReport{}, err
+	}
+	mode := os.FileMode(0o644)
+	if strings.TrimSpace(item.FileMode) != "" {
+		if parsed, parseErr := parseFileMode(item.FileMode); parseErr == nil {
+			mode = parsed
+		}
+	}
+	f, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return SourceManifestMaterializeReport{}, err
+	}
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		os.Remove(targetPath)
+		return SourceManifestMaterializeReport{}, err
+	}
+	if err := f.Close(); err != nil {
+		return SourceManifestMaterializeReport{}, err
+	}
+	return report, nil
 }
 
 func SourceManifestPath(homePath, sourceFamily string) string {
@@ -307,6 +477,7 @@ func buildSourceManifestItem(sourceFamily, sourcePath string) (SourceManifestIte
 		SnapshotTime:       info.ModTime().UTC().Format(time.RFC3339),
 		Privacy:            "private",
 		BodyPolicy:         "source_in_place",
+		FileMode:           fmt.Sprintf("%04o", info.Mode().Perm()),
 		StructureOverlays:  structureOverlays(sourcePath, data),
 		CompoundEntityRefs: inferCompoundEntityRefs(sourcePath),
 		EvidenceRefs:       []string{"source:" + sourcePath, hash},
@@ -335,7 +506,7 @@ func sourceManifestGeneratedAt(items []SourceManifestItem, fallback time.Time) s
 }
 
 func validateSourceManifest(manifest SourceManifest) error {
-	if manifest.SchemaVersion != SourceManifestSchemaVersion {
+	if manifest.SchemaVersion != SourceManifestSchemaVersion && manifest.SchemaVersion != legacySourceManifestSchemaVersion {
 		return fmt.Errorf("unsupported schema_version %q", manifest.SchemaVersion)
 	}
 	if strings.TrimSpace(manifest.ID) == "" || strings.TrimSpace(manifest.SourceFamily) == "" {
@@ -371,6 +542,14 @@ func missingSourceManifestFields(item SourceManifestItem) []string {
 	for field, value := range fields {
 		if strings.TrimSpace(value) == "" {
 			missing = append(missing, field)
+		}
+	}
+	if item.BodyPolicy == "owned_snapshot" {
+		if strings.TrimSpace(item.BodyRef) == "" {
+			missing = append(missing, "body_ref")
+		}
+		if strings.TrimSpace(item.MediaType) == "" {
+			missing = append(missing, "media_type")
 		}
 	}
 	sort.Strings(missing)
@@ -427,6 +606,19 @@ func inferSourceKind(sourcePath string) string {
 	}
 }
 
+func inferMediaType(sourcePath string) string {
+	switch strings.ToLower(filepath.Ext(sourcePath)) {
+	case ".md", ".markdown":
+		return "text/markdown"
+	case ".json":
+		return "application/json"
+	case ".yaml", ".yml":
+		return "application/yaml"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 func hashFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -434,6 +626,19 @@ func hashFile(path string) (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func hashBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func parseFileMode(value string) (os.FileMode, error) {
+	var mode uint32
+	if _, err := fmt.Sscanf(value, "%o", &mode); err != nil {
+		return 0, err
+	}
+	return os.FileMode(mode), nil
 }
 
 func gitRevision(sourcePath string) string {
@@ -449,6 +654,14 @@ func sourceManifestCheck(name string, ok bool, detail string) SourceManifestDoct
 	status := "ok"
 	if !ok {
 		status = "fail"
+	}
+	return SourceManifestDoctorCheck{Name: name, Status: status, Detail: detail}
+}
+
+func sourceManifestStatusCheck(name string, ok bool, detail string) SourceManifestDoctorCheck {
+	status := "pending"
+	if ok {
+		status = "ok"
 	}
 	return SourceManifestDoctorCheck{Name: name, Status: status, Detail: detail}
 }
