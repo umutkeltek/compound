@@ -113,6 +113,7 @@ export function normalizeExecutorProjection(projection: Json | null): ExecutorPr
       needsMe: num(counts.needs_me),
       assigned: num(counts.assigned),
       leases: num(counts.leases),
+      staleHistory: num(counts.stale_leases),
     },
     executors: arr(projection.executors).map(normalizeRow),
   };

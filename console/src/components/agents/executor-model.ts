@@ -56,7 +56,13 @@ export interface ExecutorCounts {
   ready: number;
   needsMe: number;
   assigned: number;
+  /** ACTIVE leases (work still live) — the population the threshold band reads. */
   leases: number;
+  /** Residue leases whose work is terminal/archived/missing — the "unarchived
+   *  lease history" the briefing self-healing row reports (== `home doctor`
+   *  operational_hygiene.stale_lease_count). Age-independent, disjoint from
+   *  `leases`. Surfaced so the Agents band can name both numbers side by side. */
+  staleHistory: number;
 }
 
 export interface ExecutorProjection {
@@ -172,16 +178,24 @@ export function truncate(value: string, max = 150): string {
  */
 
 /** Label for the HISTORY / residue population (briefing self-healing row). */
-export const LEASE_HISTORY_LABEL = "Stale executor leases";
+export const LEASE_HISTORY_LABEL = "Unarchived lease history";
+
+/** Plain-language sub-line for the HISTORY / residue population. Not rendered by
+ *  the briefing panel (label-only), but the Agents band shows it so the two
+ *  numbers coexist and the operator sees why they differ. */
+export const LEASE_HISTORY_SUB =
+  "lease files left behind by finished work — not a live executor problem; archive-history clears them";
 
 /** Label for the THRESHOLD / live population (Agents lease-hygiene band). */
-export function leaseThresholdLabel(_staleAfterSeconds: number): string {
-  return "stale leases";
+export function leaseThresholdLabel(staleAfterSeconds: number): string {
+  const hours = Math.max(1, Math.round(staleAfterSeconds / 3600));
+  return `live leases past the ${hours}h threshold`;
 }
 
 /** Plain-language sub-line for the THRESHOLD / live population. */
-export function leaseThresholdSub(_staleAfterSeconds: number): string {
-  return "A stale lease holds work no one is running — clear it to let the fleet read true.";
+export function leaseThresholdSub(staleAfterSeconds: number): string {
+  const hours = Math.max(1, Math.round(staleAfterSeconds / 3600));
+  return `A live lease held longer than ${hours}h may be stuck — clear it to let the fleet read true.`;
 }
 
 /** The exact count the hygiene band renders, kept here so the band and the
@@ -249,6 +263,14 @@ export function leasePressureBars(executors: ExecutorRow[], staleAfterSeconds: n
   const thresholdHours = Math.max(1, Math.round(staleAfterSeconds / 3600));
   const leased = executors.filter((e) => e.leaseCount > 0 && e.oldestLeaseAgeSeconds !== null);
 
+  // Bounded scale: the track ceiling is the OLDEST age on screen (never below
+  // the threshold), so the bars keep their relative shape when every age far
+  // exceeds the threshold — instead of all pinning full-height. Severity color
+  // still comes from the threshold ratio, so a young lease reads calm and an
+  // over-threshold one reads hot regardless of the scale.
+  const maxAgeSeconds = leased.reduce((max, e) => Math.max(max, e.oldestLeaseAgeSeconds ?? 0), 0);
+  const ceilingHours = Math.max(thresholdHours, Math.ceil(maxAgeSeconds / 3600));
+
   const bars: LeasePressureBar[] = leased.map((executor) => {
     const ageSeconds = executor.oldestLeaseAgeSeconds ?? 0;
     const ageHours = Math.round((ageSeconds / 3600) * 10) / 10;
@@ -260,9 +282,7 @@ export function leasePressureBars(executors: ExecutorRow[], staleAfterSeconds: n
       ageSeconds,
       ageHours,
       ageLabel: durationLabel(ageSeconds),
-      // Saturating scale (measured against the threshold): every age past the
-      // threshold pins full-height. Bounded-scale fix lands in the viz repair.
-      ceilingHours: thresholdHours,
+      ceilingHours,
       ratio,
       tone: leaseToneFor(ratio),
       overThreshold: ratio >= 1,

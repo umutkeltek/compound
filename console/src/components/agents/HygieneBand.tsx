@@ -4,7 +4,15 @@ import { useState } from "react";
 
 import { ConfirmDialog, FreshnessChip } from "@/components/kit";
 
-import { durationLabel, hygieneStaleCount, type HygieneSummary } from "./executor-model";
+import {
+  durationLabel,
+  hygieneStaleCount,
+  LEASE_HISTORY_LABEL,
+  LEASE_HISTORY_SUB,
+  leaseThresholdLabel,
+  leaseThresholdSub,
+  type HygieneSummary,
+} from "./executor-model";
 
 /**
  * Lease-hygiene band — THE operator win of the Agents screen (plan Part 3,
@@ -13,6 +21,19 @@ import { durationLabel, hygieneStaleCount, type HygieneSummary } from "./executo
  * seam (3px amber left seam + amber wash) — scanning that edge answers "is
  * anything stuck?". When the fleet is clean it collapses to a quiet green
  * clean-seam confirmation with doctrine copy, never "No data".
+ *
+ * TWO DISTINCT populations, never conflated (the whole point of this band's
+ * truth pass) — the briefing self-healing row and this band used to both say
+ * "stale leases" for different numbers:
+ *   - UNARCHIVED LEASE HISTORY (`staleHistory`, == `home doctor`
+ *     operational_hygiene.stale_lease_count == executors counts.stale_leases):
+ *     lease files left behind by finished work. Age-independent. THIS is what
+ *     the archive repair below actually clears — so the count and the button
+ *     match. Same number, same label as the briefing row.
+ *   - LIVE LEASES PAST THRESHOLD (`summary`, summarizeHygiene): active leases
+ *     whose work is still live but has been held longer than the staleness
+ *     threshold. Archiving would be WRONG (the work is live) — this is a watch
+ *     signal, not an archive target, so it carries no one-click.
  *
  * REPAIR — honest by construction. The clean argv exists
  * (`compound home archive-history --kind lease`), but the console's ONE
@@ -35,14 +56,18 @@ export function HygieneBand({
   summary,
   generatedAt,
   staleAfterSeconds,
+  staleHistory,
 }: {
   summary: HygieneSummary;
   generatedAt: string;
   staleAfterSeconds: number;
+  /** Unarchived lease-history residue count (executors counts.stale_leases). */
+  staleHistory: number;
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const staleCount = hygieneStaleCount(summary);
+  const thresholdStale = hygieneStaleCount(summary);
+  const history = Math.max(0, staleHistory);
   const staleAfterLabel = durationLabel(staleAfterSeconds);
 
   async function copyRepair() {
@@ -56,7 +81,7 @@ export function HygieneBand({
     window.setTimeout(() => setCopied(false), 2000);
   }
 
-  if (staleCount === 0) {
+  if (history === 0 && thresholdStale === 0) {
     return (
       <section className="rounded-lg border border-good-line bg-good-soft px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -78,45 +103,67 @@ export function HygieneBand({
     <>
       <section className="admission-seam rounded-lg border border-seam-line bg-panel px-4 py-4 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-md font-semibold text-ink">Lease hygiene</h2>
-            <span className="rounded-pill border border-seam-line bg-seam-soft px-2 py-0.5 text-xs font-semibold text-seam tabular-nums">
-              {staleCount} stale
-            </span>
+            {history > 0 ? (
+              <span className="rounded-pill border border-hair bg-soft px-2 py-0.5 text-xs font-semibold text-muted tabular-nums">
+                {history} unarchived
+              </span>
+            ) : null}
+            {thresholdStale > 0 ? (
+              <span className="rounded-pill border border-seam-line bg-seam-soft px-2 py-0.5 text-xs font-semibold text-seam tabular-nums">
+                {thresholdStale} past {Math.max(1, Math.round(staleAfterSeconds / 3600))}h
+              </span>
+            ) : null}
           </div>
           <FreshnessChip generatedAt={generatedAt} source="compound executors --json" />
         </div>
 
-        <p className="mt-2 text-sm leading-relaxed text-muted">
-          {staleCount} stale {staleCount === 1 ? "lease" : "leases"}
-          {summary.oldestAgeSeconds > 0 ? (
-            <>
-              {" "}
-              · oldest <span className="mono text-seam">{durationLabel(summary.oldestAgeSeconds)}</span>
-            </>
-          ) : null}
-          {summary.affectedExecutors.length ? <> · affecting {summary.affectedExecutors.join(", ")}</> : null}. A stale
-          lease holds work no one is running — clear it to let the fleet read true.
-        </p>
+        {/* Unarchived lease history — the number the briefing shows, same label,
+            and the population the archive repair actually clears. */}
+        {history > 0 ? (
+          <div className="mt-3">
+            <p className="text-sm leading-relaxed text-muted">
+              <span className="mono font-semibold text-ink tabular-nums">{history.toLocaleString("en-US")}</span>{" "}
+              <span className="font-semibold text-ink">{LEASE_HISTORY_LABEL}</span> — {LEASE_HISTORY_SUB}.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-seam-line bg-seam-soft px-3 py-2 text-xs font-semibold text-seam hover:brightness-105"
+              >
+                Archive lease history…
+              </button>
+              {copied ? <span className="text-2xs font-semibold text-good">command copied</span> : null}
+              <span className="mono text-2xs text-faint">{REPAIR_COMMAND}</span>
+            </div>
+          </div>
+        ) : null}
 
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-seam-line bg-seam-soft px-3 py-2 text-xs font-semibold text-seam hover:brightness-105"
-          >
-            Archive stale leases…
-          </button>
-          {copied ? <span className="text-2xs font-semibold text-good">command copied</span> : null}
-          <span className="mono text-2xs text-faint">{REPAIR_COMMAND}</span>
-        </div>
+        {/* Live leases past the threshold — a watch signal on live work; not an
+            archive target (archiving a live lease would be wrong). */}
+        {thresholdStale > 0 ? (
+          <p className={`text-sm leading-relaxed text-muted ${history > 0 ? "mt-3 border-t border-hair pt-3" : "mt-2"}`}>
+            <span className="mono font-semibold text-seam tabular-nums">{thresholdStale}</span>{" "}
+            <span className="font-semibold text-ink">{leaseThresholdLabel(staleAfterSeconds)}</span>
+            {summary.oldestAgeSeconds > 0 ? (
+              <>
+                {" "}
+                · oldest <span className="mono text-seam">{durationLabel(summary.oldestAgeSeconds)}</span>
+              </>
+            ) : null}
+            {summary.affectedExecutors.length ? <> · affecting {summary.affectedExecutors.join(", ")}</> : null}.{" "}
+            {leaseThresholdSub(staleAfterSeconds)}
+          </p>
+        ) : null}
       </section>
 
       <ConfirmDialog
         open={open}
         onOpenChange={setOpen}
-        title="Archive stale leases"
-        body="Archives terminal work history and stale leases so the fleet reads clean. Nothing is deleted — restore with `compound home restore-history`."
+        title="Archive lease history"
+        body="Archives terminal work history and its unarchived leases so the fleet reads clean. Nothing is deleted — restore with `compound home restore-history`."
         policyNote="No governed one-click is wired for home maintenance yet (it needs a home-hygiene decision area). Copy the command and run it in your terminal; it stays a human, confirmed action."
         argv={REPAIR_ARGV}
         confirmLabel="Copy command"

@@ -15,6 +15,7 @@ import { arr, num, str, type Json } from "@/lib/compound";
 import { toDate } from "@/lib/time";
 import { genericActionProjectionEligible, genericActionRevision, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
 import { specFor } from "@/lib/decision-registry";
+import { LEASE_HISTORY_LABEL } from "@/components/agents/executor-model";
 import type { ContinueRequest } from "@/components/ContinueButton";
 import type { StateTone } from "@/components/kit";
 
@@ -232,7 +233,10 @@ export function selfHealing(doctor: Json | null): SelfHealing {
   }
   const staleLeases = num(oh.stale_lease_count);
   if (staleLeases > 0) {
-    flags.push({ key: "stale-leases", label: "Stale executor leases", count: staleLeases, command: "compound home archive-history --kind lease", tone: "seam" });
+    // Age-independent residue (lease files for terminal/archived/missing work),
+    // NOT the Agents band's "live leases past threshold" — labeled distinctly so
+    // the two surfaces can never be conflated. Shared label = one source.
+    flags.push({ key: "stale-leases", label: LEASE_HISTORY_LABEL, count: staleLeases, command: "compound home archive-history --kind lease", tone: "seam" });
   }
   if (doctor.manifest_ok === false) {
     flags.push({ key: "manifest", label: "Home manifest drift", count: 1, command: "compound home doctor", tone: "crit" });

@@ -1,4 +1,5 @@
 import { CapsuleColumn, ClockIcon, SectionHeader } from "@/components/kit";
+import { TONE_TEXT } from "@/components/kit/tone";
 
 import { leasePressureBars, type ExecutorRow } from "./executor-model";
 
@@ -30,16 +31,25 @@ export function LeasePressure({
       />
       <div className="mt-4 flex flex-wrap items-end gap-4">
         {bars.map((bar) => (
-          <CapsuleColumn
-            key={bar.id}
-            value={bar.ageHours}
-            max={bar.ceilingHours}
-            tone={bar.tone}
-            unit="hours held"
-            caption={`${bar.label} · ${bar.ageLabel}`}
-            label={bar.shortLabel}
-            extraRows={[{ label: "leases", value: bar.leaseCount, tone: "neutral" }]}
-          />
+          <div key={bar.id} className="flex flex-col items-center gap-1.5">
+            {/* True age as the visible value label (§9.4: don't hide essentials
+                behind hover). Bar height is a bounded scale; this reads the age. */}
+            <span className={`mono text-2xs font-semibold tabular-nums ${TONE_TEXT[bar.tone]}`}>{bar.ageLabel}</span>
+            <CapsuleColumn
+              value={bar.ageHours}
+              max={bar.ceilingHours}
+              tone={bar.tone}
+              unit="hours held"
+              caption={bar.label}
+              label={bar.shortLabel}
+              extraRows={[
+                { label: "held", value: bar.ageLabel, tone: bar.tone },
+                { label: "threshold", value: `${thresholdHours}h`, tone: "neutral" },
+                { label: "oldest lease", value: bar.oldestLeaseWorkId || "—", tone: "neutral" },
+                { label: "leases", value: bar.leaseCount, tone: "neutral" },
+              ]}
+            />
+          </div>
         ))}
       </div>
     </section>

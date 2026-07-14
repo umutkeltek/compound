@@ -85,6 +85,7 @@ export default async function AgentsPage() {
             summary={summarizeHygiene(projection)}
             generatedAt={projection.generatedAt}
             staleAfterSeconds={projection.staleAfterSeconds}
+            staleHistory={projection.counts.staleHistory}
           />
 
           <FleetSummary counts={projection.counts} />
