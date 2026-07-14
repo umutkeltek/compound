@@ -79,8 +79,12 @@ Prove packet path resolution without COMPOUND_PACKET_DIR.
 	if err := json.Unmarshal([]byte(out), &shown); err != nil {
 		t.Fatalf("decode work show: %v\n%s", err, out)
 	}
-	if shown.PacketPath != offered.Items[0].Path {
-		t.Fatalf("packet_path = %q, want workbench path %q", shown.PacketPath, offered.Items[0].Path)
+	offeredPath, err := filepath.Abs(offered.Items[0].Path)
+	if err != nil {
+		t.Fatalf("resolve offered packet path: %v", err)
+	}
+	if shown.PacketPath != offeredPath {
+		t.Fatalf("packet_path = %q, want workbench path %q", shown.PacketPath, offeredPath)
 	}
 	if shown.PacketPath == importedPacketPath {
 		t.Fatalf("packet_path reused deleted import path %q", importedPacketPath)
