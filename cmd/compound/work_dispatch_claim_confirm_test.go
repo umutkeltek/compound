@@ -40,6 +40,9 @@ func TestWorkDispatchClaimCLIChild(t *testing.T) {
 		t.Fatalf("unknown child mode %q", mode)
 	}
 	cmdWork(args)
+	// Successful JSON commands return normally; exit here so the go test child does not append
+	// its own PASS line to the CLI bytes being asserted by the parent process.
+	os.Exit(0)
 }
 
 func TestWorkDispatchClaimUnconfirmedPreviewsWithoutMutating(t *testing.T) {
