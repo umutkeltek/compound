@@ -1401,6 +1401,16 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		if err != nil {
 			return res, fmt.Errorf("prepare Git reference transaction: %w", err)
 		}
+		// Git's transaction makes only the target/publication ref values atomic.
+		// Revalidate repository identity once more while those locks are held and
+		// before the first terminal byte; Git does not lock config or object roots.
+		if err := s.validateBoundGitDelivery(w); err != nil {
+			identityErr := fmt.Errorf("final repository identity revalidation: %w", err)
+			if abortErr := referenceTransaction.Abort(); abortErr != nil {
+				return res, errors.Join(identityErr, fmt.Errorf("abort Git reference transaction: %w", abortErr))
+			}
+			return res, identityErr
+		}
 	}
 	referenceTransactionFinished := false
 	defer func() {
