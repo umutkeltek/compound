@@ -1,6 +1,8 @@
 import {
+  adaptAttentionProjectionForArea,
   GENERIC_ACTION_ALLOWLIST,
   genericActionEffectKind,
+  genericActionProjectionEligible,
   resolveGenericActionFromProjection,
 } from "./generic-actions";
 
@@ -277,6 +279,140 @@ export function runGenericActionsSelfTest(): SelfTestResult {
     pass("generic action effect labels distinguish certified record/track semantics and reject unknown areas");
   } else {
     fail("generic action effect labels drifted from certified area semantics");
+  }
+
+  // F4/F5: the lease-hygiene attention-sourced pathway. `compound attention
+  // --json` groups[] carry a plain `action` field (not `safe_batch_action`
+  // keyed items[]) -- adaptAttentionProjectionForArea() reshapes that into
+  // the {groups:[{key, safe_batch_action}]} projection
+  // resolveGenericActionFromProjection already understands, so the same
+  // three gates apply without a bespoke reviews area existing for lease
+  // hygiene.
+  {
+    const leaseHygieneAction = {
+      id: "lease-hygiene.sweep",
+      label: "Sweep leftover claim tags",
+      argv: ["compound", "home", "archive-history", "--kind", "lease"],
+      kind: "batch",
+      requires_confirmation: true,
+    };
+    const attentionFixture = {
+      groups: [
+        { key: "lease-hygiene", area: "lease-hygiene", action: leaseHygieneAction },
+        {
+          key: "executor:codex",
+          area: "job-health",
+          action: null,
+        },
+      ],
+    };
+
+    // (g) The happy path: a well-formed attention-sourced action resolves ok
+    // with the exact projected argv and a stable, non-empty revision.
+    {
+      const projection = adaptAttentionProjectionForArea(attentionFixture, "lease-hygiene");
+      const res = resolveGenericActionFromProjection(
+        projection,
+        "lease-hygiene",
+        "lease-hygiene",
+        "lease-hygiene.sweep",
+      );
+      const res2 = resolveGenericActionFromProjection(
+        projection,
+        "lease-hygiene",
+        "lease-hygiene",
+        "lease-hygiene.sweep",
+      );
+      if (!res.ok) {
+        fail(`lease-hygiene sweep action was rejected: ${res.rejection.gate} - ${res.rejection.message}`);
+      } else if (res.action.argv.join(" ") !== "home archive-history --kind lease") {
+        fail(`lease-hygiene resolved argv unexpected: ${JSON.stringify(res.action.argv)}`);
+      } else if (!res.action.requiresReview) {
+        fail("lease-hygiene resolved action lost requires_review from the attention action's requires_confirmation");
+      } else if (!res.action.revision || !res2.ok || res.action.revision !== res2.action.revision) {
+        fail(`lease-hygiene revision must be stable and non-empty across identical resolutions, got ${JSON.stringify([res, res2])}`);
+      } else {
+        pass("lease-hygiene attention-sourced action resolves ok with the exact argv and a stable revision");
+      }
+    }
+
+    // (h) A forged action argv (a destructive verb the operator never saw
+    // certified) must be rejected at gate-2 or gate-3, even keyed under the
+    // real lease-hygiene area/key/actionId.
+    {
+      const forgedFixture = {
+        groups: [
+          {
+            key: "lease-hygiene",
+            area: "lease-hygiene",
+            action: { ...leaseHygieneAction, argv: ["compound", "home", "restore-history"] },
+          },
+        ],
+      };
+      const projection = adaptAttentionProjectionForArea(forgedFixture, "lease-hygiene");
+      const res = resolveGenericActionFromProjection(
+        projection,
+        "lease-hygiene",
+        "lease-hygiene",
+        "lease-hygiene.sweep",
+      );
+      if (res.ok) {
+        fail("forged lease-hygiene argv (home restore-history) resolved ok:true instead of being rejected");
+      } else if (res.rejection.gate !== "gate-2-allowlist" && res.rejection.gate !== "gate-3-global-allowlist") {
+        fail(`forged lease-hygiene argv rejected at "${res.rejection.gate}" instead of gate-2/gate-3`);
+      } else {
+        pass(`forged lease-hygiene argv (home restore-history) rejected at ${res.rejection.gate}`);
+      }
+
+      // (i) The SAME forged argv under an uncertified area must also reject
+      // at gate-2 -- proves certification is per-area, not a global bypass.
+      const uncertifiedArea = "totally-uncertified-attention-area";
+      if (GENERIC_ACTION_ALLOWLIST[uncertifiedArea]) {
+        fail(`fixture area "${uncertifiedArea}" is unexpectedly allowlisted -- update the test`);
+      } else {
+        const uncertifiedProjection = adaptAttentionProjectionForArea(
+          { groups: [{ key: "lease-hygiene", area: uncertifiedArea, action: { ...leaseHygieneAction, argv: ["compound", "home", "restore-history"] } }] },
+          uncertifiedArea,
+        );
+        const res2 = resolveGenericActionFromProjection(
+          uncertifiedProjection,
+          uncertifiedArea,
+          "lease-hygiene",
+          "lease-hygiene.sweep",
+        );
+        if (res2.ok || res2.rejection.gate !== "gate-2-allowlist") {
+          fail(`forged argv under an uncertified area should reject at gate-2-allowlist, got ${JSON.stringify(res2)}`);
+        } else {
+          pass("forged argv under an uncertified area rejected at gate-2-allowlist");
+        }
+      }
+    }
+  }
+
+  // F5: the client-side honesty probe agrees with the certified allowlist
+  // for the lease-hygiene area.
+  {
+    const eligible = genericActionProjectionEligible("lease-hygiene", [
+      "compound",
+      "home",
+      "archive-history",
+      "--kind",
+      "lease",
+    ]);
+    const wrongShellForm = genericActionProjectionEligible("lease-hygiene", [
+      "home",
+      "archive-history",
+      "--kind",
+      "lease",
+    ]);
+    const wrongVerb = genericActionProjectionEligible("lease-hygiene", ["compound", "home", "restore-history"]);
+    if (eligible && !wrongShellForm && !wrongVerb) {
+      pass("genericActionProjectionEligible agrees with the lease-hygiene allowlist: certified argv true, argv[0]!=='compound' and wrong verb both false");
+    } else {
+      fail(
+        `genericActionProjectionEligible drifted for lease-hygiene: eligible=${eligible} wrongShellForm=${wrongShellForm} wrongVerb=${wrongVerb}`,
+      );
+    }
   }
 
   return { ok, details };

@@ -112,6 +112,13 @@ export type GenericActionResolution =
  *    (argv ["compound","panel","verdict-record","--review",<path>,
  *    "--reviewed-by",<actor>]) beside its copy-only shell choices (landed
  *    eeaab41). Same rationale-append rule applies.
+ *  - "lease-hygiene": NOT a reviews area at all -- internal/attention emits
+ *    ONE cross-executor `lease-hygiene` needs_you group (packet:
+ *    lease-hygiene-verb) carrying a `safe_batch_action`-shaped `action`
+ *    field: `{id: "lease-hygiene.sweep", argv: ["compound","home",
+ *    "archive-history","--kind","lease"]}`. See ATTENTION_SOURCED_GENERIC_AREAS
+ *    below for how this area's actions get resolved from `compound attention
+ *    --json` instead of `compound reviews --json --area <area>`.
  */
 export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "job-health": [["authority", "job-health-review"]],
@@ -119,6 +126,7 @@ export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "observation-candidates": [["panel", "plan"]],
   "route-promotions": [["route", "promotion-record"]],
   "panel-verdicts": [["panel", "verdict-record"]],
+  "lease-hygiene": [["home", "archive-history"]],
 };
 
 export type GenericActionEffectKind = "apply" | "record" | "track";
@@ -129,6 +137,7 @@ const GENERIC_ACTION_EFFECT_KIND: Record<string, GenericActionEffectKind> = {
   "observation-candidates": "track",
   "route-promotions": "record",
   "panel-verdicts": "record",
+  "lease-hygiene": "apply",
 };
 
 export function genericActionEffectKind(area: string): GenericActionEffectKind | null {
@@ -177,6 +186,7 @@ const GENERIC_GLOBAL_ARGV_ALLOWLIST: string[][] = [
   ["panel", "plan"],
   ["route", "promotion-record"],
   ["panel", "verdict-record"],
+  ["home", "archive-history"],
 ];
 
 /** Client-side honesty probe using the same two allowlists as execution. */
@@ -310,7 +320,13 @@ export function resolveGenericActionFromProjection(
       argv: finalArgv,
       actionId,
       label: str(action.label),
-      requiresReview: Boolean(action.requires_review),
+      // Normalized the same way genericActionRevision already is: an
+      // attention-sourced action carries `requires_confirmation`, never
+      // `requires_review` (that field belongs to the reviews projection).
+      // Falling back keeps the 428-confirm gate in decision-execute.ts
+      // enforcing for both projection shapes without that file knowing which
+      // one it got.
+      requiresReview: Boolean(action.requires_review ?? action.requires_confirmation),
       policyNote: str(action.policy_note),
       revision: genericActionRevision(action),
     },
@@ -318,10 +334,43 @@ export function resolveGenericActionFromProjection(
 }
 
 /**
+ * Areas whose generic actions come from `compound attention --json` (a
+ * cross-source needs_you projection) instead of `compound reviews --json
+ * --area <area>` (a per-area review queue) -- there is no bespoke reviews
+ * area for these; the group IS the executable unit. See
+ * adaptAttentionProjectionForArea for the shape translation.
+ */
+export const ATTENTION_SOURCED_GENERIC_AREAS: ReadonlySet<string> = new Set(["lease-hygiene"]);
+
+/**
+ * Reshapes `compound attention --json`'s `groups[]` (each carrying a plain
+ * `action` field) into the `{groups:[{key, safe_batch_action}]}` shape
+ * resolveGenericActionFromProjection already understands from the reviews
+ * projection -- so the same three gates apply unmodified. Pure and
+ * deterministic: filtering by `area` and renaming `action` to
+ * `safe_batch_action` changes nothing else about the action payload, so
+ * genericActionRevision (which normalizes `requires_review ??
+ * requires_confirmation`) yields the identical token whether it runs over
+ * the client's rendered attention action or this server-side adaptation.
+ */
+export function adaptAttentionProjectionForArea(attention: Json | null, area: string): Json {
+  const groups = arr(attention?.groups)
+    .filter((raw) => str((raw as Json).area) === area)
+    .map((raw) => {
+      const g = raw as Json;
+      return { key: str(g.key), safe_batch_action: g.action ?? null };
+    });
+  return { groups };
+}
+
+/**
  * Server-side re-resolution. NEVER trusts client-supplied argv: re-fetches
- * `compound reviews --json --area <area>` fresh (through the same memoized
- * `runJson` every read path uses) and resolves the action from that live
- * projection, so a stale/forged client argv can never be replayed.
+ * the owning projection fresh (through the same memoized `runJson` every
+ * read path uses) and resolves the action from that live projection, so a
+ * stale/forged client argv can never be replayed. Attention-sourced areas
+ * (ATTENTION_SOURCED_GENERIC_AREAS) read `compound attention --json` through
+ * the adapter above; every other area keeps reading `compound reviews --json
+ * --area <area>` as before.
  */
 export async function resolveGenericAction(
   area: string,
@@ -329,6 +378,11 @@ export async function resolveGenericAction(
   actionId: string,
   rationale?: string,
 ): Promise<GenericActionResolution> {
+  if (ATTENTION_SOURCED_GENERIC_AREAS.has(area)) {
+    const attention = await runJson(["attention", "--json"]);
+    const projection = adaptAttentionProjectionForArea(attention, area);
+    return resolveGenericActionFromProjection(projection, area, itemId, actionId, rationale);
+  }
   const projection = await runJson(["reviews", "--json", "--area", area]);
   return resolveGenericActionFromProjection(projection, area, itemId, actionId, rationale);
 }
