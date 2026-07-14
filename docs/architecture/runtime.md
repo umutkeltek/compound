@@ -1,6 +1,6 @@
 # Runtime: the `.compound` home, the envelope spine, and hooks-as-clients
 
-This is how a *running* compound instance works. Three parts: the generated-state home, the typed envelope
+This is how a *running* compound instance works. Three parts: the owned runtime home, the typed envelope
 spine, and the thin hook clients. Build this **before** memory ingestion (`../roadmap/phases.md`). One doc on
 purpose — fragmenting "generated-state", "envelopes", and "hooks" into three would reproduce the disease.
 
@@ -16,12 +16,14 @@ it as a ceiling, not a bypass for public, spend, destructive, or security holds.
 
 ## 1. `COMPOUND_HOME` / `.compound` — the runtime body
 
-The repo is **source**. The running instance owns **state**, under one controlled home — never the repo tree.
+The repo is **product source**. The running instance owns **state and durable information bodies**, under one
+controlled home — never the public repo tree. The custody contract, edit/writeback flow, and restore gates are
+owned by [`information-custody.md`](./information-custody.md).
 
 ```text
 repo            = source code, schemas, docs, tests, fixtures
-COMPOUND_HOME   = generated runtime state (a typed habitat, not a folder pile)
-private overlay = real paths, credentials, accounts, private corpus, taste examples (dogfood data)
+COMPOUND_HOME   = owned private runtime state + durable bodies (a typed habitat, not a folder pile)
+private overlay = ingress bindings, credentials/secret refs, and operator-specific adapter configuration
 ```
 
 Resolution order: `1) --home <path>  2) $COMPOUND_HOME  3) nearest ancestor .compound/manifest.yaml
@@ -30,30 +32,24 @@ Resolution order: `1) --home <path>  2) $COMPOUND_HOME  3) nearest ancestor .com
 ```text
 $COMPOUND_HOME/
   manifest.yaml
-  lock/            installed-hooks.lock.json, effective-contract.lock.json
-  config/          core.yaml; overlays/{private,local}.yaml; harnesses/*.yaml; adapters/*.yaml
-  contracts/       effective/<date>/<id>.json + latest.json ; schemas/
-  events/          hook-events.ndjson ; <hook_event_id>.json ; <transition_id>.json   (raw nervous system + emitted envelopes, including route-evidence projections)
-  work/            current.sqlite ; events.ndjson ; work/<id>.json ; runs/<id>.json ; leases/<id>.json ; checkpoints/   (execution identity)
-  context/         requests/<id>.json ; packs/<id>.json ; injections/<hook_event_id>.md (EXACT injected text)
-  ledger/          {evidence,entities,claims,positions,patterns,edges,decisions,transitions,execution-route-evidence}.jsonl (durable truth; route evidence is metadata, not task success)
-  inbox/           memory-candidates/ skill-candidates/ product-signals/ capability-observations/
-                   failure-patterns/ taste-observations/ route-observations/ contradictions/ parked/ rejected/  (untrusted)
-  registries/      entities/ projects/ products/ skills/ tools/ mcps/ models/ providers/ harnesses/ hosts/ deployments/ sources/ adapters/
-  artifacts/       sha256/ab/cd/<hash> ; refs/<id>.json ; autonomy-eligibility/<id>.json ; retention/policy.yaml   (content-addressed evidence)
-  indexes/         local/ vector/ fts/ embeddings/ + build-manifest.json                    (rented/search/cache)
-  projections/     context/ dashboard/ context-summaries/ packs/ memory-timelines/ product-timelines/ capability-graph/ cost/ markdown/  (rebuildable views)
-  reviews/         adjudication/ route-remorse/ memory-doctor/ public-private-boundary/
-  exports/         public-fixtures/ private-backups/ handoff-packets/
-  tmp/
+  config/       sources/       artifacts/     ledger/        registries/
+  inbox/        work/          events/        context/       reviews/
+  projections/  indexes/       archives/      tmp/
 ```
+
+These are the accepted end-state roots, not a claim that the current home has already migrated. Today there
+are transitional top-level roots and unknown roots that `home doctor` does not fully classify. One future
+HabitatCatalog must drive constructors, placement, doctor, backup, compaction, and restore before moving them.
+Behavior-bearing cursors may not hide in `projections/`; the detailed root responsibilities are in the custody
+contract.
 
 `ExecutionRouteEvidence` records the requested route separately from the observed identity: `selected_target` is the requested lane/alias, while `resolved_provider`, `resolved_model`, `resolution_source`, and (for gateway resolution) `gateway_request_id` identify what actually served the call. Gateway aliases use `resolution_source=gateway_route`; direct OpenAI-compatible lanes may use the response body's exact `model` with `resolution_source=response_body`. Measurements and autonomy evidence MUST attribute to the observed provider/model, never the alias or provider route string.
 
-Typed semantics (the layout *is* the guardrail): `ledger/` durable append-only · `inbox/` untrusted
-candidates · `projections/` rebuildable views · `indexes/` rented · `artifacts/` content-addressed ·
-`events/` raw · `work/` execution lifecycle · `context/` what agents actually consumed. `compound home
-doctor` asserts: generated state inside home, **not** in repo source.
+Typed semantics (the layout *is* the guardrail): `sources/` custody records · `artifacts/` exact bodies ·
+`ledger/` durable meaning · `inbox/` untrusted candidates · `registries/` current typed authority ·
+`projections/` rebuildable views · `indexes/` rented · `events/` raw · `work/` execution lifecycle ·
+`context/` what agents actually consumed. `compound home doctor` must eventually assert every declared root,
+restore-critical byte, and behavior-bearing cursor; the current partial coverage is migration debt.
 
 ---
 
@@ -188,7 +184,7 @@ Each: `stdin JSON → normalized HookEvent persisted under events/ → compound 
 harness-compatible output`. The lessons from a mature hook system map cleanly:
 
 ```text
-SessionStart   → ContextRequest + EffectiveContract + ContextPack + context/injections/<hook_event_id>.md   (returns a compact orientation summary and persists exact injected text, NOT a universe dump)
+SessionStart   → ContextRequest + EffectiveContract + ContextPack + context/injections/<hook_event_id>.md   (returns a compact orientation summary and persists exact injected text plus inclusion/exclusion provenance, NOT a universe dump)
 UserPromptSubmit → ContextRequest + ContextPack + proposed WorkEnvelope (persists proposed work tied to context_pack_id when COMPOUND_HOME is available)
 PreToolUse     → ActionIntent + PolicyDecision (+ held WorkEnvelope review or exact batch-bound capability for dirty source-control holds)
                                                                   (returns allow | allow_with_obligations | hold | deny)

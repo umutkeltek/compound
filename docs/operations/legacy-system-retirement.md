@@ -14,7 +14,7 @@ Do not copy an old root wholesale into `COMPOUND_HOME`. Classify each family fir
 
 | Legacy material | Compound receiving place | What it means after transfer |
 |---|---|---|
-| authored markdown, policies, source records | source-in-place plus `EvidenceItem` / source manifest | citation and rollback evidence, not ambient authority |
+| authored markdown, policies, source records | immutable artifact body + versioned SourceManifest, then `EvidenceItem` | Compound physical custody plus citation/rollback evidence, not automatic ambient authority |
 | durable claims and current positions | `ledger/{claims,positions,edges}.jsonl` through candidate adjudication | owned meaning and temporal authority |
 | raw documents, transcripts, exports | a class-separated corpus lane or content-addressed artifact | searchable evidence, never automatic promotion |
 | decisions | decision lifecycle ledger | accepted, superseded, parked, and retired decisions stay explicit |
@@ -54,17 +54,18 @@ when the old path is no longer needed for normal operation.
 ## 3. Use the staged cutover
 
 1. **Observe**: inventory source families and live consumers. Record unknowns.
-2. **Preserve**: create content-hashed manifests and a restorable export before
-   narrowing any write or read path.
+2. **Capture**: create Compound-owned body versions and source-family manifests before
+   narrowing any write or read path; inventory-only/source-in-place rows do not pass.
 3. **Import as evidence**: use source adapters, corpus lanes, events, or candidates.
    Do not bulk-promote source bodies.
 4. **Shadow**: run Compound and the legacy path over the same frozen fixtures or
    real traffic. Compare coverage, currentness, privacy filtering, and latency.
-5. **Replay consumers**: prove each real client succeeds through Compound.
+5. **Restore and replay consumers**: restore into an empty isolated home with originals unavailable,
+   then prove each real client succeeds through Compound.
 6. **Negative control**: make the legacy read unavailable in an isolated test and
    prove the client does not silently fall back, return stale data, or claim success.
 7. **Cut over writes**: route new durable writes through Compound's governed doors.
-   Freeze the legacy writer only after export and rollback proof are green.
+   Freeze the legacy writer only after capture, isolated restore, and rollback proof are green.
 8. **Archive**: retain source/export evidence and restore instructions. Remove the
    old surface from hot operation without deleting history.
 9. **Retire or delete**: deletion is a separate operator-gated act after a measured
@@ -76,8 +77,8 @@ A retirement row is not green until all applicable checks pass:
 
 - **receiving owner**: the Compound ledger, registry, event store, work store, or
   corpus lane resolves the transferred object;
-- **lossless preservation**: source/export manifest doctor is green, hashes are
-  stable, and a restore drill works in an empty home or isolated target;
+- **lossless preservation**: source/export manifest doctor reports physical custody (not only inventory),
+  hashes are stable, and a restore drill works in an empty home with original sources unavailable;
 - **semantic parity**: frozen queries or fixtures meet explicit recall/lookup
   predicates; broad benchmark scores alone are insufficient;
 - **real consumer replay**: the production client consumes the Compound path on the
@@ -118,6 +119,8 @@ Stop the cutover and keep the bridge when any of these is true:
 - the export is missing, lossy, single-copy, or untested;
 - Compound can search the material but cannot preserve its identity, temporal state,
   privacy class, provenance, or supersession chain;
+- source manifests contain only paths/hashes or database inventory while declared bodies remain outside
+  Compound custody;
 - recall/lookup quality passes a synthetic benchmark but is not used by the real
   agent, hook, cron, or operator surface;
 - disabling the old path changes outcomes or exposes a silent fallback;

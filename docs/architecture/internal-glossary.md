@@ -7,13 +7,25 @@ and drilldown views, but should not dominate the day-to-day operator console.
 
 An external or legacy place information currently lives: markdown, registry
 file, generated view, runtime config, transcript, packet, metric export, or old
-control-plane file. A source surface can stay source-in-place; it is not
-authority just because it exists.
+control-plane file. During migration its path remains provenance, but durable
+private bodies must enter Compound custody before the surface can retire.
+
+## Physical Custody
+
+Compound can reproduce a declared source version and required metadata from
+`COMPOUND_HOME` while the original source is unavailable. A path, hash, row
+count, manifest, or index hit alone is inventory, not custody.
+
+## Source Record
+
+The stable identity and version lineage of one source item: source key,
+provenance, body ref, hash, metadata, privacy, capture time, and supersession.
+Capture preserves evidence; it does not promote the body's statements.
 
 ## Lossless Source Graph
 
 The preserved layer of source records, observations, artifact refs, hashes,
-source-in-place refs, and structure overlays that lets Compound recover original
+migration-only external refs, and structure overlays that lets Compound recover original
 detail after creating summaries, claims, or projections.
 
 ## Authority Surface
@@ -28,6 +40,12 @@ signal ledger.
 A rebuildable rendering of authority for a consumer: dashboard card, markdown
 view, generated agent file, CLI summary, ContextPack display, or console JSON. A
 projection can be fresh or stale; it cannot prove truth by itself.
+
+## Projection Edit
+
+A proposed change made through Markdown, Obsidian, a dashboard, or another
+rendered client. It becomes evidence and a governed writeback proposal; it does
+not mutate ledger or registry authority directly.
 
 ## Index Adapter
 
@@ -53,3 +71,15 @@ artifact. Drilldown lets agents stay compact without losing access to details.
 The proof condition that lets an old source, projection, wrapper, or owner lose
 authority. A retirement gate names the new Compound owner, the real consumer,
 and the command or receipt proving the consumer used the new path.
+
+## Preference Setting
+
+An explicit, scoped, precedence-aware operator choice in config/registry
+authority. A learned or inferred preference is a candidate/claim until accepted;
+an enforceable permission or prohibition is policy, not a preference.
+
+## Habitat Catalog
+
+The future shared declaration of every top-level `COMPOUND_HOME` root, its owner,
+durability, backup, restore, compaction, and placement behavior. A directory
+constructor or doctor allowlist that does not consume this catalog is a drift risk.

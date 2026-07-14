@@ -48,9 +48,11 @@ private data**. The public repo must not *ship* that data (a distribution bounda
 ## Two planes: control + execution
 
 compound is the **control / meaning plane**. Model traffic flows through a separate **execution / data
-plane** (an OpenAI/Anthropic-compatible gateway). Siblings, not nested. compound owns route *policy*; the
-gateway owns route *decision + enforcement*. A `RouteDecision` is execution-route evidence, **not** proof of
-task success — it becomes one projection in a `Transition`. Detail: `execution-plane.md`.
+plane** (an OpenAI/Anthropic-compatible gateway). Siblings, not nested. Compound owns semantic execution
+profiles, work, policy, and outcome receipts; the gateway owns live providers/models/accounts, codecs,
+circuits, route resolution, and enforcement. A `RouteDecision` is execution-route evidence, **not** proof of
+task success — it becomes one projection in a `Transition`. Detail: `execution-plane.md` and
+`information-custody.md` §7.
 
 ## Core doctrine: own the meaning, rent everything replaceable
 
@@ -73,15 +75,16 @@ from spine context), not by an adapter interface existing.
 ## Three places (this is not optional)
 
 ```text
-repo            = source code, schemas, contracts, docs, tests, fixtures
-COMPOUND_HOME   = the runtime body: the meaning corpus, ledgers, work, context packs, hooks, receipts,
+repo            = public product source: code, schemas, contracts, docs, tests, fixtures
+COMPOUND_HOME   = the private runtime body: custodied corpus bodies, ledgers, work, context, receipts,
   (`.compound`)   transitions, registries, indexes, projections, inbox candidates, artifacts
-private overlay = real paths, credentials, accounts, private corpus, taste examples — the dogfood data
+private overlay = ingress paths, credentials/secret refs, accounts, and operator-specific adapter bindings
 ```
 
-Generated runtime state is written to `COMPOUND_HOME`, **never into the public source tree**, and operator
-paths are **never hardcoded into the public core**. The private dogfood reality is an *overlay/dataset*, not
-a private fork that bakes operator assumptions into the core. Layout + resolution: `runtime.md`.
+Private runtime state and durable bodies are written to `COMPOUND_HOME`, **never into the public source
+tree**, and operator paths are **never hardcoded into the public core**. An overlay is ingress/configuration,
+not a permanent body or meaning owner. Layout + resolution: `runtime.md`; physical and semantic boundaries:
+`information-custody.md`.
 
 ## The runtime grammar is the envelope spine (first-order)
 

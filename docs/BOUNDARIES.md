@@ -37,21 +37,21 @@ Examples:
 - generic JSONL transcript adapter;
 - generic issue tracker adapter with fake fixtures.
 
-## Private Overlay
+## Private Runtime Data And Overlay
 
-Private overlays include:
+Private runtime data includes:
 
-- private notes and transcripts;
-- private project registries;
-- private infrastructure data;
-- private decision ledgers;
-- personal doctrine;
+- private notes, transcripts, project/infra data, decisions, and personal doctrine custodied inside a running
+  `COMPOUND_HOME`.
+
+Private overlays configure ingress and external access:
+
 - credentials and account configuration;
 - local retrieval engine configuration;
 - organization-specific policies.
 
-Private overlays can use the same core interfaces, but they must never be tracked or
-shipped. They live either outside the public repository, or in a gitignored in-tree
+Private runtime data and overlays use the same core interfaces, but they must never be tracked or
+shipped. Overlay inputs live either outside the public repository, or in a gitignored in-tree
 directory (`docs_private/`) that is never committed. A gitignored in-tree overlay is
 convenient but reachable by `git add -f` or a removed ignore rule, so the public/private
 contamination check plus a redact scan gate every commit.
@@ -97,7 +97,8 @@ compound memory query "<topic-or-entity>"
 compound authority <entity>
 ```
 
-Compound decides which placed objects and source-in-place citations apply.
+Compound decides which owned objects and source-version citations apply. An external path may remain
+migration/rollback provenance, but it is not completed physical custody.
 
 ## Public Fixture Rule
 
