@@ -262,14 +262,23 @@ func bindLifecycleTestEnvelopeEvidence(t *testing.T, homePath, family string, pr
 
 func writeLifecycleEvidenceFixture(t *testing.T, homePath string, in lifecycleEvidenceFixture) string {
 	t.Helper()
-	workID := firstLifecycleTestValue(in.WorkID, "work_evidence_"+safeManifestName(in.Family))
+	fixtureKey := strings.Join([]string{
+		in.Family,
+		in.CanonicalSurface,
+		strings.Join(in.Gates, ","),
+		in.State,
+		in.WorkID,
+		in.ReceiptWorkID,
+		in.TransitionWorkID,
+	}, "|")
+	workID := firstLifecycleTestValue(in.WorkID, idFor("work_evidence_", fixtureKey))
 	receiptWorkID := firstLifecycleTestValue(in.ReceiptWorkID, workID)
 	transitionWorkID := firstLifecycleTestValue(in.TransitionWorkID, workID)
 	canonicalSurface := firstLifecycleTestValue(in.CanonicalSurface, in.Family)
 	state := firstLifecycleTestValue(in.State, "completed")
-	receiptID := "rec_evidence_" + safeManifestName(in.Family)
-	transitionID := "tr_evidence_" + safeManifestName(in.Family)
-	actionID := "act_evidence_" + safeManifestName(in.Family)
+	receiptID := idFor("rec_evidence_", fixtureKey)
+	transitionID := idFor("tr_evidence_", fixtureKey)
+	actionID := idFor("act_evidence_", fixtureKey)
 	createdAt := lifecycleTestNow.UTC().Format(time.RFC3339)
 
 	workEnvelope := envelope.WorkEnvelope{
