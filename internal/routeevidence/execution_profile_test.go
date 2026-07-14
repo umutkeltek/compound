@@ -203,6 +203,17 @@ func TestDeriveChildExecutionProfileEnforcesParentNativeCeiling(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "child_intent.native_effort") || !strings.Contains(err.Error(), "parent") {
 		t.Fatalf("child native ceiling error = %v", err)
 	}
+
+	_, err = DeriveChildExecutionProfile(parent, ChildExecutionProfileIntent{
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+		SemanticEffort:  "balanced",
+		NativeEffort:    "high",
+		RemainingBudget: &remaining,
+	})
+	if err == nil || !strings.Contains(err.Error(), "child_intent.native_effort") || !strings.Contains(err.Error(), "semantic effort") {
+		t.Fatalf("child semantic/native contradiction error = %v", err)
+	}
 }
 
 func TestResolveExecutionProfileRejectsIncompatibleOrUnownedSelectors(t *testing.T) {
