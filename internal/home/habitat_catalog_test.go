@@ -1,6 +1,8 @@
 package home
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +66,7 @@ func TestBackupRestoresBehaviorBearingProjectionExceptionsOnly(t *testing.T) {
 	}
 	writeHomeFile(t, h, "projections/account-projection.json", "keep")
 	writeHomeFile(t, h, "projections/rebuildable-view.json", "drop")
+	writeHomeFile(t, h, "close-plans/legacy-plan.json", "bridge")
 
 	archivePath := filepath.Join(t.TempDir(), "backup.tar.gz")
 	if _, err := Backup(h, archivePath, archiveTestNow); err != nil {
@@ -77,6 +80,44 @@ func TestBackupRestoresBehaviorBearingProjectionExceptionsOnly(t *testing.T) {
 		t.Fatalf("restored behavior-bearing projection = %q", got)
 	}
 	assertMissing(t, filepath.Join(restored, "projections", "rebuildable-view.json"))
+	if got := mustReadHomeFile(t, restored, "close-plans/legacy-plan.json"); got != "bridge" {
+		t.Fatalf("restored bridge body = %q", got)
+	}
+}
+
+func TestVerifyArchiveRejectsUnknownHabitatBeforeRestore(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "unknown-root.tar.gz")
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	entry, err := writeBytesEntry(tw, "invented-feature-root/state.json", []byte("unowned"), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeArchiveManifest(tw, ArchiveManifest{
+		SchemaVersion: ArchiveSchemaVersion,
+		Kind:          ArchiveKindBackup,
+		CreatedAt:     archiveTestNow.UTC().Format("2006-01-02T15:04:05Z"),
+		Entries:       []ArchiveEntry{entry},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := VerifyArchive(archivePath); err == nil || !strings.Contains(err.Error(), "invented-feature-root") {
+		t.Fatalf("archive verification accepted unknown habitat: %v", err)
+	}
 }
 
 func TestHabitatCatalogClassifiesEveryKnownRootAndMakesBridgeDebtExplicit(t *testing.T) {
