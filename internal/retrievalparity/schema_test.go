@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,44 @@ func TestFreezeValidatesWindowEndpointsBeforeReadingOrWriting(t *testing.T) {
 				t.Fatalf("invalid freeze created artifacts: %v", statErr)
 			}
 		})
+	}
+}
+
+func TestFreezeExcludesUnavailableObservationsAndCountsGap(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	controlPath := writeValidControlReport(t, homePath)
+	query := "mixed availability baseline"
+	unavailableRef := "claim://claim_aaaaaaaaaaaa"
+	availableRef := "claim://claim_bbbbbbbbbbbb"
+	Record(homePath, NewRow(ConsumerQuery, query, []string{unavailableRef}, time.Millisecond, false, parityTestNow.Add(-2*time.Hour)))
+	Record(homePath, NewRow(ConsumerQuery, query, []string{availableRef}, time.Millisecond, true, parityTestNow.Add(-time.Hour)))
+
+	fixture, _, err := FreezeFromJournal(homePath, 1, "", controlPath, parityTestNow)
+	if err != nil {
+		t.Fatalf("freeze mixed availability: %v", err)
+	}
+	if len(fixture.Rows) != 1 || !equalStringSlices(fixture.Rows[0].ExpectedRefs, []string{availableRef}) {
+		t.Fatalf("unavailable observation entered baseline: %+v", fixture.Rows)
+	}
+	if gap := "engine_unavailable:query:1"; !slices.Contains(fixture.Coverage.KnownGaps, gap) {
+		t.Fatalf("coverage gaps=%v, want %q", fixture.Coverage.KnownGaps, gap)
+	}
+}
+
+func TestFreezeRejectsIdentityWithoutSuccessfulObservation(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	controlPath := writeValidControlReport(t, homePath)
+	Record(homePath, NewRow(
+		ConsumerQuery,
+		"unavailable-only baseline",
+		[]string{"claim://claim_aaaaaaaaaaaa"},
+		time.Millisecond,
+		false,
+		parityTestNow.Add(-time.Hour),
+	))
+
+	if _, path, err := FreezeFromJournal(homePath, 1, "", controlPath, parityTestNow); err == nil || path != "" || !strings.Contains(err.Error(), "no successful observation") {
+		t.Fatalf("freeze unavailable-only identity path=%q err=%v", path, err)
 	}
 }
 
