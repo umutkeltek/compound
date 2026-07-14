@@ -19,8 +19,11 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded PR runs (head_ref set) to save minutes, but NEVER cancel a push-to-main run —
+# every commit that lands on main must get a full gate verdict, even when lanes push in quick
+# succession. For pushes head_ref is empty, so the group falls back to the unique run_id.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
