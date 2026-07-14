@@ -155,7 +155,7 @@ func BuildSourceManifest(sourceFamily string, paths []string, now time.Time) (So
 		SchemaVersion: SourceManifestSchemaVersion,
 		ID:            "srcman_" + safeManifestName(sourceFamily),
 		SourceFamily:  sourceFamily,
-		AuthorityRef:  "compound://registries/source-manifests/" + safeManifestName(sourceFamily),
+		AuthorityRef:  "compound://sources/manifests/" + safeManifestName(sourceFamily),
 		Lifecycle:     defaultSourceManifestLifecycle(),
 	}
 	for _, sourcePath := range paths {
@@ -614,7 +614,7 @@ func MaterializeSourceManifestItem(homePath, sourceFamily, itemID, targetPath st
 }
 
 func SourceManifestPath(homePath, sourceFamily string) string {
-	return filepath.Join(homePath, "registries", "source-manifests", safeManifestName(sourceFamily)+".json")
+	return filepath.Join(homePath, "sources", "manifests", safeManifestName(sourceFamily)+".json")
 }
 
 func buildSourceManifestItem(sourceFamily, sourcePath string) (SourceManifestItem, error) {

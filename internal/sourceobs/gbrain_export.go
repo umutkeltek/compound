@@ -14,7 +14,7 @@ import (
 )
 
 // GbrainDBExportManifestFamily is the lossless source-manifest family for
-// gbrain DB exports (W5-J5 / P0.2). One door: source-manifests registry.
+// gbrain DB exports (W5-J5 / P0.2). One door: SourceManifest custody.
 const GbrainDBExportManifestFamily = "gbrain_db_export_manifest"
 
 // GbrainExportSchemaVersion is the on-disk export JSON shape version.
@@ -110,7 +110,7 @@ func BuildGbrainExportManifest(exportPath string, now time.Time) (SourceManifest
 		SchemaVersion: SourceManifestSchemaVersion,
 		ID:            "srcman_" + safeManifestName(GbrainDBExportManifestFamily),
 		SourceFamily:  GbrainDBExportManifestFamily,
-		AuthorityRef:  "compound://registries/source-manifests/" + safeManifestName(GbrainDBExportManifestFamily),
+		AuthorityRef:  "compound://sources/manifests/" + safeManifestName(GbrainDBExportManifestFamily),
 		Lifecycle:     defaultSourceManifestLifecycle(),
 		FamilyMeta: &SourceManifestFamilyMeta{
 			DBHost:          strings.TrimSpace(exp.DBHost),

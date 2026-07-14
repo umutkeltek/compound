@@ -13,6 +13,28 @@ import (
 	"compound/internal/home"
 )
 
+func TestSourceManifestPathAndAuthorityUseCanonicalSourcesOwner(t *testing.T) {
+	homePath := t.TempDir()
+	family := "canonical_owner"
+	wantPath := filepath.Join(homePath, "sources", "manifests", family+".json")
+	if got := SourceManifestPath(homePath, family); got != wantPath {
+		t.Fatalf("SourceManifestPath = %q, want canonical %q", got, wantPath)
+	}
+
+	sourcePath := filepath.Join(t.TempDir(), "source.md")
+	if err := os.WriteFile(sourcePath, []byte("# canonical\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := BuildSourceManifest(family, []string{sourcePath}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAuthority := "compound://sources/manifests/" + family
+	if manifest.AuthorityRef != wantAuthority {
+		t.Fatalf("authority_ref = %q, want %q", manifest.AuthorityRef, wantAuthority)
+	}
+}
+
 func TestOwnedSourceManifestSurvivesOriginalLossAndMaterializesExactBytes(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 7, 14, 5, 30, 0, 0, time.UTC)); err != nil {
