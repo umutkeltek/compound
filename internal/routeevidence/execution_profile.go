@@ -17,6 +17,7 @@ const (
 const (
 	dispositionExact      = "exact"
 	dispositionTranslated = "translated"
+	dispositionDegraded   = "degraded"
 )
 
 type ExecutionProfileIntent struct {
@@ -210,19 +211,15 @@ func ResolveExecutionProfile(intent ExecutionProfileIntent) (ExecutionProfilePla
 	if err := validateExecutionSelectors(intent, definition); err != nil {
 		return ExecutionProfilePlan{}, err
 	}
-	nativeEffort := strings.TrimSpace(intent.NativeEffort)
-	nativeDisposition := dispositionExact
-	nativeReason := "explicit native effort is supported by the selected client adapter"
-	if nativeEffort == "" {
-		nativeEffort = translatedNativeEffort(definition, intent.ClientHarnessID, intent.SemanticEffort)
-		nativeDisposition = dispositionTranslated
-		nativeReason = fmt.Sprintf("semantic effort %s maps to %s for %s", intent.SemanticEffort, nativeEffort, intent.ClientHarnessID)
-	}
-	if !supportsNativeEffort(intent.ClientHarnessID, nativeEffort) {
-		return ExecutionProfilePlan{}, compatibilityError(
-			"requested_intent.native_effort",
-			fmt.Sprintf("%s does not support native effort %q", intent.ClientHarnessID, nativeEffort),
-		)
+	nativeEffort, err := resolveNativeEffort(
+		definition,
+		intent.ClientHarnessID,
+		intent.SemanticEffort,
+		intent.NativeEffort,
+		"requested_intent.native_effort",
+	)
+	if err != nil {
+		return ExecutionProfilePlan{}, err
 	}
 
 	plan := ExecutionProfilePlan{
@@ -236,9 +233,9 @@ func ResolveExecutionProfile(intent ExecutionProfileIntent) (ExecutionProfilePla
 		RouteAlias:              strings.TrimSpace(intent.RouteAlias),
 		ModelConstraint:         strings.TrimSpace(intent.ModelConstraint),
 		SemanticEffort:          intent.SemanticEffort,
-		NativeEffort:            NativeEffortRequest{Requested: nativeEffort, Disposition: nativeDisposition, Reason: nativeReason},
+		NativeEffort:            nativeEffort,
 		OrchestrationPolicy:     intent.OrchestrationPolicy,
-		Disposition:             nativeDisposition,
+		Disposition:             nativeEffort.Disposition,
 		Budget:                  definition.Budget,
 		Checkpoint:              definition.Checkpoint,
 		Candidates:              append([]ExecutionProfileCandidate(nil), definition.Candidates...),
@@ -277,10 +274,33 @@ func DeriveChildExecutionProfile(parent ExecutionProfilePlan, child ChildExecuti
 	if parent.OrchestrationPolicy == "ultracode" && strings.TrimSpace(child.OrchestrationPolicy) == "" {
 		return ExecutionProfilePlan{}, compatibilityError("child_intent.orchestration_policy", "ultracode is not inherited; child opt-in must be explicit")
 	}
+	definition, ok := executionProfileDefinition(parent.ProfileID)
+	if !ok {
+		return ExecutionProfilePlan{}, compatibilityError("parent_plan.profile_id", "unknown execution profile "+quoted(parent.ProfileID))
+	}
+	if _, err := resolveNativeEffort(
+		definition,
+		strings.TrimSpace(child.ClientHarnessID),
+		strings.TrimSpace(child.SemanticEffort),
+		child.NativeEffort,
+		"child_intent.native_effort",
+	); err != nil {
+		return ExecutionProfilePlan{}, err
+	}
 
 	budget, err := childBudgetWithinCeiling(parent.Budget, child.Budget)
 	if err != nil {
 		return ExecutionProfilePlan{}, err
+	}
+	parentNativeRank := nativeEffortRank(parent.NativeEffort.Requested)
+	if parentNativeRank == 0 {
+		return ExecutionProfilePlan{}, compatibilityError("parent_plan.native_effort", "parent native effort is unsupported")
+	}
+	if nativeEffortRank(plan.NativeEffort.Requested) > parentNativeRank {
+		return ExecutionProfilePlan{}, compatibilityError(
+			"child_intent.native_effort",
+			fmt.Sprintf("child native effort %q exceeds parent native ceiling %q", plan.NativeEffort.Requested, parent.NativeEffort.Requested),
+		)
 	}
 	role := defaultString(child.Role, parent.Role)
 	capabilityClass := defaultString(child.CapabilityClass, parent.CapabilityClass)
@@ -389,6 +409,44 @@ func supportsNativeEffort(harness, effort string) bool {
 	default:
 		return false
 	}
+}
+
+func resolveNativeEffort(definition ExecutionProfileDefinition, harness, semanticEffort, requested, path string) (NativeEffortRequest, error) {
+	mapped := translatedNativeEffort(definition, harness, semanticEffort)
+	if !supportsNativeEffort(harness, mapped) {
+		return NativeEffortRequest{}, compatibilityError(
+			path,
+			fmt.Sprintf("%s does not support mapped native effort %q", harness, mapped),
+		)
+	}
+
+	requested = strings.TrimSpace(requested)
+	if requested != "" {
+		if !supportsNativeEffort(harness, requested) {
+			return NativeEffortRequest{}, compatibilityError(
+				path,
+				fmt.Sprintf("%s does not support native effort %q", harness, requested),
+			)
+		}
+		if requested != mapped {
+			return NativeEffortRequest{}, compatibilityError(
+				path,
+				fmt.Sprintf("native effort %q contradicts semantic effort %q; %s maps it to %q", requested, semanticEffort, harness, mapped),
+			)
+		}
+	}
+
+	disposition := dispositionTranslated
+	reason := fmt.Sprintf("semantic effort %s maps to %s for %s", semanticEffort, mapped, harness)
+	if requested != "" {
+		disposition = dispositionExact
+		reason = "explicit native effort matches the semantic effort mapping for the selected client adapter"
+	}
+	if nativeEffortRank(mapped) < effortRank(semanticEffort) {
+		disposition = dispositionDegraded
+		reason = fmt.Sprintf("semantic effort %s is capped at native effort %s for %s", semanticEffort, mapped, harness)
+	}
+	return NativeEffortRequest{Requested: mapped, Disposition: disposition, Reason: reason}, nil
 }
 
 func translatedNativeEffort(definition ExecutionProfileDefinition, harness, semanticEffort string) string {
@@ -523,6 +581,21 @@ func effortRank(effort string) int {
 		return 4
 	default:
 		return 100
+	}
+}
+
+func nativeEffortRank(effort string) int {
+	switch strings.TrimSpace(effort) {
+	case "low":
+		return 1
+	case "medium":
+		return 2
+	case "high", "xhigh":
+		return 3
+	case "max", "ultra":
+		return 4
+	default:
+		return 0
 	}
 }
 
