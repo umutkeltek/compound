@@ -21,6 +21,11 @@ An owned source body may contain a false or superseded statement. A promoted cla
 versions. A fresh Markdown projection may still display a disputed claim. A perfect vector hit may be excluded
 by privacy or currentness policy. The separate contracts make those cases ordinary instead of exceptional.
 
+There is one owner **per contract**, not one object pretending to own every concern. The artifact store may own
+the body while the ledger owns its interpreted meaning and a dashboard renders a projection. What is forbidden
+is two physical owners for the same required body, two semantic owners for the same position, or a projection or
+index acquiring an independent write lifecycle.
+
 **Physical ownership invariant:** a source family is not in Compound custody until an empty-home or isolated
 restore can reproduce its declared body and required metadata while the original source is unavailable.
 Inventory, a path, a hash, a database row count, or a search result is not custody.
@@ -94,6 +99,41 @@ Two sharp boundaries follow:
 - A deployment is not a prose fact. It is a temporal `RuntimeBinding`; the old binding becomes stale or
   retired when a new one is evidenced. A dashboard cannot make it current by rendering it.
 
+### One-owner matrix
+
+This matrix covers the legacy families and clients most likely to become accidental peer owners. The bridge is
+temporary; the exit proof is what permits subtraction.
+
+| Family or client | Physical body owner | Semantic owner | Temporary bridge / projection | Exit proof |
+|---|---|---|---|---|
+| authored note or policy tree | source versions + immutable artifacts | evidence, claims, decisions, config, or CapabilityGraph according to content | Markdown/Obsidian source and editable projection | isolated restore, governed writeback, real-reader replay, old writer quiet |
+| retrieval/fact database and raw corpus | database-native export artifact plus source-family manifest | Compound ledger; raw corpus remains evidence | read-only retrieval/import adapter and rented index | frozen contract parity, production-reader replay, legacy-unavailable negative control, terminal export |
+| control-plane repository | Git/source artifacts preserve exact history; Compound owns required runtime bodies | EffectiveContract, policy, registries, work, and capabilities | compatibility CLI, generated harness files, source adapters | every real consumer uses Compound; generators and writers stop; rollback remains verified |
+| conversation and session trace | transcript/tool-output artifacts plus normalized events | candidates first; promoted claims, rules, and capabilities only after adjudication | harness-native history and import adapters | capture and recall replay without the old history store; no silent fallback |
+| user preference or setting | config source/receipt plus cited preference evidence | explicit scoped setting; inferred preference remains a claim | settings UI and generated client config | revisioned read/write round trip, conflict proof, client drift check |
+| hook installation | tracked handler source plus installed-manifest/config evidence | semantic lifecycle requirements in the effective contract; policy remains policy authority | harness-native HookPlan and installed hook files | native/fallback behavior replay, content/readiness drift check, old hook unavailable |
+| dashboard or console | source assets in the repo; cached view state is disposable | the ledger, registries, policy, work, and runtime bindings it reads | one bounded projection with governed action clients | stale data is visible; actions traverse the owner; no hidden write API or duplicate port |
+| model gateway | gateway owns its live provider/account/credential/config bodies | Compound owns semantic profile, admission, budget, outcome, and learning | revisioned conformance projection plus route evidence | requested/effective tuple reconciles to a task Receipt; no duplicated provider registry in Compound |
+
+### Preference and setting flow
+
+Explicit and inferred preference take different paths:
+
+```text
+explicit instruction
+  → scoped SettingProposal → ActionIntent → PolicyDecision → versioned Setting → client projections
+
+observed behavior or mined conversation
+  → evidence → PreferenceCandidate → park/reject/promote as claim
+  → operator acceptance, if desired → scoped SettingProposal
+```
+
+Setting precedence is explicit and scope-aware: task override → project/product setting → operator default →
+system default. A narrower setting may override a broader one only inside its declared scope. Every effective
+value cites the winning revision and the shadowed values. Conflict, unknown scope, stale base revision, or an
+attempt to turn a preference into policy goes to review; none use last-write-wins. Removal supersedes or retires
+the setting and regenerates clients—it does not erase the evidence that explained the old value.
+
 ## 4. Source custody and meaning flow
 
 ```text
@@ -152,6 +192,28 @@ This makes “why did it know that?” answerable from a stable chain: injected 
 claim/position → evidence → source version/body. It also makes “why did it not know that?” answerable from
 `excluded[]`, freshness, privacy, uncertainty, or capability/readiness evidence.
 
+The semantic requirement comes before the harness event. Compound compiles work/session-scoped lifecycle
+intentions against a revisioned harness capability attestation:
+
+```text
+TaskContract + EffectiveContract + risk/privacy + context needs
+  → LifecyclePlan {prepare context, guard, observe, preserve, restore, close}
+  → harness capability attestation
+  → HookPlan {native binding | fallback | degraded | unsupported}
+  → installation observation + readiness/drift evidence
+```
+
+`LifecyclePlan` is the semantic view of what the run needs; `HookPlan` is its harness-native projection. This
+evolves the existing hook-plan owner instead of creating a peer hook system. Both are immutable and revision-bound
+for the work/session they serve. Neither promotes memory, mutates policy, or executes the requested action.
+Unknown harness capability is `unsupported` or `degraded`, never an optimistic event mapping. A formatter need,
+for example, may lower to a post-tool event, a wrapper, or a commit-time check without changing its meaning.
+
+Compaction, resume, delegation, and harness replacement are normal lifecycle branches. The working object and
+remaining envelope are persisted before a lossy boundary, restored from owned refs afterward, and recompiled for
+the new harness. Child runs inherit ceilings, not stale HookPlans. A missing native event must not silently drop
+the intention; the plan either names a proved fallback or exposes the uncovered branch.
+
 Hooks remain thin clients:
 
 - Session start and prompt hooks request/freeze context; they do not maintain a private memory cache.
@@ -182,6 +244,11 @@ projection edit
 Direct ledger mutation from a file watcher is forbidden. Concurrent authority drift creates a reviewable
 conflict; it never uses last-write-wins. Attachments enter artifact custody. Deleting a projected note requests
 retirement; it does not erase shared evidence or claims.
+
+Settings use the same round trip. The settings screen edits a base revision, previews the effective scope and
+affected clients, records a governed owner mutation, and shows the resulting projection revisions. A generated
+harness file is therefore a client of the setting and LifecyclePlan owners, not a convenient second source of
+truth. Hand edits become drift evidence or an import proposal; they never silently win.
 
 The ordinary dashboard is a bounded projection over the same owners. It should answer, without exposing the
 full kernel by default:
@@ -217,6 +284,20 @@ Historical evidence stores both requested alias/profile revision and observed pr
 not rewrite history. An explicitly requested unsupported native effort fails or records an allowed translation;
 it never silently changes effort. `ultra`, `xhigh`, and orchestration policies are not interchangeable.
 
+The full execution identity has four stages that remain separate:
+
+| Stage | Required evidence |
+|---|---|
+| requested | profile revision, role/class, client harness requirement, route/model constraint, semantic/native effort request, orchestration, privacy, permissions, and budget |
+| admitted | PolicyDecision, standing-grant/budget reservation, accepted gateway catalog/adapter revision, and allowed translation/fallback bounds |
+| observed | harness/adapter revision, gateway request id, transport, provider/model/account class, effective native parameters, attempts/fallbacks, usage, latency, and terminal route status |
+| outcome | Receipt state delta, verification, cost reconciliation, and Transition; provider success alone is insufficient |
+
+A child execution receives a new plan. It inherits only ceilings—privacy, targets, tools, mutation classes, and
+remaining request/token/time/cost budget. Model, transport, account, native effort, and orchestration are selected
+again and observed again. Two different harness selectors do not prove independent review if their observed
+provider/model identity is the same.
+
 The rollout is deliberately A then B. In A, the gateway owns and validates self-contained lane definitions and
 provider/account reality. In B, Compound's `ExecutionProfile` becomes semantic authority and the gateway lowers
 it into an executable lane. A specifically named interactive driver may choose the highest native effort;
@@ -251,6 +332,31 @@ A backup is successful only when it restores behavior, not merely bytes.
 
 Replication, encrypted backup policy, restore rehearsals, and reference-aware deletion are target contracts
 until a vertical slice proves them. No legacy writer or store retires based on this document alone.
+
+### Failure-case contract
+
+“All information lives in Compound” is credible only if unhappy paths preserve a single owner:
+
+| Case | Required behavior |
+|---|---|
+| source disappears after capture | owned body still restores; source ref remains provenance, not a runtime dependency |
+| canonical body is absent, legacy bridge exists | bounded fallback is visible as degraded; the next governed write canonicalizes without deleting rollback evidence |
+| canonical body is present but corrupt | fail closed; never hide corruption by falling back to a valid legacy copy |
+| capture succeeds, adjudication fails | retain cited evidence; publish no claim, setting, registry entry, or ambient context |
+| two writers update one semantic identity | serialize or compare-and-swap the complete owner transaction; preserve both accepted deltas or reject one explicitly |
+| source path or host changes | stable source/entity identity survives; ambiguous identity parks rather than duplicating |
+| projection edited from a stale revision | create a conflict/writeback review; never last-write-wins |
+| index is missing, stale, or contradictory | use authoritative fallback where bounded or report degraded/unavailable; an index hit never bypasses eligibility checks |
+| harness lacks a requested lifecycle seam | choose a proved fallback or report degraded/unsupported; never fabricate readiness |
+| session compacts, resumes, delegates, or swaps harness | restore the working object and remaining ceilings from owned refs; recompile lifecycle and execution projections |
+| native effort/model combination is unsupported | reject or record an explicitly allowed translation before provider contact |
+| gateway falls back or resolves an alias differently | preserve requested and observed identities plus revision and reason; historical meaning does not change |
+| model route succeeds but work fails | route evidence remains successful traffic evidence; Receipt/Transition records the failed or blocked outcome |
+| dashboard cache is stale or an owner is unreachable | show stale/unknown and disable unsupported actions; never render a false green |
+| backup races a writer | use a fenced/coherent snapshot or fail verification; a structurally valid mixed generation is not restorable proof |
+| another device writes while offline | import divergent work as evidence/candidates after writer-epoch reconciliation; never merge live home files |
+| legacy traffic reappears during the quiet window | invalidate the quiet-window gate and investigate the reader/writer; do not proceed to retirement |
+| shared body is requested for deletion | retain while any live ref or retention obligation exists; retirement alone does not authorize deletion |
 
 ## 9. Custody and retirement state machine
 
