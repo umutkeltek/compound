@@ -33,7 +33,10 @@ const (
 	ArchiveKindOperational   = "operational_history"
 )
 
-var backupExcludedRoots = []string{"exports", "indexes", "lock", "projections", "tmp"}
+// Compatibility projection for archive manifests and existing callers. The
+// HabitatCatalog owns inclusion policy, including protected descendants under
+// otherwise rebuildable roots such as projections.
+var backupExcludedRoots = habitatBackupExcludedRoots()
 
 // ArchiveEntry records one checksummed file inside a home archive.
 type ArchiveEntry struct {
@@ -319,8 +322,9 @@ func RestoreArchive(archivePath, targetHome string, now time.Time) (RestoreRepor
 	}, nil
 }
 
-// Compact clears owned transient dirs. With Rebuildable it also clears cache-like
-// indexes/projections that can be regenerated from ledger/events.
+// Compact clears only paths HabitatCatalog classifies as transient or, when
+// requested, rebuildable. A behavior-bearing exception remains protected even
+// when its historical parent is named projections.
 func Compact(homePath string, opts CompactOptions) (CompactReport, error) {
 	homePath, err := filepath.Abs(expandUser(homePath))
 	if err != nil {
@@ -329,17 +333,14 @@ func Compact(homePath string, opts CompactOptions) (CompactReport, error) {
 	if err := requireHealthyHome(homePath); err != nil {
 		return CompactReport{}, err
 	}
-	dirs := []string{"tmp"}
-	if opts.Rebuildable {
-		dirs = append(dirs, "indexes", "projections")
-	}
+	dirs := habitatCompactRoots(opts.Rebuildable)
 	report := CompactReport{Home: homePath, DryRun: opts.DryRun, ClearedDirs: append([]string(nil), dirs...)}
 	for _, dir := range dirs {
 		full := filepath.Join(homePath, dir)
 		if !isUnderHome(homePath, full) {
 			return CompactReport{}, fmt.Errorf("refusing compact path outside home: %s", full)
 		}
-		files, bytes, err := measureTree(full)
+		paths, files, bytes, err := compactablePaths(homePath, full, opts.Rebuildable)
 		if err != nil {
 			return CompactReport{}, err
 		}
@@ -348,14 +349,76 @@ func Compact(homePath string, opts CompactOptions) (CompactReport, error) {
 		if opts.DryRun {
 			continue
 		}
-		if err := os.RemoveAll(full); err != nil {
-			return CompactReport{}, err
+		for _, path := range paths {
+			if err := os.Remove(path); err != nil {
+				return CompactReport{}, err
+			}
 		}
-		if err := os.MkdirAll(full, 0o755); err != nil {
+		if err := removeEmptyCompactDirs(full); err != nil {
 			return CompactReport{}, err
 		}
 	}
 	return report, nil
+}
+
+func compactablePaths(homePath, root string, rebuildable bool) ([]string, int, int64, error) {
+	var paths []string
+	var bytes int64
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if path == root || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(homePath, path)
+		if err != nil {
+			return err
+		}
+		if !habitatCompactable(filepath.ToSlash(rel), rebuildable) {
+			return nil
+		}
+		paths = append(paths, path)
+		bytes += info.Size()
+		return nil
+	})
+	return paths, len(paths), bytes, err
+}
+
+func removeEmptyCompactDirs(root string) error {
+	var dirs []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() && path != root {
+			dirs = append(dirs, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, dir := range dirs {
+		if err := os.Remove(dir); err != nil && !errors.Is(err, syscall.ENOTEMPTY) && !errors.Is(err, syscall.EEXIST) {
+			return err
+		}
+	}
+	return nil
 }
 
 func OperationalArchiveIndexPath(homePath string) string {
@@ -1909,14 +1972,8 @@ func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now 
 	}, nil
 }
 
-func includeBackupPath(rel string, _ fs.FileInfo) bool {
-	top := strings.Split(rel, "/")[0]
-	for _, excluded := range backupExcludedRoots {
-		if top == excluded {
-			return false
-		}
-	}
-	return true
+func includeBackupPath(rel string, info fs.FileInfo) bool {
+	return habitatBackupIncluded(rel, info.IsDir())
 }
 
 func writeFileEntry(tw *tar.Writer, path, rel string, info fs.FileInfo) (ArchiveEntry, error) {
@@ -2094,6 +2151,11 @@ func defaultArchivePath(homePath, kind string, now time.Time) string {
 func requireHealthyHome(homePath string) error {
 	r := Doctor(homePath)
 	if !r.OK {
+		if !r.HabitatOK {
+			parts := append([]string{}, r.Habitat.UnknownRoots...)
+			parts = append(parts, r.Habitat.UnknownEntries...)
+			return fmt.Errorf("home doctor failed for %s: unknown habitat entries: %s", homePath, strings.Join(parts, ","))
+		}
 		return fmt.Errorf("home doctor failed for %s", homePath)
 	}
 	return nil
