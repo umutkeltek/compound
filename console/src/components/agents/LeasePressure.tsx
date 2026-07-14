@@ -1,6 +1,6 @@
-import { CapsuleColumn, ClockIcon, SectionHeader, type Tone } from "@/components/kit";
+import { CapsuleColumn, ClockIcon, SectionHeader } from "@/components/kit";
 
-import { durationLabel, type ExecutorRow } from "./executor-model";
+import { leasePressureBars, type ExecutorRow } from "./executor-model";
 
 /**
  * Lease pressure (DESIGN.md §9.3 CapsuleColumn) — the ONE place on Agents with a
@@ -17,10 +17,8 @@ export function LeasePressure({
   executors: ExecutorRow[];
   staleAfterSeconds: number;
 }) {
-  const leased = executors.filter((e) => e.leaseCount > 0 && e.oldestLeaseAgeSeconds !== null);
-  if (!leased.length) return null;
-
-  const thresholdHours = Math.max(1, Math.round(staleAfterSeconds / 3600));
+  const { bars, thresholdHours } = leasePressureBars(executors, staleAfterSeconds);
+  if (!bars.length) return null;
 
   return (
     <section className="rounded-xl bg-panel p-4 shadow-sm">
@@ -31,24 +29,18 @@ export function LeasePressure({
         sub={`oldest lease vs ${thresholdHours}h threshold`}
       />
       <div className="mt-4 flex flex-wrap items-end gap-4">
-        {leased.map((executor) => {
-          const ageSeconds = executor.oldestLeaseAgeSeconds ?? 0;
-          const ageHours = Math.round((ageSeconds / 3600) * 10) / 10;
-          const ratio = ageSeconds / staleAfterSeconds;
-          const tone: Tone = ratio >= 1 ? "crit" : ratio >= 0.75 ? "seam" : "work";
-          return (
-            <CapsuleColumn
-              key={executor.id || executor.label}
-              value={ageHours}
-              max={thresholdHours}
-              tone={tone}
-              unit="hours held"
-              caption={`${executor.label} · ${durationLabel(ageSeconds)}`}
-              label={executor.label.length > 6 ? `${executor.label.slice(0, 6)}…` : executor.label}
-              extraRows={[{ label: "leases", value: executor.leaseCount, tone: "neutral" }]}
-            />
-          );
-        })}
+        {bars.map((bar) => (
+          <CapsuleColumn
+            key={bar.id}
+            value={bar.ageHours}
+            max={bar.ceilingHours}
+            tone={bar.tone}
+            unit="hours held"
+            caption={`${bar.label} · ${bar.ageLabel}`}
+            label={bar.shortLabel}
+            extraRows={[{ label: "leases", value: bar.leaseCount, tone: "neutral" }]}
+          />
+        ))}
       </div>
     </section>
   );

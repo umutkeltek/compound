@@ -153,3 +153,123 @@ export function truncate(value: string, max = 150): string {
   if (clean.length <= max) return clean;
   return `${clean.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
+
+/* ---------- the two DISTINCT stale-lease definitions ----------
+ * The fleet reports "stale leases" two different ways and the operator must
+ * never see the two numbers side by side without the UI naming which is which.
+ * Both labels live HERE (one source) so the briefing self-healing row (history)
+ * and the Agents lease-hygiene band (threshold) can never render the same
+ * conflatable phrase. The consistency smoke imports these and asserts each names
+ * its own population.
+ *
+ *  - HISTORY / residue: lease files still on disk whose work is terminal,
+ *    archived, or missing. Age-INDEPENDENT. This is `home doctor`
+ *    operational_hygiene.stale_lease_count === `executors` counts.stale_leases
+ *    (one population, two doors). Cleared by `home archive-history --kind lease`.
+ *  - THRESHOLD / live: among ACTIVE (non-terminal) leases, those held longer
+ *    than the staleness threshold. Age-DEPENDENT. This is what summarizeHygiene
+ *    counts and the Agents band renders.
+ */
+
+/** Label for the HISTORY / residue population (briefing self-healing row). */
+export const LEASE_HISTORY_LABEL = "Stale executor leases";
+
+/** Label for the THRESHOLD / live population (Agents lease-hygiene band). */
+export function leaseThresholdLabel(_staleAfterSeconds: number): string {
+  return "stale leases";
+}
+
+/** Plain-language sub-line for the THRESHOLD / live population. */
+export function leaseThresholdSub(_staleAfterSeconds: number): string {
+  return "A stale lease holds work no one is running — clear it to let the fleet read true.";
+}
+
+/** The exact count the hygiene band renders, kept here so the band and the
+ *  consistency smoke agree byte-for-byte on the rule (per-lease stale ids, or
+ *  the executor-level fallback when only ages are known). */
+export function hygieneStaleCount(summary: HygieneSummary): number {
+  return summary.staleLeases.length || summary.affectedExecutors.length;
+}
+
+/* ---------- lease-pressure viz model (pure) ----------
+ * The bar geometry + severity for the Agents "Lease pressure" capsule column.
+ * Kept pure and testable so the saturation falsifier (fixture ages that must NOT
+ * collapse to identical full-height bars) reasons about the same numbers the
+ * component draws.
+ */
+
+export type LeasePressureTone = "crit" | "seam" | "work";
+
+export interface LeasePressureBar {
+  id: string;
+  /** full executor label (tooltip holder). */
+  label: string;
+  /** short axis label under the capsule. */
+  shortLabel: string;
+  ageSeconds: number;
+  /** fill value in hours (CapsuleColumn `value`). */
+  ageHours: number;
+  /** true age, mono-rendered as the visible value label. */
+  ageLabel: string;
+  /** bounded-scale ceiling in hours (CapsuleColumn `max`). */
+  ceilingHours: number;
+  /** age / threshold — drives severity color. */
+  ratio: number;
+  tone: LeasePressureTone;
+  overThreshold: boolean;
+  leaseCount: number;
+  /** the oldest lease's work id (tooltip). */
+  oldestLeaseWorkId: string;
+}
+
+export interface LeasePressureModel {
+  bars: LeasePressureBar[];
+  thresholdHours: number;
+}
+
+function leaseToneFor(ratio: number): LeasePressureTone {
+  return ratio >= 1 ? "crit" : ratio >= 0.75 ? "seam" : "work";
+}
+
+/** Which of an executor's active leases is the oldest (its age matches
+ *  oldestLeaseAgeSeconds); the tooltip names it. */
+function oldestLeaseWorkId(executor: ExecutorRow): string {
+  let bestId = "";
+  let bestAge = -1;
+  for (const lease of executor.leases) {
+    if (lease.ageSeconds !== null && lease.ageSeconds > bestAge) {
+      bestAge = lease.ageSeconds;
+      bestId = lease.workId;
+    }
+  }
+  return bestId;
+}
+
+export function leasePressureBars(executors: ExecutorRow[], staleAfterSeconds: number): LeasePressureModel {
+  const thresholdHours = Math.max(1, Math.round(staleAfterSeconds / 3600));
+  const leased = executors.filter((e) => e.leaseCount > 0 && e.oldestLeaseAgeSeconds !== null);
+
+  const bars: LeasePressureBar[] = leased.map((executor) => {
+    const ageSeconds = executor.oldestLeaseAgeSeconds ?? 0;
+    const ageHours = Math.round((ageSeconds / 3600) * 10) / 10;
+    const ratio = ageSeconds / staleAfterSeconds;
+    return {
+      id: executor.id || executor.label,
+      label: executor.label,
+      shortLabel: executor.label.length > 6 ? `${executor.label.slice(0, 6)}…` : executor.label,
+      ageSeconds,
+      ageHours,
+      ageLabel: durationLabel(ageSeconds),
+      // Saturating scale (measured against the threshold): every age past the
+      // threshold pins full-height. Bounded-scale fix lands in the viz repair.
+      ceilingHours: thresholdHours,
+      ratio,
+      tone: leaseToneFor(ratio),
+      overThreshold: ratio >= 1,
+      leaseCount: executor.leaseCount,
+      oldestLeaseWorkId: oldestLeaseWorkId(executor),
+    };
+  });
+
+  return { bars, thresholdHours };
+}

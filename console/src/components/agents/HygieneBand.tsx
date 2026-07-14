@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import { ConfirmDialog, FreshnessChip } from "@/components/kit";
 
-import { durationLabel, type HygieneSummary } from "./executor-model";
+import { durationLabel, hygieneStaleCount, type HygieneSummary } from "./executor-model";
 
 /**
  * Lease-hygiene band — THE operator win of the Agents screen (plan Part 3,
@@ -42,7 +42,7 @@ export function HygieneBand({
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const staleCount = summary.staleLeases.length || summary.affectedExecutors.length;
+  const staleCount = hygieneStaleCount(summary);
   const staleAfterLabel = durationLabel(staleAfterSeconds);
 
   async function copyRepair() {
