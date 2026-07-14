@@ -133,6 +133,79 @@ func TestPermissionDriftRedGreenAndIgnoresUnrelatedKeys(t *testing.T) {
 	assertPermissionDrift(t, homePath, true, "$defaults")
 }
 
+func TestApplyPermissionsWritesManagedRulesAndArtifactIdempotently(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{
+		"theme":    "dark",
+		"autoMode": map[string]any{"allow": []string{"$defaults", "HandOwned"}, "other": true},
+		"hooks":    map[string]any{"PreToolUse": []any{map[string]any{"matcher": "Write"}}},
+	})
+	policy := permissionFixture([]string{"Read", "mcp__gbrain__*"})
+	policy.AutoMode.Allow = []string{"$defaults", "Routine local shell is auto-approved."}
+	writePermissionFixture(t, homePath, targetPath, policy)
+
+	first, err := ApplyPermissions(homePath, "claude_code")
+	if err != nil {
+		t.Fatalf("apply permissions: %v", err)
+	}
+	if !first.Changed {
+		t.Fatal("first apply changed = false, want true")
+	}
+	body, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeTestJSON(t, body)
+	if got["theme"] != "dark" || got["autoMode"].(map[string]any)["other"] != true {
+		t.Fatalf("hand-owned settings not preserved: %+v", got)
+	}
+	if _, ok := got["hooks"].(map[string]any)["PreToolUse"]; !ok {
+		t.Fatalf("hooks not preserved: %+v", got["hooks"])
+	}
+	assertStrings(t, got["autoMode"].(map[string]any)["allow"], []string{"$defaults", "HandOwned", "Routine local shell is auto-approved."})
+	artifact, ok, err := latestHarnessArtifact(homePath, "claude_code", targetPath)
+	if err != nil || !ok {
+		t.Fatalf("latest artifact ok=%t err=%v", ok, err)
+	}
+	if artifact.ContentSHA256 != first.Artifact.ContentSHA256 {
+		t.Fatalf("artifact sha = %q, want %q", artifact.ContentSHA256, first.Artifact.ContentSHA256)
+	}
+
+	second, err := ApplyPermissions(homePath, "claude_code")
+	if err != nil {
+		t.Fatalf("second apply permissions: %v", err)
+	}
+	if second.Changed {
+		t.Fatal("second apply changed = true, want idempotent false")
+	}
+}
+
+func TestApplyPermissionsRollsBackSettingsWhenArtifactManifestFails(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	before, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	previousWriter := writeHarnessArtifactManifestForApply
+	writeHarnessArtifactManifestForApply = func(string, []HarnessArtifact) error {
+		return os.ErrPermission
+	}
+	t.Cleanup(func() { writeHarnessArtifactManifestForApply = previousWriter })
+
+	if _, err := ApplyPermissions(homePath, "claude_code"); err == nil || !strings.Contains(err.Error(), "restored") {
+		t.Fatalf("apply error = %v, want explicit restore evidence", err)
+	}
+	after, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("settings changed after manifest failure:\n%s\n---\n%s", before, after)
+	}
+}
+
 func permissionFixture(allow []string) PermissionAuthority {
 	return PermissionAuthority{
 		SchemaVersion: PermissionAuthoritySchemaVersion, Harness: "claude_code", AuthorityRef: PermissionAuthorityRef("claude_code"),
