@@ -100,7 +100,7 @@ func (s *Store) CaptureToolOutput(tool, workID, body string, now time.Time) (cid
 // the caller is told it is gone. The cid is validated to the strict "sha256:<64 hex>" shape before any
 // read, so a path-shaped value can never escape the blob dir.
 func (s *Store) ReadToolOutput(cid string) ([]byte, error) {
-	if err := validToolOutputCID(cid); err != nil {
+	if err := validSHA256CID(cid); err != nil {
 		return nil, err
 	}
 	b, err := os.ReadFile(filepath.Join(s.home, toolOutputDir, cid))
@@ -113,21 +113,22 @@ func (s *Store) ReadToolOutput(cid string) ([]byte, error) {
 	return b, nil
 }
 
-// validToolOutputCID enforces the exact content-id shape ("sha256:" + 64 lowercase hex chars). It is
-// both a correctness guard and a path-traversal guard: the cid keys a filename under the blob dir, so
-// a crafted value ("../…", a separator) must never reach os.ReadFile.
-func validToolOutputCID(cid string) error {
+// validSHA256CID enforces the exact content-id shape ("sha256:" + 64 lowercase hex chars) shared by
+// every content-addressed blob door in this package (tool-output, capture, …). It is both a
+// correctness guard and a path-traversal guard: the cid keys a filename under a blob dir, so a
+// crafted value ("../…", a separator) must never reach os.ReadFile.
+func validSHA256CID(cid string) error {
 	const prefix = "sha256:"
 	if !strings.HasPrefix(cid, prefix) {
-		return fmt.Errorf("tool output cid must be %q-prefixed, got %q", prefix, cid)
+		return fmt.Errorf("content id must be %q-prefixed, got %q", prefix, cid)
 	}
 	hexPart := cid[len(prefix):]
 	if len(hexPart) != 64 {
-		return fmt.Errorf("tool output cid must be sha256:<64 hex>, got %q", cid)
+		return fmt.Errorf("content id must be sha256:<64 hex>, got %q", cid)
 	}
 	for _, r := range hexPart {
 		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
-			return fmt.Errorf("tool output cid has a non-hex character: %q", cid)
+			return fmt.Errorf("content id has a non-hex character: %q", cid)
 		}
 	}
 	return nil
