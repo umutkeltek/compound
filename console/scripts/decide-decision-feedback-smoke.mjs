@@ -7,8 +7,8 @@
  * client.ts, which itself carries an `import type` from decision-registry.ts
  * (erased at build, so it stays client-bundle-safe) — same reason
  * generic-actions-smoke.mjs and decide-model-brief-smoke.mjs run under bun.
- * Not yet wired into `compound proof-check`'s gate list (a Go change,
- * cmd/compound/proof_check.go, out of scope here) — same as those two.
+ * Wired into `compound proof-check` as `console-decide-decision-feedback-smoke`
+ * (a bun smoke; see cmd/compound/proof_check.go).
  */
 import { runDecideDecisionFeedbackSelfTest } from "../src/lib/decide-decision-feedback.selftest.ts";
 

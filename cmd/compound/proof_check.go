@@ -212,6 +212,9 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-ask-triage-smoke", Command: consoleBunSmokeCommand("scripts/ask-triage-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-ask-triage-smoke"},
 		{Name: "console-representation-falsifiers-smoke", Command: consoleBunSmokeCommand("scripts/representation-falsifiers-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-representation-falsifiers-smoke"},
 		{Name: "console-representation-cluster-guard-smoke", Command: consoleSmokeCommand("scripts/representation-cluster-guard-smoke.mjs"), Dir: "console", ProofRef: "console-representation-cluster-guard-smoke"},
+		// bun smokes: these import extensionless TS the node runner cannot resolve, so they run under bun.
+		{Name: "console-stream-tail-smoke", Command: consoleBunSmokeCommand("scripts/stream-tail-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-stream-tail-smoke"},
+		{Name: "console-decide-decision-feedback-smoke", Command: consoleBunSmokeCommand("scripts/decide-decision-feedback-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decide-decision-feedback-smoke"},
 		{Name: "bun-tools-test", Command: []string{"bun", "test", "<tools/*.test.ts>"}, SkipIfMissing: "bun", ProofRef: "bun-tools-test"},
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict"},
 		{Name: "profiles-check", Command: []string{exe, "profiles", "check", "--installed-only"}, ProofRef: "profiles-check-installed-only"},

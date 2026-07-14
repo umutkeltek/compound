@@ -1,9 +1,9 @@
 /**
  * Executes (not just typechecks) the SSE tail-parser depth test
- * (tail-parser.selftest.ts). Pure TS (no JSX, no Node import), so plain
- * `node` with `--experimental-strip-types` runs it, matching the other
- * console smoke scripts (work-trace-smoke.mjs, move-type-drift-smoke.mjs);
- * `bun scripts/stream-tail-smoke.mjs` works too.
+ * (tail-parser.selftest.ts). The selftest imports "./tail-parser" WITHOUT a file
+ * extension, which `node --experimental-strip-types` does not resolve, so this
+ * runs under `bun scripts/stream-tail-smoke.mjs` (bun resolves the extensionless
+ * .ts import). It is wired into `compound proof-check` as a bun smoke.
  */
 import { runTailParserSelfTest } from "../src/lib/stream/tail-parser.selftest.ts";
 
