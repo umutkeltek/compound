@@ -49,6 +49,10 @@ func TestInformationCustodyDoctrineIsServedAndRetirementGrade(t *testing.T) {
 		"real consumer",
 		"negative control",
 		"quiet_window_proven",
+		"One-owner matrix",
+		"Preference and setting flow",
+		"LifecyclePlan",
+		"Failure-case contract",
 		"Compound and execution-gateway boundary",
 	} {
 		if !strings.Contains(custody, want) {
@@ -58,6 +62,18 @@ func TestInformationCustodyDoctrineIsServedAndRetirementGrade(t *testing.T) {
 	agents := read("AGENTS.md")
 	if !strings.Contains(agents, "docs/architecture/information-custody.md") {
 		t.Fatal("served build guide does not route executors to the custody owner")
+	}
+	runtime := read("docs/architecture/runtime.md")
+	for _, want := range []string{"lifecycle intention", "native`, `fallback`, `degraded`, or `unsupported`", "Installation observation is\nseparate evidence"} {
+		if !strings.Contains(runtime, want) {
+			t.Errorf("runtime hook contract missing %q", want)
+		}
+	}
+	execution := read("docs/architecture/execution-plane.md")
+	for _, want := range []string{"The execution handshake", "Requested and effective values are both durable", "no_account_or_quota", "unknown_effective_parameters"} {
+		if !strings.Contains(execution, want) {
+			t.Errorf("execution-plane contract missing %q", want)
+		}
 	}
 	adr := read("docs/adr/0002-compound-owned-information-custody.md")
 	if !strings.Contains(adr, "Status: accepted") || !strings.Contains(adr, "physically owns") {
