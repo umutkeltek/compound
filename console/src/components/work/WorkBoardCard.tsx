@@ -48,8 +48,14 @@ export function WorkBoardCard({
       onKeyDown={onKeyDown}
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="min-w-0 text-sm font-semibold leading-snug text-ink">{card.title}</span>
-        <StateBadge state={card.state} />
+        {/* Clamped (DESIGN.md work-card anatomy): a full predicate as title in a
+            narrow pipeline column otherwise wraps one word per line. */}
+        <span className="min-w-0 line-clamp-3 text-sm font-semibold leading-snug text-ink" title={card.title}>
+          {card.title}
+        </span>
+        <span className="shrink-0">
+          <StateBadge state={card.state} />
+        </span>
       </div>
 
       {card.note ? (
