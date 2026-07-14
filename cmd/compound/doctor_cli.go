@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,8 +63,10 @@ type doctorReport struct {
 
 // surfacingRow is one lane/harness × the communication surfaces it should see. Cell vocabulary
 // is deliberately small: guard is wired|drift|absent|unknown, orient is wired|never, peers is
-// the S2 placeholder. BelowExpectation names the expected-but-unwired columns (the trailing "!"
-// in the text render is derived from it) so text and JSON never disagree about what is short.
+// wired|absent (evidence-read from the latest orient-recorded peers-bearing ContextPack for the
+// harness). BelowExpectation names the expected-but-unwired columns (the trailing "!" in the text
+// render is derived from it) so text and JSON never disagree about what is short; peers is
+// informational and never marked below-expectation.
 type surfacingRow struct {
 	Lane             string   `json:"lane"`     // lane node name, or harness for fallback rows
 	Harness          string   `json:"harness"`  // aliased harness the guard/orient columns join on
@@ -232,6 +236,7 @@ func printSurfacing(stdout io.Writer, rep doctorReport) {
 		return
 	}
 	fmt.Fprintf(stdout, "%-30s %-9s %-15s %-14s %s\n", "lane", "guard", "orient", "injection", "peers")
+	seen := map[string]bool{}
 	for _, r := range rep.Surfacing {
 		below := map[string]bool{}
 		for _, c := range r.BelowExpectation {
@@ -248,7 +253,13 @@ func printSurfacing(stdout io.Writer, rep doctorReport) {
 		if below["orient"] {
 			orient += "!"
 		}
-		fmt.Fprintf(stdout, "%-30s %-9s %-15s %-14s %s\n", surfacingTruncate(r.Lane, 30), guard, orient, r.Injection, r.Peers)
+		line := fmt.Sprintf("%-30s %-9s %-15s %-14s %s", surfacingLaneCell(r.Lane, 30), guard, orient, r.Injection, r.Peers)
+		// Byte-identical rendered rows collapse to one; the JSON report still lists every row.
+		if seen[line] {
+			continue
+		}
+		seen[line] = true
+		fmt.Fprintln(stdout, line)
 	}
 	if rep.SurfacingNote != "" {
 		fmt.Fprintf(stdout, "-> %s\n", rep.SurfacingNote)
@@ -256,17 +267,37 @@ func printSurfacing(stdout io.Writer, rep doctorReport) {
 	inj := rep.SurfacingInjection
 	fmt.Fprintf(stdout, "-> injection %s: served %d, consumed %d, last-consumed %s (%s)\n",
 		inj.Scope, inj.ServedEvents, inj.ConsumedEvents, inj.LastConsumed, inj.Note)
-	fmt.Fprintln(stdout, "-> peers: lane-beliefs visibility is not built yet (S2)")
+	fmt.Fprintln(stdout, "-> peers: active leases + agent-lane cards render in each harness's orient ContextPack (contextual, display-only)")
 }
 
-func surfacingTruncate(s string, max int) string {
-	if max <= 0 || len(s) <= max {
-		return s
+// surfacingLaneCell renders a lane name into the fixed-width lane column. When the name exceeds the
+// column it is truncated, but a short deterministic fingerprint of the FULL name is appended so two
+// lanes that share a prefix up to the cut still render as distinct rows (rather than collapsing into
+// one indistinguishable truncated cell). The fingerprint is pure ASCII so the fmt width verb pads
+// predictably and the table stays within its column budget.
+func surfacingLaneCell(name string, width int) string {
+	if width <= 0 {
+		return name
 	}
-	if max <= 1 {
-		return s[:max]
+	r := []rune(name)
+	if len(r) <= width {
+		return name
 	}
-	return s[:max-1] + "…"
+	const fp = 6 // hex chars of fingerprint
+	keep := width - (1 + fp)
+	if keep < 1 {
+		keep = 1
+	}
+	return string(r[:keep]) + "~" + laneCellFingerprint(name, fp)
+}
+
+func laneCellFingerprint(s string, n int) string {
+	sum := sha256.Sum256([]byte(s))
+	h := hex.EncodeToString(sum[:])
+	if n > len(h) {
+		n = len(h)
+	}
+	return h[:n]
 }
 
 // buildSurfacingCoverage derives the read-only surfacing matrix from state that already exists:
@@ -281,18 +312,19 @@ func buildSurfacingCoverage(homePath string, hooks []doctorHook, now time.Time) 
 		guardByHarness[surfacingHarnessAlias(h.Harness)] = guardStatus(h.Status)
 	}
 	orientByHarness := lastOrientByHarness(homePath)
+	peersByHarness := lastPeersByHarness(homePath)
 	inj := injectionGlobalSummary(homePath, now)
 
 	var rows []surfacingRow
 	note := ""
 	if lanes := agentLaneRows(homePath); len(lanes) > 0 {
 		for _, ln := range lanes {
-			rows = append(rows, surfacingRowFor(ln.Name, ln.Harness, guardByHarness, orientByHarness, inj, now))
+			rows = append(rows, surfacingRowFor(ln.Name, ln.Harness, guardByHarness, orientByHarness, peersByHarness, inj, now))
 		}
 	} else {
 		note = "no agent lanes imported — showing hook harnesses only"
 		for _, harness := range hookHarnessList(hooks) {
-			rows = append(rows, surfacingRowFor(harness, harness, guardByHarness, orientByHarness, inj, now))
+			rows = append(rows, surfacingRowFor(harness, harness, guardByHarness, orientByHarness, peersByHarness, inj, now))
 		}
 	}
 	return rows, note, inj
@@ -324,7 +356,7 @@ func guardStatus(action string) string {
 // surfacingRowFor assembles one row and derives its below-expectation columns: a harness-aliased
 // lane is expected to have its guard wired and to have oriented at least once, so an absent/drift
 // guard or a never-oriented harness renders with a trailing "!".
-func surfacingRowFor(lane, rawHarness string, guardBy map[string]string, orientBy map[string]time.Time, inj surfacingInjection, now time.Time) surfacingRow {
+func surfacingRowFor(lane, rawHarness string, guardBy map[string]string, orientBy, peersBy map[string]time.Time, inj surfacingInjection, now time.Time) surfacingRow {
 	alias := surfacingHarnessAlias(rawHarness)
 	guard := guardBy[alias]
 	if guard == "" {
@@ -336,6 +368,12 @@ func surfacingRowFor(lane, rawHarness string, guardBy map[string]string, orientB
 		orient = "wired"
 		orientAge = surfacingAge(now.Sub(t))
 	}
+	// peers is evidence-read: wired when the harness's latest orient-recorded ContextPack carried a
+	// non-empty peers section, else absent. Display-only — never marked below-expectation.
+	peers := "absent"
+	if t, ok := peersBy[alias]; ok {
+		peers = "wired (last " + surfacingAge(now.Sub(t)) + ")"
+	}
 	row := surfacingRow{
 		Lane:      lane,
 		Harness:   alias,
@@ -344,7 +382,7 @@ func surfacingRowFor(lane, rawHarness string, guardBy map[string]string, orientB
 		Orient:    orient,
 		OrientAge: orientAge,
 		Injection: fmt.Sprintf("%d/%d (global)", inj.ServedEvents, inj.ConsumedEvents),
-		Peers:     "absent (S2)",
+		Peers:     peers,
 	}
 	if guard == "absent" || guard == "drift" {
 		row.BelowExpectation = append(row.BelowExpectation, "guard")
@@ -420,6 +458,79 @@ func lastOrientByHarness(homePath string) map[string]time.Time {
 			return nil
 		}
 		alias := surfacingHarnessAlias(head.Harness)
+		if cur, ok := out[alias]; !ok || t.After(cur) {
+			out[alias] = t
+		}
+		return nil
+	})
+	return out
+}
+
+// lastPeersByHarness returns the most recent orient time per aliased harness for which a RECORDED
+// ContextPack carried a non-empty peers section. A recorded pack carries no harness of its own, so
+// its harness is resolved through its effective-contract link (ids.contract_id) against the recorded
+// EffectiveContracts the orient cell already reads. Reading these artifacts directly keeps doctor
+// read-only; a torn or foreign file is skipped, never fatal.
+func lastPeersByHarness(homePath string) map[string]time.Time {
+	// contract_id -> aliased harness, from the recorded EffectiveContracts (they carry the harness).
+	harnessByContract := map[string]string{}
+	_ = filepath.WalkDir(filepath.Join(homePath, "contracts", "effective"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		var head struct {
+			SchemaVersion string `json:"schema_version"`
+			ID            string `json:"id"`
+			Harness       string `json:"harness"`
+		}
+		if json.Unmarshal(data, &head) != nil || head.SchemaVersion != envelope.SVEffectiveContract {
+			return nil
+		}
+		if id := strings.TrimSpace(head.ID); id != "" {
+			harnessByContract[id] = surfacingHarnessAlias(head.Harness)
+		}
+		return nil
+	})
+
+	out := map[string]time.Time{}
+	_ = filepath.WalkDir(filepath.Join(homePath, "context", "packs"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		var head struct {
+			SchemaVersion string `json:"schema_version"`
+			CreatedAt     string `json:"created_at"`
+			IDs           struct {
+				ContractID string `json:"contract_id"`
+			} `json:"ids"`
+			Peers *struct {
+				ActiveLeases []json.RawMessage `json:"active_leases"`
+				Lanes        []json.RawMessage `json:"lanes"`
+			} `json:"peers"`
+		}
+		if json.Unmarshal(data, &head) != nil || head.SchemaVersion != envelope.SVContextPack {
+			return nil
+		}
+		// Recorded but empty peers is NOT evidence of a wired peers cell.
+		if head.Peers == nil || (len(head.Peers.ActiveLeases) == 0 && len(head.Peers.Lanes) == 0) {
+			return nil
+		}
+		alias, ok := harnessByContract[strings.TrimSpace(head.IDs.ContractID)]
+		if !ok || alias == "" {
+			return nil
+		}
+		t, terr := time.Parse(time.RFC3339, strings.TrimSpace(head.CreatedAt))
+		if terr != nil {
+			return nil
+		}
 		if cur, ok := out[alias]; !ok || t.After(cur) {
 			out[alias] = t
 		}

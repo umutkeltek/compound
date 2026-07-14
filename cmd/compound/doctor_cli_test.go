@@ -201,13 +201,21 @@ func TestDoctorSurfacing_F4_JSONAndTextAgree(t *testing.T) {
 	if !strings.Contains(text, "global") {
 		t.Fatalf("text must state the injection scope is global:\n%s", text)
 	}
-	if !strings.Contains(text, "(S2)") {
-		t.Fatalf("text must carry the S2 peers caveat:\n%s", text)
+	// Slice C flips the peers cell from the static "absent (S2)" placeholder to an evidence read:
+	// the S2 caveat is gone and the peers column is now a real state (absent on a fresh home).
+	if strings.Contains(text, "(S2)") {
+		t.Fatalf("static (S2) peers caveat must be gone:\n%s", text)
 	}
-	// Each row's guard token from JSON appears in the text.
+	if !strings.Contains(text, "peers") {
+		t.Fatalf("text must carry the peers column/note:\n%s", text)
+	}
+	// Each row's guard and peers tokens from JSON appear in the text.
 	for _, r := range rep.Surfacing {
 		if !strings.Contains(text, r.Guard) {
 			t.Fatalf("guard token %q from json row missing in text:\n%s", r.Guard, text)
+		}
+		if !strings.Contains(text, r.Peers) {
+			t.Fatalf("peers token %q from json row missing in text:\n%s", r.Peers, text)
 		}
 	}
 }
