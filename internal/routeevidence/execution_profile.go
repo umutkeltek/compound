@@ -173,7 +173,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 			NativeEffortByHarness: map[string]string{"claude-code": "low", "codex": "low", "worker": "low"},
 			Budget:                ExecutionBudget{MaxRequests: 500, MaxInputTokens: 10_000_000, MaxOutputTokens: 2_000_000, MaxDurationSeconds: 14_400, MaxUSD: usdCeiling(30), MaxParallelism: 16},
 			Checkpoint:            ExecutionCheckpointPolicy{Required: true, EveryRequests: 20, PersistPartial: true},
-			Candidates:            []ExecutionProfileCandidate{{ClientHarnessID: "codex", TransportID: "switchback", SemanticEffort: "economy", NativeEffort: "low", Terminal: true, Explanation: "bounded Codex client over Switchback transport; no provider call is made by resolution"}},
+			Candidates:            []ExecutionProfileCandidate{{ClientHarnessID: "codex", TransportID: "switchback", SemanticEffort: "economy", NativeEffort: "low", Terminal: true, Explanation: "bounded Codex client over Switchback transport; construction leaves execution unknown until receipt"}},
 			Explanation:           "bulk mining prefers cheap transport, bounded parallelism, and persistent checkpoints",
 		},
 		{
