@@ -47,20 +47,21 @@ func (s *Store) addReceiptHoldEvidence(idx *holdEvidenceIndex) []string {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
+		// Receipts are minted as rec_<hash>.json (idFor("rec_", …)); events/
+		// holds ~50x more tr_/act_/pol_/hook_ files, so anything else is
+		// skipped unopened. The schema check below still guards a stray
+		// rec_-named non-receipt.
+		if !strings.HasPrefix(entry.Name(), "rec_") {
+			continue
+		}
 		path := filepath.Join(dir, entry.Name())
-		var header struct {
-			SchemaVersion string `json:"schema_version"`
-		}
-		if err := s.readJSON(path, &header); err != nil {
-			warnings = append(warnings, "hold evidence receipt "+entry.Name()+" unreadable: "+err.Error())
-			continue
-		}
-		if header.SchemaVersion != envelope.SVReceipt {
-			continue
-		}
+		s.holdEvidenceFileReads.Add(1)
 		var receipt envelope.Receipt
 		if err := s.readJSON(path, &receipt); err != nil {
 			warnings = append(warnings, "hold evidence receipt "+entry.Name()+" unreadable: "+err.Error())
+			continue
+		}
+		if receipt.SchemaVersion != envelope.SVReceipt {
 			continue
 		}
 		if err := receipt.Validate(); err != nil {
