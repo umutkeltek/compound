@@ -69,8 +69,10 @@ func TestGenericFallback(t *testing.T) {
 	if !h.Fallback {
 		t.Error("fallback flag should be set on the generic stand-in")
 	}
-	if r.Supports("some-unknown-harness", "PreToolUse") {
-		t.Error("generic fallback must not claim to block tool calls (fail-open)")
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"} {
+		if r.Supports("some-unknown-harness", event) {
+			t.Errorf("generic fallback must not claim native %s support", event)
+		}
 	}
 	if len(h.Limitations) == 0 {
 		t.Error("generic harness should carry its fail-open limitation")
@@ -79,8 +81,77 @@ func TestGenericFallback(t *testing.T) {
 
 func TestNamesSorted(t *testing.T) {
 	got := DefaultRegistry().Names()
-	if len(got) != 2 || got[0] != "claude_code" || got[1] != "codex" {
-		t.Errorf("Names() = %v, want sorted [claude_code codex]", got)
+	want := []string{"claude_code", "codex", "hermes", "opencode"}
+	if len(got) != len(want) {
+		t.Fatalf("Names() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Names() = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestHermesCapabilitiesAreExplicitAndConservative(t *testing.T) {
+	r := DefaultRegistry()
+	hermes, found := r.Get("hermes")
+	if !found || hermes.Fallback {
+		t.Fatalf("hermes registry row = %+v found=%v, want explicit non-fallback", hermes, found)
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"} {
+		if !r.Supports("hermes", event) {
+			t.Errorf("hermes should support %s through its evidenced plugin lifecycle", event)
+		}
+	}
+	if r.Supports("hermes", "Stop") {
+		t.Error("hermes must not claim a native Stop feedback mapping")
+	}
+	if !hermes.Capabilities.NativeSkills || !hermes.Capabilities.MCP {
+		t.Fatalf("hermes native capabilities = %+v, want skills + MCP", hermes.Capabilities)
+	}
+	for _, limitation := range []string{
+		"dynamic context uses pre_llm_call; on_session_start fires after the system prompt is built",
+		"plugin callback exceptions fail open",
+		"native blocking requires an installed and content-attested Compound plugin",
+		"on_session_end is turn/run scoped, not final chat lifetime",
+		"no-agent cron and script execution requires a wrapper or action contract",
+	} {
+		if !hasString(hermes.Limitations, limitation) {
+			t.Errorf("hermes limitations = %v, missing %q", hermes.Limitations, limitation)
+		}
+	}
+}
+
+func TestOpenCodeCapabilitiesDoNotOverclaimMutationOrEndEvents(t *testing.T) {
+	r := DefaultRegistry()
+	opencode, found := r.Get("opencode")
+	if !found || opencode.Fallback {
+		t.Fatalf("opencode registry row = %+v found=%v, want explicit non-fallback", opencode, found)
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse"} {
+		if !r.Supports("opencode", event) {
+			t.Errorf("opencode should support %s", event)
+		}
+	}
+	for _, event := range []string{"PreToolUse", "Stop", "SessionEnd"} {
+		if r.Supports("opencode", event) {
+			t.Errorf("opencode must not claim %s before complete permission/end-event proof", event)
+		}
+	}
+	if !opencode.Capabilities.NativeSkills || !opencode.Capabilities.MCP {
+		t.Fatalf("opencode native capabilities = %+v, want skills + MCP", opencode.Capabilities)
+	}
+	for _, limitation := range []string{
+		"system context transform is experimental",
+		"permission.ask denial covers only calls routed through permission handling; tool.execute.before cannot deny",
+		"full mutation coverage requires proof that every mutating tool is permission-gated or a fail-closed wrapper",
+		"no proven SessionEnd or Stop mapping",
+		"no installed Compound plugin or content attestation",
+		"currently a read-only lane in imported capability authority",
+	} {
+		if !hasString(opencode.Limitations, limitation) {
+			t.Errorf("opencode limitations = %v, missing %q", opencode.Limitations, limitation)
+		}
 	}
 }
 
@@ -101,6 +172,9 @@ func TestLoadRegistryManifest(t *testing.T) {
 	}
 	if !reg.Supports("codex", "PreToolUse") {
 		t.Fatal("codex fixture should expose the stable native pre-tool block")
+	}
+	if reg.Supports("codex", "SessionEnd") || !reg.Supports("codex", "Stop") {
+		t.Fatalf("codex fixture must model Stop=true and SessionEnd=false")
 	}
 	if got := RegistryRevision(reg); !strings.HasPrefix(got, "sha256:") {
 		t.Fatalf("registry revision = %q", got)
