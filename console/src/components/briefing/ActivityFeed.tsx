@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { EmptyDoctrine, Panel } from "@/components/briefing/primitives";
-import { StateBadge } from "@/components/kit";
+import { FeedDegraded, feedRenderModel, type FeedProjectionStatus, StateBadge } from "@/components/kit";
 import { arr, num, str, type Json } from "@/lib/compound";
 import { ago } from "@/lib/time";
 
@@ -40,7 +40,21 @@ function clamp(text: string, max: number): string {
   return clean.length <= max ? clean : `${clean.slice(0, max).replace(/[\s.,;:—–-]+$/, "")}…`;
 }
 
-export function ActivityFeed({ recent }: { recent: Json[] }) {
+export function ActivityFeed({
+  recent,
+  read,
+}: {
+  recent: Json[];
+  read: { status: FeedProjectionStatus; lastGoodAt: string | null };
+}) {
+  if (feedRenderModel(read.status, recent.length > 0) === "degraded") {
+    return (
+      <Panel className="px-6 py-6">
+        <FeedDegraded label="Live activity" source="compound workbench --json --recent 500" lastGoodAt={read.lastGoodAt} />
+      </Panel>
+    );
+  }
+
   const rows = recent
     .slice()
     .sort((a, b) => num(b.claimed_at) - num(a.claimed_at))

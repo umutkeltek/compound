@@ -1,5 +1,13 @@
 import { Panel, domainForArea, type DomainTone } from "@/components/briefing/primitives";
-import { DotMatrix, GridIcon, type MatrixRow, SectionHeader } from "@/components/kit";
+import {
+  DotMatrix,
+  FeedDegraded,
+  feedRenderModel,
+  type FeedProjectionStatus,
+  GridIcon,
+  type MatrixRow,
+  SectionHeader,
+} from "@/components/kit";
 import type { AttentionGroup } from "@/lib/attention";
 import { toDate } from "@/lib/time";
 
@@ -42,7 +50,24 @@ function level(count: number): number {
   return 3;
 }
 
-export function AttentionAgeMatrix({ groups }: { groups: AttentionGroup[] }) {
+export function AttentionAgeMatrix({
+  groups,
+  read,
+}: {
+  groups: AttentionGroup[];
+  read: { status: FeedProjectionStatus; lastGoodAt: string | null };
+}) {
+  if (feedRenderModel(read.status, groups.length > 0) === "degraded") {
+    return (
+      <Panel className="p-4">
+        <SectionHeader tone="seam" icon={<GridIcon />} label="Attention age" sub="needs-you by domain × age" />
+        <div className="mt-4">
+          <FeedDegraded label="Attention age" source="compound attention --json" lastGoodAt={read.lastGoodAt} />
+        </div>
+      </Panel>
+    );
+  }
+
   // domain → [bucket counts]
   const tally = new Map<DomainTone, number[]>();
   const now = Date.now();

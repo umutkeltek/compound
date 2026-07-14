@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { DomainKicker, EmptyDoctrine, Panel } from "@/components/briefing/primitives";
+import { FeedDegraded, feedRenderModel, type FeedProjectionStatus } from "@/components/kit";
 import type { AttentionGroup } from "@/lib/attention";
 import { humanAge, isOld } from "@/lib/briefing";
 import { str } from "@/lib/compound";
@@ -19,7 +20,22 @@ function clamp(text: string, max: number): string {
  * client-side), each deep-linked to the Decide queue. Rows carry the domain
  * accent + the amber age when stale — the same seam grammar as the hero.
  */
-export function DecideList({ groups, total }: { groups: AttentionGroup[]; total: number }) {
+export function DecideList({
+  groups,
+  total,
+  read,
+}: {
+  groups: AttentionGroup[];
+  total: number;
+  read: { status: FeedProjectionStatus; lastGoodAt: string | null };
+}) {
+  if (feedRenderModel(read.status, groups.length > 0) === "degraded") {
+    return (
+      <Panel className="px-6 py-8">
+        <FeedDegraded label="Decide" source="compound attention --json" lastGoodAt={read.lastGoodAt} />
+      </Panel>
+    );
+  }
   if (!groups.length) {
     return (
       <Panel className="px-6 py-8">

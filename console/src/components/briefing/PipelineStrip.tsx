@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import type { PipelineStage } from "@/lib/briefing";
-import type { StateTone } from "@/components/kit";
+import { FeedDegraded, feedRenderModel, type FeedProjectionStatus, type StateTone } from "@/components/kit";
 
 /**
  * Seven work stages at board scale: Signal → Suggest → Add to work → Start →
@@ -40,7 +40,22 @@ function Node({ stage }: { stage: PipelineStage }) {
   return <span className={`h-3.5 w-3.5 rounded-full border ${NODE[stage.tone]}`} aria-hidden />;
 }
 
-export function PipelineStrip({ stages }: { stages: PipelineStage[] }) {
+export function PipelineStrip({
+  stages,
+  read,
+}: {
+  stages: PipelineStage[];
+  read: { status: FeedProjectionStatus; lastGoodAt: string | null };
+}) {
+  // A dead workbench door must never render as an idle-but-healthy pipeline
+  // (all-zero stage counts are pixel-identical to a genuinely quiet queue) -
+  // packet: console-honest-degradation.
+  if (feedRenderModel(read.status, stages.some((stage) => stage.count > 0)) === "degraded") {
+    return (
+      <FeedDegraded label="Pipeline" source="compound workbench --json --recent 500" lastGoodAt={read.lastGoodAt} />
+    );
+  }
+
   const lastIndex = stages.length - 1;
   return (
     <Link

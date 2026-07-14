@@ -1,4 +1,4 @@
-import { arr, num, runJson, str, type Json } from "@/lib/compound";
+import { arr, num, runJson, runProjection, str, type Json, type ProjectionRead } from "@/lib/compound";
 
 /**
  * The ONE operator-attention projection (`compound attention --json`,
@@ -143,6 +143,23 @@ export function toAttentionReport(raw: Json | null): AttentionReport | null {
  */
 export async function getAttention(): Promise<AttentionReport | null> {
   return toAttentionReport(await runJson(["attention", "--json"]));
+}
+
+/**
+ * ProjectionRead-aware companion to `getAttention` (packet:
+ * console-honest-degradation, passthrough). Same normalizer, but exposes
+ * status/lastGoodAt/error so a caller renders the honest-degradation model -
+ * never assume a non-null report means "live"; check `read.status`. Only the
+ * briefing uses this today (a real `compound attention --json` runs ~20s, so
+ * it needs the extended per-door timeout); every other caller keeps using the
+ * plain `getAttention()` above, unaffected.
+ */
+export async function getAttentionProjection(opts?: { timeoutMs?: number }): Promise<{
+  read: ProjectionRead;
+  report: AttentionReport | null;
+}> {
+  const read = await runProjection(["attention", "--json"], opts);
+  return { read, report: toAttentionReport(read.value) };
 }
 
 /**

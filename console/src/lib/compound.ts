@@ -109,41 +109,65 @@ export function compoundFailure(error: unknown): CompoundRunFailure {
   };
 }
 
-async function execRunJson(args: string[]): Promise<Json | null> {
+async function execRunJson(args: string[], timeoutMs: number): Promise<Json | null> {
   const { stdout } = await exec(COMPOUND_BIN, args, {
     env: { ...process.env, COMPOUND_HOME },
-    timeout: 15_000,
+    timeout: timeoutMs,
     maxBuffer: 64 * 1024 * 1024,
   });
   const json = firstJsonObject(stdout.trim());
   return json ? JSON.parse(json) : null;
 }
 
-/* ---------- runJson memo: TTL cache + stale-while-revalidate + in-flight de-dup ----------
- * Every `compound ... --json` re-exec is a subprocess spawn; without this, every
- * request (and every N+1 caller within a request) pays that cost again. Keyed
- * by JSON.stringify(argv):
- *  - fresh (<25s old): served straight from cache, no exec.
- *  - stale (>=25s old): served immediately from cache (never blocks the
- *    request), one background exec refreshes it for the next reader.
+/* ---------- runJson/runProjection memo: TTL cache + stale-while-revalidate +
+ * in-flight de-dup + never-cache-null-over-good ----------
+ * Every `compound ... --json` re-exec is a subprocess spawn; without this,
+ * every request (and every N+1 caller within a request) pays that cost again.
+ * Keyed by JSON.stringify(argv):
+ *  - fresh success (<25s old, nothing has failed since): served straight from
+ *    cache, no exec - `live`.
+ *  - a last-good value exists but is past TTL, or the latest attempt to
+ *    refresh it failed: served immediately from cache (never blocks the
+ *    request) - `stale` - while at most one background exec refreshes it.
+ *  - no last-good value has EVER landed for this argv: `unreachable`. A cold
+ *    caller (no cache entry, no in-flight exec) awaits the first real attempt
+ *    so it can report the genuine failure instead of an optimistic default.
  *  - cold + concurrent callers for the SAME argv (e.g. Promise.all fan-out):
  *    collapse into one in-flight exec - this is what kills N+1 fan-outs
  *    (packets list per work item, system stats called 3x on one request).
+ *
+ * THE LAW (packet: console-honest-degradation, 2026-07-14 - the "clean seam"
+ * bug): a failed or timed-out attempt NEVER overwrites a good cached value
+ * with null, and NEVER stamps a fresh success timestamp on a failure. The old
+ * code's cold-failure catch did `storeRunJsonEntry(key, null)`, which stamped
+ * a fresh `storedAt` on a null value - for the next TTL window every reader
+ * saw "no data" as a confirmed, current fact, and `null` mapped straight to
+ * the doctrine empty state ("Clean seam. Nothing waits on you.")
+ * pixel-identical to a genuinely healthy dashboard. Now a failed attempt only
+ * ever updates `lastError`/`lastErrorAt`; `value`/`storedAt` (the last-good
+ * facts) move forward ONLY on a real success.
+ *
  * Bounded to ~50 entries (oldest-touched evicted first). Never throws - same
  * fail-soft contract as the pre-cache runJson. Mutations call
  * invalidateRunJsonCache() so router.refresh() always shows fresh truth.
  */
 const RUN_JSON_TTL_MS = 25_000;
 const RUN_JSON_MAX_ENTRIES = 50;
+const DEFAULT_RUN_JSON_TIMEOUT_MS = 15_000;
 
 type RunJsonCacheEntry = {
+  /** last SUCCESSFUL payload; null only if a success has never landed. */
   value: Json | null;
-  storedAt: number;
+  /** ms epoch of that last success; null only if a success has never landed. */
+  storedAt: number | null;
   revalidating: boolean;
+  /** message from the most recent failed attempt, if any (may postdate storedAt). */
+  lastError: string | null;
+  lastErrorAt: number | null;
 };
 
 const runJsonCache = new Map<string, RunJsonCacheEntry>();
-const runJsonInflight = new Map<string, Promise<Json | null>>();
+const runJsonInflight = new Map<string, Promise<RunJsonCacheEntry>>();
 
 let binaryFreshnessCache:
   | {
@@ -160,12 +184,74 @@ function pruneRunJsonCache() {
   }
 }
 
-function storeRunJsonEntry(key: string, value: Json | null) {
+/** A real success: the only path allowed to move `value`/`storedAt` forward. */
+function commitRunJsonSuccess(key: string, value: Json | null): RunJsonCacheEntry {
+  // Exit 0 but no parseable JSON object in stdout is not a confirmed empty
+  // result - bookkeep it as a failure so never-cache-null holds even when the
+  // exec itself didn't reject.
+  if (value === null) return commitRunJsonFailure(key, "compound produced no parseable JSON output");
   // delete-then-set moves the key to the end of Map's iteration order, so the
   // eviction above naturally drops the least-recently-refreshed entry first.
   runJsonCache.delete(key);
-  runJsonCache.set(key, { value, storedAt: Date.now(), revalidating: false });
+  const entry: RunJsonCacheEntry = { value, storedAt: Date.now(), revalidating: false, lastError: null, lastErrorAt: null };
+  runJsonCache.set(key, entry);
   pruneRunJsonCache();
+  return entry;
+}
+
+/** A failed (or parse-empty) attempt: NEVER touches `value`/`storedAt` - only
+ * stamps the failure so status derivation can tell `stale` from `live`. */
+function commitRunJsonFailure(key: string, message: string): RunJsonCacheEntry {
+  const prev = runJsonCache.get(key);
+  runJsonCache.delete(key);
+  const entry: RunJsonCacheEntry = {
+    value: prev?.value ?? null,
+    storedAt: prev?.storedAt ?? null,
+    revalidating: false,
+    lastError: message,
+    lastErrorAt: Date.now(),
+  };
+  runJsonCache.set(key, entry);
+  pruneRunJsonCache();
+  return entry;
+}
+
+/**
+ * The one place a `compound ... --json` argv is actually resolved: exec, TTL
+ * cache, stale-while-revalidate, in-flight de-dup, never-cache-null. Both
+ * `runJson` (value-only, back-compat) and `runProjection` (full honest-
+ * degradation model below) read through this shared memo.
+ */
+async function readRunJsonEntry(args: string[], timeoutMs: number): Promise<RunJsonCacheEntry> {
+  const key = JSON.stringify(args);
+  const cached = runJsonCache.get(key);
+
+  if (cached) {
+    const fresh = cached.storedAt !== null && Date.now() - cached.storedAt < RUN_JSON_TTL_MS;
+    if (fresh) return cached;
+
+    // Stale (or never-succeeded): serve what we have immediately; at most one
+    // background exec refreshes it for the next reader.
+    if (!cached.revalidating) {
+      cached.revalidating = true;
+      execRunJson(args, timeoutMs)
+        .then((value) => commitRunJsonSuccess(key, value))
+        .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message));
+    }
+    return cached;
+  }
+
+  const inflight = runJsonInflight.get(key);
+  if (inflight) return inflight;
+
+  const promise = execRunJson(args, timeoutMs)
+    .then((value) => commitRunJsonSuccess(key, value))
+    .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message))
+    .finally(() => {
+      runJsonInflight.delete(key);
+    });
+  runJsonInflight.set(key, promise);
+  return promise;
 }
 
 /**
@@ -173,41 +259,62 @@ function storeRunJsonEntry(key: string, value: Json | null) {
  * commands but only API routes below execute allowlisted mutations.
  */
 export async function runJson(args: string[]): Promise<Json | null> {
-  const key = JSON.stringify(args);
-  const cached = runJsonCache.get(key);
+  const entry = await readRunJsonEntry(args, DEFAULT_RUN_JSON_TIMEOUT_MS);
+  return entry.value;
+}
 
-  if (cached) {
-    if (Date.now() - cached.storedAt < RUN_JSON_TTL_MS) return cached.value;
+export type ProjectionStatus = "live" | "stale" | "unreachable";
 
-    // Stale: serve what we have immediately; refresh once in the background.
-    if (!cached.revalidating) {
-      cached.revalidating = true;
-      execRunJson(args)
-        .then((value) => storeRunJsonEntry(key, value))
-        .catch(() => {
-          cached.revalidating = false; // let the next read retry the refresh
-        });
-    }
-    return cached.value;
-  }
+/**
+ * The honest-degradation read model (packet: console-honest-degradation). A
+ * door being down is a fact the console states, never something it papers
+ * over with the last shape that happened to parse.
+ *  - `live`: a fresh success landed within the TTL and nothing has failed since.
+ *  - `stale`: a last-good value exists, but it is past TTL or the latest
+ *    refresh attempt failed - render the last-good value, never invent a gap.
+ *  - `unreachable`: no success has EVER landed for this argv - render nothing
+ *    invented; the caller shows the degraded seam, not a doctrine empty state
+ *    (that state is earned only by a genuinely empty `live` read).
+ */
+export type ProjectionRead = {
+  status: ProjectionStatus;
+  value: Json | null;
+  /** the payload's own `generated_at` field, when the current value carries one. */
+  generatedAt: string | null;
+  /** ISO timestamp of the last successful fetch; null iff status is `unreachable`. */
+  lastGoodAt: string | null;
+  /** message from the most recent failed attempt, if any. */
+  error: string | null;
+  elapsedMs: number;
+};
 
-  const inflight = runJsonInflight.get(key);
-  if (inflight) return inflight;
+function projectionStatus(entry: RunJsonCacheEntry, now: number): ProjectionStatus {
+  if (entry.storedAt === null) return "unreachable";
+  const failedSinceSuccess = entry.lastErrorAt !== null && entry.lastErrorAt > entry.storedAt;
+  const fresh = now - entry.storedAt < RUN_JSON_TTL_MS;
+  return fresh && !failedSinceSuccess ? "live" : "stale";
+}
 
-  const promise = execRunJson(args)
-    .then((value) => {
-      storeRunJsonEntry(key, value);
-      return value;
-    })
-    .catch(() => {
-      storeRunJsonEntry(key, null);
-      return null;
-    })
-    .finally(() => {
-      runJsonInflight.delete(key);
-    });
-  runJsonInflight.set(key, promise);
-  return promise;
+/**
+ * Run a read-only compound verb and return the full honest-degradation model
+ * instead of a bare value - see `ProjectionRead`. Shares the exact cache
+ * `runJson` uses (same key = JSON.stringify(argv)), so a page reading the same
+ * argv through both never pays for two subprocess executions. `opts.timeoutMs`
+ * overrides the default per call site (e.g. attention/workbench need ~45s
+ * today; see console/src/app/page.tsx).
+ */
+export async function runProjection(args: string[], opts?: { timeoutMs?: number }): Promise<ProjectionRead> {
+  const startedAt = Date.now();
+  const entry = await readRunJsonEntry(args, opts?.timeoutMs ?? DEFAULT_RUN_JSON_TIMEOUT_MS);
+  const now = Date.now();
+  return {
+    status: projectionStatus(entry, now),
+    value: entry.value,
+    generatedAt: typeof entry.value?.generated_at === "string" ? entry.value.generated_at : null,
+    lastGoodAt: entry.storedAt !== null ? new Date(entry.storedAt).toISOString() : null,
+    error: entry.lastError,
+    elapsedMs: now - startedAt,
+  };
 }
 
 /** Mutations call this so the next read (router.refresh()) shows live truth. */

@@ -10,7 +10,7 @@ import { PipelineStrip } from "@/components/briefing/PipelineStrip";
 import { SectionLabel } from "@/components/briefing/primitives";
 import { SelfHealingPanel } from "@/components/briefing/SelfHealingPanel";
 import { FreshnessChip } from "@/components/kit";
-import { attentionNeedsYouGroups, getAttention, hasClassAGate } from "@/lib/attention";
+import { attentionNeedsYouGroups, getAttentionProjection, hasClassAGate } from "@/lib/attention";
 import {
   autonomyPosture,
   deriveContinue,
@@ -21,7 +21,7 @@ import {
   selfHealing,
   weeklyChange,
 } from "@/lib/briefing";
-import { arr, getExecutors, num, runJson, str } from "@/lib/compound";
+import { arr, getExecutors, num, runJson, runProjection, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
@@ -31,16 +31,24 @@ export const dynamic = "force-dynamic";
 
 export default async function Briefing() {
   // The plain memory projection is instant; `--include-evidence` joins ~1100
-  // candidates and blows the exec timeout. attention/workbench/home-doctor/
-  // operator-authority are all cheap reads through the shared runJson TTL memo.
-  const [attention, executors, workbench, memory, policyAuthority, homeDoctor] = await Promise.all([
-    getAttention(),
+  // candidates and blows the exec timeout. home-doctor/operator-authority are
+  // cheap reads through the shared runJson TTL memo. attention + workbench are
+  // NOT cheap (a real `compound attention --json` / `workbench --json
+  // --recent 500` run ~20s today) — they read through `runProjection` with an
+  // extended 45s per-door timeout so the door can genuinely SUCCEED, and the
+  // briefing renders the honest degradation model (live/stale/unreachable)
+  // instead of ever caching a swallowed timeout as null (packet:
+  // console-honest-degradation).
+  const [attentionProjection, executors, workbenchRead, memory, policyAuthority, homeDoctor] = await Promise.all([
+    getAttentionProjection({ timeoutMs: 45_000 }),
     getExecutors(),
-    runJson(["workbench", "--json", "--recent", "500"]),
+    runProjection(["workbench", "--json", "--recent", "500"], { timeoutMs: 45_000 }),
     runJson(["memory", "candidates", "--json"]),
     runJson(["policy", "operator-authority", "--json"]),
     runJson(["home", "doctor", "--json"]),
   ]);
+  const { read: attentionRead, report: attention } = attentionProjection;
+  const workbench = workbenchRead.value;
 
   const now = new Date();
   const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
@@ -89,9 +97,13 @@ export default async function Briefing() {
   const autonomy = autonomyPosture(policyAuthority);
   const health = selfHealing(homeDoctor);
 
+  // Decide/World read the ProjectionRead's own `generatedAt` (packet:
+  // console-honest-degradation) so "unknown" appears only when a door has
+  // genuinely never succeeded — never for a swallowed timeout that still has
+  // a good last-good value to show.
   const stamps: { label: string; generatedAt: string; source: string }[] = [
-    { label: "Decide", generatedAt: str(attention?.generated_at), source: "compound attention --json" },
-    { label: "World", generatedAt: str(workbench?.generated_at), source: "compound workbench --json --recent 500" },
+    { label: "Decide", generatedAt: attentionRead.generatedAt ?? "", source: "compound attention --json" },
+    { label: "World", generatedAt: workbenchRead.generatedAt ?? "", source: "compound workbench --json --recent 500" },
     { label: "Mind", generatedAt: str(memory?.generated_at), source: "compound memory candidates --json" },
     { label: "Health", generatedAt: str(homeDoctor?.generated_at), source: "compound home doctor --json" },
   ];
@@ -106,13 +118,18 @@ export default async function Briefing() {
         mutationsEnabled={mutationsEnabled}
         runningAgents={runningAgents}
         classA={classAWaiting}
+        read={{ status: attentionRead.status, lastGoodAt: attentionRead.lastGoodAt }}
       />
 
       <ContinueCard model={continueModel} mutationsReady={mutationsEnabled} />
 
       <section>
         <SectionLabel>Decide</SectionLabel>
-        <DecideList groups={decideGroups} total={needsYouGroupCount} />
+        <DecideList
+          groups={decideGroups}
+          total={needsYouGroupCount}
+          read={{ status: attentionRead.status, lastGoodAt: attentionRead.lastGoodAt }}
+        />
       </section>
 
       <KpiStrip
@@ -137,18 +154,21 @@ export default async function Briefing() {
 
       {/* ---------- below the fold ---------- */}
 
-      <AttentionAgeMatrix groups={needsYouGroups} />
+      <AttentionAgeMatrix
+        groups={needsYouGroups}
+        read={{ status: attentionRead.status, lastGoodAt: attentionRead.lastGoodAt }}
+      />
 
       <section>
         <SectionLabel>Pipeline</SectionLabel>
-        <PipelineStrip stages={stages} />
+        <PipelineStrip stages={stages} read={{ status: workbenchRead.status, lastGoodAt: workbenchRead.lastGoodAt }} />
       </section>
 
       <SelfHealingPanel health={health} />
 
       <section>
         <SectionLabel>Live activity</SectionLabel>
-        <ActivityFeed recent={recent} />
+        <ActivityFeed recent={recent} read={{ status: workbenchRead.status, lastGoodAt: workbenchRead.lastGoodAt }} />
       </section>
 
       <section>

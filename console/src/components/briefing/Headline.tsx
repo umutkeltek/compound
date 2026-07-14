@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { HeadlineAct } from "@/components/briefing/HeadlineAct";
 import { DomainKicker } from "@/components/briefing/primitives";
+import { FeedDegraded, feedRenderModel, type FeedProjectionStatus } from "@/components/kit";
 import type { AttentionGroup } from "@/lib/attention";
 import type { HeadlineActDescriptor } from "@/lib/briefing";
 import { str } from "@/lib/compound";
@@ -14,6 +15,11 @@ import { headlineActIdentity } from "@/lib/governed-action-client";
  * (DESIGN.md §0 signature B): a 3px amber left seam + a left-to-right amber
  * wash — scanning the left edge answers "what needs me". When nothing waits,
  * the empty state speaks doctrine, never "No data" (§7.9).
+ *
+ * Honest degradation (packet: console-honest-degradation): an `unreachable`
+ * attention read ALWAYS renders FeedDegraded, even though `top` would already
+ * be null in that case — never let the same "nothing here" shape carry two
+ * different meanings (a dead feed vs. a genuinely clean seam).
  */
 export function Headline({
   top,
@@ -21,6 +27,7 @@ export function Headline({
   mutationsEnabled,
   runningAgents,
   classA = false,
+  read,
 }: {
   top: AttentionGroup | null;
   act: HeadlineActDescriptor | null;
@@ -28,8 +35,17 @@ export function Headline({
   runningAgents: number;
   /** any Class-A gate waiting → the hero glows amber (`--heat-seam`), else work-blue. */
   classA?: boolean;
+  read: { status: FeedProjectionStatus; lastGoodAt: string | null };
 }) {
   const summary = str(top?.operator_summary);
+
+  if (feedRenderModel(read.status, Boolean(top && summary)) === "degraded") {
+    return (
+      <section className="rounded-lg border border-hair bg-panel px-6 py-8 shadow-sm">
+        <FeedDegraded label="Decide" source="compound attention --json" lastGoodAt={read.lastGoodAt} />
+      </section>
+    );
+  }
 
   if (!top || !summary) {
     return (

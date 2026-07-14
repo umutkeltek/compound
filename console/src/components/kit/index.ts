@@ -11,6 +11,7 @@ export * from "./DotMatrix";
 export * from "./Drawer";
 export * from "./EmptyState";
 export * from "./Field";
+export * from "./FeedDegraded";
 export * from "./FreshnessChip";
 export * from "./IconTile";
 export * from "./icons";
