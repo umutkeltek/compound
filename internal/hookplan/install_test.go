@@ -3,6 +3,7 @@ package hookplan
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,47 @@ func readJSON(t *testing.T, path string) map[string]any {
 		t.Fatalf("parse %s: %v", path, err)
 	}
 	return m
+}
+
+// TestHookCommandQuotesSpacedPath proves HookCommand shell-quotes a binaryPath containing a space
+// (e.g. an app-bundle install path) so a real POSIX shell execs the FULL path as one token instead
+// of silently truncating at the first space — the bug that made the PreToolUse mutation-policy
+// guard fail open. It fails against a naive fmt.Sprintf("%s ...", binaryPath) because sh -c would
+// then try (and fail) to exec the truncated prefix.
+func TestHookCommandQuotesSpacedPath(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh on PATH to prove real shell word-splitting")
+	}
+	dir := t.TempDir()
+	spacedDir := filepath.Join(dir, "Compound Apps")
+	if err := os.MkdirAll(spacedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binaryPath := filepath.Join(spacedDir, "compound")
+	outFile := filepath.Join(dir, "invoked-as.txt")
+	// A stand-in "compound" binary that records the exact path it was invoked as ($0), so we can
+	// tell whether the shell resolved the first word of the emitted command to the full spaced
+	// path or to a truncated prefix.
+	script := "#!/bin/sh\nprintf '%s' \"$0\" > \"" + outFile + "\"\n"
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := HookCommand(binaryPath, "codex")
+	if !strings.Contains(cmd, hookCommandMarker) {
+		t.Fatalf("HookCommand() = %q, missing marker %q", cmd, hookCommandMarker)
+	}
+
+	if err := exec.Command("sh", "-c", cmd).Run(); err != nil {
+		t.Fatalf("sh -c %q failed (spaced binary path was split at the space): %v", cmd, err)
+	}
+	got, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("stand-in binary never ran (spaced path split by the shell): %v", err)
+	}
+	if string(got) != binaryPath {
+		t.Fatalf("shell resolved the hook binary to %q, want the exact spaced path %q", got, binaryPath)
+	}
 }
 
 func TestInstallHooksBothHarnesses(t *testing.T) {

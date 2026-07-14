@@ -290,8 +290,48 @@ func canonicalHookInvocationRevision(value, harnessHome string) string {
 	return "sha256:" + hashBytes([]byte(strings.Join(canonicalHookCommandFields(normalized), " ")))
 }
 
+// canonicalHookCommandFields tokenizes a hook command the way a POSIX shell would: whitespace
+// separates fields, but text wrapped in single or double quotes is kept as ONE field even if it
+// contains whitespace. This matters because hookplan.HookCommand shell-quotes the binary path
+// (internal/hookplan/install.go) so a spaced install path (e.g. an app-bundle path like
+// "/tmp/Compound Apps/compound") execs correctly — the naive strings.Fields split used to tear a
+// quoted-spaced path into multiple bogus fields, which corrupted canonicalHookHandlerRef /
+// canonicalHookInvocationRevision and made a correctly-quoted install look like handler drift. A
+// command with no quotes at all (the historical case) tokenizes identically to before: this walk
+// degenerates to plain whitespace splitting whenever no quote character is present.
 func canonicalHookCommandFields(command string) []string {
-	fields := strings.Fields(command)
+	var fields []string
+	var current strings.Builder
+	hasField := false
+	var quote rune
+	for _, r := range command {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+		case r == '\'' || r == '"':
+			quote = r
+			hasField = true
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			if hasField {
+				fields = append(fields, current.String())
+				current.Reset()
+				hasField = false
+			}
+		default:
+			current.WriteRune(r)
+			hasField = true
+		}
+	}
+	if hasField {
+		fields = append(fields, current.String())
+	}
+	// Harmless fallback: trim any stray quote characters that survived tokenizing (e.g. an
+	// unmatched quote), matching the pre-tokenizer behavior for fields that never had a matched
+	// quote pair around them.
 	for i := range fields {
 		fields[i] = strings.Trim(fields[i], "\"'`")
 	}

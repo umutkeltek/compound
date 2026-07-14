@@ -90,6 +90,18 @@ func TestCanonicalHookInvocationRevisionIncludesArgumentsForEveryHandler(t *test
 			observed:   `"` + filepath.Join(harnessHome, ".claude", "hooks", "RecallContext.hook.ts") + `" --mode compact`,
 			driftedArg: `"` + filepath.Join(harnessHome, ".claude", "hooks", "RecallContext.hook.ts") + `" --mode full`,
 		},
+		{
+			// hookplan.HookCommand shell-quotes the binary path (install.go) so a spaced
+			// install directory (e.g. an app-bundle path) shows up quoted in both the
+			// portable $HOME-form authority ref and the literal absolute-path observation.
+			// The two must canonicalize identically (quoting must not read as drift), and the
+			// quoted path must resolve as ONE field so the trailing subcommand still
+			// participates in drift detection (driftedArg still differs).
+			name:       "compound binary with spaced install directory",
+			desired:    `'$HOME/Compound Apps/compound' hook pre-tool-use --live --harness codex`,
+			observed:   `'` + filepath.Join(harnessHome, "Compound Apps", "compound") + `' hook pre-tool-use --live --harness codex`,
+			driftedArg: `'` + filepath.Join(harnessHome, "Compound Apps", "compound") + `' hook session-start --live --harness codex`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -154,6 +166,82 @@ func TestCanonicalHookHandlerRefNormalizesCurrentHomeWithoutExplicitHarnessHome(
 	portable := canonicalHookHandlerRef(`$HOME/.local/bin/compound hook pre-tool-use --live --harness codex`, harnessHome)
 	if absolute != portable {
 		t.Fatalf("implicit current-home normalization drifted: absolute=%q portable=%q", absolute, portable)
+	}
+}
+
+// TestCanonicalHookCommandFieldsQuoteTransparentForSpacedPath is a direct falsifier: a quoted
+// binary path containing a space (as hookplan.HookCommand now emits for a spaced install
+// directory) must tokenize as ONE field, not split at the embedded space. Against the historical
+// strings.Fields-based implementation this produced 7 bogus fields ("/tmp/Compound",
+// "Apps/compound", "hook", ...) instead of the correct 6.
+func TestCanonicalHookCommandFieldsQuoteTransparentForSpacedPath(t *testing.T) {
+	cmd := `'/tmp/Compound Apps/compound' hook pre-tool-use --live --harness codex`
+	got := canonicalHookCommandFields(cmd)
+	want := []string{"/tmp/Compound Apps/compound", "hook", "pre-tool-use", "--live", "--harness", "codex"}
+	if len(got) != len(want) {
+		t.Fatalf("canonicalHookCommandFields(%q) = %#v (%d fields), want %#v (%d fields)", cmd, got, len(got), want, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("canonicalHookCommandFields(%q)[%d] = %q, want %q (full: %#v)", cmd, i, got[i], want[i], got)
+		}
+	}
+}
+
+// TestCanonicalHookCommandFieldsUnquotedUnchanged is the backward-compat invariant: a command
+// with no quotes and no spaces-inside-quotes must tokenize identically to the pre-fix
+// strings.Fields + per-field quote-trim implementation, so existing installed handler refs and
+// invocation revisions never drift because of this change.
+func TestCanonicalHookCommandFieldsUnquotedUnchanged(t *testing.T) {
+	commands := []string{
+		"/usr/local/bin/compound hook pre-tool-use --live --harness codex",
+		"$HOME/.bun/bin/bun $HOME/.codex/hooks/RecallContext.hook.ts",
+		"compound hook pre-tool-use --live --harness claude-code",
+		"",
+		"   ",
+	}
+	for _, cmd := range commands {
+		got := canonicalHookCommandFields(cmd)
+		want := legacyHookCommandFields(cmd)
+		if len(got) != len(want) {
+			t.Fatalf("canonicalHookCommandFields(%q) = %#v, want %#v (unquoted backward-compat break)", cmd, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("canonicalHookCommandFields(%q) = %#v, want %#v (unquoted backward-compat break)", cmd, got, want)
+			}
+		}
+	}
+}
+
+// legacyHookCommandFields is the pre-fix tokenizer (plain strings.Fields + per-field quote-trim),
+// kept here only to pin down the backward-compat invariant above.
+func legacyHookCommandFields(command string) []string {
+	fields := strings.Fields(command)
+	for i := range fields {
+		fields[i] = strings.Trim(fields[i], "\"'`")
+	}
+	return fields
+}
+
+// TestCanonicalHookHandlerRefQuoteTransparentForSpacedInstallPath proves the quote-transparent
+// tokenizer composes with $HOME normalization: a quoted spaced install path canonicalizes to the
+// SAME handler ref whether it's given as a portable "$HOME/..." reference or an absolute path, so
+// a correctly-quoted install (hookplan.HookCommand) is never read as drift merely because of how
+// its path happens to be represented.
+func TestCanonicalHookHandlerRefQuoteTransparentForSpacedInstallPath(t *testing.T) {
+	harnessHome := t.TempDir()
+	spacedPath := filepath.Join(harnessHome, "Compound Apps", "compound")
+	absolute := `'` + spacedPath + `' hook pre-tool-use --live --harness codex`
+	portable := `'$HOME/Compound Apps/compound' hook pre-tool-use --live --harness codex`
+
+	got := canonicalHookHandlerRef(absolute, harnessHome)
+	want := canonicalHookHandlerRef(portable, harnessHome)
+	if got != want {
+		t.Fatalf("quoted spaced install path canonicalized differently: absolute=%q portable=%q (quoting introduced false drift)", got, want)
+	}
+	if got == "" {
+		t.Fatal("handler ref empty for spaced install path")
 	}
 }
 

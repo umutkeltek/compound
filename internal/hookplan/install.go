@@ -44,7 +44,18 @@ func ConfigRel(harness, scope string) string {
 
 // HookCommand is the exact command a harness runs for the compound PreToolUse gate.
 func HookCommand(binaryPath, harness string) string {
-	return fmt.Sprintf("%s hook pre-tool-use --live --harness %s", binaryPath, harness)
+	return fmt.Sprintf("%s hook pre-tool-use --live --harness %s", shellQuote(binaryPath), harness)
+}
+
+// shellQuote wraps s in POSIX single quotes so a shell (or any shell-word splitter, including the
+// harness that execs this command) treats it as exactly one token even when it contains spaces or
+// other shell metacharacters, e.g. an app-bundle install path like `/tmp/Compound Apps/compound`.
+// Without this, a spaced binaryPath silently truncates at the first space and the harness execs a
+// nonexistent binary, which fails the mutation-policy guard open. An embedded single quote is
+// escaped with the standard POSIX idiom: close the quote, insert a backslash-escaped quote
+// character, then reopen the quote (see the ReplaceAll call below for the exact byte sequence).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // HookInstallEntry is the per-harness outcome of an install/check pass.
