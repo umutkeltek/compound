@@ -26,6 +26,8 @@ const (
 	parityCLIHelperEnv       = "COMPOUND_TEST_PARITY_CLI_HELPER"
 	parityCLIHelperFixture   = "COMPOUND_TEST_PARITY_CLI_FIXTURE"
 	parityCLIHelperConsumer  = "COMPOUND_TEST_PARITY_CLI_CONSUMER"
+	parityFailureHelperEnv   = "COMPOUND_TEST_PARITY_FAILURE_HELPER"
+	parityFailureHelperQuery = "COMPOUND_TEST_PARITY_FAILURE_QUERY"
 	parityFakeSidecarEnv     = "COMPOUND_TEST_PARITY_FAKE_SIDECAR"
 	parityFakeSidecarHitID   = "COMPOUND_TEST_PARITY_FAKE_HIT_ID"
 	parityFakeSidecarTestRun = "^TestParityFakeBreadthSidecar$"
@@ -41,6 +43,18 @@ func TestParityReplayCLIHelper(t *testing.T) {
 		"--consumer", os.Getenv(parityCLIHelperConsumer),
 		"--json",
 	})
+	os.Exit(0)
+}
+
+func TestParityFailureCLIHelper(t *testing.T) {
+	switch os.Getenv(parityFailureHelperEnv) {
+	case retrievalparity.ConsumerRecall:
+		cmdMemory([]string{"recall", os.Getenv(parityFailureHelperQuery), "--json"})
+	case retrievalparity.ConsumerSearch:
+		cmdMemory([]string{"search", "--lane", "corpus-fixture", os.Getenv(parityFailureHelperQuery), "--json"})
+	default:
+		return
+	}
 	os.Exit(0)
 }
 
