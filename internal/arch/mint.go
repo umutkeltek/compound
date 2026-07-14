@@ -147,6 +147,18 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "composable behavioral-lens framework — a uniform observe->InferredSignal plug with visibility-gated composition and a per-lane sycophancy (paired-stance endorsement shift) lens; records evidence rows only, never a gate and never auto-acting",
 		Consumer: "compound behavioral-lens CLI (list/run/compose/signals) projecting only public_safe signals for operator review; operator_private signals stay under COMPOUND_HOME; the governed modulator is the named later enforcement consumer",
 	},
+	// landlease is the land-lease coordination hint: a single-holder, TTL-bounded, steal-with-reason
+	// advisory MUTEX over the ACT of landing to main (a flock-guarded JSON lease under COMPOUND_HOME).
+	// Acquire REFUSES a competing LIVE holder, but that refusal is a cooperative mutex hint, NOT a
+	// governed gate: it carries no PolicyDecision, no Receipt, no undo, and compiles no operator ruling
+	// (the three things MintEnforcement requires — see organ:act). It never mutates repo state; it only
+	// records WHO holds the right to land, and the compound-land ceremony is the enforcement point that
+	// ACTS on the hint. An advisory hint that names its consumer is textbook evidence, not enforcement.
+	"organ:landlease": {
+		Class:    MintEvidence,
+		Purpose:  "single-holder, TTL-bounded, steal-with-reason advisory mutex over the ACT of landing to main (a flock-guarded JSON lease under COMPOUND_HOME) so concurrent executor lanes serialize the fast-forward-merge window instead of colliding; records who holds the right to land, never mutates repo state and emits no PolicyDecision/Receipt",
+		Consumer: "the compound-land ceremony (skills/compound-land) — a lane acquires the lease before its ff-merge and releases after, with `compound land-lease status --json` as the orchestrator/operator read surface; steal-with-reason is the auditable override",
+	},
 	// executorlens is the executor-receipt locator: an evidence-only collector that reads THIS repo's
 	// own executor lanes' (Codex, Claude Code) receipts/events under COMPOUND_HOME and builds
 	// behaviorallens Observations — public_safe hedging over executor output text, operator_private
