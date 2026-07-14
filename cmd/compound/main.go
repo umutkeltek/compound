@@ -5732,7 +5732,11 @@ func cmdHome(args []string) {
 	case "doctor", "":
 		report := home.Doctor(resolve())
 		if hasFlag(args, "--json") {
-			printJSON(buildHomeDoctorReport(report))
+			jsonReport := buildHomeDoctorReport(report)
+			printJSON(jsonReport)
+			if jsonReport.Verdict != "ok" {
+				os.Exit(1)
+			}
 			return
 		}
 		printHomeDoctor(report)
