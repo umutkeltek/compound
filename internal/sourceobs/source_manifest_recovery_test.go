@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -80,5 +81,39 @@ func TestSourceManifestConcurrentMaterializersShareOneExactTarget(t *testing.T) 
 	}
 	if info.Mode().Perm() != 0o640 {
 		t.Fatalf("materialized mode = %04o, want 0640", info.Mode().Perm())
+	}
+}
+
+func TestSourceManifestMaterializeRefusesByteIdenticalSymlinkTarget(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", time.Date(2026, 7, 14, 15, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(t.TempDir(), "source.bin")
+	body := []byte("compound-owned-body\n")
+	if err := os.WriteFile(sourcePath, body, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := BuildOwnedSourceManifest(homePath, "symlink_materialize", []string{sourcePath}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordSourceManifest(homePath, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	targetDir := t.TempDir()
+	realTarget := filepath.Join(targetDir, "real.bin")
+	if err := os.WriteFile(realTarget, body, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	symlinkTarget := filepath.Join(targetDir, "target.bin")
+	if err := os.Symlink(realTarget, symlinkTarget); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = MaterializeSourceManifestItem(homePath, manifest.SourceFamily, manifest.Items[0].ID, symlinkTarget)
+	if err == nil || !strings.Contains(err.Error(), "non-regular target") {
+		t.Fatalf("materialize symlink error = %v, want refusal of non-regular target", err)
 	}
 }
