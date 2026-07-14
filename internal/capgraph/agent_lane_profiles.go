@@ -375,3 +375,46 @@ func addAgentLaneEdge(edges map[string]Edge, edge Edge) {
 	}
 	edges[edgeKey(edge)] = edge
 }
+
+// AgentLaneNode is a read-only view of one agent-lane capability node: its identity plus the
+// raw harness token parsed from the lane name. It is the shape a coverage/surfacing reader
+// needs without exporting the store's whole node set or its internals. The node is evidence-
+// only and never executes.
+type AgentLaneNode struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Harness string `json:"harness"` // raw harness token (first segment of the lane name)
+	Retired bool   `json:"retired,omitempty"`
+}
+
+// AgentLaneNodes returns every agent-lane node in the store, sorted by id. It is the single
+// additive read-only door onto lane rows for consumers (e.g. `compound doctor`'s surfacing
+// matrix): it filters to the agent-lane kind and parses the harness from the lane name, so no
+// consumer has to reimplement the lane-name format or reach past this reader into the store.
+func (s *Store) AgentLaneNodes() ([]AgentLaneNode, error) {
+	nodes, err := s.loadNodes()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AgentLaneNode, 0)
+	for _, n := range nodes {
+		if n.Kind != agentLaneNodeKind {
+			continue
+		}
+		out = append(out, AgentLaneNode{
+			ID:      n.ID,
+			Name:    n.Name,
+			Harness: agentLaneHarnessFromName(n.Name),
+			Retired: n.Retired,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// agentLaneHarnessFromName extracts the harness token from a lane name built by agentLaneName
+// ("harness / route / model / effort"). It is the inverse of that join for the first segment.
+func agentLaneHarnessFromName(name string) string {
+	parts := strings.SplitN(name, " / ", 2)
+	return strings.TrimSpace(parts[0])
+}
