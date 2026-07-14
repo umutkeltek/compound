@@ -1143,6 +1143,65 @@ func TestParityReplayCheckpointResumeRejectsTamperAndWrongIdentity(t *testing.T)
 	}
 }
 
+func TestParityReplayCheckpointResumesAfterRecordedRuntimeGap(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Coverage: retrievalparity.Coverage{
+			KnownGaps: []string{"fixture_baseline_gap"},
+		},
+		Rows: []retrievalparity.FixtureRow{
+			{Consumer: retrievalparity.ConsumerQuery, Query: "synthetic unavailable checkpoint one"},
+			{Consumer: retrievalparity.ConsumerQuery, Query: "synthetic unavailable checkpoint two"},
+		},
+	})
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", filepath.Join(t.TempDir(), "missing-engine"))
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, _, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerQuery,
+	}, now)
+	if err != nil || code == 0 || len(initial.Rows) != 2 ||
+		!slices.Contains(initial.Coverage.KnownGaps, "fixture_baseline_gap") ||
+		!slices.Contains(initial.Coverage.KnownGaps, "query_engine_unavailable") {
+		t.Fatalf("initial unavailable replay code=%d err=%v report=%+v", code, err, initial)
+	}
+
+	_, fixtureRef, err := retrievalparity.LoadFixture(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := retrievalparity.NewReplayIdentity(fixtureRef, retrievalparity.ConsumerQuery, 10)
+	checkpointPath := retrievalparity.CheckpointPath(homePath, identity)
+	checkpoint, err := retrievalparity.LoadCheckpoint(checkpointPath, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.Completed = 1
+	checkpoint.Rows = checkpoint.Rows[:1]
+	if err := retrievalparity.WriteCheckpoint(homePath, &checkpoint); err != nil {
+		t.Fatalf("write interrupted unavailable checkpoint: %v", err)
+	}
+
+	resumed, reportPath, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerQuery,
+		"--resume-from", checkpointPath,
+	}, now.Add(time.Second))
+	if err != nil || code == 0 || reportPath == "" || len(resumed.Rows) != 2 {
+		t.Fatalf("resume unavailable checkpoint code=%d report=%q err=%v rows=%d", code, reportPath, err, len(resumed.Rows))
+	}
+	if !slices.Contains(resumed.Coverage.KnownGaps, "fixture_baseline_gap") ||
+		!slices.Contains(resumed.Coverage.KnownGaps, "query_engine_unavailable") {
+		t.Fatalf("resumed coverage lost baseline/runtime gaps: %+v", resumed.Coverage)
+	}
+}
+
 func TestParityReplayCheckpointBindsExactFixturePrefix(t *testing.T) {
 	now := time.Now().UTC()
 	claimA := "claim://claim_aaaaaaaaaaaa"
