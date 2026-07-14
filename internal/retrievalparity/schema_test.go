@@ -227,6 +227,28 @@ func TestReportSeparatesParityFromNegativeControlValidity(t *testing.T) {
 	}
 }
 
+func TestReportRejectsClassSummariesNotDerivedFromRows(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Report)
+	}{
+		{name: "missing", mutate: func(report *Report) { report.Classes = nil }},
+		{name: "counts", mutate: func(report *Report) { report.Classes[0].Rows++ }},
+		{name: "latency", mutate: func(report *Report) { report.Classes[0].LatencyMS++ }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := newParityPackageHome(t)
+			row := NewReplayRow(FixtureRow{Consumer: ConsumerQuery, Query: "class summary evidence"}, nil, time.Millisecond, true)
+			report := BuildReport(HashQuery("class-summary-fixture"), ConsumerQuery, 10, Coverage{}, []ReplayRow{row}, parityTestNow)
+			tt.mutate(&report)
+			if _, err := WriteReport(homePath, report); err == nil || !strings.Contains(err.Error(), "classes") {
+				t.Fatalf("write report with %s class summary err=%v", tt.name, err)
+			}
+		})
+	}
+}
+
 func TestUnavailableEngineFailsParityEvenWithNoExpectedRefs(t *testing.T) {
 	row := NewReplayRow(FixtureRow{Consumer: ConsumerQuery, Query: "empty expected"}, nil, 0, false)
 	if row.ParityPassed {
