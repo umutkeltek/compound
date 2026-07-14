@@ -40,10 +40,13 @@ func TestDoctorComposesOrganState(t *testing.T) {
 	if rep.LeaseHeld {
 		t.Fatal("no lease should be held")
 	}
-	// The loaded default is "block" (fail-closed/enforcing) — doctor surfaces it; the observe
-	// (fail-open) warning only fires when an operator has explicitly relaxed the mode.
-	if rep.PlacementMode != "block" {
-		t.Fatalf("default placement mode should be block (fail-closed), got %q", rep.PlacementMode)
+	// An empty home uses the built-in observe default; operator homes may overlay block in
+	// config/policy.yaml. Doctor must report the loaded mode and make fail-open staging explicit.
+	if rep.PlacementMode != "observe" {
+		t.Fatalf("empty-home placement mode should be observe, got %q", rep.PlacementMode)
+	}
+	if rep.PlacementNote == "" {
+		t.Fatal("observe mode should carry an explicit fail-open warning")
 	}
 	if rep.FindingsTotal != 0 {
 		t.Fatalf("no findings expected, got %d", rep.FindingsTotal)
