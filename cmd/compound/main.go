@@ -6925,21 +6925,29 @@ func cmdAuthority(args []string) {
 		}
 		workID := flagValue(args[2:], "--work-id")
 		actionIntentIDs := valuesFlag(args[2:], "--action-intent")
+		var mutationBinding *authority.SourceControlMutationBinding
+		if len(actionIntentIDs) > 0 {
+			binding, bindingErr := loadSourceControlMutationBinding(homePath, actionIntentIDs)
+			if bindingErr != nil {
+				fmt.Fprintln(os.Stderr, "authority dirty-plan:", bindingErr)
+				os.Exit(1)
+			}
+			if ownerErr := validateSourceControlMutationOwner(homePath, workID); ownerErr != nil {
+				fmt.Fprintln(os.Stderr, "authority dirty-plan:", ownerErr)
+				os.Exit(1)
+			}
+			mutationBinding = &binding
+		}
 		snap, _, _, _, err := authority.ImportGitSnapshot(args[1], nil)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority dirty-plan:", err)
 			os.Exit(1)
 		}
 		var plan authority.SourceControlReviewPlan
-		if len(actionIntentIDs) == 0 {
+		if mutationBinding == nil {
 			plan, err = authority.BuildSourceControlReviewPlan(snap, workID, time.Now())
 		} else {
-			binding, bindingErr := loadSourceControlMutationBinding(homePath, actionIntentIDs)
-			if bindingErr != nil {
-				fmt.Fprintln(os.Stderr, "authority dirty-plan:", bindingErr)
-				os.Exit(1)
-			}
-			plan, err = authority.BuildSourceControlMutationReviewPlan(snap, workID, binding, time.Now())
+			plan, err = authority.BuildSourceControlMutationReviewPlan(snap, workID, *mutationBinding, time.Now())
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority dirty-plan:", err)
