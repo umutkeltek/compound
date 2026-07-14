@@ -255,11 +255,13 @@ func ensureGovernedHomeRoot(rules PlacementRules, homePath string) PlacementRule
 	return rules
 }
 
-// homeAllowGlobs is the typed habitat allow-set: every dir home.Init scaffolds is a legitimate
-// write target; anything else under the home is unowned scaffolding.
+// homeAllowGlobs is the typed habitat allow-set from HabitatCatalog. Compatibility
+// bridges are deliberately excluded: doctor/backup preserve them, but placement
+// still redirects new writes toward their canonical destinations.
 func homeAllowGlobs(homePath string) []string {
-	globs := make([]string, 0, len(homepkg.Dirs)*2)
-	for _, d := range homepkg.Dirs {
+	dirs := homepkg.HabitatPlacementDirs()
+	globs := make([]string, 0, len(dirs)*2)
+	for _, d := range dirs {
 		globs = append(globs, filepath.Join(homePath, d), filepath.Join(homePath, d, "**"))
 	}
 	return globs
