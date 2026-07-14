@@ -389,6 +389,96 @@ export function runGenericActionsSelfTest(): SelfTestResult {
     }
   }
 
+  // A3 (packet 2026-07-15-slice2A-skill-surfacing-verb): the skill-surfacing
+  // area reads from `compound reviews --json --area skill-surfacing` (a
+  // plain items[].actions[] projection, unlike lease-hygiene's
+  // attention-adapted groups[]) -- proves the certified area resolves a
+  // well-formed import action with a stable revision, and rejects a forged
+  // argv for a real compound verb that is not skill-surfacing's certified
+  // prefix.
+  {
+    const openItemPath = "/home/.compound/reviews/skill-surfacing/2026-07-09-session-mining-backfill-feedback.json";
+    const projection = {
+      items: [
+        {
+          id: "ssfb_20260709_session_backfill",
+          area: "skill-surfacing",
+          actions: [
+            {
+              id: "skill-surfacing.import",
+              label: "Fold these misses into the capability graph",
+              argv: ["compound", "capability", "import-surfacing-misses", openItemPath],
+              requires_review: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    // (j) The happy path: a well-formed skill-surfacing import action
+    // resolves ok with the exact projected argv and a stable, non-empty
+    // revision.
+    {
+      const res = resolveGenericActionFromProjection(
+        projection,
+        "skill-surfacing",
+        "ssfb_20260709_session_backfill",
+        "skill-surfacing.import",
+      );
+      const res2 = resolveGenericActionFromProjection(
+        projection,
+        "skill-surfacing",
+        "ssfb_20260709_session_backfill",
+        "skill-surfacing.import",
+      );
+      if (!res.ok) {
+        fail(`skill-surfacing import action was rejected: ${res.rejection.gate} - ${res.rejection.message}`);
+      } else if (res.action.argv.join(" ") !== `capability import-surfacing-misses ${openItemPath}`) {
+        fail(`skill-surfacing resolved argv unexpected: ${JSON.stringify(res.action.argv)}`);
+      } else if (!res.action.requiresReview) {
+        fail("skill-surfacing resolved action lost requires_review from the projection");
+      } else if (!res.action.revision || !res2.ok || res.action.revision !== res2.action.revision) {
+        fail(`skill-surfacing revision must be stable and non-empty across identical resolutions, got ${JSON.stringify([res, res2])}`);
+      } else {
+        pass("skill-surfacing import action resolves ok with the exact argv and a stable revision");
+      }
+    }
+
+    // (k) A forged action argv -- a real compound verb ("capability
+    // skill-plan") that is NOT skill-surfacing's certified prefix -- must be
+    // rejected at gate-2, even keyed under the real item/action id.
+    {
+      const forgedProjection = {
+        items: [
+          {
+            id: "ssfb_20260709_session_backfill",
+            area: "skill-surfacing",
+            actions: [
+              {
+                id: "skill-surfacing.import",
+                argv: ["compound", "capability", "skill-plan"],
+                requires_review: true,
+              },
+            ],
+          },
+        ],
+      };
+      const res = resolveGenericActionFromProjection(
+        forgedProjection,
+        "skill-surfacing",
+        "ssfb_20260709_session_backfill",
+        "skill-surfacing.import",
+      );
+      if (res.ok) {
+        fail("forged skill-surfacing argv (capability skill-plan) resolved ok:true instead of being rejected");
+      } else if (res.rejection.gate !== "gate-2-allowlist") {
+        fail(`forged skill-surfacing argv rejected at "${res.rejection.gate}" instead of gate-2-allowlist`);
+      } else {
+        pass("forged skill-surfacing argv (capability skill-plan) rejected at gate-2-allowlist");
+      }
+    }
+  }
+
   // F5: the client-side honesty probe agrees with the certified allowlist
   // for the lease-hygiene area.
   {
@@ -412,6 +502,23 @@ export function runGenericActionsSelfTest(): SelfTestResult {
       fail(
         `genericActionProjectionEligible drifted for lease-hygiene: eligible=${eligible} wrongShellForm=${wrongShellForm} wrongVerb=${wrongVerb}`,
       );
+    }
+  }
+
+  // A3: the client-side honesty probe agrees with the certified allowlist
+  // for the skill-surfacing area.
+  {
+    const eligible = genericActionProjectionEligible("skill-surfacing", [
+      "compound",
+      "capability",
+      "import-surfacing-misses",
+      "/home/.compound/reviews/skill-surfacing/2026-07-09-session-mining-backfill-feedback.json",
+    ]);
+    const wrongVerb = genericActionProjectionEligible("skill-surfacing", ["compound", "capability", "skill-plan"]);
+    if (eligible && !wrongVerb) {
+      pass("genericActionProjectionEligible agrees with the skill-surfacing allowlist: certified argv true, wrong verb false");
+    } else {
+      fail(`genericActionProjectionEligible drifted for skill-surfacing: eligible=${eligible} wrongVerb=${wrongVerb}`);
     }
   }
 

@@ -119,6 +119,16 @@ export type GenericActionResolution =
  *    "archive-history","--kind","lease"]}`. See ATTENTION_SOURCED_GENERIC_AREAS
  *    below for how this area's actions get resolved from `compound attention
  *    --json` instead of `compound reviews --json --area <area>`.
+ *  - "skill-surfacing": internal/capgraph/surfacing_misses.go's
+ *    AnnotateSkillSurfacingQueue emits `actions: [{id: "skill-surfacing.import",
+ *    argv: ["compound","capability","import-surfacing-misses",<JSONPath>]}]`
+ *    on every OPEN skill-surfacing review item (packet
+ *    2026-07-15-slice2A-skill-surfacing-verb) -- resolved items (a generic
+ *    resolution sidecar already recorded) carry none. The verb ADDITIVELY
+ *    records that same generic resolution after a successful apply, so
+ *    running it CLEARS the card. Verified live 2026-07-15 against the Go
+ *    source and the live open card
+ *    ($COMPOUND_HOME/reviews/skill-surfacing/2026-07-09-session-mining-backfill-feedback.json).
  */
 export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "job-health": [["authority", "job-health-review"]],
@@ -127,6 +137,7 @@ export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "route-promotions": [["route", "promotion-record"]],
   "panel-verdicts": [["panel", "verdict-record"]],
   "lease-hygiene": [["home", "archive-history"]],
+  "skill-surfacing": [["capability", "import-surfacing-misses"]],
 };
 
 export type GenericActionEffectKind = "apply" | "record" | "track";
@@ -138,6 +149,7 @@ const GENERIC_ACTION_EFFECT_KIND: Record<string, GenericActionEffectKind> = {
   "route-promotions": "record",
   "panel-verdicts": "record",
   "lease-hygiene": "apply",
+  "skill-surfacing": "apply",
 };
 
 export function genericActionEffectKind(area: string): GenericActionEffectKind | null {
@@ -187,6 +199,7 @@ const GENERIC_GLOBAL_ARGV_ALLOWLIST: string[][] = [
   ["route", "promotion-record"],
   ["panel", "verdict-record"],
   ["home", "archive-history"],
+  ["capability", "import-surfacing-misses"],
 ];
 
 /** Client-side honesty probe using the same two allowlists as execution. */
