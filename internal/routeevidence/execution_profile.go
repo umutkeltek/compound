@@ -32,6 +32,7 @@ type ExecutionProfileIntent struct {
 	SemanticEffort      string `json:"semantic_effort,omitempty"`
 	NativeEffort        string `json:"native_effort,omitempty"`
 	OrchestrationPolicy string `json:"orchestration_policy,omitempty"`
+	PrivacyCeiling      string `json:"privacy_ceiling,omitempty"`
 }
 
 type ExecutionBudget struct {
@@ -77,6 +78,7 @@ type ExecutionProfileDefinition struct {
 	DefaultTransport      string                           `json:"default_transport_id"`
 	SemanticEffort        string                           `json:"semantic_effort"`
 	OrchestrationPolicy   string                           `json:"orchestration_policy"`
+	PrivacyCeiling        string                           `json:"privacy_ceiling"`
 	NativeEffortByHarness map[string]string                `json:"native_effort_by_harness"`
 	Budget                ExecutionBudget                  `json:"budget"`
 	Checkpoint            ExecutionCheckpointPolicy        `json:"checkpoint"`
@@ -99,6 +101,7 @@ type ExecutionProfilePlan struct {
 	SemanticEffort          string                           `json:"semantic_effort"`
 	NativeEffort            NativeEffortRequest              `json:"native_effort"`
 	OrchestrationPolicy     string                           `json:"orchestration_policy"`
+	PrivacyCeiling          string                           `json:"privacy_ceiling"`
 	Disposition             string                           `json:"disposition"`
 	Budget                  ExecutionBudget                  `json:"budget"`
 	Checkpoint              ExecutionCheckpointPolicy        `json:"checkpoint"`
@@ -124,6 +127,7 @@ type ChildExecutionProfileIntent struct {
 	SemanticEffort      string           `json:"semantic_effort"`
 	NativeEffort        string           `json:"native_effort,omitempty"`
 	OrchestrationPolicy string           `json:"orchestration_policy,omitempty"`
+	PrivacyCeiling      string           `json:"privacy_ceiling,omitempty"`
 	RemainingBudget     *ExecutionBudget `json:"remaining_budget,omitempty"`
 	Budget              ExecutionBudget  `json:"budget"`
 }
@@ -147,7 +151,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 		{
 			ID: "interactive-default", Role: "interactive", CapabilityClass: "interactive",
 			DefaultClientHarness: "claude-code", DefaultTransport: "native",
-			SemanticEffort: "balanced", OrchestrationPolicy: "standard",
+			SemanticEffort: "balanced", OrchestrationPolicy: "standard", PrivacyCeiling: "private",
 			NativeEffortByHarness: map[string]string{"claude-code": "medium", "codex": "medium", "worker": "medium"},
 			Budget:                ExecutionBudget{MaxRequests: 8, MaxInputTokens: 120_000, MaxOutputTokens: 24_000, MaxDurationSeconds: 1_200, MaxUSD: usdCeiling(5), MaxParallelism: 1},
 			Checkpoint:            ExecutionCheckpointPolicy{},
@@ -156,7 +160,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 		{
 			ID: "coding-implementation", Role: "executor", CapabilityClass: "build-implement",
 			DefaultClientHarness: "codex", DefaultTransport: "native",
-			SemanticEffort: "deep", OrchestrationPolicy: "standard",
+			SemanticEffort: "deep", OrchestrationPolicy: "standard", PrivacyCeiling: "private",
 			NativeEffortByHarness: map[string]string{"claude-code": "xhigh", "codex": "xhigh", "worker": "high"},
 			Budget:                ExecutionBudget{MaxRequests: 40, MaxInputTokens: 1_000_000, MaxOutputTokens: 200_000, MaxDurationSeconds: 7_200, MaxUSD: usdCeiling(25), MaxParallelism: 2},
 			Checkpoint:            ExecutionCheckpointPolicy{},
@@ -165,7 +169,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 		{
 			ID: "mining-bulk", Role: "miner", CapabilityClass: "classify-extract",
 			DefaultClientHarness: "codex", DefaultTransport: "switchback",
-			SemanticEffort: "economy", OrchestrationPolicy: "standard",
+			SemanticEffort: "economy", OrchestrationPolicy: "standard", PrivacyCeiling: "private",
 			NativeEffortByHarness: map[string]string{"claude-code": "low", "codex": "low", "worker": "low"},
 			Budget:                ExecutionBudget{MaxRequests: 500, MaxInputTokens: 10_000_000, MaxOutputTokens: 2_000_000, MaxDurationSeconds: 14_400, MaxUSD: usdCeiling(30), MaxParallelism: 16},
 			Checkpoint:            ExecutionCheckpointPolicy{Required: true, EveryRequests: 20, PersistPartial: true},
@@ -175,7 +179,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 		{
 			ID: "judge-critique", Role: "judge", CapabilityClass: "judge-critique",
 			DefaultClientHarness: "claude-code", DefaultTransport: "native",
-			SemanticEffort: "deep", OrchestrationPolicy: "standard",
+			SemanticEffort: "deep", OrchestrationPolicy: "standard", PrivacyCeiling: "private",
 			NativeEffortByHarness: map[string]string{"claude-code": "xhigh", "codex": "xhigh", "worker": "high"},
 			Budget:                ExecutionBudget{MaxRequests: 20, MaxInputTokens: 400_000, MaxOutputTokens: 80_000, MaxDurationSeconds: 3_600, MaxUSD: usdCeiling(20), MaxParallelism: 3},
 			Checkpoint:            ExecutionCheckpointPolicy{},
@@ -185,7 +189,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 		{
 			ID: "orchestration-ultracode", Role: "orchestrator", CapabilityClass: "plan-decompose",
 			DefaultClientHarness: "codex", DefaultTransport: "native",
-			SemanticEffort: "deep", OrchestrationPolicy: "ultracode",
+			SemanticEffort: "deep", OrchestrationPolicy: "ultracode", PrivacyCeiling: "private",
 			NativeEffortByHarness: map[string]string{"claude-code": "xhigh", "codex": "xhigh", "worker": "high"},
 			Budget:                ExecutionBudget{MaxRequests: 80, MaxInputTokens: 2_000_000, MaxOutputTokens: 400_000, MaxDurationSeconds: 10_800, MaxUSD: usdCeiling(50), MaxParallelism: 4},
 			Checkpoint:            ExecutionCheckpointPolicy{Required: true, EveryRequests: 20, PersistPartial: true},
@@ -210,6 +214,7 @@ func ResolveExecutionProfile(intent ExecutionProfileIntent) (ExecutionProfilePla
 	intent.TransportID = defaultString(intent.TransportID, definition.DefaultTransport)
 	intent.SemanticEffort = defaultString(intent.SemanticEffort, definition.SemanticEffort)
 	intent.OrchestrationPolicy = defaultString(intent.OrchestrationPolicy, definition.OrchestrationPolicy)
+	intent.PrivacyCeiling = defaultString(intent.PrivacyCeiling, definition.PrivacyCeiling)
 
 	if err := validateExecutionSelectors(intent, definition); err != nil {
 		return ExecutionProfilePlan{}, err
@@ -241,6 +246,7 @@ func ResolveExecutionProfile(intent ExecutionProfileIntent) (ExecutionProfilePla
 		SemanticEffort:          intent.SemanticEffort,
 		NativeEffort:            nativeEffort,
 		OrchestrationPolicy:     intent.OrchestrationPolicy,
+		PrivacyCeiling:          intent.PrivacyCeiling,
 		Disposition:             nativeEffort.Disposition,
 		Budget:                  definition.Budget,
 		Checkpoint:              definition.Checkpoint,
@@ -280,6 +286,18 @@ func DeriveChildExecutionProfile(parent ExecutionProfilePlan, child ChildExecuti
 	if child.RemainingBudget == nil {
 		return ExecutionProfilePlan{}, compatibilityError("child_intent.remaining_budget", "explicit remaining budget is required")
 	}
+	parentPrivacyRank := privacyRank(parent.PrivacyCeiling)
+	if parentPrivacyRank == 0 {
+		return ExecutionProfilePlan{}, compatibilityError("parent_plan.privacy_ceiling", "parent privacy ceiling is unsupported")
+	}
+	childPrivacy := defaultString(child.PrivacyCeiling, parent.PrivacyCeiling)
+	childPrivacyRank := privacyRank(childPrivacy)
+	if childPrivacyRank == 0 {
+		return ExecutionProfilePlan{}, compatibilityError("child_intent.privacy_ceiling", "unsupported privacy ceiling "+quoted(childPrivacy))
+	}
+	if childPrivacyRank > parentPrivacyRank {
+		return ExecutionProfilePlan{}, compatibilityError("child_intent.privacy_ceiling", "child privacy ceiling cannot expand the parent ceiling")
+	}
 	if effortRank(child.SemanticEffort) > effortRank(parent.SemanticEffort) {
 		return ExecutionProfilePlan{}, compatibilityError("child_intent.semantic_effort", "child semantic effort cannot exceed the parent")
 	}
@@ -317,6 +335,7 @@ func DeriveChildExecutionProfile(parent ExecutionProfilePlan, child ChildExecuti
 		SemanticEffort:      child.SemanticEffort,
 		NativeEffort:        child.NativeEffort,
 		OrchestrationPolicy: child.OrchestrationPolicy,
+		PrivacyCeiling:      childPrivacy,
 	})
 	if err != nil {
 		return ExecutionProfilePlan{}, err
@@ -342,10 +361,11 @@ func DeriveChildExecutionProfile(parent ExecutionProfilePlan, child ChildExecuti
 		SemanticEffort:      child.SemanticEffort,
 		NativeEffort:        child.NativeEffort,
 		OrchestrationPolicy: child.OrchestrationPolicy,
+		PrivacyCeiling:      child.PrivacyCeiling,
 	}
 	plan.ParentPlanID = parent.ID
 	plan.RemainingBudget = &remainingBudget
-	plan.InheritedCeilings = []string{"remaining_budget.max_requests", "remaining_budget.max_input_tokens", "remaining_budget.max_output_tokens", "remaining_budget.max_duration_seconds", "remaining_budget.max_usd", "remaining_budget.max_parallelism"}
+	plan.InheritedCeilings = []string{"privacy_ceiling", "remaining_budget.max_requests", "remaining_budget.max_input_tokens", "remaining_budget.max_output_tokens", "remaining_budget.max_duration_seconds", "remaining_budget.max_usd", "remaining_budget.max_parallelism"}
 	plan.Budget = budget
 	plan.ID, err = executionProfilePlanID(plan)
 	if err != nil {
@@ -396,6 +416,9 @@ func validateExecutionSelectors(intent ExecutionProfileIntent, definition Execut
 	}
 	if !oneOf(intent.OrchestrationPolicy, "direct", "standard", "ultracode") {
 		return compatibilityError("requested_intent.orchestration_policy", "unsupported orchestration policy "+quoted(intent.OrchestrationPolicy))
+	}
+	if privacyRank(intent.PrivacyCeiling) == 0 {
+		return compatibilityError("requested_intent.privacy_ceiling", "unsupported privacy ceiling "+quoted(intent.PrivacyCeiling))
 	}
 	if intent.OrchestrationPolicy == "ultracode" && definition.ID != "orchestration-ultracode" {
 		return compatibilityError("requested_intent.orchestration_policy", "ultracode requires explicit profile orchestration-ultracode")
@@ -609,6 +632,7 @@ func executionProfilePlanID(plan ExecutionProfilePlan) (string, error) {
 		SemanticEffort          string
 		NativeEffort            string
 		OrchestrationPolicy     string
+		PrivacyCeiling          string
 		Budget                  ExecutionBudget
 		Checkpoint              ExecutionCheckpointPolicy
 		ParentPlanID            string
@@ -619,7 +643,7 @@ func executionProfilePlanID(plan ExecutionProfilePlan) (string, error) {
 		ClientHarnessID: plan.ClientHarnessID, TransportID: plan.TransportID,
 		RouteAlias: plan.RouteAlias, ModelConstraint: plan.ModelConstraint,
 		SemanticEffort: plan.SemanticEffort, NativeEffort: plan.NativeEffort.Requested,
-		OrchestrationPolicy: plan.OrchestrationPolicy, Budget: plan.Budget,
+		OrchestrationPolicy: plan.OrchestrationPolicy, PrivacyCeiling: plan.PrivacyCeiling, Budget: plan.Budget,
 		Checkpoint: plan.Checkpoint, ParentPlanID: plan.ParentPlanID,
 		RemainingBudget:         plan.RemainingBudget,
 		IndependenceRequirement: plan.IndependenceRequirement,
@@ -680,6 +704,21 @@ func nativeEffortRank(effort string) int {
 	case "high", "xhigh":
 		return 3
 	case "max", "ultra":
+		return 4
+	default:
+		return 0
+	}
+}
+
+func privacyRank(privacy string) int {
+	switch strings.TrimSpace(privacy) {
+	case "public":
+		return 1
+	case "private":
+		return 2
+	case "sensitive":
+		return 3
+	case "secret":
 		return 4
 	default:
 		return 0

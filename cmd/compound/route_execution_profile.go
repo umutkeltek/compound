@@ -34,6 +34,7 @@ func runRouteExecutionProfileCommand(args []string, stdout, stderr io.Writer) in
 	semanticEffort := flags.String("semantic-effort", "", "economy|balanced|deep|max")
 	nativeEffort := flags.String("effort", "", "requested native effort")
 	orchestration := flags.String("orchestration", "", "direct|standard|ultracode")
+	privacyCeiling := flags.String("privacy-ceiling", "", "public|private|sensitive|secret")
 	list := flags.Bool("list", false, "list built-in profiles")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 	if err := flags.Parse(args); err != nil {
@@ -77,6 +78,7 @@ func runRouteExecutionProfileCommand(args []string, stdout, stderr io.Writer) in
 		SemanticEffort:      *semanticEffort,
 		NativeEffort:        *nativeEffort,
 		OrchestrationPolicy: *orchestration,
+		PrivacyCeiling:      *privacyCeiling,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "route execution-profile:", err)
@@ -101,6 +103,7 @@ func runRouteExecutionProfileCommand(args []string, stdout, stderr io.Writer) in
 	fmt.Fprintf(stdout, "- semantic_effort: %s\n", plan.SemanticEffort)
 	fmt.Fprintf(stdout, "- native_effort: %s (%s)\n", plan.NativeEffort.Requested, plan.NativeEffort.Disposition)
 	fmt.Fprintf(stdout, "- orchestration: %s\n", plan.OrchestrationPolicy)
+	fmt.Fprintf(stdout, "- privacy_ceiling: %s\n", plan.PrivacyCeiling)
 	fmt.Fprintf(stdout, "- effective_provider: %s\n", plan.EffectiveProvider)
 	fmt.Fprintf(stdout, "- effective_model: %s\n", plan.EffectiveModel)
 	fmt.Fprintf(stdout, "- effective_native_effort: %s\n", plan.EffectiveNativeEffort)
