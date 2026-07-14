@@ -21,7 +21,8 @@ not independent authority services.
 ## Consequences
 
 - Agents get one stable query path.
-- Sources can stay in place while derived knowledge is findable through Compound.
+- Durable private source bodies are captured into Compound-owned custody while their original locations remain
+  provenance and migration/rollback evidence.
 - The append-only ledger remains the canonical store for derived knowledge
   objects.
 - Domain extensibility happens through adapters and vocabularies, not new
@@ -31,7 +32,8 @@ not independent authority services.
 ## Non-Goals
 
 - Do not turn Compound into an agent orchestrator.
-- Do not require all source files to move into one folder.
+- Do not collapse source bodies, semantic authority, projections, and indexes into one untyped folder or
+  lifecycle; ADR 0002 defines their separate ownership contracts.
 - Do not make one microservice per layer.
 - Do not copy private memory or private control-plane surfaces into the public
   core.

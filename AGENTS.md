@@ -24,6 +24,8 @@ symlinks to these tracked bodies; `./install.sh` runs it. No hook injection avai
 - `docs/ARCHITECTURE.md`, `docs/LAYERS.md` — the information kernel (monolith, deep modules, cwd-independent).
 - `docs/architecture/substrate.md` — target topology; **one meaning owner**; two planes; the three places.
 - `docs/architecture/runtime.md` — the `.compound` home, the **envelope spine** (schemas), hooks-as-clients.
+- `docs/architecture/information-custody.md` — physical bodies vs meaning/projections/indexes; edit, restore,
+  multi-device, Switchback boundary, and retirement topology.
 - `docs/architecture/transition.md` — the `Transition` apex object, the 9-field invariant, second-order tests.
 - `docs/architecture/execution-plane.md` — the model-traffic gateway (route evidence ≠ task success).
 - `docs/architecture/epistemics.md` — machine-checked doctrine table: principles → implementing objects → proof commands.
@@ -37,6 +39,8 @@ symlinks to these tracked bodies; `./install.sh` runs it. No hook injection avai
    owner: compound. A private corpus is compound's meaning layer *inside* a running instance (not an external
    overlay). A legacy vector/fact store is a **bridge/index, never authority**: `compound → objects → index`,
    never `index → truth → compound reads`.
+   A running instance also physically custodies every durable body it needs under `COMPOUND_HOME`;
+   `source_in_place` is migration-only, not a completed ownership state.
 2. **Own the meaning, rent the index.** The ledger owns visibility, promotion, supersession, identity, truth.
    Engines/models/tools/harnesses are disposable. A gateway `RouteDecision` is route evidence, not task success.
 3. **The runtime grammar is the envelope spine, hung off one `work_id`.** Intent → EffectiveContract →

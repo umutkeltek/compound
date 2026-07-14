@@ -25,6 +25,50 @@ func TestDoctorGreenAgainstRealRepo(t *testing.T) {
 	}
 }
 
+// Physical custody is the retirement ratchet: if future edits drift back to
+// "the path and hash are enough," legacy note trees and databases become
+// permanent co-owners again. Pin the focused owner doc, its served build-guide
+// consumer, and the migration-only source-in-place boundary together.
+func TestInformationCustodyDoctrineIsServedAndRetirementGrade(t *testing.T) {
+	read := func(rel string) string {
+		t.Helper()
+		body, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		return string(body)
+	}
+	custody := read("docs/architecture/information-custody.md")
+	for _, want := range []string{
+		"Physical custody",
+		"Semantic authority",
+		"Projection",
+		"Index",
+		"source_in_place` remains readable only as a migration bridge",
+		"isolated restore",
+		"real consumer",
+		"negative control",
+		"quiet_window_proven",
+		"Compound and Switchback execution boundary",
+	} {
+		if !strings.Contains(custody, want) {
+			t.Errorf("information custody contract missing %q", want)
+		}
+	}
+	agents := read("AGENTS.md")
+	if !strings.Contains(agents, "docs/architecture/information-custody.md") {
+		t.Fatal("served build guide does not route executors to the custody owner")
+	}
+	adr := read("docs/adr/0002-compound-owned-information-custody.md")
+	if !strings.Contains(adr, "Status: accepted") || !strings.Contains(adr, "physically owns") {
+		t.Fatal("accepted physical-custody decision is missing or weakened")
+	}
+	legacyADR := read("docs/adr/0001-local-monolith-information-kernel.md")
+	if strings.Contains(legacyADR, "Sources can stay in place while derived knowledge") {
+		t.Fatal("ADR 0001 regressed to permanent source-in-place ownership")
+	}
+}
+
 // The candidate-map check is pure (no fs) — every kind has one home dir, created by home, with a
 // consumer. This locks the B1 invariant.
 func TestDocLeakUsesSourceLeakTokensForPublicSourceSurfaces(t *testing.T) {

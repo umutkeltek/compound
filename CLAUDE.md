@@ -6,7 +6,8 @@ It applies to Claude Code identically. This file only adds Claude-specific notes
 ## TL;DR (the rules you must not skip)
 - compound is a **unified meaning + execution substrate** with **one meaning owner** (compound). A private
   corpus is its meaning layer *inside* a running instance; a legacy vector/fact store is a **bridge/index, not
-  authority**. You are a rented executor; the ledger is authority.
+  authority**. Durable private bodies are physically custodied in `COMPOUND_HOME`; source-in-place is a
+  migration bridge. You are a rented executor; the ledger is semantic authority.
 - **Two planes:** compound (control/meaning) + an execution gateway (model traffic). A `RouteDecision` is route
   evidence, not task success.
 - **The runtime grammar is the envelope spine** (`docs/architecture/runtime.md`): Intent → EffectiveContract →

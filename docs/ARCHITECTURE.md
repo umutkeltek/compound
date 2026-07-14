@@ -17,7 +17,9 @@ they are **object families the spine's transitions create, own, and adjudicate.*
 - **The rented edge** (engines / harnesses / providers / adapters — never own meaning):
   `architecture/execution-plane.md`.
 - **Source adapters and generated views** (how existing systems enter Compound without
-  becoming peer authorities): `architecture/source-adapters.md`.
+becoming peer authorities): `architecture/source-adapters.md`.
+- **Information custody** (where durable bodies live, projection/writeback, restore, and legacy retirement):
+  `architecture/information-custody.md`.
 - **The compounding loop** (turns spine events into object families): `LAYERS.md`.
 
 > Layers are not services, phases, owners, or an alternate architecture. They are object families
@@ -35,10 +37,12 @@ they are **object families the spine's transitions create, own, and adjudicate.*
    object family (the lego seams).
 5. [`architecture/source-adapters.md`](./architecture/source-adapters.md) — generated/source
 observations before importing existing views, dashboards, registries, or instructions.
-6. [`memory-architecture.md`](./memory-architecture.md) — the Memory family in depth.
-7. [`architecture/transition.md`](./architecture/transition.md) — the proof seam / compounding.
-8. [`roadmap/phases.md`](./roadmap/phases.md) — the envelope-first construction order.
-9. [`BOUNDARIES.md`](./BOUNDARIES.md) — public core vs private overlay.
+6. [`architecture/information-custody.md`](./architecture/information-custody.md) — physical bodies,
+   authority, projections, indexes, restore, and retirement.
+7. [`memory-architecture.md`](./memory-architecture.md) — the Memory family in depth.
+8. [`architecture/transition.md`](./architecture/transition.md) — the proof seam / compounding.
+9. [`roadmap/phases.md`](./roadmap/phases.md) — the envelope-first construction order.
+10. [`BOUNDARIES.md`](./BOUNDARIES.md) — public core vs private runtime data.
 
 ## Why a monolith, not microservices
 
@@ -56,18 +60,20 @@ compound transition ...  # the proof seam
 compound architecture doctor   # is the scaffolding still coherent?
 ```
 
-Adapters can read files where they already live, but **compound owns the lifecycle of derived
-knowledge.** Implementation packages, adapters, and optional engines are internal seams — they
-must not become separate authority centers.
+Adapters can read files where they already live during migration, but a running instance **physically owns
+durable bodies and semantically owns their adjudicated meaning**. Implementation packages, adapters, and
+optional engines are internal seams — they must not become separate authority centers.
 
 ## Information placement
 
 - **Compound-owned** canonical ledger objects (append-only JSONL under one ledger root):
   `evidence`, `entities`, `claims`, `positions`, `patterns`, `edges`. Scope is represented today by typed
   edges such as `part_of`; no separate `scope_assignments` ledger is implemented.
-- **Source-in-place**: external sources (repo files, notes, decision docs, runtime contracts,
-  transcripts) stay where they belong; compound stores durable identifiers, evidence refs, claims,
-  and citations. It does not copy every source into one folder to make it findable.
+- **Compound-custodied source bodies**: durable private notes, policies, transcripts, exports, and attachments
+  have versioned source records plus immutable artifact bodies under `COMPOUND_HOME`. Original paths remain
+  provenance/rollback evidence; `source_in_place` is migration-only and is not physical custody.
+- **Projections and indexes**: Markdown/dashboard/harness views are rebuildable clients; retrieval engines are
+  rented acceleration. Neither owns semantic currentness or canonical bodies.
 
 ## Cwd independence
 
