@@ -4,6 +4,8 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$repo_root"
 
+"$repo_root/scripts/sync-ceremony-overlays.sh" "$repo_root"
+
 if [ -n "${GOBIN:-}" ]; then
   install_dir=$GOBIN
 else

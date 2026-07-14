@@ -2245,7 +2245,32 @@ func checkStandingGrantContract(repoRoot string) []Finding {
 	if !hasStandingGrant || !hasScopeBudget || !hasBlastReversibility || !hasTargetCostFields || !hasLeavingEnvelope || !hasPolicyGate {
 		return []Finding{{"standing-grant-contract", Fail, "public docs do not describe scoped StandingGrant envelopes with target_path/budget/blast/reversibility and PolicyDecision/Gate enforcement when leaving the envelope"}}
 	}
-	return []Finding{{"standing-grant-contract", Info, "StandingGrant remains a scoped policy envelope enforced by PolicyDecision/Gate"}}
+	for _, rel := range []string{"AGENTS.md", "skills/compound-land/SKILL.md", "skills/compound-execute/SKILL.md"} {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			return []Finding{{"standing-grant-contract", Fail, "could not read standing-grant push doctrine at " + rel + ": " + err.Error()}}
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "never push to a public remote without explicit operator confirmation") {
+			return []Finding{{"standing-grant-contract", Fail, rel + " contradicts the standing push grant with the retired ask-before-normal-push rule"}}
+		}
+		hasExistingRemoteGrant := strings.Contains(low, "normal") &&
+			strings.Contains(low, "push") &&
+			strings.Contains(low, "existing remote") &&
+			strings.Contains(low, "standing") &&
+			strings.Contains(low, "grant")
+		hasSeparateRedactGate := strings.Contains(low, "clean") &&
+			strings.Contains(low, "redact") &&
+			(strings.Contains(low, "separate") || strings.Contains(low, "own command"))
+		hasConfirmationExceptions := (strings.Contains(low, "force-push") || strings.Contains(low, "force push")) &&
+			strings.Contains(low, "history rewrite") &&
+			(strings.Contains(low, "new remote") || strings.Contains(low, "new-remote")) &&
+			strings.Contains(low, "confirmation")
+		if !hasExistingRemoteGrant || !hasSeparateRedactGate || !hasConfirmationExceptions {
+			return []Finding{{"standing-grant-contract", Fail, rel + " must say normal push to the existing remote follows the standing grant, clean redact is a separate required gate, and force-push/history rewrite/new remote require confirmation"}}
+		}
+	}
+	return []Finding{{"standing-grant-contract", Info, "StandingGrant remains a scoped policy envelope enforced by PolicyDecision/Gate, with consistent push boundaries across served ceremonies"}}
 }
 
 func checkPlacementGuardContract(repoRoot string) []Finding {

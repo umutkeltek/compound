@@ -15,8 +15,10 @@ landing/executing/verifying work here as an `operating-ceremonies` context sourc
 **tracked in-repo** under [`skills/`](./skills/README.md) (`compound-execute`, `compound-land`,
 `compound-verify`, `extract-approach`) — plain markdown any harness reads directly, reachable in a fresh
 public clone with no private overlay. A harness may also mirror them as local auto-loading skills (e.g. under
-`.claude/skills/`), but that overlay is a convenience, not the source of truth. No hook injection available?
-Read `skills/README.md` (or run orient manually) before orchestrating or landing — never improvise the ceremony.
+`.claude/skills/`), but that overlay is a convenience, not the source of truth.
+`scripts/sync-ceremony-overlays.sh` generates the `.agents/skills/` and `.claude/skills/` adapters as relative
+symlinks to these tracked bodies; `./install.sh` runs it. No hook injection available? Read `skills/README.md`
+(or run orient manually) before orchestrating or landing — never improvise the ceremony.
 
 ## Read first
 - `docs/ARCHITECTURE.md`, `docs/LAYERS.md` — the information kernel (monolith, deep modules, cwd-independent).
@@ -119,6 +121,7 @@ loop compound provides:
 - Scoped commits, clear boundaries (source/contracts; tests/fixtures; docs). Do not "commit all."
 - **Push is pre-authorized** (standing operator grant 2026-07-12): a normal `git push` of committed work to the
   project's existing remote — public included — needs no per-push confirmation. Two floors remain: a clean
-  redact scan before any public push, and force-push/history rewrites still require explicit confirmation.
+  `redact` scan as a separate required gate before any public push; force-push, history rewrite, or a new remote
+  still requires explicit confirmation.
 - Stop and ask before deleting/archiving major surfaces, changing approval boundaries, spending, publishing, or
   any irreversible/external action. Prove the change by a state delta, not a report.

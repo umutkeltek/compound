@@ -205,8 +205,9 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
 ## 5 · Push floor
 
 Normal `git push` of committed work to the existing remote is covered by the standing operator
-grant. Before a public push: run `redact` clean; add `release export-public` sanity when the push is
-release-shaped. Force-push, history rewrite, or a new remote still requires explicit confirmation.
+grant. A clean `redact` scan is a separate required gate before a public push; add
+`release export-public` sanity when the push is release-shaped. Force-push, history rewrite, or a
+new remote still requires explicit confirmation.
 - **Never pipe `redact` through `| tail`/`| head`, and never chain the push after it in the same
   command** (real incident 2026-07-10: `redact | tail -1 && git push` — the pipeline's exit was
   tail's `0`, a MEDIUM-flagged scan read as green, and the push fired; findings were benign
