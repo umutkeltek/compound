@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,6 +16,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"compound/internal/envelope"
+	homepkg "compound/internal/home"
+	"compound/internal/policy"
 
 	"gopkg.in/yaml.v3"
 )
@@ -67,14 +73,16 @@ type PermissionRender struct {
 const permissionApplyPendingSchemaVersion = "compound.harness_permission_apply_pending.v0.1"
 
 type permissionApplyPending struct {
-	SchemaVersion  string `json:"schema_version"`
-	Harness        string `json:"harness"`
-	TargetPath     string `json:"target_path"`
-	BeforeExisted  bool   `json:"before_existed"`
-	BeforeContent  []byte `json:"before_content,omitempty"`
-	BeforeSHA256   string `json:"before_sha256,omitempty"`
-	IntendedSHA256 string `json:"intended_sha256"`
-	SourceRevision string `json:"source_revision"`
+	SchemaVersion      string `json:"schema_version"`
+	Harness            string `json:"harness"`
+	TargetPath         string `json:"target_path"`
+	RecoveryName       string `json:"recovery_name,omitempty"`
+	BeforeExisted      bool   `json:"before_existed"`
+	BeforeContent      []byte `json:"before_content,omitempty"`
+	BeforeSHA256       string `json:"before_sha256,omitempty"`
+	IntendedSHA256     string `json:"intended_sha256"`
+	SourceAuthorityRef string `json:"source_authority_ref"`
+	SourceRevision     string `json:"source_revision"`
 }
 
 type PermissionDriftReport struct {
@@ -210,7 +218,7 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 	}
 	return PermissionRender{
 		TargetPath: policy.TargetPath,
-		Changed:    !jsonEquivalent(before, content),
+		Changed:    !bytes.Equal(before, content),
 		Content:    content,
 		Preimage:   append([]byte(nil), before...),
 		PreExisted: beforeExisted,
@@ -222,13 +230,16 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 var writeHarnessArtifactManifestForApply = WriteHarnessArtifactManifest
 var applyPermissionsBeforeTargetCommit = func() {}
 var applyPermissionsAfterTargetWrite = func() error { return nil }
+var permissionApplySyncBoundary = func(_ string, path string) error {
+	return syncPermissionParentDirectory(path)
+}
 
 func PermissionApplyPendingPath(homePath, harness string) string {
 	return filepath.Join(homePath, "transactions", "harness-permissions", strings.TrimSpace(harness)+".json")
 }
 
-func permissionApplyLockPath(homePath, harness string) string {
-	return filepath.Join(homePath, "locks", "harness-permissions", strings.TrimSpace(harness)+".lock")
+func permissionApplyLockPath(homePath string) string {
+	return filepath.Join(homePath, "locks", "harness-permissions.lock")
 }
 
 // ApplyPermissions reconciles only Compound-managed permission entries, writes
@@ -236,34 +247,44 @@ func permissionApplyLockPath(homePath, harness string) string {
 // revision/content hash. The lock serializes Compound writers; the preimage CAS
 // refuses a concurrent manual edit. An interrupted transaction stays visible to
 // drift and is recovered before the next apply.
-func ApplyPermissions(homePath, harness string) (PermissionRender, error) {
+func ApplyPermissions(homePath string, approved PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision) (PermissionRender, error) {
+	if err := validatePermissionApplyApproval(approved, action, decision); err != nil {
+		return PermissionRender{}, err
+	}
+	harnessName := approved.Artifact.Harness
 	var render PermissionRender
-	err := withPermissionApplyLock(homePath, harness, func() error {
-		if err := recoverPermissionApplyPending(homePath, harness); err != nil {
+	err := withPermissionApplyLock(homePath, func() error {
+		if err := recoverPermissionApplyPending(homePath, harnessName); err != nil {
 			return err
 		}
-		var err error
-		render, err = RenderPermissions(homePath, harness)
+		current, err := RenderPermissions(homePath, harnessName)
 		if err != nil {
 			return err
 		}
+		if !samePermissionRender(current, approved) {
+			return fmt.Errorf("approved render no longer matches current authority, target path, preimage, or content")
+		}
+		render = approved
 		beforeExisted := render.PreExisted
 		if !render.Changed {
-			previous, ok, err := latestHarnessArtifact(homePath, harness, render.TargetPath)
+			previous, ok, err := latestHarnessArtifact(homePath, harnessName, render.TargetPath)
 			if err != nil {
 				return err
 			}
 			if ok && sameHarnessArtifact(previous, render.Artifact) {
 				return nil
 			}
-			return writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact})
+			if err := writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact}); err != nil {
+				return err
+			}
+			return permissionApplySyncBoundary("manifest_write", HarnessArtifactManifestPath(homePath))
 		}
+		recoveryName := permissionRecoveryName(render)
 		pending := permissionApplyPending{
 			SchemaVersion: permissionApplyPendingSchemaVersion,
-			Harness:       harness, TargetPath: render.TargetPath, BeforeExisted: beforeExisted,
-			BeforeContent:  append([]byte(nil), render.Preimage...),
-			IntendedSHA256: render.Artifact.ContentSHA256,
-			SourceRevision: render.Artifact.SourceRevision,
+			Harness:       harnessName, TargetPath: render.TargetPath, RecoveryName: recoveryName, BeforeExisted: beforeExisted,
+			BeforeContent: append([]byte(nil), render.Preimage...), IntendedSHA256: render.Artifact.ContentSHA256,
+			SourceAuthorityRef: render.Artifact.SourceAuthorityRef, SourceRevision: render.Artifact.SourceRevision,
 		}
 		if beforeExisted {
 			pending.BeforeSHA256 = "sha256:" + digest(render.Preimage)
@@ -272,30 +293,39 @@ func ApplyPermissions(homePath, harness string) (PermissionRender, error) {
 		if err != nil {
 			return err
 		}
-		pendingPath := PermissionApplyPendingPath(homePath, harness)
+		pendingPath := PermissionApplyPendingPath(homePath, harnessName)
 		if err := writePermissionPrivateFileAtomic(pendingPath, append(body, '\n')); err != nil {
 			return fmt.Errorf("write permission apply pending transaction: %w", err)
 		}
+		if err := permissionApplySyncBoundary("pending_write", pendingPath); err != nil {
+			return fmt.Errorf("sync permission apply pending transaction: %w", err)
+		}
 		applyPermissionsBeforeTargetCommit()
-		if err := writePermissionFileAtomicCAS(render.TargetPath, render.Content, render.Preimage, beforeExisted); err != nil {
-			_ = os.Remove(pendingPath)
+		publication, err := beginPermissionTargetPublication(render, recoveryName)
+		if err != nil {
+			if removeErr := removePermissionPending(pendingPath); removeErr != nil {
+				return errors.Join(err, removeErr)
+			}
 			return err
+		}
+		defer publication.Close()
+		if err := permissionApplySyncBoundary("target_publish", render.TargetPath); err != nil {
+			return rollbackPermissionPublication(publication, pendingPath, fmt.Errorf("sync permission target publication: %w", err))
 		}
 		if err := applyPermissionsAfterTargetWrite(); err != nil {
 			return fmt.Errorf("permission apply interrupted after target write: %w", err)
 		}
 		if err := writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact}); err != nil {
-			restoreErr := restorePermissionPreimage(render.TargetPath, render.Preimage, beforeExisted)
-			if restoreErr != nil {
-				return fmt.Errorf("write harness artifact manifest: %v; restore settings pre-image: %w", err, restoreErr)
-			}
-			if removeErr := os.Remove(pendingPath); removeErr != nil && !os.IsNotExist(removeErr) {
-				return fmt.Errorf("write harness artifact manifest: %v; settings pre-image restored; remove pending transaction: %w", err, removeErr)
-			}
-			return fmt.Errorf("write harness artifact manifest: %w; settings pre-image restored", err)
+			return rollbackPermissionPublication(publication, pendingPath, fmt.Errorf("write harness artifact manifest: %w", err))
 		}
-		if err := os.Remove(pendingPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove completed permission apply transaction: %w", err)
+		if err := permissionApplySyncBoundary("manifest_write", HarnessArtifactManifestPath(homePath)); err != nil {
+			return fmt.Errorf("sync harness artifact manifest: %w", err)
+		}
+		if err := publication.Commit(); err != nil {
+			return fmt.Errorf("commit permission target publication: %w", err)
+		}
+		if err := removePermissionPending(pendingPath); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -305,8 +335,8 @@ func ApplyPermissions(homePath, harness string) (PermissionRender, error) {
 	return render, nil
 }
 
-func withPermissionApplyLock(homePath, harness string, fn func() error) error {
-	path := permissionApplyLockPath(homePath, harness)
+func withPermissionApplyLock(homePath string, fn func() error) error {
+	path := permissionApplyLockPath(homePath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -338,6 +368,16 @@ func recoverPermissionApplyPending(homePath, harness string) error {
 	if pending.SchemaVersion != permissionApplyPendingSchemaVersion || pending.Harness != harness || strings.TrimSpace(pending.TargetPath) == "" {
 		return fmt.Errorf("pending permission apply transaction identity is invalid")
 	}
+	policyAuthority, sourceRevision, err := LoadPermissionAuthority(homePath, harness)
+	if err != nil {
+		return fmt.Errorf("validate pending permission apply authority: %w", err)
+	}
+	if pending.SourceRevision != sourceRevision {
+		return fmt.Errorf("pending permission apply source revision %q no longer matches %q", pending.SourceRevision, sourceRevision)
+	}
+	if pending.SourceAuthorityRef != policyAuthority.AuthorityRef || pending.TargetPath != policyAuthority.TargetPath {
+		return fmt.Errorf("pending permission apply authority or target path no longer matches current authority")
+	}
 	if pending.BeforeExisted && pending.BeforeSHA256 != "sha256:"+digest(pending.BeforeContent) {
 		return fmt.Errorf("pending permission apply transaction pre-image digest is invalid")
 	}
@@ -355,13 +395,254 @@ func recoverPermissionApplyPending(homePath, harness string) error {
 	if !currentIsBefore && !currentIsIntended {
 		return fmt.Errorf("pending permission apply target changed after interruption; refusing to overwrite manual state")
 	}
-	if err := restorePermissionPreimage(pending.TargetPath, pending.BeforeContent, pending.BeforeExisted); err != nil {
+	if currentIsBefore {
+		if pending.RecoveryName != "" {
+			_ = os.Remove(filepath.Join(filepath.Dir(pending.TargetPath), pending.RecoveryName))
+		}
+		return removePermissionPending(path)
+	}
+	latest, ok, err := latestHarnessArtifact(homePath, harness, pending.TargetPath)
+	if err != nil {
+		return err
+	}
+	if ok && latest.ContentSHA256 == pending.IntendedSHA256 && latest.SourceRevision == pending.SourceRevision {
+		if pending.RecoveryName != "" {
+			if err := os.Remove(filepath.Join(filepath.Dir(pending.TargetPath), pending.RecoveryName)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("complete pending permission target publication: %w", err)
+			}
+			if err := syncPermissionParentDirectory(pending.TargetPath); err != nil {
+				return err
+			}
+		}
+		return removePermissionPending(path)
+	}
+	if !pending.BeforeExisted || pending.RecoveryName == "" {
+		return fmt.Errorf("pending permission apply requires manual recovery; atomic pre-image is unavailable")
+	}
+	publication, err := beginPermissionRecoveryPublication(pending, current)
+	if err != nil {
 		return fmt.Errorf("recover pending permission apply pre-image: %w", err)
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove recovered permission apply transaction: %w", err)
+	defer publication.Close()
+	if err := publication.Commit(); err != nil {
+		return fmt.Errorf("commit recovered permission apply pre-image: %w", err)
+	}
+	return removePermissionPending(path)
+}
+
+func validatePermissionApplyApproval(approved PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision) error {
+	if err := action.Validate(); err != nil {
+		return fmt.Errorf("permission apply action intent invalid: %w", err)
+	}
+	if err := decision.Validate(); err != nil {
+		return fmt.Errorf("permission apply policy decision invalid: %w", err)
+	}
+	if strings.TrimSpace(approved.Artifact.Harness) == "" || approved.TargetPath == "" || approved.TargetPath != approved.Artifact.Path {
+		return fmt.Errorf("permission apply approved render target identity is invalid")
+	}
+	if approved.Artifact.ContentSHA256 != "sha256:"+digest(approved.Content) {
+		return fmt.Errorf("permission apply approved render content digest is invalid")
+	}
+	if action.Capability != "harness.permissions.apply" {
+		return fmt.Errorf("permission apply capability must be harness.permissions.apply")
+	}
+	if action.Action != "reconcile_harness_permissions" {
+		return fmt.Errorf("permission apply action must be reconcile_harness_permissions")
+	}
+	if action.Target.Kind != "harness_settings" || action.Target.ID != approved.Artifact.Harness || action.Target.Path != approved.TargetPath {
+		return fmt.Errorf("permission apply action target does not bind approved render")
+	}
+	if action.MutationClass != "security" || action.Reversibility != "easy" || action.BlastRadius != "local" {
+		return fmt.Errorf("permission apply requires security mutation_class with easy reversibility and local blast radius")
+	}
+	if !policy.HasOperatorProvenance(action.Actor) {
+		return fmt.Errorf("permission apply requires explicit operator provenance")
+	}
+	if decision.ActionIntentID != action.ID || decision.IDs.WorkID != action.IDs.WorkID {
+		return fmt.Errorf("permission apply policy decision does not bind action intent")
+	}
+	if !policy.Allowed(decision) || strings.TrimSpace(decision.StandingGrantID) == "" {
+		return fmt.Errorf("permission apply requires an allowed standing-grant policy decision")
 	}
 	return nil
+}
+
+func samePermissionRender(a, b PermissionRender) bool {
+	return a.TargetPath == b.TargetPath && a.Changed == b.Changed && a.PreExisted == b.PreExisted &&
+		bytes.Equal(a.Content, b.Content) && bytes.Equal(a.Preimage, b.Preimage) &&
+		reflect.DeepEqual(a.Artifact, b.Artifact) && reflect.DeepEqual(a.Details, b.Details)
+}
+
+type permissionTargetPublication struct {
+	root        *os.Root
+	publication *homepkg.RootedFileCAS
+}
+
+func (p *permissionTargetPublication) Commit() error   { return p.publication.Commit() }
+func (p *permissionTargetPublication) Rollback() error { return p.publication.Rollback() }
+func (p *permissionTargetPublication) Close() error    { return p.root.Close() }
+
+func beginPermissionTargetPublication(render PermissionRender, recoveryName string) (*permissionTargetPublication, error) {
+	parent := filepath.Dir(render.TargetPath)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(parent)
+	if err != nil {
+		return nil, err
+	}
+	name := filepath.Base(render.TargetPath)
+	current, currentInfo, err := readPermissionRootedFile(root, name)
+	if os.IsNotExist(err) && !render.PreExisted {
+		current, currentInfo, err = nil, nil, nil
+	}
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	if (currentInfo != nil) != render.PreExisted || !bytes.Equal(current, render.Preimage) {
+		_ = root.Close()
+		return nil, fmt.Errorf("settings target %s preimage changed before permission publication", render.TargetPath)
+	}
+	replacementInfo, err := writePermissionRootedReplacement(root, recoveryName, render.Content, currentInfo)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	publication, err := homepkg.BeginRootedFileCAS(root, name, recoveryName, current, currentInfo, render.Content, replacementInfo)
+	if err != nil {
+		if publication == nil || publication.State() == homepkg.RootedFileCASNotPublished {
+			_ = root.Remove(recoveryName)
+		}
+		_ = root.Close()
+		return nil, err
+	}
+	return &permissionTargetPublication{root: root, publication: publication}, nil
+}
+
+func beginPermissionRecoveryPublication(pending permissionApplyPending, current []byte) (*permissionTargetPublication, error) {
+	root, err := os.OpenRoot(filepath.Dir(pending.TargetPath))
+	if err != nil {
+		return nil, err
+	}
+	name := filepath.Base(pending.TargetPath)
+	actual, currentInfo, err := readPermissionRootedFile(root, name)
+	if err != nil || !bytes.Equal(actual, current) {
+		_ = root.Close()
+		return nil, errors.Join(fmt.Errorf("pending target changed during recovery"), err)
+	}
+	recoveryData, recoveryInfo, err := readPermissionRootedFile(root, pending.RecoveryName)
+	if err != nil || !bytes.Equal(recoveryData, pending.BeforeContent) {
+		_ = root.Close()
+		return nil, errors.Join(fmt.Errorf("pending recovery pre-image changed"), err)
+	}
+	publication, err := homepkg.BeginRootedFileCAS(root, name, pending.RecoveryName, actual, currentInfo, recoveryData, recoveryInfo)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return &permissionTargetPublication{root: root, publication: publication}, nil
+}
+
+func writePermissionRootedReplacement(root *os.Root, name string, body []byte, currentInfo os.FileInfo) (os.FileInfo, error) {
+	mode := os.FileMode(0o644)
+	if currentInfo != nil {
+		mode = currentInfo.Mode().Perm()
+	}
+	file, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func(cause error) (os.FileInfo, error) {
+		_ = file.Close()
+		_ = root.Remove(name)
+		return nil, cause
+	}
+	if n, err := file.Write(body); err != nil {
+		return cleanup(err)
+	} else if n != len(body) {
+		return cleanup(io.ErrShortWrite)
+	}
+	if err := file.Sync(); err != nil {
+		return cleanup(err)
+	}
+	if err := file.Close(); err != nil {
+		_ = root.Remove(name)
+		return nil, err
+	}
+	data, info, err := readPermissionRootedFile(root, name)
+	if err != nil || !bytes.Equal(data, body) {
+		return cleanup(errors.Join(fmt.Errorf("permission replacement changed before publication"), err))
+	}
+	return info, nil
+}
+
+func readPermissionRootedFile(root *os.Root, name string) ([]byte, os.FileInfo, error) {
+	before, err := root.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("permission target must be a regular file")
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	after, err := root.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !os.SameFile(before, opened) || !os.SameFile(opened, after) || int64(len(data)) != after.Size() {
+		return nil, nil, fmt.Errorf("permission target changed while read")
+	}
+	return data, after, nil
+}
+
+func permissionRecoveryName(render PermissionRender) string {
+	return fmt.Sprintf(".%s.%d.%s.permission-swap", filepath.Base(render.TargetPath), os.Getpid(), strings.TrimPrefix(render.Artifact.ContentSHA256, "sha256:")[:12])
+}
+
+func rollbackPermissionPublication(publication *permissionTargetPublication, pendingPath string, cause error) error {
+	if err := publication.Rollback(); err != nil {
+		return fmt.Errorf("%v; manual/concurrent state preserved and pending recovery retained: %w", cause, err)
+	}
+	if err := removePermissionPending(pendingPath); err != nil {
+		return fmt.Errorf("%v; settings pre-image restored; %w", cause, err)
+	}
+	return fmt.Errorf("%w; settings pre-image restored", cause)
+}
+
+func removePermissionPending(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove permission apply pending transaction: %w", err)
+	}
+	if err := permissionApplySyncBoundary("pending_remove", path); err != nil {
+		return fmt.Errorf("sync permission apply pending removal: %w", err)
+	}
+	return nil
+}
+
+func syncPermissionParentDirectory(path string) error {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
+		return syncErr
+	}
+	return closeErr
 }
 
 func sameHarnessArtifact(a, b HarnessArtifact) bool {

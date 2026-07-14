@@ -226,9 +226,10 @@ func TestApplyPermissionsInterruptedWriteIsVisibleAndRecovered(t *testing.T) {
 	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
 	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
 	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	previousHook := applyPermissionsAfterTargetWrite
 	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
-	if _, err := applyGovernedPermissions(t, homePath, "claude_code"); err == nil {
+	if _, err := ApplyPermissions(homePath, approved, action, decision); err == nil {
 		t.Fatal("interrupted apply error = nil")
 	}
 	pendingInfo, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code"))
@@ -248,7 +249,7 @@ func TestApplyPermissionsInterruptedWriteIsVisibleAndRecovered(t *testing.T) {
 
 	applyPermissionsAfterTargetWrite = previousHook
 	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
-	if _, err := applyGovernedPermissions(t, homePath, "claude_code"); err != nil {
+	if _, err := ApplyPermissions(homePath, approved, action, decision); err != nil {
 		t.Fatalf("recover apply: %v", err)
 	}
 	report, err = PermissionDrift(homePath, "claude_code")
