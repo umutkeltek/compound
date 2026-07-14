@@ -172,6 +172,61 @@ func TestWorkDispatchClaimRejectsNextAndExplicitIDTogether(t *testing.T) {
 	}
 }
 
+func TestDispatchCLIIsolationIgnoresAndRestoresAmbientCapacityGuard(t *testing.T) {
+	previousGuard := work.LaneCapacityGuard
+	ambientCalls := 0
+	work.LaneCapacityGuard = func(work.LaneCapacityGuardRequest) (work.LaneCapacityGuardResult, error) {
+		ambientCalls++
+		return work.LaneCapacityGuardResult{
+			Capacity: work.DispatchLaneCapacity{State: "walled", DataRef: "ambient test sentinel"},
+			Refused:  true,
+			Message:  "ambient capacity must not enter hermetic CLI tests",
+		}, nil
+	}
+	t.Cleanup(func() { work.LaneCapacityGuard = previousGuard })
+
+	t.Run("direct CLI harness", func(t *testing.T) {
+		isolateDispatchCapacityGuard(t)
+		homePath := t.TempDir()
+		t.Setenv("COMPOUND_HOME", homePath)
+		if err := home.Init(homePath, "test", cliTestNow); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		store, err := work.Open(homePath)
+		if err != nil {
+			t.Fatalf("open work: %v", err)
+		}
+		ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "ambient capacity is isolated"}, cliTestNow)
+		if err != nil {
+			t.Fatalf("create work: %v", err)
+		}
+
+		out := captureStdout(t, func() {
+			cmdWork([]string{"dispatch-plan", "--actor", "codex", "--json"})
+		})
+		var plan work.DispatchPlan
+		if err := json.Unmarshal([]byte(out), &plan); err != nil {
+			t.Fatalf("decode dispatch plan: %v\n%s", err, out)
+		}
+		if plan.Status != "ready_to_claim" || plan.Selected == nil || plan.Selected.WorkID != ready.ID {
+			t.Fatalf("ambient capacity changed hermetic dispatch result: %+v", plan)
+		}
+		if plan.LaneCapacity != nil {
+			t.Fatalf("ambient capacity leaked into hermetic dispatch result: %+v", plan.LaneCapacity)
+		}
+	})
+
+	if ambientCalls != 0 {
+		t.Fatalf("ambient capacity guard called during isolated CLI run: %d", ambientCalls)
+	}
+	if _, err := work.LaneCapacityGuard(work.LaneCapacityGuardRequest{}); err != nil {
+		t.Fatalf("restored ambient guard: %v", err)
+	}
+	if ambientCalls != 1 {
+		t.Fatalf("ambient capacity guard was not restored after isolated CLI run: calls=%d", ambientCalls)
+	}
+}
+
 func TestWorkDispatchClaimWalledPreviewPreservesStatusWithoutEvidenceWrite(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
