@@ -23,7 +23,7 @@ import (
 const (
 	FixtureSchemaVersion    = "compound.parity_fixture.v0.2"
 	ReportSchemaVersion     = "compound.parity_report.v0.2"
-	CheckpointSchemaVersion = "compound.parity_checkpoint.v0.1"
+	CheckpointSchemaVersion = "compound.parity_checkpoint.v0.2"
 	ReviewArea              = "retrieval-parity"
 )
 
@@ -67,17 +67,21 @@ type NegativeControlResult struct {
 // ReplayRow deliberately contains no raw query field. QuerySHA256 is the only
 // query identity that can leave the COMPOUND_HOME-only journal/fixture surface.
 type ReplayRow struct {
-	Consumer        string                 `json:"consumer"`
-	QueryClass      string                 `json:"query_class"`
-	QuerySHA256     string                 `json:"query_sha256"`
-	InputSHA256     string                 `json:"input_sha256,omitempty"`
-	ExpectedRefs    []string               `json:"expected_refs"`
-	ResultRefs      []string               `json:"result_refs"`
-	ResultCount     int                    `json:"result_count"`
-	LostHits        []string               `json:"lost_hits"`
-	ExtraHits       []string               `json:"extra_hits"`
-	LatencyMS       float64                `json:"latency_ms"`
-	EngineAvailable bool                   `json:"engine_available"`
+	Consumer        string   `json:"consumer"`
+	QueryClass      string   `json:"query_class"`
+	QuerySHA256     string   `json:"query_sha256"`
+	InputSHA256     string   `json:"input_sha256,omitempty"`
+	ExpectedRefs    []string `json:"expected_refs"`
+	ResultRefs      []string `json:"result_refs"`
+	ResultCount     int      `json:"result_count"`
+	LostHits        []string `json:"lost_hits"`
+	ExtraHits       []string `json:"extra_hits"`
+	LatencyMS       float64  `json:"latency_ms"`
+	EngineAvailable bool     `json:"engine_available"`
+	// RuntimeGap records the exact replay-time failure classification for an
+	// unavailable row. Checkpoint coverage is derived from these row facts, so
+	// resumable state cannot claim an unexplained gap or lose a real one.
+	RuntimeGap      string                 `json:"runtime_gap,omitempty"`
 	NegativeControl *NegativeControlResult `json:"negative_control,omitempty"`
 	ParityPassed    bool                   `json:"parity_passed"`
 	privacySafe     bool
@@ -530,11 +534,24 @@ func ValidateCheckpointPrefix(checkpoint Checkpoint, fixtureCoverage Coverage, f
 	if err := validateCheckpoint(checkpoint); err != nil {
 		return err
 	}
-	if !equalCoverage(checkpoint.Coverage, fixtureCoverage) {
-		return fmt.Errorf("parity checkpoint coverage does not match fixture")
+	normalizedCheckpointCoverage := normalizeCoverage(checkpoint.Coverage)
+	normalizedFixtureCoverage := normalizeCoverage(fixtureCoverage)
+	if normalizedCheckpointCoverage.WindowStart != normalizedFixtureCoverage.WindowStart ||
+		normalizedCheckpointCoverage.WindowEnd != normalizedFixtureCoverage.WindowEnd {
+		return fmt.Errorf("parity checkpoint coverage window does not match fixture")
 	}
 	if checkpoint.Completed > len(fixtureRows) {
 		return fmt.Errorf("parity checkpoint has more completed rows than the selected fixture")
+	}
+	expectedCoverage := normalizedFixtureCoverage
+	for _, row := range checkpoint.Rows[:checkpoint.Completed] {
+		if row.RuntimeGap != "" {
+			expectedCoverage.KnownGaps = append(expectedCoverage.KnownGaps, row.RuntimeGap)
+		}
+	}
+	expectedCoverage = normalizeCoverage(expectedCoverage)
+	if !equalStringSlices(normalizedCheckpointCoverage.KnownGaps, expectedCoverage.KnownGaps) {
+		return fmt.Errorf("parity checkpoint coverage gaps do not match fixture plus completed runtime evidence")
 	}
 	for i := 0; i < checkpoint.Completed; i++ {
 		checkpointRow := checkpoint.Rows[i]
@@ -667,6 +684,9 @@ func validateCheckpoint(checkpoint Checkpoint) error {
 		if err := validateReplayRow(row, checkpoint.Identity.Consumer); err != nil {
 			return fmt.Errorf("parity checkpoint row %d: %w", i+1, err)
 		}
+		if !row.EngineAvailable && row.RuntimeGap == "" {
+			return fmt.Errorf("parity checkpoint row %d: runtime_gap required when engine is unavailable", i+1)
+		}
 	}
 	return nil
 }
@@ -718,7 +738,7 @@ func freezeOutputName(out string, fixture Fixture) (string, error) {
 	return name, nil
 }
 
-func NewReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, engineAvailable bool) ReplayRow {
+func NewReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, engineAvailable bool, runtimeGaps ...string) ReplayRow {
 	expected := uniqueSorted(row.ExpectedRefs)
 	actual := uniqueSorted(resultRefs)
 	lost := difference(expected, actual)
@@ -730,6 +750,12 @@ func NewReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, en
 	privacySafe := validFixtureRefs(row.Consumer, expected) && validFixtureRefs(row.Consumer, actual) &&
 		validPersistedRefs(row.Consumer, reportExpected) && validPersistedRefs(row.Consumer, reportActual) &&
 		validPersistedRefs(row.Consumer, reportLost) && validPersistedRefs(row.Consumer, reportExtra)
+	runtimeGap := ""
+	if len(runtimeGaps) == 1 {
+		runtimeGap = strings.TrimSpace(runtimeGaps[0])
+	} else if len(runtimeGaps) > 1 {
+		runtimeGap = "invalid_multiple_runtime_gaps"
+	}
 	reportRow := ReplayRow{
 		Consumer:        row.Consumer,
 		QueryClass:      ClassifyQuery(row.Consumer, row.Query),
@@ -741,6 +767,7 @@ func NewReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, en
 		ExtraHits:       reportExtra,
 		LatencyMS:       float64(max(latency, 0)) / float64(time.Millisecond),
 		EngineAvailable: engineAvailable,
+		RuntimeGap:      runtimeGap,
 		ParityPassed:    engineAvailable && len(lost) == 0,
 		privacySafe:     privacySafe,
 	}
@@ -900,6 +927,14 @@ func validateReplayRow(row ReplayRow, consumer string) error {
 	if row.LatencyMS < 0 {
 		return fmt.Errorf("latency_ms must be non-negative")
 	}
+	if row.RuntimeGap != "" {
+		if row.EngineAvailable {
+			return fmt.Errorf("runtime_gap is invalid when engine is available")
+		}
+		if !validReplayRuntimeGap(row.Consumer, row.RuntimeGap) {
+			return fmt.Errorf("runtime_gap invalid for %s consumer", row.Consumer)
+		}
+	}
 	if row.ParityPassed != (row.EngineAvailable && len(row.LostHits) == 0) {
 		return fmt.Errorf("parity_passed does not match evidence")
 	}
@@ -910,6 +945,19 @@ func validateReplayRow(row ReplayRow, consumer string) error {
 		}
 	}
 	return nil
+}
+
+func validReplayRuntimeGap(consumer, gap string) bool {
+	switch consumer {
+	case ConsumerOrient:
+		return gap == "orient_retrieval_error"
+	case ConsumerQuery:
+		switch gap {
+		case "query_engine_unavailable", "query_engine_refused", "query_retrieval_error":
+			return true
+		}
+	}
+	return false
 }
 
 func rowsParityPassed(rows []ReplayRow) bool {

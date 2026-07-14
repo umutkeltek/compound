@@ -93,6 +93,7 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 	for _, fixtureRow := range selected[checkpoint.Completed:] {
 		resultRefs := []string{}
 		engineAvailable := false
+		runtimeGap := ""
 		latency := time.Duration(0)
 		switch consumer {
 		case retrievalparity.ConsumerOrient:
@@ -112,7 +113,7 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 			pack, packErr := contract.PackWithCapabilities(in, orientPolicy(), homePath, now)
 			latency = time.Since(started)
 			if packErr != nil {
-				coverage.KnownGaps = append(coverage.KnownGaps, "orient_retrieval_error")
+				runtimeGap = "orient_retrieval_error"
 				break
 			}
 			resultRefs = append(resultRefs, pack.ActiveMemory...)
@@ -128,14 +129,17 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 			case queryErr == nil:
 				resultRefs = parityClaimRefs(claims)
 			case errors.Is(queryErr, mem.ErrUnsupported), errors.Is(queryErr, mem.ErrEngineUnavailable):
-				coverage.KnownGaps = append(coverage.KnownGaps, "query_engine_unavailable")
+				runtimeGap = "query_engine_unavailable"
 			case errors.Is(queryErr, mem.ErrEmbedderMismatch), errors.Is(queryErr, mem.ErrProtocolVersion):
-				coverage.KnownGaps = append(coverage.KnownGaps, "query_engine_refused")
+				runtimeGap = "query_engine_refused"
 			default:
-				coverage.KnownGaps = append(coverage.KnownGaps, "query_retrieval_error")
+				runtimeGap = "query_retrieval_error"
 			}
 		}
-		checkpoint.Rows = append(checkpoint.Rows, retrievalparity.NewReplayRow(fixtureRow, resultRefs, latency, engineAvailable))
+		if runtimeGap != "" {
+			coverage.KnownGaps = append(coverage.KnownGaps, runtimeGap)
+		}
+		checkpoint.Rows = append(checkpoint.Rows, retrievalparity.NewReplayRow(fixtureRow, resultRefs, latency, engineAvailable, runtimeGap))
 		checkpoint.Completed = len(checkpoint.Rows)
 		checkpoint.Coverage = coverage
 		if err := retrievalparity.WriteCheckpoint(homePath, &checkpoint); err != nil {

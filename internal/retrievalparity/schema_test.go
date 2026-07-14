@@ -383,7 +383,7 @@ func TestCheckpointSealsIdentityCoverageAndPartialProgress(t *testing.T) {
 	homePath := newParityPackageHome(t)
 	identity := NewReplayIdentity(HashQuery("fixture"), ConsumerQuery, 10)
 	checkpoint := NewCheckpoint(identity, Coverage{KnownGaps: []string{"query_engine_unavailable"}})
-	checkpoint.Rows = append(checkpoint.Rows, NewReplayRow(FixtureRow{Consumer: ConsumerQuery, Query: "one"}, nil, 0, false))
+	checkpoint.Rows = append(checkpoint.Rows, NewReplayRow(FixtureRow{Consumer: ConsumerQuery, Query: "one"}, nil, 0, false, "query_engine_unavailable"))
 	checkpoint.Completed = len(checkpoint.Rows)
 	if err := WriteCheckpoint(homePath, &checkpoint); err != nil {
 		t.Fatalf("write checkpoint: %v", err)
