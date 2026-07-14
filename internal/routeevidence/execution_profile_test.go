@@ -1,6 +1,7 @@
 package routeevidence
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -403,6 +404,175 @@ func TestDeriveChildExecutionProfileEnforcesCeilingsAndExplicitSelectors(t *test
 	if child.EffectiveProvider != UnknownUntilReceipt || child.EffectiveModel != UnknownUntilReceipt || child.EffectiveNativeEffort != UnknownUntilReceipt {
 		t.Fatalf("child claimed effective execution before receipt: %+v", child)
 	}
+}
+
+func TestDeriveChildExecutionProfileRequiresAndEnforcesRemainingBudget(t *testing.T) {
+	parent, err := ResolveExecutionProfile(ExecutionProfileIntent{
+		ProfileID:       "coding-implementation",
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseChild := ChildExecutionProfileIntent{
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+		SemanticEffort:  "balanced",
+		NativeEffort:    "medium",
+	}
+
+	_, err = DeriveChildExecutionProfile(parent, baseChild)
+	if err == nil || !strings.Contains(err.Error(), "child_intent.remaining_budget") {
+		t.Fatalf("missing remaining budget error = %v", err)
+	}
+
+	expandedRemaining := parent.Budget
+	expandedRemaining.MaxRequests++
+	child := baseChild
+	child.RemainingBudget = &expandedRemaining
+	_, err = DeriveChildExecutionProfile(parent, child)
+	if err == nil || !strings.Contains(err.Error(), "child_intent.remaining_budget.max_requests") {
+		t.Fatalf("expanded remaining budget error = %v", err)
+	}
+
+	remaining := parent.Budget
+	remaining.MaxRequests--
+	child.RemainingBudget = &remaining
+	child.Budget.MaxRequests = parent.Budget.MaxRequests
+	_, err = DeriveChildExecutionProfile(parent, child)
+	if err == nil || !strings.Contains(err.Error(), "child_intent.budget.max_requests") || !strings.Contains(err.Error(), "remaining") {
+		t.Fatalf("remaining budget ceiling error = %v", err)
+	}
+
+	child.Budget.MaxRequests = remaining.MaxRequests
+	plan, err := DeriveChildExecutionProfile(parent, child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.RemainingBudget == nil || plan.RemainingBudget.MaxRequests != remaining.MaxRequests {
+		t.Fatalf("child plan did not represent derivation remaining budget: %+v", plan.RemainingBudget)
+	}
+}
+
+func TestDeriveChildExecutionProfileRejectsInvalidBudgets(t *testing.T) {
+	parent, err := ResolveExecutionProfile(ExecutionProfileIntent{
+		ProfileID:       "coding-implementation",
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		mutate   func(*ChildExecutionProfileIntent)
+		wantPath string
+		wantText string
+	}{
+		{
+			name: "negative request budget",
+			mutate: func(child *ChildExecutionProfileIntent) {
+				child.Budget.MaxRequests = -1
+			},
+			wantPath: "child_intent.budget.max_requests",
+			wantText: "positive",
+		},
+		{
+			name: "NaN request USD budget",
+			mutate: func(child *ChildExecutionProfileIntent) {
+				child.Budget.MaxUSD = executionBudgetUSD(math.NaN())
+			},
+			wantPath: "child_intent.budget.max_usd",
+			wantText: "finite",
+		},
+		{
+			name: "infinite request USD budget",
+			mutate: func(child *ChildExecutionProfileIntent) {
+				child.Budget.MaxUSD = executionBudgetUSD(math.Inf(1))
+			},
+			wantPath: "child_intent.budget.max_usd",
+			wantText: "finite",
+		},
+		{
+			name: "negative request USD budget",
+			mutate: func(child *ChildExecutionProfileIntent) {
+				child.Budget.MaxUSD = executionBudgetUSD(-1)
+			},
+			wantPath: "child_intent.budget.max_usd",
+			wantText: "non-negative",
+		},
+		{
+			name: "NaN remaining USD budget",
+			mutate: func(child *ChildExecutionProfileIntent) {
+				remaining := *child.RemainingBudget
+				remaining.MaxUSD = executionBudgetUSD(math.NaN())
+				child.RemainingBudget = &remaining
+			},
+			wantPath: "child_intent.remaining_budget.max_usd",
+			wantText: "finite",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			remaining := parent.Budget
+			child := ChildExecutionProfileIntent{
+				ClientHarnessID: "codex",
+				TransportID:     "native",
+				SemanticEffort:  "balanced",
+				NativeEffort:    "medium",
+				RemainingBudget: &remaining,
+			}
+			tt.mutate(&child)
+			_, err := DeriveChildExecutionProfile(parent, child)
+			if err == nil || !strings.Contains(err.Error(), tt.wantPath) || !strings.Contains(err.Error(), tt.wantText) {
+				t.Fatalf("invalid budget error = %v, want path %q and text %q", err, tt.wantPath, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestDeriveChildExecutionProfileExplicitZeroUSDNarrowsParent(t *testing.T) {
+	parent, err := ResolveExecutionProfile(ExecutionProfileIntent{
+		ProfileID:       "coding-implementation",
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := parent.Budget
+	plan, err := DeriveChildExecutionProfile(parent, ChildExecutionProfileIntent{
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+		SemanticEffort:  "balanced",
+		NativeEffort:    "medium",
+		RemainingBudget: &remaining,
+		Budget: ExecutionBudget{
+			MaxUSD: executionBudgetUSD(0),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Budget.MaxUSD == nil || *plan.Budget.MaxUSD != 0 {
+		t.Fatalf("explicit zero USD was inherited instead of narrowed: %+v", plan.Budget.MaxUSD)
+	}
+}
+
+func TestExecutionProfilePlanIDPropagatesMarshalErrors(t *testing.T) {
+	_, err := executionProfilePlanID(ExecutionProfilePlan{
+		Budget: ExecutionBudget{MaxUSD: executionBudgetUSD(math.NaN())},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported value") {
+		t.Fatalf("plan ID marshal error = %v", err)
+	}
+}
+
+func executionBudgetUSD(value float64) *float64 {
+	return &value
 }
 
 func TestObservedExecutionsIndependentRejectsSameProviderModel(t *testing.T) {
