@@ -111,6 +111,96 @@ func TestResolveExecutionProfileSemanticOverrideRemapsThroughAdapter(t *testing.
 	}
 }
 
+func TestResolveExecutionProfileMarksWeakerMaxMappingsDegraded(t *testing.T) {
+	tests := []struct {
+		name       string
+		harness    string
+		transport  string
+		wantNative string
+	}{
+		{name: "Codex max is capped at xhigh", harness: "codex", transport: "native", wantNative: "xhigh"},
+		{name: "worker max is capped at high", harness: "worker", transport: "local", wantNative: "high"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, err := ResolveExecutionProfile(ExecutionProfileIntent{
+				ProfileID:       "coding-implementation",
+				ClientHarnessID: tt.harness,
+				TransportID:     tt.transport,
+				SemanticEffort:  "max",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.NativeEffort.Requested != tt.wantNative ||
+				plan.NativeEffort.Disposition != "degraded" ||
+				plan.Disposition != "degraded" {
+				t.Fatalf("weaker max mapping was not marked degraded: %+v", plan)
+			}
+		})
+	}
+}
+
+func TestResolveExecutionProfileRejectsSemanticNativeContradictions(t *testing.T) {
+	tests := []struct {
+		name   string
+		intent ExecutionProfileIntent
+	}{
+		{
+			name: "mining economy cannot request Codex ultra",
+			intent: ExecutionProfileIntent{
+				ProfileID:       "mining-bulk",
+				ClientHarnessID: "codex",
+				TransportID:     "switchback",
+				NativeEffort:    "ultra",
+			},
+		},
+		{
+			name: "balanced cannot request high",
+			intent: ExecutionProfileIntent{
+				ProfileID:       "coding-implementation",
+				ClientHarnessID: "codex",
+				TransportID:     "native",
+				SemanticEffort:  "balanced",
+				NativeEffort:    "high",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ResolveExecutionProfile(tt.intent)
+			if err == nil || !strings.Contains(err.Error(), "requested_intent.native_effort") || !strings.Contains(err.Error(), "semantic effort") {
+				t.Fatalf("contradictory native effort error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDeriveChildExecutionProfileEnforcesParentNativeCeiling(t *testing.T) {
+	parent, err := ResolveExecutionProfile(ExecutionProfileIntent{
+		ProfileID:       "coding-implementation",
+		ClientHarnessID: "codex",
+		TransportID:     "native",
+		SemanticEffort:  "max",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = DeriveChildExecutionProfile(parent, ChildExecutionProfileIntent{
+		ClientHarnessID: "claude-code",
+		TransportID:     "native",
+		SemanticEffort:  "max",
+		NativeEffort:    "max",
+		Budget:          parent.Budget,
+	})
+	if err == nil || !strings.Contains(err.Error(), "child_intent.native_effort") || !strings.Contains(err.Error(), "parent") {
+		t.Fatalf("child native ceiling error = %v", err)
+	}
+}
+
 func TestResolveExecutionProfileRejectsIncompatibleOrUnownedSelectors(t *testing.T) {
 	tests := []struct {
 		name     string
