@@ -51,6 +51,12 @@ func TestWorkDispatchClaimCLIChild(t *testing.T) {
 		args = append(args, "--next", "--confirm")
 	case "both":
 		args = append(args, "--next", os.Getenv("COMPOUND_TEST_WORK_ID"))
+	case "help-example":
+		example := strings.Fields(workVerbHelpByName["dispatch-claim"].Example)
+		if len(example) < 3 || strings.Join(example[:3], " ") != "compound work dispatch-claim" {
+			t.Fatalf("dispatch-claim help example is not a work command: %q", example)
+		}
+		args = example[2:]
 	case "missing-actor-value":
 		args = []string{"dispatch-claim", "--next", "--actor", "--confirm", "--json"}
 	case "walled":
@@ -65,7 +71,7 @@ func TestWorkDispatchClaimCLIChild(t *testing.T) {
 }
 
 func TestWorkDispatchClaimUnconfirmedPreviewsWithoutMutating(t *testing.T) {
-	for _, target := range []string{"argless", "next", "explicit"} {
+	for _, target := range []string{"argless", "next", "explicit", "help-example"} {
 		t.Run(target, func(t *testing.T) {
 			homePath := t.TempDir()
 			if err := home.Init(homePath, "test", cliTestNow); err != nil {
