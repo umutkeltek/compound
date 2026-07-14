@@ -5690,6 +5690,17 @@ func cmdHome(args []string) {
 	if len(positionals) > 1 {
 		restPos = positionals[1:]
 	}
+	if hasUsageFlag(args) {
+		switch sub {
+		case "archive-history":
+			fmt.Println("usage: compound home archive-history [--kind work|lease|review|comparison|create-plan|memory-candidate] [--path rel] [--dry-run]")
+		case "restore-history":
+			fmt.Println("usage: compound home restore-history (--all|--id id[,id...]) [--dry-run]")
+		default:
+			fmt.Println("usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home <path>] [--local|--global]")
+		}
+		return
+	}
 	resolve := func() string {
 		p, err := home.Resolve(flagHome)
 		if err != nil {
@@ -5771,10 +5782,6 @@ func cmdHome(args []string) {
 		}
 		printHomeRestoreReport(report)
 	case "archive-history":
-		if hasUsageFlag(args) {
-			fmt.Println("usage: compound home archive-history [--kind work|lease|review|comparison|create-plan|memory-candidate] [--path rel] [--dry-run]")
-			return
-		}
 		report, err := home.ArchiveOperationalHistory(resolve(), home.OperationalArchiveOptions{
 			DryRun: hasFlag(args, "--dry-run"),
 			Kinds:  valuesFlag(args, "--kind"),
@@ -5786,10 +5793,6 @@ func cmdHome(args []string) {
 		}
 		printHomeOperationalArchiveReport("archive-history", report)
 	case "restore-history":
-		if hasUsageFlag(args) {
-			fmt.Println("usage: compound home restore-history (--all|--id id[,id...]) [--dry-run]")
-			return
-		}
 		report, err := home.RestoreOperationalArchive(resolve(), home.OperationalRestoreOptions{
 			DryRun: hasFlag(args, "--dry-run"),
 			All:    hasFlag(args, "--all"),
