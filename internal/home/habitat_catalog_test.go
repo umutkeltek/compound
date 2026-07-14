@@ -154,6 +154,33 @@ func TestHabitatCatalogClassifiesEveryKnownRootAndMakesBridgeDebtExplicit(t *tes
 	}
 }
 
+func TestHabitatCatalogProjectionsCannotMutateAuthority(t *testing.T) {
+	entries := HabitatEntries()
+	dirs := HabitatDirs()
+	placementDirs := HabitatPlacementDirs()
+	if len(entries) == 0 || len(dirs) == 0 || len(placementDirs) == 0 {
+		t.Fatal("habitat catalog projections are empty")
+	}
+
+	entries[0].Prefix = "mutated-entry"
+	dirs[0] = "mutated-dir"
+	placementDirs[0] = "mutated-placement-dir"
+
+	if _, ok := HabitatForPath("mutated-entry"); ok {
+		t.Fatal("HabitatEntries returned mutable catalog authority")
+	}
+	for _, dir := range HabitatDirs() {
+		if dir == "mutated-dir" {
+			t.Fatal("HabitatDirs returned mutable catalog authority")
+		}
+	}
+	for _, dir := range HabitatPlacementDirs() {
+		if dir == "mutated-placement-dir" {
+			t.Fatal("HabitatPlacementDirs returned mutable catalog authority")
+		}
+	}
+}
+
 func TestHabitatPathMakesLegacyWriterDebtExplicitAndRejectsTraversal(t *testing.T) {
 	h := filepath.Join(string(os.PathSeparator), "owned", ".compound")
 	got, err := HabitatPath(h, HabitatClosePlans, "plan.json")
