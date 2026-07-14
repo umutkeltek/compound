@@ -187,6 +187,30 @@ func TestFreezeExcludesUnavailableObservationsAndCountsGap(t *testing.T) {
 	}
 }
 
+func TestFreezeRecordsLiveContextBreakerAsTypedGap(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	controlPath := writeValidControlReport(t, homePath)
+	Record(homePath, NewRow(ConsumerQuery, "successful baseline traffic", nil, time.Millisecond, true, parityTestNow.Add(-time.Hour)))
+
+	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
+	stream := strings.Join([]string{
+		`{"created_at":"` + parityTestNow.Add(-2*time.Hour).Format(time.RFC3339Nano) + `","hook_name":"SessionStart","breaker_tripped":true}`,
+		`{"created_at":"` + parityTestNow.Add(-time.Hour).Format(time.RFC3339Nano) + `","hook_name":"PreToolUse","breaker_tripped":true}`,
+		`{"created_at":"` + parityTestNow.Add(-48*time.Hour).Format(time.RFC3339Nano) + `","hook_name":"UserPromptSubmit","breaker_tripped":true}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(streamPath, []byte(stream), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fixture, _, err := FreezeFromJournal(homePath, 1, "", controlPath, parityTestNow)
+	if err != nil {
+		t.Fatalf("freeze with live hook breaker: %v", err)
+	}
+	if gap := "live_hook_context_breaker:1"; !slices.Contains(fixture.Coverage.KnownGaps, gap) {
+		t.Fatalf("coverage gaps=%v, want %q", fixture.Coverage.KnownGaps, gap)
+	}
+}
+
 func TestFreezeRejectsIdentityWithoutSuccessfulObservation(t *testing.T) {
 	homePath := newParityPackageHome(t)
 	controlPath := writeValidControlReport(t, homePath)
