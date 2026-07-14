@@ -43,6 +43,8 @@ func cmdSource(args []string) {
 		cmdSourceManifestDoctor(args[1:])
 	case "manifest-drilldown":
 		cmdSourceManifestDrilldown(args[1:])
+	case "manifest-materialize":
+		cmdSourceManifestMaterialize(args[1:])
 	case "observation-verdict-plan":
 		cmdSourceObservationVerdictPlan(args[1:])
 	case "observation-verdict-review":
@@ -54,7 +56,7 @@ func cmdSource(args []string) {
 }
 
 func sourceUsage() string {
-	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... | --from-export <export.json>) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-drilldown <family> --item <id> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json>) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
 func cmdSourceObserve(args []string) {
@@ -594,6 +596,57 @@ func cmdSourceManifestDrilldown(args []string) {
 	fmt.Printf("manifest: %s\n", drilldown.ManifestRef)
 	fmt.Printf("source: %s\n", drilldown.SourceRef)
 	fmt.Printf("hash: %s matches=%t\n", drilldown.FileHash, drilldown.HashMatches)
+}
+
+func cmdSourceManifestMaterialize(args []string) {
+	jsonOut := false
+	family := ""
+	itemID := ""
+	targetPath := ""
+	usage := "usage: compound source manifest-materialize <family> --item <id> --target <path> [--json]"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--item", "--target":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			if args[i] == "--item" {
+				itemID = args[i+1]
+			} else {
+				targetPath = args[i+1]
+			}
+			i++
+		default:
+			if strings.HasPrefix(args[i], "-") || family != "" {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			family = args[i]
+		}
+	}
+	if strings.TrimSpace(family) == "" || strings.TrimSpace(itemID) == "" || strings.TrimSpace(targetPath) == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	report, err := sourceobs.MaterializeSourceManifestItem(homePath, family, itemID, targetPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source manifest-materialize:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+		return
+	}
+	fmt.Printf("materialized: %s\n", report.TargetPath)
+	fmt.Printf("body: %s bytes=%d already_exists=%t\n", report.BodyRef, report.Bytes, report.AlreadyExists)
 }
 
 func cmdSourceObservationVerdictPlan(args []string) {
