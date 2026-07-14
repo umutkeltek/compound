@@ -84,6 +84,11 @@ func TestHookLiveSessionStartOrientErrorTripsBreaker(t *testing.T) {
 	if !strings.Contains(string(stream), `"breaker_tripped":true`) || !strings.Contains(string(stream), `"status":"fail_open"`) {
 		t.Fatalf("hook event stream missing breaker telemetry:\n%s", string(stream))
 	}
+	if rows, err := retrievalparity.LoadJournal(homePath); err != nil {
+		t.Fatalf("load breaker retrieval journal: %v", err)
+	} else if len(rows) != 0 {
+		t.Fatalf("breaker-tripped hook journaled retrieval evidence: %+v", rows)
+	}
 }
 
 func TestHookLiveCodexSessionStartEmitsCodexContext(t *testing.T) {

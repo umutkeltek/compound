@@ -98,20 +98,29 @@ func TestParityReplayNegativeControlMasksData(t *testing.T) {
 			Consumer:     retrievalparity.ConsumerQuery,
 			Query:        query,
 			ExpectedRefs: []string{wantRef},
+		}},
+	})
+
+	unmaskedExit, unmaskedReport := runParityReplayCLI(t, unmaskedHome, fixturePath, retrievalparity.ConsumerQuery)
+	if unmaskedExit != 0 || !unmaskedReport.ParityPassed || unmaskedReport.NegativeControlValid != nil || len(unmaskedReport.Rows) != 1 || len(unmaskedReport.Rows[0].LostHits) != 0 {
+		t.Fatalf("unmasked replay exit=%d report=%+v, want green with no lost hits", unmaskedExit, unmaskedReport)
+	}
+
+	controlFixturePath := writeParityFixtureNamed(t, unmaskedHome, "synthetic-control-fixture.json", retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer:     retrievalparity.ConsumerQuery,
+			Query:        query,
+			ExpectedRefs: []string{wantRef},
 			NegativeControl: &retrievalparity.NegativeControl{
 				MaskedRef: wantRef,
 			},
 		}},
 	})
-
-	unmaskedExit, unmaskedReport := runParityReplayCLI(t, unmaskedHome, fixturePath, retrievalparity.ConsumerQuery)
-	if unmaskedExit != 0 || !unmaskedReport.Passed || len(unmaskedReport.Rows) != 1 || len(unmaskedReport.Rows[0].LostHits) != 0 {
-		t.Fatalf("unmasked replay exit=%d report=%+v, want green with no lost hits", unmaskedExit, unmaskedReport)
-	}
-
 	maskedHome := cloneParityHomeWithoutClaim(t, unmaskedHome, strings.TrimPrefix(wantRef, "claim://"), now)
-	maskedExit, maskedReport := runParityReplayCLI(t, maskedHome, fixturePath, retrievalparity.ConsumerQuery)
-	if maskedExit == 0 || maskedReport.Passed || len(maskedReport.Rows) != 1 {
+	maskedExit, maskedReport := runParityReplayCLI(t, maskedHome, controlFixturePath, retrievalparity.ConsumerQuery)
+	if maskedExit == 0 || maskedReport.ParityPassed || maskedReport.NegativeControlValid == nil || !*maskedReport.NegativeControlValid || len(maskedReport.Rows) != 1 {
 		t.Fatalf("masked replay exit=%d report=%+v, want nonzero data-level loss", maskedExit, maskedReport)
 	}
 	if !slices.Contains(maskedReport.Rows[0].LostHits, wantRef) {
@@ -130,6 +139,7 @@ func TestParityReplayOrientMatchesProductionContextPack(t *testing.T) {
 		Rows: []retrievalparity.FixtureRow{{
 			Consumer:     retrievalparity.ConsumerOrient,
 			Query:        query,
+			OrientInput:  parityTestOrientInput(t, homePath),
 			ExpectedRefs: []string{wantRef},
 		}},
 	})
@@ -186,7 +196,7 @@ func TestParityReplayEngineAvailabilityFollowsConsumerFallback(t *testing.T) {
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 		ClassifierVersion: retrievalparity.ClassifierVersion,
 		Rows: []retrievalparity.FixtureRow{
-			{Consumer: retrievalparity.ConsumerOrient, Query: query, ExpectedRefs: []string{wantRef}},
+			{Consumer: retrievalparity.ConsumerOrient, Query: query, OrientInput: parityTestOrientInput(t, homePath), ExpectedRefs: []string{wantRef}},
 			{Consumer: retrievalparity.ConsumerQuery, Query: query, ExpectedRefs: []string{wantRef}},
 		},
 	})
@@ -324,8 +334,8 @@ func TestParityReportPrivacy(t *testing.T) {
 		t.Fatalf("report privacy metadata=%+v fixture_ref=%q", report.Privacy, report.FixtureRef)
 	}
 	for _, row := range report.Rows {
-		if !validParitySHA(row.QuerySHA256) {
-			t.Fatalf("report query ref=%q, want sha256", row.QuerySHA256)
+		if !validParitySHA(row.QuerySHA256) || !validParitySHA(row.InputSHA256) {
+			t.Fatalf("report query/input refs=%q/%q, want sha256", row.QuerySHA256, row.InputSHA256)
 		}
 	}
 	t.Logf("f4 report=%s raw_query_present=%t query_ref=%s", filepath.Base(reportPath), strings.Contains(string(persisted), query), report.Rows[0].QuerySHA256)
@@ -339,6 +349,7 @@ func TestParityReportHashesSemanticOrientRefs(t *testing.T) {
 	fixtureRow := retrievalparity.FixtureRow{
 		Consumer:     retrievalparity.ConsumerOrient,
 		Query:        query,
+		OrientInput:  parityTestOrientInput(t, homePath),
 		ExpectedRefs: []string{semanticRef},
 	}
 	replayRow := retrievalparity.NewReplayRow(fixtureRow, []string{semanticRef}, time.Millisecond, true)
@@ -493,7 +504,7 @@ func TestParitySchemaSeparatesHomeRefsFromReportRefs(t *testing.T) {
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 		ClassifierVersion: retrievalparity.ClassifierVersion,
 		Rows: []retrievalparity.FixtureRow{
-			{Consumer: retrievalparity.ConsumerOrient, Query: "synthetic orient", ExpectedRefs: []string{positionRef}},
+			{Consumer: retrievalparity.ConsumerOrient, Query: "synthetic orient", OrientInput: parityTestOrientInput(t, homePath), ExpectedRefs: []string{positionRef}},
 			{Consumer: retrievalparity.ConsumerSearch, Query: "synthetic search", ExpectedRefs: []string{searchRef}},
 		},
 	}
@@ -508,6 +519,7 @@ func TestParitySchemaSeparatesHomeRefsFromReportRefs(t *testing.T) {
 	row := retrievalparity.NewReplayRow(retrievalparity.FixtureRow{
 		Consumer:     retrievalparity.ConsumerOrient,
 		Query:        "synthetic orient",
+		OrientInput:  parityTestOrientInput(t, homePath),
 		ExpectedRefs: []string{positionRef},
 	}, []string{positionRef}, time.Millisecond, true)
 	report := retrievalparity.BuildReport(
@@ -604,20 +616,23 @@ func TestParityFreezeBuildsFixtureFromJournal(t *testing.T) {
 	claimA := "claim://claim_aaaaaaaaaaaa"
 	claimB := "claim://claim_bbbbbbbbbbbb"
 	searchChunk := "item_a#0"
+	orientInput := parityTestOrientInput(t, homePath)
 	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerQuery, query, []string{claimA}, 2*time.Millisecond, true, now.Add(-2*time.Hour)))
 	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerQuery, query, []string{claimB}, 3*time.Millisecond, true, now.Add(-time.Hour)))
-	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerOrient, query, []string{claimA}, time.Millisecond, true, now.Add(-30*time.Minute)))
+	retrievalparity.Record(homePath, retrievalparity.NewOrientRow(query, *orientInput, []string{claimA}, time.Millisecond, true, now.Add(-30*time.Minute)))
 	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerSearch, query, []string{searchChunk}, time.Millisecond, true, now.Add(-15*time.Minute)))
+	controlReportPath := writeParityControlReport(t, homePath, now)
 
 	fixture, fixturePath, code, err := runMemoryParityFreeze(homePath, []string{
 		"--from-journal",
 		"--window-days", "1",
+		"--control-report", controlReportPath,
 		"--out", "reviews/retrieval-parity/frozen-synthetic.json",
 	}, now)
 	if err != nil || code != 0 {
 		t.Fatalf("freeze code=%d err=%v fixture=%+v", code, err, fixture)
 	}
-	if fixture.SchemaVersion != retrievalparity.FixtureSchemaVersion || len(fixture.Rows) != 3 {
+	if fixture.SchemaVersion != retrievalparity.FixtureSchemaVersion || fixture.ControlReportRef == "" || len(fixture.Rows) != 3 {
 		t.Fatalf("frozen fixture=%+v", fixture)
 	}
 	if filepath.Dir(fixturePath) != filepath.Join(homePath, "reviews", retrievalparity.ReviewArea) {
@@ -640,18 +655,20 @@ func TestParityFreezeBuildsFixtureFromJournal(t *testing.T) {
 func TestParityFreezePreservesZeroTokenTraffic(t *testing.T) {
 	now := time.Now().UTC()
 	homePath := newParityTestHome(t, now)
-	retrievalparity.Record(homePath, retrievalparity.NewRow(
-		retrievalparity.ConsumerOrient,
+	retrievalparity.Record(homePath, retrievalparity.NewOrientRow(
 		"",
+		*parityTestOrientInput(t, homePath),
 		nil,
 		time.Millisecond,
 		true,
 		now.Add(-time.Hour),
 	))
+	controlReportPath := writeParityControlReport(t, homePath, now)
 
 	fixture, fixturePath, code, err := runMemoryParityFreeze(homePath, []string{
 		"--from-journal",
 		"--window-days", "1",
+		"--control-report", controlReportPath,
 	}, now)
 	if err != nil || code != 0 {
 		t.Fatalf("freeze zero-token traffic code=%d err=%v", code, err)
@@ -686,8 +703,9 @@ func TestParityReplayRejectsOrientK(t *testing.T) {
 		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
 		ClassifierVersion: retrievalparity.ClassifierVersion,
 		Rows: []retrievalparity.FixtureRow{{
-			Consumer: retrievalparity.ConsumerOrient,
-			Query:    "",
+			Consumer:    retrievalparity.ConsumerOrient,
+			Query:       "",
+			OrientInput: parityTestOrientInput(t, homePath),
 		}},
 	})
 	store, err := mem.Open(homePath)
@@ -1084,6 +1102,46 @@ func writeParityFixtureNamed(t *testing.T, homePath, name string, fixture retrie
 	path, err := retrievalparity.WriteFixture(homePath, name, fixture)
 	if err != nil {
 		t.Fatalf("write parity fixture: %v", err)
+	}
+	return path
+}
+
+func parityTestOrientInput(t *testing.T, homePath string) *retrievalparity.OrientInput {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get parity fixture cwd: %v", err)
+	}
+	in, err := parseOrientArgsWithHome([]string{"--harness", "codex", "--cwd", cwd}, homePath)
+	if err != nil {
+		t.Fatalf("resolve parity fixture orient input: %v", err)
+	}
+	tuple := parityOrientInput(in)
+	return &tuple
+}
+
+func writeParityControlReport(t *testing.T, homePath string, now time.Time) string {
+	t.Helper()
+	maskedRef := "claim://claim_cccccccccccc"
+	row := retrievalparity.NewReplayRow(retrievalparity.FixtureRow{
+		Consumer:     retrievalparity.ConsumerQuery,
+		Query:        "synthetic freeze control",
+		ExpectedRefs: []string{maskedRef},
+		NegativeControl: &retrievalparity.NegativeControl{
+			MaskedRef: maskedRef,
+		},
+	}, nil, time.Millisecond, true)
+	report := retrievalparity.BuildReport(
+		retrievalparity.HashQuery("synthetic freeze control fixture"),
+		retrievalparity.ConsumerQuery,
+		10,
+		retrievalparity.Coverage{},
+		[]retrievalparity.ReplayRow{row},
+		now,
+	)
+	path, err := retrievalparity.WriteReport(homePath, report)
+	if err != nil {
+		t.Fatalf("write parity control report: %v", err)
 	}
 	return path
 }
