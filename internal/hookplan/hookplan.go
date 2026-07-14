@@ -129,13 +129,14 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 		return Reconciliation{}, err
 	}
 
+	reservedForPreserved := preservedObservationReservations(desiredBindings, preservedBindings, observedBindings)
 	consumed := make([]bool, len(observedBindings))
 	for _, desired := range desiredBindings {
 		matched := -1
 		var slotCandidates []int
 		var identityMatches []int
 		for i, actual := range observedBindings {
-			if consumed[i] || !sameSlot(desired, actual) {
+			if consumed[i] || reservedForPreserved[i] || !sameSlot(desired, actual) {
 				continue
 			}
 			if actual.BindingID != "" && actual.BindingID != desired.ID {
@@ -278,6 +279,36 @@ func preservedBindingMatches(preserved Binding, actual ObservedBinding) bool {
 		return false
 	}
 	return preserved.HandlerRevision == "" || preserved.HandlerRevision == actual.HandlerRevision
+}
+
+func preservedObservationReservations(desired, preserved []Binding, observed []ObservedBinding) []bool {
+	reserved := make([]bool, len(observed))
+	for i, actual := range observed {
+		managedIdentity := false
+		for _, binding := range desired {
+			if desiredBindingIdentityMatches(binding, actual) {
+				managedIdentity = true
+				break
+			}
+		}
+		if managedIdentity {
+			continue
+		}
+		for _, binding := range preserved {
+			if preservedBindingMatches(binding, actual) {
+				reserved[i] = true
+				break
+			}
+		}
+	}
+	return reserved
+}
+
+func desiredBindingIdentityMatches(desired Binding, actual ObservedBinding) bool {
+	if !sameSlot(desired, actual) || (actual.BindingID != "" && actual.BindingID != desired.ID) {
+		return false
+	}
+	return actual.BindingID == desired.ID || handlerInvocationMatches(desired, actual)
 }
 
 func bindingSupported(binding Binding, registry harness.Registry) bool {
