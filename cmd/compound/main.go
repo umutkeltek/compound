@@ -3129,12 +3129,18 @@ func cmdHarness(args []string) {
 	}
 	if target == "generate" || target == "drift" {
 		if hasFlag(args[1:], "--apply") {
-			fmt.Fprintln(os.Stderr, "compound harness generate: --apply is outside this dry-run W4 slice")
-			os.Exit(2)
+			if target != "generate" {
+				fmt.Fprintln(os.Stderr, "compound harness drift does not accept --apply")
+				os.Exit(2)
+			}
+			if code := runHarnessGenerateApply(args[1:], os.Stdout, os.Stderr, time.Now()); code != 0 {
+				os.Exit(code)
+			}
+			return
 		}
 		harnessName := flagValue(args[1:], "--harness")
 		if harnessName == "" {
-			fmt.Fprintf(os.Stderr, "usage: compound harness %s --harness <name> [--json]\n", target)
+			fmt.Fprintf(os.Stderr, "usage: compound harness %s --harness <name> [--json] [--apply --work <work_id>]\n", target)
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
