@@ -34,6 +34,7 @@ func TestProofCheckSmokeInventoryGuard(t *testing.T) {
 		// cleanup is self-enforcing in the registration change.
 		"projection-degradation-smoke.mjs": "registration pending: proof_check.go owned by a live concurrent lane at guard-landing time; wire in and DELETE this row in the registration change",
 		"projection-doors-smoke.mjs":       "registration pending: proof_check.go owned by a live concurrent lane at guard-landing time; wire in and DELETE this row in the registration change",
+		"stream-door-smoke.mjs":            "registration pending: proof_check.go owned by a live concurrent lane (work_cb8b0961355c) at land time; requires a freshly built COMPOUND_BIN with the `stream` verb; wire in and DELETE this row in the registration change",
 	}
 
 	repoRoot := inventoryGuardRepoRoot(t)
