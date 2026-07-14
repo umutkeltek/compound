@@ -368,6 +368,41 @@ type NegativeCard struct {
 	Confidence   float64 `json:"confidence,omitempty"`
 }
 
+// PeersSection is the CONTEXTUAL team-of-lanes view attached to a ContextPack at
+// orient time: the active leases (who is holding which work, with deterministic
+// staleness) and capped agent-lane cards read from the capability graph. It is
+// DISPLAY-ONLY (ratified agent-lane-beliefs Q4): it never influences routing,
+// dispatch, or pack-assembly weighting, and building it never writes a capability
+// graph or memory byte. It renders ONLY in the orient-time pack — never ambient,
+// never a console/doctor dump of its contents (ratified Q2). v1 carries leases +
+// lane cards; belief-claim cards join here in slice B (agent-lane beliefs).
+type PeersSection struct {
+	ActiveLeases []PeerLease    `json:"active_leases"`
+	Lanes        []PeerLaneCard `json:"lanes"`
+}
+
+// PeerLease is one work lease surfaced to peers: the work id, the holder, a coarse
+// age, and a deterministic staleness flag. Staleness v1 is expiry-based only (age
+// past a fixed TTL from claimed_at); process/session liveness is out of v1, so a
+// dead-but-unexpired holder renders active — acceptable and documented.
+type PeerLease struct {
+	WorkID string `json:"work_id"`
+	Holder string `json:"holder"`
+	Age    string `json:"age"`
+	Stale  bool   `json:"stale"`
+}
+
+// PeerLaneCard is one agent-lane's evidence-only capability card: its lane identity,
+// aliased harness, top capability domains, and tendency slugs — all read from slice
+// A's capability-graph edges. Display-only; carries no reputation score and drives
+// no routing.
+type PeerLaneCard struct {
+	Lane            string   `json:"lane"`
+	Harness         string   `json:"harness"`
+	TopCapabilities []string `json:"top_capabilities"`
+	Tendencies      []string `json:"tendencies"`
+}
+
 type ContextPack struct {
 	Header
 	SummaryMD          string            `json:"summary_md"`
@@ -383,6 +418,7 @@ type ContextPack struct {
 	ActiveMemory       []string          `json:"active_memory,omitempty"`
 	ActivePositions    []ActivePosition  `json:"active_positions,omitempty"`
 	Negatives          []NegativeCard    `json:"negatives,omitempty"`
+	Peers              *PeersSection     `json:"peers,omitempty"`
 	SourceRevisions    []SourceRev       `json:"source_revisions,omitempty"`
 	RequiredChecks     []string          `json:"required_checks"`
 	Avoid              []string          `json:"avoid"`
