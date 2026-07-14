@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +46,11 @@ func packetPathForWork(w envelope.WorkEnvelope) (string, error) {
 	}
 	switch len(matches) {
 	case 1:
-		return matches[0].Path, nil
+		path, err := filepath.Abs(matches[0].Path)
+		if err != nil {
+			return "", fmt.Errorf("resolve current packet path for %s: %w", w.ID, err)
+		}
+		return path, nil
 	case 0:
 		return "", fmt.Errorf("packet path unavailable for %s: no current workbench packet matches %s", w.ID, surface)
 	default:
