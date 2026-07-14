@@ -36,6 +36,11 @@ func TestRecordReceiptedActionKeepsParentOpenAndIsStateIdempotent(t *testing.T) 
 	if result.Replayed {
 		t.Fatal("first receipted action reported replay")
 	}
+	wantReceiptID := idFor("rec_", "receipted-action", w.ID, action.ID, claimID)
+	wantTransitionID := idFor("tr_", "receipted-action", w.ID, action.ID, claimID)
+	if result.Receipt.ID != wantReceiptID || result.Transition.ID != wantTransitionID {
+		t.Fatalf("legacy receipted-action identities changed: receipt=%s want=%s transition=%s want=%s", result.Receipt.ID, wantReceiptID, result.Transition.ID, wantTransitionID)
+	}
 	if result.Work.State != "running" || result.Work.IDs.TransitionID != "" {
 		t.Fatalf("nonterminal action claimed task closure: %+v", result.Work)
 	}

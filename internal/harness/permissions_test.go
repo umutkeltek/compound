@@ -544,6 +544,35 @@ func TestPendingRecoveryRejectsChangedAuthorityRevision(t *testing.T) {
 	}
 }
 
+func TestPendingRecoveryRejectsNonLeafRecoveryName(t *testing.T) {
+	base := t.TempDir()
+	homePath := filepath.Join(base, "home")
+	targetPath := filepath.Join(base, "target", "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	before, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentinelPath := filepath.Join(base, "sentinel")
+	if err := os.WriteFile(sentinelPath, []byte("must survive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pending := permissionApplyPending{
+		SchemaVersion: permissionApplyPendingSchemaVersion, Harness: "claude_code", TargetPath: targetPath,
+		RecoveryName: "../sentinel", BeforeExisted: true, BeforeContent: before, BeforeSHA256: "sha256:" + digest(before),
+		IntendedSHA256: approved.Artifact.ContentSHA256, SourceAuthorityRef: approved.Artifact.SourceAuthorityRef, SourceRevision: approved.Artifact.SourceRevision,
+	}
+	writeTestJSON(t, PermissionApplyPendingPath(homePath, "claude_code"), pending)
+	if _, err := ApplyPermissions(homePath, approved, action, decision); err == nil || !strings.Contains(err.Error(), "recovery name") {
+		t.Fatalf("ApplyPermissions error = %v, want invalid recovery name", err)
+	}
+	if body, err := os.ReadFile(sentinelPath); err != nil || string(body) != "must survive" {
+		t.Fatalf("non-leaf recovery name touched sentinel: body=%q err=%v", body, err)
+	}
+}
+
 func governedPermissionApproval(t *testing.T, homePath, harnessName string) (PermissionRender, envelope.ActionIntent, envelope.PolicyDecision) {
 	t.Helper()
 	render, err := RenderPermissions(homePath, harnessName)
