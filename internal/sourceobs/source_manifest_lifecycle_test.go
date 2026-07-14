@@ -246,6 +246,7 @@ func mustAdvanceLifecycle(t *testing.T, homePath, family, to string, proofs []So
 
 func mustAdvanceLifecycleWithActor(t *testing.T, homePath, family, to string, proofs []SourceLifecycleProof, handoff *SourceWriterHandoff, actor string, now time.Time) SourceManifestLifecycleAdvanceReport {
 	t.Helper()
+	proofs = bindLifecycleTestEnvelopeEvidence(t, homePath, family, proofs)
 	manifest, err := LoadSourceManifest(homePath, family)
 	if err != nil {
 		t.Fatal(err)
@@ -277,6 +278,7 @@ func assertLifecycleAdvanceFailsUnchanged(t *testing.T, homePath, family, to str
 
 func assertLifecycleAdvanceFailsUnchangedWithActor(t *testing.T, homePath, family, to string, proofs []SourceLifecycleProof, handoff *SourceWriterHandoff, actor, want string) {
 	t.Helper()
+	proofs = bindLifecycleTestEnvelopeEvidence(t, homePath, family, proofs)
 	path := SourceManifestPath(homePath, family)
 	before, err := os.ReadFile(path)
 	if err != nil {
