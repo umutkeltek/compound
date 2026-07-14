@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"compound/internal/envelope"
 	"compound/internal/home"
+	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/work"
 )
@@ -81,7 +83,7 @@ const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-ca
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
-		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--json] [--dry-run]",
+		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--json] [--dry-run]",
 		Example: "compound work create-plan --owner codex --predicate \"tests pass\" --dry-run",
 	},
 	"admit-plan": {
@@ -93,7 +95,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work review-card-plan --card wrc_abc123 --json",
 	},
 	"create": {
-		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)]",
+		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N]",
 		Example: "compound work create --owner codex --predicate \"tests pass\"",
 	},
 	"import-packet": {
@@ -382,6 +384,26 @@ func cmdWork(args []string) {
 			PublicationRef:     publicationRef,
 		}
 	}
+	// parsePrediction is the grouped-optional-flags precedent for staking a WorkPrediction at
+	// create time (mirrors parseGitDelivery): any of the three prediction flags declares intent
+	// to stake, and staking without --predicted-outcome is a usage error, since Outcome is the
+	// one required dimension (envelope.WorkEnvelope.Validate enforces the same rule for a
+	// hand-written envelope). MoveType/Note are optional and enum/free-text validated downstream
+	// by WorkEnvelope.Validate.
+	parsePrediction := func(usage string) *envelope.WorkPrediction {
+		outcome := strings.TrimSpace(flag("--predicted-outcome"))
+		moveType := strings.TrimSpace(flag("--predicted-move-type"))
+		note := strings.TrimSpace(flag("--prediction-note"))
+		if outcome == "" && moveType == "" && note == "" {
+			return nil
+		}
+		if outcome == "" {
+			fmt.Fprintln(os.Stderr, "error: staking a prediction requires --predicted-outcome")
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		return &envelope.WorkPrediction{Outcome: outcome, MoveType: moveType, Note: note}
+	}
 
 	switch sub {
 	case "create-plan":
@@ -393,6 +415,7 @@ func cmdWork(args []string) {
 			"--capability": true, "--action": true, "--mutation-class": true, "--reversibility": true, "--blast-radius": true,
 			"--target-kind": true, "--target-id": true, "--target-path": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
+			"--predicted-outcome": true, "--predicted-move-type": true, "--prediction-note": true,
 		}, map[string]bool{"--json": true, "--dry-run": true, "--local-only": true}, 0); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
@@ -400,6 +423,7 @@ func cmdWork(args []string) {
 		}
 		validateCreateState(usage, false)
 		gitDelivery := parseGitDelivery(usage)
+		prediction := parsePrediction(usage)
 		plan, err := store.CreatePlan(work.CreateInput{
 			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
@@ -415,6 +439,7 @@ func cmdWork(args []string) {
 			State:            flag("--state"),
 			Risk:             flag("--risk"),
 			Privacy:          flag("--privacy"),
+			Prediction:       prediction,
 		}, time.Now(), work.CreatePlanOptions{
 			Actor:         firstNonEmpty(flag("--by"), flag("--actor")),
 			Capability:    flag("--capability"),
@@ -501,6 +526,7 @@ func cmdWork(args []string) {
 			"--state": true, "--context-pack": true, "--canonical-surface": true, "--route-decision-id": true, "--risk": true, "--privacy": true,
 			"--non-goal": true, "--non-goals": true, "--evidence-ref": true, "--evidence": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
+			"--predicted-outcome": true, "--predicted-move-type": true, "--prediction-note": true,
 		}, map[string]bool{"--local-only": true}, 0); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
@@ -508,6 +534,7 @@ func cmdWork(args []string) {
 		}
 		validateCreateState(usage, true)
 		gitDelivery := parseGitDelivery(usage)
+		prediction := parsePrediction(usage)
 		requestedState := flag("--state")
 		createState := requestedState
 		actor := firstNonEmpty(flag("--by"), flag("--actor"))
@@ -531,6 +558,7 @@ func cmdWork(args []string) {
 			State:            createState,
 			Risk:             flag("--risk"),
 			Privacy:          flag("--privacy"),
+			Prediction:       prediction,
 		}, now)
 		die(err)
 		if requestedState == "running" {
@@ -1463,10 +1491,41 @@ func cmdWork(args []string) {
 		fmt.Printf("%s closed: %s  move_type=%s  policy=%s  receipt=%s  transition=%s\n",
 			res.Work.ID, res.Work.State, res.Receipt.MoveType, res.Work.PolicyDecisionID, res.Receipt.ID, res.Transition.ID)
 		printJSON(res)
+		observeWorkSurpriseOnDivergedClose(homePath, res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
 		fmt.Fprintln(os.Stderr, workUsage(""))
 		os.Exit(2)
+	}
+}
+
+// observeWorkSurpriseOnDivergedClose is the cmd-layer wiring for the prediction/surprise
+// exhaust door (see internal/mem/surprise.go, ObserveWorkSurprise): after a successful close, a
+// DIVERGED staked prediction gets its Receipt.Surprise externalized into exactly one observed
+// candidate. This call lives here, at the cmd layer, rather than inside internal/work's
+// closeLocked, on purpose -- mirrors how CaptureExhaust is invoked from main.go rather than the
+// spine -- so internal/work never imports internal/mem (Spine must not import MemTarget).
+//
+// A matching (non-diverged) close or a close with no staked prediction mints nothing (F6): this
+// is a no-op. Exhaust failure (open store, marshal) must NEVER fail an already-successful close;
+// it prints a warning line to stderr instead.
+func observeWorkSurpriseOnDivergedClose(homePath string, res work.CloseResult) {
+	surprise := res.Receipt.Surprise
+	if surprise == nil || !surprise.Diverged {
+		return
+	}
+	payload, err := json.Marshal(surprise)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: work-surprise exhaust skipped (marshal surprise):", err)
+		return
+	}
+	memStore, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: work-surprise exhaust skipped (open mem store):", err)
+		return
+	}
+	if _, _, err := memStore.ObserveWorkSurprise(res.Work.ID, res.Receipt.ID, payload, time.Now()); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: work-surprise exhaust failed:", err)
 	}
 }
 
