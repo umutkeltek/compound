@@ -150,6 +150,12 @@ type OSAbsorptionDoctorReport struct {
 	MachineProvenCount int `json:"machine_proven_count"`
 	AssertedCount      int `json:"asserted_count"`
 	FailedProofCount   int `json:"failed_proof_count"`
+	// SkippedProofCount counts rows whose auto-proof declined to run because
+	// its declared dependency (e.g. an absorbed-OS root) is not configured on
+	// this machine — the public-clone case. It is separate from
+	// AutoProofCount/FailedAutoProofCount: a skip is neither a pass nor a
+	// failure, so it must never move either of those counters.
+	SkippedProofCount int `json:"skipped_proof_count"`
 
 	Checks                 []OSAbsorptionDoctorCheck        `json:"checks"`
 	Rows                   []OSAbsorptionDoctorRow          `json:"rows,omitempty"`
@@ -349,6 +355,11 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 			report.AssertedCount++
 		case "failed":
 			report.FailedProofCount++
+		case "skipped":
+			// SkippedProofCount is already incremented by
+			// applyOSAbsorptionAutoProof at the moment the skip happens;
+			// nothing to add here beyond leaving it out of proven/asserted/
+			// failed.
 		}
 		report.Rows = append(report.Rows, dr)
 	}
@@ -992,8 +1003,13 @@ func osAbsorptionNeedsServedOrientationProof(row OSAbsorptionMatrixRow) bool {
 }
 
 // osAbsorptionProofResult is the outcome of one row's auto-proof attempt.
+// skipped is distinct from ok/failed: it means the proof declined to run at
+// all because a declared dependency (most commonly an absorbed-OS root) is
+// not configured on this machine — the public-clone case, not a pass or a
+// failure.
 type osAbsorptionProofResult struct {
 	ok       bool
+	skipped  bool
 	proofRef string
 	reason   string
 }
@@ -1464,6 +1480,12 @@ func isOSAbsorptionHex(value string) bool {
 // proof_status=ok + proof_ref on success, proof_status=failed on failure
 // (never manual, never a status-string change).
 func applyOSAbsorptionAutoProof(report *OSAbsorptionDoctorReport, dr *OSAbsorptionDoctorRow, result osAbsorptionProofResult) {
+	if result.skipped {
+		report.SkippedProofCount++
+		dr.ProofStatus = "skipped"
+		dr.ProofDetail = result.reason
+		return
+	}
 	if result.ok {
 		report.AutoProofCount++
 		dr.ProofStatus = "ok"
