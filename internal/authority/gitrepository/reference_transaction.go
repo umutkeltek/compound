@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -61,13 +62,13 @@ func PrepareReferenceTransaction(repo string, expectations []ReferenceExpectatio
 		if !validObjectID(strings.TrimSpace(expected.SHA)) {
 			return nil, fmt.Errorf("full lowercase Git object id required for %s", expected.Ref)
 		}
-		if out, err := exec.Command("git", "-C", repo, "check-ref-format", expected.Ref).CombinedOutput(); err != nil {
+		if out, err := gitCommandWithoutHooks(repo, "check-ref-format", expected.Ref).CombinedOutput(); err != nil {
 			return nil, fmt.Errorf("invalid Git ref %s: %w: %s", expected.Ref, err, strings.TrimSpace(string(out)))
 		}
 	}
 
 	stderr := &bytes.Buffer{}
-	cmd := exec.Command("git", "-C", repo, "update-ref", "--stdin")
+	cmd := gitCommandWithoutHooks(repo, "update-ref", "--stdin")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -103,6 +104,11 @@ func PrepareReferenceTransaction(repo string, expectations []ReferenceExpectatio
 		return nil, tx.fail(err)
 	}
 	return tx, nil
+}
+
+func gitCommandWithoutHooks(repo string, args ...string) *exec.Cmd {
+	gitArgs := []string{"-c", "core.hooksPath=" + os.DevNull, "-C", repo}
+	return exec.Command("git", append(gitArgs, args...)...)
 }
 
 func (tx *preparedReferenceTransaction) Commit() error {
