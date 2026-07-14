@@ -126,6 +126,80 @@ func TestOpaqueInstalledWriteGateRetainsRegisteredReadinessWithoutContentAttesta
 	}
 }
 
+func TestMixedAvailableAndUnavailableWriteGatesFailLoudInEveryOrder(t *testing.T) {
+	ready := InstalledHook{
+		Harness:  "claude_code",
+		Name:     "PreToolUse",
+		Event:    "PreToolUse",
+		Matcher:  "Write",
+		Ref:      "handler:attested-write-gate",
+		Revision: "sha256:attested-write-gate",
+		Status:   "current",
+	}
+	unavailable := InstalledHook{
+		Harness:  "claude_code",
+		Name:     "PreToolUse",
+		Event:    "PreToolUse",
+		Matcher:  "Edit",
+		Ref:      "/synthetic/missing-edit-gate.hook.ts",
+		Revision: installedHookHandlerUnavailableRevision,
+		Status:   "current",
+	}
+	orders := []struct {
+		name  string
+		hooks []InstalledHook
+	}{
+		{name: "attested_then_unavailable", hooks: []InstalledHook{ready, unavailable}},
+		{name: "unavailable_then_attested", hooks: []InstalledHook{unavailable, ready}},
+	}
+	for _, order := range orders {
+		t.Run(order.name, func(t *testing.T) {
+			manifest := InstalledHooksManifest{SchemaVersion: installedHooksSchemaVersion, Hooks: order.hooks}
+			gate := findHookGateReadiness(InstalledHookGateReadiness(manifest, map[string]bool{"claude_code": true}), "claude_code")
+			assertUnavailableMixedGate(t, gate)
+
+			home := t.TempDir()
+			if _, err := importInstalledHooks(home, "synthetic-mixed-gates", []byte(order.name), manifest, installedHooksRegistryImportedVia, fixedNow); err != nil {
+				t.Fatal(err)
+			}
+			in := Input{
+				Harness:     "claude_code",
+				Cwd:         t.TempDir(),
+				Task:        "edit source through mixed write gates",
+				RepoKind:    "control-plane",
+				RepoKindVia: "flag",
+				Mode:        "execute",
+			}
+			ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ecGate := findEnvelopeHookReadiness(ec.HookReadiness, "claude_code", "PreToolUse")
+			if ecGate == nil || ecGate.Status != "handler_unavailable" || len(ecGate.Actions) == 0 {
+				t.Fatalf("effective contract mixed-gate readiness = %+v", ecGate)
+			}
+			pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			packGate := findEnvelopeHookReadiness(pack.HookReadiness, "claude_code", "PreToolUse")
+			if packGate == nil || packGate.Status != "handler_unavailable" || len(packGate.Actions) == 0 {
+				t.Fatalf("context pack mixed-gate readiness = %+v", packGate)
+			}
+			if !containsStringWith(pack.RequiredChecks, "status=handler_unavailable") {
+				t.Fatalf("context pack mixed-gate required checks = %+v", pack.RequiredChecks)
+			}
+		})
+	}
+}
+
+func assertUnavailableMixedGate(t *testing.T, gate *HookGateReadiness) {
+	t.Helper()
+	if gate == nil || gate.Status != "handler_unavailable" || gate.Installed || gate.Status == "native_blocking" || len(gate.Actions) == 0 {
+		t.Fatalf("mixed write-gate readiness = %+v, want fail-loud handler_unavailable with remediation", gate)
+	}
+}
+
 func TestModeAffectsContractAndContextPackIDs(t *testing.T) {
 	in := mkInput("control-plane")
 	in.Task = "same task"
