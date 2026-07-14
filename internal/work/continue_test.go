@@ -57,6 +57,65 @@ func TestContinueRunAdmitsPreparesClaimsAndAdvancesUntilWait(t *testing.T) {
 	}
 }
 
+func TestContinueRunStopsAtCapacityConfirmationInsteadOfRetryingReadyWork(t *testing.T) {
+	s := newStore(t)
+	plan, err := s.CreatePlan(CreateInput{
+		WorkID:           "work_continue_capacity_wait",
+		Owner:            "compound-core",
+		Actor:            "codex",
+		State:            "proposed",
+		SuccessPredicate: "continue stops at a capacity confirmation",
+	}, fixedNow, CreatePlanOptions{
+		Record:        true,
+		Capability:    "product.action_review",
+		Action:        "plan_work_from_reviewed_product_action",
+		TargetKind:    "product_action_review",
+		TargetID:      "continue_capacity_wait",
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousGuard := LaneCapacityGuard
+	LaneCapacityGuard = func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+		return LaneCapacityGuardResult{
+			Capacity:             DispatchLaneCapacity{State: "unknown", DataRef: "test://capacity"},
+			ConfirmationRequired: true,
+			Message:              "capacity confirmation required",
+		}, nil
+	}
+	t.Cleanup(func() { LaneCapacityGuard = previousGuard })
+
+	run, err := s.ContinueRun(fixedNow.Add(time.Minute), ContinueRunOptions{
+		ContinueOptions: ContinueOptions{Actor: "codex", ExpectWorkID: plan.WorkID},
+		MaxSteps:        6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "waiting" || run.StepCount != 3 || run.CanContinue {
+		t.Fatalf("continue must stop after admit, prepare, and one capacity-gated claim: %+v", run)
+	}
+	wantActions := []string{"admit", "prepare", "claim"}
+	for i, want := range wantActions {
+		if run.Steps[i].Action != want {
+			t.Fatalf("step %d = %+v, want action=%s", i, run.Steps[i], want)
+		}
+	}
+	if run.WaitReason != "capacity_confirmation_required" || !contains(run.BlockedOn, "lane.capacity_confirmation:codex") {
+		t.Fatalf("capacity wait identity lost: reason=%q blocked=%v", run.WaitReason, run.BlockedOn)
+	}
+	after, err := s.Get(plan.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "ready" {
+		t.Fatalf("capacity confirmation must preserve ready work: %+v", after)
+	}
+}
+
 func TestContinueLeavesOperatorAdmissionPreviewWaiting(t *testing.T) {
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{

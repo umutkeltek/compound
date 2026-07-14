@@ -1336,7 +1336,9 @@ func (s *Store) recordDispatchStep(now time.Time, result DispatchStepResult) (Di
 	}
 	result.PostCounts = &post.Counts
 	result.NextAction = dispatchStepNextAction(result, post)
-	result.CanContinue, result.ContinueCommand = dispatchStepContinuation(result, post)
+	if dispatchStepMadeProgress(result) {
+		result.CanContinue, result.ContinueCommand = dispatchStepContinuation(result, post)
+	}
 	if !result.CanContinue {
 		result.WaitReason, result.BlockedOn = dispatchStepWait(result, post)
 	}
@@ -1356,6 +1358,15 @@ func (s *Store) recordDispatchStepRun(result DispatchStepRunResult) (DispatchSte
 	}
 	result.ResultPath = path
 	return result, nil
+}
+
+func dispatchStepMadeProgress(result DispatchStepResult) bool {
+	switch result.Status {
+	case "claimed", "running", "closed":
+		return true
+	default:
+		return false
+	}
 }
 
 func dispatchStepNextAction(result DispatchStepResult, post WorkbenchReport) string {
@@ -1415,6 +1426,12 @@ func dispatchStepWait(result DispatchStepResult, post WorkbenchReport) (string, 
 	actor := strings.TrimSpace(result.Actor)
 	if actor == "" {
 		actor = "codex"
+	}
+	switch result.Status {
+	case "capacity_confirmation_required":
+		return "capacity_confirmation_required", []string{"lane.capacity_confirmation:" + actor}
+	case "capacity_refused":
+		return "capacity_refused", []string{"lane.capacity_refused:" + actor}
 	}
 	var review []string
 	var runEvidence []string

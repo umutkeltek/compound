@@ -4260,6 +4260,7 @@ func TestWorkDispatchStepCommandRunsUntilWait(t *testing.T) {
 }
 
 func TestWorkContinueCommandRunsSuggestedWorkUntilWait(t *testing.T) {
+	isolateDispatchCapacityGuard(t)
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {

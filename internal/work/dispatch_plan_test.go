@@ -1202,6 +1202,72 @@ func TestDispatchStepRunClaimsAndAdvancesUntilRunEvidenceWait(t *testing.T) {
 	}
 }
 
+func TestDispatchStepRunStopsAtNonProgressCapacityWait(t *testing.T) {
+	tests := []struct {
+		name         string
+		refused      bool
+		confirmation bool
+		status       string
+		blockedOn    string
+	}{
+		{
+			name:         "confirmation required",
+			confirmation: true,
+			status:       "capacity_confirmation_required",
+			blockedOn:    "lane.capacity_confirmation:codex",
+		},
+		{
+			name:      "refused",
+			refused:   true,
+			status:    "capacity_refused",
+			blockedOn: "lane.capacity_refused:codex",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "capacity wait is not progress"}, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			previousGuard := LaneCapacityGuard
+			LaneCapacityGuard = func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+				return LaneCapacityGuardResult{
+					Capacity:             DispatchLaneCapacity{State: "unknown", DataRef: "test://capacity"},
+					Refused:              tc.refused,
+					ConfirmationRequired: tc.confirmation,
+					Message:              tc.status,
+				}, nil
+			}
+			t.Cleanup(func() { LaneCapacityGuard = previousGuard })
+
+			result, err := s.DispatchStepRun(fixedNow, DispatchStepRunOptions{
+				DispatchStepOptions: DispatchStepOptions{Actor: "codex"},
+				MaxSteps:            5,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != "waiting" || result.StepCount != 1 || result.CanContinue {
+				t.Fatalf("capacity wait must stop after one non-progress attempt: %+v", result)
+			}
+			if result.WaitReason != tc.status || !contains(result.BlockedOn, tc.blockedOn) {
+				t.Fatalf("capacity wait identity lost: reason=%q blocked=%v", result.WaitReason, result.BlockedOn)
+			}
+			if result.Steps[0].Status != tc.status || result.Steps[0].Action != "claim" {
+				t.Fatalf("capacity step = %+v", result.Steps[0])
+			}
+			after, err := s.Get(ready.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.State != "ready" {
+				t.Fatalf("capacity wait must preserve ready work: %+v", after)
+			}
+		})
+	}
+}
+
 func TestDispatchStepRunStopsAtMaxStepsWithContinuation(t *testing.T) {
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "loop bounded by max"}, fixedNow)

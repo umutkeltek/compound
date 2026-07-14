@@ -236,7 +236,9 @@ func (s *Store) recordContinue(now time.Time, result ContinueResult) (ContinueRe
 	}
 	result.PostCounts = &post.Counts
 	result.NextAction = continueNextAction(result, post)
-	result.CanContinue, result.ContinueCommand = continueCanContinue(post, result.Actor, result.ExpectWorkID)
+	if continueStepMadeProgress(result) {
+		result.CanContinue, result.ContinueCommand = continueCanContinue(post, result.Actor, result.ExpectWorkID)
+	}
 	if !result.CanContinue {
 		result.WaitReason, result.BlockedOn = continueWait(result, post)
 	}
@@ -247,6 +249,19 @@ func (s *Store) recordContinue(now time.Time, result ContinueResult) (ContinueRe
 	}
 	result.ResultPath = path
 	return result, nil
+}
+
+func continueStepMadeProgress(result ContinueResult) bool {
+	switch result.Action {
+	case "admit":
+		return result.Status == "admitted" && strings.TrimSpace(result.WorkID) != ""
+	case "prepare":
+		return result.Status == "ready" && strings.TrimSpace(result.WorkID) != ""
+	case "claim", "advance", "close":
+		return dispatchStepMadeProgress(DispatchStepResult{Status: result.Status})
+	default:
+		return false
+	}
 }
 
 func (s *Store) recordContinueRun(result ContinueRunResult) (ContinueRunResult, error) {
@@ -336,7 +351,11 @@ func continueWait(result ContinueResult, report WorkbenchReport) (string, []stri
 		}
 		return "target_changed", blocked
 	}
-	reason, blockedOn := dispatchStepWait(DispatchStepResult{Actor: result.Actor, Status: result.Status, WorkID: result.WorkID}, report)
+	workID := result.WorkID
+	if strings.TrimSpace(workID) == "" {
+		workID = result.ExpectWorkID
+	}
+	reason, blockedOn := dispatchStepWait(DispatchStepResult{Actor: result.Actor, Status: result.Status, WorkID: workID}, report)
 	for _, preview := range report.AdmissionPreviews {
 		if !continueMatchesExpected(result.ExpectWorkID, preview.WorkID) {
 			continue
