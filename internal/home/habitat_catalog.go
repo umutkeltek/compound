@@ -225,6 +225,7 @@ func HabitatPlacementDirs() []string {
 		if entry.PlacementAllowed && !strings.Contains(entry.Prefix, "/") {
 			dirs = append(dirs, entry.Prefix)
 		}
+	}
 	sort.Strings(dirs)
 	return dirs
 }
