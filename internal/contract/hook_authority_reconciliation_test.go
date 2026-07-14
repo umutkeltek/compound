@@ -70,6 +70,67 @@ func TestReconcileInstalledHooksReportsLiveClaudeSessionEndAsExtraUnowned(t *tes
 	}
 }
 
+func TestImportAndObserveInstalledHookContentAreIndependentAttestations(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	t.Setenv("HOME", harnessHome)
+	handlerPath := filepath.Join(harnessHome, ".claude", "hooks", "RecallContext.hook.ts")
+	writeHarnessHookConfig(t, handlerPath, "#!/usr/bin/env bun\nprocess.stdout.write('{}')")
+	sourcePath := filepath.Join(t.TempDir(), "hook-registration.ts")
+	source := `export const HOOK_REGISTRATIONS = [
+  { harness: "claude", event: "SessionStart", file: "RecallContext.hook.ts", command: ` + "`\"$HOME/.claude/hooks/RecallContext.hook.ts\"`" + ` },
+];`
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imported, err := ImportHookRegistrationTS(compoundHome, sourcePath, time.Date(2026, 7, 14, 20, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("ImportHookRegistrationTS() error = %v", err)
+	}
+	if len(imported.Manifest.Hooks) != 1 || !strings.HasPrefix(imported.Manifest.Hooks[0].Revision, "sha256:") {
+		t.Fatalf("imported handler content was not attested: %+v", imported.Manifest.Hooks)
+	}
+	desiredRevision := imported.Manifest.Hooks[0].Revision
+
+	writeHarnessHookConfig(t, filepath.Join(harnessHome, ".claude", "settings.json"), `{
+  "hooks": {"SessionStart": [{"hooks":[{"type":"command","command":"\"$HOME/.claude/hooks/RecallContext.hook.ts\""}]}]}
+}`)
+	ready, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("ReconcileInstalledHooks() ready error = %v", err)
+	}
+	delta := hookReconciliationDelta(ready.Reconciliation, "claude_code", "SessionStart")
+	if delta == nil || delta.State != hookplan.StateReady {
+		t.Fatalf("matching independent content attestations = %+v, want ready", delta)
+	}
+	if len(ready.Observation.Bindings) != 1 || ready.Observation.Bindings[0].HandlerRevision != desiredRevision {
+		t.Fatalf("observed handler attestation = %+v, want %s", ready.Observation.Bindings, desiredRevision)
+	}
+
+	writeHarnessHookConfig(t, handlerPath, "#!/usr/bin/env bun\nprocess.stdout.write('{\"drifted\":true}')")
+	drifted, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("ReconcileInstalledHooks() drift error = %v", err)
+	}
+	delta = hookReconciliationDelta(drifted.Reconciliation, "claude_code", "SessionStart")
+	if delta == nil || delta.State != hookplan.StateDrifted {
+		t.Fatalf("changed handler content = %+v, want drifted", delta)
+	}
+
+	if err := os.Remove(handlerPath); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("ReconcileInstalledHooks() missing-handler error = %v", err)
+	}
+	delta = hookReconciliationDelta(missing.Reconciliation, "claude_code", "SessionStart")
+	if delta == nil || delta.State != hookplan.StateDrifted {
+		t.Fatalf("missing known handler = %+v, want drifted", delta)
+	}
+}
+
 func TestCanonicalHookInvocationRevisionIncludesArgumentsForEveryHandler(t *testing.T) {
 	harnessHome := t.TempDir()
 	tests := []struct {

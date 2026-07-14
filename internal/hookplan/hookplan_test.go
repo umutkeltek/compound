@@ -235,7 +235,7 @@ func TestReconcileCanonicalizesEquivalentInputOrder(t *testing.T) {
 	}
 }
 
-func TestReconcileReportsRegisteredWithoutObservedHandlerRevision(t *testing.T) {
+func TestReconcileReportsDriftWhenExpectedHandlerContentCannotBeObserved(t *testing.T) {
 	plan := HookPlan{
 		SchemaVersion: HookPlanSchemaVersion,
 		ID:            "hook-plan",
@@ -265,8 +265,15 @@ func TestReconcileReportsRegisteredWithoutObservedHandlerRevision(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if len(got.Deltas) != 1 || got.Deltas[0].State != StateRegistered {
-		t.Fatalf("Reconcile() deltas = %+v, want registered while observed handler revision is unknown", got.Deltas)
+	if len(got.Deltas) != 1 || got.Deltas[0].State != StateDrifted {
+		t.Fatalf("Reconcile() deltas = %+v, want drifted when expected handler content is unverified", got.Deltas)
+	}
+	encoded, err := json.Marshal(got.Deltas[0])
+	if err != nil {
+		t.Fatalf("marshal delta: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"desired_handler_revision":"sha256:handler-content"`) {
+		t.Fatalf("reconciliation delta omitted desired handler attestation: %s", encoded)
 	}
 }
 
@@ -339,6 +346,18 @@ func TestReconcileReportsReadyOnlyForVerifiedHandlerContent(t *testing.T) {
 	}
 	if len(got.Deltas) != 1 || got.Deltas[0].State != StateReady {
 		t.Fatalf("Reconcile() deltas = %+v, want content-verified ready", got.Deltas)
+	}
+	encoded, err := json.Marshal(got.Deltas[0])
+	if err != nil {
+		t.Fatalf("marshal delta: %v", err)
+	}
+	for _, want := range []string{
+		`"desired_handler_revision":"sha256:verified-content"`,
+		`"observed_handler_revision":"sha256:verified-content"`,
+	} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("ready delta omitted content attestation %s: %s", want, encoded)
+		}
 	}
 }
 
