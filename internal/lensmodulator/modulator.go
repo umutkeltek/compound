@@ -348,33 +348,43 @@ func Modulate(home string, policyCfg policy.Config, workID string, now time.Time
 			continue
 		}
 		root := laneRoot(sig.Visibility)
-		// Materialize the target key at the baseline so the config-key adapter (which repoints, never
-		// creates) has something to repoint. This is setup, not the governed act: the pre-image the act
-		// captures is exactly this baseline.
-		if err := ensureLaneEntry(storePath, root, sig.Subject, th.Baseline); err != nil {
+		// Idempotency check WITHOUT mutating the store: read the current value directly (not
+		// adapter.ReadCurrent, which errors on an absent key). An absent lane is NOT "already
+		// demoted", so it proceeds; a lane already at DemoteTo is skipped. Reading (never writing)
+		// here is what lets a refused pass leave the store byte-identical.
+		if curVal, present, err := currentValue(storePath, root, sig.Subject); err != nil {
 			return ModulationResult{}, err
-		}
-		target := envelope.ActionTarget{Kind: "route_role", ID: root + "." + sig.Subject, Path: storePath}
-		cur, err := adapter.ReadCurrent(target)
-		if err != nil {
-			return ModulationResult{}, fmt.Errorf("read current route/role for %s: %w", sig.Subject, err)
-		}
-		if string(cur) == th.DemoteTo {
+		} else if present && curVal == th.DemoteTo {
 			res.Skipped = append(res.Skipped, Skip{LensID: sig.LensID, Lane: sig.Subject, Visibility: sig.Visibility, Reason: "already demoted (idempotent)"})
 			continue
 		}
 
+		target := envelope.ActionTarget{Kind: "route_role", ID: root + "." + sig.Subject, Path: storePath}
 		ai := buildDemoteIntent(workID, target, th, sig.LensID, sig.Subject, now)
 		pd := policy.Evaluate(ai, policyCfg, now)
-		result, execErr := act.Execute(store, adapter, ai, pd, []byte(th.DemoteTo), now)
-		if execErr != nil {
-			// No allowing PolicyDecision (hold/deny) => act refused, target byte-identical.
+		// GATE BEFORE ANY WRITE. Confirm the governed write is admissible BEFORE materializing the
+		// baseline key the repoint-only adapter needs. A refused (hold/deny) decision therefore leaves
+		// the route store byte-identical — absent stays absent. act.Execute re-checks the same gate.
+		if gateErr := act.Gate(ai, pd); gateErr != nil {
 			res.Modulations = append(res.Modulations, Modulation{
 				LensID: sig.LensID, Lane: sig.Subject, Root: root, Visibility: sig.Visibility,
 				SignalValue: sig.Value, Threshold: th.MinValue, DemoteTo: th.DemoteTo, Baseline: th.Baseline,
-				Applied: false, Refused: true, Reason: execErr.Error(),
+				Applied: false, Refused: true, Reason: gateErr.Error(),
 			})
 			continue
+		}
+
+		// Admitted: NOW materialize the target key at the baseline so the config-key adapter (which
+		// repoints, never creates) has something to repoint. This setup write happens ONLY on the
+		// allowed path; the pre-image the act captures is exactly this baseline.
+		if err := ensureLaneEntry(storePath, root, sig.Subject, th.Baseline); err != nil {
+			return ModulationResult{}, err
+		}
+		result, execErr := act.Execute(store, adapter, ai, pd, []byte(th.DemoteTo), now)
+		if execErr != nil {
+			// The gate already admitted this intent, so a failure here is a genuine I/O/validation
+			// error (not a policy refusal) — surface it rather than mislabeling it as refused.
+			return ModulationResult{}, fmt.Errorf("act execute after gate admitted lane %q: %w", sig.Subject, execErr)
 		}
 
 		rec := actionRecord{

@@ -3,6 +3,7 @@ package act
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,8 +22,13 @@ const artifactRefPrefix = "artifact:sha256:"
 // ArtifactStore is the content-addressed blob store the outbound wrapper writes
 // pre/post images to, under COMPOUND_HOME/artifacts/sha256 (the home's declared
 // content-addressed dir — never the repo). Same bytes -> same ref, so capture is
-// idempotent and a revert can restore the exact pre-image bytes by ref.
-type ArtifactStore struct{ dir string }
+// idempotent and a revert can restore the exact pre-image bytes by ref. It also carries
+// the home root so Execute can RECORD each governed write's receipt/transition to the
+// canonical event store (home/events), keeping the returned ids resolvable.
+type ArtifactStore struct {
+	dir  string
+	home string
+}
 
 // NewArtifactStore roots the store at COMPOUND_HOME/artifacts/sha256, creating it.
 func NewArtifactStore(home string) (*ArtifactStore, error) {
@@ -33,7 +39,7 @@ func NewArtifactStore(home string) (*ArtifactStore, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	return &ArtifactStore{dir: dir}, nil
+	return &ArtifactStore{dir: dir, home: home}, nil
 }
 
 // Put stores body content-addressed and returns its "artifact:sha256:<hex>" ref.
@@ -56,6 +62,25 @@ func (a *ArtifactStore) Get(ref string) ([]byte, error) {
 		return nil, err
 	}
 	return os.ReadFile(filepath.Join(a.dir, h))
+}
+
+// recordEnvelope persists a validated receipt/transition to the home's canonical event store at
+// home/events/<id>.json — the same store product.RecordTransition and the executor/event readers
+// use. Same id -> same file (idempotent). This is what makes a returned receipt_id/transition_id
+// resolve to a real envelope, closing the "governed action invisible to the event layer" gap.
+func recordEnvelope(home, id string, v any) error {
+	if strings.TrimSpace(home) == "" {
+		return fmt.Errorf("cannot record %q without a home", id)
+	}
+	dir := filepath.Join(home, "events")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(v, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, id+".json"), append(b, '\n'), 0o644)
 }
 
 func artifactHex(ref string) (string, error) {
@@ -140,6 +165,16 @@ func Execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd
 	if err := transition.Validate(); err != nil {
 		return Result{}, fmt.Errorf("act: emitted transition invalid: %w", err)
 	}
+	// RECORD the receipt and transition to the home's canonical event store, so the returned
+	// ids are resolvable envelope files the event readers (executorlens, eventsource, capgraph,
+	// distiller) can see — not a dangling in-memory reference. A governed write that cannot be
+	// recorded is a failed governed write, so a persistence error surfaces here.
+	if err := recordEnvelope(store.home, receipt.ID, &receipt); err != nil {
+		return Result{}, fmt.Errorf("act: record receipt %s: %w", receipt.ID, err)
+	}
+	if err := recordEnvelope(store.home, transition.ID, &transition); err != nil {
+		return Result{}, fmt.Errorf("act: record transition %s: %w", transition.ID, err)
+	}
 	return Result{
 		Receipt:      receipt,
 		Transition:   transition,
@@ -149,6 +184,15 @@ func Execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd
 		PostImage:    post,
 	}, nil
 }
+
+// Gate reports whether Execute WOULD admit this (ai, pd) pair — the same
+// by-construction refusal Execute applies — WITHOUT performing any write or touching
+// the adapter. A caller that must materialize setup state (e.g. create the target key a
+// repoint-only adapter needs) uses this to confirm the write is admissible BEFORE any
+// mutation, so a refused decision leaves the target byte-identical. It returns nil iff
+// Execute(store, adapter, ai, pd, ...) would proceed to the write. Execute re-checks the
+// same gate internally, so this is an advisory pre-flight, never a substitute for it.
+func Gate(ai envelope.ActionIntent, pd envelope.PolicyDecision) error { return gate(ai, pd) }
 
 // gate is the by-construction refusal: an outbound write proceeds only if pd is a
 // valid PolicyDecision that authorizes THIS exact intent and allows it. Anything

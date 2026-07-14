@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,6 +293,66 @@ func containsRef(refs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// Assertion 6 (canonical persistence): a governed write does not merely RETURN its receipt and
+// transition in memory — it RECORDS them to the home's canonical event store
+// (home/events/<id>.json), so a caller's ledger receipt_id/transition_id resolve to real
+// envelope files and the event readers (executorlens, eventsource, capgraph, distiller) can see
+// the governed action. This fails if Execute leaves the receipt/transition as a dangling
+// in-memory reference — the exact P1 the external audit flagged.
+func TestExecutePersistsReceiptAndTransitionToEvents(t *testing.T) {
+	now := fixedNow()
+	home := t.TempDir()
+	store, err := NewArtifactStore(home)
+	if err != nil {
+		t.Fatalf("new artifact store: %v", err)
+	}
+	path := scratch(t, "switchback.yaml", "egress:\n  auto/judge: providerA\n")
+	adapter := NewConfigKeyAdapter()
+	ai := mkIntent(t, "work_persist", "outbound.config_key.write", path, "egress.auto/judge", now)
+	pd := policy.Evaluate(ai, grantConfig(ai), now)
+	if !policy.Allowed(pd) {
+		t.Fatalf("precondition: granted decision must allow, got %s", pd.Outcome)
+	}
+
+	res, err := Execute(store, adapter, ai, pd, []byte("providerB"), now)
+	if err != nil {
+		t.Fatalf("governed write failed: %v", err)
+	}
+
+	eventsDir := filepath.Join(home, "events")
+	for _, tc := range []struct{ kind, id string }{
+		{"receipt", res.Receipt.ID},
+		{"transition", res.Transition.ID},
+	} {
+		data, err := os.ReadFile(filepath.Join(eventsDir, tc.id+".json"))
+		if err != nil {
+			t.Fatalf("%s must be recorded to the canonical event store (home/events/%s.json): %v", tc.kind, tc.id, err)
+		}
+		var probe struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(data, &probe); err != nil {
+			t.Fatalf("recorded %s is not valid JSON: %v", tc.kind, err)
+		}
+		if probe.ID != tc.id {
+			t.Fatalf("recorded %s id mismatch: file has %q, result has %q", tc.kind, probe.ID, tc.id)
+		}
+	}
+
+	// The recorded receipt round-trips through its real validator — a faithful envelope, not a stub.
+	recData, err := os.ReadFile(filepath.Join(eventsDir, res.Receipt.ID+".json"))
+	if err != nil {
+		t.Fatalf("read recorded receipt: %v", err)
+	}
+	var rec envelope.Receipt
+	if err := json.Unmarshal(recData, &rec); err != nil {
+		t.Fatalf("recorded receipt unmarshal: %v", err)
+	}
+	if err := rec.Validate(); err != nil {
+		t.Fatalf("recorded receipt invalid: %v", err)
+	}
 }
 
 // Assertion 3+4, first consumer: switchback-shaped egress alias, string value.

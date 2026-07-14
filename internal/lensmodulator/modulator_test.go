@@ -2,6 +2,7 @@ package lensmodulator
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -268,6 +269,89 @@ func TestOperatorPrivateModulationStaysOperatorLocal(t *testing.T) {
 	for _, m := range pub.Modulations {
 		if m.Visibility == behaviorallens.VisibilityOperatorPrivate {
 			t.Fatal("public projection must never carry an operator_private modulation")
+		}
+	}
+}
+
+// FALSIFIER 1b (byte-identity on refusal): a refused demote must leave the route store
+// EXACTLY as it was — including ABSENT when it never existed. The weaker "value != demoted"
+// check (case (a) of TestModulateRefusesWithoutGrantWritesWithGrant) misses a baseline key
+// materialized BEFORE policy was consulted. This asserts no route-store write happened at
+// all on refusal: it fails if any store mutation precedes an allowing PolicyDecision.
+func TestModulateRefusalLeavesRouteStoreByteIdentical(t *testing.T) {
+	now := fixedNow()
+
+	// (a) no prior store: a refused demote must NOT create the route store file.
+	{
+		home := t.TempDir()
+		recordSignal(t, home, mkSignal(t, "sycophancy", "lane-a", 0.9, behaviorallens.VisibilityPublicSafe, now))
+		armSycophancy(t, home, now)
+
+		res, err := Modulate(home, policy.DefaultConfig(), "work_nogrant", now)
+		if err != nil {
+			t.Fatalf("modulate: %v", err)
+		}
+		if len(res.Modulations) != 1 || !res.Modulations[0].Refused {
+			t.Fatalf("want exactly one refused modulation, got %+v", res.Modulations)
+		}
+		if _, err := os.Stat(RouteStorePath(home)); !os.IsNotExist(err) {
+			t.Fatalf("a refused demote must not create the route store (no write before an allowing PolicyDecision); stat err=%v", err)
+		}
+	}
+
+	// (b) pre-existing (unrelated) store: a refused demote must leave its bytes IDENTICAL —
+	// it may not silently materialize a baseline entry for the refused lane.
+	{
+		home := t.TempDir()
+		recordSignal(t, home, mkSignal(t, "sycophancy", "lane-a", 0.9, behaviorallens.VisibilityPublicSafe, now))
+		armSycophancy(t, home, now)
+		if err := ensureLaneEntry(RouteStorePath(home), publicLaneRoot, "other-lane", "active"); err != nil {
+			t.Fatalf("seed store: %v", err)
+		}
+		before, err := os.ReadFile(RouteStorePath(home))
+		if err != nil {
+			t.Fatalf("read seeded store: %v", err)
+		}
+
+		if _, err := Modulate(home, policy.DefaultConfig(), "work_nogrant2", now); err != nil {
+			t.Fatalf("modulate: %v", err)
+		}
+		after, err := os.ReadFile(RouteStorePath(home))
+		if err != nil {
+			t.Fatalf("read store after refusal: %v", err)
+		}
+		if string(before) != string(after) {
+			t.Fatalf("refused demote mutated the route store:\n before=%q\n after =%q", string(before), string(after))
+		}
+	}
+}
+
+// FALSIFIER (governed action is observable end-to-end): an APPLIED demote's receipt/transition
+// ids in the action ledger must resolve to real envelope files in the home's canonical event
+// store (home/events/<id>.json) — not dangling references. This is what makes the modulator's
+// own governed action visible to the event readers (executorlens/eventsource/capgraph). It
+// fails if the act seam only returns receipts in memory instead of recording them.
+func TestAppliedDemoteReceiptResolvesInEventStore(t *testing.T) {
+	home := t.TempDir()
+	now := fixedNow()
+	recordSignal(t, home, mkSignal(t, "sycophancy", "lane-a", 0.9, behaviorallens.VisibilityPublicSafe, now))
+	armSycophancy(t, home, now)
+
+	res, err := Modulate(home, grantConfig(home), "work_obs", now)
+	if err != nil {
+		t.Fatalf("modulate: %v", err)
+	}
+	if len(res.Modulations) != 1 || !res.Modulations[0].Applied {
+		t.Fatalf("want exactly one applied modulation, got %+v", res.Modulations)
+	}
+	m := res.Modulations[0]
+	for _, id := range []string{m.ReceiptID, m.TransitionID} {
+		if id == "" {
+			t.Fatalf("applied modulation must carry receipt+transition ids: %+v", m)
+		}
+		p := filepath.Join(home, "events", id+".json")
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("ledger references %s but it does not resolve in the canonical event store (%s): %v", id, p, err)
 		}
 	}
 }
