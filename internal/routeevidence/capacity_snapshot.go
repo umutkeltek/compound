@@ -55,8 +55,9 @@ type LaneCapacityPaths struct {
 }
 
 type LaneCapacityConfig struct {
-	Paths           LaneCapacityPaths
-	ExpectedMinutes int
+	Paths                   LaneCapacityPaths
+	ExpectedMinutes         int
+	SuppressRefusalEvidence bool
 }
 
 // DefaultLaneCapacityConfig points at the operator-owned read projections without embedding any
@@ -355,8 +356,10 @@ func GuardLaneCapacity(homePath, lane, capabilityClass string, now time.Time, co
 	case CapacityWalled, CapacityDead:
 		decision.Refused = true
 		decision.Message = capacityDecisionMessage(lane, capacity, alternatives, "refused")
-		if err := recordCapacityRefusal(homePath, lane, capacity, now); err != nil {
-			return LaneCapacityDecision{}, err
+		if !cfg.SuppressRefusalEvidence {
+			if err := recordCapacityRefusal(homePath, lane, capacity, now); err != nil {
+				return LaneCapacityDecision{}, err
+			}
 		}
 	case CapacityUnknown, CapacityExpiring:
 		if capacity.State == CapacityUnknown && !capacity.SourceInstalled {
@@ -380,6 +383,7 @@ func WorkLaneCapacityGuard(cfg LaneCapacityConfig) work.LaneCapacityGuardFunc {
 	return func(req work.LaneCapacityGuardRequest) (work.LaneCapacityGuardResult, error) {
 		effective := cfg
 		effective.ExpectedMinutes = req.ExpectedMinutes
+		effective.SuppressRefusalEvidence = req.ReadOnly
 		decision, err := GuardLaneCapacity(
 			req.HomePath,
 			req.Lane,

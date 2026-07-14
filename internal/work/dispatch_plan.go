@@ -56,6 +56,9 @@ type DispatchPlanOptions struct {
 	ExpectedMinutes int
 	// Confirm explicitly admits an unknown or expiring lane. It never overrides a wall/death.
 	Confirm bool
+	// ReadOnly suppresses evidence writes by injected guards. Selection and all
+	// warnings remain visible, but callers can promise a byte-identical preview.
+	ReadOnly bool
 }
 
 type DispatchPlan struct {
@@ -100,6 +103,7 @@ type LaneCapacityGuardRequest struct {
 	WorkID          string
 	ExpectedMinutes int
 	Confirm         bool
+	ReadOnly        bool
 	Alternatives    []string
 	Now             time.Time
 }
@@ -484,6 +488,7 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 			WorkID:          plan.Selected.WorkID,
 			ExpectedMinutes: dispatchExpectedMinutes(opts.ExpectedMinutes),
 			Confirm:         opts.Confirm,
+			ReadOnly:        opts.ReadOnly,
 			Alternatives:    dispatchAlternativeLadder(laneSelection),
 			Now:             now,
 		})

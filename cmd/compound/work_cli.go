@@ -5,7 +5,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"compound/internal/envelope"
@@ -183,24 +182,11 @@ func workHelpText(sub string) string {
 	return help.Usage + "\nexample: " + help.Example
 }
 
-var dispatchClaimPreviewMu sync.Mutex
-
 func previewDispatchClaim(store *work.Store, now time.Time, opts work.DispatchPlanOptions) (work.DispatchPlan, error) {
-	// A CLI command is one process/one operation. Temporarily remove the injected capacity
-	// adapter so a preview cannot record refusal evidence in COMPOUND_HOME. The confirmed path
-	// below still executes the adapter normally.
-	dispatchClaimPreviewMu.Lock()
-	defer dispatchClaimPreviewMu.Unlock()
-	guard := work.LaneCapacityGuard
-	work.LaneCapacityGuard = nil
-	defer func() { work.LaneCapacityGuard = guard }()
 	opts.Record = false
 	opts.Confirm = false
-	plan, err := store.DispatchPlan(now, opts)
-	if err == nil {
-		plan.Warnings = append(plan.Warnings, "capacity is evaluated when the claim is confirmed")
-	}
-	return plan, err
+	opts.ReadOnly = true
+	return store.DispatchPlan(now, opts)
 }
 
 func cmdWork(args []string) {
