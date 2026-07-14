@@ -5937,6 +5937,7 @@ type homeDoctorJSONReport struct {
 	ManifestOK                 bool                       `json:"manifest_ok"`
 	DirsOK                     int                        `json:"dirs_ok"`
 	DirsTotal                  int                        `json:"dirs_total"`
+	Habitat                    home.HabitatInventory      `json:"habitat"`
 	InsideGitRepo              bool                       `json:"inside_git_repo"`
 	GeneratedStateInRepoSource bool                       `json:"generated_state_in_repo_source"`
 	OperationalHygiene         homeDoctorHygieneReport    `json:"operational_hygiene"`
@@ -5988,6 +5989,7 @@ func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
 		ManifestOK:                 r.ManifestOK,
 		DirsOK:                     r.DirsOK,
 		DirsTotal:                  len(home.Dirs),
+		Habitat:                    r.Habitat,
 		InsideGitRepo:              r.InsideGitRepo,
 		GeneratedStateInRepoSource: smell,
 		OperationalHygiene:         operational,
@@ -5998,6 +6000,20 @@ func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
 		SetupOK:                    r.SetupOK,
 		Verdict:                    verdict,
 	}
+}
+
+func homeDoctorHabitatLines(r home.Report) []string {
+	lines := []string{"habitat: " + homeCleanStr(r.HabitatOK)}
+	for _, root := range r.Habitat.UnknownRoots {
+		lines = append(lines, "habitat_unknown_root: "+root)
+	}
+	for _, entry := range r.Habitat.UnknownEntries {
+		lines = append(lines, "habitat_unknown_entry: "+entry)
+	}
+	for _, root := range r.Habitat.BridgeRoots {
+		lines = append(lines, "habitat_bridge_root: "+root)
+	}
+	return lines
 }
 
 func buildHomeDoctorHygieneActions(h homeDoctorHygieneReport) []homeDoctorHygieneAction {
@@ -6055,6 +6071,9 @@ func printHomeDoctor(r home.Report) {
 	fmt.Printf("kind: %s\n", r.Manifest.HomeKind)
 	fmt.Printf("manifest: %s\n", homeOKStr(r.ManifestOK))
 	fmt.Printf("dirs: %d/%d ok\n", r.DirsOK, len(home.Dirs))
+	for _, line := range homeDoctorHabitatLines(r) {
+		fmt.Println(line)
+	}
 	fmt.Printf("inside_git_repo: %v\n", r.InsideGitRepo)
 	fmt.Printf("generated_state_in_repo_source: %v\n", smell)
 	fmt.Printf("operational_hygiene: %s\n", homeCleanStr(r.HygieneOK))
