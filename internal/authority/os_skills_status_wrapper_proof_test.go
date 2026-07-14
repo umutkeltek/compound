@@ -181,6 +181,7 @@ type osWrapperFixtureOpts struct {
 	anchorLiveNodeCount     int
 	anchorDirectNodeCount   int
 	statusSnapshotOverrides map[string]map[string]any
+	skipAbsorbedOSSeed      bool
 }
 
 const osWrapperFixtureDefaultOfferID = "tool:compound.proof-check"
@@ -278,7 +279,8 @@ func installOSWrapperProofFixture(t *testing.T, opts osWrapperFixtureOpts) insta
 	userHome := filepath.Join(root, "home")
 	compoundHome := filepath.Join(root, "compound-home")
 	binDir := filepath.Join(root, "bin")
-	execLane := filepath.Join(userHome, "Projects", "operating-system", "umut-os", "exec-lane")
+	osRoot := filepath.Join(userHome, "absorbed-os")
+	execLane := filepath.Join(osRoot, "exec-lane")
 	for _, dir := range []string{filepath.Join(userHome, ".local", "bin"), binDir, execLane} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -286,6 +288,9 @@ func installOSWrapperProofFixture(t *testing.T, opts osWrapperFixtureOpts) insta
 	}
 	if err := home.Init(compoundHome, "test", time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
+	}
+	if !opts.skipAbsorbedOSSeed {
+		seedAbsorbedOSRegistry(t, compoundHome, osRoot)
 	}
 
 	source := buildOSWrapperEntrypointSource(compoundHome, opts)
@@ -429,6 +434,22 @@ func TestOSAbsorptionOSSkillsProofBindsCompoundOnlySurface(t *testing.T) {
 	}
 }
 
+// TestOSAbsorptionOSSkillsProofSkipsWhenNoAbsorbedOSConfigured is the
+// public-clone falsifier: real entrypoint/shim files exist on disk, but the
+// absorbed_os path-authority registry was never seeded into mem, so the
+// resolver reports found=false and the proof must skip, not fail or
+// fabricate ok.
+func TestOSAbsorptionOSSkillsProofSkipsWhenNoAbsorbedOSConfigured(t *testing.T) {
+	fixture := installOSWrapperProofFixture(t, osWrapperFixtureOpts{skipAbsorbedOSSeed: true})
+	got := doctorOSSkillsRow(t, fixture, []string{capgraph.CapabilityGraphAuthorityRef})
+	if got.ProofStatus != "skipped" {
+		t.Fatalf("proof_status = %q, want skipped; detail = %q", got.ProofStatus, got.ProofDetail)
+	}
+	if !strings.Contains(got.ProofDetail, "no absorbed-OS root declared") {
+		t.Fatalf("proof_detail = %q, want missing absorbed-OS root explanation", got.ProofDetail)
+	}
+}
+
 func TestOSAbsorptionOSSkillsProofDetectsEntrypointDrift(t *testing.T) {
 	fixture := installOSWrapperProofFixture(t, osWrapperFixtureOpts{})
 	skillsRef, _ := osWrapperFixtureEntrypointDigestRefs(t, fixture)
@@ -440,7 +461,7 @@ func TestOSAbsorptionOSSkillsProofDetectsEntrypointDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entrypointPath := filepath.Join(homePath, "Projects", "operating-system", "umut-os", "exec-lane", "os.ts")
+	entrypointPath := filepath.Join(homePath, "absorbed-os", "exec-lane", "os.ts")
 	f, err := os.OpenFile(entrypointPath, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -521,6 +542,20 @@ func TestOSAbsorptionOSStatusProofBindsFifteenCompoundSections(t *testing.T) {
 	}
 }
 
+// TestOSAbsorptionOSStatusProofSkipsWhenNoAbsorbedOSConfigured is the
+// public-clone falsifier for the status wrapper proof, mirroring the skills
+// one above.
+func TestOSAbsorptionOSStatusProofSkipsWhenNoAbsorbedOSConfigured(t *testing.T) {
+	fixture := installOSWrapperProofFixture(t, osWrapperFixtureOpts{skipAbsorbedOSSeed: true})
+	got := doctorOSStatusRow(t, fixture, nil)
+	if got.ProofStatus != "skipped" {
+		t.Fatalf("proof_status = %q, want skipped; detail = %q", got.ProofStatus, got.ProofDetail)
+	}
+	if !strings.Contains(got.ProofDetail, "no absorbed-OS root declared") {
+		t.Fatalf("proof_detail = %q, want missing absorbed-OS root explanation", got.ProofDetail)
+	}
+}
+
 func TestOSAbsorptionOSStatusProofDetectsEntrypointDrift(t *testing.T) {
 	fixture := installOSWrapperProofFixture(t, osWrapperFixtureOpts{})
 	_, statusRef := osWrapperFixtureEntrypointDigestRefs(t, fixture)
@@ -528,7 +563,7 @@ func TestOSAbsorptionOSStatusProofDetectsEntrypointDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entrypointPath := filepath.Join(homePath, "Projects", "operating-system", "umut-os", "exec-lane", "os.ts")
+	entrypointPath := filepath.Join(homePath, "absorbed-os", "exec-lane", "os.ts")
 	f, err := os.OpenFile(entrypointPath, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -623,12 +658,15 @@ func TestOSAbsorptionOSStatusProofRejectsFabricatedProvenanceMarker(t *testing.T
 // ---------- real-environment integration check (skips if unavailable) ----------
 
 // TestOSAbsorptionOSWrapperProofsAgainstRealEnvironment runs both proofs
-// against THIS machine's real installed `os` and `compound` binaries and
-// real umut-os checkout, using freshly computed digests (never asserting a
-// baked-in expectation about live counts, which legitimately drift). It
-// skips cleanly when the real tools are not on PATH (CI/other machines),
-// and is the one place this suite actually exercises the live parity probe
-// against production data rather than a fixture.
+// against THIS machine's real installed `os`/`compound` binaries and
+// whatever absorbed-OS root (if any) this COMPOUND_HOME has declared via
+// `compound authority path-registry`, using freshly computed digests (never
+// asserting a baked-in expectation about live counts, which legitimately
+// drift). It skips cleanly when the real tools are not on PATH (CI/other
+// machines) or when this machine has not declared an absorbed-OS root — the
+// same public-clone skip the production proofs themselves report — and is
+// the one place this suite actually exercises the live parity probe against
+// production data rather than a fixture.
 func TestOSAbsorptionOSWrapperProofsAgainstRealEnvironment(t *testing.T) {
 	if _, err := exec.LookPath("os"); err != nil {
 		t.Skip("real `os` binary not on PATH; skipping real-environment check")
@@ -640,15 +678,6 @@ func TestOSAbsorptionOSWrapperProofsAgainstRealEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entrypointPath := filepath.Join(homePath, "Projects", "operating-system", "umut-os", "exec-lane", "os.ts")
-	if _, err := os.Stat(entrypointPath); err != nil {
-		t.Skipf("real umut-os checkout not present at %s; skipping", entrypointPath)
-	}
-	body, err := os.ReadFile(entrypointPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := digestBytes(body)
 
 	// Read-only against the REAL, already-populated COMPOUND_HOME (never a
 	// fresh temp home): the parity probe needs a real capability graph to
@@ -662,6 +691,19 @@ func TestOSAbsorptionOSWrapperProofsAgainstRealEnvironment(t *testing.T) {
 	if _, err := os.Stat(compoundHome); err != nil {
 		t.Skipf("real COMPOUND_HOME not present at %s; skipping", compoundHome)
 	}
+
+	entrypointPath, found, err := ResolveAbsorbedOSEntrypoint(compoundHome, AbsorbedOSExecLaneEntrypoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Skip("no absorbed-OS root declared in this COMPOUND_HOME; skipping real-environment check")
+	}
+	body, err := os.ReadFile(entrypointPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := digestBytes(body)
 
 	skillsRow := row("os_source_os_skills_cli", "cli:os skills", "wrapper", capgraph.CapabilityGraphAuthorityRef, "os skills wrapper and compound capability surface", osAbsorptionProofModeOSSkills)
 	skillsRow.SourceKind = "compatibility_cli"

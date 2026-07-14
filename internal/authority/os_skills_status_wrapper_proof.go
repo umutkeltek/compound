@@ -3,7 +3,6 @@ package authority
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -43,8 +42,6 @@ const (
 
 	osSkillsEntrypointDigestRef = "os_skills_entrypoint_sha256:"
 	osStatusEntrypointDigestRef = "os_status_entrypoint_sha256:"
-
-	osWrapperEntrypointRelPath = "Projects/operating-system/umut-os/exec-lane/os.ts"
 )
 
 var (
@@ -56,20 +53,25 @@ var (
 // by every `os` subcommand (capability, skills, status, ...). It does not
 // re-derive it from the installed shim (os_capability_wrapper_authority
 // already proves the shim -> entrypoint wiring on the sibling
-// os_source_os_capability_cli row); it reads the well-known HOME-relative
-// path directly, bounded and snapshot-verified like every other proof read
-// in this package.
-func readOSWrapperEntrypoint() (string, []byte, error) {
-	homePath, err := os.UserHomeDir()
+// os_source_os_capability_cli row); it resolves the compound-owned
+// exec-lane/os.ts sub-path beneath the operator-declared absorbed-OS root
+// (ResolveAbsorbedOSEntrypoint), bounded and snapshot-verified like every
+// other proof read in this package. found=false means no absorbed-OS root
+// is configured (or the declared root is absent on disk) — the caller must
+// skip, not fail.
+func readOSWrapperEntrypoint(compoundHome string) (path string, body []byte, found bool, err error) {
+	path, found, err = ResolveAbsorbedOSEntrypoint(compoundHome, AbsorbedOSExecLaneEntrypoint)
 	if err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
-	path := filepath.Join(homePath, filepath.FromSlash(osWrapperEntrypointRelPath))
-	body, err := readRegularBounded(path, maxOSCapabilityEntrypointBytes)
+	if !found {
+		return "", nil, false, nil
+	}
+	body, err = readRegularBounded(path, maxOSCapabilityEntrypointBytes)
 	if err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
-	return path, body, nil
+	return path, body, true, nil
 }
 
 // extractTSFunctionBody returns the full `function ... { ... }` text for the
@@ -151,16 +153,19 @@ func osAbsorptionNeedsOSSkillsProof(row OSAbsorptionMatrixRow) bool {
 }
 
 func osAbsorptionOSSkillsProof(homePath string, row OSAbsorptionMatrixRow) (osAbsorptionProofResult, bool) {
+	path, body, found, err := readOSWrapperEntrypoint(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "os skills entrypoint: " + err.Error()}, false
+	}
+	if !found {
+		return osAbsorptionProofResult{skipped: true, reason: osAbsorptionAbsorbedOSSkipReason}, false
+	}
 	if !hasExactString(row.EvidenceRefs, capgraph.CapabilityGraphAuthorityRef) {
 		return osAbsorptionProofResult{reason: "os skills wrapper requires capability graph authority evidence ref"}, false
 	}
 	expectedDigest, err := exactOSCapabilityDigestEvidence(row.EvidenceRefs, osSkillsEntrypointDigestRef)
 	if err != nil {
 		return osAbsorptionProofResult{reason: "os skills expected entrypoint binding: " + err.Error()}, false
-	}
-	path, body, err := readOSWrapperEntrypoint()
-	if err != nil {
-		return osAbsorptionProofResult{reason: "os skills entrypoint: " + err.Error()}, false
 	}
 	liveDigest := digestBytes(body)
 	if liveDigest != expectedDigest {
@@ -460,13 +465,16 @@ func osAbsorptionNeedsOSStatusProof(row OSAbsorptionMatrixRow) bool {
 }
 
 func osAbsorptionOSStatusProof(homePath string, row OSAbsorptionMatrixRow) (osAbsorptionProofResult, bool) {
+	path, body, found, err := readOSWrapperEntrypoint(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "os status entrypoint: " + err.Error()}, false
+	}
+	if !found {
+		return osAbsorptionProofResult{skipped: true, reason: osAbsorptionAbsorbedOSSkipReason}, false
+	}
 	expectedDigest, err := exactOSCapabilityDigestEvidence(row.EvidenceRefs, osStatusEntrypointDigestRef)
 	if err != nil {
 		return osAbsorptionProofResult{reason: "os status expected entrypoint binding: " + err.Error()}, false
-	}
-	path, body, err := readOSWrapperEntrypoint()
-	if err != nil {
-		return osAbsorptionProofResult{reason: "os status entrypoint: " + err.Error()}, false
 	}
 	liveDigest := digestBytes(body)
 	if liveDigest != expectedDigest {
