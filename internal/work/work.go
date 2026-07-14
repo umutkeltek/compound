@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -55,7 +56,19 @@ func canTransition(from, to string) bool {
 }
 
 // Store is the work lifecycle store rooted at a COMPOUND_HOME.
-type Store struct{ home string }
+type Store struct {
+	home                  string
+	eventLogReads         atomic.Int64
+	holdEvidenceFileReads atomic.Int64
+}
+
+func (s *Store) eventLogReadCount() int64 {
+	return s.eventLogReads.Load()
+}
+
+func (s *Store) holdEvidenceFileReadCount() int64 {
+	return s.holdEvidenceFileReads.Load()
+}
 
 // withLifecycleMutation is the outer transaction boundary for authoritative
 // work writers. The lock order is always autonomy-admission -> work-event:
@@ -264,6 +277,20 @@ func (s *Store) Get(workID string) (envelope.WorkEnvelope, error) {
 	return w, err
 }
 
+// getWithArchiveIndex is Get for batch callers that already loaded the
+// operational archive index once (e.g. the workbench report build) and must
+// not trigger another LoadOperationalArchiveIndex per work item.
+func (s *Store) getWithArchiveIndex(workID string, archiveIndex []home.OperationalArchiveEntry) (envelope.WorkEnvelope, error) {
+	var w envelope.WorkEnvelope
+	err := s.readJSON(s.workPath(workID), &w)
+	if errors.Is(err, os.ErrNotExist) {
+		if archivedPath, ok := s.archivedWorkPathWithIndex(workID, archiveIndex); ok {
+			err = s.readJSON(archivedPath, &w)
+		}
+	}
+	return w, err
+}
+
 // Show returns a work and its lifecycle log (oldest first).
 func (s *Store) Show(workID string) (envelope.WorkEnvelope, []Event, error) {
 	w, err := s.Get(workID)
@@ -331,6 +358,12 @@ func (s *Store) archivedWorkPath(workID string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+	return s.archivedWorkPathWithIndex(workID, entries)
+}
+
+// archivedWorkPathWithIndex is archivedWorkPath against a caller-supplied,
+// already-loaded archive index instead of re-reading it from disk.
+func (s *Store) archivedWorkPathWithIndex(workID string, entries []home.OperationalArchiveEntry) (string, bool) {
 	want := filepath.ToSlash(filepath.Join("work", "work", workID+".json"))
 	for _, entry := range entries {
 		if entry.Kind == "work" && entry.OriginalPath == want {
@@ -2018,6 +2051,7 @@ func (s *Store) eventsFor(workID string) ([]Event, error) {
 }
 
 func (s *Store) readEventsStrictUnlocked(workID string) ([]Event, error) {
+	s.eventLogReads.Add(1)
 	b, err := os.ReadFile(s.eventsLog())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -2026,6 +2060,41 @@ func (s *Store) readEventsStrictUnlocked(workID string) ([]Event, error) {
 		return nil, err
 	}
 	return decodeAdmissionEvents(b, workID)
+}
+
+// eventsByWorkID reads and strictly decodes the whole event log ONCE, under
+// the same work-event lock as eventsFor, and groups the result by work_id.
+// It exists for batch callers (the workbench report build) that would
+// otherwise call eventsFor once per work item and pay a full log
+// re-read+re-decode per item; eventsFor stays the correct call for existing
+// single-work callers (dispatch, continue, show) and is untouched.
+func (s *Store) eventsByWorkID() (map[string][]Event, error) {
+	var all []Event
+	err := s.withWorkEventLock(func() error {
+		var err error
+		all, err = s.readAllEventsStrictUnlocked()
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	byWorkID := make(map[string][]Event, len(all))
+	for _, e := range all {
+		byWorkID[e.WorkID] = append(byWorkID[e.WorkID], e)
+	}
+	return byWorkID, nil
+}
+
+func (s *Store) readAllEventsStrictUnlocked() ([]Event, error) {
+	s.eventLogReads.Add(1)
+	b, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return decodeAdmissionEvents(b, "")
 }
 
 // --- small helpers ---

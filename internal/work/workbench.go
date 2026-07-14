@@ -13,6 +13,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"compound/internal/home"
 )
 
 // WorkbenchOptions controls the read-only workbench projection.
@@ -310,6 +311,12 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	if err != nil {
 		return report, err
 	}
+	// Loaded once and threaded through the rest of this build: every Get/
+	// archivedWorkPath lookup on the workbench path uses this snapshot instead
+	// of re-reading the archive index per work item. A malformed/missing index
+	// is treated as "no archived entries" here, matching archivedWorkPath's own
+	// swallowed-error behavior, so report content is unchanged either way.
+	archiveIndex, _ := home.LoadOperationalArchiveIndex(s.home)
 	holdEvidence, holdEvidenceWarnings := s.workHoldEvidenceIndex()
 	for _, warning := range holdEvidenceWarnings {
 		report.Integrity = append(report.Integrity, warning)
@@ -318,18 +325,22 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	for _, warning := range routeWarnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
-	admissionPreviews, admissionWarnings := s.workbenchAdmissionPreviews(now, opts.RecentLimit)
+	admissionPreviews, admissionWarnings := s.workbenchAdmissionPreviews(now, opts.RecentLimit, archiveIndex)
 	report.AdmissionPreviews = admissionPreviews
 	report.Counts.AdmissionPreviews = len(admissionPreviews)
 	for _, warning := range admissionWarnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
 	report.Counts.Total = len(works)
+	// One event-log read for the whole build: eventsFor stays the correct call
+	// for single-work callers, but re-reading+re-decoding the full log once per
+	// work item here made this loop O(works x log size) instead of O(log size).
+	eventsByWork, err := s.eventsByWorkID()
+	if err != nil {
+		return report, err
+	}
 	for _, w := range works {
-		events, err := s.eventsFor(w.ID)
-		if err != nil {
-			return report, err
-		}
+		events := eventsByWork[w.ID]
 		item := s.workbenchItem(w, events, &report, holdEvidence, now)
 		routeOutcomes.attach(&item)
 		item.ObservatoryTags = workbenchObservatoryTags(item)
@@ -357,13 +368,13 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		}
 		report.Open = append(report.Open, item)
 	}
-	runs, warnings := s.workbenchDispatchStepRuns(opts.RecentLimit)
+	runs, warnings := s.workbenchDispatchStepRuns(opts.RecentLimit, archiveIndex)
 	report.DispatchStepRuns = runs
 	report.Counts.DispatchStepRuns = len(runs)
 	for _, warning := range warnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
-	continueRuns, continueWarnings := s.workbenchContinueRuns(opts.RecentLimit)
+	continueRuns, continueWarnings := s.workbenchContinueRuns(opts.RecentLimit, archiveIndex)
 	report.ContinueRuns = continueRuns
 	report.Counts.ContinueRuns = len(continueRuns)
 	for _, warning := range continueWarnings {
@@ -408,7 +419,7 @@ func (s *Store) workbenchActivePacketProof(now time.Time, surface, expectedPacke
 	return &proof, nil
 }
 
-func (s *Store) workbenchAdmissionPreviews(now time.Time, limit int) ([]WorkbenchAdmissionPreview, []string) {
+func (s *Store) workbenchAdmissionPreviews(now time.Time, limit int, archiveIndex []home.OperationalArchiveEntry) ([]WorkbenchAdmissionPreview, []string) {
 	dir := filepath.Join(s.home, "create-plans")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -433,7 +444,7 @@ func (s *Store) workbenchAdmissionPreviews(now time.Time, limit int) ([]Workbenc
 		if !workbenchCreatePlanIsAdmissionPreview(plan) {
 			continue
 		}
-		if _, err := s.Get(plan.WorkID); err == nil {
+		if _, err := s.getWithArchiveIndex(plan.WorkID, archiveIndex); err == nil {
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {
 			warnings = append(warnings, "create plan "+entry.Name()+" work lookup failed: "+err.Error())
@@ -1557,7 +1568,7 @@ func reviewartifactOrDash(s string) string {
 	return s
 }
 
-func (s *Store) workbenchDispatchStepRuns(limit int) ([]DispatchStepRunSummary, []string) {
+func (s *Store) workbenchDispatchStepRuns(limit int, archiveIndex []home.OperationalArchiveEntry) ([]DispatchStepRunSummary, []string) {
 	dir := filepath.Join(s.home, "dispatch-step-runs")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1596,7 +1607,7 @@ func (s *Store) workbenchDispatchStepRuns(limit int) ([]DispatchStepRunSummary, 
 				summary.StepWorkIDs = append(summary.StepWorkIDs, step.WorkID)
 			}
 		}
-		summary = s.resolveDispatchStepRunSummary(summary)
+		summary = s.resolveDispatchStepRunSummary(summary, archiveIndex)
 		out = append(out, summary)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1611,7 +1622,7 @@ func (s *Store) workbenchDispatchStepRuns(limit int) ([]DispatchStepRunSummary, 
 	return out, warnings
 }
 
-func (s *Store) workbenchContinueRuns(limit int) ([]ContinueRunSummary, []string) {
+func (s *Store) workbenchContinueRuns(limit int, archiveIndex []home.OperationalArchiveEntry) ([]ContinueRunSummary, []string) {
 	dir := filepath.Join(s.home, "continue-runs")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1650,7 +1661,7 @@ func (s *Store) workbenchContinueRuns(limit int) ([]ContinueRunSummary, []string
 				summary.StepWorkIDs = append(summary.StepWorkIDs, step.WorkID)
 			}
 		}
-		summary = s.resolveContinueRunSummary(summary)
+		summary = s.resolveContinueRunSummary(summary, archiveIndex)
 		out = append(out, summary)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1665,7 +1676,7 @@ func (s *Store) workbenchContinueRuns(limit int) ([]ContinueRunSummary, []string
 	return out, warnings
 }
 
-func (s *Store) resolveDispatchStepRunSummary(summary DispatchStepRunSummary) DispatchStepRunSummary {
+func (s *Store) resolveDispatchStepRunSummary(summary DispatchStepRunSummary, archiveIndex []home.OperationalArchiveEntry) DispatchStepRunSummary {
 	if summary.Status != "waiting" || len(summary.BlockedOn) == 0 {
 		return summary
 	}
@@ -1679,7 +1690,7 @@ func (s *Store) resolveDispatchStepRunSummary(summary DispatchStepRunSummary) Di
 	if !ok {
 		return summary
 	}
-	terminalRefs, ok := s.terminalWorkRefs(workIDs)
+	terminalRefs, ok := s.terminalWorkRefs(workIDs, archiveIndex)
 	if !ok {
 		return summary
 	}
@@ -1695,7 +1706,7 @@ func (s *Store) resolveDispatchStepRunSummary(summary DispatchStepRunSummary) Di
 // runs: when every work id a waiting run references (blocked_on work refs ∪
 // step_work_ids) is terminal, the run has no continue action left. Projection
 // only — the recorded run file is never mutated.
-func (s *Store) resolveContinueRunSummary(summary ContinueRunSummary) ContinueRunSummary {
+func (s *Store) resolveContinueRunSummary(summary ContinueRunSummary, archiveIndex []home.OperationalArchiveEntry) ContinueRunSummary {
 	if summary.Status != "waiting" {
 		return summary
 	}
@@ -1704,7 +1715,7 @@ func (s *Store) resolveContinueRunSummary(summary ContinueRunSummary) ContinueRu
 		return summary
 	}
 	workIDs = append(workIDs, summary.StepWorkIDs...)
-	terminalRefs, ok := s.terminalWorkRefs(workIDs)
+	terminalRefs, ok := s.terminalWorkRefs(workIDs, archiveIndex)
 	if !ok {
 		return summary
 	}
@@ -1734,7 +1745,7 @@ func blockedWorkIDs(blockedOn []string) ([]string, bool) {
 // terminalWorkRefs returns deduplicated work.terminal:<id> refs when every work
 // id resolves to a terminal WorkEnvelope. ok is false when the set is empty or
 // any referenced work is missing or non-terminal.
-func (s *Store) terminalWorkRefs(workIDs []string) ([]string, bool) {
+func (s *Store) terminalWorkRefs(workIDs []string, archiveIndex []home.OperationalArchiveEntry) ([]string, bool) {
 	seen := map[string]bool{}
 	var refs []string
 	for _, workID := range workIDs {
@@ -1743,7 +1754,7 @@ func (s *Store) terminalWorkRefs(workIDs []string) ([]string, bool) {
 			continue
 		}
 		seen[workID] = true
-		w, err := s.Get(workID)
+		w, err := s.getWithArchiveIndex(workID, archiveIndex)
 		if err != nil || !terminalStates[w.State] {
 			return nil, false
 		}
