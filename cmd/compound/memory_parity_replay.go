@@ -195,3 +195,14 @@ func parityCorpusRefs(report corpus.QueryReport) []string {
 	}
 	return refs
 }
+
+func parityOrientInput(in contract.Input) retrievalparity.OrientInput {
+	return retrievalparity.OrientInput{
+		Harness:     in.Harness,
+		Cwd:         in.Cwd,
+		RepoKind:    in.RepoKind,
+		RepoKindVia: in.RepoKindVia,
+		Mode:        in.Mode,
+		Topic:       in.Topic,
+	}
+}

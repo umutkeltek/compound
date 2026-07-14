@@ -118,6 +118,15 @@ type InjectionArtifact struct {
 	ContextPackPath    string `json:"context_pack_path"`
 }
 
+// ContextObservation exposes the exact successful production context build to
+// adapters that record retrieval evidence. It is intentionally excluded from
+// hook JSON: the ContextPack and raw input remain owned by their normal
+// COMPOUND_HOME artifacts, while adapters persist only the parity journal row.
+type ContextObservation struct {
+	Input contract.Input
+	Pack  envelope.ContextPack
+}
+
 // Result is what a hook produces: the normalized event, the typed objects, and the small
 // harness-facing output line.
 type Result struct {
@@ -125,6 +134,7 @@ type Result struct {
 	Produced       []envelope.Envelope `json:"produced"`
 	Summary        string              `json:"summary"`
 	Injection      *InjectionArtifact  `json:"injection,omitempty"`
+	Context        *ContextObservation `json:"-"`
 	BreakerTripped bool                `json:"breaker_tripped,omitempty"`
 }
 
@@ -207,7 +217,13 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContractRef, injection.ContextPackRef, injection.Ref)
 		ev.OutputRef = injection.Ref
 	}
-	return Result{Event: ev, Produced: []envelope.Envelope{&req, &built.Contract, &built.Pack}, Summary: built.Pack.SummaryMD, Injection: injection}, nil
+	return Result{
+		Event:     ev,
+		Produced:  []envelope.Envelope{&req, &built.Contract, &built.Pack},
+		Summary:   built.Pack.SummaryMD,
+		Injection: injection,
+		Context:   &ContextObservation{Input: built.Input, Pack: built.Pack},
+	}, nil
 }
 
 func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
@@ -255,7 +271,13 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	}
 	summary := fmt.Sprintf("candidate work %s (proposed); scope=%q repo=%s; %d ctx in / %d excluded; mutations need ActionIntent+PolicyDecision",
 		cand.ID, orDash(fx.Task), built.Input.RepoKind, len(built.Pack.Included), len(built.Pack.Excluded))
-	return Result{Event: ev, Produced: produced, Summary: summary, Injection: injection}, nil
+	return Result{
+		Event:     ev,
+		Produced:  produced,
+		Summary:   summary,
+		Injection: injection,
+		Context:   &ContextObservation{Input: built.Input, Pack: built.Pack},
+	}, nil
 }
 
 func buildContextWithBreaker(name string, fx Fixture, deps Deps, mode string, now time.Time) (contextBuild, *Result, error) {

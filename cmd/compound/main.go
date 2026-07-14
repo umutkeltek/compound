@@ -3339,10 +3339,23 @@ func runHookCommand(args []string) int {
 		return 1
 	}
 
+	hookStarted := time.Now()
 	res, err := hook.Run(fx, deps, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
+	}
+	if parsed.Live && !res.BreakerTripped && res.Context != nil &&
+		(parsed.HookName == "session-start" || parsed.HookName == "user-prompt-submit") {
+		in := res.Context.Input
+		retrievalparity.Record(homePath, retrievalparity.NewOrientRow(
+			in.Task,
+			parityOrientInput(in),
+			res.Context.Pack.ActiveMemory,
+			time.Since(hookStarted),
+			true,
+			time.Now(),
+		))
 	}
 	if parsed.Live && strings.TrimSpace(parsed.ParityLogDir) != "" {
 		if err := writeLiveHookParityLog(parsed.ParityLogDir, res, now); err != nil {
@@ -5571,7 +5584,7 @@ func cmdOrient(args []string) {
 	die(err)
 	retrievalStarted := time.Now()
 	pack, err := contract.PackWithCapabilities(in, orientPolicy(), homePath, now)
-	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerOrient, in.Task, pack.ActiveMemory, time.Since(retrievalStarted), err == nil, time.Now()))
+	retrievalparity.Record(homePath, retrievalparity.NewOrientRow(in.Task, parityOrientInput(in), pack.ActiveMemory, time.Since(retrievalStarted), err == nil, time.Now()))
 	die(err)
 	if pack.IDs.ContractID != ec.ID {
 		die(fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID))
