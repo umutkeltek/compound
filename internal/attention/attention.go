@@ -372,11 +372,25 @@ func normalizeGroup(g *Group, generatedAt string, now time.Time) {
 		g.Kind = classifyArea(g.Area).Kind
 	}
 	classification := classifyArea(g.Area)
+	// A blast/reversibility EXPLICITLY authored in knownAreaClassifications (the
+	// raw entry, not withDefaults' fill-ins) outranks the keyword net, which
+	// exists to guess for areas that declare nothing — e.g. lease-hygiene's
+	// restorable sweep says "archive" in its card text and would otherwise read
+	// as destructive/irreversible.
+	raw, known := knownAreaClassifications[strings.TrimSpace(g.Area)]
 	if strings.TrimSpace(g.BlastRadius) == "" {
-		g.BlastRadius = deriveBlastRadius(*g, classification.BlastRadius)
+		if known && raw.BlastRadius != "" {
+			g.BlastRadius = raw.BlastRadius
+		} else {
+			g.BlastRadius = deriveBlastRadius(*g, classification.BlastRadius)
+		}
 	}
 	if strings.TrimSpace(g.Reversibility) == "" {
-		g.Reversibility = deriveReversibility(*g, classification.Reversibility)
+		if known && raw.Reversibility != "" {
+			g.Reversibility = raw.Reversibility
+		} else {
+			g.Reversibility = deriveReversibility(*g, classification.Reversibility)
+		}
 	}
 	if g.Count <= 0 {
 		g.Count = maxInt(1, len(g.ItemIDs))

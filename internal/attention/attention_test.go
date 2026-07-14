@@ -221,6 +221,33 @@ func TestNoLeaseHygieneGroupOrActiveLeaseLeakWhenNoStaleLeases(t *testing.T) {
 	}
 }
 
+func TestExplicitAreaClassificationOutranksKeywordSniffing(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	report := Build(Inputs{
+		Executors: &work.ExecutorsProjection{
+			GeneratedAt: now.Format(time.RFC3339),
+			Executors: []work.ExecutorRow{
+				{
+					ID: "codex", Label: "Codex",
+					StaleLeaseCount:   1,
+					StaleLeaseWorkIDs: []string{"work_stale_only"},
+				},
+			},
+		},
+	}, now)
+
+	// The card text says "archive"/"sweep" — the keyword net alone would call
+	// that destructive/irreversible, but the sweep is restorable and the area
+	// classification says so explicitly.
+	lease := groupByKey(t, report, "lease-hygiene")
+	if lease.BlastRadius != BlastLocalReversible {
+		t.Fatalf("lease-hygiene blast_radius = %q, want %q (explicit classification must outrank keyword sniffing)", lease.BlastRadius, BlastLocalReversible)
+	}
+	if lease.Reversibility != Reversible {
+		t.Fatalf("lease-hygiene reversibility = %q, want %q (the sweep is restorable via restore-history)", lease.Reversibility, Reversible)
+	}
+}
+
 func sameStringSlice(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
