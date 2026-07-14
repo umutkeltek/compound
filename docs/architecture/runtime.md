@@ -44,9 +44,17 @@ conditions, and producer path constructors cut over incrementally before bytes m
 exceptions under `projections/` survive backup and compaction until their producers reach the correct typed home;
 new behavior-bearing cursors may not be placed there. The detailed responsibilities are in the custody contract.
 
+`SourceManifest` storage follows the habitat meaning: canonical manifests live under
+`sources/manifests/`, because they are source-family custody and provenance records, not inside-world registry
+authority. `registries/source-manifests/` is an explicit compatibility bridge only. New capture and lifecycle
+writes publish to the canonical path. Reads consult the bridge only when the canonical file is absent; a present
+but corrupt canonical file fails closed. `manifest-doctor` reports bridge consumption as `degraded` with
+`storage_location=pending`, so compatibility cannot look like completed topology migration.
+
 `ExecutionRouteEvidence` records the requested route separately from the observed identity: `selected_target` is the requested lane/alias, while `resolved_provider`, `resolved_model`, `resolution_source`, and (for gateway resolution) `gateway_request_id` identify what actually served the call. Gateway aliases use `resolution_source=gateway_route`; direct OpenAI-compatible lanes may use the response body's exact `model` with `resolution_source=response_body`. Measurements and autonomy evidence MUST attribute to the observed provider/model, never the alias or provider route string.
 
-Typed semantics (the layout *is* the guardrail): `sources/` custody records · `artifacts/` exact bodies ·
+Typed semantics (the layout *is* the guardrail): `sources/` custody records (including
+`sources/manifests/`) · `artifacts/` exact bodies ·
 `ledger/` durable meaning · `inbox/` untrusted candidates · `registries/` current typed authority ·
 `projections/` rebuildable views · `indexes/` rented · `events/` raw · `work/` execution lifecycle ·
 `context/` what agents actually consumed. `compound home doctor` asserts the cataloged root set and reports present

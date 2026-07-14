@@ -82,6 +82,13 @@ compound source manifest-advance <family> --to <next-state> \
 # inspect the dry-run and PolicyDecision; add --confirm only when both are correct
 ```
 
+The SourceManifest body itself has one canonical home: `sources/manifests/`. A legacy
+`registries/source-manifests/` body may be read only when canonical state is absent, and doctor reports that posture
+as degraded. Any record or lifecycle mutation publishes canonical state; it does not delete the legacy body.
+Retire this storage fallback only after the canonical materializer/doctor and a real source-family consumer replay
+with the legacy path unavailable. This storage bridge proof does not by itself advance or retire the source system's
+own lifecycle.
+
 `manifest-doctor` names the exact next gates and posture. Forward skips, proof-class substitution, stale lifecycle
 revisions, incomplete writer handoff fields, short/dirty quiet windows, and non-operator retirement decisions are
 rejected without changing the manifest. Writer cutover and every later operational state are policy-held by default.

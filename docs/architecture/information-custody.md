@@ -64,6 +64,13 @@ their bridges retire. Behavior-bearing historical files under `projections/` are
 them and compaction refuses them until their producers cut over to their true typed homes. Connector offsets belong
 with the source adapter, work cursors with work, and schema/contract locks with config.
 
+The first nested convergence is executable: `sources/manifests/` owns SourceManifest storage, while
+`registries/source-manifests/` is a backup-preserved, placement-denied bridge. Canonical state always wins. The
+reader falls back only when the canonical file is absent, never when it is corrupt or invalid. A write after a
+legacy-only read publishes canonical schema and authority without deleting the bridge. This gives each source
+family a reversible migration path and a visible `degraded` doctor state until the bridge is independently proven
+unnecessary.
+
 ## 3. Information placement grammar
 
 | Information encountered | Physical body | Meaning owner | User-facing form |
@@ -288,6 +295,13 @@ the exact typed gate set for that edge. Writer cutover additionally records the 
 destination, rollback reference, writer fence, monotonically increasing writer epoch, and required quiet-window
 duration. Quiet-window proof carries its measured interval and observed/unexplained read/write counts; any unexplained
 traffic or a short interval fails closed.
+
+Its physical authority ref is `compound://sources/manifests/<family>` and its canonical body is
+`COMPOUND_HOME/sources/manifests/<family>.json`. A legacy body under `registries/source-manifests/` is readable only
+through the observable compatibility fallback. Recording or advancing that family writes the canonical body and
+canonicalizes the authority ref; it does not move or delete the legacy file. Retiring the fallback still requires a
+canonical restore, real-consumer replay, legacy-unavailable negative control, retained rollback evidence, and the
+normal operator gate.
 
 The state machine also has explicit rollback edges (`capture_abandoned`, `custody_invalidated`,
 `verification_invalidated`, `writer_rollback`, `legacy_unfreeze`, `quiet_window_invalidated`, and
