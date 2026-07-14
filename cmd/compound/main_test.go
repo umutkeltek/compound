@@ -2499,6 +2499,134 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 	}
 }
 
+func TestUnavailableConcretePreToolUseFailsLoudAcrossAuthorityAndOrientation(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, handlerPath string)
+	}{
+		{name: "missing"},
+		{
+			name: "symlink",
+			setup: func(t *testing.T, handlerPath string) {
+				if err := os.MkdirAll(filepath.Dir(handlerPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				realPath := filepath.Join(filepath.Dir(handlerPath), "real-placement-guard.ts")
+				if err := os.WriteFile(realPath, []byte("process.stdout.write('{}')\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(realPath, handlerPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			harnessHome := t.TempDir()
+			t.Setenv("COMPOUND_HOME", homePath)
+			t.Setenv("HOME", harnessHome)
+			handlerPath := filepath.Join(harnessHome, ".claude", "hooks", "PlacementGuard.hook.ts")
+			if test.setup != nil {
+				test.setup(t, handlerPath)
+			}
+			sourcePath := filepath.Join(t.TempDir(), "hook-registration.ts")
+			source := `export const HOOK_REGISTRATIONS = [
+  { harness: "claude", event: "PreToolUse", matcher: "Write|Edit", file: "PlacementGuard.hook.ts", command: ` + "`\"$HOME/.claude/hooks/PlacementGuard.hook.ts\"`" + ` },
+];`
+			if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			captureStdout(t, func() {
+				cmdContract([]string{"import-hooks", "--hook-registration-ts", sourcePath})
+			})
+
+			authorityOut := captureStdout(t, func() {
+				cmdContract([]string{"hooks-authority"})
+			})
+			var authority hooksAuthorityReport
+			if err := json.Unmarshal([]byte(authorityOut), &authority); err != nil {
+				t.Fatalf("parse hooks-authority: %v\n%s", err, authorityOut)
+			}
+			gate := findHookGateReadiness(authority.PreToolUseReadiness, "claude_code")
+			if gate == nil || gate.Status != "handler_unavailable" || gate.Status == "native_blocking" || len(gate.Actions) == 0 {
+				t.Fatalf("unavailable gate readiness = %+v", gate)
+			}
+			runtime := findHookReadiness(authority.HookReadiness, "claude_code", "PreToolUse")
+			if runtime == nil || runtime.Status != "handler_unavailable" || runtime.Status == "ready" || len(runtime.Actions) == 0 {
+				t.Fatalf("unavailable runtime readiness = %+v", runtime)
+			}
+
+			in := contract.Input{
+				Harness:     "claude_code",
+				Cwd:         t.TempDir(),
+				Task:        "edit source with guarded mutation",
+				RepoKind:    "control-plane",
+				RepoKindVia: "flag",
+				Mode:        "execute",
+			}
+			ec, err := contract.CompileWithRuntime(in, contract.DefaultPolicy(), homePath, cliTestNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertUnavailableHookOrientation(t, ec.ActiveHooks, ec.Excluded, ec.HookRoster, ec.HookReadiness, nil)
+			pack, err := contract.PackWithCapabilities(in, contract.DefaultPolicy(), homePath, cliTestNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertUnavailableHookOrientation(t, pack.ActiveHooks, pack.Excluded, pack.HookRoster, pack.HookReadiness, pack.RequiredChecks)
+		})
+	}
+}
+
+func assertUnavailableHookOrientation(t *testing.T, active []string, excluded []envelope.ExcludedRef, roster []envelope.HookRosterEntry, readiness []envelope.HookReadiness, requiredChecks []string) {
+	t.Helper()
+	ref := "hook://claude_code/PreToolUse"
+	if stringSliceContains(active, ref) {
+		t.Fatalf("unavailable hook surfaced active: %v", active)
+	}
+	foundExcluded := false
+	for _, row := range excluded {
+		if row.Ref == ref && strings.Contains(row.Reason, "unavailable") {
+			foundExcluded = true
+		}
+	}
+	if !foundExcluded {
+		t.Fatalf("unavailable hook missing fail-loud exclusion: %+v", excluded)
+	}
+	foundRoster := false
+	for _, row := range roster {
+		if row.Ref == ref && row.Status == "handler_unavailable" && strings.Contains(row.Reason, "unavailable") {
+			foundRoster = true
+		}
+	}
+	if !foundRoster {
+		t.Fatalf("unavailable hook missing roster gap: %+v", roster)
+	}
+	foundReadiness := false
+	for _, row := range readiness {
+		if row.Harness == "claude_code" && row.Hook == "PreToolUse" && row.Status == "handler_unavailable" && len(row.Actions) > 0 {
+			foundReadiness = true
+		}
+	}
+	if !foundReadiness {
+		t.Fatalf("unavailable hook missing readiness remediation: %+v", readiness)
+	}
+	if requiredChecks != nil && !sliceContainsSubstring(requiredChecks, "status=handler_unavailable") {
+		t.Fatalf("unavailable hook missing required check: %+v", requiredChecks)
+	}
+}
+
+func sliceContainsSubstring(values []string, needle string) bool {
+	for _, value := range values {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestWorkImportPacketCreatesWorkEnvelopeWithoutClaims(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

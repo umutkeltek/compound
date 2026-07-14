@@ -99,6 +99,33 @@ func TestPreservedExternalInstalledHooksDoNotSurfaceReadiness(t *testing.T) {
 	}
 }
 
+func TestOpaqueInstalledWriteGateRetainsRegisteredReadinessWithoutContentAttestation(t *testing.T) {
+	manifest := InstalledHooksManifest{
+		SchemaVersion: installedHooksSchemaVersion,
+		Hooks: []InstalledHook{
+			{
+				Harness:  "claude_code",
+				Name:     "PreToolUse",
+				Event:    "PreToolUse",
+				Matcher:  "Write|Edit",
+				Ref:      "handler:opaque-runtime",
+				Revision: "",
+				Status:   "current",
+			},
+		},
+	}
+	gate := findHookGateReadiness(InstalledHookGateReadiness(manifest, map[string]bool{"claude_code": true}), "claude_code")
+	if gate == nil || gate.Status != "native_blocking" || !gate.Installed {
+		t.Fatalf("opaque write-gate readiness = %+v, want installed native_blocking", gate)
+	}
+	runtime := contractHookReadiness(InstalledHookRuntimeReadinessRows(manifest, []HookRuntimeSupport{
+		{Harness: "claude_code", Hook: "PreToolUse", FixturePresent: true, LiveAdapter: true},
+	}), "claude_code", "PreToolUse")
+	if runtime == nil || runtime.Status != "ready" || !runtime.Installed {
+		t.Fatalf("opaque runtime readiness = %+v, want installed ready", runtime)
+	}
+}
+
 func TestModeAffectsContractAndContextPackIDs(t *testing.T) {
 	in := mkInput("control-plane")
 	in.Task = "same task"
@@ -1326,6 +1353,79 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	}
 	if sourceRev(ec.SourceRevisions, InstalledHooksAuthorityRef) == "" {
 		t.Fatalf("effective contract missing installed-hooks source revision: %+v", ec.SourceRevisions)
+	}
+}
+
+func TestInstalledHooksImportProvenanceTracksResultingAuthorityAcrossPreservedReplay(t *testing.T) {
+	home := t.TempDir()
+	importedVia := installedHooksCodexImportedVia
+	sourceA := filepath.Join(t.TempDir(), "hooks-a.json")
+	sourceB := filepath.Join(t.TempDir(), "hooks-b.json")
+	dataA := []byte(`{"source":"A"}`)
+	dataB := []byte(`{"source":"preserved-B"}`)
+	manifestA := InstalledHooksManifest{Hooks: []InstalledHook{
+		{Harness: "codex", Name: "SessionStart", Event: "SessionStart", Ref: "handler:a", Status: "current"},
+	}}
+	manifestB := InstalledHooksManifest{Hooks: []InstalledHook{
+		{Harness: "claude_code", Name: "SessionStart", Event: "SessionStart", Ref: "handler:preserved-b", Status: "preserved_external"},
+	}}
+
+	first, err := importInstalledHooks(home, sourceA, dataA, manifestA, importedVia, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAuthorityBytes, err := os.ReadFile(InstalledHooksPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := importInstalledHooks(home, sourceB, dataB, manifestB, importedVia, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAuthorityBytes, err := os.ReadFile(InstalledHooksPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := importInstalledHooks(home, sourceA, dataA, manifestA, importedVia, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdAuthorityBytes, err := os.ReadFile(InstalledHooksPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstJSON := jsonObject(t, first)
+	secondJSON := jsonObject(t, second)
+	thirdJSON := jsonObject(t, third)
+	firstAuthorityRevision := hashBytes(firstAuthorityBytes)
+	secondAuthorityRevision := hashBytes(secondAuthorityBytes)
+	thirdAuthorityRevision := hashBytes(thirdAuthorityBytes)
+	if first.SourceAuthority.SourceRevision != third.SourceAuthority.SourceRevision {
+		t.Fatalf("A replay source revisions differ: first=%q third=%q", first.SourceAuthority.SourceRevision, third.SourceAuthority.SourceRevision)
+	}
+	if firstJSON["authority_revision"] != firstAuthorityRevision || secondJSON["authority_revision"] != secondAuthorityRevision || thirdJSON["authority_revision"] != thirdAuthorityRevision {
+		t.Fatalf("import reports do not identify exact resulting authorities: first=%v second=%v third=%v", firstJSON, secondJSON, thirdJSON)
+	}
+	if firstAuthorityRevision == thirdAuthorityRevision || first.SourceAuthority.ID == third.SourceAuthority.ID {
+		t.Fatalf("A replay collapsed distinct resulting authorities: first=%+v third=%+v", first.SourceAuthority, third.SourceAuthority)
+	}
+	if thirdJSON["prior_authority_revision"] != secondAuthorityRevision {
+		t.Fatalf("third import prior authority = %v, want %q", thirdJSON["prior_authority_revision"], secondAuthorityRevision)
+	}
+	if thirdJSON["incoming_hook_count"] != float64(1) || third.HookCount != 2 {
+		t.Fatalf("third import incoming/resulting counts = %v/%d, want 1/2", thirdJSON["incoming_hook_count"], third.HookCount)
+	}
+	records, err := LoadInstalledHooksSourceAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("source-authority replay records = %d, want 3: %+v", len(records), records)
+	}
+	thirdRecordJSON := jsonObject(t, records[2])
+	if thirdRecordJSON["authority_revision"] != thirdAuthorityRevision || thirdRecordJSON["prior_authority_revision"] != secondAuthorityRevision || thirdRecordJSON["incoming_hook_count"] != float64(1) {
+		t.Fatalf("third source-authority provenance = %v", thirdRecordJSON)
 	}
 }
 
@@ -3147,6 +3247,19 @@ func sourceRev(revs []envelope.SourceRev, source string) string {
 		}
 	}
 	return ""
+}
+
+func jsonObject(t *testing.T, value any) map[string]any {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func sameStrings(a, b []string) bool {
