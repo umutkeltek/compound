@@ -230,9 +230,12 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 var writeHarnessArtifactManifestForApply = WriteHarnessArtifactManifest
 var applyPermissionsBeforeTargetCommit = func() {}
 var applyPermissionsAfterTargetWrite = func() error { return nil }
+var permissionApplyNow = time.Now
 var permissionApplySyncBoundary = func(_ string, path string) error {
 	return syncPermissionParentDirectory(path)
 }
+
+type PermissionApplyAuthorization func(action envelope.ActionIntent, decision envelope.PolicyDecision, now time.Time) error
 
 func PermissionApplyPendingPath(homePath, harness string) string {
 	return filepath.Join(homePath, "transactions", "harness-permissions", strings.TrimSpace(harness)+".json")
@@ -247,9 +250,12 @@ func permissionApplyLockPath(homePath string) string {
 // revision/content hash. The lock serializes Compound writers; the preimage CAS
 // refuses a concurrent manual edit. An interrupted transaction stays visible to
 // drift and is recovered before the next apply.
-func ApplyPermissions(homePath string, approved PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision) (PermissionRender, error) {
+func ApplyPermissions(homePath string, approved PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize PermissionApplyAuthorization) (PermissionRender, error) {
 	if err := validatePermissionApplyApproval(approved, action, decision); err != nil {
 		return PermissionRender{}, err
+	}
+	if authorize == nil {
+		return PermissionRender{}, fmt.Errorf("permission apply authorization revalidation is required")
 	}
 	harnessName := approved.Artifact.Harness
 	var render PermissionRender
@@ -270,6 +276,9 @@ func ApplyPermissions(homePath string, approved PermissionRender, action envelop
 			previous, ok, err := latestHarnessArtifact(homePath, harnessName, render.TargetPath)
 			if err != nil {
 				return err
+			}
+			if err := authorize(action, decision, permissionApplyNow()); err != nil {
+				return fmt.Errorf("permission apply authorization revalidation: %w", err)
 			}
 			if ok && sameHarnessArtifact(previous, render.Artifact) {
 				return nil
@@ -301,6 +310,12 @@ func ApplyPermissions(homePath string, approved PermissionRender, action envelop
 			return fmt.Errorf("sync permission apply pending transaction: %w", err)
 		}
 		applyPermissionsBeforeTargetCommit()
+		if err := authorize(action, decision, permissionApplyNow()); err != nil {
+			if removeErr := removePermissionPending(pendingPath); removeErr != nil {
+				return errors.Join(fmt.Errorf("permission apply authorization revalidation: %w", err), removeErr)
+			}
+			return fmt.Errorf("permission apply authorization revalidation: %w", err)
+		}
 		publication, err := beginPermissionTargetPublication(render, recoveryName)
 		if err != nil {
 			if removeErr := removePermissionPending(pendingPath); removeErr != nil {
