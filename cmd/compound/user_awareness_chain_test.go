@@ -278,7 +278,9 @@ func TestUserAwarenessBreadthSidecar(t *testing.T) {
 	}
 	err = breadth.RunProtocol(
 		io.TeeReader(os.Stdin, requestLog),
-		io.MultiWriter(os.Stdout, responseLog),
+		// Persist the response row before exposing it to the parent process. Writing stdout
+		// first lets the parent assert the transcript while the matching log write is pending.
+		io.MultiWriter(responseLog, os.Stdout),
 		breadth.ProtocolConfig{
 			Embedder:     userAwarenessEmbedder{},
 			CompoundHome: os.Getenv("COMPOUND_HOME"),
