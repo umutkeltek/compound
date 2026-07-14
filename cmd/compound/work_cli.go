@@ -16,8 +16,22 @@ import (
 
 type workShowOutput struct {
 	envelope.WorkEnvelope
-	PacketPath string       `json:"packet_path,omitempty"`
-	Lifecycle  []work.Event `json:"lifecycle"`
+	PacketPath   string       `json:"packet_path,omitempty"`
+	PacketStatus string       `json:"packet_status,omitempty"`
+	Lifecycle    []work.Event `json:"lifecycle"`
+}
+
+// packetEnrichmentStatus renders a packetPathForWork failure as an explicit,
+// non-fatal enrichment note. Packet content is enrichment for `show`, not a
+// load-bearing dependency: the envelope itself always renders, and a dangling
+// packet pointer (or unconfigured workbench packet dir) becomes a visible
+// packet_status note instead of a hard failure, so the operator still learns
+// the pointer is dangling without losing the rest of the envelope.
+func packetEnrichmentStatus(err error) string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("unavailable (%s)", err.Error())
 }
 
 func packetPathForWork(w envelope.WorkEnvelope) (string, error) {
@@ -548,15 +562,18 @@ func cmdWork(args []string) {
 	case "show":
 		w, evs, err := store.Show(pos())
 		die(err)
-		packetPath, err := packetPathForWork(w)
-		die(err)
+		packetPath, packetErr := packetPathForWork(w)
+		packetStatus := packetEnrichmentStatus(packetErr)
 		if has("--json") {
-			printJSON(workShowOutput{WorkEnvelope: w, PacketPath: packetPath, Lifecycle: evs})
+			printJSON(workShowOutput{WorkEnvelope: w, PacketPath: packetPath, PacketStatus: packetStatus, Lifecycle: evs})
 			return
 		}
 		printJSON(w)
 		if packetPath != "" {
 			fmt.Printf("packet_path: %s\n", packetPath)
+		}
+		if packetStatus != "" {
+			fmt.Printf("packet_status: %s\n", packetStatus)
 		}
 		fmt.Println("--- lifecycle ---")
 		for _, e := range evs {

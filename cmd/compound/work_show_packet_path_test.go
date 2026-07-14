@@ -149,6 +149,11 @@ const workShowDanglingPacketChildEnv = "COMPOUND_TEST_WORK_SHOW_DANGLING_PACKET_
 func TestWorkShowSurvivesDanglingPacketPointer(t *testing.T) {
 	if childID := os.Getenv(workShowDanglingPacketChildEnv); childID != "" {
 		cmdWork([]string{"show", childID, "--json"})
+		// Exit explicitly so the child process's stdout is exactly what a real
+		// `compound work show` invocation would print — without this, the Go
+		// testing framework appends its own "PASS\nok ..." trailer once the test
+		// function returns normally, corrupting the JSON the parent decodes.
+		os.Exit(0)
 		return
 	}
 
