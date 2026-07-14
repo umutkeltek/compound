@@ -10,8 +10,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/home"
+	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -24,7 +26,13 @@ func TestWorkDispatchClaimCLIChild(t *testing.T) {
 	}
 	// CLI boundary tests must not inherit the operator's live CodexBar/quota state.
 	// A confirmed command still exercises the complete claim mutation below this adapter.
-	work.LaneCapacityGuard = nil
+	if mode == "walled" {
+		work.LaneCapacityGuard = routeevidence.WorkLaneCapacityGuard(routeevidence.LaneCapacityConfig{
+			Paths: routeevidence.LaneCapacityPaths{UsageHistoryPath: os.Getenv("COMPOUND_TEST_CAPACITY_PATH")},
+		})
+	} else {
+		work.LaneCapacityGuard = nil
+	}
 	args := []string{"dispatch-claim", "--actor", "codex", "--json"}
 	switch mode {
 	case "argless":
@@ -36,6 +44,8 @@ func TestWorkDispatchClaimCLIChild(t *testing.T) {
 		args = append(args, "--next", "--confirm")
 	case "both":
 		args = append(args, "--next", os.Getenv("COMPOUND_TEST_WORK_ID"))
+	case "walled":
+		args = append(args, "--next")
 	default:
 		t.Fatalf("unknown child mode %q", mode)
 	}
@@ -65,7 +75,7 @@ func TestWorkDispatchClaimUnconfirmedPreviewsWithoutMutating(t *testing.T) {
 			}
 			before := snapshotDispatchClaimHome(t, homePath)
 
-			output, runErr := runDispatchClaimChild(t, target, homePath, ready.ID)
+			output, runErr := runDispatchClaimChild(t, target, homePath, ready.ID, "")
 			exitErr, ok := runErr.(*exec.ExitError)
 			if !ok || exitErr.ExitCode() != 1 {
 				t.Fatalf("unconfirmed %s dispatch-claim exit = %v, want 1\n%s", target, runErr, output)
@@ -112,7 +122,7 @@ func TestWorkDispatchClaimConfirmPerformsMutation(t *testing.T) {
 		t.Fatalf("create work: %v", err)
 	}
 
-	output, runErr := runDispatchClaimChild(t, "confirm", homePath, ready.ID)
+	output, runErr := runDispatchClaimChild(t, "confirm", homePath, ready.ID, "")
 	if runErr != nil {
 		t.Fatalf("confirmed dispatch-claim failed: %v\n%s", runErr, output)
 	}
@@ -145,7 +155,7 @@ func TestWorkDispatchClaimRejectsNextAndExplicitIDTogether(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create work: %v", err)
 	}
-	output, runErr := runDispatchClaimChild(t, "both", homePath, ready.ID)
+	output, runErr := runDispatchClaimChild(t, "both", homePath, ready.ID, "")
 	exitErr, ok := runErr.(*exec.ExitError)
 	if !ok || exitErr.ExitCode() != 2 {
 		t.Fatalf("ambiguous target exit = %v, want 2\n%s", runErr, output)
@@ -155,13 +165,144 @@ func TestWorkDispatchClaimRejectsNextAndExplicitIDTogether(t *testing.T) {
 	}
 }
 
-func runDispatchClaimChild(t *testing.T, mode, homePath, workID string) ([]byte, error) {
+func TestWorkDispatchClaimWalledPreviewPreservesStatusWithoutEvidenceWrite(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "walled preview stays read-only"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	now := time.Now()
+	capacityPath := filepath.Join(t.TempDir(), "usage-history.jsonl")
+	row, err := json.Marshal(map[string]any{
+		"provider":      "codex",
+		"windowKind":    "5h",
+		"windowMinutes": 300,
+		"usedPercent":   100,
+		"resetsAt":      now.Add(2 * time.Hour).UTC().Format(time.RFC3339),
+		"sampledAt":     now.Add(-time.Minute).UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capacityPath, append(row, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotDispatchClaimHome(t, homePath)
+
+	output, runErr := runDispatchClaimChild(t, "walled", homePath, ready.ID, capacityPath)
+	exitErr, ok := runErr.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 1 {
+		t.Fatalf("walled preview exit = %v, want 1\n%s", runErr, output)
+	}
+	var preview work.DispatchPlan
+	if err := json.Unmarshal(output, &preview); err != nil {
+		t.Fatalf("parse walled preview: %v\n%s", err, output)
+	}
+	if preview.Status != "capacity_refused" || preview.LaneCapacity == nil || preview.LaneCapacity.State != "walled" {
+		t.Fatalf("walled capacity disappeared from preview: %+v", preview)
+	}
+	if after := snapshotDispatchClaimHome(t, homePath); !reflect.DeepEqual(before, after) {
+		t.Fatalf("walled preview wrote refusal evidence:\nbefore=%+v\nafter=%+v", before, after)
+	}
+}
+
+func TestWorkDispatchClaimPreviewCapacityGuardIsPerRequest(t *testing.T) {
+	makeStore := func(predicate string) *work.Store {
+		t.Helper()
+		homePath := t.TempDir()
+		if err := home.Init(homePath, "test", cliTestNow); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		store, err := work.Open(homePath)
+		if err != nil {
+			t.Fatalf("open work: %v", err)
+		}
+		if _, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: predicate}, cliTestNow); err != nil {
+			t.Fatalf("create work: %v", err)
+		}
+		return store
+	}
+	previewStore := makeStore("read-only request keeps guard installed")
+	mutableStore := makeStore("ordinary request keeps its own capacity semantics")
+
+	previousGuard := work.LaneCapacityGuard
+	requests := make(chan bool, 2)
+	release := make(chan struct{})
+	released := false
+	work.LaneCapacityGuard = func(req work.LaneCapacityGuardRequest) (work.LaneCapacityGuardResult, error) {
+		requests <- req.ReadOnly
+		<-release
+		return work.LaneCapacityGuardResult{
+			Capacity: work.DispatchLaneCapacity{State: "walled", DataRef: "concurrency falsifier"},
+			Refused:  true,
+			Message:  "capacity refused",
+		}, nil
+	}
+	t.Cleanup(func() {
+		if !released {
+			close(release)
+		}
+		work.LaneCapacityGuard = previousGuard
+	})
+
+	type planResult struct {
+		plan work.DispatchPlan
+		err  error
+	}
+	results := make(chan planResult, 2)
+	go func() {
+		plan, err := previewDispatchClaim(previewStore, cliTestNow, work.DispatchPlanOptions{Actor: "codex"})
+		results <- planResult{plan: plan, err: err}
+	}()
+	go func() {
+		plan, err := mutableStore.DispatchPlan(cliTestNow, work.DispatchPlanOptions{Actor: "codex"})
+		results <- planResult{plan: plan, err: err}
+	}()
+
+	seenReadOnly, seenMutable := false, false
+	for range 2 {
+		select {
+		case readOnly := <-requests:
+			if readOnly {
+				seenReadOnly = true
+			} else {
+				seenMutable = true
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("concurrent preview removed the process-global capacity guard")
+		}
+	}
+	close(release)
+	released = true
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("dispatch plan: %v", result.err)
+		}
+		if result.plan.Status != "capacity_refused" {
+			t.Fatalf("concurrent plan lost capacity status: %+v", result.plan)
+		}
+	}
+	if !seenReadOnly || !seenMutable {
+		t.Fatalf("capacity requests = read_only:%v mutable:%v, want one of each", seenReadOnly, seenMutable)
+	}
+}
+
+func runDispatchClaimChild(t *testing.T, mode, homePath, workID, capacityPath string) ([]byte, error) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkDispatchClaimCLIChild$")
 	cmd.Env = []string{
 		dispatchClaimConfirmChildEnv + "=" + mode,
 		"COMPOUND_HOME=" + homePath,
 		"COMPOUND_TEST_WORK_ID=" + workID,
+		"COMPOUND_TEST_CAPACITY_PATH=" + capacityPath,
 		"HOME=" + t.TempDir(),
 		"PATH=" + os.Getenv("PATH"),
 		"TZ=UTC",
