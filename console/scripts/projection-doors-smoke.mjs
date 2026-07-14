@@ -86,7 +86,9 @@ function sourceFiles() {
 
 function literalProjectionCalls(source) {
   const calls = [];
-  const pattern = /\b(?:runJson|runProjection)\s*\(\s*(\[(?:\s*"(?:\\.|[^"\\])*"\s*,?)*\s*\])\s*\)/gms;
+  // The argv array may be followed by an options argument (runProjection's
+  // { timeoutMs }); current options objects never contain ")".
+  const pattern = /\b(?:runJson|runProjection)\s*\(\s*(\[(?:\s*"(?:\\.|[^"\\])*"\s*,?)*\s*\])\s*(?:,[^)]*)?\)/gms;
   for (const match of source.matchAll(pattern)) {
     calls.push(JSON.parse(match[1].replace(/,\s*]$/, "]")));
   }
