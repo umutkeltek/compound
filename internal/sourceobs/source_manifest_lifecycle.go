@@ -13,6 +13,8 @@ import (
 
 const SourceManifestLifecycleAdvanceSchemaVersion = "compound.source_manifest_lifecycle_advance.v0.1"
 
+const SourceLifecycleEvidenceBindingSchemaVersion = "compound.source_lifecycle_evidence_binding.v0.1"
+
 const (
 	SourceLifecycleRegistered            = "registered"
 	SourceLifecycleCapturing             = "capturing"
@@ -66,11 +68,24 @@ type SourceWriterHandoff struct {
 }
 
 type SourceLifecycleProof struct {
-	Gate        string                        `json:"gate"`
-	EvidenceRef string                        `json:"evidence_ref"`
-	SubjectRef  string                        `json:"subject_ref"`
-	RecordedAt  string                        `json:"recorded_at"`
-	QuietWindow *SourceQuietWindowMeasurement `json:"quiet_window,omitempty"`
+	Gate            string                          `json:"gate"`
+	EvidenceRef     string                          `json:"evidence_ref"`
+	SubjectRef      string                          `json:"subject_ref"`
+	RecordedAt      string                          `json:"recorded_at"`
+	QuietWindow     *SourceQuietWindowMeasurement   `json:"quiet_window,omitempty"`
+	EvidenceBinding *SourceLifecycleEvidenceBinding `json:"evidence_binding,omitempty"`
+}
+
+type SourceLifecycleEvidenceBinding struct {
+	SchemaVersion        string `json:"schema_version"`
+	EvidenceWorkID       string `json:"evidence_work_id"`
+	EvidenceWorkSHA256   string `json:"evidence_work_sha256"`
+	ReceiptID            string `json:"receipt_id"`
+	ReceiptSHA256        string `json:"receipt_sha256"`
+	TransitionID         string `json:"transition_id"`
+	TransitionSHA256     string `json:"transition_sha256"`
+	CanonicalSurface     string `json:"canonical_surface"`
+	RequiredGateProofRef string `json:"required_gate_proof_ref"`
 }
 
 type SourceQuietWindowMeasurement struct {
@@ -259,7 +274,8 @@ func planSourceManifestLifecycleAdvance(homePath string, manifest SourceManifest
 	if err != nil {
 		return SourceManifestLifecycleAdvanceReport{}, err
 	}
-	if err := validateSourceLifecycleEvidenceRefs(homePath, proofs); err != nil {
+	proofs, err = bindSourceLifecycleEvidence(homePath, manifest, proofs)
+	if err != nil {
 		return SourceManifestLifecycleAdvanceReport{}, err
 	}
 	if edge.forward && sourceLifecycleRank(edge.to) >= sourceLifecycleRank(SourceLifecycleOwnedSnapshot) {
@@ -267,8 +283,8 @@ func planSourceManifestLifecycleAdvance(homePath string, manifest SourceManifest
 		if err != nil {
 			return SourceManifestLifecycleAdvanceReport{}, err
 		}
-		if !doctor.CustodyComplete || doctor.HashMismatchCount != 0 || doctor.MissingFieldCount != 0 {
-			return SourceManifestLifecycleAdvanceReport{}, fmt.Errorf("source lifecycle %s requires current exact custody; doctor custody_complete=%t missing=%d mismatch=%d", edge.to, doctor.CustodyComplete, doctor.MissingFieldCount, doctor.HashMismatchCount)
+		if !doctor.CustodyComplete || doctor.HashMismatchCount != 0 || doctor.MissingFieldCount != 0 || doctor.LifecycleEvidenceMissingCount != 0 || doctor.LifecycleEvidenceMismatchCount != 0 {
+			return SourceManifestLifecycleAdvanceReport{}, fmt.Errorf("source lifecycle %s requires current exact custody and bound lifecycle evidence; doctor custody_complete=%t missing=%d mismatch=%d evidence_missing=%d evidence_mismatch=%d", edge.to, doctor.CustodyComplete, doctor.MissingFieldCount, doctor.HashMismatchCount, doctor.LifecycleEvidenceMissingCount, doctor.LifecycleEvidenceMismatchCount)
 		}
 	}
 	nextHandoff := cloneSourceWriterHandoff(lifecycle.WriterHandoff)
@@ -360,7 +376,11 @@ func validateSourceManifestLifecycle(manifest SourceManifest) error {
 		if strings.TrimSpace(transition.OccurredAt) == "" || strings.TrimSpace(transition.Actor) == "" || strings.TrimSpace(transition.WorkID) == "" || strings.TrimSpace(transition.ActionIntentID) == "" || strings.TrimSpace(transition.PolicyDecisionID) == "" {
 			return fmt.Errorf("source lifecycle history[%d] lacks governance identity", i)
 		}
-		if _, err := normalizeSourceLifecycleProofs(manifest.AuthorityRef, transition.Proofs, edge.gates, time.Time{}); err != nil {
+		normalizedProofs, err := normalizeSourceLifecycleProofs(manifest.AuthorityRef, transition.Proofs, edge.gates, time.Time{})
+		if err != nil {
+			return fmt.Errorf("source lifecycle history[%d]: %w", i, err)
+		}
+		if err := validateStoredSourceLifecycleEvidenceBindings(manifest.SourceFamily, normalizedProofs); err != nil {
 			return fmt.Errorf("source lifecycle history[%d]: %w", i, err)
 		}
 		if edge.from == SourceLifecycleVerified && edge.to == SourceLifecycleCompoundPrimaryWriter {
@@ -570,6 +590,10 @@ func cloneSourceManifestLifecycle(in *SourceManifestLifecycle) *SourceManifestLi
 			if in.History[i].Proofs[j].QuietWindow != nil {
 				copyWindow := *in.History[i].Proofs[j].QuietWindow
 				out.History[i].Proofs[j].QuietWindow = &copyWindow
+			}
+			if in.History[i].Proofs[j].EvidenceBinding != nil {
+				copyBinding := *in.History[i].Proofs[j].EvidenceBinding
+				out.History[i].Proofs[j].EvidenceBinding = &copyBinding
 			}
 		}
 		out.History[i].WriterHandoff = cloneSourceWriterHandoff(in.History[i].WriterHandoff)

@@ -81,20 +81,22 @@ type SourceManifestReport struct {
 }
 
 type SourceManifestDoctorReport struct {
-	SchemaVersion      string                      `json:"schema_version"`
-	Status             string                      `json:"status"`
-	ManifestID         string                      `json:"manifest_id,omitempty"`
-	ManifestPath       string                      `json:"manifest_path"`
-	AuthorityRef       string                      `json:"authority_ref,omitempty"`
-	ItemCount          int                         `json:"item_count"`
-	MissingFieldCount  int                         `json:"missing_field_count"`
-	HashMismatchCount  int                         `json:"hash_mismatch_count"`
-	OwnedBodyCount     int                         `json:"owned_body_count"`
-	InventoryOnlyCount int                         `json:"inventory_only_count"`
-	CustodyComplete    bool                        `json:"custody_complete"`
-	Lifecycle          SourceLifecycleStatus       `json:"lifecycle"`
-	Checks             []SourceManifestDoctorCheck `json:"checks"`
-	Items              []SourceManifestDoctorItem  `json:"items,omitempty"`
+	SchemaVersion                  string                      `json:"schema_version"`
+	Status                         string                      `json:"status"`
+	ManifestID                     string                      `json:"manifest_id,omitempty"`
+	ManifestPath                   string                      `json:"manifest_path"`
+	AuthorityRef                   string                      `json:"authority_ref,omitempty"`
+	ItemCount                      int                         `json:"item_count"`
+	MissingFieldCount              int                         `json:"missing_field_count"`
+	HashMismatchCount              int                         `json:"hash_mismatch_count"`
+	LifecycleEvidenceMissingCount  int                         `json:"lifecycle_evidence_missing_count"`
+	LifecycleEvidenceMismatchCount int                         `json:"lifecycle_evidence_mismatch_count"`
+	OwnedBodyCount                 int                         `json:"owned_body_count"`
+	InventoryOnlyCount             int                         `json:"inventory_only_count"`
+	CustodyComplete                bool                        `json:"custody_complete"`
+	Lifecycle                      SourceLifecycleStatus       `json:"lifecycle"`
+	Checks                         []SourceManifestDoctorCheck `json:"checks"`
+	Items                          []SourceManifestDoctorItem  `json:"items,omitempty"`
 }
 
 type SourceManifestDoctorCheck struct {
@@ -441,12 +443,16 @@ func DoctorSourceManifest(homePath, sourceFamily string) (SourceManifestDoctorRe
 		report.Items = append(report.Items, di)
 	}
 	report.CustodyComplete = report.ItemCount > 0 && report.OwnedBodyCount == report.ItemCount && report.HashMismatchCount == 0 && report.MissingFieldCount == 0
+	boundEvidence, missingEvidence, mismatchedEvidence := doctorSourceLifecycleEvidence(homePath, manifest)
+	report.LifecycleEvidenceMissingCount = missingEvidence
+	report.LifecycleEvidenceMismatchCount = mismatchedEvidence
 	report.Checks = append(report.Checks,
 		sourceManifestCheck("installed", true, report.ManifestPath),
 		sourceManifestCheck("items", report.ItemCount > 0, fmt.Sprintf("items=%d", report.ItemCount)),
 		sourceManifestCheck("required_fields", report.MissingFieldCount == 0, fmt.Sprintf("missing=%d", report.MissingFieldCount)),
 		sourceManifestCheck("source_recovery", report.HashMismatchCount == 0, fmt.Sprintf("hash_mismatch=%d", report.HashMismatchCount)),
 		sourceManifestStatusCheck("physical_custody", report.CustodyComplete, fmt.Sprintf("owned=%d inventory_only=%d", report.OwnedBodyCount, report.InventoryOnlyCount)),
+		sourceManifestCheck("lifecycle_evidence", missingEvidence == 0 && mismatchedEvidence == 0, fmt.Sprintf("bound=%d missing=%d hash_or_contract_mismatch=%d", boundEvidence, missingEvidence, mismatchedEvidence)),
 		sourceManifestStatusCheck("retirement_lifecycle", report.Lifecycle.Terminal, fmt.Sprintf("state=%s next=%s read=%s write=%s", report.Lifecycle.State, report.Lifecycle.NextState, report.Lifecycle.ReadPosture, report.Lifecycle.WritePosture)),
 	)
 	if manifest.SourceFamily == GbrainDBExportManifestFamily {
