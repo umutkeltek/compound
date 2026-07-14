@@ -23,6 +23,7 @@ type proofCheckReport struct {
 	Repo          string           `json:"repo"`
 	BaseRef       string           `json:"base_ref,omitempty"`
 	DryRun        bool             `json:"dry_run"`
+	CIOnly        bool             `json:"ci_only,omitempty"`
 	ArtifactRef   string           `json:"artifact_ref,omitempty"`
 	Warnings      []string         `json:"warnings,omitempty"`
 	ProofRefs     []string         `json:"proof_refs"`
@@ -40,18 +41,24 @@ type proofCheckStep struct {
 	ExitCode      int      `json:"exit_code,omitempty"`
 	DurationMS    int64    `json:"duration_ms,omitempty"`
 	OutputTail    string   `json:"output_tail,omitempty"`
+	// CIPortable marks a gate that runs green in a fresh-clone CI checkout: no external
+	// non-Go binary (redact), no installed-binary dependency, and no COMPOUND_HOME body.
+	// `proof-check --ci` runs exactly these. Not serialized — it is a gate attribute, not a result.
+	CIPortable bool `json:"-"`
 }
 
 func cmdProofCheck(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--repo P] [--base REF]")
+		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--ci] [--repo P] [--base REF]")
+		fmt.Println("  --ci  run only the fresh-clone-portable gate subset (what CI runs on push/PR)")
 		return
 	}
 	jsonOut := hasFlag(args, "--json")
 	dryRun := hasFlag(args, "--dry-run")
+	ciOnly := hasFlag(args, "--ci")
 	repoPath := flagValue(args, "--repo")
 	baseRef := flagValue(args, "--base")
-	report, err := runProofCheck(repoPath, dryRun, baseRef, time.Now())
+	report, err := runProofCheck(repoPath, dryRun, baseRef, ciOnly, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
 		os.Exit(2)
@@ -78,7 +85,7 @@ func cmdProofCheck(args []string) {
 	}
 }
 
-func runProofCheck(repoPath string, dryRun bool, baseRef string, now time.Time) (proofCheckReport, error) {
+func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, now time.Time) (proofCheckReport, error) {
 	repo, err := resolveProofCheckRepo(repoPath)
 	if err != nil {
 		return proofCheckReport{}, err
@@ -88,6 +95,9 @@ func runProofCheck(repoPath string, dryRun bool, baseRef string, now time.Time) 
 	if err != nil {
 		return proofCheckReport{}, err
 	}
+	if ciOnly {
+		steps = ciPortableSteps(steps)
+	}
 	report := proofCheckReport{
 		SchemaVersion: proofCheckSchemaVersion,
 		Status:        "ok",
@@ -95,6 +105,7 @@ func runProofCheck(repoPath string, dryRun bool, baseRef string, now time.Time) 
 		Repo:          repo,
 		BaseRef:       baseRef,
 		DryRun:        dryRun,
+		CIOnly:        ciOnly,
 		Steps:         make([]proofCheckStep, 0, len(steps)),
 	}
 	for _, step := range steps {
@@ -184,11 +195,11 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		redactCommand = []string{"redact", "--repo-visibility", "public", "--from-file", "<files changed in " + strings.TrimSpace(baseRef) + "...HEAD>"}
 	}
 	return []proofCheckStep{
-		{Name: "go-test", Command: []string{"go", "test", "-count=1", "./..."}, ProofRef: "go-test-count-1-all"},
-		{Name: "go-vet", Command: []string{"go", "vet", "./..."}, ProofRef: "go-vet-all"},
-		{Name: "go-build", Command: []string{"go", "build", "./..."}, ProofRef: "go-build-all"},
-		{Name: "gofmt", Command: []string{"gofmt", "-l", "<tracked *.go>"}, ProofRef: "gofmt-check"},
-		{Name: "diff-check", Command: []string{"git", "diff", "--check"}, ProofRef: "diff-check"},
+		{Name: "go-test", Command: []string{"go", "test", "-count=1", "./..."}, ProofRef: "go-test-count-1-all", CIPortable: true},
+		{Name: "go-vet", Command: []string{"go", "vet", "./..."}, ProofRef: "go-vet-all", CIPortable: true},
+		{Name: "go-build", Command: []string{"go", "build", "./..."}, ProofRef: "go-build-all", CIPortable: true},
+		{Name: "gofmt", Command: []string{"gofmt", "-l", "<tracked *.go>"}, ProofRef: "gofmt-check", CIPortable: true},
+		{Name: "diff-check", Command: []string{"git", "diff", "--check"}, ProofRef: "diff-check", CIPortable: true},
 		{Name: "console-tsc", Command: []string{"./node_modules/.bin/tsc", "--noEmit"}, Dir: "console", ProofRef: "console-tsc-noemit"},
 		{Name: "console-smoke", Command: consoleSmokeCommand("scripts/smoke.mjs"), Dir: "console", ProofRef: "console-smoke"},
 		{Name: "console-mutation-gate-smoke", Command: consoleSmokeCommand("scripts/mutation-guard-smoke.mjs"), Dir: "console", ProofRef: "console-mutation-gate-smoke"},
@@ -217,13 +228,28 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-stream-tail-smoke", Command: consoleBunSmokeCommand("scripts/stream-tail-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-stream-tail-smoke"},
 		{Name: "console-decide-decision-feedback-smoke", Command: consoleBunSmokeCommand("scripts/decide-decision-feedback-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decide-decision-feedback-smoke"},
 		{Name: "bun-tools-test", Command: []string{"bun", "test", "<tools/*.test.ts>"}, SkipIfMissing: "bun", ProofRef: "bun-tools-test"},
-		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict"},
+		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict", CIPortable: true},
 		{Name: "profiles-check", Command: []string{exe, "profiles", "check", "--installed-only"}, ProofRef: "profiles-check-installed-only"},
 		{Name: "workbench-projection", Command: []string{exe, "workbench", "--json"}, ProofRef: "workbench-projection-refresh"},
 		{Name: "codex-pretooluse-native-gate", Command: []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"}, ProofRef: "codex-pretooluse-native-gate-proof"},
-		{Name: "memory-doctor", Command: []string{exe, "memory", "doctor"}, ProofRef: "memory-doctor"},
+		{Name: "memory-doctor", Command: []string{exe, "memory", "doctor"}, ProofRef: "memory-doctor", CIPortable: true},
 		{Name: "redact-public", Command: redactCommand, ProofRef: "redact-public-clean"},
 	}, nil
+}
+
+// ciPortableSteps returns only the gates that run green in a fresh-clone CI checkout —
+// no external non-Go binary (redact), no installed-binary dependency (profiles-check),
+// no COMPOUND_HOME body or bun/node console runner. `proof-check --ci` runs exactly these
+// so the CI gate set is single-sourced from proofCheckSteps and cannot drift from a
+// separately-maintained workflow list.
+func ciPortableSteps(steps []proofCheckStep) []proofCheckStep {
+	out := make([]proofCheckStep, 0, len(steps))
+	for _, s := range steps {
+		if s.CIPortable {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func consoleSmokeCommand(script string) []string {

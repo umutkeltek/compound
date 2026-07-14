@@ -352,6 +352,75 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 	}
 }
 
+func TestProofCheckCIFlagRunsOnlyPortableGates(t *testing.T) {
+	out := captureStdout(t, func() {
+		cmdProofCheck([]string{"--ci", "--dry-run", "--json", "--repo", "."})
+	})
+	var report proofCheckReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse proof-check --ci report: %v\n%s", err, out)
+	}
+	if !report.CIOnly || report.Status != "ok" || !report.DryRun {
+		t.Fatalf("bad proof-check --ci report: ci_only=%v status=%s dry_run=%v", report.CIOnly, report.Status, report.DryRun)
+	}
+	// The CI gate set is single-sourced from proofCheckSteps via CIPortable; --ci must run
+	// exactly the fresh-clone-portable gates, in order, and nothing that needs the external
+	// redact binary, the installed binary, or a bun/node console runner.
+	wantCIProofs := []string{
+		"go-test-count-1-all",
+		"go-vet-all",
+		"go-build-all",
+		"gofmt-check",
+		"diff-check",
+		"architecture-doctor-strict",
+		"memory-doctor",
+	}
+	if len(report.Steps) != len(wantCIProofs) {
+		names := make([]string, 0, len(report.Steps))
+		for _, s := range report.Steps {
+			names = append(names, s.ProofRef)
+		}
+		t.Fatalf("proof-check --ci ran %d gates %v, want %d %v", len(report.Steps), names, len(wantCIProofs), wantCIProofs)
+	}
+	for i, want := range wantCIProofs {
+		if report.Steps[i].ProofRef != want || report.Steps[i].Status != "planned" {
+			t.Fatalf("ci step %d = %+v, want proof %s planned", i, report.Steps[i], want)
+		}
+	}
+	// The non-portable gates must NOT appear under --ci (they hard-fail or skip in a fresh clone).
+	excluded := []string{
+		"redact-public-clean", "profiles-check-installed-only", "workbench-projection-refresh",
+		"codex-pretooluse-native-gate-proof", "console-smoke", "console-tsc-noemit", "bun-tools-test",
+	}
+	for _, s := range report.Steps {
+		for _, bad := range excluded {
+			if s.ProofRef == bad {
+				t.Fatalf("proof-check --ci included non-portable gate %q", bad)
+			}
+		}
+	}
+	// Guard the single-source invariant: every CIPortable gate in the canonical list is exactly
+	// the wantCIProofs set — a newly-added gate mis-tagged CIPortable fails here, not silently in CI.
+	steps, err := proofCheckSteps("")
+	if err != nil {
+		t.Fatalf("proofCheckSteps: %v", err)
+	}
+	gotPortable := make([]string, 0, len(steps))
+	for _, s := range steps {
+		if s.CIPortable {
+			gotPortable = append(gotPortable, s.ProofRef)
+		}
+	}
+	if len(gotPortable) != len(wantCIProofs) {
+		t.Fatalf("CIPortable gates = %v, want %v", gotPortable, wantCIProofs)
+	}
+	for i, want := range wantCIProofs {
+		if gotPortable[i] != want {
+			t.Fatalf("CIPortable gate %d = %s, want %s", i, gotPortable[i], want)
+		}
+	}
+}
+
 func TestProofCheckMissingConsoleSmokeDependencyEmitsSkipReason(t *testing.T) {
 	step := proofCheckStep{Name: "console-work-trace-smoke", Command: []string{"bun", "scripts/work-trace-smoke.mjs"}, SkipIfMissing: "definitely-missing-proof-tool"}
 	got := runProofCheckStep(t.TempDir(), step, "")

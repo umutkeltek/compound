@@ -1,0 +1,52 @@
+name: CI
+
+# compound's first automated gate (the repo is destined to be public). On every push to main and
+# every pull request this runs the fresh-clone-portable subset of `compound proof-check` — SINGLE-
+# SOURCED from cmd/compound/proof_check.go via the `--ci` flag (see ciPortableSteps) so the CI gate
+# set can't drift from a hand-maintained list — plus a portable gitleaks secret scan.
+#
+# The full local battery still runs per skills/compound-land before a push: console/bun smokes, the
+# installed-binary gates (profiles-check, workbench, codex-pretooluse), and the richer `redact`
+# push-floor (PII / private-path / private-tool-name detection). gitleaks here COMPLEMENTS redact;
+# it does not replace it. redact is a local tool not installed on a CI runner.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: these jobs only read the checkout.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proof-gates:
+    name: proof-check --ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod   # single-source the Go version from go.mod, no drift
+          cache: true
+      - name: compound proof-check --ci
+        # go-test, go-vet, go-build, gofmt, diff-check, architecture-doctor --strict, memory-doctor
+        run: go run ./cmd/compound proof-check --ci
+
+  secret-scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run gitleaks (pinned)
+        run: |
+          set -euo pipefail
+          VER=8.30.1
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" -o "$RUNNER_TEMP/gitleaks.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" version
+          "$RUNNER_TEMP/gitleaks" dir . --config .gitleaks.toml --no-banner --redact
