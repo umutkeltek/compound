@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	LandCheckSchemaVersion  = "compound.work_land_check.v0.3"
-	landCheckEvidencePrefix = "land-check:"
-	landCheckIDPrefix       = "landcheck_"
+	LegacyLandCheckSchemaVersion = "compound.work_land_check.v0.3"
+	LandCheckSchemaVersion       = "compound.work_land_check.v0.4"
+	landCheckEvidencePrefix      = "land-check:"
+	landCheckIDPrefix            = "landcheck_"
 )
 
 // LandCheckOptions names every source-control input explicitly. In particular,
@@ -406,6 +407,14 @@ func (s *Store) recordedLandedProofForClose(w envelope.WorkEnvelope, proofRefs [
 }
 
 func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPath string, report LandCheckReport) error {
+	switch report.SchemaVersion {
+	case LegacyLandCheckSchemaVersion:
+		return fmt.Errorf("recorded land-check %s uses legacy/stale schema %s that predates repository identity; record a fresh %s land-check", id, LegacyLandCheckSchemaVersion, LandCheckSchemaVersion)
+	case LandCheckSchemaVersion:
+		// Current sealed content is verified below.
+	default:
+		return fmt.Errorf("recorded land-check %s has unsupported schema %q", id, report.SchemaVersion)
+	}
 	if !report.Recorded {
 		return fmt.Errorf("recorded land-check %s has invalid schema or recording state", id)
 	}
@@ -415,9 +424,6 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 	}
 	if report.ContentSHA256 == "" || report.ContentSHA256 != digest || id != landCheckIDPrefix+digest[:12] {
 		return fmt.Errorf("recorded land-check %s content digest mismatch; proof content was modified after recording", id)
-	}
-	if report.SchemaVersion != LandCheckSchemaVersion {
-		return fmt.Errorf("recorded land-check %s has unsupported schema %q", id, report.SchemaVersion)
 	}
 	if report.ID != id || report.EvidenceRef != evidenceRef {
 		return fmt.Errorf("recorded land-check %s identity does not match cited evidence", id)
