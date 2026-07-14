@@ -252,11 +252,12 @@ type Input struct {
 const installedHooksSchemaVersion = "compound.installed_hooks.v0.1"
 
 const (
-	InstalledHooksAuthorityRef          = "compound://config/installed-hooks"
-	InstalledHooksSourceAuthoritySchema = "compound.installed_hooks_source_authority.v0.1"
-	installedHooksSourceAuthorityFile   = "installed-hooks-source-authority.jsonl"
-	installedHooksCodexImportedVia      = "contract import-hooks --codex-hooks-json"
-	installedHooksRegistryImportedVia   = "contract import-hooks --hook-registration-ts"
+	InstalledHooksAuthorityRef              = "compound://config/installed-hooks"
+	InstalledHooksSourceAuthoritySchema     = "compound.installed_hooks_source_authority.v0.1"
+	installedHooksSourceAuthorityFile       = "installed-hooks-source-authority.jsonl"
+	installedHooksCodexImportedVia          = "contract import-hooks --codex-hooks-json"
+	installedHooksRegistryImportedVia       = "contract import-hooks --hook-registration-ts"
+	installedHookHandlerUnavailableRevision = "unavailable:concrete-handler"
 )
 
 type InstalledHooksManifest struct {
@@ -2122,8 +2123,17 @@ func attestInstalledHookHandlers(manifest *InstalledHooksManifest) {
 		return
 	}
 	for i := range manifest.Hooks {
-		manifest.Hooks[i].Revision = installedHookHandlerRevision(manifest.Hooks[i].Ref, "")
+		revision := installedHookHandlerRevision(manifest.Hooks[i].Ref, "")
+		if revision == "" && concreteInstalledHookHandlerRef(manifest.Hooks[i].Ref) {
+			revision = installedHookHandlerUnavailableRevision
+		}
+		manifest.Hooks[i].Revision = revision
 	}
+}
+
+func concreteInstalledHookHandlerRef(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	return ref != "" && !strings.HasPrefix(ref, "handler:") && !strings.HasPrefix(ref, "hook://")
 }
 
 func importInstalledHooks(homePath, sourcePath string, data []byte, manifest InstalledHooksManifest, importedVia string, now time.Time) (InstalledHooksImportReport, error) {
