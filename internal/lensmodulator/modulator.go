@@ -376,14 +376,25 @@ func Modulate(home string, policyCfg policy.Config, workID string, now time.Time
 
 		// Admitted: NOW materialize the target key at the baseline so the config-key adapter (which
 		// repoints, never creates) has something to repoint. This setup write happens ONLY on the
-		// allowed path; the pre-image the act captures is exactly this baseline.
-		if err := ensureLaneEntry(storePath, root, sig.Subject, th.Baseline); err != nil {
+		// allowed path; the pre-image the act captures is exactly this baseline. Track whether WE
+		// created it so a failed act can restore absence.
+		createdEntry, err := ensureLaneEntry(storePath, root, sig.Subject, th.Baseline)
+		if err != nil {
 			return ModulationResult{}, err
 		}
 		result, execErr := act.Execute(store, adapter, ai, pd, []byte(th.DemoteTo), now)
 		if execErr != nil {
 			// The gate already admitted this intent, so a failure here is a genuine I/O/validation
-			// error (not a policy refusal) — surface it rather than mislabeling it as refused.
+			// error (not a policy refusal). If WE materialized the baseline entry just now (it did not
+			// pre-exist), compensate by deleting it so the failed modulation leaves the route store as
+			// it found it — restoring absence — before surfacing the error. A pre-existing entry is
+			// never touched.
+			if createdEntry {
+				if delErr := deleteLaneEntry(storePath, root, sig.Subject); delErr != nil {
+					return ModulationResult{}, fmt.Errorf("act execute after gate admitted lane %q failed (%w); compensating deletion of the entry this pass created ALSO failed: %v", sig.Subject, execErr, delErr)
+				}
+				return ModulationResult{}, fmt.Errorf("act execute after gate admitted lane %q: %w (compensated: deleted the baseline entry this pass created)", sig.Subject, execErr)
+			}
 			return ModulationResult{}, fmt.Errorf("act execute after gate admitted lane %q: %w", sig.Subject, execErr)
 		}
 
@@ -623,11 +634,13 @@ func saveStore(path string, m map[string]any) error {
 }
 
 // ensureLaneEntry guarantees root.lane exists in the store, initialized to baseline if absent, so the
-// governed ConfigKeyAdapter (which repoints, never creates) has a key to repoint.
-func ensureLaneEntry(path, root, lane, baseline string) error {
+// governed ConfigKeyAdapter (which repoints, never creates) has a key to repoint. It reports whether
+// it CREATED the entry this call (created=true) versus finding a pre-existing one (created=false), so
+// a caller can compensate a materialized-then-orphaned baseline if the subsequent governed act fails.
+func ensureLaneEntry(path, root, lane, baseline string) (created bool, err error) {
 	m, err := loadStore(path)
 	if err != nil {
-		return err
+		return false, err
 	}
 	sub, _ := m[root].(map[string]any)
 	if sub == nil {
@@ -635,9 +648,29 @@ func ensureLaneEntry(path, root, lane, baseline string) error {
 		m[root] = sub
 	}
 	if _, ok := sub[lane]; ok {
-		return nil
+		return false, nil
 	}
 	sub[lane] = baseline
+	if err := saveStore(path, m); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// deleteLaneEntry removes root.lane from the store, restoring its absence. It is the compensation for
+// a baseline entry ensureLaneEntry materialized THIS pass when the subsequent governed act failed —
+// so a failed modulation leaves the route store's lane keys as it found them. Only the one key is
+// removed; sibling lanes and a now-empty root map are left in place (an empty root is not lane state).
+func deleteLaneEntry(path, root, lane string) error {
+	m, err := loadStore(path)
+	if err != nil {
+		return err
+	}
+	sub, _ := m[root].(map[string]any)
+	if sub == nil {
+		return nil
+	}
+	delete(sub, lane)
 	return saveStore(path, m)
 }
 

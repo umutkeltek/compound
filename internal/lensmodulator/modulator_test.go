@@ -305,7 +305,7 @@ func TestModulateRefusalLeavesRouteStoreByteIdentical(t *testing.T) {
 		home := t.TempDir()
 		recordSignal(t, home, mkSignal(t, "sycophancy", "lane-a", 0.9, behaviorallens.VisibilityPublicSafe, now))
 		armSycophancy(t, home, now)
-		if err := ensureLaneEntry(RouteStorePath(home), publicLaneRoot, "other-lane", "active"); err != nil {
+		if _, err := ensureLaneEntry(RouteStorePath(home), publicLaneRoot, "other-lane", "active"); err != nil {
 			t.Fatalf("seed store: %v", err)
 		}
 		before, err := os.ReadFile(RouteStorePath(home))
@@ -352,6 +352,57 @@ func TestAppliedDemoteReceiptResolvesInEventStore(t *testing.T) {
 		p := filepath.Join(home, "events", id+".json")
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("ledger references %s but it does not resolve in the canonical event store (%s): %v", id, p, err)
+		}
+	}
+}
+
+// F4 (partial-failure compensation): the modulator materializes a baseline lane entry BEFORE the
+// governed act. If that act then FAILS, a freshly-created entry must be compensated (deleted) so a
+// failed modulation leaves the route store as it found it — the lane key ABSENT. A pre-existing
+// entry is never touched. The act is forced to fail by wedging the canonical event store (a file
+// where home/events must be a dir), so act.Execute aborts after the baseline is materialized.
+func TestModulateCompensatesCreatedLaneEntryWhenActFails(t *testing.T) {
+	now := fixedNow()
+
+	// (a) lane ABSENT -> materialized -> act fails -> the created key is compensated to ABSENT.
+	{
+		home := t.TempDir()
+		recordSignal(t, home, mkSignal(t, "sycophancy", "lane-a", 0.9, behaviorallens.VisibilityPublicSafe, now))
+		armSycophancy(t, home, now)
+		if err := os.WriteFile(filepath.Join(home, "events"), []byte("not a directory"), 0o644); err != nil {
+			t.Fatalf("wedge event store: %v", err)
+		}
+		if _, err := Modulate(home, grantConfig(home), "work_partial", now); err == nil {
+			t.Fatal("expected Modulate to surface the failed act")
+		}
+		if _, present, err := currentValue(RouteStorePath(home), publicLaneRoot, "lane-a"); err != nil {
+			t.Fatalf("read route store: %v", err)
+		} else if present {
+			t.Fatal("a failed act must compensate the lane entry it created — the key must be ABSENT")
+		}
+	}
+
+	// (b) lane PRE-EXISTING at baseline -> act fails -> the pre-existing entry is left UNTOUCHED.
+	{
+		home := t.TempDir()
+		recordSignal(t, home, mkSignal(t, "sycophancy", "lane-a", 0.9, behaviorallens.VisibilityPublicSafe, now))
+		armSycophancy(t, home, now)
+		// Seed a pre-existing entry at baseline (not already-demoted, so the demote still proceeds).
+		if err := saveStore(RouteStorePath(home), map[string]any{publicLaneRoot: map[string]any{"lane-a": "active"}}); err != nil {
+			t.Fatalf("seed lane entry: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(home, "events"), []byte("not a directory"), 0o644); err != nil {
+			t.Fatalf("wedge event store: %v", err)
+		}
+		if _, err := Modulate(home, grantConfig(home), "work_partial2", now); err == nil {
+			t.Fatal("expected Modulate to surface the failed act")
+		}
+		val, present, err := currentValue(RouteStorePath(home), publicLaneRoot, "lane-a")
+		if err != nil {
+			t.Fatalf("read route store: %v", err)
+		}
+		if !present || val != "active" {
+			t.Fatalf("a pre-existing lane entry must be untouched by a failed act: present=%v val=%q", present, val)
 		}
 	}
 }
