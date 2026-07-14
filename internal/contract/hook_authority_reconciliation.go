@@ -216,6 +216,7 @@ func parseObservedHarnessHooks(data []byte, source hookInstallationSource, harne
 					Matcher:            strings.TrimSpace(group.Matcher),
 					HandlerRef:         handlerRef,
 					InvocationRevision: canonicalHookInvocationRevision(command.Command, harnessHome),
+					HandlerRevision:    installedHookHandlerRevision(handlerRef, harnessHome),
 					Active:             !group.Disabled && !command.Disabled,
 					SourceRef:          source.Ref,
 				})
@@ -288,6 +289,32 @@ func canonicalHookInvocationRevision(value, harnessHome string) string {
 		normalized = "$HOME/" + strings.TrimPrefix(normalized, "~/")
 	}
 	return "sha256:" + hashBytes([]byte(strings.Join(canonicalHookCommandFields(normalized), " ")))
+}
+
+// installedHookHandlerRevision independently attests the bytes behind a concrete handler ref.
+// Opaque handler identities remain unverifiable (empty); a desired concrete revision paired with
+// an empty observation reconciles as drift, so missing/unreadable installed handlers fail loudly.
+func installedHookHandlerRevision(handlerRef, harnessHome string) string {
+	path := strings.TrimSpace(handlerRef)
+	if path == "" || strings.HasPrefix(path, "handler:") || strings.HasPrefix(path, "hook://") {
+		return ""
+	}
+	home := strings.TrimSpace(harnessHome)
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	if home != "" {
+		path = strings.ReplaceAll(path, "${HOME}", home)
+		path = strings.ReplaceAll(path, "$HOME", home)
+		if strings.HasPrefix(path, "~/") {
+			path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return ""
+	}
+	return "sha256:" + hashBytes(data)
 }
 
 // canonicalHookCommandFields tokenizes a hook command the way a POSIX shell would: whitespace

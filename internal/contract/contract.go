@@ -2094,6 +2094,7 @@ func ImportCodexHooksJSON(homePath, sourcePath string, now time.Time) (Installed
 	if err != nil {
 		return InstalledHooksImportReport{}, err
 	}
+	attestInstalledHookHandlers(&manifest)
 	return importInstalledHooks(homePath, sourcePath, data, manifest, installedHooksCodexImportedVia, now)
 }
 
@@ -2112,7 +2113,17 @@ func ImportHookRegistrationTS(homePath, sourcePath string, now time.Time) (Insta
 	if err != nil {
 		return InstalledHooksImportReport{}, err
 	}
+	attestInstalledHookHandlers(&manifest)
 	return importInstalledHooks(homePath, sourcePath, data, manifest, installedHooksRegistryImportedVia, now)
+}
+
+func attestInstalledHookHandlers(manifest *InstalledHooksManifest) {
+	if manifest == nil {
+		return
+	}
+	for i := range manifest.Hooks {
+		manifest.Hooks[i].Revision = installedHookHandlerRevision(manifest.Hooks[i].Ref, "")
+	}
 }
 
 func importInstalledHooks(homePath, sourcePath string, data []byte, manifest InstalledHooksManifest, importedVia string, now time.Time) (InstalledHooksImportReport, error) {

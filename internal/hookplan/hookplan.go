@@ -86,6 +86,8 @@ type Delta struct {
 	ObservedHandlerRef         string `json:"observed_handler_ref,omitempty"`
 	DesiredInvocationRevision  string `json:"desired_invocation_revision,omitempty"`
 	ObservedInvocationRevision string `json:"observed_invocation_revision,omitempty"`
+	DesiredHandlerRevision     string `json:"desired_handler_revision,omitempty"`
+	ObservedHandlerRevision    string `json:"observed_handler_revision,omitempty"`
 	ObservedSourceRef          string `json:"observed_source_ref,omitempty"`
 	Reason                     string `json:"reason,omitempty"`
 }
@@ -157,6 +159,7 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 			Matcher:                   desired.Matcher,
 			DesiredHandlerRef:         desired.HandlerRef,
 			DesiredInvocationRevision: desired.InvocationRevision,
+			DesiredHandlerRevision:    desired.HandlerRevision,
 			State:                     StateMissing,
 		}
 		if !bindingSupported(desired, registry) {
@@ -168,6 +171,7 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 			consumed[matched] = true
 			delta.ObservedHandlerRef = actual.HandlerRef
 			delta.ObservedInvocationRevision = actual.InvocationRevision
+			delta.ObservedHandlerRevision = actual.HandlerRevision
 			delta.ObservedSourceRef = actual.SourceRef
 			switch {
 			case delta.State == StateUnsupported:
@@ -246,7 +250,7 @@ func bindingSupported(binding Binding, registry harness.Registry) bool {
 }
 
 func handlerRevisionDrifted(desired Binding, actual ObservedBinding) bool {
-	return desired.HandlerRevision != "" && actual.HandlerRevision != "" && desired.HandlerRevision != actual.HandlerRevision
+	return desired.HandlerRevision != "" && desired.HandlerRevision != actual.HandlerRevision
 }
 
 func handlerRevisionVerified(desired Binding, actual ObservedBinding) bool {
