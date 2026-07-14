@@ -178,6 +178,21 @@ tampered plan, inactive owner work, or legacy count-only review keeps the normal
 
 > Hooks are clients. compound is authority.
 
+Hook event names are adapter vocabulary, not semantic authority. The stable input is a lifecycle intention such
+as `prepare_context`, `guard_mutation`, `normalize_artifact`, `observe_outcome`, `preserve_before_loss`,
+`restore_after_resume`, or `close_with_proof`. The existing hook-plan owner must compile those intentions from
+the frozen TaskContract/EffectiveContract plus risk, privacy, and context needs against a revisioned harness
+capability attestation. Its HookPlan output is a harness-native projection with one explicit disposition per
+intention: `native`, `fallback`, `degraded`, or `unsupported`. This replaces HookPlan-as-authority; it does not
+add a peer lifecycle or hook system. The full ownership and compaction/resume flow is in
+[`information-custody.md` §5](./information-custody.md#5-recall-context-injection-and-hooks).
+
+A plan is immutable for the work/session and cites the harness family, surface, version, feature/trust state,
+config scope, handler revision, and fallback revision it was compiled against. Installation observation is
+separate evidence. “Installed” therefore cannot imply “ready,” and an unknown harness cannot inherit optimistic
+capabilities from a familiar one. On delegation, resume, or harness replacement, Compound restores the owned
+working object and remaining ceilings, then compiles a new plan for the new executor.
+
 Hooks may: **request** context · **freeze** selected context into a ContextPack · **guard** mutations (where
 the harness supports blocking) · **capture** evidence/receipts · **emit** typed events. Hooks may **not**:
 deep synthesis · canonical memory promotion · tool/model routing policy · product judgment · global truth
