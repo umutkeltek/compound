@@ -214,7 +214,7 @@ func ResolveExecutionProfile(intent ExecutionProfileIntent) (ExecutionProfilePla
 	nativeDisposition := dispositionExact
 	nativeReason := "explicit native effort is supported by the selected client adapter"
 	if nativeEffort == "" {
-		nativeEffort = definition.NativeEffortByHarness[intent.ClientHarnessID]
+		nativeEffort = translatedNativeEffort(definition, intent.ClientHarnessID, intent.SemanticEffort)
 		nativeDisposition = dispositionTranslated
 		nativeReason = fmt.Sprintf("semantic effort %s maps to %s for %s", intent.SemanticEffort, nativeEffort, intent.ClientHarnessID)
 	}
@@ -238,7 +238,7 @@ func ResolveExecutionProfile(intent ExecutionProfileIntent) (ExecutionProfilePla
 		SemanticEffort:          intent.SemanticEffort,
 		NativeEffort:            NativeEffortRequest{Requested: nativeEffort, Disposition: nativeDisposition, Reason: nativeReason},
 		OrchestrationPolicy:     intent.OrchestrationPolicy,
-		Disposition:             dispositionExact,
+		Disposition:             nativeDisposition,
 		Budget:                  definition.Budget,
 		Checkpoint:              definition.Checkpoint,
 		Candidates:              append([]ExecutionProfileCandidate(nil), definition.Candidates...),
@@ -388,6 +388,34 @@ func supportsNativeEffort(harness, effort string) bool {
 		return oneOf(effort, "low", "medium", "high")
 	default:
 		return false
+	}
+}
+
+func translatedNativeEffort(definition ExecutionProfileDefinition, harness, semanticEffort string) string {
+	if semanticEffort == definition.SemanticEffort {
+		return definition.NativeEffortByHarness[harness]
+	}
+	switch semanticEffort {
+	case "economy":
+		return "low"
+	case "balanced":
+		return "medium"
+	case "deep":
+		if harness == "worker" {
+			return "high"
+		}
+		return "xhigh"
+	case "max":
+		switch harness {
+		case "claude-code":
+			return "max"
+		case "worker":
+			return "high"
+		default:
+			return "xhigh"
+		}
+	default:
+		return ""
 	}
 }
 
