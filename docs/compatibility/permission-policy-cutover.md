@@ -4,16 +4,22 @@ Compound owns the permission authority, governed actuator, and drift consumer:
 
 - authority: `COMPOUND_HOME/config/harness-permissions/claude_code.yaml`
 - renderer: `compound harness generate --harness claude_code`
-- governed actuator: `compound harness generate --harness claude_code --apply --work <work_id>`
+- governed actuator: `compound harness generate --harness claude_code --apply --work <work_id> --actor <operator>`
 - doctor: `compound harness drift --harness claude_code`
 - managed-entry provenance: `COMPOUND_HOME/config/harness-artifacts.jsonl`
 
-Apply requires a live WorkEnvelope, evaluates and records a fresh
-`harness.permissions.apply` ActionIntent + PolicyDecision, preserves unmanaged
-settings, serializes Compound writers, and refuses a target whose exact pre-image
-changed before publication. A pending transaction makes interrupted activation
-visible to drift and recoverable on the next apply; provenance failure restores
-the settings pre-image. A second apply is byte-idempotent.
+Apply requires a running WorkEnvelope whose current lease holder exactly matches
+the explicit operator actor. It evaluates a `security`-class
+`harness.permissions.apply` ActionIntent against a matching standing grant, then
+passes the exact approved render and PolicyDecision through the mutation seam.
+The actuator preserves unmanaged settings, serializes all harness writers, and
+publishes with a kernel-backed compare-and-swap that refuses a changed pre-image.
+A pending transaction makes interrupted activation visible to drift; recovery
+revalidates the authority revision and target before completing or atomically
+restoring the displaced pre-image. Completed, no-op, and failed attempts record
+Receipt + Transition truth with content-addressed pre/post refs. Formatting-only
+JSON differences publish canonical bytes; a second canonical apply is a byte
+no-op.
 
 The reviewed compatibility source revision is
 `sha256:c9f884e2992c654318394116389c66ab4ecb7215ac304ca16589872d1c404731`.
