@@ -136,6 +136,8 @@ func main() {
 		cmdExecutors(os.Args[2:])
 	case "proof-check":
 		cmdProofCheck(os.Args[2:])
+	case "doctor":
+		cmdDoctor(os.Args[2:])
 	case "experiential-smoke":
 		cmdExperientialSmoke(os.Args[2:])
 	case "release":
@@ -182,6 +184,8 @@ func main() {
 		cmdExecutorLens(os.Args[2:])
 	case "lens-modulate":
 		cmdLensModulate(os.Args[2:])
+	case "act":
+		cmdAct(os.Args[2:])
 	case "land-lease":
 		cmdLandLease(os.Args[2:])
 	case "panel":
@@ -329,6 +333,11 @@ compound narrate [--json|--text] [--mood decide|wander|worry] [--recent N] [--ho
 compound executors [--json] read-only executor projection from Workbench, leases, and profile guide; no health overclaim
 compound behavioral-lens <list|run|compose|signals> composable behavioral-lens framework (compound.behavioral_lens_signal.v0.1): uniform observe->InferredSignal plug + visibility-gated composition; sycophancy (paired-stance shift) is the first lens; evidence-only, never a gate; operator_private signals stay under $COMPOUND_HOME
 compound lens-modulate <arm|thresholds|modulate|revert> governed modulator: turns a crossing behavioral-lens signal into a REVERSIBLE, PolicyDecision-gated route/role demote through act; default off + calibration-guarded; modulate is dry-run unless --confirm; operator_private modulations stay operator-local
+compound act repoint --target-path P --target-id KEY --value V --work W [--confirm] [--capability CAP] generic governed OUTBOUND write through the act seam (config-key repoint); dry-run unless --confirm; requires an allowing PolicyDecision; pre/post images + receipt land in $COMPOUND_HOME/events
+compound land-lease <acquire|release|status|steal> TTL-bounded single-holder landing mutex under $COMPOUND_HOME; steal records a reason + prior holder
+compound finding <record|list|show|doctor> direct-write home for durable operational findings (evidence-class, never ledger); doctor flags superseded/stale
+compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
+compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hook install/drift, land-lease state, pending findings, placement guard mode; writes nothing
 compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/gofmt/diff/doctors/redact
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
