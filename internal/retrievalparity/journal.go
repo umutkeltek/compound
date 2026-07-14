@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	JournalSchemaVersion = "compound.retrieval_traffic.v0.1"
-	ClassifierVersion    = "consumer-token-count.v0"
-	JournalRelPath       = "events/retrieval-traffic.ndjson"
+	JournalSchemaVersion     = "compound.retrieval_traffic.v0.2"
+	OrientInputSchemaVersion = "compound.orient_input.v0.1"
+	ClassifierVersion        = "consumer-token-count.v0"
+	JournalRelPath           = "events/retrieval-traffic.ndjson"
 
 	ConsumerOrient = "orient"
 	ConsumerRecall = "recall"
@@ -29,19 +30,33 @@ const (
 	ConsumerSearch = "search"
 )
 
+// OrientInput is the exact production input tuple whose retrieval behavior is
+// being observed. It is deliberately allowed only on COMPOUND_HOME-local
+// journal and fixture surfaces. Reports carry HashOrientInput instead.
+type OrientInput struct {
+	SchemaVersion string `json:"schema_version"`
+	Harness       string `json:"harness"`
+	Cwd           string `json:"cwd"`
+	RepoKind      string `json:"repo_kind"`
+	RepoKindVia   string `json:"repo_kind_via"`
+	Mode          string `json:"mode"`
+	Topic         string `json:"topic"`
+}
+
 // Row is one production retrieval observation. Query is intentionally present
 // only in this COMPOUND_HOME journal shape; parity reports use QuerySHA256 and
 // never embed Row.
 type Row struct {
-	SchemaVersion     string   `json:"schema_version"`
-	ClassifierVersion string   `json:"classifier_version"`
-	Consumer          string   `json:"consumer"`
-	QueryClass        string   `json:"query_class"`
-	QuerySHA256       string   `json:"query_sha256"`
-	Query             string   `json:"query"`
-	ResultRefs        []string `json:"result_refs"`
-	ResultCount       int      `json:"result_count"`
-	LatencyMS         float64  `json:"latency_ms"`
+	SchemaVersion     string       `json:"schema_version"`
+	ClassifierVersion string       `json:"classifier_version"`
+	Consumer          string       `json:"consumer"`
+	QueryClass        string       `json:"query_class"`
+	QuerySHA256       string       `json:"query_sha256"`
+	Query             string       `json:"query"`
+	OrientInput       *OrientInput `json:"orient_input,omitempty"`
+	ResultRefs        []string     `json:"result_refs"`
+	ResultCount       int          `json:"result_count"`
+	LatencyMS         float64      `json:"latency_ms"`
 	// EngineAvailable is consumer-relative: a successful designed fallback is
 	// available even when an optional rented sidecar did not answer.
 	EngineAvailable bool   `json:"engine_available"`
@@ -69,6 +84,15 @@ func NewRow(consumer, query string, resultRefs []string, latency time.Duration, 
 	}
 }
 
+// NewOrientRow records the exact tuple used by the live orient consumer. The
+// tuple never crosses into a parity report; NewReplayRow hashes it there.
+func NewOrientRow(query string, input OrientInput, resultRefs []string, latency time.Duration, engineAvailable bool, now time.Time) Row {
+	row := NewRow(ConsumerOrient, query, resultRefs, latency, engineAvailable, now)
+	normalized := normalizeOrientInput(input)
+	row.OrientInput = &normalized
+	return row
+}
+
 // ClassifyQuery is deliberately content-free: consumer plus a coarse token-count
 // bucket. Changing the buckets requires a classifier-version change.
 func ClassifyQuery(consumer, query string) string {
@@ -90,6 +114,33 @@ func ClassifyQuery(consumer, query string) string {
 func HashQuery(query string) string {
 	sum := sha256.Sum256([]byte(query))
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// HashOrientInput returns a deterministic identity over the full orient tuple
+// and query. JSON over a fixed struct is canonical for this schema: field order
+// is declaration order and strings have one unambiguous encoding.
+func HashOrientInput(input OrientInput, query string) string {
+	payload := struct {
+		SchemaVersion string `json:"schema_version"`
+		Harness       string `json:"harness"`
+		Cwd           string `json:"cwd"`
+		RepoKind      string `json:"repo_kind"`
+		RepoKindVia   string `json:"repo_kind_via"`
+		Mode          string `json:"mode"`
+		Topic         string `json:"topic"`
+		Query         string `json:"query"`
+	}{
+		SchemaVersion: normalizeOrientInput(input).SchemaVersion,
+		Harness:       input.Harness,
+		Cwd:           input.Cwd,
+		RepoKind:      input.RepoKind,
+		RepoKindVia:   input.RepoKindVia,
+		Mode:          input.Mode,
+		Topic:         input.Topic,
+		Query:         query,
+	}
+	data, _ := json.Marshal(payload)
+	return HashQuery(string(data))
 }
 
 // Record is a best-effort tap. A journal failure emits exactly one warning and
@@ -142,9 +193,27 @@ func normalizeRow(row Row) Row {
 	if row.QuerySHA256 == "" {
 		row.QuerySHA256 = HashQuery(row.Query)
 	}
+	if row.OrientInput != nil {
+		normalized := normalizeOrientInput(*row.OrientInput)
+		row.OrientInput = &normalized
+	}
 	row.ResultRefs = uniqueSorted(row.ResultRefs)
 	row.ResultCount = len(row.ResultRefs)
 	return row
+}
+
+func normalizeOrientInput(input OrientInput) OrientInput {
+	if input.SchemaVersion == "" {
+		input.SchemaVersion = OrientInputSchemaVersion
+	}
+	return input
+}
+
+func validateOrientInput(input OrientInput) error {
+	if input.SchemaVersion != OrientInputSchemaVersion {
+		return fmt.Errorf("unsupported orient input schema %q", input.SchemaVersion)
+	}
+	return nil
 }
 
 func validateRow(row Row) error {
@@ -156,6 +225,14 @@ func validateRow(row Row) error {
 	}
 	if !validConsumer(row.Consumer) {
 		return fmt.Errorf("unsupported retrieval consumer %q", row.Consumer)
+	}
+	if row.OrientInput != nil {
+		if row.Consumer != ConsumerOrient {
+			return fmt.Errorf("orient_input is only valid for orient consumer")
+		}
+		if err := validateOrientInput(*row.OrientInput); err != nil {
+			return err
+		}
 	}
 	if row.QueryClass != ClassifyQuery(row.Consumer, row.Query) {
 		return fmt.Errorf("query_class does not match classifier")

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,13 +16,15 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/home"
 	"compound/internal/reviewartifact"
 )
 
 const (
-	FixtureSchemaVersion = "compound.parity_fixture.v0.1"
-	ReportSchemaVersion  = "compound.parity_report.v0.1"
-	ReviewArea           = "retrieval-parity"
+	FixtureSchemaVersion    = "compound.parity_fixture.v0.2"
+	ReportSchemaVersion     = "compound.parity_report.v0.2"
+	CheckpointSchemaVersion = "compound.parity_checkpoint.v0.1"
+	ReviewArea              = "retrieval-parity"
 )
 
 type Coverage struct {
@@ -37,6 +40,7 @@ type NegativeControl struct {
 type FixtureRow struct {
 	Consumer        string           `json:"consumer"`
 	Query           string           `json:"query"`
+	OrientInput     *OrientInput     `json:"orient_input,omitempty"`
 	ExpectedRefs    []string         `json:"expected_refs"`
 	NegativeControl *NegativeControl `json:"negative_control,omitempty"`
 }
@@ -46,6 +50,7 @@ type Fixture struct {
 	ClassifierVersion string       `json:"classifier_version"`
 	GeneratedAt       string       `json:"generated_at,omitempty"`
 	Coverage          Coverage     `json:"coverage"`
+	ControlReportRef  string       `json:"control_report_ref,omitempty"`
 	Rows              []FixtureRow `json:"rows"`
 }
 
@@ -65,6 +70,7 @@ type ReplayRow struct {
 	Consumer        string                 `json:"consumer"`
 	QueryClass      string                 `json:"query_class"`
 	QuerySHA256     string                 `json:"query_sha256"`
+	InputSHA256     string                 `json:"input_sha256,omitempty"`
 	ExpectedRefs    []string               `json:"expected_refs"`
 	ResultRefs      []string               `json:"result_refs"`
 	ResultCount     int                    `json:"result_count"`
@@ -73,7 +79,7 @@ type ReplayRow struct {
 	LatencyMS       float64                `json:"latency_ms"`
 	EngineAvailable bool                   `json:"engine_available"`
 	NegativeControl *NegativeControlResult `json:"negative_control,omitempty"`
-	Passed          bool                   `json:"passed"`
+	ParityPassed    bool                   `json:"parity_passed"`
 	privacySafe     bool
 }
 
@@ -90,15 +96,37 @@ type ClassSummary struct {
 
 type Report struct {
 	envelope.Header
-	ClassifierVersion string         `json:"classifier_version"`
-	FixtureRef        string         `json:"fixture_ref"`
-	Consumer          string         `json:"consumer"`
-	K                 int            `json:"k,omitempty"`
-	Coverage          Coverage       `json:"coverage"`
-	Rows              []ReplayRow    `json:"rows"`
-	Classes           []ClassSummary `json:"classes"`
-	Privacy           PrivacyCheck   `json:"privacy_check"`
-	Passed            bool           `json:"passed"`
+	ClassifierVersion    string         `json:"classifier_version"`
+	FixtureRef           string         `json:"fixture_ref"`
+	Consumer             string         `json:"consumer"`
+	K                    int            `json:"k,omitempty"`
+	Coverage             Coverage       `json:"coverage"`
+	Rows                 []ReplayRow    `json:"rows"`
+	Classes              []ClassSummary `json:"classes"`
+	Privacy              PrivacyCheck   `json:"privacy_check"`
+	ParityPassed         bool           `json:"parity_passed"`
+	NegativeControlValid *bool          `json:"negative_control_valid,omitempty"`
+}
+
+// ReplayIdentity binds resumable progress to the exact immutable fixture and
+// replay configuration. ClassifierVersion participates in both equality and
+// the checkpoint path so classifier changes can never reuse stale progress.
+type ReplayIdentity struct {
+	FixtureRef        string `json:"fixture_ref"`
+	Consumer          string `json:"consumer"`
+	K                 int    `json:"k,omitempty"`
+	ClassifierVersion string `json:"classifier_version"`
+}
+
+// Checkpoint is private resumable replay state. SealSHA256 authenticates every
+// other field against accidental or out-of-band mutation.
+type Checkpoint struct {
+	SchemaVersion string         `json:"schema_version"`
+	Identity      ReplayIdentity `json:"identity"`
+	Coverage      Coverage       `json:"coverage"`
+	Completed     int            `json:"completed"`
+	Rows          []ReplayRow    `json:"rows"`
+	SealSHA256    string         `json:"seal_sha256"`
 }
 
 func LoadFixture(path string) (Fixture, string, error) {
@@ -140,6 +168,9 @@ func ValidateFixture(fixture Fixture) error {
 	if err := validateCoverage(fixture.Coverage); err != nil {
 		return err
 	}
+	if fixture.ControlReportRef != "" && !validSHARef(fixture.ControlReportRef) {
+		return fmt.Errorf("parity fixture control_report_ref invalid")
+	}
 	seen := map[string]bool{}
 	for i, row := range fixture.Rows {
 		if !validConsumer(row.Consumer) {
@@ -148,12 +179,20 @@ func ValidateFixture(fixture Fixture) error {
 		if strings.TrimSpace(row.Query) == "" && !consumerAllowsBlankQuery(row.Consumer) {
 			return fmt.Errorf("fixture row %d: query required", i+1)
 		}
+		if row.OrientInput != nil {
+			if row.Consumer != ConsumerOrient {
+				return fmt.Errorf("fixture row %d: orient_input is only valid for orient consumer", i+1)
+			}
+			if err := validateOrientInput(*row.OrientInput); err != nil {
+				return fmt.Errorf("fixture row %d: %w", i+1, err)
+			}
+		}
 		for j, ref := range row.ExpectedRefs {
 			if !validFixtureRef(row.Consumer, ref) {
 				return fmt.Errorf("fixture row %d: expected_ref %d invalid", i+1, j+1)
 			}
 		}
-		key := row.Consumer + "\x00" + HashQuery(row.Query)
+		key := fixtureRowIdentity(row)
 		if seen[key] {
 			return fmt.Errorf("fixture row %d: duplicate consumer/query", i+1)
 		}
@@ -187,6 +226,7 @@ func normalizeFixture(fixture Fixture) Fixture {
 		fixture.ClassifierVersion = ClassifierVersion
 	}
 	fixture.GeneratedAt = strings.TrimSpace(fixture.GeneratedAt)
+	fixture.ControlReportRef = strings.TrimSpace(fixture.ControlReportRef)
 	fixture.Coverage.WindowStart = strings.TrimSpace(fixture.Coverage.WindowStart)
 	fixture.Coverage.WindowEnd = strings.TrimSpace(fixture.Coverage.WindowEnd)
 	if fixture.Coverage.KnownGaps == nil {
@@ -196,6 +236,10 @@ func normalizeFixture(fixture Fixture) Fixture {
 	}
 	for i := range fixture.Rows {
 		fixture.Rows[i].Consumer = strings.TrimSpace(fixture.Rows[i].Consumer)
+		if fixture.Rows[i].OrientInput != nil {
+			normalized := normalizeOrientInput(*fixture.Rows[i].OrientInput)
+			fixture.Rows[i].OrientInput = &normalized
+		}
 		fixture.Rows[i].ExpectedRefs = uniqueSorted(fixture.Rows[i].ExpectedRefs)
 		if fixture.Rows[i].NegativeControl != nil {
 			fixture.Rows[i].NegativeControl.MaskedRef = strings.TrimSpace(fixture.Rows[i].NegativeControl.MaskedRef)
@@ -204,24 +248,36 @@ func normalizeFixture(fixture Fixture) Fixture {
 	return fixture
 }
 
+func fixtureRowIdentity(row FixtureRow) string {
+	identity := HashQuery(row.Query)
+	if row.Consumer == ConsumerOrient && row.OrientInput != nil {
+		identity = HashOrientInput(*row.OrientInput, row.Query)
+	}
+	return row.Consumer + "\x00" + identity
+}
+
 // FreezeFromJournal records a deduplicated candidate baseline. Repeated rows
 // union their result refs so the door does not silently discard intermittent
 // pre-intake hits; an operator labels load-bearing refs on this evidence later.
-func FreezeFromJournal(homePath string, windowDays int, out string, now time.Time) (Fixture, string, error) {
-	if windowDays <= 0 {
-		return Fixture{}, "", fmt.Errorf("window-days must be positive")
+func FreezeFromJournal(homePath string, windowDays int, out, controlReportPath string, now time.Time) (Fixture, string, error) {
+	windowStart, windowEnd, err := validatedFreezeWindow(windowDays, now)
+	if err != nil {
+		return Fixture{}, "", err
+	}
+	_, controlReportRef, err := loadControlReport(controlReportPath)
+	if err != nil {
+		return Fixture{}, "", err
 	}
 	rows, gaps, err := loadJournal(homePath, true)
 	if err != nil {
 		return Fixture{}, "", err
 	}
-	windowEnd := now.UTC()
-	windowStart := windowEnd.Add(-time.Duration(windowDays) * 24 * time.Hour)
 
 	type aggregate struct {
-		consumer string
-		query    string
-		refs     []string
+		consumer    string
+		query       string
+		orientInput *OrientInput
+		refs        []string
 	}
 	groups := map[string]*aggregate{}
 	seenConsumers := map[string]bool{}
@@ -243,13 +299,25 @@ func FreezeFromJournal(homePath string, windowDays int, out string, now time.Tim
 			earliest = ts
 		}
 		seenConsumers[row.Consumer] = true
-		key := row.Consumer + "\x00" + row.QuerySHA256
+		identityRef := row.QuerySHA256
+		if row.Consumer == ConsumerOrient {
+			if row.OrientInput == nil {
+				gaps = append(gaps, "orient_input_unavailable")
+			} else {
+				identityRef = HashOrientInput(*row.OrientInput, row.Query)
+			}
+		}
+		key := row.Consumer + "\x00" + identityRef
 		group := groups[key]
 		if group == nil {
 			group = &aggregate{consumer: row.Consumer, query: row.Query}
+			if row.OrientInput != nil {
+				input := *row.OrientInput
+				group.orientInput = &input
+			}
 			groups[key] = group
 		} else if group.query != row.Query {
-			gaps = append(gaps, "query_hash_collision:"+row.QuerySHA256)
+			gaps = append(gaps, "query_hash_collision:"+identityRef)
 			continue
 		}
 		group.refs = append(group.refs, row.ResultRefs...)
@@ -275,12 +343,14 @@ func FreezeFromJournal(homePath string, windowDays int, out string, now time.Tim
 			WindowEnd:   windowEnd.Format(time.RFC3339Nano),
 			KnownGaps:   uniqueSorted(gaps),
 		},
-		Rows: []FixtureRow{},
+		ControlReportRef: controlReportRef,
+		Rows:             []FixtureRow{},
 	}
 	for _, group := range groups {
 		fixture.Rows = append(fixture.Rows, FixtureRow{
 			Consumer:     group.consumer,
 			Query:        group.query,
+			OrientInput:  group.orientInput,
 			ExpectedRefs: uniqueSorted(group.refs),
 		})
 	}
@@ -288,7 +358,7 @@ func FreezeFromJournal(homePath string, windowDays int, out string, now time.Tim
 		if fixture.Rows[i].Consumer != fixture.Rows[j].Consumer {
 			return fixture.Rows[i].Consumer < fixture.Rows[j].Consumer
 		}
-		return HashQuery(fixture.Rows[i].Query) < HashQuery(fixture.Rows[j].Query)
+		return fixtureRowIdentity(fixture.Rows[i]) < fixtureRowIdentity(fixture.Rows[j])
 	})
 	name, err := freezeOutputName(out, fixture)
 	if err != nil {
@@ -299,6 +369,240 @@ func FreezeFromJournal(homePath string, windowDays int, out string, now time.Tim
 		return Fixture{}, "", err
 	}
 	return fixture, path, nil
+}
+
+func validatedFreezeWindow(windowDays int, now time.Time) (time.Time, time.Time, error) {
+	if windowDays <= 0 {
+		return time.Time{}, time.Time{}, fmt.Errorf("window-days must be positive")
+	}
+	windowEnd := now.UTC()
+	if err := validateRFC3339Endpoint("window_end", windowEnd); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	const day = 24 * time.Hour
+	if int64(windowDays) > math.MaxInt64/int64(day) {
+		return time.Time{}, time.Time{}, fmt.Errorf("window_start is outside representable duration")
+	}
+	windowStart := windowEnd.Add(-time.Duration(int64(windowDays) * int64(day)))
+	if err := validateRFC3339Endpoint("window_start", windowStart); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if windowStart.After(windowEnd) {
+		return time.Time{}, time.Time{}, fmt.Errorf("window_start must not follow window_end")
+	}
+	return windowStart, windowEnd, nil
+}
+
+func validateRFC3339Endpoint(name string, value time.Time) error {
+	text := value.Format(time.RFC3339Nano)
+	parsed, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || !parsed.Equal(value) {
+		return fmt.Errorf("%s must be representable as RFC3339Nano", name)
+	}
+	return nil
+}
+
+func loadControlReport(path string) (Report, string, error) {
+	if strings.TrimSpace(path) == "" {
+		return Report{}, "", fmt.Errorf("control-report required")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Report{}, "", fmt.Errorf("read control report: %w", err)
+	}
+	var report Report
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&report); err != nil {
+		return Report{}, "", fmt.Errorf("decode control report: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return Report{}, "", fmt.Errorf("control report must contain exactly one JSON value")
+	}
+	if err := validateReport(report); err != nil {
+		return Report{}, "", fmt.Errorf("invalid control report: %w", err)
+	}
+	if report.NegativeControlValid == nil || !*report.NegativeControlValid {
+		return Report{}, "", fmt.Errorf("control report must contain a valid negative control")
+	}
+	return report, hashBytes(data), nil
+}
+
+// NewReplayIdentity binds checkpoint state to an immutable fixture and the
+// exact replay configuration.
+func NewReplayIdentity(fixtureRef, consumer string, k int) ReplayIdentity {
+	return ReplayIdentity{
+		FixtureRef:        strings.TrimSpace(fixtureRef),
+		Consumer:          strings.TrimSpace(consumer),
+		K:                 k,
+		ClassifierVersion: ClassifierVersion,
+	}
+}
+
+// CheckpointPath is deterministic over every replay identity field, including
+// the classifier version.
+func CheckpointPath(homePath string, identity ReplayIdentity) string {
+	identity = normalizeReplayIdentity(identity)
+	data, _ := json.Marshal(identity)
+	digest := strings.TrimPrefix(hashBytes(data), "sha256:")
+	return filepath.Join(homePath, "reviews", ReviewArea, "checkpoints", "checkpoint_"+digest[:16]+".json")
+}
+
+func NewCheckpoint(identity ReplayIdentity, coverage Coverage) Checkpoint {
+	return Checkpoint{
+		SchemaVersion: CheckpointSchemaVersion,
+		Identity:      normalizeReplayIdentity(identity),
+		Coverage:      normalizeCoverage(coverage),
+		Rows:          []ReplayRow{},
+	}
+}
+
+func LoadCheckpoint(path string, expected ReplayIdentity) (Checkpoint, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	var checkpoint Checkpoint
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&checkpoint); err != nil {
+		return Checkpoint{}, fmt.Errorf("decode parity checkpoint: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return Checkpoint{}, fmt.Errorf("parity checkpoint must contain exactly one JSON value")
+	}
+	providedSeal := checkpoint.SealSHA256
+	if !validSHARef(providedSeal) || checkpointSeal(checkpoint) != providedSeal {
+		return Checkpoint{}, fmt.Errorf("parity checkpoint tampered: content seal mismatch")
+	}
+	expected = normalizeReplayIdentity(expected)
+	if checkpoint.Identity != expected {
+		return Checkpoint{}, fmt.Errorf("parity checkpoint identity does not match replay")
+	}
+	if err := validateCheckpoint(checkpoint); err != nil {
+		return Checkpoint{}, err
+	}
+	for i := range checkpoint.Rows {
+		checkpoint.Rows[i].privacySafe = true
+	}
+	return checkpoint, nil
+}
+
+func WriteCheckpoint(homePath string, checkpoint *Checkpoint) error {
+	if checkpoint == nil {
+		return fmt.Errorf("parity checkpoint required")
+	}
+	if _, err := home.LoadManifest(homePath); err != nil {
+		return fmt.Errorf("invalid COMPOUND_HOME: %w", err)
+	}
+	if checkpoint.SchemaVersion == "" {
+		checkpoint.SchemaVersion = CheckpointSchemaVersion
+	}
+	checkpoint.Identity = normalizeReplayIdentity(checkpoint.Identity)
+	checkpoint.Coverage = normalizeCoverage(checkpoint.Coverage)
+	if checkpoint.Rows == nil {
+		checkpoint.Rows = []ReplayRow{}
+	}
+	if err := validateCheckpoint(*checkpoint); err != nil {
+		return err
+	}
+	checkpoint.SealSHA256 = checkpointSeal(*checkpoint)
+	path := CheckpointPath(homePath, checkpoint.Identity)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(checkpoint, "", "  ")
+	if err != nil {
+		return err
+	}
+	if _, err := temp.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeReplayIdentity(identity ReplayIdentity) ReplayIdentity {
+	identity.FixtureRef = strings.TrimSpace(identity.FixtureRef)
+	identity.Consumer = strings.TrimSpace(identity.Consumer)
+	if identity.ClassifierVersion == "" {
+		identity.ClassifierVersion = ClassifierVersion
+	}
+	return identity
+}
+
+func validateReplayIdentity(identity ReplayIdentity) error {
+	if !validSHARef(identity.FixtureRef) {
+		return fmt.Errorf("parity checkpoint fixture identity invalid")
+	}
+	if !validConsumer(identity.Consumer) {
+		return fmt.Errorf("parity checkpoint consumer identity invalid")
+	}
+	if identity.ClassifierVersion != ClassifierVersion {
+		return fmt.Errorf("parity checkpoint classifier identity invalid")
+	}
+	if (identity.Consumer == ConsumerQuery || identity.Consumer == ConsumerSearch) && identity.K <= 0 {
+		return fmt.Errorf("parity checkpoint k identity required for ranked consumer")
+	}
+	if (identity.Consumer == ConsumerOrient || identity.Consumer == ConsumerRecall) && identity.K != 0 {
+		return fmt.Errorf("parity checkpoint k identity must be omitted for unranked consumer")
+	}
+	return nil
+}
+
+func validateCheckpoint(checkpoint Checkpoint) error {
+	if checkpoint.SchemaVersion != CheckpointSchemaVersion {
+		return fmt.Errorf("unsupported parity checkpoint schema %q", checkpoint.SchemaVersion)
+	}
+	if err := validateReplayIdentity(checkpoint.Identity); err != nil {
+		return err
+	}
+	if err := validateCoverage(checkpoint.Coverage); err != nil {
+		return err
+	}
+	if checkpoint.Completed < 0 || checkpoint.Completed != len(checkpoint.Rows) {
+		return fmt.Errorf("parity checkpoint completed must equal len(rows)")
+	}
+	for i, row := range checkpoint.Rows {
+		if err := validateReplayRow(row, checkpoint.Identity.Consumer); err != nil {
+			return fmt.Errorf("parity checkpoint row %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+func checkpointSeal(checkpoint Checkpoint) string {
+	checkpoint.SealSHA256 = ""
+	data, _ := json.Marshal(checkpoint)
+	return hashBytes(data)
+}
+
+func normalizeCoverage(coverage Coverage) Coverage {
+	coverage.WindowStart = strings.TrimSpace(coverage.WindowStart)
+	coverage.WindowEnd = strings.TrimSpace(coverage.WindowEnd)
+	coverage.KnownGaps = uniqueSorted(coverage.KnownGaps)
+	return coverage
 }
 
 func freezeOutputName(out string, fixture Fixture) (string, error) {
@@ -350,8 +654,12 @@ func NewReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, en
 		ExtraHits:       reportExtra,
 		LatencyMS:       float64(max(latency, 0)) / float64(time.Millisecond),
 		EngineAvailable: engineAvailable,
-		Passed:          len(lost) == 0,
+		ParityPassed:    engineAvailable && len(lost) == 0,
 		privacySafe:     privacySafe,
+	}
+	if row.Consumer == ConsumerOrient && row.OrientInput != nil {
+		reportRow.InputSHA256 = HashOrientInput(*row.OrientInput, row.Query)
+		reportRow.privacySafe = reportRow.privacySafe && validSHARef(reportRow.InputSHA256)
 	}
 	if row.NegativeControl != nil {
 		masked := strings.TrimSpace(row.NegativeControl.MaskedRef)
@@ -359,7 +667,7 @@ func NewReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, en
 		reportRow.privacySafe = reportRow.privacySafe && validFixtureRef(row.Consumer, masked) && validPersistedRef(row.Consumer, persistedMasked)
 		reportRow.NegativeControl = &NegativeControlResult{
 			MaskedRef: persistedMasked,
-			Observed:  contains(lost, masked),
+			Observed:  contains(reportLost, persistedMasked),
 		}
 	}
 	return reportRow
@@ -392,14 +700,15 @@ func BuildReport(fixtureRef, consumer string, k int, coverage Coverage, rows []R
 		Rows:              append([]ReplayRow(nil), rows...),
 		Classes:           summarizeClasses(rows),
 		Privacy:           PrivacyCheck{RawQueryExcluded: privacySafe, QueryRefsHashed: allRowsHashed(rows)},
-		Passed:            true,
+		ParityPassed:      true,
 	}
 	for _, row := range rows {
-		if !row.Passed {
-			report.Passed = false
+		if !row.ParityPassed {
+			report.ParityPassed = false
 			break
 		}
 	}
+	report.NegativeControlValid = negativeControlValidity(rows)
 	return report
 }
 
@@ -417,6 +726,15 @@ func WriteReport(homePath string, report Report) (string, error) {
 }
 
 func validateReport(report Report) error {
+	if report.SchemaVersion != ReportSchemaVersion {
+		return fmt.Errorf("unsupported parity report schema %q", report.SchemaVersion)
+	}
+	if strings.TrimSpace(report.ID) == "" {
+		return fmt.Errorf("parity report id required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, report.CreatedAt); err != nil {
+		return fmt.Errorf("parity report created_at must be RFC3339Nano")
+	}
 	if report.ClassifierVersion != ClassifierVersion {
 		return fmt.Errorf("unsupported query classifier %q", report.ClassifierVersion)
 	}
@@ -439,19 +757,8 @@ func validateReport(report Report) error {
 		return err
 	}
 	for i, row := range report.Rows {
-		if row.Consumer != report.Consumer || !validQueryClass(row.Consumer, row.QueryClass) {
-			return fmt.Errorf("parity report row %d classification invalid", i+1)
-		}
-		if !validSHARef(row.QuerySHA256) {
-			return fmt.Errorf("parity report row %d query_sha256 invalid", i+1)
-		}
-		for _, refs := range [][]string{row.ExpectedRefs, row.ResultRefs, row.LostHits, row.ExtraHits} {
-			if !validPersistedRefs(row.Consumer, refs) {
-				return fmt.Errorf("parity report row %d reference invalid", i+1)
-			}
-		}
-		if row.NegativeControl != nil && !validPersistedRef(row.Consumer, row.NegativeControl.MaskedRef) {
-			return fmt.Errorf("parity report row %d negative_control invalid", i+1)
+		if err := validateReplayRow(row, report.Consumer); err != nil {
+			return fmt.Errorf("parity report row %d: %w", i+1, err)
 		}
 	}
 	for i, class := range report.Classes {
@@ -462,7 +769,81 @@ func validateReport(report Report) error {
 	if !report.Privacy.RawQueryExcluded || !report.Privacy.QueryRefsHashed || !allRowsHashed(report.Rows) {
 		return fmt.Errorf("parity report privacy check failed")
 	}
+	if report.ParityPassed != rowsParityPassed(report.Rows) {
+		return fmt.Errorf("parity report parity_passed does not match rows")
+	}
+	wantControl := negativeControlValidity(report.Rows)
+	if !equalOptionalBool(report.NegativeControlValid, wantControl) {
+		return fmt.Errorf("parity report negative_control_valid does not match rows")
+	}
 	return nil
+}
+
+func validateReplayRow(row ReplayRow, consumer string) error {
+	if row.Consumer != consumer || !validQueryClass(row.Consumer, row.QueryClass) {
+		return fmt.Errorf("classification invalid")
+	}
+	if !validSHARef(row.QuerySHA256) {
+		return fmt.Errorf("query_sha256 invalid")
+	}
+	if row.InputSHA256 != "" {
+		if row.Consumer != ConsumerOrient || !validSHARef(row.InputSHA256) {
+			return fmt.Errorf("input_sha256 invalid")
+		}
+	}
+	for _, refs := range [][]string{row.ExpectedRefs, row.ResultRefs, row.LostHits, row.ExtraHits} {
+		if !validPersistedRefs(row.Consumer, refs) {
+			return fmt.Errorf("reference invalid")
+		}
+	}
+	if row.ResultCount != len(row.ResultRefs) {
+		return fmt.Errorf("result_count does not match result_refs")
+	}
+	if row.LatencyMS < 0 {
+		return fmt.Errorf("latency_ms must be non-negative")
+	}
+	if row.ParityPassed != (row.EngineAvailable && len(row.LostHits) == 0) {
+		return fmt.Errorf("parity_passed does not match evidence")
+	}
+	if row.NegativeControl != nil {
+		if !validPersistedRef(row.Consumer, row.NegativeControl.MaskedRef) ||
+			row.NegativeControl.Observed != contains(row.LostHits, row.NegativeControl.MaskedRef) {
+			return fmt.Errorf("negative_control invalid")
+		}
+	}
+	return nil
+}
+
+func rowsParityPassed(rows []ReplayRow) bool {
+	for _, row := range rows {
+		if !row.ParityPassed {
+			return false
+		}
+	}
+	return true
+}
+
+func negativeControlValidity(rows []ReplayRow) *bool {
+	hasControl := false
+	valid := true
+	for _, row := range rows {
+		if row.NegativeControl == nil {
+			continue
+		}
+		hasControl = true
+		valid = valid && row.NegativeControl.Observed
+	}
+	if !hasControl {
+		return nil
+	}
+	return &valid
+}
+
+func equalOptionalBool(left, right *bool) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func summarizeClasses(rows []ReplayRow) []ClassSummary {
@@ -475,7 +856,7 @@ func summarizeClasses(rows []ReplayRow) []ClassSummary {
 			byClass[key] = summary
 		}
 		summary.Rows++
-		if row.Passed {
+		if row.ParityPassed {
 			summary.Passed++
 		} else {
 			summary.Failed++
@@ -503,6 +884,9 @@ func summarizeClasses(rows []ReplayRow) []ClassSummary {
 func allRowsHashed(rows []ReplayRow) bool {
 	for _, row := range rows {
 		if !validSHARef(row.QuerySHA256) {
+			return false
+		}
+		if row.InputSHA256 != "" && !validSHARef(row.InputSHA256) {
 			return false
 		}
 	}
@@ -536,7 +920,7 @@ func validFixtureRef(consumer, ref string) bool {
 	if ref == "" || len(ref) > 512 || containsControl(ref) {
 		return false
 	}
-	claimRef := strings.HasPrefix(ref, "claim://") && validOpaqueID(strings.TrimPrefix(ref, "claim://"))
+	claimRef := strings.HasPrefix(ref, "claim://") && validClaimFixtureID(strings.TrimPrefix(ref, "claim://"))
 	switch consumer {
 	case ConsumerQuery:
 		return claimRef
@@ -566,7 +950,7 @@ func persistedRef(consumer, ref string) string {
 	}
 	if strings.HasPrefix(ref, "claim://") {
 		claimID := strings.TrimPrefix(ref, "claim://")
-		if validOpaqueID(claimID) && !validCanonicalID(claimID, "claim_") {
+		if validClaimFixtureID(claimID) && !validCanonicalID(claimID, "claim_") {
 			return hashBytes([]byte(ref))
 		}
 	}
@@ -574,6 +958,10 @@ func persistedRef(consumer, ref string) string {
 		return hashBytes([]byte(ref))
 	}
 	return ref
+}
+
+func validClaimFixtureID(value string) bool {
+	return len(value) <= 500 && validSafeID(value)
 }
 
 func validPersistedRefs(consumer string, refs []string) bool {
