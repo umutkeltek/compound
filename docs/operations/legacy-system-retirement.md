@@ -107,18 +107,18 @@ compound authority os-absorption-doctor --json   # private dogfood matrix when i
 compound proof-check --json
 ```
 
-For a GBrain database export, physical custody is the bounded sequence below. The export's `dump_ref` must
+For a database export with native-dump support, physical custody is the bounded sequence below. The export's `dump_ref` must
 match the supplied dump exactly; do not attach a merely newer or nearby backup generation.
 
 ```sh
-compound source manifest-create --family gbrain_db_export_manifest \
+compound source manifest-create --family <database-export-family> \
   --from-export <export.json> --dump <matching.dump> --json
-compound source manifest-doctor gbrain_db_export_manifest --json
-compound source manifest-materialize-dump gbrain_db_export_manifest \
+compound source manifest-doctor <database-export-family> --json
+compound source manifest-materialize-dump <database-export-family> \
   --target <isolated-recovery.dump> --json
 ```
 
-A green materialization closes only the byte-custody part of lossless preservation. Keep the GBrain row at
+A green materialization closes only the byte-custody part of lossless preservation. Keep the database-service row at
 `bridge` until an isolated database restore, production-consumer replay, negative control, write-path cutover,
 quiet window, rollback rehearsal, and explicit operator retirement act are all evidenced.
 

@@ -113,7 +113,7 @@ declared recoverable body remains `custody_complete=false`. Database-native dump
 symlinks, xattrs, ACLs, and compound document packages require source-family adapters; a regular-file snapshot
 must not overclaim those semantics.
 
-The GBrain export family is the first database-native custody adapter. `manifest-create --from-export ...
+The first database-export custody adapter uses `manifest-create --from-export ...
 --dump ...` accepts a dump only when its streamed SHA-256 equals the export's exact `dump_ref`, then records
 `dump_body_ref` and `dump_bytes` at family scope. A mismatch publishes no artifact. `manifest-doctor` keeps an
 inventory-only export pending and fails a missing, corrupt, wrong-ref, or wrong-size owned dump;
