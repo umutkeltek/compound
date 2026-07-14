@@ -229,7 +229,7 @@ func TestApplyPermissionsInterruptedWriteIsVisibleAndRecovered(t *testing.T) {
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	previousHook := applyPermissionsAfterTargetWrite
 	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
-	if _, err := ApplyPermissions(homePath, approved, action, decision); err == nil {
+	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply); err == nil {
 		t.Fatal("interrupted apply error = nil")
 	}
 	pendingInfo, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code"))
@@ -249,7 +249,7 @@ func TestApplyPermissionsInterruptedWriteIsVisibleAndRecovered(t *testing.T) {
 
 	applyPermissionsAfterTargetWrite = previousHook
 	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
-	if _, err := ApplyPermissions(homePath, approved, action, decision); err != nil {
+	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply); err != nil {
 		t.Fatalf("recover apply: %v", err)
 	}
 	report, err = PermissionDrift(homePath, "claude_code")
@@ -326,7 +326,7 @@ func TestApplyPermissionsRequiresExactGovernanceAndApprovedRender(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			r, a, d := approved, action, decision
 			tt.mutate(&r, &a, &d)
-			if _, err := ApplyPermissions(homePath, r, a, d); err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.wantText)) {
+			if _, err := ApplyPermissions(homePath, r, a, d, allowPermissionApply); err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.wantText)) {
 				t.Fatalf("ApplyPermissions error = %v, want containing %q", err, tt.wantText)
 			}
 			after, err := os.ReadFile(targetPath)
@@ -359,7 +359,7 @@ func TestApplyPermissionsRejectsApprovedRenderWhenAuthorityOrTargetChanges(t *te
 			approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 			before, _ := os.ReadFile(targetPath)
 			tc.mutate(t, homePath, targetPath)
-			if _, err := ApplyPermissions(homePath, approved, action, decision); err == nil || !strings.Contains(err.Error(), "approved render") {
+			if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply); err == nil || !strings.Contains(err.Error(), "approved render") {
 				t.Fatalf("ApplyPermissions error = %v, want stale approved render refusal", err)
 			}
 			after, _ := os.ReadFile(targetPath)
@@ -384,7 +384,7 @@ func TestPermissionRenderFormattingDifferencePublishesCanonicalBytes(t *testing.
 	if !approved.Changed {
 		t.Fatal("byte-different semantic JSON reported Changed=false")
 	}
-	applied, err := ApplyPermissions(homePath, approved, action, decision)
+	applied, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestApplyPermissionsSerializesSharedManifestAcrossHarnesses(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := ApplyPermissions(homePath, approval.r, approval.a, approval.d)
+			_, err := ApplyPermissions(homePath, approval.r, approval.a, approval.d, allowPermissionApply)
 			errs <- err
 		}()
 	}
@@ -528,14 +528,14 @@ func TestPendingRecoveryRejectsChangedAuthorityRevision(t *testing.T) {
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	previousHook := applyPermissionsAfterTargetWrite
 	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
-	if _, err := ApplyPermissions(homePath, approved, action, decision); err == nil {
+	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply); err == nil {
 		t.Fatal("interrupted apply error = nil")
 	}
 	applyPermissionsAfterTargetWrite = previousHook
 	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
 	writePermissionFixture(t, homePath, targetPath+".changed", permissionFixture([]string{"Write"}))
 	before, _ := os.ReadFile(targetPath)
-	if _, err := ApplyPermissions(homePath, approved, action, decision); err == nil || !strings.Contains(err.Error(), "source revision") {
+	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply); err == nil || !strings.Contains(err.Error(), "source revision") {
 		t.Fatalf("recovery error = %v, want source revision refusal", err)
 	}
 	after, _ := os.ReadFile(targetPath)
@@ -565,11 +565,86 @@ func TestPendingRecoveryRejectsNonLeafRecoveryName(t *testing.T) {
 		IntendedSHA256: approved.Artifact.ContentSHA256, SourceAuthorityRef: approved.Artifact.SourceAuthorityRef, SourceRevision: approved.Artifact.SourceRevision,
 	}
 	writeTestJSON(t, PermissionApplyPendingPath(homePath, "claude_code"), pending)
-	if _, err := ApplyPermissions(homePath, approved, action, decision); err == nil || !strings.Contains(err.Error(), "recovery name") {
+	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply); err == nil || !strings.Contains(err.Error(), "recovery name") {
 		t.Fatalf("ApplyPermissions error = %v, want invalid recovery name", err)
 	}
 	if body, err := os.ReadFile(sentinelPath); err != nil || string(body) != "must survive" {
 		t.Fatalf("non-leaf recovery name touched sentinel: body=%q err=%v", body, err)
+	}
+}
+
+func TestApplyPermissionsRevalidatesAuthorizationAfterWaitingForMutationLock(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	before, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lockHeld := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- withPermissionApplyLock(homePath, func() error {
+			close(lockHeld)
+			<-releaseLock
+			return nil
+		})
+	}()
+	<-lockHeld
+
+	authorityCurrent := atomic.Bool{}
+	authorityCurrent.Store(true)
+	applyDone := make(chan error, 1)
+	go func() {
+		_, err := ApplyPermissions(homePath, approved, action, decision, func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error {
+			if !authorityCurrent.Load() {
+				return os.ErrPermission
+			}
+			return nil
+		})
+		applyDone <- err
+	}()
+	authorityCurrent.Store(false)
+	close(releaseLock)
+	if err := <-lockDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-applyDone; err == nil || !strings.Contains(err.Error(), "authorization") {
+		t.Fatalf("ApplyPermissions error = %v, want in-lock authorization refusal", err)
+	}
+	after, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytesEqual(before, after) {
+		t.Fatal("authorization revoked while waiting but target was published")
+	}
+	if _, err := os.Stat(HarnessArtifactManifestPath(homePath)); !os.IsNotExist(err) {
+		t.Fatalf("authorization refusal wrote manifest: %v", err)
+	}
+}
+
+func TestApplyPermissionsRevalidatesAuthorizationBeforeManifestOnlyMutation(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	initial, _, _ := governedPermissionApproval(t, homePath, "claude_code")
+	if err := os.WriteFile(targetPath, initial.Content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	if approved.Changed {
+		t.Fatal("fixture target is not canonical")
+	}
+	if _, err := ApplyPermissions(homePath, approved, action, decision, func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error {
+		return os.ErrPermission
+	}); err == nil || !strings.Contains(err.Error(), "authorization") {
+		t.Fatalf("ApplyPermissions error = %v, want manifest authorization refusal", err)
+	}
+	if _, err := os.Stat(HarnessArtifactManifestPath(homePath)); !os.IsNotExist(err) {
+		t.Fatalf("authorization refusal wrote manifest: %v", err)
 	}
 }
 
@@ -606,7 +681,11 @@ func governedPermissionApproval(t *testing.T, homePath, harnessName string) (Per
 func applyGovernedPermissions(t *testing.T, homePath, harnessName string) (PermissionRender, error) {
 	t.Helper()
 	render, action, decision := governedPermissionApproval(t, homePath, harnessName)
-	return ApplyPermissions(homePath, render, action, decision)
+	return ApplyPermissions(homePath, render, action, decision, allowPermissionApply)
+}
+
+func allowPermissionApply(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error {
+	return nil
 }
 
 func bytesEqual(a, b []byte) bool { return reflect.DeepEqual(a, b) }
