@@ -5944,6 +5944,7 @@ func homeCleanStr(b bool) string {
 
 type homeDoctorJSONReport struct {
 	SchemaVersion              string                     `json:"schema_version"`
+	GeneratedAt                string                     `json:"generated_at"`
 	Home                       string                     `json:"home"`
 	Kind                       string                     `json:"kind,omitempty"`
 	ManifestOK                 bool                       `json:"manifest_ok"`
@@ -5996,6 +5997,7 @@ func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
 	}
 	return homeDoctorJSONReport{
 		SchemaVersion:              "compound.home_doctor_report.v0.1",
+		GeneratedAt:                time.Now().UTC().Format(time.RFC3339),
 		Home:                       r.Home,
 		Kind:                       r.Manifest.HomeKind,
 		ManifestOK:                 r.ManifestOK,
