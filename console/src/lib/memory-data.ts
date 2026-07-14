@@ -50,9 +50,19 @@ export function isActionableMemoryCandidate(candidate: Json): boolean {
  * decision-shaped row whose claim_type drifted still enters the queue. Knowledge
  * corpus rows (x_likes, imports) are parked in the tens of thousands and MUST
  * NOT flood in: they are neither decision-typed nor decision:-entity.
+ *
+ * A candidate the operator has already ruled on (keep-aside-drain lane,
+ * work_4033b98c5837) is EXCLUDED even though it stays parked: `compound memory
+ * adjudicate` (the CLI door the console's "Keep aside" card calls) stamps
+ * `adjudicated_by` on the resulting candidate — see mem.Candidate.AdjudicatedBy.
+ * Its presence means a human already looked at this exact card and chose "keep
+ * as evidence, not yet ambient" — re-showing it as a needs-your-call queue item
+ * forever would re-litigate a decision already made. A raw harvested park (never
+ * touched by the ratification door) carries no `adjudicated_by` and still renders.
  */
 export function isStandingLawCandidate(candidate: Json): boolean {
   if (str(candidate.state) !== "parked") return false;
+  if (str(candidate.adjudicated_by).trim()) return false;
   const entity = str(candidate.entity).trim();
   return str(candidate.claim_type).trim() === "decision" || entity.startsWith("decision:");
 }

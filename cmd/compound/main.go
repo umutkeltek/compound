@@ -229,7 +229,7 @@ func memoryUsage(sub string) string {
 	case "candidates":
 		return "usage: compound memory candidates --json [--state proposed|parked|promoted|rejected|no_promote|needs_review] [--limit N] [--kind K] [--include-evidence]"
 	case "adjudicate":
-		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--confirmation-ref ev_ID]"
+		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W] [--by ACTOR] [--confirmation-ref ev_ID]"
 	case "confirmation":
 		return "usage: compound memory confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>"
 	case "graph":
@@ -1891,7 +1891,7 @@ func cmdMemory(args []string) {
 		die(err)
 		fmt.Printf("%s: recorded confirmation %s reviewed_by=%s\n", candidateID, evidence.ID, evidence.Actor)
 	case "adjudicate":
-		candidateID := firstPos(map[string]bool{"--verdict": true, "--work": true, "--confirmation-ref": true})
+		candidateID := firstPos(map[string]bool{"--verdict": true, "--work": true, "--confirmation-ref": true, "--by": true})
 		verdict := flag("--verdict")
 		confirmationRef := flag("--confirmation-ref")
 		if has("--confirmation-ref") && confirmationRef == "" {
@@ -1906,7 +1906,12 @@ func cmdMemory(args []string) {
 		if confirmationRef != "" {
 			res, err = store.AdjudicateExplicitConfirmation(candidateID, confirmationRef, flag("--work"), time.Now())
 		} else {
-			res, err = store.Adjudicate(candidateID, verdict, flag("--work"), time.Now())
+			// The CLI verb is the operator ratification door: it always stamps
+			// AdjudicatedBy/AdjudicatedAt (actor defaults to "operator") so a
+			// candidate the operator has ruled on — including a re-park, "Keep
+			// aside" — leaves the needs-your-call queue while staying parked as
+			// evidence. See mem.Candidate.AdjudicatedBy.
+			res, err = store.AdjudicateAsOperator(candidateID, verdict, flag("--work"), flag("--by"), time.Now())
 		}
 		die(err)
 		if res.Claim != nil {

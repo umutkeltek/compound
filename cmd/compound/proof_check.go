@@ -207,6 +207,7 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-decide-brief-smoke", Command: consoleBunSmokeCommand("scripts/decide-model-brief-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decide-brief-smoke"},
 		{Name: "console-decision-execute-smoke", Command: consoleBunSmokeCommand("scripts/decision-execute-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decision-execute-smoke"},
 		{Name: "console-standing-law-smoke", Command: consoleBunSmokeCommand("scripts/standing-law-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-standing-law-smoke"},
+		{Name: "console-memory-data-smoke", Command: consoleBunSmokeCommand("scripts/memory-data-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-memory-data-smoke"},
 		{Name: "console-attention-consistency-smoke", Command: consoleSmokeCommand("scripts/attention-consistency-smoke.mjs"), Dir: "console", SkipIfMissing: "compound", ProofRef: "console-attention-consistency-smoke"},
 		{Name: "console-work-language-smoke", Command: consoleBunSmokeCommand("scripts/work-language-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-work-language-smoke"},
 		{Name: "console-ask-triage-smoke", Command: consoleBunSmokeCommand("scripts/ask-triage-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-ask-triage-smoke"},

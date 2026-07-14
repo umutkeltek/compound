@@ -1515,3 +1515,90 @@ func TestStoreCurrentClaimReadsBackPromotedValueAndFollowsReimport(t *testing.T)
 		t.Fatalf("CurrentClaim after re-import = %+v, ok=%v; want newest /root/second", claim, ok)
 	}
 }
+
+// TestAdjudicateAsOperatorStampsProvenance is the falsifier for the
+// keep-aside-drain lane (work_4033b98c5837): a candidate the operator
+// explicitly kept aside via the CLI ratification door must carry visible
+// adjudicated_by/adjudicated_at provenance in the candidates-list
+// projection, while the plain (unstamped) Adjudicate door used by automated
+// callers (panel apply, decisions import) leaves a candidate looking exactly
+// like one still sitting untouched since ingestion.
+func TestAdjudicateAsOperatorStampsProvenance(t *testing.T) {
+	s := newStore(t)
+
+	// An ordinary automated park (e.g. panel apply, decisions import) must
+	// NOT gain operator provenance — only the CLI's ratification door does.
+	autoSeed := cand("decision:auto", "decided", "auto-parked candidate", "")
+	autoCaptured, err := s.Capture([]Candidate{autoSeed}, t0)
+	if err != nil || len(autoCaptured) != 1 {
+		t.Fatalf("capture auto = %+v, err=%v", autoCaptured, err)
+	}
+	if _, err := s.Adjudicate(autoCaptured[0].ID, "park", "panel-apply", t0); err != nil {
+		t.Fatalf("automated park: %v", err)
+	}
+	autoGot, err := s.getCandidate(autoCaptured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if autoGot.AdjudicatedBy != "" || autoGot.AdjudicatedAt != "" {
+		t.Fatalf("automated Adjudicate stamped provenance it must not: by=%q at=%q", autoGot.AdjudicatedBy, autoGot.AdjudicatedAt)
+	}
+
+	// The operator ratification door — AdjudicateAsOperator, what `compound
+	// memory adjudicate` calls — stamps provenance visible on the candidate.
+	opSeed := cand("decision:op", "decided", "operator-parked candidate", "")
+	opCaptured, err := s.Capture([]Candidate{opSeed}, t0)
+	if err != nil || len(opCaptured) != 1 {
+		t.Fatalf("capture operator = %+v, err=%v", opCaptured, err)
+	}
+	if _, err := s.AdjudicateAsOperator(opCaptured[0].ID, "park", "", "", t0); err != nil {
+		t.Fatalf("operator park: %v", err)
+	}
+	opGot, err := s.getCandidate(opCaptured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opGot.State != "parked" {
+		t.Fatalf("operator-parked candidate state = %q, want parked", opGot.State)
+	}
+	if opGot.AdjudicatedBy != "operator" {
+		t.Fatalf("adjudicated_by = %q, want default %q", opGot.AdjudicatedBy, "operator")
+	}
+	if opGot.AdjudicatedAt != rfc3339(t0) {
+		t.Fatalf("adjudicated_at = %q, want %q", opGot.AdjudicatedAt, rfc3339(t0))
+	}
+
+	// An explicit actor overrides the "operator" default.
+	namedSeed := cand("decision:named", "decided", "named-operator-parked candidate", "")
+	namedCaptured, err := s.Capture([]Candidate{namedSeed}, t0)
+	if err != nil || len(namedCaptured) != 1 {
+		t.Fatalf("capture named = %+v, err=%v", namedCaptured, err)
+	}
+	if _, err := s.AdjudicateAsOperator(namedCaptured[0].ID, "park", "", "operator:umut", t0); err != nil {
+		t.Fatalf("named operator park: %v", err)
+	}
+	namedGot, err := s.getCandidate(namedCaptured[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if namedGot.AdjudicatedBy != "operator:umut" {
+		t.Fatalf("adjudicated_by = %q, want %q", namedGot.AdjudicatedBy, "operator:umut")
+	}
+
+	// candidates-list projection (what the console standing-law queue reads)
+	// must surface the stamp too, not just the raw candidate file.
+	report, err := s.ListCandidates(t0, CandidateListOptions{State: "parked"})
+	if err != nil {
+		t.Fatalf("ListCandidates: %v", err)
+	}
+	byID := map[string]CandidateListItem{}
+	for _, item := range report.Items {
+		byID[item.ID] = item
+	}
+	if got := byID[opCaptured[0].ID]; got.AdjudicatedBy != "operator" {
+		t.Fatalf("candidates-list projection missing adjudicated_by for operator-parked candidate: %+v", got)
+	}
+	if got := byID[autoCaptured[0].ID]; got.AdjudicatedBy != "" {
+		t.Fatalf("candidates-list projection stamped adjudicated_by on an automated park: %+v", got)
+	}
+}

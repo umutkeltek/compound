@@ -36,28 +36,35 @@ type CandidateListCounts struct {
 }
 
 type CandidateListItem struct {
-	ID              string                 `json:"id"`
-	State           string                 `json:"state"`
-	ReviewState     string                 `json:"review_state,omitempty"`
-	Entity          string                 `json:"entity,omitempty"`
-	Predicate       string                 `json:"predicate,omitempty"`
-	Object          string                 `json:"object,omitempty"`
-	ObservationDate string                 `json:"observation_date,omitempty"`
-	Confidence      float64                `json:"confidence,omitempty"`
-	Derivation      string                 `json:"derivation,omitempty"`
-	ClaimType       string                 `json:"claim_type,omitempty"`
-	Kind            string                 `json:"kind,omitempty"`
-	Visibility      string                 `json:"visibility,omitempty"`
-	PromotionBasis  string                 `json:"promotion_basis,omitempty"`
-	Qualifiers      map[string]string      `json:"qualifiers,omitempty"`
-	Reason          string                 `json:"reason,omitempty"`
-	CreatedAt       string                 `json:"created_at,omitempty"`
-	SourceTraceRef  string                 `json:"source_trace_ref,omitempty"`
-	SnippetHash     string                 `json:"snippet_hash,omitempty"`
-	EvidenceRefs    []string               `json:"evidence_refs,omitempty"`
-	Evidence        *CandidateListEvidence `json:"evidence,omitempty"`
-	BelievedBefore  *CandidateListBelief   `json:"believed_before,omitempty"`
-	Annotations     []CandidateAnnotation  `json:"annotations,omitempty"`
+	ID              string            `json:"id"`
+	State           string            `json:"state"`
+	ReviewState     string            `json:"review_state,omitempty"`
+	Entity          string            `json:"entity,omitempty"`
+	Predicate       string            `json:"predicate,omitempty"`
+	Object          string            `json:"object,omitempty"`
+	ObservationDate string            `json:"observation_date,omitempty"`
+	Confidence      float64           `json:"confidence,omitempty"`
+	Derivation      string            `json:"derivation,omitempty"`
+	ClaimType       string            `json:"claim_type,omitempty"`
+	Kind            string            `json:"kind,omitempty"`
+	Visibility      string            `json:"visibility,omitempty"`
+	PromotionBasis  string            `json:"promotion_basis,omitempty"`
+	Qualifiers      map[string]string `json:"qualifiers,omitempty"`
+	Reason          string            `json:"reason,omitempty"`
+	// AdjudicatedBy/AdjudicatedAt mirror Candidate's operator-ratification
+	// provenance (see mem.Candidate) so `memory candidates --json` — the
+	// projection the console standing-law queue reads — can distinguish a
+	// candidate the operator explicitly ruled on (even "Keep aside") from one
+	// still sitting untouched since ingestion.
+	AdjudicatedBy  string                 `json:"adjudicated_by,omitempty"`
+	AdjudicatedAt  string                 `json:"adjudicated_at,omitempty"`
+	CreatedAt      string                 `json:"created_at,omitempty"`
+	SourceTraceRef string                 `json:"source_trace_ref,omitempty"`
+	SnippetHash    string                 `json:"snippet_hash,omitempty"`
+	EvidenceRefs   []string               `json:"evidence_refs,omitempty"`
+	Evidence       *CandidateListEvidence `json:"evidence,omitempty"`
+	BelievedBefore *CandidateListBelief   `json:"believed_before,omitempty"`
+	Annotations    []CandidateAnnotation  `json:"annotations,omitempty"`
 }
 
 type CandidateListEvidence struct {
@@ -186,6 +193,8 @@ func (s *Store) candidateListItem(c Candidate, reviewState, rawKind string, incl
 		PromotionBasis:  c.PromotionBasis,
 		Qualifiers:      c.Qualifiers,
 		Reason:          c.Reason,
+		AdjudicatedBy:   c.AdjudicatedBy,
+		AdjudicatedAt:   c.AdjudicatedAt,
 		CreatedAt:       c.CreatedAt,
 	}
 	if includeEvidence {

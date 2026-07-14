@@ -100,8 +100,18 @@ type Candidate struct {
 	Visibility      string                `json:"visibility"`
 	State           string                `json:"state"` // proposed | parked | promoted | rejected
 	Reason          string                `json:"reason,omitempty"`
-	Annotations     []CandidateAnnotation `json:"annotations,omitempty"`
-	CreatedAt       string                `json:"created_at"`
+	// AdjudicatedBy/AdjudicatedAt are stamped ONLY by the CLI's operator
+	// ratification door (AdjudicateAsOperator, i.e. `compound memory
+	// adjudicate`) — never by an automated caller (panel apply, decisions
+	// import, harvest). A raw harvested "parked" candidate carries neither
+	// field; once the operator has explicitly ruled on it (even a re-park —
+	// "Keep aside"), both are set so the candidates-list projection (and the
+	// console standing-law queue) can tell "seen and kept aside" from "never
+	// looked at" and stop re-asking about the same candidate.
+	AdjudicatedBy string                `json:"adjudicated_by,omitempty"`
+	AdjudicatedAt string                `json:"adjudicated_at,omitempty"`
+	Annotations   []CandidateAnnotation `json:"annotations,omitempty"`
+	CreatedAt     string                `json:"created_at"`
 }
 
 // Claim is a durable, IMMUTABLE assertion in the ledger. It is never mutated or deleted;
@@ -442,8 +452,28 @@ type AdjudicateResult struct {
 // Adjudicate applies a verdict to a candidate. promote writes an immutable Claim (next seq,
 // provenance), supersedes the prior current claim if the value changed (edge, not delete),
 // and emits a Transition (memory_delta). A duplicate (same current value) is rejected.
+//
+// This is the UNSTAMPED door: automated callers (panel apply, decisions import,
+// authority imports, ...) use this and leave AdjudicatedBy/AdjudicatedAt empty —
+// an automated verdict is not the same event as a human ratifying the queue.
+// The CLI's `compound memory adjudicate` verb uses AdjudicateAsOperator instead.
 func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (AdjudicateResult, error) {
-	return s.adjudicate(candID, verdict, workID, now, false, "")
+	return s.adjudicate(candID, verdict, workID, now, false, "", "")
+}
+
+// AdjudicateAsOperator is the operator ratification door — the CLI's
+// `compound memory adjudicate` verb. It stamps AdjudicatedBy/AdjudicatedAt
+// provenance onto the resulting candidate so the candidates-list projection
+// (and the console standing-law queue built on it) can tell a candidate the
+// operator has already ruled on — even a re-park, "Keep aside" — from one
+// still sitting untouched since ingestion. actor defaults to "operator" when
+// blank.
+func (s *Store) AdjudicateAsOperator(candID, verdict, workID, actor string, now time.Time) (AdjudicateResult, error) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "operator"
+	}
+	return s.adjudicate(candID, verdict, workID, now, false, "", actor)
 }
 
 // AdjudicateExplicitConfirmation is the only ordinary-memory door that may
@@ -456,7 +486,7 @@ func (s *Store) AdjudicateExplicitConfirmation(candID, confirmationEvidenceID, w
 	if confirmationEvidenceID == "" {
 		return AdjudicateResult{}, fmt.Errorf("explicit confirmation evidence ref required")
 	}
-	return s.adjudicate(candID, "promote", workID, now, false, confirmationEvidenceID)
+	return s.adjudicate(candID, "promote", workID, now, false, confirmationEvidenceID, "")
 }
 
 // AdjudicateOperationalDecision is the dedicated claim-append door used by
@@ -465,10 +495,10 @@ func (s *Store) AdjudicateExplicitConfirmation(candID, confirmationEvidenceID, w
 // input under the shared autonomy-admission lock. Callers with ordinary
 // extracted/inferred memory must use Adjudicate instead.
 func (s *Store) AdjudicateOperationalDecision(candID, verdict, workID string, now time.Time) (AdjudicateResult, error) {
-	return s.adjudicate(candID, verdict, workID, now, true, "")
+	return s.adjudicate(candID, verdict, workID, now, true, "", "")
 }
 
-func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operationalDecision bool, explicitConfirmationRef string) (AdjudicateResult, error) {
+func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operationalDecision bool, explicitConfirmationRef string, actor string) (AdjudicateResult, error) {
 	var res AdjudicateResult
 	if !oneOf(verdict, Verdicts) {
 		return res, fmt.Errorf("verdict must be one of %v, got %q", Verdicts, verdict)
@@ -507,6 +537,10 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 				return false, fmt.Errorf("candidate %s already promoted", candID)
 			}
 			latest.State = nonPromoteState(verdict)
+			if actor != "" {
+				latest.AdjudicatedBy = actor
+				latest.AdjudicatedAt = rfc3339(now)
+			}
 			return true, nil
 		})
 		if lockErr != nil {
@@ -661,6 +695,10 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 				}
 			}
 			c.State = "promoted"
+			if actor != "" {
+				c.AdjudicatedBy = actor
+				c.AdjudicatedAt = rfc3339(now)
+			}
 			if err := s.writeAdjudicatedCandidate(c.ID, &c); err != nil {
 				return err
 			}
@@ -677,6 +715,10 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 			dup = true
 			c.State = "rejected"
 			c.Reason = "duplicate of current claim " + prior.ID
+			if actor != "" {
+				c.AdjudicatedBy = actor
+				c.AdjudicatedAt = rfc3339(now)
+			}
 			return s.writeAdjudicatedCandidate(c.ID, &c)
 		}
 		seq, err := s.nextSeq()
@@ -701,6 +743,10 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 			return err
 		}
 		c.State = "promoted"
+		if actor != "" {
+			c.AdjudicatedBy = actor
+			c.AdjudicatedAt = rfc3339(now)
+		}
 		return s.writeAdjudicatedCandidate(c.ID, &c)
 	})
 	if lockErr != nil {
