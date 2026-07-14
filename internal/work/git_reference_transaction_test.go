@@ -69,6 +69,72 @@ func TestCloseRejectsPublicationRefMoveBeforePreparedReferenceTransaction(t *tes
 	assertLifecycleAuthorityUnchanged(t, before, after)
 }
 
+func TestCloseRejectsRepositoryIdentityMoveBeforeLockedPersistence(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 45, 0, 0, time.UTC)
+	fixture := newPublishedLandingProofFixture(t, now)
+	before := snapshotLifecycleAuthority(t, fixture.store)
+
+	realStart := startGitReferenceTransaction
+	startGitReferenceTransaction = func(repo string, refs []gitReferenceExpectation) (gitReferenceTransaction, error) {
+		tx, err := realStart(repo, refs)
+		if err != nil {
+			return nil, err
+		}
+		cmd := exec.Command("git", "-C", repo, "config", "remote.origin.url", "https://replacement.example.invalid/repo.git")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			_ = tx.Abort()
+			return nil, &testGitCommandError{args: "config remote.origin.url", err: err, output: string(out)}
+		}
+		return tx, nil
+	}
+	t.Cleanup(func() { startGitReferenceTransaction = realStart })
+
+	_, err := fixture.store.Close(fixture.workID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Actor:     "codex",
+		Summary:   "identity must still match after exact ref locks are prepared",
+		ProofRefs: []string{fixture.proof.EvidenceRef},
+	}, now.Add(10*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "final repository identity revalidation") {
+		t.Fatalf("repository identity move before locked persistence must fail, got %v", err)
+	}
+	after := snapshotLifecycleAuthority(t, fixture.store)
+	assertLifecycleAuthorityUnchanged(t, before, after)
+}
+
+func TestRepositoryIdentityIsNotClaimedAtomicThroughTerminalPersistence(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 50, 0, 0, time.UTC)
+	fixture := newPublishedLandingProofFixture(t, now)
+
+	realStart := startGitReferenceTransaction
+	startGitReferenceTransaction = func(repo string, refs []gitReferenceExpectation) (gitReferenceTransaction, error) {
+		tx, err := realStart(repo, refs)
+		if err != nil {
+			return nil, err
+		}
+		return &identityMutationAtCommitTransaction{inner: tx, repo: repo}, nil
+	}
+	t.Cleanup(func() { startGitReferenceTransaction = realStart })
+
+	closed, err := fixture.store.Close(fixture.workID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Actor:     "codex",
+		Summary:   "ref atomicity does not overclaim repository config locking",
+		ProofRefs: []string{fixture.proof.EvidenceRef},
+	}, now.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.Work.State != "completed" {
+		t.Fatalf("close result = %+v", closed)
+	}
+	if err := fixture.store.validateBoundGitDelivery(closed.Work); err == nil || !strings.Contains(err.Error(), "repository fingerprint") {
+		t.Fatalf("post-persistence origin mutation must sit outside the atomic ref guarantee, got %v", err)
+	}
+}
+
 func TestPreparedReferenceTransactionLocksTargetAndPublicationThroughTerminalPersistence(t *testing.T) {
 	now := time.Date(2026, 7, 14, 4, 0, 0, 0, time.UTC)
 	fixture := newPublishedLandingProofFixture(t, now)
@@ -145,6 +211,22 @@ func (tx *commitGateReferenceTransaction) Commit() error {
 }
 
 func (tx *commitGateReferenceTransaction) Abort() error { return tx.inner.Abort() }
+
+type identityMutationAtCommitTransaction struct {
+	inner gitReferenceTransaction
+	repo  string
+}
+
+func (tx *identityMutationAtCommitTransaction) Commit() error {
+	cmd := exec.Command("git", "-C", tx.repo, "config", "remote.origin.url", "https://post-persistence.example.invalid/repo.git")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = tx.inner.Abort()
+		return &testGitCommandError{args: "config remote.origin.url", err: err, output: string(out)}
+	}
+	return tx.inner.Commit()
+}
+
+func (tx *identityMutationAtCommitTransaction) Abort() error { return tx.inner.Abort() }
 
 func assertTerminalClosePersistedBeforeGitCommit(t *testing.T, store *Store, workID string) {
 	t.Helper()
