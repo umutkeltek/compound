@@ -347,6 +347,7 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
   compound route evidence-authority [--json] [--recent N] read-only route evidence authority
   compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
   compound route import-account-projection <admin-accounts.json>  switchback/admin-accounts@1 -> projections/account-projection.json (lane admission gate)
+  compound route execution-profile (--list|--profile ID ...) [--json] provider-neutral resolved intent; no provider call or home mutation
   compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record] provider cost coverage -> route observation/no-promote
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
@@ -2738,6 +2739,9 @@ func cmdRoute(args []string) {
 	}
 	if hasUsageFlag(args) {
 		fmt.Println(routeUsage(args[0]))
+		return
+	}
+	if tryRouteExecutionProfileCommand(args) {
 		return
 	}
 	homePath, err := home.Resolve("")
