@@ -31,6 +31,7 @@ import (
 	"compound/internal/distiller"
 	"compound/internal/envelope"
 	"compound/internal/eventsource"
+	"compound/internal/finding"
 	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hook"
@@ -139,6 +140,8 @@ func main() {
 		cmdRelease(os.Args[2:])
 	case "reviews":
 		cmdReviews(os.Args[2:])
+	case "finding":
+		cmdFinding(os.Args[2:])
 	case "policy":
 		cmdPolicy(os.Args[2:])
 	case "hook":
@@ -4226,6 +4229,133 @@ func validateKnownFlags(args []string, valueFlags, boolFlags map[string]bool) er
 		return fmt.Errorf("unknown flag %s", arg)
 	}
 	return nil
+}
+
+func cmdFinding(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound finding <record|list|show> ...")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "record":
+		cmdFindingRecord(args[1:])
+	case "list":
+		cmdFindingList(args[1:])
+	case "show":
+		cmdFindingShow(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound finding <record|list|show> ...")
+		os.Exit(2)
+	}
+}
+
+func cmdFindingRecord(args []string) {
+	const usage = "usage: compound finding record --topic T (--body B | --body-file F) [--work-id W] [--produced-by P] [--supersedes ID] [--evidence REF] [--json]"
+	topic := valueFlag(args, "--topic")
+	body := valueFlag(args, "--body")
+	bodyFile := valueFlag(args, "--body-file")
+	jsonOut := hasFlag(args, "--json")
+	if strings.TrimSpace(bodyFile) != "" {
+		data, err := os.ReadFile(bodyFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error: read --body-file:", err)
+			os.Exit(1)
+		}
+		body = string(data)
+	}
+	if strings.TrimSpace(topic) == "" || strings.TrimSpace(body) == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	f := finding.Finding{
+		Topic:      topic,
+		Body:       body,
+		WorkID:     valueFlag(args, "--work-id"),
+		ProducedBy: valueFlag(args, "--produced-by"),
+		Supersedes: valueFlag(args, "--supersedes"),
+	}
+	if ev := strings.TrimSpace(valueFlag(args, "--evidence")); ev != "" {
+		f.EvidenceRefs = strings.Split(ev, ",")
+	}
+	rec, err := finding.Record(homePath, f, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(rec)
+		return
+	}
+	fmt.Printf("recorded finding %s (topic=%q cid=%s) -> observed/findings/%s.json\n", rec.ID, rec.Topic, rec.CID, rec.ID)
+}
+
+func cmdFindingList(args []string) {
+	jsonOut := hasFlag(args, "--json")
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	items, err := finding.List(homePath, valueFlag(args, "--topic"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(items)
+		return
+	}
+	if len(items) == 0 {
+		fmt.Println("no findings")
+		return
+	}
+	for _, f := range items {
+		fmt.Printf("%s  %s  %s\n", f.ID, f.CreatedAt, f.Topic)
+	}
+}
+
+func cmdFindingShow(args []string) {
+	jsonOut := hasFlag(args, "--json")
+	id := ""
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			id = a
+			break
+		}
+	}
+	if strings.TrimSpace(id) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound finding show <finding-id> [--json]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	f, err := finding.Show(homePath, id)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(f)
+		return
+	}
+	fmt.Printf("# %s\n", f.Topic)
+	fmt.Printf("id=%s cid=%s created=%s", f.ID, f.CID, f.CreatedAt)
+	if f.WorkID != "" {
+		fmt.Printf(" work=%s", f.WorkID)
+	}
+	if f.Supersedes != "" {
+		fmt.Printf(" supersedes=%s", f.Supersedes)
+	}
+	fmt.Print("\n\n")
+	fmt.Println(f.Body)
 }
 
 func cmdReviews(args []string) {

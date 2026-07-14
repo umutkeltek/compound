@@ -46,6 +46,7 @@ var Dirs = func() []string {
 		"inbox/knowledge-extractions",
 		"ledger",
 		"observed/tool-output", // rebuildable, content-addressed externalized tool-output bodies (C3); NEVER under ledger
+		"observed/findings",    // direct-write, content-addressed agent-authored operational findings; NEVER under ledger
 		"registries",
 		"artifacts/sha256", "artifacts/refs",
 		"indexes",

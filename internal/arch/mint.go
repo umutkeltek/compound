@@ -79,6 +79,17 @@ var mintHomes = map[string]MintHome{
 	// Its teeth ARE the policy gate — it is the compilation of the "no mutation without a valid
 	// PolicyDecision" ruling — so it is enforcement, not evidence.
 	"organ:act": {Class: MintEnforcement},
+	// finding is the direct-write home for agent-authored operational findings under
+	// COMPOUND_HOME/observed/findings — the POSITIVE counterpart to the placement guard: a governed
+	// place to record a durable operational note instead of inventing a path. It writes only a
+	// content-addressed evidence record (source_class=evidence, NEVER a ledger byte, NEVER a promoted
+	// Claim), so it is evidence, not enforcement; promotion to canon stays the separate governed
+	// memory door.
+	"organ:finding": {
+		Class:    MintEvidence,
+		Purpose:  "direct-write, content-addressed home for agent-authored operational findings (durable operational notes) under COMPOUND_HOME/observed/findings, recorded as source_class=evidence with never a ledger byte",
+		Consumer: "compound finding list/show recall surface (and orient operational recall); promotion to canon is the separate governed memory door",
+	},
 	// laneselect landed the same day as the ratchet (6112375) — its registration is the ratchet's
 	// first live catch, classified rather than grandfathered.
 	"organ:laneselect": {
