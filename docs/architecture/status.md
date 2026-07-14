@@ -73,27 +73,60 @@ Capability status note: `capgraph` owns `compound capability skill-plan`; skill 
 
 ## Packages (`internal/`)
 
-| Package | Status | Role |
+This table is SINGLE-SOURCED from `arch.Classification` (`internal/arch/arch.go`): one row per classified package, Class holding the exact lowercase Class value; `architecture doctor --strict` fails on drift, a missing package, or a stale one.
+
+| Package | Class | Role |
 |---|---|---|
-| `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook` | canonical | runtime spine |
-| `localmodel` | canonical | object family: local model lifecycle advice/probe surface |
-| `candidates` | canonical leaf | candidate kinds -> inbox dirs and verdicts |
-| `release` | canonical leaf | public source export gate over `git archive HEAD`; validates tracked archive entries do not include private/runtime surfaces |
-| `mem` | canonical | memory object family: entities, evidence, claims, positions, patterns, edges, adjudication, recall, meaning write plans |
-| `distiller` | canonical | trace/runtime-work/LLM-response -> richer prior state -> candidate set -> critique -> adjudication input; doctor surfaces eval/method/policy/capability debt and turns eval/method/policy/failure/taste candidates into reviewed eval-plan/improvement-plan/rule-plan/taste-plan artifacts |
-| `schema` | canonical | JSON Schema export plus contract-aware validation for envelope/runtime/candidate/capability/product/route adapter contracts; structural schemas are exported, semantic checks stay with owning runtime validators |
-| `capgraph` | canonical | capability graph: surface, observe, consume; normalized skill manifests and generated skill-manifest JSON land here as graph nodes/edges, never a parallel skill registry |
-| `runtimebinding` | canonical | RuntimeBinding + ServiceContract bundle, doctor, project-contract adapter, and gated repair-plan review artifacts |
-| `projection` | canonical | GeneratedViewObservation + ProjectionFreshness doctor + ProjectionRegenerationPlan review artifacts |
-| `writeback` | canonical | OwnerWritebackGate + NoPromoteDecision: candidate/observation -> owner gate -> policy/no-promote ledger |
-| `product` | canonical | Product registry + standalone/source-export/ASC-datapoints/ASC-sales-series ProductSignal adapters + reviewed hypothesis-plan artifacts + strict signal doctor/no-promote path + joined product timeline over signals/hypotheses/transitions/open and closed source issues; signal/review/source-issue-review imports emit product Transition projections; resolved source-issue follow-up creates parked ProductHypothesis candidates only; doctor routes open feedback review debt through writeback gate |
-| `routeevidence` | canonical | ExecutionRouteEvidence import/record/join path, provider-call ledger adapter, route cost-coverage doctor, RouteOutcomeReview artifacts, plus RoutePolicyPlan review artifacts; metadata-only route decisions become Transition routing/cost projections, receipt-linked outcome reviews can create route observations/no-promote, route observations become review drafts, never task success or direct config mutation |
-| `arch` | canonical | architecture doctor |
+| `act` | leaf | compound's ONE generic governed outbound-write seam: the single execute-and-receipt wrapper gating every external write on an allowing PolicyDecision plus pre/post-image artifacts and an outward_delta Receipt/Transition; owns no authority object |
+| `arch` | spine | architecture doctor: enforces package classification, candidate-map integrity, public-doc leak checks, status hot-path budget, and the memory convergence ratchet |
+| `attention` | leaf | ranked read-only projection over reviews/workbench/executors; owns no authority objects |
 | `authority` | importer | external source/path authority records imported through spine memory; path authority preserves entity identity across path/source moves |
+| `behaviorallens` | leaf | composable behavioral-lens framework: uniform observe->InferredSignal plug + visibility-gated composition + sycophancy (paired-stance shift) lens; records evidence rows under COMPOUND_HOME, owns no authority object and never gates/promotes |
+| `bench` | leaf | evaluator organ: read-only scorer over the real surfacing/recall paths; produces evidence reports, owns no object family |
+| `breadth` | leaf | breadth-resolved embedding engine (`compound-breadth`, lexical default embedder) used for optional semantic capability surfacing over `internal/mem`; degrades to literal surfacing (`semantic_lane=degraded`) rather than blocking offers on failure |
+| `candidates` | leaf | the SINGLE source of truth for candidate kinds and where each one lands: candidate kinds -> inbox dirs and verdicts |
+| `capgraph` | object-family | the Capability Graph: typed capability nodes (skills are one kind) connected by typed edges including evolution-feedback edges (missed_when/false_triggered_by/validated_by/retired_by); a CapabilityObservation re-weights surfacing |
+| `contract` | spine | compiles an EffectiveContract for a harness+repo+task and assembles the ContextPack an agent actually orients from; the same task in different repos must yield different packs |
+| `corpus` | leaf | lane-scoped corpus indexes: disposable derivatives over imported evidence; ledger stays authority, hits never ambient |
 | `decisions` | importer | DecisionLifecycle records imported/projected through spine memory; decision candidates become reviewed lifecycle drafts; doctor routes lifecycle gaps through owner writeback; source-doctor verifies lifecycle source templates/docs; repair-plan emits owner-review artifacts; repair-apply enforces reviewed plan status before explicit write |
+| `director` | object-family | proposes bounded work from candidate signals (job-health evidence, briefable decision-prep groups from `internal/reviewartifact`), holding autonomous apply behind an operator grant (`HasActiveAutonomyGrant`/apply-grant record) so grants act as gates, not prose |
+| `distiller` | object-family | the P6 distillation front-end: turns spine artifacts (a trace) into a typed, adjudicated CandidateSet; the model EXTRACTS, code DECIDES, every candidate is adjudicated (reject|park|promote|operationalize|retire); doctor surfaces eval/method/policy/capability debt and turns candidates into reviewed eval-plan/improvement-plan/rule-plan/taste-plan artifacts |
+| `envelope` | spine | the typed runtime grammar — the spine every harness, hook, and run flows through, hung off one root work_id; every envelope begins with the universal Header |
+| `eventsource` | importer | append-only event streams import as typed TraceEnvelope evidence under runtime events; idempotent, no memory promotion |
+| `executorlens` | leaf | evidence-only collector: reads THIS repo's executor lanes' (Codex, Claude Code) receipts/events and builds behaviorallens Observations; records evidence rows only, owns no authority object, never gates/promotes |
+| `finding` | leaf | direct-write home for agent-authored operational findings under COMPOUND_HOME/observed/findings: content-addressed evidence records, NEVER a ledger byte, NEVER a promoted Claim; the positive counterpart to the placement guard |
+| `harness` | spine | the HarnessRegistry — the spine's record of what each agent harness ACTUALLY supports and where it is weak; governance must be capability-aware, enforced via wrapper/adapter when a harness cannot self-gate |
+| `harvest` | leaf | ruling harvester: classifies operator utterances + reconciles them against accepted decision records through mem/decisions/candidates; owns no authority object |
+| `home` | spine | owns COMPOUND_HOME — the runtime body; the public repo is source, generated runtime state (ledger, work, context, receipts, transitions, indexes, projections, inbox candidates, artifacts) lives under the home, never the repo source tree |
+| `hook` | spine | the capability-aware hook fixture loop — the seam where a harness's lifecycle is normalized into the typed spine; hooks are CLIENTS, not brains (request context / guard a mutation / capture a receipt) |
+| `hookplan` | leaf | desired/observed hook reconciliation model; installed-hooks ledger and harness configs retain authority |
+| `jobprobe` | leaf | job-roster probe-refresh collector: re-observes current unit liveness for declared probe targets (files under COMPOUND_HOME) and refreshes the job-roster authority through authority's additive refresh surface; owns no authority object |
+| `knowledge` | importer | imports captured source exports into evidence plus proposed memory candidates; intentionally medium-agnostic, `source.kind` is data, not a core enum |
+| `landlease` | leaf | land-lease coordination hint: a single-holder, TTL-bounded, steal-with-reason advisory MUTEX over the ACT of landing to main so concurrent executor lanes serialize the fast-forward-merge window; never mutates repo state |
+| `lanebeliefs` | object-family | folds receipt/observation evidence into lane-belief candidates (`tends_to`/`capable_of` predicates) and resolves a receipt's lane identity, feeding the lane-belief candidate/adjudication path in `internal/mem` |
+| `laneselect` | leaf | pure preparation-lane ranking (fit/speed/cost) shared by work dispatch + routeevidence adapter; owns no authority objects, breaks the work<->routeevidence import cycle |
+| `latenttax` | leaf | the one-week latent-tax rig: a COMPOUND-NATIVE, read-only evaluator that DERIVES thrash/tokens/latency/success from existing ledger objects per work_id; owns only a thin run-index, produces evidence reports, no promotion path |
+| `lensmodulator` | leaf | governed modulator: composes behaviorallens signals + act into the one enforcement point that turns a crossing signal into a reversible, PolicyDecision-gated route/role demote (calibration-guarded, default off); owns no authority object |
+| `localmodel` | object-family | local model lifecycle advice/probe surface: a structured LifecycleIntent handoff to the local routing layer describing the runtime mutation Compound wants without executing it |
+| `mem` | mem-target | P6 memory re-bound through the spine; the OWNED ledger — entities, evidence, claims, positions, patterns, edges, adjudication, recall, meaning write plans; the convergence TARGET the Gen-1 object model migrates into |
+| `narrate` | leaf | the correspondent composer: turns the same-tick attention projection, the orient cursor's changed-set, and recent receipt summaries into one typed, deterministic script of what compound has to say to the operator right now; owns no authority objects |
+| `negatives` | leaf | rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient |
+| `observation` | object-family | owns the generic external observation intake seam; observation batches are a public grammar for rented source edges that route into existing meaning owners without creating provider-specific authority |
+| `panel` | object-family | a judgment engine over existing candidates: perspectives generate decisions, and a panel verdict is evidence, never authority |
+| `policy` | spine | governance v0: evaluates an ActionIntent into a PolicyDecision in proportion to risk/blast-radius; mutation is GATED, not asked — a mutating adapter must hold an allowing PolicyDecision |
+| `product` | object-family | owns the first product-feedback loop: product registry facts, market signals, and hypothesis candidates; product pages are market-control surfaces, not repo summaries, signals are evidence, not truth |
+| `profiles` | object-family | renders harness agent profiles from public-safe role definitions plus an optional private overlay |
+| `projection` | object-family | checks GeneratedViewObservation / ProjectionFreshness; a generated view can prove freshness or drift, it cannot promote truth |
+| `release` | leaf | public source export gate over `git archive HEAD`; validates tracked archive entries do not include private/runtime surfaces |
+| `retrievalparity` | leaf | owns retrieval-traffic evidence and parity artifact schemas; a data-layer leaf — production retrieval stays in its existing consumers, this package records and compares their result references |
+| `reviewartifact` | leaf | the one deep module behind every owner-review artifact compound writes under COMPOUND_HOME/reviews/<area>/ |
+| `routeevidence` | object-family | ExecutionRouteEvidence import/record/join path, provider-call ledger adapter, route cost-coverage doctor, RouteOutcomeReview + RoutePolicyPlan review artifacts; metadata-only route decisions become Transition routing/cost projections, never task success or direct config mutation |
+| `runtimebinding` | object-family | models where a service actually runs and how to check it; RuntimeBinding/ServiceContract bundle, doctor, project-contract adapter, and gated repair-plan review artifacts |
+| `schema` | spine | exports machine-readable contract schemas and validates concrete documents through the same package validators Compound uses at run time; JSON Schema documents are structural, Validate is the semantic gate |
 | `sourceobs` | importer | SourceObservation records map generated/source views into candidate inboxes plus no-promote decisions; observation only, never promotion |
 | `tooltopology` | importer | Tool/MCP topology observations import normalized YAML or generated resolver JSON into CLI/MCP/adapter nodes and fallback recommendations in CapabilityGraph, and record source-view no-promote evidence; offers only, never executes |
-| `eventsource` | importer | append-only event streams import as typed TraceEnvelope evidence under runtime events; idempotent, no memory promotion |
+| `work` | spine | the lifecycle store that threads ONE work_id through the whole chain: intent (WorkEnvelope) -> context (pack id) -> action (run ids) -> close, where close emits the Receipt and the apex Transition |
+| `writeback` | spine | governs candidate updates to owner surfaces: the first OwnerWritebackGate/NoPromoteDecision slice — observations and candidates do not become owner writes or repeat promotion without passing through this gate |
 
 Retired Gen-1 packages:
 

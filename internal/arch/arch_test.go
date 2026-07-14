@@ -428,6 +428,85 @@ func TestSpineCoreAllowlistRatchetCatchesDrift(t *testing.T) {
 	}
 }
 
+// docs/architecture/status.md's package table must be SINGLE-SOURCED from arch.Classification (the
+// package doc comment's own promise: "the package Classification below is the ENFORCED source of
+// truth; docs/architecture/status.md narrates it"). This locks the mechanical side of that promise
+// against three ways narration can drift from the map: a classified package missing from the table,
+// a table row whose Class text is not the exact Class value (a paraphrase like "canonical" is not a
+// substitute), and a table row naming a package the map no longer classifies (stale/retired).
+func TestPackageClassificationTableMatchesArchClassification(t *testing.T) {
+	// The real repo table must already match (this is the fix this test locks in).
+	if findings := checkPackageClassificationTableContract(repoRoot); len(findings) != 1 || findings[0].Severity != Info {
+		t.Fatalf("real status.md package table must match arch.Classification exactly, got %+v", findings)
+	}
+
+	writeStatus := func(t *testing.T, body string) string {
+		t.Helper()
+		repo := t.TempDir()
+		statusDir := filepath.Join(repo, "docs", "architecture")
+		if err := os.MkdirAll(statusDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(statusDir, "status.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return repo
+	}
+
+	classification := map[string]Class{
+		"home": Spine,
+		"mem":  MemTarget,
+		"act":  Leaf,
+	}
+	restore := Classification
+	Classification = classification
+	defer func() { Classification = restore }()
+
+	// A table naming every classified package with the exact Class string must pass clean.
+	clean := "## Packages (`internal/`)\n\n| Package | Class | Role |\n|---|---|---|\n" +
+		"| `home` | spine | runtime spine |\n" +
+		"| `mem` | mem-target | memory |\n" +
+		"| `act` | leaf | outbound seam |\n\n## Commands\n"
+	if findings := checkPackageClassificationTableContract(writeStatus(t, clean)); len(findings) != 1 || findings[0].Severity != Info {
+		t.Fatalf("exact-match table should pass clean, got %+v", findings)
+	}
+
+	// Missing package + stale "canonical" class text (the real-world drift this test was written
+	// for) + an extra package the map no longer classifies, all in one row set.
+	stale := "## Packages (`internal/`)\n\n| Package | Class | Role |\n|---|---|---|\n" +
+		"| `home` | canonical | runtime spine |\n" +
+		"| `act` | leaf | outbound seam |\n" +
+		"| `retired` | leaf | gone |\n\n## Commands\n"
+	findings := checkPackageClassificationTableContract(writeStatus(t, stale))
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("stale table should fail, got %+v", findings)
+	}
+	msg := findings[0].Message
+	for _, want := range []string{
+		`internal/home is classified "spine" in arch.Classification but status.md's table says "canonical"`,
+		"status.md package table is missing 1 classified package(s): mem",
+		"status.md package table names internal/retired which arch.Classification does not classify",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("failure should report %q, got: %s", want, msg)
+		}
+	}
+
+	// A package listed on more than one row is flagged too.
+	duplicate := "## Packages (`internal/`)\n\n| Package | Class | Role |\n|---|---|---|\n" +
+		"| `home` | spine | runtime spine |\n" +
+		"| `home` | spine | duplicate row |\n" +
+		"| `mem` | mem-target | memory |\n" +
+		"| `act` | leaf | outbound seam |\n\n## Commands\n"
+	findings = checkPackageClassificationTableContract(writeStatus(t, duplicate))
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("duplicate-row table should fail, got %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "internal/home appears on more than one status.md package-table row") {
+		t.Fatalf("failure should name the duplicated package: %+v", findings[0])
+	}
+}
+
 // The convergence debt is reported (observable), not hidden — the coherent treatment of a duplicate
 // that cannot yet be retired.
 func TestStatusHotPathFailsAboveLineBudget(t *testing.T) {

@@ -209,6 +209,7 @@ func Doctor(repoRoot string, strict bool) Report {
 	f = append(f, checkCandidateMap()...)
 	if repoRoot != "" {
 		f = append(f, checkClassificationTotal(repoRoot)...)
+		f = append(f, checkPackageClassificationTableContract(repoRoot)...)
 		f = append(f, checkDocLeak(repoRoot, strict)...)
 		f = append(f, checkPrivateSourceBodyContract(repoRoot)...)
 		f = append(f, checkStatusHotPath(repoRoot)...)
@@ -350,6 +351,151 @@ func checkSpineCoreDrift(classification map[string]Class, core map[string]bool) 
 		f = append(f, Finding{"classification", Fail, "spineCore names internal/" + pkg + " but it is not classified Spine (map drift) — keep spineCore and the Spine classification in lockstep"})
 	}
 	return f
+}
+
+// packageTablePkgToken extracts a backtick-quoted `internal/` package name
+// from a package-table cell.
+var packageTablePkgToken = regexp.MustCompile("`([a-z][a-z0-9]*)`")
+
+// splitRawTableCells splits one markdown table row into its raw (untrimmed of
+// backticks) cell texts, so callers can regex the package-name cell without
+// losing internal backtick pairs the way a whole-cell backtick trim would.
+func splitRawTableCells(line string) []string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "|") {
+		return nil
+	}
+	line = strings.Trim(line, "|")
+	parts := strings.Split(line, "|")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, strings.TrimSpace(p))
+	}
+	return out
+}
+
+// parseStatusPackageTable extracts the `## Packages (`internal/`)` table from
+// status.md's text into package -> declared Class-string (lowercased). It
+// tolerates a first cell naming more than one backtick-quoted package (a
+// legacy grouped row) by attributing the row's class to every named package,
+// and reports every package name encountered (including duplicates) via
+// order so the caller can flag a package listed on more than one row.
+func parseStatusPackageTable(text string) (classes map[string]string, order []string) {
+	classes = map[string]string{}
+	inSection := false
+	inTable := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !inSection {
+			if strings.HasPrefix(trimmed, "## Packages") {
+				inSection = true
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			break // left the Packages section
+		}
+		if !strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		cells := splitRawTableCells(line)
+		if len(cells) < 2 {
+			continue
+		}
+		if !inTable {
+			if strings.EqualFold(strings.Trim(cells[0], "`"), "package") {
+				inTable = true
+			}
+			continue
+		}
+		if isMarkdownSeparatorRow(cells) {
+			continue
+		}
+		names := packageTablePkgToken.FindAllStringSubmatch(cells[0], -1)
+		if len(names) == 0 {
+			continue
+		}
+		classText := strings.ToLower(cells[1])
+		for _, m := range names {
+			pkg := m[1]
+			classes[pkg] = classText
+			order = append(order, pkg)
+		}
+	}
+	return classes, order
+}
+
+// checkPackageClassificationTableContract is the mechanical half of arch.go's
+// own package doc comment ("the package Classification below is the ENFORCED
+// source of truth; docs/architecture/status.md narrates it"): narration must
+// MATCH the enforced map, not merely exist. It fails when docs/architecture/
+// status.md's `## Packages (`internal/`)` table diverges from
+// arch.Classification in any of three ways: a classified package missing
+// from the table, a table row naming a package Classification does not
+// classify (stale/retired), or a package present in both whose table Class
+// string is not the EXACT lowercase Class value (spine/object-family/leaf/
+// mem-target/converge-pending/importer) — a bare "canonical" or prose
+// description is not a substitute for the class token, because that is
+// exactly the drift that let build-layer packages go unrepresented.
+func checkPackageClassificationTableContract(repoRoot string) []Finding {
+	path := filepath.Join(repoRoot, "docs", "architecture", "status.md")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return []Finding{{"package-table-single-source", Fail, "could not read docs/architecture/status.md: " + err.Error()}}
+	}
+	tableClasses, order := parseStatusPackageTable(string(b))
+
+	seen := map[string]int{}
+	for _, pkg := range order {
+		seen[pkg]++
+	}
+	var problems []string
+	var duplicates []string
+	for pkg, count := range seen {
+		if count > 1 {
+			duplicates = append(duplicates, pkg)
+		}
+	}
+	sort.Strings(duplicates)
+	for _, pkg := range duplicates {
+		problems = append(problems, "internal/"+pkg+" appears on more than one status.md package-table row")
+	}
+
+	var missing []string
+	var wrongClass []string
+	for pkg, class := range Classification {
+		want := string(class)
+		got, ok := tableClasses[pkg]
+		if !ok {
+			missing = append(missing, pkg)
+			continue
+		}
+		if got != want {
+			wrongClass = append(wrongClass, "internal/"+pkg+" is classified "+strconv(want)+" in arch.Classification but status.md's table says "+strconv(got))
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(wrongClass)
+	problems = append(problems, wrongClass...)
+	if len(missing) > 0 {
+		problems = append(problems, "status.md package table is missing "+itoa(len(missing))+" classified package(s): "+strings.Join(missing, ", "))
+	}
+
+	var extra []string
+	for pkg := range tableClasses {
+		if _, ok := Classification[pkg]; !ok {
+			extra = append(extra, pkg)
+		}
+	}
+	sort.Strings(extra)
+	if len(extra) > 0 {
+		problems = append(problems, "status.md package table names internal/"+strings.Join(extra, ", internal/")+" which arch.Classification does not classify (stale/retired?)")
+	}
+
+	if len(problems) > 0 {
+		return []Finding{{"package-table-single-source", Fail, "docs/architecture/status.md package table diverges from arch.Classification: " + strings.Join(problems, "; ")}}
+	}
+	return []Finding{{"package-table-single-source", Info, "docs/architecture/status.md package table matches arch.Classification for all " + itoa(len(Classification)) + " classified packages"}}
 }
 
 // checkStatusHotPath keeps status.md bounded as a hot map, not a runtime proof journal.
