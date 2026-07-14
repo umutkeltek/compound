@@ -121,11 +121,11 @@ Explicit and inferred preference take different paths:
 
 ```text
 explicit instruction
-  → scoped SettingProposal → ActionIntent → PolicyDecision → versioned Setting → client projections
+  → scoped setting proposal → ActionIntent → PolicyDecision → versioned setting → client projections
 
 observed behavior or mined conversation
-  → evidence → PreferenceCandidate → park/reject/promote as claim
-  → operator acceptance, if desired → scoped SettingProposal
+  → evidence → preference candidate → park/reject/promote as claim
+  → operator acceptance, if desired → scoped setting proposal
 ```
 
 Setting precedence is explicit and scope-aware: task override → project/product setting → operator default →
