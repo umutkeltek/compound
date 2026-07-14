@@ -101,8 +101,8 @@ func cmdMemoryRecall(homePath string, store *mem.Store, args []string) {
 		IncludeEvidence:    hasFlag(args, "--include-evidence"),
 		Topic:              valueFlag(args, "--topic"),
 	})
+	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerRecall, entity, parityRecallRefs(rr), time.Since(retrievalStarted), err == nil, time.Now()))
 	die(err)
-	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerRecall, entity, parityRecallRefs(rr), time.Since(retrievalStarted), true, time.Now()))
 	if hasFlag(args, "--json") {
 		printJSON(rr)
 		return
