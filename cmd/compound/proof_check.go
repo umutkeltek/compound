@@ -589,6 +589,12 @@ func printProofCheck(report proofCheckReport) {
 	fmt.Printf("- dry_run: %t\n", report.DryRun)
 	for _, step := range report.Steps {
 		fmt.Printf("- step: %s status=%s proof=%s command=%s\n", step.Name, step.Status, step.ProofRef, strings.Join(step.Command, " "))
+		if step.Status == "failed" && strings.TrimSpace(step.OutputTail) != "" {
+			fmt.Println("  output_tail:")
+			for _, line := range strings.Split(step.OutputTail, "\n") {
+				fmt.Printf("    %s\n", line)
+			}
+		}
 		if step.SkipReason != "" {
 			fmt.Printf("  skip_reason: %s\n", step.SkipReason)
 		}
