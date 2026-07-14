@@ -81,6 +81,43 @@ func TestExecutorsProjectionDefaultDoesNotProbeLocalLMStudio(t *testing.T) {
 	}
 }
 
+// A terminal-work lease's WorkID must survive onto the row as
+// StaleLeaseWorkIDs (additive field) so the lease-hygiene attention group can
+// name exactly which stale leases it will sweep; a live-work lease must never
+// leak into that list.
+func TestExecutorsProjectionRecordsStaleLeaseWorkIDs(t *testing.T) {
+	now := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	store := newExecutorTestStore(t, now)
+
+	terminalWork, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "terminal work with residual lease"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeWorkbenchTestWork(t, store, terminalWork.ID, now, "terminal work closed")
+
+	liveWork, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "live claimed work"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(liveWork.ID, "codex", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	proj, err := store.ExecutorsProjection(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codex := requireExecutorProjectionRow(t, proj, "codex")
+	if len(codex.StaleLeaseWorkIDs) != 1 || codex.StaleLeaseWorkIDs[0] != terminalWork.ID {
+		t.Fatalf("stale_lease_work_ids = %v, want exactly [%q]", codex.StaleLeaseWorkIDs, terminalWork.ID)
+	}
+	for _, id := range codex.StaleLeaseWorkIDs {
+		if id == liveWork.ID {
+			t.Fatalf("live-work lease id leaked into stale_lease_work_ids: %v", codex.StaleLeaseWorkIDs)
+		}
+	}
+}
+
 func requireExecutorProjectionRow(t *testing.T, projection ExecutorsProjection, id string) ExecutorRow {
 	t.Helper()
 	for _, row := range projection.Executors {

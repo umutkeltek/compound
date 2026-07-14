@@ -62,6 +62,7 @@ type ExecutorRow struct {
 	NeedsMeCount          int                     `json:"needs_me_count"`
 	LeaseCount            int                     `json:"lease_count"`
 	StaleLeaseCount       int                     `json:"stale_lease_count,omitempty"`
+	StaleLeaseWorkIDs     []string                `json:"stale_lease_work_ids,omitempty"`
 	OldestLeaseAgeSeconds *int64                  `json:"oldest_lease_age_seconds,omitempty"`
 	RouteEvidenceCount    int                     `json:"route_evidence_count"`
 	RouteEvidencePresent  bool                    `json:"route_evidence_present"`
@@ -282,6 +283,7 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 			// out of the active lease list/count and surface a stale count so
 			// `home archive-history --kind lease` sweep debt stays visible.
 			row.StaleLeaseCount++
+			row.StaleLeaseWorkIDs = append(row.StaleLeaseWorkIDs, lease.WorkID)
 			projection.Counts.StaleLeases++
 			continue
 		}
