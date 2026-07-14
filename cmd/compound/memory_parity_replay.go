@@ -29,7 +29,10 @@ func cmdMemoryParityReplay(homePath string, store *mem.Store, args []string) {
 		fmt.Printf("# memory parity-replay %s\n", report.ID)
 		fmt.Printf("- consumer: %s\n", report.Consumer)
 		fmt.Printf("- rows: %d\n", len(report.Rows))
-		fmt.Printf("- passed: %t\n", report.Passed)
+		fmt.Printf("- parity_passed: %t\n", report.ParityPassed)
+		if report.NegativeControlValid != nil {
+			fmt.Printf("- negative_control_valid: %t\n", *report.NegativeControlValid)
+		}
 		fmt.Printf("- report: %s\n", reportPath)
 	}
 	if code != 0 {
@@ -41,7 +44,7 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 	fixturePath := valueFlag(args, "--fixture")
 	consumer := strings.TrimSpace(valueFlag(args, "--consumer"))
 	if fixturePath == "" || consumer == "" {
-		return retrievalparity.Report{}, "", 2, fmt.Errorf("usage: compound memory parity-replay --fixture <file.json> --consumer orient|query [--k N (query only)] [--json]")
+		return retrievalparity.Report{}, "", 2, fmt.Errorf("usage: compound memory parity-replay --fixture <file.json> --consumer orient|query [--k N (query only)] [--resume-from <checkpoint.json>] [--json]")
 	}
 	if consumer != retrievalparity.ConsumerOrient && consumer != retrievalparity.ConsumerQuery {
 		return retrievalparity.Report{}, "", 2, fmt.Errorf("consumer must be orient or query")
@@ -75,23 +78,48 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 		return retrievalparity.Report{}, "", 1, fmt.Errorf("fixture has no %s rows", consumer)
 	}
 
-	replayRows := make([]retrievalparity.ReplayRow, 0, len(selected))
-	coverage := fixture.Coverage
-	for _, fixtureRow := range selected {
+	identity := retrievalparity.NewReplayIdentity(fixtureRef, consumer, k)
+	checkpoint := retrievalparity.NewCheckpoint(identity, fixture.Coverage)
+	if resumePath := strings.TrimSpace(valueFlag(args, "--resume-from")); resumePath != "" {
+		checkpoint, err = retrievalparity.LoadCheckpoint(resumePath, identity)
+		if err != nil {
+			return retrievalparity.Report{}, "", 1, err
+		}
+		if checkpoint.Completed > len(selected) {
+			return retrievalparity.Report{}, "", 1, fmt.Errorf("parity checkpoint has more completed rows than the selected fixture")
+		}
+	}
+	coverage := checkpoint.Coverage
+	for _, fixtureRow := range selected[checkpoint.Completed:] {
 		resultRefs := []string{}
 		engineAvailable := false
 		latency := time.Duration(0)
 		switch consumer {
 		case retrievalparity.ConsumerOrient:
-			cwd, cwdErr := os.Getwd()
-			if cwdErr != nil {
-				coverage.KnownGaps = append(coverage.KnownGaps, "orient_cwd_unavailable")
-				break
-			}
-			in, parseErr := parseOrientArgsWithHome([]string{"--harness", "codex", "--cwd", cwd, "--task", fixtureRow.Query}, homePath)
-			if parseErr != nil {
-				coverage.KnownGaps = append(coverage.KnownGaps, "orient_input_unavailable")
-				break
+			var in contract.Input
+			if fixtureRow.OrientInput != nil {
+				in = contract.Input{
+					Harness:     fixtureRow.OrientInput.Harness,
+					Cwd:         fixtureRow.OrientInput.Cwd,
+					Task:        fixtureRow.Query,
+					RepoKind:    fixtureRow.OrientInput.RepoKind,
+					RepoKindVia: fixtureRow.OrientInput.RepoKindVia,
+					Mode:        fixtureRow.OrientInput.Mode,
+					Topic:       fixtureRow.OrientInput.Topic,
+				}
+			} else {
+				cwd, cwdErr := os.Getwd()
+				if cwdErr != nil {
+					coverage.KnownGaps = append(coverage.KnownGaps, "orient_cwd_unavailable")
+					break
+				}
+				var parseErr error
+				in, parseErr = parseOrientArgsWithHome([]string{"--harness", "codex", "--cwd", cwd, "--task", fixtureRow.Query}, homePath)
+				if parseErr != nil {
+					coverage.KnownGaps = append(coverage.KnownGaps, "orient_input_unavailable")
+					break
+				}
+				coverage.KnownGaps = append(coverage.KnownGaps, "orient_input_unrecorded")
 			}
 			started := time.Now()
 			pack, packErr := contract.PackWithCapabilities(in, orientPolicy(), homePath, now)
@@ -120,14 +148,19 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 				coverage.KnownGaps = append(coverage.KnownGaps, "query_retrieval_error")
 			}
 		}
-		replayRows = append(replayRows, retrievalparity.NewReplayRow(fixtureRow, resultRefs, latency, engineAvailable))
+		checkpoint.Rows = append(checkpoint.Rows, retrievalparity.NewReplayRow(fixtureRow, resultRefs, latency, engineAvailable))
+		checkpoint.Completed = len(checkpoint.Rows)
+		checkpoint.Coverage = coverage
+		if err := retrievalparity.WriteCheckpoint(homePath, &checkpoint); err != nil {
+			return retrievalparity.Report{}, "", 1, fmt.Errorf("write parity checkpoint: %w", err)
+		}
 	}
-	report := retrievalparity.BuildReport(fixtureRef, consumer, k, coverage, replayRows, now)
+	report := retrievalparity.BuildReport(fixtureRef, consumer, k, checkpoint.Coverage, checkpoint.Rows, now)
 	reportPath, err := retrievalparity.WriteReport(homePath, report)
 	if err != nil {
 		return report, "", 1, err
 	}
-	if !report.Passed {
+	if !report.ParityPassed {
 		return report, reportPath, 1, nil
 	}
 	return report, reportPath, 0, nil
@@ -152,14 +185,18 @@ func cmdMemoryParityFreeze(homePath string, args []string) {
 
 func runMemoryParityFreeze(homePath string, args []string, now time.Time) (retrievalparity.Fixture, string, int, error) {
 	if !hasFlag(args, "--from-journal") {
-		return retrievalparity.Fixture{}, "", 2, fmt.Errorf("usage: compound memory parity-freeze --from-journal --window-days N [--out <home-relative path>]")
+		return retrievalparity.Fixture{}, "", 2, fmt.Errorf("usage: compound memory parity-freeze --from-journal --window-days N --control-report <report.json> [--out <home-relative path>]")
 	}
 	rawDays := valueFlag(args, "--window-days")
 	windowDays, err := strconv.Atoi(rawDays)
 	if err != nil || windowDays <= 0 {
 		return retrievalparity.Fixture{}, "", 2, fmt.Errorf("window-days must be a positive integer")
 	}
-	fixture, path, err := retrievalparity.FreezeFromJournal(homePath, windowDays, valueFlag(args, "--out"), now)
+	controlReportPath := strings.TrimSpace(valueFlag(args, "--control-report"))
+	if controlReportPath == "" {
+		return retrievalparity.Fixture{}, "", 2, fmt.Errorf("control-report is required")
+	}
+	fixture, path, err := retrievalparity.FreezeFromJournal(homePath, windowDays, valueFlag(args, "--out"), controlReportPath, now)
 	if err != nil {
 		return retrievalparity.Fixture{}, "", 1, err
 	}
