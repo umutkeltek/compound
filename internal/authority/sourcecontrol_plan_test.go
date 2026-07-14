@@ -308,6 +308,72 @@ func TestRecordedSourceControlMutationReviewSelectsNewestExactSealedReport(t *te
 	}
 }
 
+func TestRecordedSourceControlMutationReviewOrdersRFC3339NanoByInstant(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := SourceControlMutationBinding{
+		ActionWorkID:      "work_live_fractional_order",
+		MutationInputHash: "mutation-input:sha256:" + strings.Repeat("6", 64),
+		Capability:        "filesystem.write",
+		Action:            "write_file",
+		MutationClass:     "local_reversible",
+		TargetPaths:       []string{"README.md"},
+		ActionIntentIDs:   []string{"act_fractional_order"},
+	}
+	makeReport := func(home, owner string) SourceControlReviewReport {
+		t.Helper()
+		plan, buildErr := BuildSourceControlMutationReviewPlan(snapshot, owner, binding, fixedSourceControlReviewTime)
+		if buildErr != nil {
+			t.Fatal(buildErr)
+		}
+		paths, recordErr := RecordSourceControlReviewPlan(home, plan)
+		if recordErr != nil {
+			t.Fatal(recordErr)
+		}
+		return authorizeSourceControlMutationPlanAt(t, home, paths, plan, fixedSourceControlReviewTime)
+	}
+	reseal := func(report *SourceControlReviewReport, createdAt string) {
+		t.Helper()
+		report.CreatedAt = createdAt
+		report.AuthorizationDigest = sourceControlReviewReportDigest(*report)
+		writeJSON(t, report.ReviewPath, *report)
+	}
+
+	home := t.TempDir()
+	older := makeReport(home, "work_fractional_order_older")
+	newer := makeReport(home, "work_fractional_order_newer")
+	reseal(&older, "2026-07-13T12:00:20Z")
+	reseal(&newer, "2026-07-13T12:00:20.9Z")
+
+	matched, err := FindRecordedSourceControlMutationReview(home, snapshot, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched == nil || matched.ID != newer.ID {
+		t.Fatalf("fractional timestamp selection = %+v, want chronologically newer %s (%s after %s)", matched, newer.ID, newer.CreatedAt, older.CreatedAt)
+	}
+
+	// Equal instants may have different legal RFC3339Nano spellings. The report
+	// id, not the raw timestamp spelling or directory order, breaks that tie.
+	higherID, lowerID := &older, &newer
+	if higherID.ID < lowerID.ID {
+		higherID, lowerID = lowerID, higherID
+	}
+	reseal(higherID, "2026-07-13T12:00:21.0Z")
+	reseal(lowerID, "2026-07-13T12:00:21Z")
+	matched, err = FindRecordedSourceControlMutationReview(home, snapshot, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched == nil || matched.ID != higherID.ID {
+		t.Fatalf("equal-instant selection = %+v, want deterministic higher id %s", matched, higherID.ID)
+	}
+}
+
 func TestSourceControlMutationAuthorizationRequiresReviewerAndSealedSource(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
