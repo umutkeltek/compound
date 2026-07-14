@@ -29,6 +29,9 @@ func (s *Store) attachDispatchPrompt(workID, actor string, now time.Time) (dispa
 		if err != nil {
 			return dispatchPrompt{}, err
 		}
+		if gitDeliveryRequiresRepositoryIdentityMigration(w.GitDelivery) {
+			return dispatchPrompt{}, repositoryIdentityMigrationError(w)
+		}
 		workSHA256, err := workEnvelopeSHA256(w)
 		if err != nil {
 			return dispatchPrompt{}, err

@@ -185,6 +185,9 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 
 func (s *Store) preflightGitDeliveryBinding(w envelope.WorkEnvelope, actor, to string, requested *envelope.GitDeliveryContract) (*envelope.GitDeliveryContract, error) {
 	if requested == nil {
+		if gitDeliveryRequiresRepositoryIdentityMigration(w.GitDelivery) {
+			return nil, repositoryIdentityMigrationError(w)
+		}
 		return nil, nil
 	}
 	if !policy.HasOperatorProvenance(actor) {
@@ -196,7 +199,8 @@ func (s *Store) preflightGitDeliveryBinding(w envelope.WorkEnvelope, actor, to s
 	if to != w.State {
 		return nil, fmt.Errorf("git_delivery binding requires a same-state advance, got %s -> %s", w.State, to)
 	}
-	if w.GitDelivery != nil {
+	backfillRepositoryIdentity := gitDeliveryRequiresRepositoryIdentityMigration(w.GitDelivery)
+	if w.GitDelivery != nil && !backfillRepositoryIdentity {
 		return nil, fmt.Errorf("work %s already has git_delivery authority; rebinding is not allowed", w.ID)
 	}
 	candidate := w
@@ -210,6 +214,9 @@ func (s *Store) preflightGitDeliveryBinding(w envelope.WorkEnvelope, actor, to s
 		return nil, err
 	}
 	normalized := *candidate.GitDelivery
+	if backfillRepositoryIdentity && !sameGitDeliveryAuthorityExceptFingerprint(*w.GitDelivery, normalized) {
+		return nil, fmt.Errorf("work %s repository identity backfill must exactly match the existing git_delivery fields; rebinding is not allowed", w.ID)
+	}
 	return &normalized, nil
 }
 
@@ -242,6 +249,7 @@ func (s *Store) advanceActionIntent(w envelope.WorkEnvelope, actor, to string, n
 	targetKind := orDefault(opts.TargetKind, "work")
 	mutationClass := orDefault(opts.MutationClass, "local_reversible")
 	reversibility := orDefault(opts.Reversibility, "easy")
+	backfillRepositoryIdentity := opts.GitDelivery != nil && gitDeliveryRequiresRepositoryIdentityMigration(w.GitDelivery)
 	if opts.GitDelivery != nil {
 		reversibility = "manual"
 	}
@@ -259,9 +267,15 @@ func (s *Store) advanceActionIntent(w envelope.WorkEnvelope, actor, to string, n
 			contract.PublicationMode,
 			contract.PublicationRef,
 		)
-		preview = fmt.Sprintf("bind Git delivery on work %s at state %s to target %s repository fingerprint %s ref %s expected base %s publication mode %s publication ref %s actor %s",
-			w.ID, w.State, contract.TargetWorktreeRoot, contract.RepositoryFingerprint, contract.TargetLocalRef, contract.ExpectedBaseSHA, contract.PublicationMode, contract.PublicationRef, actor)
-		rollbackPlan = "git_delivery authority is immutable after binding; correct a rejected plan before advancing"
+		if backfillRepositoryIdentity {
+			preview = fmt.Sprintf("backfill Git repository identity on work %s at state %s for existing target %s repository fingerprint %s ref %s expected base %s publication mode %s publication ref %s actor %s",
+				w.ID, w.State, contract.TargetWorktreeRoot, contract.RepositoryFingerprint, contract.TargetLocalRef, contract.ExpectedBaseSHA, contract.PublicationMode, contract.PublicationRef, actor)
+			rollbackPlan = "repository identity remains unbound unless this exact governed advance commits"
+		} else {
+			preview = fmt.Sprintf("bind Git delivery on work %s at state %s to target %s repository fingerprint %s ref %s expected base %s publication mode %s publication ref %s actor %s",
+				w.ID, w.State, contract.TargetWorktreeRoot, contract.RepositoryFingerprint, contract.TargetLocalRef, contract.ExpectedBaseSHA, contract.PublicationMode, contract.PublicationRef, actor)
+			rollbackPlan = "git_delivery authority is immutable after binding; correct a rejected plan before advancing"
+		}
 	}
 	return envelope.ActionIntent{
 		Header: newHeader(

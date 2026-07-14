@@ -198,7 +198,7 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 		PublicationRef:        "refs/remotes/origin/main",
 	}
 	if err := invalidFingerprint.Validate(); err == nil || !strings.Contains(err.Error(), "repository_fingerprint") {
-		t.Fatalf("missing or invalid repository fingerprint should fail validation, got %v", err)
+		t.Fatalf("non-empty invalid repository fingerprint should fail validation, got %v", err)
 	}
 
 	partial := w

@@ -3,6 +3,7 @@ package work
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -763,13 +764,20 @@ func (s *Store) applyWorkbenchGitDelivery(item *WorkbenchItem, w envelope.WorkEn
 		return
 	}
 	contract := *w.GitDelivery
-	item.GitDeliveryBound = true
 	item.TargetWorktreeRoot = contract.TargetWorktreeRoot
 	item.RepositoryFingerprint = contract.RepositoryFingerprint
 	item.TargetLocalRef = contract.TargetLocalRef
 	item.ExpectedBaseSHA = contract.ExpectedBaseSHA
 	item.PublicationMode = contract.PublicationMode
 	item.PublicationRef = contract.PublicationRef
+	if gitDeliveryRequiresRepositoryIdentityMigration(w.GitDelivery) {
+		if !terminal {
+			item.LandingStatus = "repository_identity_migration_required"
+			item.NextAction = repositoryIdentityMigrationNextAction(w)
+		}
+		return
+	}
+	item.GitDeliveryBound = true
 	if terminal {
 		return
 	}
@@ -807,6 +815,21 @@ func (s *Store) applyWorkbenchGitDelivery(item *WorkbenchItem, w envelope.WorkEn
 		item.LandingStatus = "awaiting_local_land"
 		item.NextAction = firstNonEmpty(live.NextAction, "land the candidate in the WorkEnvelope-bound target and rerun land-check")
 	}
+}
+
+func repositoryIdentityMigrationNextAction(w envelope.WorkEnvelope) string {
+	if w.GitDelivery == nil {
+		return ""
+	}
+	contract := w.GitDelivery
+	command := fmt.Sprintf("compound work advance %s --to %s --by operator:<id> --target-worktree-root %q --target-local-ref %s --expected-base-sha %s",
+		w.ID, w.State, contract.TargetWorktreeRoot, contract.TargetLocalRef, contract.ExpectedBaseSHA)
+	if contract.PublicationMode == "local_only" {
+		command += " --local-only"
+	} else {
+		command += " --publication-ref " + contract.PublicationRef
+	}
+	return "review the legacy repository identity, then run exact operator same-state migration: " + command
 }
 
 type routeOutcomeIndex struct {

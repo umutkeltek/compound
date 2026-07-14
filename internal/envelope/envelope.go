@@ -436,7 +436,7 @@ func validateCapabilityOfferConstraints(v *verr, field string, values []Capabili
 // Land-check callers may assert the contract, but may never replace it.
 type GitDeliveryContract struct {
 	TargetWorktreeRoot    string `json:"target_worktree_root"`
-	RepositoryFingerprint string `json:"repository_fingerprint"`
+	RepositoryFingerprint string `json:"repository_fingerprint,omitempty"`
 	TargetLocalRef        string `json:"target_local_ref"`
 	ExpectedBaseSHA       string `json:"expected_base_sha"`
 	PublicationMode       string `json:"publication_mode"`
@@ -489,7 +489,12 @@ func (e *WorkEnvelope) Validate() error {
 }
 
 func validateGitDeliveryContract(v *verr, contract GitDeliveryContract) {
-	if !validSHA256(strings.TrimSpace(contract.RepositoryFingerprint)) {
+	// An exactly empty fingerprint is the readable legacy v0.1 shape from
+	// before repository identity entered GitDeliveryContract. Current writers
+	// derive it before admission; work execution gates require governed
+	// backfill. Whitespace and every other malformed non-empty value remain
+	// invalid rather than masquerading as legacy state.
+	if contract.RepositoryFingerprint != "" && !validSHA256(strings.TrimSpace(contract.RepositoryFingerprint)) {
 		v.addf("git_delivery.repository_fingerprint must be a lowercase SHA-256 hex digest")
 	}
 	root := strings.TrimSpace(contract.TargetWorktreeRoot)

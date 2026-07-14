@@ -804,9 +804,6 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	if terminalStates[in.To] {
 		return w, terminalStateRequiresClose("advance", in.To)
 	}
-	if in.GitDelivery != nil && w.GitDelivery != nil {
-		return w, fmt.Errorf("work %s already has git_delivery authority; rebinding is not allowed", w.ID)
-	}
 	if in.To != w.State && !canTransition(w.State, in.To) {
 		return w, fmt.Errorf("illegal transition %s -> %s (allowed: %s)", w.State, in.To, strings.Join(transitions[w.State], ", "))
 	}

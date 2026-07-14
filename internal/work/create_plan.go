@@ -589,6 +589,20 @@ func sameGitDeliveryContract(a, b *envelope.GitDeliveryContract) bool {
 	return *a == *b
 }
 
+func gitDeliveryRequiresRepositoryIdentityMigration(contract *envelope.GitDeliveryContract) bool {
+	return contract != nil && contract.RepositoryFingerprint == ""
+}
+
+func repositoryIdentityMigrationError(w envelope.WorkEnvelope) error {
+	return fmt.Errorf("work %s git_delivery repository fingerprint is unbound; run the governed operator same-state repository identity migration", w.ID)
+}
+
+func sameGitDeliveryAuthorityExceptFingerprint(a, b envelope.GitDeliveryContract) bool {
+	a.RepositoryFingerprint = ""
+	b.RepositoryFingerprint = ""
+	return a == b
+}
+
 func validateNewGitDeliveryDeclaration(w envelope.WorkEnvelope) error {
 	if strings.TrimSpace(w.ExpectedBaseSHA) != "" {
 		return fmt.Errorf("legacy expected_base_sha cannot admit new work; declare a complete git_delivery contract")
@@ -632,6 +646,9 @@ func (s *Store) normalizeGitDeliveryForPlan(w *envelope.WorkEnvelope) error {
 func (s *Store) validateBoundGitDelivery(w envelope.WorkEnvelope) error {
 	if w.GitDelivery == nil {
 		return validateNewGitDeliveryDeclaration(w)
+	}
+	if gitDeliveryRequiresRepositoryIdentityMigration(w.GitDelivery) {
+		return repositoryIdentityMigrationError(w)
 	}
 	contract := *w.GitDelivery
 	root, err := canonicalLandingRepo(contract.TargetWorktreeRoot)

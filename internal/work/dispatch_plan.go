@@ -1538,6 +1538,12 @@ func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 		ActionContext:         cloneWorkActionContext(item.ActionContext),
 		ClaimedBy:             item.ClaimedBy,
 	}
+	if item.LandingStatus == "repository_identity_migration_required" {
+		out.Action = "review"
+		out.Command = nil
+		out.Reason = "repository fingerprint migration requires exact operator review"
+		return out
+	}
 	switch item.State {
 	case "ready":
 		if dispatchLeaseHeldByOther(item, actor) {

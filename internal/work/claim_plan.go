@@ -68,6 +68,9 @@ func (s *Store) ClaimPlan(workID string, now time.Time, opts ClaimPlanOptions) (
 	if err != nil {
 		return ClaimPlan{}, err
 	}
+	if gitDeliveryRequiresRepositoryIdentityMigration(w.GitDelivery) {
+		return ClaimPlan{}, repositoryIdentityMigrationError(w)
+	}
 	actor := strings.TrimSpace(opts.Actor)
 	if actor == "" {
 		actor = "codex"
