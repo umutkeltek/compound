@@ -1558,6 +1558,19 @@ func TestReviewedMutationSkipsUnusableOwnerReportsAndUsesNextExactAuthorization(
 	if reviewed == nil || reviewed.OwnerWorkID != validOwner || reviewed.PlanID != validPlan.ID {
 		t.Fatalf("reviewed mutation = %+v, want fallback to current durable owner %s / plan %s", reviewed, validOwner, validPlan.ID)
 	}
+	entries, err := os.ReadDir(filepath.Join(homePath, "reviews", authority.SourceControlCleanupReviewArea))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewedArtifacts := 0
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".reviewed.json") {
+			reviewedArtifacts++
+		}
+	}
+	if reviewedArtifacts != 3 {
+		t.Fatalf("reviewed artifacts after fallback = %d, want all 3 immutable historical reports preserved", reviewedArtifacts)
+	}
 }
 
 func recordHookSourceControlMutationAuthorization(t *testing.T, homePath string, plan authority.SourceControlReviewPlan, now time.Time) authority.SourceControlReviewReport {
