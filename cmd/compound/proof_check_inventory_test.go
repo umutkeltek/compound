@@ -22,6 +22,12 @@ func TestProofCheckSmokeInventoryGuard(t *testing.T) {
 	// defeats the point of the guard.
 	manualOnlySmokes := map[string]string{
 		"work-mutation-trail-smoke.mjs": "requires COMPOUND_BIN (a freshly built compound binary); exercised manually / in strict-local batteries, not in the portable proof-check path",
+		// The two rows below are TEMPORARY: their proofCheckSteps registration is owned by a
+		// concurrent live lane (proof_check.go was not editable when this guard landed). Wiring
+		// them in WITHOUT deleting these rows turns this guard red (allowlisted-and-wired), so
+		// cleanup is self-enforcing in the registration change.
+		"projection-degradation-smoke.mjs": "registration pending: proof_check.go owned by a live concurrent lane at guard-landing time; wire in and DELETE this row in the registration change",
+		"projection-doors-smoke.mjs":       "registration pending: proof_check.go owned by a live concurrent lane at guard-landing time; wire in and DELETE this row in the registration change",
 	}
 
 	repoRoot := inventoryGuardRepoRoot(t)
