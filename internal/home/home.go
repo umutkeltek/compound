@@ -247,7 +247,14 @@ func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
 	r.BackupWarnings = backupFreshnessWarnings(homePath, now)
 	r.Setup = DoctorSetup(SetupOptions{})
 	r.SetupOK = r.Setup.OK
-	r.OK = r.ManifestOK && r.DirsOK == len(dirs) && r.HabitatOK && r.SetupOK
+	// r.OK is the HOME-health verdict: manifest, scaffold dirs, and a clean habitat inventory.
+	// It deliberately does NOT fold in SetupOK — SetupOK checks the machine's install environment
+	// (setup.compound_on_path, setup.install_dir_on_path), which is orthogonal to whether THIS home
+	// is healthy. Folding it in made every home-health consumer (archive.requireHealthyHome, backup
+	// restore verify, and any test asserting Doctor().OK) fail on a machine without an installed
+	// compound — a CI runner or a fresh clone — even for a perfectly healthy home. SetupOK/Setup stay
+	// reported fields so callers that care about install readiness still see it.
+	r.OK = r.ManifestOK && r.DirsOK == len(dirs) && r.HabitatOK
 	return r
 }
 

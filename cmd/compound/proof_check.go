@@ -562,6 +562,11 @@ func printProofCheck(report proofCheckReport) {
 		if step.SkipReason != "" {
 			fmt.Printf("  skip_reason: %s\n", step.SkipReason)
 		}
+		// Surface the captured output of a failed gate so a red CI run (which prints this human
+		// report, not --json) shows WHICH test/check failed, instead of only the summary line.
+		if step.Status == "failed" && strings.TrimSpace(step.OutputTail) != "" {
+			fmt.Printf("  output_tail:\n%s\n", step.OutputTail)
+		}
 	}
 	if len(report.ProofRefs) > 0 {
 		fmt.Printf("- proof_refs: %s\n", strings.Join(report.ProofRefs, ","))
