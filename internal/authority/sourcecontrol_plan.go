@@ -524,7 +524,11 @@ func ListRecordedSourceControlMutationReviews(homePath string, snapshot SourceCo
 	if err != nil {
 		return nil, err
 	}
-	matches := make([]SourceControlReviewReport, 0)
+	type matchedReview struct {
+		report    SourceControlReviewReport
+		createdAt time.Time
+	}
+	matches := make([]matchedReview, 0)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reviewed.json") {
 			continue
@@ -544,18 +548,23 @@ func ListRecordedSourceControlMutationReviews(homePath string, snapshot SourceCo
 		if !sourceControlPlanMatchesSnapshot(plan, snapshot) || !sourceControlMutationExecutionEqual(*plan.MutationBinding, normalized) {
 			continue
 		}
-		if _, parseErr := time.Parse(time.RFC3339Nano, report.CreatedAt); parseErr != nil {
+		createdAt, parseErr := time.Parse(time.RFC3339Nano, report.CreatedAt)
+		if parseErr != nil {
 			continue
 		}
-		matches = append(matches, report)
+		matches = append(matches, matchedReview{report: report, createdAt: createdAt})
 	}
 	sort.SliceStable(matches, func(i, j int) bool {
-		if matches[i].CreatedAt != matches[j].CreatedAt {
-			return matches[i].CreatedAt > matches[j].CreatedAt
+		if !matches[i].createdAt.Equal(matches[j].createdAt) {
+			return matches[i].createdAt.After(matches[j].createdAt)
 		}
-		return matches[i].ID > matches[j].ID
+		return matches[i].report.ID > matches[j].report.ID
 	})
-	return matches, nil
+	reports := make([]SourceControlReviewReport, len(matches))
+	for i := range matches {
+		reports[i] = matches[i].report
+	}
+	return reports, nil
 }
 
 // SourceControlMutationOwnerCurrent is the one lifecycle predicate shared by
