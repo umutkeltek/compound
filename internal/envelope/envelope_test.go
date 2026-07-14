@@ -228,6 +228,126 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 	}
 }
 
+// TestWorkPredictionRoundTripsAndLegacyMissingFieldLoads covers F2: a WorkEnvelope carrying a
+// staked WorkPrediction round-trips byte-identical, and a hand-written legacy envelope JSON
+// WITHOUT "prediction" loads, validates, and remains legacy-shaped (mirrors the GitDelivery
+// legacy-missing-field precedent — additive optional fields need no schema_version bump).
+func TestWorkPredictionRoundTripsAndLegacyMissingFieldLoads(t *testing.T) {
+	w := WorkEnvelope{
+		Header:           hdr(SVWork, "work_predicted"),
+		Owner:            "compound",
+		State:            "ready",
+		SuccessPredicate: "predicted work round-trips",
+		Prediction: &WorkPrediction{
+			Outcome:  "completed",
+			MoveType: "rule_delta",
+			Note:     "expect a clean rule-delta land",
+		},
+	}
+	if err := w.Validate(); err != nil {
+		t.Fatalf("predicted work should validate: %v", err)
+	}
+	if err := RoundTrip(&w); err != nil {
+		t.Fatalf("predicted work round-trip: %v", err)
+	}
+
+	legacyJSON := `{"schema_version":"compound.work.v0.1","id":"work_legacy_shape","created_at":"2026-06-28T00:00:00Z","producer":{"kind":"cli","name":"compound"},"authority":{"source_class":"runtime","status":"current"},"privacy":"private","risk":"tier1","evidence_refs":[],"uncertainty":{"level":"known"},"owner":"compound","state":"ready","success_predicate":"legacy remains valid","non_goals":[],"run_ids":[],"artifact_ids":[],"verification_ids":[],"memory_candidate_ids":[]}`
+	var legacy WorkEnvelope
+	if err := json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
+		t.Fatalf("decode legacy work: %v", err)
+	}
+	if legacy.Prediction != nil {
+		t.Fatalf("legacy prediction = %+v, want nil", legacy.Prediction)
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy work without prediction must remain valid: %v", err)
+	}
+	if strings.Contains(legacyJSON, "prediction") {
+		t.Fatal("legacy fixture unexpectedly contains a prediction field; test setup error")
+	}
+}
+
+// TestWorkPredictionValidation covers F3 (envelope layer): a staked prediction's outcome must be
+// one of the CLOSE outcome enum (completed|failed|cancelled) -- NOT a Receipt.Outcome value like
+// "no_op" or "blocked" -- and, when set, move_type must be one of envelope.MoveTypes.
+func TestWorkPredictionValidation(t *testing.T) {
+	base := WorkEnvelope{
+		Header:           hdr(SVWork, "work_predicted_invalid"),
+		Owner:            "compound",
+		State:            "ready",
+		SuccessPredicate: "predicate",
+	}
+
+	receiptOutcomeNotCloseOutcome := base
+	receiptOutcomeNotCloseOutcome.Prediction = &WorkPrediction{Outcome: "no_op"}
+	if err := receiptOutcomeNotCloseOutcome.Validate(); err == nil || !strings.Contains(err.Error(), "prediction.outcome") {
+		t.Fatalf("prediction outcome=no_op (a Receipt outcome, not a close outcome) should fail validation, got %v", err)
+	}
+
+	badMoveType := base
+	badMoveType.Prediction = &WorkPrediction{Outcome: "completed", MoveType: "banana"}
+	if err := badMoveType.Validate(); err == nil || !strings.Contains(err.Error(), "prediction.move_type") {
+		t.Fatalf("prediction move_type=banana should fail validation, got %v", err)
+	}
+
+	missingOutcome := base
+	missingOutcome.Prediction = &WorkPrediction{MoveType: "rule_delta"}
+	if err := missingOutcome.Validate(); err == nil || !strings.Contains(err.Error(), "prediction.outcome") {
+		t.Fatalf("prediction without outcome should fail validation (required when struct present), got %v", err)
+	}
+
+	unstakedMoveType := base
+	unstakedMoveType.Prediction = &WorkPrediction{Outcome: "completed"}
+	if err := unstakedMoveType.Validate(); err != nil {
+		t.Fatalf("prediction with only outcome staked (move_type left unstaked) should validate: %v", err)
+	}
+}
+
+// TestReceiptSurpriseRoundTripsAndLegacyMissingFieldLoads covers F2 for the Receipt side: a
+// Receipt carrying a Surprise round-trips byte-identical, and a legacy receipt JSON without
+// "surprise" loads and validates.
+func TestReceiptSurpriseRoundTripsAndLegacyMissingFieldLoads(t *testing.T) {
+	rec := Receipt{
+		Header:   withWork(hdr(SVReceipt, "rec_surprised"), "work_predicted"),
+		Outcome:  "completed",
+		MoveType: "control_plane_repair",
+		StateDelta: StateDelta{
+			Changed:      true,
+			Artifacts:    []string{},
+			Verification: []string{},
+		},
+		ProofRefs: []string{"check:proof"},
+		Surprise: &SurpriseSignal{
+			PredictedOutcome:  "completed",
+			PredictedMoveType: "rule_delta",
+			ActualOutcome:     "completed",
+			ActualMoveType:    "control_plane_repair",
+			Diverged:          true,
+		},
+	}
+	if err := rec.Validate(); err != nil {
+		t.Fatalf("receipt with surprise should validate: %v", err)
+	}
+	if err := RoundTrip(&rec); err != nil {
+		t.Fatalf("receipt-with-surprise round-trip: %v", err)
+	}
+
+	legacyJSON := `{"schema_version":"compound.receipt.v0.1","id":"rec_legacy_shape","created_at":"2026-06-28T00:00:00Z","producer":{"kind":"cli","name":"compound"},"authority":{"source_class":"runtime","status":"current"},"privacy":"private","risk":"tier1","evidence_refs":[],"uncertainty":{"level":"known"},"outcome":"completed","move_type":"outward_delta","state_delta":{"changed":true},"cost":{},"skills":{},"memory":{},"next":{},"proof_refs":["check:proof"]}`
+	var legacy Receipt
+	if err := json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
+		t.Fatalf("decode legacy receipt: %v", err)
+	}
+	if legacy.Surprise != nil {
+		t.Fatalf("legacy surprise = %+v, want nil", legacy.Surprise)
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy receipt without surprise must remain valid: %v", err)
+	}
+	if strings.Contains(legacyJSON, "surprise") {
+		t.Fatal("legacy fixture unexpectedly contains a surprise field; test setup error")
+	}
+}
+
 func TestWorkEnvelopePreFingerprintGitDeliveryIsReadableAndShapeStable(t *testing.T) {
 	const legacyJSON = `{"schema_version":"compound.work.v0.1","id":"work_pre_fingerprint","created_at":"2026-07-13T22:00:00Z","producer":{"kind":"cli","name":"compound","version":""},"ids":{},"scope":{},"authority":{"source_class":"runtime","status":"current"},"privacy":"private","risk":"tier1","evidence_refs":[],"uncertainty":{"level":"known"},"owner":"codex","git_delivery":{"target_worktree_root":"/repo/product","target_local_ref":"refs/heads/main","expected_base_sha":"0123456789abcdef0123456789abcdef01234567","publication_mode":"local_only"},"state":"running","success_predicate":"legacy delivery remains readable without changing its hash","non_goals":[],"run_ids":[],"artifact_ids":[],"verification_ids":[],"memory_candidate_ids":[]}`
 

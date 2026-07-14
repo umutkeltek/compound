@@ -48,6 +48,12 @@ var (
 	HookStatuses      = []string{"ok", "fail_open", "blocked", "error"}
 	ReceiptOutcomes   = []string{"completed", "blocked", "failed", "no_op"}
 	RequestedModes    = []string{"observe", "plan", "execute", "review"}
+	// CloseOutcomes is the CLOSE outcome enum (CloseInput.Outcome in internal/work): the state a
+	// work lands in, completed|failed|cancelled. It is DISTINCT from ReceiptOutcomes (the
+	// Receipt.Outcome value, mapped from a close outcome via receiptOutcome — e.g.
+	// cancelled->no_op) and from DesiredOutcome (free text staked at `create --outcome`). A staked
+	// WorkPrediction.Outcome predicts THIS enum, never the other two.
+	CloseOutcomes = []string{"completed", "failed", "cancelled"}
 )
 
 func oneOf(val string, set []string) bool {
@@ -505,6 +511,32 @@ type WorkEnvelope struct {
 	ArtifactIDs        []string             `json:"artifact_ids"`
 	VerificationIDs    []string             `json:"verification_ids"`
 	MemoryCandidateIDs []string             `json:"memory_candidate_ids"`
+	// Prediction is an OPTIONAL, additive stake of how this work is expected to CLOSE, set at
+	// CREATE time only (v1: no restaking at Claim/Advance -- Claim carries no payload to widen).
+	// A work without it is ordinary work; close-time mechanically diffs it against the actual
+	// close and bakes a SurpriseSignal into the Receipt (see Receipt.Surprise, and
+	// internal/work's surpriseOnClose). It is the harness-layer analog of a prediction-error
+	// signal: compound has a policy (orient/routing), a perception (ContextPack), and a
+	// transition model (the ledger) -- staking + diffing a prediction is what lets prediction
+	// error accumulate as adjudicable evidence.
+	Prediction *WorkPrediction `json:"prediction,omitempty"`
+}
+
+// WorkPrediction is staked at create time and predicts the CLOSE outcome enum
+// (CloseOutcomes: completed|failed|cancelled -- CloseInput.Outcome in internal/work), NEVER
+// Receipt.Outcome (mapped via receiptOutcome, e.g. cancelled->no_op) and NEVER DesiredOutcome
+// (free text staked via `create --outcome`). Naming avoids both scouted landmines: "Expected*"
+// already means the legacy git-delivery contract fields, and "outcome" is triply overloaded
+// across this envelope/Receipt pair.
+type WorkPrediction struct {
+	// Outcome is REQUIRED whenever Prediction is present; must be one of CloseOutcomes.
+	Outcome string `json:"outcome"`
+	// MoveType is OPTIONAL; when set, must be one of MoveTypes. Left empty, the move_type
+	// dimension is simply not staked and is never compared at close (an unstaked dimension
+	// cannot itself cause a divergence).
+	MoveType string `json:"move_type,omitempty"`
+	// Note is optional free text (e.g. why this outcome/move_type is expected).
+	Note string `json:"note,omitempty"`
 }
 
 func (e *WorkEnvelope) Kind() string { return "work" }
@@ -521,7 +553,18 @@ func (e *WorkEnvelope) Validate() error {
 	if e.GitDelivery != nil {
 		validateGitDeliveryContract(v, *e.GitDelivery)
 	}
+	if e.Prediction != nil {
+		validateWorkPrediction(v, *e.Prediction)
+	}
 	return v.result(e.Kind())
+}
+
+// validateWorkPrediction holds a hand-written work envelope's staked prediction to the same rule
+// as any other writer: outcome REQUIRED and must be a close outcome (never a Receipt.Outcome
+// value like "no_op" or "blocked"), move_type optional but must be one of MoveTypes when set.
+func validateWorkPrediction(v *verr, p WorkPrediction) {
+	v.enum("prediction.outcome", p.Outcome, CloseOutcomes, true)
+	v.enum("prediction.move_type", p.MoveType, MoveTypes, false)
 }
 
 func validateGitDeliveryContract(v *verr, contract GitDeliveryContract) {
@@ -786,6 +829,24 @@ type Receipt struct {
 	Next         ReceiptNext   `json:"next"`
 	ProofRefs    []string      `json:"proof_refs,omitempty"`
 	FailureCause *FailureCause `json:"failure_cause,omitempty"`
+	// Surprise is the mechanical diff between the closing WorkEnvelope's staked WorkPrediction
+	// and what actually happened at close (see internal/work's surpriseOnClose). Nil when the
+	// work staked no prediction. When staked, ALWAYS set -- Diverged=false (a confirmed
+	// prediction) is signal too, not merely the absence of a divergence flag.
+	Surprise *SurpriseSignal `json:"surprise,omitempty"`
+}
+
+// SurpriseSignal is the harness-layer prediction-error record: what the work staked at create
+// vs. what its close actually was. PredictedMoveType is empty when that dimension was left
+// unstaked (and is then excluded from the Diverged comparison). Named consumers: the
+// adjudication inbox (via the observed candidate ObserveWorkSurprise mints on divergence), the
+// ACE/injection-observation weekly compile, and the canonized value-function Revisit trigger.
+type SurpriseSignal struct {
+	PredictedOutcome  string `json:"predicted_outcome"`
+	PredictedMoveType string `json:"predicted_move_type,omitempty"`
+	ActualOutcome     string `json:"actual_outcome"`
+	ActualMoveType    string `json:"actual_move_type"`
+	Diverged          bool   `json:"diverged"`
 }
 
 func (e *Receipt) Kind() string { return "receipt" }
