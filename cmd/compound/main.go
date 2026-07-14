@@ -180,6 +180,8 @@ func main() {
 		cmdExecutorLens(os.Args[2:])
 	case "lens-modulate":
 		cmdLensModulate(os.Args[2:])
+	case "land-lease":
+		cmdLandLease(os.Args[2:])
 	case "panel":
 		cmdPanel(os.Args[2:])
 	case "local-models":
