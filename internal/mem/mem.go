@@ -1229,6 +1229,14 @@ func (s *Store) canonicalRecallEntity(entity string, claims []Claim, includeEvid
 	return entity, nil
 }
 
+// CurrentClaim is the exported read door onto currentClaim for callers
+// outside this package (e.g. internal/authority resolvers) that need the
+// current (highest-seq, non-superseded) promoted claim for one entity+
+// predicate pair "as of now". It never mutates the store.
+func (s *Store) CurrentClaim(entity, predicate string) (Claim, bool, error) {
+	return s.currentClaim(entity, predicate, 0)
+}
+
 // currentClaim returns the current claim for entity+predicate as of asOf (0 = now), if any.
 func (s *Store) currentClaim(entity, predicate string, asOf int64) (Claim, bool, error) {
 	claims, err := s.loadClaimsAsOf(asOf)

@@ -1468,3 +1468,50 @@ func objs(cs []Claim) []string {
 	}
 	return out
 }
+
+// TestStoreCurrentClaimReadsBackPromotedValueAndFollowsReimport proves the
+// exported CurrentClaim door: internal/authority (and any other package)
+// reads the current promoted current_path claim without reaching into mem's
+// private currentClaim, and a later re-import (new object, same
+// entity+predicate) is picked up as the newest current value.
+func TestStoreCurrentClaimReadsBackPromotedValueAndFollowsReimport(t *testing.T) {
+	s := newStore(t)
+
+	if _, ok, err := s.CurrentClaim("source:absorbed-os", "current_path"); err != nil {
+		t.Fatalf("CurrentClaim on empty store: %v", err)
+	} else if ok {
+		t.Fatalf("CurrentClaim on empty store should report not-found")
+	}
+
+	c1, err := s.Capture([]Candidate{cand("source:absorbed-os", "current_path", "/root/first", "")}, t0)
+	if err != nil {
+		t.Fatalf("capture first: %v", err)
+	}
+	if _, err := promoteForTest(t, s, c1[0].ID, "", t0); err != nil {
+		t.Fatalf("promote first: %v", err)
+	}
+
+	claim, ok, err := s.CurrentClaim("source:absorbed-os", "current_path")
+	if err != nil {
+		t.Fatalf("CurrentClaim after first promote: %v", err)
+	}
+	if !ok || claim.Object != "/root/first" {
+		t.Fatalf("CurrentClaim = %+v, ok=%v; want /root/first", claim, ok)
+	}
+
+	c2, err := s.Capture([]Candidate{cand("source:absorbed-os", "current_path", "/root/second", "")}, t0.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("capture second (re-import): %v", err)
+	}
+	if _, err := promoteForTest(t, s, c2[0].ID, "", t0.Add(time.Minute)); err != nil {
+		t.Fatalf("promote second: %v", err)
+	}
+
+	claim, ok, err = s.CurrentClaim("source:absorbed-os", "current_path")
+	if err != nil {
+		t.Fatalf("CurrentClaim after re-import: %v", err)
+	}
+	if !ok || claim.Object != "/root/second" {
+		t.Fatalf("CurrentClaim after re-import = %+v, ok=%v; want newest /root/second", claim, ok)
+	}
+}
