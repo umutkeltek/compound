@@ -58,7 +58,7 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 			if err != nil {
 				t.Fatalf("doctor: %v", err)
 			}
-			for _, id := range []string{"os_source_umut_live_start", "os_source_umut_whole_system_map"} {
+			for _, id := range []string{"os_source_served_orientation_primary", "os_source_served_orientation_secondary"} {
 				got, ok := findOSAbsorptionDoctorRow(doctor.Rows, id)
 				if !ok {
 					t.Fatalf("doctor row %s missing: %+v", id, doctor.Rows)
@@ -117,7 +117,7 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 			t.Fatal(err)
 		}
 		body := strings.Join([]string{
-			"<!-- GENERATED from operating-system/umut-os/spine/steering.config.ts; generator stamp test -->",
+			"<!-- GENERATED from an absorbed-OS steering config; generator stamp test -->",
 			"## Orient first — Compound (the served contract)",
 			"Run `compound orient --harness " + entrypoint.harness + " --task \"<task>\"`.",
 			"These files remain source-in-place evidence and rollback:",
@@ -138,8 +138,8 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 		id  string
 		ref string
 	}{
-		{id: "os_source_umut_live_start", ref: liveStart},
-		{id: "os_source_umut_whole_system_map", ref: wholeMap},
+		{id: "os_source_served_orientation_primary", ref: liveStart},
+		{id: "os_source_served_orientation_secondary", ref: wholeMap},
 	} {
 		r := row(source.id, source.ref, "absorbed", "compound://contracts/effective-contract", "compound orient and served client contract", testServedOrientationProofMode)
 		r.CurrentRole = "source_in_place_evidence"

@@ -992,14 +992,19 @@ func osAbsorptionNeedsOperatorStateProof(row OSAbsorptionMatrixRow) bool {
 	return row.CompoundOwner == policy.OperatorStateAuthorityRef
 }
 
+// osAbsorptionNeedsServedOrientationProof selects the served-orientation
+// proof by explicit proof_mode alone once a row opts in — it no longer
+// requires the row.ID to be one of two hardcoded operator-specific source
+// rows. Any row that names osAbsorptionProofModeServedOrient gets the
+// proof; the legacy (row.ID, status, compound_owner) tuple match remains
+// only as the fallback for rows that never set proof_mode at all.
 func osAbsorptionNeedsServedOrientationProof(row OSAbsorptionMatrixRow) bool {
-	tupleMatches := row.Status == "absorbed" &&
+	if row.ProofMode != "" {
+		return row.ProofMode == osAbsorptionProofModeServedOrient
+	}
+	return row.Status == "absorbed" &&
 		row.CompoundOwner == osAbsorptionEffectiveContractAuthorityRef &&
 		(row.ID == "os_source_umut_live_start" || row.ID == "os_source_umut_whole_system_map")
-	if row.ProofMode != "" {
-		return row.ProofMode == osAbsorptionProofModeServedOrient && tupleMatches
-	}
-	return tupleMatches
 }
 
 // osAbsorptionProofResult is the outcome of one row's auto-proof attempt.
@@ -1150,7 +1155,6 @@ func parseOSAbsorptionServedOrientationEvidence(refs []string) (osAbsorptionServ
 
 func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error {
 	required := []string{
-		"<!-- GENERATED from operating-system/umut-os/spine/steering.config.ts;",
 		"## Orient first — Compound (the served contract)",
 		"compound orient --harness " + harness + " --task \"<task>\"",
 		"source-in-place evidence",
