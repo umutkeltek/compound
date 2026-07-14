@@ -1,12 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"compound/internal/capgraph"
+	"compound/internal/envelope"
 	"compound/internal/finding"
 	"compound/internal/home"
 	"compound/internal/hookplan"
@@ -45,6 +50,41 @@ type doctorReport struct {
 	FindingsSuperseded int          `json:"findings_superseded"`
 	PlacementMode      string       `json:"placement_guard_mode"`
 	PlacementNote      string       `json:"placement_note,omitempty"`
+
+	// Surfacing coverage: rows = agent lanes/harnesses, columns = communication surfaces
+	// (guard hook · orient · memory injection · peer visibility). Read-only, derived from
+	// state that already exists; it answers "do all harnesses actually see compound?".
+	Surfacing          []surfacingRow     `json:"surfacing"`
+	SurfacingNote      string             `json:"surfacing_note,omitempty"`
+	SurfacingInjection surfacingInjection `json:"surfacing_injection"`
+}
+
+// surfacingRow is one lane/harness × the communication surfaces it should see. Cell vocabulary
+// is deliberately small: guard is wired|drift|absent|unknown, orient is wired|never, peers is
+// the S2 placeholder. BelowExpectation names the expected-but-unwired columns (the trailing "!"
+// in the text render is derived from it) so text and JSON never disagree about what is short.
+type surfacingRow struct {
+	Lane             string   `json:"lane"`     // lane node name, or harness for fallback rows
+	Harness          string   `json:"harness"`  // aliased harness the guard/orient columns join on
+	Expected         bool     `json:"expected"` // harness-aliased lane => guard + orient expected (v1 derived)
+	Guard            string   `json:"guard"`
+	Orient           string   `json:"orient"`
+	OrientAge        string   `json:"orient_age,omitempty"`
+	Injection        string   `json:"injection"`
+	Peers            string   `json:"peers"`
+	BelowExpectation []string `json:"below_expectation,omitempty"`
+}
+
+// surfacingInjection is the memory-injection column's evidence. It is GLOBAL by construction:
+// the injection-observation report attributes sessions to work ids, not to harnesses, so an
+// honest matrix shows the same numbers on every row rather than faking a per-lane split. Scope
+// is always "global" and Note says so; a future per-lane consumption signal would refine this.
+type surfacingInjection struct {
+	Scope          string `json:"scope"` // always "global" in v1
+	ServedEvents   int    `json:"served_events"`
+	ConsumedEvents int    `json:"consumed_events"`
+	LastConsumed   string `json:"last_consumed"` // coarse age or "never"
+	Note           string `json:"note"`
 }
 
 func doctorUsage() string {
@@ -126,6 +166,9 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// 5) Surfacing coverage — read-only lanes/harnesses × communication-surfaces matrix.
+	rep.Surfacing, rep.SurfacingNote, rep.SurfacingInjection = buildSurfacingCoverage(homePath, rep.Hooks, time.Now())
+
 	if hasFlag(args, "--json") {
 		if err := encodeJSON(stdout, rep); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
@@ -173,5 +216,259 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	fmt.Fprintf(stdout, "- mode: %s\n", rep.PlacementMode)
 	if rep.PlacementNote != "" {
 		fmt.Fprintf(stdout, "  note: %s\n", rep.PlacementNote)
+	}
+
+	printSurfacing(stdout, rep)
+}
+
+// printSurfacing renders the surfacing-coverage matrix. Cells stay narrow (no table wider than
+// ~100 cols, no color); the global injection numbers and the S2 peers caveat are stated once in
+// note lines rather than repeated per row, and a trailing "!" marks an expected-but-unwired cell.
+func printSurfacing(stdout io.Writer, rep doctorReport) {
+	fmt.Fprintln(stdout, "\n## surfacing coverage")
+	fmt.Fprintln(stdout, "rows = agent lanes/harnesses · cols = communication surfaces · ! = expected surface not wired (guard+orient expected)")
+	if len(rep.Surfacing) == 0 {
+		fmt.Fprintln(stdout, "- (no lanes or harnesses to report)")
+		return
+	}
+	fmt.Fprintf(stdout, "%-30s %-9s %-15s %-14s %s\n", "lane", "guard", "orient", "injection", "peers")
+	for _, r := range rep.Surfacing {
+		below := map[string]bool{}
+		for _, c := range r.BelowExpectation {
+			below[c] = true
+		}
+		guard := r.Guard
+		if below["guard"] {
+			guard += "!"
+		}
+		orient := r.Orient
+		if r.Orient == "wired" && r.OrientAge != "" {
+			orient = "wired (" + r.OrientAge + ")"
+		}
+		if below["orient"] {
+			orient += "!"
+		}
+		fmt.Fprintf(stdout, "%-30s %-9s %-15s %-14s %s\n", surfacingTruncate(r.Lane, 30), guard, orient, r.Injection, r.Peers)
+	}
+	if rep.SurfacingNote != "" {
+		fmt.Fprintf(stdout, "-> %s\n", rep.SurfacingNote)
+	}
+	inj := rep.SurfacingInjection
+	fmt.Fprintf(stdout, "-> injection %s: served %d, consumed %d, last-consumed %s (%s)\n",
+		inj.Scope, inj.ServedEvents, inj.ConsumedEvents, inj.LastConsumed, inj.Note)
+	fmt.Fprintln(stdout, "-> peers: lane-beliefs visibility is not built yet (S2)")
+}
+
+func surfacingTruncate(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 1 {
+		return s[:max]
+	}
+	return s[:max-1] + "…"
+}
+
+// buildSurfacingCoverage derives the read-only surfacing matrix from state that already exists:
+// the per-harness guard status (reused from the hook check), the last orient-produced evidence
+// per harness (recorded EffectiveContracts), and the GLOBAL memory-injection numbers (the
+// observation report does not record a per-harness split). Rows are the capgraph's agent-lane
+// nodes when any are imported; otherwise the hook harness list, with an explicit note so the
+// matrix is never silently empty on a fresh home. It writes nothing and makes no provider call.
+func buildSurfacingCoverage(homePath string, hooks []doctorHook, now time.Time) ([]surfacingRow, string, surfacingInjection) {
+	guardByHarness := map[string]string{}
+	for _, h := range hooks {
+		guardByHarness[surfacingHarnessAlias(h.Harness)] = guardStatus(h.Status)
+	}
+	orientByHarness := lastOrientByHarness(homePath)
+	inj := injectionGlobalSummary(homePath, now)
+
+	var rows []surfacingRow
+	note := ""
+	if lanes := agentLaneRows(homePath); len(lanes) > 0 {
+		for _, ln := range lanes {
+			rows = append(rows, surfacingRowFor(ln.Name, ln.Harness, guardByHarness, orientByHarness, inj, now))
+		}
+	} else {
+		note = "no agent lanes imported — showing hook harnesses only"
+		for _, harness := range hookHarnessList(hooks) {
+			rows = append(rows, surfacingRowFor(harness, harness, guardByHarness, orientByHarness, inj, now))
+		}
+	}
+	return rows, note, inj
+}
+
+// surfacingHarnessAlias normalizes a harness token to the join key the matrix uses across lane
+// rows, hook entries, and recorded contracts. It mirrors capgraph's agent-lane harness alias
+// (lowercase, trailing "-code" stripped) so "claude" and "claude-code" resolve to one row.
+func surfacingHarnessAlias(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	return strings.TrimSuffix(v, "-code")
+}
+
+// guardStatus maps a hook install/check action to the matrix guard vocabulary
+// (installed/ok/updated -> wired; drift; absent; anything else -> unknown).
+func guardStatus(action string) string {
+	switch action {
+	case "ok", "installed", "updated":
+		return "wired"
+	case "drift":
+		return "drift"
+	case "absent":
+		return "absent"
+	default:
+		return "unknown"
+	}
+}
+
+// surfacingRowFor assembles one row and derives its below-expectation columns: a harness-aliased
+// lane is expected to have its guard wired and to have oriented at least once, so an absent/drift
+// guard or a never-oriented harness renders with a trailing "!".
+func surfacingRowFor(lane, rawHarness string, guardBy map[string]string, orientBy map[string]time.Time, inj surfacingInjection, now time.Time) surfacingRow {
+	alias := surfacingHarnessAlias(rawHarness)
+	guard := guardBy[alias]
+	if guard == "" {
+		guard = "unknown"
+	}
+	orient := "never"
+	orientAge := ""
+	if t, ok := orientBy[alias]; ok {
+		orient = "wired"
+		orientAge = surfacingAge(now.Sub(t))
+	}
+	row := surfacingRow{
+		Lane:      lane,
+		Harness:   alias,
+		Expected:  true,
+		Guard:     guard,
+		Orient:    orient,
+		OrientAge: orientAge,
+		Injection: fmt.Sprintf("%d/%d (global)", inj.ServedEvents, inj.ConsumedEvents),
+		Peers:     "absent (S2)",
+	}
+	if guard == "absent" || guard == "drift" {
+		row.BelowExpectation = append(row.BelowExpectation, "guard")
+	}
+	if orient == "never" {
+		row.BelowExpectation = append(row.BelowExpectation, "orient")
+	}
+	return row
+}
+
+// agentLaneRows lists the non-retired agent-lane nodes for this home. An absent capability graph
+// (fresh home) is not an error — it just means the fallback hook-harness rows are used.
+func agentLaneRows(homePath string) []capgraph.AgentLaneNode {
+	if !capgraph.Exists(homePath) {
+		return nil
+	}
+	store, err := capgraph.OpenReadOnly(homePath)
+	if err != nil {
+		return nil
+	}
+	nodes, err := store.AgentLaneNodes()
+	if err != nil {
+		return nil
+	}
+	out := make([]capgraph.AgentLaneNode, 0, len(nodes))
+	for _, n := range nodes {
+		if n.Retired {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// hookHarnessList is the fallback row set when no agent lanes are imported. It uses the harnesses
+// the hook check already reported, and falls back to the canonical two so the matrix is never
+// silently empty even when the harness configs could not be read.
+func hookHarnessList(hooks []doctorHook) []string {
+	if len(hooks) == 0 {
+		return []string{"claude-code", "codex"}
+	}
+	out := make([]string, 0, len(hooks))
+	for _, h := range hooks {
+		out = append(out, h.Harness)
+	}
+	return out
+}
+
+// lastOrientByHarness scans the recorded EffectiveContracts (the orient-produced evidence that
+// carries a harness) and returns the most recent orient time per aliased harness. Reading these
+// artifacts directly keeps doctor read-only; a torn or foreign file is skipped, never fatal.
+func lastOrientByHarness(homePath string) map[string]time.Time {
+	out := map[string]time.Time{}
+	base := filepath.Join(homePath, "contracts", "effective")
+	_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		var head struct {
+			SchemaVersion string `json:"schema_version"`
+			Harness       string `json:"harness"`
+			CreatedAt     string `json:"created_at"`
+		}
+		if json.Unmarshal(data, &head) != nil || head.SchemaVersion != envelope.SVEffectiveContract {
+			return nil
+		}
+		t, terr := time.Parse(time.RFC3339, strings.TrimSpace(head.CreatedAt))
+		if terr != nil {
+			return nil
+		}
+		alias := surfacingHarnessAlias(head.Harness)
+		if cur, ok := out[alias]; !ok || t.After(cur) {
+			out[alias] = t
+		}
+		return nil
+	})
+	return out
+}
+
+// injectionGlobalSummary reuses the memory-injection observation report and rolls it up to global
+// served/consumed event totals plus the most recent consumption age. The report attributes
+// sessions to work ids, not harnesses, so this is explicitly global (per-lane split not recorded).
+func injectionGlobalSummary(homePath string, now time.Time) surfacingInjection {
+	inj := surfacingInjection{Scope: "global", LastConsumed: "never", Note: "per-lane split not recorded"}
+	rep, err := capgraph.BuildInjectionObservationReport(homePath, capgraph.InjectionObservationOptions{GeneratedAt: now})
+	if err != nil {
+		return inj
+	}
+	for _, c := range rep.Conditions {
+		inj.ServedEvents += c.ServedClaimEvents
+		inj.ConsumedEvents += c.ConsumedClaimEvents
+	}
+	var last time.Time
+	for _, s := range rep.Sessions {
+		if s.ConsumedCount <= 0 {
+			continue
+		}
+		if t, perr := time.Parse(time.RFC3339, strings.TrimSpace(s.CreatedAt)); perr == nil && t.After(last) {
+			last = t
+		}
+	}
+	if !last.IsZero() {
+		inj.LastConsumed = surfacingAge(now.Sub(last))
+	}
+	return inj
+}
+
+// surfacingAge humanizes a duration coarsely (m/h/d) for the matrix. Ages are computed against a
+// runtime clock and a runtime-written timestamp, never a fixed fixture date, so no fixture ages
+// into a failure over time.
+func surfacingAge(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 	}
 }
