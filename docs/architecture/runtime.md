@@ -37,19 +37,20 @@ $COMPOUND_HOME/
   projections/  indexes/       archives/      tmp/
 ```
 
-These are the accepted end-state roots, not a claim that the current home has already migrated. Today there
-are transitional top-level roots and unknown roots that `home doctor` does not fully classify. One future
-HabitatCatalog must drive constructors, placement, doctor, backup, compaction, and restore before moving them.
-Behavior-bearing cursors may not hide in `projections/`; the detailed root responsibilities are in the custody
-contract.
+These are the accepted end-state roots, not a claim that every producer has migrated. HabitatCatalog now owns the
+closed set: init, placement, doctor, backup, compaction, and restore consume it; unknown top-level entries fail
+doctor/backup. Existing feature-shaped roots are explicit non-canonical bridges with destinations and retirement
+conditions, and producer path constructors cut over incrementally before bytes move. Cataloged behavior-bearing
+exceptions under `projections/` survive backup and compaction until their producers reach the correct typed home;
+new behavior-bearing cursors may not be placed there. The detailed responsibilities are in the custody contract.
 
 `ExecutionRouteEvidence` records the requested route separately from the observed identity: `selected_target` is the requested lane/alias, while `resolved_provider`, `resolved_model`, `resolution_source`, and (for gateway resolution) `gateway_request_id` identify what actually served the call. Gateway aliases use `resolution_source=gateway_route`; direct OpenAI-compatible lanes may use the response body's exact `model` with `resolution_source=response_body`. Measurements and autonomy evidence MUST attribute to the observed provider/model, never the alias or provider route string.
 
 Typed semantics (the layout *is* the guardrail): `sources/` custody records · `artifacts/` exact bodies ·
 `ledger/` durable meaning · `inbox/` untrusted candidates · `registries/` current typed authority ·
 `projections/` rebuildable views · `indexes/` rented · `events/` raw · `work/` execution lifecycle ·
-`context/` what agents actually consumed. `compound home doctor` must eventually assert every declared root,
-restore-critical byte, and behavior-bearing cursor; the current partial coverage is migration debt.
+`context/` what agents actually consumed. `compound home doctor` asserts the cataloged root set and reports present
+bridge roots; per-family semantic restore and real-consumer replay remain migration gates beyond byte inventory.
 
 ---
 
@@ -262,8 +263,10 @@ compound home export --public-fixture [--target fixture.tar.gz]
 compound home compact [--dry-run] [--rebuildable]
 ```
 
-`backup` stores durable owned state and intentionally excludes transient or
-rebuildable roots. `export --public-fixture` emits only sanitized layout/manifest
+`backup` stores catalog-classified durable owned state and intentionally excludes transient or
+rebuildable paths, while preserving behavior-bearing exceptions even when their historical parent is named
+`projections`. `compact --rebuildable` consults the same classification and cannot remove those exceptions.
+`export --public-fixture` emits only sanitized layout/manifest
 metadata, not private events, ledgers, context packs, or work records.
 `archive-history` moves terminal operational history out of hot surfaces into
 `COMPOUND_HOME/archives/operational/` with an append-only index, without deleting

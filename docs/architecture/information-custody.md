@@ -54,11 +54,15 @@ $COMPOUND_HOME/
 | `archives/` | sealed local snapshots, import/export bundles, retention manifests, and rollback material |
 | `tmp/` | restart-safe scratch only; no fact or cursor whose loss changes behavior |
 
-The current runtime still has transitional top-level roots, and not every active root is declared or checked by
-`home doctor`. A future shared **HabitatCatalog** must drive constructors, placement, doctor, backup, compaction,
-and restore before those roots are moved. Until then, this table is the target and no command may pretend the
-layout migration is complete. Behavior-bearing cursors are not projections: connector offsets belong with the
-source adapter, work cursors with work, and schema/contract locks with config.
+The shared **HabitatCatalog** now declares every observed top-level root and drives home scaffolding, placement's
+canonical allow-set, doctor inventory, backup inclusion, compaction, and restore validation. An unknown top-level
+directory or file makes doctor and backup fail. Transitional feature-shaped roots remain explicit `bridge`
+entries: each names its canonical destination and retirement condition, is preserved by backup, and is excluded
+from canonical placement so new writes still receive a redirect. This is inventory/control ownership, not a claim
+that the layout migration is complete; path constructors move behind the catalog one producer at a time before
+their bridges retire. Behavior-bearing historical files under `projections/` are catalog exceptions: backup keeps
+them and compaction refuses them until their producers cut over to their true typed homes. Connector offsets belong
+with the source adapter, work cursors with work, and schema/contract locks with config.
 
 ## 3. Information placement grammar
 
