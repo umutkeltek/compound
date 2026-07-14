@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,7 +11,10 @@ import (
 	"compound/internal/authority"
 	"compound/internal/envelope"
 	"compound/internal/home"
+	"compound/internal/work"
 )
+
+const sourceControlMutationCLIRejectSubEnv = "COMPOUND_SOURCE_CONTROL_MUTATION_CLI_REJECT_SUB"
 
 func TestAuthorityDirtyPlanDerivesMutationBindingFromPersistedActions(t *testing.T) {
 	homePath := t.TempDir()
@@ -18,6 +22,7 @@ func TestAuthorityDirtyPlanDerivesMutationBindingFromPersistedActions(t *testing
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
+	createSourceControlMutationOwner(t, homePath, "work_owner_cli_dirty", "running")
 	repo := initCompoundCommandGitRepo(t)
 	writeFileAt(t, filepath.Join(repo, "README.md"), "changed\n")
 	writeFileAt(t, filepath.Join(repo, "SECOND.md"), "second\n")
@@ -76,6 +81,86 @@ func TestAuthorityDirtyPlanDerivesMutationBindingFromPersistedActions(t *testing
 	}
 }
 
+func TestAuthorityDirtyPlanRejectsUnusableMutationOwner(t *testing.T) {
+	if os.Getenv(sourceControlMutationCLIRejectSubEnv) == "1" {
+		cmdAuthority([]string{
+			"dirty-plan", os.Getenv("COMPOUND_SOURCE_CONTROL_MUTATION_TEST_REPO"),
+			"--work-id", os.Getenv("COMPOUND_SOURCE_CONTROL_MUTATION_TEST_OWNER"),
+			"--action-intent", os.Getenv("COMPOUND_SOURCE_CONTROL_MUTATION_TEST_ACTION"),
+		})
+		return
+	}
+
+	repo := initCompoundCommandGitRepo(t)
+	writeFileAt(t, filepath.Join(repo, "README.md"), "changed\n")
+	cases := []struct {
+		name       string
+		owner      string
+		ownerState string
+		want       string
+	}{
+		{name: "synthetic owner", owner: "work_live_cli_reject", want: "must not be synthetic work_live_*"},
+		{name: "missing durable owner", owner: "work_cli_missing", want: "does not exist"},
+		{name: "non-current durable owner", owner: "work_cli_ready", ownerState: "ready", want: "must be claimed|running|verifying|held"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+			if tc.ownerState != "" {
+				createSourceControlMutationOwner(t, homePath, tc.owner, tc.ownerState)
+			}
+			inputHash := "mutation-input:sha256:" + strings.Repeat("7", 64)
+			action := persistedMutationAction("act_cli_owner_reject", "work_live_cli_reject", filepath.Join(repo, "README.md"), inputHash)
+			writeJSONFixture(t, filepath.Join(homePath, "events", action.ID+".json"), action)
+
+			cmd := exec.Command(os.Args[0], "-test.run=^TestAuthorityDirtyPlanRejectsUnusableMutationOwner$")
+			cmd.Env = append(os.Environ(),
+				sourceControlMutationCLIRejectSubEnv+"=1",
+				"COMPOUND_HOME="+homePath,
+				"COMPOUND_SOURCE_CONTROL_MUTATION_TEST_REPO="+repo,
+				"COMPOUND_SOURCE_CONTROL_MUTATION_TEST_OWNER="+tc.owner,
+				"COMPOUND_SOURCE_CONTROL_MUTATION_TEST_ACTION="+action.ID,
+			)
+			output, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("dirty-plan should reject %s, got err=%v output=%s", tc.name, err, output)
+			}
+			if exitErr.ExitCode() != 1 {
+				t.Fatalf("dirty-plan %s exit = %d, want 1; output=%s", tc.name, exitErr.ExitCode(), output)
+			}
+			if !strings.Contains(string(output), tc.want) {
+				t.Fatalf("dirty-plan %s output = %s, want %q", tc.name, output, tc.want)
+			}
+			assertNoSourceControlReviewArtifacts(t, homePath)
+		})
+	}
+}
+
+func TestAuthorityDirtyPlanCleanupOnlyDoesNotRequireDurableMutationOwner(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	repo := initCompoundCommandGitRepo(t)
+	writeFileAt(t, filepath.Join(repo, "README.md"), "changed\n")
+
+	out := captureStdout(t, func() {
+		cmdAuthority([]string{"dirty-plan", repo, "--work-id", "work_live_cleanup_evidence", "--json"})
+	})
+	var result struct {
+		Plan authority.SourceControlReviewPlan `json:"plan"`
+	}
+	readJSONBytes(t, []byte(out), &result)
+	if result.Plan.WorkID != "work_live_cleanup_evidence" || result.Plan.MutationBinding != nil {
+		t.Fatalf("cleanup-only dirty-plan changed semantics: %+v", result.Plan)
+	}
+}
+
 func TestDirtyPlanPersistedActionsMustShareExecutableIdentity(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -114,6 +199,49 @@ func persistedMutationAction(id, workID, target, inputHash string) envelope.Acti
 		MutationClass: "local_reversible",
 		Reversibility: "easy",
 		BlastRadius:   "repo",
+	}
+}
+
+func createSourceControlMutationOwner(t *testing.T, homePath, workID, state string) {
+	t.Helper()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(work.CreateInput{
+		WorkID: workID, Owner: "codex", SuccessPredicate: "own one exact source-control mutation review",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state == "ready" {
+		return
+	}
+	if _, err := store.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if state == "claimed" {
+		return
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if state != "running" {
+		t.Fatalf("unsupported source-control owner test state %q", state)
+	}
+}
+
+func assertNoSourceControlReviewArtifacts(t *testing.T, homePath string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(homePath, "reviews", authority.SourceControlCleanupReviewArea))
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("rejected mutation owner wrote source-control review artifacts: %+v", entries)
 	}
 }
 
