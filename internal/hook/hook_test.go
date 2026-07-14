@@ -1456,6 +1456,130 @@ func TestReviewedMutationOwnerMustRemainCurrent(t *testing.T) {
 	}
 }
 
+func TestReviewedMutationSkipsUnusableOwnerReportsAndUsesNextExactAuthorization(t *testing.T) {
+	repo := initHookGitRepo(t)
+	target := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(target, []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := authority.ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	homePath := t.TempDir()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const validOwner = "work_reviewed_retry_valid"
+	valid, err := store.Create(work.CreateInput{
+		WorkID: validOwner, Owner: "codex", SuccessPredicate: "apply the exact reviewed retry",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(valid.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(valid.ID, work.AdvanceInput{To: "running", Actor: "codex"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	const nonCurrentOwner = "work_reviewed_retry_ready"
+	if _, err := store.Create(work.CreateInput{
+		WorkID: nonCurrentOwner, Owner: "codex", SuccessPredicate: "not yet current retry owner",
+	}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+
+	inputHash := "mutation-input:sha256:" + strings.Repeat("8", 64)
+	prepared := []preparedPreToolAction{{
+		action: envelope.ActionIntent{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVActionIntent, ID: "act_reviewed_retry_current", CreatedAt: fixedNow.Format(time.RFC3339),
+				Producer: envelope.Producer{Kind: "hook", Name: "compound"}, IDs: envelope.IDs{WorkID: "work_live_reviewed_retry"},
+				Authority: envelope.Authority{SourceClass: "runtime"}, Privacy: "private", Risk: "tier1",
+				EvidenceRefs: []string{inputHash}, Uncertainty: envelope.Uncertainty{Level: "known"},
+			},
+			Actor: "codex", Capability: "filesystem.write", Action: "write_file",
+			Target: envelope.ActionTarget{Kind: "file", Path: target}, MutationClass: "local_reversible",
+			Reversibility: "easy", BlastRadius: "repo",
+		},
+		sourceControl: &policy.SourceControlContext{
+			EntityRef: snapshot.RepoID, GitRoot: snapshot.GitRoot, Remote: snapshot.Remote, Head: snapshot.Head,
+			Status: snapshot.Status, ChangedPaths: snapshot.ChangedPaths, ChangedStateFingerprint: snapshot.ChangedStateFingerprint,
+		},
+	}}
+	liveSnapshot, binding, ok := sourceControlMutationBatchBinding(prepared)
+	if !ok {
+		t.Fatal("test mutation did not produce a source-control binding")
+	}
+
+	buildPlan := func(owner, actionID string) authority.SourceControlReviewPlan {
+		t.Helper()
+		historical := binding
+		historical.ActionIntentIDs = []string{actionID}
+		plan, buildErr := authority.BuildSourceControlMutationReviewPlan(liveSnapshot, owner, historical, fixedNow)
+		if buildErr != nil {
+			t.Fatal(buildErr)
+		}
+		return plan
+	}
+	validPlan := buildPlan(validOwner, "act_reviewed_retry_valid_old")
+	nonCurrentPlan := buildPlan(nonCurrentOwner, "act_reviewed_retry_ready_old")
+	var shadowPlan authority.SourceControlReviewPlan
+	for i := 0; i < 256; i++ {
+		candidate := buildPlan(fmt.Sprintf("work_live_reviewed_retry_shadow_%03d", i), "act_reviewed_retry_shadow_old")
+		if candidate.ID > validPlan.ID && candidate.ID > nonCurrentPlan.ID {
+			shadowPlan = candidate
+			break
+		}
+	}
+	if shadowPlan.ID == "" {
+		t.Fatal("could not construct lexical-first unusable shadow report")
+	}
+
+	validReport := recordHookSourceControlMutationAuthorization(t, homePath, validPlan, fixedNow.Add(time.Minute))
+	recordHookSourceControlMutationAuthorization(t, homePath, nonCurrentPlan, fixedNow.Add(2*time.Minute))
+	shadowReport := recordHookSourceControlMutationAuthorization(t, homePath, shadowPlan, fixedNow.Add(3*time.Minute))
+	if shadowReport.CreatedAt <= validReport.CreatedAt || shadowPlan.ID <= validPlan.ID {
+		t.Fatalf("test precondition failed: shadow=%s/%s valid=%s/%s", shadowReport.CreatedAt, shadowPlan.ID, validReport.CreatedAt, validPlan.ID)
+	}
+
+	deps := baseDeps()
+	deps.HomePath = homePath
+	deps.Store = store
+	reviewed, err := reviewedSourceControlMutationForBatch(deps, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed == nil || reviewed.OwnerWorkID != validOwner || reviewed.PlanID != validPlan.ID {
+		t.Fatalf("reviewed mutation = %+v, want fallback to current durable owner %s / plan %s", reviewed, validOwner, validPlan.ID)
+	}
+}
+
+func recordHookSourceControlMutationAuthorization(t *testing.T, homePath string, plan authority.SourceControlReviewPlan, now time.Time) authority.SourceControlReviewReport {
+	t.Helper()
+	paths, err := authority.RecordSourceControlReviewPlan(homePath, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := authority.RecordSourceControlReview(homePath, authority.SourceControlReview{
+		SchemaVersion: authority.SourceControlReviewSchemaVersion,
+		ID:            plan.ReviewDraft.ReviewID,
+		PlanID:        plan.ID,
+		RepoID:        plan.RepoID,
+		Decision:      "authorize_mutation",
+		Rationale:     "operator reviewed this exact historical retry",
+		Confidence:    1,
+		ReviewedBy:    "operator:test",
+		EvidenceRefs:  append([]string{}, plan.EvidenceRefs...),
+	}, paths.ReviewYAMLPath, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return report
+}
+
 func TestSessionEndClosesWork(t *testing.T) {
 	store, err := work.Open(t.TempDir())
 	if err != nil {
