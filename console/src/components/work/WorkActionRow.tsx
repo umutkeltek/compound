@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { Button, ConfirmDialog } from "@/components/kit";
-import { CliCaption } from "@/components/CopyCmd";
+import { CliCaption, CopyCmd } from "@/components/CopyCmd";
 import type { ActionOption, WorkActionRowData } from "@/lib/work-pipeline";
+import { WORK_COPY } from "@/lib/work-copy";
 
 /*
  * The contextual governed state-transition row (the buried-<details> fix).
@@ -208,9 +209,10 @@ function CopyOnlyWorkActions({ data, dense }: { data: WorkActionRowData; dense: 
           <CliCaption argv={option.argv} />
         </div>
       ))}
-      <p className="text-xs text-muted">
-        This console is read-only until it is launched with an explicit home via <code>compound console --operator</code>.
-      </p>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        <p className="text-xs text-muted">{WORK_COPY.consoleReadOnly.prose}</p>
+        <CopyCmd cmd={WORK_COPY.consoleReadOnly.command} />
+      </div>
     </div>
   );
 }

@@ -1,6 +1,8 @@
+import { CopyCmd } from "@/components/CopyCmd";
 import { CapsuleColumn, EmptyState, FreshnessChip, RouteIcon, SectionHeader } from "@/components/kit";
 import type { Tone, TooltipRow } from "@/components/kit";
 import type { LaneTrafficReport, LaneTrafficRow } from "@/lib/lane-traffic";
+import { WORK_COPY } from "@/lib/work-copy";
 
 /**
  * CapsuleColumns (DESIGN.md §9.6) — lane traffic and account capacity in one
@@ -69,15 +71,19 @@ export function CapsuleColumns({ report }: { report: LaneTrafficReport }) {
         </div>
       ) : (
         <div className="mt-4">
-          <EmptyState>No lane traffic recorded yet. This fills in as executors run and route-evidence rows land.</EmptyState>
+          <EmptyState>{WORK_COPY.laneTraffic.noTraffic}</EmptyState>
         </div>
       )}
 
       {!accountProjection ? (
-        <p className="mt-4 border-t border-hair pt-3 text-2xs leading-relaxed text-faint">
-          No account-health projection on record — capsule tone stays neutral until{" "}
-          <span className="mono text-muted">compound route import-account-projection</span> runs.
-        </p>
+        <div className="mt-4 border-t border-hair pt-3">
+          <p className="text-2xs leading-relaxed text-faint">
+            {WORK_COPY.laneTraffic.noAccountProjection.prose}
+          </p>
+          <div className="mt-2">
+            <CopyCmd cmd={WORK_COPY.laneTraffic.noAccountProjection.command} />
+          </div>
+        </div>
       ) : null}
     </section>
   );

@@ -5,6 +5,7 @@ import { MOVE_TYPE_LABELS, TERM_GLOSSARY, movePlain } from "@/lib/glossary";
 import { dedupeKey, extractMoveType, type WorkEvent } from "@/lib/stream/tail-parser";
 import { useEnvelopeStream, type StreamStatus } from "@/lib/stream/useEnvelopeStream";
 import { ago } from "@/lib/time";
+import { WORK_COPY } from "@/lib/work-copy";
 
 /**
  * Transitions ticker (DESIGN.md §9.6) — "the console's spectacle is the
@@ -69,9 +70,7 @@ export function TransitionsTicker({ onOpenTrace }: { onOpenTrace: (workId: strin
       ) : (
         <div className="mt-3">
           <EmptyState>
-            {status === "degraded"
-              ? "Live stream is offline. Reopen this view once it's back — nothing here is lost, only paused."
-              : "No transitions streaming yet. They appear here the moment work moves."}
+            {status === "degraded" ? WORK_COPY.transitions.offline : WORK_COPY.transitions.empty}
           </EmptyState>
         </div>
       )}
