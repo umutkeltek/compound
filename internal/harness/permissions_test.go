@@ -226,6 +226,13 @@ func TestApplyPermissionsInterruptedWriteIsVisibleAndRecovered(t *testing.T) {
 	if _, err := ApplyPermissions(homePath, "claude_code"); err == nil {
 		t.Fatal("interrupted apply error = nil")
 	}
+	pendingInfo, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pendingInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("pending transaction mode = %o, want 600", got)
+	}
 	report, err := PermissionDrift(homePath, "claude_code")
 	if err != nil {
 		t.Fatal(err)

@@ -10,8 +10,10 @@ Compound owns the permission authority, governed actuator, and drift consumer:
 
 Apply requires a live WorkEnvelope, evaluates and records a fresh
 `harness.permissions.apply` ActionIntent + PolicyDecision, preserves unmanaged
-settings, and restores the settings pre-image if artifact provenance cannot be
-persisted. A second apply is idempotent.
+settings, serializes Compound writers, and refuses a target whose exact pre-image
+changed before publication. A pending transaction makes interrupted activation
+visible to drift and recoverable on the next apply; provenance failure restores
+the settings pre-image. A second apply is byte-idempotent.
 
 The reviewed compatibility source revision is
 `sha256:c9f884e2992c654318394116389c66ab4ecb7215ac304ca16589872d1c404731`.

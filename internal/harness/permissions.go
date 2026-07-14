@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -57,8 +58,23 @@ type PermissionRender struct {
 	TargetPath string          `json:"target_path"`
 	Changed    bool            `json:"changed"`
 	Content    []byte          `json:"-"`
+	Preimage   []byte          `json:"-"`
+	PreExisted bool            `json:"-"`
 	Artifact   HarnessArtifact `json:"artifact"`
 	Details    []string        `json:"details,omitempty"`
+}
+
+const permissionApplyPendingSchemaVersion = "compound.harness_permission_apply_pending.v0.1"
+
+type permissionApplyPending struct {
+	SchemaVersion  string `json:"schema_version"`
+	Harness        string `json:"harness"`
+	TargetPath     string `json:"target_path"`
+	BeforeExisted  bool   `json:"before_existed"`
+	BeforeContent  []byte `json:"before_content,omitempty"`
+	BeforeSHA256   string `json:"before_sha256,omitempty"`
+	IntendedSHA256 string `json:"intended_sha256"`
+	SourceRevision string `json:"source_revision"`
 }
 
 type PermissionDriftReport struct {
@@ -156,6 +172,7 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return PermissionRender{}, fmt.Errorf("read settings target %s: %w", policy.TargetPath, err)
 	}
+	beforeExisted := err == nil
 	settings := map[string]any{}
 	if len(bytes.TrimSpace(before)) > 0 {
 		if err := json.Unmarshal(before, &settings); err != nil {
@@ -191,38 +208,169 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 			"autoMode.allow":    append([]string(nil), policy.AutoMode.Allow...),
 		},
 	}
-	return PermissionRender{TargetPath: policy.TargetPath, Changed: !jsonEquivalent(before, content), Content: content, Artifact: artifact, Details: permissionDelta(previous, policy)}, nil
+	return PermissionRender{
+		TargetPath: policy.TargetPath,
+		Changed:    !jsonEquivalent(before, content),
+		Content:    content,
+		Preimage:   append([]byte(nil), before...),
+		PreExisted: beforeExisted,
+		Artifact:   artifact,
+		Details:    permissionDelta(previous, policy),
+	}, nil
 }
 
 var writeHarnessArtifactManifestForApply = WriteHarnessArtifactManifest
+var applyPermissionsBeforeTargetCommit = func() {}
+var applyPermissionsAfterTargetWrite = func() error { return nil }
+
+func PermissionApplyPendingPath(homePath, harness string) string {
+	return filepath.Join(homePath, "transactions", "harness-permissions", strings.TrimSpace(harness)+".json")
+}
+
+func permissionApplyLockPath(homePath, harness string) string {
+	return filepath.Join(homePath, "locks", "harness-permissions", strings.TrimSpace(harness)+".lock")
+}
 
 // ApplyPermissions reconciles only Compound-managed permission entries, writes
-// the target atomically, and records the exact authority revision/content hash.
-// If provenance persistence fails after the target write, the target is restored
-// to its pre-image so a clean drift report can never outpace its artifact record.
+// the target through a recoverable transaction, and records the exact authority
+// revision/content hash. The lock serializes Compound writers; the preimage CAS
+// refuses a concurrent manual edit. An interrupted transaction stays visible to
+// drift and is recovered before the next apply.
 func ApplyPermissions(homePath, harness string) (PermissionRender, error) {
-	render, err := RenderPermissions(homePath, harness)
+	var render PermissionRender
+	err := withPermissionApplyLock(homePath, harness, func() error {
+		if err := recoverPermissionApplyPending(homePath, harness); err != nil {
+			return err
+		}
+		var err error
+		render, err = RenderPermissions(homePath, harness)
+		if err != nil {
+			return err
+		}
+		beforeExisted := render.PreExisted
+		if !render.Changed {
+			previous, ok, err := latestHarnessArtifact(homePath, harness, render.TargetPath)
+			if err != nil {
+				return err
+			}
+			if ok && sameHarnessArtifact(previous, render.Artifact) {
+				return nil
+			}
+			return writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact})
+		}
+		pending := permissionApplyPending{
+			SchemaVersion: permissionApplyPendingSchemaVersion,
+			Harness:       harness, TargetPath: render.TargetPath, BeforeExisted: beforeExisted,
+			BeforeContent:  append([]byte(nil), render.Preimage...),
+			IntendedSHA256: render.Artifact.ContentSHA256,
+			SourceRevision: render.Artifact.SourceRevision,
+		}
+		if beforeExisted {
+			pending.BeforeSHA256 = "sha256:" + digest(render.Preimage)
+		}
+		body, err := json.MarshalIndent(pending, "", "  ")
+		if err != nil {
+			return err
+		}
+		pendingPath := PermissionApplyPendingPath(homePath, harness)
+		if err := writePermissionPrivateFileAtomic(pendingPath, append(body, '\n')); err != nil {
+			return fmt.Errorf("write permission apply pending transaction: %w", err)
+		}
+		applyPermissionsBeforeTargetCommit()
+		if err := writePermissionFileAtomicCAS(render.TargetPath, render.Content, render.Preimage, beforeExisted); err != nil {
+			_ = os.Remove(pendingPath)
+			return err
+		}
+		if err := applyPermissionsAfterTargetWrite(); err != nil {
+			return fmt.Errorf("permission apply interrupted after target write: %w", err)
+		}
+		if err := writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact}); err != nil {
+			restoreErr := restorePermissionPreimage(render.TargetPath, render.Preimage, beforeExisted)
+			if restoreErr != nil {
+				return fmt.Errorf("write harness artifact manifest: %v; restore settings pre-image: %w", err, restoreErr)
+			}
+			if removeErr := os.Remove(pendingPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				return fmt.Errorf("write harness artifact manifest: %v; settings pre-image restored; remove pending transaction: %w", err, removeErr)
+			}
+			return fmt.Errorf("write harness artifact manifest: %w; settings pre-image restored", err)
+		}
+		if err := os.Remove(pendingPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove completed permission apply transaction: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return PermissionRender{}, err
 	}
-	before, readErr := os.ReadFile(render.TargetPath)
-	beforeExisted := readErr == nil
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return PermissionRender{}, fmt.Errorf("read settings pre-image %s: %w", render.TargetPath, readErr)
-	}
-	if render.Changed {
-		if err := writePermissionFileAtomic(render.TargetPath, render.Content); err != nil {
-			return PermissionRender{}, fmt.Errorf("write settings target %s: %w", render.TargetPath, err)
-		}
-	}
-	if err := writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact}); err != nil {
-		restoreErr := restorePermissionPreimage(render.TargetPath, before, beforeExisted)
-		if restoreErr != nil {
-			return PermissionRender{}, fmt.Errorf("write harness artifact manifest: %v; restore settings pre-image: %w", err, restoreErr)
-		}
-		return PermissionRender{}, fmt.Errorf("write harness artifact manifest: %w; settings pre-image restored", err)
-	}
 	return render, nil
+}
+
+func withPermissionApplyLock(homePath, harness string, fn func() error) error {
+	path := permissionApplyLockPath(homePath, harness)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return fn()
+}
+
+func recoverPermissionApplyPending(homePath, harness string) error {
+	path := PermissionApplyPendingPath(homePath, harness)
+	body, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read pending permission apply transaction: %w", err)
+	}
+	var pending permissionApplyPending
+	if err := json.Unmarshal(body, &pending); err != nil {
+		return fmt.Errorf("parse pending permission apply transaction: %w", err)
+	}
+	if pending.SchemaVersion != permissionApplyPendingSchemaVersion || pending.Harness != harness || strings.TrimSpace(pending.TargetPath) == "" {
+		return fmt.Errorf("pending permission apply transaction identity is invalid")
+	}
+	if pending.BeforeExisted && pending.BeforeSHA256 != "sha256:"+digest(pending.BeforeContent) {
+		return fmt.Errorf("pending permission apply transaction pre-image digest is invalid")
+	}
+	current, readErr := os.ReadFile(pending.TargetPath)
+	currentExisted := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return fmt.Errorf("read pending permission target: %w", readErr)
+	}
+	currentSHA := ""
+	if currentExisted {
+		currentSHA = "sha256:" + digest(current)
+	}
+	currentIsBefore := currentExisted == pending.BeforeExisted && (!currentExisted || currentSHA == pending.BeforeSHA256)
+	currentIsIntended := currentExisted && currentSHA == pending.IntendedSHA256
+	if !currentIsBefore && !currentIsIntended {
+		return fmt.Errorf("pending permission apply target changed after interruption; refusing to overwrite manual state")
+	}
+	if err := restorePermissionPreimage(pending.TargetPath, pending.BeforeContent, pending.BeforeExisted); err != nil {
+		return fmt.Errorf("recover pending permission apply pre-image: %w", err)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove recovered permission apply transaction: %w", err)
+	}
+	return nil
+}
+
+func sameHarnessArtifact(a, b HarnessArtifact) bool {
+	return a.Path == b.Path &&
+		a.Harness == b.Harness &&
+		a.SourceAuthorityRef == b.SourceAuthorityRef &&
+		a.SourceRevision == b.SourceRevision &&
+		a.ContentSHA256 == b.ContentSHA256 &&
+		reflect.DeepEqual(a.ManagedEntries, b.ManagedEntries)
 }
 
 func PermissionDrift(homePath, harness string) (PermissionDriftReport, error) {
@@ -231,6 +379,11 @@ func PermissionDrift(homePath, harness string) (PermissionDriftReport, error) {
 		return PermissionDriftReport{}, err
 	}
 	report := PermissionDriftReport{Harness: harness, TargetPath: render.TargetPath}
+	if _, err := os.Stat(PermissionApplyPendingPath(homePath, harness)); err == nil {
+		report.Details = append(report.Details, "incomplete permission apply transaction requires recovery")
+	} else if !os.IsNotExist(err) {
+		return report, fmt.Errorf("inspect pending permission apply transaction: %w", err)
+	}
 	current, err := os.ReadFile(render.TargetPath)
 	if err != nil {
 		return report, err
@@ -296,6 +449,48 @@ func restorePermissionPreimage(path string, body []byte, existed bool) error {
 }
 
 func writePermissionFileAtomic(path string, body []byte) error {
+	return writePermissionFileAtomicMode(path, body, 0o644)
+}
+
+func writePermissionPrivateFileAtomic(path string, body []byte) error {
+	return writePermissionFileAtomicMode(path, body, 0o600)
+}
+
+func writePermissionFileAtomicMode(path string, body []byte, defaultMode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	mode := defaultMode
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(mode); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(body); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func writePermissionFileAtomicCAS(path string, body, expected []byte, expectedExisted bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -325,6 +520,14 @@ func writePermissionFileAtomic(path string, body []byte) error {
 	}
 	if err := temp.Close(); err != nil {
 		return err
+	}
+	current, readErr := os.ReadFile(path)
+	currentExisted := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	if currentExisted != expectedExisted || (currentExisted && !bytes.Equal(current, expected)) {
+		return fmt.Errorf("settings target %s changed during permission apply; refusing to overwrite concurrent state", path)
 	}
 	return os.Rename(tempPath, path)
 }
