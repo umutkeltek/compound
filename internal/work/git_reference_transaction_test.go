@@ -1,6 +1,7 @@
 package work
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -68,11 +69,12 @@ func TestCloseRejectsPublicationRefMoveBeforePreparedReferenceTransaction(t *tes
 	assertLifecycleAuthorityUnchanged(t, before, after)
 }
 
-func TestPreparedReferenceTransactionLocksRefsThroughTerminalPersistence(t *testing.T) {
+func TestPreparedReferenceTransactionLocksTargetAndPublicationThroughTerminalPersistence(t *testing.T) {
 	now := time.Date(2026, 7, 14, 4, 0, 0, 0, time.UTC)
-	fixture := newLandingProofFixture(t, now)
-	lateTip := landingEmptyDescendant(t, fixture.repo, "concurrent-target")
-	prepared := make(chan struct{})
+	fixture := newPublishedLandingProofFixture(t, now)
+	lateTarget := landingEmptyDescendant(t, fixture.repo, "concurrent-target")
+	latePublication := landingEmptyDescendant(t, fixture.repo, "concurrent-publication")
+	commitEntered := make(chan struct{})
 	release := make(chan struct{})
 
 	realStart := startGitReferenceTransaction
@@ -81,9 +83,7 @@ func TestPreparedReferenceTransactionLocksRefsThroughTerminalPersistence(t *test
 		if err != nil {
 			return nil, err
 		}
-		close(prepared)
-		<-release
-		return tx, nil
+		return &commitGateReferenceTransaction{inner: tx, entered: commitEntered, release: release}, nil
 	}
 	t.Cleanup(func() { startGitReferenceTransaction = realStart })
 
@@ -104,19 +104,13 @@ func TestPreparedReferenceTransactionLocksRefsThroughTerminalPersistence(t *test
 	}()
 
 	select {
-	case <-prepared:
+	case <-commitEntered:
 	case <-time.After(5 * time.Second):
-		t.Fatal("close did not prepare Git reference transaction")
+		t.Fatal("close did not reach Git commit after terminal persistence")
 	}
-	cmd := exec.Command("git", "-C", fixture.repo, "update-ref", "refs/heads/main", lateTip)
-	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "cannot lock ref") {
-		close(release)
-		t.Fatalf("lock-respecting concurrent ref mutation must fail while close is prepared: err=%v output=%s", err, out)
-	}
-	if got := landingGitOutput(t, fixture.repo, "rev-parse", "refs/heads/main"); got != fixture.candidate {
-		close(release)
-		t.Fatalf("failed concurrent mutation moved target to %s, want %s", got, fixture.candidate)
-	}
+	assertTerminalClosePersistedBeforeGitCommit(t, fixture.store, fixture.workID)
+	assertReferenceLocked(t, fixture.repo, "refs/heads/main", lateTarget)
+	assertReferenceLocked(t, fixture.repo, "refs/remotes/origin/main", latePublication)
 	close(release)
 
 	select {
@@ -132,6 +126,54 @@ func TestPreparedReferenceTransactionLocksRefsThroughTerminalPersistence(t *test
 	}
 	if got := landingGitOutput(t, fixture.repo, "rev-parse", "refs/heads/main"); got != fixture.candidate {
 		t.Fatalf("close committed against moved target %s, want %s", got, fixture.candidate)
+	}
+	if got := landingGitOutput(t, fixture.repo, "rev-parse", "refs/remotes/origin/main"); got != fixture.candidate {
+		t.Fatalf("close committed against moved publication %s, want %s", got, fixture.candidate)
+	}
+}
+
+type commitGateReferenceTransaction struct {
+	inner   gitReferenceTransaction
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (tx *commitGateReferenceTransaction) Commit() error {
+	close(tx.entered)
+	<-tx.release
+	return tx.inner.Commit()
+}
+
+func (tx *commitGateReferenceTransaction) Abort() error { return tx.inner.Abort() }
+
+func assertTerminalClosePersistedBeforeGitCommit(t *testing.T, store *Store, workID string) {
+	t.Helper()
+	w, events, err := store.Show(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.State != "completed" || w.IDs.TransitionID == "" {
+		t.Fatalf("terminal WorkEnvelope not persisted before Git commit: %+v", w)
+	}
+	if len(events) == 0 {
+		t.Fatal("terminal lifecycle event not persisted before Git commit")
+	}
+	closed := events[len(events)-1]
+	if closed.To != "completed" || len(closed.Attached) != 4 || closed.WorkSHA256 == "" || closed.ReceiptSHA256 == "" {
+		t.Fatalf("terminal lifecycle event incomplete before Git commit: %+v", closed)
+	}
+	for _, id := range closed.Attached {
+		if _, err := os.Stat(store.envPath(id)); err != nil {
+			t.Fatalf("terminal envelope %s not persisted before Git commit: %v", id, err)
+		}
+	}
+}
+
+func assertReferenceLocked(t *testing.T, repo, ref, next string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repo, "update-ref", ref, next)
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "cannot lock ref") {
+		t.Fatalf("concurrent mutation of %s must fail after terminal persistence and before Git commit: err=%v output=%s", ref, err, out)
 	}
 }
 
