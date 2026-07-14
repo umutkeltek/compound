@@ -63,12 +63,12 @@ func TestSourceManifestLifecycleEnforcesEveryForwardGateAndMeasuredQuietWindow(t
 	mustAdvanceLifecycle(t, homePath, family, SourceLifecycleOwnedSnapshot, lifecycleProofs(SourceLifecycleGateExactCustody), nil, now.Add(time.Minute))
 
 	verifiedProofs := lifecycleProofs(
-		SourceLifecycleGateIsolatedRestore,
-		SourceLifecycleGateSemanticParity,
-		SourceLifecycleGateRealConsumerReplay,
 		SourceLifecycleGateLegacyUnavailableNegativeControl,
+		SourceLifecycleGateRealConsumerReplay,
+		SourceLifecycleGateSemanticParity,
+		SourceLifecycleGateIsolatedRestore,
 	)
-	missingNegative := verifiedProofs[:len(verifiedProofs)-1]
+	missingNegative := verifiedProofs[1:]
 	assertLifecycleAdvanceFailsUnchanged(t, homePath, family, SourceLifecycleVerified, missingNegative, nil, "legacy_unavailable_negative_control")
 	mustAdvanceLifecycle(t, homePath, family, SourceLifecycleVerified, verifiedProofs, nil, now.Add(2*time.Minute))
 
@@ -122,7 +122,10 @@ func TestSourceManifestLifecycleEnforcesEveryForwardGateAndMeasuredQuietWindow(t
 
 	badRetirement := lifecycleProofs(SourceLifecycleGateOperatorRetirementDecision)
 	badRetirement[0].EvidenceRef = "review://not-an-operator-decision"
-	assertLifecycleAdvanceFailsUnchangedWithActor(t, homePath, family, SourceLifecycleRetired, badRetirement, nil, "codex:test", "operator actor")
+	assertLifecycleAdvanceFailsUnchangedWithActor(t, homePath, family, SourceLifecycleRetired, badRetirement, nil, "operator:test", "decision://")
+	validDecisionWrongActor := lifecycleProofs(SourceLifecycleGateOperatorRetirementDecision)
+	validDecisionWrongActor[0].EvidenceRef = "decision://retire-source-family-2026-07-14"
+	assertLifecycleAdvanceFailsUnchangedWithActor(t, homePath, family, SourceLifecycleRetired, validDecisionWrongActor, nil, "codex:test", "operator actor")
 
 	retirement := lifecycleProofs(SourceLifecycleGateOperatorRetirementDecision)
 	retirement[0].EvidenceRef = "decision://retire-source-family-2026-07-14"

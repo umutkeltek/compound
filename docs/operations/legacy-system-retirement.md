@@ -71,6 +71,23 @@ when the old path is no longer needed for normal operation.
 9. **Retire or delete**: deletion is a separate operator-gated act after a measured
    quiet window. Retirement does not imply deletion.
 
+Record this progression on the source family's existing `SourceManifest`; do not create a second retirement matrix
+or status registry. The operator loop is:
+
+```sh
+compound source manifest-doctor <family> --json
+compound source manifest-advance <family> --to <next-state> \
+  --work <running-work-id> --by <lease-holder> \
+  --proof <required-gate>=<evidence-ref> ... --json
+# inspect the dry-run and PolicyDecision; add --confirm only when both are correct
+```
+
+`manifest-doctor` names the exact next gates and posture. Forward skips, proof-class substitution, stale lifecycle
+revisions, incomplete writer handoff fields, short/dirty quiet windows, and non-operator retirement decisions are
+rejected without changing the manifest. Writer cutover and every later operational state are policy-held by default.
+The transition command records evidenced authority state only; the actual external freeze, cutover, archive, service
+stop, or deletion remains a separately governed action with its own receipt.
+
 ## 4. Required proof bundle
 
 A retirement row is not green until all applicable checks pass:

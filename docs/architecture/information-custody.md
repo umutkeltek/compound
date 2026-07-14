@@ -273,6 +273,28 @@ Every arrow needs evidence. The gates are:
 9. archive with a verified rollback procedure;
 10. request an explicit operator decision for service shutdown, destructive retirement, or deletion.
 
+`SourceManifest` v0.3 is the executable owner of this family-level state. Legacy v0.1/v0.2 manifests load as
+`registered`; they do not inherit a later state from body presence or an old status string. The forward edges require
+the exact typed gate set for that edge. Writer cutover additionally records the old writer roster, Compound writer
+destination, rollback reference, writer fence, monotonically increasing writer epoch, and required quiet-window
+duration. Quiet-window proof carries its measured interval and observed/unexplained read/write counts; any unexplained
+traffic or a short interval fails closed.
+
+The state machine also has explicit rollback edges (`capture_abandoned`, `custody_invalidated`,
+`verification_invalidated`, `writer_rollback`, `legacy_unfreeze`, `quiet_window_invalidated`, and
+`archive_rollback`). `retired` is terminal; reactivation starts a new governed lifecycle instead of rewriting
+history. Reads and owned-body materialization remain available while migration is incomplete. A state transition
+records what an evidenced cutover did; it does not itself stop a service, freeze a writer, delete data, or mutate a
+remote system.
+
+`compound source manifest-doctor <family> --json` is the live operator consumer: it reports current/next state,
+required gates, read/write posture, rollback target, and next safe action. `manifest-advance` is dry-run by default and
+requires a running leased WorkEnvelope, typed proof refs, and a matching allowing `PolicyDecision` before `--confirm`
+can publish the next manifest revision. The built-in policy allows the reversible pre-cutover bookkeeping path but
+holds writer cutover, freeze, quiet-window, archive, rollback-from-live-writer, and retirement transitions until an
+exact reviewed authority exists. The manifest transition retains `work_id`, `ActionIntent`, and `PolicyDecision`
+links so the eventual Receipt/Transition closes the same execution spine.
+
 Brain-like Markdown, database retrieval stores, and control-plane repositories each need their own rows because
 their bodies, writers, and consumers differ. A single “OS absorbed” status cannot retire all three. The end
 state is subtraction: Compound owns durable bodies and meaning; Markdown is a client, indexes are rented,

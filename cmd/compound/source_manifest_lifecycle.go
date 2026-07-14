@@ -242,7 +242,7 @@ func sourceManifestLifecycleActionIntent(homePath string, w envelope.WorkEnvelop
 	if manifest.Lifecycle != nil && manifest.Lifecycle.WriterHandoff != nil && strings.TrimSpace(manifest.Lifecycle.WriterHandoff.RollbackRef) != "" {
 		rollback = manifest.Lifecycle.WriterHandoff.RollbackRef
 	}
-	id := sourceManifestLifecycleID(w.ID, manifest.SourceFamily, manifest.Lifecycle.State, req.ToState, fmt.Sprintf("%d", manifest.Lifecycle.Revision), strings.Join(refs, "|"))
+	id := sourceManifestLifecycleID(w.ID, manifest.SourceFamily, manifest.Lifecycle.State, req.ToState, fmt.Sprintf("%d", manifest.Lifecycle.Revision), strings.Join(refs, "|"), now.UTC().Format(time.RFC3339Nano))
 	return envelope.ActionIntent{
 		Header: envelope.Header{SchemaVersion: envelope.SVActionIntent, ID: id, CreatedAt: now.UTC().Format(time.RFC3339), Producer: envelope.Producer{Kind: "cli", Name: "compound", LaneID: req.Actor}, IDs: envelope.IDs{WorkID: w.ID, ContextPackID: w.IDs.ContextPackID}, Authority: envelope.Authority{SourceClass: "runtime", Status: "current"}, Privacy: "private", Risk: "tier1", EvidenceRefs: refs, Uncertainty: envelope.Uncertainty{Level: "known"}},
 		Actor:  req.Actor, Capability: "source_manifest.lifecycle.advance", Action: "advance_source_manifest_to_" + req.ToState,
