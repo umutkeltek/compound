@@ -51,6 +51,8 @@ func TestWorkDispatchClaimCLIChild(t *testing.T) {
 		args = append(args, "--next", "--confirm")
 	case "both":
 		args = append(args, "--next", os.Getenv("COMPOUND_TEST_WORK_ID"))
+	case "missing-actor-value":
+		args = []string{"dispatch-claim", "--next", "--actor", "--confirm", "--json"}
 	case "walled":
 		args = append(args, "--next")
 	default:
@@ -169,6 +171,39 @@ func TestWorkDispatchClaimRejectsNextAndExplicitIDTogether(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "either --next or <work_id>") {
 		t.Fatalf("ambiguous target error is not actionable:\n%s", output)
+	}
+}
+
+func TestWorkDispatchClaimRejectsConfirmAsMissingActorValue(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	if _, err := store.Create(work.CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "missing actor value must not swallow confirm",
+	}, cliTestNow); err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	before := snapshotDispatchClaimHome(t, homePath)
+
+	output, runErr := runDispatchClaimChild(t, "missing-actor-value", homePath, "", "")
+	exitErr, ok := runErr.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 2 {
+		t.Fatalf("missing actor value exit = %v, want usage exit 2\n%s", runErr, output)
+	}
+	if !strings.Contains(string(output), "usage: compound work dispatch-claim") {
+		t.Fatalf("missing actor value did not print dispatch-claim usage:\n%s", output)
+	}
+	if strings.Contains(string(output), `"actor": "--confirm"`) {
+		t.Fatalf("--confirm was swallowed as the actor value:\n%s", output)
+	}
+	if after := snapshotDispatchClaimHome(t, homePath); !reflect.DeepEqual(before, after) {
+		t.Fatalf("invalid dispatch-claim mutated home:\nbefore=%+v\nafter=%+v", before, after)
 	}
 }
 
