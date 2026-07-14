@@ -14,7 +14,7 @@ func validateSourceLifecycleEvidenceRefs(homePath string, proofs []SourceLifecyc
 		}
 		transitionID, ok := strings.CutPrefix(strings.TrimSpace(proof.EvidenceRef), "transition:")
 		if !ok {
-			continue
+			return fmt.Errorf("proof %s requires transition:<id> evidence", proof.Gate)
 		}
 		transitionID = strings.TrimSpace(transitionID)
 		if transitionID == "" {
