@@ -418,3 +418,86 @@ func agentLaneHarnessFromName(name string) string {
 	parts := strings.SplitN(name, " / ", 2)
 	return strings.TrimSpace(parts[0])
 }
+
+// AgentLaneCard is a read-only display summary of one agent-lane node, built from slice A's
+// capability-graph edges: the lane identity, the capability domains it is `capable_of`, the
+// tendency slugs it `tends_to`, and a lane-level count of `validated_by` receipts. It exposes
+// the graph's edge conventions ("task-class:" / "tendency:" prefixes) as clean slugs so display
+// consumers (e.g. the orient-time peers section) never reimplement the edge format or reach past
+// this reader into the store. Evidence-only; the reader writes nothing.
+type AgentLaneCard struct {
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	Harness          string   `json:"harness"`
+	Capabilities     []string `json:"capabilities"`
+	Tendencies       []string `json:"tendencies"`
+	ValidatedByCount int      `json:"validated_by_count"`
+	Retired          bool     `json:"retired,omitempty"`
+}
+
+// AgentLaneCards returns one read-only card per agent-lane node, sorted by id, joining each node
+// with its outgoing capable_of / tends_to / validated_by edges. Capability domains and tendency
+// slugs are sorted deterministically by slug. validated_by edges point at receipt/eval refs, not
+// per-domain targets, so their tally is lane-level (surfaced as ValidatedByCount) rather than
+// weighting one domain over another — per-domain evidence weighting is slice-B territory. This is
+// the single additive read-only edge reader the orient peers section needs; it never writes.
+func (s *Store) AgentLaneCards() ([]AgentLaneCard, error) {
+	nodes, err := s.loadNodes()
+	if err != nil {
+		return nil, err
+	}
+	edges, err := s.loadEdges()
+	if err != nil {
+		return nil, err
+	}
+	capByNode := map[string]map[string]bool{}
+	tendByNode := map[string]map[string]bool{}
+	validatedByNode := map[string]int{}
+	for _, e := range edges {
+		switch e.Kind {
+		case EdCapableOf:
+			if slug := strings.TrimPrefix(e.To, "task-class:"); slug != e.To && slug != "" {
+				laneCardAddSlug(capByNode, e.From, slug)
+			}
+		case EdTendsTo:
+			if slug := strings.TrimPrefix(e.To, "tendency:"); slug != e.To && slug != "" {
+				laneCardAddSlug(tendByNode, e.From, slug)
+			}
+		case EdValidatedBy:
+			validatedByNode[e.From]++
+		}
+	}
+	out := make([]AgentLaneCard, 0)
+	for _, n := range nodes {
+		if n.Kind != agentLaneNodeKind {
+			continue
+		}
+		out = append(out, AgentLaneCard{
+			ID:               n.ID,
+			Name:             n.Name,
+			Harness:          agentLaneHarnessFromName(n.Name),
+			Capabilities:     laneCardSortedSlugs(capByNode[n.ID]),
+			Tendencies:       laneCardSortedSlugs(tendByNode[n.ID]),
+			ValidatedByCount: validatedByNode[n.ID],
+			Retired:          n.Retired,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func laneCardAddSlug(m map[string]map[string]bool, node, slug string) {
+	if m[node] == nil {
+		m[node] = map[string]bool{}
+	}
+	m[node][slug] = true
+}
+
+func laneCardSortedSlugs(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for slug := range set {
+		out = append(out, slug)
+	}
+	sort.Strings(out)
+	return out
+}
