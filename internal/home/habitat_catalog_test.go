@@ -154,6 +154,18 @@ func TestHabitatCatalogClassifiesEveryKnownRootAndMakesBridgeDebtExplicit(t *tes
 	}
 }
 
+func TestHabitatCatalogOwnsCanonicalSourceManifestsAndNamesLegacyRetirement(t *testing.T) {
+	canonical, ok := HabitatForPath("sources/manifests/family.json")
+	if !ok || canonical.Prefix != "sources/manifests" || canonical.Status != HabitatStatusActive || canonical.Class != HabitatClassEvidence || !canonical.Backup || canonical.Compact || !canonical.PlacementAllowed {
+		t.Fatalf("canonical SourceManifest habitat is not durable evidence: %+v ok=%t", canonical, ok)
+	}
+
+	legacy, ok := HabitatForPath("registries/source-manifests/family.json")
+	if !ok || legacy.Prefix != "registries/source-manifests" || legacy.Status != HabitatStatusBridge || legacy.CanonicalPrefix != "sources/manifests" || legacy.PlacementAllowed || legacy.RetirementCondition == "" {
+		t.Fatalf("legacy SourceManifest path hides retirement debt: %+v ok=%t", legacy, ok)
+	}
+}
+
 func TestHabitatCatalogProjectionsCannotMutateAuthority(t *testing.T) {
 	entries := HabitatEntries()
 	dirs := HabitatDirs()
