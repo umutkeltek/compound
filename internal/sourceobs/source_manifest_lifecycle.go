@@ -259,6 +259,9 @@ func planSourceManifestLifecycleAdvance(homePath string, manifest SourceManifest
 	if err != nil {
 		return SourceManifestLifecycleAdvanceReport{}, err
 	}
+	if err := validateSourceLifecycleEvidenceRefs(homePath, proofs); err != nil {
+		return SourceManifestLifecycleAdvanceReport{}, err
+	}
 	if edge.forward && sourceLifecycleRank(edge.to) >= sourceLifecycleRank(SourceLifecycleOwnedSnapshot) {
 		doctor, err := DoctorSourceManifest(homePath, manifest.SourceFamily)
 		if err != nil {
