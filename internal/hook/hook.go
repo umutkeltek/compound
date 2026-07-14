@@ -96,9 +96,10 @@ type Deps struct {
 	Store    *work.Store // required only for session-end; may be nil otherwise
 	HomePath string      // optional; when present session-start persists context artifacts
 
-	Now                func() time.Time
-	After              func(time.Duration) <-chan time.Time
-	BeforeContextBuild func()
+	Now                  func() time.Time
+	After                func(time.Duration) <-chan time.Time
+	BeforeContextBuild   func()
+	BeforeContextPersist func()
 }
 
 // InjectionArtifact records the exact harness-facing context text written under
@@ -123,8 +124,9 @@ type InjectionArtifact struct {
 // hook JSON: the ContextPack and raw input remain owned by their normal
 // COMPOUND_HOME artifacts, while adapters persist only the parity journal row.
 type ContextObservation struct {
-	Input contract.Input
-	Pack  envelope.ContextPack
+	Input            contract.Input
+	Pack             envelope.ContextPack
+	RetrievalLatency time.Duration
 }
 
 // Result is what a hook produces: the normalized event, the typed objects, and the small
@@ -185,9 +187,10 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 }
 
 type contextBuild struct {
-	Input    contract.Input
-	Contract envelope.EffectiveContract
-	Pack     envelope.ContextPack
+	Input            contract.Input
+	Contract         envelope.EffectiveContract
+	Pack             envelope.ContextPack
+	RetrievalLatency time.Duration
 }
 
 type contextBuildResult struct {
@@ -210,6 +213,9 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
+		if deps.BeforeContextPersist != nil {
+			deps.BeforeContextPersist()
+		}
 		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack)
 		if err != nil {
 			return Result{}, err
@@ -222,7 +228,11 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 		Produced:  []envelope.Envelope{&req, &built.Contract, &built.Pack},
 		Summary:   built.Pack.SummaryMD,
 		Injection: injection,
-		Context:   &ContextObservation{Input: built.Input, Pack: built.Pack},
+		Context: &ContextObservation{
+			Input:            built.Input,
+			Pack:             built.Pack,
+			RetrievalLatency: built.RetrievalLatency,
+		},
 	}, nil
 }
 
@@ -245,6 +255,9 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
+		if deps.BeforeContextPersist != nil {
+			deps.BeforeContextPersist()
+		}
 		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack)
 		if err != nil {
 			return Result{}, err
@@ -276,7 +289,11 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		Produced:  produced,
 		Summary:   summary,
 		Injection: injection,
-		Context:   &ContextObservation{Input: built.Input, Pack: built.Pack},
+		Context: &ContextObservation{
+			Input:            built.Input,
+			Pack:             built.Pack,
+			RetrievalLatency: built.RetrievalLatency,
+		},
 	}, nil
 }
 
@@ -291,19 +308,26 @@ func buildContextWithBreaker(name string, fx Fixture, deps Deps, mode string, no
 			return contextBuild{}, err
 		}
 		ec := contract.Compile(in, deps.Orient, now)
-		pack := contract.Pack(in, deps.Orient, now)
+		var pack envelope.ContextPack
+		var retrievalLatency time.Duration
 		if strings.TrimSpace(deps.HomePath) != "" {
 			var err error
 			ec, err = contract.CompileWithRuntime(in, deps.Orient, deps.HomePath, now)
 			if err != nil {
 				return contextBuild{}, err
 			}
+			retrievalStarted := hookNow(deps)
 			pack, err = contract.PackWithCapabilities(in, deps.Orient, deps.HomePath, now)
+			retrievalLatency = nonNegativeDuration(hookNow(deps).Sub(retrievalStarted))
 			if err != nil {
 				return contextBuild{}, err
 			}
+		} else {
+			retrievalStarted := hookNow(deps)
+			pack = contract.Pack(in, deps.Orient, now)
+			retrievalLatency = nonNegativeDuration(hookNow(deps).Sub(retrievalStarted))
 		}
-		return contextBuild{Input: in, Contract: ec, Pack: pack}, nil
+		return contextBuild{Input: in, Contract: ec, Pack: pack, RetrievalLatency: retrievalLatency}, nil
 	}
 	if !fx.Live {
 		built, err := build()
@@ -331,6 +355,13 @@ func buildContextWithBreaker(name string, fx Fixture, deps Deps, mode string, no
 		breaker := contextBreakerResult(name, fx, deps, mode, now)
 		return contextBuild{}, &breaker, nil
 	}
+}
+
+func nonNegativeDuration(duration time.Duration) time.Duration {
+	if duration < 0 {
+		return 0
+	}
+	return duration
 }
 
 func contextBreakerResult(name string, fx Fixture, deps Deps, mode string, now time.Time) Result {

@@ -3339,24 +3339,12 @@ func runHookCommand(args []string) int {
 		return 1
 	}
 
-	hookStarted := time.Now()
 	res, err := hook.Run(fx, deps, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	if parsed.Live && !res.BreakerTripped && res.Context != nil &&
-		(parsed.HookName == "session-start" || parsed.HookName == "user-prompt-submit") {
-		in := res.Context.Input
-		retrievalparity.Record(homePath, retrievalparity.NewOrientRow(
-			in.Task,
-			parityOrientInput(in),
-			res.Context.Pack.ActiveMemory,
-			time.Since(hookStarted),
-			true,
-			time.Now(),
-		))
-	}
+	recordLiveHookRetrieval(homePath, parsed, res, time.Now())
 	if parsed.Live && strings.TrimSpace(parsed.ParityLogDir) != "" {
 		if err := writeLiveHookParityLog(parsed.ParityLogDir, res, now); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -3376,6 +3364,22 @@ func runHookCommand(args []string) int {
 		return hookEnforceExit(parsed.HookName, res)
 	}
 	return 0
+}
+
+func recordLiveHookRetrieval(homePath string, parsed hookCommandArgs, res hook.Result, now time.Time) {
+	if !parsed.Live || res.BreakerTripped || res.Context == nil ||
+		(parsed.HookName != "session-start" && parsed.HookName != "user-prompt-submit") {
+		return
+	}
+	in := res.Context.Input
+	retrievalparity.Record(homePath, retrievalparity.NewOrientRow(
+		in.Task,
+		parityOrientInput(in),
+		res.Context.Pack.ActiveMemory,
+		res.Context.RetrievalLatency,
+		true,
+		now,
+	))
 }
 
 func parseHookArgs(args []string) (hookCommandArgs, error) {
