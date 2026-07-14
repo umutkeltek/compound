@@ -254,6 +254,60 @@ func TestRecordedSourceControlMutationReviewRequiresExactImmutableBinding(t *tes
 	}
 }
 
+func TestRecordedSourceControlMutationReviewSelectsNewestExactSealedReport(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := SourceControlMutationBinding{
+		ActionWorkID:      "work_live_newest_exact",
+		MutationInputHash: "mutation-input:sha256:" + strings.Repeat("9", 64),
+		Capability:        "filesystem.write",
+		Action:            "write_file",
+		MutationClass:     "local_reversible",
+		TargetPaths:       []string{"README.md"},
+		ActionIntentIDs:   []string{"act_newest_exact"},
+	}
+	plans := make([]SourceControlReviewPlan, 2)
+	for i, owner := range []string{"work_newest_exact_a", "work_newest_exact_b"} {
+		plans[i], err = BuildSourceControlMutationReviewPlan(snapshot, owner, binding, fixedSourceControlReviewTime)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Put CreatedAt order deliberately opposite the filename/hash order. A scan
+	// ordered by immutable report time must win; lexical directory order must not.
+	olderIndex := 0
+	if plans[1].ID > plans[0].ID {
+		olderIndex = 1
+	}
+	newerIndex := 1 - olderIndex
+	home := t.TempDir()
+	paths := make([]SourceControlReviewPlanPaths, len(plans))
+	for i, plan := range plans {
+		paths[i], err = RecordSourceControlReviewPlan(home, plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	older := authorizeSourceControlMutationPlanAt(t, home, paths[olderIndex], plans[olderIndex], fixedSourceControlReviewTime.Add(time.Minute))
+	newer := authorizeSourceControlMutationPlanAt(t, home, paths[newerIndex], plans[newerIndex], fixedSourceControlReviewTime.Add(2*time.Minute))
+	if older.CreatedAt >= newer.CreatedAt || plans[olderIndex].ID <= plans[newerIndex].ID {
+		t.Fatalf("test precondition failed: older=%s/%s newer=%s/%s", older.CreatedAt, plans[olderIndex].ID, newer.CreatedAt, plans[newerIndex].ID)
+	}
+
+	matched, err := FindRecordedSourceControlMutationReview(home, snapshot, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched == nil || matched.ID != newer.ID {
+		t.Fatalf("selected report = %+v, want newest exact sealed report %s (older lexical-first report %s)", matched, newer.ID, older.ID)
+	}
+}
+
 func TestSourceControlMutationAuthorizationRequiresReviewerAndSealedSource(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
@@ -505,6 +559,10 @@ func TestLegacyCountOnlySourceControlReviewCannotAuthorizeMutation(t *testing.T)
 var fixedSourceControlReviewTime = time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
 
 func authorizeSourceControlMutationPlan(t *testing.T, home string, paths SourceControlReviewPlanPaths, plan SourceControlReviewPlan) SourceControlReviewReport {
+	return authorizeSourceControlMutationPlanAt(t, home, paths, plan, fixedSourceControlReviewTime.Add(time.Minute))
+}
+
+func authorizeSourceControlMutationPlanAt(t *testing.T, home string, paths SourceControlReviewPlanPaths, plan SourceControlReviewPlan, now time.Time) SourceControlReviewReport {
 	t.Helper()
 	review := SourceControlReview{
 		SchemaVersion: SourceControlReviewSchemaVersion,
@@ -512,7 +570,7 @@ func authorizeSourceControlMutationPlan(t *testing.T, home string, paths SourceC
 		Decision: "authorize_mutation", Rationale: "exact reviewed dirty mutation may proceed once",
 		Confidence: 1, ReviewedBy: "operator:test", EvidenceRefs: append([]string{}, plan.EvidenceRefs...),
 	}
-	report, err := RecordSourceControlReview(home, review, paths.ReviewYAMLPath, fixedSourceControlReviewTime.Add(time.Minute))
+	report, err := RecordSourceControlReview(home, review, paths.ReviewYAMLPath, now)
 	if err != nil {
 		t.Fatal(err)
 	}
