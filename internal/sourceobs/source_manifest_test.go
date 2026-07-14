@@ -35,6 +35,107 @@ func TestSourceManifestPathAndAuthorityUseCanonicalSourcesOwner(t *testing.T) {
 	}
 }
 
+func TestSourceManifestLegacyFallbackIsObservableAndCanonicalizedOnWrite(t *testing.T) {
+	homePath := t.TempDir()
+	family := "legacy_storage_bridge"
+	sourcePath := filepath.Join(t.TempDir(), "legacy.md")
+	if err := os.WriteFile(sourcePath, []byte("# legacy bridge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := BuildSourceManifest(family, []string{sourcePath}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.AuthorityRef = "compound://registries/source-manifests/" + family
+	legacyPath := LegacySourceManifestPath(homePath, family)
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, append(body, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadSourceManifest(homePath, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ID != legacy.ID {
+		t.Fatalf("legacy fallback changed manifest identity: got %q want %q", loaded.ID, legacy.ID)
+	}
+	doctor, err := DoctorSourceManifest(homePath, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "degraded" || doctor.StorageStatus != "legacy_fallback" || doctor.LoadedManifestPath != legacyPath {
+		t.Fatalf("legacy fallback is not observable: %+v", doctor)
+	}
+	if got := sourceManifestDoctorCheckByNameForTest(doctor, "storage_location"); got.Status != "pending" {
+		t.Fatalf("storage_location check = %+v, want pending bridge debt", got)
+	}
+
+	if _, err := RecordSourceManifest(homePath, loaded); err != nil {
+		t.Fatal(err)
+	}
+	canonicalPath := SourceManifestPath(homePath, family)
+	if _, err := os.Stat(canonicalPath); err != nil {
+		t.Fatalf("canonical publication missing: %v", err)
+	}
+	canonical, err := LoadSourceManifest(homePath, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical.AuthorityRef != "compound://sources/manifests/"+family {
+		t.Fatalf("canonical authority_ref = %q", canonical.AuthorityRef)
+	}
+	doctor, err = DoctorSourceManifest(homePath, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "ok" || doctor.StorageStatus != "canonical" || doctor.LoadedManifestPath != canonicalPath {
+		t.Fatalf("canonical publication not consumed: %+v", doctor)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Fatalf("compatibility read bridge was destructively changed: %v", err)
+	}
+}
+
+func TestSourceManifestCanonicalCorruptionFailsClosedWithoutLegacyFallback(t *testing.T) {
+	homePath := t.TempDir()
+	family := "fail_closed_storage"
+	legacyPath := LegacySourceManifestPath(homePath, family)
+	canonicalPath := SourceManifestPath(homePath, family)
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	validLegacy := `{"schema_version":"compound.source_manifest.v0.3","id":"srcman_legacy","generated_at":"2026-07-14T00:00:00Z","source_family":"fail_closed_storage","authority_ref":"compound://registries/source-manifests/fail_closed_storage","lifecycle":{"state":"registered","revision":0,"history":[]},"items":[{"id":"srcitem_legacy","source_key":"source_legacy","version_state":"current","source_kind":"markdown","source_ref":"/unavailable/legacy.md","file_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshot_time":"2026-07-14T00:00:00Z","privacy":"private","body_policy":"source_in_place"}]}`
+	if err := os.WriteFile(legacyPath, []byte(validLegacy+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(canonicalPath, []byte("{corrupt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadSourceManifest(homePath, family); err == nil {
+		t.Fatal("corrupt canonical manifest silently fell back to legacy")
+	}
+}
+
+func sourceManifestDoctorCheckByNameForTest(report SourceManifestDoctorReport, name string) SourceManifestDoctorCheck {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	return SourceManifestDoctorCheck{Name: name, Status: "missing"}
+}
+
 func TestOwnedSourceManifestSurvivesOriginalLossAndMaterializesExactBytes(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", time.Date(2026, 7, 14, 5, 30, 0, 0, time.UTC)); err != nil {

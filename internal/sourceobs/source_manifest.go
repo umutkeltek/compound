@@ -24,6 +24,11 @@ const legacySourceManifestSchemaVersion = "compound.source_manifest.v0.1"
 
 const custodySourceManifestSchemaVersion = "compound.source_manifest.v0.2"
 
+const (
+	SourceManifestStorageCanonical      = "canonical"
+	SourceManifestStorageLegacyFallback = "legacy_fallback"
+)
+
 type SourceManifest struct {
 	SchemaVersion string                    `json:"schema_version"`
 	ID            string                    `json:"id"`
@@ -85,6 +90,8 @@ type SourceManifestDoctorReport struct {
 	Status                         string                      `json:"status"`
 	ManifestID                     string                      `json:"manifest_id,omitempty"`
 	ManifestPath                   string                      `json:"manifest_path"`
+	LoadedManifestPath             string                      `json:"loaded_manifest_path,omitempty"`
+	StorageStatus                  string                      `json:"storage_status,omitempty"`
 	AuthorityRef                   string                      `json:"authority_ref,omitempty"`
 	ItemCount                      int                         `json:"item_count"`
 	MissingFieldCount              int                         `json:"missing_field_count"`
@@ -155,7 +162,7 @@ func BuildSourceManifest(sourceFamily string, paths []string, now time.Time) (So
 		SchemaVersion: SourceManifestSchemaVersion,
 		ID:            "srcman_" + safeManifestName(sourceFamily),
 		SourceFamily:  sourceFamily,
-		AuthorityRef:  "compound://sources/manifests/" + safeManifestName(sourceFamily),
+		AuthorityRef:  SourceManifestAuthorityRef(sourceFamily),
 		Lifecycle:     defaultSourceManifestLifecycle(),
 	}
 	for _, sourcePath := range paths {
@@ -218,6 +225,7 @@ func RecordSourceManifest(homePath string, manifest SourceManifest) (SourceManif
 		return SourceManifestReport{}, err
 	}
 	manifest.SchemaVersion = SourceManifestSchemaVersion
+	manifest.AuthorityRef = SourceManifestAuthorityRef(manifest.SourceFamily)
 	if manifest.Lifecycle == nil {
 		manifest.Lifecycle = defaultSourceManifestLifecycle()
 	}
@@ -353,16 +361,38 @@ func writeSourceManifestAtomic(path string, body []byte) error {
 }
 
 func LoadSourceManifest(homePath, sourceFamily string) (SourceManifest, error) {
-	data, err := os.ReadFile(SourceManifestPath(homePath, sourceFamily))
+	manifest, _, _, err := loadSourceManifest(homePath, sourceFamily)
+	return manifest, err
+}
+
+func loadSourceManifest(homePath, sourceFamily string) (SourceManifest, string, string, error) {
+	canonicalPath := SourceManifestPath(homePath, sourceFamily)
+	manifest, err := loadSourceManifestFile(canonicalPath)
+	if err == nil {
+		return manifest, canonicalPath, SourceManifestStorageCanonical, nil
+	}
+	if !os.IsNotExist(err) {
+		return SourceManifest{}, canonicalPath, SourceManifestStorageCanonical, err
+	}
+	legacyPath := LegacySourceManifestPath(homePath, sourceFamily)
+	manifest, err = loadSourceManifestFile(legacyPath)
+	if err != nil {
+		return SourceManifest{}, legacyPath, SourceManifestStorageLegacyFallback, err
+	}
+	return manifest, legacyPath, SourceManifestStorageLegacyFallback, nil
+}
+
+func loadSourceManifestFile(path string) (SourceManifest, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return SourceManifest{}, err
 	}
 	var manifest SourceManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return SourceManifest{}, err
+		return SourceManifest{}, fmt.Errorf("parse source manifest %s: %w", path, err)
 	}
 	if err := validateSourceManifest(manifest); err != nil {
-		return SourceManifest{}, err
+		return SourceManifest{}, fmt.Errorf("validate source manifest %s: %w", path, err)
 	}
 	if manifest.Lifecycle == nil {
 		manifest.Lifecycle = defaultSourceManifestLifecycle()
@@ -376,7 +406,7 @@ func DoctorSourceManifest(homePath, sourceFamily string) (SourceManifestDoctorRe
 		Status:        "fail",
 		ManifestPath:  SourceManifestPath(homePath, sourceFamily),
 	}
-	manifest, err := LoadSourceManifest(homePath, sourceFamily)
+	manifest, loadedPath, storageStatus, err := loadSourceManifest(homePath, sourceFamily)
 	if err != nil {
 		if os.IsNotExist(err) {
 			report.Checks = append(report.Checks, sourceManifestCheck("installed", false, "manifest not found"))
@@ -384,6 +414,8 @@ func DoctorSourceManifest(homePath, sourceFamily string) (SourceManifestDoctorRe
 		}
 		return report, err
 	}
+	report.LoadedManifestPath = loadedPath
+	report.StorageStatus = storageStatus
 	report.ManifestID = manifest.ID
 	report.AuthorityRef = manifest.AuthorityRef
 	report.ItemCount = len(manifest.Items)
@@ -447,7 +479,8 @@ func DoctorSourceManifest(homePath, sourceFamily string) (SourceManifestDoctorRe
 	report.LifecycleEvidenceMissingCount = missingEvidence
 	report.LifecycleEvidenceMismatchCount = mismatchedEvidence
 	report.Checks = append(report.Checks,
-		sourceManifestCheck("installed", true, report.ManifestPath),
+		sourceManifestCheck("installed", true, loadedPath),
+		sourceManifestStatusCheck("storage_location", storageStatus == SourceManifestStorageCanonical, fmt.Sprintf("loaded_from=%s canonical=%s", loadedPath, report.ManifestPath)),
 		sourceManifestCheck("items", report.ItemCount > 0, fmt.Sprintf("items=%d", report.ItemCount)),
 		sourceManifestCheck("required_fields", report.MissingFieldCount == 0, fmt.Sprintf("missing=%d", report.MissingFieldCount)),
 		sourceManifestCheck("source_recovery", report.HashMismatchCount == 0, fmt.Sprintf("hash_mismatch=%d", report.HashMismatchCount)),
@@ -459,6 +492,9 @@ func DoctorSourceManifest(homePath, sourceFamily string) (SourceManifestDoctorRe
 		doctorGbrainManifestExtras(homePath, manifest, &report)
 	}
 	report.Status = "ok"
+	if storageStatus == SourceManifestStorageLegacyFallback {
+		report.Status = "degraded"
+	}
 	for _, check := range report.Checks {
 		if check.Status == "fail" {
 			report.Status = "fail"
@@ -615,6 +651,14 @@ func MaterializeSourceManifestItem(homePath, sourceFamily, itemID, targetPath st
 
 func SourceManifestPath(homePath, sourceFamily string) string {
 	return filepath.Join(homePath, "sources", "manifests", safeManifestName(sourceFamily)+".json")
+}
+
+func LegacySourceManifestPath(homePath, sourceFamily string) string {
+	return filepath.Join(homePath, "registries", "source-manifests", safeManifestName(sourceFamily)+".json")
+}
+
+func SourceManifestAuthorityRef(sourceFamily string) string {
+	return "compound://sources/manifests/" + safeManifestName(sourceFamily)
 }
 
 func buildSourceManifestItem(sourceFamily, sourcePath string) (SourceManifestItem, error) {

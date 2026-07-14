@@ -232,6 +232,7 @@ func AdvanceSourceManifestLifecycle(homePath, sourceFamily string, req SourceMan
 			return err
 		}
 		manifest.SchemaVersion = SourceManifestSchemaVersion
+		manifest.AuthorityRef = SourceManifestAuthorityRef(sourceFamily)
 		manifest.Lifecycle = cloneSourceManifestLifecycle(&report.Lifecycle)
 		if err := validateSourceManifest(manifest); err != nil {
 			return fmt.Errorf("validate source lifecycle publication: %w", err)
