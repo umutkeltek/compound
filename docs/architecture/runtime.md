@@ -204,6 +204,16 @@ Commands: `compound hook {session-start, user-prompt-submit, pre-tool-use, post-
 Reconciliation reports an active command match as `registered`; it reports `ready` only when desired and
 observed handler-content revisions also match. Invocation arguments have a separate privacy-safe digest, so
 argument drift remains detectable without treating configuration bytes as handler-content proof.
+Hook-plan reconciliation also carries `preserved_bindings` for exact operator-owned declarations outside the
+managed plan. Those rows remain `external_preserved`: they are reserved before a managed fallback can claim the
+same observed slot, survive narrower imports, and never enter active hooks or readiness. A concrete handler whose
+content cannot be attested (including a symlink) retains the fail-loud `unavailable:concrete-handler` sentinel;
+authority/readiness reports it as `handler_unavailable`, excludes it from EffectiveContract and ContextPack active
+hooks, and requires restoration plus re-import before mutation. Opaque `handler:` and `hook://` identities make no
+local content claim and retain their registered/readiness semantics. These fields and statuses are additive v0.1
+extensions; the schema version changes only if strict-consumer evidence proves additive compatibility insufficient.
+Each import records incoming hook count, the exact resulting authority revision, and the prior authority revision,
+so identical source bytes cannot collapse distinct preserved-merge results into one provenance record.
 Each: `stdin JSON → normalized HookEvent persisted under events/ → compound service → typed object written under .compound → small
 harness-compatible output`. The lessons from a mature hook system map cleanly:
 

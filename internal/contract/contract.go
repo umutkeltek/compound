@@ -277,13 +277,16 @@ type InstalledHook struct {
 }
 
 type InstalledHooksImportReport struct {
-	AuthorityRef      string                        `json:"authority_ref"`
-	AuthorityPath     string                        `json:"authority_path"`
-	SourceAuthorityID string                        `json:"source_authority_id"`
-	SourceAuthority   InstalledHooksSourceAuthority `json:"source_authority"`
-	HookCount         int                           `json:"hook_count"`
-	Harnesses         []string                      `json:"harnesses"`
-	Manifest          InstalledHooksManifest        `json:"manifest"`
+	AuthorityRef           string                        `json:"authority_ref"`
+	AuthorityPath          string                        `json:"authority_path"`
+	SourceAuthorityID      string                        `json:"source_authority_id"`
+	SourceAuthority        InstalledHooksSourceAuthority `json:"source_authority"`
+	IncomingHookCount      int                           `json:"incoming_hook_count"`
+	HookCount              int                           `json:"hook_count"`
+	AuthorityRevision      string                        `json:"authority_revision"`
+	PriorAuthorityRevision string                        `json:"prior_authority_revision,omitempty"`
+	Harnesses              []string                      `json:"harnesses"`
+	Manifest               InstalledHooksManifest        `json:"manifest"`
 }
 
 type HookGateReadiness struct {
@@ -335,21 +338,24 @@ type InstalledHookRuntimeReadiness struct {
 }
 
 type InstalledHooksSourceAuthority struct {
-	SchemaVersion       string   `json:"schema_version"`
-	ID                  string   `json:"id"`
-	CreatedAt           string   `json:"created_at"`
-	SourcePath          string   `json:"source_path"`
-	SourceRevision      string   `json:"source_revision"`
-	ImportedVia         string   `json:"imported_via"`
-	AuthorityRef        string   `json:"authority_ref"`
-	AuthorityStatus     string   `json:"authority_status"`
-	SourceRole          string   `json:"source_role"`
-	Retires             string   `json:"retires"`
-	RetirementCondition string   `json:"retirement_condition"`
-	Rollback            string   `json:"rollback"`
-	Harnesses           []string `json:"harnesses"`
-	HookCount           int      `json:"hook_count"`
-	EvidenceRefs        []string `json:"evidence_refs"`
+	SchemaVersion          string   `json:"schema_version"`
+	ID                     string   `json:"id"`
+	CreatedAt              string   `json:"created_at"`
+	SourcePath             string   `json:"source_path"`
+	SourceRevision         string   `json:"source_revision"`
+	ImportedVia            string   `json:"imported_via"`
+	AuthorityRef           string   `json:"authority_ref"`
+	AuthorityRevision      string   `json:"authority_revision,omitempty"`
+	PriorAuthorityRevision string   `json:"prior_authority_revision,omitempty"`
+	AuthorityStatus        string   `json:"authority_status"`
+	SourceRole             string   `json:"source_role"`
+	Retires                string   `json:"retires"`
+	RetirementCondition    string   `json:"retirement_condition"`
+	Rollback               string   `json:"rollback"`
+	Harnesses              []string `json:"harnesses"`
+	IncomingHookCount      int      `json:"incoming_hook_count,omitempty"`
+	HookCount              int      `json:"hook_count"`
+	EvidenceRefs           []string `json:"evidence_refs"`
 }
 
 // Compile produces the EffectiveContract: the instructions, hooks, memory/capability/
@@ -2140,8 +2146,15 @@ func importInstalledHooks(homePath, sourcePath string, data []byte, manifest Ins
 	if err := os.MkdirAll(filepath.Join(homePath, "config"), 0o755); err != nil {
 		return InstalledHooksImportReport{}, err
 	}
+	incomingHookCount := len(manifest.Hooks)
 	authorityPath := InstalledHooksPath(homePath)
-	if existing, err := loadInstalledHooksManifest(authorityPath); err == nil {
+	priorAuthorityRevision := ""
+	if authorityData, err := os.ReadFile(authorityPath); err == nil {
+		existing, err := parseInstalledHooksManifest(authorityPath, authorityData)
+		if err != nil {
+			return InstalledHooksImportReport{}, err
+		}
+		priorAuthorityRevision = hashBytes(authorityData)
 		manifest = mergeInstalledHooksManifest(existing, manifest)
 	} else if !os.IsNotExist(err) {
 		return InstalledHooksImportReport{}, err
@@ -2151,38 +2164,49 @@ func importInstalledHooks(homePath, sourcePath string, data []byte, manifest Ins
 	if err != nil {
 		return InstalledHooksImportReport{}, err
 	}
+	authorityRevision := hashBytes(manifestData)
 	if err := os.WriteFile(authorityPath, manifestData, 0o644); err != nil {
 		return InstalledHooksImportReport{}, err
 	}
 	sourceRevision := hashBytes(data)
+	evidenceRefs := []string{sourceRevision, InstalledHooksAuthorityRef, "authority_revision:" + authorityRevision}
+	if priorAuthorityRevision != "" {
+		evidenceRefs = append(evidenceRefs, "prior_authority_revision:"+priorAuthorityRevision)
+	}
 	rec := InstalledHooksSourceAuthority{
-		SchemaVersion:       InstalledHooksSourceAuthoritySchema,
-		ID:                  installedHooksSourceAuthorityID(sourcePath, sourceRevision, importedVia),
-		CreatedAt:           now.UTC().Format(time.RFC3339),
-		SourcePath:          sourcePath,
-		SourceRevision:      sourceRevision,
-		ImportedVia:         importedVia,
-		AuthorityRef:        InstalledHooksAuthorityRef,
-		AuthorityStatus:     "compound_primary",
-		SourceRole:          "evidence_only_input_after_import",
-		Retires:             "source_view_authority:" + sourcePath,
-		RetirementCondition: "EffectiveContract reads compound://config/installed-hooks from COMPOUND_HOME; source view remains rollback/evidence input",
-		Rollback:            "re-import source hooks JSON or remove COMPOUND_HOME config/installed-hooks.yaml",
-		Harnesses:           installedHookHarnesses(manifest),
-		HookCount:           len(manifest.Hooks),
-		EvidenceRefs:        []string{sourceRevision, InstalledHooksAuthorityRef},
+		SchemaVersion:          InstalledHooksSourceAuthoritySchema,
+		ID:                     installedHooksSourceAuthorityID(sourcePath, sourceRevision, importedVia, authorityRevision),
+		CreatedAt:              now.UTC().Format(time.RFC3339),
+		SourcePath:             sourcePath,
+		SourceRevision:         sourceRevision,
+		ImportedVia:            importedVia,
+		AuthorityRef:           InstalledHooksAuthorityRef,
+		AuthorityRevision:      authorityRevision,
+		PriorAuthorityRevision: priorAuthorityRevision,
+		AuthorityStatus:        "compound_primary",
+		SourceRole:             "evidence_only_input_after_import",
+		Retires:                "source_view_authority:" + sourcePath,
+		RetirementCondition:    "EffectiveContract reads compound://config/installed-hooks from COMPOUND_HOME; source view remains rollback/evidence input",
+		Rollback:               "re-import source hooks JSON or remove COMPOUND_HOME config/installed-hooks.yaml",
+		Harnesses:              installedHookHarnesses(manifest),
+		IncomingHookCount:      incomingHookCount,
+		HookCount:              len(manifest.Hooks),
+		EvidenceRefs:           evidenceRefs,
 	}
 	if err := appendInstalledHooksSourceAuthority(homePath, rec); err != nil {
 		return InstalledHooksImportReport{}, err
 	}
 	return InstalledHooksImportReport{
-		AuthorityRef:      InstalledHooksAuthorityRef,
-		AuthorityPath:     authorityPath,
-		SourceAuthorityID: rec.ID,
-		SourceAuthority:   rec,
-		HookCount:         len(manifest.Hooks),
-		Harnesses:         rec.Harnesses,
-		Manifest:          manifest,
+		AuthorityRef:           InstalledHooksAuthorityRef,
+		AuthorityPath:          authorityPath,
+		SourceAuthorityID:      rec.ID,
+		SourceAuthority:        rec,
+		IncomingHookCount:      incomingHookCount,
+		HookCount:              len(manifest.Hooks),
+		AuthorityRevision:      authorityRevision,
+		PriorAuthorityRevision: priorAuthorityRevision,
+		Harnesses:              rec.Harnesses,
+		Manifest:               manifest,
 	}, nil
 }
 
@@ -2504,6 +2528,10 @@ func loadInstalledHooksManifest(path string) (InstalledHooksManifest, error) {
 	if err != nil {
 		return InstalledHooksManifest{}, err
 	}
+	return parseInstalledHooksManifest(path, data)
+}
+
+func parseInstalledHooksManifest(path string, data []byte) (InstalledHooksManifest, error) {
 	var manifest InstalledHooksManifest
 	if err := yaml.Unmarshal(data, &manifest); err != nil {
 		return InstalledHooksManifest{}, fmt.Errorf("parse installed hooks %s: %w", path, err)
@@ -2557,8 +2585,8 @@ func installedHookHarnesses(manifest InstalledHooksManifest) []string {
 	return out
 }
 
-func installedHooksSourceAuthorityID(path, revision, importedVia string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{path, revision, importedVia}, "|")))
+func installedHooksSourceAuthorityID(path, revision, importedVia, authorityRevision string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{path, revision, importedVia, authorityRevision}, "|")))
 	return "hksrc_" + hex.EncodeToString(sum[:])[:12]
 }
 
@@ -2632,10 +2660,16 @@ func requiredChecksForHookReadiness(readiness []envelope.HookReadiness, in Input
 	}
 	checks := []string{}
 	for _, row := range readiness {
+		status := strings.TrimSpace(row.Status)
+		if status == "handler_unavailable" {
+			harness := firstNonEmpty(strings.TrimSpace(row.Harness), strings.TrimSpace(in.Harness), "unknown")
+			hook := firstNonEmpty(strings.TrimSpace(row.Hook), "PreToolUse")
+			checks = append(checks, fmt.Sprintf("pre_write_gate %s/%s status=handler_unavailable: restore a readable non-symlink concrete handler, re-import installed-hook authority, then run `compound contract hooks-authority` before mutation", harness, hook))
+			continue
+		}
 		if !row.AdapterRequired || strings.TrimSpace(row.AdapterCommand) == "" {
 			continue
 		}
-		status := strings.TrimSpace(row.Status)
 		if status != "missing_gate" && status != "wrapper_required" {
 			continue
 		}
@@ -2707,6 +2741,7 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 	roster := []envelope.HookRosterEntry{}
 	writeScopedHarnesses := writeScopedHookHarnesses(manifest)
 	hasWriteScopedHook := false
+	hasUnavailableWriteScopedHook := false
 	revs := []envelope.SourceRev{{Source: InstalledHooksAuthorityRef, Rev: hashBytes(data)}}
 	for _, hook := range manifest.Hooks {
 		if strings.TrimSpace(hook.Name) == "" {
@@ -2718,11 +2753,20 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 		if hook.Harness != "" && in.Harness != "" && hook.Harness != in.Harness {
 			continue
 		}
+		h := firstNonEmpty(hook.Harness, in.Harness, "unknown")
+		ref := "hook://" + h + "/" + hook.Name
+		if installedHookHandlerUnavailable(hook) {
+			reason := "installed concrete handler content is unavailable or symlinked; hook excluded until handler content is restored and installed-hook authority is re-imported"
+			excluded = append(excluded, envelope.ExcludedRef{Ref: ref, Reason: reason})
+			roster = append(roster, hookRosterEntry(hook, h, ref, "handler_unavailable", reason))
+			if writeScopedHook(hook) {
+				hasUnavailableWriteScopedHook = true
+			}
+			continue
+		}
 		if writeScopedHook(hook) {
 			hasWriteScopedHook = true
 		}
-		h := firstNonEmpty(hook.Harness, in.Harness, "unknown")
-		ref := "hook://" + h + "/" + hook.Name
 		if installedHookExcludedForTask(hook, in) {
 			reason := "write-scoped hook excluded from read-only task context; installed hook remains Compound authority/fallback"
 			excluded = append(excluded, envelope.ExcludedRef{
@@ -2743,7 +2787,7 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 		}
 		revs = append(revs, envelope.SourceRev{Source: ref, Rev: rev})
 	}
-	if writeMutationTask(in) && strings.TrimSpace(in.Harness) != "" && !hasWriteScopedHook {
+	if writeMutationTask(in) && strings.TrimSpace(in.Harness) != "" && !hasWriteScopedHook && !hasUnavailableWriteScopedHook {
 		excluded = append(excluded, envelope.ExcludedRef{
 			Ref:    "hook://" + in.Harness + "/PreToolUse",
 			Reason: missingWriteGateReason(in.Harness, writeScopedHarnesses),
@@ -2792,6 +2836,9 @@ func writeScopedHookHarnesses(manifest InstalledHooksManifest) []string {
 		if !writeScopedHook(hook) {
 			continue
 		}
+		if installedHookHandlerUnavailable(hook) {
+			continue
+		}
 		seen[firstNonEmpty(hook.Harness, "unknown")] = true
 	}
 	out := make([]string, 0, len(seen))
@@ -2827,7 +2874,7 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 
 	out := make([]HookGateReadiness, 0, len(names))
 	for _, harness := range names {
-		installed, ref := installedWriteGateForHarness(manifest, harness)
+		installed, unavailable, ref := installedWriteGateForHarness(manifest, harness)
 		nativeBlock := nativePreToolUseBlock[harness]
 		row := HookGateReadiness{
 			Harness:     harness,
@@ -2835,10 +2882,15 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 			NativeBlock: nativeBlock,
 			Installed:   installed,
 		}
-		if installed {
+		if unavailable {
+			row.InstalledRef = ref
+		} else if installed {
 			row.InstalledRef = ref
 		}
 		switch {
+		case unavailable:
+			row.Status = "handler_unavailable"
+			row.Reason = "installed write-gate declaration names concrete handler content that is missing, unreadable, or symlinked"
 		case installed && nativeBlock:
 			row.Status = "native_blocking"
 			row.Reason = "installed write gate can block in the harness"
@@ -2863,6 +2915,9 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 }
 
 func hookGateActions(row HookGateReadiness) []HookGateAction {
+	if row.Status == "handler_unavailable" {
+		return unavailableHandlerActions()
+	}
 	if !row.AdapterRequired && row.Status != "not_installed" {
 		return nil
 	}
@@ -2958,6 +3013,9 @@ func InstalledHookRuntimeReadinessRows(manifest InstalledHooksManifest, supports
 			row.LiveCommand = strings.TrimSpace(support.LiveCommand)
 		}
 		switch {
+		case installedHookHandlerUnavailable(hook):
+			row.Status = "handler_unavailable"
+			row.Reason = "installed hook declaration names concrete handler content that is missing, unreadable, or symlinked"
 		case row.FixturePresent && row.LiveAdapter:
 			row.Status = "ready"
 			row.Reason = "installed hook has fixture proof and live adapter support"
@@ -2983,6 +3041,9 @@ func InstalledHookRuntimeReadinessRows(manifest InstalledHooksManifest, supports
 }
 
 func hookRuntimeReadinessActions(row InstalledHookRuntimeReadiness) []HookGateAction {
+	if row.Status == "handler_unavailable" {
+		return unavailableHandlerActions()
+	}
 	if row.Status == "ready" {
 		return nil
 	}
@@ -3012,6 +3073,17 @@ func hookRuntimeReadinessActions(row InstalledHookRuntimeReadiness) []HookGateAc
 		})
 	}
 	return actions
+}
+
+func unavailableHandlerActions() []HookGateAction {
+	return []HookGateAction{{
+		Kind:             "operator_restore_handler",
+		Label:            "Restore and attest concrete handler content before enabling this hook",
+		Boundary:         "operator-only handler repair or hook registration change; agents may inspect and prepare proof but must not activate an unattested handler",
+		Proof:            "re-import installed-hook authority, rerun `compound contract hooks-authority`, and require this row to leave handler_unavailable",
+		Rollback:         "restore the prior handler bytes or hook registration, then re-import and rerun `compound contract hooks-authority`",
+		RequiresOperator: true,
+	}}
 }
 
 func hookCLIName(hookName string) string {
@@ -3064,7 +3136,7 @@ func canonicalHookEvent(value string) string {
 	}
 }
 
-func installedWriteGateForHarness(manifest InstalledHooksManifest, harness string) (bool, string) {
+func installedWriteGateForHarness(manifest InstalledHooksManifest, harness string) (installed, unavailable bool, ref string) {
 	for _, hook := range manifest.Hooks {
 		if strings.TrimSpace(hook.Name) == "" {
 			continue
@@ -3078,9 +3150,17 @@ func installedWriteGateForHarness(manifest InstalledHooksManifest, harness strin
 		if !writeScopedHook(hook) {
 			continue
 		}
-		return true, "hook://" + strings.TrimSpace(harness) + "/" + strings.TrimSpace(hook.Name)
+		ref := "hook://" + strings.TrimSpace(harness) + "/" + strings.TrimSpace(hook.Name)
+		if installedHookHandlerUnavailable(hook) {
+			return false, true, ref
+		}
+		return true, false, ref
 	}
-	return false, ""
+	return false, false, ""
+}
+
+func installedHookHandlerUnavailable(hook InstalledHook) bool {
+	return strings.TrimSpace(hook.Revision) == installedHookHandlerUnavailableRevision
 }
 
 func missingWriteGateReason(harness string, availableHarnesses []string) string {

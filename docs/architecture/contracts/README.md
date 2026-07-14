@@ -86,7 +86,16 @@ desired `hook_plan`, read-only `installation_observation`, and deterministic `re
 observed extras never promote themselves into desired authority. Reconciliation separates the privacy-safe
 command invocation revision from handler-content revision: an active matching command is `registered`;
 `ready` requires matching desired/observed handler-content revisions, while argument or content mismatch is
-`drifted`. Hook selection is
+`drifted`. Exact operator-owned declarations outside the managed plan are retained in `preserved_bindings` and
+reported as `external_preserved`; they are reserved before managed same-slot fallback, survive narrower imports,
+and never enter active hooks or readiness. Missing, unreadable, or symlinked concrete handler content retains the
+`unavailable:concrete-handler` sentinel and reports `handler_unavailable`, never `ready` or `native_blocking`; the
+hook is excluded from EffectiveContract/ContextPack active refs and mutation context carries a restoration/re-import
+required check. Opaque `handler:` and `hook://` identities retain their existing registered/readiness semantics.
+Installed-hook v0.1 gains these fields/statuses additively unless strict-consumer evidence requires a version bump.
+Import provenance records `incoming_hook_count`, the resulting `authority_revision`, and the
+`prior_authority_revision`; source-authority identity includes the merge result so identical input bytes applied
+over different preserved state remain separately replayable. Hook selection is
 task-conditioned where the imported roster provides event/matcher metadata: clearly read-only tasks exclude
 write-scoped `PreToolUse` hooks from active refs and record the excluded hook in `ContextPack.excluded`; this does
 not uninstall the hook or mutate harness settings.
