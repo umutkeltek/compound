@@ -1,7 +1,6 @@
 package sourceobs
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -590,11 +589,15 @@ func MaterializeSourceManifestItem(homePath, sourceFamily, itemID, targetPath st
 	if err != nil {
 		return SourceManifestMaterializeReport{}, err
 	}
-	body, err := store.Get(item.BodyRef)
+	expectedBodyRef := home.ArtifactRefPrefix + strings.TrimPrefix(item.FileHash, "sha256:")
+	if item.BodyRef != expectedBodyRef {
+		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize %s: manifest/body mismatch", item.BodyRef)
+	}
+	verifiedBytes, err := store.Verify(item.BodyRef)
 	if err != nil {
 		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize %s: %w", item.BodyRef, err)
 	}
-	if hashBytes(body) != item.FileHash || int64(len(body)) != item.BodyBytes {
+	if verifiedBytes != item.BodyBytes {
 		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize %s: manifest/body mismatch", item.BodyRef)
 	}
 	mode := os.FileMode(0o644)
@@ -604,49 +607,18 @@ func MaterializeSourceManifestItem(homePath, sourceFamily, itemID, targetPath st
 			return SourceManifestMaterializeReport{}, fmt.Errorf("materialize %s: invalid file_mode %q: %w", item.BodyRef, item.FileMode, err)
 		}
 	}
-	targetPath = strings.TrimSpace(targetPath)
-	if targetPath == "" {
-		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize target required")
-	}
-	report := SourceManifestMaterializeReport{ManifestRef: manifest.AuthorityRef, ItemID: item.ID, BodyRef: item.BodyRef, TargetPath: targetPath, Bytes: int64(len(body))}
-	if existing, readErr := os.ReadFile(targetPath); readErr == nil {
-		if !bytes.Equal(existing, body) {
-			return SourceManifestMaterializeReport{}, fmt.Errorf("refusing to overwrite non-identical target %s", targetPath)
-		}
-		info, statErr := os.Stat(targetPath)
-		if statErr != nil {
-			return SourceManifestMaterializeReport{}, statErr
-		}
-		if info.Mode().Perm() != mode.Perm() {
-			return SourceManifestMaterializeReport{}, fmt.Errorf("refusing byte-identical target with non-identical mode %s: got %04o want %04o", targetPath, info.Mode().Perm(), mode.Perm())
-		}
-		report.AlreadyExists = true
-		return report, nil
-	} else if !os.IsNotExist(readErr) {
-		return SourceManifestMaterializeReport{}, readErr
-	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return SourceManifestMaterializeReport{}, err
-	}
-	f, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	written, alreadyExists, err := store.Materialize(item.BodyRef, targetPath, mode)
 	if err != nil {
-		return SourceManifestMaterializeReport{}, err
+		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize %s: %w", item.BodyRef, err)
 	}
-	if _, err := f.Write(body); err != nil {
-		f.Close()
-		os.Remove(targetPath)
-		return SourceManifestMaterializeReport{}, err
-	}
-	if err := f.Close(); err != nil {
-		return SourceManifestMaterializeReport{}, err
-	}
-	// OpenFile respects the process umask. Chmod after closing so the restored
-	// mode is the captured mode rather than a host-dependent approximation.
-	if err := os.Chmod(targetPath, mode); err != nil {
-		os.Remove(targetPath)
-		return SourceManifestMaterializeReport{}, err
-	}
-	return report, nil
+	return SourceManifestMaterializeReport{
+		ManifestRef:   manifest.AuthorityRef,
+		ItemID:        item.ID,
+		BodyRef:       item.BodyRef,
+		TargetPath:    strings.TrimSpace(targetPath),
+		Bytes:         written,
+		AlreadyExists: alreadyExists,
+	}, nil
 }
 
 func SourceManifestPath(homePath, sourceFamily string) string {
