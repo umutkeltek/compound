@@ -30,10 +30,6 @@ const (
 	BackupFreshnessMaxAge   = 48 * time.Hour
 )
 
-// Dirs is a compatibility projection of HabitatCatalog's scaffold policy.
-// HabitatCatalog is the owner; callers that need a fresh copy use HabitatDirs.
-var Dirs = HabitatDirs()
-
 // Manifest is the home's identity record.
 type Manifest struct {
 	SchemaVersion string   `yaml:"schema_version"`
@@ -141,7 +137,7 @@ func Init(homePath, kind string, now time.Time) error {
 	if kind == "" {
 		kind = "global"
 	}
-	for _, d := range Dirs {
+	for _, d := range HabitatDirs() {
 		if err := os.MkdirAll(filepath.Join(homePath, d), 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
@@ -233,7 +229,8 @@ func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
 			r.ManifestOK = true
 		}
 	}
-	for _, d := range Dirs {
+	dirs := HabitatDirs()
+	for _, d := range dirs {
 		fi, err := os.Stat(filepath.Join(homePath, d))
 		ok := err == nil && fi.IsDir()
 		if ok {
@@ -250,7 +247,7 @@ func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
 	r.BackupWarnings = backupFreshnessWarnings(homePath, now)
 	r.Setup = DoctorSetup(SetupOptions{})
 	r.SetupOK = r.Setup.OK
-	r.OK = r.ManifestOK && r.DirsOK == len(Dirs) && r.HabitatOK && r.SetupOK
+	r.OK = r.ManifestOK && r.DirsOK == len(dirs) && r.HabitatOK && r.SetupOK
 	return r
 }
 

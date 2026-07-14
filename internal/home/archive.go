@@ -193,7 +193,8 @@ func ExportPublicFixture(homePath, targetPath string, now time.Time) (ArchiveRep
 
 	entries := []ArchiveEntry{}
 	var bytesWritten int64
-	for _, dir := range Dirs {
+	dirs := HabitatDirs()
+	for _, dir := range dirs {
 		if err := writeDirEntry(tw, filepath.ToSlash(dir)); err != nil {
 			return ArchiveReport{}, err
 		}
@@ -219,7 +220,7 @@ func ExportPublicFixture(homePath, targetPath string, now time.Time) (ArchiveRep
 		"schema_version":    "compound.home_public_fixture.v0.1",
 		"created_at":        now.UTC().Format(time.RFC3339),
 		"home_schema":       SchemaVersion,
-		"dirs":              Dirs,
+		"dirs":              dirs,
 		"private_data_note": "runtime files are intentionally omitted; this archive is safe as a public fixture shape",
 	}, "", "  ")
 	if err != nil {

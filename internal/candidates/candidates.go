@@ -3,7 +3,7 @@
 // home created `inbox/capability-observations`, the distiller wrote `inbox/capability_observation`,
 // and the capability graph read a third spelling — which is "same concept, three folder names,
 // no single contract": the fragmentation disease in miniature. Every producer (distiller, mem)
-// and consumer (capgraph, the memory adjudicator, home.Dirs) now derives its inbox path from
+// and consumer (capgraph, the memory adjudicator, HabitatCatalog) now derives its inbox path from
 // THIS map, so a candidate kind can have exactly one home. It is a pure leaf: it imports nothing
 // internal, so nothing can create an import cycle through it.
 package candidates
@@ -106,7 +106,7 @@ func Known(k Kind) bool { _, ok := specs[k]; return ok }
 // SpecFor returns the full spec and whether it exists.
 func SpecFor(k Kind) (Spec, bool) { s, ok := specs[k]; return s, ok }
 
-// AllInboxDirs returns every canonical inbox directory, sorted (for home.Dirs to create).
+// AllInboxDirs returns every canonical inbox directory, sorted (for HabitatCatalog to create).
 func AllInboxDirs() []string {
 	out := make([]string, 0, len(specs))
 	for _, s := range specs {

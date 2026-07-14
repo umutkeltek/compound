@@ -268,12 +268,12 @@ func Doctor(repoRoot string, strict bool) Report {
 	return Report{Findings: f, OK: ok}
 }
 
-// checkCandidateMap (pure): every kind → one non-empty inbox dir, home.Dirs creates it, and every
+// checkCandidateMap (pure): every kind → one non-empty inbox dir, HabitatCatalog creates it, and every
 // kind declares a consumer (no orphan inbox). This is the B1 invariant, enforced.
 func checkCandidateMap() []Finding {
 	var f []Finding
 	homeDirs := map[string]bool{}
-	for _, d := range home.Dirs {
+	for _, d := range home.HabitatDirs() {
 		homeDirs[d] = true
 	}
 	for _, k := range candidates.AllKinds() {
@@ -283,7 +283,7 @@ func checkCandidateMap() []Finding {
 			continue
 		}
 		if !homeDirs[spec.InboxDir] {
-			f = append(f, Finding{"candidate-map", Fail, "kind " + string(k) + " dir " + spec.InboxDir + " is not created by home.Dirs"})
+			f = append(f, Finding{"candidate-map", Fail, "kind " + string(k) + " dir " + spec.InboxDir + " is not created by HabitatCatalog"})
 		}
 		if strings.TrimSpace(spec.Consumer) == "" {
 			f = append(f, Finding{"candidate-map", Fail, "kind " + string(k) + " has no consumer (orphan inbox)"})

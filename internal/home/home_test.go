@@ -29,13 +29,13 @@ func TestInitAndDoctor(t *testing.T) {
 	if !r.ManifestOK {
 		t.Fatal("manifest not ok")
 	}
-	if r.DirsOK != len(Dirs) {
+	if r.DirsOK != len(HabitatDirs()) {
 		for _, d := range r.Dirs {
 			if !d.OK {
 				t.Errorf("missing dir: %s", d.Name)
 			}
 		}
-		t.Fatalf("dirs %d/%d ok", r.DirsOK, len(Dirs))
+		t.Fatalf("dirs %d/%d ok", r.DirsOK, len(HabitatDirs()))
 	}
 	if !r.OK {
 		t.Fatalf("doctor not ok: %+v", r)

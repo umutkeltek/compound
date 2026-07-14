@@ -5988,7 +5988,7 @@ func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
 		Kind:                       r.Manifest.HomeKind,
 		ManifestOK:                 r.ManifestOK,
 		DirsOK:                     r.DirsOK,
-		DirsTotal:                  len(home.Dirs),
+		DirsTotal:                  len(home.HabitatDirs()),
 		Habitat:                    r.Habitat,
 		InsideGitRepo:              r.InsideGitRepo,
 		GeneratedStateInRepoSource: smell,
@@ -6070,7 +6070,7 @@ func printHomeDoctor(r home.Report) {
 	fmt.Printf("home: %s\n", r.Home)
 	fmt.Printf("kind: %s\n", r.Manifest.HomeKind)
 	fmt.Printf("manifest: %s\n", homeOKStr(r.ManifestOK))
-	fmt.Printf("dirs: %d/%d ok\n", r.DirsOK, len(home.Dirs))
+	fmt.Printf("dirs: %d/%d ok\n", r.DirsOK, len(home.HabitatDirs()))
 	for _, line := range homeDoctorHabitatLines(r) {
 		fmt.Println(line)
 	}

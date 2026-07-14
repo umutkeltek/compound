@@ -305,8 +305,9 @@ func runProofCheckCodexPreToolUseNativeGate(repo string, step proofCheckStep) ([
 	if err := json.Unmarshal(fixtureData, &rules); err != nil {
 		return nil, fmt.Errorf("parse placement fixture: %w", err)
 	}
-	allowGlobs := make([]string, 0, len(home.Dirs))
-	for _, d := range home.Dirs {
+	placementDirs := home.HabitatPlacementDirs()
+	allowGlobs := make([]string, 0, len(placementDirs))
+	for _, d := range placementDirs {
 		allowGlobs = append(allowGlobs, filepath.Join(tmpHome, d, "**"))
 	}
 	rules.GovernedRoots = append(rules.GovernedRoots, policy.GovernedRoot{

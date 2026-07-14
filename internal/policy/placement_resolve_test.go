@@ -57,7 +57,7 @@ func TestResolvePathMatchesGuard(t *testing.T) {
 // TestEveryCandidateInboxIsPlacementAllowed is Amendment B — the cheap drift guard that replaces the
 // whole projection machinery. Every candidate inbox (candidates.Spec) must resolve as ALLOWED against
 // the synthesized governed home root; otherwise the guard would flag a LEGITIMATE registered inbox as
-// unowned. It holds by construction (home.Dirs derives its allow-set from candidates.AllInboxDirs), so
+// unowned. It holds by construction (HabitatCatalog derives its allow-set from candidates.AllInboxDirs), so
 // adding a candidate kind can never silently create an ungoverned-looking inbox — and this fails loud
 // if that derivation ever breaks.
 func TestEveryCandidateInboxIsPlacementAllowed(t *testing.T) {
