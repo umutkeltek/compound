@@ -261,6 +261,11 @@ func VerifyArchive(archivePath string) (VerifyReport, error) {
 	}
 	expected := map[string]ArchiveEntry{}
 	for _, entry := range manifest.Entries {
+		if entry.Path != ManifestName {
+			if _, ok := HabitatForPath(entry.Path); !ok {
+				return VerifyReport{}, fmt.Errorf("archive contains unknown habitat entry %s", entry.Path)
+			}
+		}
 		expected[entry.Path] = entry
 	}
 	if len(expected) != len(actual) {
