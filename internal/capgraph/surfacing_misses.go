@@ -10,7 +10,27 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/reviewartifact"
 )
+
+// skillSurfacingReviewArea is the reviews/ subdirectory the skill-surfacing
+// feedback bridge and session-mining backfill write review artifacts into
+// (compound.tools.skill_surfacing_feedback_bridge, packet backfill jobs).
+const skillSurfacingReviewArea = "skill-surfacing"
+
+// skillSurfacingTerminalStatuses mirrors the terminal-status set queue.go /
+// resolution.go keep unexported (statusPriority, terminalResolutionStatus):
+// an item whose OWNER already marked it terminal via a native status field --
+// not only via a generic resolution sidecar -- also gets no import action.
+var skillSurfacingTerminalStatuses = map[string]bool{
+	"ok":                 true,
+	"applied":            true,
+	"resolved":           true,
+	"accepted":           true,
+	"recorded":           true,
+	"candidate_recorded": true,
+}
 
 type SkillSurfacingMisses struct {
 	ID            string
@@ -290,4 +310,85 @@ func SkillSurfacingMissesSourceName(path string) string {
 		return "skill-surfacing-proposals.json"
 	}
 	return filepath.Base(path)
+}
+
+// AnnotateSkillSurfacingQueue attaches the "fold these misses into the
+// capability graph" one-click action to every OPEN skill-surfacing review
+// item, so the card carries the verb that has existed since 07-10
+// (`compound capability import-surfacing-misses <path>`) instead of "owner
+// has not exposed a safe action for this decision group". It never applies
+// misses, writes graph edges, or resolves anything itself — read-only
+// annotation, same contract as every other domain queue annotator.
+func AnnotateSkillSurfacingQueue(report *reviewartifact.QueueReport) {
+	if report == nil {
+		return
+	}
+	for i := range report.Items {
+		item := &report.Items[i]
+		if item.Area != skillSurfacingReviewArea {
+			continue
+		}
+		annotateSkillSurfacingItem(item)
+	}
+}
+
+func annotateSkillSurfacingItem(item *reviewartifact.QueueItem) {
+	// Resolved items (a generic resolution sidecar already recorded, or the
+	// owner marked the item terminal by a native status field) get NO
+	// action — the card is already closed, one-shot import stays one-shot.
+	if item.Resolution != nil || skillSurfacingTerminalStatuses[strings.TrimSpace(item.Status)] {
+		item.Actions = nil
+		return
+	}
+	if strings.TrimSpace(item.JSONPath) == "" {
+		return
+	}
+	argv := []string{"compound", "capability", "import-surfacing-misses", item.JSONPath}
+	item.Actions = []reviewartifact.Action{{
+		ID:             "skill-surfacing.import",
+		Label:          "Fold these misses into the capability graph",
+		Command:        "compound capability import-surfacing-misses " + shellQuote(item.JSONPath),
+		Argv:           argv,
+		RequiresReview: true,
+	}}
+}
+
+// ResolveSkillSurfacingMissesReviewItem closes the skill-surfacing review
+// card that produced sourcePath, if sourcePath resolves to one under
+// homePath/reviews/skill-surfacing: it records a "reviewed" generic
+// resolution (internal/reviewartifact.ResolveQueueItem) so the import verb
+// CLEARS the card out of the needs-you queue, the same mechanism
+// `compound reviews resolve` uses. The verb also runs on arbitrary export
+// files that are not review-queue items at all — those return resolved=false
+// with no error. An item that already carries a resolution sidecar (a prior
+// import already closed it) also returns resolved=false with no error —
+// idempotent: no duplicate sidecar, no duplicate receipt.
+func ResolveSkillSurfacingMissesReviewItem(homePath, sourcePath, actor string, now time.Time) (bool, reviewartifact.ReviewResolutionResult, error) {
+	absPath, err := filepath.Abs(strings.TrimSpace(sourcePath))
+	if err != nil {
+		return false, reviewartifact.ReviewResolutionResult{}, err
+	}
+	queue, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: skillSurfacingReviewArea}, now)
+	if err != nil {
+		return false, reviewartifact.ReviewResolutionResult{}, err
+	}
+	for _, item := range queue.Items {
+		itemAbs, err := filepath.Abs(item.JSONPath)
+		if err != nil || itemAbs != absPath {
+			continue
+		}
+		if item.Resolution != nil {
+			return false, reviewartifact.ReviewResolutionResult{}, nil
+		}
+		result, err := reviewartifact.ResolveQueueItem(homePath, item, reviewartifact.ResolutionInput{
+			Decision: "reviewed",
+			Reason:   "misses imported into the capability graph",
+			Actor:    actor,
+		}, now)
+		if err != nil {
+			return false, reviewartifact.ReviewResolutionResult{}, err
+		}
+		return true, result, nil
+	}
+	return false, reviewartifact.ReviewResolutionResult{}, nil
 }
