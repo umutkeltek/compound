@@ -109,6 +109,14 @@ declared recoverable body remains `custody_complete=false`. Database-native dump
 symlinks, xattrs, ACLs, and compound document packages require source-family adapters; a regular-file snapshot
 must not overclaim those semantics.
 
+The GBrain export family is the first database-native custody adapter. `manifest-create --from-export ...
+--dump ...` accepts a dump only when its streamed SHA-256 equals the export's exact `dump_ref`, then records
+`dump_body_ref` and `dump_bytes` at family scope. A mismatch publishes no artifact. `manifest-doctor` keeps an
+inventory-only export pending and fails a missing, corrupt, wrong-ref, or wrong-size owned dump;
+`manifest-materialize-dump` streams the private dump back with mode `0600` without requiring the original.
+This proves dump-byte custody only. Database restore, schema/application validity, real-consumer replay,
+negative control, write cutover, quiet window, and the operator retirement act remain separate proofs.
+
 The current generic v0.2 SourceManifest slice owns regular-file bytes, media type, byte count, permission mode,
 stable inferred source key, and version lineage. Its inferred key uses explicit entity refs when available and
 otherwise path identity. Explicit source IDs and path-move reconciliation are required before bulk migration.
