@@ -60,26 +60,27 @@ var Classification = map[string]Class{
 	"routeevidence":  ObjectFamily,
 	"runtimebinding": ObjectFamily,
 	// shared leaf
-	"act":            Leaf, // generic governed outbound-write seam: the one execute-and-receipt wrapper that gates every external write on a matching allowing PolicyDecision and emits pre/post-image artifacts + an outward_delta Receipt/Transition; owns no authority object (envelope/policy/work stay authority), a new outbound system is a new Adapter not a new governance path
-	"attention":      Leaf, // ranked read-only projection over reviews/workbench/executors; owns no authority objects
-	"behaviorallens": Leaf, // composable behavioral-lens framework: uniform observe->InferredSignal plug + visibility-gated composition + sycophancy (paired-stance shift) lens; records evidence rows under COMPOUND_HOME, owns no authority object and never gates/promotes
-	"bench":          Leaf, // evaluator organ: read-only scorer over the real surfacing/recall paths; produces evidence reports, owns no object family
-	"breadth":        Leaf,
-	"candidates":     Leaf,
-	"corpus":         Leaf, // lane-scoped corpus indexes: disposable derivatives over imported evidence; ledger stays authority, hits never ambient
-	"executorlens":   Leaf, // evidence-only collector: reads THIS repo's executor lanes' (Codex, Claude Code) receipts/events and builds behaviorallens Observations (public_safe hedging over output text + operator_private agreement-asymmetry over receipt verdicts); records evidence rows only, owns no authority object, never gates/promotes
-	"finding":        Leaf, // direct-write home for agent-authored operational findings under COMPOUND_HOME/observed/findings: content-addressed evidence records (source_class=evidence), NEVER a ledger byte, NEVER a promoted Claim; the positive counterpart to the placement guard, owns no authority object (promotion stays the governed memory door)
-	"harvest":        Leaf, // ruling harvester: classifies operator utterances + reconciles them against accepted decision records through mem/decisions/candidates; owns no authority object (corroboration lands on mem, novel rulings on the decision-candidate door proposed-only)
-	"hookplan":       Leaf, // desired/observed hook reconciliation model; installed-hooks ledger and harness configs retain authority
-	"jobprobe":       Leaf, // job-roster probe-refresh collector: re-observes current unit liveness for declared probe targets (files under COMPOUND_HOME) and refreshes the job-roster authority through authority's additive refresh surface; owns no authority object (authority stays the roster owner)
-	"landlease":      Leaf, // land-lease coordination hint: a single-holder, TTL-bounded, steal-with-reason advisory MUTEX (flock-guarded JSON under COMPOUND_HOME) over the ACT of landing to main, so concurrent executor lanes serialize the ff-merge window; records who holds the right to land, never mutates repo state, emits no PolicyDecision/Receipt and gates/promotes nothing
-	"laneselect":     Leaf, // pure preparation-lane ranking (fit/speed/cost) shared by work dispatch + routeevidence adapter; owns no authority objects, breaks the work<->routeevidence import cycle
-	"latenttax":      Leaf, // latent-tax rig: read-only factorial evaluator that DERIVES thrash/tokens/latency/success from existing ledger objects per work_id; owns only a thin run-index, produces evidence reports, no promotion path
-	"lensmodulator":  Leaf, // governed modulator: composes behaviorallens signals + act into the one enforcement point that turns a crossing signal into a reversible, PolicyDecision-gated route/role demote (calibration-guarded, default off); owns no authority object (envelope/policy/work/act stay authority), operator_private modulations stay operator-local
-	"narrate":        Leaf, // composed read-only correspondent script over attention/orient-changed/receipts; owns no authority objects
-	"negatives":      Leaf, // rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient (Weng item 6)
-	"release":        Leaf,
-	"reviewartifact": Leaf,
+	"act":             Leaf, // generic governed outbound-write seam: the one execute-and-receipt wrapper that gates every external write on a matching allowing PolicyDecision and emits pre/post-image artifacts + an outward_delta Receipt/Transition; owns no authority object (envelope/policy/work stay authority), a new outbound system is a new Adapter not a new governance path
+	"attention":       Leaf, // ranked read-only projection over reviews/workbench/executors; owns no authority objects
+	"behaviorallens":  Leaf, // composable behavioral-lens framework: uniform observe->InferredSignal plug + visibility-gated composition + sycophancy (paired-stance shift) lens; records evidence rows under COMPOUND_HOME, owns no authority object and never gates/promotes
+	"bench":           Leaf, // evaluator organ: read-only scorer over the real surfacing/recall paths; produces evidence reports, owns no object family
+	"breadth":         Leaf,
+	"candidates":      Leaf,
+	"corpus":          Leaf, // lane-scoped corpus indexes: disposable derivatives over imported evidence; ledger stays authority, hits never ambient
+	"executorlens":    Leaf, // evidence-only collector: reads THIS repo's executor lanes' (Codex, Claude Code) receipts/events and builds behaviorallens Observations (public_safe hedging over output text + operator_private agreement-asymmetry over receipt verdicts); records evidence rows only, owns no authority object, never gates/promotes
+	"finding":         Leaf, // direct-write home for agent-authored operational findings under COMPOUND_HOME/observed/findings: content-addressed evidence records (source_class=evidence), NEVER a ledger byte, NEVER a promoted Claim; the positive counterpart to the placement guard, owns no authority object (promotion stays the governed memory door)
+	"harvest":         Leaf, // ruling harvester: classifies operator utterances + reconciles them against accepted decision records through mem/decisions/candidates; owns no authority object (corroboration lands on mem, novel rulings on the decision-candidate door proposed-only)
+	"hookplan":        Leaf, // desired/observed hook reconciliation model; installed-hooks ledger and harness configs retain authority
+	"jobprobe":        Leaf, // job-roster probe-refresh collector: re-observes current unit liveness for declared probe targets (files under COMPOUND_HOME) and refreshes the job-roster authority through authority's additive refresh surface; owns no authority object (authority stays the roster owner)
+	"landlease":       Leaf, // land-lease coordination hint: a single-holder, TTL-bounded, steal-with-reason advisory MUTEX (flock-guarded JSON under COMPOUND_HOME) over the ACT of landing to main, so concurrent executor lanes serialize the ff-merge window; records who holds the right to land, never mutates repo state, emits no PolicyDecision/Receipt and gates/promotes nothing
+	"laneselect":      Leaf, // pure preparation-lane ranking (fit/speed/cost) shared by work dispatch + routeevidence adapter; owns no authority objects, breaks the work<->routeevidence import cycle
+	"latenttax":       Leaf, // latent-tax rig: read-only factorial evaluator that DERIVES thrash/tokens/latency/success from existing ledger objects per work_id; owns only a thin run-index, produces evidence reports, no promotion path
+	"lensmodulator":   Leaf, // governed modulator: composes behaviorallens signals + act into the one enforcement point that turns a crossing signal into a reversible, PolicyDecision-gated route/role demote (calibration-guarded, default off); owns no authority object (envelope/policy/work/act stay authority), operator_private modulations stay operator-local
+	"narrate":         Leaf, // composed read-only correspondent script over attention/orient-changed/receipts; owns no authority objects
+	"negatives":       Leaf, // rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient (Weng item 6)
+	"release":         Leaf,
+	"reviewartifact":  Leaf,
+	"retrievalparity": Leaf, // evaluator organ: read-only traffic recorder/replayer over real retrieval paths; produces evidence reports, owns no object family
 	// memory object family — canonical after Gen-1 package retirement
 	"mem": MemTarget,
 	// importers — keep, upgrade in place

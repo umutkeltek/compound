@@ -179,6 +179,11 @@ var mintHomes = map[string]MintHome{
 	// CLI (arm/thresholds/modulate --confirm/revert); default off, operator_private modulations stay
 	// operator-local (never a shared route projection).
 	"organ:lensmodulator": {Class: MintEnforcement},
+	"organ:retrievalparity": {
+		Class:    MintEvidence,
+		Purpose:  "privacy-bounded retrieval traffic and replay comparisons over production consumer paths",
+		Consumer: "compound memory parity-replay and parity-freeze operator review",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law
