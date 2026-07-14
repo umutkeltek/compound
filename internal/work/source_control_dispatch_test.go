@@ -21,6 +21,9 @@ func TestDispatchSurfacesExpectedBaseAndWorkerLandingContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if w.GitDelivery == nil || w.GitDelivery.RepositoryFingerprint == "" {
+		t.Fatalf("created work did not bind derived repository fingerprint: %+v", w.GitDelivery)
+	}
 
 	plan, err := store.DispatchPlan(now.Add(time.Minute), DispatchPlanOptions{Actor: "codex"})
 	if err != nil {
@@ -42,6 +45,7 @@ func TestDispatchSurfacesExpectedBaseAndWorkerLandingContract(t *testing.T) {
 		"target_worktree_root: " + w.GitDelivery.TargetWorktreeRoot,
 		"target_local_ref: refs/heads/main",
 		"expected_base_sha: " + base,
+		"repository_fingerprint: " + w.GitDelivery.RepositoryFingerprint,
 		"publication_mode: local_only",
 		"commit:<full-sha>",
 		"compound work land-check",

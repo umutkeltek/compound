@@ -372,6 +372,7 @@ func TestRecordedLandCheckContentIsTamperEvident(t *testing.T) {
 		{name: "candidate tip", mutate: func(f *landingProofFixture, p *LandCheckReport) { p.CandidateTipSHA = f.base }},
 		{name: "status", mutate: func(_ *landingProofFixture, p *LandCheckReport) { p.Status = "ready_to_land" }},
 		{name: "expected base", mutate: func(_ *landingProofFixture, p *LandCheckReport) { p.ExpectedBaseSHA = strings.Repeat("a", 40) }},
+		{name: "repository fingerprint", mutate: func(_ *landingProofFixture, p *LandCheckReport) { p.RepositoryFingerprint = strings.Repeat("a", 64) }},
 		{name: "target ref", mutate: func(_ *landingProofFixture, p *LandCheckReport) { p.TargetRef = "refs/heads/main" }},
 		{name: "target sha", mutate: func(f *landingProofFixture, p *LandCheckReport) { p.TargetSHA = f.base }},
 	}
@@ -545,6 +546,53 @@ func TestLandCheckRejectsWrongRepoSecondCloneAndWrongBranch(t *testing.T) {
 	}
 	if report.Status != "wrong_target_worktree" {
 		t.Fatalf("feature-branch worktree must not certify the bound main target: %+v", report)
+	}
+}
+
+func TestLandCheckRejectsSamePathRepositoryReplacement(t *testing.T) {
+	now := time.Date(2026, 7, 14, 2, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	landingGit(t, repo, "remote", "add", "origin", "https://source.example.invalid/acme/product.git")
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "repository identity remains bound at the target path",
+		GitDelivery:      localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, w.ID, now)
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(3*time.Minute))
+	proof, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate, Record: true}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.Status != "landed" {
+		t.Fatalf("initial repository proof = %+v", proof)
+	}
+
+	replacementParent := t.TempDir()
+	replacement := filepath.Join(replacementParent, "replacement")
+	landingGit(t, replacementParent, "clone", "--no-local", repo, replacement)
+	landingGit(t, replacement, "remote", "set-url", "origin", "https://other.example.invalid/acme/product.git")
+	retired := repo + "-retired"
+	if err := os.Rename(repo, retired); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), "repository fingerprint") {
+		t.Fatalf("same-path replacement with another origin must fail repository identity, got %v", err)
 	}
 }
 

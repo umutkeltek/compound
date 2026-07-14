@@ -45,7 +45,7 @@ func TestLegacyNonterminalWorkBindsGitDeliveryThroughAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.GitDelivery == nil || plan.GitDelivery.TargetWorktreeRoot != canonicalRepo || plan.GitDelivery.ExpectedBaseSHA != base {
+	if plan.GitDelivery == nil || plan.GitDelivery.TargetWorktreeRoot != canonicalRepo || plan.GitDelivery.ExpectedBaseSHA != base || plan.GitDelivery.RepositoryFingerprint == "" {
 		t.Fatalf("normalized delivery binding plan = %+v", plan)
 	}
 	if !commandHasFlagValue(plan.AdvanceCommand, "--target-worktree-root", canonicalRepo) ||
@@ -71,7 +71,7 @@ func TestLegacyNonterminalWorkBindsGitDeliveryThroughAdvance(t *testing.T) {
 	if err := store.readJSON(store.envPath(bound.RunIDs[len(bound.RunIDs)-1]), &action); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(action.Preview, "bind Git delivery") || !strings.Contains(action.Preview, canonicalRepo) || !strings.Contains(action.Preview, base) || action.Reversibility != "manual" {
+	if !strings.Contains(action.Preview, "bind Git delivery") || !strings.Contains(action.Preview, canonicalRepo) || !strings.Contains(action.Preview, base) || !strings.Contains(action.Preview, plan.GitDelivery.RepositoryFingerprint) || action.Reversibility != "manual" {
 		t.Fatalf("binding action does not carry exact authority: %+v", action)
 	}
 

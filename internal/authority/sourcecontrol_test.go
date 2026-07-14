@@ -158,6 +158,47 @@ func TestImportGitSnapshotAcceptsFileAndFuturePath(t *testing.T) {
 	}
 }
 
+func TestGitRepositoryIdentityIsStableAcrossDescendantsAndBindsRemote(t *testing.T) {
+	repo := initGitRepo(t)
+	runGit(t, repo, "remote", "add", "origin", "https://source.example.invalid/acme/product.git")
+
+	before, err := ReadGitRepositoryIdentity(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Fingerprint == "" || before.ObjectFormat == "" || len(before.LineageRoots) != 1 || before.RemoteIdentity == "" {
+		t.Fatalf("initial repository identity incomplete: %+v", before)
+	}
+
+	writeFile(t, filepath.Join(repo, "descendant.txt"), "descendant\n")
+	runGit(t, repo, "add", "descendant.txt")
+	runGit(t, repo, "commit", "-m", "descendant")
+	after, err := ReadGitRepositoryIdentity(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Fingerprint != before.Fingerprint {
+		t.Fatalf("descendant commit changed stable repository fingerprint: before=%+v after=%+v", before, after)
+	}
+
+	runGit(t, repo, "remote", "set-url", "origin", "https://other.example.invalid/acme/product.git")
+	replaced, err := ReadGitRepositoryIdentity(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.Fingerprint == before.Fingerprint {
+		t.Fatalf("different canonical origin retained repository fingerprint: before=%+v replaced=%+v", before, replaced)
+	}
+
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.RepositoryFingerprint != replaced.Fingerprint {
+		t.Fatalf("source-control snapshot fingerprint = %q, want owner identity %q", snapshot.RepositoryFingerprint, replaced.Fingerprint)
+	}
+}
+
 func TestSourceControlEntityMergesExistingRemoteIdentity(t *testing.T) {
 	snap := SourceControlSnapshot{
 		SchemaVersion: SourceControlSchemaVersion,
