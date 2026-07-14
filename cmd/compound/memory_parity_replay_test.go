@@ -735,7 +735,19 @@ func seedParityClaim(t *testing.T, homePath, object string, now time.Time) strin
 	if err != nil {
 		t.Fatalf("capture parity claim: %v", err)
 	}
-	result, err := store.Adjudicate(captured[0].ID, candidates.Promote, "work_parity_fixture", now)
+	if _, err := store.Adjudicate(captured[0].ID, candidates.Park, "work_parity_fixture", now); err != nil {
+		t.Fatalf("park parity claim: %v", err)
+	}
+	confirmation, err := store.RecordOperatorConfirmation(
+		captured[0].ID,
+		"test fixture confirms "+captured[0].ID,
+		"operator:test",
+		now,
+	)
+	if err != nil {
+		t.Fatalf("record parity confirmation: %v", err)
+	}
+	result, err := store.AdjudicateExplicitConfirmation(captured[0].ID, confirmation.ID, "work_parity_fixture", now)
 	if err != nil {
 		t.Fatalf("promote parity claim: %v", err)
 	}
