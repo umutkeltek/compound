@@ -23,6 +23,7 @@ const (
 	OrientInputSchemaVersion = "compound.orient_input.v0.1"
 	ClassifierVersion        = "consumer-token-count.v0"
 	JournalRelPath           = "events/retrieval-traffic.ndjson"
+	hookEventJournalRelPath  = "events/hook-events.ndjson"
 
 	ConsumerOrient = "orient"
 	ConsumerRecall = "recall"
@@ -41,6 +42,12 @@ type OrientInput struct {
 	RepoKindVia   string `json:"repo_kind_via"`
 	Mode          string `json:"mode"`
 	Topic         string `json:"topic"`
+}
+
+type hookBreakerRecord struct {
+	CreatedAt      string `json:"created_at"`
+	HookName       string `json:"hook_name"`
+	BreakerTripped bool   `json:"breaker_tripped"`
 }
 
 // Row is one production retrieval observation. Query is intentionally present
@@ -300,6 +307,44 @@ func loadJournal(homePath string, tolerateMalformed bool) ([]Row, []string, erro
 		return nil, nil, err
 	}
 	return rows, uniqueSorted(gaps), nil
+}
+
+// liveContextBreakerCount reads the hook spine's existing typed breaker
+// evidence. A timed-out or failed live context build has no exact retrieval
+// duration/result tuple, so parity coverage counts the gap without fabricating
+// an orient observation.
+func liveContextBreakerCount(homePath string, windowStart, windowEnd time.Time) (int, error) {
+	path := filepath.Join(homePath, filepath.FromSlash(hookEventJournalRelPath))
+	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	count := 0
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		var record hookBreakerRecord
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil || !record.BreakerTripped {
+			continue
+		}
+		if record.HookName != "SessionStart" && record.HookName != "UserPromptSubmit" {
+			continue
+		}
+		createdAt, err := time.Parse(time.RFC3339Nano, record.CreatedAt)
+		if err != nil || createdAt.Before(windowStart) || createdAt.After(windowEnd) {
+			continue
+		}
+		count++
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func validConsumer(consumer string) bool {

@@ -278,6 +278,13 @@ func FreezeFromJournal(homePath string, windowDays int, out, controlReportPath s
 	if err != nil {
 		return Fixture{}, "", err
 	}
+	breakerCount, err := liveContextBreakerCount(homePath, windowStart, windowEnd)
+	if err != nil {
+		return Fixture{}, "", fmt.Errorf("read live hook breaker evidence: %w", err)
+	}
+	if breakerCount > 0 {
+		gaps = append(gaps, fmt.Sprintf("live_hook_context_breaker:%d", breakerCount))
+	}
 
 	type aggregate struct {
 		consumer    string
@@ -1231,6 +1238,9 @@ func validCoverageGap(gap string) bool {
 	if strings.HasPrefix(gap, "engine_unavailable:") {
 		parts := strings.Split(strings.TrimPrefix(gap, "engine_unavailable:"), ":")
 		return len(parts) == 2 && validConsumer(parts[0]) && validDecimal(parts[1], false)
+	}
+	if strings.HasPrefix(gap, "live_hook_context_breaker:") {
+		return validDecimal(strings.TrimPrefix(gap, "live_hook_context_breaker:"), false)
 	}
 	if strings.HasPrefix(gap, "query_hash_collision:") {
 		return validSHARef(strings.TrimPrefix(gap, "query_hash_collision:"))
