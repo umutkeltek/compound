@@ -16,7 +16,12 @@ func TestWorkShowEmitsWorkbenchPacketPathWithDefaultResolver(t *testing.T) {
 	if err := os.MkdirAll(packetDir, 0o755); err != nil {
 		t.Fatalf("create packet dir: %v", err)
 	}
-	packetPath := filepath.Join(packetDir, "default-resolver.md")
+	canonicalPacketPath := filepath.Join(packetDir, "default-resolver.md")
+	worktreePacketDir := filepath.Join(t.TempDir(), "executor-worktree", "docs_private", "plan", "packets")
+	if err := os.MkdirAll(worktreePacketDir, 0o755); err != nil {
+		t.Fatalf("create worktree packet dir: %v", err)
+	}
+	importedPacketPath := filepath.Join(worktreePacketDir, "default-resolver.md")
 	packetBody := `# Default resolver packet
 Date: 2026-07-14
 Status: ready
@@ -27,8 +32,8 @@ Success: work show uses the same default packet directory as workbench.
 ## Objective
 Prove packet path resolution without COMPOUND_PACKET_DIR.
 `
-	if err := os.WriteFile(packetPath, []byte(packetBody), 0o644); err != nil {
-		t.Fatalf("write packet: %v", err)
+	if err := os.WriteFile(importedPacketPath, []byte(packetBody), 0o644); err != nil {
+		t.Fatalf("write imported packet: %v", err)
 	}
 
 	homePath := t.TempDir()
@@ -41,9 +46,15 @@ Prove packet path resolution without COMPOUND_PACKET_DIR.
 	if err != nil {
 		t.Fatalf("open work: %v", err)
 	}
-	imported, err := store.ImportPacket(packetPath, work.PacketImportOptions{Owner: "codex"}, cliTestNow)
+	imported, err := store.ImportPacket(importedPacketPath, work.PacketImportOptions{Owner: "codex"}, cliTestNow)
 	if err != nil {
 		t.Fatalf("import packet: %v", err)
+	}
+	if err := os.Remove(importedPacketPath); err != nil {
+		t.Fatalf("remove stale worktree packet: %v", err)
+	}
+	if err := os.WriteFile(canonicalPacketPath, []byte(packetBody), 0o644); err != nil {
+		t.Fatalf("write canonical packet: %v", err)
 	}
 
 	originalCWD, err := os.Getwd()
@@ -70,6 +81,12 @@ Prove packet path resolution without COMPOUND_PACKET_DIR.
 	}
 	if shown.PacketPath != offered.Items[0].Path {
 		t.Fatalf("packet_path = %q, want workbench path %q", shown.PacketPath, offered.Items[0].Path)
+	}
+	if shown.PacketPath == importedPacketPath {
+		t.Fatalf("packet_path reused deleted import path %q", importedPacketPath)
+	}
+	if shown.PacketPath != canonicalPacketPath {
+		t.Fatalf("packet_path = %q, want canonical current path %q", shown.PacketPath, canonicalPacketPath)
 	}
 	if _, err := os.Stat(shown.PacketPath); err != nil {
 		t.Fatalf("packet_path does not exist: %v", err)
