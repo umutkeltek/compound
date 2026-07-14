@@ -17,7 +17,8 @@ harnesses:
       user_prompt_context: true
       pre_tool_use_block: true
       post_tool_use_event: true
-      session_end_receipt: true
+      stop_feedback: true
+      session_end_receipt: false
       native_skills: true
       mcp: true
     limitations:
@@ -34,5 +35,33 @@ harnesses:
       mcp: true
     limitations:
       - hook behavior can vary by installation
+  - name: hermes
+    instruction_mechanism: AGENTS.md + plugin lifecycle hooks + skills + MCP
+    capabilities:
+      session_start_context: true
+      user_prompt_context: true
+      pre_tool_use_block: true
+      post_tool_use_event: true
+      stop_feedback: false
+      session_end_receipt: true
+      native_skills: true
+      mcp: true
+    limitations:
+      - native blocking requires an installed and content-attested Compound plugin
+      - no-agent cron and script execution requires a wrapper or action contract
+  - name: opencode
+    instruction_mechanism: config instructions + plugins + native skills
+    capabilities:
+      session_start_context: true
+      user_prompt_context: true
+      pre_tool_use_block: false
+      post_tool_use_event: true
+      stop_feedback: false
+      session_end_receipt: false
+      native_skills: true
+      mcp: true
+    limitations:
+      - full mutation coverage requires proof that every mutating tool is permission-gated or a fail-closed wrapper
+      - no proven SessionEnd or Stop mapping
 evidence_refs:
   - harness_registry_fixture:sha256:harness-fixture

@@ -143,6 +143,41 @@ func DefaultRegistry() Registry {
 			},
 			InjectBudgetMS: 1500,
 		},
+		"hermes": {
+			Name:                 "hermes",
+			InstructionMechanism: "AGENTS.md + plugin lifecycle hooks + skills + MCP",
+			Capabilities: Capabilities{
+				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
+				PostToolUseEvent: true, StopFeedback: false, SessionEndReceipt: true,
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"dynamic context uses pre_llm_call; on_session_start fires after the system prompt is built",
+				"plugin callback exceptions fail open",
+				"native blocking requires an installed and content-attested Compound plugin",
+				"on_session_end is turn/run scoped, not final chat lifetime",
+				"no-agent cron and script execution requires a wrapper or action contract",
+			},
+			InjectBudgetMS: 1000,
+		},
+		"opencode": {
+			Name:                 "opencode",
+			InstructionMechanism: "config instructions + plugins + native skills",
+			Capabilities: Capabilities{
+				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: false,
+				PostToolUseEvent: true, StopFeedback: false, SessionEndReceipt: false,
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"system context transform is experimental",
+				"permission.ask denial covers only calls routed through permission handling; tool.execute.before cannot deny",
+				"full mutation coverage requires proof that every mutating tool is permission-gated or a fail-closed wrapper",
+				"no proven SessionEnd or Stop mapping",
+				"no installed Compound plugin or content attestation",
+				"currently a read-only lane in imported capability authority",
+			},
+			InjectBudgetMS: 1000,
+		},
 	}}
 }
 
@@ -359,7 +394,7 @@ func Generic() Harness {
 	return Harness{
 		Name:                 "generic",
 		InstructionMechanism: "static instructions file",
-		Capabilities:         Capabilities{PostToolUseEvent: true, SessionEndReceipt: true},
+		Capabilities:         Capabilities{},
 		Limitations:          []string{"assume fail-open; enforce all gates in the adapter, not the harness"},
 		InjectBudgetMS:       1000,
 		Fallback:             true,
