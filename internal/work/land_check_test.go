@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -436,6 +437,24 @@ func TestRepositoryFingerprintLandCheckUsesV04Schema(t *testing.T) {
 	}
 	if fixture.proof.RepositoryFingerprint == "" {
 		t.Fatal("v0.4 land-check did not seal repository fingerprint")
+	}
+}
+
+func TestLandCheckV04FieldSetRequiresSchemaBump(t *testing.T) {
+	if LandCheckSchemaVersion != "compound.work_land_check.v0.4" {
+		t.Fatalf("update the sealed field-set fixture for new schema %s", LandCheckSchemaVersion)
+	}
+	typeOfReport := reflect.TypeOf(LandCheckReport{})
+	fields := make([]string, 0, typeOfReport.NumField())
+	for i := 0; i < typeOfReport.NumField(); i++ {
+		name := strings.Split(typeOfReport.Field(i).Tag.Get("json"), ",")[0]
+		if name != "" && name != "-" {
+			fields = append(fields, name)
+		}
+	}
+	const v04Fields = "schema_version,id,generated_at,work_id,status,repo_path,candidate_tip_sha,candidate_artifact_ref,attached_candidate_tip_sha,expected_base_sha,repository_fingerprint,target_ref,target_branch_ref,expected_main_sha,target_sha,publication_mode,publication_ref,publication_sha,candidate_exists,expected_base_exists,clean_target,target_branch_worktree,expected_base_ancestor_of_candidate,target_ancestor_of_candidate,candidate_contained_in_target,candidate_contained_in_publication,next_action,content_sha256,recorded,evidence_ref,proof_path"
+	if got := strings.Join(fields, ","); got != v04Fields {
+		t.Fatalf("LandCheckReport field set changed under sealed v0.4; bump schema and add a previous-version fixture:\n got: %s\nwant: %s", got, v04Fields)
 	}
 }
 
