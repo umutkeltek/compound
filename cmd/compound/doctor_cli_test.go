@@ -14,6 +14,13 @@ import (
 // findings, and the fail-open placement default; recording a finding plus a superseding revision
 // moves the live/superseded counts. It writes nothing.
 func TestDoctorComposesOrganState(t *testing.T) {
+	// Determinism: placement mode is overridable by env (policy.applyPlacementGuardEnv reads
+	// COMPOUND_PLACEMENT_GUARD_MODE / PLACEMENT_GUARD_MODE). Clear both so this test always exercises
+	// the built-in default (observe) regardless of the operator's ambient shell — the env-dependence
+	// is what made this assertion flip between "block" and "observe" across environments.
+	t.Setenv("COMPOUND_PLACEMENT_GUARD_MODE", "")
+	t.Setenv("PLACEMENT_GUARD_MODE", "")
+
 	home := t.TempDir()
 	base := t.TempDir() // empty base => no harness hooks installed
 
