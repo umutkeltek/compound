@@ -42,7 +42,7 @@ func TestSourceManifestLegacyFallbackIsObservableAndCanonicalizedOnWrite(t *test
 	if err := os.WriteFile(sourcePath, []byte("# legacy bridge\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	legacy, err := BuildSourceManifest(family, []string{sourcePath}, time.Now())
+	legacy, err := BuildOwnedSourceManifest(homePath, family, []string{sourcePath}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +100,23 @@ func TestSourceManifestLegacyFallbackIsObservableAndCanonicalizedOnWrite(t *test
 	}
 	if _, err := os.Stat(legacyPath); err != nil {
 		t.Fatalf("compatibility read bridge was destructively changed: %v", err)
+	}
+	if err := os.Remove(legacyPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sourcePath); err != nil {
+		t.Fatal(err)
+	}
+	restoredPath := filepath.Join(t.TempDir(), "restored.md")
+	if _, err := MaterializeSourceManifestItem(homePath, family, canonical.Items[0].ID, restoredPath); err != nil {
+		t.Fatalf("canonical real consumer still depends on legacy/source path: %v", err)
+	}
+	restored, err := os.ReadFile(restoredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restored) != "# legacy bridge\n" {
+		t.Fatalf("restored canonical body = %q", restored)
 	}
 }
 
