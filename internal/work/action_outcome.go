@@ -28,10 +28,20 @@ import (
 type ReceiptedActionInput struct {
 	Action                     envelope.ActionIntent
 	OperationalDecisionClaimID string
-	ExpectedWorkState          string
-	Summary                    string
-	MoveType                   string
-	ProofRefs                  []string
+	// PreEvaluatedDecision records an exact operator-governed decision after the
+	// bounded action has actually completed or failed. It is deliberately
+	// incompatible with the autonomous operational-decision path below.
+	PreEvaluatedDecision *envelope.PolicyDecision
+	ExpectedWorkState    string
+	Outcome              string
+	Changed              bool
+	Summary              string
+	MoveType             string
+	ProofRefs            []string
+	BeforeRefs           []string
+	AfterRefs            []string
+	FilesChanged         []string
+	FailureCause         *envelope.FailureCause
 }
 
 type ReceiptedActionResult struct {
@@ -89,7 +99,11 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if err := w.Validate(); err != nil {
 		return out, fmt.Errorf("work envelope invalid: %w", err)
 	}
-	if !receiptedActionEligibleStates[w.State] {
+	explicitDecision := in.PreEvaluatedDecision != nil
+	if explicitDecision && w.State != "running" {
+		return out, fmt.Errorf("work %s is %s; pre-evaluated governed actions require state running", workID, w.State)
+	}
+	if !explicitDecision && !receiptedActionEligibleStates[w.State] {
 		return out, fmt.Errorf("work %s is %s; receipted actions require state claimed|running|verifying", workID, w.State)
 	}
 	if expected := strings.TrimSpace(in.ExpectedWorkState); expected != "" && w.State != expected {
@@ -113,15 +127,18 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 		requestedAction.CreatedAt = pending.CreatedAt
 	}
 	claimID := strings.TrimSpace(in.OperationalDecisionClaimID)
-	if claimID == "" {
-		return out, fmt.Errorf("operational decision claim id required")
-	}
-	if err := currentReceiptedActionLaw(s.home, claimID); err != nil {
-		return out, err
-	}
-	cfg, _, err := policy.LoadConfig(s.home)
-	if err != nil {
-		return out, err
+	var cfg policy.Config
+	if !explicitDecision {
+		if claimID == "" {
+			return out, fmt.Errorf("operational decision claim id required")
+		}
+		if err := currentReceiptedActionLaw(s.home, claimID); err != nil {
+			return out, err
+		}
+		cfg, _, err = policy.LoadConfig(s.home)
+		if err != nil {
+			return out, err
+		}
 	}
 	action, actionPresent, err := s.preflightReceiptedAction(requestedAction)
 	if err != nil {
@@ -131,18 +148,29 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if err != nil {
 		return out, fmt.Errorf("receipted action %s created_at invalid: %w", action.ID, err)
 	}
-	if reason := policy.AutonomyOperatorOnlyReason(action, cfg); reason != "" {
-		return out, fmt.Errorf("cannot record autonomous receipted action: %s", reason)
-	}
-	currentDecision := policy.Evaluate(action, cfg, now)
-	if !policy.Allowed(currentDecision) {
-		return out, fmt.Errorf("cannot record receipted action %s: current policy %s (%s)", action.ID, currentDecision.Outcome, strings.Join(currentDecision.Reasons, "; "))
+	var currentDecision envelope.PolicyDecision
+	if explicitDecision {
+		currentDecision = *in.PreEvaluatedDecision
+		if err := validatePreEvaluatedReceiptedAction(s, w, action, currentDecision, now); err != nil {
+			return out, err
+		}
+	} else {
+		if reason := policy.AutonomyOperatorOnlyReason(action, cfg); reason != "" {
+			return out, fmt.Errorf("cannot record autonomous receipted action: %s", reason)
+		}
+		currentDecision = policy.Evaluate(action, cfg, now)
+		if !policy.Allowed(currentDecision) {
+			return out, fmt.Errorf("cannot record receipted action %s: current policy %s (%s)", action.ID, currentDecision.Outcome, strings.Join(currentDecision.Reasons, "; "))
+		}
 	}
 	if action.MutationClass != "read" && strings.TrimSpace(action.RollbackPlan) == "" {
 		return out, fmt.Errorf("receipted action %s requires rollback_plan", action.ID)
 	}
 
-	proofRefs := mergeUnique(in.ProofRefs, action.EvidenceRefs, []string{"claim:" + claimID, "work:" + workID})
+	proofRefs := mergeUnique(in.ProofRefs, action.EvidenceRefs, in.BeforeRefs, in.AfterRefs, []string{"work:" + workID})
+	if !explicitDecision {
+		proofRefs = mergeUnique(proofRefs, []string{"claim:" + claimID})
+	}
 	moveType := strings.TrimSpace(in.MoveType)
 	if moveType == "" {
 		moveType = "control_plane_repair"
@@ -155,25 +183,38 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	}
 
 	decisionID := idFor("pol_", "receipted-action", workID, action.ID, claimID)
-	receiptID := idFor("rec_", "receipted-action", workID, action.ID, claimID)
-	transitionID := idFor("tr_", "receipted-action", workID, action.ID, claimID)
+	if explicitDecision {
+		decisionID = currentDecision.ID
+	}
+	outcome := strings.TrimSpace(in.Outcome)
+	if outcome == "" {
+		outcome = "completed"
+	}
+	changed := in.Changed
+	if !explicitDecision {
+		changed = true
+	}
+	receiptID := idFor("rec_", "receipted-action", workID, action.ID, decisionID, outcome)
+	transitionID := idFor("tr_", "receipted-action", workID, action.ID, decisionID, outcome)
 	decision := currentDecision
-	decision.ID = decisionID
-	decision.CreatedAt = action.CreatedAt
-	decision.EvidenceRefs = mergeUnique(decision.EvidenceRefs, proofRefs)
+	if !explicitDecision {
+		decision.ID = decisionID
+		decision.CreatedAt = action.CreatedAt
+		decision.EvidenceRefs = mergeUnique(decision.EvidenceRefs, proofRefs)
+	}
 	used := normalizeCapabilityRefs([]string{action.Capability})
 	receipt := envelope.Receipt{
 		Header:     newHeader(envelope.SVReceipt, receiptID, transactionNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
-		Outcome:    "completed",
+		Outcome:    outcome,
 		MoveType:   moveType,
-		StateDelta: envelope.StateDelta{Changed: true, Summary: strings.TrimSpace(in.Summary), FilesChanged: []string{}, Artifacts: []string{}, Verification: []string{}},
+		StateDelta: envelope.StateDelta{Changed: changed, Summary: strings.TrimSpace(in.Summary), FilesChanged: mergeUnique(in.FilesChanged), Artifacts: []string{}, Verification: []string{}},
 		Cost:       envelope.ReceiptCost{ModelCalls: []string{}},
 		Skills: envelope.ReceiptSkills{
 			Used: used, Missed: []string{}, Candidate: []string{}, UsedDeclared: true,
 		},
 		Memory:    envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
 		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
-		ProofRefs: proofRefs,
+		ProofRefs: proofRefs, FailureCause: in.FailureCause,
 	}
 	receipt.EvidenceRefs = proofRefs
 	if lane := strings.TrimSpace(action.Producer.LaneID); lane != "" {
@@ -182,18 +223,21 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if err := receipt.Validate(); err != nil {
 		return out, fmt.Errorf("emitted receipted-action receipt invalid: %w", err)
 	}
-	beforeRefs := mergeUnique([]string{w.IDs.ContextPackID, "claim:" + claimID})
+	beforeRefs := mergeUnique([]string{w.IDs.ContextPackID}, in.BeforeRefs)
+	if !explicitDecision {
+		beforeRefs = mergeUnique(beforeRefs, []string{"claim:" + claimID})
+	}
 	transition := envelope.Transition{
 		Header:     newHeader(envelope.SVTransition, transitionID, transactionNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
 		BeforeRefs: beforeRefs,
 		ActionRefs: []string{action.ID},
-		AfterRefs:  []string{receipt.ID},
+		AfterRefs:  mergeUnique([]string{receipt.ID}, in.AfterRefs),
 		StateDelta: receipt.StateDelta.Summary,
 		Projections: envelope.Projections{
 			Memory: []string{}, Skill: used, Product: []string{}, Cost: []string{}, Risk: []string{}, Taste: []string{}, Routing: []string{}, HumanAttention: []string{},
 			Typed: closeProjectionRefs(receipt, w.IDs.ContextPackID),
 		},
-		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: true},
+		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: changed},
 	}
 	transition.EvidenceRefs = proofRefs
 	if lane := strings.TrimSpace(action.Producer.LaneID); lane != "" {
@@ -320,6 +364,41 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 		}
 	}
 	return ReceiptedActionResult{Work: expectedWork, Action: action, Decision: decision, Receipt: receipt, Transition: transition, Replayed: replayed}, nil
+}
+
+func validatePreEvaluatedReceiptedAction(s *Store, w envelope.WorkEnvelope, action envelope.ActionIntent, decision envelope.PolicyDecision, now time.Time) error {
+	if action.MutationClass == "security" && !policy.HasOperatorProvenance(action.Actor) {
+		return fmt.Errorf("pre-evaluated security action requires operator provenance")
+	}
+	lease, err := s.readLease(w.ID)
+	if err != nil {
+		return fmt.Errorf("pre-evaluated governed action requires current lease holder: %w", err)
+	}
+	if lease.WorkID != w.ID || strings.TrimSpace(lease.By) == "" || lease.By != action.Actor {
+		return fmt.Errorf("pre-evaluated governed action actor %q does not match lease holder %q", action.Actor, lease.By)
+	}
+	if err := decision.Validate(); err != nil {
+		return fmt.Errorf("pre-evaluated policy decision invalid: %w", err)
+	}
+	if decision.ActionIntentID != action.ID || decision.IDs.WorkID != action.IDs.WorkID {
+		return fmt.Errorf("pre-evaluated policy decision does not bind action intent")
+	}
+	if !policy.Allowed(decision) {
+		return fmt.Errorf("pre-evaluated policy decision is not allowed: %s", decision.Outcome)
+	}
+	if action.MutationClass == "security" && strings.TrimSpace(decision.StandingGrantID) == "" {
+		return fmt.Errorf("pre-evaluated security action requires standing-grant authority")
+	}
+	if expiresAt := strings.TrimSpace(decision.ExpiresAt); expiresAt != "" {
+		expires, err := time.Parse(time.RFC3339, expiresAt)
+		if err != nil {
+			return fmt.Errorf("pre-evaluated policy decision expires_at invalid: %w", err)
+		}
+		if !now.Before(expires) {
+			return fmt.Errorf("pre-evaluated policy decision expired at %s", expiresAt)
+		}
+	}
+	return nil
 }
 
 func currentReceiptedActionLaw(homePath, claimID string) error {
