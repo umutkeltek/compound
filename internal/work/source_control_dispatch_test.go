@@ -13,15 +13,18 @@ func TestDispatchSurfacesExpectedBaseAndWorkerLandingContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo, base := initLandingRepo(t)
+	declaredDelivery := localGitDelivery(repo, base)
+	callerFingerprint := strings.Repeat("f", 64)
+	declaredDelivery.RepositoryFingerprint = callerFingerprint
 	w, err := store.Create(CreateInput{
 		Owner:            "codex",
 		SuccessPredicate: "source-controlled work lands on main",
-		GitDelivery:      localGitDelivery(repo, base),
+		GitDelivery:      declaredDelivery,
 	}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.GitDelivery == nil || w.GitDelivery.RepositoryFingerprint == "" {
+	if w.GitDelivery == nil || w.GitDelivery.RepositoryFingerprint == "" || w.GitDelivery.RepositoryFingerprint == callerFingerprint {
 		t.Fatalf("created work did not bind derived repository fingerprint: %+v", w.GitDelivery)
 	}
 
@@ -32,8 +35,8 @@ func TestDispatchSurfacesExpectedBaseAndWorkerLandingContract(t *testing.T) {
 	if plan.Selected == nil || plan.Selected.WorkID != w.ID {
 		t.Fatalf("dispatch did not select source-controlled work: %+v", plan.Selected)
 	}
-	if plan.Selected.ExpectedBaseSHA != base {
-		t.Fatalf("dispatch expected_base_sha = %q, want %q", plan.Selected.ExpectedBaseSHA, base)
+	if plan.Selected.ExpectedBaseSHA != base || plan.Selected.RepositoryFingerprint != w.GitDelivery.RepositoryFingerprint {
+		t.Fatalf("dispatch source-control identity = %+v, want base %q and fingerprint %q", plan.Selected, base, w.GitDelivery.RepositoryFingerprint)
 	}
 
 	claimed, err := store.DispatchClaim(now.Add(2*time.Minute), DispatchPlanOptions{Actor: "codex", WorkID: w.ID})
@@ -96,7 +99,7 @@ func TestWorkbenchMakesVerifiedCodeAwaitingLandingVisible(t *testing.T) {
 		t.Fatalf("open work = %d, want 1", len(report.Open))
 	}
 	item := report.Open[0]
-	if item.ExpectedBaseSHA != base || item.CandidateTipSHA != tip {
+	if item.ExpectedBaseSHA != base || item.RepositoryFingerprint != w.GitDelivery.RepositoryFingerprint || item.CandidateTipSHA != tip {
 		t.Fatalf("source-control identity missing from workbench: %+v", item)
 	}
 	if item.LandingStatus != "awaiting_local_land" || !strings.Contains(item.NextAction, "land-check") {

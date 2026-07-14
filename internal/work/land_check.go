@@ -50,6 +50,7 @@ type LandCheckReport struct {
 	CandidateArtifactRef            string `json:"candidate_artifact_ref,omitempty"`
 	AttachedCandidateTipSHA         string `json:"attached_candidate_tip_sha,omitempty"`
 	ExpectedBaseSHA                 string `json:"expected_base_sha,omitempty"`
+	RepositoryFingerprint           string `json:"repository_fingerprint"`
 	TargetRef                       string `json:"target_ref"`
 	TargetBranchRef                 string `json:"target_branch_ref"`
 	ExpectedMainSHA                 string `json:"expected_main_sha,omitempty"`
@@ -183,19 +184,20 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 
 	expectedBase := strings.TrimSpace(contract.ExpectedBaseSHA)
 	report := LandCheckReport{
-		SchemaVersion:        LandCheckSchemaVersion,
-		GeneratedAt:          now.UTC().Format(time.RFC3339Nano),
-		WorkID:               w.ID,
-		RepoPath:             repoPath,
-		CandidateTipSHA:      candidate,
-		ExpectedBaseSHA:      expectedBase,
-		TargetRef:            targetRef,
-		TargetBranchRef:      targetBranchRef,
-		TargetSHA:            targetSHA,
-		PublicationMode:      contract.PublicationMode,
-		PublicationRef:       contract.PublicationRef,
-		CleanTarget:          statusOutput == "",
-		TargetBranchWorktree: currentBranchRef == targetBranchRef,
+		SchemaVersion:         LandCheckSchemaVersion,
+		GeneratedAt:           now.UTC().Format(time.RFC3339Nano),
+		WorkID:                w.ID,
+		RepoPath:              repoPath,
+		CandidateTipSHA:       candidate,
+		ExpectedBaseSHA:       expectedBase,
+		RepositoryFingerprint: contract.RepositoryFingerprint,
+		TargetRef:             targetRef,
+		TargetBranchRef:       targetBranchRef,
+		TargetSHA:             targetSHA,
+		PublicationMode:       contract.PublicationMode,
+		PublicationRef:        contract.PublicationRef,
+		CleanTarget:           statusOutput == "",
+		TargetBranchWorktree:  currentBranchRef == targetBranchRef,
 	}
 
 	artifactRef, attachedTip, artifactFound, artifactValid := latestCommitArtifact(w.ArtifactIDs)
@@ -432,6 +434,9 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 	contract := *w.GitDelivery
 	if report.ExpectedBaseSHA != contract.ExpectedBaseSHA {
 		return fmt.Errorf("recorded land-check %s expected base no longer matches work %s", id, w.ID)
+	}
+	if report.RepositoryFingerprint != contract.RepositoryFingerprint {
+		return fmt.Errorf("recorded land-check %s repository fingerprint no longer matches work %s", id, w.ID)
 	}
 	if report.RepoPath != contract.TargetWorktreeRoot || report.TargetBranchRef != contract.TargetLocalRef ||
 		report.PublicationMode != contract.PublicationMode || report.PublicationRef != contract.PublicationRef {

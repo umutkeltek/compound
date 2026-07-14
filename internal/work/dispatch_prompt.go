@@ -199,6 +199,7 @@ func dispatchWorkRevision(w envelope.WorkEnvelope) string {
 	if w.GitDelivery != nil {
 		parts = append(parts,
 			"target_root:"+w.GitDelivery.TargetWorktreeRoot,
+			"repository_fingerprint:"+w.GitDelivery.RepositoryFingerprint,
 			"target_ref:"+w.GitDelivery.TargetLocalRef,
 			"expected_base:"+w.GitDelivery.ExpectedBaseSHA,
 			"publication_mode:"+w.GitDelivery.PublicationMode,
@@ -290,6 +291,7 @@ func renderDispatchPrompt(w envelope.WorkEnvelope, task envelope.TaskContract, o
 		fmt.Fprintln(&b, "## SOURCE CONTROL CONTRACT")
 		fmt.Fprintln(&b)
 		fmt.Fprintf(&b, "- target_worktree_root: %s\n", w.GitDelivery.TargetWorktreeRoot)
+		fmt.Fprintf(&b, "- repository_fingerprint: %s\n", w.GitDelivery.RepositoryFingerprint)
 		fmt.Fprintf(&b, "- target_local_ref: %s\n", w.GitDelivery.TargetLocalRef)
 		fmt.Fprintf(&b, "- expected_base_sha: %s\n", w.GitDelivery.ExpectedBaseSHA)
 		fmt.Fprintf(&b, "- publication_mode: %s\n", w.GitDelivery.PublicationMode)

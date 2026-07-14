@@ -430,15 +430,17 @@ func validateCapabilityOfferConstraints(v *verr, field string, values []Capabili
 	}
 }
 
-// GitDeliveryContract binds source-controlled completion to one exact local
-// target and one explicit publication policy. The bound worktree is authority;
-// land-check callers may assert it, but may never replace it.
+// GitDeliveryContract binds source-controlled completion to one logical
+// repository, one exact local target, and one publication policy. The root is
+// only a locator; RepositoryFingerprint proves which repository occupies it.
+// Land-check callers may assert the contract, but may never replace it.
 type GitDeliveryContract struct {
-	TargetWorktreeRoot string `json:"target_worktree_root"`
-	TargetLocalRef     string `json:"target_local_ref"`
-	ExpectedBaseSHA    string `json:"expected_base_sha"`
-	PublicationMode    string `json:"publication_mode"`
-	PublicationRef     string `json:"publication_ref,omitempty"`
+	TargetWorktreeRoot    string `json:"target_worktree_root"`
+	RepositoryFingerprint string `json:"repository_fingerprint"`
+	TargetLocalRef        string `json:"target_local_ref"`
+	ExpectedBaseSHA       string `json:"expected_base_sha"`
+	PublicationMode       string `json:"publication_mode"`
+	PublicationRef        string `json:"publication_ref,omitempty"`
 }
 
 type WorkEnvelope struct {
@@ -487,6 +489,9 @@ func (e *WorkEnvelope) Validate() error {
 }
 
 func validateGitDeliveryContract(v *verr, contract GitDeliveryContract) {
+	if !validSHA256(strings.TrimSpace(contract.RepositoryFingerprint)) {
+		v.addf("git_delivery.repository_fingerprint must be a lowercase SHA-256 hex digest")
+	}
 	root := strings.TrimSpace(contract.TargetWorktreeRoot)
 	if root == "" {
 		v.addf("git_delivery.target_worktree_root is required")
@@ -538,6 +543,18 @@ func validBoundGitRef(value, prefix string) bool {
 
 func validFullGitObjectID(value string) bool {
 	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
 		return false
 	}
 	for _, r := range value {

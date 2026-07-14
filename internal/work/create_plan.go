@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"compound/internal/authority/gitrepository"
 	"compound/internal/envelope"
 	"compound/internal/policy"
 )
@@ -615,6 +616,13 @@ func (s *Store) normalizeGitDeliveryForPlan(w *envelope.WorkEnvelope) error {
 	w.GitDelivery.ExpectedBaseSHA = strings.TrimSpace(w.GitDelivery.ExpectedBaseSHA)
 	w.GitDelivery.PublicationMode = strings.TrimSpace(w.GitDelivery.PublicationMode)
 	w.GitDelivery.PublicationRef = strings.TrimSpace(w.GitDelivery.PublicationRef)
+	identity, err := gitrepository.ReadIdentity(root, w.GitDelivery.ExpectedBaseSHA)
+	if err != nil {
+		return fmt.Errorf("git_delivery.repository_fingerprint: %w", err)
+	}
+	// Repository identity is always derived from the bound repository. A caller
+	// cannot choose or preserve a supplied fingerprint.
+	w.GitDelivery.RepositoryFingerprint = identity.Fingerprint
 	if err := w.Validate(); err != nil {
 		return err
 	}
@@ -639,6 +647,13 @@ func (s *Store) validateBoundGitDelivery(w envelope.WorkEnvelope) error {
 	}
 	if localRef != contract.TargetLocalRef {
 		return fmt.Errorf("git_delivery.target_local_ref %q is not canonical %q", contract.TargetLocalRef, localRef)
+	}
+	identity, err := gitrepository.ReadIdentity(root, contract.ExpectedBaseSHA)
+	if err != nil {
+		return fmt.Errorf("git_delivery.repository_fingerprint: %w", err)
+	}
+	if identity.Fingerprint != contract.RepositoryFingerprint {
+		return fmt.Errorf("git_delivery repository fingerprint %s no longer matches bound fingerprint %s", identity.Fingerprint, contract.RepositoryFingerprint)
 	}
 	if _, err := runLandingGitOutput(root, "rev-parse", "--verify", localRef+"^{commit}"); err != nil {
 		return fmt.Errorf("git_delivery.target_local_ref does not resolve: %w", err)
@@ -744,10 +759,17 @@ func (s *Store) createActionIntent(w envelope.WorkEnvelope, actor string, now ti
 	mutationClass := orDefault(opts.MutationClass, "local_reversible")
 	reversibility := orDefault(opts.Reversibility, "easy")
 	blastRadius := orDefault(opts.BlastRadius, "local")
+	idParts := []string{capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor}
+	preview := fmt.Sprintf("create work %s state %s", w.ID, w.State)
+	if w.GitDelivery != nil {
+		contract := w.GitDelivery
+		idParts = append(idParts, contract.TargetWorktreeRoot, contract.RepositoryFingerprint, contract.TargetLocalRef, contract.ExpectedBaseSHA, contract.PublicationMode, contract.PublicationRef)
+		preview = fmt.Sprintf("create work %s state %s with Git delivery target %s repository fingerprint %s ref %s expected base %s publication mode %s publication ref %s", w.ID, w.State, contract.TargetWorktreeRoot, contract.RepositoryFingerprint, contract.TargetLocalRef, contract.ExpectedBaseSHA, contract.PublicationMode, contract.PublicationRef)
+	}
 	return envelope.ActionIntent{
 		Header: newHeader(
 			envelope.SVActionIntent,
-			idFor("act_", capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, ts(now)),
+			idFor("act_", append(idParts, ts(now))...),
 			now,
 			w.ID,
 			w.IDs.ContextPackID,
@@ -761,7 +783,7 @@ func (s *Store) createActionIntent(w envelope.WorkEnvelope, actor string, now ti
 		MutationClass: mutationClass,
 		Reversibility: reversibility,
 		BlastRadius:   blastRadius,
-		Preview:       fmt.Sprintf("create work %s state %s", w.ID, w.State),
+		Preview:       preview,
 		RollbackPlan:  "delete created WorkEnvelope and matching lifecycle event before any claim/action starts",
 	}
 }

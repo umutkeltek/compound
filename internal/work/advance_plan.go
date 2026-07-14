@@ -253,13 +253,14 @@ func (s *Store) advanceActionIntent(w envelope.WorkEnvelope, actor, to string, n
 		contract := opts.GitDelivery
 		idParts = append(idParts,
 			contract.TargetWorktreeRoot,
+			contract.RepositoryFingerprint,
 			contract.TargetLocalRef,
 			contract.ExpectedBaseSHA,
 			contract.PublicationMode,
 			contract.PublicationRef,
 		)
-		preview = fmt.Sprintf("bind Git delivery on work %s at state %s to target %s ref %s expected base %s publication mode %s publication ref %s actor %s",
-			w.ID, w.State, contract.TargetWorktreeRoot, contract.TargetLocalRef, contract.ExpectedBaseSHA, contract.PublicationMode, contract.PublicationRef, actor)
+		preview = fmt.Sprintf("bind Git delivery on work %s at state %s to target %s repository fingerprint %s ref %s expected base %s publication mode %s publication ref %s actor %s",
+			w.ID, w.State, contract.TargetWorktreeRoot, contract.RepositoryFingerprint, contract.TargetLocalRef, contract.ExpectedBaseSHA, contract.PublicationMode, contract.PublicationRef, actor)
 		rollbackPlan = "git_delivery authority is immutable after binding; correct a rejected plan before advancing"
 	}
 	return envelope.ActionIntent{

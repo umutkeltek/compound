@@ -160,42 +160,43 @@ type WorkbenchAdmissionPreview struct {
 }
 
 type WorkbenchItem struct {
-	WorkID             string                  `json:"work_id"`
-	State              string                  `json:"state"`
-	Owner              string                  `json:"owner,omitempty"`
-	GitDeliveryBound   bool                    `json:"git_delivery_bound,omitempty"`
-	TargetWorktreeRoot string                  `json:"target_worktree_root,omitempty"`
-	TargetLocalRef     string                  `json:"target_local_ref,omitempty"`
-	ExpectedBaseSHA    string                  `json:"expected_base_sha,omitempty"`
-	PublicationMode    string                  `json:"publication_mode,omitempty"`
-	PublicationRef     string                  `json:"publication_ref,omitempty"`
-	CandidateTipSHA    string                  `json:"candidate_tip_sha,omitempty"`
-	LandingStatus      string                  `json:"landing_status,omitempty"`
-	ClaimedBy          string                  `json:"claimed_by,omitempty"`
-	ClaimedAt          string                  `json:"claimed_at,omitempty"`
-	SuccessPredicate   string                  `json:"success_predicate"`
-	DesiredOutcome     string                  `json:"desired_outcome,omitempty"`
-	CanonicalSurface   string                  `json:"canonical_surface,omitempty"`
-	ContextPackID      string                  `json:"context_pack_id,omitempty"`
-	PolicyDecisionID   string                  `json:"policy_decision_id,omitempty"`
-	ReceiptID          string                  `json:"receipt_id,omitempty"`
-	TransitionID       string                  `json:"transition_id,omitempty"`
-	MoveType           string                  `json:"move_type,omitempty"`
-	Changed            bool                    `json:"changed,omitempty"`
-	ReviewTrigger      string                  `json:"review_trigger,omitempty"`
-	ObservatoryTags    []string                `json:"observatory_tags,omitempty"`
-	NextAction         string                  `json:"next_action"`
-	OpenReason         string                  `json:"open_reason,omitempty"`
-	EvidenceRefs       []string                `json:"evidence_refs,omitempty"`
-	ArtifactIDs        []string                `json:"artifact_ids,omitempty"`
-	VerificationIDs    []string                `json:"verification_ids,omitempty"`
-	MemoryCandidateIDs []string                `json:"memory_candidate_ids,omitempty"`
-	ActionContext      *WorkActionContext      `json:"action_context,omitempty"`
-	ReviewCards        []WorkbenchReviewCard   `json:"review_cards,omitempty"`
-	RunObservations    []RunObservationSummary `json:"run_observations,omitempty"`
-	RunArtifacts       []WorkbenchRunArtifact  `json:"run_artifacts,omitempty"`
-	RouteOutcomes      []RouteOutcomeSummary   `json:"route_outcomes,omitempty"`
-	recentAt           string
+	WorkID                string                  `json:"work_id"`
+	State                 string                  `json:"state"`
+	Owner                 string                  `json:"owner,omitempty"`
+	GitDeliveryBound      bool                    `json:"git_delivery_bound,omitempty"`
+	TargetWorktreeRoot    string                  `json:"target_worktree_root,omitempty"`
+	RepositoryFingerprint string                  `json:"repository_fingerprint,omitempty"`
+	TargetLocalRef        string                  `json:"target_local_ref,omitempty"`
+	ExpectedBaseSHA       string                  `json:"expected_base_sha,omitempty"`
+	PublicationMode       string                  `json:"publication_mode,omitempty"`
+	PublicationRef        string                  `json:"publication_ref,omitempty"`
+	CandidateTipSHA       string                  `json:"candidate_tip_sha,omitempty"`
+	LandingStatus         string                  `json:"landing_status,omitempty"`
+	ClaimedBy             string                  `json:"claimed_by,omitempty"`
+	ClaimedAt             string                  `json:"claimed_at,omitempty"`
+	SuccessPredicate      string                  `json:"success_predicate"`
+	DesiredOutcome        string                  `json:"desired_outcome,omitempty"`
+	CanonicalSurface      string                  `json:"canonical_surface,omitempty"`
+	ContextPackID         string                  `json:"context_pack_id,omitempty"`
+	PolicyDecisionID      string                  `json:"policy_decision_id,omitempty"`
+	ReceiptID             string                  `json:"receipt_id,omitempty"`
+	TransitionID          string                  `json:"transition_id,omitempty"`
+	MoveType              string                  `json:"move_type,omitempty"`
+	Changed               bool                    `json:"changed,omitempty"`
+	ReviewTrigger         string                  `json:"review_trigger,omitempty"`
+	ObservatoryTags       []string                `json:"observatory_tags,omitempty"`
+	NextAction            string                  `json:"next_action"`
+	OpenReason            string                  `json:"open_reason,omitempty"`
+	EvidenceRefs          []string                `json:"evidence_refs,omitempty"`
+	ArtifactIDs           []string                `json:"artifact_ids,omitempty"`
+	VerificationIDs       []string                `json:"verification_ids,omitempty"`
+	MemoryCandidateIDs    []string                `json:"memory_candidate_ids,omitempty"`
+	ActionContext         *WorkActionContext      `json:"action_context,omitempty"`
+	ReviewCards           []WorkbenchReviewCard   `json:"review_cards,omitempty"`
+	RunObservations       []RunObservationSummary `json:"run_observations,omitempty"`
+	RunArtifacts          []WorkbenchRunArtifact  `json:"run_artifacts,omitempty"`
+	RouteOutcomes         []RouteOutcomeSummary   `json:"route_outcomes,omitempty"`
+	recentAt              string
 }
 
 type WorkbenchReviewCard struct {
@@ -764,6 +765,7 @@ func (s *Store) applyWorkbenchGitDelivery(item *WorkbenchItem, w envelope.WorkEn
 	contract := *w.GitDelivery
 	item.GitDeliveryBound = true
 	item.TargetWorktreeRoot = contract.TargetWorktreeRoot
+	item.RepositoryFingerprint = contract.RepositoryFingerprint
 	item.TargetLocalRef = contract.TargetLocalRef
 	item.ExpectedBaseSHA = contract.ExpectedBaseSHA
 	item.PublicationMode = contract.PublicationMode

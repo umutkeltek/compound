@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/authority/gitrepository"
 	"compound/internal/candidates"
 	"compound/internal/mem"
 )
@@ -28,6 +29,7 @@ type SourceControlSnapshot struct {
 	RequestedPath           string `json:"requested_path,omitempty"`
 	GitRoot                 string `json:"git_root"`
 	Remote                  string `json:"remote,omitempty"`
+	RepositoryFingerprint   string `json:"repository_fingerprint,omitempty"`
 	Branch                  string `json:"branch,omitempty"`
 	Head                    string `json:"head,omitempty"`
 	Upstream                string `json:"upstream,omitempty"`
@@ -49,6 +51,7 @@ type SourceControlReport struct {
 	Branch                  string `json:"branch,omitempty"`
 	Head                    string `json:"head,omitempty"`
 	Remote                  string `json:"remote,omitempty"`
+	RepositoryFingerprint   string `json:"repository_fingerprint,omitempty"`
 	Upstream                string `json:"upstream,omitempty"`
 	Ahead                   int    `json:"ahead"`
 	Behind                  int    `json:"behind"`
@@ -78,6 +81,7 @@ func ImportGitSnapshot(path string, existing []mem.Entity) (SourceControlSnapsho
 		Branch:                  snap.Branch,
 		Head:                    snap.Head,
 		Remote:                  snap.Remote,
+		RepositoryFingerprint:   snap.RepositoryFingerprint,
 		Upstream:                snap.Upstream,
 		Ahead:                   snap.Ahead,
 		Behind:                  snap.Behind,
@@ -106,6 +110,10 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 	root = strings.TrimSpace(root)
 	if canonical, canonicalErr := filepath.EvalSymlinks(root); canonicalErr == nil {
 		root = canonical
+	}
+	repositoryIdentity, err := ReadGitRepositoryIdentity(root, "HEAD")
+	if err != nil {
+		return SourceControlSnapshot{}, fmt.Errorf("git repository identity: %w", err)
 	}
 	remote, _ := gitOutput(ctx, root, "config", "--get", "remote.origin.url")
 	branch, _ := gitOutput(ctx, root, "branch", "--show-current")
@@ -141,6 +149,7 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 		RequestedPath:           requestedPath,
 		GitRoot:                 root,
 		Remote:                  strings.TrimSpace(remote),
+		RepositoryFingerprint:   repositoryIdentity.Fingerprint,
 		Branch:                  strings.TrimSpace(branch),
 		Head:                    strings.TrimSpace(head),
 		Upstream:                strings.TrimSpace(upstream),
@@ -155,6 +164,12 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 		EvidenceRef:             sourceControlEvidenceRef(repositoryID, strings.TrimSpace(head), fingerprint),
 	}
 	return snap, nil
+}
+
+type GitRepositoryIdentity = gitrepository.Identity
+
+func ReadGitRepositoryIdentity(path, lineageRef string) (GitRepositoryIdentity, error) {
+	return gitrepository.ReadIdentity(path, lineageRef)
 }
 
 func (s SourceControlSnapshot) EvidenceReference() string {

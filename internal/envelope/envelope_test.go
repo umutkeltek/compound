@@ -141,6 +141,7 @@ func TestAllKindsValidateAndRoundTrip(t *testing.T) {
 
 func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.T) {
 	const baseSHA = "0123456789abcdef0123456789abcdef01234567"
+	const repositoryFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	repoRoot := filepath.Join(string(filepath.Separator), "repo", "product")
 	w := WorkEnvelope{
 		Header:           hdr(SVWork, "work_expected_base"),
@@ -148,11 +149,12 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 		State:            "ready",
 		SuccessPredicate: "candidate lands from its frozen base",
 		GitDelivery: &GitDeliveryContract{
-			TargetWorktreeRoot: repoRoot,
-			TargetLocalRef:     "refs/heads/main",
-			ExpectedBaseSHA:    baseSHA,
-			PublicationMode:    "required",
-			PublicationRef:     "refs/remotes/origin/main",
+			TargetWorktreeRoot:    repoRoot,
+			RepositoryFingerprint: repositoryFingerprint,
+			TargetLocalRef:        "refs/heads/main",
+			ExpectedBaseSHA:       baseSHA,
+			PublicationMode:       "required",
+			PublicationRef:        "refs/remotes/origin/main",
 		},
 	}
 	if err := RoundTrip(&w); err != nil {
@@ -174,23 +176,39 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 	invalid := w
 	invalid.ID = "work_invalid_base"
 	invalid.GitDelivery = &GitDeliveryContract{
-		TargetWorktreeRoot: repoRoot,
-		TargetLocalRef:     "refs/heads/main",
-		ExpectedBaseSHA:    "ABCDEF",
-		PublicationMode:    "required",
-		PublicationRef:     "refs/remotes/origin/main",
+		TargetWorktreeRoot:    repoRoot,
+		RepositoryFingerprint: repositoryFingerprint,
+		TargetLocalRef:        "refs/heads/main",
+		ExpectedBaseSHA:       "ABCDEF",
+		PublicationMode:       "required",
+		PublicationRef:        "refs/remotes/origin/main",
 	}
 	if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "expected_base_sha") {
 		t.Fatalf("invalid expected_base_sha should fail validation, got %v", err)
 	}
 
+	invalidFingerprint := w
+	invalidFingerprint.ID = "work_invalid_repository_fingerprint"
+	invalidFingerprint.GitDelivery = &GitDeliveryContract{
+		TargetWorktreeRoot:    repoRoot,
+		RepositoryFingerprint: "ABCDEF",
+		TargetLocalRef:        "refs/heads/main",
+		ExpectedBaseSHA:       baseSHA,
+		PublicationMode:       "required",
+		PublicationRef:        "refs/remotes/origin/main",
+	}
+	if err := invalidFingerprint.Validate(); err == nil || !strings.Contains(err.Error(), "repository_fingerprint") {
+		t.Fatalf("missing or invalid repository fingerprint should fail validation, got %v", err)
+	}
+
 	partial := w
 	partial.ID = "work_partial_delivery"
 	partial.GitDelivery = &GitDeliveryContract{
-		TargetWorktreeRoot: repoRoot,
-		TargetLocalRef:     "refs/heads/main",
-		ExpectedBaseSHA:    baseSHA,
-		PublicationMode:    "required",
+		TargetWorktreeRoot:    repoRoot,
+		RepositoryFingerprint: repositoryFingerprint,
+		TargetLocalRef:        "refs/heads/main",
+		ExpectedBaseSHA:       baseSHA,
+		PublicationMode:       "required",
 	}
 	if err := partial.Validate(); err == nil || !strings.Contains(err.Error(), "publication_ref") {
 		t.Fatalf("publication-required contract without remote-tracking ref should fail, got %v", err)
@@ -199,10 +217,11 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 	localOnly := w
 	localOnly.ID = "work_local_only_delivery"
 	localOnly.GitDelivery = &GitDeliveryContract{
-		TargetWorktreeRoot: repoRoot,
-		TargetLocalRef:     "refs/heads/main",
-		ExpectedBaseSHA:    baseSHA,
-		PublicationMode:    "local_only",
+		TargetWorktreeRoot:    repoRoot,
+		RepositoryFingerprint: repositoryFingerprint,
+		TargetLocalRef:        "refs/heads/main",
+		ExpectedBaseSHA:       baseSHA,
+		PublicationMode:       "local_only",
 	}
 	if err := localOnly.Validate(); err != nil {
 		t.Fatalf("explicit local-only contract should validate: %v", err)
@@ -211,6 +230,7 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 
 func TestWorkEnvelopeGitDeliveryPublicationRefMatchesWholeBranch(t *testing.T) {
 	const baseSHA = "0123456789abcdef0123456789abcdef01234567"
+	const repositoryFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	repoRoot := filepath.Join(string(filepath.Separator), "repo", "product")
 	tests := []struct {
 		name           string
@@ -238,11 +258,12 @@ func TestWorkEnvelopeGitDeliveryPublicationRefMatchesWholeBranch(t *testing.T) {
 				State:            "ready",
 				SuccessPredicate: "candidate reaches the exact publication branch",
 				GitDelivery: &GitDeliveryContract{
-					TargetWorktreeRoot: repoRoot,
-					TargetLocalRef:     tt.localRef,
-					ExpectedBaseSHA:    baseSHA,
-					PublicationMode:    "required",
-					PublicationRef:     tt.publicationRef,
+					TargetWorktreeRoot:    repoRoot,
+					RepositoryFingerprint: repositoryFingerprint,
+					TargetLocalRef:        tt.localRef,
+					ExpectedBaseSHA:       baseSHA,
+					PublicationMode:       "required",
+					PublicationRef:        tt.publicationRef,
 				},
 			}
 			err := w.Validate()
