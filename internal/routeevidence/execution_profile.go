@@ -292,16 +292,6 @@ func DeriveChildExecutionProfile(parent ExecutionProfilePlan, child ChildExecuti
 	if err != nil {
 		return ExecutionProfilePlan{}, err
 	}
-	parentNativeRank := nativeEffortRank(parent.NativeEffort.Requested)
-	if parentNativeRank == 0 {
-		return ExecutionProfilePlan{}, compatibilityError("parent_plan.native_effort", "parent native effort is unsupported")
-	}
-	if nativeEffortRank(plan.NativeEffort.Requested) > parentNativeRank {
-		return ExecutionProfilePlan{}, compatibilityError(
-			"child_intent.native_effort",
-			fmt.Sprintf("child native effort %q exceeds parent native ceiling %q", plan.NativeEffort.Requested, parent.NativeEffort.Requested),
-		)
-	}
 	role := defaultString(child.Role, parent.Role)
 	capabilityClass := defaultString(child.CapabilityClass, parent.CapabilityClass)
 	plan, err := ResolveExecutionProfile(ExecutionProfileIntent{
@@ -318,6 +308,16 @@ func DeriveChildExecutionProfile(parent ExecutionProfilePlan, child ChildExecuti
 	})
 	if err != nil {
 		return ExecutionProfilePlan{}, err
+	}
+	parentNativeRank := nativeEffortRank(parent.NativeEffort.Requested)
+	if parentNativeRank == 0 {
+		return ExecutionProfilePlan{}, compatibilityError("parent_plan.native_effort", "parent native effort is unsupported")
+	}
+	if nativeEffortRank(plan.NativeEffort.Requested) > parentNativeRank {
+		return ExecutionProfilePlan{}, compatibilityError(
+			"child_intent.native_effort",
+			fmt.Sprintf("child native effort %q exceeds parent native ceiling %q", plan.NativeEffort.Requested, parent.NativeEffort.Requested),
+		)
 	}
 	plan.RequestedIntent = ExecutionProfileIntent{
 		ProfileID:           parent.ProfileID,
