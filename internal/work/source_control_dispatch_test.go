@@ -59,6 +59,36 @@ func TestDispatchSurfacesExpectedBaseAndWorkerLandingContract(t *testing.T) {
 	}
 }
 
+func TestPreFingerprintGitDeliveryIsVisibleButNotDispatchableBeforeBackfill(t *testing.T) {
+	now := time.Date(2026, 7, 14, 5, 0, 0, 0, time.UTC)
+	store, legacy, _, _ := preFingerprintGitDeliveryFixture(t, now, "ready", "")
+	report, err := store.Workbench(now.Add(time.Minute), WorkbenchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := findWorkbenchItem(t, report.Open, legacy.ID)
+	if item.GitDeliveryBound || item.LandingStatus != "repository_identity_migration_required" || !strings.Contains(item.NextAction, "operator") {
+		t.Errorf("pre-fingerprint workbench item must expose migration debt: %+v", item)
+	}
+
+	plan, err := store.DispatchPlan(now.Add(2*time.Minute), DispatchPlanOptions{Actor: "codex", WorkID: legacy.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Selected != nil || len(plan.Candidates) != 1 || plan.Candidates[0].Action != "review" || len(plan.Candidates[0].Command) != 0 {
+		t.Errorf("pre-fingerprint work must not be claimable from dispatch: %+v", plan)
+	}
+	if _, err := store.attachDispatchPrompt(legacy.ID, "codex", now.Add(3*time.Minute)); err == nil || !strings.Contains(err.Error(), "repository fingerprint") {
+		t.Errorf("direct prompt attachment before migration error = %v", err)
+	}
+	if _, err := store.ClaimPlan(legacy.ID, now.Add(4*time.Minute), ClaimPlanOptions{Actor: "codex"}); err == nil || !strings.Contains(err.Error(), "repository fingerprint") {
+		t.Errorf("claim plan before migration error = %v", err)
+	}
+	if _, err := store.Claim(legacy.ID, "codex", now.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), "repository fingerprint") {
+		t.Errorf("claim before migration error = %v", err)
+	}
+}
+
 func TestWorkbenchMakesVerifiedCodeAwaitingLandingVisible(t *testing.T) {
 	now := time.Date(2026, 7, 13, 21, 0, 0, 0, time.UTC)
 	store, err := Open(t.TempDir())

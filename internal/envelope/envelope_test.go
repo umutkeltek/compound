@@ -228,6 +228,31 @@ func TestWorkEnvelopeGitDeliveryRoundTripsAndLegacyMissingFieldLoads(t *testing.
 	}
 }
 
+func TestWorkEnvelopePreFingerprintGitDeliveryIsReadableAndShapeStable(t *testing.T) {
+	const legacyJSON = `{"schema_version":"compound.work.v0.1","id":"work_pre_fingerprint","created_at":"2026-07-13T22:00:00Z","producer":{"kind":"cli","name":"compound","version":""},"ids":{},"scope":{},"authority":{"source_class":"runtime","status":"current"},"privacy":"private","risk":"tier1","evidence_refs":[],"uncertainty":{"level":"known"},"owner":"codex","git_delivery":{"target_worktree_root":"/repo/product","target_local_ref":"refs/heads/main","expected_base_sha":"0123456789abcdef0123456789abcdef01234567","publication_mode":"local_only"},"state":"running","success_predicate":"legacy delivery remains readable without changing its hash","non_goals":[],"run_ids":[],"artifact_ids":[],"verification_ids":[],"memory_candidate_ids":[]}`
+
+	var legacy WorkEnvelope
+	if err := json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
+		t.Fatalf("decode pre-fingerprint work: %v", err)
+	}
+	if legacy.GitDelivery == nil || legacy.GitDelivery.RepositoryFingerprint != "" {
+		t.Fatalf("pre-fingerprint git_delivery = %+v", legacy.GitDelivery)
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Errorf("pre-fingerprint work must remain readable: %v", err)
+	}
+	remarshaled, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(remarshaled) != legacyJSON {
+		t.Fatalf("pre-fingerprint work shape changed during re-marshal:\n got: %s\nwant: %s", remarshaled, legacyJSON)
+	}
+	if strings.Contains(string(remarshaled), "repository_fingerprint") {
+		t.Fatalf("legacy re-marshal invented repository_fingerprint: %s", remarshaled)
+	}
+}
+
 func TestWorkEnvelopeGitDeliveryPublicationRefMatchesWholeBranch(t *testing.T) {
 	const baseSHA = "0123456789abcdef0123456789abcdef01234567"
 	const repositoryFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

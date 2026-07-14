@@ -1,6 +1,9 @@
 package work
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +12,128 @@ import (
 
 	"compound/internal/envelope"
 )
+
+func TestPreFingerprintGitDeliveryPreservesCanonicalWorkHash(t *testing.T) {
+	const legacyJSON = `{"schema_version":"compound.work.v0.1","id":"work_pre_fingerprint","created_at":"2026-07-13T22:00:00Z","producer":{"kind":"cli","name":"compound","version":""},"ids":{},"scope":{},"authority":{"source_class":"runtime","status":"current"},"privacy":"private","risk":"tier1","evidence_refs":[],"uncertainty":{"level":"known"},"owner":"codex","git_delivery":{"target_worktree_root":"/repo/product","target_local_ref":"refs/heads/main","expected_base_sha":"0123456789abcdef0123456789abcdef01234567","publication_mode":"local_only"},"state":"running","success_predicate":"legacy delivery remains readable without changing its hash","non_goals":[],"run_ids":[],"artifact_ids":[],"verification_ids":[],"memory_candidate_ids":[]}`
+	var legacy envelope.WorkEnvelope
+	if err := json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	wantSum := sha256.Sum256([]byte(legacyJSON))
+	want := "sha256:" + hex.EncodeToString(wantSum[:])
+	got, err := workEnvelopeSHA256(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("pre-fingerprint canonical WorkEnvelope hash changed: got %s want %s", got, want)
+	}
+}
+
+func TestPreFingerprintGitDeliveryBackfillsOnlyThroughExactOperatorSameStateAdvance(t *testing.T) {
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	store, legacy, repo, base := preFingerprintGitDeliveryFixture(t, now, "running", "operator:test")
+	before := *legacy.GitDelivery
+	_, beforeEvents, err := store.Show(legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := localGitDelivery(repo, base)
+	callerFingerprint := strings.Repeat("f", 64)
+	requested.RepositoryFingerprint = callerFingerprint
+
+	plan, err := store.AdvancePlan(legacy.ID, now.Add(3*time.Minute), AdvancePlanOptions{
+		Actor:       "operator:test",
+		To:          legacy.State,
+		GitDelivery: requested,
+	})
+	if err != nil {
+		t.Fatalf("plan exact repository identity backfill: %v", err)
+	}
+	if plan.GitDelivery == nil || plan.GitDelivery.RepositoryFingerprint == "" || plan.GitDelivery.RepositoryFingerprint == callerFingerprint {
+		t.Fatalf("backfill plan did not derive repository identity: %+v", plan.GitDelivery)
+	}
+	if !sameGitDeliveryIgnoringFingerprint(before, *plan.GitDelivery) {
+		t.Fatalf("backfill changed delivery authority beyond fingerprint: before=%+v after=%+v", before, *plan.GitDelivery)
+	}
+	if !strings.Contains(plan.ActionIntent.Preview, "backfill Git repository identity") {
+		t.Fatalf("backfill action is not explicit: %+v", plan.ActionIntent)
+	}
+
+	bound, err := store.Advance(legacy.ID, AdvanceInput{
+		To:          legacy.State,
+		Actor:       "operator:test",
+		GitDelivery: requested,
+	}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatalf("apply exact repository identity backfill: %v", err)
+	}
+	if bound.State != legacy.State || bound.GitDelivery == nil || bound.GitDelivery.RepositoryFingerprint == "" || !sameGitDeliveryIgnoringFingerprint(before, *bound.GitDelivery) {
+		t.Fatalf("backfilled work = %+v", bound)
+	}
+	if bound.ExpectedBaseSHA != "" || len(bound.RunIDs) != len(legacy.RunIDs)+1 || bound.PolicyDecisionID == legacy.PolicyDecisionID {
+		t.Fatalf("backfill did not use the governed advance journal: %+v", bound)
+	}
+	_, afterEvents, err := store.Show(bound.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterEvents) != len(beforeEvents)+1 || len(afterEvents[len(afterEvents)-1].Attached) < 2 {
+		t.Fatalf("backfill lifecycle evidence = %+v", afterEvents)
+	}
+	if err := store.validateBoundGitDelivery(bound); err != nil {
+		t.Fatalf("backfilled repository identity is not authoritative: %v", err)
+	}
+	if _, err := store.Advance(bound.ID, AdvanceInput{To: bound.State, Actor: "operator:test", GitDelivery: requested}, now.Add(5*time.Minute)); err == nil || !strings.Contains(err.Error(), "already has git_delivery") {
+		t.Fatalf("second backfill must be rejected as rebinding, got %v", err)
+	}
+}
+
+func TestPreFingerprintGitDeliveryRejectsUnsafeMigrationPaths(t *testing.T) {
+	now := time.Date(2026, 7, 14, 4, 0, 0, 0, time.UTC)
+	t.Run("executor", func(t *testing.T) {
+		store, legacy, repo, base := preFingerprintGitDeliveryFixture(t, now, "running", "codex")
+		_, err := store.Advance(legacy.ID, AdvanceInput{To: legacy.State, Actor: "codex", GitDelivery: localGitDelivery(repo, base)}, now.Add(3*time.Minute))
+		if err == nil || !strings.Contains(err.Error(), "operator provenance") {
+			t.Fatalf("executor backfill error = %v", err)
+		}
+	})
+	t.Run("lifecycle transition", func(t *testing.T) {
+		store, legacy, repo, base := preFingerprintGitDeliveryFixture(t, now, "running", "operator:test")
+		_, err := store.AdvancePlan(legacy.ID, now.Add(3*time.Minute), AdvancePlanOptions{Actor: "operator:test", To: "verifying", GitDelivery: localGitDelivery(repo, base)})
+		if err == nil || !strings.Contains(err.Error(), "same-state") {
+			t.Fatalf("transition plus backfill error = %v", err)
+		}
+	})
+	t.Run("delivery field drift", func(t *testing.T) {
+		store, legacy, repo, base := preFingerprintGitDeliveryFixture(t, now, "running", "operator:test")
+		landingGit(t, repo, "branch", "other", base)
+		requested := localGitDelivery(repo, base)
+		requested.TargetLocalRef = "refs/heads/other"
+		_, err := store.AdvancePlan(legacy.ID, now.Add(3*time.Minute), AdvancePlanOptions{Actor: "operator:test", To: legacy.State, GitDelivery: requested})
+		if err == nil || !strings.Contains(err.Error(), "exactly match") {
+			t.Fatalf("delivery drift backfill error = %v", err)
+		}
+	})
+	t.Run("terminal", func(t *testing.T) {
+		store, legacy, repo, base := preFingerprintGitDeliveryFixture(t, now, "running", "operator:test")
+		legacy.State = "completed"
+		if err := store.writeJSON(store.workPath(legacy.ID), &legacy); err != nil {
+			t.Fatal(err)
+		}
+		_, err := store.AdvancePlan(legacy.ID, now.Add(3*time.Minute), AdvancePlanOptions{Actor: "operator:test", To: legacy.State, GitDelivery: localGitDelivery(repo, base)})
+		if err == nil || !strings.Contains(err.Error(), "terminal") {
+			t.Fatalf("terminal backfill error = %v", err)
+		}
+	})
+	t.Run("ordinary advance before backfill", func(t *testing.T) {
+		store, legacy, _, _ := preFingerprintGitDeliveryFixture(t, now, "running", "codex")
+		_, err := store.Advance(legacy.ID, AdvanceInput{To: "verifying", Actor: "codex"}, now.Add(3*time.Minute))
+		if err == nil || !strings.Contains(err.Error(), "repository fingerprint") {
+			t.Fatalf("ordinary advance before backfill error = %v", err)
+		}
+	})
+}
 
 func TestLegacyNonterminalWorkBindsGitDeliveryThroughAdvance(t *testing.T) {
 	now := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
@@ -190,6 +315,67 @@ func TestRejectedDeliveryBindingDoesNotRecordLeaseSteal(t *testing.T) {
 	if afterEventFiles := eventFiles(); afterEventFiles != beforeEventFiles {
 		t.Fatalf("rejected binding wrote action/policy evidence:\nbefore:\n%s\nafter:\n%s", beforeEventFiles, afterEventFiles)
 	}
+}
+
+func preFingerprintGitDeliveryFixture(t *testing.T, now time.Time, state, holder string) (*Store, envelope.WorkEnvelope, string, string) {
+	t.Helper()
+	repo, base := initLandingRepo(t)
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "pre-fingerprint delivery requires governed migration",
+		GitDelivery:      localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state == "running" {
+		if _, err := store.Claim(w.ID, holder, now.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: holder}, now.Add(2*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	} else if state != "ready" {
+		t.Fatalf("unsupported pre-fingerprint fixture state %q", state)
+	}
+	w, err = store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := w.GitDelivery.RepositoryFingerprint
+	body, err := os.ReadFile(store.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	needle := "    \"repository_fingerprint\": \"" + fingerprint + "\",\n"
+	if strings.Count(string(body), needle) != 1 {
+		t.Fatalf("persisted work did not contain one fingerprint field:\n%s", body)
+	}
+	body = []byte(strings.Replace(string(body), needle, "", 1))
+	if err := os.WriteFile(store.workPath(w.ID), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.GitDelivery == nil || legacy.GitDelivery.RepositoryFingerprint != "" {
+		t.Fatalf("pre-fingerprint fixture = %+v", legacy.GitDelivery)
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Errorf("pre-fingerprint fixture must remain readable: %v", err)
+	}
+	return store, legacy, repo, base
+}
+
+func sameGitDeliveryIgnoringFingerprint(a, b envelope.GitDeliveryContract) bool {
+	a.RepositoryFingerprint = ""
+	b.RepositoryFingerprint = ""
+	return a == b
 }
 
 func TestRepoScopedContextAloneDoesNotInventGitDeliveryAuthority(t *testing.T) {
