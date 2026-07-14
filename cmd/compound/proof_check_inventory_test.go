@@ -22,6 +22,7 @@ func TestProofCheckSmokeInventoryGuard(t *testing.T) {
 	// defeats the point of the guard.
 	manualOnlySmokes := map[string]string{
 		"work-mutation-trail-smoke.mjs": "requires COMPOUND_BIN (a freshly built compound binary); exercised manually / in strict-local batteries, not in the portable proof-check path",
+		"work-legibility-smoke.mjs":     "static copy-model assertion (imports console WORK_COPY, no binary/home needed); run manually / in local batteries — wiring into the portable proof-check step list is out of the work-page-legibility packet's file scope (proof_check.go owned by a concurrent lane at packet time)",
 		// The two rows below are TEMPORARY: their proofCheckSteps registration is owned by a
 		// concurrent live lane (proof_check.go was not editable when this guard landed). Wiring
 		// them in WITHOUT deleting these rows turns this guard red (allowlisted-and-wired), so
