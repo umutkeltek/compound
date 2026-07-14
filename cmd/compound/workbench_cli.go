@@ -1196,6 +1196,7 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	capgraph.AnnotateOutboundDistributionDryRunQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
 	capgraph.AnnotateCapabilityLifecycleProposalQueue(&report)
+	capgraph.AnnotateSkillSurfacingQueue(&report)
 	distiller.AnnotateImprovementQueue(&report)
 	distiller.AnnotateRequestQueue(&report)
 	mem.AnnotateBakeoffQueue(&report)

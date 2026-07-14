@@ -9076,6 +9076,85 @@ func TestCapabilityImportSurfacingMissesRecordsFeedbackAndSourceNoPromote(t *tes
 	}
 }
 
+// A2 (packet 2026-07-15-slice2A-skill-surfacing-verb) at the CLI layer: the
+// open skill-surfacing review card carries the exact import action (queue
+// projection), running the verb on that card's own path applies edges AND
+// clears the card, and a second run is a clean idempotent no-op.
+func TestCapabilityImportSurfacingMissesResolvesReviewQueueItemAndStaysIdempotent(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	cmdCapability([]string{"add", "skill:web-design-guidelines", "skill", "Web Design Guidelines", "--triggers", "css"})
+
+	reviewDir := filepath.Join(homePath, "reviews", "skill-surfacing")
+	if err := os.MkdirAll(reviewDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reviewPath := filepath.Join(reviewDir, "session-mining-backfill.json")
+	if err := os.WriteFile(reviewPath, []byte(`{
+  "id": "ssfb_test_cli01",
+  "generated": "2026-07-09T18:39:12Z",
+  "all_misses": [
+    {"skill": "web-design-guidelines", "count": 1, "receipts": ["packet-test-cli"], "reasons": ["app store design review"], "maxConf": 0.9}
+  ],
+  "false_triggers": [],
+  "perReceipt": [
+    {"dir": "packet-test-cli", "kind": "human", "lanes": "deterministic-backfill",
+      "real": [{"skill": "web-design-guidelines", "confidence": 0.9, "reason": "app store design review"}],
+      "false_triggered": []}
+  ]
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	queueBefore, err := buildReviewQueueReport(homePath, "skill-surfacing", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queueBefore.Items) != 1 || len(queueBefore.Items[0].Actions) != 1 || queueBefore.Items[0].Actions[0].ID != "skill-surfacing.import" {
+		t.Fatalf("queue before import = %+v", queueBefore.Items)
+	}
+	wantArgv := []string{"compound", "capability", "import-surfacing-misses", reviewPath}
+	if strings.Join(queueBefore.Items[0].Actions[0].Argv, "\x00") != strings.Join(wantArgv, "\x00") {
+		t.Fatalf("action argv = %+v, want %+v", queueBefore.Items[0].Actions[0].Argv, wantArgv)
+	}
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"import-surfacing-misses", reviewPath})
+	})
+	for _, want := range []string{
+		"- applied_misses: 1",
+		"- applied_edges: 4",
+		"- review_resolved: true",
+		"- review_receipt: rec_",
+		"- review_undo: compound reviews resolve",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("import-surfacing-misses output missing %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(strings.TrimSuffix(reviewPath, ".json") + ".reviewed.json"); err != nil {
+		t.Fatalf("resolution sidecar missing: %v", err)
+	}
+
+	queueAfter, err := buildReviewQueueReport(homePath, "skill-surfacing", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queueAfter.Items) != 1 || queueAfter.Items[0].Band != reviewartifact.BandFiled || len(queueAfter.Items[0].Actions) != 0 {
+		t.Fatalf("queue after import should be filed with no action: %+v", queueAfter.Items[0])
+	}
+
+	replayOut := captureStdout(t, func() {
+		cmdCapability([]string{"import-surfacing-misses", reviewPath})
+	})
+	if !strings.Contains(replayOut, "- applied_edges: 0") || !strings.Contains(replayOut, "- review_resolved: false") {
+		t.Fatalf("replay import should be a clean idempotent no-op, got:\n%s", replayOut)
+	}
+}
+
 func TestCapabilitySkillSourceDoctorReportsRawSkillSource(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

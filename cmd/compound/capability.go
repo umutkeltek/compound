@@ -834,6 +834,12 @@ func cmdCapability(args []string) {
 			fmt.Fprintln(os.Stderr, "source observe:", err)
 			os.Exit(1)
 		}
+		actor := firstNonEmpty(os.Getenv("COMPOUND_OPERATOR_ID"), os.Getenv("COMPOUND_REVIEWED_BY"), "operator")
+		reviewResolved, reviewResolution, err := capgraph.ResolveSkillSurfacingMissesReviewItem(homePath, p[0], actor, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "review resolve:", err)
+			os.Exit(1)
+		}
 		fmt.Printf("# capability import-surfacing-misses %s\n", report.ReportID)
 		fmt.Printf("- status: %s\n", report.Status)
 		fmt.Printf("- misses_read: %d\n", report.MissesRead)
@@ -857,6 +863,11 @@ func cmdCapability(args []string) {
 		}
 		for _, id := range sourceReport.NoPromoteIDs {
 			fmt.Printf("- source_no_promote: %s\n", id)
+		}
+		fmt.Printf("- review_resolved: %t\n", reviewResolved)
+		if reviewResolved {
+			fmt.Printf("- review_receipt: %s\n", reviewResolution.ReceiptID)
+			fmt.Printf("- review_undo: %s\n", reviewResolution.UndoHint)
 		}
 	case "evaluation-plan":
 		capabilityName := flag("--capability")
