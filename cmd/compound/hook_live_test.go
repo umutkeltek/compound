@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/policy"
+	"compound/internal/retrievalparity"
 	"compound/internal/work"
 )
 
@@ -196,6 +198,50 @@ func TestHookLiveUserPromptSubmitEmitsAdditionalContext(t *testing.T) {
 	if resp.HookSpecificOutput.HookEventName != "UserPromptSubmit" ||
 		!strings.Contains(resp.HookSpecificOutput.AdditionalContext, "tighten onboarding copy") {
 		t.Fatalf("live user-prompt-submit response = %+v", resp.HookSpecificOutput)
+	}
+}
+
+func TestHookLiveContextRetrievalJournalsAfterSuccessfulBreakers(t *testing.T) {
+	homePath := t.TempDir()
+	repoPath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	inputs := []struct {
+		hook   string
+		event  string
+		prompt string
+		mode   string
+	}{
+		{hook: "session-start", event: "SessionStart", prompt: "synthetic startup retrieval", mode: "observe"},
+		{hook: "user-prompt-submit", event: "UserPromptSubmit", prompt: "synthetic prompt retrieval", mode: "execute"},
+	}
+	for i, input := range inputs {
+		body := `{"hook_event_name":` + quoteJSON(input.event) +
+			`,"session_id":` + quoteJSON(fmt.Sprintf("sess_retrieval_%d", i)) +
+			`,"cwd":` + quoteJSON(repoPath) +
+			`,"prompt":` + quoteJSON(input.prompt) + `}`
+		withStdin(t, body, func() {
+			if code := runHookCommand([]string{input.hook, "--live", "--harness", "codex"}); code != 0 {
+				t.Fatalf("%s exit=%d", input.hook, code)
+			}
+		})
+	}
+	rows, err := retrievalparity.LoadJournal(homePath)
+	if err != nil {
+		t.Fatalf("load live-hook retrieval journal: %v", err)
+	}
+	if len(rows) != len(inputs) {
+		t.Fatalf("live-hook retrieval rows=%d, want %d: %+v", len(rows), len(inputs), rows)
+	}
+	for i, row := range rows {
+		if row.Consumer != retrievalparity.ConsumerOrient || row.Query != inputs[i].prompt || row.OrientInput == nil {
+			t.Fatalf("live-hook row %d=%+v", i, row)
+		}
+		if row.OrientInput.Harness != "codex" || row.OrientInput.Cwd != repoPath || row.OrientInput.Mode != inputs[i].mode {
+			t.Fatalf("live-hook row %d tuple=%+v", i, row.OrientInput)
+		}
 	}
 }
 

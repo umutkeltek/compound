@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/mem"
@@ -703,6 +704,322 @@ func TestParityReplayRejectsOrientK(t *testing.T) {
 	}
 }
 
+func TestParityReplayPreservesExactOrientTuple(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	query := "synthetic exact orient tuple"
+	tuple := retrievalparity.OrientInput{
+		Harness:     "claude_code",
+		Cwd:         filepath.Join(t.TempDir(), "library"),
+		RepoKind:    "library",
+		RepoKindVia: "flag",
+		Mode:        "review",
+		Topic:       "topic:synthetic",
+	}
+	production, err := contract.PackWithCapabilities(contract.Input{
+		Harness:     tuple.Harness,
+		Cwd:         tuple.Cwd,
+		Task:        query,
+		RepoKind:    tuple.RepoKind,
+		RepoKindVia: tuple.RepoKindVia,
+		Mode:        tuple.Mode,
+		Topic:       tuple.Topic,
+	}, orientPolicy(), homePath, now)
+	if err != nil {
+		t.Fatalf("build production tuple pack: %v", err)
+	}
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer:     retrievalparity.ConsumerOrient,
+			Query:        query,
+			OrientInput:  &tuple,
+			ExpectedRefs: production.ActiveMemory,
+		}},
+	})
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerOrient,
+	}, now)
+	if err != nil || code != 0 || len(report.Rows) != 1 {
+		t.Fatalf("exact-tuple replay code=%d err=%v report=%+v", code, err, report)
+	}
+	wantInputRef := retrievalparity.HashOrientInput(tuple, query)
+	if report.Rows[0].InputSHA256 != wantInputRef {
+		t.Fatalf("orient input identity=%q, want %q", report.Rows[0].InputSHA256, wantInputRef)
+	}
+	wantRefs, _ := parityPersistedOrientRefs(production.ActiveMemory)
+	if !sameStringSet(report.Rows[0].ResultRefs, wantRefs) {
+		t.Fatalf("exact-tuple replay refs=%v production=%v", report.Rows[0].ResultRefs, production.ActiveMemory)
+	}
+
+	changed := tuple
+	changed.Topic = "topic:other"
+	if retrievalparity.HashOrientInput(changed, query) == wantInputRef {
+		t.Fatal("topic did not participate in orient input identity")
+	}
+}
+
+func TestParityFixtureAcceptsSafeLegacyClaimRefsAndHashesReports(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	legacyRef := "claim://brain-D1"
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer:     retrievalparity.ConsumerQuery,
+			Query:        "synthetic legacy claim ref",
+			ExpectedRefs: []string{legacyRef},
+		}},
+	})
+	if fixturePath == "" {
+		t.Fatal("safe legacy fixture was not written")
+	}
+	row := retrievalparity.NewReplayRow(retrievalparity.FixtureRow{
+		Consumer:     retrievalparity.ConsumerQuery,
+		Query:        "synthetic legacy claim ref",
+		ExpectedRefs: []string{legacyRef},
+	}, []string{legacyRef}, time.Millisecond, true)
+	report := retrievalparity.BuildReport(
+		retrievalparity.HashQuery("synthetic legacy fixture"),
+		retrievalparity.ConsumerQuery,
+		10,
+		retrievalparity.Coverage{},
+		[]retrievalparity.ReplayRow{row},
+		now,
+	)
+	reportPath, err := retrievalparity.WriteReport(homePath, report)
+	if err != nil {
+		t.Fatalf("write legacy-ref report: %v", err)
+	}
+	persisted, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), legacyRef) {
+		t.Fatalf("persisted report leaked legacy ref: %s", persisted)
+	}
+	want := retrievalparity.HashQuery(legacyRef)
+	if !slices.Contains(report.Rows[0].ExpectedRefs, want) || !slices.Contains(report.Rows[0].ResultRefs, want) {
+		t.Fatalf("legacy refs were not hashed: %+v", report.Rows[0])
+	}
+}
+
+func TestParityFreezeRejectsInvalidWindowEndpointsBeforeArtifact(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	retrievalparity.Record(homePath, retrievalparity.NewRow(
+		retrievalparity.ConsumerQuery,
+		"synthetic endpoint validation",
+		nil,
+		time.Millisecond,
+		true,
+		now,
+	))
+	tests := []struct {
+		name       string
+		windowDays int
+		at         time.Time
+		want       string
+	}{
+		{name: "overflowed start", windowDays: int(^uint(0) >> 1), at: now, want: "window_start"},
+		{name: "invalid end", windowDays: 1, at: time.Date(10000, 1, 2, 0, 0, 0, 0, time.UTC), want: "window_end"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := retrievalparity.FreezeFromJournal(homePath, tt.windowDays, "", "", tt.at)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("freeze err=%v, want endpoint error containing %q", err, tt.want)
+			}
+		})
+	}
+	matches, err := filepath.Glob(filepath.Join(homePath, "reviews", retrievalparity.ReviewArea, "fixture_*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("invalid freeze wrote artifacts: %v", matches)
+	}
+}
+
+func TestParityReportSeparatesControlValidityAndFreezeRequiresControlReport(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	maskedRef := "claim://claim_aaaaaaaaaaaa"
+	row := retrievalparity.NewReplayRow(retrievalparity.FixtureRow{
+		Consumer:     retrievalparity.ConsumerQuery,
+		Query:        "synthetic negative control",
+		ExpectedRefs: []string{maskedRef},
+		NegativeControl: &retrievalparity.NegativeControl{
+			MaskedRef: maskedRef,
+		},
+	}, nil, time.Millisecond, true)
+	report := retrievalparity.BuildReport(
+		retrievalparity.HashQuery("synthetic negative control fixture"),
+		retrievalparity.ConsumerQuery,
+		10,
+		retrievalparity.Coverage{},
+		[]retrievalparity.ReplayRow{row},
+		now,
+	)
+	if report.ParityPassed {
+		t.Fatal("masked negative control must remain a parity failure")
+	}
+	if report.NegativeControlValid == nil || !*report.NegativeControlValid {
+		t.Fatalf("negative control validity=%v, want typed true", report.NegativeControlValid)
+	}
+	controlReportPath, err := retrievalparity.WriteReport(homePath, report)
+	if err != nil {
+		t.Fatalf("write control report: %v", err)
+	}
+	retrievalparity.Record(homePath, retrievalparity.NewRow(
+		retrievalparity.ConsumerQuery,
+		"synthetic traffic to freeze",
+		[]string{maskedRef},
+		time.Millisecond,
+		true,
+		now,
+	))
+	if _, path, code, err := runMemoryParityFreeze(homePath, []string{
+		"--from-journal",
+		"--window-days", "1",
+	}, now); err == nil || code != 2 || path != "" {
+		t.Fatalf("freeze without control code=%d path=%q err=%v, want usage rejection", code, path, err)
+	}
+	fixture, path, code, err := runMemoryParityFreeze(homePath, []string{
+		"--from-journal",
+		"--window-days", "1",
+		"--control-report", controlReportPath,
+	}, now)
+	if err != nil || code != 0 || path == "" || fixture.ControlReportRef == "" {
+		t.Fatalf("freeze with control code=%d path=%q err=%v fixture=%+v", code, path, err, fixture)
+	}
+}
+
+func TestParityReplayFailsUnavailableEngineWithNoExpectedRefs(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer: retrievalparity.ConsumerQuery,
+			Query:    "synthetic empty expected unavailable engine",
+		}},
+	})
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", filepath.Join(t.TempDir(), "missing-engine"))
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerQuery,
+	}, now)
+	if err != nil || code == 0 || report.ParityPassed || len(report.Rows) != 1 || report.Rows[0].EngineAvailable {
+		t.Fatalf("unavailable empty-expected replay code=%d err=%v report=%+v", code, err, report)
+	}
+}
+
+func TestParityReplayCheckpointResumeRejectsTamperAndWrongIdentity(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{
+			{Consumer: retrievalparity.ConsumerQuery, Query: "synthetic checkpoint one"},
+			{Consumer: retrievalparity.ConsumerQuery, Query: "synthetic checkpoint two"},
+		},
+	})
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerQuery,
+	}, now)
+	if err != nil || code != 0 || len(report.Rows) != 2 {
+		t.Fatalf("initial checkpoint replay code=%d err=%v report=%+v", code, err, report)
+	}
+	_, fixtureRef, err := retrievalparity.LoadFixture(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := retrievalparity.NewReplayIdentity(fixtureRef, retrievalparity.ConsumerQuery, 10)
+	checkpointPath := retrievalparity.CheckpointPath(homePath, identity)
+	checkpoint, err := retrievalparity.LoadCheckpoint(checkpointPath, identity)
+	if err != nil || checkpoint.Completed != 2 || len(checkpoint.Rows) != 2 {
+		t.Fatalf("load complete checkpoint=%+v err=%v", checkpoint, err)
+	}
+	checkpoint.Completed = 1
+	checkpoint.Rows = checkpoint.Rows[:1]
+	if err := retrievalparity.WriteCheckpoint(homePath, &checkpoint); err != nil {
+		t.Fatalf("write partial checkpoint: %v", err)
+	}
+	resumed, _, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerQuery,
+		"--resume-from", checkpointPath,
+	}, now.Add(time.Second))
+	if err != nil || code != 0 || len(resumed.Rows) != 2 {
+		t.Fatalf("resume code=%d err=%v report=%+v", code, err, resumed)
+	}
+	if temps, _ := filepath.Glob(filepath.Join(filepath.Dir(checkpointPath), ".*.tmp-*")); len(temps) != 0 {
+		t.Fatalf("atomic checkpoint left temp files: %v", temps)
+	}
+
+	raw, err := os.ReadFile(checkpointPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tampered map[string]any
+	if err := json.Unmarshal(raw, &tampered); err != nil {
+		t.Fatal(err)
+	}
+	tampered["completed"] = float64(1)
+	tamperedRaw, err := json.MarshalIndent(tampered, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(checkpointPath, append(tamperedRaw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, reportPath, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerQuery,
+		"--resume-from", checkpointPath,
+	}, now.Add(2*time.Second)); err == nil || code == 0 || reportPath != "" || !strings.Contains(err.Error(), "tampered") {
+		t.Fatalf("tampered resume code=%d report=%q err=%v", code, reportPath, err)
+	}
+
+	if err := retrievalparity.WriteCheckpoint(homePath, &checkpoint); err != nil {
+		t.Fatalf("restore checkpoint: %v", err)
+	}
+	otherFixturePath := writeParityFixtureNamed(t, homePath, "other-fixture.json", retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer: retrievalparity.ConsumerQuery,
+			Query:    "synthetic different identity",
+		}},
+	})
+	if _, reportPath, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", otherFixturePath,
+		"--consumer", retrievalparity.ConsumerQuery,
+		"--resume-from", checkpointPath,
+	}, now.Add(3*time.Second)); err == nil || code == 0 || reportPath != "" || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("wrong-identity resume code=%d report=%q err=%v", code, reportPath, err)
+	}
+}
+
 func newParityTestHome(t *testing.T, now time.Time) string {
 	t.Helper()
 	homePath := filepath.Join(t.TempDir(), "home")
@@ -759,7 +1076,12 @@ func seedParityClaim(t *testing.T, homePath, object string, now time.Time) strin
 
 func writeParityFixture(t *testing.T, homePath string, fixture retrievalparity.Fixture) string {
 	t.Helper()
-	path, err := retrievalparity.WriteFixture(homePath, "synthetic-fixture.json", fixture)
+	return writeParityFixtureNamed(t, homePath, "synthetic-fixture.json", fixture)
+}
+
+func writeParityFixtureNamed(t *testing.T, homePath, name string, fixture retrievalparity.Fixture) string {
+	t.Helper()
+	path, err := retrievalparity.WriteFixture(homePath, name, fixture)
 	if err != nil {
 		t.Fatalf("write parity fixture: %v", err)
 	}
