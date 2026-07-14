@@ -494,6 +494,50 @@ func LoadCheckpoint(path string, expected ReplayIdentity) (Checkpoint, error) {
 	return checkpoint, nil
 }
 
+// ValidateCheckpointPrefix proves that resumable rows replace exactly the
+// selected fixture prefix they claim to have completed. The seal protects the
+// checkpoint bytes; this binds those bytes back to the fixture semantics.
+func ValidateCheckpointPrefix(checkpoint Checkpoint, fixtureCoverage Coverage, fixtureRows []FixtureRow) error {
+	if err := validateCheckpoint(checkpoint); err != nil {
+		return err
+	}
+	if !equalCoverage(checkpoint.Coverage, fixtureCoverage) {
+		return fmt.Errorf("parity checkpoint coverage does not match fixture")
+	}
+	if checkpoint.Completed > len(fixtureRows) {
+		return fmt.Errorf("parity checkpoint has more completed rows than the selected fixture")
+	}
+	for i := 0; i < checkpoint.Completed; i++ {
+		checkpointRow := checkpoint.Rows[i]
+		fixtureRow := fixtureRows[i]
+		if checkpointRow.Consumer != fixtureRow.Consumer ||
+			checkpointRow.QueryClass != ClassifyQuery(fixtureRow.Consumer, fixtureRow.Query) ||
+			checkpointRow.QuerySHA256 != HashQuery(fixtureRow.Query) {
+			return fmt.Errorf("parity checkpoint row %d query identity does not match fixture", i+1)
+		}
+		wantInput := ""
+		if fixtureRow.Consumer == ConsumerOrient && fixtureRow.OrientInput != nil {
+			wantInput = HashOrientInput(*fixtureRow.OrientInput, fixtureRow.Query)
+		}
+		if checkpointRow.InputSHA256 != wantInput {
+			return fmt.Errorf("parity checkpoint row %d input identity does not match fixture", i+1)
+		}
+		wantExpected := persistedRefs(fixtureRow.Consumer, uniqueSorted(fixtureRow.ExpectedRefs))
+		if !equalStringSlices(checkpointRow.ExpectedRefs, wantExpected) {
+			return fmt.Errorf("parity checkpoint row %d expected refs do not match fixture", i+1)
+		}
+		wantControl := ""
+		if fixtureRow.NegativeControl != nil {
+			wantControl = persistedRef(fixtureRow.Consumer, fixtureRow.NegativeControl.MaskedRef)
+		}
+		if (checkpointRow.NegativeControl == nil) != (wantControl == "") ||
+			(checkpointRow.NegativeControl != nil && checkpointRow.NegativeControl.MaskedRef != wantControl) {
+			return fmt.Errorf("parity checkpoint row %d negative control does not match fixture", i+1)
+		}
+	}
+	return nil
+}
+
 func WriteCheckpoint(homePath string, checkpoint *Checkpoint) error {
 	if checkpoint == nil {
 		return fmt.Errorf("parity checkpoint required")
@@ -609,6 +653,14 @@ func normalizeCoverage(coverage Coverage) Coverage {
 	coverage.WindowEnd = strings.TrimSpace(coverage.WindowEnd)
 	coverage.KnownGaps = uniqueSorted(coverage.KnownGaps)
 	return coverage
+}
+
+func equalCoverage(left, right Coverage) bool {
+	left = normalizeCoverage(left)
+	right = normalizeCoverage(right)
+	return left.WindowStart == right.WindowStart &&
+		left.WindowEnd == right.WindowEnd &&
+		equalStringSlices(left.KnownGaps, right.KnownGaps)
 }
 
 func freezeOutputName(out string, fixture Fixture) (string, error) {

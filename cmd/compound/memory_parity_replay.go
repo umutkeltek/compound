@@ -85,8 +85,8 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 		if err != nil {
 			return retrievalparity.Report{}, "", 1, err
 		}
-		if checkpoint.Completed > len(selected) {
-			return retrievalparity.Report{}, "", 1, fmt.Errorf("parity checkpoint has more completed rows than the selected fixture")
+		if err := retrievalparity.ValidateCheckpointPrefix(checkpoint, fixture.Coverage, selected); err != nil {
+			return retrievalparity.Report{}, "", 1, err
 		}
 	}
 	coverage := checkpoint.Coverage
