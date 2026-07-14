@@ -2,6 +2,7 @@ package routeevidence
 
 import (
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -190,11 +191,13 @@ func TestDeriveChildExecutionProfileEnforcesParentNativeCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	remaining := parent.Budget
 	_, err = DeriveChildExecutionProfile(parent, ChildExecutionProfileIntent{
 		ClientHarnessID: "claude-code",
 		TransportID:     "native",
 		SemanticEffort:  "max",
 		NativeEffort:    "max",
+		RemainingBudget: &remaining,
 		Budget:          parent.Budget,
 	})
 	if err == nil || !strings.Contains(err.Error(), "child_intent.native_effort") || !strings.Contains(err.Error(), "parent") {
@@ -364,6 +367,7 @@ func TestDeriveChildExecutionProfileEnforcesCeilingsAndExplicitSelectors(t *test
 		TransportID:     "switchback",
 		SemanticEffort:  "balanced",
 		NativeEffort:    "medium",
+		RemainingBudget: &parent.Budget,
 		Budget: ExecutionBudget{
 			MaxRequests: parent.Budget.MaxRequests + 1,
 		},
@@ -377,7 +381,7 @@ func TestDeriveChildExecutionProfileEnforcesCeilingsAndExplicitSelectors(t *test
 	childBudget.MaxInputTokens--
 	childBudget.MaxOutputTokens--
 	childBudget.MaxDurationSeconds--
-	childBudget.MaxUSD--
+	childBudget.MaxUSD = executionBudgetUSD(*parent.Budget.MaxUSD - 1)
 	childBudget.MaxParallelism = 1
 	child, err := DeriveChildExecutionProfile(parent, ChildExecutionProfileIntent{
 		Role:            "scout",
@@ -387,12 +391,13 @@ func TestDeriveChildExecutionProfileEnforcesCeilingsAndExplicitSelectors(t *test
 		ModelConstraint: "openai/gpt-5.6-sol",
 		SemanticEffort:  "balanced",
 		NativeEffort:    "medium",
+		RemainingBudget: &parent.Budget,
 		Budget:          childBudget,
 	})
 	if err != nil {
 		t.Fatalf("narrow child: %v", err)
 	}
-	if child.ParentPlanID != parent.ID || child.ID == parent.ID || child.Budget != childBudget {
+	if child.ParentPlanID != parent.ID || child.ID == parent.ID || !reflect.DeepEqual(child.Budget, childBudget) {
 		t.Fatalf("child identity/ceiling mismatch: parent=%+v child=%+v", parent, child)
 	}
 	if child.RequestedIntent.ClientHarnessID != "codex" ||

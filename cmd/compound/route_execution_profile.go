@@ -104,12 +104,16 @@ func runRouteExecutionProfileCommand(args []string, stdout, stderr io.Writer) in
 	fmt.Fprintf(stdout, "- effective_provider: %s\n", plan.EffectiveProvider)
 	fmt.Fprintf(stdout, "- effective_model: %s\n", plan.EffectiveModel)
 	fmt.Fprintf(stdout, "- effective_native_effort: %s\n", plan.EffectiveNativeEffort)
-	fmt.Fprintf(stdout, "- budget: requests=%d input_tokens=%d output_tokens=%d duration_seconds=%d max_usd=%.2f parallelism=%d\n",
+	maxUSD := "inherit"
+	if plan.Budget.MaxUSD != nil {
+		maxUSD = fmt.Sprintf("%.2f", *plan.Budget.MaxUSD)
+	}
+	fmt.Fprintf(stdout, "- budget: requests=%d input_tokens=%d output_tokens=%d duration_seconds=%d max_usd=%s parallelism=%d\n",
 		plan.Budget.MaxRequests,
 		plan.Budget.MaxInputTokens,
 		plan.Budget.MaxOutputTokens,
 		plan.Budget.MaxDurationSeconds,
-		plan.Budget.MaxUSD,
+		maxUSD,
 		plan.Budget.MaxParallelism,
 	)
 	if plan.Checkpoint.Required {

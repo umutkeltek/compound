@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -34,12 +35,12 @@ type ExecutionProfileIntent struct {
 }
 
 type ExecutionBudget struct {
-	MaxRequests        int     `json:"max_requests"`
-	MaxInputTokens     int     `json:"max_input_tokens"`
-	MaxOutputTokens    int     `json:"max_output_tokens"`
-	MaxDurationSeconds int     `json:"max_duration_seconds"`
-	MaxUSD             float64 `json:"max_usd,omitempty"`
-	MaxParallelism     int     `json:"max_parallelism"`
+	MaxRequests        int      `json:"max_requests"`
+	MaxInputTokens     int      `json:"max_input_tokens"`
+	MaxOutputTokens    int      `json:"max_output_tokens"`
+	MaxDurationSeconds int      `json:"max_duration_seconds"`
+	MaxUSD             *float64 `json:"max_usd,omitempty"`
+	MaxParallelism     int      `json:"max_parallelism"`
 }
 
 type ExecutionCheckpointPolicy struct {
@@ -104,6 +105,7 @@ type ExecutionProfilePlan struct {
 	Candidates              []ExecutionProfileCandidate      `json:"candidates"`
 	CandidateExplanation    string                           `json:"candidate_explanation"`
 	ParentPlanID            string                           `json:"parent_plan_id,omitempty"`
+	RemainingBudget         *ExecutionBudget                 `json:"remaining_budget,omitempty"`
 	InheritedCeilings       []string                         `json:"inherited_ceilings,omitempty"`
 	IndependenceRequirement ExecutionIndependenceRequirement `json:"independence_requirement"`
 	EffectiveProvider       string                           `json:"effective_provider"`
@@ -113,16 +115,17 @@ type ExecutionProfilePlan struct {
 }
 
 type ChildExecutionProfileIntent struct {
-	Role                string          `json:"role,omitempty"`
-	CapabilityClass     string          `json:"capability_class,omitempty"`
-	ClientHarnessID     string          `json:"client_harness_id"`
-	TransportID         string          `json:"transport_id"`
-	RouteAlias          string          `json:"route_alias,omitempty"`
-	ModelConstraint     string          `json:"model_constraint,omitempty"`
-	SemanticEffort      string          `json:"semantic_effort"`
-	NativeEffort        string          `json:"native_effort,omitempty"`
-	OrchestrationPolicy string          `json:"orchestration_policy,omitempty"`
-	Budget              ExecutionBudget `json:"budget"`
+	Role                string           `json:"role,omitempty"`
+	CapabilityClass     string           `json:"capability_class,omitempty"`
+	ClientHarnessID     string           `json:"client_harness_id"`
+	TransportID         string           `json:"transport_id"`
+	RouteAlias          string           `json:"route_alias,omitempty"`
+	ModelConstraint     string           `json:"model_constraint,omitempty"`
+	SemanticEffort      string           `json:"semantic_effort"`
+	NativeEffort        string           `json:"native_effort,omitempty"`
+	OrchestrationPolicy string           `json:"orchestration_policy,omitempty"`
+	RemainingBudget     *ExecutionBudget `json:"remaining_budget,omitempty"`
+	Budget              ExecutionBudget  `json:"budget"`
 }
 
 type ObservedExecutionIdentity struct {
@@ -146,7 +149,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 			DefaultClientHarness: "claude-code", DefaultTransport: "native",
 			SemanticEffort: "balanced", OrchestrationPolicy: "standard",
 			NativeEffortByHarness: map[string]string{"claude-code": "medium", "codex": "medium", "worker": "medium"},
-			Budget:                ExecutionBudget{MaxRequests: 8, MaxInputTokens: 120_000, MaxOutputTokens: 24_000, MaxDurationSeconds: 1_200, MaxUSD: 5, MaxParallelism: 1},
+			Budget:                ExecutionBudget{MaxRequests: 8, MaxInputTokens: 120_000, MaxOutputTokens: 24_000, MaxDurationSeconds: 1_200, MaxUSD: usdCeiling(5), MaxParallelism: 1},
 			Checkpoint:            ExecutionCheckpointPolicy{},
 			Explanation:           "interactive work favors a bounded balanced request and standard orchestration",
 		},
@@ -155,7 +158,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 			DefaultClientHarness: "codex", DefaultTransport: "native",
 			SemanticEffort: "deep", OrchestrationPolicy: "standard",
 			NativeEffortByHarness: map[string]string{"claude-code": "xhigh", "codex": "xhigh", "worker": "high"},
-			Budget:                ExecutionBudget{MaxRequests: 40, MaxInputTokens: 1_000_000, MaxOutputTokens: 200_000, MaxDurationSeconds: 7_200, MaxUSD: 25, MaxParallelism: 2},
+			Budget:                ExecutionBudget{MaxRequests: 40, MaxInputTokens: 1_000_000, MaxOutputTokens: 200_000, MaxDurationSeconds: 7_200, MaxUSD: usdCeiling(25), MaxParallelism: 2},
 			Checkpoint:            ExecutionCheckpointPolicy{},
 			Explanation:           "implementation maps semantic depth through the selected harness without opting into ultracode",
 		},
@@ -164,7 +167,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 			DefaultClientHarness: "codex", DefaultTransport: "switchback",
 			SemanticEffort: "economy", OrchestrationPolicy: "standard",
 			NativeEffortByHarness: map[string]string{"claude-code": "low", "codex": "low", "worker": "low"},
-			Budget:                ExecutionBudget{MaxRequests: 500, MaxInputTokens: 10_000_000, MaxOutputTokens: 2_000_000, MaxDurationSeconds: 14_400, MaxUSD: 30, MaxParallelism: 16},
+			Budget:                ExecutionBudget{MaxRequests: 500, MaxInputTokens: 10_000_000, MaxOutputTokens: 2_000_000, MaxDurationSeconds: 14_400, MaxUSD: usdCeiling(30), MaxParallelism: 16},
 			Checkpoint:            ExecutionCheckpointPolicy{Required: true, EveryRequests: 20, PersistPartial: true},
 			Candidates:            []ExecutionProfileCandidate{{ClientHarnessID: "codex", TransportID: "switchback", SemanticEffort: "economy", NativeEffort: "low", Terminal: true, Explanation: "bounded Codex client over Switchback transport; no provider call is made by resolution"}},
 			Explanation:           "bulk mining prefers cheap transport, bounded parallelism, and persistent checkpoints",
@@ -174,7 +177,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 			DefaultClientHarness: "claude-code", DefaultTransport: "native",
 			SemanticEffort: "deep", OrchestrationPolicy: "standard",
 			NativeEffortByHarness: map[string]string{"claude-code": "xhigh", "codex": "xhigh", "worker": "high"},
-			Budget:                ExecutionBudget{MaxRequests: 20, MaxInputTokens: 400_000, MaxOutputTokens: 80_000, MaxDurationSeconds: 3_600, MaxUSD: 20, MaxParallelism: 3},
+			Budget:                ExecutionBudget{MaxRequests: 20, MaxInputTokens: 400_000, MaxOutputTokens: 80_000, MaxDurationSeconds: 3_600, MaxUSD: usdCeiling(20), MaxParallelism: 3},
 			Checkpoint:            ExecutionCheckpointPolicy{},
 			Independence:          ExecutionIndependenceRequirement{CrossModelRequired: true, Basis: "terminal critique requires distinct observed provider/model identities; free lanes are tripwire-only"},
 			Explanation:           "critique uses deep semantic effort; free candidates may object but cannot terminate judgment",
@@ -184,7 +187,7 @@ func ListExecutionProfiles() []ExecutionProfileDefinition {
 			DefaultClientHarness: "codex", DefaultTransport: "native",
 			SemanticEffort: "deep", OrchestrationPolicy: "ultracode",
 			NativeEffortByHarness: map[string]string{"claude-code": "xhigh", "codex": "xhigh", "worker": "high"},
-			Budget:                ExecutionBudget{MaxRequests: 80, MaxInputTokens: 2_000_000, MaxOutputTokens: 400_000, MaxDurationSeconds: 10_800, MaxUSD: 50, MaxParallelism: 4},
+			Budget:                ExecutionBudget{MaxRequests: 80, MaxInputTokens: 2_000_000, MaxOutputTokens: 400_000, MaxDurationSeconds: 10_800, MaxUSD: usdCeiling(50), MaxParallelism: 4},
 			Checkpoint:            ExecutionCheckpointPolicy{Required: true, EveryRequests: 20, PersistPartial: true},
 			Explanation:           "ultracode is an explicit orchestration policy, never a model or native effort value",
 		},
@@ -209,6 +212,9 @@ func ResolveExecutionProfile(intent ExecutionProfileIntent) (ExecutionProfilePla
 	intent.OrchestrationPolicy = defaultString(intent.OrchestrationPolicy, definition.OrchestrationPolicy)
 
 	if err := validateExecutionSelectors(intent, definition); err != nil {
+		return ExecutionProfilePlan{}, err
+	}
+	if err := validateConcreteBudget("profile.budget", definition.Budget); err != nil {
 		return ExecutionProfilePlan{}, err
 	}
 	nativeEffort, err := resolveNativeEffort(
@@ -251,7 +257,10 @@ func ResolveExecutionProfile(intent ExecutionProfileIntent) (ExecutionProfilePla
 	if plan.ProfileID == "judge-critique" {
 		plan.Warnings = append(plan.Warnings, "free judge candidates are tripwire-only and cannot provide a terminal verdict")
 	}
-	plan.ID = executionProfilePlanID(plan)
+	plan.ID, err = executionProfilePlanID(plan)
+	if err != nil {
+		return ExecutionProfilePlan{}, fmt.Errorf("generate execution profile plan id: %w", err)
+	}
 	return plan, nil
 }
 
@@ -267,6 +276,9 @@ func DeriveChildExecutionProfile(parent ExecutionProfilePlan, child ChildExecuti
 	}
 	if strings.TrimSpace(child.SemanticEffort) == "" {
 		return ExecutionProfilePlan{}, compatibilityError("child_intent.semantic_effort", "child effort must be explicit")
+	}
+	if child.RemainingBudget == nil {
+		return ExecutionProfilePlan{}, compatibilityError("child_intent.remaining_budget", "explicit remaining budget is required")
 	}
 	if effortRank(child.SemanticEffort) > effortRank(parent.SemanticEffort) {
 		return ExecutionProfilePlan{}, compatibilityError("child_intent.semantic_effort", "child semantic effort cannot exceed the parent")
@@ -288,7 +300,7 @@ func DeriveChildExecutionProfile(parent ExecutionProfilePlan, child ChildExecuti
 		return ExecutionProfilePlan{}, err
 	}
 
-	budget, err := childBudgetWithinCeiling(parent.Budget, child.Budget)
+	remainingBudget, budget, err := childBudgetWithinCeiling(parent.Budget, *child.RemainingBudget, child.Budget)
 	if err != nil {
 		return ExecutionProfilePlan{}, err
 	}
@@ -332,9 +344,13 @@ func DeriveChildExecutionProfile(parent ExecutionProfilePlan, child ChildExecuti
 		OrchestrationPolicy: child.OrchestrationPolicy,
 	}
 	plan.ParentPlanID = parent.ID
-	plan.InheritedCeilings = []string{"budget.max_requests", "budget.max_input_tokens", "budget.max_output_tokens", "budget.max_duration_seconds", "budget.max_usd", "budget.max_parallelism"}
+	plan.RemainingBudget = &remainingBudget
+	plan.InheritedCeilings = []string{"remaining_budget.max_requests", "remaining_budget.max_input_tokens", "remaining_budget.max_output_tokens", "remaining_budget.max_duration_seconds", "remaining_budget.max_usd", "remaining_budget.max_parallelism"}
 	plan.Budget = budget
-	plan.ID = executionProfilePlanID(plan)
+	plan.ID, err = executionProfilePlanID(plan)
+	if err != nil {
+		return ExecutionProfilePlan{}, fmt.Errorf("generate child execution profile plan id: %w", err)
+	}
 	return plan, nil
 }
 
@@ -477,45 +493,111 @@ func translatedNativeEffort(definition ExecutionProfileDefinition, harness, sema
 	}
 }
 
-func childBudgetWithinCeiling(parent, requested ExecutionBudget) (ExecutionBudget, error) {
-	child := requested
+func childBudgetWithinCeiling(parent, remaining, requested ExecutionBudget) (ExecutionBudget, ExecutionBudget, error) {
+	parent = cloneExecutionBudget(parent)
+	remaining = cloneExecutionBudget(remaining)
+	if err := validateConcreteBudget("parent_plan.budget", parent); err != nil {
+		return ExecutionBudget{}, ExecutionBudget{}, err
+	}
+	if err := validateConcreteBudget("child_intent.remaining_budget", remaining); err != nil {
+		return ExecutionBudget{}, ExecutionBudget{}, err
+	}
+	if err := validateBudgetWithinCeiling(parent, remaining, "child_intent.remaining_budget", "parent"); err != nil {
+		return ExecutionBudget{}, ExecutionBudget{}, err
+	}
+
+	child := cloneExecutionBudget(requested)
 	inheritInt := func(value, ceiling int) int {
 		if value == 0 {
 			return ceiling
 		}
 		return value
 	}
-	child.MaxRequests = inheritInt(child.MaxRequests, parent.MaxRequests)
-	child.MaxInputTokens = inheritInt(child.MaxInputTokens, parent.MaxInputTokens)
-	child.MaxOutputTokens = inheritInt(child.MaxOutputTokens, parent.MaxOutputTokens)
-	child.MaxDurationSeconds = inheritInt(child.MaxDurationSeconds, parent.MaxDurationSeconds)
-	child.MaxParallelism = inheritInt(child.MaxParallelism, parent.MaxParallelism)
-	if child.MaxUSD == 0 {
-		child.MaxUSD = parent.MaxUSD
+	child.MaxRequests = inheritInt(child.MaxRequests, remaining.MaxRequests)
+	child.MaxInputTokens = inheritInt(child.MaxInputTokens, remaining.MaxInputTokens)
+	child.MaxOutputTokens = inheritInt(child.MaxOutputTokens, remaining.MaxOutputTokens)
+	child.MaxDurationSeconds = inheritInt(child.MaxDurationSeconds, remaining.MaxDurationSeconds)
+	child.MaxParallelism = inheritInt(child.MaxParallelism, remaining.MaxParallelism)
+	if child.MaxUSD == nil {
+		child.MaxUSD = cloneFloat64(remaining.MaxUSD)
 	}
-
-	checks := []struct {
-		path           string
-		value, ceiling int
-	}{
-		{"max_requests", child.MaxRequests, parent.MaxRequests},
-		{"max_input_tokens", child.MaxInputTokens, parent.MaxInputTokens},
-		{"max_output_tokens", child.MaxOutputTokens, parent.MaxOutputTokens},
-		{"max_duration_seconds", child.MaxDurationSeconds, parent.MaxDurationSeconds},
-		{"max_parallelism", child.MaxParallelism, parent.MaxParallelism},
+	if err := validateConcreteBudget("child_intent.budget", child); err != nil {
+		return ExecutionBudget{}, ExecutionBudget{}, err
 	}
-	for _, check := range checks {
-		if check.value <= 0 || check.value > check.ceiling {
-			return ExecutionBudget{}, compatibilityError("child_intent.budget."+check.path, fmt.Sprintf("child value %d exceeds parent ceiling %d", check.value, check.ceiling))
-		}
+	if err := validateBudgetWithinCeiling(remaining, child, "child_intent.budget", "remaining"); err != nil {
+		return ExecutionBudget{}, ExecutionBudget{}, err
 	}
-	if child.MaxUSD < 0 || child.MaxUSD > parent.MaxUSD {
-		return ExecutionBudget{}, compatibilityError("child_intent.budget.max_usd", fmt.Sprintf("child value %.2f exceeds parent ceiling %.2f", child.MaxUSD, parent.MaxUSD))
-	}
-	return child, nil
+	return remaining, child, nil
 }
 
-func executionProfilePlanID(plan ExecutionProfilePlan) string {
+func validateConcreteBudget(path string, budget ExecutionBudget) error {
+	checks := []struct {
+		name  string
+		value int
+	}{
+		{"max_requests", budget.MaxRequests},
+		{"max_input_tokens", budget.MaxInputTokens},
+		{"max_output_tokens", budget.MaxOutputTokens},
+		{"max_duration_seconds", budget.MaxDurationSeconds},
+		{"max_parallelism", budget.MaxParallelism},
+	}
+	for _, check := range checks {
+		if check.value <= 0 {
+			return compatibilityError(path+"."+check.name, fmt.Sprintf("budget value must be positive, got %d", check.value))
+		}
+	}
+	if budget.MaxUSD == nil {
+		return compatibilityError(path+".max_usd", "concrete budget must provide max_usd explicitly")
+	}
+	if math.IsNaN(*budget.MaxUSD) || math.IsInf(*budget.MaxUSD, 0) {
+		return compatibilityError(path+".max_usd", "budget value must be finite")
+	}
+	if *budget.MaxUSD < 0 {
+		return compatibilityError(path+".max_usd", "budget value must be non-negative")
+	}
+	return nil
+}
+
+func validateBudgetWithinCeiling(ceiling, value ExecutionBudget, path, ceilingName string) error {
+	checks := []struct {
+		name           string
+		value, ceiling int
+	}{
+		{"max_requests", value.MaxRequests, ceiling.MaxRequests},
+		{"max_input_tokens", value.MaxInputTokens, ceiling.MaxInputTokens},
+		{"max_output_tokens", value.MaxOutputTokens, ceiling.MaxOutputTokens},
+		{"max_duration_seconds", value.MaxDurationSeconds, ceiling.MaxDurationSeconds},
+		{"max_parallelism", value.MaxParallelism, ceiling.MaxParallelism},
+	}
+	for _, check := range checks {
+		if check.value > check.ceiling {
+			return compatibilityError(path+"."+check.name, fmt.Sprintf("budget value %d exceeds %s ceiling %d", check.value, ceilingName, check.ceiling))
+		}
+	}
+	if *value.MaxUSD > *ceiling.MaxUSD {
+		return compatibilityError(path+".max_usd", fmt.Sprintf("budget value %.2f exceeds %s ceiling %.2f", *value.MaxUSD, ceilingName, *ceiling.MaxUSD))
+	}
+	return nil
+}
+
+func cloneExecutionBudget(budget ExecutionBudget) ExecutionBudget {
+	budget.MaxUSD = cloneFloat64(budget.MaxUSD)
+	return budget
+}
+
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func usdCeiling(value float64) *float64 {
+	return &value
+}
+
+func executionProfilePlanID(plan ExecutionProfilePlan) (string, error) {
 	canonical := struct {
 		ProfileID               string
 		Role                    string
@@ -530,6 +612,7 @@ func executionProfilePlanID(plan ExecutionProfilePlan) string {
 		Budget                  ExecutionBudget
 		Checkpoint              ExecutionCheckpointPolicy
 		ParentPlanID            string
+		RemainingBudget         *ExecutionBudget
 		IndependenceRequirement ExecutionIndependenceRequirement
 	}{
 		ProfileID: plan.ProfileID, Role: plan.Role, CapabilityClass: plan.CapabilityClass,
@@ -538,11 +621,15 @@ func executionProfilePlanID(plan ExecutionProfilePlan) string {
 		SemanticEffort: plan.SemanticEffort, NativeEffort: plan.NativeEffort.Requested,
 		OrchestrationPolicy: plan.OrchestrationPolicy, Budget: plan.Budget,
 		Checkpoint: plan.Checkpoint, ParentPlanID: plan.ParentPlanID,
+		RemainingBudget:         plan.RemainingBudget,
 		IndependenceRequirement: plan.IndependenceRequirement,
 	}
-	data, _ := json.Marshal(canonical)
+	data, err := json.Marshal(canonical)
+	if err != nil {
+		return "", err
+	}
 	sum := sha256.Sum256(data)
-	return "epp_" + hex.EncodeToString(sum[:6])
+	return "epp_" + hex.EncodeToString(sum[:6]), nil
 }
 
 func compatibilityError(path, reason string) error {
