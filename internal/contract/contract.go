@@ -28,6 +28,7 @@ import (
 	"compound/internal/mem"
 	"compound/internal/negatives"
 	"compound/internal/projection"
+	"compound/internal/work"
 )
 
 const (
@@ -783,6 +784,10 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if err != nil {
 		return pack, err
 	}
+	// Attach the CONTEXTUAL, display-only peers view (active leases + capped agent-lane cards).
+	// Read-only: it never writes a capgraph/mem byte and never influences routing. Absent content
+	// (fresh home) leaves the section off entirely.
+	pack.Peers = buildPeersSection(homePath, now)
 	return pack, nil
 }
 
@@ -828,6 +833,126 @@ func appendNegatives(pack envelope.ContextPack, homePath string, in Input) (enve
 	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: negatives.ProjectionRef, Rev: proj.ComputedAt}})
 	pack.SummaryMD += fmt.Sprintf(" %d already-tried-and-failed negative(s) surfaced (scope-matched, display-only).", len(matched))
 	return pack, nil
+}
+
+const (
+	// peerLeaseStaleAfter is the deterministic v1 staleness window for a work lease surfaced in the
+	// peers section: a lease whose claimed_at is older than this renders stale. Process/session
+	// liveness is deliberately OUT of v1 — a dead-but-unexpired holder still renders active, which
+	// is acceptable and documented (the design packet's falsifier d covers only the expiry path).
+	peerLeaseStaleAfter    = 24 * time.Hour
+	peerLaneCardCap        = 5
+	peerTopCapabilitiesCap = 2
+)
+
+// buildPeersSection assembles the CONTEXTUAL, display-only peers view at orient time: the active
+// work leases (deterministic expiry-based staleness) plus capped agent-lane cards read from slice
+// A's capability graph. It is strictly READ-ONLY: it opens the capability graph read-only and never
+// writes a capgraph or memory byte (ratified: orient writes ZERO capgraph/mem bytes), and it has
+// zero routing influence. It returns nil when there is nothing to show (a fresh home), so the pack
+// omits the peers key entirely; read errors fail open (skip that part) rather than break orient.
+// Belief-claim cards (slice B — agent-lane beliefs) join this section later; v1 is leases + lanes.
+func buildPeersSection(homePath string, now time.Time) *envelope.PeersSection {
+	if strings.TrimSpace(homePath) == "" {
+		return nil
+	}
+	leases := peerActiveLeases(homePath, now)
+	lanes := peerLaneCards(homePath)
+	if len(leases) == 0 && len(lanes) == 0 {
+		return nil
+	}
+	return &envelope.PeersSection{ActiveLeases: leases, Lanes: lanes}
+}
+
+// peerActiveLeases lists the work leases as peer rows with deterministic expiry staleness. It only
+// touches the work store when a leases dir already exists, so orient never materializes work
+// runtime dirs on a fresh home just to report an empty peer set.
+func peerActiveLeases(homePath string, now time.Time) []envelope.PeerLease {
+	if _, err := os.Stat(filepath.Join(homePath, "work", "leases")); err != nil {
+		return nil
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		return nil
+	}
+	raw, err := store.ListLeases()
+	if err != nil {
+		return nil
+	}
+	out := make([]envelope.PeerLease, 0, len(raw))
+	for _, l := range raw {
+		age, stale := peerLeaseAgeStale(l.ClaimAt, now)
+		out = append(out, envelope.PeerLease{WorkID: l.WorkID, Holder: l.By, Age: age, Stale: stale})
+	}
+	return out
+}
+
+// peerLeaseAgeStale renders a coarse age and the deterministic staleness verdict for a claimed_at
+// timestamp. An unparseable time is surfaced as stale/unknown rather than silently rendered active.
+func peerLeaseAgeStale(claimedAt string, now time.Time) (string, bool) {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(claimedAt))
+	if err != nil {
+		return "unknown", true
+	}
+	d := now.Sub(t)
+	if d < 0 {
+		d = 0
+	}
+	return peerCoarseAge(d), d > peerLeaseStaleAfter
+}
+
+// peerLaneCards reads slice A's agent-lane cards read-only and reduces them to display cards: the
+// non-retired lanes capped at peerLaneCardCap (ordered by node id, the reader's stable order), each
+// with its top capability domains and tendency slugs. top_capabilities is the first peerTopCapabilities
+// domains in the reader's deterministic slug order — validated_by evidence is lane-level (not
+// per-domain) in slice A, so it cannot re-rank a single lane's domains; per-domain weighting is
+// slice-B territory. Read-only: OpenReadOnly + a pure reader, zero writes.
+func peerLaneCards(homePath string) []envelope.PeerLaneCard {
+	if !capgraph.Exists(homePath) {
+		return nil
+	}
+	store, err := capgraph.OpenReadOnly(homePath)
+	if err != nil {
+		return nil
+	}
+	cards, err := store.AgentLaneCards()
+	if err != nil {
+		return nil
+	}
+	out := make([]envelope.PeerLaneCard, 0, peerLaneCardCap)
+	for _, c := range cards {
+		if c.Retired {
+			continue
+		}
+		if len(out) >= peerLaneCardCap {
+			break
+		}
+		top := c.Capabilities
+		if len(top) > peerTopCapabilitiesCap {
+			top = top[:peerTopCapabilitiesCap]
+		}
+		out = append(out, envelope.PeerLaneCard{
+			Lane:            c.Name,
+			Harness:         c.Harness,
+			TopCapabilities: append([]string{}, top...),
+			Tendencies:      append([]string{}, c.Tendencies...),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func peerCoarseAge(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
+	}
 }
 
 func surfaceCapabilityHits(homePath string, in Input) ([]capgraph.Surfaced, int, error) {
