@@ -180,6 +180,9 @@ func TestReconcileDoesNotPreserveExternalHookWithAttestationDrift(t *testing.T) 
 			if len(got.Deltas) != 1 || got.Deltas[0].State != StateExtraUnowned {
 				t.Fatalf("Reconcile() deltas = %+v, want attestation drift to remain extra_unowned", got.Deltas)
 			}
+			if got.Deltas[0].ObservedHandlerRevision != test.observed.HandlerRevision {
+				t.Fatalf("extra_unowned delta lost observed handler attestation: %+v", got.Deltas[0])
+			}
 		})
 	}
 }

@@ -145,6 +145,88 @@ func TestImportAndObserveInstalledHookContentAreIndependentAttestations(t *testi
 	}
 }
 
+func TestImportUnavailableConcreteHandlerReconcilesDrifted(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, handlerPath string)
+	}{
+		{name: "missing"},
+		{
+			name: "symlink",
+			setup: func(t *testing.T, handlerPath string) {
+				realPath := filepath.Join(filepath.Dir(handlerPath), "real-recall.ts")
+				writeHarnessHookConfig(t, realPath, "#!/usr/bin/env bun\nprocess.stdout.write('{}')")
+				if err := os.Symlink(realPath, handlerPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			compoundHome := t.TempDir()
+			harnessHome := t.TempDir()
+			t.Setenv("HOME", harnessHome)
+			handlerPath := filepath.Join(harnessHome, ".claude", "hooks", "RecallContext.hook.ts")
+			if test.setup != nil {
+				test.setup(t, handlerPath)
+			}
+			sourcePath := filepath.Join(t.TempDir(), "hook-registration.ts")
+			source := `export const HOOK_REGISTRATIONS = [
+  { harness: "claude", event: "SessionStart", file: "RecallContext.hook.ts", command: ` + "`\"$HOME/.claude/hooks/RecallContext.hook.ts\"`" + ` },
+];`
+			if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			imported, err := ImportHookRegistrationTS(compoundHome, sourcePath, time.Date(2026, 7, 14, 20, 0, 0, 0, time.UTC))
+			if err != nil {
+				t.Fatalf("ImportHookRegistrationTS() error = %v", err)
+			}
+			if len(imported.Manifest.Hooks) != 1 || imported.Manifest.Hooks[0].Revision != installedHookHandlerUnavailableRevision {
+				t.Fatalf("imported unavailable handler attestation = %+v, want fail-loud sentinel", imported.Manifest.Hooks)
+			}
+			writeHarnessHookConfig(t, filepath.Join(harnessHome, ".claude", "settings.json"), `{
+  "hooks": {"SessionStart": [{"hooks":[{"type":"command","command":"\"$HOME/.claude/hooks/RecallContext.hook.ts\""}]}]}
+}`)
+			reconciled, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+			if err != nil {
+				t.Fatalf("ReconcileInstalledHooks() error = %v", err)
+			}
+			delta := hookReconciliationDelta(reconciled.Reconciliation, "claude_code", "SessionStart")
+			if delta == nil || delta.State != hookplan.StateDrifted || delta.DesiredHandlerRevision != installedHookHandlerUnavailableRevision {
+				t.Fatalf("unavailable imported handler reconciliation = %+v, want drifted sentinel", delta)
+			}
+		})
+	}
+}
+
+func TestOpaqueImportedHandlerIdentityRemainsRegisteredWithoutContentAttestation(t *testing.T) {
+	manifest := InstalledHooksManifest{
+		SchemaVersion: installedHooksSchemaVersion,
+		Hooks: []InstalledHook{
+			{Harness: "claude_code", Name: "SessionStart", Event: "SessionStart", Ref: "handler:opaque-runtime", Status: "current"},
+		},
+	}
+	attestInstalledHookHandlers(&manifest)
+	if manifest.Hooks[0].Revision != "" {
+		t.Fatalf("opaque handler identity received concrete-unavailable sentinel: %+v", manifest.Hooks[0])
+	}
+	plan, err := hookPlanFromInstalledManifest(manifest, t.TempDir())
+	if err != nil {
+		t.Fatalf("hookPlanFromInstalledManifest() error = %v", err)
+	}
+	reconciled, err := hookplan.Reconcile(plan, hookplan.InstallationSnapshot{Bindings: []hookplan.ObservedBinding{
+		{Harness: "claude_code", Event: "SessionStart", HandlerRef: "handler:opaque-runtime", Active: true},
+	}}, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(reconciled.Deltas) != 1 || reconciled.Deltas[0].State != hookplan.StateRegistered {
+		t.Fatalf("opaque handler reconciliation = %+v, want registered", reconciled.Deltas)
+	}
+}
+
 func TestCanonicalHookInvocationRevisionIncludesArgumentsForEveryHandler(t *testing.T) {
 	harnessHome := t.TempDir()
 	tests := []struct {
