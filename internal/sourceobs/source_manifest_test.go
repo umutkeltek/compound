@@ -2,6 +2,7 @@ package sourceobs
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,7 +21,7 @@ func TestOwnedSourceManifestSurvivesOriginalLossAndMaterializesExactBytes(t *tes
 	sourceDir := t.TempDir()
 	sourcePath := filepath.Join(sourceDir, "compound.md")
 	body := []byte("---\ntitle: Compound\n---\n# Compound\n\nPhysical custody is not semantic promotion.\n")
-	if err := os.WriteFile(sourcePath, body, 0o644); err != nil {
+	if err := os.WriteFile(sourcePath, body, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -70,6 +71,13 @@ func TestOwnedSourceManifestSurvivesOriginalLossAndMaterializesExactBytes(t *tes
 	}
 	if !bytes.Equal(got, body) {
 		t.Fatalf("materialized bytes differ:\ngot  %q\nwant %q", got, body)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o750 {
+		t.Fatalf("materialized mode = %04o, want 0750", info.Mode().Perm())
 	}
 }
 
@@ -171,6 +179,96 @@ func TestOwnedSourceManifestDeduplicatesBodiesAndRefusesDestructiveMaterialize(t
 	}
 	if _, err := MaterializeSourceManifestItem(homePath, manifest.SourceFamily, manifest.Items[0].ID, target); err != nil {
 		t.Fatalf("byte-identical materialize must be idempotent: %v", err)
+	}
+}
+
+func TestOwnedSourceManifestRejectsInvalidOrMismatchedExistingMode(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(t.TempDir(), "executable.sh")
+	body := []byte("#!/bin/sh\nexit 0\n")
+	if err := os.WriteFile(sourcePath, body, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := BuildOwnedSourceManifest(homePath, "mode_restore", []string{sourcePath}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordSourceManifest(homePath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "executable.sh")
+	if err := os.WriteFile(target, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MaterializeSourceManifestItem(homePath, manifest.SourceFamily, manifest.Items[0].ID, target); err == nil || !strings.Contains(err.Error(), "non-identical mode") {
+		t.Fatalf("mode mismatch err = %v", err)
+	}
+
+	loaded, err := LoadSourceManifest(homePath, manifest.SourceFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Items[0].FileMode = "08no"
+	bodyJSON, err := json.MarshalIndent(loaded, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(SourceManifestPath(homePath, manifest.SourceFamily), append(bodyJSON, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MaterializeSourceManifestItem(homePath, manifest.SourceFamily, manifest.Items[0].ID, filepath.Join(t.TempDir(), "new.sh")); err == nil || !strings.Contains(err.Error(), "invalid file_mode") {
+		t.Fatalf("invalid mode err = %v", err)
+	}
+}
+
+func TestLegacySourceManifestV01LoadsAndUpgradesWithoutLosingIdentity(t *testing.T) {
+	homePath := t.TempDir()
+	family := "legacy_v01"
+	path := SourceManifestPath(homePath, family)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{
+  "schema_version": "compound.source_manifest.v0.1",
+  "id": "srcman_legacy_v01",
+  "generated_at": "2026-07-01T00:00:00Z",
+  "source_family": "legacy_v01",
+  "authority_ref": "compound://registries/source-manifests/legacy_v01",
+  "items": [{
+    "id": "srcitem_frozen_v01",
+    "source_kind": "markdown",
+    "source_ref": "/migration-only/source.md",
+    "file_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "snapshot_time": "2026-07-01T00:00:00Z",
+    "privacy": "private",
+    "body_policy": "source_in_place"
+  }]
+}`
+	if err := os.WriteFile(path, []byte(legacy+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadSourceManifest(homePath, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != legacySourceManifestSchemaVersion || loaded.Items[0].ID != "srcitem_frozen_v01" {
+		t.Fatalf("legacy load changed frozen identity: %+v", loaded)
+	}
+	if _, err := RecordSourceManifest(homePath, loaded); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := LoadSourceManifest(homePath, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.SchemaVersion != SourceManifestSchemaVersion || upgraded.Items[0].ID != "srcitem_frozen_v01" {
+		t.Fatalf("upgrade changed identity: %+v", upgraded)
+	}
+	if upgraded.Items[0].SourceKey == "" || upgraded.Items[0].VersionState != "current" {
+		t.Fatalf("upgrade did not populate v0.2 lineage fields: %+v", upgraded.Items[0])
 	}
 }
 

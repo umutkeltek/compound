@@ -34,6 +34,9 @@ func TestBuildGbrainExportManifestFromSyntheticFixture(t *testing.T) {
 	if doctor.Status != "ok" {
 		t.Fatalf("doctor = %+v", doctor)
 	}
+	if doctor.CustodyComplete || doctor.OwnedBodyCount != 0 || doctor.InventoryOnlyCount != len(manifest.Items) {
+		t.Fatalf("db export metadata must not masquerade as physical body custody: %+v", doctor)
+	}
 }
 
 func TestFilterSourceManifestByGenerationDisjoint(t *testing.T) {

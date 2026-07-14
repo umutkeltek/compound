@@ -85,7 +85,22 @@ func (s *ArtifactStore) Put(body []byte) (string, error) {
 			return "", fmt.Errorf("artifact %s content-address collision", ref)
 		}
 	}
+	// The file bytes were synced before publication. Sync the containing
+	// directory as well so a successful Put means the name-to-inode link is
+	// durable across a crash, not merely visible to this process.
+	if err := syncDirectory(s.dir); err != nil {
+		return "", fmt.Errorf("sync artifact directory: %w", err)
+	}
 	return ref, nil
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // Get validates both the reference grammar and the bytes. A corrupt object is

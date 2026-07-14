@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -211,6 +212,12 @@ func RecordSourceManifest(homePath string, manifest SourceManifest) (SourceManif
 	}
 	manifest.SchemaVersion = SourceManifestSchemaVersion
 	manifest.GeneratedAt = sourceManifestGeneratedAt(manifest.Items, time.Time{})
+	// Merge can introduce lineage and normalize a legacy v0.1 manifest. Treat
+	// that result as a new authority publication and validate the exact object
+	// that will be made visible, not only the caller's pre-merge fragment.
+	if err := validateSourceManifest(manifest); err != nil {
+		return SourceManifestReport{}, fmt.Errorf("validate merged source manifest: %w", err)
+	}
 	body, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return SourceManifestReport{}, err
@@ -532,6 +539,13 @@ func MaterializeSourceManifestItem(homePath, sourceFamily, itemID, targetPath st
 	if hashBytes(body) != item.FileHash || int64(len(body)) != item.BodyBytes {
 		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize %s: manifest/body mismatch", item.BodyRef)
 	}
+	mode := os.FileMode(0o644)
+	if strings.TrimSpace(item.FileMode) != "" {
+		mode, err = parseFileMode(item.FileMode)
+		if err != nil {
+			return SourceManifestMaterializeReport{}, fmt.Errorf("materialize %s: invalid file_mode %q: %w", item.BodyRef, item.FileMode, err)
+		}
+	}
 	targetPath = strings.TrimSpace(targetPath)
 	if targetPath == "" {
 		return SourceManifestMaterializeReport{}, fmt.Errorf("materialize target required")
@@ -541,6 +555,13 @@ func MaterializeSourceManifestItem(homePath, sourceFamily, itemID, targetPath st
 		if !bytes.Equal(existing, body) {
 			return SourceManifestMaterializeReport{}, fmt.Errorf("refusing to overwrite non-identical target %s", targetPath)
 		}
+		info, statErr := os.Stat(targetPath)
+		if statErr != nil {
+			return SourceManifestMaterializeReport{}, statErr
+		}
+		if info.Mode().Perm() != mode.Perm() {
+			return SourceManifestMaterializeReport{}, fmt.Errorf("refusing byte-identical target with non-identical mode %s: got %04o want %04o", targetPath, info.Mode().Perm(), mode.Perm())
+		}
 		report.AlreadyExists = true
 		return report, nil
 	} else if !os.IsNotExist(readErr) {
@@ -548,12 +569,6 @@ func MaterializeSourceManifestItem(homePath, sourceFamily, itemID, targetPath st
 	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return SourceManifestMaterializeReport{}, err
-	}
-	mode := os.FileMode(0o644)
-	if strings.TrimSpace(item.FileMode) != "" {
-		if parsed, parseErr := parseFileMode(item.FileMode); parseErr == nil {
-			mode = parsed
-		}
 	}
 	f, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
@@ -565,6 +580,12 @@ func MaterializeSourceManifestItem(homePath, sourceFamily, itemID, targetPath st
 		return SourceManifestMaterializeReport{}, err
 	}
 	if err := f.Close(); err != nil {
+		return SourceManifestMaterializeReport{}, err
+	}
+	// OpenFile respects the process umask. Chmod after closing so the restored
+	// mode is the captured mode rather than a host-dependent approximation.
+	if err := os.Chmod(targetPath, mode); err != nil {
+		os.Remove(targetPath)
 		return SourceManifestMaterializeReport{}, err
 	}
 	return report, nil
@@ -758,9 +779,16 @@ func hashBytes(data []byte) string {
 }
 
 func parseFileMode(value string) (os.FileMode, error) {
-	var mode uint32
-	if _, err := fmt.Sscanf(value, "%o", &mode); err != nil {
-		return 0, err
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 4 {
+		return 0, fmt.Errorf("expected 1-4 octal permission digits")
+	}
+	mode, err := strconv.ParseUint(value, 8, 12)
+	if err != nil {
+		return 0, fmt.Errorf("expected octal permission digits: %w", err)
+	}
+	if mode > 0o777 {
+		return 0, fmt.Errorf("permission mode %04o exceeds 0777", mode)
 	}
 	return os.FileMode(mode), nil
 }
