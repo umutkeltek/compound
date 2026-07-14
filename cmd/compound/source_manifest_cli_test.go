@@ -98,6 +98,9 @@ func TestSourceManifestCLICommands(t *testing.T) {
 	if len(manifest.Items) != 1 || manifest.Items[0].SourceRef != sourcePath {
 		t.Fatalf("manifest = %+v", manifest)
 	}
+	if manifest.Items[0].BodyPolicy != "owned_snapshot" || manifest.Items[0].BodyRef == "" {
+		t.Fatalf("generic CLI capture must default to Compound-owned custody: %+v", manifest.Items[0])
+	}
 
 	doctorOut := captureStdout(t, func() {
 		cmdSource([]string{"manifest-doctor", "brain_source_manifest", "--json"})
@@ -106,7 +109,7 @@ func TestSourceManifestCLICommands(t *testing.T) {
 	if err := json.Unmarshal([]byte(doctorOut), &doctor); err != nil {
 		t.Fatalf("parse doctor: %v\n%s", err, doctorOut)
 	}
-	if doctor.Status != "ok" || doctor.HashMismatchCount != 0 {
+	if doctor.Status != "ok" || doctor.HashMismatchCount != 0 || !doctor.CustodyComplete {
 		t.Fatalf("doctor = %+v", doctor)
 	}
 

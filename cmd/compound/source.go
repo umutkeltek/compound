@@ -362,13 +362,16 @@ func cmdSourceIntakeWorkPlan(args []string) {
 func cmdSourceManifestCreate(args []string) {
 	family := ""
 	fromExport := ""
+	sourceInPlace := false
 	jsonOut := false
 	var paths []string
-	usage := "usage: compound source manifest-create --family <id> (<source>... | --from-export <export.json>) [--json]"
+	usage := "usage: compound source manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json>) [--json]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
 			jsonOut = true
+		case "--source-in-place":
+			sourceInPlace = true
 		case "--family":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, usage)
@@ -399,6 +402,10 @@ func cmdSourceManifestCreate(args []string) {
 		fmt.Fprintln(os.Stderr, "source manifest-create: use either --from-export or positional sources, not both")
 		os.Exit(2)
 	}
+	if strings.TrimSpace(fromExport) != "" && sourceInPlace {
+		fmt.Fprintln(os.Stderr, "source manifest-create: --source-in-place cannot be used with --from-export")
+		os.Exit(2)
+	}
 	if strings.TrimSpace(fromExport) == "" && len(paths) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -415,8 +422,10 @@ func cmdSourceManifestCreate(args []string) {
 			os.Exit(2)
 		}
 		manifest, err = sourceobs.BuildGbrainExportManifest(fromExport, time.Now())
-	} else {
+	} else if sourceInPlace {
 		manifest, err = sourceobs.BuildSourceManifest(family, paths, time.Now())
+	} else {
+		manifest, err = sourceobs.BuildOwnedSourceManifest(homePath, family, paths, time.Now())
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "source manifest-create:", err)
