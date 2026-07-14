@@ -1445,14 +1445,17 @@ func TestPreToolUseResolvesRelativeTargetAgainstHookCwd(t *testing.T) {
 
 func TestReviewedMutationOwnerMustRemainCurrent(t *testing.T) {
 	for _, state := range []string{"claimed", "running", "verifying", "held"} {
-		if !currentReviewedMutationOwnerState(state) {
+		if !currentReviewedMutationOwner("work_durable_owner", state) {
 			t.Errorf("current state %q rejected", state)
 		}
 	}
 	for _, state := range []string{"", "proposed", "admitted", "ready", "blocked", "completed", "failed", "cancelled"} {
-		if currentReviewedMutationOwnerState(state) {
+		if currentReviewedMutationOwner("work_durable_owner", state) {
 			t.Errorf("non-current state %q accepted", state)
 		}
+	}
+	if currentReviewedMutationOwner("work_live_synthetic", "running") {
+		t.Error("synthetic work_live_* owner accepted as durable")
 	}
 }
 

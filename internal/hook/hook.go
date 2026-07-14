@@ -580,37 +580,44 @@ func reviewedSourceControlMutationForBatch(deps Deps, prepared []preparedPreTool
 	if !ok {
 		return nil, nil
 	}
-	report, err := authority.FindRecordedSourceControlMutationReview(deps.HomePath, snapshot, binding)
-	if err != nil || report == nil || report.MutationBinding == nil {
+	reports, err := authority.ListRecordedSourceControlMutationReviews(deps.HomePath, snapshot, binding)
+	if err != nil {
 		return nil, err
 	}
-	owner, err := deps.Store.Get(report.WorkID)
-	if err != nil || !currentReviewedMutationOwnerState(owner.State) {
-		return nil, nil
+	for i := range reports {
+		report := &reports[i]
+		if report.MutationBinding == nil {
+			continue
+		}
+		owner, ownerErr := deps.Store.Get(report.WorkID)
+		if ownerErr != nil || !currentReviewedMutationOwner(report.WorkID, owner.State) {
+			continue
+		}
+		recorded := report.MutationBinding
+		return &policy.ReviewedSourceControlMutation{
+			Status:                  report.Status,
+			Decision:                report.Decision,
+			ReviewID:                report.ReviewID,
+			PlanID:                  report.PlanID,
+			PlanDigest:              report.PlanDigest,
+			AuthorizationDigest:     report.AuthorizationDigest,
+			ReviewedBy:              report.ReviewedBy,
+			OwnerWorkID:             report.WorkID,
+			ActionWorkID:            recorded.ActionWorkID,
+			RepoID:                  report.RepoID,
+			GitRoot:                 report.GitRoot,
+			Remote:                  report.Remote,
+			Head:                    report.Head,
+			ChangedStateFingerprint: report.ChangedStateFingerprint,
+			MutationInputHash:       recorded.MutationInputHash,
+			Capability:              recorded.Capability,
+			Action:                  recorded.Action,
+			MutationClass:           recorded.MutationClass,
+			TargetPaths:             append([]string{}, recorded.TargetPaths...),
+			EvidenceRefs:            append([]string{}, report.EvidenceRefs...),
+		}, nil
 	}
-	recorded := report.MutationBinding
-	return &policy.ReviewedSourceControlMutation{
-		Status:                  report.Status,
-		Decision:                report.Decision,
-		ReviewID:                report.ReviewID,
-		PlanID:                  report.PlanID,
-		PlanDigest:              report.PlanDigest,
-		AuthorizationDigest:     report.AuthorizationDigest,
-		ReviewedBy:              report.ReviewedBy,
-		OwnerWorkID:             report.WorkID,
-		ActionWorkID:            recorded.ActionWorkID,
-		RepoID:                  report.RepoID,
-		GitRoot:                 report.GitRoot,
-		Remote:                  report.Remote,
-		Head:                    report.Head,
-		ChangedStateFingerprint: report.ChangedStateFingerprint,
-		MutationInputHash:       recorded.MutationInputHash,
-		Capability:              recorded.Capability,
-		Action:                  recorded.Action,
-		MutationClass:           recorded.MutationClass,
-		TargetPaths:             append([]string{}, recorded.TargetPaths...),
-		EvidenceRefs:            append([]string{}, report.EvidenceRefs...),
-	}, nil
+	return nil, nil
 }
 
 func sourceControlMutationBatchBinding(prepared []preparedPreToolAction) (authority.SourceControlSnapshot, authority.SourceControlMutationBinding, bool) {
@@ -677,13 +684,8 @@ func boundMutationInputHash(ai envelope.ActionIntent) (string, bool) {
 	return value, value != ""
 }
 
-func currentReviewedMutationOwnerState(state string) bool {
-	switch strings.TrimSpace(state) {
-	case "claimed", "running", "verifying", "held":
-		return true
-	default:
-		return false
-	}
+func currentReviewedMutationOwner(workID, state string) bool {
+	return authority.SourceControlMutationOwnerCurrent(workID, state)
 }
 
 func hookStatusRank(status string) int {
