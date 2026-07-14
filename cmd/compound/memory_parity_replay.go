@@ -96,30 +96,17 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 		latency := time.Duration(0)
 		switch consumer {
 		case retrievalparity.ConsumerOrient:
-			var in contract.Input
-			if fixtureRow.OrientInput != nil {
-				in = contract.Input{
-					Harness:     fixtureRow.OrientInput.Harness,
-					Cwd:         fixtureRow.OrientInput.Cwd,
-					Task:        fixtureRow.Query,
-					RepoKind:    fixtureRow.OrientInput.RepoKind,
-					RepoKindVia: fixtureRow.OrientInput.RepoKindVia,
-					Mode:        fixtureRow.OrientInput.Mode,
-					Topic:       fixtureRow.OrientInput.Topic,
-				}
-			} else {
-				cwd, cwdErr := os.Getwd()
-				if cwdErr != nil {
-					coverage.KnownGaps = append(coverage.KnownGaps, "orient_cwd_unavailable")
-					break
-				}
-				var parseErr error
-				in, parseErr = parseOrientArgsWithHome([]string{"--harness", "codex", "--cwd", cwd, "--task", fixtureRow.Query}, homePath)
-				if parseErr != nil {
-					coverage.KnownGaps = append(coverage.KnownGaps, "orient_input_unavailable")
-					break
-				}
-				coverage.KnownGaps = append(coverage.KnownGaps, "orient_input_unrecorded")
+			if fixtureRow.OrientInput == nil {
+				return retrievalparity.Report{}, "", 1, fmt.Errorf("orient fixture row requires exact orient_input")
+			}
+			in := contract.Input{
+				Harness:     fixtureRow.OrientInput.Harness,
+				Cwd:         fixtureRow.OrientInput.Cwd,
+				Task:        fixtureRow.Query,
+				RepoKind:    fixtureRow.OrientInput.RepoKind,
+				RepoKindVia: fixtureRow.OrientInput.RepoKindVia,
+				Mode:        fixtureRow.OrientInput.Mode,
+				Topic:       fixtureRow.OrientInput.Topic,
 			}
 			started := time.Now()
 			pack, packErr := contract.PackWithCapabilities(in, orientPolicy(), homePath, now)

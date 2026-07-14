@@ -179,6 +179,9 @@ func ValidateFixture(fixture Fixture) error {
 		if strings.TrimSpace(row.Query) == "" && !consumerAllowsBlankQuery(row.Consumer) {
 			return fmt.Errorf("fixture row %d: query required", i+1)
 		}
+		if row.Consumer == ConsumerOrient && row.OrientInput == nil {
+			return fmt.Errorf("fixture row %d: orient_input required for orient consumer", i+1)
+		}
 		if row.OrientInput != nil {
 			if row.Consumer != ConsumerOrient {
 				return fmt.Errorf("fixture row %d: orient_input is only valid for orient consumer", i+1)
@@ -250,8 +253,11 @@ func normalizeFixture(fixture Fixture) Fixture {
 
 func fixtureRowIdentity(row FixtureRow) string {
 	identity := HashQuery(row.Query)
-	if row.Consumer == ConsumerOrient && row.OrientInput != nil {
-		identity = HashOrientInput(*row.OrientInput, row.Query)
+	if row.Consumer == ConsumerOrient {
+		identity = ""
+		if row.OrientInput != nil {
+			identity = HashOrientInput(*row.OrientInput, row.Query)
+		}
 	}
 	return row.Consumer + "\x00" + identity
 }
@@ -303,9 +309,9 @@ func FreezeFromJournal(homePath string, windowDays int, out, controlReportPath s
 		if row.Consumer == ConsumerOrient {
 			if row.OrientInput == nil {
 				gaps = append(gaps, "orient_input_unavailable")
-			} else {
-				identityRef = HashOrientInput(*row.OrientInput, row.Query)
+				continue
 			}
+			identityRef = HashOrientInput(*row.OrientInput, row.Query)
 		}
 		key := row.Consumer + "\x00" + identityRef
 		group := groups[key]
@@ -667,7 +673,7 @@ func NewReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, en
 		reportRow.privacySafe = reportRow.privacySafe && validFixtureRef(row.Consumer, masked) && validPersistedRef(row.Consumer, persistedMasked)
 		reportRow.NegativeControl = &NegativeControlResult{
 			MaskedRef: persistedMasked,
-			Observed:  contains(reportLost, persistedMasked),
+			Observed:  engineAvailable && contains(reportLost, persistedMasked),
 		}
 	}
 	return reportRow
@@ -786,15 +792,23 @@ func validateReplayRow(row ReplayRow, consumer string) error {
 	if !validSHARef(row.QuerySHA256) {
 		return fmt.Errorf("query_sha256 invalid")
 	}
-	if row.InputSHA256 != "" {
-		if row.Consumer != ConsumerOrient || !validSHARef(row.InputSHA256) {
-			return fmt.Errorf("input_sha256 invalid")
+	if row.Consumer == ConsumerOrient {
+		if !validSHARef(row.InputSHA256) {
+			return fmt.Errorf("input_sha256 required for orient consumer")
 		}
+	} else if row.InputSHA256 != "" {
+		return fmt.Errorf("input_sha256 is only valid for orient consumer")
 	}
 	for _, refs := range [][]string{row.ExpectedRefs, row.ResultRefs, row.LostHits, row.ExtraHits} {
 		if !validPersistedRefs(row.Consumer, refs) {
 			return fmt.Errorf("reference invalid")
 		}
+	}
+	if !equalStringSlices(row.LostHits, difference(row.ExpectedRefs, row.ResultRefs)) {
+		return fmt.Errorf("lost_hits must equal expected_refs minus result_refs")
+	}
+	if !equalStringSlices(row.ExtraHits, difference(row.ResultRefs, row.ExpectedRefs)) {
+		return fmt.Errorf("extra_hits must equal result_refs minus expected_refs")
 	}
 	if row.ResultCount != len(row.ResultRefs) {
 		return fmt.Errorf("result_count does not match result_refs")
@@ -807,7 +821,7 @@ func validateReplayRow(row ReplayRow, consumer string) error {
 	}
 	if row.NegativeControl != nil {
 		if !validPersistedRef(row.Consumer, row.NegativeControl.MaskedRef) ||
-			row.NegativeControl.Observed != contains(row.LostHits, row.NegativeControl.MaskedRef) {
+			row.NegativeControl.Observed != (row.EngineAvailable && contains(row.LostHits, row.NegativeControl.MaskedRef)) {
 			return fmt.Errorf("negative_control invalid")
 		}
 	}
@@ -831,7 +845,7 @@ func negativeControlValidity(rows []ReplayRow) *bool {
 			continue
 		}
 		hasControl = true
-		valid = valid && row.NegativeControl.Observed
+		valid = valid && row.EngineAvailable && row.NegativeControl.Observed
 	}
 	if !hasControl {
 		return nil
@@ -1162,6 +1176,18 @@ func difference(left, right []string) []string {
 		}
 	}
 	return uniqueSorted(out)
+}
+
+func equalStringSlices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func contains(values []string, want string) bool {

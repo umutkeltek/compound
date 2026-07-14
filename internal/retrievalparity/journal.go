@@ -226,6 +226,9 @@ func validateRow(row Row) error {
 	if !validConsumer(row.Consumer) {
 		return fmt.Errorf("unsupported retrieval consumer %q", row.Consumer)
 	}
+	if row.Consumer == ConsumerOrient && row.OrientInput == nil {
+		return fmt.Errorf("orient_input required for orient consumer")
+	}
 	if row.OrientInput != nil {
 		if row.Consumer != ConsumerOrient {
 			return fmt.Errorf("orient_input is only valid for orient consumer")
