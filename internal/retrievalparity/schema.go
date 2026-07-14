@@ -287,6 +287,9 @@ func FreezeFromJournal(homePath string, windowDays int, out, controlReportPath s
 	}
 	groups := map[string]*aggregate{}
 	seenConsumers := map[string]bool{}
+	observedIdentities := map[string]string{}
+	successfulIdentities := map[string]bool{}
+	unavailableCounts := map[string]int{}
 	var earliest time.Time
 	for _, row := range rows {
 		ts, err := time.Parse(time.RFC3339Nano, row.Timestamp)
@@ -314,6 +317,12 @@ func FreezeFromJournal(homePath string, windowDays int, out, controlReportPath s
 			identityRef = HashOrientInput(*row.OrientInput, row.Query)
 		}
 		key := row.Consumer + "\x00" + identityRef
+		observedIdentities[key] = row.Consumer + ":" + identityRef
+		if !row.EngineAvailable {
+			unavailableCounts[row.Consumer]++
+			continue
+		}
+		successfulIdentities[key] = true
 		group := groups[key]
 		if group == nil {
 			group = &aggregate{consumer: row.Consumer, query: row.Query}
@@ -328,6 +337,16 @@ func FreezeFromJournal(homePath string, windowDays int, out, controlReportPath s
 		}
 		group.refs = append(group.refs, row.ResultRefs...)
 	}
+	unavailableOnly := []string{}
+	for key, identity := range observedIdentities {
+		if !successfulIdentities[key] {
+			unavailableOnly = append(unavailableOnly, identity)
+		}
+	}
+	if len(unavailableOnly) > 0 {
+		sort.Strings(unavailableOnly)
+		return Fixture{}, "", fmt.Errorf("retrieval identity %s has no successful observation", unavailableOnly[0])
+	}
 	if len(groups) == 0 {
 		return Fixture{}, "", fmt.Errorf("no retrieval traffic in requested window")
 	}
@@ -337,6 +356,9 @@ func FreezeFromJournal(homePath string, windowDays int, out, controlReportPath s
 	for _, consumer := range []string{ConsumerOrient, ConsumerRecall, ConsumerQuery, ConsumerSearch} {
 		if !seenConsumers[consumer] {
 			gaps = append(gaps, "consumer_no_traffic:"+consumer)
+		}
+		if unavailableCounts[consumer] > 0 {
+			gaps = append(gaps, fmt.Sprintf("engine_unavailable:%s:%d", consumer, unavailableCounts[consumer]))
 		}
 	}
 
@@ -1190,6 +1212,10 @@ func validCoverageGap(gap string) bool {
 		if strings.HasPrefix(gap, prefix) {
 			return validConsumer(strings.TrimPrefix(gap, prefix))
 		}
+	}
+	if strings.HasPrefix(gap, "engine_unavailable:") {
+		parts := strings.Split(strings.TrimPrefix(gap, "engine_unavailable:"), ":")
+		return len(parts) == 2 && validConsumer(parts[0]) && validDecimal(parts[1], false)
 	}
 	if strings.HasPrefix(gap, "query_hash_collision:") {
 		return validSHARef(strings.TrimPrefix(gap, "query_hash_collision:"))
