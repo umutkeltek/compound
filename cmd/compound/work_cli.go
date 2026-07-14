@@ -293,7 +293,7 @@ func cmdWork(args []string) {
 				confirmed = true
 			case arg == "--json":
 			case valueFlags[arg]:
-				if i+1 >= len(rest) {
+				if i+1 >= len(rest) || strings.HasPrefix(rest[i+1], "-") {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
 				}
