@@ -54,6 +54,41 @@ func TestOrientInputStaysHomeLocalAndReportCarriesOnlyItsHash(t *testing.T) {
 	}
 }
 
+func TestOrientJournalRequiresExactInputIdentity(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	row := NewRow(ConsumerOrient, "missing exact input", nil, time.Millisecond, true, parityTestNow)
+	if err := appendRow(homePath, row); err == nil || !strings.Contains(err.Error(), "orient_input") {
+		t.Fatalf("orient journal without exact input error = %v", err)
+	}
+}
+
+func TestOrientFixtureRequiresExactInputIdentity(t *testing.T) {
+	fixture := Fixture{
+		SchemaVersion:     FixtureSchemaVersion,
+		ClassifierVersion: ClassifierVersion,
+		Coverage:          Coverage{KnownGaps: []string{}},
+		Rows: []FixtureRow{{
+			Consumer: ConsumerOrient,
+			Query:    "missing exact input",
+		}},
+	}
+	if err := ValidateFixture(fixture); err == nil || !strings.Contains(err.Error(), "orient_input") {
+		t.Fatalf("orient fixture without exact input error = %v", err)
+	}
+}
+
+func TestOrientReportRequiresExactInputIdentity(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	row := NewReplayRow(FixtureRow{
+		Consumer: ConsumerOrient,
+		Query:    "missing exact input",
+	}, nil, time.Millisecond, true)
+	report := BuildReport(HashQuery("missing-input-fixture"), ConsumerOrient, 0, Coverage{}, []ReplayRow{row}, parityTestNow)
+	if _, err := WriteReport(homePath, report); err == nil || !strings.Contains(err.Error(), "input_sha256") {
+		t.Fatalf("orient report without exact input error = %v", err)
+	}
+}
+
 func TestFreezeKeepsSameOrientQueryWithDistinctExactTuples(t *testing.T) {
 	homePath := newParityPackageHome(t)
 	controlPath := writeValidControlReport(t, homePath)
@@ -157,6 +192,79 @@ func TestUnavailableEngineFailsParityEvenWithNoExpectedRefs(t *testing.T) {
 	row := NewReplayRow(FixtureRow{Consumer: ConsumerQuery, Query: "empty expected"}, nil, 0, false)
 	if row.ParityPassed {
 		t.Fatal("unavailable engine passed an empty-expected parity row")
+	}
+}
+
+func TestUnavailableEngineCannotValidateNegativeControl(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	masked := "claim://claim_aaaaaaaaaaaa"
+	row := NewReplayRow(FixtureRow{
+		Consumer:        ConsumerQuery,
+		Query:           "unavailable negative control",
+		ExpectedRefs:    []string{masked},
+		NegativeControl: &NegativeControl{MaskedRef: masked},
+	}, nil, time.Millisecond, false)
+	report := BuildReport(HashQuery("unavailable-control-fixture"), ConsumerQuery, 10, Coverage{}, []ReplayRow{row}, parityTestNow)
+	if report.NegativeControlValid == nil || *report.NegativeControlValid {
+		t.Fatalf("unavailable engine negative-control validity = %v, want false", report.NegativeControlValid)
+	}
+	controlPath, err := WriteReport(homePath, report)
+	if err != nil {
+		t.Fatalf("write honest unavailable-engine report: %v", err)
+	}
+	Record(homePath, NewRow(ConsumerQuery, "traffic", nil, time.Millisecond, true, parityTestNow))
+	if _, _, err := FreezeFromJournal(homePath, 1, "", controlPath, parityTestNow); err == nil || !strings.Contains(err.Error(), "valid negative control") {
+		t.Fatalf("freeze with unavailable-engine control error = %v", err)
+	}
+}
+
+func TestFreezeRejectsControlReportWithInconsistentSetDeltas(t *testing.T) {
+	tests := []struct {
+		name   string
+		want   string
+		mutate func(*ReplayRow)
+	}{
+		{
+			name: "lost hits",
+			want: "lost_hits",
+			mutate: func(row *ReplayRow) {
+				row.ResultRefs = append([]string(nil), row.ExpectedRefs...)
+				row.ResultCount = len(row.ResultRefs)
+			},
+		},
+		{
+			name: "extra hits",
+			want: "extra_hits",
+			mutate: func(row *ReplayRow) {
+				row.ExtraHits = []string{HashQuery("fabricated extra")}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := newParityPackageHome(t)
+			controlPath := writeValidControlReport(t, homePath)
+			data, err := os.ReadFile(controlPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report Report
+			if err := json.Unmarshal(data, &report); err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(&report.Rows[0])
+			tampered, err := json.MarshalIndent(report, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(controlPath, append(tampered, '\n'), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			Record(homePath, NewRow(ConsumerQuery, "traffic", nil, time.Millisecond, true, parityTestNow))
+			if _, _, err := FreezeFromJournal(homePath, 1, "", controlPath, parityTestNow); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("freeze with inconsistent %s error = %v", tt.name, err)
+			}
+		})
 	}
 }
 

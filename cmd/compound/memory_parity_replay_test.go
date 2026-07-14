@@ -334,8 +334,14 @@ func TestParityReportPrivacy(t *testing.T) {
 		t.Fatalf("report privacy metadata=%+v fixture_ref=%q", report.Privacy, report.FixtureRef)
 	}
 	for _, row := range report.Rows {
-		if !validParitySHA(row.QuerySHA256) || !validParitySHA(row.InputSHA256) {
-			t.Fatalf("report query/input refs=%q/%q, want sha256", row.QuerySHA256, row.InputSHA256)
+		if !validParitySHA(row.QuerySHA256) {
+			t.Fatalf("report query ref=%q, want sha256", row.QuerySHA256)
+		}
+		if row.Consumer == retrievalparity.ConsumerOrient && !validParitySHA(row.InputSHA256) {
+			t.Fatalf("orient report input ref=%q, want sha256", row.InputSHA256)
+		}
+		if row.Consumer != retrievalparity.ConsumerOrient && row.InputSHA256 != "" {
+			t.Fatalf("%s report carried orient-only input ref=%q", row.Consumer, row.InputSHA256)
 		}
 	}
 	t.Logf("f4 report=%s raw_query_present=%t query_ref=%s", filepath.Base(reportPath), strings.Contains(string(persisted), query), report.Rows[0].QuerySHA256)
@@ -719,6 +725,38 @@ func TestParityReplayRejectsOrientK(t *testing.T) {
 	}, now)
 	if replayErr == nil || code != 2 || reportPath != "" {
 		t.Fatalf("orient --k code=%d report=%q err=%v, want usage rejection", code, reportPath, replayErr)
+	}
+}
+
+func TestParityReplayRejectsOrientFixtureWithoutExactInput(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	fixturePath := filepath.Join(homePath, "missing-orient-input.json")
+	fixture := retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Coverage:          retrievalparity.Coverage{KnownGaps: []string{}},
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer: retrievalparity.ConsumerOrient,
+			Query:    "synthetic missing exact orient input",
+		}},
+	}
+	data, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixturePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, reportPath, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerOrient,
+	}, now); err == nil || code == 0 || reportPath != "" || !strings.Contains(err.Error(), "orient_input") {
+		t.Fatalf("orient replay without exact input code=%d report=%q err=%v", code, reportPath, err)
 	}
 }
 
