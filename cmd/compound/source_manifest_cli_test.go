@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,6 +12,128 @@ import (
 	"compound/internal/home"
 	"compound/internal/sourceobs"
 )
+
+func TestSourceManifestGbrainCapturesMatchingDumpIntoArtifactCustody(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	dump := []byte(strings.Repeat("postgres-custom-dump-block\n", 128*1024))
+	dumpPath := filepath.Join(t.TempDir(), "gbrain.dump")
+	if err := os.WriteFile(dumpPath, dump, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(dump)
+
+	fixturePath := filepath.Join("..", "..", "fixtures", "sourceobs", "gbrain-db-export-synthetic.json")
+	fixture, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var export sourceobs.GbrainDBExport
+	if err := json.Unmarshal(fixture, &export); err != nil {
+		t.Fatal(err)
+	}
+	export.DumpRef = "sha256:" + hex.EncodeToString(sum[:])
+	exportPath := filepath.Join(t.TempDir(), "gbrain-export.json")
+	exportBody, err := json.Marshal(export)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exportPath, exportBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	captureStdout(t, func() {
+		cmdSource([]string{"manifest-create", "--family", "gbrain_db_export_manifest", "--from-export", exportPath, "--dump", dumpPath, "--json"})
+	})
+	manifestBody, err := os.ReadFile(sourceobs.SourceManifestPath(homePath, sourceobs.GbrainDBExportManifestFamily))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(manifestBody, &raw); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := raw["family_meta"].(map[string]any)
+	if got, _ := meta["dump_body_ref"].(string); got != "artifact:"+export.DumpRef {
+		t.Fatalf("dump_body_ref = %q, want artifact:%s", got, export.DumpRef)
+	}
+	if got, _ := meta["dump_bytes"].(float64); int64(got) != int64(len(dump)) {
+		t.Fatalf("dump_bytes = %.0f, want %d", got, len(dump))
+	}
+
+	doctor, err := sourceobs.DoctorSourceManifest(homePath, sourceobs.GbrainDBExportManifestFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "ok" || !doctor.CustodyComplete {
+		t.Fatalf("owned dump doctor = %+v", doctor)
+	}
+	dumpCheck := sourceManifestDoctorCheckByName(doctor, "gbrain_dump_custody")
+	if dumpCheck.Status != "ok" || !strings.Contains(dumpCheck.Detail, "restore/read cutover not proven") {
+		t.Fatalf("dump custody check = %+v", dumpCheck)
+	}
+
+	if err := os.Remove(dumpPath); err != nil {
+		t.Fatal(err)
+	}
+	recoveredPath := filepath.Join(t.TempDir(), "recovered.dump")
+	materializeOut := captureStdout(t, func() {
+		cmdSource([]string{"manifest-materialize-dump", sourceobs.GbrainDBExportManifestFamily, "--target", recoveredPath, "--json"})
+	})
+	var recovery sourceobs.SourceManifestMaterializeReport
+	if err := json.Unmarshal([]byte(materializeOut), &recovery); err != nil {
+		t.Fatalf("parse materialize report: %v\n%s", err, materializeOut)
+	}
+	if recovery.Bytes != int64(len(dump)) {
+		t.Fatalf("recovered bytes = %d, want %d", recovery.Bytes, len(dump))
+	}
+	recovered, err := os.ReadFile(recoveredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(recovered) != string(dump) {
+		t.Fatal("materialized dump differs from deleted source")
+	}
+
+	artifactPath := filepath.Join(homePath, "artifacts", "sha256", strings.TrimPrefix("artifact:"+export.DumpRef, home.ArtifactRefPrefix))
+	if err := os.WriteFile(artifactPath, []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	doctor, err = sourceobs.DoctorSourceManifest(homePath, sourceobs.GbrainDBExportManifestFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "fail" || doctor.CustodyComplete {
+		t.Fatalf("corrupt dump doctor = %+v", doctor)
+	}
+	if check := sourceManifestDoctorCheckByName(doctor, "gbrain_dump_custody"); check.Status != "fail" {
+		t.Fatalf("corrupt dump custody check = %+v", check)
+	}
+	if err := os.Remove(artifactPath); err != nil {
+		t.Fatal(err)
+	}
+	doctor, err = sourceobs.DoctorSourceManifest(homePath, sourceobs.GbrainDBExportManifestFamily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingCheck := sourceManifestDoctorCheckByName(doctor, "gbrain_dump_custody")
+	if doctor.Status != "fail" || missingCheck.Status != "fail" || !strings.Contains(missingCheck.Detail, filepath.Join(homePath, "artifacts", "sha256")) {
+		t.Fatalf("missing dump doctor = %+v check=%+v", doctor, missingCheck)
+	}
+}
+
+func sourceManifestDoctorCheckByName(report sourceobs.SourceManifestDoctorReport, name string) sourceobs.SourceManifestDoctorCheck {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	return sourceobs.SourceManifestDoctorCheck{Name: name, Status: "missing"}
+}
 
 func TestSourceManifestGbrainFromExportCLI(t *testing.T) {
 	homePath := t.TempDir()
