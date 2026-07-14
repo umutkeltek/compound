@@ -19,6 +19,13 @@ import (
 
 const dispatchClaimConfirmChildEnv = "COMPOUND_DISPATCH_CLAIM_CONFIRM_CHILD"
 
+func isolateDispatchCapacityGuard(t *testing.T) {
+	t.Helper()
+	previous := work.LaneCapacityGuard
+	work.LaneCapacityGuard = nil
+	t.Cleanup(func() { work.LaneCapacityGuard = previous })
+}
+
 func TestWorkDispatchClaimCLIChild(t *testing.T) {
 	mode := os.Getenv(dispatchClaimConfirmChildEnv)
 	if mode == "" {

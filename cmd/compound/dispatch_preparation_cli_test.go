@@ -56,6 +56,7 @@ func seedCLIThroughput(t *testing.T, homePath, provider, model string, completio
 // (cmd init) -> routeevidence.PlanPreparationLane -> model-router registry + route-evidence
 // throughput -> a ranking whose measured-fast lane wins and becomes the dispatch actor.
 func TestDispatchPlanCLIRoutesPreparationLane(t *testing.T) {
+	isolateDispatchCapacityGuard(t)
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {

@@ -3633,6 +3633,7 @@ func TestWorkActivePacketProofDetectsChangedSourcePacket(t *testing.T) {
 }
 
 func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {
+	isolateDispatchCapacityGuard(t)
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -3682,6 +3683,7 @@ func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {
 }
 
 func TestWorkDispatchClaimCommandClaimsSelectedWork(t *testing.T) {
+	isolateDispatchCapacityGuard(t)
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -3728,6 +3730,7 @@ func TestWorkDispatchClaimCommandClaimsSelectedWork(t *testing.T) {
 }
 
 func TestWorkDispatchClaimCommandClaimsExplicitWork(t *testing.T) {
+	isolateDispatchCapacityGuard(t)
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -4054,6 +4057,7 @@ func TestWorkDispatchCloseCommandClosesProofReadyWork(t *testing.T) {
 }
 
 func TestWorkDispatchStepCommandClaimsReadyWork(t *testing.T) {
+	isolateDispatchCapacityGuard(t)
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -4097,6 +4101,7 @@ func TestWorkDispatchStepCommandClaimsReadyWork(t *testing.T) {
 }
 
 func TestWorkDispatchStepCommandImportsSourcePacket(t *testing.T) {
+	isolateDispatchCapacityGuard(t)
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -4135,6 +4140,7 @@ func TestWorkDispatchStepCommandImportsSourcePacket(t *testing.T) {
 }
 
 func TestWorkDispatchStepCommandReportsTerminalSourcePacket(t *testing.T) {
+	isolateDispatchCapacityGuard(t)
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -4193,6 +4199,7 @@ func TestWorkDispatchStepCommandReportsTerminalSourcePacket(t *testing.T) {
 }
 
 func TestWorkDispatchStepCommandRunsUntilWait(t *testing.T) {
+	isolateDispatchCapacityGuard(t)
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -4724,6 +4731,7 @@ func TestValidateKnownFlagsRejectsUnknownFlag(t *testing.T) {
 }
 
 func TestWorkDispatchPlanCommandPreviewsSourcePacketReadOnly(t *testing.T) {
+	isolateDispatchCapacityGuard(t)
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
