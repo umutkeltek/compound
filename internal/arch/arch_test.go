@@ -588,6 +588,34 @@ func TestWorkProofChainContractResolved(t *testing.T) {
 	}
 }
 
+func TestGoStructFieldContractIgnoresFormattingButRejectsWrongTypeAndTag(t *testing.T) {
+	expected := map[string]goStructFieldContract{
+		"ReviewCards":  {Type: "[]WorkbenchReviewCard", Tag: `json:"review_cards,omitempty"`},
+		"RunArtifacts": {Type: "[]WorkbenchRunArtifact", Tag: `json:"run_artifacts,omitempty"`},
+	}
+	text := `package fixture
+
+type WorkbenchItem struct {
+	ReviewCards []WorkbenchReviewCard ` + "`json:\"review_cards,omitempty\"`" + `
+	AnUnrelatedMuchLongerSiblingField string ` + "`json:\"unrelated,omitempty\"`" + `
+	RunArtifacts []WorkbenchRunArtifact ` + "`json:\"run_artifacts,omitempty\"`" + `
+}
+`
+	if missing := missingGoStructFields("workbench.go", text, "WorkbenchItem", expected); len(missing) != 0 {
+		t.Fatalf("gofmt-independent fields reported missing: %v", missing)
+	}
+	wrong := strings.Replace(text, "[]WorkbenchRunArtifact", "WorkbenchRunArtifact", 1)
+	missing := missingGoStructFields("workbench.go", wrong, "WorkbenchItem", expected)
+	if len(missing) != 1 || !strings.Contains(missing[0], "RunArtifacts []WorkbenchRunArtifact") {
+		t.Fatalf("wrong field type must fail exactly: %v", missing)
+	}
+	wrongTag := strings.Replace(text, `json:"review_cards,omitempty"`, `json:"review_cards"`, 1)
+	missing = missingGoStructFields("workbench.go", wrongTag, "WorkbenchItem", expected)
+	if len(missing) != 1 || !strings.Contains(missing[0], `json:"review_cards,omitempty"`) {
+		t.Fatalf("wrong field tag must fail exactly: %v", missing)
+	}
+}
+
 func TestWorkbenchActionCardContractFailsOnShallowSurface(t *testing.T) {
 	repo := writeWorkbenchActionCardFixtureRepo(t, map[string]string{
 		"internal/work/workbench.go":      "type WorkbenchAdjacentAction struct { ID string; RequiresOperator bool }\n",

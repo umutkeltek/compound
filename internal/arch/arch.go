@@ -6,8 +6,13 @@
 package arch
 
 import (
+	"bytes"
 	"context"
 	_ "embed" // for //go:embed baseline-leak-tokens.txt (armed-by-default doc-leak gate)
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -828,8 +833,6 @@ func checkWorkbenchActionCardContract(repoRoot string) []Finding {
 			"\"--max-items\", \"1\"",
 			"no compound memory adjudicate --verdict promote is run",
 			"review plan would run adjudication or promotion",
-			"RunArtifacts       []WorkbenchRunArtifact",
-			"ReviewCards        []WorkbenchReviewCard",
 			"GateID",
 			"SourceKind",
 			"workbenchReviewCards",
@@ -841,7 +844,6 @@ func checkWorkbenchActionCardContract(repoRoot string) []Finding {
 			"workbenchRunArtifacts",
 			"runs\", workID",
 			"promotion_summary",
-			"TargetRefs   []string",
 			"hasSourcePrivateConfigCard",
 			"hasMemoryCandidateReviewCard",
 			"!hasSourcePrivateConfigCard",
@@ -964,6 +966,15 @@ func checkWorkbenchActionCardContract(repoRoot string) []Finding {
 			continue
 		}
 		failures = append(failures, missingPhrases(rel, text, phrases)...)
+		if rel == "internal/work/workbench.go" {
+			failures = append(failures, missingGoStructFields(rel, text, "WorkbenchItem", map[string]goStructFieldContract{
+				"ReviewCards":  {Type: "[]WorkbenchReviewCard", Tag: `json:"review_cards,omitempty"`},
+				"RunArtifacts": {Type: "[]WorkbenchRunArtifact", Tag: `json:"run_artifacts,omitempty"`},
+			})...)
+			failures = append(failures, missingGoStructFields(rel, text, "WorkbenchRunArtifact", map[string]goStructFieldContract{
+				"TargetRefs": {Type: "[]string", Tag: `json:"target_refs,omitempty"`},
+			})...)
+		}
 	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
@@ -1369,12 +1380,6 @@ func checkASCDailySignalsPublicBoundaryContract(repoRoot string) []Finding {
 func checkReviewSurfaceCoverageContract(repoRoot string) []Finding {
 	requiredByFile := map[string][]string{
 		"internal/reviewartifact/queue.go": {
-			"DecisionCardCount                 int            `json:\"decision_card_count\"`",
-			"ActionableCount                   int            `json:\"actionable_count\"`",
-			"ReviewRequiredMissingDecisionCard int            `json:\"review_required_missing_decision_card\"`",
-			"ReviewRequiredMissingAction       int            `json:\"review_required_missing_action\"`",
-			"FallbackSummaryCount              int            `json:\"fallback_summary_count,omitempty\"`",
-			"NeedsYouFallbackGroupCount        int            `json:\"needs_you_fallback_group_count,omitempty\"`",
 			"itemNeedsReviewCard",
 		},
 		"internal/reviewartifact/reviewartifact_test.go": {
@@ -1416,7 +1421,18 @@ func checkReviewSurfaceCoverageContract(repoRoot string) []Finding {
 			failures = append(failures, rel+" unreadable: "+err.Error())
 			continue
 		}
-		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+		text := string(b)
+		failures = append(failures, missingPhrases(rel, text, phrases)...)
+		if rel == "internal/reviewartifact/queue.go" {
+			failures = append(failures, missingGoStructFields(rel, text, "QueueCounts", map[string]goStructFieldContract{
+				"DecisionCardCount":                 {Type: "int", Tag: `json:"decision_card_count"`},
+				"ActionableCount":                   {Type: "int", Tag: `json:"actionable_count"`},
+				"ReviewRequiredMissingDecisionCard": {Type: "int", Tag: `json:"review_required_missing_decision_card"`},
+				"ReviewRequiredMissingAction":       {Type: "int", Tag: `json:"review_required_missing_action"`},
+				"FallbackSummaryCount":              {Type: "int", Tag: `json:"fallback_summary_count,omitempty"`},
+				"NeedsYouFallbackGroupCount":        {Type: "int", Tag: `json:"needs_you_fallback_group_count,omitempty"`},
+			})...)
+		}
 	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
@@ -1433,6 +1449,72 @@ func missingPhrases(source, text string, phrases []string) []string {
 		}
 	}
 	return out
+}
+
+type goStructFieldContract struct {
+	Type string
+	Tag  string
+}
+
+// missingGoStructFields checks Go field identity, type, and optional tag
+// instead of gofmt's alignment whitespace. Adding a longer sibling field must
+// not make an architecture contract report that an unchanged field disappeared.
+func missingGoStructFields(source, text, structName string, expected map[string]goStructFieldContract) []string {
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, source, text, 0)
+	if err != nil {
+		return []string{source + " unparseable: " + err.Error()}
+	}
+	var target *ast.StructType
+	for _, decl := range parsed.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok || typeSpec.Name.Name != structName {
+				continue
+			}
+			target, _ = typeSpec.Type.(*ast.StructType)
+		}
+	}
+	if target == nil {
+		return []string{source + " missing " + strconv("type "+structName+" struct")}
+	}
+	found := make(map[string]bool, len(expected))
+	for _, field := range target.Fields.List {
+		var typeText bytes.Buffer
+		if err := format.Node(&typeText, fset, field.Type); err != nil {
+			continue
+		}
+		tag := ""
+		if field.Tag != nil {
+			tag = strings.Trim(field.Tag.Value, "`")
+		}
+		for _, name := range field.Names {
+			contract, ok := expected[name.Name]
+			if ok && contract.Type == typeText.String() && (contract.Tag == "" || contract.Tag == tag) {
+				found[name.Name] = true
+			}
+		}
+	}
+	fields := make([]string, 0, len(expected))
+	for field := range expected {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	var missing []string
+	for _, field := range fields {
+		if !found[field] {
+			description := field + " " + expected[field].Type
+			if expected[field].Tag != "" {
+				description += " `" + expected[field].Tag + "`"
+			}
+			missing = append(missing, source+" missing "+strconv(description))
+		}
+	}
+	return missing
 }
 
 func readPackageText(repoRoot, relDir string) (string, error) {
@@ -2133,9 +2215,12 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 		return []Finding{{"hook-readiness-action-contract", Warn, "could not read internal/envelope/envelope.go: " + err.Error()}}
 	}
 	envelopeText := string(envelopeBytes)
+	hookReadinessActionsPresent := len(missingGoStructFields("internal/envelope/envelope.go", envelopeText, "HookReadiness", map[string]goStructFieldContract{
+		"Actions": {Type: "[]HookReadinessAction", Tag: `json:"actions,omitempty"`},
+	})) == 0
 	hasSource := strings.Contains(contractText, "hookRuntimeReadinessActions") &&
 		strings.Contains(envelopeText, "type HookReadinessAction struct") &&
-		strings.Contains(envelopeText, "Actions         []HookReadinessAction") &&
+		hookReadinessActionsPresent &&
 		strings.Contains(contractText, "envelopeHookReadinessActions") &&
 		strings.Contains(contractText, "hookReadinessAction") &&
 		strings.Contains(contractText, "InvocationRevision string") &&
@@ -2399,10 +2484,6 @@ func checkProductLoopOpenHypothesisContract(repoRoot string) []Finding {
 			"product_review_plan",
 			"product_next_bounded_move",
 			"signalWithoutHypothesisActionCard",
-			"Metrics           []string `json:\"metrics,omitempty\"`",
-			"ObservationWindow string   `json:\"observation_window,omitempty\"`",
-			"NextAction        string   `json:\"next_action,omitempty\"`",
-			"EvidenceRefs      []string `json:\"evidence_refs,omitempty\"`",
 			"Metrics:           compact(h.Metrics)",
 			"NextAction:        h.NextAction",
 		},
@@ -2654,7 +2735,16 @@ func checkProductLoopOpenHypothesisContract(repoRoot string) []Finding {
 			failures = append(failures, rel+" unreadable: "+err.Error())
 			continue
 		}
-		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+		text := string(b)
+		failures = append(failures, missingPhrases(rel, text, phrases)...)
+		if rel == "internal/product/loops.go" {
+			failures = append(failures, missingGoStructFields(rel, text, "LoopHypothesis", map[string]goStructFieldContract{
+				"Metrics":           {Type: "[]string", Tag: `json:"metrics,omitempty"`},
+				"ObservationWindow": {Type: "string", Tag: `json:"observation_window,omitempty"`},
+				"NextAction":        {Type: "string", Tag: `json:"next_action,omitempty"`},
+				"EvidenceRefs":      {Type: "[]string", Tag: `json:"evidence_refs,omitempty"`},
+			})...)
+		}
 	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
