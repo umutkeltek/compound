@@ -25,7 +25,7 @@ symlinks to these tracked bodies; `./install.sh` runs it. No hook injection avai
 - `docs/architecture/substrate.md` — target topology; **one meaning owner**; two planes; the three places.
 - `docs/architecture/runtime.md` — the `.compound` home, the **envelope spine** (schemas), hooks-as-clients.
 - `docs/architecture/information-custody.md` — physical bodies vs meaning/projections/indexes; edit, restore,
-  multi-device, Switchback boundary, and retirement topology.
+  multi-device, execution-gateway boundary, and retirement topology.
 - `docs/architecture/transition.md` — the `Transition` apex object, the 9-field invariant, second-order tests.
 - `docs/architecture/execution-plane.md` — the model-traffic gateway (route evidence ≠ task success).
 - `docs/architecture/epistemics.md` — machine-checked doctrine table: principles → implementing objects → proof commands.

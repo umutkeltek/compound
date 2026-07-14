@@ -49,7 +49,7 @@ func TestInformationCustodyDoctrineIsServedAndRetirementGrade(t *testing.T) {
 		"real consumer",
 		"negative control",
 		"quiet_window_proven",
-		"Compound and Switchback execution boundary",
+		"Compound and execution-gateway boundary",
 	} {
 		if !strings.Contains(custody, want) {
 			t.Errorf("information custody contract missing %q", want)

@@ -55,5 +55,5 @@ shutdown remains a separate operator decision.
   supersession.
 - **Copy the old roots wholesale:** preserves fragmentation and hides information-class boundaries.
 - **Make Markdown canonical:** couples authority to one editor format and recreates file-watcher truth.
-- **Put Switchback inside Compound:** duplicates provider/account/transport ownership; the systems instead use
-  a revisioned execution handshake.
+- **Put the execution gateway inside Compound:** duplicates provider/account/transport ownership; the systems
+  instead use a revisioned execution handshake.

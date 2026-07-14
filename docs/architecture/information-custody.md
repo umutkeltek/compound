@@ -176,19 +176,19 @@ full kernel by default:
 Buttons that mutate settings, memory, policies, projections, or deployments are clients of the same action and
 policy path. A dashboard never grows a hidden write API.
 
-## 7. Compound and Switchback execution boundary
+## 7. Compound and execution-gateway boundary
 
 A harness is not a model, a model is not a provider, native inference effort is not orchestration, and an alias
 is not an observed identity. Compound stores those axes independently.
 
 Compound owns the semantic request: task/job class, agent role, harness requirements, privacy/risk, semantic
 effort, orchestration policy, budget ceilings, capability constraints, standing grants, and the WorkEnvelope.
-Switchback owns live provider/model/account availability, transport, codec compatibility, retries, circuits,
-fallback execution, provider catalog revision, and exact resolution. The handshake is:
+The execution gateway owns live provider/model/account availability, transport, codec compatibility, retries,
+circuits, fallback execution, provider catalog revision, and exact resolution. The handshake is:
 
 ```text
 Compound ExecutionProfile + budget + policy
-  → Switchback revision-bound transport request
+  → execution gateway revision-bound transport request
   → resolved provider/model/native effort/effective parameters + gateway request id
   → ExecutionRouteEvidence
   → Receipt/Transition joined to task outcome
@@ -198,17 +198,18 @@ Historical evidence stores both requested alias/profile revision and observed pr
 not rewrite history. An explicitly requested unsupported native effort fails or records an allowed translation;
 it never silently changes effort. `ultra`, `xhigh`, and orchestration policies are not interchangeable.
 
-The rollout is deliberately A then B. In A, Switchback owns and validates self-contained lane definitions and
-provider/account reality. In B, Compound's `ExecutionProfile` becomes semantic authority and Switchback lowers
-it into an executable lane. The specific named interactive driver may choose `ultra`; `ultra` is never the
-global default, is not inherited by child agents, mining, or routine work, and every child operation receives
-its own bounded profile and receipt requirement. “Route accepted” remains route evidence, not task success.
+The rollout is deliberately A then B. In A, the gateway owns and validates self-contained lane definitions and
+provider/account reality. In B, Compound's `ExecutionProfile` becomes semantic authority and the gateway lowers
+it into an executable lane. A specifically named interactive driver may choose the highest native effort;
+that effort is never the global default, is not inherited by child agents, mining, or routine work, and every
+child operation receives its own bounded profile and receipt requirement. “Route accepted” remains route
+evidence, not task success.
 
-Required hardening before B is complete: validate aliases against a revisioned Switchback catalog, preserve the
-full requested/effective execution tuple in Panel and receipts, make `ultra` reachable only through explicit
-profile semantics, accept valid cross-model harness combinations, and distinguish no-account/circuit-open from
-no-capable-target failures. Those are open integration gates, not reasons to duplicate Switchback inside
-Compound.
+Required hardening before B is complete: validate aliases against a revisioned gateway catalog, preserve the
+full requested/effective execution tuple in Panel and receipts, make the highest native effort reachable only
+through explicit profile semantics, accept valid cross-model harness combinations, and distinguish
+no-account/circuit-open from no-capable-target failures. Those are open integration gates, not reasons to
+duplicate the gateway inside Compound.
 
 ## 8. Backup, restore, multi-device, retention, and deletion
 
@@ -263,4 +264,4 @@ Every arrow needs evidence. The gates are:
 Brain-like Markdown, database retrieval stores, and control-plane repositories each need their own rows because
 their bodies, writers, and consumers differ. A single “OS absorbed” status cannot retire all three. The end
 state is subtraction: Compound owns durable bodies and meaning; Markdown is a client, indexes are rented,
-Switchback executes, and legacy systems are evidence/archives or gone.
+the gateway executes, and legacy systems are evidence/archives or gone.
