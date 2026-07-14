@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,7 +15,7 @@ import (
 )
 
 func SourceLifecycleGateEvidenceRef(sourceFamily, gate string) string {
-	return "source-gate:" + safeManifestName(sourceFamily) + ":" + strings.TrimSpace(gate)
+	return "source-gate:" + url.PathEscape(strings.TrimSpace(sourceFamily)) + ":" + strings.TrimSpace(gate)
 }
 
 func bindSourceLifecycleEvidence(homePath string, manifest SourceManifest, proofs []SourceLifecycleProof) ([]SourceLifecycleProof, error) {
@@ -41,6 +42,9 @@ func resolveSourceLifecycleEvidenceBinding(homePath string, manifest SourceManif
 	transitionID = strings.TrimSpace(transitionID)
 	if transitionID == "" {
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("proof %s requires a transition evidence id", proof.Gate)
+	}
+	if !validLifecycleEnvelopeStorageID(transitionID, "tr_") {
+		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("proof %s has invalid evidence transition id %q", proof.Gate, transitionID)
 	}
 	transitionPath := filepath.Join(homePath, "events", transitionID+".json")
 	transitionBody, err := os.ReadFile(transitionPath)
@@ -74,6 +78,9 @@ func resolveSourceLifecycleEvidenceBinding(homePath string, manifest SourceManif
 	if receiptID == "" {
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("evidence transition %s has no receipt ref", transitionID)
 	}
+	if !validLifecycleEnvelopeStorageID(receiptID, "rec_") {
+		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("evidence transition %s has invalid receipt ref %q", transitionID, receiptID)
+	}
 	receiptPath := filepath.Join(homePath, "events", receiptID+".json")
 	receiptBody, err := os.ReadFile(receiptPath)
 	if err != nil {
@@ -100,6 +107,9 @@ func resolveSourceLifecycleEvidenceBinding(homePath string, manifest SourceManif
 	}
 
 	workID := strings.TrimSpace(transition.IDs.WorkID)
+	if !validLifecycleEnvelopeStorageID(workID, "work_") {
+		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("evidence transition %s has invalid work_id %q", transitionID, workID)
+	}
 	workPath := filepath.Join(homePath, "work", "work", workID+".json")
 	workBody, err := os.ReadFile(workPath)
 	if err != nil {
@@ -210,7 +220,11 @@ func lifecycleEvidenceSHA256(body []byte) string {
 }
 
 func validLifecycleEvidenceSHA256(value string) bool {
-	value = strings.TrimPrefix(strings.TrimSpace(value), "sha256:")
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	value = strings.TrimPrefix(value, "sha256:")
 	if len(value) != 64 {
 		return false
 	}
@@ -218,6 +232,19 @@ func validLifecycleEvidenceSHA256(value string) bool {
 		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
 			return false
 		}
+	}
+	return true
+}
+
+func validLifecycleEnvelopeStorageID(value, prefix string) bool {
+	if value != strings.TrimSpace(value) || !strings.HasPrefix(value, prefix) || len(value) == len(prefix) {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
 	}
 	return true
 }

@@ -88,6 +88,14 @@ rejected without changing the manifest. Writer cutover and every later operation
 The transition command records evidenced authority state only; the actual external freeze, cutover, archive, service
 stop, or deletion remains a separately governed action with its own receipt.
 
+For isolated restore, semantic parity, real-consumer replay, legacy-unavailable control, writer handoff/cutover,
+rollback, freeze, quiet-window, and archive gates, `<evidence-ref>` must be `transition:<id>`. That Transition and its
+completed/effective Receipt belong to a separate completed evidence work whose `canonical_surface` is the exact
+source family; the Receipt carries `source-gate:<path-escaped-source-family>:<gate>`. The advance work authorizes the
+lifecycle mutation, while the evidence work proves the prerequisite. `manifest-doctor` rehashes and revalidates the
+bound work/Receipt/Transition on every run; missing, malformed, cross-work, cross-family, wrong-gate, or drifted
+evidence blocks the lifecycle without hiding recovery reads.
+
 ## 4. Required proof bundle
 
 A retirement row is not green until all applicable checks pass:

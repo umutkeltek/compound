@@ -160,6 +160,59 @@ func TestSourceManifestLifecycleRejectsEvidenceWithoutExactGateToken(t *testing.
 	assertVerifiedEvidenceRejected(t, homePath, family, transitionRef, SourceLifecycleGateSemanticParity)
 }
 
+func TestSourceLifecycleGateEvidenceRefPreservesSourceFamilyIdentity(t *testing.T) {
+	left := SourceLifecycleGateEvidenceRef("family/a", SourceLifecycleGateSemanticParity)
+	right := SourceLifecycleGateEvidenceRef("family_a", SourceLifecycleGateSemanticParity)
+	if left == right {
+		t.Fatalf("distinct source families collided: %q", left)
+	}
+	if !strings.Contains(left, "family%2Fa") {
+		t.Fatalf("gate ref does not carry escaped source identity: %q", left)
+	}
+}
+
+func TestSourceManifestLifecycleRejectsUnsafeEvidenceObjectIDsBeforePathResolution(t *testing.T) {
+	homePath, family := ownedSnapshotLifecycle(t)
+	assertVerifiedEvidenceRejected(t, homePath, family, "transition:tr_/../../outside", "invalid evidence transition id")
+}
+
+func TestSourceManifestLifecycleRejectsTransitionWithoutReceipt(t *testing.T) {
+	homePath, family := ownedSnapshotLifecycle(t)
+	transitionRef := writeLifecycleEvidenceFixture(t, homePath, lifecycleEvidenceFixture{
+		Family: family,
+		Gates:  verifiedLifecycleGates(),
+		State:  "completed",
+	})
+	transitionID := strings.TrimPrefix(transitionRef, "transition:")
+	var transition envelope.Transition
+	transitionPath := filepath.Join(homePath, "events", transitionID+".json")
+	readLifecycleTestJSON(t, transitionPath, &transition)
+	transition.AfterRefs = nil
+	writeLifecycleTestJSON(t, transitionPath, transition)
+	assertVerifiedEvidenceRejected(t, homePath, family, transitionRef, "has no receipt ref")
+}
+
+func TestStoredSourceLifecycleEvidenceBindingRequiresCanonicalSHA256Refs(t *testing.T) {
+	proof := SourceLifecycleProof{
+		Gate:        SourceLifecycleGateSemanticParity,
+		EvidenceRef: "transition:tr_evidence",
+		EvidenceBinding: &SourceLifecycleEvidenceBinding{
+			SchemaVersion:        SourceLifecycleEvidenceBindingSchemaVersion,
+			EvidenceWorkID:       "work_evidence",
+			EvidenceWorkSHA256:   strings.Repeat("a", 64),
+			ReceiptID:            "rec_evidence",
+			ReceiptSHA256:        "sha256:" + strings.Repeat("b", 64),
+			TransitionID:         "tr_evidence",
+			TransitionSHA256:     "sha256:" + strings.Repeat("c", 64),
+			CanonicalSurface:     "family",
+			RequiredGateProofRef: SourceLifecycleGateEvidenceRef("family", SourceLifecycleGateSemanticParity),
+		},
+	}
+	if err := validateStoredSourceLifecycleEvidenceBindings("family", []SourceLifecycleProof{proof}); err == nil || !strings.Contains(err.Error(), "invalid evidence_binding hash") {
+		t.Fatalf("prefixless SHA accepted: %v", err)
+	}
+}
+
 func TestSourceManifestDoctorRejectsEvidenceEnvelopeDriftAfterAdvance(t *testing.T) {
 	homePath, family := ownedSnapshotLifecycle(t)
 	gates := verifiedLifecycleGates()
@@ -309,7 +362,7 @@ func writeLifecycleEvidenceFixture(t *testing.T, homePath string, in lifecycleEv
 	}
 	proofRefs := make([]string, 0, len(in.Gates))
 	for _, gate := range in.Gates {
-		proofRefs = append(proofRefs, "source-gate:"+in.Family+":"+gate)
+		proofRefs = append(proofRefs, SourceLifecycleGateEvidenceRef(in.Family, gate))
 	}
 	receipt := envelope.Receipt{
 		Header: envelope.Header{

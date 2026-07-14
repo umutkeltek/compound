@@ -273,6 +273,15 @@ Every arrow needs evidence. The gates are:
 9. archive with a verified rollback procedure;
 10. request an explicit operator decision for service shutdown, destructive retirement, or deletion.
 
+High-risk gates do not accept assertion-shaped proof strings. Their proof value is `transition:<id>` for a
+separate, completed evidence WorkEnvelope whose canonical surface exactly equals the source family. Its completed,
+effective Receipt and linked Transition must share that work id, and the Receipt must carry the exact token
+`source-gate:<path-escaped-source-family>:<gate>`. The lifecycle transition's work governs the state advance; the
+evidence work proves the gate. Compound persists the evidence work, Receipt, and Transition ids plus canonical
+`sha256:` hashes, and `manifest-doctor` re-resolves them so missing or changed evidence fails closed. Legacy
+high-risk histories without bindings remain readable for recovery, but doctor fails and no later advance can build
+on them until the source family is re-evidenced through the governed path.
+
 `SourceManifest` v0.3 is the executable owner of this family-level state. Legacy v0.1/v0.2 manifests load as
 `registered`; they do not inherit a later state from body presence or an old status string. The forward edges require
 the exact typed gate set for that edge. Writer cutover additionally records the old writer roster, Compound writer
