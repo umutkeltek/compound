@@ -155,13 +155,20 @@ func buildCanonEvolutionTransition(in CanonEvolutionInput, ensured []string, now
 	if len(evidence) == 0 {
 		evidence = skillRefs
 	}
+	// Identity carries content, not just topology: the evidence refs (live-hash-derived candidate ids)
+	// and caused-by refs are folded into both the transition and work ids so the same file drifting
+	// A->B then B->C under the same cause mints DISTINCT ids and never clobbers the prior events/<id>.json.
+	// No timestamp participates — a byte-identical re-run (e.g. after a failed mint) must reproduce the
+	// same id so transaction-safe retries stay deterministic.
+	evidenceKey := strings.Join(cleanSorted(in.EvidenceRefs), ",")
+	causedByKey := strings.Join(causedBy, ",")
 	tr := envelope.Transition{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVTransition,
-			ID:            canonEvolutionID("tr_canon_", strings.Join(ensured, ","), in.DeltaCause, strings.Join(changed, ",")),
+			ID:            canonEvolutionID("tr_canon_", strings.Join(ensured, ","), in.DeltaCause, strings.Join(changed, ","), evidenceKey, causedByKey),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
-			IDs:           envelope.IDs{WorkID: canonEvolutionID("work_canon_", strings.Join(ensured, ","), in.DeltaCause)},
+			IDs:           envelope.IDs{WorkID: canonEvolutionID("work_canon_", strings.Join(ensured, ","), in.DeltaCause, evidenceKey, causedByKey)},
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier1",
@@ -210,6 +217,10 @@ func canonSourceRevision(in CanonEvolutionInput, ensured []string) string {
 	parts := append([]string{}, cleanSorted(in.ChangedRefs)...)
 	parts = append(parts, ensured...)
 	parts = append(parts, strings.TrimSpace(in.DeltaCause))
+	// Evidence refs carry the live-hash-derived candidate ids, so distinct content produces a distinct
+	// source-authority revision — otherwise A->B and B->C on the same file would share a revision id and
+	// the second RecordSourceAuthority record would shadow the first.
+	parts = append(parts, cleanSorted(in.EvidenceRefs)...)
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return "canon:" + hex.EncodeToString(sum[:])[:12]
 }
