@@ -700,6 +700,9 @@ func readPermissionTargetSnapshot(path string) ([]byte, os.FileInfo, error) {
 }
 
 func cleanupPublishedPermissionRecovery(pending permissionApplyPending) error {
+	if err := validatePermissionRecoveryNames(pending); err != nil {
+		return err
+	}
 	root, err := os.OpenRoot(filepath.Dir(pending.TargetPath))
 	if err != nil {
 		return err
@@ -729,6 +732,9 @@ func cleanupPublishedPermissionRecovery(pending permissionApplyPending) error {
 }
 
 func cleanupUnusedPermissionRecovery(pending permissionApplyPending) error {
+	if err := validatePermissionRecoveryNames(pending); err != nil {
+		return err
+	}
 	root, err := os.OpenRoot(filepath.Dir(pending.TargetPath))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -750,6 +756,9 @@ func cleanupUnusedPermissionRecovery(pending permissionApplyPending) error {
 }
 
 func cleanupInterruptedPermissionCreation(pending permissionApplyPending, canonicalPresent bool) error {
+	if err := validatePermissionRecoveryNames(pending); err != nil {
+		return err
+	}
 	root, err := os.OpenRoot(filepath.Dir(pending.TargetPath))
 	if err != nil {
 		if os.IsNotExist(err) && !canonicalPresent {
