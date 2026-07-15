@@ -37,9 +37,12 @@ func checkEventStoreOwnership(repoRoot string) []Finding {
 				return walkErr
 			}
 			if entry.IsDir() {
-				if entry.Name() == "testdata" || rel == "internal/eventstore" {
+				if entry.Name() == "testdata" {
 					return filepath.SkipDir
 				}
+				return nil
+			}
+			if filepath.Clean(filepath.Dir(path)) == filepath.Join(repoRoot, "internal", "eventstore") {
 				return nil
 			}
 			if strings.HasSuffix(entry.Name(), ".go") && !strings.HasSuffix(entry.Name(), "_test.go") {
@@ -114,6 +117,7 @@ const (
 func inspectEventStoreFile(rel string, fset *token.FileSet, file *ast.File) []eventStoreViolation {
 	imports := eventStoreImports(file)
 	globals := map[string]eventPathKind{}
+	globalStrings := map[string]string{}
 	var violations []eventStoreViolation
 	record := func(node ast.Node, reason string) {
 		violations = append(violations, eventStoreViolation{rel: rel, line: fset.Position(node.Pos()).Line, reason: reason})
@@ -131,11 +135,11 @@ func inspectEventStoreFile(rel string, fset *token.FileSet, file *ast.File) []ev
 			}
 			for _, value := range valueSpec.Values {
 				ast.Inspect(value, func(node ast.Node) bool {
-					inspectEventStoreOperation(node, globals, imports, record)
+					inspectEventStoreOperation(node, globals, globalStrings, imports, record)
 					return true
 				})
 			}
-			bindEventStoreValues(rel, valueSpec.Names, valueSpec.Values, globals, imports, record)
+			bindEventStoreValues(rel, valueSpec.Names, valueSpec.Values, globals, globalStrings, imports, record)
 		}
 	}
 	ast.Inspect(file, func(node ast.Node) bool {
@@ -155,10 +159,14 @@ func inspectEventStoreFile(rel string, fset *token.FileSet, file *ast.File) []ev
 		for name, kind := range globals {
 			env[name] = kind
 		}
+		stringValues := make(map[string]string, len(globalStrings))
+		for name, value := range globalStrings {
+			stringValues[name] = value
+		}
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
 			switch n := node.(type) {
 			case *ast.ValueSpec:
-				bindEventStoreValues(rel, n.Names, n.Values, env, imports, record)
+				bindEventStoreValues(rel, n.Names, n.Values, env, stringValues, imports, record)
 			case *ast.AssignStmt:
 				names := make([]*ast.Ident, 0, len(n.Lhs))
 				for _, lhs := range n.Lhs {
@@ -166,43 +174,43 @@ func inspectEventStoreFile(rel string, fset *token.FileSet, file *ast.File) []ev
 						names = append(names, ident)
 					}
 				}
-				bindEventStoreValues(rel, names, n.Rhs, env, imports, record)
+				bindEventStoreValues(rel, names, n.Rhs, env, stringValues, imports, record)
 			case *ast.ReturnStmt:
 				for _, result := range n.Results {
-					if eventStoreExprKind(result, env, imports) != eventPathNone && !eventStoreReturnVocabulary(rel, result) {
+					if eventStoreExprKind(result, env, stringValues, imports) != eventPathNone && !eventStoreReturnVocabulary(rel, result) {
 						record(result, "event path returned to caller")
 					}
 				}
 			}
-			inspectEventStoreOperation(node, env, imports, record)
+			inspectEventStoreOperation(node, env, stringValues, imports, record)
 			return true
 		})
 	}
 	return violations
 }
 
-func inspectEventStoreOperation(node ast.Node, env map[string]eventPathKind, imports map[string]string, record func(ast.Node, string)) {
+func inspectEventStoreOperation(node ast.Node, env map[string]eventPathKind, stringValues map[string]string, imports map[string]string, record func(ast.Node, string)) {
 	switch n := node.(type) {
 	case *ast.BinaryExpr:
-		if n.Op == token.ADD && eventStoreExprKind(n, env, imports) == eventPathPhysical {
+		if n.Op == token.ADD && eventStoreExprKind(n, env, stringValues, imports) == eventPathPhysical {
 			record(n, "event path concatenation")
 		}
 	case *ast.CallExpr:
 		if eventStoreImportedCall(n, imports, "path/filepath", "Join", "FromSlash") || eventStoreImportedCall(n, imports, "path", "Join") {
-			if eventStoreArgsKind(n.Args, env, imports) != eventPathNone {
+			if eventStoreArgsKind(n.Args, env, stringValues, imports) != eventPathNone {
 				record(n, "event path construction")
 			}
 		}
-		if eventStorePathFormattingCall(n, imports) && eventStoreArgsKind(n.Args, env, imports) != eventPathNone {
+		if eventStorePathFormattingCall(n, imports) && eventStoreArgsKind(n.Args, env, stringValues, imports) != eventPathNone {
 			record(n, "event path formatting")
 		}
-		if eventStoreFilesystemCall(n, imports) && eventStoreArgsKind(n.Args, env, imports) != eventPathNone {
+		if eventStoreFilesystemCall(n, imports) && eventStoreArgsKind(n.Args, env, stringValues, imports) != eventPathNone {
 			record(n, "event filesystem access")
 		}
 	}
 }
 
-func bindEventStoreValues(rel string, names []*ast.Ident, values []ast.Expr, env map[string]eventPathKind, imports map[string]string, record func(ast.Node, string)) {
+func bindEventStoreValues(rel string, names []*ast.Ident, values []ast.Expr, env map[string]eventPathKind, stringValues map[string]string, imports map[string]string, record func(ast.Node, string)) {
 	for i, name := range names {
 		if name == nil || name.Name == "_" {
 			continue
@@ -215,7 +223,12 @@ func bindEventStoreValues(rel string, names []*ast.Ident, values []ast.Expr, env
 			value = values[0]
 		}
 		if value != nil {
-			kind = eventStoreExprKind(value, env, imports)
+			kind = eventStoreExprKind(value, env, stringValues, imports)
+		}
+		if folded, ok := eventStoreStaticString(value, stringValues); ok {
+			stringValues[name.Name] = folded
+		} else {
+			delete(stringValues, name.Name)
 		}
 		if kind == eventPathNone {
 			delete(env, name.Name)
@@ -263,7 +276,10 @@ func eventStoreContainsDiagnosticPath(expr ast.Expr) bool {
 	return found
 }
 
-func eventStoreExprKind(expr ast.Expr, env map[string]eventPathKind, imports map[string]string) eventPathKind {
+func eventStoreExprKind(expr ast.Expr, env map[string]eventPathKind, stringValues map[string]string, imports map[string]string) eventPathKind {
+	if value, ok := eventStoreStaticString(expr, stringValues); ok {
+		return eventStoreStringKind(value)
+	}
 	switch e := expr.(type) {
 	case *ast.BasicLit:
 		if e.Kind != token.STRING {
@@ -282,10 +298,10 @@ func eventStoreExprKind(expr ast.Expr, env map[string]eventPathKind, imports map
 		}
 		return eventPathNone
 	case *ast.ParenExpr:
-		return eventStoreExprKind(e.X, env, imports)
+		return eventStoreExprKind(e.X, env, stringValues, imports)
 	case *ast.BinaryExpr:
-		left := eventStoreExprKind(e.X, env, imports)
-		right := eventStoreExprKind(e.Y, env, imports)
+		left := eventStoreExprKind(e.X, env, stringValues, imports)
+		right := eventStoreExprKind(e.Y, env, stringValues, imports)
 		kind := eventStoreMaxKind(left, right)
 		if e.Op == token.ADD && kind == eventPathComponent {
 			return eventPathPhysical
@@ -294,13 +310,13 @@ func eventStoreExprKind(expr ast.Expr, env map[string]eventPathKind, imports map
 	case *ast.CompositeLit:
 		kind := eventPathNone
 		for _, elt := range e.Elts {
-			kind = eventStoreMaxKind(kind, eventStoreExprKind(elt, env, imports))
+			kind = eventStoreMaxKind(kind, eventStoreExprKind(elt, env, stringValues, imports))
 		}
 		return kind
 	case *ast.KeyValueExpr:
-		return eventStoreExprKind(e.Value, env, imports)
+		return eventStoreExprKind(e.Value, env, stringValues, imports)
 	case *ast.CallExpr:
-		kind := eventStoreArgsKind(e.Args, env, imports)
+		kind := eventStoreArgsKind(e.Args, env, stringValues, imports)
 		if eventStoreImportedCall(e, imports, "path/filepath", "Join", "FromSlash") || eventStoreImportedCall(e, imports, "path", "Join") {
 			if kind != eventPathNone {
 				return eventPathPhysical
@@ -318,10 +334,38 @@ func eventStoreExprKind(expr ast.Expr, env map[string]eventPathKind, imports map
 	return eventPathNone
 }
 
-func eventStoreArgsKind(args []ast.Expr, env map[string]eventPathKind, imports map[string]string) eventPathKind {
+func eventStoreStaticString(expr ast.Expr, values map[string]string) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind != token.STRING {
+			return "", false
+		}
+		value, err := stdstrconv.Unquote(e.Value)
+		return value, err == nil
+	case *ast.Ident:
+		value, ok := values[e.Name]
+		return value, ok
+	case *ast.ParenExpr:
+		return eventStoreStaticString(e.X, values)
+	case *ast.BinaryExpr:
+		if e.Op != token.ADD {
+			return "", false
+		}
+		left, leftOK := eventStoreStaticString(e.X, values)
+		right, rightOK := eventStoreStaticString(e.Y, values)
+		if !leftOK || !rightOK {
+			return "", false
+		}
+		return left + right, true
+	default:
+		return "", false
+	}
+}
+
+func eventStoreArgsKind(args []ast.Expr, env map[string]eventPathKind, stringValues map[string]string, imports map[string]string) eventPathKind {
 	kind := eventPathNone
 	for _, arg := range args {
-		kind = eventStoreMaxKind(kind, eventStoreExprKind(arg, env, imports))
+		kind = eventStoreMaxKind(kind, eventStoreExprKind(arg, env, stringValues, imports))
 	}
 	return kind
 }

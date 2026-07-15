@@ -370,7 +370,7 @@ func (s *Store) Scan(opts ScanOptions) ([]Entry, error) {
 		}
 		ref, err := ReferenceForID(id)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("invalid event scan entry %q: %w", name, err)
 		}
 		entries = append(entries, Entry{
 			ID:        id,

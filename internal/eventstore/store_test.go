@@ -431,6 +431,37 @@ func TestScanIsDeterministicLazyAndPrefixFilteredBeforeOpen(t *testing.T) {
 	}
 }
 
+func TestScanFailsClosedOnMatchingInvalidLooseEventReference(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	if err := os.WriteFile(filepath.Join(store.rootPath(), "trace_bad#.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.Scan(ScanOptions{Prefixes: []string{"rec_"}})
+	if err != nil {
+		t.Fatalf("nonmatching invalid loose record affected scan: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("nonmatching invalid loose record produced entries: %+v", entries)
+	}
+
+	const invalidName = "rec_bad#.json"
+	if err := os.WriteFile(filepath.Join(store.rootPath(), invalidName), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = store.Scan(ScanOptions{Prefixes: []string{"rec_"}})
+	if err == nil {
+		t.Fatal("matching invalid loose event reference was silently skipped")
+	}
+	if entries != nil {
+		t.Fatalf("failed scan returned partial entries: %+v", entries)
+	}
+	if !strings.Contains(err.Error(), invalidName) {
+		t.Fatalf("scan error %q does not identify invalid loose filename %q", err, invalidName)
+	}
+}
+
 func TestNamedStreamsRemainPhysicallyDistinct(t *testing.T) {
 	t.Parallel()
 

@@ -183,6 +183,67 @@ var fixture = filepath.Join("fixture", "events", "rec_example.json")
 	}
 }
 
+func TestEventStoreOwnershipGuardRejectsNestedOwnerPackage(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteArchFixture(t, repo, "internal/eventstore/nested/bypass.go", `package nested
+
+import (
+	"os"
+	"path/filepath"
+)
+
+func read(home string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(home, "events", "rec_nested.json"))
+}
+`)
+
+	findings := eventStoreOwnershipFindings(t, Doctor(repo, true))
+	if !eventStoreFindingContains(findings, Fail, "internal/eventstore/nested/bypass.go") {
+		t.Fatalf("nested package bypassed exact internal/eventstore ownership: %+v", findings)
+	}
+}
+
+func TestEventStoreOwnershipGuardConstantFoldsSplitStringConstants(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteArchFixture(t, repo, "internal/reader/split_constant.go", `package reader
+
+import (
+	"os"
+	"path/filepath"
+)
+
+const eventDir = "ev" + "ents"
+
+func open(home string) (*os.File, error) {
+	return os.Open(filepath.Join(home, eventDir, "rec_split.json"))
+}
+`)
+	mustWriteArchFixture(t, repo, "internal/chainedreader/chained_constant.go", `package chainedreader
+
+import (
+	"os"
+	"path/filepath"
+)
+
+const eventPrefix = "ev"
+const eventDir = eventPrefix + "ents"
+
+func open(home string) (*os.File, error) {
+	return os.Open(filepath.Join(home, eventDir, "rec_chained.json"))
+}
+`)
+
+	findings := eventStoreOwnershipFindings(t, Doctor(repo, true))
+	for _, rel := range []string{
+		"internal/reader/split_constant.go",
+		"internal/chainedreader/chained_constant.go",
+	} {
+		if !eventStoreFindingContains(findings, Fail, rel) {
+			t.Errorf("split string constant in %s bypassed eventstore ownership: %+v", rel, findings)
+		}
+	}
+}
+
 func TestEventStoreOwnershipGuardDetectsUntrackedScratchProductionFile(t *testing.T) {
 	repo := t.TempDir()
 	cmd := exec.Command("git", "init", "--quiet", repo)
