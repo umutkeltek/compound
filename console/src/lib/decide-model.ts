@@ -296,7 +296,7 @@ function groupCreatedAt(group: Json, itemByID: Map<string, Json>): string {
     const created = str(itemByID.get(id)?.created_at);
     if (created && (!min || created < min)) min = created;
   }
-  return min || str(group.created_at);
+  return min || str(group.oldest_created_at) || str(group.created_at);
 }
 
 function isOldAge(createdAt: string): boolean {
@@ -626,7 +626,17 @@ export function buildDecideGroups(
     const attn = attnByKey.get(str(group.key)) ?? attnByArea.get(area) ?? null;
     const attnAction = attn && typeof attn.action === "object" ? (attn.action as Json) : null;
 
-    const act = resolveAct(group, sample, sampleId, attnAction, itemByID);
+    // External-repo intake is a per-repository reviewed-artifact workflow.
+    // An Attention group can contain several repositories, but the bespoke
+    // registry action resolves only one member's YAML. Keep the aggregate
+    // identity read-only so one click cannot imply an atomic group decision.
+    const act: DecideAct = area === "external-repo-intake"
+      ? {
+          mode: "copy",
+          command: "compound reviews --area external-repo-intake",
+          reason: "Each repository requires its own reviewed owner artifact before it can be decided.",
+        }
+      : resolveAct(group, sample, sampleId, attnAction, itemByID);
     const createdAt = groupCreatedAt(group, itemByID);
     const count = num(group.count) || arr(group.item_ids).length || 1;
 

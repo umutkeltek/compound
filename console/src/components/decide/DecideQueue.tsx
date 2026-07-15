@@ -621,18 +621,27 @@ function DecisionDetail({
 
 type RetainedDecision = { group: DecideGroup; result: ExecuteResult; identity: string };
 
+export function initialDecideKey(
+  groups: ReadonlyArray<Pick<DecideGroup, "key">>,
+  requestedKey = "",
+): string {
+  return groups.some((group) => group.key === requestedKey) ? requestedKey : (groups[0]?.key ?? "");
+}
+
 export function DecideQueue({
   groups,
   mutationsEnabled,
   keyboardShortcuts = true,
+  initialSelectedKey = "",
 }: {
   groups: DecideGroup[];
   mutationsEnabled: boolean;
   keyboardShortcuts?: boolean;
+  initialSelectedKey?: string;
 }) {
   const [filter, setFilter] = useState("");
   const [focused, setFocused] = useState(0);
-  const [selectedKey, setSelectedKey] = useState(groups[0]?.key ?? "");
+  const [selectedKey, setSelectedKey] = useState(() => initialDecideKey(groups, initialSelectedKey));
   const [excluded, setExcluded] = useState<Record<string, Set<string>>>({});
   const [retained, setRetained] = useState<Record<string, RetainedDecision>>({});
 

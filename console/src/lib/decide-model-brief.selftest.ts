@@ -234,6 +234,71 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
     );
   }
 
+  // An Attention-owned external-repo group may contain several repositories,
+  // while the legacy bespoke registry action resolves only one review YAML.
+  // Keep the grouped card read-only so one click can never look like it ruled
+  // on every member while mutating only the first sample.
+  {
+    const area = "external-repo-intake";
+    const items = ["extrepo_alpha01", "extrepo_bravo02"].map((id) => ({
+      id,
+      area,
+      context_label: id,
+      actions: [{
+        id: `review_${id}`,
+        argv: ["compound", "capability", "external-intake-review", `/tmp/${id}.review.yaml`],
+      }],
+    })) as Json[];
+    const group = {
+      key: "external-repo-intake|needs-you",
+      area,
+      count: items.length,
+      item_ids: items.map((item) => String(item.id)),
+      operator_summary: "Two external repositories need separate intake decisions.",
+      sample: items[0],
+    } as Json;
+    const attention = {
+      groups: [{
+        ...group,
+        action: {
+          id: "review_external_repo",
+          kind: "one_click",
+          argv: ["compound", "capability", "external-intake-review", "/tmp/extrepo_alpha01.review.yaml"],
+        },
+      }],
+    } as Parameters<typeof buildDecideGroups>[2];
+    const itemByID = new Map(items.map((item) => [String(item.id), item]));
+    const decided = buildDecideGroups([group], itemByID, attention, () => items[0])[0];
+    push(
+      "external-attention-group-stays-copy-only",
+      decided.key === group.key &&
+        decided.count === items.length &&
+        decided.members.map((member) => member.id).join(",") === items.map((item) => item.id).join(",") &&
+        decided.act.mode === "copy" &&
+        decided.capability.kind === "unavailable",
+      `key=${decided.key} count=${decided.count} members=${decided.members.map((member) => member.id).join(",")} act=${decided.act.mode} capability=${decided.capability.kind}`,
+    );
+  }
+
+  // Attention-only identities still carry their oldest observed timestamp.
+  // Do not erase it merely because Reviews has no sample to enrich the group.
+  {
+    const group = {
+      key: "workbench:blocked-on-you",
+      area: "workbench-blocked-on-you",
+      count: 1,
+      item_ids: ["work_blocked_fixture"],
+      oldest_created_at: "2024-01-02T03:04:05Z",
+      operator_summary: "One work item needs a ruling.",
+    } as Json;
+    const decided = buildDecideGroups([group], new Map(), null, () => ({}))[0];
+    push(
+      "attention-oldest-created-at-survives-without-review-sample",
+      decided.createdAt === group.oldest_created_at && decided.ageLabel !== "age unknown" && decided.old,
+      `created_at=${decided.createdAt} age=${decided.ageLabel} old=${decided.old}`,
+    );
+  }
+
   // 11. After a partial enumerable batch, a retry excludes both deliberately
   //     skipped members and members already recorded before the failure.
   {

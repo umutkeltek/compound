@@ -1,25 +1,22 @@
 import { DecideQueue } from "@/components/decide/DecideQueue";
-import { CheckIcon, ClockIcon, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
-import { getAttention, type AttentionReport } from "@/lib/attention";
+import { CheckIcon, ClockIcon, FeedDegraded, feedRenderModel, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
+import { attentionNeedsYouGroups, getAttentionProjection } from "@/lib/attention";
 import { arr, getReviews, num, str, type Json } from "@/lib/compound";
 import { partitionDecideGroupsByOwnerWorkflow } from "@/lib/decide-members";
 import { ago } from "@/lib/time";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
-import { buildDecideGroups, domainForArea, type DecideGroup } from "@/lib/decide-model";
+import { buildDecideGroups, type DecideGroup } from "@/lib/decide-model";
 import { areaPlain } from "@/lib/glossary";
-import { areaOf, bandOf, externalReviewRows, groupsForBand } from "@/lib/review-data";
+import { areaOf, bandOf, enrichAttentionGroups, externalReviewRows, groupsForBand } from "@/lib/review-data";
 
 export const dynamic = "force-dynamic";
 
-const EXTERNAL_AREA = "external-repo-intake";
-
 /* ---------- item index + sample resolution (unchanged data contract) ----------
- * The Decide page renders the SAME needs-you group set the attention smoke
- * models: backend `compound reviews --json` groups + the client fallback net +
- * one external card. Ordering follows the ONE `compound attention --json`
- * projection. Phase 3b only changes how those groups are PRESENTED and ACTED
- * on (kit cards, honest batch modes, keyboard triage) — not which groups show.
+ * The Decide page renders the SAME ordered needs-you group set as
+ * `compound attention --json`. Reviews only enrich those identities with item
+ * detail. Phase 3b only changes how those groups are PRESENTED and ACTED on
+ * (kit cards, honest batch modes, keyboard triage) — not which groups show.
  */
 
 function buildItemIndex(reviews: Json | null): Map<string, Json> {
@@ -63,34 +60,6 @@ function groupCreatedAt(group: Json, itemByID: Map<string, Json>): string {
   return min || str(group.created_at);
 }
 
-/* ---------- ordering follows the ONE attention projection ---------- */
-function orderByAttention(groups: Json[], attention: AttentionReport | null, itemByID: Map<string, Json>): Json[] {
-  const rankByKey = new Map<string, number>();
-  const rankByArea = new Map<string, number>();
-  arr(attention?.groups).forEach((g: Json, index: number) => {
-    const key = str(g.key);
-    if (key && !rankByKey.has(key)) rankByKey.set(key, index);
-    const area = str(g.area);
-    if (area && !rankByArea.has(area)) rankByArea.set(area, index);
-  });
-  const UNRANKED = Number.MAX_SAFE_INTEGER;
-  const rankOf = (group: Json): number => {
-    const byKey = rankByKey.get(str(group.key));
-    if (byKey != null) return byKey;
-    return rankByArea.get(areaOf(group)) ?? UNRANKED;
-  };
-  return groups
-    .map((group, index) => ({ group, index, rank: rankOf(group) }))
-    .sort((a, b) => {
-      if (a.rank !== b.rank) return a.rank - b.rank;
-      const ageA = groupCreatedAt(a.group, itemByID) || "9999";
-      const ageB = groupCreatedAt(b.group, itemByID) || "9999";
-      if (ageA !== ageB) return ageA.localeCompare(ageB);
-      return a.index - b.index;
-    })
-    .map((entry) => entry.group);
-}
-
 function sortByAge(rows: Json[], itemByID: Map<string, Json>): Json[] {
   return rows
     .slice()
@@ -102,50 +71,6 @@ function asWatchingEntry(row: Json): Json {
     ...row,
     count: num(row.count) || 1,
     item_ids: arr(row.item_ids).length ? row.item_ids : [str(row.id) || str(row.review_id)],
-  };
-}
-
-/* ---------- external needs-you collapses to ONE honest card ----------
- * Each external repo is decided from its filled review artifact (a prepared-YAML
- * flow, genuinely not a one-click), so this card is honest copy + a member list.
- */
-function externalDecideGroup(externalNeedsYou: Json[], attention: AttentionReport | null): DecideGroup | null {
-  if (!externalNeedsYou.length) return null;
-  return {
-    key: "external-repo-intake|needs-you",
-    area: EXTERNAL_AREA,
-    areaLabel: "external repo intake",
-    areaPlain: areaPlain(EXTERNAL_AREA),
-    domain: domainForArea(EXTERNAL_AREA),
-    glyph: "E",
-    title: "Shared repos awaiting your keep / reference / reject call",
-    unlock: "",
-    body: "Each repo is decided from its own review artifact — fill the review, then record it. Nothing is cloned, installed, or run from this card.",
-    consequences: {
-      approve: "your decision + rationale go on the permanent record and steer what happens to the repo",
-      hold: "the repos stay in this queue untouched",
-    },
-    chips: [],
-    count: externalNeedsYou.length,
-    createdAt: "",
-    ageLabel: "",
-    old: false,
-    sampleId: str(externalNeedsYou[0]?.id) || EXTERNAL_AREA,
-    members: externalNeedsYou.map((r) => ({
-      id: str(r.id) || str(r.review_id),
-      label: str(r.target_path) || str(r.operator_summary) || str(r.id),
-      argv: null,
-      actionId: "",
-      expectedRevision: "",
-    })),
-    evidence: [],
-    freshness: { generatedAt: str(attention?.generated_at), source: "compound attention --json" },
-    act: { mode: "copy", command: "compound reviews --area external-repo-intake", reason: "" },
-    capability: {
-      kind: "unavailable",
-      label: "Owner action unavailable",
-      detail: "Each repository still requires its reviewed owner artifact before a safe action exists.",
-    },
   };
 }
 
@@ -176,21 +101,33 @@ function WatchingRow({ entry, itemByID }: { entry: Json; itemByID: Map<string, J
   );
 }
 
-export default async function Decide() {
-  const [reviews, attention] = await Promise.all([getReviews(), getAttention()]);
+export default async function Decide({
+  searchParams,
+}: {
+  searchParams: Promise<{ decision?: string | string[] }>;
+}) {
+  const [reviews, attentionProjection, params] = await Promise.all([
+    getReviews(),
+    getAttentionProjection({ timeoutMs: 45_000 }),
+    searchParams,
+  ]);
+  const { read: attentionRead, report: attention } = attentionProjection;
   const itemByID = buildItemIndex(reviews);
   const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
+  const initialSelectedKey = Array.isArray(params.decision) ? str(params.decision[0]) : str(params.decision);
 
   const externalRows = externalReviewRows(reviews);
-  const externalNeedsYou = externalRows.filter((r) => bandOf(r) !== "watching");
   const externalWatching = externalRows.filter((r) => bandOf(r) === "watching");
 
-  // The needs-you set (backend groups + client fallback net), ordered by the
-  // ONE attention projection — same set the attention-consistency smoke models.
-  const orderedGroups = orderByAttention(groupsForBand(reviews, "needs_you", attention), attention, itemByID);
+  // Attention owns both membership and order. Reviews only supply richer
+  // samples for identities already selected by that projection.
+  const reviewEnrichmentGroups = [
+    ...arr(reviews?.groups).filter((group: Json) => bandOf(group) === "needs_you"),
+    ...groupsForBand(reviews, "needs_you", attention),
+  ];
+  const orderedGroups = enrichAttentionGroups(attentionNeedsYouGroups(attention), reviewEnrichmentGroups);
   const modelGroups = buildDecideGroups(orderedGroups, itemByID, attention, (g) => sampleForGroup(g, itemByID));
-  const extGroup = externalDecideGroup(externalNeedsYou, attention);
-  const decideGroups: DecideGroup[] = extGroup ? [extGroup, ...modelGroups] : modelGroups;
+  const decideGroups: DecideGroup[] = modelGroups;
 
   const watchingEntries = sortByAge(
     [...groupsForBand(reviews, "watching", attention), ...externalWatching.map(asWatchingEntry)],
@@ -209,6 +146,7 @@ export default async function Decide() {
 
   const { ready: readyGroups, limited: limitedGroups } = partitionDecideGroupsByOwnerWorkflow(decideGroups);
   const empty = readyGroups.length === 0;
+  const decideRender = feedRenderModel(attentionRead.status, decideGroups.length > 0);
 
   return (
     <div className="flex flex-col gap-6">
@@ -221,12 +159,22 @@ export default async function Decide() {
           label="Ready to decide"
         />
 
-        {empty ? (
+        {decideRender === "degraded" ? (
+          <FeedDegraded
+            label="Decide"
+            source="compound attention --json"
+            lastGoodAt={attentionRead.lastGoodAt}
+          />
+        ) : empty ? (
           <p className="rounded-lg border border-dashed border-hair bg-page px-4 py-8 text-center text-sm text-muted">
             Nothing is ready for a decision right now.
           </p>
         ) : (
-          <DecideQueue groups={readyGroups} mutationsEnabled={mutationsEnabled} />
+          <DecideQueue
+            groups={readyGroups}
+            mutationsEnabled={mutationsEnabled}
+            initialSelectedKey={initialSelectedKey}
+          />
         )}
       </section>
 
@@ -242,7 +190,12 @@ export default async function Decide() {
             <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
           </div>
           <div className="border-t border-hair p-3">
-            <DecideQueue groups={limitedGroups} mutationsEnabled={mutationsEnabled} keyboardShortcuts={false} />
+            <DecideQueue
+              groups={limitedGroups}
+              mutationsEnabled={mutationsEnabled}
+              keyboardShortcuts={false}
+              initialSelectedKey={initialSelectedKey}
+            />
           </div>
         </section>
       ) : null}

@@ -1,168 +1,251 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+// proof-check invokes console smokes with Node. The real public seam below is
+// TSX, so re-enter this same script through the repo's Bun runtime before any
+// TSX module is loaded. Static imports would fail in Node before this guard ran.
+if (!process.versions.bun) {
+  execFileSync("bun", [fileURLToPath(import.meta.url)], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: "inherit",
+  });
+  process.exit(0);
+}
+
+const [
+  { default: ReviewsPage },
+  { getAttentionProjection },
+  { DecideList },
+  { initialDecideKey },
+  { enrichAttentionGroups },
+  { buildDecideGroups },
+] = await Promise.all([
+  import("../src/app/reviews/page.tsx"),
+  import("../src/lib/attention.ts"),
+  import("../src/components/briefing/DecideList.tsx"),
+  import("../src/components/decide/DecideQueue.tsx"),
+  import("../src/lib/review-data.ts"),
+  import("../src/lib/decide-model.ts"),
+]);
 
 /*
- * Phase 2 acceptance: ONE attention projection feeds every "what needs you"
- * surface. This smoke proves the nav Decide badge, the briefing pill, and the
- * Reviews needs-you band cannot silently diverge, by cross-checking the two
- * live projections a running console reads:
+ * Acceptance: ONE attention projection owns every "what needs you" identity.
+ * This smoke executes the real Reviews server component, then proves that the
+ * Decide queues render exactly the needs-you keys emitted by
+ * `compound attention --json`.
  *
- *   (a) `compound attention --json` (nav badge + briefing + Reviews ordering)
- *   (b) `compound reviews --json`   (what the Reviews page renders)
+ * Reviews may enrich an Attention group with item detail, and the page may
+ * present ready and limited workflows in separate queues. Neither is allowed
+ * to add, drop, replace, duplicate, or reorder identities within a queue.
  *
- * It asserts:
- *   1. counts.needs_you_groups equals the actual number of needs_you groups in
- *      the projection (the count field can't drift from the array).
- *   2. attention's reviews-source needs_you groups match, key-for-key, the
- *      needs_you groups `compound reviews --json` emits — so the page (reads
- *      reviews) and the nav/briefing (read attention) agree on the reviews slice.
- *   3. counts.needs_you_groups reconciles with the number of needs_you groups
- *      the Reviews page renders AFTER its client fallback safety net, with any
- *      delta fully explained by an explicit allowlist of reasons.
- *   4. every attention group whose action is not copy-only carries a well-formed
- *      argv starting with "compound".
- *
- * Run manually / by the orchestrator; nothing wires it into Go.
- *   COMPOUND_BIN=../compound COMPOUND_HOME=~/.compound bun scripts/attention-consistency-smoke.mjs
+ * Run manually / through proof-check:
+ *   COMPOUND_BIN=compound COMPOUND_HOME=~/.compound bun scripts/attention-consistency-smoke.mjs
  */
 
-const BIN = process.env.COMPOUND_BIN || "compound";
-const EXTERNAL_AREA = "external-repo-intake";
+const str = (value) => (typeof value === "string" ? value : "");
+const arr = (value) => (Array.isArray(value) ? value : []);
+const num = (value) => (typeof value === "number" ? value : 0);
 
-function runJson(args) {
-  const out = execFileSync(BIN, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  const start = out.indexOf("{");
-  assert.ok(start >= 0, `no JSON object in \`${BIN} ${args.join(" ")}\` output`);
-  return JSON.parse(out.slice(start));
+function decideQueuesFromPage(root) {
+  const queues = [];
+  const visit = (node) => {
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+    if (node.type?.name === "DecideQueue" && Array.isArray(node.props?.groups)) {
+      queues.push(node);
+    }
+    visit(node.props?.children);
+  };
+  visit(root);
+  return queues;
 }
 
-const str = (v) => (typeof v === "string" ? v : "");
-const arr = (v) => (Array.isArray(v) ? v : []);
-const num = (v) => (typeof v === "number" ? v : 0);
-
-/* ---- replicate the console's review-data.ts grouping so the smoke reasons
-       about exactly what the Reviews page renders (kept in sync by review) ---- */
-const areaOf = (row) => str(row.area) || str(row.review_area);
-const bandOf = (row) => {
-  const b = str(row.band);
-  return b === "watching" || b === "filed" ? b : "needs_you";
-};
-const idOf = (row) => str(row.id) || str(row.review_id);
-function fallbackGroupKey(row) {
-  const area = areaOf(row) || "review";
-  const basis =
-    str(row.group_key) ||
-    str(row.context_label) ||
-    str(row.operator_summary) ||
-    str(row.next_action) ||
-    idOf(row) ||
-    "decision";
-  return `${area}:${basis.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80)}`;
-}
-
-const attention = runJson(["attention", "--json"]);
-const reviews = runJson(["reviews", "--json"]);
-
+// Seed the production memo once, then render the real page. A separate direct
+// child process here would make the smoke pay for the same expensive
+// projection twice and turn unrelated machine contention into a false
+// identity failure.
+const attentionProjection = await getAttentionProjection({ timeoutMs: 45_000 });
+assert.notEqual(
+  attentionProjection.read.status,
+  "unreachable",
+  `Attention projection is unreachable: ${attentionProjection.read.error ?? "unknown error"}`,
+);
+const attention = attentionProjection.report;
+assert.ok(attention, "Attention projection returned no report");
 assert.equal(str(attention.schema_version), "compound.attention.v0.1", "unexpected attention schema");
 
-const attnGroups = arr(attention.groups);
-const attnNeedsYou = attnGroups.filter((g) => str(g.band) === "needs_you");
-const A = num(attention.counts?.needs_you_groups);
-
-/* ---- check 1: counts.needs_you_groups == actual needs_you groups ---- */
+const attentionGroups = arr(attention.groups).filter((group) => str(group.band) === "needs_you");
+const attentionKeys = attentionGroups.map((group) => str(group.key));
+assert.ok(attentionKeys.every(Boolean), "every Attention needs-you group must carry a stable key");
 assert.equal(
-  A,
-  attnNeedsYou.length,
-  `counts.needs_you_groups (${A}) != number of needs_you groups in .groups (${attnNeedsYou.length})`,
+  num(attention.counts?.needs_you_groups),
+  attentionKeys.length,
+  "counts.needs_you_groups must equal the actual Attention needs-you group count",
+);
+assert.equal(new Set(attentionKeys).size, attentionKeys.length, "Attention needs-you keys must be unique");
+
+const page = await ReviewsPage({ searchParams: Promise.resolve({}) });
+const queues = decideQueuesFromPage(page);
+const queueKeys = queues.map((queue) => queue.props.groups.map((group) => str(group.key)));
+const decideKeys = queueKeys.flat();
+
+assert.ok(queues.length > 0 || attentionKeys.length === 0, "Reviews page did not render a DecideQueue for pending Attention groups");
+assert.equal(new Set(decideKeys).size, decideKeys.length, "a decision key rendered in more than one Decide queue");
+
+const onlyInAttention = attentionKeys.filter((key) => !decideKeys.includes(key));
+const onlyInDecide = decideKeys.filter((key) => !attentionKeys.includes(key));
+assert.deepEqual(
+  { onlyInAttention, onlyInDecide },
+  { onlyInAttention: [], onlyInDecide: [] },
+  "Attention and Decide must have exactly the same needs-you membership",
 );
 
-/* ---- source tally ---- */
-const bySource = {};
-for (const g of attnNeedsYou) {
-  const s = str(g.source) || "unknown";
-  bySource[s] = (bySource[s] ?? 0) + 1;
+for (const [index, keys] of queueKeys.entries()) {
+  const keySet = new Set(keys);
+  const expected = attentionKeys.filter((key) => keySet.has(key));
+  assert.deepEqual(
+    keys,
+    expected,
+    `Decide queue ${index + 1} reordered identities relative to Attention`,
+  );
 }
 
-/* ---- check 2: attention reviews-source groups == reviews.json backend groups (key-for-key) ---- */
-const attnReviewKeys = new Set(
-  attnNeedsYou.filter((g) => str(g.source) === "reviews").map((g) => str(g.key)),
-);
-const revBackend = arr(reviews.groups).filter(
-  (g) => bandOf(g) === "needs_you" && areaOf(g) !== EXTERNAL_AREA,
-);
-const revBackendKeys = new Set(revBackend.map((g) => str(g.key)));
-
-const onlyInAttention = [...attnReviewKeys].filter((k) => !revBackendKeys.has(k));
-const onlyInReviews = [...revBackendKeys].filter((k) => !attnReviewKeys.has(k));
-assert.deepEqual(
-  { onlyInAttention, onlyInReviews },
-  { onlyInAttention: [], onlyInReviews: [] },
-  "attention reviews-source needs_you groups drifted from `compound reviews --json` — the two projections must stay key-for-key identical on the reviews slice",
-);
-
-/* ---- reconstruct what the Reviews page renders (after the fallback safety net) ---- */
-const covered = new Set([
-  ...revBackend.flatMap((g) => arr(g.item_ids).map(String)),
-  ...attnGroups.flatMap((g) => arr(g.item_ids).map(String)),
-]);
-const leftover = arr(reviews.items).filter((it) => {
-  if (bandOf(it) !== "needs_you") return false;
-  if (areaOf(it) === EXTERNAL_AREA) return false;
-  const id = idOf(it);
-  return Boolean(id) && !covered.has(id);
+const briefing = DecideList({
+  groups: attentionGroups,
+  total: attentionGroups.length,
+  read: { status: "live", lastGoodAt: null },
 });
-const clientFallbackKeys = new Set(leftover.map(fallbackGroupKey));
-const externalNeedsYou = arr(reviews.items).filter(
-  (it) => areaOf(it) === EXTERNAL_AREA && bandOf(it) === "needs_you",
-);
-const externalCard = externalNeedsYou.length > 0 ? 1 : 0;
-
-const reviewsRendered = revBackend.length + clientFallbackKeys.size + externalCard;
-
-/* ---- check 3: A reconciles with the Reviews-rendered count via an explicit allowlist ---- */
-const nonReviewsSources = Object.entries(bySource).filter(([s]) => s !== "reviews");
-const allowlist = [
-  ...nonReviewsSources.map(([s, n]) => [
-    n,
-    `attention "${s}"-source needs-you groups render on their own screen (Agents/Work), not Reviews`,
-  ]),
-  [-clientFallbackKeys.size, "Reviews client fallback safety-net groups for areas the projection has not grouped yet (writer debt; retires when counts.fallback_groups == 0)"],
-  [-externalCard, "external-repo-intake needs-you rows collapse to one Reviews card"],
-];
-const explainedDelta = allowlist.reduce((sum, [n]) => sum + n, 0);
-const observedDelta = A - reviewsRendered;
-
-console.log("attention-consistency-smoke");
-console.log(`  attention.counts.needs_you_groups        = ${A}`);
-console.log(`  Reviews page rendered needs_you groups   = ${reviewsRendered}`);
-console.log(`    reviews backend groups   ${revBackend.length}`);
-console.log(`    client fallback groups   ${clientFallbackKeys.size}`);
-console.log(`    external card            ${externalCard}`);
-console.log(`  needs_you groups by source: ${JSON.stringify(bySource)}`);
-console.log("  delta allowlist (attention groups minus what Reviews renders):");
-for (const [n, reason] of allowlist) console.log(`    ${n >= 0 ? "+" : ""}${n}  ${reason}`);
-
-assert.equal(
-  observedDelta,
-  explainedDelta,
-  `attention.needs_you_groups (${A}) vs Reviews-rendered (${reviewsRendered}) delta ${observedDelta} is not fully explained by the allowlist (${explainedDelta}) — an un-accounted "needs me" heuristic has appeared`,
+const briefingHrefs = [];
+const collectHrefs = (node) => {
+  if (Array.isArray(node)) {
+    node.forEach(collectHrefs);
+    return;
+  }
+  if (!node || typeof node !== "object") return;
+  if (typeof node.props?.href === "string") briefingHrefs.push(node.props.href);
+  collectHrefs(node.props?.children);
+};
+collectHrefs(briefing);
+assert.deepEqual(
+  briefingHrefs,
+  attentionKeys.map((key) => `/reviews?decision=${encodeURIComponent(key)}`),
+  "every Briefing decision row must deep-link its exact Attention key",
 );
 
-/* ---- check 4: every non-copy-only action is a clean argv[0]==="compound" ---- */
+// Attention chooses identity, membership, and order. A matching Reviews group
+// may enrich that identity with evidence and the owner's exact batch action;
+// dropping either makes a card look empty or routes a panel action through an
+// incompatible generic path.
+{
+  const key = "panel-verdicts|prun_fixture_enrichment|promote";
+  const item = { id: "panel_enrichment_member01", area: "panel-verdicts" };
+  const attentionGroup = {
+    key,
+    area: item.area,
+    band: "needs_you",
+    count: 1,
+    item_ids: [item.id],
+    operator_summary: "Apply the reviewed panel run.",
+  };
+  const reviewsGroup = {
+    key,
+    area: item.area,
+    band: "needs_you",
+    count: 1,
+    item_ids: [item.id],
+    evidence_refs: ["panel-run:prun_fixture_enrichment"],
+    evidence_summaries: [{ ref: "panel-run:prun_fixture_enrichment", summary: "reviewed run" }],
+    sample: item,
+    safe_batch_action: {
+      id: "panel_run_apply",
+      label: "Apply reviewed run",
+      argv: ["compound", "panel", "run", "--plan", "prun_fixture_enrichment", "--apply"],
+      requires_review: true,
+    },
+  };
+  const enriched = enrichAttentionGroups([attentionGroup], [reviewsGroup]);
+  assert.equal(enriched.length, 1, "Reviews enrichment must not add an identity");
+  assert.deepEqual(enriched[0].item_ids, [item.id], "Attention must retain exact group membership");
+  assert.deepEqual(enriched[0].evidence_refs, reviewsGroup.evidence_refs, "matching Reviews evidence must survive");
+  const decided = buildDecideGroups(enriched, new Map([[item.id, item]]), { groups: [attentionGroup] }, () => item)[0];
+  assert.equal(decided.act.mode, "batch-atomic", "matching panel safe_batch_action must survive enrichment");
+  assert.equal(decided.capability.kind, "apply", "panel apply capability must remain executable");
+  assert.equal(decided.evidence.length, 1, "matching Reviews evidence must reach the Decide card");
+
+  const mismatched = enrichAttentionGroups(
+    [attentionGroup],
+    [{ ...reviewsGroup, count: 2, item_ids: [item.id, "review_only_member"] }],
+  )[0];
+  assert.deepEqual(mismatched.item_ids, [item.id], "Attention must retain exact group membership");
+  assert.equal(
+    mismatched.safe_batch_action,
+    undefined,
+    "a Reviews batch action must not cross a mismatched member set",
+  );
+}
+
+for (const queue of queues) {
+  const requestedKey = str(queue.props.groups.at(-1)?.key);
+  if (!requestedKey) continue;
+  const selectedPage = await ReviewsPage({ searchParams: Promise.resolve({ decision: requestedKey }) });
+  const selectedQueues = decideQueuesFromPage(selectedPage);
+  const containingQueue = selectedQueues.find((queue) =>
+    queue.props.groups.some((group) => str(group.key) === requestedKey),
+  );
+  assert.ok(containingQueue, `requested decision ${requestedKey} was not present in any Decide queue`);
+  assert.equal(
+    containingQueue.props.initialSelectedKey,
+    requestedKey,
+    "the Decide queue containing a deep-linked decision must receive that exact initialSelectedKey",
+  );
+  assert.equal(
+    initialDecideKey(containingQueue.props.groups, requestedKey),
+    requestedKey,
+    "DecideQueue must initialize to a requested key that belongs to its own partition",
+  );
+}
+
+const reviewsPageURL = new URL("../src/app/reviews/page.tsx", import.meta.url).href;
+const degradationProbe = `
+  import ReviewsPage from ${JSON.stringify(reviewsPageURL)};
+  const root = await ReviewsPage({ searchParams: Promise.resolve({}) });
+  let degraded = false;
+  const visit = (node) => {
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    if (!node || typeof node !== "object") return;
+    if (node.type?.name === "FeedDegraded" && node.props?.label === "Decide") degraded = true;
+    visit(node.props?.children);
+  };
+  visit(root);
+  if (!degraded) throw new Error("unreachable Attention rendered as an empty Decide queue");
+`;
+execFileSync("bun", ["-e", degradationProbe], {
+  cwd: fileURLToPath(new URL("../..", import.meta.url)),
+  env: { ...process.env, COMPOUND_BIN: process.execPath },
+  stdio: "pipe",
+});
+
 let checkedActions = 0;
-for (const g of attnGroups) {
-  const action = g.action;
+for (const group of attentionGroups) {
+  const action = group.action;
   if (!action || typeof action !== "object") continue;
   if (str(action.kind) === "copy_only") continue;
   checkedActions++;
   const argv = arr(action.argv).map(String);
   assert.ok(
     argv.length >= 2 && argv[0] === "compound",
-    `group ${str(g.key)} action ${str(action.id)} (kind=${str(action.kind)}) must carry a clean argv starting with "compound"; got ${JSON.stringify(argv)}`,
+    `group ${str(group.key)} action ${str(action.id)} (kind=${str(action.kind)}) must carry a clean argv starting with "compound"; got ${JSON.stringify(argv)}`,
   );
 }
 
-console.log(
-  `  action argv check: ${checkedActions} non-copy-only action(s) all clean (argv[0]="compound")`,
-);
+console.log("attention-consistency-smoke");
+console.log(`  Attention needs-you keys = ${attentionKeys.length}`);
+console.log(`  Decide needs-you keys    = ${decideKeys.length}`);
+queueKeys.forEach((keys, index) => console.log(`    queue ${index + 1}: ${keys.length}`));
+console.log(`  action argv check: ${checkedActions} non-copy-only action(s) all clean (argv[0]="compound")`);
 console.log("attention-consistency-smoke ok");

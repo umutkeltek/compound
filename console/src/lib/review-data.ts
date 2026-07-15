@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { AttentionReport } from "@/lib/attention";
+import type { AttentionGroup, AttentionReport } from "@/lib/attention";
 import { arr, COMPOUND_HOME, Json, num, privateFallbacksEnabled, reviewCommand, str } from "@/lib/compound";
 import { parseReviewDraftYaml, ReviewDraftFields } from "@/lib/review-yaml";
 
@@ -116,6 +116,46 @@ export function groupsForBand(
     return Boolean(id) && !covered.has(id);
   });
   return [...backend, ...fallbackGroups(leftover)];
+}
+
+function sameMembers(left: unknown, right: unknown): boolean {
+  const a = [...new Set(arr(left).map(String).filter(Boolean))].sort();
+  const b = [...new Set(arr(right).map(String).filter(Boolean))].sort();
+  return a.length > 0 && a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/**
+ * Preserve Attention as the identity, membership, and order owner while
+ * restoring richer Reviews metadata for the exact same key. Evidence may
+ * enrich a key match. A group-wide action crosses only when both owners name
+ * the exact same member set, so stale Reviews membership cannot execute a
+ * wider batch than the card represents.
+ */
+export function enrichAttentionGroups(
+  attentionGroups: ReadonlyArray<AttentionGroup>,
+  reviewGroups: ReadonlyArray<Json>,
+): Json[] {
+  const reviewByKey = new Map<string, Json>();
+  for (const group of reviewGroups) {
+    const key = str(group.key);
+    if (key) reviewByKey.set(key, group);
+  }
+  return attentionGroups.map((group) => {
+    const review = reviewByKey.get(group.key);
+    const enriched = {
+      ...(review ?? {}),
+      ...group,
+    } as unknown as Json;
+    if (review && !sameMembers(group.item_ids, review.item_ids)) {
+      delete enriched.safe_batch_action;
+    }
+    const sample = enriched.sample as Json | undefined;
+    const sampleID = str(sample?.id) || str(sample?.review_id);
+    if (sampleID && !group.item_ids.includes(sampleID)) {
+      delete enriched.sample;
+    }
+    return enriched;
+  });
 }
 
 export function externalReviewYamlPath(id: string): string {

@@ -48,15 +48,16 @@ export function DecideList({
   return (
     <Panel className="overflow-hidden">
       {groups.map((group, index) => {
+        const key = str(group.key);
         const created = group.oldest_created_at;
         const warn = isOld(created);
         const age = humanAge(created) || "new";
         const unlock = str(group.operator_unlock);
         return (
           <Link
-            key={str(group.key) || index}
-            href="/reviews"
-            title={str(group.key)}
+            key={key || index}
+            href={key ? `/reviews?decision=${encodeURIComponent(key)}` : "/reviews"}
+            title={key}
             className={`grid grid-cols-1 gap-2 px-5 py-4 transition-colors hover:bg-soft focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus sm:grid-cols-[1fr_auto] sm:items-center sm:gap-5 ${
               index > 0 ? "border-t border-hair" : ""
             }`}
