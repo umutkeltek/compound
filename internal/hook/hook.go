@@ -20,6 +20,7 @@ import (
 	"compound/internal/authority"
 	"compound/internal/contract"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/harness"
 	"compound/internal/mem"
 	"compound/internal/policy"
@@ -733,6 +734,14 @@ func createHeldGateReview(store *work.Store, fx Fixture, ai envelope.ActionInten
 	if target == "" {
 		target = ai.Target.ID
 	}
+	actionRef, err := eventstore.ReferenceForID(ai.ID)
+	if err != nil {
+		return envelope.WorkEnvelope{}, err
+	}
+	decisionRef, err := eventstore.ReferenceForID(pd.ID)
+	if err != nil {
+		return envelope.WorkEnvelope{}, err
+	}
 	predicate := fmt.Sprintf("review held policy gate for %s on %s", ai.Action, target)
 	return store.Create(work.CreateInput{
 		Owner:            fx.Harness,
@@ -745,7 +754,7 @@ func createHeldGateReview(store *work.Store, fx Fixture, ai envelope.ActionInten
 			"do not mutate the target before policy allows it",
 			"do not treat git status as source truth for meaning",
 		},
-		EvidenceRefs: mergeRefs([]string{ai.ID, pd.ID}, pd.EvidenceRefs, sc.EvidenceRefs),
+		EvidenceRefs: mergeRefs([]string{actionRef.String(), decisionRef.String()}, pd.EvidenceRefs, sc.EvidenceRefs),
 	}, now)
 }
 
@@ -766,15 +775,19 @@ func mergeRefs(groups ...[]string) []string {
 }
 
 func writeGateArtifacts(homePath string, ai envelope.ActionIntent, pd envelope.PolicyDecision) ([]string, error) {
-	actionRef := filepath.Join("events", ai.ID+".json")
-	policyRef := filepath.Join("events", pd.ID+".json")
-	if err := writeJSON(filepath.Join(homePath, actionRef), ai); err != nil {
+	store, err := eventstore.Open(homePath)
+	if err != nil {
 		return nil, err
 	}
-	if err := writeJSON(filepath.Join(homePath, policyRef), pd); err != nil {
+	action, err := store.PutJSON(ai.ID, ai, "  ")
+	if err != nil {
 		return nil, err
 	}
-	return []string{actionRef, policyRef}, nil
+	decision, err := store.PutJSON(pd.ID, pd, "  ")
+	if err != nil {
+		return nil, err
+	}
+	return []string{action.Reference.String(), decision.Reference.String()}, nil
 }
 
 func sourceControlContextForAction(homePath, targetPath string, now time.Time) (*policy.SourceControlContext, string, []string, error) {
@@ -939,9 +952,16 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		if err != nil || rec == nil {
 			return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 		}
-		ref := receiptEventRef(rec)
+		ref, refErr := receiptEventRef(rec)
+		if refErr != nil {
+			return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
+		}
 		if strings.TrimSpace(deps.HomePath) != "" {
-			if err := writeJSON(filepath.Join(deps.HomePath, ref), rec); err != nil {
+			store, err := eventstore.Open(deps.HomePath)
+			if err != nil {
+				return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
+			}
+			if _, err := store.PutJSON(rec.ID, rec, "  "); err != nil {
 				return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 			}
 			ev.SideEffects = append(ev.SideEffects, ref)
@@ -979,7 +999,15 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if err != nil {
 		return Result{}, err
 	}
-	ev := newEvent(name, fx, st, hashStr(fx.WorkID), mergeRefs(fx.AdapterSideEffects, []string{res.Receipt.ID, res.Transition.ID}), now)
+	receiptRef, err := eventstore.ReferenceForID(res.Receipt.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	transitionRef, err := eventstore.ReferenceForID(res.Transition.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	ev := newEvent(name, fx, st, hashStr(fx.WorkID), mergeRefs(fx.AdapterSideEffects, []string{receiptRef.String(), transitionRef.String()}), now)
 	ev.IDs.ContextPackID = res.Work.IDs.ContextPackID
 	summary := fmt.Sprintf("closed %s: %s, receipt %s, transition %s%s", res.Work.ID, res.Work.State, res.Receipt.ID, res.Transition.ID, warn)
 	return Result{Event: ev, Produced: []envelope.Envelope{&res.Receipt, &res.Transition}, Summary: summary}, nil
@@ -1141,25 +1169,16 @@ type hookEventRecord struct {
 
 func writeHookEvent(homePath string, ev envelope.HookEvent, breakerTripped bool) error {
 	record := hookEventRecord{HookEvent: ev, BreakerTripped: breakerTripped}
-	eventRef := filepath.Join("events", ev.Header.ID+".json")
-	if err := writeJSON(filepath.Join(homePath, eventRef), record); err != nil {
-		return err
-	}
-	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
-	if err := os.MkdirAll(filepath.Dir(streamPath), 0o755); err != nil {
-		return err
-	}
-	b, err := json.Marshal(record)
+	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(streamPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+	if _, err := store.PutJSON(ev.Header.ID, record, "  "); err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.Write(append(b, '\n'))
-	return err
+	// Preserve object-before-stream publication. A compatibility-stream failure
+	// leaves the loose HookEvent record in place, matching the prior behavior.
+	return store.AppendHookEvent(record)
 }
 
 func writeJSON(path string, v any) error {

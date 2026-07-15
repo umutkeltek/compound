@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 type ImportOptions struct {
@@ -509,33 +510,21 @@ func normalizeOSEvent(ev osEvent) osEvent {
 }
 
 func recordTrace(homePath string, trace envelope.TraceEnvelope) (bool, error) {
-	path := filepath.Join(homePath, "events", trace.ID+".json")
-	if _, err := os.Stat(path); err == nil {
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return false, err
+	}
+	result, err := store.PutJSONIfAbsent(trace.ID, trace, "  ")
+	if err != nil {
+		return false, err
+	}
+	if !result.Created {
 		return false, nil
-	} else if !os.IsNotExist(err) {
-		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, err
-	}
-	b, err := json.MarshalIndent(trace, "", "  ")
-	if err != nil {
-		return false, err
-	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
-		return false, err
-	}
-	streamPath := filepath.Join(homePath, "events", "traces.ndjson")
-	f, err := os.OpenFile(streamPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	row, err := json.Marshal(trace)
-	if err != nil {
-		return false, err
-	}
-	if _, err := f.Write(append(row, '\n')); err != nil {
+	// Preserve the existing dual-write ordering: the loose trace object is
+	// visible before its compatibility-stream row. A stream failure leaves the
+	// object in place, and a retry silently skips it as before.
+	if err := store.AppendTrace(trace); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -637,42 +626,47 @@ const (
 	TraceListReportSchema = "compound.event_trace_list_report.v0.1"
 )
 
-// ShowTrace serves one imported trace by id from COMPOUND_HOME/events. The read
-// is confined to the compound event store (filepath.Base strips any path
-// component the caller passes) and returns a clear not-found error for an
-// unknown id. This is the forensic reader for the os_source_umut_events
-// retirement gate.
+// ShowTrace serves one imported trace through the event-store resolver. CLI
+// conveniences accept a short hash, full trace id, or pasted filename; durable
+// logical and historical refs are accepted by the same resolver. Other path
+// components are rejected rather than normalized to a basename.
 func ShowTrace(homePath, traceID string) (TraceDetail, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return TraceDetail{}, fmt.Errorf("home path required")
 	}
-	id := normalizeTraceID(traceID)
-	if id == "" {
+	if strings.TrimSpace(traceID) == "" {
 		return TraceDetail{}, fmt.Errorf("trace id required")
 	}
-	path := filepath.Join(homePath, "events", id+".json")
-	data, err := os.ReadFile(path)
+	ref, err := normalizeTraceReference(traceID)
+	if err != nil {
+		return TraceDetail{}, fmt.Errorf("invalid trace reference %q: %w", traceID, err)
+	}
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return TraceDetail{}, err
+	}
+	record, err := store.Read(ref.String())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return TraceDetail{}, fmt.Errorf("trace %q not found under %s (unknown trace id — list with `compound event list`)", id, filepath.Join(homePath, "events"))
+			return TraceDetail{}, fmt.Errorf("trace %q not found in event store (unknown trace id — list with `compound event list`)", ref.ID())
 		}
 		return TraceDetail{}, err
 	}
 	var tr envelope.TraceEnvelope
-	if err := json.Unmarshal(data, &tr); err != nil {
-		return TraceDetail{}, fmt.Errorf("parse trace %s: %w", path, err)
+	if err := json.Unmarshal(record.Bytes, &tr); err != nil {
+		return TraceDetail{}, fmt.Errorf("parse trace %s: %w", record.DiagnosticPath, err)
 	}
 	// A trace_-prefixed file must actually decode to a trace envelope; a bad
 	// file surfaces as an error, never a silent empty read.
 	if err := tr.Validate(); err != nil {
-		return TraceDetail{}, fmt.Errorf("trace %s failed validation: %w", id, err)
+		return TraceDetail{}, fmt.Errorf("trace %s failed validation: %w", ref.ID(), err)
 	}
 	return TraceDetail{
 		SchemaVersion: TraceShowReportSchema,
 		Status:        "ok",
 		AuthorityRef:  TraceEventsAuthorityRef,
 		TraceID:       tr.ID,
-		TracePath:     path,
+		TracePath:     record.DiagnosticPath,
 		SourceRef:     formatSourceRef(tr.Source),
 		Source:        tr.Source,
 		Trace:         tr,
@@ -686,8 +680,11 @@ func ListTraces(homePath, stream string, limit int) ([]TraceSummary, error) {
 		return nil, fmt.Errorf("home path required")
 	}
 	stream = strings.TrimSpace(stream)
-	path := filepath.Join(homePath, "events", "traces.ndjson")
-	f, err := os.Open(path)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	f, err := store.OpenTraces()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -736,19 +733,29 @@ func ListTraces(homePath, stream string, limit int) ([]TraceSummary, error) {
 	return summaries, nil
 }
 
-func normalizeTraceID(raw string) string {
-	id := strings.TrimSpace(raw)
-	if id == "" {
-		return ""
+func normalizeTraceReference(raw string) (eventstore.Reference, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return eventstore.Reference{}, fmt.Errorf("trace id required")
 	}
-	// Accept a bare short hash or a fully-qualified trace_<hash>, and tolerate a
-	// pasted filename. filepath.Base defends the read against any path component.
-	id = filepath.Base(id)
-	id = strings.TrimSuffix(id, ".json")
+	if strings.HasPrefix(value, "compound://events/") || strings.HasPrefix(value, "events/") {
+		ref, err := eventstore.ParseReference(value)
+		if err != nil {
+			return eventstore.Reference{}, err
+		}
+		if !strings.HasPrefix(ref.ID(), "trace_") {
+			return eventstore.Reference{}, fmt.Errorf("event %q is not a trace", ref.ID())
+		}
+		return ref, nil
+	}
+	if strings.ContainsAny(value, `/\\`) || filepath.IsAbs(value) {
+		return eventstore.Reference{}, fmt.Errorf("trace id must not contain path components")
+	}
+	id := strings.TrimSuffix(value, ".json")
 	if !strings.HasPrefix(id, "trace_") {
 		id = "trace_" + id
 	}
-	return id
+	return eventstore.ReferenceForID(id)
 }
 
 func formatSourceRef(src envelope.TraceSource) string {
@@ -774,18 +781,16 @@ func formatSourceRef(src envelope.TraceSource) string {
 }
 
 func countTraceFiles(homePath string) (int, error) {
-	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return 0, err
+	}
+	count, err := store.Count(eventstore.ScanOptions{Prefixes: []string{"trace_"}, RegularOnly: true})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
 		}
 		return 0, err
-	}
-	count := 0
-	for _, entry := range entries {
-		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), "trace_") && strings.HasSuffix(entry.Name(), ".json") {
-			count++
-		}
 	}
 	return count, nil
 }
@@ -794,8 +799,11 @@ func loadRecentTraceSummaries(homePath string, limit int) ([]TraceSummary, error
 	if limit == 0 {
 		return nil, nil
 	}
-	path := filepath.Join(homePath, "events", "traces.ndjson")
-	f, err := os.Open(path)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	f, err := store.OpenTraces()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

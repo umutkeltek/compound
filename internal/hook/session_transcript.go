@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 var (
@@ -646,6 +646,10 @@ func matchConsumedClaimsFromFile(path string, injected []injectedClaim) ([]strin
 	return consumed, nil
 }
 
-func receiptEventRef(rec *envelope.Receipt) string {
-	return filepath.Join("events", rec.ID+".json")
+func receiptEventRef(rec *envelope.Receipt) (string, error) {
+	ref, err := eventstore.ReferenceForID(rec.ID)
+	if err != nil {
+		return "", err
+	}
+	return ref.String(), nil
 }

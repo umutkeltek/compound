@@ -1146,14 +1146,14 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 	if !containsString(res.Event.SideEffects, filepath.Join("ledger", "claims.jsonl")) {
 		t.Fatalf("side effects = %v, want claims ledger", res.Event.SideEffects)
 	}
-	if !containsString(res.Event.SideEffects, filepath.Join("events", "act_dirty_write.json")) {
+	if !containsString(res.Event.SideEffects, "compound://events/act_dirty_write") {
 		t.Fatalf("side effects = %v, want action intent artifact", res.Event.SideEffects)
 	}
 	pd := res.Produced[1].(*envelope.PolicyDecision)
 	if pd.Outcome != "hold" {
 		t.Fatalf("policy outcome = %q reasons=%v", pd.Outcome, pd.Reasons)
 	}
-	if !containsString(res.Event.SideEffects, filepath.Join("events", pd.ID+".json")) {
+	if !containsString(res.Event.SideEffects, "compound://events/"+pd.ID) {
 		t.Fatalf("side effects = %v, want policy decision artifact %s", res.Event.SideEffects, pd.ID)
 	}
 	if len(pd.EvidenceRefs) == 0 || !strings.HasPrefix(pd.EvidenceRefs[0], "source-control:repo:") {
@@ -1184,7 +1184,9 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 	if review.State != "held" {
 		t.Fatalf("review work state = %q, want held", review.State)
 	}
-	if !containsString(review.EvidenceRefs, pd.ID) || !containsString(review.EvidenceRefs, pd.EvidenceRefs[0]) {
+	if !containsString(review.EvidenceRefs, "compound://events/act_dirty_write") ||
+		!containsString(review.EvidenceRefs, "compound://events/"+pd.ID) ||
+		!containsString(review.EvidenceRefs, pd.EvidenceRefs[0]) {
 		t.Fatalf("review work evidence refs = %v, want policy and source-control refs", review.EvidenceRefs)
 	}
 	for _, ref := range []string{filepath.Join("events", "act_dirty_write.json"), filepath.Join("events", pd.ID+".json")} {
@@ -1232,7 +1234,7 @@ func TestPreToolUseSkipsHeldGateReviewOutsideCompoundRepo(t *testing.T) {
 		t.Fatalf("policy outcome = %q reasons=%v, want hold", pd.Outcome, pd.Reasons)
 	}
 	// The PolicyDecision audit is persisted independently of any held mint.
-	if !containsString(res.Event.SideEffects, filepath.Join("events", pd.ID+".json")) {
+	if !containsString(res.Event.SideEffects, "compound://events/"+pd.ID) {
 		t.Fatalf("side effects = %v, want persisted policy decision artifact %s", res.Event.SideEffects, pd.ID)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "events", pd.ID+".json")); err != nil {
@@ -1464,6 +1466,11 @@ func TestSessionEndClosesWork(t *testing.T) {
 	}
 	if tr.IDs.WorkID != w.ID {
 		t.Errorf("transition work_id = %q, want %q", tr.IDs.WorkID, w.ID)
+	}
+	for _, id := range []string{rec.ID, tr.ID} {
+		if !containsString(res.Event.SideEffects, "compound://events/"+id) {
+			t.Errorf("session-end side effects = %v, want logical event ref for %s", res.Event.SideEffects, id)
+		}
 	}
 	closed, _ := store.Get(w.ID)
 	if closed.State != "completed" {

@@ -212,18 +212,35 @@ func TestShowTraceServesEnvelopeWithSourceRef(t *testing.T) {
 		t.Fatalf("served trace invalid: %v", err)
 	}
 
-	// Lenient id forms resolve to the same trace; a bogus id fails clearly.
-	if _, err := ShowTrace(home, strings.TrimPrefix(id, "trace_")); err != nil {
-		t.Fatalf("bare-hash id should resolve: %v", err)
+	// Lenient CLI forms plus durable logical and historical references all
+	// resolve to the same trace.
+	for _, input := range []string{
+		strings.TrimPrefix(id, "trace_"),
+		id + ".json",
+		"compound://events/" + id,
+		"events/" + id + ".json",
+	} {
+		t.Run(input, func(t *testing.T) {
+			got, err := ShowTrace(home, input)
+			if err != nil {
+				t.Fatalf("ShowTrace(%q): %v", input, err)
+			}
+			if got.TraceID != id {
+				t.Fatalf("ShowTrace(%q) trace_id = %q, want %q", input, got.TraceID, id)
+			}
+		})
 	}
 	if _, err := ShowTrace(home, "trace_deadbeefdead"); err == nil {
 		t.Fatalf("unknown trace id must error")
 	} else if !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("unknown-id error must be clear, got %v", err)
 	}
-	// A path-traversal id is confined to the event store, not the filesystem.
-	if _, err := ShowTrace(home, "../../etc/passwd"); err == nil {
-		t.Fatalf("path-component id must not escape the event store")
+	// Traversal that names an existing trace must be rejected, not normalized
+	// to the basename and served.
+	if _, err := ShowTrace(home, "../"+id+".json"); err == nil {
+		t.Fatalf("path-component id unexpectedly resolved to an existing trace")
+	} else if !strings.Contains(err.Error(), "invalid trace reference") {
+		t.Fatalf("traversal error = %v, want invalid trace reference", err)
 	}
 }
 

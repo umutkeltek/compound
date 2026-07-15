@@ -58,7 +58,7 @@ func TestSessionEndWorklessTranscriptProducesContentReceipt(t *testing.T) {
 	if !containsString(rec.Skills.Used, "capability://skill:golang-testing") {
 		t.Fatalf("skills used = %v, want golang-testing", rec.Skills.Used)
 	}
-	if !containsString(res.Event.SideEffects, filepath.Join("events", rec.ID+".json")) {
+	if !containsString(res.Event.SideEffects, "compound://events/"+rec.ID) {
 		t.Fatalf("hook side effects = %v, want receipt event ref", res.Event.SideEffects)
 	}
 	if _, err := os.Stat(filepath.Join(home, "events", rec.ID+".json")); err != nil {
