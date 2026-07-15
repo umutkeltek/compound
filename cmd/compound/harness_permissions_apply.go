@@ -23,6 +23,8 @@ type harnessPermissionApplyReport struct {
 	Harness          string                  `json:"harness"`
 	TargetPath       string                  `json:"target_path"`
 	Changed          bool                    `json:"changed"`
+	TargetChanged    bool                    `json:"target_changed"`
+	ManifestChanged  bool                    `json:"manifest_changed"`
 	WorkID           string                  `json:"work_id"`
 	ActionIntentID   string                  `json:"action_intent_id"`
 	PolicyDecisionID string                  `json:"policy_decision_id"`
@@ -36,6 +38,10 @@ type harnessPermissionApplyReport struct {
 }
 
 var applyHarnessPermissions = harness.ApplyPermissions
+var readPermissionTargetForObservation = os.ReadFile
+var recordHarnessPermissionOutcome = func(store *work.Store, workID string, input work.ReceiptedActionInput, now time.Time) (work.ReceiptedActionResult, error) {
+	return store.RecordReceiptedAction(workID, input, now)
+}
 
 func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.Time) int {
 	harnessName := strings.TrimSpace(flagValue(args, "--harness"))
@@ -89,6 +95,13 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	permissionRecoveryPending := false
+	if _, err := os.Stat(harness.PermissionApplyPendingPath(homePath, harnessName)); err == nil {
+		permissionRecoveryPending = true
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(stderr, "error: inspect pending permission apply transaction:", err)
+		return 1
+	}
 	preImageRef := "sha256:" + permissionApplyDigest(render.Preimage)
 	approvedPostImageRef := render.Artifact.ContentSHA256
 	createdAt := now.UTC().Format(time.RFC3339Nano)
@@ -121,24 +134,60 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 		return 1
 	}
 	decision := policy.Evaluate(action, cfg, now)
-	if !policy.Allowed(decision) {
+	if !policy.Allowed(decision) && !permissionRecoveryPending {
 		fmt.Fprintf(stderr, "refused: policy %s (%s)\n", decision.Outcome, strings.Join(decision.Reasons, "; "))
 		return 1
 	}
 	authorize := permissionApplyAuthorization(store, homePath, workID)
-	applied, err := applyHarnessPermissions(homePath, render, action, decision, authorize)
+	var finalized harness.PermissionApplyOutcome
+	var receipted work.ReceiptedActionResult
+	finalize := func(outcome harness.PermissionApplyOutcome) error {
+		authorizedAt, err := time.Parse(time.RFC3339Nano, outcome.AuthorizedAt)
+		if err != nil {
+			return fmt.Errorf("parse permission authorization timestamp: %w", err)
+		}
+		receiptOutcome := "no_op"
+		if outcome.Changed {
+			receiptOutcome = "completed"
+		}
+		preRef := "sha256:" + permissionApplyDigest(outcome.Render.Preimage)
+		result, err := recordHarnessPermissionOutcome(store, outcome.Action.IDs.WorkID, work.ReceiptedActionInput{
+			Action: outcome.Action, PreEvaluatedDecision: &outcome.Decision, ExpectedWorkState: "running",
+			Outcome: receiptOutcome, Changed: outcome.Changed, Summary: "permission activation " + receiptOutcome, MoveType: "control_plane_repair",
+			ProofRefs:  []string{outcome.Render.Artifact.SourceAuthorityRef, outcome.Render.Artifact.SourceRevision},
+			BeforeRefs: []string{preRef}, AfterRefs: []string{outcome.Render.Artifact.ContentSHA256},
+			FilesChanged: append([]string(nil), outcome.FilesChanged...),
+		}, authorizedAt)
+		if err != nil {
+			return err
+		}
+		finalized = outcome
+		receipted = result
+		return nil
+	}
+	_, err = applyHarnessPermissions(homePath, render, action, decision, authorize, finalize)
 	if err != nil {
-		postImageRef := observedPermissionTargetRef(render.TargetPath, render.Preimage)
-		changed := postImageRef != preImageRef
+		if harness.IsPermissionApplyFinalizationPending(err) {
+			fmt.Fprintln(stderr, "error: permission mutation is pending finalization and will recover its exact outcome:", err)
+			return 1
+		}
+		postImageRef, observationErr := observedPermissionTargetRef(render.TargetPath)
+		changed := true
+		mechanism := "governed permission activation failed after policy allowance"
+		if observationErr == nil {
+			changed = postImageRef != preImageRef
+		} else {
+			mechanism += "; post-mutation observation failed: " + observationErr.Error()
+		}
 		filesChanged := []string{}
 		if changed {
 			filesChanged = []string{render.TargetPath}
 		}
-		outcome, recordErr := store.RecordReceiptedAction(workID, work.ReceiptedActionInput{
+		outcome, recordErr := recordHarnessPermissionOutcome(store, workID, work.ReceiptedActionInput{
 			Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
 			Outcome: "failed", Changed: changed, Summary: "permission activation failed: " + err.Error(), MoveType: "control_plane_repair",
 			ProofRefs: []string{render.Artifact.SourceAuthorityRef, render.Artifact.SourceRevision}, BeforeRefs: []string{preImageRef}, AfterRefs: []string{postImageRef},
-			FilesChanged: filesChanged, FailureCause: &envelope.FailureCause{SurfaceOutcome: err.Error(), Mechanism: "governed permission activation failed after policy allowance"},
+			FilesChanged: filesChanged, FailureCause: &envelope.FailureCause{SurfaceOutcome: err.Error(), Mechanism: mechanism},
 		}, now)
 		if recordErr != nil {
 			fmt.Fprintf(stderr, "error: permission apply failed: %v; record failed outcome: %v\n", err, recordErr)
@@ -147,40 +196,30 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 		fmt.Fprintf(stderr, "error: permission apply failed and was receipted as %s/%s: %v\n", outcome.Receipt.ID, outcome.Transition.ID, err)
 		return 1
 	}
-	postImageRef := applied.Artifact.ContentSHA256
-	receiptOutcome := "completed"
-	filesChanged := []string{}
-	if !applied.Changed {
-		receiptOutcome = "no_op"
-	} else {
-		filesChanged = []string{applied.TargetPath}
-	}
-	outcome, err := store.RecordReceiptedAction(workID, work.ReceiptedActionInput{
-		Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
-		Outcome: receiptOutcome, Changed: applied.Changed, Summary: "permission activation " + receiptOutcome, MoveType: "control_plane_repair",
-		ProofRefs: []string{applied.Artifact.SourceAuthorityRef, applied.Artifact.SourceRevision}, BeforeRefs: []string{preImageRef}, AfterRefs: []string{postImageRef},
-		FilesChanged: filesChanged,
-	}, now)
-	if err != nil {
-		fmt.Fprintln(stderr, "error: permission activation published but outcome receipt failed:", err)
+	if finalized.Action.ID == "" || receipted.Receipt.ID == "" {
+		fmt.Fprintln(stderr, "error: permission activation returned without a finalized outcome")
 		return 1
 	}
+	preImageRef = "sha256:" + permissionApplyDigest(finalized.Render.Preimage)
+	postImageRef := finalized.Render.Artifact.ContentSHA256
 	report := harnessPermissionApplyReport{
 		SchemaVersion:    "compound.harness_permission_apply.v0.1",
 		Mode:             "apply",
-		Harness:          harnessName,
-		TargetPath:       applied.TargetPath,
-		Changed:          applied.Changed,
-		WorkID:           workID,
-		ActionIntentID:   action.ID,
-		PolicyDecisionID: decision.ID,
-		PolicyOutcome:    decision.Outcome,
-		ReceiptID:        outcome.Receipt.ID,
-		TransitionID:     outcome.Transition.ID,
+		Harness:          finalized.Render.Artifact.Harness,
+		TargetPath:       finalized.Render.TargetPath,
+		Changed:          finalized.Changed,
+		TargetChanged:    finalized.TargetChanged,
+		ManifestChanged:  finalized.ManifestChanged,
+		WorkID:           finalized.Action.IDs.WorkID,
+		ActionIntentID:   finalized.Action.ID,
+		PolicyDecisionID: finalized.Decision.ID,
+		PolicyOutcome:    finalized.Decision.Outcome,
+		ReceiptID:        receipted.Receipt.ID,
+		TransitionID:     receipted.Transition.ID,
 		PreImageRef:      preImageRef,
 		PostImageRef:     postImageRef,
-		Artifact:         applied.Artifact,
-		Details:          applied.Details,
+		Artifact:         finalized.Render.Artifact,
+		Details:          finalized.Render.Details,
 	}
 	if hasFlag(args, "--json") {
 		if err := json.NewEncoder(stdout).Encode(report); err != nil {
@@ -257,10 +296,11 @@ func permissionApplyDigest(body []byte) string {
 	return fmt.Sprintf("%x", digest[:])
 }
 
-func observedPermissionTargetRef(path string, fallback []byte) string {
-	body, err := os.ReadFile(path)
+func observedPermissionTargetRef(path string) (string, error) {
+	body, err := readPermissionTargetForObservation(path)
 	if err != nil {
-		body = fallback
+		marker := "observation_error:permission-target-read:sha256:" + permissionApplyDigest([]byte(err.Error()))
+		return marker, fmt.Errorf("read permission target %s: %w", path, err)
 	}
-	return "sha256:" + permissionApplyDigest(body)
+	return "sha256:" + permissionApplyDigest(body), nil
 }

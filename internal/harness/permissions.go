@@ -70,19 +70,58 @@ type PermissionRender struct {
 	Details    []string        `json:"details,omitempty"`
 }
 
-const permissionApplyPendingSchemaVersion = "compound.harness_permission_apply_pending.v0.2"
+const permissionApplyPendingSchemaVersion = "compound.harness_permission_apply_pending.v0.3"
 
 type permissionApplyPending struct {
-	SchemaVersion      string `json:"schema_version"`
-	Harness            string `json:"harness"`
-	TargetPath         string `json:"target_path"`
-	RecoveryName       string `json:"recovery_name,omitempty"`
-	BeforeExisted      bool   `json:"before_existed"`
-	BeforeContent      []byte `json:"before_content,omitempty"`
-	BeforeSHA256       string `json:"before_sha256,omitempty"`
-	IntendedSHA256     string `json:"intended_sha256"`
-	SourceAuthorityRef string `json:"source_authority_ref"`
-	SourceRevision     string `json:"source_revision"`
+	SchemaVersion      string                  `json:"schema_version"`
+	Harness            string                  `json:"harness"`
+	TargetPath         string                  `json:"target_path"`
+	RecoveryName       string                  `json:"recovery_name,omitempty"`
+	RollbackName       string                  `json:"rollback_name,omitempty"`
+	BeforeExisted      bool                    `json:"before_existed"`
+	BeforeContent      []byte                  `json:"before_content,omitempty"`
+	BeforeSHA256       string                  `json:"before_sha256,omitempty"`
+	IntendedContent    []byte                  `json:"intended_content"`
+	IntendedSHA256     string                  `json:"intended_sha256"`
+	SourceAuthorityRef string                  `json:"source_authority_ref"`
+	SourceRevision     string                  `json:"source_revision"`
+	Artifact           HarnessArtifact         `json:"artifact"`
+	Details            []string                `json:"details,omitempty"`
+	Action             envelope.ActionIntent   `json:"action_intent"`
+	Decision           envelope.PolicyDecision `json:"policy_decision"`
+	AuthorizedAt       string                  `json:"authorized_at"`
+	TargetChanged      bool                    `json:"target_changed"`
+	ManifestChanged    bool                    `json:"manifest_changed"`
+	Changed            bool                    `json:"changed"`
+	FilesChanged       []string                `json:"files_changed"`
+}
+
+type PermissionApplyOutcome struct {
+	Render          PermissionRender
+	Action          envelope.ActionIntent
+	Decision        envelope.PolicyDecision
+	AuthorizedAt    string
+	TargetChanged   bool
+	ManifestChanged bool
+	Changed         bool
+	FilesChanged    []string
+}
+
+type PermissionApplyFinalize func(PermissionApplyOutcome) error
+
+type PermissionApplyFinalizationPendingError struct {
+	Cause error
+}
+
+func (e *PermissionApplyFinalizationPendingError) Error() string {
+	return fmt.Sprintf("permission outcome is published with exact identity pending finalization: %v", e.Cause)
+}
+
+func (e *PermissionApplyFinalizationPendingError) Unwrap() error { return e.Cause }
+
+func IsPermissionApplyFinalizationPending(err error) bool {
+	var pending *PermissionApplyFinalizationPendingError
+	return errors.As(err, &pending)
 }
 
 type PermissionDriftReport struct {
@@ -230,6 +269,8 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 var writeHarnessArtifactManifestForApply = WriteHarnessArtifactManifest
 var applyPermissionsBeforeTargetCommit = func() {}
 var applyPermissionsAfterTargetWrite = func() error { return nil }
+var permissionApplyRecoveryAfterQuarantine = func(_, _ string) {}
+var permissionApplyAfterCanonicalQuarantine = func(_ string) {}
 var permissionApplyNow = time.Now
 var permissionApplySyncBoundary = func(_ string, path string) error {
 	return syncPermissionParentDirectory(path)
@@ -250,17 +291,28 @@ func permissionApplyLockPath(homePath string) string {
 // revision/content hash. The lock serializes Compound writers; the preimage CAS
 // refuses a concurrent manual edit. An interrupted transaction stays visible to
 // drift and is recovered before the next apply.
-func ApplyPermissions(homePath string, approved PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize PermissionApplyAuthorization) (PermissionRender, error) {
-	if err := validatePermissionApplyApproval(approved, action, decision); err != nil {
-		return PermissionRender{}, err
-	}
+func ApplyPermissions(homePath string, approved PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize PermissionApplyAuthorization, finalize PermissionApplyFinalize) (PermissionRender, error) {
 	if authorize == nil {
 		return PermissionRender{}, fmt.Errorf("permission apply authorization revalidation is required")
 	}
-	harnessName := approved.Artifact.Harness
+	if finalize == nil {
+		return PermissionRender{}, fmt.Errorf("permission apply outcome finalization is required")
+	}
+	harnessName := strings.TrimSpace(approved.Artifact.Harness)
+	if !validPermissionLeaf(harnessName) {
+		return PermissionRender{}, fmt.Errorf("permission apply harness must be a local leaf")
+	}
 	var render PermissionRender
 	err := withPermissionApplyLock(homePath, func() error {
-		if err := recoverPermissionApplyPending(homePath, harnessName); err != nil {
+		recovered, ok, err := recoverPermissionApplyPending(homePath, harnessName, finalize)
+		if err != nil {
+			return err
+		}
+		if ok {
+			render = recovered.Render
+			return nil
+		}
+		if err := validatePermissionApplyApproval(approved, action, decision); err != nil {
 			return err
 		}
 		current, err := RenderPermissions(homePath, harnessName)
@@ -271,33 +323,18 @@ func ApplyPermissions(homePath string, approved PermissionRender, action envelop
 			return fmt.Errorf("approved render no longer matches current authority, target path, preimage, or content")
 		}
 		render = approved
-		beforeExisted := render.PreExisted
-		if !render.Changed {
-			previous, ok, err := latestHarnessArtifact(homePath, harnessName, render.TargetPath)
-			if err != nil {
-				return err
-			}
-			if err := authorize(action, decision, permissionApplyNow()); err != nil {
-				return fmt.Errorf("permission apply authorization revalidation: %w", err)
-			}
-			if ok && sameHarnessArtifact(previous, render.Artifact) {
-				return nil
-			}
-			if err := writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact}); err != nil {
-				return err
-			}
-			return permissionApplySyncBoundary("manifest_write", HarnessArtifactManifestPath(homePath))
+		previous, manifestPresent, err := latestHarnessArtifact(homePath, harnessName, render.TargetPath)
+		if err != nil {
+			return err
 		}
-		recoveryName := permissionRecoveryName(render)
-		pending := permissionApplyPending{
-			SchemaVersion: permissionApplyPendingSchemaVersion,
-			Harness:       harnessName, TargetPath: render.TargetPath, RecoveryName: recoveryName, BeforeExisted: beforeExisted,
-			BeforeContent: append([]byte(nil), render.Preimage...), IntendedSHA256: render.Artifact.ContentSHA256,
-			SourceAuthorityRef: render.Artifact.SourceAuthorityRef, SourceRevision: render.Artifact.SourceRevision,
+		manifestChanged := !manifestPresent || !sameHarnessArtifact(previous, render.Artifact)
+		applyPermissionsBeforeTargetCommit()
+		authorizedAt := permissionApplyNow().UTC()
+		if err := authorize(action, decision, authorizedAt); err != nil {
+			return fmt.Errorf("permission apply authorization revalidation: %w", err)
 		}
-		if beforeExisted {
-			pending.BeforeSHA256 = "sha256:" + digest(render.Preimage)
-		}
+		outcome := newPermissionApplyOutcome(homePath, render, action, decision, authorizedAt, manifestChanged)
+		pending := newPermissionApplyPending(outcome)
 		body, err := json.MarshalIndent(pending, "", "  ")
 		if err != nil {
 			return err
@@ -307,40 +344,55 @@ func ApplyPermissions(homePath string, approved PermissionRender, action envelop
 			return fmt.Errorf("write permission apply pending transaction: %w", err)
 		}
 		if err := permissionApplySyncBoundary("pending_write", pendingPath); err != nil {
+			if removeErr := removePermissionPending(pendingPath); removeErr != nil {
+				return errors.Join(fmt.Errorf("sync permission apply pending transaction: %w", err), removeErr)
+			}
 			return fmt.Errorf("sync permission apply pending transaction: %w", err)
 		}
-		applyPermissionsBeforeTargetCommit()
-		if err := authorize(action, decision, permissionApplyNow()); err != nil {
-			if removeErr := removePermissionPending(pendingPath); removeErr != nil {
-				return errors.Join(fmt.Errorf("permission apply authorization revalidation: %w", err), removeErr)
+		var publication *permissionTargetPublication
+		if outcome.TargetChanged {
+			publication, err = beginPermissionTargetPublication(render, pending.RecoveryName)
+			if err != nil {
+				if removeErr := removePermissionPending(pendingPath); removeErr != nil {
+					return errors.Join(err, removeErr)
+				}
+				return err
 			}
-			return fmt.Errorf("permission apply authorization revalidation: %w", err)
-		}
-		publication, err := beginPermissionTargetPublication(render, recoveryName)
-		if err != nil {
-			if removeErr := removePermissionPending(pendingPath); removeErr != nil {
-				return errors.Join(err, removeErr)
+			defer publication.Close()
+			if err := permissionApplySyncBoundary("target_publish", render.TargetPath); err != nil {
+				return rollbackPermissionPublication(publication, pendingPath, fmt.Errorf("sync permission target publication: %w", err))
 			}
-			return err
+			if err := applyPermissionsAfterTargetWrite(); err != nil {
+				return fmt.Errorf("permission apply interrupted after target write: %w", err)
+			}
 		}
-		defer publication.Close()
-		if err := permissionApplySyncBoundary("target_publish", render.TargetPath); err != nil {
-			return rollbackPermissionPublication(publication, pendingPath, fmt.Errorf("sync permission target publication: %w", err))
+		if outcome.ManifestChanged {
+			if err := writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact}); err != nil {
+				if publication != nil {
+					return rollbackPermissionPublication(publication, pendingPath, fmt.Errorf("write harness artifact manifest: %w", err))
+				}
+				if removeErr := removePermissionPending(pendingPath); removeErr != nil {
+					return errors.Join(fmt.Errorf("write harness artifact manifest: %w", err), removeErr)
+				}
+				return fmt.Errorf("write harness artifact manifest: %w", err)
+			}
+			if err := permissionApplySyncBoundary("manifest_write", HarnessArtifactManifestPath(homePath)); err != nil {
+				return &PermissionApplyFinalizationPendingError{Cause: fmt.Errorf("sync harness artifact manifest: %w", err)}
+			}
 		}
-		if err := applyPermissionsAfterTargetWrite(); err != nil {
-			return fmt.Errorf("permission apply interrupted after target write: %w", err)
+		if err := validatePublishedPermissionOutcome(homePath, pending); err != nil {
+			return &PermissionApplyFinalizationPendingError{Cause: err}
 		}
-		if err := writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact}); err != nil {
-			return rollbackPermissionPublication(publication, pendingPath, fmt.Errorf("write harness artifact manifest: %w", err))
+		if err := finalize(outcome); err != nil {
+			return &PermissionApplyFinalizationPendingError{Cause: err}
 		}
-		if err := permissionApplySyncBoundary("manifest_write", HarnessArtifactManifestPath(homePath)); err != nil {
-			return fmt.Errorf("sync harness artifact manifest: %w", err)
-		}
-		if err := publication.Commit(); err != nil {
-			return fmt.Errorf("commit permission target publication: %w", err)
+		if outcome.TargetChanged {
+			if err := cleanupPublishedPermissionRecovery(pending); err != nil {
+				return &PermissionApplyFinalizationPendingError{Cause: fmt.Errorf("clean finalized permission recovery: %w", err)}
+			}
 		}
 		if err := removePermissionPending(pendingPath); err != nil {
-			return err
+			return &PermissionApplyFinalizationPendingError{Cause: err}
 		}
 		return nil
 	})
@@ -367,90 +419,402 @@ func withPermissionApplyLock(homePath string, fn func() error) error {
 	return fn()
 }
 
-func recoverPermissionApplyPending(homePath, harness string) error {
+func recoverPermissionApplyPending(homePath, harness string, finalize PermissionApplyFinalize) (PermissionApplyOutcome, bool, error) {
+	var zero PermissionApplyOutcome
 	path := PermissionApplyPendingPath(homePath, harness)
 	body, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return nil
+		return zero, false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read pending permission apply transaction: %w", err)
+		return zero, false, fmt.Errorf("read pending permission apply transaction: %w", err)
 	}
 	var pending permissionApplyPending
 	if err := json.Unmarshal(body, &pending); err != nil {
-		return fmt.Errorf("parse pending permission apply transaction: %w", err)
+		return zero, false, fmt.Errorf("parse pending permission apply transaction: %w", err)
 	}
-	if pending.SchemaVersion != permissionApplyPendingSchemaVersion || pending.Harness != harness || strings.TrimSpace(pending.TargetPath) == "" {
-		return fmt.Errorf("pending permission apply transaction identity is invalid")
+	outcome, err := validatePermissionApplyPending(homePath, harness, pending)
+	if err != nil {
+		return zero, false, err
 	}
-	if pending.RecoveryName != "" && (filepath.Base(pending.RecoveryName) != pending.RecoveryName || !filepath.IsLocal(pending.RecoveryName)) {
-		return fmt.Errorf("pending permission apply recovery name must be a local leaf")
+	current, _, readErr := readPermissionTargetSnapshot(pending.TargetPath)
+	currentExisted := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return zero, false, fmt.Errorf("read pending permission target: %w", readErr)
+	}
+	currentIsBefore := currentExisted == pending.BeforeExisted && (!currentExisted || bytes.Equal(current, pending.BeforeContent))
+	currentIsIntended := currentExisted && bytes.Equal(current, pending.IntendedContent)
+	manifestIsIntended, err := permissionManifestMatchesPending(homePath, pending)
+	if err != nil {
+		return zero, false, err
+	}
+	if currentIsIntended && manifestIsIntended {
+		if err := finalize(outcome); err != nil {
+			return zero, false, &PermissionApplyFinalizationPendingError{Cause: err}
+		}
+		if pending.TargetChanged {
+			if err := cleanupPublishedPermissionRecovery(pending); err != nil {
+				return zero, false, &PermissionApplyFinalizationPendingError{Cause: fmt.Errorf("clean recovered permission publication: %w", err)}
+			}
+		}
+		if err := removePermissionPending(path); err != nil {
+			return zero, false, &PermissionApplyFinalizationPendingError{Cause: err}
+		}
+		return outcome, true, nil
+	}
+	if !pending.TargetChanged {
+		if err := removePermissionPending(path); err != nil {
+			return zero, false, err
+		}
+		return zero, false, nil
+	}
+	if !currentIsBefore && !currentIsIntended {
+		return zero, false, fmt.Errorf("pending permission apply target changed after interruption; refusing to overwrite manual state")
+	}
+	if currentIsBefore {
+		if !pending.BeforeExisted && pending.RollbackName != "" {
+			if err := cleanupInterruptedPermissionCreation(pending, false); err != nil {
+				return zero, false, err
+			}
+		} else if err := cleanupUnusedPermissionRecovery(pending); err != nil {
+			return zero, false, err
+		}
+		if err := removePermissionPending(path); err != nil {
+			return zero, false, err
+		}
+		return zero, false, nil
 	}
 	policyAuthority, sourceRevision, err := LoadPermissionAuthority(homePath, harness)
 	if err != nil {
-		return fmt.Errorf("validate pending permission apply authority: %w", err)
+		return zero, false, fmt.Errorf("validate pending permission apply authority: %w", err)
 	}
 	if pending.SourceRevision != sourceRevision {
-		return fmt.Errorf("pending permission apply source revision %q no longer matches %q", pending.SourceRevision, sourceRevision)
+		return zero, false, fmt.Errorf("pending permission apply source revision %q no longer matches %q", pending.SourceRevision, sourceRevision)
 	}
 	if pending.SourceAuthorityRef != policyAuthority.AuthorityRef || pending.TargetPath != policyAuthority.TargetPath {
-		return fmt.Errorf("pending permission apply authority or target path no longer matches current authority")
+		return zero, false, fmt.Errorf("pending permission apply authority or target path no longer matches current authority")
 	}
-	if pending.BeforeExisted && pending.BeforeSHA256 != "sha256:"+digest(pending.BeforeContent) {
-		return fmt.Errorf("pending permission apply transaction pre-image digest is invalid")
-	}
-	current, readErr := os.ReadFile(pending.TargetPath)
-	currentExisted := readErr == nil
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return fmt.Errorf("read pending permission target: %w", readErr)
-	}
-	currentSHA := ""
-	if currentExisted {
-		currentSHA = "sha256:" + digest(current)
-	}
-	currentIsBefore := currentExisted == pending.BeforeExisted && (!currentExisted || currentSHA == pending.BeforeSHA256)
-	currentIsIntended := currentExisted && currentSHA == pending.IntendedSHA256
-	if !currentIsBefore && !currentIsIntended {
-		return fmt.Errorf("pending permission apply target changed after interruption; refusing to overwrite manual state")
-	}
-	if currentIsBefore {
-		if pending.RecoveryName != "" {
-			if err := os.Remove(filepath.Join(filepath.Dir(pending.TargetPath), pending.RecoveryName)); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove unused permission target recovery entry: %w", err)
-			}
-			if err := syncPermissionParentDirectory(pending.TargetPath); err != nil {
-				return fmt.Errorf("sync unused permission target recovery removal: %w", err)
-			}
+	if pending.BeforeExisted {
+		publication, err := beginPermissionRecoveryPublication(pending, current)
+		if err != nil {
+			return zero, false, fmt.Errorf("recover pending permission apply pre-image: %w", err)
 		}
-		return removePermissionPending(path)
+		if err := publication.Close(); err != nil {
+			return zero, false, fmt.Errorf("close recovered permission target root: %w", err)
+		}
+		if err := cleanupUnusedPermissionRecovery(pending); err != nil {
+			return zero, false, fmt.Errorf("complete recovered permission pre-image: %w", err)
+		}
+	} else if err := cleanupInterruptedPermissionCreation(pending, true); err != nil {
+		return zero, false, fmt.Errorf("recover interrupted permission target creation: %w", err)
 	}
-	latest, ok, err := latestHarnessArtifact(homePath, harness, pending.TargetPath)
+	if err := removePermissionPending(path); err != nil {
+		return zero, false, err
+	}
+	return zero, false, nil
+}
+
+func validPermissionLeaf(name string) bool {
+	return name != "" && name != "." && filepath.Base(name) == name && filepath.IsLocal(name)
+}
+
+func newPermissionApplyOutcome(homePath string, render PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorizedAt time.Time, manifestChanged bool) PermissionApplyOutcome {
+	filesChanged := []string{}
+	if render.Changed {
+		filesChanged = append(filesChanged, render.TargetPath)
+	}
+	if manifestChanged {
+		filesChanged = append(filesChanged, HarnessArtifactManifestPath(homePath))
+	}
+	return PermissionApplyOutcome{
+		Render:          render,
+		Action:          action,
+		Decision:        decision,
+		AuthorizedAt:    authorizedAt.Format(time.RFC3339Nano),
+		TargetChanged:   render.Changed,
+		ManifestChanged: manifestChanged,
+		Changed:         render.Changed || manifestChanged,
+		FilesChanged:    filesChanged,
+	}
+}
+
+func newPermissionApplyPending(outcome PermissionApplyOutcome) permissionApplyPending {
+	render := outcome.Render
+	pending := permissionApplyPending{
+		SchemaVersion:      permissionApplyPendingSchemaVersion,
+		Harness:            render.Artifact.Harness,
+		TargetPath:         render.TargetPath,
+		BeforeExisted:      render.PreExisted,
+		BeforeContent:      append([]byte(nil), render.Preimage...),
+		IntendedContent:    append([]byte(nil), render.Content...),
+		IntendedSHA256:     render.Artifact.ContentSHA256,
+		SourceAuthorityRef: render.Artifact.SourceAuthorityRef,
+		SourceRevision:     render.Artifact.SourceRevision,
+		Artifact:           render.Artifact,
+		Details:            append([]string(nil), render.Details...),
+		Action:             outcome.Action,
+		Decision:           outcome.Decision,
+		AuthorizedAt:       outcome.AuthorizedAt,
+		TargetChanged:      outcome.TargetChanged,
+		ManifestChanged:    outcome.ManifestChanged,
+		Changed:            outcome.Changed,
+		FilesChanged:       append([]string(nil), outcome.FilesChanged...),
+	}
+	if render.PreExisted {
+		pending.BeforeSHA256 = "sha256:" + digest(render.Preimage)
+	}
+	if outcome.TargetChanged {
+		pending.RecoveryName = permissionRecoveryName(render)
+		pending.RollbackName = permissionCreationRollbackName(render)
+	}
+	return pending
+}
+
+func validatePermissionApplyPending(homePath, harness string, pending permissionApplyPending) (PermissionApplyOutcome, error) {
+	var zero PermissionApplyOutcome
+	if pending.SchemaVersion != permissionApplyPendingSchemaVersion || pending.Harness != harness || strings.TrimSpace(pending.TargetPath) == "" {
+		return zero, fmt.Errorf("pending permission apply transaction identity is invalid")
+	}
+	for label, name := range map[string]string{"recovery": pending.RecoveryName, "rollback": pending.RollbackName} {
+		if name != "" && !validPermissionLeaf(name) {
+			return zero, fmt.Errorf("pending permission apply %s name must be a local leaf", label)
+		}
+	}
+	if pending.TargetChanged != (pending.RecoveryName != "") || pending.TargetChanged != (pending.RollbackName != "") {
+		return zero, fmt.Errorf("pending permission apply recovery identity does not match target outcome")
+	}
+	if pending.BeforeExisted {
+		if pending.BeforeSHA256 != "sha256:"+digest(pending.BeforeContent) {
+			return zero, fmt.Errorf("pending permission apply transaction pre-image digest is invalid")
+		}
+	} else if len(pending.BeforeContent) != 0 || pending.BeforeSHA256 != "" {
+		return zero, fmt.Errorf("pending permission apply absent pre-image identity is invalid")
+	}
+	if pending.IntendedSHA256 != "sha256:"+digest(pending.IntendedContent) || pending.Artifact.ContentSHA256 != pending.IntendedSHA256 {
+		return zero, fmt.Errorf("pending permission apply intended content digest is invalid")
+	}
+	if pending.Artifact.Harness != pending.Harness || pending.Artifact.Path != pending.TargetPath ||
+		pending.SourceAuthorityRef != pending.Artifact.SourceAuthorityRef || pending.SourceRevision != pending.Artifact.SourceRevision {
+		return zero, fmt.Errorf("pending permission apply artifact identity is invalid")
+	}
+	render := PermissionRender{
+		TargetPath: pending.TargetPath,
+		Changed:    pending.TargetChanged,
+		Content:    append([]byte(nil), pending.IntendedContent...),
+		Preimage:   append([]byte(nil), pending.BeforeContent...),
+		PreExisted: pending.BeforeExisted,
+		Artifact:   pending.Artifact,
+		Details:    append([]string(nil), pending.Details...),
+	}
+	if err := validatePermissionApplyApproval(render, pending.Action, pending.Decision); err != nil {
+		return zero, fmt.Errorf("pending permission apply governed identity is invalid: %w", err)
+	}
+	authorizedAt, err := time.Parse(time.RFC3339Nano, pending.AuthorizedAt)
+	if err != nil {
+		return zero, fmt.Errorf("pending permission apply authorized_at is invalid: %w", err)
+	}
+	if expiresAt := strings.TrimSpace(pending.Decision.ExpiresAt); expiresAt != "" {
+		expires, err := time.Parse(time.RFC3339, expiresAt)
+		if err != nil || !authorizedAt.Before(expires) {
+			return zero, fmt.Errorf("pending permission apply decision was not current at authorization")
+		}
+	}
+	wantFiles := []string{}
+	if pending.TargetChanged {
+		wantFiles = append(wantFiles, pending.TargetPath)
+	}
+	if pending.ManifestChanged {
+		wantFiles = append(wantFiles, HarnessArtifactManifestPath(homePath))
+	}
+	if pending.Changed != (pending.TargetChanged || pending.ManifestChanged) || !reflect.DeepEqual(pending.FilesChanged, wantFiles) {
+		return zero, fmt.Errorf("pending permission apply outcome delta is invalid")
+	}
+	return PermissionApplyOutcome{
+		Render:          render,
+		Action:          pending.Action,
+		Decision:        pending.Decision,
+		AuthorizedAt:    pending.AuthorizedAt,
+		TargetChanged:   pending.TargetChanged,
+		ManifestChanged: pending.ManifestChanged,
+		Changed:         pending.Changed,
+		FilesChanged:    append([]string(nil), pending.FilesChanged...),
+	}, nil
+}
+
+func permissionManifestMatchesPending(homePath string, pending permissionApplyPending) (bool, error) {
+	latest, ok, err := latestHarnessArtifact(homePath, pending.Harness, pending.TargetPath)
+	if err != nil {
+		return false, err
+	}
+	return ok && sameHarnessArtifact(latest, pending.Artifact), nil
+}
+
+func validatePublishedPermissionOutcome(homePath string, pending permissionApplyPending) error {
+	current, _, err := readPermissionTargetSnapshot(pending.TargetPath)
+	if err != nil {
+		return fmt.Errorf("validate published permission target: %w", err)
+	}
+	if !bytes.Equal(current, pending.IntendedContent) {
+		return fmt.Errorf("published permission target changed before outcome finalization")
+	}
+	manifestMatches, err := permissionManifestMatchesPending(homePath, pending)
 	if err != nil {
 		return err
 	}
-	if ok && latest.ContentSHA256 == pending.IntendedSHA256 && latest.SourceRevision == pending.SourceRevision {
-		if pending.RecoveryName != "" {
-			if err := os.Remove(filepath.Join(filepath.Dir(pending.TargetPath), pending.RecoveryName)); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("complete pending permission target publication: %w", err)
-			}
-			if err := syncPermissionParentDirectory(pending.TargetPath); err != nil {
-				return err
-			}
-		}
-		return removePermissionPending(path)
+	if !manifestMatches {
+		return fmt.Errorf("published permission manifest changed before outcome finalization")
 	}
-	if !pending.BeforeExisted || pending.RecoveryName == "" {
-		return fmt.Errorf("pending permission apply requires manual recovery; atomic pre-image is unavailable")
-	}
-	publication, err := beginPermissionRecoveryPublication(pending, current)
+	return nil
+}
+
+func readPermissionTargetSnapshot(path string) ([]byte, os.FileInfo, error) {
+	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
-		return fmt.Errorf("recover pending permission apply pre-image: %w", err)
+		return nil, nil, err
 	}
-	defer publication.Close()
-	if err := publication.Commit(); err != nil {
-		return fmt.Errorf("commit recovered permission apply pre-image: %w", err)
+	defer root.Close()
+	return readPermissionRootedFile(root, filepath.Base(path))
+}
+
+func cleanupPublishedPermissionRecovery(pending permissionApplyPending) error {
+	root, err := os.OpenRoot(filepath.Dir(pending.TargetPath))
+	if err != nil {
+		return err
 	}
-	return removePermissionPending(path)
+	defer root.Close()
+	canonical, canonicalInfo, err := readPermissionRootedFile(root, filepath.Base(pending.TargetPath))
+	if err != nil || !bytes.Equal(canonical, pending.IntendedContent) {
+		return errors.Join(fmt.Errorf("published permission target identity changed before recovery cleanup"), err)
+	}
+	recovery, recoveryInfo, err := readPermissionRootedFile(root, pending.RecoveryName)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	expectedRecovery := pending.BeforeContent
+	if !pending.BeforeExisted {
+		expectedRecovery = pending.IntendedContent
+	}
+	if err != nil || !bytes.Equal(recovery, expectedRecovery) {
+		return errors.Join(fmt.Errorf("published permission recovery identity or content changed"), err)
+	}
+	if !pending.BeforeExisted && !os.SameFile(canonicalInfo, recoveryInfo) {
+		return fmt.Errorf("published permission creation recovery no longer matches canonical identity")
+	}
+	return quarantineAndRemovePermissionLeaf(root, filepath.Dir(pending.TargetPath), pending.RecoveryName, recoveryInfo, expectedRecovery, func() {
+		permissionApplyRecoveryAfterQuarantine(pending.TargetPath, pending.RecoveryName)
+	})
+}
+
+func cleanupUnusedPermissionRecovery(pending permissionApplyPending) error {
+	root, err := os.OpenRoot(filepath.Dir(pending.TargetPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer root.Close()
+	recovery, recoveryInfo, err := readPermissionRootedFile(root, pending.RecoveryName)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil || !bytes.Equal(recovery, pending.IntendedContent) {
+		return errors.Join(fmt.Errorf("unused permission recovery identity or content changed"), err)
+	}
+	return quarantineAndRemovePermissionLeaf(root, filepath.Dir(pending.TargetPath), pending.RecoveryName, recoveryInfo, pending.IntendedContent, func() {
+		permissionApplyRecoveryAfterQuarantine(pending.TargetPath, pending.RecoveryName)
+	})
+}
+
+func cleanupInterruptedPermissionCreation(pending permissionApplyPending, canonicalPresent bool) error {
+	root, err := os.OpenRoot(filepath.Dir(pending.TargetPath))
+	if err != nil {
+		if os.IsNotExist(err) && !canonicalPresent {
+			return nil
+		}
+		return err
+	}
+	defer root.Close()
+	recovery, recoveryInfo, err := readPermissionRootedFile(root, pending.RecoveryName)
+	rollback, rollbackInfo, rollbackErr := readPermissionRootedFile(root, pending.RollbackName)
+	if os.IsNotExist(err) && os.IsNotExist(rollbackErr) && !canonicalPresent {
+		return nil
+	}
+	if err != nil || !bytes.Equal(recovery, pending.IntendedContent) {
+		return errors.Join(fmt.Errorf("interrupted creation recovery identity or content changed"), err)
+	}
+	if rollbackErr == nil {
+		if !bytes.Equal(rollback, pending.IntendedContent) || !os.SameFile(rollbackInfo, recoveryInfo) {
+			return fmt.Errorf("interrupted creation rollback evidence no longer matches recovery identity")
+		}
+		if err := quarantineAndRemovePermissionLeaf(root, filepath.Dir(pending.TargetPath), pending.RollbackName, rollbackInfo, pending.IntendedContent, nil); err != nil {
+			return err
+		}
+		return quarantineAndRemovePermissionLeaf(root, filepath.Dir(pending.TargetPath), pending.RecoveryName, recoveryInfo, pending.IntendedContent, func() {
+			permissionApplyRecoveryAfterQuarantine(pending.TargetPath, pending.RecoveryName)
+		})
+	}
+	if !os.IsNotExist(rollbackErr) {
+		return rollbackErr
+	}
+	if !canonicalPresent {
+		return quarantineAndRemovePermissionLeaf(root, filepath.Dir(pending.TargetPath), pending.RecoveryName, recoveryInfo, pending.IntendedContent, func() {
+			permissionApplyRecoveryAfterQuarantine(pending.TargetPath, pending.RecoveryName)
+		})
+	}
+	canonicalName := filepath.Base(pending.TargetPath)
+	canonical, canonicalInfo, err := readPermissionRootedFile(root, canonicalName)
+	if err != nil || !bytes.Equal(canonical, pending.IntendedContent) || !os.SameFile(canonicalInfo, recoveryInfo) {
+		return errors.Join(fmt.Errorf("interrupted creation canonical and recovery identities no longer match"), err)
+	}
+	if err := root.Rename(canonicalName, pending.RollbackName); err != nil {
+		return fmt.Errorf("quarantine interrupted permission creation: %w", err)
+	}
+	if err := syncPermissionParentDirectory(pending.TargetPath); err != nil {
+		return fmt.Errorf("sync interrupted permission creation quarantine: %w", err)
+	}
+	permissionApplyAfterCanonicalQuarantine(pending.TargetPath)
+	rollback, rollbackInfo, err = readPermissionRootedFile(root, pending.RollbackName)
+	if err != nil || !bytes.Equal(rollback, pending.IntendedContent) || !os.SameFile(rollbackInfo, canonicalInfo) {
+		return errors.Join(fmt.Errorf("quarantined permission creation changed before cleanup"), err)
+	}
+	recovery, recoveryInfo, err = readPermissionRootedFile(root, pending.RecoveryName)
+	if err != nil || !bytes.Equal(recovery, pending.IntendedContent) || !os.SameFile(recoveryInfo, canonicalInfo) {
+		return errors.Join(fmt.Errorf("permission creation recovery changed after canonical quarantine"), err)
+	}
+	if err := quarantineAndRemovePermissionLeaf(root, filepath.Dir(pending.TargetPath), pending.RollbackName, rollbackInfo, pending.IntendedContent, nil); err != nil {
+		return err
+	}
+	return quarantineAndRemovePermissionLeaf(root, filepath.Dir(pending.TargetPath), pending.RecoveryName, recoveryInfo, pending.IntendedContent, func() {
+		permissionApplyRecoveryAfterQuarantine(pending.TargetPath, pending.RecoveryName)
+	})
+}
+
+func quarantineAndRemovePermissionLeaf(root *os.Root, parent, name string, expectedInfo os.FileInfo, expectedContent []byte, afterQuarantine func()) error {
+	quarantineName := fmt.Sprintf(".%s.%d.%d.permission-cleanup", name, os.Getpid(), time.Now().UnixNano())
+	if !validPermissionLeaf(quarantineName) {
+		return fmt.Errorf("permission cleanup quarantine name is invalid")
+	}
+	if err := root.Rename(name, quarantineName); err != nil {
+		return fmt.Errorf("quarantine permission recovery leaf: %w", err)
+	}
+	if err := syncPermissionParentDirectory(filepath.Join(parent, name)); err != nil {
+		return fmt.Errorf("sync permission recovery quarantine: %w", err)
+	}
+	if afterQuarantine != nil {
+		afterQuarantine()
+	}
+	quarantined, quarantinedInfo, err := readPermissionRootedFile(root, quarantineName)
+	if err != nil || !os.SameFile(expectedInfo, quarantinedInfo) || !bytes.Equal(quarantined, expectedContent) {
+		return errors.Join(fmt.Errorf("quarantined permission recovery identity or content changed; evidence preserved"), err)
+	}
+	if err := root.Remove(quarantineName); err != nil {
+		return fmt.Errorf("remove validated permission recovery quarantine: %w", err)
+	}
+	if err := syncPermissionParentDirectory(filepath.Join(parent, name)); err != nil {
+		return fmt.Errorf("sync validated permission recovery removal: %w", err)
+	}
+	return nil
 }
 
 func validatePermissionApplyApproval(approved PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision) error {
@@ -633,6 +997,10 @@ func readPermissionRootedFile(root *os.Root, name string) ([]byte, os.FileInfo, 
 
 func permissionRecoveryName(render PermissionRender) string {
 	return fmt.Sprintf(".%s.%d.%s.permission-swap", filepath.Base(render.TargetPath), os.Getpid(), strings.TrimPrefix(render.Artifact.ContentSHA256, "sha256:")[:12])
+}
+
+func permissionCreationRollbackName(render PermissionRender) string {
+	return fmt.Sprintf(".%s.%d.%s.permission-rollback", filepath.Base(render.TargetPath), os.Getpid(), strings.TrimPrefix(render.Artifact.ContentSHA256, "sha256:")[:12])
 }
 
 func rollbackPermissionPublication(publication *permissionTargetPublication, pendingPath string, cause error) error {

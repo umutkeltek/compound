@@ -534,6 +534,7 @@ func TestHarnessGenerateApplyRecoversExactPublishedOutcomeBeforeNewAction(t *tes
 		t.Fatalf("failed finalizer emitted a competing action envelope: %v", err)
 	}
 
+	writeHarnessApplyJSON(t, filepath.Join(homePath, "config", "policy.yaml"), policy.DefaultConfig())
 	recordHarnessPermissionOutcome = previousRecord
 	stdout.Reset()
 	stderr.Reset()

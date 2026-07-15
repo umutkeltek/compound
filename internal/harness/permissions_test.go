@@ -784,6 +784,24 @@ func TestPendingRecoveryRollsBackInterruptedCreationToAbsent(t *testing.T) {
 	}
 }
 
+func TestPendingRecoveryClearsPrePublicationAbsentCreation(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "missing", "settings.json")
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	outcome := newPermissionApplyOutcome(homePath, approved, action, decision, time.Date(2026, 7, 15, 12, 1, 0, 0, time.UTC), true)
+	writeTestJSON(t, PermissionApplyPendingPath(homePath, "claude_code"), newPermissionApplyPending(outcome))
+	refuseNew := func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error { return os.ErrPermission }
+	if _, err := ApplyPermissions(homePath, approved, action, decision, refuseNew, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "authorization") {
+		t.Fatalf("post-recovery apply error = %v, want new-action authorization refusal", err)
+	}
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("pre-publication recovery created target: %v", err)
+	}
+	if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); !os.IsNotExist(err) {
+		t.Fatalf("pre-publication recovery left pending transaction: %v", err)
+	}
+}
+
 func TestPendingCreationRecoveryPreservesConcurrentCanonicalReplacement(t *testing.T) {
 	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "target", "settings.json")
 	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
