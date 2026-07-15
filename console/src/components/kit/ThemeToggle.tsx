@@ -30,7 +30,7 @@ const OPTIONS: { value: ThemePref; label: string; icon: React.ReactNode }[] = [
   { value: "dark", label: "Dark", icon: <MoonIcon /> },
 ];
 
-export function ThemeToggle() {
+export function ThemeToggle({ responsive = false }: { responsive?: boolean }) {
   const [pref, setPref] = useState<ThemePref | null>(null);
 
   useEffect(() => {
@@ -50,32 +50,52 @@ export function ThemeToggle() {
     applyTheme(next);
   }
 
+  const current = pref ?? "auto";
+  const currentIndex = OPTIONS.findIndex((option) => option.value === current);
+  const activeOption = OPTIONS[currentIndex];
+  const nextOption = OPTIONS[(currentIndex + 1) % OPTIONS.length];
+
   return (
-    <div
-      role="radiogroup"
-      aria-label="Theme"
-      className="inline-flex items-center rounded-pill border border-hair bg-soft p-0.5"
-    >
-      {OPTIONS.map((opt) => {
-        const active = pref === opt.value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            aria-label={opt.label}
-            title={`${opt.label} theme`}
-            onClick={() => choose(opt.value)}
-            className={`inline-flex h-6 w-6 items-center justify-center rounded-pill transition-colors ${
-              active ? "bg-panel text-ink shadow-sm" : "text-faint hover:text-muted"
-            }`}
-          >
-            {opt.icon}
-          </button>
-        );
-      })}
-    </div>
+    <>
+      {responsive ? (
+        <button
+          type="button"
+          data-theme-control="compact"
+          aria-label={`${activeOption.label} theme. Switch to ${nextOption.label} theme`}
+          title={`${activeOption.label} theme · switch to ${nextOption.label.toLowerCase()}`}
+          onClick={() => choose(nextOption.value)}
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-hair bg-soft text-muted transition-colors hover:bg-soft-2 hover:text-ink sm:hidden"
+        >
+          {activeOption.icon}
+        </button>
+      ) : null}
+      <div
+        role="radiogroup"
+        aria-label="Theme"
+        data-theme-control="expanded"
+        className={`${responsive ? "hidden sm:inline-flex" : "inline-flex"} shrink-0 items-center rounded-pill border border-hair bg-soft p-0.5`}
+      >
+        {OPTIONS.map((opt) => {
+          const active = pref === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              aria-label={opt.label}
+              title={`${opt.label} theme`}
+              onClick={() => choose(opt.value)}
+              className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-pill transition-colors ${
+                active ? "bg-panel text-ink shadow-sm" : "text-faint hover:text-muted"
+              }`}
+            >
+              {opt.icon}
+            </button>
+          );
+        })}
+      </div>
+    </>
   );
 }
 

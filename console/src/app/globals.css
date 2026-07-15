@@ -138,7 +138,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page:#080B10; --panel:#12171F; --soft:#161C25; --soft-2:#1A212B;
-  --ink:#E4E9F0; --strong:#F4F7FA; --muted:#93A0AF; --faint:#66727F;
+  --ink:#E4E9F0; --strong:#F4F7FA; --muted:#93A0AF; --faint:#7D8996;
   --hair:#242C37; --hair-2:#1F2630;
 
   --work-fg:#5AA2FF;   --work-soft:#0E2436;   --work-line:#1D3E5C;

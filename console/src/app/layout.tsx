@@ -40,27 +40,27 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <div className="flex min-h-screen">
           <NavContainer variant="desktop" />
           <div className="flex min-w-0 flex-1 flex-col">
-            <header className="sticky top-0 z-40 flex min-h-12 items-center gap-2 border-b border-hair bg-page/80 px-3 py-2 backdrop-blur sm:gap-3 sm:px-5 md:px-6 md:py-2.5">
+            <header className="sticky top-0 z-40 flex min-h-12 flex-wrap items-center gap-2 border-b border-hair bg-page/80 px-3 py-2 backdrop-blur sm:flex-nowrap sm:gap-3 sm:px-5 md:px-6 md:py-2.5">
               <NavContainer variant="mobile" />
               <InstanceBadge />
               <div className="hidden min-w-0 sm:block"><Breadcrumb /></div>
               <div className="hidden min-w-0 xl:block"><SystemBanner /></div>
-              <div className="ml-auto flex items-center gap-2">
+              <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
                 <div className="hidden xl:block"><FreshnessChip generatedAt={str(attention?.generated_at) || undefined} source="compound attention --json" /></div>
                 {/* Kill-switch / autonomy posture. Read from operator-authority
                     (level + mode); there is no cheap "halted" boolean today, so
                     this reflects governed posture, not an armed/tripped bit.
                     TODO: policy autonomy halted-state read when a projection lands. */}
-                <div>
+                <div className="shrink-0">
                   <StatusChip
                     tone={autonomy.tone}
-                    label={`Autonomy ${autonomy.level}`}
+                    label={<span className="sr-only sm:not-sr-only">Autonomy {autonomy.level}</span>}
                     title={`${autonomy.detail} — kill switch: compound policy autonomy-halt · source: compound policy operator-authority --json`}
                   />
                 </div>
                 <RefreshControl responsive />
                 <div className="hidden lg:block"><CommandK /></div>
-                <ThemeToggle />
+                <ThemeToggle responsive />
               </div>
             </header>
             <div className="xl:hidden"><SystemBanner compact /></div>

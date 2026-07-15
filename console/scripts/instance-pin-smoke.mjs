@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -87,6 +88,95 @@ assert.equal(pinnedARel.homeHash, pinnedA.homeHash, "same absolute home => same 
 //    per-request value. (Both read process.env at load; they must never drift.)
 assert.equal(INSTANCE_PIN.home, COMPOUND_HOME, "runCompound exec home must equal the frozen instance pin");
 
+// 6. The instance badge lives in the persistent shell, so that shell must keep
+// its identity and controls reachable at narrow widths. These source-level
+// contracts are deterministic proof for the responsive classes; the browser
+// journey separately measures scrollWidth === innerWidth at 390px.
+const layoutSource = readFileSync(new URL("../src/app/layout.tsx", import.meta.url), "utf8");
+const refreshSource = readFileSync(new URL("../src/components/RefreshControl.tsx", import.meta.url), "utf8");
+const themeSource = readFileSync(new URL("../src/components/kit/ThemeToggle.tsx", import.meta.url), "utf8");
+const globalStyles = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+const shellFailures = [];
+
+function requireSource(source, pattern, message) {
+  if (!pattern.test(source)) shellFailures.push(message);
+}
+
+requireSource(
+  layoutSource,
+  /<header className="[^"]*\bflex-wrap\b[^"]*\bsm:flex-nowrap\b/,
+  "header needs a mobile wrap fallback and a single desktop row",
+);
+requireSource(
+  layoutSource,
+  /className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2"/,
+  "header controls need a compact non-shrinking group",
+);
+requireSource(
+  layoutSource,
+  /<ThemeToggle responsive\s*\/>/,
+  "the shell must request ThemeToggle's compact mobile control",
+);
+requireSource(
+  refreshSource,
+  /data-refresh-control="expanded"/,
+  "RefreshControl needs an explicit expanded surface",
+);
+requireSource(
+  refreshSource,
+  /data-refresh-control="compact"/,
+  "RefreshControl needs an explicit compact surface",
+);
+requireSource(
+  refreshSource,
+  /\bshrink-0\b[^"\n]*\bwhitespace-nowrap\b|\bwhitespace-nowrap\b[^"\n]*\bshrink-0\b/,
+  "desktop refresh pills must neither shrink nor wrap",
+);
+requireSource(
+  themeSource,
+  /data-theme-control="compact"/,
+  "ThemeToggle needs a reachable compact mobile surface",
+);
+requireSource(
+  themeSource,
+  /data-theme-control="expanded"/,
+  "ThemeToggle must preserve the expanded radio group from sm upward",
+);
+
+function parseDarkToken(name) {
+  const dark = globalStyles.match(/:root\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+  const value = dark.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`, "i"))?.[1];
+  if (!value) shellFailures.push(`dark theme token --${name} is missing or not a six-digit hex`);
+  return value ?? "#000000";
+}
+
+function relativeLuminance(hex) {
+  const channels = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255);
+  const [r, g, b] = channels.map((channel) =>
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+  );
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrastRatio(a, b) {
+  const lighter = Math.max(relativeLuminance(a), relativeLuminance(b));
+  const darker = Math.min(relativeLuminance(a), relativeLuminance(b));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+const darkFaint = parseDarkToken("faint");
+const darkMuted = parseDarkToken("muted");
+for (const surface of ["page", "panel", "soft", "soft-2"]) {
+  const background = parseDarkToken(surface);
+  const ratio = contrastRatio(darkFaint, background);
+  if (ratio < 4.5) shellFailures.push(`dark --faint contrast on --${surface} is ${ratio.toFixed(2)}:1; need >= 4.5:1`);
+}
+if (relativeLuminance(darkFaint) >= relativeLuminance(darkMuted)) {
+  shellFailures.push("dark --faint must remain visually subordinate to --muted");
+}
+
+assert.deepEqual(shellFailures, [], `console shell contract failures:\n${shellFailures.join("\n")}`);
+
 console.log(
-  "instance-pin smoke ok: mutations pinned to the started home; unpinned instance fails closed; scratch-A never resolves scratch-B/canonical",
+  "instance-pin smoke ok: mutations stay pinned; shell controls stay responsive; dark faint text keeps AA contrast",
 );
