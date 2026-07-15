@@ -421,6 +421,66 @@ func TestProofCheckCIFlagRunsOnlyPortableGates(t *testing.T) {
 	}
 }
 
+// TestProofCheckCIConsoleFlagRunsOnlyConsoleGates mirrors TestProofCheckCIFlagRunsOnlyPortableGates
+// for the console/TypeScript lane: --ci-console must run exactly the gates that need bun +
+// console/node_modules (every Dir=="console" step plus bun-tools-test), in dry-run order, and never
+// the bare-Go or binary-dependent gates. The expected set is single-sourced from proofCheckSteps
+// (not hardcoded), so a newly-added console smoke joins this subset automatically and a bare-Go gate
+// mis-routed here fails the test before it reds the CI console job.
+func TestProofCheckCIConsoleFlagRunsOnlyConsoleGates(t *testing.T) {
+	out := captureStdout(t, func() {
+		cmdProofCheck([]string{"--ci-console", "--dry-run", "--json", "--repo", "."})
+	})
+	var report proofCheckReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse proof-check --ci-console report: %v\n%s", err, out)
+	}
+	if !report.CIConsole || report.CIOnly || report.Status != "ok" || !report.DryRun {
+		t.Fatalf("bad proof-check --ci-console report: ci_console=%v ci_only=%v status=%s dry_run=%v", report.CIConsole, report.CIOnly, report.Status, report.DryRun)
+	}
+	steps, err := proofCheckSteps("")
+	if err != nil {
+		t.Fatalf("proofCheckSteps: %v", err)
+	}
+	wantProofSet := map[string]bool{}
+	for _, s := range steps {
+		if s.Dir == "console" || s.Name == "bun-tools-test" {
+			wantProofSet[s.ProofRef] = true
+		}
+	}
+	if len(wantProofSet) == 0 {
+		t.Fatal("no console gates in proofCheckSteps; the CI console job would run nothing")
+	}
+	if len(report.Steps) != len(wantProofSet) {
+		names := make([]string, 0, len(report.Steps))
+		for _, s := range report.Steps {
+			names = append(names, s.ProofRef)
+		}
+		t.Fatalf("proof-check --ci-console ran %d gates %v, want %d", len(report.Steps), names, len(wantProofSet))
+	}
+	for _, s := range report.Steps {
+		if !wantProofSet[s.ProofRef] {
+			t.Fatalf("proof-check --ci-console included non-console gate %q", s.ProofRef)
+		}
+		if s.Status != "planned" {
+			t.Fatalf("ci-console step %s status=%s, want planned", s.ProofRef, s.Status)
+		}
+	}
+	// The bare-Go / binary-dependent gates must NOT appear under --ci-console (no Go-test intent,
+	// and they belong to the --ci job).
+	for _, banned := range []string{
+		"go-test-count-1-all", "go-vet-all", "go-build-all", "gofmt-check", "diff-check",
+		"architecture-doctor-strict", "memory-doctor", "redact-public-clean",
+		"profiles-check-installed-only", "codex-pretooluse-native-gate-proof", "workbench-projection-refresh",
+	} {
+		for _, s := range report.Steps {
+			if s.ProofRef == banned {
+				t.Fatalf("proof-check --ci-console included non-console gate %q", banned)
+			}
+		}
+	}
+}
+
 func TestProofCheckMissingConsoleSmokeDependencyEmitsSkipReason(t *testing.T) {
 	step := proofCheckStep{Name: "console-work-trace-smoke", Command: []string{"bun", "scripts/work-trace-smoke.mjs"}, SkipIfMissing: "definitely-missing-proof-tool"}
 	got := runProofCheckStep(t.TempDir(), step, "")

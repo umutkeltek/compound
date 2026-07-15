@@ -24,6 +24,7 @@ type proofCheckReport struct {
 	BaseRef       string           `json:"base_ref,omitempty"`
 	DryRun        bool             `json:"dry_run"`
 	CIOnly        bool             `json:"ci_only,omitempty"`
+	CIConsole     bool             `json:"ci_console,omitempty"`
 	ArtifactRef   string           `json:"artifact_ref,omitempty"`
 	Warnings      []string         `json:"warnings,omitempty"`
 	ProofRefs     []string         `json:"proof_refs"`
@@ -49,16 +50,23 @@ type proofCheckStep struct {
 
 func cmdProofCheck(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--ci] [--repo P] [--base REF]")
-		fmt.Println("  --ci  run only the fresh-clone-portable gate subset (what CI runs on push/PR)")
+		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--ci|--ci-console] [--repo P] [--base REF]")
+		fmt.Println("  --ci          run only the fresh-clone-portable gate subset (bare Go gates; what CI runs on push/PR)")
+		fmt.Println("  --ci-console  run only the console/TypeScript gate subset (needs bun + console/node_modules;")
+		fmt.Println("                run by the CI console job, not the bare-clone --ci job)")
 		return
 	}
 	jsonOut := hasFlag(args, "--json")
 	dryRun := hasFlag(args, "--dry-run")
 	ciOnly := hasFlag(args, "--ci")
+	ciConsole := hasFlag(args, "--ci-console")
+	if ciOnly && ciConsole {
+		fmt.Fprintln(os.Stderr, "proof-check: --ci and --ci-console are mutually exclusive")
+		os.Exit(2)
+	}
 	repoPath := flagValue(args, "--repo")
 	baseRef := flagValue(args, "--base")
-	report, err := runProofCheck(repoPath, dryRun, baseRef, ciOnly, time.Now())
+	report, err := runProofCheck(repoPath, dryRun, baseRef, ciOnly, ciConsole, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
 		os.Exit(2)
@@ -85,7 +93,7 @@ func cmdProofCheck(args []string) {
 	}
 }
 
-func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, now time.Time) (proofCheckReport, error) {
+func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, ciConsole bool, now time.Time) (proofCheckReport, error) {
 	repo, err := resolveProofCheckRepo(repoPath)
 	if err != nil {
 		return proofCheckReport{}, err
@@ -95,7 +103,9 @@ func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, no
 	if err != nil {
 		return proofCheckReport{}, err
 	}
-	if ciOnly {
+	if ciConsole {
+		steps = ciConsoleSteps(steps)
+	} else if ciOnly {
 		steps = ciPortableSteps(steps)
 	}
 	report := proofCheckReport{
@@ -106,6 +116,7 @@ func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, no
 		BaseRef:       baseRef,
 		DryRun:        dryRun,
 		CIOnly:        ciOnly,
+		CIConsole:     ciConsole,
 		Steps:         make([]proofCheckStep, 0, len(steps)),
 	}
 	for _, step := range steps {
@@ -246,6 +257,21 @@ func ciPortableSteps(steps []proofCheckStep) []proofCheckStep {
 	out := make([]proofCheckStep, 0, len(steps))
 	for _, s := range steps {
 		if s.CIPortable {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// ciConsoleSteps returns the console/TypeScript gate subset — every step rooted in console/ plus
+// bun-tools-test. These need bun + console/node_modules (and a compound binary on PATH for the
+// smokes that subprocess it), so they cannot run in the bare-clone `--ci` set. `proof-check
+// --ci-console` runs exactly these, single-sourced from proofCheckSteps, so the CI console job's
+// gate set cannot drift from a hand-maintained workflow list.
+func ciConsoleSteps(steps []proofCheckStep) []proofCheckStep {
+	out := make([]proofCheckStep, 0, len(steps))
+	for _, s := range steps {
+		if s.Dir == "console" || s.Name == "bun-tools-test" {
 			out = append(out, s)
 		}
 	}

@@ -1,14 +1,18 @@
 name: CI
 
-# compound's first automated gate (the repo is destined to be public). On every push to main and
-# every pull request this runs the fresh-clone-portable subset of `compound proof-check` — SINGLE-
-# SOURCED from cmd/compound/proof_check.go via the `--ci` flag (see ciPortableSteps) so the CI gate
-# set can't drift from a hand-maintained list — plus a portable gitleaks secret scan.
+# compound's automated gates (the repo is destined to be public). On every push to main and every
+# pull request this runs two single-sourced `compound proof-check` subsets plus a secret scan:
+#   - proof-gates   : `proof-check --ci`       — the fresh-clone-portable bare-Go gates (ciPortableSteps).
+#   - console-gates : `proof-check --ci-console` — the console/TypeScript gates (ciConsoleSteps); needs
+#                     bun + console/node_modules + a compound binary on PATH for the smokes that
+#                     subprocess it.
+# Both gate sets are SINGLE-SOURCED from cmd/compound/proof_check.go so CI can't drift from a
+# hand-maintained workflow list; plus a portable gitleaks secret scan.
 #
-# The full local battery still runs per skills/compound-land before a push: console/bun smokes, the
-# installed-binary gates (profiles-check, workbench, codex-pretooluse), and the richer `redact`
-# push-floor (PII / private-path / private-tool-name detection). gitleaks here COMPLEMENTS redact;
-# it does not replace it. redact is a local tool not installed on a CI runner.
+# The full local battery still runs per skills/compound-land before a push: the installed-binary
+# gates (profiles-check, workbench, codex-pretooluse) and the richer `redact` push-floor
+# (PII / private-path / private-tool-name detection). gitleaks here COMPLEMENTS redact; it does not
+# replace it. redact is a local tool not installed on a CI runner.
 
 on:
   push:
@@ -39,6 +43,30 @@ jobs:
       - name: compound proof-check --ci
         # go-test, go-vet, go-build, gofmt, diff-check, architecture-doctor --strict, memory-doctor
         run: go run ./cmd/compound proof-check --ci
+
+  console-gates:
+    name: proof-check --ci-console
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod   # single-source the Go version from go.mod, no drift
+          cache: true
+      - uses: oven-sh/setup-bun@v2   # bun runs the *.selftest.ts smoke runners + bun-tools-test
+      - name: Build compound binary (smokes subprocess it via PATH)
+        # Several console smokes exec `compound ...` (COMPOUND_BIN || "compound"); build once and put
+        # it on PATH so they resolve the freshly built binary, not a stale install.
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          go build -o "$HOME/.local/bin/compound" ./cmd/compound
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install console deps
+        run: bun install --frozen-lockfile
+        working-directory: console
+      - name: compound proof-check --ci-console
+        # console-tsc + every wired console/*-smoke + bun-tools-test (ciConsoleSteps)
+        run: go run ./cmd/compound proof-check --ci-console
 
   secret-scan:
     name: gitleaks
