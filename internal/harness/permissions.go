@@ -367,6 +367,10 @@ func ApplyPermissions(homePath string, approved PermissionRender, action envelop
 		if outcome.TargetChanged {
 			publication, err = beginPermissionTargetPublication(render, pending.RecoveryName)
 			if err != nil {
+				if publication != nil {
+					defer publication.Close()
+					return &PermissionApplyFinalizationPendingError{Cause: fmt.Errorf("permission target publication is %s and requires recovery: %w", publication.State(), err)}
+				}
 				return abortPermissionApplyBeforePublication(outcome, abort, pendingPath, err)
 			}
 			defer publication.Close()
@@ -909,14 +913,35 @@ func samePermissionRender(a, b PermissionRender) bool {
 		reflect.DeepEqual(a.Artifact, b.Artifact) && reflect.DeepEqual(a.Details, b.Details)
 }
 
+type permissionRootedCAS interface {
+	State() homepkg.RootedFileCASState
+	Commit() error
+	Rollback() error
+}
+
+var beginPermissionRootedFileCAS = func(
+	root *os.Root,
+	canonicalName string,
+	recoveryName string,
+	expectedData []byte,
+	expectedInfo os.FileInfo,
+	replacementData []byte,
+	replacementInfo os.FileInfo,
+) (permissionRootedCAS, error) {
+	return homepkg.BeginRootedFileCAS(root, canonicalName, recoveryName, expectedData, expectedInfo, replacementData, replacementInfo)
+}
+
 type permissionTargetPublication struct {
 	root        *os.Root
-	publication *homepkg.RootedFileCAS
+	publication permissionRootedCAS
 }
 
 func (p *permissionTargetPublication) Commit() error   { return p.publication.Commit() }
 func (p *permissionTargetPublication) Rollback() error { return p.publication.Rollback() }
 func (p *permissionTargetPublication) Close() error    { return p.root.Close() }
+func (p *permissionTargetPublication) State() homepkg.RootedFileCASState {
+	return p.publication.State()
+}
 
 func beginPermissionTargetPublication(render PermissionRender, recoveryName string) (*permissionTargetPublication, error) {
 	parent := filepath.Dir(render.TargetPath)
@@ -945,13 +970,14 @@ func beginPermissionTargetPublication(render PermissionRender, recoveryName stri
 		_ = root.Close()
 		return nil, err
 	}
-	publication, err := homepkg.BeginRootedFileCAS(root, name, recoveryName, current, currentInfo, render.Content, replacementInfo)
+	publication, err := beginPermissionRootedFileCAS(root, name, recoveryName, current, currentInfo, render.Content, replacementInfo)
 	if err != nil {
 		if publication == nil || publication.State() == homepkg.RootedFileCASNotPublished {
 			_ = root.Remove(recoveryName)
+			_ = root.Close()
+			return nil, err
 		}
-		_ = root.Close()
-		return nil, err
+		return &permissionTargetPublication{root: root, publication: publication}, err
 	}
 	return &permissionTargetPublication{root: root, publication: publication}, nil
 }
