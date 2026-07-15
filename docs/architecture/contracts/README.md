@@ -28,6 +28,15 @@ ObservationBatch knowledge apply contract note: `--apply-knowledge` converts con
 ObservationBatch route evidence apply contract note: `--apply-route-evidence` converts route/cost observations routed as `route_evidence` into existing `routeevidence.RecordJoined`, producing metadata-only ExecutionRouteEvidence plus routing/cost Transition. It is not provider/model-router mutation, model calling, task-success proof, memory promotion, ProductSignal mutation, or a connector-specific route ledger.
 ObservationBatch event apply contract note: `--apply-events` converts event observations routed as `trace_envelope` into a generated NDJSON event stream under `COMPOUND_HOME` and calls existing `eventsource.ImportOSEvents`, producing TraceEnvelope material plus event source authority. It is not an external collector, scheduler, provider connector, memory promotion, ProductSignal mutation, public side effect, or a second event truth ledger.
 
+## Event-reference contract
+
+`internal/eventstore` owns the physical layout beneath `COMPOUND_HOME/events`; callers persist and exchange
+logical references instead of filesystem paths. The resolver accepts bare IDs, `compound://events/<id>`, and
+historical `events/<id>.json` references. It rejects traversal, slash-bearing IDs, absolute paths, and physical
+segment/index paths. `events/work.jsonl`, `events/hook-events.ndjson`, and `events/traces.ndjson` remain named
+compatibility streams with separate semantics, but their construction and filesystem access stay behind the same
+owner seam.
+
 Fragmentation happens when seams between pieces are fuzzy: change one and others break. The cure is
 a small explicit contract — port + lifecycle + receipt — with implementations swapped behind it.
 Defined before implementation so agents stop re-deriving them. Implement a contract only when a

@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 const (
@@ -207,8 +208,11 @@ func BuildInjectionObservationReport(homePath string, opts InjectionObservationO
 		Conditions:    []InjectionConditionSummary{},
 	}
 
-	dir := filepath.Join(homePath, "events")
-	entries, err := os.ReadDir(dir)
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return rep, err
+	}
+	entries, err := events.Scan(eventstore.ScanOptions{})
 	if err != nil {
 		if os.IsNotExist(err) {
 			rep.Conditions = summarizeInjectionConditions(nil)
@@ -219,13 +223,11 @@ func BuildInjectionObservationReport(homePath string, opts InjectionObservationO
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		record, err := entry.Read()
 		if err != nil {
 			return rep, err
 		}
+		data := record.Bytes
 		var head struct {
 			SchemaVersion string `json:"schema_version"`
 		}

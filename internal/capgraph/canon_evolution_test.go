@@ -1,6 +1,8 @@
 package capgraph
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,6 +25,22 @@ func canonEventFiles(t *testing.T, homePath string) []string {
 		}
 	}
 	return out
+}
+
+func assertCanonEventBytes(t *testing.T, homePath string, transition any, id string) {
+	t.Helper()
+	got, err := os.ReadFile(filepath.Join(homePath, "events", id+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.MarshalIndent(transition, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, '\n')
+	if !bytes.Equal(got, want) {
+		t.Fatalf("canon transition bytes changed\ngot:  %q\nwant: %q", got, want)
+	}
 }
 
 // F2 (collision): the same canon file drifting A->B then B->C under the same cause must mint two
@@ -71,6 +89,8 @@ func TestRecordCanonEvolutionDistinctEvidenceMintsDistinctTransitions(t *testing
 	if len(events) != 2 {
 		t.Fatalf("both transition event files must survive, got %d: %v (second mint overwrote the first)", len(events), events)
 	}
+	assertCanonEventBytes(t, homePath, &trAB, trAB.ID)
+	assertCanonEventBytes(t, homePath, &trBC, trBC.ID)
 
 	ensured := []string{"harness:example"}
 	revAB := canonSourceRevision(inAB, ensured)

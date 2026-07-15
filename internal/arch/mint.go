@@ -73,6 +73,10 @@ func (h MintHome) Valid() bool {
 // Every new organ / registry surface / status note goes here (or is grandfathered with a dated
 // reason). Keys are "<surface>:<id>" (e.g. "organ:scratchpad").
 var mintHomes = map[string]MintHome{
+	// eventstore enforces the single physical-layout boundary for COMPOUND_HOME/events. The
+	// architecture doctor blocks any production path construction or filesystem access outside
+	// this package, so the organ is enforcement rather than a second meaning authority.
+	"organ:eventstore": {Class: MintEnforcement},
 	// act is the generic governed outbound-write seam: it REFUSES to call an adapter's Write unless
 	// handed a matching allowing PolicyDecision for that exact ActionIntent, and every write it does
 	// pass carries an outward_delta Receipt (proof) plus a pre-image artifact + RevertIntent (undo).

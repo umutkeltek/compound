@@ -17,6 +17,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/mem"
 	"compound/internal/reviewartifact"
 	"compound/internal/writeback"
@@ -1810,15 +1811,12 @@ func RecordTransition(homePath string, tr envelope.Transition) error {
 	if err := tr.Validate(); err != nil {
 		return err
 	}
-	path := filepath.Join(homePath, "events", tr.ID+".json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(&tr, "", " ")
+	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	_, err = store.PutJSON(tr.ID, &tr, " ")
+	return err
 }
 
 func productClaims(bundle Bundle, evidenceID, sourcePath string) []mem.Candidate {
@@ -2063,8 +2061,11 @@ func loadSourceIssueReviews(homePath string) ([]SourceIssueReview, error) {
 }
 
 func loadProductTransitions(homePath, productID string) ([]TimelineTransition, error) {
-	dir := filepath.Join(homePath, "events")
-	entries, err := os.ReadDir(dir)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := store.Scan(eventstore.ScanOptions{})
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -2073,13 +2074,11 @@ func loadProductTransitions(homePath, productID string) ([]TimelineTransition, e
 	}
 	var out []TimelineTransition
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		record, err := entry.Read()
 		if err != nil {
 			return nil, err
 		}
+		b := record.Bytes
 		var header struct {
 			SchemaVersion string `json:"schema_version"`
 		}
@@ -2091,7 +2090,7 @@ func loadProductTransitions(homePath, productID string) ([]TimelineTransition, e
 			return nil, err
 		}
 		if err := tr.Validate(); err != nil {
-			return nil, fmt.Errorf("product transition %s: %w", entry.Name(), err)
+			return nil, fmt.Errorf("product transition %s: %w", entry.Name, err)
 		}
 		if tr.Scope.ProductID != productID && !containsValue(tr.Projections.Product, productID) {
 			continue

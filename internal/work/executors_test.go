@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,29 @@ import (
 	"compound/internal/home"
 	"compound/internal/localmodel"
 )
+
+func TestExecutorsProjectionTreatsHookStreamStatErrorAsAbsent(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsPath := filepath.Join(homePath, "events")
+	if err := os.RemoveAll(eventsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(eventsPath, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bench := WorkbenchReport{}
+	if _, err := store.ExecutorsProjection(now, ExecutorsProjectionOptions{Workbench: &bench}); err != nil {
+		t.Fatalf("legacy hook-stream existence probe should ignore stat error: %v", err)
+	}
+}
 
 func TestExecutorsProjectionProbeLocalLMStudio(t *testing.T) {
 	loaded := 4096

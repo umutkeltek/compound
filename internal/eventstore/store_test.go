@@ -34,6 +34,40 @@ func TestParseReferenceAcceptsLogicalBareAndHistoricalShapes(t *testing.T) {
 	}
 }
 
+func TestReferenceAndScanPreserveSafeHistoricalIDVocabulary(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	for _, id := range []string{"rec:legacy@host", "réc_élan", "rec_payload.json"} {
+		ref, err := ReferenceForID(id)
+		if err != nil {
+			t.Fatalf("ReferenceForID(%q): %v", id, err)
+		}
+		if ref.ID() != id {
+			t.Fatalf("ReferenceForID(%q).ID = %q", id, ref.ID())
+		}
+		if _, err := store.PutJSON(id, map[string]string{"id": id}, " "); err != nil {
+			t.Fatalf("PutJSON(%q): %v", id, err)
+		}
+	}
+
+	entries, err := store.Scan(ScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		got = append(got, entry.ID)
+	}
+	want := []string{"rec:legacy@host", "rec_payload.json", "réc_élan"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("historical ids = %q, want %q", got, want)
+	}
+	if _, err := store.Read("events/rec_payload.json.json"); err != nil {
+		t.Fatalf("historical double-extension reference: %v", err)
+	}
+}
+
 func TestParseReferenceRejectsPhysicalAndUnsafeShapes(t *testing.T) {
 	t.Parallel()
 
@@ -53,7 +87,6 @@ func TestParseReferenceRejectsPhysicalAndUnsafeShapes(t *testing.T) {
 		"/events/rec_abc123.json",
 		`events\rec_abc123.json`,
 		"events/rec_abc123",
-		"rec_abc123.json",
 	} {
 		t.Run(strings.ReplaceAll(raw, "/", "_"), func(t *testing.T) {
 			if _, err := ParseReference(raw); err == nil {
@@ -160,6 +193,25 @@ func TestPutModesPreserveOverwriteExclusiveAndSkipIfPresent(t *testing.T) {
 	if !created.Created {
 		t.Fatal("if-absent missing record did not report created")
 	}
+}
+
+func TestExclusiveWriteParityUsesOneCallAndIgnoresNilErrorShortCount(t *testing.T) {
+	t.Parallel()
+
+	writer := &shortCountingWriter{}
+	if err := writeOnce(writer, []byte("complete record")); err != nil {
+		t.Fatal(err)
+	}
+	if writer.calls != 1 {
+		t.Fatalf("exclusive writer calls = %d, want exactly one", writer.calls)
+	}
+}
+
+type shortCountingWriter struct{ calls int }
+
+func (w *shortCountingWriter) Write(data []byte) (int, error) {
+	w.calls++
+	return len(data) / 2, nil
 }
 
 func TestPutJSONAtomicPreservesPublicationHooksAndCleansTemp(t *testing.T) {

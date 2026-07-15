@@ -3,15 +3,13 @@ package capgraph
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 // canonProjectionPrefix is the capability-graph node namespace a canon-evolution transition rides in
@@ -196,21 +194,17 @@ func buildCanonEvolutionTransition(in CanonEvolutionInput, ensured []string, now
 	return tr, nil
 }
 
-// recordCanonTransition persists the minted transition to events/<id>.json, mirroring the
-// routeevidence/product transition writers so it lands on the same read surface.
+// recordCanonTransition persists the minted transition through the shared event-store seam.
 func recordCanonTransition(homePath string, tr envelope.Transition) error {
 	if err := tr.Validate(); err != nil {
 		return err
 	}
-	path := filepath.Join(homePath, "events", tr.ID+".json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(&tr, "", "  ")
+	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	_, err = store.PutJSON(tr.ID, &tr, "  ")
+	return err
 }
 
 func canonSourceRevision(in CanonEvolutionInput, ensured []string) string {

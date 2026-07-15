@@ -212,7 +212,9 @@ func (s *Store) PutJSONExclusive(id string, value any, indent string) (PutResult
 	if err != nil {
 		return PutResult{}, err
 	}
-	if err := writeFull(file, data); err != nil {
+	// Preserve the review-artifact writer's historical single Write call. In
+	// particular, a nil-error short write is not retried in this parity slice.
+	if err := writeOnce(file, data); err != nil {
 		_ = file.Close()
 		_ = os.Remove(path)
 		return PutResult{}, err
@@ -325,6 +327,11 @@ func writeFull(file *os.File, data []byte) error {
 		data = data[n:]
 	}
 	return nil
+}
+
+func writeOnce(writer io.Writer, data []byte) error {
+	_, err := writer.Write(data)
+	return err
 }
 
 func syncDirectory(path string) error {

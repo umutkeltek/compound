@@ -1,9 +1,11 @@
 package product
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -205,6 +207,39 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	}
 }
 
+func TestLoadProductTransitionsPreservesMalformedRecordPolicy(t *testing.T) {
+	home := t.TempDir()
+	eventsDir := filepath.Join(home, "events")
+	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(eventsDir, "torn.json"), []byte("{\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(eventsDir, "foreign.json"), []byte("{\"schema_version\":\"foreign.v1\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	transitions, err := loadProductTransitions(home, "product:fixture")
+	if err != nil || len(transitions) != 0 {
+		t.Fatalf("torn/foreign transitions = %+v, err=%v", transitions, err)
+	}
+
+	invalid, err := json.Marshal(map[string]any{
+		"schema_version": envelope.SVTransition,
+		"id":             "tr_invalid",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(eventsDir, "tr_invalid.json"), append(invalid, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadProductTransitions(home, "product:fixture"); err == nil ||
+		!strings.Contains(err.Error(), "product transition tr_invalid.json") {
+		t.Fatalf("invalid product transition error = %v", err)
+	}
+}
+
 func TestAuthoritySummarizesProductFeedbackState(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
@@ -239,6 +274,9 @@ func TestAuthoritySummarizesProductFeedbackState(t *testing.T) {
 	}
 	if report.AuthorityRef != AuthorityRef || report.Status != "needs_review" {
 		t.Fatalf("authority header = %+v", report)
+	}
+	if !slices.Contains(report.AuthorityPaths, "compound://events/<id>") || slices.Contains(report.AuthorityPaths, "events/*.json") {
+		t.Fatalf("authority event reference is not logical: %v", report.AuthorityPaths)
 	}
 	if report.ProductCount != 2 || report.SignalCount != 2 || report.HypothesisCount != 1 || report.ReviewReadyCount != 2 || report.TransitionCount != 1 {
 		t.Fatalf("authority counts = %+v", report)
@@ -1234,6 +1272,14 @@ func readTransition(t *testing.T, home, id string) envelope.Transition {
 	}
 	if err := tr.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	want, err := json.MarshalIndent(&tr, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, '\n')
+	if !bytes.Equal(b, want) {
+		t.Fatalf("product transition bytes changed\ngot:  %q\nwant: %q", b, want)
 	}
 	return tr
 }

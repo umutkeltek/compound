@@ -312,6 +312,24 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	}
 }
 
+func TestReceiptScannersPreserveMalformedRecordPolicies(t *testing.T) {
+	home, store := newStore(t)
+	writeFile(t, filepath.Join(home, "events", "rec_malformed.json"), "{\n")
+
+	if _, err := store.ConsumeReceipts(home, t0); err == nil ||
+		!strings.Contains(err.Error(), "parse event envelope rec_malformed.json") {
+		t.Fatalf("ConsumeReceipts malformed error = %v", err)
+	}
+	usage, err := BuildCapabilityUsage(home, UsageBuildOptions{GeneratedAt: t0})
+	if err != nil || usage.ReceiptsScanned != 0 {
+		t.Fatalf("usage malformed policy = receipts:%d err:%v", usage.ReceiptsScanned, err)
+	}
+	injection, err := BuildInjectionObservationReport(home, InjectionObservationOptions{GeneratedAt: t0})
+	if err != nil || injection.ReceiptsScanned != 0 {
+		t.Fatalf("injection malformed policy = receipts:%d err:%v", injection.ReceiptsScanned, err)
+	}
+}
+
 func TestConsumeReceiptsValidatedSkillRaisesFutureSurfacing(t *testing.T) {
 	home, s := newStore(t)
 	const nodeID = "skill:capability-writeback"

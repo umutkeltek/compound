@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/eventstore"
 	"compound/internal/policy"
 
 	"compound/internal/envelope"
@@ -215,7 +216,8 @@ type Position struct {
 
 // Store is the memory ledger rooted at a COMPOUND_HOME.
 type Store struct {
-	home string
+	home       string
+	eventStore *eventstore.Store
 
 	// entityLoader is a test seam for proving that cluster folds do not reload
 	// the append-only entity registry once per claim. Production stores leave it
@@ -241,12 +243,19 @@ func Open(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
 	}
-	for _, d := range []string{candidates.InboxDir(candidates.Memory), "ledger", "events"} {
+	for _, d := range []string{candidates.InboxDir(candidates.Memory), "ledger"} {
 		if err := os.MkdirAll(filepath.Join(homePath, d), 0o755); err != nil {
 			return nil, err
 		}
 	}
-	return &Store{home: homePath}, nil
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := events.Ensure(); err != nil {
+		return nil, err
+	}
+	return &Store{home: homePath, eventStore: events}, nil
 }
 
 // OpenReadOnly opens an existing memory ledger without creating runtime
@@ -264,7 +273,11 @@ func OpenReadOnly(homePath string) (*Store, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("open memory ledger read-only: %s is not a directory", ledger)
 	}
-	return &Store{home: homePath}, nil
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{home: homePath, eventStore: events}, nil
 }
 
 // HomePath exposes the runtime root to sibling authority owners that must
@@ -288,10 +301,9 @@ func (s *Store) writeAdjudicatedCandidate(id string, payload any) error {
 	return candidates.WriteCandidate(s.home, candidates.Memory, id, payload)
 }
 
-func (s *Store) claimsLog() string          { return filepath.Join(s.home, "ledger", "claims.jsonl") }
-func (s *Store) edgesLog() string           { return filepath.Join(s.home, "ledger", "edges.jsonl") }
-func (s *Store) seqFile() string            { return filepath.Join(s.home, "ledger", "seq") }
-func (s *Store) eventPath(id string) string { return filepath.Join(s.home, "events", id+".json") }
+func (s *Store) claimsLog() string { return filepath.Join(s.home, "ledger", "claims.jsonl") }
+func (s *Store) edgesLog() string  { return filepath.Join(s.home, "ledger", "edges.jsonl") }
+func (s *Store) seqFile() string   { return filepath.Join(s.home, "ledger", "seq") }
 
 // --- capture (candidate-first) ---
 
@@ -690,7 +702,7 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 				if err := transition.Validate(); err != nil {
 					return fmt.Errorf("emitted transition invalid: %w", err)
 				}
-				if err := writeJSONAtomic(s.eventPath(transition.ID), &transition); err != nil {
+				if err := s.writePromotionTransition(&transition); err != nil {
 					return err
 				}
 			}
@@ -739,7 +751,7 @@ func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operat
 		if err := transition.Validate(); err != nil {
 			return fmt.Errorf("emitted transition invalid: %w", err)
 		}
-		if err := writeJSONAtomic(s.eventPath(transition.ID), &transition); err != nil {
+		if err := s.writePromotionTransition(&transition); err != nil {
 			return err
 		}
 		c.State = "promoted"
@@ -1013,13 +1025,14 @@ func (s *Store) memoryTransition(claim Claim, prior Claim, hasPrior bool, workID
 }
 
 func (s *Store) persistedPromotionTransition(expected envelope.Transition) (envelope.Transition, bool, error) {
-	data, err := os.ReadFile(s.eventPath(expected.ID))
+	record, err := s.eventStore.Read(expected.ID)
 	if os.IsNotExist(err) {
 		return envelope.Transition{}, false, nil
 	}
 	if err != nil {
 		return envelope.Transition{}, false, err
 	}
+	data := record.Bytes
 	var transition envelope.Transition
 	if err := json.Unmarshal(data, &transition); err != nil {
 		return envelope.Transition{}, false, fmt.Errorf("persisted promotion transition %s unreadable: %w", expected.ID, err)
@@ -1036,6 +1049,17 @@ func (s *Store) persistedPromotionTransition(expected envelope.Transition) (enve
 		return envelope.Transition{}, false, fmt.Errorf("persisted promotion transition %s does not match claim projection", expected.ID)
 	}
 	return transition, true, nil
+}
+
+func (s *Store) writePromotionTransition(transition *envelope.Transition) error {
+	_, err := s.eventStore.PutJSONAtomic(transition.ID, transition, "  ", eventstore.AtomicOptions{
+		SyncDirectory: false,
+		Write: func(file *os.File, data []byte) error {
+			_, err := file.Write(data)
+			return err
+		},
+	})
+	return err
 }
 
 // --- recall (relevance-gated, as-of-aware fold) ---
@@ -1855,42 +1879,6 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
-}
-
-func writeJSONAtomic(path string, v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	keep := false
-	defer func() {
-		_ = tmp.Close()
-		if !keep {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if err := tmp.Chmod(0o644); err != nil {
-		return err
-	}
-	if _, err := tmp.Write(append(b, '\n')); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	keep = true
-	return nil
 }
 
 func readJSON(path string, v any) error {

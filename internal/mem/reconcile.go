@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 const (
@@ -398,8 +399,7 @@ func (s *Store) currentClaimsByCluster(claims []Claim, superseded map[string]boo
 }
 
 func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Time) ([]reconcileEvent, error) {
-	dir := filepath.Join(s.home, "events")
-	entries, err := os.ReadDir(dir)
+	entries, err := s.eventStore.Scan(eventstore.ScanOptions{})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -421,10 +421,11 @@ func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Tim
 
 	var out []reconcileEvent
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
+		record, err := entry.Read()
+		if err != nil {
+			return nil, err
 		}
-		event, ok, err := readReconcileEvent(filepath.Join(dir, entry.Name()))
+		event, ok, err := readReconcileEvent(entry.Name, record.Bytes)
 		if err != nil {
 			return nil, err
 		}
@@ -450,14 +451,10 @@ func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Tim
 	return out, nil
 }
 
-func readReconcileEvent(path string) (reconcileEvent, bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return reconcileEvent{}, false, err
-	}
+func readReconcileEvent(name string, data []byte) (reconcileEvent, bool, error) {
 	kind, err := envelope.ValidateBytes(data)
 	if err != nil {
-		return reconcileEvent{}, false, fmt.Errorf("load event %s: %w", filepath.Base(path), err)
+		return reconcileEvent{}, false, fmt.Errorf("load event %s: %w", name, err)
 	}
 	switch kind {
 	case "transition":

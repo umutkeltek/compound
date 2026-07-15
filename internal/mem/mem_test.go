@@ -1,6 +1,8 @@
 package mem
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -738,8 +740,8 @@ func TestPartialPromotionRecoveryUsesHistoricalClaimAfterInterveningPromotion(t 
 	if err != nil || !ok || current.ID != intervening.Claim.ID {
 		t.Fatalf("current claim after recovery = %+v ok=%t err=%v, want %s", current, ok, err, intervening.Claim.ID)
 	}
-	if _, err := os.Stat(s.eventPath(recovered.Transition.ID)); err != nil {
-		t.Fatalf("recovered transition missing: %v", err)
+	if exists, err := s.eventStore.Exists(recovered.Transition.ID); err != nil || !exists {
+		t.Fatalf("recovered transition missing: exists=%t err=%v", exists, err)
 	}
 }
 
@@ -800,6 +802,14 @@ func TestPartialPromotionRecoveryReusesPersistedTransition(t *testing.T) {
 	if string(eventBytesAfterRecovery) != string(firstEventBytes) {
 		t.Fatal("recovery rewrote the already-persisted transition")
 	}
+	wantBytes, err := json.MarshalIndent(recovered.Transition, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes = append(wantBytes, '\n')
+	if !bytes.Equal(eventBytesAfterRecovery, wantBytes) {
+		t.Fatalf("promotion transition bytes changed\ngot:  %q\nwant: %q", eventBytesAfterRecovery, wantBytes)
+	}
 }
 
 func TestPartialPromotionRecoveryRejectsCorruptStableTransition(t *testing.T) {
@@ -832,7 +842,7 @@ func TestPartialPromotionRecoveryRejectsCorruptStableTransition(t *testing.T) {
 	if err := os.MkdirAll(eventsPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	stablePath := s.eventPath(idFor("tr_", partialClaims[0].ID))
+	stablePath := filepath.Join(eventsPath, idFor("tr_", partialClaims[0].ID)+".json")
 	if err := os.WriteFile(stablePath, []byte("{\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -882,7 +892,7 @@ func TestPartialPromotionRecoveryUsesClaimDerivedTransitionIdentity(t *testing.T
 	}
 	unrelated := s.memoryTransition(partialClaims[0], Claim{}, false, "work_unrelated", t0.Add(time.Second))
 	unrelated.ID = "tr_unrelated"
-	if err := writeJSON(s.eventPath(unrelated.ID), &unrelated); err != nil {
+	if _, err := s.eventStore.PutJSON(unrelated.ID, &unrelated, "  "); err != nil {
 		t.Fatal(err)
 	}
 

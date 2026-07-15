@@ -9,6 +9,7 @@ import (
 
 	"compound/internal/contract"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/harness"
 	"compound/internal/hook"
 	"compound/internal/policy"
@@ -195,6 +196,27 @@ func TestHookSideEffectJSONPathRejectsUnsafeRefs(t *testing.T) {
 	}
 	if want := filepath.Join(homePath, "context", "requests", "ctxreq_123.json"); path != want {
 		t.Fatalf("path = %q, want %q", path, want)
+	}
+}
+
+func TestLoadHookSideEffectEnvelopesKeepsGenericJSONPathsSeparate(t *testing.T) {
+	homePath := t.TempDir()
+	generic := testTraceEnvelope("trace_generic_side_effect", "evt_generic", "Loaded from a generic side-effect path.")
+	writeRuntimeEnvelope(t, filepath.Join(homePath, "rec_report.json"), generic)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatalf("open event store: %v", err)
+	}
+
+	loaded, err := loadHookSideEffectEnvelopes(homePath, store, []envelope.HookEvent{{
+		Header:      envelope.Header{ID: "hook_generic_side_effect"},
+		SideEffects: []string{"rec_report.json"},
+	}}, map[string]bool{})
+	if err != nil {
+		t.Fatalf("load generic side effect: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Kind() != "trace_envelope" {
+		t.Fatalf("loaded = %+v, want generic trace envelope", loaded)
 	}
 }
 

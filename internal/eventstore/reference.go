@@ -2,13 +2,11 @@ package eventstore
 
 import (
 	"fmt"
-	"regexp"
+	"path/filepath"
 	"strings"
 )
 
 const logicalReferencePrefix = "compound://events/"
-
-var eventIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Reference is the stable logical identity of one event record. It deliberately
 // carries no physical path: loose files are an implementation detail of Store.
@@ -39,8 +37,7 @@ func ParseReference(raw string) (Reference, error) {
 // ReferenceForID validates an event id and returns its logical reference.
 func ReferenceForID(id string) (Reference, error) {
 	if id == "" || id != strings.TrimSpace(id) || id == "." || id == ".." ||
-		strings.HasSuffix(id, ".json") || strings.ContainsAny(id, `/\?#`) ||
-		!eventIDPattern.MatchString(id) {
+		filepath.IsAbs(id) || strings.ContainsAny(id, `/\?#`) || strings.ContainsRune(id, 0) {
 		return Reference{}, fmt.Errorf("invalid event id %q", id)
 	}
 	return Reference{id: id}, nil

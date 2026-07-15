@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 const (
@@ -180,8 +181,11 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 	packCache := map[string]*envelope.ContextPack{} // id -> pack (nil = missing/invalid)
 	packsLoaded := map[string]bool{}
 
-	dir := filepath.Join(homePath, "events")
-	entries, err := os.ReadDir(dir)
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return proj, err
+	}
+	entries, err := events.Scan(eventstore.ScanOptions{})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return proj, nil
@@ -190,13 +194,11 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		record, err := entry.Read()
 		if err != nil {
 			return proj, err
 		}
+		data := record.Bytes
 		var head struct {
 			SchemaVersion string `json:"schema_version"`
 		}

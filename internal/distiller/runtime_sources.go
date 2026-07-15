@@ -241,6 +241,13 @@ func hookSideEffectEventReference(raw string) (eventstore.Reference, bool, error
 		parsed, err := eventstore.ParseReference(ref)
 		return parsed, true, err
 	}
+	// A .json suffix is the established shape for a generic home-relative hook
+	// side effect. New event side effects are logical refs, so keep ambiguous
+	// bare values on the generic path rather than appending another .json in the
+	// loose event engine.
+	if strings.HasSuffix(ref, ".json") {
+		return eventstore.Reference{}, false, nil
+	}
 	for _, prefix := range []string{"act_", "pol_", "rec_", "tr_", "trace_", "hook_"} {
 		if strings.HasPrefix(ref, prefix) {
 			parsed, err := eventstore.ParseReference(ref)

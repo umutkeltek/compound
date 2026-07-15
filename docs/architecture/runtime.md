@@ -60,6 +60,13 @@ Typed semantics (the layout *is* the guardrail): `sources/` custody records (inc
 `context/` what agents actually consumed. `compound home doctor` asserts the cataloged root set and reports present
 bridge roots; per-family semantic restore and real-consumer replay remain migration gates beyond byte inventory.
 
+`internal/eventstore` is the sole physical-layout owner beneath `COMPOUND_HOME/events`. Its current loose-file
+engine preserves the existing bytes and stream semantics behind one replaceable seam. Durable event references
+use `compound://events/<id>`; the resolver also accepts bare IDs and historical `events/<id>.json` references,
+but rejects traversal and physical segment/index paths. The lifecycle and compatibility streams remain distinct:
+`events/work.jsonl`, `events/hook-events.ndjson`, and `events/traces.ndjson` retain their existing contracts while
+their physical access stays inside the event-store seam.
+
 ---
 
 ## 2. The envelope spine (the typed grammar everything runs through)

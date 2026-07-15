@@ -22,6 +22,18 @@ func TestSynthesisReconcileStageRegistered(t *testing.T) {
 	}
 }
 
+func TestLoadReconcileEventsFailsClosedOnMalformedRecord(t *testing.T) {
+	s := newStore(t)
+	path := filepath.Join(s.home, "events", "rec_malformed.json")
+	if err := os.WriteFile(path, []byte("{\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.loadReconcileEvents(reconcileCheckpoint{}, t0); err == nil ||
+		!strings.Contains(err.Error(), "load event rec_malformed.json") {
+		t.Fatalf("malformed reconcile event error = %v", err)
+	}
+}
+
 func TestSynthesisReconcileDismissesEchoAndScopeDisjointWithoutMutation(t *testing.T) {
 	s := newStore(t)
 	now := t0.Add(2 * time.Hour)
@@ -371,7 +383,7 @@ func writeReconcileTransition(t *testing.T, s *Store, in reconcileTransitionInpu
 	if err := tr.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeJSON(s.eventPath(tr.ID), &tr); err != nil {
+	if _, err := s.eventStore.PutJSON(tr.ID, &tr, "  "); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -401,7 +413,7 @@ func writeReconcileCloseReceipt(t *testing.T, s *Store, receiptID, transitionID,
 	if err := rec.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeJSON(s.eventPath(rec.ID), &rec); err != nil {
+	if _, err := s.eventStore.PutJSON(rec.ID, &rec, "  "); err != nil {
 		t.Fatal(err)
 	}
 	tr := envelope.Transition{
@@ -426,7 +438,7 @@ func writeReconcileCloseReceipt(t *testing.T, s *Store, receiptID, transitionID,
 	if err := tr.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeJSON(s.eventPath(tr.ID), &tr); err != nil {
+	if _, err := s.eventStore.PutJSON(tr.ID, &tr, "  "); err != nil {
 		t.Fatal(err)
 	}
 }

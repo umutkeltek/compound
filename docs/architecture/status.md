@@ -93,6 +93,7 @@ This table is SINGLE-SOURCED from `arch.Classification` (`internal/arch/arch.go`
 | `distiller` | object-family | the P6 distillation front-end: turns spine artifacts (a trace) into a typed, adjudicated CandidateSet; the model EXTRACTS, code DECIDES, every candidate is adjudicated (reject|park|promote|operationalize|retire); doctor surfaces eval/method/policy/capability debt and turns candidates into reviewed eval-plan/improvement-plan/rule-plan/taste-plan artifacts |
 | `envelope` | spine | the typed runtime grammar — the spine every harness, hook, and run flows through, hung off one root work_id; every envelope begins with the universal Header |
 | `eventsource` | importer | append-only event streams import as typed TraceEnvelope evidence under runtime events; idempotent, no memory promotion |
+| `eventstore` | leaf | sole physical-layout owner beneath COMPOUND_HOME/events; resolves logical and historical event refs while preserving loose-record and named-stream parity behind a replaceable engine seam |
 | `executorlens` | leaf | evidence-only collector: reads THIS repo's executor lanes' (Codex, Claude Code) receipts/events and builds behaviorallens Observations; records evidence rows only, owns no authority object, never gates/promotes |
 | `finding` | leaf | direct-write home for agent-authored operational findings under COMPOUND_HOME/observed/findings: content-addressed evidence records, NEVER a ledger byte, NEVER a promoted Claim; the positive counterpart to the placement guard |
 | `harness` | spine | the HarnessRegistry — the spine's record of what each agent harness ACTUALLY supports and where it is weak; governance must be capability-aware, enforced via wrapper/adapter when a harness cannot self-gate |
@@ -128,7 +129,6 @@ This table is SINGLE-SOURCED from `arch.Classification` (`internal/arch/arch.go`
 | `tooltopology` | importer | Tool/MCP topology observations import normalized YAML or generated resolver JSON into CLI/MCP/adapter nodes and fallback recommendations in CapabilityGraph, and record source-view no-promote evidence; offers only, never executes |
 | `work` | spine | the lifecycle store that threads ONE work_id through the whole chain: intent (WorkEnvelope) -> context (pack id) -> action (run ids) -> close, where close emits the Receipt and the apex Transition |
 | `writeback` | spine | governs candidate updates to owner surfaces: the first OwnerWritebackGate/NoPromoteDecision slice — observations and candidates do not become owner writes or repeat promotion without passing through this gate |
-
 Retired Gen-1 packages:
 
 ```text

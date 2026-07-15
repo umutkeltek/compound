@@ -212,9 +212,9 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 		row.WaitReason = firstNonEmptyExecutorString(dispatch.WaitReason, dispatch.Reason)
 	}
 
-	if exists, err := s.events.HookEventsExists(); err != nil {
-		return ExecutorsProjection{}, err
-	} else if exists {
+	// The legacy existence probe treated any stat error as absent and let the
+	// rest of the projection proceed; retain that non-authoritative behavior.
+	if exists, _ := s.events.HookEventsExists(); exists {
 		projection.SourceRefs = appendSourceRef(projection.SourceRefs, "compound.events.hook_events")
 		hookEvents, warnings, err := s.loadExecutorHookEvents()
 		if err != nil {

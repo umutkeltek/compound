@@ -93,6 +93,7 @@ var Classification = map[string]Class{
 	"authority":    Importer,
 	"decisions":    Importer,
 	"eventsource":  Importer,
+	"eventstore":   Leaf, // sole physical-layout owner for COMPOUND_HOME/events; enforcement leaf, not meaning authority or envelope spine
 	"knowledge":    Importer,
 	"sourceobs":    Importer,
 	"tooltopology": Importer,
@@ -211,6 +212,8 @@ func Doctor(repoRoot string, strict bool) Report {
 	if repoRoot != "" {
 		f = append(f, checkClassificationTotal(repoRoot)...)
 		f = append(f, checkPackageClassificationTableContract(repoRoot)...)
+		f = append(f, checkEventStoreOwnership(repoRoot)...)
+		f = append(f, checkEventStorePublicContract(repoRoot)...)
 		f = append(f, checkDocLeak(repoRoot, strict)...)
 		f = append(f, checkPrivateSourceBodyContract(repoRoot)...)
 		f = append(f, checkStatusHotPath(repoRoot)...)

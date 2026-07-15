@@ -22,6 +22,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 // NodeKinds — skills are one kind, not the whole graph.
@@ -796,8 +797,11 @@ type ReceiptConsumeReport struct {
 // intentionally ignored: offer is not use.
 func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeReport, error) {
 	var report ReceiptConsumeReport
-	dir := filepath.Join(homePath, "events")
-	entries, err := os.ReadDir(dir)
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return report, err
+	}
+	entries, err := events.Scan(eventstore.ScanOptions{})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return report, nil
@@ -827,18 +831,16 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 	unknown := map[string]bool{}
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		record, err := entry.Read()
 		if err != nil {
 			return report, err
 		}
+		data := record.Bytes
 		var head struct {
 			SchemaVersion string `json:"schema_version"`
 		}
 		if err := json.Unmarshal(data, &head); err != nil {
-			return report, fmt.Errorf("parse event envelope %s: %w", entry.Name(), err)
+			return report, fmt.Errorf("parse event envelope %s: %w", entry.Name, err)
 		}
 		if head.SchemaVersion != envelope.SVReceipt {
 			continue
@@ -846,7 +848,7 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 
 		var rec envelope.Receipt
 		if err := json.Unmarshal(data, &rec); err != nil {
-			return report, fmt.Errorf("parse receipt %s: %w", entry.Name(), err)
+			return report, fmt.Errorf("parse receipt %s: %w", entry.Name, err)
 		}
 		if err := rec.Validate(); err != nil {
 			report.SkippedInvalidReceipt++
