@@ -298,7 +298,10 @@ func permissionApplyLegacyPendingPath(homePath, harness string) string {
 	return filepath.Join(homePath, "transactions", "harness-permissions", strings.TrimSpace(harness)+".json")
 }
 
-func permissionApplyPendingPathForRecovery(homePath, harness string) (string, bool, error) {
+// ProbePermissionApplyRecovery returns the one pending journal a recovery may
+// consume. Legacy-only state remains recoverable; coexistence is ambiguous and
+// fails closed without choosing or removing either journal.
+func ProbePermissionApplyRecovery(homePath, harness string) (string, bool, error) {
 	canonicalPath := PermissionApplyPendingPath(homePath, harness)
 	legacyPath := permissionApplyLegacyPendingPath(homePath, harness)
 	canonicalExists, err := permissionApplyPendingExists(canonicalPath)
@@ -453,6 +456,18 @@ func ApplyPermissions(homePath string, approved PermissionRender, action envelop
 }
 
 func withPermissionApplyLock(homePath string, fn func() error) error {
+	legacyPath := filepath.Join(homePath, "locks", "harness-permissions.lock")
+	legacyFile, err := os.OpenFile(legacyPath, os.O_RDWR, 0)
+	if err == nil {
+		defer legacyFile.Close()
+		if err := syscall.Flock(int(legacyFile.Fd()), syscall.LOCK_EX); err != nil {
+			return err
+		}
+		defer syscall.Flock(int(legacyFile.Fd()), syscall.LOCK_UN)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
 	path := permissionApplyLockPath(homePath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -471,7 +486,7 @@ func withPermissionApplyLock(homePath string, fn func() error) error {
 
 func recoverPermissionApplyPending(homePath, harness string, abort PermissionApplyAbort, finalize PermissionApplyFinalize) (PermissionApplyOutcome, bool, error) {
 	var zero PermissionApplyOutcome
-	path, exists, err := permissionApplyPendingPathForRecovery(homePath, harness)
+	path, exists, err := ProbePermissionApplyRecovery(homePath, harness)
 	if err != nil {
 		return zero, false, err
 	}
@@ -1180,7 +1195,7 @@ func PermissionDrift(homePath, harness string) (PermissionDriftReport, error) {
 		return PermissionDriftReport{}, err
 	}
 	report := PermissionDriftReport{Harness: harness, TargetPath: render.TargetPath}
-	_, pending, err := permissionApplyPendingPathForRecovery(homePath, harness)
+	_, pending, err := ProbePermissionApplyRecovery(homePath, harness)
 	if err != nil {
 		return report, err
 	}

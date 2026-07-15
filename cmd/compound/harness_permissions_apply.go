@@ -99,9 +99,7 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 		return 1
 	}
 	permissionRecoveryPending := false
-	if _, err := os.Stat(harness.PermissionApplyPendingPath(homePath, harnessName)); err == nil {
-		permissionRecoveryPending = true
-	} else if !os.IsNotExist(err) {
+	if _, permissionRecoveryPending, err = harness.ProbePermissionApplyRecovery(homePath, harnessName); err != nil {
 		fmt.Fprintln(stderr, "error: inspect pending permission apply transaction:", err)
 		return 1
 	}
