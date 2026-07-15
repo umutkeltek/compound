@@ -11,6 +11,7 @@ import (
 	"compound/internal/attention"
 	"compound/internal/home"
 	"compound/internal/narrate"
+	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -152,13 +153,38 @@ func buildNarrateScript(homePath string, mood narrate.Mood, recent int, now time
 	if err != nil {
 		return narrate.Result{}, err
 	}
+	traffic, err := loadCheapShare(homePath)
+	if err != nil {
+		return narrate.Result{}, err
+	}
 	return narrate.Build(narrate.Inputs{
 		Attention:  report,
 		Changed:    narrate.ChangedSet{CurrentSeq: currentSeq, LastSeenSeq: cursor.LastSeenSeq, FirstRun: firstRun},
 		Receipts:   recentReceiptSummaries(changed),
+		Traffic:    traffic,
 		ThreadSeen: seen,
 		Now:        now,
 	}, narrate.Options{Mood: mood})
+}
+
+// loadCheapShare reads the imported route-evidence ledger and reduces it to the
+// spend-based cheap-share split (routeevidence owns the computation; narrate only
+// renders it). When no provider ledger has been imported the split reports
+// Present=false, so narrate omits the beat entirely rather than fabricating a
+// ratio (`compound route import-provider-ledger` writes the underlying ledger).
+func loadCheapShare(homePath string) (narrate.TrafficSplit, error) {
+	rows, _, err := routeevidence.LoadRouteEvidenceLedger(homePath)
+	if err != nil {
+		return narrate.TrafficSplit{}, err
+	}
+	share := routeevidence.ComputeCheapShare(rows)
+	return narrate.TrafficSplit{
+		Present:     share.Present,
+		TotalCalls:  share.TotalCalls,
+		CheapCalls:  share.CheapCalls,
+		TotalTokens: share.TotalTokens,
+		CheapTokens: share.CheapTokens,
+	}, nil
 }
 
 // recentReceiptSummaries reduces the orient changed-set's recent items (already

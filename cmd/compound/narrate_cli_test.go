@@ -9,6 +9,7 @@ import (
 
 	"compound/internal/home"
 	"compound/internal/narrate"
+	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -108,6 +109,66 @@ func TestOrientOperatorEmbedsNarrateScript(t *testing.T) {
 	}
 	if report.Narrate.ScriptHash == "" {
 		t.Fatalf("embedded narrate script missing script_hash")
+	}
+}
+
+func trafficBeatFromScript(s narrate.Script) *narrate.Beat {
+	for i := range s.Beats {
+		if s.Beats[i].ThreadID == "route|cheap-share" {
+			return &s.Beats[i]
+		}
+	}
+	return nil
+}
+
+// End to end: with no imported provider ledger the cheap-share beat is absent;
+// after `route import-provider-ledger` records a mixed ledger, narrate surfaces
+// ONE deterministic beat with the real split. This proves the whole chain
+// (import -> route-evidence ledger -> narrate) without touching live state.
+func TestNarrateCLISurfacesCheapShareFromImportedLedger(t *testing.T) {
+	homePath := seedNarrateHome(t)
+
+	// no ledger yet -> beat absent (never a fabricated ratio).
+	before := captureStdout(t, func() { cmdNarrate([]string{"--json", "--home", homePath}) })
+	var beforeScript narrate.Script
+	if err := json.Unmarshal([]byte(before), &beforeScript); err != nil {
+		t.Fatalf("parse narrate JSON (before): %v\n%s", err, before)
+	}
+	if b := trafficBeatFromScript(beforeScript); b != nil {
+		t.Fatalf("cheap-share beat present before any provider ledger import: %q", b.Body)
+	}
+
+	// import a mixed provider ledger: one zero-cost (cheap) row + one paid row.
+	ledger := filepath.Join(t.TempDir(), "provider-calls.ndjson")
+	rows := strings.Join([]string{
+		`{"request_id":"req_cheap","ts_start":"2026-06-29T09:00:00Z","provider":"fixture-provider","model":"fixture-small","transport":"chat_completions","input_tokens":80,"output_tokens":20,"status":"ok"}`,
+		`{"request_id":"req_paid","ts_start":"2026-06-29T10:00:00Z","provider":"fixture-provider","model":"fixture-large","transport":"responses","input_tokens":60,"output_tokens":40,"estimated_cost_usd":0.0025,"status":"ok"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(ledger, []byte(rows), 0o644); err != nil {
+		t.Fatalf("write provider ledger fixture: %v", err)
+	}
+	if _, err := routeevidence.ImportProviderLedgerFile(homePath, ledger, routeevidence.ProviderLedgerImportOptions{}); err != nil {
+		t.Fatalf("import provider ledger: %v", err)
+	}
+
+	after := captureStdout(t, func() { cmdNarrate([]string{"--json", "--home", homePath}) })
+	var afterScript narrate.Script
+	if err := json.Unmarshal([]byte(after), &afterScript); err != nil {
+		t.Fatalf("parse narrate JSON (after): %v\n%s", err, after)
+	}
+	beat := trafficBeatFromScript(afterScript)
+	if beat == nil {
+		t.Fatalf("cheap-share beat absent after importing a provider ledger:\n%s", after)
+	}
+	// 1 of 2 routed calls ran on a zero-cost lane (50%).
+	for _, want := range []string{"1 of 2", "50%", "By spend"} {
+		if !strings.Contains(beat.Body, want) {
+			t.Fatalf("cheap-share body missing %q: %q", want, beat.Body)
+		}
+	}
+	// the extra stream must not perturb attention conservation.
+	if afterScript.Counts.Narrated+afterScript.Counts.Folded != afterScript.Counts.TotalMembers {
+		t.Fatalf("cheap-share beat broke conservation through the CLI: %+v", afterScript.Counts)
 	}
 }
 

@@ -84,6 +84,7 @@ type Inputs struct {
 	Attention  attention.Report
 	Changed    ChangedSet
 	Receipts   []ReceiptSummary
+	Traffic    TrafficSplit
 	ThreadSeen map[string]ThreadSeen
 	Now        time.Time
 }
@@ -255,6 +256,13 @@ func Build(in Inputs, opt Options) (Result, error) {
 
 	acks, ackFolds := composeAcks(in.Receipts, in.Changed.hasNewMovement(), mood)
 	beats = append(beats, acks...)
+
+	// The cheap-share beat is an additional conversational stream (like acks),
+	// appended AFTER composeAttention has fixed Counts.Narrated — so it never
+	// enters the attention conservation accounting (narrated+folded==members).
+	if tb, ok := composeTraffic(in.Traffic, mood); ok {
+		beats = append(beats, tb)
+	}
 
 	assignSceneOrder(beats)
 
