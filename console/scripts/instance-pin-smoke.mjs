@@ -44,6 +44,17 @@ assert.equal(pinnedA.home, resolve(scratchA), "pin binds its own home");
 assert.notEqual(pinnedA.home, resolve(scratchB), "scratch-A pin must never equal scratch-B");
 assert.notEqual(pinnedA.home, canonical, "scratch-A pin must never equal the canonical default");
 assert.equal(instanceUnpinnedBlockedResponse(pinnedA), null, "explicitly pinned instance may mutate");
+assert.equal(
+  computeInstancePin({ COMPOUND_HOME: scratchA, COMPOUND_CONSOLE_BUILD_KIND: "production" }).buildKind,
+  "production",
+  "instance identity must expose the production lifecycle kind",
+);
+assert.equal(
+  computeInstancePin({ COMPOUND_HOME: scratchA, COMPOUND_CONSOLE_BUILD_KIND: "development" }).buildKind,
+  "development",
+  "instance identity must expose the development lifecycle kind",
+);
+assert.equal(pinnedA.buildKind, "unknown", "an unclassified runtime must not impersonate dev or production");
 
 // 3b. Render-time readiness is the conjunction of the mutation flag and the
 // frozen instance pin. The flag alone must never advertise a live act.

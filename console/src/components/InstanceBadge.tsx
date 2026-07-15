@@ -16,7 +16,7 @@ import { INSTANCE_PIN } from "@/lib/instance-pin";
 export async function InstanceBadge() {
   const host = (await headers()).get("host") ?? "";
   const port = host.includes(":") ? host.slice(host.lastIndexOf(":") + 1) : "";
-  const { homeBasename, homeHash, home, explicit } = INSTANCE_PIN;
+  const { homeBasename, homeHash, home, explicit, buildKind } = INSTANCE_PIN;
 
   const tone = explicit
     ? "border-hair bg-soft text-muted"
@@ -31,6 +31,7 @@ export async function InstanceBadge() {
       className={`inline-flex shrink-0 items-center gap-1 rounded-pill border px-2 py-0.5 text-2xs font-semibold tabular-nums ${tone}`}
       data-instance-home-hash={homeHash}
       data-instance-explicit={explicit ? "1" : "0"}
+      data-instance-build-kind={buildKind}
     >
       <span
         aria-hidden

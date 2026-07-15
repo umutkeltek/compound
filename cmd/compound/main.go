@@ -331,7 +331,8 @@ compound home <init|doctor|where|backup|export|verify|restore|archive-history|re
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T] [--topic S]  ContextPack orient from records excluded; --topic narrows ambient recall
-  compound console --operator [--private-fallbacks]             start local operator console with mutation env wired
+  compound console [dev|build|serve] --operator                  own the canonical local console lifecycle on :3777
+  compound console status [--json]                               verify console identity, HTTP, and static-asset health
 compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition
 compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional packet offers, bounded capability offers, and route plan; no dispatch
 compound attention [--json] [--home P] ranked operator-attention projection from reviews, workbench, and executors; no mutation

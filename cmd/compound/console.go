@@ -4,21 +4,39 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/home"
 )
 
-const consoleLaunchSchemaVersion = "compound.console_launch.v0.1"
+const (
+	consoleLaunchSchemaVersion = "compound.console_launch.v0.2"
+	consoleStatusSchemaVersion = "compound.console_status.v0.2"
+)
+
+const (
+	consoleLifecycleDev   = "dev"
+	consoleLifecycleBuild = "build"
+	consoleLifecycleServe = "serve"
+	consoleListenAddress  = "127.0.0.1:3777"
+	consoleShutdownGrace  = 2 * time.Second
+)
 
 type consoleLaunchPlan struct {
 	SchemaVersion    string            `json:"schema_version"`
 	GeneratedAt      string            `json:"generated_at"`
 	Mode             string            `json:"mode"`
+	Lifecycle        string            `json:"lifecycle"`
 	ConsoleDir       string            `json:"console_dir"`
 	Command          []string          `json:"command"`
 	Env              map[string]string `json:"env"`
@@ -27,15 +45,42 @@ type consoleLaunchPlan struct {
 	DryRun           bool              `json:"dry_run"`
 }
 
+type consoleRuntimeStatus struct {
+	SchemaVersion string `json:"schema_version"`
+	CheckedAt     string `json:"checked_at"`
+	State         string `json:"state"`
+	Address       string `json:"address"`
+	Port          int    `json:"port"`
+	OwnerProcess  string `json:"owner_process,omitempty"`
+	OwnerPID      string `json:"owner_pid,omitempty"`
+	ExpectedHome  string `json:"expected_home_hash,omitempty"`
+	ObservedHome  string `json:"observed_home_hash,omitempty"`
+	BuildKind     string `json:"build_kind,omitempty"`
+	HTTPStatus    int    `json:"http_status,omitempty"`
+	AssetsChecked int    `json:"assets_checked,omitempty"`
+	FailedAsset   string `json:"failed_asset,omitempty"`
+	Detail        string `json:"detail,omitempty"`
+}
+
 func cmdConsole(args []string) {
 	if len(args) == 0 || hasUsageFlag(args) {
-		fmt.Fprintln(os.Stderr, "usage: compound console --operator [--console-dir DIR] [--private-fallbacks] [--dry-run] [--json]")
+		fmt.Fprintln(os.Stderr, consoleUsage())
 		os.Exit(2)
+	}
+	if args[0] == "status" {
+		cmdConsoleStatus(args[1:])
+		return
+	}
+	lifecycle := consoleLifecycleDev
+	if args[0] == consoleLifecycleDev || args[0] == consoleLifecycleBuild || args[0] == consoleLifecycleServe {
+		lifecycle = args[0]
+		args = args[1:]
 	}
 	operator := false
 	privateFallbacks := false
 	dryRun := false
 	jsonOut := false
+	requireExplicitHome := false
 	consoleDirFlag := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -47,9 +92,11 @@ func cmdConsole(args []string) {
 			dryRun = true
 		case "--json":
 			jsonOut = true
+		case "--require-explicit-home":
+			requireExplicitHome = true
 		case "--console-dir":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "usage: compound console --operator [--console-dir DIR] [--private-fallbacks] [--dry-run] [--json]")
+				fmt.Fprintln(os.Stderr, consoleUsage())
 				os.Exit(2)
 			}
 			i++
@@ -60,10 +107,14 @@ func cmdConsole(args []string) {
 		}
 	}
 	if !operator {
-		fmt.Fprintln(os.Stderr, "usage: compound console --operator [--console-dir DIR] [--private-fallbacks] [--dry-run] [--json]")
+		fmt.Fprintln(os.Stderr, consoleUsage())
 		os.Exit(2)
 	}
-	plan, err := buildConsoleLaunchPlan(consoleDirFlag, privateFallbacks, dryRun)
+	if requireExplicitHome && strings.TrimSpace(os.Getenv("COMPOUND_HOME")) == "" {
+		fmt.Fprintln(os.Stderr, "error: this lifecycle entrypoint requires an explicit COMPOUND_HOME; use compound console dev --operator when you intend the canonical default")
+		os.Exit(1)
+	}
+	plan, err := buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag, privateFallbacks, dryRun)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -76,7 +127,7 @@ func cmdConsole(args []string) {
 	}
 	pinLabel := consoleInstancePinLabel(plan.Env["COMPOUND_HOME"])
 	if dryRun {
-		fmt.Printf("console operator dry-run: home %s; cd %s && %s\n", pinLabel, plan.ConsoleDir, strings.Join(plan.Command, " "))
+		fmt.Printf("console operator %s dry-run: home %s; cd %s && %s\n", plan.Lifecycle, pinLabel, plan.ConsoleDir, consoleCommandSummary(plan))
 		return
 	}
 	if _, err := exec.LookPath(plan.Command[0]); err != nil {
@@ -87,19 +138,349 @@ func cmdConsole(args []string) {
 	// running several ports can always tell which instance they launched. Mirrors
 	// the console's always-visible InstanceBadge (same home + short hash).
 	fmt.Printf("console operator: local console on port 3777 — home %s\n", pinLabel)
-	cmd := exec.Command(plan.Command[0], plan.Command[1:]...)
-	cmd.Dir = plan.ConsoleDir
-	cmd.Env = consoleLaunchEnv(plan.Env)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Run(); err != nil {
+	lock, err := acquireConsoleLifecycleLock(plan.ConsoleDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	defer releaseConsoleLifecycleLock(lock)
+
+	if plan.Lifecycle == consoleLifecycleServe {
+		if err := validateConsoleProductionBuild(plan.ConsoleDir); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	}
+	reservation, err := reserveConsolePort(consoleListenAddress)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if plan.Lifecycle == consoleLifecycleBuild {
+		defer reservation.Close()
+		if err := executeConsoleCommand(plan, plan.Command); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if err := reservation.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, "error: release console port 3777 reservation:", err)
+		os.Exit(1)
+	}
+	if err := executeConsoleSupervisedCommand(plan, plan.Command); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
+func cmdConsoleStatus(args []string) {
+	jsonOut := false
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOut = true
+		default:
+			fmt.Fprintln(os.Stderr, consoleUsage())
+			os.Exit(2)
+		}
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: resolve COMPOUND_HOME:", err)
+		os.Exit(1)
+	}
+	status := inspectConsoleRuntimeAt(consoleListenAddress, homePath, nil)
+	if jsonOut {
+		printJSON(status)
+		return
+	}
+	if status.State == "healthy" && status.OwnerProcess != "" {
+		fmt.Printf("console healthy at %s — %s build; owner %s pid %s\n", status.Address, status.BuildKind, status.OwnerProcess, status.OwnerPID)
+		return
+	}
+	if status.Detail != "" {
+		fmt.Printf("console %s at %s — %s\n", status.State, status.Address, status.Detail)
+		return
+	}
+	fmt.Printf("console %s at %s\n", status.State, status.Address)
+}
+
+func inspectConsoleRuntimeAt(address, expectedHome string, client *http.Client) consoleRuntimeStatus {
+	_, portText, _ := net.SplitHostPort(address)
+	port, _ := strconv.Atoi(portText)
+	status := consoleRuntimeStatus{
+		SchemaVersion: consoleStatusSchemaVersion,
+		CheckedAt:     time.Now().UTC().Format(time.RFC3339),
+		State:         "unhealthy",
+		Address:       address,
+		Port:          port,
+		ExpectedHome:  consoleHomeShortHash(expectedHome),
+	}
+	listener, err := net.Listen("tcp", address)
+	if err == nil {
+		status.State = "stopped"
+		_ = listener.Close()
+		return status
+	}
+	status.OwnerPID, status.OwnerProcess = consolePortOwner(port)
+	if client == nil {
+		// RootLayout waits on the real attention/policy projections. A cold
+		// canonical process can legitimately take tens of seconds on its first
+		// render, so health must cover the longest current projection door.
+		client = &http.Client{Timeout: 60 * time.Second}
+	}
+	rootURL := "http://" + address + "/"
+	response, err := client.Get(rootURL)
+	if err != nil {
+		status.Detail = "listener accepted TCP but the console HTTP probe failed"
+		return status
+	}
+	defer response.Body.Close()
+	status.HTTPStatus = response.StatusCode
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		status.Detail = "console root response could not be read"
+		return status
+	}
+	html := string(body)
+	status.ObservedHome = consoleHTMLAttribute(html, "data-instance-home-hash")
+	status.BuildKind = consoleHTMLAttribute(html, "data-instance-build-kind")
+	explicit := consoleHTMLAttribute(html, "data-instance-explicit")
+	if status.ObservedHome == "" || status.ObservedHome != status.ExpectedHome || explicit != "1" {
+		status.State = "occupied_foreign"
+		status.Detail = "port owner is not the explicitly pinned canonical Compound console"
+		return status
+	}
+	if response.StatusCode != http.StatusOK {
+		status.Detail = fmt.Sprintf("console root returned HTTP %d", response.StatusCode)
+		return status
+	}
+	if status.BuildKind != "development" && status.BuildKind != "production" {
+		status.Detail = "console identity is missing its lifecycle build kind"
+		return status
+	}
+	assetPaths := consoleStaticAssets(html)
+	if len(assetPaths) == 0 {
+		status.Detail = "console root referenced no Next static asset"
+		return status
+	}
+	for _, assetPath := range assetPaths {
+		assetResponse, err := client.Get("http://" + address + assetPath)
+		if err != nil {
+			status.FailedAsset = assetPath
+			status.Detail = "console static asset probe failed"
+			return status
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(assetResponse.Body, 4<<20))
+		_ = assetResponse.Body.Close()
+		if assetResponse.StatusCode < 200 || assetResponse.StatusCode >= 300 {
+			status.FailedAsset = assetPath
+			status.Detail = fmt.Sprintf("console static asset returned HTTP %d", assetResponse.StatusCode)
+			return status
+		}
+		status.AssetsChecked++
+	}
+	status.State = "healthy"
+	status.Detail = ""
+	return status
+}
+
+func consoleHTMLAttribute(html, name string) string {
+	marker := name + `="`
+	start := strings.Index(html, marker)
+	if start < 0 {
+		return ""
+	}
+	value := html[start+len(marker):]
+	end := strings.IndexByte(value, '"')
+	if end < 0 {
+		return ""
+	}
+	return value[:end]
+}
+
+func consoleStaticAssets(html string) []string {
+	const limit = 256
+	seen := make(map[string]struct{})
+	assets := make([]string, 0, 32)
+	remaining := html
+	for len(assets) < limit {
+		src := strings.Index(remaining, `src="`)
+		href := strings.Index(remaining, `href="`)
+		start := src
+		marker := `src="`
+		if start < 0 || (href >= 0 && href < start) {
+			start = href
+			marker = `href="`
+		}
+		if start < 0 {
+			break
+		}
+		rest := remaining[start+len(marker):]
+		end := strings.IndexByte(rest, '"')
+		if end < 0 {
+			break
+		}
+		value := rest[:end]
+		if strings.HasPrefix(value, "/_next/static/") {
+			if _, ok := seen[value]; !ok {
+				seen[value] = struct{}{}
+				assets = append(assets, value)
+			}
+		}
+		remaining = rest[end+1:]
+	}
+	return assets
+}
+
+func consolePortOwner(port int) (string, string) {
+	out, err := exec.Command("lsof", "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN", "-Fpc").Output()
+	if err != nil {
+		return "", ""
+	}
+	var pid, process string
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 2 {
+			continue
+		}
+		switch line[0] {
+		case 'p':
+			if pid == "" {
+				pid = line[1:]
+			}
+		case 'c':
+			if process == "" {
+				process = line[1:]
+			}
+		}
+	}
+	return pid, process
+}
+
+func reserveConsolePort(address string) (net.Listener, error) {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("console port 3777 is already owned; run compound console status --json: %w", err)
+	}
+	return listener, nil
+}
+
+func consoleUsage() string {
+	return "usage: compound console [dev|build|serve] --operator [--require-explicit-home] [--console-dir DIR] [--private-fallbacks] [--dry-run] [--json] | compound console status [--json]"
+}
+
+func consoleCommandSummary(plan consoleLaunchPlan) string {
+	return strings.Join(plan.Command, " ")
+}
+
+func executeConsoleCommand(plan consoleLaunchPlan, command []string) error {
+	cmd := exec.Command(command[0], command[1:]...)
+	cmd.Dir = plan.ConsoleDir
+	cmd.Env = consoleLaunchEnv(plan.Env)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
+}
+
+func executeConsoleSupervisedCommand(plan consoleLaunchPlan, command []string) error {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	return runConsoleSupervisedCommand(plan, command, signals)
+}
+
+func runConsoleSupervisedCommand(plan consoleLaunchPlan, command []string, signals <-chan os.Signal) error {
+	cmd := exec.Command(command[0], command[1:]...)
+	cmd.Dir = plan.ConsoleDir
+	cmd.Env = consoleLaunchEnv(plan.Env)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		return err
+	case received := <-signals:
+		sig, ok := received.(syscall.Signal)
+		if !ok {
+			sig = syscall.SIGTERM
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, sig); err != nil && err != syscall.ESRCH {
+			_ = cmd.Process.Kill()
+			<-waited
+			return fmt.Errorf("forward console termination: %w", err)
+		}
+		timer := time.NewTimer(consoleShutdownGrace)
+		defer timer.Stop()
+		select {
+		case <-waited:
+			return nil
+		case <-timer.C:
+			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+				_ = cmd.Process.Kill()
+				<-waited
+				return fmt.Errorf("force console shutdown after %s: %w", consoleShutdownGrace, err)
+			}
+			<-waited
+			return nil
+		}
+	}
+}
+
+func acquireConsoleLifecycleLock(consoleDir string) (*os.File, error) {
+	lockDir := filepath.Join(consoleDir, ".next")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create console lifecycle lock directory: %w", err)
+	}
+	lock, err := os.OpenFile(filepath.Join(lockDir, "compound-console-3777.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open console lifecycle lock: %w", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("console lifecycle is already active for %s; run compound console status --json: %w", consoleDir, err)
+	}
+	return lock, nil
+}
+
+func releaseConsoleLifecycleLock(lock *os.File) {
+	if lock == nil {
+		return
+	}
+	_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	_ = lock.Close()
+}
+
+func validateConsoleProductionBuild(consoleDir string) error {
+	productionDir := filepath.Join(consoleDir, ".next", "production")
+	buildID, err := os.ReadFile(filepath.Join(productionDir, "BUILD_ID"))
+	if err != nil || strings.TrimSpace(string(buildID)) == "" {
+		return fmt.Errorf("production BUILD_ID is missing; run compound console build --operator --console-dir %s", consoleDir)
+	}
+	for _, name := range []string{"prerender-manifest.json", "required-server-files.json", "routes-manifest.json"} {
+		info, err := os.Stat(filepath.Join(productionDir, name))
+		if err != nil || info.IsDir() {
+			return fmt.Errorf("production %s is missing; run compound console build --operator --console-dir %s", name, consoleDir)
+		}
+	}
+	return nil
+}
+
 func buildConsoleLaunchPlan(consoleDirFlag string, privateFallbacks, dryRun bool) (consoleLaunchPlan, error) {
+	return buildConsoleLifecycleLaunchPlan(consoleLifecycleDev, consoleDirFlag, privateFallbacks, dryRun)
+}
+
+func buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag string, privateFallbacks, dryRun bool) (consoleLaunchPlan, error) {
+	if lifecycle != consoleLifecycleDev && lifecycle != consoleLifecycleBuild && lifecycle != consoleLifecycleServe {
+		return consoleLaunchPlan{}, fmt.Errorf("unknown console lifecycle %q", lifecycle)
+	}
 	consoleDir, err := resolveConsoleDir(consoleDirFlag)
 	if err != nil {
 		return consoleLaunchPlan{}, err
@@ -111,9 +492,19 @@ func buildConsoleLaunchPlan(consoleDirFlag string, privateFallbacks, dryRun bool
 	compoundExe, _ := os.Executable()
 	compoundBin := resolveConsoleCompoundBin(compoundExe, exec.LookPath)
 	env := map[string]string{
-		"COMPOUND_BIN":               compoundBin,
-		"COMPOUND_CONSOLE_MUTATIONS": "1",
-		"COMPOUND_HOME":              homePath,
+		"COMPOUND_BIN":                compoundBin,
+		"COMPOUND_CONSOLE_BUILD_KIND": "development",
+		"COMPOUND_CONSOLE_MUTATIONS":  "1",
+		"COMPOUND_HOME":               homePath,
+	}
+	command := []string{"bun", "run", "_next:dev"}
+	if lifecycle == consoleLifecycleBuild {
+		env["COMPOUND_CONSOLE_BUILD_KIND"] = "production"
+		command = []string{"bun", "run", "_next:build"}
+	}
+	if lifecycle == consoleLifecycleServe {
+		env["COMPOUND_CONSOLE_BUILD_KIND"] = "production"
+		command = []string{"bun", "run", "_next:serve"}
 	}
 	if privateFallbacks {
 		env["COMPOUND_CONSOLE_PRIVATE_FALLBACKS"] = "1"
@@ -122,8 +513,9 @@ func buildConsoleLaunchPlan(consoleDirFlag string, privateFallbacks, dryRun bool
 		SchemaVersion:    consoleLaunchSchemaVersion,
 		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
 		Mode:             "operator",
+		Lifecycle:        lifecycle,
 		ConsoleDir:       consoleDir,
-		Command:          []string{"bun", "run", "dev"},
+		Command:          command,
 		Env:              env,
 		MutationsEnabled: true,
 		PrivateFallbacks: privateFallbacks,

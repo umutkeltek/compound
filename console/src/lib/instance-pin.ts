@@ -33,6 +33,8 @@ export type InstancePin = {
   homeHash: string;
   /** True iff COMPOUND_HOME was explicitly set at start (not defaulted). */
   explicit: boolean;
+  /** Lifecycle artifacts this process serves; unknown never impersonates a canonical runtime. */
+  buildKind: "development" | "production" | "unknown";
 };
 
 export type ConsoleMutationReadiness = {
@@ -50,7 +52,9 @@ export function computeInstancePin(env: NodeJS.ProcessEnv = process.env): Instan
   const explicit = raw.length > 0;
   const home = resolve(explicit ? raw : `${homedir()}/.compound`);
   const homeHash = createHash("sha256").update(home).digest("hex").slice(0, 7);
-  return { home, homeBasename: basename(home) || home, homeHash, explicit };
+  const rawBuildKind = (env.COMPOUND_CONSOLE_BUILD_KIND ?? "").trim();
+  const buildKind = rawBuildKind === "development" || rawBuildKind === "production" ? rawBuildKind : "unknown";
+  return { home, homeBasename: basename(home) || home, homeHash, explicit, buildKind };
 }
 
 /** Frozen at module load: the pin for THIS server process. */

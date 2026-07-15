@@ -4,9 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "next dev -p 3777",
-    "build": "next build",
-    "start": "next start -p 3777"
+    "dev": "go run ../cmd/compound console dev --operator --require-explicit-home --console-dir .",
+    "build": "go run ../cmd/compound console build --operator --require-explicit-home --console-dir .",
+    "serve": "go run ../cmd/compound console serve --operator --require-explicit-home --console-dir .",
+    "start": "bun run serve",
+    "_next:dev": "COMPOUND_CONSOLE_BUILD_KIND=development next dev -H 127.0.0.1 -p 3777",
+    "_next:build": "COMPOUND_CONSOLE_BUILD_KIND=production next build",
+    "_next:serve": "COMPOUND_CONSOLE_BUILD_KIND=production next start -H 127.0.0.1 -p 3777"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.11",

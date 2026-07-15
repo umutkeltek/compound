@@ -7,13 +7,51 @@ That constraint keeps it a control surface instead of a second runtime owner.
 ## Run
 
 ```bash
-compound console --operator # pins COMPOUND_HOME and enables governed local acts
+compound console dev --operator    # interactive development on :3777
+compound console build --operator  # exclusive production build while :3777 is free
+compound console serve --operator  # serve the already-verified production build
+compound console status --json     # identity, lifecycle kind, HTTP + asset health
 ```
 
 Requirements: `compound` binary on PATH, or `COMPOUND_BIN=/path/to/compound`;
-the operator launcher resolves and explicitly pins `COMPOUND_HOME`. A direct
-`bun run dev` without an explicit home remains read-only even when the mutation
-flag is set, because silently defaulting a write target is unsafe.
+the operator launcher resolves and explicitly pins `COMPOUND_HOME`. Package
+lifecycle commands refuse to run without an explicit `COMPOUND_HOME`, because
+silently turning a developer command into a canonical mutating instance is
+unsafe. Use `compound console dev --operator` when choosing the canonical
+default is intentional.
+
+`compound console --operator` remains a compatibility alias for `dev`. The
+documented package scripts delegate back to these CLI lifecycle owners; the
+underscore-prefixed `_next:*` scripts are implementation details. A per-console
+advisory lock serializes every lifecycle command. `build` also holds the
+canonical `127.0.0.1:3777` listener for the full build, so no second runtime can
+start while production artifacts are changing. Development writes
+`.next/development`; production build and serve use `.next/production`.
+
+`serve` never builds. It refuses to start unless the production `BUILD_ID` and
+the manifests Next requires are present. Build once while the supervised job is
+stopped, then let launchd restart only the immutable serve step. The CLI keeps
+the lifecycle lock while Next runs and forwards termination to the whole child
+process group, so supervision cannot orphan a server on `:3777`.
+
+`status` is not a bind-only guess. It probes the existing instance badge on `/`,
+matches the expected home hash and lifecycle kind, then fetches every referenced
+local Next static asset. Its states distinguish `stopped`, `healthy`,
+`unhealthy`, and `occupied_foreign` without adding a health route.
+
+The `ai.compound.console` launchd unit is an adapter to this owner. Its command
+must invoke the installed CLI (with its configured repo path), rather than
+calling `next start` directly:
+
+```bash
+exec "${HOME}/.local/bin/compound" console serve --operator \
+  --console-dir "/path/to/compound/console" --private-fallbacks
+```
+
+Run `compound console build --operator --console-dir /path/to/compound/console`
+before bootstrapping the unit. The CLI owns artifact validation, port and
+lifecycle exclusion, the frozen home binding, and the final Next process. The
+launchd label owns only process supervision.
 
 Optional local-only gates:
 
