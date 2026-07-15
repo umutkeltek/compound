@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +146,166 @@ func TestWorkLandCheckCLIUsesExplicitRepoAndRecordsProof(t *testing.T) {
 	}
 }
 
+const workLandCheckStealCLISubEnv = "COMPOUND_WORK_LAND_CHECK_STEAL_CLI_SUB"
+
+func TestWorkLandCheckCLIStealOnlyOverridesProofAttachment(t *testing.T) {
+	if mode := os.Getenv(workLandCheckStealCLISubEnv); mode != "" {
+		args := []string{
+			"land-check", os.Getenv("COMPOUND_WORK_LAND_CHECK_STEAL_WORK_ID"),
+			"--tip", os.Getenv("COMPOUND_WORK_LAND_CHECK_STEAL_TIP"),
+			"--actor", "operator:test", "--steal", "--reason", "stale executor was replaced",
+			"--json",
+		}
+		if mode == "dry-run" {
+			args = append(args, "--dry-run")
+		}
+		cmdWork(args)
+		return
+	}
+
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	repo, base, tip := initLandingCLIRepo(t)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(work.CreateInput{
+		Owner:            "codex",
+		Actor:            "codex",
+		SuccessPredicate: "stale holder cannot hide current landing proof",
+		GitDelivery: &envelope.GitDeliveryContract{
+			TargetWorktreeRoot: repo,
+			TargetLocalRef:     "refs/heads/main",
+			ExpectedBaseSHA:    base,
+			PublicationMode:    "local_only",
+		},
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(w.ID, "actor-a", cliTestNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{
+		To: "running", Actor: "actor-a", ArtifactID: "commit:" + tip,
+	}, cliTestNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	leasePath := filepath.Join(homePath, "work", "leases", w.ID+".json")
+	leaseBefore, err := os.ReadFile(leasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, eventsBefore, err := store.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runChild := func(t *testing.T, mode string) (work.LandCheckReport, []byte) {
+		t.Helper()
+		cmd := exec.Command(os.Args[0], "-test.run=^TestWorkLandCheckCLIStealOnlyOverridesProofAttachment$")
+		cmd.Env = append(os.Environ(),
+			workLandCheckStealCLISubEnv+"="+mode,
+			"COMPOUND_HOME="+homePath,
+			"COMPOUND_WORK_LAND_CHECK_STEAL_WORK_ID="+w.ID,
+			"COMPOUND_WORK_LAND_CHECK_STEAL_TIP="+tip,
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("land-check %s failed: %v\n%s", mode, err, out)
+		}
+		var report work.LandCheckReport
+		if err := json.Unmarshal(out, &report); err != nil {
+			t.Fatalf("parse land-check %s JSON: %v\n%s", mode, err, out)
+		}
+		return report, out
+	}
+
+	ready, _ := runChild(t, "record")
+	if ready.Status != "ready_to_land" || !ready.Recorded {
+		t.Fatalf("pre-land report = %+v", ready)
+	}
+	beforeLand, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringSliceContains(beforeLand.EvidenceRefs, ready.EvidenceRef) {
+		t.Fatalf("non-landed report must not attach close evidence: %+v", beforeLand.EvidenceRefs)
+	}
+	_, eventsAfterReady, err := store.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(eventsAfterReady, eventsBefore) {
+		t.Fatalf("non-landed --steal must not invoke Advance: before=%+v after=%+v", eventsBefore, eventsAfterReady)
+	}
+	if leaseAfterReady, err := os.ReadFile(leasePath); err != nil || !bytes.Equal(leaseAfterReady, leaseBefore) {
+		t.Fatalf("non-landed --steal changed lease: err=%v\nbefore=%s\nafter=%s", err, leaseBefore, leaseAfterReady)
+	}
+
+	runLandingCLIGit(t, repo, "merge", "--ff-only", tip)
+	proofsBeforeDry, err := os.ReadDir(filepath.Join(homePath, "work", "land-checks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dry, _ := runChild(t, "dry-run")
+	if dry.Status != "landed" || dry.Recorded || dry.EvidenceRef != "" {
+		t.Fatalf("dry-run report = %+v", dry)
+	}
+	proofsAfterDry, err := os.ReadDir(filepath.Join(homePath, "work", "land-checks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proofsAfterDry) != len(proofsBeforeDry) {
+		t.Fatalf("dry-run recorded proof: before=%d after=%d", len(proofsBeforeDry), len(proofsAfterDry))
+	}
+	_, eventsAfterDry, err := store.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(eventsAfterDry, eventsBefore) {
+		t.Fatalf("dry-run --steal must not invoke Advance: before=%+v after=%+v", eventsBefore, eventsAfterDry)
+	}
+
+	landed, _ := runChild(t, "record")
+	if landed.Status != "landed" || !landed.Recorded || landed.EvidenceRef == "" {
+		t.Fatalf("landed report = %+v", landed)
+	}
+	after, eventsAfterLand, err := store.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "running" || after.Authority.Owner != "actor-a" || !stringSliceContains(after.EvidenceRefs, landed.EvidenceRef) {
+		t.Fatalf("same-state proof attachment changed work authority or missed evidence: %+v", after)
+	}
+	leaseAfterLand, err := os.ReadFile(leasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(leaseAfterLand, leaseBefore) {
+		t.Fatalf("land-check --steal transferred or rewrote lease:\nbefore=%s\nafter=%s", leaseBefore, leaseAfterLand)
+	}
+	var sawSteal, sawAttachment bool
+	for _, event := range eventsAfterLand[len(eventsBefore):] {
+		if event.From != "running" || event.To != "running" || event.By != "operator:test" {
+			t.Fatalf("land-check override must stay a same-state operator advance: %+v", event)
+		}
+		if strings.Contains(event.Note, "lease stolen from \"actor-a\": stale executor was replaced") {
+			sawSteal = true
+		}
+		if stringSliceContains(event.Attached, landed.EvidenceRef) {
+			sawAttachment = true
+		}
+	}
+	if !sawSteal || !sawAttachment {
+		t.Fatalf("land-check must reuse audited Advance steal then attach proof: steal=%v attachment=%v events=%+v", sawSteal, sawAttachment, eventsAfterLand)
+	}
+}
+
 func TestWorkAdvanceCLIBindsLegacyGitDelivery(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -225,6 +387,12 @@ func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
 			cmdWork([]string{"land-check", "work_x", "--tip", strings.Repeat("a", 40), "--expected-main-sha", strings.Repeat("b", 40)})
 		case "land-missing-value":
 			cmdWork([]string{"land-check", "work_x", "--tip"})
+		case "land-steal-without-reason":
+			cmdWork([]string{"land-check", "work_x", "--tip", strings.Repeat("a", 40), "--steal"})
+		case "land-reason-without-steal":
+			cmdWork([]string{"land-check", "work_x", "--tip", strings.Repeat("a", 40), "--reason", "stale holder"})
+		case "land-empty-steal-reason":
+			cmdWork([]string{"land-check", "work_x", "--tip", strings.Repeat("a", 40), "--steal", "--reason", "   "})
 		case "advance-partial-contract":
 			cmdWork([]string{"advance", "work_x", "--to", "running", "--expected-base-sha", strings.Repeat("a", 40)})
 		}
@@ -235,7 +403,11 @@ func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"create-unknown", "create-partial-contract", "land-unknown", "land-missing-value", "advance-partial-contract"} {
+	for _, mode := range []string{
+		"create-unknown", "create-partial-contract", "land-unknown", "land-missing-value",
+		"land-steal-without-reason", "land-reason-without-steal", "land-empty-steal-reason",
+		"advance-partial-contract",
+	} {
 		t.Run(mode, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=^TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags$")
 			cmd.Env = append(os.Environ(), workLandingGuardCLISubEnv+"="+mode, "COMPOUND_HOME="+homePath)
@@ -249,7 +421,9 @@ func TestWorkLandingGuardCLIRejectsMalformedAndUnknownFlags(t *testing.T) {
 			}
 		})
 	}
-	if !strings.Contains(workUsage(""), "land-check") || !strings.Contains(workUsage("land-check"), "--tip") {
+	if !strings.Contains(workUsage(""), "land-check") ||
+		!strings.Contains(workUsage("land-check"), "--tip") ||
+		!strings.Contains(workUsage("land-check"), "--steal --reason") {
 		t.Fatalf("work help must expose land-check: root=%q sub=%q", workUsage(""), workUsage("land-check"))
 	}
 }
