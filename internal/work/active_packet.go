@@ -135,7 +135,7 @@ func (s *Store) receiptWorkMatches(id, workID string) bool {
 		return false
 	}
 	var rec envelope.Receipt
-	if err := s.readJSON(s.envPath(id), &rec); err != nil {
+	if err := s.readEventJSON(id, &rec); err != nil {
 		return false
 	}
 	return rec.IDs.WorkID == workID && rec.Validate() == nil
@@ -146,7 +146,7 @@ func (s *Store) transitionWorkMatches(id, workID string) bool {
 		return false
 	}
 	var tr envelope.Transition
-	if err := s.readJSON(s.envPath(id), &tr); err != nil {
+	if err := s.readEventJSON(id, &tr); err != nil {
 		return false
 	}
 	return tr.IDs.WorkID == workID && tr.Validate() == nil

@@ -102,10 +102,10 @@ func (s *Store) recordLeaseHolderDeny(w envelope.WorkEnvelope, actor, holder, me
 	if err := pd.Validate(); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+	if err := s.writeEventJSON(ai.ID, &ai); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+	if err := s.writeEventJSON(pd.ID, &pd); err != nil {
 		return err
 	}
 	return s.appendEvent(Event{
@@ -133,10 +133,10 @@ func (s *Store) recordLeaseSteal(w envelope.WorkEnvelope, actor, holder, reason,
 	if err := pd.Validate(); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+	if err := s.writeEventJSON(ai.ID, &ai); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+	if err := s.writeEventJSON(pd.ID, &pd); err != nil {
 		return err
 	}
 	return s.appendEvent(Event{

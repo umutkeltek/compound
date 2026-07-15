@@ -118,7 +118,7 @@ func (s *Store) ObserveRun(workID string, in ObserveRunInput, now time.Time) (Ru
 
 func (s *Store) GetTrace(traceID string) (envelope.TraceEnvelope, error) {
 	var trace envelope.TraceEnvelope
-	if err := s.readJSON(s.envPath(traceID), &trace); err != nil {
+	if err := s.readEventJSON(traceID, &trace); err != nil {
 		return trace, err
 	}
 	if err := trace.Validate(); err != nil {

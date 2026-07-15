@@ -719,7 +719,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 	if terminalStates[w.State] {
 		if item.TransitionID != "" {
 			var tr envelope.Transition
-			if err := s.readJSON(s.envPath(item.TransitionID), &tr); err != nil {
+			if err := s.readEventJSON(item.TransitionID, &tr); err != nil {
 				report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" unreadable: "+err.Error())
 			} else if err := tr.Validate(); err != nil {
 				report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" invalid: "+err.Error())
@@ -740,7 +740,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		}
 		if item.ReceiptID != "" {
 			var rec envelope.Receipt
-			if err := s.readJSON(s.envPath(item.ReceiptID), &rec); err != nil {
+			if err := s.readEventJSON(item.ReceiptID, &rec); err != nil {
 				report.Integrity = append(report.Integrity, w.ID+": receipt "+item.ReceiptID+" unreadable: "+err.Error())
 			} else if err := rec.Validate(); err != nil {
 				report.Integrity = append(report.Integrity, w.ID+": receipt "+item.ReceiptID+" invalid: "+err.Error())

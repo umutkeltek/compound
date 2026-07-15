@@ -1,12 +1,11 @@
 package work
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 const ProofChainDoctorSchemaVersion = "compound.work_proof_chain_doctor.v0.1"
@@ -141,7 +140,7 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, report *ProofChainDoctor
 	var rec envelope.Receipt
 	receiptValid := false
 	if item.ReceiptID != "" {
-		if err := s.readJSON(s.envPath(item.ReceiptID), &rec); err != nil {
+		if err := s.readEventJSON(item.ReceiptID, &rec); err != nil {
 			report.Counts.InvalidReceipt++
 			addProofChainProblem(report, &item, "receipt_unreadable", "receipt "+item.ReceiptID+" unreadable: "+err.Error())
 		} else if err := rec.Validate(); err != nil {
@@ -160,7 +159,7 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, report *ProofChainDoctor
 	for _, actionID := range item.ActionIntentIDs {
 		actionIDs[actionID] = true
 		var ai envelope.ActionIntent
-		if err := s.readJSON(s.envPath(actionID), &ai); err != nil {
+		if err := s.readEventJSON(actionID, &ai); err != nil {
 			report.Counts.InvalidActionIntent++
 			addProofChainProblem(report, &item, "action_intent_unreadable", "action intent "+actionID+" unreadable: "+err.Error())
 		} else if err := ai.Validate(); err != nil {
@@ -174,7 +173,7 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, report *ProofChainDoctor
 
 	if item.PolicyDecisionID != "" {
 		var pd envelope.PolicyDecision
-		if err := s.readJSON(s.envPath(item.PolicyDecisionID), &pd); err != nil {
+		if err := s.readEventJSON(item.PolicyDecisionID, &pd); err != nil {
 			report.Counts.InvalidPolicyDecision++
 			addProofChainProblem(report, &item, "policy_decision_unreadable", "policy decision "+item.PolicyDecisionID+" unreadable: "+err.Error())
 		} else if err := pd.Validate(); err != nil {
@@ -194,7 +193,7 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, report *ProofChainDoctor
 
 	if item.TransitionID != "" {
 		var tr envelope.Transition
-		if err := s.readJSON(s.envPath(item.TransitionID), &tr); err != nil {
+		if err := s.readEventJSON(item.TransitionID, &tr); err != nil {
 			report.Counts.InvalidTransition++
 			addProofChainProblem(report, &item, "transition_unreadable", "transition "+item.TransitionID+" unreadable: "+err.Error())
 		} else if err := tr.Validate(); err != nil {
@@ -243,16 +242,13 @@ func (s *Store) addOrphanEnvelopeFindings(works []envelope.WorkEnvelope, report 
 		}
 	}
 
-	entries, err := os.ReadDir(filepath.Join(s.home, "events"))
+	entries, err := s.events.Scan(eventstore.ScanOptions{})
 	if err != nil {
 		report.Findings = append(report.Findings, ProofChainDoctorFinding{Code: "envelopes_unreadable", Message: "could not scan envelope root: " + err.Error()})
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		id := strings.TrimSuffix(entry.Name(), ".json")
+		id := entry.ID
 		if referenced[id] {
 			continue
 		}
@@ -286,22 +282,22 @@ func (s *Store) envelopeWorkID(id string) string {
 	switch {
 	case strings.HasPrefix(id, "act_"):
 		var ai envelope.ActionIntent
-		if err := s.readJSON(s.envPath(id), &ai); err == nil {
+		if err := s.readEventJSON(id, &ai); err == nil {
 			return ai.IDs.WorkID
 		}
 	case strings.HasPrefix(id, "pol_"):
 		var pd envelope.PolicyDecision
-		if err := s.readJSON(s.envPath(id), &pd); err == nil {
+		if err := s.readEventJSON(id, &pd); err == nil {
 			return pd.IDs.WorkID
 		}
 	case strings.HasPrefix(id, "rec_"):
 		var rec envelope.Receipt
-		if err := s.readJSON(s.envPath(id), &rec); err == nil {
+		if err := s.readEventJSON(id, &rec); err == nil {
 			return rec.IDs.WorkID
 		}
 	case strings.HasPrefix(id, "tr_"):
 		var tr envelope.Transition
-		if err := s.readJSON(s.envPath(id), &tr); err == nil {
+		if err := s.readEventJSON(id, &tr); err == nil {
 			return tr.IDs.WorkID
 		}
 	}

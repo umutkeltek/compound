@@ -1,6 +1,7 @@
 package work
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/policy"
 )
 
@@ -34,8 +36,7 @@ func (s *Store) workHoldEvidenceIndex() (holdEvidenceIndex, []string) {
 }
 
 func (s *Store) addReceiptHoldEvidence(idx *holdEvidenceIndex) []string {
-	dir := filepath.Join(s.home, "events")
-	entries, err := os.ReadDir(dir)
+	entries, err := s.events.Scan(eventstore.ScanOptions{Prefixes: []string{"rec_"}})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -44,28 +45,22 @@ func (s *Store) addReceiptHoldEvidence(idx *holdEvidenceIndex) []string {
 	}
 	var warnings []string
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		// Receipts are minted as rec_<hash>.json (idFor("rec_", …)); events/
-		// holds ~50x more tr_/act_/pol_/hook_ files, so anything else is
-		// skipped unopened. The schema check below still guards a stray
-		// rec_-named non-receipt.
-		if !strings.HasPrefix(entry.Name(), "rec_") {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
 		s.holdEvidenceFileReads.Add(1)
+		record, err := entry.Read()
+		if err != nil {
+			warnings = append(warnings, "hold evidence receipt "+entry.Name+" unreadable: "+err.Error())
+			continue
+		}
 		var receipt envelope.Receipt
-		if err := s.readJSON(path, &receipt); err != nil {
-			warnings = append(warnings, "hold evidence receipt "+entry.Name()+" unreadable: "+err.Error())
+		if err := json.Unmarshal(record.Bytes, &receipt); err != nil {
+			warnings = append(warnings, "hold evidence receipt "+entry.Name+" unreadable: "+err.Error())
 			continue
 		}
 		if receipt.SchemaVersion != envelope.SVReceipt {
 			continue
 		}
 		if err := receipt.Validate(); err != nil {
-			warnings = append(warnings, "hold evidence receipt "+entry.Name()+" invalid: "+err.Error())
+			warnings = append(warnings, "hold evidence receipt "+entry.Name+" invalid: "+err.Error())
 			continue
 		}
 		tokens := evidenceRefTokens(receipt.EvidenceRefs...)

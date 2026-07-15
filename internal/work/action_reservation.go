@@ -157,10 +157,10 @@ func (s *Store) AbortReceiptedActionReservation(workID, actionID string) error {
 		} else if present && pending.ActionID == actionID {
 			return fmt.Errorf("cannot abort receipted action reservation %s after receipt publication began", actionID)
 		}
-		if _, err := os.Stat(s.envPath(actionID)); err == nil {
-			return fmt.Errorf("cannot abort receipted action reservation %s after receipt publication began", actionID)
-		} else if !errors.Is(err, os.ErrNotExist) {
+		if exists, err := s.events.Exists(actionID); err != nil {
 			return err
+		} else if exists {
+			return fmt.Errorf("cannot abort receipted action reservation %s after receipt publication began", actionID)
 		}
 		actual, present, path, err := s.preflightReceiptedActionReservation(workID)
 		if err != nil {
@@ -469,14 +469,14 @@ func (s *Store) replayCompletedReceiptedAction(workID string, in ReceiptedAction
 	}
 	decision := *in.PreEvaluatedDecision
 	var storedDecision envelope.PolicyDecision
-	if err := s.readJSON(s.envPath(completion.PolicyDecisionID), &storedDecision); err != nil {
+	if err := s.readEventJSON(completion.PolicyDecisionID, &storedDecision); err != nil {
 		return out, fmt.Errorf("completed receipted action %s decision unreadable: %w", completion.ActionID, err)
 	}
 	if err := storedDecision.Validate(); err != nil || !reflect.DeepEqual(storedDecision, decision) {
 		return out, errors.Join(fmt.Errorf("completed receipted action %s decision conflicts with requested transaction", completion.ActionID), err)
 	}
 	var receipt envelope.Receipt
-	if err := s.readJSON(s.envPath(completion.ReceiptID), &receipt); err != nil {
+	if err := s.readEventJSON(completion.ReceiptID, &receipt); err != nil {
 		return out, fmt.Errorf("completed receipted action %s receipt unreadable: %w", completion.ActionID, err)
 	}
 	if err := receipt.Validate(); err != nil {
@@ -490,7 +490,7 @@ func (s *Store) replayCompletedReceiptedAction(workID string, in ReceiptedAction
 		return out, fmt.Errorf("completed receipted action %s receipt digest conflicts with completion identity", completion.ActionID)
 	}
 	var transition envelope.Transition
-	if err := s.readJSON(s.envPath(completion.TransitionID), &transition); err != nil {
+	if err := s.readEventJSON(completion.TransitionID, &transition); err != nil {
 		return out, fmt.Errorf("completed receipted action %s transition unreadable: %w", completion.ActionID, err)
 	}
 	if err := transition.Validate(); err != nil {

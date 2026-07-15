@@ -54,7 +54,7 @@ func (s *Store) gitDeliveryRequirementSignal(w envelope.WorkEnvelope, moveType s
 			continue
 		}
 		var action envelope.ActionIntent
-		if err := s.readJSON(s.envPath(runID), &action); err != nil {
+		if err := s.readEventJSON(runID, &action); err != nil {
 			return "", fmt.Errorf("read ActionIntent %s for git_delivery scope: %w", runID, err)
 		}
 		if err := action.Validate(); err != nil {

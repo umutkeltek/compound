@@ -102,10 +102,7 @@ func (s *Store) Preflight() error {
 		return err
 	}
 	name := probe.Name()
-	if err := probe.Close(); err != nil {
-		_ = os.Remove(name)
-		return err
-	}
+	_ = probe.Close()
 	_ = os.Remove(name)
 	return nil
 }
@@ -335,12 +332,12 @@ func syncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
+	defer dir.Close()
 	syncErr := dir.Sync()
-	closeErr := dir.Close()
 	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
 		return syncErr
 	}
-	return closeErr
+	return nil
 }
 
 // Scan returns matching loose records in deterministic filename order. It
@@ -575,10 +572,25 @@ func (s *Store) ReadWorkLogAt(off, length int64) ([]byte, error) {
 
 func (s *Store) OpenHookEvents() (*os.File, error) { return os.Open(s.hookEventsPath()) }
 
+func (s *Store) HookEventsExists() (bool, error) {
+	return regularFileExists(s.hookEventsPath())
+}
+
 func (s *Store) OpenTraces() (*os.File, error) { return os.Open(s.tracesPath()) }
 
 func (s *Store) OpenRetrievalTraffic() (*os.File, error) {
 	return os.Open(s.retrievalTrafficPath())
+}
+
+func regularFileExists(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return !info.IsDir(), nil
 }
 
 func (s *Store) AppendHookEvent(value any) error {

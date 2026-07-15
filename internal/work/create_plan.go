@@ -513,10 +513,10 @@ func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, ext
 	state := w.State
 	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
-	if err := s.writeJSON(s.envPath(plan.ActionIntent.ID), &plan.ActionIntent); err != nil {
+	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
 		return w, err
 	}
-	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
+	if err := s.writeEventJSON(plan.Decision.ID, &plan.Decision); err != nil {
 		return w, err
 	}
 	if err := s.writeJSON(s.workPath(w.ID), &w); err != nil {

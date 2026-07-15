@@ -212,7 +212,9 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 		row.WaitReason = firstNonEmptyExecutorString(dispatch.WaitReason, dispatch.Reason)
 	}
 
-	if hookEventsPathExists(s.home) {
+	if exists, err := s.events.HookEventsExists(); err != nil {
+		return ExecutorsProjection{}, err
+	} else if exists {
 		projection.SourceRefs = appendSourceRef(projection.SourceRefs, "compound.events.hook_events")
 		hookEvents, warnings, err := s.loadExecutorHookEvents()
 		if err != nil {
@@ -376,8 +378,7 @@ type executorHookEventLine struct {
 }
 
 func (s *Store) loadExecutorHookEvents() ([]executorHookEventLine, []string, error) {
-	path := executorHookEventsPath(s.home)
-	f, err := os.Open(path)
+	f, err := s.events.OpenHookEvents()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil
@@ -806,14 +807,6 @@ func executorClaimedAtTime(value string) (time.Time, bool) {
 func int64Ref(value int64) *int64 {
 	v := value
 	return &v
-}
-
-func executorHookEventsPath(homePath string) string {
-	return filepath.Join(homePath, "events", "hook-events.ndjson")
-}
-
-func hookEventsPathExists(homePath string) bool {
-	return regularFileExists(executorHookEventsPath(homePath))
 }
 
 func routeEvidencePathExists(homePath string) bool {

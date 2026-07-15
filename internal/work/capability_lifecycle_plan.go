@@ -273,11 +273,11 @@ func (s *Store) recoverCapabilityLifecycleAdmission(
 		return report, fmt.Errorf("work %s exists without a lifecycle event but does not match create-plan %s", plan.WorkID, plan.ID)
 	}
 	var action envelope.ActionIntent
-	if err := s.readJSON(s.envPath(plan.ActionIntent.ID), &action); err != nil || !reflect.DeepEqual(action, plan.ActionIntent) {
+	if err := s.readEventJSON(plan.ActionIntent.ID, &action); err != nil || !reflect.DeepEqual(action, plan.ActionIntent) {
 		return report, fmt.Errorf("work %s torn admission action intent does not match create-plan %s", plan.WorkID, plan.ID)
 	}
 	var decision envelope.PolicyDecision
-	if err := s.readJSON(s.envPath(plan.Decision.ID), &decision); err != nil || !reflect.DeepEqual(decision, plan.Decision) {
+	if err := s.readEventJSON(plan.Decision.ID, &decision); err != nil || !reflect.DeepEqual(decision, plan.Decision) {
 		return report, fmt.Errorf("work %s torn admission policy decision does not match create-plan %s", plan.WorkID, plan.ID)
 	}
 	actionContextRef, err := s.recordActionContextSnapshot(plan)

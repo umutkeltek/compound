@@ -24,6 +24,7 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/home"
 )
 
@@ -59,6 +60,7 @@ func canTransition(from, to string) bool {
 // Store is the work lifecycle store rooted at a COMPOUND_HOME.
 type Store struct {
 	home                  string
+	events                *eventstore.Store
 	eventLogReads         atomic.Int64
 	holdEvidenceFileReads atomic.Int64
 }
@@ -90,18 +92,23 @@ func Open(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
 	}
-	for _, d := range []string{"work/work", "work/leases", "work/land-checks", "events"} {
+	for _, d := range []string{"work/work", "work/leases", "work/land-checks"} {
 		if err := os.MkdirAll(filepath.Join(homePath, d), 0o755); err != nil {
 			return nil, err
 		}
 	}
-	return &Store{home: homePath}, nil
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := events.Ensure(); err != nil {
+		return nil, err
+	}
+	return &Store{home: homePath, events: events}, nil
 }
 
 func (s *Store) workPath(id string) string  { return filepath.Join(s.home, "work/work", id+".json") }
 func (s *Store) leasePath(id string) string { return filepath.Join(s.home, "work/leases", id+".json") }
-func (s *Store) eventsLog() string          { return filepath.Join(s.home, "events", "work.jsonl") }
-func (s *Store) envPath(id string) string   { return filepath.Join(s.home, "events", id+".json") }
 
 // Event is one append-only lifecycle record.
 type Event struct {
@@ -501,10 +508,10 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	w.Authority.Owner = plan.Actor
 	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
-	if err := s.writeJSON(s.envPath(plan.ActionIntent.ID), &plan.ActionIntent); err != nil {
+	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
 		return w, err
 	}
-	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
+	if err := s.writeEventJSON(plan.Decision.ID, &plan.Decision); err != nil {
 		return w, err
 	}
 	claimedWorkSHA256, err := workEnvelopeSHA256(w)
@@ -814,14 +821,14 @@ func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEn
 	}
 	actionID, policyID := event.Attached[0], event.Attached[1]
 	var action envelope.ActionIntent
-	if err := s.readJSON(s.envPath(actionID), &action); err != nil {
+	if err := s.readEventJSON(actionID, &action); err != nil {
 		return fmt.Errorf("read claim action %s: %w", actionID, err)
 	}
 	if err := action.Validate(); err != nil {
 		return fmt.Errorf("claim action %s invalid: %w", actionID, err)
 	}
 	var decision envelope.PolicyDecision
-	if err := s.readJSON(s.envPath(policyID), &decision); err != nil {
+	if err := s.readEventJSON(policyID, &decision); err != nil {
 		return fmt.Errorf("read claim policy %s: %w", policyID, err)
 	}
 	if err := decision.Validate(); err != nil {
@@ -1030,10 +1037,10 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		w.IDs.ContextPackID = in.ContextPackID
 		attached = append(attached, in.ContextPackID)
 	}
-	if err := s.writeJSON(s.envPath(plan.ActionIntent.ID), &plan.ActionIntent); err != nil {
+	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
 		return w, err
 	}
-	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
+	if err := s.writeEventJSON(plan.Decision.ID, &plan.Decision); err != nil {
 		return w, err
 	}
 	workSHA256, err := workEnvelopeSHA256(w)
@@ -1192,14 +1199,14 @@ func (s *Store) validatePendingAdvance(event Event, pending envelope.WorkEnvelop
 	}
 	actionID, policyID := event.Attached[0], event.Attached[1]
 	var action envelope.ActionIntent
-	if err := s.readJSON(s.envPath(actionID), &action); err != nil {
+	if err := s.readEventJSON(actionID, &action); err != nil {
 		return fmt.Errorf("read pending advance action %s: %w", actionID, err)
 	}
 	if err := action.Validate(); err != nil {
 		return fmt.Errorf("pending advance action %s invalid: %w", actionID, err)
 	}
 	var decision envelope.PolicyDecision
-	if err := s.readJSON(s.envPath(policyID), &decision); err != nil {
+	if err := s.readEventJSON(policyID, &decision); err != nil {
 		return fmt.Errorf("read pending advance policy %s: %w", policyID, err)
 	}
 	if err := decision.Validate(); err != nil {
@@ -1274,10 +1281,10 @@ func (s *Store) recordActionLocked(workID string, ai envelope.ActionIntent, pd e
 	if pd.Outcome != "allow" && pd.Outcome != "allow_with_obligations" {
 		return w, fmt.Errorf("cannot record action %s: policy %s (a mutating adapter requires an allowing PolicyDecision)", ai.ID, pd.Outcome)
 	}
-	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+	if err := s.writeEventJSON(ai.ID, &ai); err != nil {
 		return w, err
 	}
-	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+	if err := s.writeEventJSON(pd.ID, &pd); err != nil {
 		return w, err
 	}
 	w.RunIDs = append(w.RunIDs, ai.ID) // the performed action is an action ref in the chain
@@ -1547,16 +1554,16 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	}
 
 	// Persist the emitted envelopes, then land the work terminal and link the transition.
-	if err := s.writeJSON(s.envPath(plan.ActionIntent.ID), &plan.ActionIntent); err != nil {
+	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
 		return res, abortReferenceTransaction(err)
 	}
-	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
+	if err := s.writeEventJSON(plan.Decision.ID, &plan.Decision); err != nil {
 		return res, abortReferenceTransaction(err)
 	}
-	if err := s.writeJSON(s.envPath(rec.ID), &rec); err != nil {
+	if err := s.writeEventJSON(rec.ID, &rec); err != nil {
 		return res, abortReferenceTransaction(err)
 	}
-	if err := s.writeJSON(s.envPath(tr.ID), &tr); err != nil {
+	if err := s.writeEventJSON(tr.ID, &tr); err != nil {
 		return res, abortReferenceTransaction(err)
 	}
 	from := w.State
@@ -1604,6 +1611,11 @@ func (s *Store) writeJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func (s *Store) writeEventJSON(id string, v any) error {
+	_, err := s.events.PutJSON(id, v, "  ")
+	return err
 }
 
 func (s *Store) stageJSON(path string, v any) (string, error) {
@@ -1733,7 +1745,7 @@ func (s *Store) usedCapabilitiesForRuns(runIDs, offeredRefs []string) ([]string,
 	offeredByNode := capabilityRefsByNodeID(offeredRefs)
 	for _, runID := range runIDs {
 		var ai envelope.ActionIntent
-		if err := s.readJSON(s.envPath(runID), &ai); err != nil {
+		if err := s.readEventJSON(runID, &ai); err != nil {
 			if strings.HasPrefix(err.Error(), "not found:") {
 				continue
 			}
@@ -1944,6 +1956,21 @@ func (s *Store) readJSON(path string, v any) error {
 	return json.Unmarshal(b, v)
 }
 
+func (s *Store) readEventJSON(ref string, v any) error {
+	record, err := s.events.Read(ref)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			id := ref
+			if parsed, parseErr := eventstore.ParseReference(ref); parseErr == nil {
+				id = parsed.ID()
+			}
+			return fmt.Errorf("not found: %s.json: %w", id, err)
+		}
+		return err
+	}
+	return json.Unmarshal(record.Bytes, v)
+}
+
 func (s *Store) readLease(workID string) (Lease, error) {
 	var l Lease
 	err := s.readJSON(s.leasePath(workID), &l)
@@ -2001,21 +2028,9 @@ func (s *Store) appendEventUnlocked(e Event) error {
 	if err != nil {
 		return err
 	}
-	// The caller holds the stable sidecar lock before this open, so a
-	// controlled publication cannot replace the inode while we wait.
-	f, err := os.OpenFile(s.eventsLog(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	n, err := writeWorkEvent(f, b)
-	if err == nil && n != len(b) {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
-		return err
-	}
-	return f.Sync()
+	// The caller holds the stable sidecar lock before eventstore opens the
+	// stream, so controlled publication cannot replace the inode while waiting.
+	return s.events.AppendWorkLog(b, writeWorkEventThrough)
 }
 
 // appendEventControlled publishes one JSONL append by atomically replacing the
@@ -2034,59 +2049,18 @@ func (s *Store) appendEventControlledUnlocked(e Event, beforePublish, afterPubli
 	if err != nil {
 		return err
 	}
-	current, err := os.ReadFile(s.eventsLog())
+	current, err := s.events.ReadWorkLog()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	if _, err := decodeAdmissionEvents(current, ""); err != nil {
 		return err
 	}
-
-	dir := filepath.Dir(s.eventsLog())
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(s.eventsLog())+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := writeWorkEventPrefix(tmp, current); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	n, writeErr := writeWorkEvent(tmp, b)
-	if writeErr == nil && n != len(b) {
-		writeErr = io.ErrShortWrite
-	}
-	if writeErr != nil {
-		_ = tmp.Close()
-		return writeErr
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if beforePublish != nil {
-		if err := beforePublish(); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(tmpPath, s.eventsLog()); err != nil {
-		return err
-	}
-	if err := syncReceiptedActionDir(dir); err != nil {
-		return err
-	}
-	if afterPublish != nil {
-		return afterPublish()
-	}
-	return nil
+	return s.events.ReplaceWorkLog(current, b, eventstore.WorkLogReplaceOptions{
+		WriteSuffix:   writeWorkEventThrough,
+		BeforePublish: beforePublish,
+		AfterPublish:  afterPublish,
+	})
 }
 
 func marshalWorkEvent(e Event) ([]byte, error) {
@@ -2098,30 +2072,15 @@ func marshalWorkEvent(e Event) ([]byte, error) {
 }
 
 func (s *Store) withWorkEventLock(fn func() error) error {
-	lock, err := os.OpenFile(s.eventsLog()+".lock", os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return err
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-	return fn()
+	return s.events.WithWorkLogLock(fn)
 }
 
-func writeWorkEventPrefix(file *os.File, data []byte) error {
-	for remaining := data; len(remaining) > 0; {
-		n, err := file.Write(remaining)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		remaining = remaining[n:]
+func writeWorkEventThrough(writer io.Writer, data []byte) (int, error) {
+	file, ok := writer.(*os.File)
+	if !ok {
+		return 0, fmt.Errorf("work event writer is %T, want *os.File", writer)
 	}
-	return nil
+	return writeWorkEvent(file, data)
 }
 
 func (s *Store) eventsFor(workID string) ([]Event, error) {
@@ -2136,7 +2095,7 @@ func (s *Store) eventsFor(workID string) ([]Event, error) {
 
 func (s *Store) readEventsStrictUnlocked(workID string) ([]Event, error) {
 	s.eventLogReads.Add(1)
-	b, err := os.ReadFile(s.eventsLog())
+	b, err := s.events.ReadWorkLog()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -2171,7 +2130,7 @@ func (s *Store) eventsByWorkID() (map[string][]Event, error) {
 
 func (s *Store) readAllEventsStrictUnlocked() ([]Event, error) {
 	s.eventLogReads.Add(1)
-	b, err := os.ReadFile(s.eventsLog())
+	b, err := s.events.ReadWorkLog()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil

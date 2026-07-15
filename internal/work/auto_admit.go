@@ -233,7 +233,7 @@ func (s *Store) autonomyAdmissionAction(w envelope.WorkEnvelope) (envelope.Actio
 			continue
 		}
 		var action envelope.ActionIntent
-		if err := s.readJSON(s.envPath(ref), &action); err != nil {
+		if err := s.readEventJSON(ref, &action); err != nil {
 			return envelope.ActionIntent{}, fmt.Errorf("autonomy admission action %s unreadable: %w", ref, err)
 		}
 		if err := action.Validate(); err != nil {
@@ -322,10 +322,10 @@ func (s *Store) recordAutonomyDeny(w envelope.WorkEnvelope, actor, note string, 
 	if err := pd.Validate(); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+	if err := s.writeEventJSON(ai.ID, &ai); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+	if err := s.writeEventJSON(pd.ID, &pd); err != nil {
 		return err
 	}
 	attached := mergeUnique([]string{ai.ID, pd.ID}, refs)
@@ -369,10 +369,10 @@ func (s *Store) recordAutonomyHalt(w envelope.WorkEnvelope, actor, to, reason st
 	if err := pd.Validate(); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+	if err := s.writeEventJSON(ai.ID, &ai); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+	if err := s.writeEventJSON(pd.ID, &pd); err != nil {
 		return err
 	}
 	return s.appendEvent(Event{
@@ -426,10 +426,10 @@ func (s *Store) recordEditableSurfaceDeny(w envelope.WorkEnvelope, actor, to, re
 	if err := pd.Validate(); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+	if err := s.writeEventJSON(ai.ID, &ai); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+	if err := s.writeEventJSON(pd.ID, &pd); err != nil {
 		return err
 	}
 	return s.appendEvent(Event{
@@ -617,10 +617,10 @@ func (s *Store) recordFreezeDeny(w envelope.WorkEnvelope, actor, to string, rec 
 	if err := pd.Validate(); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+	if err := s.writeEventJSON(ai.ID, &ai); err != nil {
 		return err
 	}
-	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+	if err := s.writeEventJSON(pd.ID, &pd); err != nil {
 		return err
 	}
 	return s.appendEvent(Event{

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	homepkg "compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/policy"
@@ -344,7 +345,7 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 		if item.present {
 			continue
 		}
-		if err := s.writeReceiptedActionBoundary(item.name, s.envPath(item.id), item.payload); err != nil {
+		if err := s.writeReceiptedActionEventBoundary(item.name, item.id, item.payload); err != nil {
 			return out, err
 		}
 	}
@@ -424,7 +425,7 @@ func currentReceiptedActionLaw(homePath, claimID string) error {
 
 func (s *Store) preflightReceiptedAction(requested envelope.ActionIntent) (envelope.ActionIntent, bool, error) {
 	var stored envelope.ActionIntent
-	err := s.readJSON(s.envPath(requested.ID), &stored)
+	err := s.readEventJSON(requested.ID, &stored)
 	if errors.Is(err, os.ErrNotExist) {
 		return requested, false, nil
 	}
@@ -446,7 +447,7 @@ func (s *Store) preflightReceiptedAction(requested envelope.ActionIntent) (envel
 }
 
 func (s *Store) preflightReceiptedEnvelope(kind, id string, expected, target envelope.Envelope) (bool, error) {
-	err := s.readJSON(s.envPath(id), target)
+	err := s.readEventJSON(id, target)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -649,7 +650,7 @@ func (s *Store) preflightReceiptedActionWorkLink(w envelope.WorkEnvelope, action
 
 func (s *Store) validateReceiptedActionNewerWorkLink(w envelope.WorkEnvelope, latestActionID string) error {
 	var latestAction envelope.ActionIntent
-	if err := s.readJSON(s.envPath(latestActionID), &latestAction); err != nil {
+	if err := s.readEventJSON(latestActionID, &latestAction); err != nil {
 		return fmt.Errorf("latest action %s unreadable: %w", latestActionID, err)
 	}
 	if err := latestAction.Validate(); err != nil {
@@ -664,7 +665,7 @@ func (s *Store) validateReceiptedActionNewerWorkLink(w envelope.WorkEnvelope, la
 		return fmt.Errorf("latest action %s has no current policy", latestActionID)
 	}
 	var latestDecision envelope.PolicyDecision
-	if err := s.readJSON(s.envPath(policyID), &latestDecision); err != nil {
+	if err := s.readEventJSON(policyID, &latestDecision); err != nil {
 		return fmt.Errorf("current policy %s unreadable: %w", policyID, err)
 	}
 	if err := latestDecision.Validate(); err != nil {
@@ -734,6 +735,22 @@ func (s *Store) writeReceiptedActionBoundary(name, path string, payload any) err
 		return err
 	}
 	return receiptedActionAfterWrite(name)
+}
+
+func (s *Store) writeReceiptedActionEventBoundary(name, id string, payload any) error {
+	_, err := s.events.PutJSONAtomic(id, payload, "  ", eventstore.AtomicOptions{
+		SyncDirectory: true,
+		Write: func(file *os.File, data []byte) error {
+			return writeReceiptedActionTemp(name, file, data)
+		},
+		BeforePublish: func() error {
+			return receiptedActionBeforePublish(name)
+		},
+		AfterPublish: func() error {
+			return receiptedActionAfterWrite(name)
+		},
+	})
+	return err
 }
 
 func writeReceiptedActionTempFully(file *os.File, data []byte) error {
