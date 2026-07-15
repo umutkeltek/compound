@@ -30,6 +30,9 @@ const (
 	parityFailureHelperQuery = "COMPOUND_TEST_PARITY_FAILURE_QUERY"
 	parityFakeSidecarEnv     = "COMPOUND_TEST_PARITY_FAKE_SIDECAR"
 	parityFakeSidecarHitID   = "COMPOUND_TEST_PARITY_FAKE_HIT_ID"
+	parityFakeSidecarMode    = "COMPOUND_TEST_PARITY_FAKE_MODE"
+	parityFakeModeAhead      = "engine_ahead"
+	parityFakeModeUnowned    = "unowned_claim"
 	parityFakeSidecarTestRun = "^TestParityFakeBreadthSidecar$"
 )
 
@@ -63,9 +66,13 @@ func TestParityFakeBreadthSidecar(t *testing.T) {
 		return
 	}
 	hitID := os.Getenv(parityFakeSidecarHitID)
+	mode := os.Getenv(parityFakeSidecarMode)
 	dec := json.NewDecoder(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)
 	var corpusGen int64
+	if mode == parityFakeModeAhead {
+		corpusGen = 1 << 30
+	}
 	for {
 		var req mem.Request
 		if err := dec.Decode(&req); err != nil {
@@ -87,7 +94,9 @@ func TestParityFakeBreadthSidecar(t *testing.T) {
 			resp.CorpusGen = corpusGen
 			resp.Indexed = len(req.Claims)
 		case mem.OpQuery:
-			if hitID != "" && slices.Contains(req.Allowlist, hitID) {
+			if mode == parityFakeModeUnowned {
+				resp.Hits = []mem.Hit{{ClaimID: "claim_aaaaaaaaaaaa", Score: 1}}
+			} else if hitID != "" && slices.Contains(req.Allowlist, hitID) {
 				resp.Hits = []mem.Hit{{ClaimID: hitID, Score: 1}}
 			}
 		default:
@@ -255,6 +264,44 @@ func TestParityReplayEngineAvailabilityFollowsConsumerFallback(t *testing.T) {
 	}
 }
 
+func TestParityReplayRefusedEngineErrorsUseRefusedRuntimeGap(t *testing.T) {
+	now := time.Now().UTC()
+	for _, mode := range []string{parityFakeModeAhead, parityFakeModeUnowned} {
+		t.Run(mode, func(t *testing.T) {
+			homePath := newParityTestHome(t, now)
+			fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+				SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+				ClassifierVersion: retrievalparity.ClassifierVersion,
+				Rows: []retrievalparity.FixtureRow{{
+					Consumer: retrievalparity.ConsumerQuery,
+					Query:    "synthetic refused engine",
+				}},
+			})
+			t.Setenv(parityFakeSidecarEnv, "1")
+			t.Setenv(parityFakeSidecarMode, mode)
+			t.Setenv("COMPOUND_MEM_ENGINE_BIN", os.Args[0]+" -test.run="+parityFakeSidecarTestRun)
+			store, err := mem.Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			report, _, code, err := runMemoryParityReplay(homePath, store, []string{
+				"--fixture", fixturePath,
+				"--consumer", retrievalparity.ConsumerQuery,
+			}, now)
+			if err != nil || code == 0 || len(report.Rows) != 1 {
+				t.Fatalf("refused replay mode=%s code=%d err=%v report=%+v", mode, code, err, report)
+			}
+			row := report.Rows[0]
+			if row.EngineDependency == nil || row.EngineDependency.Outcome != retrievalparity.EngineOutcomeRefused {
+				t.Fatalf("refused replay mode=%s engine evidence=%+v", mode, row.EngineDependency)
+			}
+			if row.RuntimeGap != "query_engine_refused" || !slices.Contains(report.Coverage.KnownGaps, "query_engine_refused") {
+				t.Fatalf("refused replay mode=%s runtime_gap=%q known_gaps=%v", mode, row.RuntimeGap, report.Coverage.KnownGaps)
+			}
+		})
+	}
+}
+
 func TestParityReplayExpectedEngineFailsWhenLexicalMatchesRefs(t *testing.T) {
 	now := time.Now().UTC()
 	homePath := newParityTestHome(t, now)
@@ -408,6 +455,54 @@ func TestParityReplayRejectsMissingEngineExpectationValue(t *testing.T) {
 	}, now)
 	if err == nil || code != 2 || reportPath != "" || !strings.Contains(err.Error(), "--expect-engine requires") {
 		t.Fatalf("missing expect-engine value code=%d report=%q err=%v", code, reportPath, err)
+	}
+}
+
+func TestParityReplayRejectsInvalidArgvBeforeWritingArtifacts(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name  string
+		extra []string
+	}{
+		{name: "misspelled flag", extra: []string{"--expect-engne", "gbrain"}},
+		{name: "unknown flag", extra: []string{"--unknown", "value"}},
+		{name: "equals syntax", extra: []string{"--expect-engine=gbrain"}},
+		{name: "stray positional", extra: []string{"stray"}},
+		{name: "missing value", extra: []string{"--expect-engine"}},
+		{name: "value replaced by flag", extra: []string{"--expect-engine", "--json"}},
+		{name: "duplicate value flag", extra: []string{"--expect-engine", "gbrain", "--expect-engine", "gbrain"}},
+		{name: "duplicate json", extra: []string{"--json", "--json"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := newParityTestHome(t, now)
+			fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+				SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+				ClassifierVersion: retrievalparity.ClassifierVersion,
+				Rows: []retrievalparity.FixtureRow{{
+					Consumer: retrievalparity.ConsumerQuery,
+					Query:    "invalid argv must not execute",
+				}},
+			})
+			store, err := mem.Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := parityReplayArtifactPaths(t, homePath)
+			args := []string{
+				"--fixture", fixturePath,
+				"--consumer", retrievalparity.ConsumerQuery,
+			}
+			args = append(args, tt.extra...)
+			_, reportPath, code, replayErr := runMemoryParityReplay(homePath, store, args, now)
+			if replayErr == nil || code != 2 || reportPath != "" {
+				t.Fatalf("invalid argv code=%d report=%q err=%v, want usage rejection", code, reportPath, replayErr)
+			}
+			after := parityReplayArtifactPaths(t, homePath)
+			if !slices.Equal(after, before) {
+				t.Fatalf("invalid argv wrote artifacts: before=%v after=%v", before, after)
+			}
+		})
 	}
 }
 
@@ -1540,6 +1635,31 @@ func newParityTestHome(t *testing.T, now time.Time) string {
 	t.Setenv("COMPOUND_HOME", homePath)
 	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
 	return homePath
+}
+
+func parityReplayArtifactPaths(t *testing.T, homePath string) []string {
+	t.Helper()
+	root := filepath.Join(homePath, "reviews", retrievalparity.ReviewArea)
+	var paths []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("list parity replay artifacts: %v", err)
+	}
+	slices.Sort(paths)
+	return paths
 }
 
 func seedParityClaim(t *testing.T, homePath, object string, now time.Time) string {

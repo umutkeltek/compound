@@ -41,23 +41,21 @@ func cmdMemoryParityReplay(homePath string, store *mem.Store, args []string) {
 }
 
 func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now time.Time) (retrievalparity.Report, string, int, error) {
-	fixturePath := valueFlag(args, "--fixture")
-	consumer := strings.TrimSpace(valueFlag(args, "--consumer"))
+	parsed, err := parseMemoryParityReplayArgs(args)
+	if err != nil {
+		return retrievalparity.Report{}, "", 2, err
+	}
+	fixturePath := parsed.Fixture
+	consumer := strings.TrimSpace(parsed.Consumer)
 	if fixturePath == "" || consumer == "" {
 		return retrievalparity.Report{}, "", 2, fmt.Errorf("usage: compound memory parity-replay --fixture <file.json> --consumer orient|query [--k N (query only)] [--expect-engine ID] [--forbid-engine ID] [--resume-from <checkpoint.json>] [--json]")
 	}
-	expectEngine, err := parityEngineFlag(args, "--expect-engine")
-	if err != nil {
-		return retrievalparity.Report{}, "", 2, err
-	}
-	forbidEngine, err := parityEngineFlag(args, "--forbid-engine")
-	if err != nil {
-		return retrievalparity.Report{}, "", 2, err
-	}
+	expectEngine := strings.TrimSpace(parsed.ExpectEngine)
+	forbidEngine := strings.TrimSpace(parsed.ForbidEngine)
 	if consumer != retrievalparity.ConsumerOrient && consumer != retrievalparity.ConsumerQuery {
 		return retrievalparity.Report{}, "", 2, fmt.Errorf("consumer must be orient or query")
 	}
-	rawK := valueFlag(args, "--k")
+	rawK := parsed.K
 	k := 0
 	if consumer == retrievalparity.ConsumerOrient && rawK != "" {
 		return retrievalparity.Report{}, "", 2, fmt.Errorf("--k is supported only for the query consumer")
@@ -97,7 +95,7 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 		return retrievalparity.Report{}, "", 2, err
 	}
 	checkpoint := retrievalparity.NewCheckpoint(identity, fixture.Coverage)
-	if resumePath := strings.TrimSpace(valueFlag(args, "--resume-from")); resumePath != "" {
+	if resumePath := strings.TrimSpace(parsed.ResumeFrom); resumePath != "" {
 		checkpoint, err = retrievalparity.LoadCheckpoint(resumePath, identity)
 		if err != nil {
 			return retrievalparity.Report{}, "", 1, err
@@ -144,15 +142,10 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 			latency = time.Since(started)
 			engineEvidence = &evidence
 			engineAvailable = queryErr == nil
-			switch {
-			case queryErr == nil:
+			if queryErr == nil {
 				resultRefs = parityClaimRefs(claims)
-			case errors.Is(queryErr, mem.ErrUnsupported), errors.Is(queryErr, mem.ErrEngineUnavailable):
-				runtimeGap = "query_engine_unavailable"
-			case errors.Is(queryErr, mem.ErrEmbedderMismatch), errors.Is(queryErr, mem.ErrProtocolVersion):
-				runtimeGap = "query_engine_refused"
-			default:
-				runtimeGap = "query_retrieval_error"
+			} else {
+				runtimeGap = parityQueryRuntimeGap(evidence)
 			}
 		}
 		if runtimeGap != "" {
@@ -180,23 +173,63 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 	return report, reportPath, 0, nil
 }
 
-func parityEngineFlag(args []string, name string) (string, error) {
-	seen := false
-	value := ""
-	for i, arg := range args {
-		if arg != name {
+type memoryParityReplayArgs struct {
+	Fixture      string
+	Consumer     string
+	K            string
+	ExpectEngine string
+	ForbidEngine string
+	ResumeFrom   string
+	JSON         bool
+}
+
+func parseMemoryParityReplayArgs(args []string) (memoryParityReplayArgs, error) {
+	var parsed memoryParityReplayArgs
+	seen := make(map[string]bool)
+	for i := 0; i < len(args); {
+		name := args[i]
+		if strings.Contains(name, "=") {
+			return memoryParityReplayArgs{}, fmt.Errorf("unsupported parity-replay argument syntax %q", name)
+		}
+		if name == "--json" {
+			if seen[name] {
+				return memoryParityReplayArgs{}, fmt.Errorf("%s may be provided only once", name)
+			}
+			seen[name] = true
+			parsed.JSON = true
+			i++
 			continue
 		}
-		if seen {
-			return "", fmt.Errorf("%s may be provided only once", name)
+		switch name {
+		case "--fixture", "--consumer", "--k", "--expect-engine", "--forbid-engine", "--resume-from":
+		default:
+			return memoryParityReplayArgs{}, fmt.Errorf("unsupported parity-replay argument %q", name)
 		}
-		seen = true
+		if seen[name] {
+			return memoryParityReplayArgs{}, fmt.Errorf("%s may be provided only once", name)
+		}
+		seen[name] = true
 		if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") || strings.TrimSpace(args[i+1]) == "" {
-			return "", fmt.Errorf("%s requires an engine id", name)
+			return memoryParityReplayArgs{}, fmt.Errorf("%s requires a value", name)
 		}
-		value = strings.TrimSpace(args[i+1])
+		value := args[i+1]
+		switch name {
+		case "--fixture":
+			parsed.Fixture = value
+		case "--consumer":
+			parsed.Consumer = value
+		case "--k":
+			parsed.K = value
+		case "--expect-engine":
+			parsed.ExpectEngine = value
+		case "--forbid-engine":
+			parsed.ForbidEngine = value
+		case "--resume-from":
+			parsed.ResumeFrom = value
+		}
+		i += 2
 	}
-	return value, nil
+	return parsed, nil
 }
 
 func parityOrientEngineEvidence(trace contract.EngineDependencyTrace) retrievalparity.EngineDependencyEvidence {
@@ -302,6 +335,16 @@ func parityEngineErrorEvidence(err error) (string, string) {
 	default:
 		return retrievalparity.EngineOutcomeDegraded, retrievalparity.EngineErrorRetrieval
 	}
+}
+
+func parityQueryRuntimeGap(evidence retrievalparity.EngineDependencyEvidence) string {
+	if evidence.Outcome == retrievalparity.EngineOutcomeRefused {
+		return "query_engine_refused"
+	}
+	if evidence.ErrorClass == retrievalparity.EngineErrorUnsupported || evidence.ErrorClass == retrievalparity.EngineErrorUnavailable {
+		return "query_engine_unavailable"
+	}
+	return "query_retrieval_error"
 }
 
 func cmdMemoryParityFreeze(homePath string, args []string) {
