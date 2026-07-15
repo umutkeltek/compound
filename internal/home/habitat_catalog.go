@@ -95,6 +95,7 @@ func buildHabitatEntries() []HabitatEntry {
 		child("work.runs", "work/runs", HabitatClassOperational, true, true, false),
 		child("work.leases", "work/leases", HabitatClassOperational, true, true, false),
 		child("work.checkpoints", "work/checkpoints", HabitatClassOperational, true, true, false),
+		child("work.transactions", "work/transactions", HabitatClassOperational, true, true, false),
 		active("context", "context", HabitatClassOperational, true, true, false),
 		child("context.requests", "context/requests", HabitatClassOperational, true, true, false),
 		child("context.packs", "context/packs", HabitatClassOperational, true, true, false),
@@ -144,6 +145,7 @@ func buildHabitatEntries() []HabitatEntry {
 		bridge("legacy.sources.imports", "imports", "sources/imports"),
 		bridge("legacy.sources.manifests", "registries/source-manifests", "sources/manifests"),
 		bridge("legacy.registries.lane-beliefs", "lanebeliefs", "registries/lane-beliefs"),
+		bridge("legacy.lock", "locks", "lock"),
 		bridge("legacy.events.logs", "logs", "events/logs"),
 		bridge("legacy.context.packs", "packs", "context/packs"),
 		bridge("legacy.work.panel-runs", "panel-runs", "work/runs/panel"),
@@ -155,6 +157,7 @@ func buildHabitatEntries() []HabitatEntry {
 		bridge("legacy.registries.runtime", "runtime", "registries/runtime-bindings"),
 		bridge("legacy.artifacts.snapshots", "snapshots", "artifacts/snapshots"),
 		bridge("legacy.sources.state", "state", "sources/state"),
+		bridge("legacy.work.transactions", "transactions", "work/transactions"),
 	}
 	for _, dir := range candidates.AllInboxDirs() {
 		entries = append(entries, child("inbox.candidate."+strings.ReplaceAll(dir, "/", "."), dir, HabitatClassOperational, true, true, false))

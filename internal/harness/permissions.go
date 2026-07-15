@@ -287,11 +287,49 @@ var permissionApplySyncBoundary = func(_ string, path string) error {
 type PermissionApplyAuthorization func(action envelope.ActionIntent, decision envelope.PolicyDecision, now time.Time) error
 
 func PermissionApplyPendingPath(homePath, harness string) string {
-	return filepath.Join(homePath, "transactions", "harness-permissions", strings.TrimSpace(harness)+".json")
+	return filepath.Join(homePath, "work", "transactions", "harness-permissions", strings.TrimSpace(harness)+".json")
 }
 
 func permissionApplyLockPath(homePath string) string {
-	return filepath.Join(homePath, "locks", "harness-permissions.lock")
+	return filepath.Join(homePath, "lock", "harness-permissions.lock")
+}
+
+func permissionApplyLegacyPendingPath(homePath, harness string) string {
+	return filepath.Join(homePath, "transactions", "harness-permissions", strings.TrimSpace(harness)+".json")
+}
+
+func permissionApplyPendingPathForRecovery(homePath, harness string) (string, bool, error) {
+	canonicalPath := PermissionApplyPendingPath(homePath, harness)
+	legacyPath := permissionApplyLegacyPendingPath(homePath, harness)
+	canonicalExists, err := permissionApplyPendingExists(canonicalPath)
+	if err != nil {
+		return "", false, fmt.Errorf("inspect canonical pending permission apply transaction: %w", err)
+	}
+	legacyExists, err := permissionApplyPendingExists(legacyPath)
+	if err != nil {
+		return "", false, fmt.Errorf("inspect legacy pending permission apply transaction: %w", err)
+	}
+	if canonicalExists && legacyExists {
+		return "", false, fmt.Errorf("canonical and legacy pending permission apply transactions coexist at %s and %s; refusing ambiguous recovery", canonicalPath, legacyPath)
+	}
+	if canonicalExists {
+		return canonicalPath, true, nil
+	}
+	if legacyExists {
+		return legacyPath, true, nil
+	}
+	return canonicalPath, false, nil
+}
+
+func permissionApplyPendingExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // ApplyPermissions reconciles only Compound-managed permission entries, writes
@@ -433,11 +471,14 @@ func withPermissionApplyLock(homePath string, fn func() error) error {
 
 func recoverPermissionApplyPending(homePath, harness string, abort PermissionApplyAbort, finalize PermissionApplyFinalize) (PermissionApplyOutcome, bool, error) {
 	var zero PermissionApplyOutcome
-	path := PermissionApplyPendingPath(homePath, harness)
-	body, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
+	path, exists, err := permissionApplyPendingPathForRecovery(homePath, harness)
+	if err != nil {
+		return zero, false, err
+	}
+	if !exists {
 		return zero, false, nil
 	}
+	body, err := os.ReadFile(path)
 	if err != nil {
 		return zero, false, fmt.Errorf("read pending permission apply transaction: %w", err)
 	}
@@ -1139,10 +1180,12 @@ func PermissionDrift(homePath, harness string) (PermissionDriftReport, error) {
 		return PermissionDriftReport{}, err
 	}
 	report := PermissionDriftReport{Harness: harness, TargetPath: render.TargetPath}
-	if _, err := os.Stat(PermissionApplyPendingPath(homePath, harness)); err == nil {
+	_, pending, err := permissionApplyPendingPathForRecovery(homePath, harness)
+	if err != nil {
+		return report, err
+	}
+	if pending {
 		report.Details = append(report.Details, "incomplete permission apply transaction requires recovery")
-	} else if !os.IsNotExist(err) {
-		return report, fmt.Errorf("inspect pending permission apply transaction: %w", err)
 	}
 	current, err := os.ReadFile(render.TargetPath)
 	if err != nil {
