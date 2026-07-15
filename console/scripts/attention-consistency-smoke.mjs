@@ -18,6 +18,7 @@ const [
   { default: ReviewsPage },
   { getAttentionProjection },
   { DecideList },
+  { Headline },
   { initialDecideKey },
   { enrichAttentionGroups },
   { buildDecideGroups },
@@ -25,6 +26,7 @@ const [
   import("../src/app/reviews/page.tsx"),
   import("../src/lib/attention.ts"),
   import("../src/components/briefing/DecideList.tsx"),
+  import("../src/components/briefing/Headline.tsx"),
   import("../src/components/decide/DecideQueue.tsx"),
   import("../src/lib/review-data.ts"),
   import("../src/lib/decide-model.ts"),
@@ -135,6 +137,27 @@ assert.deepEqual(
   briefingHrefs,
   attentionKeys.map((key) => `/reviews?decision=${encodeURIComponent(key)}`),
   "every Briefing decision row must deep-link its exact Attention key",
+);
+
+const heroKey = "decision-candidates|fixture hero identity";
+briefingHrefs.length = 0;
+collectHrefs(Headline({
+  top: {
+    key: heroKey,
+    area: "decision-candidates",
+    operator_summary: "A decision needs review.",
+    operator_unlock: "",
+    count: 1,
+  },
+  act: null,
+  mutationsEnabled: false,
+  runningAgents: 0,
+  read: { status: "live", lastGoodAt: null },
+}));
+assert.deepEqual(
+  briefingHrefs,
+  [`/reviews?decision=${encodeURIComponent(heroKey)}`],
+  "the Briefing hero must deep-link its exact Attention key",
 );
 
 // Attention chooses identity, membership, and order. A matching Reviews group

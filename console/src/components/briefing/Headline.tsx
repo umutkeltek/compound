@@ -66,6 +66,7 @@ export function Headline({
   }
 
   const unlock = str(top.operator_unlock);
+  const decisionKey = str(top.key);
   // THE one heat glow of the briefing viewport (DESIGN.md §9.2/§9.4): a
   // bottom-rising domain ambience over the panel — amber when a Class-A gate
   // waits, work-blue otherwise. The 3px amber left seam (admission signature,
@@ -93,7 +94,7 @@ export function Headline({
       <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2">
         {act ? <HeadlineAct key={headlineActIdentity(act)} act={act} mutationsEnabled={mutationsEnabled} /> : null}
         <Link
-          href="/reviews"
+          href={decisionKey ? `/reviews?decision=${encodeURIComponent(decisionKey)}` : "/reviews"}
           className="text-sm font-semibold text-work transition-colors hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
         >
           {act ? "Review in Decide →" : "Open in Decide →"}
