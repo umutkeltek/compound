@@ -155,16 +155,16 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work claim-plan work_abc123 --actor codex --dry-run",
 	},
 	"claim": {
-		Usage:   "usage: compound work claim <work_id> --by A",
-		Example: "compound work claim work_abc123 --by codex",
+		Usage:   "usage: compound work claim <work_id> --by A [--lane <agent-lane node id | short lane id>]",
+		Example: "compound work claim work_abc123 --by codex --lane auto/judge",
 	},
 	"advance-plan": {
 		Usage:   "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]",
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--run R] [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)]",
-		Example: "compound work advance work_abc123 --to running --by codex",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run R] [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)]",
+		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"observe-run": {
 		Usage:   "usage: compound work observe-run <work_id> --trace <trace_id> [--actor A] [--note N] [--json]",
@@ -1116,7 +1116,9 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "claim":
-		w, err := store.Claim(pos(), flag("--by"), time.Now())
+		// --lane optionally declares the lane: the ref must resolve to a canonical agent-lane
+		// node id (fail-closed) or the claim errors. Absent --lane is byte-identical to before.
+		w, err := store.ClaimWithLane(pos(), flag("--by"), flag("--lane"), time.Now())
 		die(err)
 		fmt.Printf("%s claimed by %s (%s) policy=%s\n", w.ID, w.Authority.Owner, w.State, w.PolicyDecisionID)
 	case "advance-plan":
@@ -1180,7 +1182,7 @@ func cmdWork(args []string) {
 	case "advance":
 		usage := workUsage("advance")
 		if err := validateWorkArguments(rest, map[string]bool{
-			"--to": true, "--by": true, "--actor": true, "--run": true, "--artifact": true, "--verification": true,
+			"--to": true, "--by": true, "--actor": true, "--lane": true, "--run": true, "--artifact": true, "--verification": true,
 			"--context-pack": true, "--note": true, "--reason": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 		}, map[string]bool{"--steal": true, "--local-only": true}, 1); err != nil {
@@ -1196,6 +1198,7 @@ func cmdWork(args []string) {
 		w, err := store.Advance(pos(), work.AdvanceInput{
 			To:             flag("--to"),
 			Actor:          firstNonEmpty(flag("--by"), flag("--actor")),
+			LaneRef:        flag("--lane"),
 			GitDelivery:    gitDelivery,
 			RunID:          flag("--run"),
 			ArtifactID:     flag("--artifact"),
