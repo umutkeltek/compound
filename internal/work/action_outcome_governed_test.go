@@ -124,6 +124,72 @@ func TestReceiptedActionReservationAuthorizationFailureDoesNotBlockWork(t *testi
 	}
 }
 
+func TestRecordReservedReceiptedActionReplaysCompletedOutcomeAfterLifecycleAdvances(t *testing.T) {
+	s := newStore(t)
+	w := governedActionRunningWork(t, s, "operator:test")
+	action, decision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
+	in := ReceiptedActionInput{
+		Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
+		Outcome: "completed", Changed: true, Summary: "permission activation completed", MoveType: "control_plane_repair",
+		BeforeRefs: []string{"sha256:preimage"}, AfterRefs: []string{"sha256:postimage"},
+	}
+	authorizedAt := fixedNow.Add(2 * time.Minute)
+	if err := s.ReserveReceiptedAction(w.ID, in, authorizedAt, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.RecordReservedReceiptedAction(w.ID, in, authorizedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "operator:test"}, fixedNow.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := s.RecordReservedReceiptedAction(w.ID, in, authorizedAt)
+	if err != nil {
+		t.Fatalf("replay finalized reservation after lifecycle advance: %v", err)
+	}
+	if !replay.Replayed || replay.Receipt.ID != first.Receipt.ID || replay.Transition.ID != first.Transition.ID {
+		t.Fatalf("replay = %+v, want exact completed transaction %+v", replay, first)
+	}
+}
+
+func TestAbortReceiptedActionReservationRefusesAfterReceiptPublicationBegins(t *testing.T) {
+	s := newStore(t)
+	w := governedActionRunningWork(t, s, "operator:test")
+	action, decision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
+	in := ReceiptedActionInput{
+		Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
+		Outcome: "completed", Changed: true, Summary: "permission activation completed", MoveType: "control_plane_repair",
+		BeforeRefs: []string{"sha256:preimage"}, AfterRefs: []string{"sha256:postimage"},
+	}
+	authorizedAt := fixedNow.Add(2 * time.Minute)
+	if err := s.ReserveReceiptedAction(w.ID, in, authorizedAt, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("receipt transaction interrupted after action publication")
+	previous := receiptedActionAfterWrite
+	receiptedActionAfterWrite = func(stage string) error {
+		if stage == "action" {
+			return injected
+		}
+		return nil
+	}
+	if _, err := s.RecordReservedReceiptedAction(w.ID, in, authorizedAt); !errors.Is(err, injected) {
+		t.Fatalf("RecordReservedReceiptedAction error = %v", err)
+	}
+	receiptedActionAfterWrite = previous
+	t.Cleanup(func() { receiptedActionAfterWrite = previous })
+	if err := s.AbortReceiptedActionReservation(w.ID, action.ID); err == nil || !strings.Contains(err.Error(), "publication began") {
+		t.Fatalf("AbortReceiptedActionReservation error = %v", err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "operator:test"}, fixedNow.Add(3*time.Minute)); err == nil || !strings.Contains(err.Error(), "pending receipted action "+action.ID) {
+		t.Fatalf("partial receipt transaction no longer blocked lifecycle: %v", err)
+	}
+	if result, err := s.RecordReservedReceiptedAction(w.ID, in, authorizedAt); err != nil || result.Receipt.ID == "" {
+		t.Fatalf("recover partial reserved transaction: result=%+v err=%v", result, err)
+	}
+}
+
 func TestRecordReceiptedActionRefusesInvalidPreEvaluatedSecurityDecisionWithoutWriting(t *testing.T) {
 	tests := []struct {
 		name   string
