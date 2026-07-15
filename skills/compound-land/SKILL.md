@@ -60,6 +60,13 @@ go run ./cmd/compound proof-check --json     # tests, vet, build, diff-check, co
   so the pipeline's exit status is `tail`'s (always `0`) — a real gate failure reads as green. The
   truncation also drops the top-of-output verdict and the `go-test`/`go-vet`/`go-build` gates. Run it
   unpiped: `go run ./cmd/compound proof-check --json > out.json 2>&1; echo "EXIT=$?"` and read the file.
+- **Background-battery variant of the same trap (real incident 2026-07-15):** a backgrounded battery
+  command's completion notification reports the WRAPPER's exit (the trailing `echo` — always `0`), not
+  proof-check's. A red battery landed because the lander trusted "completed (exit code 0)" and never
+  opened the output file (sole red gate was cosmetic — a comment tripping the private-runtime string
+  guard — repaired on main as `5fa4c784`). Rule: a background battery is not green until you have READ
+  the `EXIT=` line (and on failure, the failed gate's `output_tail`) from the file itself. Acquiring
+  the land-lease before reading that line is the tell you're about to repeat this.
 - **Worktree caveat (real failure):** fresh worktrees do not contain the gitignored
   `docs_private/leak-tokens.txt`. The doctor's leak gate **fails closed** under `--strict` when
   the token list is missing. Copy the file into the worktree before running the battery there.
