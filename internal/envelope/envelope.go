@@ -44,14 +44,14 @@ var (
 	// DeltaCauses is the causal CLASS of a source-truth change carried on a Transition's optional
 	// Cause (see TransitionCause and docs/architecture/transition.md). It lets a future agent choose
 	// repair/retirement/acceptance/invalidation instead of re-litigating the old value.
-	DeltaCauses = []string{"repair", "retire", "accept", "invalidate"}
-	ProofMedia        = []string{"web-ui", "ios", "cli", "api", "none"}
-	ProjectionKinds   = []string{"memory", "skill", "product", "cost", "risk", "taste", "routing", "human_attention", "rule", "control_plane"}
-	ProjectionRoles   = []string{"offered", "used", "missed", "false_triggered", "validated", "candidate", "promoted", "parked", "rejected", "proof"}
-	HookNames         = []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd", "Stop"}
-	HookStatuses      = []string{"ok", "fail_open", "blocked", "error"}
-	ReceiptOutcomes   = []string{"completed", "blocked", "failed", "no_op"}
-	RequestedModes    = []string{"observe", "plan", "execute", "review"}
+	DeltaCauses     = []string{"repair", "retire", "accept", "invalidate"}
+	ProofMedia      = []string{"web-ui", "ios", "cli", "api", "none"}
+	ProjectionKinds = []string{"memory", "skill", "product", "cost", "risk", "taste", "routing", "human_attention", "rule", "control_plane"}
+	ProjectionRoles = []string{"offered", "used", "missed", "false_triggered", "validated", "candidate", "promoted", "parked", "rejected", "proof"}
+	HookNames       = []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd", "Stop"}
+	HookStatuses    = []string{"ok", "fail_open", "blocked", "error"}
+	ReceiptOutcomes = []string{"completed", "blocked", "failed", "no_op"}
+	RequestedModes  = []string{"observe", "plan", "execute", "review"}
 	// CloseOutcomes is the CLOSE outcome enum (CloseInput.Outcome in internal/work): the state a
 	// work lands in, completed|failed|cancelled. It is DISTINCT from ReceiptOutcomes (the
 	// Receipt.Outcome value, mapped from a close outcome via receiptOutcome — e.g.
@@ -965,6 +965,7 @@ type SecondOrder struct {
 	ShouldDecay           bool   `json:"should_decay"`
 	RevisitAt             string `json:"revisit_at,omitempty"`
 }
+
 // TransitionCause is the OPTIONAL causal cross-ref carried with a Transition: the causal CLASS of
 // the source-truth change (delta_cause), the refs that caused it (caused_by_refs), and who is
 // expected to act next (next_consumer, empty => audit_only). It ships a proven subset of the
