@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -59,6 +60,10 @@ var (
 	// WorkPrediction.Outcome predicts THIS enum, never the other two.
 	CloseOutcomes = []string{"completed", "failed", "cancelled"}
 )
+
+// nextConsumerRe: a Transition cause's next_consumer is a consumer slug/ref
+// (component or surface id), never prose — no whitespace, lowercase start.
+var nextConsumerRe = regexp.MustCompile(`^[a-z][a-z0-9_.:/-]{0,63}$`)
 
 func oneOf(val string, set []string) bool {
 	for _, s := range set {
@@ -975,7 +980,7 @@ type SecondOrder struct {
 type TransitionCause struct {
 	DeltaCause   string   `json:"delta_cause"`             // one of DeltaCauses
 	CausedByRefs []string `json:"caused_by_refs"`          // >=1 non-empty: work_id / decision: / commit / source:<path>#rev
-	NextConsumer string   `json:"next_consumer,omitempty"` // empty => audit_only
+	NextConsumer string   `json:"next_consumer,omitempty"` // consumer slug/ref matching nextConsumerRe; empty => audit_only
 }
 
 type Transition struct {
@@ -1006,6 +1011,9 @@ func (e *Transition) Validate() error {
 		v.enum("cause.delta_cause", e.Cause.DeltaCause, DeltaCauses, true)
 		if len(nonEmpty(e.Cause.CausedByRefs)) == 0 {
 			v.addf("cause.caused_by_refs requires at least one non-empty ref")
+		}
+		if e.Cause.NextConsumer != "" && !nextConsumerRe.MatchString(e.Cause.NextConsumer) {
+			v.addf("cause.next_consumer must be a consumer slug/ref (no prose), got %q", e.Cause.NextConsumer)
 		}
 	}
 	return v.result(e.Kind())
