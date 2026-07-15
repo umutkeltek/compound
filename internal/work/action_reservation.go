@@ -50,6 +50,11 @@ func (s *Store) ReserveReceiptedAction(workID string, in ReceiptedActionInput, a
 		} else if present {
 			return fmt.Errorf("work %s has pending receipted action %s; cannot reserve %s", workID, pending.ActionID, in.Action.ID)
 		}
+		if _, present, err := s.preflightReceiptedAction(in.Action); err != nil {
+			return err
+		} else if present {
+			return fmt.Errorf("receipted action %s was already published before reservation", in.Action.ID)
+		}
 		expected, err := newReceiptedActionReservation(workID, in, authorizedAt)
 		if err != nil {
 			return err
@@ -147,7 +152,7 @@ func validateReceiptedActionReservationAdmission(s *Store, w envelope.WorkEnvelo
 		return fmt.Errorf("work envelope invalid: %w", err)
 	}
 	if w.State != "running" {
-		return fmt.Errorf("work %s is %s; pre-evaluated governed actions require state running", workID, w.State)
+		return fmt.Errorf("work %s is %s; receipted action reservation requires running work", workID, w.State)
 	}
 	if expected := strings.TrimSpace(in.ExpectedWorkState); expected != "" && expected != w.State {
 		return fmt.Errorf("work %s state %q no longer matches expected state %q", workID, w.State, expected)

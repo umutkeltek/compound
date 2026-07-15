@@ -42,6 +42,9 @@ var readPermissionTargetForObservation = os.ReadFile
 var recordHarnessPermissionOutcome = func(store *work.Store, workID string, input work.ReceiptedActionInput, now time.Time) (work.ReceiptedActionResult, error) {
 	return store.RecordReceiptedAction(workID, input, now)
 }
+var recordReservedHarnessPermissionOutcome = func(store *work.Store, workID string, input work.ReceiptedActionInput, now time.Time) (work.ReceiptedActionResult, error) {
+	return store.RecordReservedReceiptedAction(workID, input, now)
+}
 
 func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.Time) int {
 	harnessName := strings.TrimSpace(flagValue(args, "--harness"))
@@ -139,25 +142,26 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 		return 1
 	}
 	authorize := permissionApplyAuthorization(store, homePath, workID)
+	reserve := func(outcome harness.PermissionApplyOutcome, authorize harness.PermissionApplyAuthorization) error {
+		input, authorizedAt, err := harnessPermissionReceiptedActionInput(outcome)
+		if err != nil {
+			return err
+		}
+		return store.ReserveReceiptedAction(outcome.Action.IDs.WorkID, input, authorizedAt, func() error {
+			return authorize(outcome.Action, outcome.Decision, authorizedAt)
+		})
+	}
+	abort := func(outcome harness.PermissionApplyOutcome) error {
+		return store.AbortReceiptedActionReservation(outcome.Action.IDs.WorkID, outcome.Action.ID)
+	}
 	var finalized harness.PermissionApplyOutcome
 	var receipted work.ReceiptedActionResult
 	finalize := func(outcome harness.PermissionApplyOutcome) error {
-		authorizedAt, err := time.Parse(time.RFC3339Nano, outcome.AuthorizedAt)
+		input, authorizedAt, err := harnessPermissionReceiptedActionInput(outcome)
 		if err != nil {
-			return fmt.Errorf("parse permission authorization timestamp: %w", err)
+			return err
 		}
-		receiptOutcome := "no_op"
-		if outcome.Changed {
-			receiptOutcome = "completed"
-		}
-		preRef := "sha256:" + permissionApplyDigest(outcome.Render.Preimage)
-		result, err := recordHarnessPermissionOutcome(store, outcome.Action.IDs.WorkID, work.ReceiptedActionInput{
-			Action: outcome.Action, PreEvaluatedDecision: &outcome.Decision, ExpectedWorkState: "running",
-			Outcome: receiptOutcome, Changed: outcome.Changed, Summary: "permission activation " + receiptOutcome, MoveType: "control_plane_repair",
-			ProofRefs:  []string{outcome.Render.Artifact.SourceAuthorityRef, outcome.Render.Artifact.SourceRevision},
-			BeforeRefs: []string{preRef}, AfterRefs: []string{outcome.Render.Artifact.ContentSHA256},
-			FilesChanged: append([]string(nil), outcome.FilesChanged...),
-		}, authorizedAt)
+		result, err := recordReservedHarnessPermissionOutcome(store, outcome.Action.IDs.WorkID, input, authorizedAt)
 		if err != nil {
 			return err
 		}
@@ -165,7 +169,7 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 		receipted = result
 		return nil
 	}
-	_, err = applyHarnessPermissions(homePath, render, action, decision, authorize, finalize)
+	_, err = applyHarnessPermissions(homePath, render, action, decision, authorize, reserve, abort, finalize)
 	if err != nil {
 		if harness.IsPermissionApplyFinalizationPending(err) {
 			fmt.Fprintln(stderr, "error: permission mutation is pending finalization and will recover its exact outcome:", err)
@@ -239,6 +243,25 @@ func runHarnessGenerateApply(args []string, stdout, stderr io.Writer, now time.T
 	fmt.Fprintf(stdout, "- transition: %s\n", report.TransitionID)
 	fmt.Fprintf(stdout, "- content_sha256: %s\n", report.Artifact.ContentSHA256)
 	return 0
+}
+
+func harnessPermissionReceiptedActionInput(outcome harness.PermissionApplyOutcome) (work.ReceiptedActionInput, time.Time, error) {
+	authorizedAt, err := time.Parse(time.RFC3339Nano, outcome.AuthorizedAt)
+	if err != nil {
+		return work.ReceiptedActionInput{}, time.Time{}, fmt.Errorf("parse permission authorization timestamp: %w", err)
+	}
+	receiptOutcome := "no_op"
+	if outcome.Changed {
+		receiptOutcome = "completed"
+	}
+	preRef := "sha256:" + permissionApplyDigest(outcome.Render.Preimage)
+	return work.ReceiptedActionInput{
+		Action: outcome.Action, PreEvaluatedDecision: &outcome.Decision, ExpectedWorkState: "running",
+		Outcome: receiptOutcome, Changed: outcome.Changed, Summary: "permission activation " + receiptOutcome, MoveType: "control_plane_repair",
+		ProofRefs:  []string{outcome.Render.Artifact.SourceAuthorityRef, outcome.Render.Artifact.SourceRevision},
+		BeforeRefs: []string{preRef}, AfterRefs: []string{outcome.Render.Artifact.ContentSHA256},
+		FilesChanged: append([]string(nil), outcome.FilesChanged...),
+	}, authorizedAt, nil
 }
 
 func permissionApplyAuthorization(store *work.Store, homePath, workID string) harness.PermissionApplyAuthorization {

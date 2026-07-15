@@ -109,6 +109,14 @@ type PermissionApplyOutcome struct {
 
 type PermissionApplyFinalize func(PermissionApplyOutcome) error
 
+// PermissionApplyReserve atomically performs the supplied authorization
+// revalidation and creates the work-owned lifecycle blocker for this outcome.
+type PermissionApplyReserve func(PermissionApplyOutcome, PermissionApplyAuthorization) error
+
+// PermissionApplyAbort clears a reservation only after the adapter has safely
+// restored the pre-publication state.
+type PermissionApplyAbort func(PermissionApplyOutcome) error
+
 type PermissionApplyFinalizationPendingError struct {
 	Cause error
 }
@@ -291,9 +299,15 @@ func permissionApplyLockPath(homePath string) string {
 // revision/content hash. The lock serializes Compound writers; the preimage CAS
 // refuses a concurrent manual edit. An interrupted transaction stays visible to
 // drift and is recovered before the next apply.
-func ApplyPermissions(homePath string, approved PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize PermissionApplyAuthorization, finalize PermissionApplyFinalize) (PermissionRender, error) {
+func ApplyPermissions(homePath string, approved PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize PermissionApplyAuthorization, reserve PermissionApplyReserve, abort PermissionApplyAbort, finalize PermissionApplyFinalize) (PermissionRender, error) {
 	if authorize == nil {
 		return PermissionRender{}, fmt.Errorf("permission apply authorization revalidation is required")
+	}
+	if reserve == nil {
+		return PermissionRender{}, fmt.Errorf("permission apply work reservation is required")
+	}
+	if abort == nil {
+		return PermissionRender{}, fmt.Errorf("permission apply reservation abort is required")
 	}
 	if finalize == nil {
 		return PermissionRender{}, fmt.Errorf("permission apply outcome finalization is required")
@@ -304,7 +318,7 @@ func ApplyPermissions(homePath string, approved PermissionRender, action envelop
 	}
 	var render PermissionRender
 	err := withPermissionApplyLock(homePath, func() error {
-		recovered, ok, err := recoverPermissionApplyPending(homePath, harnessName, finalize)
+		recovered, ok, err := recoverPermissionApplyPending(homePath, harnessName, abort, finalize)
 		if err != nil {
 			return err
 		}
@@ -330,9 +344,6 @@ func ApplyPermissions(homePath string, approved PermissionRender, action envelop
 		manifestChanged := !manifestPresent || !sameHarnessArtifact(previous, render.Artifact)
 		applyPermissionsBeforeTargetCommit()
 		authorizedAt := permissionApplyNow().UTC()
-		if err := authorize(action, decision, authorizedAt); err != nil {
-			return fmt.Errorf("permission apply authorization revalidation: %w", err)
-		}
 		outcome := newPermissionApplyOutcome(homePath, render, action, decision, authorizedAt, manifestChanged)
 		pending := newPermissionApplyPending(outcome)
 		body, err := json.MarshalIndent(pending, "", "  ")
@@ -349,18 +360,18 @@ func ApplyPermissions(homePath string, approved PermissionRender, action envelop
 			}
 			return fmt.Errorf("sync permission apply pending transaction: %w", err)
 		}
+		if err := reserve(outcome, authorize); err != nil {
+			return abortPermissionApplyBeforePublication(outcome, abort, pendingPath, fmt.Errorf("permission apply reservation authorization: %w", err))
+		}
 		var publication *permissionTargetPublication
 		if outcome.TargetChanged {
 			publication, err = beginPermissionTargetPublication(render, pending.RecoveryName)
 			if err != nil {
-				if removeErr := removePermissionPending(pendingPath); removeErr != nil {
-					return errors.Join(err, removeErr)
-				}
-				return err
+				return abortPermissionApplyBeforePublication(outcome, abort, pendingPath, err)
 			}
 			defer publication.Close()
 			if err := permissionApplySyncBoundary("target_publish", render.TargetPath); err != nil {
-				return rollbackPermissionPublication(publication, pendingPath, fmt.Errorf("sync permission target publication: %w", err))
+				return rollbackPermissionPublication(publication, outcome, abort, pendingPath, fmt.Errorf("sync permission target publication: %w", err))
 			}
 			if err := applyPermissionsAfterTargetWrite(); err != nil {
 				return fmt.Errorf("permission apply interrupted after target write: %w", err)
@@ -369,12 +380,9 @@ func ApplyPermissions(homePath string, approved PermissionRender, action envelop
 		if outcome.ManifestChanged {
 			if err := writeHarnessArtifactManifestForApply(homePath, []HarnessArtifact{render.Artifact}); err != nil {
 				if publication != nil {
-					return rollbackPermissionPublication(publication, pendingPath, fmt.Errorf("write harness artifact manifest: %w", err))
+					return rollbackPermissionPublication(publication, outcome, abort, pendingPath, fmt.Errorf("write harness artifact manifest: %w", err))
 				}
-				if removeErr := removePermissionPending(pendingPath); removeErr != nil {
-					return errors.Join(fmt.Errorf("write harness artifact manifest: %w", err), removeErr)
-				}
-				return fmt.Errorf("write harness artifact manifest: %w", err)
+				return abortPermissionApplyBeforePublication(outcome, abort, pendingPath, fmt.Errorf("write harness artifact manifest: %w", err))
 			}
 			if err := permissionApplySyncBoundary("manifest_write", HarnessArtifactManifestPath(homePath)); err != nil {
 				return &PermissionApplyFinalizationPendingError{Cause: fmt.Errorf("sync harness artifact manifest: %w", err)}
@@ -419,7 +427,7 @@ func withPermissionApplyLock(homePath string, fn func() error) error {
 	return fn()
 }
 
-func recoverPermissionApplyPending(homePath, harness string, finalize PermissionApplyFinalize) (PermissionApplyOutcome, bool, error) {
+func recoverPermissionApplyPending(homePath, harness string, abort PermissionApplyAbort, finalize PermissionApplyFinalize) (PermissionApplyOutcome, bool, error) {
 	var zero PermissionApplyOutcome
 	path := PermissionApplyPendingPath(homePath, harness)
 	body, err := os.ReadFile(path)
@@ -463,6 +471,9 @@ func recoverPermissionApplyPending(homePath, harness string, finalize Permission
 		return outcome, true, nil
 	}
 	if !pending.TargetChanged {
+		if err := abort(outcome); err != nil {
+			return zero, false, fmt.Errorf("abort pre-publication permission reservation: %w", err)
+		}
 		if err := removePermissionPending(path); err != nil {
 			return zero, false, err
 		}
@@ -478,6 +489,9 @@ func recoverPermissionApplyPending(homePath, harness string, finalize Permission
 			}
 		} else if err := cleanupUnusedPermissionRecovery(pending); err != nil {
 			return zero, false, err
+		}
+		if err := abort(outcome); err != nil {
+			return zero, false, fmt.Errorf("abort recovered permission reservation: %w", err)
 		}
 		if err := removePermissionPending(path); err != nil {
 			return zero, false, err
@@ -507,6 +521,9 @@ func recoverPermissionApplyPending(homePath, harness string, finalize Permission
 		}
 	} else if err := cleanupInterruptedPermissionCreation(pending, true); err != nil {
 		return zero, false, fmt.Errorf("recover interrupted permission target creation: %w", err)
+	}
+	if err := abort(outcome); err != nil {
+		return zero, false, fmt.Errorf("abort recovered permission reservation: %w", err)
 	}
 	if err := removePermissionPending(path); err != nil {
 		return zero, false, err
@@ -1035,14 +1052,27 @@ func permissionCreationRollbackName(render PermissionRender) string {
 	return fmt.Sprintf(".%s.%d.%s.permission-rollback", filepath.Base(render.TargetPath), os.Getpid(), strings.TrimPrefix(render.Artifact.ContentSHA256, "sha256:")[:12])
 }
 
-func rollbackPermissionPublication(publication *permissionTargetPublication, pendingPath string, cause error) error {
+func rollbackPermissionPublication(publication *permissionTargetPublication, outcome PermissionApplyOutcome, abort PermissionApplyAbort, pendingPath string, cause error) error {
 	if err := publication.Rollback(); err != nil {
 		return fmt.Errorf("%v; manual/concurrent state preserved and pending recovery retained: %w", cause, err)
+	}
+	if err := abort(outcome); err != nil {
+		return fmt.Errorf("%v; settings pre-image restored; reservation retained for recovery: %w", cause, err)
 	}
 	if err := removePermissionPending(pendingPath); err != nil {
 		return fmt.Errorf("%v; settings pre-image restored; %w", cause, err)
 	}
 	return fmt.Errorf("%w; settings pre-image restored", cause)
+}
+
+func abortPermissionApplyBeforePublication(outcome PermissionApplyOutcome, abort PermissionApplyAbort, pendingPath string, cause error) error {
+	if err := abort(outcome); err != nil {
+		return fmt.Errorf("%v; permission reservation retained for recovery: %w", cause, err)
+	}
+	if err := removePermissionPending(pendingPath); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }
 
 func removePermissionPending(path string) error {

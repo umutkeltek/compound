@@ -306,7 +306,7 @@ func TestHarnessGenerateApplyFailureRecordsFailedReceiptWithoutFalseSuccess(t *t
 	installHarnessPermissionGrant(t, homePath, targetPath)
 	before, _ := os.ReadFile(targetPath)
 	previous := applyHarnessPermissions
-	applyHarnessPermissions = func(string, harness.PermissionRender, envelope.ActionIntent, envelope.PolicyDecision, harness.PermissionApplyAuthorization, harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
+	applyHarnessPermissions = func(string, harness.PermissionRender, envelope.ActionIntent, envelope.PolicyDecision, harness.PermissionApplyAuthorization, harness.PermissionApplyReserve, harness.PermissionApplyAbort, harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
 		return harness.PermissionRender{}, errors.New("injected permission apply failure")
 	}
 	t.Cleanup(func() { applyHarnessPermissions = previous })
@@ -353,12 +353,12 @@ func TestHarnessGenerateApplyAuthorityChangeAfterApprovalIsReceiptedAsFailure(t 
 	installHarnessPermissionGrant(t, homePath, targetPath)
 	before, _ := os.ReadFile(targetPath)
 	previous := applyHarnessPermissions
-	applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization, finalize harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
+	applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization, reserve harness.PermissionApplyReserve, abort harness.PermissionApplyAbort, finalize harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
 		writeHarnessApplyJSON(t, harness.PermissionAuthorityPath(home, "claude_code"), harness.PermissionAuthority{
 			SchemaVersion: harness.PermissionAuthoritySchemaVersion, Harness: "claude_code", AuthorityRef: harness.PermissionAuthorityRef("claude_code"), TargetPath: targetPath + ".changed",
 			Permissions: harness.PermissionRules{Allow: []string{"Write"}, DefaultMode: "auto"}, AutoMode: harness.AutoModePolicy{Allow: []string{"$defaults", "Write"}},
 		})
-		return harness.ApplyPermissions(home, approved, action, decision, authorize, finalize)
+		return harness.ApplyPermissions(home, approved, action, decision, authorize, reserve, abort, finalize)
 	}
 	t.Cleanup(func() { applyHarnessPermissions = previous })
 	var stdout, stderr bytes.Buffer
@@ -436,9 +436,9 @@ func TestHarnessGenerateApplyRevalidatesWorkLeaseAndGrantInsideMutation(t *testi
 				t.Fatal(err)
 			}
 			previous := applyHarnessPermissions
-			applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization, finalize harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
+			applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization, reserve harness.PermissionApplyReserve, abort harness.PermissionApplyAbort, finalize harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
 				tc.mutate(t, home, w.ID, targetPath)
-				return previous(home, approved, action, decision, authorize, finalize)
+				return previous(home, approved, action, decision, authorize, reserve, abort, finalize)
 			}
 			t.Cleanup(func() { applyHarnessPermissions = previous })
 
@@ -478,7 +478,7 @@ func TestHarnessGenerateApplyRevalidatesDecisionExpiryInsideMutation(t *testing.
 		t.Fatal(err)
 	}
 	previous := applyHarnessPermissions
-	applyHarnessPermissions = func(_ string, _ harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization, _ harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
+	applyHarnessPermissions = func(_ string, _ harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization, _ harness.PermissionApplyReserve, _ harness.PermissionApplyAbort, _ harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
 		return harness.PermissionRender{}, authorize(action, decision, runNow.Add(2*time.Hour))
 	}
 	t.Cleanup(func() { applyHarnessPermissions = previous })
@@ -515,11 +515,11 @@ func TestHarnessGenerateApplyRecoversExactPublishedOutcomeBeforeNewAction(t *tes
 		firstNow.UTC().Format(time.RFC3339Nano),
 	)
 	injected := errors.New("injected receipt store interruption")
-	previousRecord := recordHarnessPermissionOutcome
-	recordHarnessPermissionOutcome = func(*work.Store, string, work.ReceiptedActionInput, time.Time) (work.ReceiptedActionResult, error) {
+	previousRecord := recordReservedHarnessPermissionOutcome
+	recordReservedHarnessPermissionOutcome = func(*work.Store, string, work.ReceiptedActionInput, time.Time) (work.ReceiptedActionResult, error) {
 		return work.ReceiptedActionResult{}, injected
 	}
-	t.Cleanup(func() { recordHarnessPermissionOutcome = previousRecord })
+	t.Cleanup(func() { recordReservedHarnessPermissionOutcome = previousRecord })
 	var stdout, stderr bytes.Buffer
 	code := runHarnessGenerateApply([]string{
 		"--harness", "claude_code", "--apply", "--work", w.ID, "--actor", "operator:test", "--json",
@@ -543,7 +543,7 @@ func TestHarnessGenerateApplyRecoversExactPublishedOutcomeBeforeNewAction(t *tes
 	}
 
 	writeHarnessApplyJSON(t, filepath.Join(homePath, "config", "policy.yaml"), policy.DefaultConfig())
-	recordHarnessPermissionOutcome = previousRecord
+	recordReservedHarnessPermissionOutcome = previousRecord
 	stdout.Reset()
 	stderr.Reset()
 	code = runHarnessGenerateApply([]string{
@@ -610,7 +610,7 @@ func TestHarnessGenerateApplyFailedPostReadRecordsObservationFailure(t *testing.
 		t.Fatal(err)
 	}
 	previousApply := applyHarnessPermissions
-	applyHarnessPermissions = func(string, harness.PermissionRender, envelope.ActionIntent, envelope.PolicyDecision, harness.PermissionApplyAuthorization, harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
+	applyHarnessPermissions = func(string, harness.PermissionRender, envelope.ActionIntent, envelope.PolicyDecision, harness.PermissionApplyAuthorization, harness.PermissionApplyReserve, harness.PermissionApplyAbort, harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
 		return harness.PermissionRender{}, errors.New("injected permission apply failure")
 	}
 	t.Cleanup(func() { applyHarnessPermissions = previousApply })

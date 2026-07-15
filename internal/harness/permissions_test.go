@@ -230,7 +230,7 @@ func TestApplyPermissionsInterruptedWriteIsVisibleAndRecovered(t *testing.T) {
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	previousHook := applyPermissionsAfterTargetWrite
 	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
 		t.Fatal("interrupted apply error = nil")
 	}
 	pendingInfo, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code"))
@@ -250,7 +250,7 @@ func TestApplyPermissionsInterruptedWriteIsVisibleAndRecovered(t *testing.T) {
 
 	applyPermissionsAfterTargetWrite = previousHook
 	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err != nil {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err != nil {
 		t.Fatalf("recover apply: %v", err)
 	}
 	report, err = PermissionDrift(homePath, "claude_code")
@@ -327,7 +327,7 @@ func TestApplyPermissionsRequiresExactGovernanceAndApprovedRender(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			r, a, d := approved, action, decision
 			tt.mutate(&r, &a, &d)
-			if _, err := ApplyPermissions(homePath, r, a, d, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.wantText)) {
+			if _, err := applyPermissionsForTest(homePath, r, a, d, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.wantText)) {
 				t.Fatalf("ApplyPermissions error = %v, want containing %q", err, tt.wantText)
 			}
 			after, err := os.ReadFile(targetPath)
@@ -360,7 +360,7 @@ func TestApplyPermissionsRejectsApprovedRenderWhenAuthorityOrTargetChanges(t *te
 			approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 			before, _ := os.ReadFile(targetPath)
 			tc.mutate(t, homePath, targetPath)
-			if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "approved render") {
+			if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "approved render") {
 				t.Fatalf("ApplyPermissions error = %v, want stale approved render refusal", err)
 			}
 			after, _ := os.ReadFile(targetPath)
@@ -385,7 +385,7 @@ func TestPermissionRenderFormattingDifferencePublishesCanonicalBytes(t *testing.
 	if !approved.Changed {
 		t.Fatal("byte-different semantic JSON reported Changed=false")
 	}
-	applied, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply)
+	applied, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +460,7 @@ func TestApplyPermissionsSerializesSharedManifestAcrossHarnesses(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := ApplyPermissions(homePath, approval.r, approval.a, approval.d, allowPermissionApply, finalizePermissionApply)
+			_, err := applyPermissionsForTest(homePath, approval.r, approval.a, approval.d, allowPermissionApply, finalizePermissionApply)
 			errs <- err
 		}()
 	}
@@ -529,14 +529,14 @@ func TestPendingRecoveryRejectsChangedAuthorityRevision(t *testing.T) {
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	previousHook := applyPermissionsAfterTargetWrite
 	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
 		t.Fatal("interrupted apply error = nil")
 	}
 	applyPermissionsAfterTargetWrite = previousHook
 	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
 	writePermissionFixture(t, homePath, targetPath+".changed", permissionFixture([]string{"Write"}))
 	before, _ := os.ReadFile(targetPath)
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "source revision") {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "source revision") {
 		t.Fatalf("recovery error = %v, want source revision refusal", err)
 	}
 	after, _ := os.ReadFile(targetPath)
@@ -566,7 +566,7 @@ func TestPendingRecoveryRejectsNonLeafRecoveryName(t *testing.T) {
 		IntendedSHA256: approved.Artifact.ContentSHA256, SourceAuthorityRef: approved.Artifact.SourceAuthorityRef, SourceRevision: approved.Artifact.SourceRevision,
 	}
 	writeTestJSON(t, PermissionApplyPendingPath(homePath, "claude_code"), pending)
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "recovery name") {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "recovery name") {
 		t.Fatalf("ApplyPermissions error = %v, want invalid recovery name", err)
 	}
 	if body, err := os.ReadFile(sentinelPath); err != nil || string(body) != "must survive" {
@@ -600,7 +600,7 @@ func TestApplyPermissionsRevalidatesAuthorizationAfterWaitingForMutationLock(t *
 	authorityCurrent.Store(true)
 	applyDone := make(chan error, 1)
 	go func() {
-		_, err := ApplyPermissions(homePath, approved, action, decision, func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error {
+		_, err := applyPermissionsForTest(homePath, approved, action, decision, func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error {
 			if !authorityCurrent.Load() {
 				return os.ErrPermission
 			}
@@ -639,7 +639,7 @@ func TestApplyPermissionsRevalidatesAuthorizationBeforeManifestOnlyMutation(t *t
 	if approved.Changed {
 		t.Fatal("fixture target is not canonical")
 	}
-	if _, err := ApplyPermissions(homePath, approved, action, decision, func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error {
 		return os.ErrPermission
 	}, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "authorization") {
 		t.Fatalf("ApplyPermissions error = %v, want manifest authorization refusal", err)
@@ -660,7 +660,7 @@ func TestApplyPermissionsPersistsPendingBeforeReservationAdmission(t *testing.T)
 	}
 	injected := errors.New("authorization revoked")
 	aborted := false
-	_, err = ApplyPermissionsReserved(
+	_, err = ApplyPermissions(
 		homePath, approved, action, decision,
 		func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error { return injected },
 		func(outcome PermissionApplyOutcome, authorize PermissionApplyAuthorization) error {
@@ -678,8 +678,8 @@ func TestApplyPermissionsPersistsPendingBeforeReservationAdmission(t *testing.T)
 	if !errors.Is(err, injected) {
 		t.Fatalf("ApplyPermissionsReserved error = %v", err)
 	}
-	if aborted {
-		t.Fatal("failed reservation admission invoked abort despite creating no reservation")
+	if !aborted {
+		t.Fatal("failed reservation admission did not idempotently abort partial reservation state")
 	}
 	if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); !os.IsNotExist(err) {
 		t.Fatalf("failed reservation admission retained permission pending: %v", err)
@@ -705,7 +705,7 @@ func TestApplyPermissionsAbortsReservationAfterSafePublicationRollback(t *testin
 	}
 	t.Cleanup(func() { permissionApplySyncBoundary = previousSync })
 	reserved := false
-	_, err = ApplyPermissionsReserved(
+	_, err = ApplyPermissions(
 		homePath, approved, action, decision,
 		allowPermissionApply,
 		func(outcome PermissionApplyOutcome, authorize PermissionApplyAuthorization) error {
@@ -754,7 +754,7 @@ func TestApplyPermissionsFinalizationFailureRecoversExactPublishedOutcome(t *tes
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	injected := errors.New("injected receipt interruption")
 	var attempted PermissionApplyOutcome
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, func(outcome PermissionApplyOutcome) error {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, func(outcome PermissionApplyOutcome) error {
 		attempted = outcome
 		return injected
 	}); !errors.Is(err, injected) || !IsPermissionApplyFinalizationPending(err) {
@@ -776,7 +776,7 @@ func TestApplyPermissionsFinalizationFailureRecoversExactPublishedOutcome(t *tes
 	retryDecision.ID = "pol_permission_retry"
 	retryDecision.ActionIntentID = retryAction.ID
 	var recovered PermissionApplyOutcome
-	applied, err := ApplyPermissions(homePath, current, retryAction, retryDecision, func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error {
+	applied, err := applyPermissionsForTest(homePath, current, retryAction, retryDecision, func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error {
 		return errors.New("new action must not authorize before prior outcome recovery")
 	}, func(outcome PermissionApplyOutcome) error {
 		recovered = outcome
@@ -807,7 +807,7 @@ func TestApplyPermissionsManifestOnlyOutcomeIsChanged(t *testing.T) {
 		t.Fatal("fixture target is not canonical")
 	}
 	var finalized PermissionApplyOutcome
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, func(outcome PermissionApplyOutcome) error {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, func(outcome PermissionApplyOutcome) error {
 		finalized = outcome
 		return nil
 	}); err != nil {
@@ -825,7 +825,7 @@ func TestPermissionRecoveryCleanupPreservesReplacementLeaf(t *testing.T) {
 	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	injected := errors.New("receipt unavailable")
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, func(PermissionApplyOutcome) error { return injected }); !errors.Is(err, injected) {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, func(PermissionApplyOutcome) error { return injected }); !errors.Is(err, injected) {
 		t.Fatalf("ApplyPermissions error = %v", err)
 	}
 	var pending permissionApplyPending
@@ -847,7 +847,7 @@ func TestPermissionRecoveryCleanupPreservesReplacementLeaf(t *testing.T) {
 	}
 	t.Cleanup(func() { permissionApplyRecoveryAfterQuarantine = previous })
 	current, _, _ := governedPermissionApproval(t, homePath, "claude_code")
-	if _, err := ApplyPermissions(homePath, current, action, decision, allowPermissionApply, finalizePermissionApply); err != nil {
+	if _, err := applyPermissionsForTest(homePath, current, action, decision, allowPermissionApply, finalizePermissionApply); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(filepath.Dir(targetPath), pending.RecoveryName))
@@ -862,7 +862,7 @@ func TestPendingRecoveryRollsBackInterruptedCreationToAbsent(t *testing.T) {
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	previous := applyPermissionsAfterTargetWrite
 	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
 		t.Fatal("interrupted creation error = nil")
 	}
 	applyPermissionsAfterTargetWrite = previous
@@ -871,7 +871,7 @@ func TestPendingRecoveryRollsBackInterruptedCreationToAbsent(t *testing.T) {
 		t.Fatalf("interruption did not publish creation: %v", err)
 	}
 	refuseNew := func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error { return os.ErrPermission }
-	if _, err := ApplyPermissions(homePath, approved, action, decision, refuseNew, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "authorization") {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, refuseNew, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "authorization") {
 		t.Fatalf("post-recovery apply error = %v, want new-action authorization refusal", err)
 	}
 	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
@@ -889,7 +889,7 @@ func TestPendingRecoveryClearsPrePublicationAbsentCreation(t *testing.T) {
 	outcome := newPermissionApplyOutcome(homePath, approved, action, decision, time.Date(2026, 7, 15, 12, 1, 0, 0, time.UTC), true)
 	writeTestJSON(t, PermissionApplyPendingPath(homePath, "claude_code"), newPermissionApplyPending(outcome))
 	refuseNew := func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error { return os.ErrPermission }
-	if _, err := ApplyPermissions(homePath, approved, action, decision, refuseNew, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "authorization") {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, refuseNew, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "authorization") {
 		t.Fatalf("post-recovery apply error = %v, want new-action authorization refusal", err)
 	}
 	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
@@ -906,7 +906,7 @@ func TestPendingCreationRecoveryPreservesConcurrentCanonicalReplacement(t *testi
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	previousInterrupt := applyPermissionsAfterTargetWrite
 	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
 		t.Fatal("interrupted creation error = nil")
 	}
 	applyPermissionsAfterTargetWrite = previousInterrupt
@@ -917,7 +917,7 @@ func TestPendingCreationRecoveryPreservesConcurrentCanonicalReplacement(t *testi
 		writeTestJSON(t, path, replacement)
 	}
 	t.Cleanup(func() { permissionApplyAfterCanonicalQuarantine = previousQuarantine })
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "approved render") {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "approved render") {
 		t.Fatalf("post-recovery apply error = %v, want stale render after concurrent replacement", err)
 	}
 	body, err := os.ReadFile(targetPath)
@@ -932,7 +932,7 @@ func TestPendingCreationRecoveryRejectsMismatchedRecoveryContent(t *testing.T) {
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	previous := applyPermissionsAfterTargetWrite
 	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
 		t.Fatal("interrupted creation error = nil")
 	}
 	applyPermissionsAfterTargetWrite = previous
@@ -952,7 +952,7 @@ func TestPendingCreationRecoveryRejectsMismatchedRecoveryContent(t *testing.T) {
 	if err := os.WriteFile(recoveryPath, []byte("mismatched recovery evidence\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(strings.ToLower(err.Error()), "recovery") {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(strings.ToLower(err.Error()), "recovery") {
 		t.Fatalf("mismatched recovery error = %v", err)
 	}
 	if body, err := os.ReadFile(recoveryPath); err != nil || string(body) != "mismatched recovery evidence\n" {
@@ -968,7 +968,7 @@ func TestPendingCreationRecoveryRejectsCanonicalRecoveryAliasBeforeFinalization(
 	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	injected := errors.New("receipt unavailable")
-	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, func(PermissionApplyOutcome) error { return injected }); !errors.Is(err, injected) {
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, func(PermissionApplyOutcome) error { return injected }); !errors.Is(err, injected) {
 		t.Fatalf("ApplyPermissions error = %v", err)
 	}
 	pendingPath := PermissionApplyPendingPath(homePath, "claude_code")
@@ -984,7 +984,7 @@ func TestPendingCreationRecoveryRejectsCanonicalRecoveryAliasBeforeFinalization(
 	writeTestJSON(t, pendingPath, pending)
 	current, _, _ := governedPermissionApproval(t, homePath, "claude_code")
 	finalized := false
-	if _, err := ApplyPermissions(homePath, current, action, decision, allowPermissionApply, func(PermissionApplyOutcome) error {
+	if _, err := applyPermissionsForTest(homePath, current, action, decision, allowPermissionApply, func(PermissionApplyOutcome) error {
 		finalized = true
 		return nil
 	}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "canonical") {
@@ -1119,7 +1119,22 @@ func governedPermissionApproval(t *testing.T, homePath, harnessName string) (Per
 func applyGovernedPermissions(t *testing.T, homePath, harnessName string) (PermissionRender, error) {
 	t.Helper()
 	render, action, decision := governedPermissionApproval(t, homePath, harnessName)
-	return ApplyPermissions(homePath, render, action, decision, allowPermissionApply, finalizePermissionApply)
+	return applyPermissionsForTest(homePath, render, action, decision, allowPermissionApply, finalizePermissionApply)
+}
+
+func applyPermissionsForTest(homePath string, approved PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize PermissionApplyAuthorization, finalize PermissionApplyFinalize) (PermissionRender, error) {
+	return ApplyPermissions(
+		homePath, approved, action, decision, authorize,
+		func(outcome PermissionApplyOutcome, authorize PermissionApplyAuthorization) error {
+			at, err := time.Parse(time.RFC3339Nano, outcome.AuthorizedAt)
+			if err != nil {
+				return err
+			}
+			return authorize(outcome.Action, outcome.Decision, at)
+		},
+		func(PermissionApplyOutcome) error { return nil },
+		finalize,
+	)
 }
 
 func allowPermissionApply(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error {
