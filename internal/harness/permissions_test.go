@@ -649,6 +649,104 @@ func TestApplyPermissionsRevalidatesAuthorizationBeforeManifestOnlyMutation(t *t
 	}
 }
 
+func TestApplyPermissionsPersistsPendingBeforeReservationAdmission(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	before, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("authorization revoked")
+	aborted := false
+	_, err = ApplyPermissionsReserved(
+		homePath, approved, action, decision,
+		func(_ envelope.ActionIntent, _ envelope.PolicyDecision, _ time.Time) error { return injected },
+		func(outcome PermissionApplyOutcome, authorize PermissionApplyAuthorization) error {
+			if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); err != nil {
+				t.Fatalf("reservation ran before durable permission pending: %v", err)
+			}
+			if current, err := os.ReadFile(targetPath); err != nil || !bytesEqual(current, before) {
+				t.Fatalf("target changed before reservation: body=%q err=%v", current, err)
+			}
+			return authorize(outcome.Action, outcome.Decision, mustPermissionAuthorizedAt(t, outcome))
+		},
+		func(PermissionApplyOutcome) error { aborted = true; return nil },
+		finalizePermissionApply,
+	)
+	if !errors.Is(err, injected) {
+		t.Fatalf("ApplyPermissionsReserved error = %v", err)
+	}
+	if aborted {
+		t.Fatal("failed reservation admission invoked abort despite creating no reservation")
+	}
+	if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); !os.IsNotExist(err) {
+		t.Fatalf("failed reservation admission retained permission pending: %v", err)
+	}
+}
+
+func TestApplyPermissionsAbortsReservationAfterSafePublicationRollback(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	before, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("target publication sync failed")
+	previousSync := permissionApplySyncBoundary
+	permissionApplySyncBoundary = func(stage, _ string) error {
+		if stage == "target_publish" {
+			return injected
+		}
+		return nil
+	}
+	t.Cleanup(func() { permissionApplySyncBoundary = previousSync })
+	reserved := false
+	_, err = ApplyPermissionsReserved(
+		homePath, approved, action, decision,
+		allowPermissionApply,
+		func(outcome PermissionApplyOutcome, authorize PermissionApplyAuthorization) error {
+			if err := authorize(outcome.Action, outcome.Decision, mustPermissionAuthorizedAt(t, outcome)); err != nil {
+				return err
+			}
+			reserved = true
+			return nil
+		},
+		func(PermissionApplyOutcome) error {
+			if !reserved {
+				t.Fatal("abort ran without an active reservation")
+			}
+			if current, err := os.ReadFile(targetPath); err != nil || !bytesEqual(current, before) {
+				t.Fatalf("reservation aborted before pre-image restoration: body=%q err=%v", current, err)
+			}
+			reserved = false
+			return nil
+		},
+		finalizePermissionApply,
+	)
+	if !errors.Is(err, injected) {
+		t.Fatalf("ApplyPermissionsReserved error = %v", err)
+	}
+	if reserved {
+		t.Fatal("safe rollback left reservation active")
+	}
+	if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); !os.IsNotExist(err) {
+		t.Fatalf("safe rollback retained permission pending: %v", err)
+	}
+}
+
+func mustPermissionAuthorizedAt(t *testing.T, outcome PermissionApplyOutcome) time.Time {
+	t.Helper()
+	at, err := time.Parse(time.RFC3339Nano, outcome.AuthorizedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
 func TestApplyPermissionsFinalizationFailureRecoversExactPublishedOutcome(t *testing.T) {
 	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
 	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
