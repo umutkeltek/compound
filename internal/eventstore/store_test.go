@@ -1,0 +1,349 @@
+package eventstore
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestParseReferenceAcceptsLogicalBareAndHistoricalShapes(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{
+		"rec_abc123",
+		"compound://events/rec_abc123",
+		"events/rec_abc123.json",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			ref, err := ParseReference(raw)
+			if err != nil {
+				t.Fatalf("ParseReference(%q): %v", raw, err)
+			}
+			if got, want := ref.ID(), "rec_abc123"; got != want {
+				t.Fatalf("id = %q, want %q", got, want)
+			}
+			if got, want := ref.String(), "compound://events/rec_abc123"; got != want {
+				t.Fatalf("logical ref = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestParseReferenceRejectsPhysicalAndUnsafeShapes(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{
+		"",
+		" rec_abc123",
+		"rec_abc123 ",
+		".",
+		"..",
+		"../rec_abc123",
+		"events/../rec_abc123.json",
+		"events/segments/2026-07/rec_abc123.json",
+		"events/index/rec_abc123.json",
+		"compound://events/segments/rec_abc123",
+		"compound://events/rec_abc123?raw=1",
+		"compound://events/rec_abc123#fragment",
+		"/events/rec_abc123.json",
+		`events\rec_abc123.json`,
+		"events/rec_abc123",
+		"rec_abc123.json",
+	} {
+		t.Run(strings.ReplaceAll(raw, "/", "_"), func(t *testing.T) {
+			if _, err := ParseReference(raw); err == nil {
+				t.Fatalf("ParseReference(%q) unexpectedly succeeded", raw)
+			}
+		})
+	}
+}
+
+func TestPutJSONPreservesIndentAndExactlyOneNewline(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	payload := struct {
+		ID   string `json:"id"`
+		Meta struct {
+			State string `json:"state"`
+		} `json:"meta"`
+	}{ID: "rec_bytes"}
+	payload.Meta.State = "ok"
+
+	for _, tc := range []struct {
+		name   string
+		id     string
+		indent string
+		want   string
+	}{
+		{
+			name:   "one space",
+			id:     "rec_one",
+			indent: " ",
+			want:   "{\n \"id\": \"rec_bytes\",\n \"meta\": {\n  \"state\": \"ok\"\n }\n}\n",
+		},
+		{
+			name:   "two spaces",
+			id:     "rec_two",
+			indent: "  ",
+			want:   "{\n  \"id\": \"rec_bytes\",\n  \"meta\": {\n    \"state\": \"ok\"\n  }\n}\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := store.PutJSON(tc.id, payload, tc.indent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Created || result.Reference.String() != "compound://events/"+tc.id {
+				t.Fatalf("unexpected put result: %+v", result)
+			}
+			record, err := store.Read(tc.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(record.Bytes); got != tc.want {
+				t.Fatalf("bytes differ\ngot:\n%q\nwant:\n%q", got, tc.want)
+			}
+			if result.DiagnosticPath == "" || record.DiagnosticPath != result.DiagnosticPath {
+				t.Fatalf("diagnostic path mismatch: put=%q read=%q", result.DiagnosticPath, record.DiagnosticPath)
+			}
+		})
+	}
+}
+
+func TestPutModesPreserveOverwriteExclusiveAndSkipIfPresent(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	if _, err := store.PutJSON("rec_mode", map[string]string{"value": "first"}, " "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutJSON("rec_mode", map[string]string{"value": "overwritten"}, " "); err != nil {
+		t.Fatalf("overwrite: %v", err)
+	}
+	overwritten, err := store.Read("compound://events/rec_mode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(overwritten.Bytes, []byte("overwritten")) {
+		t.Fatalf("overwrite did not replace bytes: %s", overwritten.Bytes)
+	}
+
+	if _, err := store.PutJSONExclusive("rec_mode", map[string]string{"value": "exclusive"}, " "); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("exclusive existing error = %v, want os.ErrExist", err)
+	}
+
+	created, err := store.PutJSONIfAbsent("rec_mode", map[string]string{"value": "skipped"}, " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Created {
+		t.Fatal("if-absent existing record reported created")
+	}
+	stable, err := store.Read("events/rec_mode.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stable.Bytes, overwritten.Bytes) {
+		t.Fatalf("if-absent changed stable bytes\nbefore=%q\nafter=%q", overwritten.Bytes, stable.Bytes)
+	}
+
+	created, err = store.PutJSONIfAbsent("trace_new", map[string]string{"value": "created"}, "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.Created {
+		t.Fatal("if-absent missing record did not report created")
+	}
+}
+
+func TestPutJSONAtomicPreservesPublicationHooksAndCleansTemp(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	var phases []string
+	result, err := store.PutJSONAtomic("tr_atomic", map[string]string{"state": "ok"}, "  ", AtomicOptions{
+		SyncDirectory: true,
+		Write: func(file *os.File, data []byte) error {
+			phases = append(phases, "write")
+			for len(data) > 0 {
+				n, err := file.Write(data)
+				if err != nil {
+					return err
+				}
+				if n == 0 {
+					return io.ErrShortWrite
+				}
+				data = data[n:]
+			}
+			return nil
+		},
+		BeforePublish: func() error {
+			phases = append(phases, "before_publish")
+			if exists, err := store.Exists("tr_atomic"); err != nil || exists {
+				t.Fatalf("record visible before publish: exists=%v err=%v", exists, err)
+			}
+			return nil
+		},
+		AfterPublish: func() error {
+			phases = append(phases, "after_publish")
+			if exists, err := store.Exists("tr_atomic"); err != nil || !exists {
+				t.Fatalf("record not visible after publish: exists=%v err=%v", exists, err)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Created {
+		t.Fatal("atomic put did not report created")
+	}
+	if want := []string{"write", "before_publish", "after_publish"}; !reflect.DeepEqual(phases, want) {
+		t.Fatalf("phases = %v, want %v", phases, want)
+	}
+	entries, err := os.ReadDir(filepath.Dir(result.DiagnosticPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Fatalf("atomic temp leaked: %s", entry.Name())
+		}
+	}
+}
+
+func TestScanIsDeterministicLazyAndPrefixFilteredBeforeOpen(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	for _, id := range []string{"rec_z", "act_ignored", "rec_a"} {
+		if _, err := store.PutJSON(id, map[string]string{"id": id}, " "); err != nil {
+			t.Fatal(err)
+		}
+	}
+	broken := filepath.Join(t.TempDir(), "missing.json")
+	if err := os.Symlink(broken, filepath.Join(store.DiagnosticRoot(), "trace_broken.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := store.Scan(ScanOptions{Prefixes: []string{"rec_"}, RegularOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		got = append(got, entry.ID)
+		if _, err := entry.Read(); err != nil {
+			t.Fatalf("read %s: %v", entry.ID, err)
+		}
+	}
+	if want := []string{"rec_a", "rec_z"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("scan ids = %v, want %v", got, want)
+	}
+
+	missingStore, err := Open(filepath.Join(t.TempDir(), "absent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := missingStore.Scan(ScanOptions{}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing scan error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestNamedStreamsRemainPhysicallyDistinct(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	if err := store.AppendHookEvent(map[string]string{"kind": "hook"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendTrace(map[string]string{"kind": "trace"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendRetrievalTraffic(map[string]string{"kind": "retrieval"}); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := []struct {
+		name string
+		open func() (*os.File, error)
+		want string
+	}{
+		{"hook", store.OpenHookEvents, `{"kind":"hook"}` + "\n"},
+		{"trace", store.OpenTraces, `{"kind":"trace"}` + "\n"},
+		{"retrieval", store.OpenRetrievalTraffic, `{"kind":"retrieval"}` + "\n"},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			file, err := check.open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			got, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != check.want {
+				t.Fatalf("stream bytes = %q, want %q", got, check.want)
+			}
+		})
+	}
+	if _, err := os.Stat(store.WorkLogPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("compatibility stream write touched work log: %v", err)
+	}
+}
+
+func TestReadRegularRejectsSymlinkedRecordAndEventsAncestor(t *testing.T) {
+	t.Parallel()
+
+	t.Run("record", func(t *testing.T) {
+		store := openTestStore(t)
+		outside := filepath.Join(t.TempDir(), "rec_link.json")
+		if err := os.WriteFile(outside, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(store.DiagnosticRoot(), "rec_link.json")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ReadRegular("rec_link", "receipt"); err == nil {
+			t.Fatal("ReadRegular followed a symlinked event record")
+		}
+	})
+
+	t.Run("events ancestor", func(t *testing.T) {
+		home := t.TempDir()
+		outside := t.TempDir()
+		if err := os.WriteFile(filepath.Join(outside, "rec_link.json"), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(home, "events")); err != nil {
+			t.Fatal(err)
+		}
+		store, err := Open(home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ReadRegular("rec_link", "receipt"); err == nil {
+			t.Fatal("ReadRegular followed a symlinked events ancestor")
+		}
+	})
+}
+
+func openTestStore(t *testing.T) *Store {
+	t.Helper()
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
