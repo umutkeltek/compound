@@ -1,8 +1,10 @@
 package work
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -150,6 +152,237 @@ func TestRecordReservedReceiptedActionReplaysCompletedOutcomeAfterLifecycleAdvan
 	}
 	if !replay.Replayed || replay.Receipt.ID != first.Receipt.ID || replay.Transition.ID != first.Transition.ID {
 		t.Fatalf("replay = %+v, want exact completed transaction %+v", replay, first)
+	}
+}
+
+func TestCompletedReceiptedActionPersistsExactOutputDigests(t *testing.T) {
+	s, w, in, authorizedAt, result := completedGovernedAction(t)
+	path := filepath.Join(s.home, "work", "receipted-action-completions", w.ID, in.Action.ID+".json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completion map[string]any
+	if err := json.Unmarshal(body, &completion); err != nil {
+		t.Fatal(err)
+	}
+	if got := completion["schema_version"]; got != "compound.receipted_action_completion.v0.1" {
+		t.Fatalf("completion schema_version = %v", got)
+	}
+	for key, wantID := range map[string]string{
+		"receipt_sha256":    result.Receipt.ID,
+		"transition_sha256": result.Transition.ID,
+		"event_sha256":      result.Action.ID,
+	} {
+		got, ok := completion[key].(string)
+		if !ok || len(got) != 64 {
+			t.Fatalf("completion %s = %v, want SHA-256 binding for %s", key, completion[key], wantID)
+		}
+	}
+	if replay, err := s.RecordReservedReceiptedAction(w.ID, in, authorizedAt); err != nil || !replay.Replayed {
+		t.Fatalf("exact completion did not replay: result=%+v err=%v", replay, err)
+	}
+}
+
+func TestCompletedReceiptedActionRejectsLegacyAndMissingExactOutputDigests(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{
+			name: "legacy completion schema",
+			mutate: func(completion map[string]any) {
+				completion["schema_version"] = receiptedActionReservationSchemaVersion
+				delete(completion, "receipt_sha256")
+				delete(completion, "transition_sha256")
+				delete(completion, "event_sha256")
+			},
+			want: "schema_version",
+		},
+		{name: "missing receipt digest", mutate: func(completion map[string]any) { delete(completion, "receipt_sha256") }, want: "receipt_sha256"},
+		{name: "missing transition digest", mutate: func(completion map[string]any) { delete(completion, "transition_sha256") }, want: "transition_sha256"},
+		{name: "missing event digest", mutate: func(completion map[string]any) { delete(completion, "event_sha256") }, want: "event_sha256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, w, in, authorizedAt, _ := completedGovernedAction(t)
+			path := filepath.Join(s.home, "work", "receipted-action-completions", w.ID, in.Action.ID+".json")
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var completion map[string]any
+			if err := json.Unmarshal(body, &completion); err != nil {
+				t.Fatal(err)
+			}
+			completion["schema_version"] = "compound.receipted_action_completion.v0.1"
+			tc.mutate(completion)
+			body, err = json.Marshal(completion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if replay, err := s.RecordReservedReceiptedAction(w.ID, in, authorizedAt); err == nil || replay.Replayed || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("completion tamper replayed: result=%+v err=%v, want %q", replay, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCompletedReceiptedActionRejectsSchemaValidExactOutputTamper(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*testing.T, *Store, ReceiptedActionResult)
+	}{
+		{name: "receipt header", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedReceipt(t, s, result, func(receipt *envelope.Receipt) { receipt.Authority.Owner = "tampered" })
+		}},
+		{name: "receipt producer", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedReceipt(t, s, result, func(receipt *envelope.Receipt) { receipt.Producer.Name = "tampered" })
+		}},
+		{name: "receipt skills missed", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedReceipt(t, s, result, func(receipt *envelope.Receipt) { receipt.Skills.Missed = []string{"skill:tampered"} })
+		}},
+		{name: "receipt cost", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedReceipt(t, s, result, func(receipt *envelope.Receipt) { tokens := 1; receipt.Cost.Tokens = &tokens })
+		}},
+		{name: "receipt memory", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedReceipt(t, s, result, func(receipt *envelope.Receipt) { receipt.Memory.Candidates = []string{"candidate:tampered"} })
+		}},
+		{name: "receipt next", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedReceipt(t, s, result, func(receipt *envelope.Receipt) { receipt.Next.SuggestedWork = []string{"work_tampered"} })
+		}},
+		{name: "receipt artifacts", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedReceipt(t, s, result, func(receipt *envelope.Receipt) { receipt.StateDelta.Artifacts = []string{"artifact:tampered"} })
+		}},
+		{name: "receipt verification", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedReceipt(t, s, result, func(receipt *envelope.Receipt) { receipt.StateDelta.Verification = []string{"check:tampered"} })
+		}},
+		{name: "transition header", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedTransition(t, s, result, func(transition *envelope.Transition) { transition.Authority.Owner = "tampered" })
+		}},
+		{name: "transition producer", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedTransition(t, s, result, func(transition *envelope.Transition) { transition.Producer.Name = "tampered" })
+		}},
+		{name: "transition risk projection", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedTransition(t, s, result, func(transition *envelope.Transition) { transition.Projections.Risk = []string{"risk:tampered"} })
+		}},
+		{name: "transition should harden", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedTransition(t, s, result, func(transition *envelope.Transition) { transition.SecondOrder.ShouldHarden = true })
+		}},
+		{name: "transition should create rule", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedTransition(t, s, result, func(transition *envelope.Transition) { transition.SecondOrder.ShouldCreateRule = true })
+		}},
+		{name: "transition should decay", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedTransition(t, s, result, func(transition *envelope.Transition) { transition.SecondOrder.ShouldDecay = true })
+		}},
+		{name: "transition revisit at", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedTransition(t, s, result, func(transition *envelope.Transition) {
+				transition.SecondOrder.RevisitAt = fixedNow.Add(24 * time.Hour).Format(time.RFC3339)
+			})
+		}},
+		{name: "lifecycle equal state", mutate: func(t *testing.T, s *Store, result ReceiptedActionResult) {
+			tamperGovernedLifecycleEvent(t, s, result.Action.ID, func(event *Event) { event.From, event.To = "verifying", "verifying" })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, w, in, authorizedAt, result := completedGovernedAction(t)
+			tc.mutate(t, s, result)
+			if replay, err := s.RecordReservedReceiptedAction(w.ID, in, authorizedAt); err == nil || replay.Replayed || !strings.Contains(err.Error(), "digest") {
+				t.Fatalf("schema-valid tamper replayed: result=%+v err=%v", replay, err)
+			}
+		})
+	}
+}
+
+func completedGovernedAction(t *testing.T) (*Store, envelope.WorkEnvelope, ReceiptedActionInput, time.Time, ReceiptedActionResult) {
+	t.Helper()
+	s := newStore(t)
+	w := governedActionRunningWork(t, s, "operator:test")
+	action, decision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
+	in := ReceiptedActionInput{
+		Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
+		Outcome: "completed", Changed: true, Summary: "permission activation completed", MoveType: "control_plane_repair",
+		BeforeRefs: []string{"sha256:preimage"}, AfterRefs: []string{"sha256:postimage"},
+	}
+	authorizedAt := fixedNow.Add(2 * time.Minute)
+	if err := s.ReserveReceiptedAction(w.ID, in, authorizedAt, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.RecordReservedReceiptedAction(w.ID, in, authorizedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "operator:test"}, fixedNow.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	return s, w, in, authorizedAt, result
+}
+
+func tamperGovernedReceipt(t *testing.T, s *Store, result ReceiptedActionResult, mutate func(*envelope.Receipt)) {
+	t.Helper()
+	var receipt envelope.Receipt
+	if err := s.readJSON(s.envPath(result.Receipt.ID), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&receipt)
+	if err := receipt.Validate(); err != nil {
+		t.Fatalf("receipt tamper is not schema-valid: %v", err)
+	}
+	if err := s.writeJSON(s.envPath(receipt.ID), &receipt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func tamperGovernedTransition(t *testing.T, s *Store, result ReceiptedActionResult, mutate func(*envelope.Transition)) {
+	t.Helper()
+	var transition envelope.Transition
+	if err := s.readJSON(s.envPath(result.Transition.ID), &transition); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&transition)
+	if err := transition.Validate(); err != nil {
+		t.Fatalf("transition tamper is not schema-valid: %v", err)
+	}
+	if err := s.writeJSON(s.envPath(transition.ID), &transition); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func tamperGovernedLifecycleEvent(t *testing.T, s *Store, actionID string, mutate func(*Event)) {
+	t.Helper()
+	body, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
+	matched := 0
+	for i, line := range lines {
+		var event Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if !contains(event.Attached, actionID) {
+			continue
+		}
+		mutate(&event)
+		if event.From != event.To {
+			t.Fatalf("lifecycle tamper is not an equal-state event: %+v", event)
+		}
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines[i] = string(encoded)
+		matched++
+	}
+	if matched != 1 {
+		t.Fatalf("matched %d lifecycle events for %s", matched, actionID)
+	}
+	if err := os.WriteFile(s.eventsLog(), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
