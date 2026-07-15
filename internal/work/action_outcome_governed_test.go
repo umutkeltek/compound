@@ -1,6 +1,7 @@
 package work
 
 import (
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -59,6 +60,67 @@ func TestRecordReceiptedActionPersistsExactGovernedOutcome(t *testing.T) {
 				t.Fatalf("governed outcome broke work chain: %+v", result)
 			}
 		})
+	}
+}
+
+func TestReceiptedActionReservationBlocksLifecycleUntilFinalizeOrAbort(t *testing.T) {
+	newInput := func(w envelope.WorkEnvelope, action envelope.ActionIntent, decision envelope.PolicyDecision) ReceiptedActionInput {
+		return ReceiptedActionInput{
+			Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
+			Outcome: "completed", Changed: true, Summary: "permission activation completed", MoveType: "control_plane_repair",
+			BeforeRefs: []string{"sha256:preimage"}, AfterRefs: []string{"sha256:postimage"},
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		complete func(t *testing.T, s *Store, w envelope.WorkEnvelope, in ReceiptedActionInput, at time.Time)
+	}{
+		{name: "finalize", complete: func(t *testing.T, s *Store, w envelope.WorkEnvelope, in ReceiptedActionInput, at time.Time) {
+			if result, err := s.RecordReservedReceiptedAction(w.ID, in, at); err != nil || result.Receipt.ID == "" {
+				t.Fatalf("finalize reservation: result=%+v err=%v", result, err)
+			}
+		}},
+		{name: "abort", complete: func(t *testing.T, s *Store, w envelope.WorkEnvelope, in ReceiptedActionInput, _ time.Time) {
+			if err := s.AbortReceiptedActionReservation(w.ID, in.Action.ID); err != nil {
+				t.Fatalf("abort reservation: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			w := governedActionRunningWork(t, s, "operator:test")
+			action, decision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
+			in := newInput(w, action, decision)
+			authorizedAt := fixedNow.Add(2 * time.Minute)
+			if err := s.ReserveReceiptedAction(w.ID, in, authorizedAt, func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "operator:test"}, fixedNow.Add(3*time.Minute)); err == nil ||
+				!strings.Contains(err.Error(), "pending receipted action "+action.ID) {
+				t.Fatalf("advance crossed reservation: %v", err)
+			}
+			tc.complete(t, s, w, in, authorizedAt)
+			if advanced, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "operator:test"}, fixedNow.Add(4*time.Minute)); err != nil || advanced.State != "verifying" {
+				t.Fatalf("advance after reservation completion: work=%+v err=%v", advanced, err)
+			}
+		})
+	}
+}
+
+func TestReceiptedActionReservationAuthorizationFailureDoesNotBlockWork(t *testing.T) {
+	s := newStore(t)
+	w := governedActionRunningWork(t, s, "operator:test")
+	action, decision := governedActionApproval(w, "operator:test", fixedNow.Add(time.Minute))
+	in := ReceiptedActionInput{
+		Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
+		Outcome: "completed", Changed: true, Summary: "permission activation completed", MoveType: "control_plane_repair",
+	}
+	injected := errors.New("authorization revoked")
+	if err := s.ReserveReceiptedAction(w.ID, in, fixedNow.Add(2*time.Minute), func() error { return injected }); !errors.Is(err, injected) {
+		t.Fatalf("ReserveReceiptedAction error = %v", err)
+	}
+	if advanced, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "operator:test"}, fixedNow.Add(3*time.Minute)); err != nil || advanced.State != "verifying" {
+		t.Fatalf("authorization failure left reservation: work=%+v err=%v", advanced, err)
 	}
 }
 
