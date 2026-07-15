@@ -354,7 +354,7 @@ func validateRetirementOwnerProof(proof WorktreeRetirementOwnerProof) error {
 	if strings.TrimSpace(proof.WorkID) == "" || proof.State != "running" || strings.TrimSpace(proof.LeaseHolder) == "" || strings.TrimSpace(proof.LeaseClaimedAt) == "" {
 		return fmt.Errorf("running work id and lease holder/timestamp required")
 	}
-	if !validRetirementHex(proof.LeaseWorkSHA256, 64) || !validRetirementDigest(proof.WorkDigest) {
+	if (!validRetirementHex(proof.LeaseWorkSHA256, 64) && !validRetirementDigest(proof.LeaseWorkSHA256)) || !validRetirementDigest(proof.WorkDigest) {
 		return fmt.Errorf("lease/work digests required")
 	}
 	return nil

@@ -164,15 +164,22 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 	}
 	pendingPath := filepath.Join(dir, plan.ID+".retirement.pending.json")
 	resultPath := filepath.Join(dir, plan.ID+".retirement.result.json")
-	if existing, loadErr := loadWorktreeRetirementResult(resultPath); loadErr == nil && existing.Status == "completed" {
+	var previousResult *WorktreeRetirementResult
+	if existing, loadErr := loadWorktreeRetirementResult(resultPath); loadErr == nil {
 		if err := validateWorktreeRetirementResult(existing, plan, report, resultPath); err != nil {
 			return WorktreeRetirementResult{}, err
 		}
-		if err := verifyRetirementFinalState(ctx, deps.Git, plan); err != nil {
-			return WorktreeRetirementResult{}, fmt.Errorf("completed retirement result no longer matches Git state: %w", err)
+		if existing.Status == "completed" {
+			if err := verifyRetirementFinalState(ctx, deps.Git, plan); err != nil {
+				return WorktreeRetirementResult{}, fmt.Errorf("completed retirement result no longer matches Git state: %w", err)
+			}
+			existing.Replayed = true
+			return existing, nil
 		}
-		existing.Replayed = true
-		return existing, nil
+		if existing.Status != "partial" && existing.Status != "failed" {
+			return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement result has non-resumable status %q", existing.Status)
+		}
+		previousResult = &existing
 	} else if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
 		return WorktreeRetirementResult{}, loadErr
 	}
@@ -202,6 +209,24 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 			}
 		} else if err := verifyRetirementResumeState(ctx, deps.Git, plan, pending.Phase); err != nil {
 			return WorktreeRetirementResult{}, err
+		}
+		if previousResult != nil {
+			action := newWorktreeRetirementActionForAttempt(plan, report, actor, now, previousResult.ResultDigest)
+			decision, err := deps.Evaluate(action, now)
+			if err != nil {
+				return WorktreeRetirementResult{}, err
+			}
+			if err := action.Validate(); err != nil {
+				return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement retry action invalid: %w", err)
+			}
+			if err := decision.Validate(); err != nil || decision.ActionIntentID != action.ID || decision.IDs.WorkID != action.IDs.WorkID || !policy.Allowed(decision) {
+				return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement retry policy does not allow exact action")
+			}
+			pending.Action = action
+			pending.Decision = decision
+			if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+				return WorktreeRetirementResult{}, err
+			}
 		}
 	} else {
 		if !reflect.DeepEqual(req.OwnerProof, plan.OwnerProof) {
@@ -338,8 +363,15 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 }
 
 func newWorktreeRetirementAction(plan WorktreeRetirementPlan, report WorktreeRetirementReviewReport, actor string, now time.Time) envelope.ActionIntent {
+	return newWorktreeRetirementActionForAttempt(plan, report, actor, now, "")
+}
+
+func newWorktreeRetirementActionForAttempt(plan WorktreeRetirementPlan, report WorktreeRetirementReviewReport, actor string, now time.Time, attemptSalt string) envelope.ActionIntent {
 	evidence := worktreeRetirementApplyProofRefs(plan, report)
-	id := "act_" + digestRetirementHex([]byte(plan.ID + "|" + report.AuthorizationDigest + "|" + actor))[:12]
+	if attemptSalt != "" {
+		evidence = sortedUniqueNonEmpty(append(evidence, "worktree-retirement-prior-result:"+attemptSalt))
+	}
+	id := "act_" + digestRetirementHex([]byte(plan.ID + "|" + report.AuthorizationDigest + "|" + actor + "|" + attemptSalt))[:12]
 	return envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent, ID: id, CreatedAt: now.UTC().Format(time.RFC3339Nano),
