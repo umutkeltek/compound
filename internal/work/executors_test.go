@@ -85,6 +85,56 @@ func TestExecutorsProjectionDefaultDoesNotProbeLocalLMStudio(t *testing.T) {
 // StaleLeaseWorkIDs (additive field) so the lease-hygiene attention group can
 // name exactly which stale leases it will sweep; a live-work lease must never
 // leak into that list.
+func TestExecutorsProjectionReusesCallerWorkbench(t *testing.T) {
+	now := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	store := newExecutorTestStore(t, now)
+
+	// Parity: a caller-built RecentLimit-8 report must yield the same
+	// projection as the internal build it replaces.
+	bench, err := store.Workbench(now, WorkbenchOptions{RecentLimit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	internal, err := store.ExecutorsProjection(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reused, err := store.ExecutorsProjection(now, ExecutorsProjectionOptions{Workbench: &bench})
+	if err != nil {
+		t.Fatal(err)
+	}
+	internalJSON, err := json.Marshal(internal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reusedJSON, err := json.Marshal(reused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(internalJSON) != string(reusedJSON) {
+		t.Fatalf("projection from reused workbench diverged from internal build:\n%s\nvs\n%s", reusedJSON, internalJSON)
+	}
+
+	// Depth: the passed report must actually be USED, not silently rebuilt.
+	// A sentinel integrity note in the caller's report must surface in the
+	// projection; if the engine reverts to always rebuilding, this fails.
+	sentinel := "sentinel-integrity-from-caller-workbench"
+	bench.Integrity = append(bench.Integrity, sentinel)
+	proj, err := store.ExecutorsProjection(now, ExecutorsProjectionOptions{Workbench: &bench})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, note := range proj.Integrity {
+		if note == sentinel {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("caller workbench was ignored: sentinel integrity note missing from projection integrity %v", proj.Integrity)
+	}
+}
+
 func TestExecutorsProjectionRecordsStaleLeaseWorkIDs(t *testing.T) {
 	now := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
 	store := newExecutorTestStore(t, now)

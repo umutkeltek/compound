@@ -54,12 +54,16 @@ func cmdAttention(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	workbench, err := store.Workbench(now, work.WorkbenchOptions{RecentLimit: 5})
+	// One Workbench build serves both consumers below. attention.Build never
+	// reads Recent, so ExecutorsProjection's RecentLimit 8 is the binding
+	// requirement; building twice (5 here, 8 inside the projection) walked
+	// the whole event store twice per invocation.
+	workbench, err := store.Workbench(now, work.WorkbenchOptions{RecentLimit: 8})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	executors, err := store.ExecutorsProjection(now)
+	executors, err := store.ExecutorsProjection(now, work.ExecutorsProjectionOptions{Workbench: &workbench})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

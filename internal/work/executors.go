@@ -129,6 +129,12 @@ type ExecutorsProjectionOptions struct {
 	// JobsStateDir overrides the codex jobs state directory scanned by the
 	// probe. Empty falls back to DefaultCodexJobsStateDir (machine-local).
 	JobsStateDir string
+	// Workbench reuses a caller-built report instead of building a second one
+	// (a full Workbench walks the whole event store — the dominant cost of
+	// every projection verb). The report must have been built with
+	// RecentLimit >= 8: the executor rows read Recent, and a shorter list
+	// would silently change which observations they see.
+	Workbench *WorkbenchReport
 }
 
 type executorProfile struct {
@@ -152,9 +158,15 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 	if len(optionSets) > 0 {
 		opts = optionSets[0]
 	}
-	workbench, err := s.Workbench(now, WorkbenchOptions{RecentLimit: 8})
-	if err != nil {
-		return ExecutorsProjection{}, err
+	var workbench WorkbenchReport
+	if opts.Workbench != nil {
+		workbench = *opts.Workbench
+	} else {
+		built, err := s.Workbench(now, WorkbenchOptions{RecentLimit: 8})
+		if err != nil {
+			return ExecutorsProjection{}, err
+		}
+		workbench = built
 	}
 	leases, err := s.ListLeases()
 	if err != nil {
