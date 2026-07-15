@@ -575,10 +575,12 @@ func validatePermissionApplyPending(homePath, harness string, pending permission
 	if pending.SchemaVersion != permissionApplyPendingSchemaVersion || pending.Harness != harness || strings.TrimSpace(pending.TargetPath) == "" {
 		return zero, fmt.Errorf("pending permission apply transaction identity is invalid")
 	}
-	for label, name := range map[string]string{"recovery": pending.RecoveryName, "rollback": pending.RollbackName} {
-		if name != "" && !validPermissionLeaf(name) {
-			return zero, fmt.Errorf("pending permission apply %s name must be a local leaf", label)
-		}
+	if err := validatePermissionRecoveryNames(pending); err != nil {
+		return zero, err
+	}
+	targetChanged := !pending.BeforeExisted || !bytes.Equal(pending.BeforeContent, pending.IntendedContent)
+	if pending.TargetChanged != targetChanged {
+		return zero, fmt.Errorf("pending permission apply target outcome does not match derived content change")
 	}
 	if pending.TargetChanged != (pending.RecoveryName != "") || pending.TargetChanged != (pending.RollbackName != "") {
 		return zero, fmt.Errorf("pending permission apply recovery identity does not match target outcome")
@@ -639,6 +641,27 @@ func validatePermissionApplyPending(homePath, harness string, pending permission
 		Changed:         pending.Changed,
 		FilesChanged:    append([]string(nil), pending.FilesChanged...),
 	}, nil
+}
+
+func validatePermissionRecoveryNames(pending permissionApplyPending) error {
+	for _, item := range []struct {
+		label string
+		name  string
+	}{
+		{label: "recovery", name: pending.RecoveryName},
+		{label: "rollback", name: pending.RollbackName},
+	} {
+		if item.name != "" && !validPermissionLeaf(item.name) {
+			return fmt.Errorf("pending permission apply %s name must be a local leaf", item.label)
+		}
+		if item.name != "" && item.name == filepath.Base(pending.TargetPath) {
+			return fmt.Errorf("pending permission apply %s name aliases the canonical target", item.label)
+		}
+	}
+	if pending.RecoveryName != "" && pending.RecoveryName == pending.RollbackName {
+		return fmt.Errorf("pending permission apply recovery and rollback names alias each other")
+	}
+	return nil
 }
 
 func permissionManifestMatchesPending(homePath string, pending permissionApplyPending) (bool, error) {
