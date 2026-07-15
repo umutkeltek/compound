@@ -5,35 +5,14 @@ import (
 	"time"
 )
 
-func TestCloseStampsProducerLaneIDOnReceiptAndTransition(t *testing.T) {
-	s := newStore(t)
-	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "fixture proof exists"}, fixedNow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Claim(w.ID, "fixture/lane", fixedNow.Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "fixture/lane"}, fixedNow.Add(2*time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	res, err := s.Close(w.ID, CloseInput{
-		Outcome:   "completed",
-		MoveType:  "outward_delta",
-		Actor:     "fixture/lane",
-		Summary:   "fixture proof landed",
-		ProofRefs: []string{"proof:fixture"},
-	}, fixedNow.Add(3*time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Receipt.Producer.LaneID != "fixture/lane" {
-		t.Fatalf("receipt producer lane_id = %q, want fixture/lane", res.Receipt.Producer.LaneID)
-	}
-	if res.Transition.Producer.LaneID != "fixture/lane" {
-		t.Fatalf("transition producer lane_id = %q, want fixture/lane", res.Transition.Producer.LaneID)
-	}
-}
+// NOTE (B0 deviation): the former TestCloseStampsProducerLaneIDOnReceiptAndTransition asserted
+// that close-minted receipts inherit the lane from in.Actor (a raw actor string). B0 removes
+// that actor-derivation from the close path — a lane is stamped ONLY when it was DECLARED on the
+// lifecycle (claim/advance --lane) and resolved to a canonical agent-lane node id. That behavior
+// is now owned by TestF1DeclaredLaneStampsCanonicalNodeIDOnClose (declared → canonical) and
+// TestF2NoLaneEmptyLaneIDDespiteActorOwnerHarness (no declaration → empty, no-guessing) in
+// lane_declaration_test.go. The action-execution mint path below is a SEPARATE seam, out of B0's
+// scope, and still stamps its actor-derived lane unchanged (see handoff deviations).
 
 func TestActionExecutionReceiptDraftStampsProducerLaneID(t *testing.T) {
 	s := newStore(t)

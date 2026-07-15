@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/home"
 )
@@ -118,9 +119,14 @@ type Event struct {
 
 // Lease records who holds a claimed work (claim-before-you-touch / D7).
 type Lease struct {
-	WorkID     string `json:"work_id"`
-	By         string `json:"by"`
-	ClaimAt    string `json:"claimed_at"`
+	WorkID  string `json:"work_id"`
+	By      string `json:"by"`
+	ClaimAt string `json:"claimed_at"`
+	// LaneID is the DECLARED lane's canonical agent-lane node id (resolved via
+	// capgraph.ResolveLaneRef at claim/advance time), or empty when no lane was declared.
+	// It is the single authoritative source for the lane stamped onto close-minted
+	// receipts/transitions — never derived from actor/owner/harness (no-guessing, B0).
+	LaneID     string `json:"lane_id,omitempty"`
 	WorkSHA256 string `json:"work_sha256,omitempty"`
 }
 
@@ -390,16 +396,65 @@ func (s *Store) archivedWorkPathWithIndex(workID string, entries []home.Operatio
 // rejected (claim-before-you-touch prevents parallel agents colliding on the
 // same surface).
 func (s *Store) Claim(workID, by string, now time.Time) (envelope.WorkEnvelope, error) {
+	return s.ClaimWithLane(workID, by, "", now)
+}
+
+// ClaimWithLane claims a work and, when laneRef is non-empty, declares its lane: the ref must
+// resolve via capgraph.ResolveLaneRef (fail-closed at the gate, before any state mutation) and
+// the resolved canonical node id is recorded on the lease. Claim is the laneRef=="" case; every
+// existing Claim caller is byte-identical.
+func (s *Store) ClaimWithLane(workID, by, laneRef string, now time.Time) (envelope.WorkEnvelope, error) {
+	laneID, err := s.resolveDeclaredLane(laneRef)
+	if err != nil {
+		w, _ := s.Get(workID)
+		return w, err
+	}
 	var out envelope.WorkEnvelope
 	var claimErr error
-	err := s.withLifecycleMutation(func() error {
-		out, claimErr = s.claimLocked(workID, by, now)
+	err = s.withLifecycleMutation(func() error {
+		out, claimErr = s.claimLocked(workID, by, laneID, now)
 		return claimErr
 	})
 	return out, err
 }
 
-func (s *Store) claimLocked(workID, by string, now time.Time) (envelope.WorkEnvelope, error) {
+// resolveDeclaredLane maps a declared --lane ref to its canonical agent-lane node id via the
+// single no-guessing resolver (capgraph.ResolveLaneRef). Empty ref → ("", nil): no declaration.
+// A non-empty ref that does not resolve is a fail-closed error naming the valid ref forms, so
+// typos and bare-harness/actor guesses die at the write gate, never in the belief fold.
+func (s *Store) resolveDeclaredLane(ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", nil
+	}
+	cg, err := capgraph.Open(s.home)
+	if err != nil {
+		return "", fmt.Errorf("resolve --lane %q: %w", ref, err)
+	}
+	nodeID, ok := cg.ResolveLaneRef(ref)
+	if !ok {
+		return "", fmt.Errorf("--lane %q does not resolve to an imported agent-lane node; pass an agent-lane node id or a short lane id (e.g. provider/model), not a bare harness or an actor string", ref)
+	}
+	return nodeID, nil
+}
+
+// recordDeclaredLaneOnLease writes the resolved canonical lane id onto workID's existing lease.
+// The caller has already passed the holder-scoped advance gate, so this only reaches a lease the
+// acting holder is entitled to mutate. An absent lease is an error: a lane can only be declared
+// on a work that is currently claimed.
+func (s *Store) recordDeclaredLaneOnLease(workID, laneID string) error {
+	lease, err := s.readLease(workID)
+	if err != nil {
+		return fmt.Errorf("advance --lane requires a claimed work with a live lease: %w", err)
+	}
+	if strings.TrimSpace(lease.By) == "" {
+		return fmt.Errorf("advance --lane requires a claimed work (no lease holder)")
+	}
+	lease.LaneID = laneID
+	return s.publishClaimJSON(s.leasePath(workID), &lease)
+}
+
+func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.WorkEnvelope, error) {
 	w, err := s.Get(workID)
 	if err != nil {
 		return w, err
@@ -456,7 +511,7 @@ func (s *Store) claimLocked(workID, by string, now time.Time) (envelope.WorkEnve
 	if err != nil {
 		return w, err
 	}
-	lease := Lease{WorkID: workID, By: plan.Actor, ClaimAt: ts(now), WorkSHA256: claimedWorkSHA256}
+	lease := Lease{WorkID: workID, By: plan.Actor, ClaimAt: ts(now), LaneID: laneID, WorkSHA256: claimedWorkSHA256}
 	event := Event{
 		TS:                 lease.ClaimAt,
 		WorkID:             workID,
@@ -794,8 +849,12 @@ func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEn
 // --- advance ---
 
 type AdvanceInput struct {
-	To             string
-	Actor          string
+	To    string
+	Actor string
+	// LaneRef optionally declares or corrects the work's lane mid-lifecycle. When set it must
+	// resolve via capgraph.ResolveLaneRef (fail-closed) and is recorded as the canonical node
+	// id on the holder's lease, under the same holder-scoped rules as any advance mutation.
+	LaneRef        string
 	GitDelivery    *envelope.GitDeliveryContract
 	RunID          string
 	ArtifactID     string
@@ -891,10 +950,26 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 		}
 		in.GitDelivery = normalized
 	}
+	// Resolve a declared/corrected lane fail-closed BEFORE any state mutation: a bad --lane ref
+	// aborts the advance untouched (never records a refusal, never mutates the envelope).
+	declaredLane, err := s.resolveDeclaredLane(in.LaneRef)
+	if err != nil {
+		return w, err
+	}
 	if err := s.leaseHolderAdvanceGate(w, actor, in, now); err != nil {
 		return w, err
 	}
-	return s.applyAdvance(w, in, now)
+	advanced, err := s.applyAdvance(w, in, now)
+	if err != nil {
+		return advanced, err
+	}
+	// The advance passed the holder-scoped gate; record the declared lane on the holder's lease.
+	if strings.TrimSpace(in.LaneRef) != "" {
+		if err := s.recordDeclaredLaneOnLease(w.ID, declaredLane); err != nil {
+			return advanced, err
+		}
+	}
+	return advanced, nil
 }
 
 // applyAdvance performs the state write for a legal, gate-cleared advance. It is shared
@@ -1299,9 +1374,12 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err != nil {
 		return res, err
 	}
-	producerLaneID := strings.TrimSpace(in.LaneID)
-	if producerLaneID == "" {
-		producerLaneID = strings.TrimSpace(in.Actor)
+	// The lane stamped onto close-minted receipts is the DECLARED lane on the lease (a canonical
+	// node id recorded at claim/advance time) or an explicit, resolver-gated in.LaneID override —
+	// never the actor/owner/harness (no-guessing, B0). No declared lane → empty.
+	producerLaneID, err := s.closeLaneID(w.ID, in.LaneID)
+	if err != nil {
+		return res, err
 	}
 	actor := strings.TrimSpace(in.Actor)
 	if actor == "" {
@@ -1347,7 +1425,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	// Receipt — how the run is learned from.
 	rOut := receiptOutcome[in.Outcome]
 	rec := envelope.Receipt{
-		Header:   newHeader(envelope.SVReceipt, idFor("rec_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
+		Header:   newHeaderWithLane(envelope.SVReceipt, idFor("rec_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
 		Outcome:  rOut,
 		MoveType: in.MoveType,
 		Surprise: surprise,
@@ -1376,9 +1454,6 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
 		ProofRefs: proofRefs,
 	}
-	if producerLaneID != "" {
-		rec.Producer.LaneID = producerLaneID
-	}
 	if fc := failureCause(in.FailureSurfaceOutcome, in.FailureMechanism); fc != nil {
 		rec.FailureCause = fc
 	}
@@ -1402,7 +1477,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		rec.Skills.Used = mergeUnique(rec.Skills.Used, in.ConsumedRefs)
 	}
 	tr := envelope.Transition{
-		Header:     newHeader(envelope.SVTransition, idFor("tr_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
+		Header:     newHeaderWithLane(envelope.SVTransition, idFor("tr_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
 		BeforeRefs: before,
 		ActionRefs: orEmpty(w.RunIDs),
 		AfterRefs:  after,
@@ -1416,9 +1491,6 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			FutureBehaviorChanged: in.MoveType != "audit_only",
 			ShouldHarden:          shouldHardenOnClose(w.TargetSurface, in.Outcome, in.ProofRefs),
 		},
-	}
-	if producerLaneID != "" {
-		tr.Producer.LaneID = producerLaneID
 	}
 	if err := tr.Validate(); err != nil {
 		return res, fmt.Errorf("emitted transition invalid: %w", err)
@@ -2112,11 +2184,20 @@ func (s *Store) readAllEventsStrictUnlocked() ([]Event, error) {
 // --- small helpers ---
 
 func newHeader(sv, id string, now time.Time, workID, contextPackID, privacy, risk string) envelope.Header {
+	return newHeaderWithLane(sv, id, now, workID, contextPackID, privacy, risk, "")
+}
+
+// newHeaderWithLane is newHeader plus a declared lane id stamped into Producer.LaneID. laneID
+// is a canonical agent-lane node id (resolved via capgraph.ResolveLaneRef) or empty. With
+// laneID=="" the Producer is byte-identical to newHeader's (lane_id is omitempty), so every
+// existing newHeader call site is unchanged; only the close-minted Receipt/Transition pass a
+// non-empty lane, and only when one was declared on the lifecycle (no-guessing, B0).
+func newHeaderWithLane(sv, id string, now time.Time, workID, contextPackID, privacy, risk, laneID string) envelope.Header {
 	return envelope.Header{
 		SchemaVersion: sv,
 		ID:            id,
 		CreatedAt:     now.UTC().Format(time.RFC3339),
-		Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
+		Producer:      envelope.Producer{Kind: "cli", Name: "compound", LaneID: laneID},
 		IDs:           envelope.IDs{WorkID: workID, ContextPackID: contextPackID},
 		Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 		Privacy:       orDefault(privacy, "private"),
@@ -2124,6 +2205,21 @@ func newHeader(sv, id string, now time.Time, workID, contextPackID, privacy, ris
 		EvidenceRefs:  []string{},
 		Uncertainty:   envelope.Uncertainty{Level: "known"},
 	}
+}
+
+// closeLaneID resolves the lane stamped onto close-minted receipts/transitions. Precedence:
+// an explicit in.LaneID override (resolver-gated, fail-closed) wins; otherwise the DECLARED
+// lane recorded on the work's lease at claim/advance time (already a canonical node id). No
+// override and no lease-declared lane → empty. Never derived from actor/owner/harness.
+func (s *Store) closeLaneID(workID, override string) (string, error) {
+	if strings.TrimSpace(override) != "" {
+		return s.resolveDeclaredLane(override)
+	}
+	lease, err := s.readLease(workID)
+	if err != nil {
+		return "", nil // no lease = no declared lane = empty (no-guessing)
+	}
+	return strings.TrimSpace(lease.LaneID), nil
 }
 
 func idFor(prefix string, parts ...string) string {
