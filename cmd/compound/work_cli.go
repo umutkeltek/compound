@@ -1510,6 +1510,7 @@ func cmdWork(args []string) {
 			res.Work.ID, res.Work.State, res.Receipt.MoveType, res.Work.PolicyDecisionID, res.Receipt.ID, res.Transition.ID)
 		printJSON(res)
 		observeWorkSurpriseOnDivergedClose(homePath, res)
+		offerStandingProofGraduationOnClose(homePath, res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
 		fmt.Fprintln(os.Stderr, workUsage(""))
@@ -1544,6 +1545,36 @@ func observeWorkSurpriseOnDivergedClose(homePath string, res work.CloseResult) {
 	}
 	if _, _, err := memStore.ObserveWorkSurprise(res.Work.ID, res.Receipt.ID, payload, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: work-surprise exhaust failed:", err)
+	}
+}
+
+// offerStandingProofGraduationOnClose is the cmd-layer wiring for the standing-proof graduation
+// exhaust door (see internal/mem/standing_proof.go, OfferStandingProofGraduation): after a
+// SUCCESSFUL (completed) close whose WorkEnvelope carries a machine-checkable, re-runnable proof
+// command as its success predicate, compound mints exactly ONE observed-class PROPOSED candidate
+// offering to graduate that command into a standing re-verified proof. It attacks "landed !=
+// working": today close evidence is point-in-time and nothing re-runs the proof.
+//
+// This lives here, at the cmd layer -- NOT inside internal/work's closeLocked -- on purpose,
+// mirroring observeWorkSurpriseOnDivergedClose (and CaptureExhaust from main.go): the mint path
+// must never fail the close, and the close spine must not import the mem mint door. A non-completed
+// close, or a completed close whose predicate is ordinary prose (the common case), mints nothing.
+// Mint failure surfaces as a visible stderr warning while the already-successful close stands.
+func offerStandingProofGraduationOnClose(homePath string, res work.CloseResult) {
+	if res.Work.State != "completed" {
+		return // only a successful close graduates a proof
+	}
+	command, ok := work.CommandShapedPredicate(res.Work.SuccessPredicate)
+	if !ok {
+		return // no machine-checkable proof command in the success predicate -- mint nothing
+	}
+	memStore, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: standing-proof graduation offer skipped (open mem store):", err)
+		return
+	}
+	if _, _, err := memStore.OfferStandingProofGraduation(res.Work.ID, res.Receipt.ID, command, time.Now()); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: standing-proof graduation offer failed:", err)
 	}
 }
 
