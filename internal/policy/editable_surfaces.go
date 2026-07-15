@@ -260,6 +260,55 @@ func writeEditableSurfacesLocked(homePath string, reg EditableSurfaces) error {
 	return os.WriteFile(path, body, 0o644)
 }
 
+// ActivateSurface loads the registry, ensures `surface` is present AND active (adding it
+// when absent, flipping a retired entry back to active), and writes it back through the
+// same WriteEditableSurfaces path the live check reads. Every other surface is preserved.
+// It is the write path behind an operator's "allow edits to this surface" decision.
+//
+// Two guarantees the caller relies on:
+//   - Byte-idempotent: re-activating an already-active surface adds no duplicate entry and
+//     rewrites identical bytes; the returned `changed` is false so a caller can tell a
+//     no-op re-run from a real toggle.
+//   - Fail-closed on hard-deny-core: a policy/permissions/ledger/evaluator surface is
+//     refused BEFORE any write, so a hand-crafted proposal can never brick the whole
+//     registry by pushing a surface LoadEditableSurfaces would then flag invalid.
+func ActivateSurface(homePath, surface string) (EditableSurfaces, bool, error) {
+	surface = strings.TrimSpace(surface)
+	if surface == "" {
+		return EditableSurfaces{}, false, fmt.Errorf("editable surface required")
+	}
+	if hardDenyCoreSurfaces[strings.ToLower(surface)] {
+		return EditableSurfaces{}, false, fmt.Errorf(
+			"surface %q is a HARD-DENY core surface and can never be whitelisted (policy, permissions, ledger, and evaluator must stay outside any self-improvement loop)", surface)
+	}
+	reg, _, err := LoadEditableSurfaces(homePath)
+	if err != nil {
+		return EditableSurfaces{}, false, err
+	}
+	changed := false
+	found := false
+	for i := range reg.Entries {
+		if !strings.EqualFold(reg.Entries[i].Surface, surface) {
+			continue
+		}
+		found = true
+		if reg.Entries[i].Status != EditableSurfaceStatusActive {
+			reg.Entries[i].Status = EditableSurfaceStatusActive
+			changed = true
+		}
+		break
+	}
+	if !found {
+		reg.Entries = append(reg.Entries, EditableSurface{Surface: surface, Status: EditableSurfaceStatusActive})
+		changed = true
+	}
+	next := EditableSurfaces{Entries: reg.Entries}
+	if err := WriteEditableSurfaces(homePath, next); err != nil {
+		return EditableSurfaces{}, false, err
+	}
+	return next, changed, nil
+}
+
 // EditableSurfaceAllowed is the live check callers use at the admission seam: it loads the
 // registry live and reports whether a system-originated proposal may target `surface`.
 func EditableSurfaceAllowed(homePath, surface string) (bool, string, error) {
