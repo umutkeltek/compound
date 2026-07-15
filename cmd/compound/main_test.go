@@ -2287,7 +2287,11 @@ func TestOrientUsesRepoKindRegistry(t *testing.T) {
 func TestContractImportHooksFeedsCompile(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
+	t.Setenv("HOME", homePath)
 	source := filepath.Join("..", "..", "fixtures", "harness", "codex-hooks-json.json")
+	if err := contract.StageSyntheticHookHandlers(homePath, source); err != nil {
+		t.Fatalf("stage synthetic hook handlers: %v", err)
+	}
 	importOut := captureStdout(t, func() {
 		cmdContract([]string{"import-hooks", "--codex-hooks-json", source})
 	})
@@ -2407,7 +2411,11 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
+	t.Setenv("HOME", homePath)
 	source := filepath.Join("..", "..", "fixtures", "harness", "hook-registration.ts")
+	if err := contract.StageSyntheticHookHandlers(homePath, source); err != nil {
+		t.Fatalf("stage synthetic hook handlers: %v", err)
+	}
 	importOut := captureStdout(t, func() {
 		cmdContract([]string{"import-hooks", "--hook-registration-ts", source})
 	})

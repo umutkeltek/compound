@@ -1372,7 +1372,11 @@ func TestRuntimeContractResolvesControlPlaneSourceRevisions(t *testing.T) {
 
 func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	source := filepath.Join("..", "..", "fixtures", "harness", "codex-hooks-json.json")
+	if err := StageSyntheticHookHandlers(home, source); err != nil {
+		t.Fatalf("stage synthetic hook handlers: %v", err)
+	}
 	report, err := ImportCodexHooksJSON(home, source, fixedNow)
 	if err != nil {
 		t.Fatalf("import codex hooks json: %v", err)
@@ -1505,7 +1509,11 @@ func TestInstalledHooksImportProvenanceTracksResultingAuthorityAcrossPreservedRe
 
 func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	source := filepath.Join("..", "..", "fixtures", "harness", "hook-registration.ts")
+	if err := StageSyntheticHookHandlers(home, source); err != nil {
+		t.Fatalf("stage synthetic hook handlers: %v", err)
+	}
 	report, err := ImportHookRegistrationTS(home, source, fixedNow)
 	if err != nil {
 		t.Fatalf("import hook registration ts: %v", err)
@@ -1593,7 +1601,11 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 
 func TestInstalledHookGateReadinessRequiresWrapperForFailOpenCodex(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	source := filepath.Join("..", "..", "fixtures", "harness", "hook-registration.ts")
+	if err := StageSyntheticHookHandlers(home, source); err != nil {
+		t.Fatalf("stage synthetic hook handlers: %v", err)
+	}
 	if _, err := ImportHookRegistrationTS(home, source, fixedNow); err != nil {
 		t.Fatalf("import hook registration ts: %v", err)
 	}

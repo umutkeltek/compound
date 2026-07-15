@@ -266,6 +266,7 @@ func TestContextHookInputHashIncludesNormalizedScope(t *testing.T) {
 
 func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	homePath := t.TempDir()
+	t.Setenv("HOME", homePath)
 	manifest, err := capgraph.LoadSkillManifest(filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml"))
 	if err != nil {
 		t.Fatalf("load skill manifest: %v", err)
@@ -273,7 +274,11 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if _, err := capgraph.ApplySkillManifest(homePath, manifest, fixedNow); err != nil {
 		t.Fatalf("apply skill manifest: %v", err)
 	}
-	if _, err := contract.ImportCodexHooksJSON(homePath, filepath.Join("..", "..", "fixtures", "harness", "codex-hooks-json.json"), fixedNow); err != nil {
+	codexHooksJSON := filepath.Join("..", "..", "fixtures", "harness", "codex-hooks-json.json")
+	if err := contract.StageSyntheticHookHandlers(homePath, codexHooksJSON); err != nil {
+		t.Fatalf("stage synthetic hook handlers: %v", err)
+	}
+	if _, err := contract.ImportCodexHooksJSON(homePath, codexHooksJSON, fixedNow); err != nil {
 		t.Fatalf("import codex hooks: %v", err)
 	}
 
