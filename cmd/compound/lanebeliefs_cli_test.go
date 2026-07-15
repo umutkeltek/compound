@@ -7,13 +7,16 @@ import (
 	"path/filepath"
 	"testing"
 
+	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/lanebeliefs"
+	"compound/internal/mem"
 )
 
 func TestCmdLaneBeliefsFoldDryRunAndListJSON(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
+	seedCLILaneNode(t, homePath, "fixture/judge")
 	for i := 0; i < lanebeliefs.MIN_LANE_RECEIPTS; i++ {
 		writeCLILaneBeliefReceiptEvent(t, homePath, fmt.Sprintf("rec_cli_%02d", i), "work_cli", "fixture/judge")
 	}
@@ -23,8 +26,9 @@ func TestCmdLaneBeliefsFoldDryRunAndListJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(dryOut), &dry); err != nil {
 		t.Fatalf("parse dry-run fold: %v\n%s", err, dryOut)
 	}
-	if !dry.DryRun || dry.CandidateCount != 1 || dry.NewObservationCount != 1 {
-		t.Fatalf("dry-run report = %+v, want one unwritten candidate", dry)
+	// Each completed proof-bearing receipt yields two beliefs (capability + tendency).
+	if !dry.DryRun || dry.CandidateCount != 2 || dry.NewObservationCount != 2 {
+		t.Fatalf("dry-run report = %+v, want two unwritten candidates", dry)
 	}
 	listEmptyOut := captureStdout(t, func() { cmdLaneBeliefs([]string{"list", "--json"}) })
 	var listEmpty lanebeliefs.ListReport
@@ -40,16 +44,38 @@ func TestCmdLaneBeliefsFoldDryRunAndListJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(foldOut), &folded); err != nil {
 		t.Fatalf("parse fold: %v\n%s", err, foldOut)
 	}
-	if folded.DryRun || folded.CandidateCount != 1 || folded.NewObservationCount != 1 {
-		t.Fatalf("fold report = %+v, want one written candidate", folded)
+	if folded.DryRun || folded.CandidateCount != 2 || folded.NewObservationCount != 2 {
+		t.Fatalf("fold report = %+v, want two written candidates", folded)
 	}
 	listOut := captureStdout(t, func() { cmdLaneBeliefs([]string{"list", "--json"}) })
 	var list lanebeliefs.ListReport
 	if err := json.Unmarshal([]byte(listOut), &list); err != nil {
 		t.Fatalf("parse list: %v\n%s", err, listOut)
 	}
-	if list.CandidateCount != 1 || len(list.Candidates) != 1 || list.Candidates[0].Predicate != lanebeliefs.BeliefPredicateTendsTo {
-		t.Fatalf("list = %+v, want one tendency belief", list)
+	if list.CandidateCount != 2 || len(list.Candidates) != 2 {
+		t.Fatalf("list = %+v, want two lane beliefs", list)
+	}
+	predicates := map[string]bool{}
+	for _, c := range list.Candidates {
+		predicates[c.Predicate] = true
+	}
+	if !predicates[mem.BeliefPredicateTendsTo] || !predicates[mem.BeliefPredicateCapableOf] {
+		t.Fatalf("list = %+v, want one tendency and one capability belief", list)
+	}
+}
+
+func seedCLILaneNode(t *testing.T, homePath, shortID string) {
+	t.Helper()
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeID, ok := capgraph.AgentLaneNodeIDFromShortLaneID(shortID)
+	if !ok {
+		t.Fatalf("short lane id %q has no node mapping", shortID)
+	}
+	if err := store.Add(capgraph.Node{ID: nodeID, Kind: "agent-lane", Name: nodeID, Weight: 0.25, EvidenceOnly: true}); err != nil {
+		t.Fatalf("seed lane node %q: %v", nodeID, err)
 	}
 }
 

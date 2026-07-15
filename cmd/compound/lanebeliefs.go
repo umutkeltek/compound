@@ -60,6 +60,11 @@ func cmdLaneBeliefs(args []string) {
 		fmt.Printf("- observations: %d\n", report.NewObservationCount)
 		fmt.Printf("- candidates: %d\n", report.CandidateCount)
 		fmt.Printf("- unresolved_receipts: %d\n", report.UnresolvedReceiptCount)
+		fmt.Printf("- below_floor_lanes: %d\n", report.BelowFloorLaneCount)
+		fmt.Printf("- valve_dropped: %d\n", report.ValveDroppedCount)
+		for _, drop := range report.ValveDrops {
+			fmt.Printf("  - dropped %s %s: %s\n", drop.Kind, drop.Domain, drop.Reason)
+		}
 		fmt.Printf("- cursor: %d -> %d\n", report.CursorBefore, report.CursorAfter)
 	case "list":
 		report, err := lanebeliefs.List(homePath)

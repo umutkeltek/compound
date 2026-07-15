@@ -3,43 +3,61 @@ package lanebeliefs
 import (
 	"testing"
 
-	"compound/internal/capgraph"
 	"compound/internal/envelope"
 )
 
-func TestResolveReceiptLaneUnresolvedWhenReceiptHasNoStampedLaneID(t *testing.T) {
-	resolution := ResolveReceiptLane(envelope.Receipt{
+// stubResolver is a minimal mem.LaneResolver: it resolves exactly the refs in its map and
+// refuses everything else, so the identity unit test does not depend on capgraph internals (the
+// store-backed membership behaviour is proven end-to-end by the fold falsifiers).
+type stubResolver map[string]string
+
+func (s stubResolver) ResolveLaneRef(ref string) (string, bool) {
+	nodeID, ok := s[ref]
+	return nodeID, ok
+}
+
+func receiptWithLane(laneID string) envelope.Receipt {
+	return envelope.Receipt{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVReceipt,
 			ID:            "rec_fixture",
-			Producer:      envelope.Producer{Kind: "test", Name: "fixture"},
+			Producer:      envelope.Producer{Kind: "test", Name: "fixture", LaneID: laneID},
 		},
-	})
-	if resolution.Outcome != LaneResolutionUnresolved {
-		t.Fatalf("outcome = %q, want %q", resolution.Outcome, LaneResolutionUnresolved)
-	}
-	if resolution.NodeID != "" {
-		t.Fatalf("unresolved receipt guessed node id %q", resolution.NodeID)
 	}
 }
 
-func TestResolveReceiptLaneUsesCapgraphCanonicalNodeID(t *testing.T) {
-	rec := envelope.Receipt{
-		Header: envelope.Header{
-			SchemaVersion: envelope.SVReceipt,
-			ID:            "rec_fixture",
-			Producer:      envelope.Producer{Kind: "test", Name: "fixture", LaneID: "fixture/judge"},
-		},
+func TestReceiptLaneUnresolvedWithoutStampedLaneID(t *testing.T) {
+	res := resolveReceiptLane(stubResolver{}, receiptWithLane(""))
+	if res.Resolved() || res.Outcome != LaneResolutionUnresolved {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, LaneResolutionUnresolved)
 	}
-	resolution := ResolveReceiptLane(rec)
-	if resolution.Outcome != LaneResolutionResolved {
-		t.Fatalf("outcome = %q, want %q", resolution.Outcome, LaneResolutionResolved)
+	if res.NodeID != "" {
+		t.Fatalf("a laneless receipt produced a node id %q", res.NodeID)
 	}
-	want, ok := capgraph.AgentLaneNodeIDFromShortLaneID("fixture/judge")
-	if !ok {
-		t.Fatal("fixture lane id should map")
+}
+
+func TestReceiptLaneResolvesThroughStoreDoorOnly(t *testing.T) {
+	resolver := stubResolver{"agent-lane:codex--auto-build--gpt--balanced": "agent-lane:codex--auto-build--gpt--balanced"}
+	res := resolveReceiptLane(resolver, receiptWithLane("agent-lane:codex--auto-build--gpt--balanced"))
+	if !res.Resolved() {
+		t.Fatalf("outcome = %q, want resolved", res.Outcome)
 	}
-	if resolution.NodeID != want {
-		t.Fatalf("resolver node id = %q, want capgraph id %q", resolution.NodeID, want)
+	if res.NodeID != "agent-lane:codex--auto-build--gpt--balanced" {
+		t.Fatalf("node id = %q, want the resolver's canonical id", res.NodeID)
+	}
+}
+
+func TestReceiptLaneNeverGuessesUnimportedLane(t *testing.T) {
+	// The resolver refuses these refs (they name no imported node). The retired guessing path
+	// would have mapped them onto synthetic node ids anyway — resolveReceiptLane must not.
+	resolver := stubResolver{}
+	for _, laneID := range []string{"codex", "some-actor:abcdef", "fixture/judge", "*"} {
+		res := resolveReceiptLane(resolver, receiptWithLane(laneID))
+		if res.Resolved() {
+			t.Fatalf("lane %q resolved without store membership (node %q)", laneID, res.NodeID)
+		}
+		if res.NodeID != "" {
+			t.Fatalf("lane %q guessed a node id %q", laneID, res.NodeID)
+		}
 	}
 }
