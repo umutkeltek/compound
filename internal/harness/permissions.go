@@ -1280,6 +1280,13 @@ func reconcileRules(current, previousManaged, desired []string, defaultsFirst bo
 	for _, rule := range previousManaged {
 		managed[rule] = true
 	}
+	// The artifact published with this render claims every desired rule as
+	// managed. Adopt already-present exact matches into the same canonical
+	// block now, rather than preserving their old positions for one render and
+	// reporting order drift only after the manifest starts claiming them.
+	for _, rule := range desired {
+		managed[rule] = true
+	}
 	out, seen := []string{}, map[string]bool{}
 	for _, rule := range current {
 		if managed[rule] || seen[rule] {
