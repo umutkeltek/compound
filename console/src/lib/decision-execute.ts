@@ -504,6 +504,10 @@ const GENERIC_GATE_STATUS: Record<GenericActionGate, number> = {
   "gate-2-allowlist": 403,
   "gate-3-global-allowlist": 403,
   "rationale-required": 422,
+  // A projection that did not answer is a slow door, not a missing item —
+  // 503 tells the client "retry", where the old collapse into 404 told the
+  // operator their real button pointed at nothing (the cold-cache act 404).
+  "projection-unavailable": 503,
 };
 
 const REVIEW_RESOLUTION_DECISIONS = {

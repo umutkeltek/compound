@@ -4,6 +4,7 @@ import {
   genericActionEffectKind,
   genericActionProjectionEligible,
   resolveGenericActionFromProjection,
+  resolveGenericActionFromRead,
 } from "./generic-actions";
 
 /**
@@ -638,6 +639,59 @@ export function runGenericActionsSelfTest(): SelfTestResult {
       fail("genericActionProjectionEligible drifted for harness-edit-proposals");
     } else {
       pass("harness-edit-proposals effect kind is record and the eligibility probe agrees with the allowlist");
+    }
+  }
+
+  // (j) The cold-cache honesty gate. The act path always resolves against a
+  // cold read (decision-execute invalidates the read cache first), and
+  // `compound attention --json` can outlast its timeout — an `unreachable`
+  // read must reject as "the projection did not answer", NEVER as
+  // "not-found". Collapsing the two was the cold-cache act 404: the operator
+  // clicked a rendered, real button and was told the item did not exist.
+  {
+    const read = { status: "unreachable" as const, value: null, error: "compound command timed out" };
+    const res = resolveGenericActionFromRead(read, "lease-hygiene", "lease-hygiene", "lease-hygiene.sweep");
+    if (res.ok) {
+      fail("unreachable projection read resolved ok:true instead of being rejected");
+    } else if (res.rejection.gate !== "projection-unavailable") {
+      fail(`unreachable projection read rejected at "${res.rejection.gate}" instead of projection-unavailable`);
+    } else if (!res.rejection.message.includes("nothing was run")) {
+      fail(`projection-unavailable message must say nothing ran, got: ${res.rejection.message}`);
+    } else {
+      pass("unreachable projection read rejects at projection-unavailable (slow door), never not-found");
+    }
+  }
+
+  // (k) A `stale` read still carries the last-good value: resolution proceeds
+  // through the same three gates (staleness of the ACTION is guarded by the
+  // revision match in decision-execute.ts, not by refusing to resolve).
+  {
+    const read = {
+      status: "stale" as const,
+      value: {
+        groups: [
+          {
+            key: "lease-hygiene",
+            area: "lease-hygiene",
+            action: {
+              id: "lease-hygiene.sweep",
+              label: "Sweep leftover claim tags",
+              argv: ["compound", "home", "archive-history", "--kind", "lease"],
+              kind: "batch",
+              requires_confirmation: true,
+            },
+          },
+        ],
+      },
+      error: "latest refresh attempt failed",
+    };
+    const res = resolveGenericActionFromRead(read, "lease-hygiene", "lease-hygiene", "lease-hygiene.sweep");
+    if (!res.ok) {
+      fail(`stale read with a last-good value failed to resolve: ${res.rejection.gate} - ${res.rejection.message}`);
+    } else if (res.action.argv.join(" ") !== "home archive-history --kind lease") {
+      fail(`stale read resolved unexpected argv: ${JSON.stringify(res.action.argv)}`);
+    } else {
+      pass("stale read with a last-good value still resolves (revision match stays the freshness guard)");
     }
   }
 

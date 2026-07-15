@@ -1,4 +1,4 @@
-import { arr, type Json, runJson, str } from "@/lib/compound";
+import { arr, type Json, type ProjectionStatus, runProjection, str } from "@/lib/compound";
 import { argvMatchesAllowlist } from "@/lib/decision-registry";
 
 /*
@@ -53,6 +53,7 @@ export type GenericActionGate =
   | "gate-2-allowlist"
   | "gate-3-global-allowlist"
   | "rationale-required"
+  | "projection-unavailable"
   | "not-found";
 
 export type ResolvedGenericAction = {
@@ -381,9 +382,63 @@ export function adaptAttentionProjectionForArea(attention: Json | null, area: st
 }
 
 /**
+ * The act path always resolves against a COLD read: decision-execute.ts
+ * deliberately calls invalidateRunJsonCache() before resolving, so owner
+ * truth is re-fetched outside the read cache — and `compound attention
+ * --json` takes ~13-17s wall today, past the 15s runJson default. Grant
+ * resolution the same extended budget the dashboard doors get (page.tsx,
+ * 45s per door): a click is worth waiting for, and the argv is the same
+ * cache key, so a successful read warms both surfaces.
+ */
+const GENERIC_RESOLUTION_TIMEOUT_MS = 45_000;
+
+/** Minimal slice of ProjectionRead the resolver consumes — lets the selftest
+ * craft reads with no runtime home, subprocess, or network. */
+export type GenericResolutionRead = {
+  status: ProjectionStatus;
+  value: Json | null;
+  error: string | null;
+};
+
+/**
+ * Pure status gate between the projection read and the three-gate core: an
+ * `unreachable` read (no success has EVER landed for this argv — the cold
+ * exec failed or timed out) means "the projection did not answer", NEVER
+ * "your item does not exist". Collapsing the two was the cold-cache 404:
+ * the operator clicked a rendered, real button and was told the item was
+ * gone. A `stale` read still carries the last-good value, so resolution
+ * proceeds — the action-revision match in decision-execute.ts remains the
+ * freshness guard for the argv itself.
+ */
+export function resolveGenericActionFromRead(
+  read: GenericResolutionRead,
+  area: string,
+  itemId: string,
+  actionId: string,
+  rationale?: string,
+): GenericActionResolution {
+  if (read.status === "unreachable") {
+    const source = ATTENTION_SOURCED_GENERIC_AREAS.has(area) ? "attention" : "reviews";
+    return {
+      ok: false,
+      rejection: {
+        gate: "projection-unavailable",
+        message:
+          `the ${source} projection did not answer in time, so nothing was run — retry in a moment` +
+          (read.error ? ` (${read.error})` : ""),
+      },
+    };
+  }
+  const projection = ATTENTION_SOURCED_GENERIC_AREAS.has(area)
+    ? adaptAttentionProjectionForArea(read.value, area)
+    : read.value;
+  return resolveGenericActionFromProjection(projection, area, itemId, actionId, rationale);
+}
+
+/**
  * Server-side re-resolution. NEVER trusts client-supplied argv: re-fetches
- * the owning projection fresh (through the same memoized `runJson` every
- * read path uses) and resolves the action from that live projection, so a
+ * the owning projection fresh (through the same memoized read path every
+ * page uses) and resolves the action from that live projection, so a
  * stale/forged client argv can never be replayed. Attention-sourced areas
  * (ATTENTION_SOURCED_GENERIC_AREAS) read `compound attention --json` through
  * the adapter above; every other area keeps reading `compound reviews --json
@@ -395,11 +450,9 @@ export async function resolveGenericAction(
   actionId: string,
   rationale?: string,
 ): Promise<GenericActionResolution> {
-  if (ATTENTION_SOURCED_GENERIC_AREAS.has(area)) {
-    const attention = await runJson(["attention", "--json"]);
-    const projection = adaptAttentionProjectionForArea(attention, area);
-    return resolveGenericActionFromProjection(projection, area, itemId, actionId, rationale);
-  }
-  const projection = await runJson(["reviews", "--json", "--area", area]);
-  return resolveGenericActionFromProjection(projection, area, itemId, actionId, rationale);
+  const argv = ATTENTION_SOURCED_GENERIC_AREAS.has(area)
+    ? ["attention", "--json"]
+    : ["reviews", "--json", "--area", area];
+  const read = await runProjection(argv, { timeoutMs: GENERIC_RESOLUTION_TIMEOUT_MS });
+  return resolveGenericActionFromRead(read, area, itemId, actionId, rationale);
 }
