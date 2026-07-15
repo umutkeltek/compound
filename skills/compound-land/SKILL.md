@@ -107,6 +107,16 @@ go run ./cmd/compound proof-check --json     # tests, vet, build, diff-check, co
   before them). `git merge` would revert their work. Rebase the executor branch onto the fresh
   `main` SHA, re-run the battery on the combined state, THEN `--ff-only` (observed 2026-07-06:
   the kill-switch branch would have reverted the bakeoff that landed 40 min earlier).
+- **ff refuses "diverging" despite a CLEAN guard → check `git branch --show-current`** (observed
+  2026-07-15, next_consumer land): a non-ceremony lane can `git checkout` ITS branch in the shared
+  MAIN worktree, so `git merge` compares against THEIR HEAD, not main — and land-check later fails
+  `wrong_target_worktree`. Do NOT switch their checkout while they may be live. Escape hatch: verify
+  NO worktree has main checked out (`git worktree list --porcelain | grep -B2 'branch refs/heads/main$'`),
+  then land with an atomic CAS that never touches any checkout:
+  `git update-ref refs/heads/main <verified-descendant-tip> <fresh-main-sha>` — the old-value arg IS
+  the guard (fails if main moved), and merge-base == main must be verified first (pure ff only).
+  Restore the main checkout to main only after proving the hijacking lane idle (no live process,
+  clean tree, reflog/HEAD-mtime stale) — its branch keeps its commits; log the restore in the worklog.
 
 ## 2 · Commit shape
 
