@@ -12,6 +12,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/reviewartifact"
 	"compound/internal/writeback"
 )
@@ -246,11 +247,15 @@ func LoadReceiptFile(path string) (envelope.Receipt, error) {
 	if err != nil {
 		return envelope.Receipt{}, fmt.Errorf("read receipt %s: %w", path, err)
 	}
+	return decodeReceiptBytes(data, path)
+}
+
+func decodeReceiptBytes(data []byte, source string) (envelope.Receipt, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var rec envelope.Receipt
 	if err := dec.Decode(&rec); err != nil {
-		return envelope.Receipt{}, fmt.Errorf("decode receipt %s: %w", path, err)
+		return envelope.Receipt{}, fmt.Errorf("decode receipt %s: %w", source, err)
 	}
 	if err := rec.Validate(); err != nil {
 		return envelope.Receipt{}, err
@@ -263,7 +268,15 @@ func LoadReceiptByID(homePath, receiptID string) (envelope.Receipt, error) {
 	if err != nil {
 		return envelope.Receipt{}, err
 	}
-	return LoadReceiptFile(filepath.Join(homePath, "events", id+".json"))
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return envelope.Receipt{}, err
+	}
+	record, err := store.Read(id)
+	if err != nil {
+		return envelope.Receipt{}, fmt.Errorf("read receipt %s: %w", id, err)
+	}
+	return decodeReceiptBytes(record.Bytes, record.DiagnosticPath)
 }
 
 func LoadReceiptForWorkID(homePath, workID string) (envelope.Receipt, error) {
@@ -341,8 +354,11 @@ type workReceiptEvent struct {
 }
 
 func latestReceiptIDForWork(homePath, workID string) (string, error) {
-	path := filepath.Join(homePath, "events", "work.jsonl")
-	f, err := os.Open(path)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return "", err
+	}
+	f, err := store.OpenWorkLog()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil

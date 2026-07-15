@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 func SourceLifecycleGateEvidenceRef(sourceFamily, gate string) string {
@@ -46,14 +47,18 @@ func resolveSourceLifecycleEvidenceBinding(homePath string, manifest SourceManif
 	if !validLifecycleEnvelopeStorageID(transitionID, "tr_") {
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("proof %s has invalid evidence transition id %q", proof.Gate, transitionID)
 	}
-	transitionPath := filepath.Join(homePath, "events", transitionID+".json")
-	transitionBody, err := os.ReadFile(transitionPath)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return SourceLifecycleEvidenceBinding{}, err
+	}
+	transitionRecord, err := store.Read(transitionID)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return SourceLifecycleEvidenceBinding{}, fmt.Errorf("evidence transition %s not found", transitionID)
 		}
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("read evidence transition %s: %w", transitionID, err)
 	}
+	transitionBody := transitionRecord.Bytes
 	var transition envelope.Transition
 	if err := json.Unmarshal(transitionBody, &transition); err != nil {
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("decode evidence transition %s: %w", transitionID, err)
@@ -81,14 +86,14 @@ func resolveSourceLifecycleEvidenceBinding(homePath string, manifest SourceManif
 	if !validLifecycleEnvelopeStorageID(receiptID, "rec_") {
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("evidence transition %s has invalid receipt ref %q", transitionID, receiptID)
 	}
-	receiptPath := filepath.Join(homePath, "events", receiptID+".json")
-	receiptBody, err := os.ReadFile(receiptPath)
+	receiptRecord, err := store.Read(receiptID)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return SourceLifecycleEvidenceBinding{}, fmt.Errorf("evidence receipt %s not found", receiptID)
 		}
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("read evidence receipt %s: %w", receiptID, err)
 	}
+	receiptBody := receiptRecord.Bytes
 	var receipt envelope.Receipt
 	if err := json.Unmarshal(receiptBody, &receipt); err != nil {
 		return SourceLifecycleEvidenceBinding{}, fmt.Errorf("decode evidence receipt %s: %w", receiptID, err)

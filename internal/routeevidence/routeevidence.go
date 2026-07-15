@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	homepkg "compound/internal/home"
 )
 
@@ -594,15 +595,12 @@ func RecordTransition(homePath string, tr envelope.Transition) error {
 	if err := tr.Validate(); err != nil {
 		return err
 	}
-	path := filepath.Join(homePath, "events", tr.ID+".json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(&tr, "", "  ")
+	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	_, err = store.PutJSON(tr.ID, &tr, "  ")
+	return err
 }
 
 func Validate(ev Evidence) error {

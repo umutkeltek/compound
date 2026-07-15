@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/routeevidence"
 )
 
@@ -140,42 +141,35 @@ func buildLedgerIndex(homePath string) (ledgerIndex, error) {
 }
 
 func (idx ledgerIndex) scanEvents(homePath string) error {
-	dir := filepath.Join(homePath, "events")
-	entries, err := os.ReadDir(dir)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return err
+	}
+	entries, err := store.Scan(eventstore.ScanOptions{Prefixes: []string{"pol_", "rec_"}})
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		// Only PolicyDecisions and Receipts carry the metrics/traceability the rig reads;
-		// filter by id prefix so we never read the whole events dir.
-		isPol := strings.HasPrefix(name, "pol_")
-		isRec := strings.HasPrefix(name, "rec_")
-		if (!isPol && !isRec) || !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, name))
+	for _, entry := range entries {
+		record, err := entry.Read()
 		if err != nil {
 			return err
 		}
+		data := record.Bytes
 		var probe struct {
 			SchemaVersion string `json:"schema_version"`
 		}
 		if err := json.Unmarshal(data, &probe); err != nil {
-			return fmt.Errorf("events/%s: %w", name, err)
+			return fmt.Errorf("event %s: %w", entry.Reference.String(), err)
 		}
 		env := envelope.New(probe.SchemaVersion)
 		if env == nil {
 			continue
 		}
 		if err := json.Unmarshal(data, env); err != nil {
-			return fmt.Errorf("events/%s: %w", name, err)
+			return fmt.Errorf("event %s: %w", entry.Reference.String(), err)
 		}
 		switch obj := env.(type) {
 		case *envelope.PolicyDecision:

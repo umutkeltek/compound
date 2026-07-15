@@ -17,6 +17,7 @@ import (
 	"compound/internal/decisions"
 	"compound/internal/envelope"
 	"compound/internal/eventsource"
+	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/policy"
@@ -1325,12 +1326,16 @@ func validateOSAbsorptionPacketWork(homePath string, w envelope.WorkEnvelope, wo
 	if !safeOSAbsorptionRuntimeID(item.ReceiptID, "rec_") {
 		return fmt.Errorf("canonical proof chain receipt_id=%q is missing or invalid", item.ReceiptID)
 	}
-	data, err := os.ReadFile(filepath.Join(homePath, "events", item.ReceiptID+".json"))
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return err
+	}
+	record, err := store.Read(item.ReceiptID)
 	if err != nil {
 		return fmt.Errorf("read canonical receipt %s: %w", item.ReceiptID, err)
 	}
 	var receipt envelope.Receipt
-	if err := json.Unmarshal(data, &receipt); err != nil {
+	if err := json.Unmarshal(record.Bytes, &receipt); err != nil {
 		return fmt.Errorf("decode canonical receipt %s: %w", item.ReceiptID, err)
 	}
 	if err := receipt.Validate(); err != nil {
@@ -1701,7 +1706,10 @@ func eventSourceAuthorityProof(homePath string, row OSAbsorptionMatrixRow) (osAb
 		byFile[base] = append(byFile[base], rec)
 	}
 
-	eventsDir := filepath.Join(homePath, "events")
+	eventStore, err := eventstore.Open(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "event source authority: " + err.Error()}, false
+	}
 	var proofRefs []string
 	for _, name := range files {
 		fileRecords := byFile[name]
@@ -1745,9 +1753,12 @@ func eventSourceAuthorityProof(homePath string, row OSAbsorptionMatrixRow) (osAb
 				sample = sample[:osAbsorptionEventSourceTraceSpotCheckSample]
 			}
 			for _, traceID := range sample {
-				tracePath := filepath.Join(eventsDir, traceID+".json")
-				if _, err := os.Stat(tracePath); err != nil {
-					return osAbsorptionProofResult{reason: fmt.Sprintf("event source authority: trace %s from record %s does not resolve under %s: %v", traceID, latestWithTraces.ID, eventsDir, err)}, false
+				exists, err := eventStore.Exists(traceID)
+				if err != nil {
+					return osAbsorptionProofResult{reason: fmt.Sprintf("event source authority: trace %s from record %s does not resolve under event store: %v", traceID, latestWithTraces.ID, err)}, false
+				}
+				if !exists {
+					return osAbsorptionProofResult{reason: fmt.Sprintf("event source authority: trace %s from record %s does not resolve under event store: not found", traceID, latestWithTraces.ID)}, false
 				}
 			}
 			proofRefs = append(proofRefs, latestWithTraces.ID)

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	homepkg "compound/internal/home"
 
 	"gopkg.in/yaml.v3"
@@ -936,8 +937,11 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 
 func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) {
 	out := map[string]receiptEvidence{}
-	path := filepath.Join(homePath, "events", "work.jsonl")
-	raw, err := readRegularFile(homePath, path, "work event ledger")
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := store.ReadWorkLogRegular("work event ledger")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return out, nil
@@ -979,14 +983,19 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 }
 
 func loadBoundReceipt(homePath, ref string) (string, envelope.Receipt, []byte, error) {
-	receiptID, path, err := terminalReceiptPath(homePath, ref)
+	receiptID, reference, err := terminalReceiptReference(ref)
 	if err != nil {
 		return "", envelope.Receipt{}, nil, err
 	}
-	raw, err := readRegularFile(homePath, path, "receipt")
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return "", envelope.Receipt{}, nil, err
+	}
+	record, err := store.ReadRegular(reference.String(), "receipt")
 	if err != nil {
 		return "", envelope.Receipt{}, nil, fmt.Errorf("receipt unreadable: %w", err)
 	}
+	raw := record.Bytes
 	var receipt envelope.Receipt
 	if err := json.Unmarshal(raw, &receipt); err != nil {
 		return "", envelope.Receipt{}, nil, fmt.Errorf("receipt invalid: %w", err)
@@ -1000,7 +1009,7 @@ func loadBoundReceipt(homePath, ref string) (string, envelope.Receipt, []byte, e
 	return receiptID, receipt, raw, nil
 }
 
-func terminalReceiptPath(homePath, ref string) (string, string, error) {
+func terminalReceiptReference(ref string) (string, eventstore.Reference, error) {
 	receiptID := strings.TrimSpace(ref)
 	if receiptID == "" ||
 		receiptID != ref ||
@@ -1011,14 +1020,13 @@ func terminalReceiptPath(homePath, ref string) (string, string, error) {
 		!filepath.IsLocal(receiptID) ||
 		filepath.Clean(receiptID) != receiptID ||
 		filepath.Base(receiptID) != receiptID {
-		return "", "", fmt.Errorf("receipt ref must be a local basename: %q", ref)
+		return "", eventstore.Reference{}, fmt.Errorf("receipt ref must be a local basename: %q", ref)
 	}
-	eventsRoot := filepath.Clean(filepath.Join(homePath, "events"))
-	path := filepath.Join(eventsRoot, receiptID+".json")
-	if filepath.Dir(path) != eventsRoot {
-		return "", "", fmt.Errorf("receipt ref must remain under the owned events root: %q", ref)
+	reference, err := eventstore.ReferenceForID(receiptID)
+	if err != nil {
+		return "", eventstore.Reference{}, fmt.Errorf("receipt ref must be a local basename: %q", ref)
 	}
-	return receiptID, path, nil
+	return receiptID, reference, nil
 }
 
 func canonicalLocalSlashPath(raw string) (string, bool) {

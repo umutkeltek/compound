@@ -14,6 +14,7 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/mem"
 )
 
@@ -567,8 +568,11 @@ type nullLaneResolver struct{}
 func (nullLaneResolver) ResolveLaneRef(string) (string, bool) { return "", false }
 
 func loadWorkEventsAfter(homePath string, cursor int64) ([]sequencedEvent, int64, error) {
-	path := filepath.Join(homePath, "events", "work.jsonl")
-	f, err := os.Open(path)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, cursor, err
+	}
+	f, err := store.OpenWorkLog()
 	if os.IsNotExist(err) {
 		return nil, cursor, nil
 	}
@@ -599,11 +603,15 @@ func loadWorkEventsAfter(homePath string, cursor int64) ([]sequencedEvent, int64
 
 func loadReceipt(homePath, id string) (envelope.Receipt, error) {
 	var rec envelope.Receipt
-	b, err := os.ReadFile(filepath.Join(homePath, "events", id+".json"))
+	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return rec, err
 	}
-	if err := json.Unmarshal(b, &rec); err != nil {
+	record, err := store.Read(id)
+	if err != nil {
+		return rec, err
+	}
+	if err := json.Unmarshal(record.Bytes, &rec); err != nil {
 		return rec, err
 	}
 	return rec, nil
