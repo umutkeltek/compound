@@ -54,6 +54,20 @@ func (e *engine) segmentFrame(id, regularKind string) (segmentHit, bool, error) 
 			continue
 		}
 
+		// Hot (last-written) segment: resolve through the per-process memo so a
+		// projection's thousands of point reads cost one parse, not one parse
+		// each (the post-migration quadratic — see hotcache.go). regularKind
+		// reads keep the direct rooted-validation parse.
+		if regularKind == "" {
+			byID, err := e.hotFrames(segment.path)
+			if err != nil {
+				return segmentHit{}, false, err
+			}
+			if hit, ok := byID[id]; ok {
+				return segmentHit{frame: hit.Frame, relPath: rel, offset: hit.Offset}, true, nil
+			}
+			continue
+		}
 		frames, err := e.readSegment(segment.path, true, regularKind)
 		if err != nil {
 			return segmentHit{}, false, err
