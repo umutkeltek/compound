@@ -15,9 +15,8 @@ import (
 )
 
 const (
-	segmentsDirName           = "segments"
-	maxBytes            int64 = 64 << 20
-	idCheckLookbackDays       = 1
+	segmentsDirName       = "segments"
+	maxBytes        int64 = 64 << 20
 )
 
 type engineConfig struct {
@@ -31,12 +30,15 @@ type engine struct {
 	home            string
 	eventsDir       string
 	segRoot         string
+	indexRoot       string
 	segmentMaxBytes int64
 	clock           func() time.Time
 	logf            func(string, ...any)
 	localFS         bool
 	fsType          string
 	warnOnce        sync.Once
+	sourceHashMu    sync.Mutex
+	sourceHashes    map[string]cachedSourceHash
 }
 
 type putMode uint8
@@ -97,6 +99,7 @@ func newEngine(homePath string, config engineConfig) (*engine, error) {
 		home:            homePath,
 		eventsDir:       filepath.Join(homePath, eventsDirName),
 		segRoot:         filepath.Join(homePath, eventsDirName, segmentsDirName),
+		indexRoot:       filepath.Join(homePath, eventsDirName, indexDirName),
 		segmentMaxBytes: limit,
 		clock:           clock,
 		logf:            logf,
@@ -278,7 +281,7 @@ func (e *engine) put(id string, record []byte, mode putMode, opts AtomicOptions)
 		}
 	}
 	today := ingestionDay(e.clock())
-	presence, existingPath, err := e.checkID(frame.Family, id, frame.SHA256, today)
+	presence, existingPath, err := e.checkID(frame.Family, id, frame.SHA256)
 	if err != nil {
 		return putOutcome{}, err
 	}
@@ -386,7 +389,7 @@ func (e *engine) exerciseAtomicWriter(writer func(*os.File, []byte) error, line 
 	return nil
 }
 
-func (e *engine) checkID(family, id, hash, today string) (idPresence, string, error) {
+func (e *engine) checkID(family, id, hash string) (idPresence, string, error) {
 	legacyPath := filepath.Join(e.eventsDir, id+".json")
 	if data, err := os.ReadFile(legacyPath); err == nil {
 		compact, compactErr := canonical(data)
@@ -401,23 +404,27 @@ func (e *engine) checkID(family, id, hash, today string) (idPresence, string, er
 		return idAbsent, "", err
 	}
 
-	days := map[string]bool{today: true}
-	parsedToday, err := time.Parse("2006-01-02", today)
-	if err != nil {
-		return idAbsent, "", err
-	}
-	for daysBack := 1; daysBack <= idCheckLookbackDays; daysBack++ {
-		days[ingestionDay(parsedToday.AddDate(0, 0, -daysBack))] = true
-	}
 	segments, err := e.familySegments(family)
 	if err != nil {
 		return idAbsent, "", err
 	}
 	presence := idAbsent
-	for _, segment := range segments {
-		if !days[segment.day] {
+	for index, segment := range segments {
+		if index > 0 {
+			frame, found, err := e.readIndexedFrame(family, segment, id, "")
+			if err != nil {
+				return idAbsent, "", err
+			}
+			if !found {
+				continue
+			}
+			if frame.SHA256 != hash {
+				return idConflict, logicalReferencePrefix + id, nil
+			}
+			presence = idAlreadyPresent
 			continue
 		}
+
 		frames, err := parseSegment(segment.path, false)
 		if err != nil {
 			return idAbsent, "", err

@@ -25,20 +25,35 @@ func (e *engine) getByID(id, regularKind string) (storedRecord, error) {
 		return storedRecord{}, err
 	}
 	for index, segment := range segments {
-		frames, err := e.readSegment(segment.path, index == 0, regularKind)
+		if index > 0 {
+			frame, found, err := e.readIndexedFrame(family, segment, id, regularKind)
+			if err != nil {
+				return storedRecord{}, err
+			}
+			if found {
+				return storedRecord{
+					id:             id,
+					bytes:          append(append([]byte(nil), frame.Record...), '\n'),
+					diagnosticPath: logicalReferencePrefix + id,
+					fromSegment:    true,
+				}, nil
+			}
+			continue
+		}
+
+		frames, err := e.readSegment(segment.path, true, regularKind)
 		if err != nil {
 			return storedRecord{}, err
 		}
 		for i := len(frames) - 1; i >= 0; i-- {
-			if frames[i].Frame.ID != id {
-				continue
+			if frames[i].Frame.ID == id {
+				return storedRecord{
+					id:             id,
+					bytes:          append(append([]byte(nil), frames[i].Frame.Record...), '\n'),
+					diagnosticPath: logicalReferencePrefix + id,
+					fromSegment:    true,
+				}, nil
 			}
-			return storedRecord{
-				id:             id,
-				bytes:          append(append([]byte(nil), frames[i].Frame.Record...), '\n'),
-				diagnosticPath: logicalReferencePrefix + id,
-				fromSegment:    true,
-			}, nil
 		}
 	}
 	legacyPath := filepath.Join(e.eventsDir, id+".json")

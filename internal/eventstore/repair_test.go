@@ -136,7 +136,13 @@ func TestSealedSegmentFinalCorruptionIsNeverTailRepaired(t *testing.T) {
 	}
 	before := append([]byte(nil), corrupted...)
 
-	putRecord(t, store, "rec_hot_2", "compound.receipt.v0.1", now, "hot-2")
+	if _, err := store.PutJSON(
+		"rec_hot_2",
+		eventRecord("rec_hot_2", "compound.receipt.v0.1", now, "hot-2"),
+		"  ",
+	); !errors.Is(err, ErrCanonicalCorruption) {
+		t.Fatalf("put across corrupt sealed segment error = %v, want ErrCanonicalCorruption", err)
+	}
 	after, err := os.ReadFile(oldPath)
 	if err != nil {
 		t.Fatal(err)
