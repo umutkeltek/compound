@@ -3,13 +3,23 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	"compound/internal/home"
 	"compound/internal/lanebeliefs"
 )
 
+func sortedReasonKeys(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func laneBeliefsUsage() string {
-	return "usage: compound lanebeliefs <fold [--dry-run] [--json] [--home P]|list [--json] [--home P]>"
+	return "usage: compound lanebeliefs <fold [--dry-run] [--json] [--home P]|promote [--dry-run] [--json] [--home P]|list [--json] [--home P]>"
 }
 
 func cmdLaneBeliefs(args []string) {
@@ -66,6 +76,35 @@ func cmdLaneBeliefs(args []string) {
 			fmt.Printf("  - dropped %s %s: %s\n", drop.Kind, drop.Domain, drop.Reason)
 		}
 		fmt.Printf("- cursor: %d -> %d\n", report.CursorBefore, report.CursorAfter)
+	case "promote":
+		report, err := lanebeliefs.Promote(homePath, lanebeliefs.PromoteOptions{DryRun: dryRun})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "lanebeliefs promote:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# lanebeliefs promote\n")
+		if report.DryRun {
+			fmt.Printf("- dry_run: true (no writes)\n")
+		}
+		fmt.Printf("- evaluated: %d\n", report.EvaluatedCount)
+		fmt.Printf("- promoted: %d\n", report.PromotedCount)
+		fmt.Printf("- refused: %d\n", report.RefusedCount)
+		for _, reason := range sortedReasonKeys(report.ReasonCounts) {
+			fmt.Printf("  - %s: %d\n", reason, report.ReasonCounts[reason])
+		}
+		for _, res := range report.Results {
+			if res.Disposition == lanebeliefs.DispositionPromoted {
+				fmt.Printf("%s %s.%s[%s] %s -> promoted basis=%s visibility=%s\n",
+					res.CandidateID, res.Subject, res.Domain, res.Valence, res.Kind, res.PromotionBasis, res.Visibility)
+			} else {
+				fmt.Printf("%s %s.%s[%s] %s -> parked (%s) works=%d posterior=%.4f mark=%t\n",
+					res.CandidateID, res.Subject, res.Domain, res.Valence, res.Kind, res.Reason, res.WorkCount, res.PosteriorMean, res.HasCrossLaneMark)
+			}
+		}
 	case "list":
 		report, err := lanebeliefs.List(homePath)
 		if err != nil {
