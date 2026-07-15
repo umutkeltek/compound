@@ -263,15 +263,19 @@ func ciPortableSteps(steps []proofCheckStep) []proofCheckStep {
 	return out
 }
 
-// ciConsoleSteps returns the console/TypeScript gate subset — every step rooted in console/ plus
-// bun-tools-test. These need bun + console/node_modules (and a compound binary on PATH for the
-// smokes that subprocess it), so they cannot run in the bare-clone `--ci` set. `proof-check
-// --ci-console` runs exactly these, single-sourced from proofCheckSteps, so the CI console job's
-// gate set cannot drift from a hand-maintained workflow list.
+// ciConsoleSteps returns the console/TypeScript gate subset — every step rooted in console/. These
+// need bun + console/node_modules (and a compound binary on PATH for the smokes that subprocess
+// it), so they cannot run in the bare-clone `--ci` set. `proof-check --ci-console` runs exactly
+// these, single-sourced from proofCheckSteps, so the CI console job's gate set cannot drift from a
+// hand-maintained workflow list.
+//
+// bun-tools-test (tools/*.test.ts) is intentionally excluded: those App Store Connect / analytics
+// tool tests are env-coupled — asc_preflight validates a macOS launchd plist and scheduler state,
+// so it passes on macOS and reds a Linux CI runner. They stay local-battery-only.
 func ciConsoleSteps(steps []proofCheckStep) []proofCheckStep {
 	out := make([]proofCheckStep, 0, len(steps))
 	for _, s := range steps {
-		if s.Dir == "console" || s.Name == "bun-tools-test" {
+		if s.Dir == "console" {
 			out = append(out, s)
 		}
 	}

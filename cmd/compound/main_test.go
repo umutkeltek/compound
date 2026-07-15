@@ -423,10 +423,10 @@ func TestProofCheckCIFlagRunsOnlyPortableGates(t *testing.T) {
 
 // TestProofCheckCIConsoleFlagRunsOnlyConsoleGates mirrors TestProofCheckCIFlagRunsOnlyPortableGates
 // for the console/TypeScript lane: --ci-console must run exactly the gates that need bun +
-// console/node_modules (every Dir=="console" step plus bun-tools-test), in dry-run order, and never
-// the bare-Go or binary-dependent gates. The expected set is single-sourced from proofCheckSteps
-// (not hardcoded), so a newly-added console smoke joins this subset automatically and a bare-Go gate
-// mis-routed here fails the test before it reds the CI console job.
+// console/node_modules (every Dir=="console" step), in dry-run order, and never the bare-Go or
+// binary-dependent gates, nor the env-coupled bun-tools-test. The expected set is single-sourced
+// from proofCheckSteps (not hardcoded), so a newly-added console smoke joins this subset
+// automatically and a mis-routed gate fails the test before it reds the CI console job.
 func TestProofCheckCIConsoleFlagRunsOnlyConsoleGates(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdProofCheck([]string{"--ci-console", "--dry-run", "--json", "--repo", "."})
@@ -444,7 +444,7 @@ func TestProofCheckCIConsoleFlagRunsOnlyConsoleGates(t *testing.T) {
 	}
 	wantProofSet := map[string]bool{}
 	for _, s := range steps {
-		if s.Dir == "console" || s.Name == "bun-tools-test" {
+		if s.Dir == "console" {
 			wantProofSet[s.ProofRef] = true
 		}
 	}
@@ -467,11 +467,15 @@ func TestProofCheckCIConsoleFlagRunsOnlyConsoleGates(t *testing.T) {
 		}
 	}
 	// The bare-Go / binary-dependent gates must NOT appear under --ci-console (no Go-test intent,
-	// and they belong to the --ci job).
+	// and they belong to the --ci job). bun-tools-test is excluded too: tools/*.test.ts are
+	// env-coupled (asc_preflight validates a macOS launchd plist) and red a Linux CI runner — they
+	// stay local-battery-only. Re-adding it here reds the CI console job, not this test, so it is
+	// pinned out explicitly.
 	for _, banned := range []string{
 		"go-test-count-1-all", "go-vet-all", "go-build-all", "gofmt-check", "diff-check",
 		"architecture-doctor-strict", "memory-doctor", "redact-public-clean",
 		"profiles-check-installed-only", "codex-pretooluse-native-gate-proof", "workbench-projection-refresh",
+		"bun-tools-test",
 	} {
 		for _, s := range report.Steps {
 			if s.ProofRef == banned {
