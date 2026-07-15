@@ -433,6 +433,142 @@ func TestCheckpointSealsIdentityCoverageAndPartialProgress(t *testing.T) {
 	}
 }
 
+func TestCheckpointDependencyAssertionRequiresEngineEvidence(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	identity, err := NewReplayIdentityWithDependency(
+		HashQuery("dependency-fixture"),
+		ConsumerQuery,
+		10,
+		"breadth",
+		"gbrain",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := NewCheckpoint(identity, Coverage{})
+	checkpoint.Rows = append(checkpoint.Rows, NewReplayRow(FixtureRow{
+		Consumer: ConsumerQuery,
+		Query:    "replacement dependency must be attested",
+	}, nil, time.Millisecond, true))
+	checkpoint.Completed = len(checkpoint.Rows)
+
+	err = WriteCheckpoint(homePath, &checkpoint)
+	if err == nil || !strings.Contains(err.Error(), "engine dependency evidence required") {
+		t.Fatalf("checkpoint without dependency evidence error = %v", err)
+	}
+}
+
+func TestExpectedEngineRequiresUsedObservedMatch(t *testing.T) {
+	identity, err := NewReplayIdentityWithDependency(
+		HashQuery("expected-engine-fixture"),
+		ConsumerQuery,
+		10,
+		"breadth",
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := NewReplayRowWithEngineEvidence(FixtureRow{
+		Consumer: ConsumerQuery,
+		Query:    "matching refs cannot hide the wrong engine",
+	}, nil, time.Millisecond, true, EngineDependencyEvidence{
+		Attempted:       true,
+		RequestedEngine: "breadth",
+		ObservedEngine:  "lexical",
+		Outcome:         EngineOutcomeUsed,
+	}, identity)
+	if row.DependencyPassed == nil || *row.DependencyPassed {
+		t.Fatalf("dependency result = %v, want false", row.DependencyPassed)
+	}
+	if row.ParityPassed {
+		t.Fatalf("matching refs with wrong observed engine must fail parity: %+v", row)
+	}
+}
+
+func TestEngineEvidencePersistsZeroCorpusGeneration(t *testing.T) {
+	row := NewReplayRowWithEngineEvidence(FixtureRow{
+		Consumer: ConsumerQuery,
+		Query:    "zero generation is still observed evidence",
+	}, nil, time.Millisecond, true, EngineDependencyEvidence{
+		Attempted:      true,
+		ObservedEngine: "lexical",
+		Outcome:        EngineOutcomeUsed,
+	}, NewReplayIdentity(HashQuery("zero-generation-fixture"), ConsumerQuery, 10))
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"corpus_generation":0`) {
+		t.Fatalf("zero corpus generation omitted from engine evidence: %s", raw)
+	}
+}
+
+func TestReportValidationRecomputesDependencyFromRowEvidence(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	identity, err := NewReplayIdentityWithDependency(
+		HashQuery("report-dependency-fixture"),
+		ConsumerQuery,
+		10,
+		"breadth",
+		"gbrain",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := NewReplayRowWithEngineEvidence(FixtureRow{
+		Consumer: ConsumerQuery,
+		Query:    "report validation must distrust booleans",
+	}, nil, time.Millisecond, true, EngineDependencyEvidence{
+		Attempted:       true,
+		RequestedEngine: "breadth",
+		ObservedEngine:  "breadth",
+		Outcome:         EngineOutcomeUsed,
+	}, identity)
+	report := BuildReportWithIdentity(identity, Coverage{}, []ReplayRow{row}, parityTestNow)
+	report.Rows[0].EngineDependency.ObservedEngine = "lexical"
+
+	_, err = WriteReport(homePath, report)
+	if err == nil || !strings.Contains(err.Error(), "dependency_passed does not match engine evidence") {
+		t.Fatalf("tampered report dependency error = %v", err)
+	}
+}
+
+func TestCheckpointRejectsChangedEngineDependencyContract(t *testing.T) {
+	homePath := newParityPackageHome(t)
+	fixtureRef := HashQuery("checkpoint-dependency-fixture")
+	identity, err := NewReplayIdentityWithDependency(fixtureRef, ConsumerQuery, 10, "breadth", "gbrain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := NewCheckpoint(identity, Coverage{})
+	checkpoint.Rows = append(checkpoint.Rows, NewReplayRowWithEngineEvidence(FixtureRow{
+		Consumer: ConsumerQuery,
+		Query:    "resume binds the engine contract",
+	}, nil, time.Millisecond, true, EngineDependencyEvidence{
+		Attempted:       true,
+		RequestedEngine: "breadth",
+		ObservedEngine:  "breadth",
+		Outcome:         EngineOutcomeUsed,
+	}, identity))
+	checkpoint.Completed = len(checkpoint.Rows)
+	if err := WriteCheckpoint(homePath, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	path := CheckpointPath(homePath, identity)
+	changed, err := NewReplayIdentityWithDependency(fixtureRef, ConsumerQuery, 10, "lexical", "gbrain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if CheckpointPath(homePath, changed) == path {
+		t.Fatal("dependency contract did not participate in checkpoint path")
+	}
+	_, err = LoadCheckpoint(path, changed)
+	if err == nil || !strings.Contains(err.Error(), "dependency contract") {
+		t.Fatalf("changed dependency contract error = %v", err)
+	}
+}
+
 func writeValidControlReport(t *testing.T, homePath string) string {
 	t.Helper()
 	masked := "claim://claim_aaaaaaaaaaaa"

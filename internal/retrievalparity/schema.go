@@ -25,6 +25,19 @@ const (
 	ReportSchemaVersion     = "compound.parity_report.v0.2"
 	CheckpointSchemaVersion = "compound.parity_checkpoint.v0.2"
 	ReviewArea              = "retrieval-parity"
+
+	EngineOutcomeNotAttempted = "not_attempted"
+	EngineOutcomeUsed         = "used"
+	EngineOutcomeDegraded     = "degraded"
+	EngineOutcomeRefused      = "refused"
+
+	EngineErrorUnavailable      = "unavailable"
+	EngineErrorUnsupported      = "unsupported"
+	EngineErrorEmbedderMismatch = "embedder_mismatch"
+	EngineErrorProtocolVersion  = "protocol_version"
+	EngineErrorEngineAhead      = "engine_ahead"
+	EngineErrorUnownedClaim     = "unowned_claim"
+	EngineErrorRetrieval        = "retrieval_error"
 )
 
 type Coverage struct {
@@ -64,20 +77,32 @@ type NegativeControlResult struct {
 	Observed  bool   `json:"observed"`
 }
 
+type EngineDependencyEvidence struct {
+	Attempted        bool   `json:"attempted"`
+	RequestedEngine  string `json:"requested_engine,omitempty"`
+	ObservedEngine   string `json:"observed_engine,omitempty"`
+	Embedder         string `json:"embedder,omitempty"`
+	CorpusGeneration int64  `json:"corpus_generation"`
+	Outcome          string `json:"outcome"`
+	ErrorClass       string `json:"error_class,omitempty"`
+}
+
 // ReplayRow deliberately contains no raw query field. QuerySHA256 is the only
 // query identity that can leave the COMPOUND_HOME-only journal/fixture surface.
 type ReplayRow struct {
-	Consumer        string   `json:"consumer"`
-	QueryClass      string   `json:"query_class"`
-	QuerySHA256     string   `json:"query_sha256"`
-	InputSHA256     string   `json:"input_sha256,omitempty"`
-	ExpectedRefs    []string `json:"expected_refs"`
-	ResultRefs      []string `json:"result_refs"`
-	ResultCount     int      `json:"result_count"`
-	LostHits        []string `json:"lost_hits"`
-	ExtraHits       []string `json:"extra_hits"`
-	LatencyMS       float64  `json:"latency_ms"`
-	EngineAvailable bool     `json:"engine_available"`
+	Consumer         string                    `json:"consumer"`
+	QueryClass       string                    `json:"query_class"`
+	QuerySHA256      string                    `json:"query_sha256"`
+	InputSHA256      string                    `json:"input_sha256,omitempty"`
+	ExpectedRefs     []string                  `json:"expected_refs"`
+	ResultRefs       []string                  `json:"result_refs"`
+	ResultCount      int                       `json:"result_count"`
+	LostHits         []string                  `json:"lost_hits"`
+	ExtraHits        []string                  `json:"extra_hits"`
+	LatencyMS        float64                   `json:"latency_ms"`
+	EngineAvailable  bool                      `json:"engine_available"`
+	EngineDependency *EngineDependencyEvidence `json:"engine_dependency,omitempty"`
+	DependencyPassed *bool                     `json:"dependency_passed,omitempty"`
 	// RuntimeGap records the exact replay-time failure classification for an
 	// unavailable row. Checkpoint coverage is derived from these row facts, so
 	// resumable state cannot claim an unexplained gap or lose a real one.
@@ -108,6 +133,9 @@ type Report struct {
 	Rows                 []ReplayRow    `json:"rows"`
 	Classes              []ClassSummary `json:"classes"`
 	Privacy              PrivacyCheck   `json:"privacy_check"`
+	ExpectEngine         string         `json:"expect_engine,omitempty"`
+	ForbidEngine         string         `json:"forbid_engine,omitempty"`
+	DependencyPassed     *bool          `json:"dependency_passed,omitempty"`
 	ParityPassed         bool           `json:"parity_passed"`
 	NegativeControlValid *bool          `json:"negative_control_valid,omitempty"`
 }
@@ -120,6 +148,8 @@ type ReplayIdentity struct {
 	Consumer          string `json:"consumer"`
 	K                 int    `json:"k,omitempty"`
 	ClassifierVersion string `json:"classifier_version"`
+	ExpectEngine      string `json:"expect_engine,omitempty"`
+	ForbidEngine      string `json:"forbid_engine,omitempty"`
 }
 
 // Checkpoint is private resumable replay state. SealSHA256 authenticates every
@@ -478,6 +508,17 @@ func NewReplayIdentity(fixtureRef, consumer string, k int) ReplayIdentity {
 	}
 }
 
+func NewReplayIdentityWithDependency(fixtureRef, consumer string, k int, expectEngine, forbidEngine string) (ReplayIdentity, error) {
+	identity := NewReplayIdentity(fixtureRef, consumer, k)
+	identity.ExpectEngine = strings.TrimSpace(expectEngine)
+	identity.ForbidEngine = strings.TrimSpace(forbidEngine)
+	identity = normalizeReplayIdentity(identity)
+	if err := validateEngineDependencyContract(identity.ExpectEngine, identity.ForbidEngine); err != nil {
+		return ReplayIdentity{}, err
+	}
+	return identity, nil
+}
+
 // CheckpointPath is deterministic over every replay identity field, including
 // the classifier version.
 func CheckpointPath(homePath string, identity ReplayIdentity) string {
@@ -515,6 +556,9 @@ func LoadCheckpoint(path string, expected ReplayIdentity) (Checkpoint, error) {
 		return Checkpoint{}, fmt.Errorf("parity checkpoint tampered: content seal mismatch")
 	}
 	expected = normalizeReplayIdentity(expected)
+	if checkpoint.Identity.ExpectEngine != expected.ExpectEngine || checkpoint.Identity.ForbidEngine != expected.ForbidEngine {
+		return Checkpoint{}, fmt.Errorf("parity checkpoint engine dependency contract does not match replay")
+	}
 	if checkpoint.Identity != expected {
 		return Checkpoint{}, fmt.Errorf("parity checkpoint identity does not match replay")
 	}
@@ -642,6 +686,8 @@ func WriteCheckpoint(homePath string, checkpoint *Checkpoint) error {
 func normalizeReplayIdentity(identity ReplayIdentity) ReplayIdentity {
 	identity.FixtureRef = strings.TrimSpace(identity.FixtureRef)
 	identity.Consumer = strings.TrimSpace(identity.Consumer)
+	identity.ExpectEngine = strings.TrimSpace(identity.ExpectEngine)
+	identity.ForbidEngine = strings.TrimSpace(identity.ForbidEngine)
 	if identity.ClassifierVersion == "" {
 		identity.ClassifierVersion = ClassifierVersion
 	}
@@ -664,6 +710,9 @@ func validateReplayIdentity(identity ReplayIdentity) error {
 	if (identity.Consumer == ConsumerOrient || identity.Consumer == ConsumerRecall) && identity.K != 0 {
 		return fmt.Errorf("parity checkpoint k identity must be omitted for unranked consumer")
 	}
+	if err := validateEngineDependencyContract(identity.ExpectEngine, identity.ForbidEngine); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -681,7 +730,7 @@ func validateCheckpoint(checkpoint Checkpoint) error {
 		return fmt.Errorf("parity checkpoint completed must equal len(rows)")
 	}
 	for i, row := range checkpoint.Rows {
-		if err := validateReplayRow(row, checkpoint.Identity.Consumer); err != nil {
+		if err := validateReplayRowWithDependency(row, checkpoint.Identity.Consumer, checkpoint.Identity.ExpectEngine, checkpoint.Identity.ForbidEngine); err != nil {
 			return fmt.Errorf("parity checkpoint row %d: %w", i+1, err)
 		}
 		if !row.EngineAvailable && row.RuntimeGap == "" {
@@ -689,6 +738,118 @@ func validateCheckpoint(checkpoint Checkpoint) error {
 		}
 	}
 	return nil
+}
+
+func validateEngineDependencyContract(expectEngine, forbidEngine string) error {
+	if expectEngine != "" && !validEngineIdentity(expectEngine) {
+		return fmt.Errorf("expected engine identity invalid")
+	}
+	if forbidEngine != "" && !validEngineIdentity(forbidEngine) {
+		return fmt.Errorf("forbidden engine identity invalid")
+	}
+	if expectEngine != "" && expectEngine == forbidEngine {
+		return fmt.Errorf("expected and forbidden engine identities contradict")
+	}
+	return nil
+}
+
+func normalizeEngineDependencyEvidence(evidence EngineDependencyEvidence) EngineDependencyEvidence {
+	evidence.RequestedEngine = strings.TrimSpace(evidence.RequestedEngine)
+	evidence.ObservedEngine = strings.TrimSpace(evidence.ObservedEngine)
+	evidence.Embedder = strings.TrimSpace(evidence.Embedder)
+	evidence.Outcome = strings.TrimSpace(evidence.Outcome)
+	evidence.ErrorClass = strings.TrimSpace(evidence.ErrorClass)
+	return evidence
+}
+
+func validateEngineDependencyEvidence(evidence EngineDependencyEvidence) error {
+	if evidence.RequestedEngine != "" && !validEngineIdentity(evidence.RequestedEngine) {
+		return fmt.Errorf("requested engine identity invalid")
+	}
+	if evidence.ObservedEngine != "" && !validEngineIdentity(evidence.ObservedEngine) {
+		return fmt.Errorf("observed engine identity invalid")
+	}
+	if evidence.Embedder != "" && !validEmbedderIdentity(evidence.Embedder) {
+		return fmt.Errorf("engine embedder identity invalid")
+	}
+	if evidence.CorpusGeneration < 0 {
+		return fmt.Errorf("engine corpus generation must be non-negative")
+	}
+	switch evidence.Outcome {
+	case EngineOutcomeNotAttempted:
+		if evidence.Attempted || evidence.ObservedEngine != "" || evidence.Embedder != "" || evidence.CorpusGeneration != 0 || evidence.ErrorClass != "" {
+			return fmt.Errorf("not_attempted engine evidence is inconsistent")
+		}
+	case EngineOutcomeUsed:
+		if !evidence.Attempted || evidence.ObservedEngine == "" || evidence.ErrorClass != "" {
+			return fmt.Errorf("used engine evidence is incomplete")
+		}
+	case EngineOutcomeDegraded:
+		if !validEngineErrorClass(evidence.ErrorClass, false) {
+			return fmt.Errorf("degraded engine error class invalid")
+		}
+	case EngineOutcomeRefused:
+		if !validEngineErrorClass(evidence.ErrorClass, true) {
+			return fmt.Errorf("refused engine error class invalid")
+		}
+	default:
+		return fmt.Errorf("engine outcome invalid")
+	}
+	if !evidence.Attempted && evidence.ObservedEngine != "" {
+		return fmt.Errorf("unattempted engine cannot be observed")
+	}
+	return nil
+}
+
+func validEngineErrorClass(value string, refused bool) bool {
+	if refused {
+		switch value {
+		case EngineErrorEmbedderMismatch, EngineErrorProtocolVersion, EngineErrorEngineAhead, EngineErrorUnownedClaim:
+			return true
+		}
+		return false
+	}
+	switch value {
+	case EngineErrorUnavailable, EngineErrorUnsupported, EngineErrorRetrieval:
+		return true
+	}
+	return false
+}
+
+func validEmbedderIdentity(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' || r == ':' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func engineDependencyPasses(evidence EngineDependencyEvidence, expectEngine, forbidEngine string) bool {
+	if expectEngine != "" && (evidence.Outcome != EngineOutcomeUsed || evidence.ObservedEngine != expectEngine) {
+		return false
+	}
+	if forbidEngine != "" && (evidence.RequestedEngine == forbidEngine || evidence.ObservedEngine == forbidEngine) {
+		return false
+	}
+	return true
+}
+
+func validEngineIdentity(value string) bool {
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	for i, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || (i > 0 && (r == '.' || r == '_' || r == '-')) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func checkpointSeal(checkpoint Checkpoint) string {
@@ -739,6 +900,15 @@ func freezeOutputName(out string, fixture Fixture) (string, error) {
 }
 
 func NewReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, engineAvailable bool, runtimeGaps ...string) ReplayRow {
+	return newReplayRow(row, resultRefs, latency, engineAvailable, nil, ReplayIdentity{}, runtimeGaps...)
+}
+
+func NewReplayRowWithEngineEvidence(row FixtureRow, resultRefs []string, latency time.Duration, engineAvailable bool, evidence EngineDependencyEvidence, identity ReplayIdentity, runtimeGaps ...string) ReplayRow {
+	evidence = normalizeEngineDependencyEvidence(evidence)
+	return newReplayRow(row, resultRefs, latency, engineAvailable, &evidence, identity, runtimeGaps...)
+}
+
+func newReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, engineAvailable bool, evidence *EngineDependencyEvidence, identity ReplayIdentity, runtimeGaps ...string) ReplayRow {
 	expected := uniqueSorted(row.ExpectedRefs)
 	actual := uniqueSorted(resultRefs)
 	lost := difference(expected, actual)
@@ -771,6 +941,13 @@ func NewReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, en
 		ParityPassed:    engineAvailable && len(lost) == 0,
 		privacySafe:     privacySafe,
 	}
+	if evidence != nil {
+		dependencyPassed := engineDependencyPasses(*evidence, identity.ExpectEngine, identity.ForbidEngine)
+		reportRow.EngineDependency = evidence
+		reportRow.DependencyPassed = &dependencyPassed
+		reportRow.ParityPassed = reportRow.ParityPassed && dependencyPassed
+		reportRow.privacySafe = reportRow.privacySafe && validateEngineDependencyEvidence(*evidence) == nil
+	}
 	if row.Consumer == ConsumerOrient && row.OrientInput != nil {
 		reportRow.InputSHA256 = HashOrientInput(*row.OrientInput, row.Query)
 		reportRow.privacySafe = reportRow.privacySafe && validSHARef(reportRow.InputSHA256)
@@ -788,6 +965,11 @@ func NewReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, en
 }
 
 func BuildReport(fixtureRef, consumer string, k int, coverage Coverage, rows []ReplayRow, now time.Time) Report {
+	return BuildReportWithIdentity(NewReplayIdentity(fixtureRef, consumer, k), coverage, rows, now)
+}
+
+func BuildReportWithIdentity(identity ReplayIdentity, coverage Coverage, rows []ReplayRow, now time.Time) Report {
+	identity = normalizeReplayIdentity(identity)
 	coverage.KnownGaps = uniqueSorted(coverage.KnownGaps)
 	if coverage.WindowStart == "" || coverage.WindowEnd == "" {
 		coverage.KnownGaps = uniqueSorted(append(coverage.KnownGaps, "fixture_window_unrecorded"))
@@ -796,24 +978,26 @@ func BuildReport(fixtureRef, consumer string, k int, coverage Coverage, rows []R
 	report := Report{
 		Header: envelope.Header{
 			SchemaVersion: ReportSchemaVersion,
-			ID:            reviewartifact.ID("parity_", fixtureRef, consumer, now.UTC().Format(time.RFC3339Nano)),
+			ID:            reviewartifact.ID("parity_", identity.FixtureRef, identity.Consumer, identity.ExpectEngine, identity.ForbidEngine, now.UTC().Format(time.RFC3339Nano)),
 			CreatedAt:     now.UTC().Format(time.RFC3339Nano),
 			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
 			Scope:         envelope.Scope{Surface: ReviewArea},
 			Authority:     envelope.Authority{SourceClass: "review", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier0",
-			EvidenceRefs:  []string{fixtureRef},
+			EvidenceRefs:  []string{identity.FixtureRef},
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
 		ClassifierVersion: ClassifierVersion,
-		FixtureRef:        fixtureRef,
-		Consumer:          consumer,
-		K:                 k,
+		FixtureRef:        identity.FixtureRef,
+		Consumer:          identity.Consumer,
+		K:                 identity.K,
 		Coverage:          coverage,
 		Rows:              append([]ReplayRow(nil), rows...),
 		Classes:           summarizeClasses(rows),
 		Privacy:           PrivacyCheck{RawQueryExcluded: privacySafe, QueryRefsHashed: allRowsHashed(rows)},
+		ExpectEngine:      identity.ExpectEngine,
+		ForbidEngine:      identity.ForbidEngine,
 		ParityPassed:      true,
 	}
 	for _, row := range rows {
@@ -822,6 +1006,7 @@ func BuildReport(fixtureRef, consumer string, k int, coverage Coverage, rows []R
 			break
 		}
 	}
+	report.DependencyPassed = rowsDependencyPassed(rows, identity.ExpectEngine, identity.ForbidEngine)
 	report.NegativeControlValid = negativeControlValidity(rows)
 	return report
 }
@@ -858,6 +1043,9 @@ func validateReport(report Report) error {
 	if !validConsumer(report.Consumer) {
 		return fmt.Errorf("parity report consumer invalid")
 	}
+	if err := validateEngineDependencyContract(report.ExpectEngine, report.ForbidEngine); err != nil {
+		return fmt.Errorf("parity report dependency contract: %w", err)
+	}
 	if len(report.Rows) == 0 {
 		return fmt.Errorf("parity report rows required")
 	}
@@ -871,7 +1059,7 @@ func validateReport(report Report) error {
 		return err
 	}
 	for i, row := range report.Rows {
-		if err := validateReplayRow(row, report.Consumer); err != nil {
+		if err := validateReplayRowWithDependency(row, report.Consumer, report.ExpectEngine, report.ForbidEngine); err != nil {
 			return fmt.Errorf("parity report row %d: %w", i+1, err)
 		}
 	}
@@ -889,6 +1077,10 @@ func validateReport(report Report) error {
 	if report.ParityPassed != rowsParityPassed(report.Rows) {
 		return fmt.Errorf("parity report parity_passed does not match rows")
 	}
+	wantDependency := rowsDependencyPassed(report.Rows, report.ExpectEngine, report.ForbidEngine)
+	if !equalOptionalBool(report.DependencyPassed, wantDependency) {
+		return fmt.Errorf("parity report dependency_passed does not match rows")
+	}
 	wantControl := negativeControlValidity(report.Rows)
 	if !equalOptionalBool(report.NegativeControlValid, wantControl) {
 		return fmt.Errorf("parity report negative_control_valid does not match rows")
@@ -896,7 +1088,25 @@ func validateReport(report Report) error {
 	return nil
 }
 
+func rowsDependencyPassed(rows []ReplayRow, expectEngine, forbidEngine string) *bool {
+	if expectEngine == "" && forbidEngine == "" {
+		return nil
+	}
+	passed := true
+	for _, row := range rows {
+		if row.EngineDependency == nil || !engineDependencyPasses(*row.EngineDependency, expectEngine, forbidEngine) {
+			passed = false
+			break
+		}
+	}
+	return &passed
+}
+
 func validateReplayRow(row ReplayRow, consumer string) error {
+	return validateReplayRowWithDependency(row, consumer, "", "")
+}
+
+func validateReplayRowWithDependency(row ReplayRow, consumer, expectEngine, forbidEngine string) error {
 	if row.Consumer != consumer || !validQueryClass(row.Consumer, row.QueryClass) {
 		return fmt.Errorf("classification invalid")
 	}
@@ -935,7 +1145,24 @@ func validateReplayRow(row ReplayRow, consumer string) error {
 			return fmt.Errorf("runtime_gap invalid for %s consumer", row.Consumer)
 		}
 	}
-	if row.ParityPassed != (row.EngineAvailable && len(row.LostHits) == 0) {
+	dependencyPassed := true
+	if row.EngineDependency != nil {
+		if err := validateEngineDependencyEvidence(*row.EngineDependency); err != nil {
+			return err
+		}
+		dependencyPassed = engineDependencyPasses(*row.EngineDependency, expectEngine, forbidEngine)
+		if row.DependencyPassed == nil || *row.DependencyPassed != dependencyPassed {
+			return fmt.Errorf("dependency_passed does not match engine evidence")
+		}
+	} else {
+		if expectEngine != "" || forbidEngine != "" {
+			return fmt.Errorf("engine dependency evidence required")
+		}
+		if row.DependencyPassed != nil {
+			return fmt.Errorf("dependency_passed requires engine evidence")
+		}
+	}
+	if row.ParityPassed != (row.EngineAvailable && len(row.LostHits) == 0 && dependencyPassed) {
 		return fmt.Errorf("parity_passed does not match evidence")
 	}
 	if row.NegativeControl != nil {
