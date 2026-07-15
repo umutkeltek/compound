@@ -35,6 +35,11 @@ type LandCheckOptions struct {
 	ExpectedMainSHA string
 	Actor           string
 	Record          bool
+	// Steal and StealReason are forwarded only to the same-state Advance that
+	// attaches a successful recorded proof. They do not transfer the lease or
+	// affect evaluation, non-landed recording, or dry runs.
+	Steal       bool
+	StealReason string
 }
 
 // LandCheckReport is durable evidence about one candidate tip and one target
@@ -81,6 +86,14 @@ func (s *Store) LandCheck(workID string, opts LandCheckOptions, now time.Time) (
 	if now.IsZero() {
 		now = time.Now()
 	}
+	stealReason := strings.TrimSpace(opts.StealReason)
+	switch {
+	case opts.Steal && stealReason == "":
+		return LandCheckReport{}, fmt.Errorf("--steal requires --reason <non-empty>")
+	case !opts.Steal && opts.StealReason != "":
+		return LandCheckReport{}, fmt.Errorf("--reason requires --steal")
+	}
+	opts.StealReason = stealReason
 	w, err := s.Get(strings.TrimSpace(workID))
 	if err != nil {
 		return LandCheckReport{}, err
@@ -110,6 +123,8 @@ func (s *Store) LandCheck(workID string, opts LandCheckOptions, now time.Time) (
 				Actor:        actor,
 				EvidenceRefs: []string{report.EvidenceRef},
 				Note:         "attached current Git delivery proof",
+				Steal:        opts.Steal,
+				StealReason:  opts.StealReason,
 			}, now); err != nil {
 				return report, fmt.Errorf("attach land-check proof to work %s: %w", current.ID, err)
 			}

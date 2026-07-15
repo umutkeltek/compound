@@ -219,7 +219,7 @@ func TestWorkLandCheckCLIStealOnlyOverridesProofAttachment(t *testing.T) {
 			t.Fatalf("land-check %s failed: %v\n%s", mode, err, out)
 		}
 		var report work.LandCheckReport
-		if err := json.Unmarshal(out, &report); err != nil {
+		if err := json.NewDecoder(bytes.NewReader(out)).Decode(&report); err != nil {
 			t.Fatalf("parse land-check %s JSON: %v\n%s", mode, err, out)
 		}
 		return report, out

@@ -171,7 +171,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work observe-run work_abc123 --trace trace_xyz --json",
 	},
 	"land-check": {
-		Usage:   "usage: compound work land-check <work_id> --tip <full-sha> [--repo /bound/repo] [--target-ref refs/heads/main] [--actor A] [--dry-run] [--json]",
+		Usage:   "usage: compound work land-check <work_id> --tip <full-sha> [--repo /bound/repo] [--target-ref refs/heads/main] [--actor A] [--steal --reason R] [--dry-run] [--json]",
 		Example: "compound work land-check work_abc123 --tip 0123456789012345678901234567890123456789 --json",
 	},
 	"action-plan": {
@@ -1236,13 +1236,26 @@ func cmdWork(args []string) {
 	case "land-check":
 		usage := workUsage("land-check")
 		if err := validateWorkArguments(rest,
-			map[string]bool{"--tip": true, "--repo": true, "--target-ref": true, "--actor": true},
-			map[string]bool{"--dry-run": true, "--json": true}, 1); err != nil {
+			map[string]bool{"--tip": true, "--repo": true, "--target-ref": true, "--actor": true, "--reason": true},
+			map[string]bool{"--steal": true, "--dry-run": true, "--json": true}, 1); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
 		if strings.TrimSpace(flag("--tip")) == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		steal := has("--steal")
+		stealReasonProvided := has("--reason")
+		stealReason := strings.TrimSpace(flag("--reason"))
+		switch {
+		case steal && (!stealReasonProvided || stealReason == ""):
+			fmt.Fprintln(os.Stderr, "error: --steal requires --reason <non-empty>")
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		case !steal && stealReasonProvided:
+			fmt.Fprintln(os.Stderr, "error: --reason requires --steal")
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
@@ -1252,6 +1265,8 @@ func cmdWork(args []string) {
 			TargetRef:       flag("--target-ref"),
 			Actor:           flag("--actor"),
 			Record:          !has("--dry-run"),
+			Steal:           steal,
+			StealReason:     stealReason,
 		}, time.Now())
 		die(err)
 		if has("--json") {
