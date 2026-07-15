@@ -533,6 +533,14 @@ func TestHarnessGenerateApplyRecoversExactPublishedOutcomeBeforeNewAction(t *tes
 	if _, err := os.Stat(filepath.Join(homePath, "events", expectedActionID+".json")); !os.IsNotExist(err) {
 		t.Fatalf("failed finalizer emitted a competing action envelope: %v", err)
 	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying", Actor: "operator:test"}, firstNow.Add(30*time.Minute)); err == nil ||
+		!strings.Contains(err.Error(), "pending receipted action "+expectedActionID) {
+		t.Fatalf("work advancement crossed published permission outcome reservation: %v", err)
+	}
 
 	writeHarnessApplyJSON(t, filepath.Join(homePath, "config", "policy.yaml"), policy.DefaultConfig())
 	recordHarnessPermissionOutcome = previousRecord

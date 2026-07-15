@@ -865,6 +865,79 @@ func TestPendingCreationRecoveryRejectsMismatchedRecoveryContent(t *testing.T) {
 	}
 }
 
+func TestPendingCreationRecoveryRejectsCanonicalRecoveryAliasBeforeFinalization(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "target", "settings.json")
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	injected := errors.New("receipt unavailable")
+	if _, err := ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, func(PermissionApplyOutcome) error { return injected }); !errors.Is(err, injected) {
+		t.Fatalf("ApplyPermissions error = %v", err)
+	}
+	pendingPath := PermissionApplyPendingPath(homePath, "claude_code")
+	var pending permissionApplyPending
+	body, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body, &pending); err != nil {
+		t.Fatal(err)
+	}
+	pending.RecoveryName = filepath.Base(targetPath)
+	writeTestJSON(t, pendingPath, pending)
+	current, _, _ := governedPermissionApproval(t, homePath, "claude_code")
+	finalized := false
+	if _, err := ApplyPermissions(homePath, current, action, decision, allowPermissionApply, func(PermissionApplyOutcome) error {
+		finalized = true
+		return nil
+	}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "canonical") {
+		t.Fatalf("aliased recovery error = %v finalized=%t, want pre-finalization canonical alias refusal", err, finalized)
+	}
+	if finalized {
+		t.Fatal("canonical recovery alias reached outcome finalization")
+	}
+	if actual, err := os.ReadFile(targetPath); err != nil || !bytesEqual(actual, approved.Content) {
+		t.Fatalf("canonical target was deleted or changed: body=%q err=%v", actual, err)
+	}
+	if _, err := os.Stat(pendingPath); err != nil {
+		t.Fatalf("canonical alias refusal removed pending evidence: %v", err)
+	}
+}
+
+func TestValidatePermissionApplyPendingRejectsAliasedAndDerivedIdentity(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	render, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	base := newPermissionApplyPending(newPermissionApplyOutcome(homePath, render, action, decision, time.Date(2026, 7, 15, 12, 1, 0, 0, time.UTC), true))
+	canonicalName := filepath.Base(targetPath)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*permissionApplyPending)
+	}{
+		{name: "recovery aliases canonical", mutate: func(p *permissionApplyPending) { p.RecoveryName = canonicalName }},
+		{name: "rollback aliases canonical", mutate: func(p *permissionApplyPending) { p.RollbackName = canonicalName }},
+		{name: "recovery aliases rollback", mutate: func(p *permissionApplyPending) { p.RollbackName = p.RecoveryName }},
+		{name: "target change omitted", mutate: func(p *permissionApplyPending) {
+			p.TargetChanged = false
+			p.RecoveryName = ""
+			p.RollbackName = ""
+			p.FilesChanged = []string{HarnessArtifactManifestPath(homePath)}
+		}},
+		{name: "false target change claimed", mutate: func(p *permissionApplyPending) {
+			p.BeforeContent = append([]byte(nil), p.IntendedContent...)
+			p.BeforeSHA256 = p.IntendedSHA256
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pending := base
+			tc.mutate(&pending)
+			if _, err := validatePermissionApplyPending(homePath, "claude_code", pending); err == nil {
+				t.Fatalf("validatePermissionApplyPending accepted %+v", pending)
+			}
+		})
+	}
+}
+
 func governedPermissionApproval(t *testing.T, homePath, harnessName string) (PermissionRender, envelope.ActionIntent, envelope.PolicyDecision) {
 	t.Helper()
 	render, err := RenderPermissions(homePath, harnessName)
