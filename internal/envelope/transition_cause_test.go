@@ -81,3 +81,55 @@ func TestTransitionCauseOmittedIsBackcompat(t *testing.T) {
 		t.Fatalf("nil Cause must not emit a cause key: %s", b)
 	}
 }
+
+// Falsifier F1: a prose next_consumer is rejected by Validate.
+func TestTransitionCauseRejectsProseNextConsumer(t *testing.T) {
+	tr := validCauseTransition()
+	tr.Cause = &TransitionCause{
+		DeltaCause:   "accept",
+		CausedByRefs: []string{"work_abc"},
+		NextConsumer: "someone should probably check the new thing tomorrow",
+	}
+	if err := tr.Validate(); err == nil {
+		t.Fatalf("expected validation error for prose next_consumer, got nil")
+	}
+}
+
+// Falsifier F2: a slug-shaped next_consumer passes, an empty next_consumer passes
+// (audit_only), and a nil Cause passes (backward compat).
+func TestTransitionCauseAcceptsSlugEmptyAndNilNextConsumer(t *testing.T) {
+	tr := validCauseTransition()
+
+	tr.Cause = &TransitionCause{DeltaCause: "accept", CausedByRefs: []string{"work_abc"}, NextConsumer: "capgraph"}
+	if err := tr.Validate(); err != nil {
+		t.Fatalf("slug next_consumer %q should validate: %v", tr.Cause.NextConsumer, err)
+	}
+
+	tr.Cause = &TransitionCause{DeltaCause: "accept", CausedByRefs: []string{"work_abc"}, NextConsumer: ""}
+	if err := tr.Validate(); err != nil {
+		t.Fatalf("empty next_consumer (audit_only) should validate: %v", err)
+	}
+
+	tr.Cause = nil
+	if err := tr.Validate(); err != nil {
+		t.Fatalf("nil Cause should validate: %v", err)
+	}
+}
+
+// Falsifier F3: ValidateBytes over a serialized Transition carrying a prose
+// next_consumer rejects it — proves the write/read gate, not just the struct method.
+func TestTransitionCauseValidateBytesRejectsProseNextConsumer(t *testing.T) {
+	tr := validCauseTransition()
+	tr.Cause = &TransitionCause{
+		DeltaCause:   "accept",
+		CausedByRefs: []string{"work_abc"},
+		NextConsumer: "someone should probably check the new thing tomorrow",
+	}
+	b, err := json.Marshal(&tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateBytes(b); err == nil {
+		t.Fatalf("expected ValidateBytes to reject prose next_consumer, got nil error")
+	}
+}
