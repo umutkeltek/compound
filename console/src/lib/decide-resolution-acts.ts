@@ -3,8 +3,8 @@ import type { DecideAct, DecideGroup } from "@/lib/decide-model";
 type GenericDecideAct = Extract<DecideAct, { mode: "generic" }>;
 
 // Generic resolution controls are derived at render time so the serialized
-// DecideGroup remains byte-identical for every existing card. Only honest-copy
-// cards qualify; an already-actionable bespoke/generic/batch card gets none.
+// DecideGroup stays unchanged. Only an honest-copy card representing exactly
+// one Reviews-backed item qualifies; Attention-only and aggregate cards get none.
 // The synthetic acts execute through the fixed server-side review-resolution
 // adapter (argv is rebuilt server-side), so they carry no projection revision.
 //
@@ -12,12 +12,12 @@ type GenericDecideAct = Extract<DecideAct, { mode: "generic" }>;
 // components, and decide-model's module graph reaches node:child_process via
 // @/lib/compound — type-only imports keep this file client-bundle-safe.
 export function genericReviewResolutionActs(group: DecideGroup): GenericDecideAct[] {
-  if (group.act.mode !== "copy") return [];
+  if (group.act.mode !== "copy" || !group.reviewResolutionItemId) return [];
   const copyCommand = group.act.command;
   return [{
     mode: "generic",
     area: group.area,
-    itemId: group.sampleId,
+    itemId: group.reviewResolutionItemId,
     actionId: "review_resolution_park",
     expectedRevision: "",
     label: "Review disposition",

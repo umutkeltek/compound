@@ -5,10 +5,12 @@ import { fieldValidationMessage, RATIONALE_REQUIRED_MESSAGE } from "./governed-a
 import { ownerUnavailableMessage } from "./glossary";
 
 /**
- * Falsifiers for the two Decide-page presentation bugs the operator
+ * Falsifiers for the Decide-page presentation bugs the operator
  * browser-reproduced: (1) clicking a primary act with an empty required
  * field silently did nothing — no visible feedback; (2) 11 "Owner action
- * unavailable" cards named no owner and no operator escape hatch.
+ * unavailable" cards named no owner and no operator escape hatch; (3) the
+ * final confirmation omitted the rationale and other field values it would
+ * send.
  *
  * This repo's console tests are pure-function `.selftest.ts` files (no DOM
  * renderer is wired in — see decide-model-brief.selftest.ts, ask-triage.
@@ -165,6 +167,44 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
       fail("DecideQueue.tsx still renders the old generic 'Primary action unavailable' heading instead of the named-owner line");
     } else {
       pass("the old generic 'Primary action unavailable' heading is gone — replaced by the named-owner line");
+    }
+  }
+
+  /* ---------- f3: final confirmation shows the submitted values ---------- */
+
+  // The final GovernedAct review must use the shared ConfirmDialog and its
+  // extra-content slot to show every field collected for submission. The
+  // value itself is rendered verbatim, not merely the field label or a count.
+  // This is a source-wiring falsifier because the console test harness has no
+  // DOM renderer; importing the component would also pull in Next client code.
+  {
+    const src = read("components/decide/GovernedAct.tsx");
+    const dialog = src.match(/<ConfirmDialog[\s\S]*?<\/ConfirmDialog>/)?.[0] ?? "";
+    if (!/<ConfirmDialog[\s\S]*onConfirm=\{\(\) => void submit\("confirm"/.test(dialog)) {
+      fail("GovernedAct final review is not wired through the shared ConfirmDialog");
+    } else {
+      pass("GovernedAct final review is wired through the shared ConfirmDialog");
+    }
+    if (!/const confirmationFields = Object\.entries\(confirmationFieldValues\)/.test(src)) {
+      fail("GovernedAct does not render from a stable submission-field snapshot");
+    } else if (!/setConfirmationFieldValues\(fieldValues\)/.test(src)) {
+      fail("GovernedAct does not capture the submission-field snapshot before opening confirmation");
+    } else if (!/confirmationFields\.map\(\(\[name, value\]\)/.test(src)) {
+      fail("GovernedAct does not render every collected submission field in the final confirmation");
+    } else if (!/<code[^>]*>\{value\}<\/code>/.test(src)) {
+      fail("GovernedAct final confirmation does not render each collected value verbatim");
+    } else {
+      pass("GovernedAct final confirmation renders every collected field value verbatim");
+    }
+    if (!/submit\("confirm", Object\.fromEntries\(confirmationFields\)\)/.test(dialog)) {
+      fail("GovernedAct confirm request is not bound to the exact field snapshot shown in the dialog");
+    } else {
+      pass("GovernedAct confirm request is bound to the exact field snapshot shown in the dialog");
+    }
+    if (!/previewResult/.test(dialog) || !/act\.policyNote/.test(dialog) || !/act\.argv/.test(dialog)) {
+      fail("GovernedAct lost preview, policy, or argv details while adopting ConfirmDialog");
+    } else {
+      pass("GovernedAct preserves preview, policy, and argv details inside ConfirmDialog");
     }
   }
 

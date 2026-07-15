@@ -1,12 +1,11 @@
 "use client";
 
-import * as Dialog from "@radix-ui/react-dialog";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { CopyCmd } from "@/components/CopyCmd";
-import { Button, Field } from "@/components/kit";
+import { Button, ConfirmDialog, Field } from "@/components/kit";
 import type { DecideAct, DecideCapability } from "@/lib/decide-model";
 import type { DecisionExecutionEffect, DecisionExecutionRefs } from "@/lib/decision-execute";
 import type { DecisionOption, FieldSpec } from "@/lib/decision-registry";
@@ -196,6 +195,7 @@ export function GovernedAct({
   const [localOutcome, setLocalOutcome] = useState<ExecuteResult | null>(null);
   const [fellBackToCopy, setFellBackToCopy] = useState(false);
   const [invalidField, setInvalidField] = useState<string | null>(null);
+  const [confirmationFieldValues, setConfirmationFieldValues] = useState<Record<string, string>>({});
   const formRef = useRef<HTMLFormElement | null>(null);
   const validationMessageId = useId();
 
@@ -215,6 +215,7 @@ export function GovernedAct({
     setLocalOutcome(null);
     setFellBackToCopy(false);
     setInvalidField(null);
+    setConfirmationFieldValues({});
     setMessage(null);
     // The server refreshes projections every 30 seconds and recreates the act
     // object. Reset only when the owner item/revision changes, not while the
@@ -255,11 +256,14 @@ export function GovernedAct({
     return true;
   }
 
-  async function request(kind: GovernedSubmitKind): Promise<ExecuteResult> {
+  async function request(
+    kind: GovernedSubmitKind,
+    fieldValues: Record<string, string> = collectedFields(),
+  ): Promise<ExecuteResult> {
     const response = await fetch("/api/decision/execute", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(buildDecideActionRequest(act, selectedOption, collectedFields(), kind)),
+      body: JSON.stringify(buildDecideActionRequest(act, selectedOption, fieldValues, kind)),
     });
     const parsed = (await response.json().catch(() => null)) as ExecuteResult | null;
     return parsed
@@ -269,12 +273,13 @@ export function GovernedAct({
 
   async function trigger() {
     if (!mutationsEnabled || state === "pending" || !validateDraft()) return;
+    const fieldValues = collectedFields();
     setMessage(null);
     if (act.mode === "bespoke" && act.supportsPreview) {
       const previewIdentity = actIdentity;
       setState("pending");
       try {
-        const result = await request("preview");
+        const result = await request("preview", fieldValues);
         if (latestActIdentity.current !== previewIdentity) return;
         if (!result.ok) {
           setState("error");
@@ -282,6 +287,7 @@ export function GovernedAct({
           return;
         }
         setPreviewResult(result);
+        setConfirmationFieldValues(fieldValues);
         setState("idle");
         setOpen(true);
       } catch (error) {
@@ -291,10 +297,11 @@ export function GovernedAct({
       return;
     }
     if (act.requiresConfirmation || fields.length > 0 || (act.mode === "bespoke" && act.options.length > 1)) {
+      setConfirmationFieldValues(fieldValues);
       setOpen(true);
       return;
     }
-    await submit("direct");
+    await submit("direct", fieldValues);
   }
 
   useEffect(() => {
@@ -303,12 +310,15 @@ export function GovernedAct({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [act, mutationsEnabled, selectedOption, state]);
 
-  async function submit(kind: Exclude<GovernedSubmitKind, "preview">) {
+  async function submit(
+    kind: Exclude<GovernedSubmitKind, "preview">,
+    fieldValues?: Record<string, string>,
+  ) {
     if (!validateDraft()) return;
     setState("pending");
     setMessage(null);
     try {
-      const result = await request(kind);
+      const result = await request(kind, fieldValues);
       onExecuted?.(result);
       if (result.ok) {
         setLocalOutcome(result);
@@ -349,6 +359,7 @@ export function GovernedAct({
       : options.length > 1
         ? selectedOption ? "Review decision" : "Choose a decision"
         : chosen?.label ?? act.label;
+  const confirmationFields = Object.entries(confirmationFieldValues);
 
   return (
     <div className="flex flex-col gap-3">
@@ -430,52 +441,64 @@ export function GovernedAct({
       ) : null}
       {outcome ? <DecisionOutcome result={outcome} effectKind={effectKind} /> : null}
 
-      <Dialog.Root open={open} onOpenChange={setOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-strong/35 backdrop-blur-sm motion-reduce:backdrop-blur-none" />
-          <Dialog.Content className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-lg border border-hair bg-panel p-5 shadow-lg focus:outline-none">
-            <Dialog.Title className="text-md font-semibold text-ink">Confirm {chosen?.label ?? act.label}</Dialog.Title>
-            <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted">
-              {confirmationDescription(act, chosen)}
-            </Dialog.Description>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={`Confirm ${chosen?.label ?? act.label}`}
+        body={confirmationDescription(act, chosen)}
+        confirmLabel="Confirm decision"
+        pending={state === "pending"}
+        onConfirm={() => void submit("confirm", Object.fromEntries(confirmationFields))}
+      >
+        <div className="grid gap-3">
+          {previewResult ? <DecisionOutcome result={previewResult} preview effectKind={effectKind} /> : null}
 
-            {previewResult ? <div className="mt-3"><DecisionOutcome result={previewResult} preview effectKind={effectKind} /></div> : null}
-
-            {act.mode === "batch-atomic" ? (
-              <div className="mt-3 rounded-md border border-seam-line bg-seam-soft px-3 py-2 text-xs leading-relaxed text-seam">
-                Applies to all {act.memberCount} members together. Members cannot be excluded individually.
-              </div>
-            ) : null}
-
-            {(act.mode !== "generic" && act.policyNote) || act.argv?.length ? (
-              <details className="mt-3 rounded-md border border-hair bg-soft px-3 py-2">
-                <summary className="cursor-pointer text-xs font-semibold text-muted">Technical details</summary>
-                {act.mode !== "generic" && act.policyNote ? (
-                  <p className="mt-2 text-xs leading-relaxed text-muted">{act.policyNote}</p>
-                ) : null}
-                {act.argv?.length ? (
-                  <pre className="mono mt-2 overflow-x-auto border-t border-hair pt-2 text-2xs leading-relaxed text-muted">
-                    compound {act.argv.join(" ")}
-                  </pre>
-                ) : null}
-              </details>
-            ) : null}
-
-            {state === "error" && message ? (
-              <div id={validationMessageId} role="alert" aria-live="assertive" className="mt-3 rounded-md border border-crit-line bg-crit-soft px-3 py-2 text-xs leading-relaxed text-crit">
-                {message}
-              </div>
-            ) : null}
-
-            <div className="mt-4 flex justify-end gap-2">
-              <Dialog.Close asChild><Button variant="secondary">Cancel</Button></Dialog.Close>
-              <Button variant="primary" disabled={state === "pending"} onClick={() => void submit("confirm")}>
-                {state === "pending" ? "Working…" : "Confirm decision"}
-              </Button>
+          {act.mode === "batch-atomic" ? (
+            <div className="rounded-md border border-seam-line bg-seam-soft px-3 py-2 text-xs leading-relaxed text-seam">
+              Applies to all {act.memberCount} members together. Members cannot be excluded individually.
             </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
+          ) : null}
+
+          {confirmationFields.length ? (
+            <section className="rounded-md border border-work-line bg-work-soft px-3 py-2.5" aria-label="Values to submit">
+              <h3 className="text-2xs font-bold uppercase tracking-wide text-work">Values to submit</h3>
+              <dl className="mt-2 grid gap-2">
+                {confirmationFields.map(([name, value]) => {
+                  const label = fields.find((field) => field.name === name)?.label ?? name.replaceAll("_", " ");
+                  return (
+                    <div key={name} className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-3 text-xs">
+                      <dt className="font-semibold capitalize text-muted" title={name}>{label}</dt>
+                      <dd className="min-w-0 text-ink">
+                        <code className="mono whitespace-pre-wrap break-words">{value}</code>
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            </section>
+          ) : null}
+
+          {(act.mode !== "generic" && act.policyNote) || act.argv?.length ? (
+            <details className="rounded-md border border-hair bg-soft px-3 py-2">
+              <summary className="cursor-pointer text-xs font-semibold text-muted">Technical details</summary>
+              {act.mode !== "generic" && act.policyNote ? (
+                <p className="mt-2 text-xs leading-relaxed text-muted">{act.policyNote}</p>
+              ) : null}
+              {act.argv?.length ? (
+                <pre className="mono mt-2 overflow-x-auto border-t border-hair pt-2 text-2xs leading-relaxed text-muted">
+                  compound {act.argv.join(" ")}
+                </pre>
+              ) : null}
+            </details>
+          ) : null}
+
+          {state === "error" && message ? (
+            <div id={validationMessageId} role="alert" aria-live="assertive" className="rounded-md border border-crit-line bg-crit-soft px-3 py-2 text-xs leading-relaxed text-crit">
+              {message}
+            </div>
+          ) : null}
+        </div>
+      </ConfirmDialog>
     </div>
   );
 }

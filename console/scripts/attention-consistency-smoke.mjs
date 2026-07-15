@@ -19,7 +19,7 @@ const [
   { getAttentionProjection },
   { DecideList },
   { Headline },
-  { initialDecideKey },
+  { decisionSelectionHref, initialDecideIndex, initialDecideKey },
   { enrichAttentionGroups },
   { buildDecideGroups },
 ] = await Promise.all([
@@ -39,8 +39,8 @@ const [
  * `compound attention --json`.
  *
  * Reviews may enrich an Attention group with item detail, and the page may
- * present ready and limited workflows in separate queues. Neither is allowed
- * to add, drop, replace, duplicate, or reorder identities within a queue.
+ * present every workflow in one queue. It may not add, drop, replace,
+ * duplicate, or reorder identities.
  *
  * Run manually / through proof-check:
  *   COMPOUND_BIN=compound COMPOUND_HOME=~/.compound bun scripts/attention-consistency-smoke.mjs
@@ -96,7 +96,11 @@ const queues = decideQueuesFromPage(page);
 const queueKeys = queues.map((queue) => queue.props.groups.map((group) => str(group.key)));
 const decideKeys = queueKeys.flat();
 
-assert.ok(queues.length > 0 || attentionKeys.length === 0, "Reviews page did not render a DecideQueue for pending Attention groups");
+assert.equal(
+  queues.length,
+  attentionKeys.length > 0 ? 1 : 0,
+  "Reviews must render one Attention-ordered Decide queue (or none for a live-empty projection)",
+);
 assert.equal(new Set(decideKeys).size, decideKeys.length, "a decision key rendered in more than one Decide queue");
 
 const onlyInAttention = attentionKeys.filter((key) => !decideKeys.includes(key));
@@ -107,15 +111,7 @@ assert.deepEqual(
   "Attention and Decide must have exactly the same needs-you membership",
 );
 
-for (const [index, keys] of queueKeys.entries()) {
-  const keySet = new Set(keys);
-  const expected = attentionKeys.filter((key) => keySet.has(key));
-  assert.deepEqual(
-    keys,
-    expected,
-    `Decide queue ${index + 1} reordered identities relative to Attention`,
-  );
-}
+assert.deepEqual(decideKeys, attentionKeys, "Decide must preserve Attention's global group order exactly");
 
 const briefing = DecideList({
   groups: attentionGroups,
@@ -212,15 +208,21 @@ assert.deepEqual(
   );
 }
 
-for (const queue of queues) {
-  const requestedKey = str(queue.props.groups.at(-1)?.key);
-  if (!requestedKey) continue;
+if (attentionKeys.length > 0) {
+  const requestedKey = attentionKeys.at(-1);
   const selectedPage = await ReviewsPage({ searchParams: Promise.resolve({ decision: requestedKey }) });
   const selectedQueues = decideQueuesFromPage(selectedPage);
-  const containingQueue = selectedQueues.find((queue) =>
-    queue.props.groups.some((group) => str(group.key) === requestedKey),
+  assert.equal(
+    selectedQueues.length,
+    1,
+    "a deep-linked decision must render in the one Attention-ordered queue without a competing fallback queue",
   );
-  assert.ok(containingQueue, `requested decision ${requestedKey} was not present in any Decide queue`);
+  const containingQueue = selectedQueues[0];
+  assert.deepEqual(
+    containingQueue.props.groups.map((group) => str(group.key)),
+    attentionKeys,
+    "deep-link rendering must preserve the complete Attention order",
+  );
   assert.equal(
     containingQueue.props.initialSelectedKey,
     requestedKey,
@@ -229,8 +231,26 @@ for (const queue of queues) {
   assert.equal(
     initialDecideKey(containingQueue.props.groups, requestedKey),
     requestedKey,
-    "DecideQueue must initialize to a requested key that belongs to its own partition",
+    "DecideQueue must initialize to the requested key in the Attention-ordered queue",
   );
+
+  assert.equal(
+    initialDecideIndex(containingQueue.props.groups, requestedKey),
+    attentionKeys.length - 1,
+    "the deep-linked queue must initialize its keyboard index to the requested decision",
+  );
+
+  const selectionHref = decisionSelectionHref(
+    "/reviews",
+    "view=compact&decision=old-key&source=briefing",
+    requestedKey,
+  );
+  const selectionURL = new URL(selectionHref, "https://console.invalid");
+  assert.equal(selectionURL.pathname, "/reviews", "selection sync must stay on the current route");
+  assert.equal(selectionURL.searchParams.get("decision"), requestedKey, "selection sync must write the exact decision key");
+  assert.equal(selectionURL.searchParams.get("view"), "compact", "selection sync must preserve unrelated query params");
+  assert.equal(selectionURL.searchParams.get("source"), "briefing", "selection sync must preserve query provenance");
+  assert.equal(selectionURL.searchParams.getAll("decision").length, 1, "selection sync must replace, not duplicate, the decision param");
 }
 
 const reviewsPageURL = new URL("../src/app/reviews/page.tsx", import.meta.url).href;
@@ -238,14 +258,17 @@ const degradationProbe = `
   import ReviewsPage from ${JSON.stringify(reviewsPageURL)};
   const root = await ReviewsPage({ searchParams: Promise.resolve({}) });
   let degraded = false;
+  let queueCount = 0;
   const visit = (node) => {
     if (Array.isArray(node)) { node.forEach(visit); return; }
     if (!node || typeof node !== "object") return;
     if (node.type?.name === "FeedDegraded" && node.props?.label === "Decide") degraded = true;
+    if (node.type?.name === "DecideQueue") queueCount += 1;
     visit(node.props?.children);
   };
   visit(root);
   if (!degraded) throw new Error("unreachable Attention rendered as an empty Decide queue");
+  if (queueCount !== 0) throw new Error("unreachable Attention rendered a stale Decide queue");
 `;
 execFileSync("bun", ["-e", degradationProbe], {
   cwd: fileURLToPath(new URL("../..", import.meta.url)),

@@ -11,7 +11,7 @@
  * (same reason as generic-actions.selftest.ts).
  */
 
-import { partitionDecideGroupsByOwnerWorkflow, remainingDecideMembers } from "./decide-members";
+import { remainingDecideMembers } from "./decide-members";
 import { buildDecideGroups, genericReviewResolutionActs } from "./decide-model";
 import type { Json } from "./compound";
 
@@ -63,28 +63,6 @@ function build(group: Json, itemByID: Map<string, Json>) {
 export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] } {
   const checks: Check[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
-
-  // The operator's default queue is full owner workflows, not diagnostics.
-  // Groups with only generic review dispositions stay available as limited
-  // actions, but cannot bury decisions that can complete their requested move.
-  {
-    const actionable = { key: "ready", capability: { kind: "track" } };
-    const unavailableA = { key: "gap-a", capability: { kind: "unavailable" } };
-    const recordable = { key: "record", capability: { kind: "record" } };
-    const unavailableB = { key: "gap-b", capability: { kind: "unavailable" } };
-    const partition = partitionDecideGroupsByOwnerWorkflow([
-      actionable,
-      unavailableA,
-      recordable,
-      unavailableB,
-    ]);
-    push(
-      "owner-workflow-default-queue",
-      partition.ready.map((group) => group.key).join(",") === "ready,record" &&
-        partition.limited.map((group) => group.key).join(",") === "gap-a,gap-b",
-      `ready=${partition.ready.map((group) => group.key).join(",")} limited=${partition.limited.map((group) => group.key).join(",")}`,
-    );
-  }
 
   // 1. The seam-audit falsifier: group.sample points at member_a (no brief);
   //    the brief lives on member_b, the SECOND member — exactly the shape the
@@ -269,14 +247,36 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
     } as Parameters<typeof buildDecideGroups>[2];
     const itemByID = new Map(items.map((item) => [String(item.id), item]));
     const decided = buildDecideGroups([group], itemByID, attention, () => items[0])[0];
+    const resolutionActs = genericReviewResolutionActs(decided);
     push(
       "external-attention-group-stays-copy-only",
       decided.key === group.key &&
         decided.count === items.length &&
         decided.members.map((member) => member.id).join(",") === items.map((item) => item.id).join(",") &&
         decided.act.mode === "copy" &&
-        decided.capability.kind === "unavailable",
-      `key=${decided.key} count=${decided.count} members=${decided.members.map((member) => member.id).join(",")} act=${decided.act.mode} capability=${decided.capability.kind}`,
+        decided.capability.kind === "unavailable" &&
+        resolutionActs.length === 0,
+      `key=${decided.key} count=${decided.count} members=${decided.members.map((member) => member.id).join(",")} act=${decided.act.mode} capability=${decided.capability.kind} resolutions=${resolutionActs.length}`,
+    );
+  }
+
+  // Attention-only groups are real operator gates, but they are not review
+  // items. A copy fallback must not invent reviews-resolve Park/Dismiss actions
+  // against the synthetic group key.
+  {
+    const group = {
+      key: "workbench:blocked-on-you",
+      area: "workbench-blocked-on-you",
+      count: 1,
+      item_ids: ["work_blocked_fixture"],
+      operator_summary: "One work item needs a ruling.",
+    } as Json;
+    const decided = buildDecideGroups([group], new Map(), null, () => ({}))[0];
+    const resolutionActs = genericReviewResolutionActs(decided);
+    push(
+      "attention-only-copy-card-has-no-review-disposition",
+      decided.act.mode === "copy" && resolutionActs.length === 0,
+      `act=${decided.act.mode} sample=${decided.sampleId} resolutions=${resolutionActs.length}`,
     );
   }
 
@@ -604,13 +604,10 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
         before === after,
       `model_unchanged=${before === after} controls=${acts.length} options=${JSON.stringify(resolutionAct?.decisionOptions?.map((option) => option.value))}`,
     );
-    const partition = partitionDecideGroupsByOwnerWorkflow([decided]);
     push(
-      "limited-card-preserves-review-disposition",
-      partition.ready.length === 0 &&
-        partition.limited[0]?.key === decided.key &&
-        resolutionAct?.itemId === "parity_unknown_fixture",
-      `ready=${partition.ready.length} limited=${partition.limited.map((entry) => entry.key).join(",")} control_item=${resolutionAct?.itemId ?? ""}`,
+      "single-review-copy-card-targets-its-sole-member",
+      resolutionAct?.itemId === "parity_unknown_fixture",
+      `control_item=${resolutionAct?.itemId ?? ""}`,
     );
   }
 

@@ -196,6 +196,8 @@ export type DecideGroup = {
   ageLabel: string;
   old: boolean;
   sampleId: string;
+  /** Sole represented member when it is backed by the Reviews projection; otherwise no generic review disposition. */
+  reviewResolutionItemId: string | null;
   members: DecideMember[];
   evidence: DecideEvidence[];
   freshness: { generatedAt: string; source: string };
@@ -639,6 +641,11 @@ export function buildDecideGroups(
       : resolveAct(group, sample, sampleId, attnAction, itemByID);
     const createdAt = groupCreatedAt(group, itemByID);
     const count = num(group.count) || arr(group.item_ids).length || 1;
+    const representedMemberIDs = [...new Set(arr(group.item_ids).map(String).filter(Boolean))];
+    const reviewResolutionItemId =
+      count === 1 && representedMemberIDs.length === 1 && itemByID.has(representedMemberIDs[0])
+        ? representedMemberIDs[0]
+        : null;
 
     const hasDecisionCard = Boolean(sample.decision_card && typeof sample.decision_card === "object");
     const title = (hasDecisionCard ? pl?.headline : "") || str(group.operator_summary) || pl?.headline || "Review this decision.";
@@ -664,6 +671,7 @@ export function buildDecideGroups(
       ageLabel: createdAt ? ago(createdAt) : "age unknown",
       old: isOldAge(createdAt),
       sampleId,
+      reviewResolutionItemId,
       members,
       evidence,
       freshness: {

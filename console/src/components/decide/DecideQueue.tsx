@@ -2,7 +2,7 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
 import { Button, FreshnessChip } from "@/components/kit";
@@ -393,7 +393,9 @@ function CapabilityStatus({ group, compact = false }: { group: DecideGroup; comp
   // the hover title carries the named-owner detail so even the list row
   // never leaves an operator with just the bare "Owner action unavailable"
   // label and nothing else.
-  const detail = group.capability.kind === "unavailable" ? ownerUnavailableMessage(group.area) : group.capability.detail;
+  const detail = group.capability.kind === "unavailable" && group.reviewResolutionItemId
+    ? ownerUnavailableMessage(group.area)
+    : group.capability.detail;
   return (
     <span
       className={`inline-flex shrink-0 items-center rounded-pill border font-semibold ${CAPABILITY_TONE[group.capability.kind]} ${
@@ -554,11 +556,15 @@ function DecisionDetail({
       <section className="border-t border-hair bg-soft/60 px-4 py-4">
         <div>
           {group.capability.kind === "unavailable" && act.mode !== "copy" ? (
-            <p className="mb-2 text-sm font-semibold text-seam">{ownerUnavailableMessage(group.area)}</p>
+            <p className="mb-2 text-sm font-semibold text-seam">
+              {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : group.capability.detail}
+            </p>
           ) : null}
           {act.mode === "copy" ? (
             <div className="grid gap-2 border-l-2 border-seam-line pl-3">
-              <p className="text-sm font-semibold text-seam">{ownerUnavailableMessage(group.area)}</p>
+              <p className="text-sm font-semibold text-seam">
+                {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : group.capability.detail}
+              </p>
               {reviewResolutionActs.map((resolutionAct) => (
                 <GovernedAct
                   key={resolutionAct.actionId}
@@ -621,11 +627,28 @@ function DecisionDetail({
 
 type RetainedDecision = { group: DecideGroup; result: ExecuteResult; identity: string };
 
+export function initialDecideIndex(
+  groups: ReadonlyArray<Pick<DecideGroup, "key">>,
+  requestedKey = "",
+): number {
+  const requestedIndex = requestedKey ? groups.findIndex((group) => group.key === requestedKey) : -1;
+  return requestedIndex >= 0 ? requestedIndex : groups.length > 0 ? 0 : -1;
+}
+
 export function initialDecideKey(
   groups: ReadonlyArray<Pick<DecideGroup, "key">>,
   requestedKey = "",
 ): string {
-  return groups.some((group) => group.key === requestedKey) ? requestedKey : (groups[0]?.key ?? "");
+  const index = initialDecideIndex(groups, requestedKey);
+  return index >= 0 ? groups[index]?.key ?? "" : "";
+}
+
+export function decisionSelectionHref(pathname: string, currentSearch: string, decisionKey: string): string {
+  const params = new URLSearchParams(currentSearch);
+  if (decisionKey) params.set("decision", decisionKey);
+  else params.delete("decision");
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
 }
 
 export function DecideQueue({
@@ -639,8 +662,11 @@ export function DecideQueue({
   keyboardShortcuts?: boolean;
   initialSelectedKey?: string;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [filter, setFilter] = useState("");
-  const [focused, setFocused] = useState(0);
+  const [focused, setFocused] = useState(() => Math.max(0, initialDecideIndex(groups, initialSelectedKey)));
   const [selectedKey, setSelectedKey] = useState(() => initialDecideKey(groups, initialSelectedKey));
   const [excluded, setExcluded] = useState<Record<string, Set<string>>>({});
   const [retained, setRetained] = useState<Record<string, RetainedDecision>>({});
@@ -649,6 +675,11 @@ export function DecideQueue({
   const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const listRef = useRef<HTMLDivElement | null>(null);
   const detailRef = useRef<HTMLDivElement | null>(null);
+
+  const replaceSelectionInURL = useCallback((key: string) => {
+    if (!key || searchParams.get("decision") === key) return;
+    router.replace(decisionSelectionHref(pathname, searchParams.toString(), key), { scroll: false });
+  }, [pathname, router, searchParams]);
 
   const visible = useMemo(() => {
     const query = filter.trim().toLowerCase();
@@ -661,13 +692,39 @@ export function DecideQueue({
     const selectedIsVisible = visible.some((group) => group.key === selectedKey);
     if (!selectedKey && visible[0]) {
       setSelectedKey(visible[0].key);
+      replaceSelectionInURL(visible[0].key);
     } else if (selectedIsCurrent && !selectedIsVisible) {
-      setSelectedKey(visible[0]?.key ?? "");
+      const nextKey = visible[0]?.key ?? "";
+      setSelectedKey(nextKey);
+      replaceSelectionInURL(nextKey);
     } else if (selectedKey && !selectedIsCurrent && !retained[selectedKey]) {
-      setSelectedKey(visible[0]?.key ?? "");
+      const nextKey = visible[0]?.key ?? "";
+      setSelectedKey(nextKey);
+      replaceSelectionInURL(nextKey);
     }
     if (focused > visible.length - 1) setFocused(Math.max(0, visible.length - 1));
-  }, [focused, groups, retained, selectedKey, visible]);
+  }, [focused, groups, replaceSelectionInURL, retained, selectedKey, visible]);
+
+  const requestedIndex = initialDecideIndex(groups, initialSelectedKey);
+  const requestedExists = Boolean(
+    initialSelectedKey && requestedIndex >= 0 && groups[requestedIndex]?.key === initialSelectedKey,
+  );
+
+  useEffect(() => {
+    if (!requestedExists) return;
+    setSelectedKey(initialSelectedKey);
+    setFocused(requestedIndex);
+    const timer = window.setTimeout(() => {
+      if (!window.matchMedia("(max-width: 1023px)").matches) return;
+      rowRefs.current[requestedIndex]?.scrollIntoView({ behavior: "auto", block: "nearest" });
+      detailRef.current?.scrollIntoView({ behavior: "auto", block: "start" });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [initialSelectedKey, requestedExists, requestedIndex]);
+
+  useEffect(() => {
+    if (!requestedExists && selectedKey) replaceSelectionInURL(selectedKey);
+  }, [replaceSelectionInURL, requestedExists, selectedKey]);
 
   useEffect(() => {
     if (!keyboardShortcuts) return;
@@ -692,10 +749,12 @@ export function DecideQueue({
   const select = useCallback((group: DecideGroup, index: number, scroll = false) => {
     setSelectedKey(group.key);
     setFocused(index);
+    replaceSelectionInURL(group.key);
     if (scroll && window.matchMedia("(max-width: 1023px)").matches) {
-      window.setTimeout(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+      const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+      window.setTimeout(() => detailRef.current?.scrollIntoView({ behavior, block: "start" }), 0);
     }
-  }, []);
+  }, [replaceSelectionInURL]);
 
   function onRowKey(event: React.KeyboardEvent<HTMLButtonElement>, index: number, group: DecideGroup) {
     if (event.key === "j" || event.key === "ArrowDown") {
@@ -721,9 +780,11 @@ export function DecideQueue({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <input
           ref={filterRef}
+          name="decision-filter"
+          autoComplete="off"
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
-          placeholder="Filter decisions"
+          placeholder="Filter decisions…"
           aria-label="Filter decisions"
           className="w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus sm:max-w-xs"
         />
@@ -752,7 +813,10 @@ export function DecideQueue({
             <div className="grid gap-2">
               <button
                 type="button"
-                onClick={() => listRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                onClick={() => {
+                  const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+                  listRef.current?.scrollIntoView({ behavior, block: "start" });
+                }}
                 className="inline-flex w-fit items-center gap-1.5 rounded-md border border-hair bg-panel px-2.5 py-1.5 text-xs font-semibold text-muted hover:bg-soft lg:hidden"
               >
                 <span aria-hidden>↑</span>

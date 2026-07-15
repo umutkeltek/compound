@@ -2,11 +2,10 @@ import { DecideQueue } from "@/components/decide/DecideQueue";
 import { CheckIcon, ClockIcon, FeedDegraded, feedRenderModel, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
 import { attentionNeedsYouGroups, getAttentionProjection } from "@/lib/attention";
 import { arr, getReviews, num, str, type Json } from "@/lib/compound";
-import { partitionDecideGroupsByOwnerWorkflow } from "@/lib/decide-members";
 import { ago } from "@/lib/time";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
-import { buildDecideGroups, type DecideGroup } from "@/lib/decide-model";
+import { buildDecideGroups } from "@/lib/decide-model";
 import { areaPlain } from "@/lib/glossary";
 import { areaOf, bandOf, enrichAttentionGroups, externalReviewRows, groupsForBand } from "@/lib/review-data";
 
@@ -126,8 +125,7 @@ export default async function Decide({
     ...groupsForBand(reviews, "needs_you", attention),
   ];
   const orderedGroups = enrichAttentionGroups(attentionNeedsYouGroups(attention), reviewEnrichmentGroups);
-  const modelGroups = buildDecideGroups(orderedGroups, itemByID, attention, (g) => sampleForGroup(g, itemByID));
-  const decideGroups: DecideGroup[] = modelGroups;
+  const decideGroups = buildDecideGroups(orderedGroups, itemByID, attention, (g) => sampleForGroup(g, itemByID));
 
   const watchingEntries = sortByAge(
     [...groupsForBand(reviews, "watching", attention), ...externalWatching.map(asWatchingEntry)],
@@ -144,8 +142,7 @@ export default async function Decide({
   }
   const filedByArea = [...filedByAreaMap.entries()].sort((a, b) => b[1] - a[1]);
 
-  const { ready: readyGroups, limited: limitedGroups } = partitionDecideGroupsByOwnerWorkflow(decideGroups);
-  const empty = readyGroups.length === 0;
+  const empty = decideGroups.length === 0;
   const decideRender = feedRenderModel(attentionRead.status, decideGroups.length > 0);
 
   return (
@@ -156,7 +153,7 @@ export default async function Decide({
         <SectionHeader
           tone="seam"
           icon={<GavelIcon />}
-          label="Ready to decide"
+          label="Needs your decision"
         />
 
         {decideRender === "degraded" ? (
@@ -171,34 +168,12 @@ export default async function Decide({
           </p>
         ) : (
           <DecideQueue
-            groups={readyGroups}
+            groups={decideGroups}
             mutationsEnabled={mutationsEnabled}
             initialSelectedKey={initialSelectedKey}
           />
         )}
       </section>
-
-      {limitedGroups.length ? (
-        <section aria-labelledby="limited-actions-heading" className="overflow-hidden rounded-lg border border-seam-line bg-panel shadow-sm">
-          <div className="flex items-center gap-3 px-4 py-3">
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-soft-2 text-sm text-muted" aria-hidden>!</span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-xs font-bold uppercase text-muted">Limited actions</span>
-              <span className="mt-0.5 block text-xs text-faint">You can park or dismiss these reviews, but not complete their requested change here.</span>
-            </span>
-            <span className="mono text-2xs tabular-nums text-faint">{limitedGroups.length}</span>
-            <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
-          </div>
-          <div className="border-t border-hair p-3">
-            <DecideQueue
-              groups={limitedGroups}
-              mutationsEnabled={mutationsEnabled}
-              keyboardShortcuts={false}
-              initialSelectedKey={initialSelectedKey}
-            />
-          </div>
-        </section>
-      ) : null}
 
       {watchingEntries.length ? (
         <details className="group overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">

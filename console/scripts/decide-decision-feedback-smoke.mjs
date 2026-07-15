@@ -1,7 +1,8 @@
 /**
  * Executes (not just typechecks) `decide-decision-feedback.selftest.ts` —
  * falsifiers for the Decide-page empty-required-field silent no-op and the
- * bare "Owner action unavailable" label (work_6047d1a871ed slice 1). Runs
+ * bare "Owner action unavailable" label, and the final confirmation's exact
+ * submitted-value review (work_6047d1a871ed slice 1). Runs
  * under `bun`, not plain `node --experimental-strip-types`: the selftest
  * resolves `@/lib`-style-adjacent relative imports into governed-action-
  * client.ts, which itself carries an `import type` from decision-registry.ts
@@ -23,5 +24,5 @@ if (!result.ok) {
 }
 
 console.log(
-  "decide-decision-feedback smoke ok: empty-required-field feedback and named-owner unavailable copy are wired at their render sites",
+  "decide-decision-feedback smoke ok: required-field feedback, named-owner unavailable copy, and exact final submission values are wired",
 );
