@@ -54,6 +54,7 @@ const (
 	tendencyReceiptFaithful = "receipt-faithful" // completed WITH proof — standing-raising
 	tendencyCeremonySkipper = "ceremony-skipper" // completed WITHOUT proof — standing-lowering
 	tendencyObjectObserved  = "observed"
+	tendencyObjectCooled    = "cooled" // the decayed stance a zero-reinforcement belief supersedes to (B4)
 )
 
 type FoldOptions struct {
@@ -62,24 +63,31 @@ type FoldOptions struct {
 }
 
 type FoldReport struct {
-	SchemaVersion             string          `json:"schema_version"`
-	GeneratedAt               string          `json:"generated_at"`
-	DryRun                    bool            `json:"dry_run"`
-	CursorBefore              int64           `json:"cursor_before"`
-	CursorAfter               int64           `json:"cursor_after"`
-	RawReceiptCount           int             `json:"raw_receipt_count"`
-	UnresolvedReceiptCount    int             `json:"unresolved_receipt_count"`
-	IgnoredReceiptCount       int             `json:"ignored_receipt_count"`
-	NewObservationCount       int             `json:"new_observation_count"`
-	DuplicateObservationCount int             `json:"duplicate_observation_count"`
-	CandidateCount            int             `json:"candidate_count"`
-	ReinforcementCount        int             `json:"reinforcement_count"`
-	BelowFloorLaneCount       int             `json:"below_floor_lane_count"`
-	ValveDroppedCount         int             `json:"valve_dropped_count"`
-	OverflowCount             int             `json:"overflow_count"`
-	CandidateIDs              []string        `json:"candidate_ids,omitempty"`
-	ValveDrops                []ValveDrop     `json:"valve_drops,omitempty"`
-	Aggregates                []FoldAggregate `json:"aggregates,omitempty"`
+	SchemaVersion             string `json:"schema_version"`
+	GeneratedAt               string `json:"generated_at"`
+	DryRun                    bool   `json:"dry_run"`
+	CursorBefore              int64  `json:"cursor_before"`
+	CursorAfter               int64  `json:"cursor_after"`
+	RawReceiptCount           int    `json:"raw_receipt_count"`
+	UnresolvedReceiptCount    int    `json:"unresolved_receipt_count"`
+	IgnoredReceiptCount       int    `json:"ignored_receipt_count"`
+	NewObservationCount       int    `json:"new_observation_count"`
+	DuplicateObservationCount int    `json:"duplicate_observation_count"`
+	CandidateCount            int    `json:"candidate_count"`
+	ReinforcementCount        int    `json:"reinforcement_count"`
+	// RunCount is the persisted fold-RUN counter after this run (B4 cooling bookkeeping): every
+	// non-dry-run Fold increments it. The cool pass reads current_run − last_reinforced_run against
+	// COOL_AFTER_FOLDS. Zero on a dry-run (nothing persisted).
+	RunCount int64 `json:"run_count"`
+	// ReinforcedAggregateCount is how many (lane, kind, domain) aggregates gained ≥1 new observation
+	// this run and therefore had their last_reinforced_run stamped to RunCount (B4 bookkeeping).
+	ReinforcedAggregateCount int             `json:"reinforced_aggregate_count"`
+	BelowFloorLaneCount      int             `json:"below_floor_lane_count"`
+	ValveDroppedCount        int             `json:"valve_dropped_count"`
+	OverflowCount            int             `json:"overflow_count"`
+	CandidateIDs             []string        `json:"candidate_ids,omitempty"`
+	ValveDrops               []ValveDrop     `json:"valve_drops,omitempty"`
+	Aggregates               []FoldAggregate `json:"aggregates,omitempty"`
 }
 
 // ValveDrop records a belief draft the B1 valve refused: a first-class, counted outcome, never a
@@ -308,7 +316,20 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 	report.Aggregates = aggregateObservations(allObservations)
 
 	if len(newObservations) > 0 {
-		candidates, drops, belowFloor, err := candidatesForNewObservations(resolver, newObservations, allObservations, now)
+		store, err := mem.Open(homePath)
+		if err != nil {
+			return report, err
+		}
+		// B4 recovery: a belief slot whose CURRENT claim is object=cooled is re-openable — fresh
+		// evidence must re-promote observed OVER cooled (decay is undoable). The landed fold+B3
+		// freeze a promoted slot's candidate (writeStableCandidate no-ops), so a recovery draft needs
+		// a DISTINCT id keyed on the cooled claim it supersedes. When no cooled claim is present the
+		// candidate id is byte-unchanged (normal path), so this arm is inert on every non-recovery run.
+		cooledSlots, err := cooledBeliefSlots(store)
+		if err != nil {
+			return report, err
+		}
+		candidates, drops, belowFloor, err := candidatesForNewObservations(resolver, newObservations, allObservations, cooledSlots, now)
 		if err != nil {
 			return report, err
 		}
@@ -325,10 +346,6 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 				report.CandidateIDs = append(report.CandidateIDs, candidate.ID)
 			}
 		} else {
-			store, err := mem.Open(homePath)
-			if err != nil {
-				return report, err
-			}
 			for _, candidate := range candidates {
 				created, err := store.RecordStableCandidate(candidate)
 				if err != nil {
@@ -351,6 +368,16 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 				return report, err
 			}
 		}
+		// B4 run-bookkeeping (additive): every non-dry-run fold is one RUN. Increment the run counter
+		// and stamp last_reinforced_run = current run for each aggregate that gained a new observation
+		// this run. Persisted beside the cursor. Quiet runs bump the counter without reinforcing, so
+		// the cool pass can measure zero-reinforcement folds since a belief's last evidence.
+		reinforced, err := recordFoldRun(homePath, newObservations, now)
+		if err != nil {
+			return report, err
+		}
+		report.RunCount = reinforced.RunCount
+		report.ReinforcedAggregateCount = reinforced.ReinforcedAggregateCount
 	}
 	return report, nil
 }
@@ -427,7 +454,7 @@ func isLaneBeliefCandidate(c mem.Candidate) bool {
 // building each draft ONLY via the B1 constructors + valve (draftForObservation). A lane/domain
 // below the noise floor yields no candidate (counted in belowFloor); a draft the valve refuses is
 // DROPPED and counted with its reason (never proposed, never silently swallowed).
-func candidatesForNewObservations(resolver mem.LaneResolver, newObservations, allObservations []observationRecord, now time.Time) (cands []mem.Candidate, drops []ValveDrop, belowFloor int, err error) {
+func candidatesForNewObservations(resolver mem.LaneResolver, newObservations, allObservations []observationRecord, cooledSlots map[string]string, now time.Time) (cands []mem.Candidate, drops []ValveDrop, belowFloor int, err error) {
 	aggregates := aggregateObservationMap(allObservations)
 	seen := map[string]bool{}
 	for _, obs := range newObservations {
@@ -451,6 +478,21 @@ func candidatesForNewObservations(resolver mem.LaneResolver, newObservations, al
 				Reason:            buildErr.Error(),
 			})
 			continue
+		}
+		// B4 recovery: if the slot's current claim is cooled, this new (object=observed) draft is a
+		// re-promotion over the cooled claim. Re-key it off the cooled claim id so it is a FRESH
+		// candidate the gate can promote (the frozen genesis candidate stays promoted and untouched).
+		if cooledClaimID, ok := cooledSlots[aggKey]; ok {
+			draft.ID = recoveryCandidateID(cooledClaimID)
+			if err := mem.ValidateBeliefDraft(draft); err != nil {
+				drops = append(drops, ValveDrop{
+					SubjectLaneNodeID: obs.SubjectLaneNodeID,
+					Domain:            obs.Domain,
+					Kind:              obs.Kind,
+					Reason:            err.Error(),
+				})
+				continue
+			}
 		}
 		cands = append(cands, draft)
 	}
@@ -501,6 +543,116 @@ func beliefCandidateID(c mem.Candidate) string {
 }
 
 const beliefDomainKey = "domain"
+
+// recoveryCandidateID is the deterministic id of the FRESH candidate that re-promotes an observed
+// belief over a cooled one (B4 recovery). It is keyed on the cooled claim being superseded, so it is
+// stable while that cooled claim is current (idempotent) and distinct from both the frozen genesis
+// candidate and any prior cool/recovery generation.
+func recoveryCandidateID(cooledClaimID string) string {
+	return "cand_lanebelief_recover_" + hashParts(cooledClaimID)[:20]
+}
+
+// reinforcementKey is the JSON-map-safe key for a (subject, kind, domain) aggregate in the fold
+// run-state's last_reinforced map. Both the fold (stamping) and the cool pass (reading) compute it
+// the same way, so they agree on which aggregate a belief's reinforcement clock belongs to.
+func reinforcementKey(subject, kind, domain string) string {
+	return hashParts(subject, kind, domain)
+}
+
+// foldRunState is B4's additive fold-RUN bookkeeping, persisted beside the cursor. run_count is the
+// number of non-dry-run folds; last_reinforced maps a reinforcementKey to the run in which its
+// aggregate last gained a new observation. The cursor (event seq) is untouched — this is a separate,
+// additive projection so the landed cursor semantics do not change.
+type foldRunState struct {
+	RunCount       int64            `json:"run_count"`
+	LastReinforced map[string]int64 `json:"last_reinforced"`
+	UpdatedAt      string           `json:"updated_at,omitempty"`
+}
+
+type foldRunSummary struct {
+	RunCount                 int64
+	ReinforcedAggregateCount int
+}
+
+func runStatePath(homePath string) string {
+	return filepath.Join(laneBeliefsDir(homePath), "runstate.json")
+}
+
+func loadRunState(homePath string) (foldRunState, error) {
+	state := foldRunState{LastReinforced: map[string]int64{}}
+	b, err := os.ReadFile(runStatePath(homePath))
+	if os.IsNotExist(err) {
+		return state, nil
+	}
+	if err != nil {
+		return state, err
+	}
+	if err := json.Unmarshal(b, &state); err != nil {
+		return state, fmt.Errorf("parse lane belief run state: %w", err)
+	}
+	if state.LastReinforced == nil {
+		state.LastReinforced = map[string]int64{}
+	}
+	return state, nil
+}
+
+func saveRunState(homePath string, state foldRunState) error {
+	if err := os.MkdirAll(laneBeliefsDir(homePath), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(runStatePath(homePath), append(b, '\n'), 0o644)
+}
+
+// recordFoldRun increments the run counter and stamps last_reinforced_run for each aggregate that
+// gained a new observation this run. It runs only on a non-dry-run fold (the caller gates it), so a
+// dry-run leaves the run state byte-identical.
+func recordFoldRun(homePath string, newObservations []observationRecord, now time.Time) (foldRunSummary, error) {
+	state, err := loadRunState(homePath)
+	if err != nil {
+		return foldRunSummary{}, err
+	}
+	state.RunCount++
+	reinforced := map[string]bool{}
+	for _, obs := range newObservations {
+		key := reinforcementKey(obs.SubjectLaneNodeID, obs.Kind, obs.Domain)
+		state.LastReinforced[key] = state.RunCount
+		reinforced[key] = true
+	}
+	state.UpdatedAt = now.UTC().Format(time.RFC3339)
+	if err := saveRunState(homePath, state); err != nil {
+		return foldRunSummary{}, err
+	}
+	return foldRunSummary{RunCount: state.RunCount, ReinforcedAggregateCount: len(reinforced)}, nil
+}
+
+// cooledBeliefSlots returns, per (subject, kind, domain) aggregate key, the id of the CURRENT cooled
+// tendency claim in that slot — the slots B4 recovery may re-promote over. Only fold-produced
+// tendency claims (provenance = the fold tag) with object=cooled qualify. Read-only.
+func cooledBeliefSlots(store *mem.Store) (map[string]string, error) {
+	current, err := store.AllCurrent()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, cl := range current {
+		if cl.Predicate != mem.BeliefPredicateTendsTo || cl.ProvenanceLane != foldProvenanceTag {
+			continue
+		}
+		if strings.TrimSpace(cl.Object) != tendencyObjectCooled {
+			continue
+		}
+		domain := strings.TrimSpace(cl.Qualifiers[beliefDomainKey])
+		if domain == "" {
+			continue
+		}
+		out[aggregateKey(cl.Entity, beliefKindTendency, domain)] = cl.ID
+	}
+	return out, nil
+}
 
 func aggregateObservations(observations []observationRecord) []FoldAggregate {
 	m := aggregateObservationMap(observations)

@@ -19,7 +19,7 @@ func sortedReasonKeys(m map[string]int) []string {
 }
 
 func laneBeliefsUsage() string {
-	return "usage: compound lanebeliefs <fold [--dry-run] [--json] [--home P]|promote [--dry-run] [--json] [--home P]|list [--json] [--home P]>"
+	return "usage: compound lanebeliefs <fold [--dry-run] [--json] [--home P]|promote [--dry-run] [--json] [--home P]|cool [--dry-run] [--json] [--home P]|list [--json] [--home P]>"
 }
 
 func cmdLaneBeliefs(args []string) {
@@ -103,6 +103,33 @@ func cmdLaneBeliefs(args []string) {
 			} else {
 				fmt.Printf("%s %s.%s[%s] %s -> parked (%s) works=%d posterior=%.4f mark=%t\n",
 					res.CandidateID, res.Subject, res.Domain, res.Valence, res.Kind, res.Reason, res.WorkCount, res.PosteriorMean, res.HasCrossLaneMark)
+			}
+		}
+	case "cool":
+		report, err := lanebeliefs.Cool(homePath, lanebeliefs.CoolOptions{DryRun: dryRun})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "lanebeliefs cool:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# lanebeliefs cool\n")
+		if report.DryRun {
+			fmt.Printf("- dry_run: true (no writes)\n")
+		}
+		fmt.Printf("- run_count: %d (cool_after_folds=%d)\n", report.RunCount, report.CoolAfterFolds)
+		fmt.Printf("- evaluated: %d\n", report.EvaluatedCount)
+		fmt.Printf("- cooled: %d\n", report.CooledCount)
+		fmt.Printf("- skipped: %d\n", report.SkippedCount)
+		for _, res := range report.Results {
+			if res.Disposition == lanebeliefs.CoolDispositionCooled {
+				fmt.Printf("%s %s.%s[%s] observed -> cooled (%s) quiet=%d claim=%s basis=%s visibility=%s\n",
+					res.ObservedClaimID, res.Subject, res.Domain, res.Valence, res.Reason, res.QuietFolds, res.CooledClaimID, res.PromotionBasis, res.Visibility)
+			} else {
+				fmt.Printf("%s %s.%s[%s] observed -> kept (%s) quiet=%d last_reinforced=%d\n",
+					res.ObservedClaimID, res.Subject, res.Domain, res.Valence, res.Reason, res.QuietFolds, res.LastReinforcedRun)
 			}
 		}
 	case "list":
