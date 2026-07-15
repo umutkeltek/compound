@@ -208,6 +208,44 @@ func TestApplyPermissionsWritesManagedRulesAndArtifactIdempotently(t *testing.T)
 	}
 }
 
+func TestApplyPermissionsFirstAdoptionOfPreexistingManagedRulesIsImmediatelyStable(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{
+		"permissions": map[string]any{
+			"allow":       []string{"Bash", "HandAllow", "Agent(*)"},
+			"deny":        []string{"Bash(rm -rf /)", "HandDeny", "Bash(dd *)"},
+			"ask":         []string{"WebFetch"},
+			"defaultMode": "default",
+		},
+		"autoMode": map[string]any{"allow": []string{"$defaults", "Read"}},
+	})
+	policy := permissionFixture([]string{"Agent(*)", "Bash"})
+	policy.Permissions.Deny = []string{"Bash(dd *)", "Bash(rm -rf /)"}
+	writePermissionFixture(t, homePath, targetPath, policy)
+
+	applied, err := applyGovernedPermissions(t, homePath, "claude_code")
+	if err != nil {
+		t.Fatalf("apply permissions: %v", err)
+	}
+	immediate, err := RenderPermissions(homePath, "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if immediate.Changed {
+		t.Fatal("render immediately after first adoption changed = true, want stable false")
+	}
+	if immediate.Artifact.ContentSHA256 != applied.Artifact.ContentSHA256 {
+		t.Fatalf("immediate artifact sha = %q, want applied %q", immediate.Artifact.ContentSHA256, applied.Artifact.ContentSHA256)
+	}
+	report, err := PermissionDrift(homePath, "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Drifted || len(report.Details) > 0 {
+		t.Fatalf("drift immediately after first adoption = %+v, want clean", report)
+	}
+}
+
 func TestApplyPermissionsRollsBackSettingsWhenArtifactManifestFails(t *testing.T) {
 	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
 	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
