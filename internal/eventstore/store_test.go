@@ -218,6 +218,115 @@ func TestPutJSONAtomicPreservesPublicationHooksAndCleansTemp(t *testing.T) {
 	}
 }
 
+func TestOpenIsReadOnlyAndPreflightCleansItsProbe(t *testing.T) {
+	t.Parallel()
+
+	homePath := filepath.Join(t.TempDir(), "absent")
+	store, err := Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.rootPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Open created the event root: %v", err)
+	}
+	if err := store.Preflight(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(store.rootPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("preflight left artifacts: %v", entries)
+	}
+}
+
+func TestCountAndRemoveUseResolvedRecords(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	for _, id := range []string{"rec_a", "rec_b", "pol_c"} {
+		if _, err := store.PutJSON(id, map[string]string{"id": id}, " "); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count, err := store.Count(ScanOptions{Prefixes: []string{"rec_"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
+	}
+	if err := store.Remove("compound://events/rec_a"); err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := store.Exists("events/rec_a.json"); err != nil || exists {
+		t.Fatalf("removed record exists=%v err=%v", exists, err)
+	}
+	missing, err := Open(filepath.Join(t.TempDir(), "missing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := missing.Count(ScanOptions{}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing count error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestPutJSONAtomicFailureBoundariesPreserveVisibility(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("injected failure")
+	for _, tc := range []struct {
+		name          string
+		opts          AtomicOptions
+		wantPublished bool
+	}{
+		{
+			name: "write",
+			opts: AtomicOptions{Write: func(*os.File, []byte) error {
+				return boom
+			}},
+		},
+		{
+			name: "before publish",
+			opts: AtomicOptions{BeforePublish: func() error {
+				return boom
+			}},
+		},
+		{
+			name: "after publish",
+			opts: AtomicOptions{AfterPublish: func() error {
+				return boom
+			}},
+			wantPublished: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTestStore(t)
+			_, err := store.PutJSONAtomic("tr_failure", map[string]string{"state": "new"}, "  ", tc.opts)
+			if !errors.Is(err, boom) {
+				t.Fatalf("error = %v, want injected failure", err)
+			}
+			exists, err := store.Exists("tr_failure")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if exists != tc.wantPublished {
+				t.Fatalf("published = %v, want %v", exists, tc.wantPublished)
+			}
+			entries, err := os.ReadDir(store.rootPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.Contains(entry.Name(), ".tmp-") {
+					t.Fatalf("atomic temp leaked: %s", entry.Name())
+				}
+			}
+		})
+	}
+}
+
 func TestScanIsDeterministicLazyAndPrefixFilteredBeforeOpen(t *testing.T) {
 	t.Parallel()
 
@@ -228,7 +337,7 @@ func TestScanIsDeterministicLazyAndPrefixFilteredBeforeOpen(t *testing.T) {
 		}
 	}
 	broken := filepath.Join(t.TempDir(), "missing.json")
-	if err := os.Symlink(broken, filepath.Join(store.DiagnosticRoot(), "trace_broken.json")); err != nil {
+	if err := os.Symlink(broken, filepath.Join(store.rootPath(), "trace_broken.json")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -253,6 +362,20 @@ func TestScanIsDeterministicLazyAndPrefixFilteredBeforeOpen(t *testing.T) {
 	}
 	if _, err := missingStore.Scan(ScanOptions{}); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing scan error = %v, want os.ErrNotExist", err)
+	}
+
+	if err := os.Symlink(broken, filepath.Join(store.rootPath(), "rec_broken.json")); err != nil {
+		t.Fatal(err)
+	}
+	lazy, err := store.Scan(ScanOptions{Prefixes: []string{"rec_b"}})
+	if err != nil {
+		t.Fatalf("matching unreadable scan entry was opened eagerly: %v", err)
+	}
+	if len(lazy) != 1 || lazy[0].ID != "rec_broken" {
+		t.Fatalf("lazy entries = %+v", lazy)
+	}
+	if _, err := lazy[0].Read(); err == nil {
+		t.Fatal("matching unreadable entry unexpectedly read")
 	}
 }
 
@@ -295,8 +418,79 @@ func TestNamedStreamsRemainPhysicallyDistinct(t *testing.T) {
 			}
 		})
 	}
-	if _, err := os.Stat(store.WorkLogPath()); !errors.Is(err, os.ErrNotExist) {
+	if _, err := store.WorkLogSize(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("compatibility stream write touched work log: %v", err)
+	}
+}
+
+func TestWorkLogOperationsPreserveLockingPublicationAndReadOnlyTail(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	first := []byte("{\"work_id\":\"work_a\"}\n")
+	if err := store.WithWorkLogLock(func() error {
+		return store.AppendWorkLog(first, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := store.ReadWorkLog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, first) {
+		t.Fatalf("work log = %q, want %q", data, first)
+	}
+	if size, err := store.WorkLogSize(); err != nil || size != int64(len(first)) {
+		t.Fatalf("work log size = %d, err=%v", size, err)
+	}
+	chunk, err := store.ReadWorkLogAt(2, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := first[2:9]; !bytes.Equal(chunk, want) {
+		t.Fatalf("read-at = %q, want %q", chunk, want)
+	}
+	file, err := store.OpenWorkLog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("forbidden")); err == nil {
+		_ = file.Close()
+		t.Fatal("read-only work log handle accepted a write")
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second := []byte("{\"work_id\":\"work_b\"}\n")
+	var phases []string
+	if err := store.WithWorkLogLock(func() error {
+		return store.ReplaceWorkLog(first, second, WorkLogReplaceOptions{
+			WriteSuffix: func(w io.Writer, data []byte) (int, error) {
+				phases = append(phases, "write")
+				return w.Write(data)
+			},
+			BeforePublish: func() error {
+				phases = append(phases, "before_publish")
+				return nil
+			},
+			AfterPublish: func() error {
+				phases = append(phases, "after_publish")
+				return nil
+			},
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"write", "before_publish", "after_publish"}; !reflect.DeepEqual(phases, want) {
+		t.Fatalf("replace phases = %v, want %v", phases, want)
+	}
+	data, err = store.ReadWorkLogRegular("work event ledger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := append(append([]byte(nil), first...), second...); !bytes.Equal(data, want) {
+		t.Fatalf("replaced work log = %q, want %q", data, want)
 	}
 }
 
@@ -309,7 +503,7 @@ func TestReadRegularRejectsSymlinkedRecordAndEventsAncestor(t *testing.T) {
 		if err := os.WriteFile(outside, []byte("{}\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(outside, filepath.Join(store.DiagnosticRoot(), "rec_link.json")); err != nil {
+		if err := os.Symlink(outside, filepath.Join(store.rootPath(), "rec_link.json")); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.ReadRegular("rec_link", "receipt"); err == nil {
