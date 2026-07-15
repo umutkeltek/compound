@@ -32,6 +32,7 @@ import (
 	"compound/internal/distiller"
 	"compound/internal/envelope"
 	"compound/internal/eventsource"
+	"compound/internal/eventstore"
 	"compound/internal/finding"
 	"compound/internal/harness"
 	"compound/internal/home"
@@ -2738,14 +2739,18 @@ func cmdTransition(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	path := filepath.Join(homePath, "events", id+".json")
-	data, err := os.ReadFile(path)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	record, err := store.Read(id)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: not found under COMPOUND_HOME/events:", id)
 		os.Exit(1)
 	}
-	kind, verr := envelope.ValidateBytes(data)
-	fmt.Println(string(data))
+	kind, verr := envelope.ValidateBytes(record.Bytes)
+	fmt.Println(string(record.Bytes))
 	if verr != nil {
 		fmt.Fprintf(os.Stderr, "[%s] INVALID: %v\n", kind, verr)
 		os.Exit(1)
@@ -7175,6 +7180,10 @@ func loadSourceControlMutationBinding(homePath string, actionIntentIDs []string)
 	}
 	binding := authority.SourceControlMutationBinding{}
 	seen := map[string]struct{}{}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return authority.SourceControlMutationBinding{}, err
+	}
 	for _, rawID := range actionIntentIDs {
 		id := strings.TrimSpace(rawID)
 		if id == "" || filepath.Base(id) != id || !strings.HasPrefix(id, "act_") {
@@ -7184,12 +7193,12 @@ func loadSourceControlMutationBinding(homePath string, actionIntentIDs []string)
 			return authority.SourceControlMutationBinding{}, fmt.Errorf("duplicate action_intent %s", id)
 		}
 		seen[id] = struct{}{}
-		data, err := os.ReadFile(filepath.Join(homePath, "events", id+".json"))
+		record, err := events.Read(id)
 		if err != nil {
 			return authority.SourceControlMutationBinding{}, fmt.Errorf("read persisted action_intent %s: %w", id, err)
 		}
 		var action envelope.ActionIntent
-		if err := json.Unmarshal(data, &action); err != nil {
+		if err := json.Unmarshal(record.Bytes, &action); err != nil {
 			return authority.SourceControlMutationBinding{}, fmt.Errorf("decode persisted action_intent %s: %w", id, err)
 		}
 		if action.ID != id {

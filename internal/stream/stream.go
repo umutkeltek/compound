@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/eventstore"
 	"compound/internal/work"
 )
 
@@ -39,8 +40,7 @@ const (
 // BACKLOG_LINES = 25).
 const DefaultBacklog = 25
 
-func eventsLogPath(home string) string { return filepath.Join(home, "events", "work.jsonl") }
-func seqFilePath(home string) string   { return filepath.Join(home, "ledger", "seq") }
+func seqFilePath(home string) string { return filepath.Join(home, "ledger", "seq") }
 
 // Snapshot is the finite --once payload: the last N work events, the current
 // ledger seq, the end-of-log byte cursor (where --follow resumes losslessly),
@@ -78,7 +78,11 @@ func BuildSnapshot(home string, backlog int, now time.Time) (Snapshot, error) {
 	}
 	snap := Snapshot{Kind: KindSnapshot, Events: []work.Event{}, Seq: seq, GeneratedAt: now.UTC().Format(time.RFC3339)}
 
-	data, err := os.ReadFile(eventsLogPath(home))
+	eventStore, err := eventstore.Open(home)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	data, err := eventStore.ReadWorkLog()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return snap, nil
@@ -141,18 +145,20 @@ func Follow(ctx context.Context, home string, opts FollowOptions, w io.Writer) e
 		return nil
 	}
 
-	path := eventsLogPath(home)
+	eventStore, err := eventstore.Open(home)
+	if err != nil {
+		return err
+	}
 	t := &tailer{consumed: opts.Cursor}
 
 	pump := func() error {
-		fi, err := os.Stat(path)
+		size, err := eventStore.WorkLogSize()
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil // log not written yet; a later poll picks it up
 			}
 			return err
 		}
-		size := fi.Size()
 		if _, truncated := ResolveOffset(t.consumed, size); truncated {
 			t.reset() // rotation/compaction: drop any half-buffered line, re-read from 0
 		}
@@ -160,7 +166,7 @@ func Follow(ctx context.Context, home string, opts FollowOptions, w io.Writer) e
 		if size <= from {
 			return nil
 		}
-		chunk, err := readAt(path, from, size-from)
+		chunk, err := eventStore.ReadWorkLogAt(from, size-from)
 		if err != nil {
 			return err
 		}
@@ -317,23 +323,4 @@ func readSeq(home string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(b)), nil
-}
-
-// readAt reads length bytes from off using a read-only handle (never a write
-// lock). A short read at EOF is not an error.
-func readAt(path string, off, length int64) ([]byte, error) {
-	if length <= 0 {
-		return nil, nil
-	}
-	f, err := os.Open(path) // O_RDONLY: never contends with the work-event writer
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	buf := make([]byte, length)
-	n, err := f.ReadAt(buf, off)
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-	return buf[:n], nil
 }

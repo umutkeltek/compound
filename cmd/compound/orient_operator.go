@@ -18,6 +18,7 @@ import (
 	"compound/internal/capgraph"
 	"compound/internal/decisions"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/mem"
 	"compound/internal/narrate"
 	"compound/internal/observation"
@@ -1740,11 +1741,15 @@ func orientOperatorCursorPath(homePath string) string {
 
 func readReceipt(homePath, id string) (envelope.Receipt, error) {
 	var rec envelope.Receipt
-	data, err := os.ReadFile(filepath.Join(homePath, "events", id+".json"))
+	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return rec, err
 	}
-	if err := json.Unmarshal(data, &rec); err != nil {
+	record, err := store.Read(id)
+	if err != nil {
+		return rec, err
+	}
+	if err := json.Unmarshal(record.Bytes, &rec); err != nil {
 		return rec, err
 	}
 	return rec, nil

@@ -12,6 +12,7 @@ import (
 
 	"compound/internal/decisions"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/hook"
 	"compound/internal/mem"
 	"compound/internal/policy"
@@ -313,16 +314,27 @@ func recordStopContinuation(homePath string, store *work.Store, binding codexSto
 		triage.ResumeLane = false
 		return writeStopReview(homePath, CodexStopOutcome{WorkID: binding.Work.ID}, in, ask, triage, "policy_hold", err.Error(), now)
 	}
+	sideEffects, err := logicalEventRefs(result.Action.ID, result.Decision.ID, result.Receipt.ID, result.Transition.ID)
+	if err != nil {
+		return CodexStopOutcome{}, err
+	}
 	return CodexStopOutcome{
 		WorkID: binding.Work.ID, Handled: true, Decision: "block", Reason: triage.Answer, Disposition: string(AskAutoAnswered),
 		ActionIntentID: result.Action.ID, PolicyDecisionID: result.Decision.ID, ReceiptID: result.Receipt.ID, TransitionID: result.Transition.ID,
-		SideEffects: []string{
-			filepath.Join("events", result.Action.ID+".json"),
-			filepath.Join("events", result.Decision.ID+".json"),
-			filepath.Join("events", result.Receipt.ID+".json"),
-			filepath.Join("events", result.Transition.ID+".json"),
-		},
+		SideEffects: sideEffects,
 	}, nil
+}
+
+func logicalEventRefs(ids ...string) ([]string, error) {
+	refs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		ref, err := eventstore.ReferenceForID(id)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref.String())
+	}
+	return refs, nil
 }
 
 func writeStopReview(homePath string, out CodexStopOutcome, in CodexStopInput, ask hook.BlockingAsk, triage AskTriageResult, disposition, blockedReason string, now time.Time) (CodexStopOutcome, error) {

@@ -2,9 +2,9 @@
 // (Codex, Claude Code) real execution receipts/events into behavioral-lens Observations, so the
 // agents that EXECUTE compound's work are measured for behavior-bending even as they execute.
 //
-// It owns no authority object. It reads the append-only envelope objects under
-// $COMPOUND_HOME/events/*.json (rec_ receipts, act_ action-intents, tr_ transitions, trace_ imported
-// event traces), classifies each to an executor lane subject, and builds two classes of Observation
+// It owns no authority object. It scans append-only envelope objects through
+// internal/eventstore (rec_ receipts, act_ action-intents, tr_ transitions, trace_ imported event
+// traces), classifies each to an executor lane subject, and builds two classes of Observation
 // that snap into the existing behaviorallens framework — it reimplements NONE of it:
 //
 //   - PUBLIC_SAFE hedging: over an executor's OUTPUT text (a receipt/trace summary, an action
@@ -32,13 +32,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"compound/internal/behaviorallens"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 // Schema versions for this collector's read-model shapes (evidence reports, not persisted authority).
@@ -112,19 +112,10 @@ func executorView(e envelope.Envelope) (candidates []string, text string) {
 	}
 }
 
-// executorFilePrefixes are the envelope-object id prefixes this collector reads out of the events
-// directory. traces.ndjson is intentionally NOT read: recordTrace writes a trace_<id>.json alongside
-// every ndjson row, so reading the individual files covers the same traces without double-counting.
+// executorFilePrefixes are the envelope-object id prefixes this collector scans through eventstore.
+// The trace compatibility stream is intentionally not read: recordTrace also writes a trace_<id>
+// object, so scanning records covers the same traces without double-counting.
 var executorFilePrefixes = []string{"rec_", "act_", "tr_", "trace_"}
-
-func hasExecutorPrefix(name string) bool {
-	for _, p := range executorFilePrefixes {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
-	}
-	return false
-}
 
 // decodeEnvelope probes an events file's schema_version and decodes it into the matching concrete
 // envelope. A file whose schema_version is unknown/blank (a policy decision, a work envelope, a
@@ -175,34 +166,28 @@ func CollectObservations(homePath string) (Collection, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return col, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
 	}
-	dir := filepath.Join(homePath, "events")
-	entries, err := os.ReadDir(dir)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return col, err
+	}
+	entries, err := store.Scan(eventstore.ScanOptions{Prefixes: executorFilePrefixes, RegularOnly: true})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return col, nil
 		}
-		return col, fmt.Errorf("read events dir %s: %w", dir, err)
+		return col, fmt.Errorf("scan event store: %w", err)
 	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		name := e.Name()
-		if !e.Type().IsRegular() || !strings.HasSuffix(name, ".json") || !hasExecutorPrefix(name) {
-			continue
-		}
-		names = append(names, name)
-	}
-	sort.Strings(names) // deterministic order regardless of directory iteration
 
 	subjectSeen := map[string]bool{}
 	// work_id -> subject -> latest verdict; the peer axis is other subjects on the same work.
 	byWork := map[string]map[string]receiptVerdict{}
 
-	for _, name := range names {
-		data, readErr := os.ReadFile(filepath.Join(dir, name))
+	for _, entry := range entries {
+		record, readErr := entry.Read()
 		if readErr != nil {
-			return col, fmt.Errorf("read events file %s: %w", name, readErr)
+			return col, fmt.Errorf("read events file %s: %w", entry.Name, readErr)
 		}
-		e, ok := decodeEnvelope(data)
+		e, ok := decodeEnvelope(record.Bytes)
 		if !ok {
 			continue // not an envelope kind we score; skip resiliently
 		}
@@ -224,8 +209,8 @@ func CollectObservations(homePath string) (Collection, error) {
 				Subject:       subject,
 				Kind:          "executor_output",
 				Payload:       payload,
-				EvidenceRefs:  []string{"events/" + name},
-				Meta:          map[string]string{"source": name, "lens": behaviorallens.HedgingLensID},
+				EvidenceRefs:  []string{record.Reference.String()},
+				Meta:          map[string]string{"source": entry.Name, "lens": behaviorallens.HedgingLensID},
 			})
 		}
 

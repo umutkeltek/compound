@@ -205,7 +205,11 @@ func TestLoadTraceEnvelopesFromRuntimeEvents(t *testing.T) {
 	writeRuntimeEnvelope(t, filepath.Join(homePath, "events", first.ID+".json"), first)
 	writeRuntimeEnvelope(t, filepath.Join(homePath, "events", second.ID+".json"), second)
 
-	loaded, err := LoadTraceEnvelopes(homePath, []string{first.ID, first.ID, " " + second.ID + " "})
+	loaded, err := LoadTraceEnvelopes(homePath, []string{
+		first.ID,
+		"compound://events/" + first.ID,
+		" events/" + second.ID + ".json ",
+	})
 	if err != nil {
 		t.Fatalf("load trace envelopes: %v", err)
 	}

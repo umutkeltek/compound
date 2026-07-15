@@ -648,7 +648,7 @@ func TestRetrievalJournalCLIAndBestEffortFailure(t *testing.T) {
 		}
 	}
 
-	journalPath := filepath.Join(homePath, filepath.FromSlash(retrievalparity.JournalRelPath))
+	journalPath := filepath.Join(homePath, "events", "retrieval-traffic.ndjson")
 	if err := os.Rename(journalPath, journalPath+".saved"); err != nil {
 		t.Fatal(err)
 	}

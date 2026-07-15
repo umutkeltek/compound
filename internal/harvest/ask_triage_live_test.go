@@ -16,6 +16,22 @@ import (
 	"compound/internal/work"
 )
 
+func TestLogicalEventRefsCanonicalizePersistedStopSideEffects(t *testing.T) {
+	refs, err := logicalEventRefs("act_stop", "pol_stop", "rec_stop", "tr_stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"compound://events/act_stop",
+		"compound://events/pol_stop",
+		"compound://events/rec_stop",
+		"compound://events/tr_stop",
+	}
+	if !reflect.DeepEqual(refs, want) {
+		t.Fatalf("refs = %v, want %v", refs, want)
+	}
+}
+
 func TestAskLawsFromClaimsUsesAuthoritativeOperationalFold(t *testing.T) {
 	authoritative := mem.Claim{
 		ID:        "claim_authoritative",

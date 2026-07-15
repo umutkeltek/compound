@@ -3,12 +3,14 @@ package distiller
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 // LoadRuntimeSources builds distiller source material from a durable work chain
@@ -23,6 +25,10 @@ func LoadRuntimeSources(homePath, workID string) (LLMExtractionSources, error) {
 	}
 	if workID == "" {
 		return src, fmt.Errorf("work_id is required")
+	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return src, err
 	}
 
 	workPath := filepath.Join(homePath, "work", "work", workID+".json")
@@ -57,7 +63,7 @@ func LoadRuntimeSources(homePath, workID string) (LLMExtractionSources, error) {
 		seenExtra[src.ContextPack.ID] = true
 	}
 
-	hookEvents, err := loadHookEvents(homePath, w.ID, w.IDs.ContextPackID)
+	hookEvents, err := loadHookEvents(events, w.ID, w.IDs.ContextPackID)
 	if err != nil {
 		return src, err
 	}
@@ -66,7 +72,7 @@ func LoadRuntimeSources(homePath, workID string) (LLMExtractionSources, error) {
 			src.Extra = append(src.Extra, &hookEvents[i])
 		}
 	}
-	hookSideEffects, err := loadHookSideEffectEnvelopes(homePath, hookEvents, seenExtra)
+	hookSideEffects, err := loadHookSideEffectEnvelopes(homePath, events, hookEvents, seenExtra)
 	if err != nil {
 		return src, err
 	}
@@ -76,14 +82,13 @@ func LoadRuntimeSources(homePath, workID string) (LLMExtractionSources, error) {
 		return src, fmt.Errorf("closed work %s missing transition_id", workID)
 	}
 	if trID := strings.TrimSpace(w.IDs.TransitionID); trID != "" {
-		trPath := filepath.Join(homePath, "events", trID+".json")
-		trEnv, err := readRuntimeEnvelope(trPath)
+		trEnv, err := readRuntimeEventEnvelope(events, trID)
 		if err != nil {
 			return src, fmt.Errorf("load transition %s: %w", trID, err)
 		}
 		tr, ok := trEnv.(*envelope.Transition)
 		if !ok {
-			return src, fmt.Errorf("%s is %s, want transition", trPath, trEnv.Kind())
+			return src, fmt.Errorf("event %s is %s, want transition", trID, trEnv.Kind())
 		}
 		if markEnvelopeSeen(tr, seenExtra) {
 			src.Extra = append(src.Extra, tr)
@@ -93,14 +98,13 @@ func LoadRuntimeSources(homePath, workID string) (LLMExtractionSources, error) {
 		if recID == "" {
 			return src, fmt.Errorf("transition %s missing receipt ref in after_refs", trID)
 		}
-		recPath := filepath.Join(homePath, "events", recID+".json")
-		recEnv, err := readRuntimeEnvelope(recPath)
+		recEnv, err := readRuntimeEventEnvelope(events, recID)
 		if err != nil {
 			return src, fmt.Errorf("load receipt %s: %w", recID, err)
 		}
 		rec, ok := recEnv.(*envelope.Receipt)
 		if !ok {
-			return src, fmt.Errorf("%s is %s, want receipt", recPath, recEnv.Kind())
+			return src, fmt.Errorf("event %s is %s, want receipt", recID, recEnv.Kind())
 		}
 		src.Receipt = rec
 	}
@@ -116,34 +120,48 @@ func LoadTraceEnvelopes(homePath string, traceIDs []string) ([]envelope.Envelope
 	if homePath == "" {
 		return nil, fmt.Errorf("home path is required")
 	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
 	var out []envelope.Envelope
 	seen := map[string]bool{}
 	for _, rawID := range traceIDs {
-		traceID := strings.TrimSpace(rawID)
-		if traceID == "" || seen[traceID] {
+		value := strings.TrimSpace(rawID)
+		if value == "" {
 			continue
 		}
-		seen[traceID] = true
-		tracePath := filepath.Join(homePath, "events", traceID+".json")
-		env, err := readRuntimeEnvelope(tracePath)
+		traceRef, err := eventstore.ParseReference(value)
 		if err != nil {
-			return nil, fmt.Errorf("load trace %s: %w", traceID, err)
+			return nil, fmt.Errorf("load trace %s: %w", value, err)
+		}
+		if seen[traceRef.String()] {
+			continue
+		}
+		seen[traceRef.String()] = true
+		env, err := readRuntimeEventEnvelope(events, traceRef.String())
+		if err != nil {
+			return nil, fmt.Errorf("load trace %s: %w", traceRef.ID(), err)
 		}
 		if env.Kind() != "trace_envelope" {
-			return nil, fmt.Errorf("%s is %s, want trace_envelope", tracePath, env.Kind())
+			return nil, fmt.Errorf("event %s is %s, want trace_envelope", traceRef.ID(), env.Kind())
 		}
 		out = append(out, env)
 	}
 	return out, nil
 }
 
-func loadHookEvents(homePath, workID, contextPackID string) ([]envelope.HookEvent, error) {
-	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
-	data, err := os.ReadFile(streamPath)
+func loadHookEvents(events *eventstore.Store, workID, contextPackID string) ([]envelope.HookEvent, error) {
+	file, err := events.OpenHookEvents()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
+		return nil, fmt.Errorf("read hook events: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
 		return nil, fmt.Errorf("read hook events: %w", err)
 	}
 	var out []envelope.HookEvent
@@ -177,10 +195,24 @@ func loadHookEvents(homePath, workID, contextPackID string) ([]envelope.HookEven
 	return out, nil
 }
 
-func loadHookSideEffectEnvelopes(homePath string, events []envelope.HookEvent, seen map[string]bool) ([]envelope.Envelope, error) {
+func loadHookSideEffectEnvelopes(homePath string, store *eventstore.Store, events []envelope.HookEvent, seen map[string]bool) ([]envelope.Envelope, error) {
 	var out []envelope.Envelope
 	for _, ev := range events {
 		for _, ref := range ev.SideEffects {
+			eventRef, isEvent, err := hookSideEffectEventReference(ref)
+			if err != nil {
+				return nil, fmt.Errorf("hook event %s side effect %q: %w", ev.ID, ref, err)
+			}
+			if isEvent {
+				env, err := readRuntimeEventEnvelope(store, eventRef.String())
+				if err != nil {
+					return nil, fmt.Errorf("load hook event %s side effect %s: %w", ev.ID, ref, err)
+				}
+				if markEnvelopeSeen(env, seen) {
+					out = append(out, env)
+				}
+				continue
+			}
 			path, ok, err := hookSideEffectJSONPath(homePath, ref)
 			if err != nil {
 				return nil, fmt.Errorf("hook event %s side effect %q: %w", ev.ID, ref, err)
@@ -198,6 +230,24 @@ func loadHookSideEffectEnvelopes(homePath string, events []envelope.HookEvent, s
 		}
 	}
 	return out, nil
+}
+
+func hookSideEffectEventReference(raw string) (eventstore.Reference, bool, error) {
+	ref := strings.TrimSpace(raw)
+	if ref == "" {
+		return eventstore.Reference{}, false, nil
+	}
+	if strings.HasPrefix(ref, "compound://events/") || strings.HasPrefix(ref, "events/") {
+		parsed, err := eventstore.ParseReference(ref)
+		return parsed, true, err
+	}
+	for _, prefix := range []string{"act_", "pol_", "rec_", "tr_", "trace_", "hook_"} {
+		if strings.HasPrefix(ref, prefix) {
+			parsed, err := eventstore.ParseReference(ref)
+			return parsed, true, err
+		}
+	}
+	return eventstore.Reference{}, false, nil
 }
 
 func hookSideEffectJSONPath(homePath, ref string) (string, bool, error) {
@@ -259,6 +309,18 @@ func readRuntimeEnvelope(path string) (envelope.Envelope, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeRuntimeEnvelope(data)
+}
+
+func readRuntimeEventEnvelope(store *eventstore.Store, ref string) (envelope.Envelope, error) {
+	record, err := store.Read(ref)
+	if err != nil {
+		return nil, err
+	}
+	return decodeRuntimeEnvelope(record.Bytes)
+}
+
+func decodeRuntimeEnvelope(data []byte) (envelope.Envelope, error) {
 	var probe struct {
 		SchemaVersion string `json:"schema_version"`
 	}
@@ -279,9 +341,10 @@ func readRuntimeEnvelope(path string) (envelope.Envelope, error) {
 }
 
 func transitionReceiptID(tr envelope.Transition) string {
-	for _, ref := range tr.AfterRefs {
-		if strings.HasPrefix(ref, "rec_") {
-			return ref
+	for _, raw := range tr.AfterRefs {
+		ref, err := eventstore.ParseReference(strings.TrimSpace(raw))
+		if err == nil && strings.HasPrefix(ref.ID(), "rec_") {
+			return ref.ID()
 		}
 	}
 	return ""

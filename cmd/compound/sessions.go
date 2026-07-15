@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/distiller"
+	"compound/internal/eventstore"
 	"compound/internal/harvest"
 	"compound/internal/home"
 	"compound/internal/mem"
@@ -467,8 +467,11 @@ func parseSessionMiningSince(value string) (time.Duration, error) {
 }
 
 func loadRecentSessionHookEvents(homePath string, cutoff time.Time) ([]sessionHookEvent, []string, error) {
-	path := filepath.Join(homePath, "events", "hook-events.ndjson")
-	f, err := os.Open(path)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	f, err := store.OpenHookEvents()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil

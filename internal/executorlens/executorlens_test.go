@@ -278,6 +278,23 @@ func TestNonExecutorReceiptIgnored(t *testing.T) {
 	}
 }
 
+func TestExecutorObservationsUseLogicalEventReferences(t *testing.T) {
+	home := t.TempDir()
+	writeReceipt(t, home, "rec_logical01", "codex-native", "codex", "work_x", "completed",
+		"Landed the bounded change.", "2026-07-14T10:00:00Z")
+	col, err := CollectObservations(home)
+	if err != nil {
+		t.Fatalf("CollectObservations: %v", err)
+	}
+	if len(col.Hedging) != 1 {
+		t.Fatalf("hedging observations = %d, want 1", len(col.Hedging))
+	}
+	refs := col.Hedging[0].EvidenceRefs
+	if len(refs) != 1 || refs[0] != "compound://events/rec_logical01" {
+		t.Fatalf("evidence refs = %v, want canonical logical event ref", refs)
+	}
+}
+
 // A missing events directory is a clean empty collection (fresh home).
 func TestMissingEventsDirIsClean(t *testing.T) {
 	home := t.TempDir()
