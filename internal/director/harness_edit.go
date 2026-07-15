@@ -577,6 +577,237 @@ func recordHarnessEditCard(homePath string, cand candidate, proposal Proposal, n
 	return err
 }
 
+// --- Slice 2B: the review verb that resolves a harness-edit proposal card ---
+//
+// A harness-edit proposal card names ONE editable surface and rides in
+// review_required until an operator decides. `compound authority
+// harness-edit-review <card> --decision whitelist|reject --rationale <text>`
+// records that decision. whitelist opens the target surface for edits (writes
+// the editable-surfaces registry through policy.ActivateSurface); reject writes
+// no registry byte. Both record a decision sidecar so the card leaves needs-you.
+// The verb never executes, admits, or applies the edit — it only opens (or
+// declines to open) the surface and files the decision. It mirrors the
+// authority job-health-review shape: validate-then-write, record into a sidecar
+// the annotator reads, refuse (writing nothing) on any invalid input.
+
+const (
+	harnessEditReviewSchemaVersion = "compound.harness_edit_review.v0.1"
+	// harnessEditReviewedSuffix names the recorded-decision sidecar written
+	// beside a card as <card-id>.harness-edit.reviewed.json. It ends in
+	// .reviewed.json so the queue excludes it from being its own review item,
+	// yet does NOT collide with the generic <card-id>.reviewed.json resolution
+	// sidecar (reviewartifact/resolution.go) — so a harness-edit decision keeps
+	// its whitelist|reject fidelity instead of collapsing to reviewed/parked.
+	harnessEditReviewedSuffix  = ".harness-edit.reviewed.json"
+	harnessEditDefaultReviewer = "operator-console"
+
+	// HarnessEditDecisionWhitelist opens the card's target surface for edits
+	// (writes the editable-surfaces registry); HarnessEditDecisionReject
+	// declines and writes no registry byte. Both decisions resolve the card.
+	HarnessEditDecisionWhitelist = "whitelist"
+	HarnessEditDecisionReject    = "reject"
+)
+
+// HarnessEditReviewInput carries the CLI flags into RecordHarnessEditReview.
+// ReviewedBy defaults to operator-console when empty.
+type HarnessEditReviewInput struct {
+	CardPath   string
+	Decision   string
+	Rationale  string
+	ReviewedBy string
+}
+
+// HarnessEditReviewReport is the recorded-decision sidecar. It is deliberately
+// NOT the generic review-resolution schema so the whitelist|reject decision (and
+// its rationale/provenance) survives verbatim.
+type HarnessEditReviewReport struct {
+	SchemaVersion      string `json:"schema_version"`
+	ID                 string `json:"id"`
+	CreatedAt          string `json:"created_at"`
+	Status             string `json:"status"`
+	CardID             string `json:"card_id"`
+	TargetSurface      string `json:"target_surface"`
+	Decision           string `json:"decision"`
+	Rationale          string `json:"rationale"`
+	ReviewedBy         string `json:"reviewed_by"`
+	SurfaceWhitelisted bool   `json:"surface_whitelisted"`
+	SourcePath         string `json:"source_path,omitempty"`
+	ReviewPath         string `json:"review_path,omitempty"`
+}
+
+// RecordHarnessEditReview validates the decision, then records it. Every refusal
+// (unknown decision, empty rationale, missing/schema-invalid card, a card path
+// outside COMPOUND_HOME/reviews) returns an error BEFORE any write, so a refused
+// run leaves the registry and card byte-identical. On whitelist it opens the
+// card's target surface via policy.ActivateSurface (idempotent); on reject it
+// writes no registry byte. Both write one decision sidecar.
+func RecordHarnessEditReview(homePath string, in HarnessEditReviewInput, now time.Time) (HarnessEditReviewReport, error) {
+	decision := strings.TrimSpace(in.Decision)
+	if decision != HarnessEditDecisionWhitelist && decision != HarnessEditDecisionReject {
+		return HarnessEditReviewReport{}, fmt.Errorf("harness-edit review decision must be %s|%s, got %q", HarnessEditDecisionWhitelist, HarnessEditDecisionReject, in.Decision)
+	}
+	rationale := strings.TrimSpace(in.Rationale)
+	if rationale == "" {
+		return HarnessEditReviewReport{}, fmt.Errorf("harness-edit review rationale required")
+	}
+	reviewedBy := strings.TrimSpace(in.ReviewedBy)
+	if reviewedBy == "" {
+		reviewedBy = harnessEditDefaultReviewer
+	}
+	card, stem, err := loadHarnessEditProposalCardForReview(homePath, in.CardPath)
+	if err != nil {
+		return HarnessEditReviewReport{}, err
+	}
+	surface := strings.TrimSpace(card.TargetSurface)
+
+	whitelisted := false
+	if decision == HarnessEditDecisionWhitelist {
+		if _, _, err := policy.ActivateSurface(homePath, surface); err != nil {
+			return HarnessEditReviewReport{}, err
+		}
+		whitelisted = true
+	}
+
+	createdAt := reviewartifact.Timestamp(now)
+	report := HarnessEditReviewReport{
+		SchemaVersion:      harnessEditReviewSchemaVersion,
+		ID:                 reviewartifact.ID("her_", card.ID, decision, createdAt),
+		CreatedAt:          createdAt,
+		Status:             "recorded",
+		CardID:             card.ID,
+		TargetSurface:      surface,
+		Decision:           decision,
+		Rationale:          rationale,
+		ReviewedBy:         reviewedBy,
+		SurfaceWhitelisted: whitelisted,
+		SourcePath:         in.CardPath,
+		ReviewPath:         filepath.Join(homePath, "reviews", harnessEditReviewArea, stem+harnessEditReviewedSuffix),
+	}
+	if _, err := reviewartifact.WriteJSON(homePath, harnessEditReviewArea, stem+harnessEditReviewedSuffix, report, " "); err != nil {
+		return HarnessEditReviewReport{}, err
+	}
+	return report, nil
+}
+
+// loadHarnessEditProposalCardForReview resolves and validates the card path: it
+// must sit under COMPOUND_HOME/reviews, be a readable .json, and carry the
+// harness-edit card schema with a target_surface. It returns the parsed card and
+// its filename stem (which names the decision sidecar). Every failure is a
+// refusal the caller surfaces before writing anything.
+func loadHarnessEditProposalCardForReview(homePath, cardPath string) (harnessEditProposalCard, string, error) {
+	homeAbs, err := filepath.Abs(strings.TrimSpace(homePath))
+	if err != nil {
+		return harnessEditProposalCard{}, "", err
+	}
+	cardAbs, err := filepath.Abs(strings.TrimSpace(cardPath))
+	if err != nil {
+		return harnessEditProposalCard{}, "", err
+	}
+	rel, err := filepath.Rel(homeAbs, cardAbs)
+	if err != nil {
+		return harnessEditProposalCard{}, "", err
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == ".." || strings.HasPrefix(rel, "../") || !strings.HasPrefix(rel, "reviews/") {
+		return harnessEditProposalCard{}, "", fmt.Errorf("harness-edit card %s is outside COMPOUND_HOME/reviews", cardAbs)
+	}
+	if filepath.Ext(cardAbs) != ".json" {
+		return harnessEditProposalCard{}, "", fmt.Errorf("harness-edit card must be a .json file: %s", cardAbs)
+	}
+	data, err := os.ReadFile(cardAbs)
+	if err != nil {
+		return harnessEditProposalCard{}, "", err
+	}
+	var card harnessEditProposalCard
+	if err := json.Unmarshal(data, &card); err != nil {
+		return harnessEditProposalCard{}, "", fmt.Errorf("parse harness-edit card %s: %w", cardAbs, err)
+	}
+	if card.SchemaVersion != harnessEditProposalCardSchema {
+		return harnessEditProposalCard{}, "", fmt.Errorf("harness-edit card schema_version must be %s, got %q", harnessEditProposalCardSchema, card.SchemaVersion)
+	}
+	if strings.TrimSpace(card.TargetSurface) == "" {
+		return harnessEditProposalCard{}, "", fmt.Errorf("harness-edit card missing target_surface")
+	}
+	stem := strings.TrimSuffix(filepath.Base(cardAbs), ".json")
+	return card, stem, nil
+}
+
+// LoadHarnessEditReviewReport reads a recorded decision sidecar.
+func LoadHarnessEditReviewReport(path string) (HarnessEditReviewReport, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return HarnessEditReviewReport{}, err
+	}
+	var report HarnessEditReviewReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return HarnessEditReviewReport{}, err
+	}
+	return report, nil
+}
+
+// AnnotateHarnessEditProposalQueue gives every OPEN harness-edit card exactly one
+// governed action — "Allow edits to this surface" — whose argv is the review verb
+// with --decision whitelist (never --rationale; the console appends the operator's
+// text). A card that already carries a recorded-decision sidecar is banded out of
+// needs-you and carries no action. It owns only its own area's items.
+func AnnotateHarnessEditProposalQueue(report *reviewartifact.QueueReport) {
+	if report == nil {
+		return
+	}
+	for i := range report.Items {
+		item := &report.Items[i]
+		if item.Area != harnessEditReviewArea {
+			continue
+		}
+		annotateHarnessEditProposalItem(item)
+	}
+}
+
+func annotateHarnessEditProposalItem(item *reviewartifact.QueueItem) {
+	if reviewedPath := harnessEditReviewedPath(*item); reviewedPath != "" {
+		item.Status = "recorded"
+		item.Readiness = "review_recorded"
+		item.Actions = nil
+		item.BlockedReason = ""
+		item.Band = reviewartifact.BandFiled
+		item.NextAction = "harness-edit review recorded"
+		if rep, err := LoadHarnessEditReviewReport(reviewedPath); err == nil {
+			switch rep.Decision {
+			case HarnessEditDecisionWhitelist:
+				item.NextAction = "surface whitelisted for edits; the proposal can be admitted when ready"
+			case HarnessEditDecisionReject:
+				item.NextAction = "harness-edit proposal declined by " + reviewartifact.FirstNonEmpty(rep.ReviewedBy, "operator")
+			}
+		}
+		return
+	}
+	if strings.TrimSpace(item.JSONPath) == "" {
+		item.Readiness = "blocked"
+		item.BlockedReason = "harness-edit proposal path missing"
+		item.Band = reviewartifact.BandNeedsYou
+		return
+	}
+	argv := []string{"compound", "authority", "harness-edit-review", item.JSONPath, "--decision", HarnessEditDecisionWhitelist, "--json"}
+	item.Actions = []reviewartifact.Action{{
+		ID:             "harness-edit.whitelist",
+		Label:          "Allow edits to this surface",
+		Command:        "compound authority harness-edit-review " + item.JSONPath + " --decision " + HarnessEditDecisionWhitelist,
+		Argv:           argv,
+		RequiresReview: true,
+	}}
+	item.Readiness = "needs_review"
+	item.Band = reviewartifact.BandNeedsYou
+}
+
+func harnessEditReviewedPath(item reviewartifact.QueueItem) string {
+	for _, path := range item.ExtraPaths {
+		if strings.HasSuffix(path, harnessEditReviewedSuffix) {
+			return path
+		}
+	}
+	return ""
+}
+
 func renderHarnessEditCard(card harnessEditProposalCard) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Harness-edit proposal: %s\n\n", card.Title)
