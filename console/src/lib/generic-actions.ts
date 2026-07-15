@@ -127,8 +127,8 @@ export type GenericActionResolution =
  *    resolution sidecar already recorded) carry none. The verb ADDITIVELY
  *    records that same generic resolution after a successful apply, so
  *    running it CLEARS the card. Verified live 2026-07-15 against the Go
- *    source and the live open card
- *    ($COMPOUND_HOME/reviews/skill-surfacing/2026-07-09-session-mining-backfill-feedback.json).
+ *    source and the live open card under the home's
+ *    reviews/skill-surfacing/ directory.
  */
 export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "job-health": [["authority", "job-health-review"]],
