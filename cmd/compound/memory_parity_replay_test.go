@@ -26,6 +26,7 @@ const (
 	parityCLIHelperEnv       = "COMPOUND_TEST_PARITY_CLI_HELPER"
 	parityCLIHelperFixture   = "COMPOUND_TEST_PARITY_CLI_FIXTURE"
 	parityCLIHelperConsumer  = "COMPOUND_TEST_PARITY_CLI_CONSUMER"
+	parityCLIHelperProfile   = "COMPOUND_TEST_PARITY_CLI_ENGINE_PROFILE"
 	parityFailureHelperEnv   = "COMPOUND_TEST_PARITY_FAILURE_HELPER"
 	parityFailureHelperQuery = "COMPOUND_TEST_PARITY_FAILURE_QUERY"
 	parityFakeSidecarEnv     = "COMPOUND_TEST_PARITY_FAKE_SIDECAR"
@@ -40,12 +41,16 @@ func TestParityReplayCLIHelper(t *testing.T) {
 	if os.Getenv(parityCLIHelperEnv) != "1" {
 		return
 	}
-	cmdMemory([]string{
+	args := []string{
 		"parity-replay",
 		"--fixture", os.Getenv(parityCLIHelperFixture),
 		"--consumer", os.Getenv(parityCLIHelperConsumer),
 		"--json",
-	})
+	}
+	if profile := os.Getenv(parityCLIHelperProfile); profile != "" {
+		args = append(args, "--engine-profile", profile)
+	}
+	cmdMemory(args)
 	os.Exit(0)
 }
 
@@ -264,6 +269,36 @@ func TestParityReplayEngineAvailabilityFollowsConsumerFallback(t *testing.T) {
 	}
 }
 
+func TestParityReplayCmdMemoryEngineProfileBindsConfiguredEngine(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	wantRef := seedParityClaim(t, homePath, "synthetic configured profile hit", now)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer:     retrievalparity.ConsumerQuery,
+			Query:        "token-disjoint configured profile query",
+			ExpectedRefs: []string{wantRef},
+		}},
+	})
+	exitCode, out := runParityProfileReplayCLI(t, homePath, fixturePath, "gbrain", strings.TrimPrefix(wantRef, "claim://"))
+	if exitCode != 0 {
+		t.Fatalf("cmdMemory parity replay with engine profile exit=%d, want 0\n%s", exitCode, out)
+	}
+	var report retrievalparity.Report
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("parse profiled parity replay report: %v\n%s", err, out)
+	}
+	if !report.ParityPassed || len(report.Rows) != 1 {
+		t.Fatalf("profiled parity replay report=%+v", report)
+	}
+	evidence := report.Rows[0].EngineDependency
+	if evidence == nil || evidence.RequestedEngine != "gbrain" || evidence.ObservedEngine != "parity-test-breadth" || evidence.Outcome != retrievalparity.EngineOutcomeUsed {
+		t.Fatalf("profiled parity replay evidence=%+v", evidence)
+	}
+}
+
 func TestParityReplayRefusedEngineErrorsUseRefusedRuntimeGap(t *testing.T) {
 	now := time.Now().UTC()
 	for _, mode := range []string{parityFakeModeAhead, parityFakeModeUnowned} {
@@ -471,6 +506,8 @@ func TestParityReplayRejectsInvalidArgvBeforeWritingArtifacts(t *testing.T) {
 		{name: "missing value", extra: []string{"--expect-engine"}},
 		{name: "value replaced by flag", extra: []string{"--expect-engine", "--json"}},
 		{name: "duplicate value flag", extra: []string{"--expect-engine", "gbrain", "--expect-engine", "gbrain"}},
+		{name: "missing engine profile", extra: []string{"--engine-profile"}},
+		{name: "duplicate engine profile", extra: []string{"--engine-profile", "gbrain", "--engine-profile", "gbrain"}},
 		{name: "duplicate json", extra: []string{"--json", "--json"}},
 	}
 	for _, tt := range tests {
@@ -1830,6 +1867,33 @@ func runParityReplayCLI(t *testing.T, homePath, fixturePath, consumer string) (i
 		t.Fatalf("parse parity CLI report (exit=%d): %v\n%s", exitCode, jsonErr, out)
 	}
 	return exitCode, report
+}
+
+func runParityProfileReplayCLI(t *testing.T, homePath, fixturePath, profile, hitID string) (int, []byte) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestParityReplayCLIHelper$")
+	cmd.Env = parityTestEnv(os.Environ(), map[string]string{
+		parityCLIHelperEnv:             "1",
+		parityCLIHelperFixture:         fixturePath,
+		parityCLIHelperConsumer:        retrievalparity.ConsumerQuery,
+		parityCLIHelperProfile:         profile,
+		parityFakeSidecarEnv:           "1",
+		parityFakeSidecarHitID:         hitID,
+		parityFakeSidecarMode:          "",
+		"COMPOUND_HOME":                homePath,
+		"COMPOUND_MEM_ENGINE_BIN":      os.Args[0] + " -test.run=" + parityFakeSidecarTestRun,
+		"COMPOUND_MEM_ENGINE_EMBEDDER": "",
+		"COMPOUND_MEMORY_CLI_PROFILE":  "",
+	})
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return 0, out
+	}
+	var exitErr *exec.ExitError
+	if !asExitError(err, &exitErr) {
+		t.Fatalf("run profiled parity CLI helper: %v\n%s", err, out)
+	}
+	return exitErr.ExitCode(), out
 }
 
 func runParityFailureCLI(t *testing.T, homePath, consumer, query string) (int, string) {

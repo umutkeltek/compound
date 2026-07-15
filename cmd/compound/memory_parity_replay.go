@@ -180,7 +180,9 @@ type memoryParityReplayArgs struct {
 	ExpectEngine string
 	ForbidEngine string
 	ResumeFrom   string
-	JSON         bool
+	// EngineProfile is applied by cmdMemory before dispatch; replay only validates the passthrough argv.
+	EngineProfile string
+	JSON          bool
 }
 
 func parseMemoryParityReplayArgs(args []string) (memoryParityReplayArgs, error) {
@@ -201,7 +203,7 @@ func parseMemoryParityReplayArgs(args []string) (memoryParityReplayArgs, error) 
 			continue
 		}
 		switch name {
-		case "--fixture", "--consumer", "--k", "--expect-engine", "--forbid-engine", "--resume-from":
+		case "--fixture", "--consumer", "--k", "--expect-engine", "--forbid-engine", "--resume-from", "--engine-profile":
 		default:
 			return memoryParityReplayArgs{}, fmt.Errorf("unsupported parity-replay argument %q", name)
 		}
@@ -226,6 +228,8 @@ func parseMemoryParityReplayArgs(args []string) (memoryParityReplayArgs, error) 
 			parsed.ForbidEngine = value
 		case "--resume-from":
 			parsed.ResumeFrom = value
+		case "--engine-profile":
+			parsed.EngineProfile = value
 		}
 		i += 2
 	}
