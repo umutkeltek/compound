@@ -27,6 +27,8 @@ type receiptedActionReservation struct {
 	WorkID            string `json:"work_id"`
 	ActionID          string `json:"action_intent_id"`
 	PolicyDecisionID  string `json:"policy_decision_id"`
+	ReceiptID         string `json:"receipt_id"`
+	TransitionID      string `json:"transition_id"`
 	AuthorizedAt      string `json:"authorized_at"`
 	TransactionDigest string `json:"transaction_digest"`
 }
@@ -95,7 +97,18 @@ func (s *Store) RecordReservedReceiptedAction(workID string, in ReceiptedActionI
 			return err
 		}
 		if !present {
-			return fmt.Errorf("work %s has no receipted action reservation for %s", workID, in.Action.ID)
+			completion, completed, _, err := s.preflightReceiptedActionCompletion(workID, in.Action.ID)
+			if err != nil {
+				return err
+			}
+			if !completed {
+				return fmt.Errorf("work %s has no receipted action reservation for %s", workID, in.Action.ID)
+			}
+			if !reflect.DeepEqual(completion, expected) {
+				return fmt.Errorf("work %s completed receipted action %s conflicts with requested transaction", workID, completion.ActionID)
+			}
+			out, recordErr = s.replayCompletedReceiptedAction(workID, in, completion)
+			return recordErr
 		}
 		if !reflect.DeepEqual(actual, expected) {
 			return fmt.Errorf("work %s receipted action reservation %s conflicts with requested transaction", workID, actual.ActionID)
@@ -104,7 +117,7 @@ func (s *Store) RecordReservedReceiptedAction(workID string, in ReceiptedActionI
 		if recordErr != nil {
 			return recordErr
 		}
-		return s.clearReceiptedActionReservation(path, expected)
+		return s.completeReceiptedActionReservation(path, expected)
 	})
 	return out, err
 }
@@ -197,9 +210,15 @@ func newReceiptedActionReservation(workID string, in ReceiptedActionInput, autho
 		return receiptedActionReservation{}, fmt.Errorf("marshal receipted action reservation digest: %w", err)
 	}
 	digest := sha256.Sum256(body)
+	outcome := strings.TrimSpace(in.Outcome)
+	if outcome == "" {
+		outcome = "completed"
+	}
 	reservation := receiptedActionReservation{
 		SchemaVersion: receiptedActionReservationSchemaVersion,
 		WorkID:        workID, ActionID: in.Action.ID, PolicyDecisionID: decisionID,
+		ReceiptID:    idFor("rec_", "receipted-action", workID, in.Action.ID, decisionID, outcome),
+		TransitionID: idFor("tr_", "receipted-action", workID, in.Action.ID, decisionID, outcome),
 		AuthorizedAt: payload.AuthorizedAt, TransactionDigest: hex.EncodeToString(digest[:]),
 	}
 	if err := reservation.validate(); err != nil {
@@ -252,6 +271,8 @@ func (r receiptedActionReservation) validate() error {
 		{name: "work_id", value: r.WorkID, prefix: "work_"},
 		{name: "action_intent_id", value: r.ActionID, prefix: "act_"},
 		{name: "policy_decision_id", value: r.PolicyDecisionID, prefix: "pol_"},
+		{name: "receipt_id", value: r.ReceiptID, prefix: "rec_"},
+		{name: "transition_id", value: r.TransitionID, prefix: "tr_"},
 	} {
 		if filepath.Base(item.value) != item.value || !strings.HasPrefix(item.value, item.prefix) {
 			return fmt.Errorf("%s must be a local %q identifier", item.name, item.prefix)
@@ -279,4 +300,167 @@ func (s *Store) clearReceiptedActionReservation(path string, expected receiptedA
 		return err
 	}
 	return syncReceiptedActionDir(filepath.Dir(path))
+}
+
+func (s *Store) completeReceiptedActionReservation(path string, expected receiptedActionReservation) error {
+	completion, present, completionPath, err := s.preflightReceiptedActionCompletion(expected.WorkID, expected.ActionID)
+	if err != nil {
+		return err
+	}
+	if present && !reflect.DeepEqual(completion, expected) {
+		return fmt.Errorf("work %s completed receipted action %s conflicts with reservation", expected.WorkID, expected.ActionID)
+	}
+	if !present {
+		if err := ensureReceiptedActionPendingDir(filepath.Dir(completionPath)); err != nil {
+			return err
+		}
+		if err := s.writeReceiptedActionBoundary("reservation_completion", completionPath, &expected); err != nil {
+			return err
+		}
+	}
+	return s.clearReceiptedActionReservation(path, expected)
+}
+
+func (s *Store) preflightReceiptedActionCompletion(workID, actionID string) (receiptedActionReservation, bool, string, error) {
+	var completion receiptedActionReservation
+	if filepath.Base(workID) != workID || !strings.HasPrefix(workID, "work_") {
+		return completion, false, "", fmt.Errorf("invalid receipted-action work id %q", workID)
+	}
+	if filepath.Base(actionID) != actionID || !strings.HasPrefix(actionID, "act_") {
+		return completion, false, "", fmt.Errorf("invalid receipted-action action id %q", actionID)
+	}
+	path := filepath.Join(s.home, "work", "receipted-action-completions", workID, actionID+".json")
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return completion, false, path, nil
+	}
+	if err != nil {
+		return completion, false, path, fmt.Errorf("work %s completed receipted action %s unreadable: %w", workID, actionID, err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&completion); err != nil {
+		return completion, false, path, fmt.Errorf("work %s completed receipted action %s invalid: %w", workID, actionID, err)
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values")
+		}
+		return completion, false, path, fmt.Errorf("work %s completed receipted action %s invalid: %w", workID, actionID, err)
+	}
+	if err := completion.validate(); err != nil {
+		return completion, false, path, fmt.Errorf("work %s completed receipted action %s invalid: %w", workID, actionID, err)
+	}
+	if completion.WorkID != workID || completion.ActionID != actionID {
+		return completion, false, path, fmt.Errorf("work %s completed receipted action path conflicts with transaction identity", workID)
+	}
+	return completion, true, path, nil
+}
+
+func (s *Store) replayCompletedReceiptedAction(workID string, in ReceiptedActionInput, completion receiptedActionReservation) (ReceiptedActionResult, error) {
+	var out ReceiptedActionResult
+	action, present, err := s.preflightReceiptedAction(in.Action)
+	if err != nil {
+		return out, err
+	}
+	if !present {
+		return out, fmt.Errorf("completed receipted action %s is missing its action envelope", completion.ActionID)
+	}
+	if in.PreEvaluatedDecision == nil {
+		return out, fmt.Errorf("completed receipted action %s requires its pre-evaluated decision", completion.ActionID)
+	}
+	decision := *in.PreEvaluatedDecision
+	var storedDecision envelope.PolicyDecision
+	if err := s.readJSON(s.envPath(completion.PolicyDecisionID), &storedDecision); err != nil {
+		return out, fmt.Errorf("completed receipted action %s decision unreadable: %w", completion.ActionID, err)
+	}
+	if err := storedDecision.Validate(); err != nil || !reflect.DeepEqual(storedDecision, decision) {
+		return out, errors.Join(fmt.Errorf("completed receipted action %s decision conflicts with requested transaction", completion.ActionID), err)
+	}
+	var receipt envelope.Receipt
+	if err := s.readJSON(s.envPath(completion.ReceiptID), &receipt); err != nil {
+		return out, fmt.Errorf("completed receipted action %s receipt unreadable: %w", completion.ActionID, err)
+	}
+	if err := receipt.Validate(); err != nil {
+		return out, fmt.Errorf("completed receipted action %s receipt invalid: %w", completion.ActionID, err)
+	}
+	var transition envelope.Transition
+	if err := s.readJSON(s.envPath(completion.TransitionID), &transition); err != nil {
+		return out, fmt.Errorf("completed receipted action %s transition unreadable: %w", completion.ActionID, err)
+	}
+	if err := transition.Validate(); err != nil {
+		return out, fmt.Errorf("completed receipted action %s transition invalid: %w", completion.ActionID, err)
+	}
+	w, err := s.recoverPendingClaimBeforeMutation(workID)
+	if err != nil {
+		return out, err
+	}
+	linked, _, err := s.preflightReceiptedActionWorkLink(w, action.ID, decision.ID)
+	if err != nil {
+		return out, err
+	}
+	if !linked {
+		return out, fmt.Errorf("completed receipted action %s is not linked from work %s", action.ID, workID)
+	}
+	if err := validateCompletedReceiptedActionOutcome(w, in, action, decision, receipt, transition, completion); err != nil {
+		return out, err
+	}
+	events, err := s.admissionEventsFor(workID)
+	if err != nil {
+		return out, err
+	}
+	if err := validateCompletedReceiptedActionEvent(events, action, decision, receipt, transition); err != nil {
+		return out, err
+	}
+	return ReceiptedActionResult{Work: w, Action: action, Decision: decision, Receipt: receipt, Transition: transition, Replayed: true}, nil
+}
+
+func validateCompletedReceiptedActionOutcome(w envelope.WorkEnvelope, in ReceiptedActionInput, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition, completion receiptedActionReservation) error {
+	outcome := strings.TrimSpace(in.Outcome)
+	if outcome == "" {
+		outcome = "completed"
+	}
+	moveType := strings.TrimSpace(in.MoveType)
+	if moveType == "" {
+		moveType = "control_plane_repair"
+	}
+	proofRefs := mergeUnique(in.ProofRefs, action.EvidenceRefs, in.BeforeRefs, in.AfterRefs, []string{"work:" + w.ID})
+	if receipt.ID != completion.ReceiptID || receipt.IDs.WorkID != w.ID || receipt.Outcome != outcome || receipt.MoveType != moveType ||
+		receipt.StateDelta.Changed != in.Changed || receipt.StateDelta.Summary != strings.TrimSpace(in.Summary) ||
+		!reflect.DeepEqual(receipt.StateDelta.FilesChanged, mergeUnique(in.FilesChanged)) ||
+		!reflect.DeepEqual(receipt.ProofRefs, proofRefs) || !reflect.DeepEqual(receipt.EvidenceRefs, proofRefs) ||
+		!reflect.DeepEqual(receipt.FailureCause, in.FailureCause) {
+		return fmt.Errorf("completed receipted action %s receipt conflicts with reserved outcome", action.ID)
+	}
+	wantBefore := mergeUnique([]string{w.IDs.ContextPackID}, in.BeforeRefs)
+	wantAfter := mergeUnique([]string{receipt.ID}, in.AfterRefs)
+	if transition.ID != completion.TransitionID || transition.IDs.WorkID != w.ID ||
+		!reflect.DeepEqual(transition.ActionRefs, []string{action.ID}) || !reflect.DeepEqual(transition.BeforeRefs, wantBefore) ||
+		!reflect.DeepEqual(transition.AfterRefs, wantAfter) || transition.StateDelta != receipt.StateDelta.Summary ||
+		!reflect.DeepEqual(transition.EvidenceRefs, proofRefs) || transition.SecondOrder.FutureBehaviorChanged != in.Changed ||
+		decision.ID != completion.PolicyDecisionID {
+		return fmt.Errorf("completed receipted action %s transition conflicts with reserved outcome", action.ID)
+	}
+	return nil
+}
+
+func validateCompletedReceiptedActionEvent(events []Event, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition) error {
+	wantAttached := []string{action.ID, decision.ID, receipt.ID, transition.ID}
+	matching := 0
+	for _, event := range events {
+		if !receiptedActionEventTouches(event, wantAttached) {
+			continue
+		}
+		if event.WorkID != action.IDs.WorkID || event.From != event.To || event.By != action.Actor ||
+			event.Note != "receipted action recorded: "+action.Action+" (policy "+decision.Outcome+")" ||
+			!reflect.DeepEqual(event.Attached, wantAttached) {
+			return fmt.Errorf("completed receipted action %s event conflicts with reserved outcome", action.ID)
+		}
+		matching++
+	}
+	if matching != 1 {
+		return fmt.Errorf("completed receipted action %s has %d matching lifecycle events", action.ID, matching)
+	}
+	return nil
 }
