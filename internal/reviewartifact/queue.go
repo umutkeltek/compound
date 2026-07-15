@@ -118,6 +118,11 @@ type QueueItem struct {
 	Actions                 []Action          `json:"actions,omitempty"`
 	DecisionCard            *DecisionCard     `json:"decision_card,omitempty"`
 	Resolution              *ReviewResolution `json:"resolution,omitempty"`
+	// ReviewResolutionRevision is an opaque owner-computed fingerprint of the
+	// complete rendered QueueItem plus its area. Clients carry it back when
+	// recording a synthetic Park/Dismiss disposition; they never reconstruct
+	// it from a selective subset of fields.
+	ReviewResolutionRevision string `json:"review_resolution_revision,omitempty"`
 
 	// Brief is the generic, propose-only decision-brief translation attached
 	// from the `<id>.brief.json` sidecar, if one exists and is valid — for
@@ -295,6 +300,7 @@ func Recount(report *QueueReport) {
 			}
 		}
 	}
+	stampReviewResolutionRevisions(report)
 }
 
 func buildQueueGroups(items []QueueItem) []QueueGroup {

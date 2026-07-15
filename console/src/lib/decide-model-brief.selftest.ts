@@ -573,11 +573,140 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
     );
   }
 
+  // A singleton decision candidate with the owner-projected bounded panel
+  // plan becomes one enumerable tracked action. The queue-hygiene fallback is
+  // retired for this item; no accept/import/source-write option is invented.
+  {
+    const area = "decision-candidates";
+    const itemId = "dcp_decision_review_selftest";
+    const action = {
+      id: "plan_decision_candidate_review",
+      label: "Plan decision review",
+      argv: [
+        "compound", "panel", "plan",
+        "--target-kind", "decision_candidate",
+        "--target", "cand_decision_review_selftest",
+        "--domain", "reasoning-lenses",
+        "--task", "review falsifier, review trigger, source ownership, and second-order effects",
+        "--supervised",
+        "--max-items", "1",
+        "--json",
+      ],
+      requires_review: true,
+      policy_note: "creates review evidence only; decision source and authority stay unchanged",
+    } as Json;
+    const item = {
+      id: itemId,
+      area,
+      context_label: "Hold destructive actions",
+      actions: [action],
+    } as Json;
+    const group = {
+      key: "decision-candidates|ruling",
+      area,
+      count: 1,
+      item_ids: [itemId],
+      operator_summary: "Review this candidate ruling.",
+      sample: item,
+      safe_batch_action: action,
+    } as Json;
+    const [decided] = buildDecideGroups([group], new Map([[itemId, item]]), null, () => item);
+    push(
+      "decision-candidate-owner-plan-retires-unavailable-fallback",
+      decided.act.mode === "batch-enumerable" &&
+        decided.act.effectKind === "track" &&
+        decided.act.requiresConfirmation === true &&
+        decided.act.label === "Plan decision review" &&
+        decided.act.policyNote === "creates review evidence only; decision source and authority stay unchanged" &&
+        decided.act.members.length === 1 &&
+        decided.act.members[0].id === itemId &&
+        decided.act.members[0].actionId === "plan_decision_candidate_review" &&
+        decided.capability.kind === "track" &&
+        genericReviewResolutionActs(decided).length === 0,
+      `act=${decided.act.mode} effect=${decided.act.mode === "batch-enumerable" ? decided.act.effectKind : "-"} label=${decided.act.mode === "batch-enumerable" ? JSON.stringify(decided.act.label) : "-"} policy=${decided.act.mode === "batch-enumerable" ? JSON.stringify(decided.act.policyNote) : "-"} capability=${decided.capability.kind} resolutions=${genericReviewResolutionActs(decided).length}`,
+    );
+  }
+
+  // Same-kind candidates are serialized as separate owner groups. Each card
+  // must retain its own target-bound Plan action, and owner-action precedence
+  // must keep the synthetic Park/Dismiss adapter off both cards.
+  {
+    const area = "decision-candidates";
+    const task = "review falsifier, review trigger, source ownership, and second-order effects";
+    const candidates = [
+      { itemId: "dcp_alpha", candidateId: "cand_decision_alpha" },
+      { itemId: "dcp_bravo", candidateId: "cand_decision_bravo" },
+    ];
+    const items = candidates.map(({ itemId, candidateId }) => {
+      const action = {
+        id: "plan_decision_candidate_review",
+        label: "Plan decision review",
+        argv: [
+          "compound", "panel", "plan",
+          "--target-kind", "decision_candidate",
+          "--target", candidateId,
+          "--domain", "reasoning-lenses",
+          "--task", task,
+          "--supervised",
+          "--max-items", "1",
+          "--json",
+        ],
+        requires_review: true,
+        policy_note: "creates review evidence only; decision source and authority stay unchanged",
+      } as Json;
+      return {
+        id: itemId,
+        area,
+        candidate_id: candidateId,
+        context_label: candidateId,
+        actions: [action],
+      } as Json;
+    });
+    const itemByID = new Map(items.map((item) => [String(item.id), item]));
+    const groups = items.map((item) => ({
+      key: `decision-candidates|${String(item.id)}`,
+      area,
+      count: 1,
+      item_ids: [item.id],
+      operator_summary: `Review ${String(item.candidate_id)}.`,
+      sample: item,
+      safe_batch_action: (item.actions as Json[])[0],
+    } as Json));
+    const decided = buildDecideGroups(
+      groups,
+      itemByID,
+      null,
+      (group) => itemByID.get(String((group.item_ids as unknown[])[0]))!,
+    );
+    const exactTargets = decided.map((group) =>
+      group.act.mode === "batch-enumerable" ? group.act.members[0]?.argv?.[5] : "",
+    );
+    push(
+      "same-kind-decision-candidates-keep-per-member-plan-and-owner-precedence",
+      decided.length === 2 &&
+        decided.every((group) =>
+          group.act.mode === "batch-enumerable" &&
+          group.act.members.length === 1 &&
+          group.act.members[0]?.actionId === "plan_decision_candidate_review" &&
+          group.capability.kind === "track" &&
+          genericReviewResolutionActs(group).length === 0
+        ) &&
+        exactTargets.join(",") === candidates.map(({ candidateId }) => candidateId).join(","),
+      `groups=${decided.length} modes=${decided.map((group) => group.act.mode).join(",")} targets=${exactTargets.join(",")} resolutions=${decided.map((group) => genericReviewResolutionActs(group).length).join(",")}`,
+    );
+  }
+
   // Generic review resolution derives at render time. A zero-wired
   // unknown-status card keeps its serialized model untouched while one
   // governed control shares a reason across Park and Dismiss.
   {
-    const item: Json = { id: "parity_unknown_fixture", area: "parity", context_label: "Parity unknown" };
+    const ownerRevision = `review-resolution-v2:sha256:${"d".repeat(64)}`;
+    const item: Json = {
+      id: "parity_unknown_fixture",
+      area: "parity",
+      context_label: "Parity unknown",
+      review_resolution_revision: ownerRevision,
+    };
     const group: Json = {
       key: "parity|unknown",
       area: "parity",
@@ -599,10 +728,11 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
       decided.act.mode === "copy" &&
         acts.length === 1 &&
         resolutionAct?.reasonRequired === true &&
+        resolutionAct.expectedRevision === ownerRevision &&
         resolutionAct.effectKind === "record" &&
         resolutionAct.decisionOptions?.map((option) => option.value).join(",") === "review_resolution_park,review_resolution_dismiss" &&
         before === after,
-      `model_unchanged=${before === after} controls=${acts.length} options=${JSON.stringify(resolutionAct?.decisionOptions?.map((option) => option.value))}`,
+      `model_unchanged=${before === after} controls=${acts.length} revision=${resolutionAct?.expectedRevision ?? ""} options=${JSON.stringify(resolutionAct?.decisionOptions?.map((option) => option.value))}`,
     );
     push(
       "single-review-copy-card-targets-its-sole-member",

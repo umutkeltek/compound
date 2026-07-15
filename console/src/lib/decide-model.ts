@@ -2,7 +2,7 @@ import { arr, num, reviewCommand, str, type Json } from "@/lib/compound";
 import { ago, toDate } from "@/lib/time";
 import type { AttentionReport } from "@/lib/attention";
 import { type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor } from "@/lib/decision-registry";
-import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
+import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, reviewResolutionRevision, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
 import { areaPlain } from "@/lib/glossary";
 import { areaOf } from "@/lib/review-data";
 
@@ -198,6 +198,8 @@ export type DecideGroup = {
   sampleId: string;
   /** Sole represented member when it is backed by the Reviews projection; otherwise no generic review disposition. */
   reviewResolutionItemId: string | null;
+  /** Revision of the copy-only owner state the synthetic disposition was rendered from. */
+  reviewResolutionRevision: string;
   members: DecideMember[];
   evidence: DecideEvidence[];
   freshness: { generatedAt: string; source: string };
@@ -642,10 +644,22 @@ export function buildDecideGroups(
     const createdAt = groupCreatedAt(group, itemByID);
     const count = num(group.count) || arr(group.item_ids).length || 1;
     const representedMemberIDs = [...new Set(arr(group.item_ids).map(String).filter(Boolean))];
+    const soleReviewItem = representedMemberIDs.length === 1
+      ? itemByID.get(representedMemberIDs[0]) ?? null
+      : null;
+    const hasProjectedOwnerAction =
+      Boolean(soleReviewItem && arr(soleReviewItem.actions).length > 0) ||
+      Boolean(group.safe_batch_action || group.action);
     const reviewResolutionItemId =
-      count === 1 && representedMemberIDs.length === 1 && itemByID.has(representedMemberIDs[0])
+      act.mode === "copy" &&
+      count === 1 &&
+      soleReviewItem &&
+      !hasProjectedOwnerAction
         ? representedMemberIDs[0]
         : null;
+    const reviewResolutionOwnerRevision = reviewResolutionItemId && soleReviewItem
+      ? reviewResolutionRevision(area, soleReviewItem)
+      : "";
 
     const hasDecisionCard = Boolean(sample.decision_card && typeof sample.decision_card === "object");
     const title = (hasDecisionCard ? pl?.headline : "") || str(group.operator_summary) || pl?.headline || "Review this decision.";
@@ -672,6 +686,7 @@ export function buildDecideGroups(
       old: isOldAge(createdAt),
       sampleId,
       reviewResolutionItemId,
+      reviewResolutionRevision: reviewResolutionOwnerRevision,
       members,
       evidence,
       freshness: {

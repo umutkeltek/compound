@@ -20,6 +20,7 @@ import {
   genericActionAllowedForOwner,
   missingBespokeConfirmation,
   renderedRevisionMatches,
+  reviewResolutionCommandFailureResponse,
   resolveReviewResolutionAction,
 } from "./decision-execute";
 import { headlineAct, type HeadlineActDescriptor } from "./briefing";
@@ -32,7 +33,7 @@ import {
   headlineActIdentity,
 } from "./governed-action-client";
 import { specFor } from "./decision-registry";
-import { genericActionRevision } from "./generic-actions";
+import { genericActionRevision, reviewResolutionRevision } from "./generic-actions";
 import { isStandingLawCandidate } from "./memory-data";
 import { str, type Json } from "./compound";
 
@@ -597,10 +598,23 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
   //    involved in the adapter.
   {
     const reason = "hold: day-2 evidence decides; '; $(echo text) stays text";
+    const ownerRevision = `review-resolution-v2:sha256:${"a".repeat(64)}`;
+    const item = {
+      id: "skill_surfacing_unknown_fixture",
+      area: "skill-surfacing",
+      status: "unknown",
+      review_required: true,
+      review_resolution_revision: ownerRevision,
+    } as Json;
     const resolution = resolveReviewResolutionAction(
       "review_resolution_dismiss",
-      "skill_surfacing_unknown_fixture",
+      str(item.id),
       reason,
+      {
+        area: "skill-surfacing",
+        expectedRevision: reviewResolutionRevision("skill-surfacing", item),
+        read: { status: "live", value: { items: [item] }, error: null },
+      },
     );
     const argv = resolution?.ok ? resolution.action.argv : [];
     const reasonIndex = argv.indexOf("--reason");
@@ -608,7 +622,15 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
       "reason-stays-one-argv-element",
       resolution?.ok === true &&
         argv.join("\u0000") ===
-          ["reviews", "resolve", "--item", "skill_surfacing_unknown_fixture", "--decision", "dismissed", "--reason", reason, "--json"].join("\u0000") &&
+          [
+            "reviews", "resolve",
+            "--item", "skill_surfacing_unknown_fixture",
+            "--area", "skill-surfacing",
+            "--expected-revision", ownerRevision,
+            "--decision", "dismissed",
+            "--reason", reason,
+            "--json",
+          ].join("\u0000") &&
         reasonIndex >= 0 &&
         argv[reasonIndex + 1] === reason,
       `resolution=${JSON.stringify(resolution)}`,
@@ -618,12 +640,13 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
   // The combined Park/Dismiss control selects one fixed adapter action while
   // preserving the single shared reason and explicit confirmation marker.
   {
+    const sentinelRevision = `review-resolution-v2:sha256:${"c".repeat(64)}`;
     const act: ClientDecideAct = {
       mode: "generic",
       area: "parity",
       itemId: "parity_unknown_fixture",
       actionId: "review_resolution_park",
-      expectedRevision: "",
+      expectedRevision: sentinelRevision,
       label: "Review disposition",
       argv: null,
       requiresConfirmation: true,
@@ -645,6 +668,7 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
     push(
       "combined-resolution-selects-one-action",
       request.actionId === "review_resolution_dismiss" &&
+        request.expectedRevision === sentinelRevision &&
         request.reason === "duplicate evidence" &&
         request.confirmed === true,
       `request=${JSON.stringify(request)}`,
@@ -660,10 +684,141 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
       "route_promotion_selftest01",
       "record the hold",
     );
+    const prototypeNamed = resolveReviewResolutionAction(
+      "toString",
+      "parity_unknown_fixture",
+      "must remain an ordinary unknown action",
+    );
     push(
       "non-resolution-action-still-uses-existing-generic-resolver",
-      resolution === null,
-      `resolution=${JSON.stringify(resolution)}`,
+      resolution === null && prototypeNamed === null,
+      `resolution=${JSON.stringify(resolution)} prototypeNamed=${JSON.stringify(prototypeNamed)}`,
+    );
+  }
+
+  // A conflict discovered by the owner CLI after the Next preflight keeps its
+  // stable 409 contract instead of collapsing into a generic server failure.
+  {
+    const stale = reviewResolutionCommandFailureResponse({
+      message: "command failed",
+      stdout: JSON.stringify({
+        schema_version: "compound.review_resolution_error.v0.1",
+        status: "error",
+        error_code: "stale_action_revision",
+        error: "review state changed; refresh before deciding",
+      }),
+      stderr: "",
+    });
+    const ownerAction = reviewResolutionCommandFailureResponse({
+      message: "command failed",
+      stdout: JSON.stringify({
+        schema_version: "compound.review_resolution_error.v0.1",
+        status: "error",
+        error_code: "owner_action_present",
+        error: "owner action appeared; refresh",
+      }),
+      stderr: "",
+    });
+    const unknown = reviewResolutionCommandFailureResponse({ message: "boom", stdout: "", stderr: "boom" });
+    const stalePayload = await stale.json() as { error_code?: string };
+    const ownerPayload = await ownerAction.json() as { error_code?: string };
+    push(
+      "review-resolution-cli-conflicts-map-to-http-409",
+      stale.status === 409 &&
+        ownerAction.status === 409 &&
+        unknown.status === 500 &&
+        stalePayload.error_code === "stale_action_revision" &&
+        ownerPayload.error_code === "owner_action_present",
+      `stale=${stale.status}/${stalePayload.error_code ?? ""} owner=${ownerAction.status}/${ownerPayload.error_code ?? ""} unknown=${unknown.status}`,
+    );
+  }
+
+  // A forged resolution request must not bypass a freshly projected owner
+  // action. The adapter also refuses a copy-only card whose rendered
+  // resolution revision no longer matches owner truth.
+  {
+    const itemId = "dcp_decision_review_selftest";
+    const actionable = resolveReviewResolutionAction(
+      "review_resolution_dismiss",
+      itemId,
+      "hide the actionable card",
+      {
+        area: "decision-candidates",
+        expectedRevision: "",
+        read: {
+          status: "live",
+          value: {
+            items: [{
+              id: itemId,
+              area: "decision-candidates",
+              candidate_id: "cand_decision_review_selftest",
+              actions: [{
+                id: "plan_decision_candidate_review",
+                argv: ["compound", "panel", "plan", "--target-kind", "decision_candidate"],
+              }],
+            }],
+          },
+          error: null,
+        },
+      },
+    );
+    push(
+      "generic-resolution-refuses-fresh-owner-action",
+      actionable != null && !actionable.ok && actionable.rejection.gate === "owner-action-present",
+      `resolution=${JSON.stringify(actionable)}`,
+    );
+
+    const stale = resolveReviewResolutionAction(
+      "review_resolution_park",
+      "parity_unknown_fixture",
+      "park the old evidence",
+      {
+        area: "parity",
+        expectedRevision: "review-resolution-v1:stale",
+        read: {
+          status: "live",
+          value: {
+            items: [{
+              id: "parity_unknown_fixture",
+              area: "parity",
+              status: "unknown",
+              review_required: true,
+            }],
+          },
+          error: null,
+        },
+      },
+    );
+    push(
+      "generic-resolution-binds-rendered-owner-revision",
+      stale != null && !stale.ok && stale.rejection.gate === "stale-action-revision",
+      `resolution=${JSON.stringify(stale)}`,
+    );
+
+    const lastGoodItem = {
+      id: "parity_unknown_fixture",
+      area: "parity",
+      status: "unknown",
+      review_required: true,
+    } as Json;
+    const staleProjection = resolveReviewResolutionAction(
+      "review_resolution_park",
+      str(lastGoodItem.id),
+      "park the last-good snapshot",
+      {
+        area: "parity",
+        expectedRevision: reviewResolutionRevision("parity", lastGoodItem),
+        read: {
+          status: "stale",
+          value: { items: [lastGoodItem] },
+          error: "fresh owner read timed out",
+        },
+      },
+    );
+    push(
+      "generic-resolution-requires-fresh-owner-projection",
+      staleProjection != null && !staleProjection.ok && staleProjection.rejection.gate === "projection-unavailable",
+      `resolution=${JSON.stringify(staleProjection)}`,
     );
   }
 

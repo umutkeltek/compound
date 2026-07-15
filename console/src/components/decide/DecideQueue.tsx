@@ -9,6 +9,7 @@ import { Button, FreshnessChip } from "@/components/kit";
 import { remainingDecideMembers } from "@/lib/decide-members";
 import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
+import type { DecisionEffectKind } from "@/lib/decision-registry";
 import { decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
 import { ownerUnavailableMessage } from "@/lib/glossary";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
@@ -170,6 +171,36 @@ function BriefPanel({ brief }: { brief: DecideBrief }) {
 
 /* ---------- enumerable batch: per-member checkboxes + exclusion ---------- */
 
+const ENUMERABLE_ACTION_COPY: Record<DecisionEffectKind, {
+  imperative: string;
+  progressive: string;
+  past: string;
+  completed: string;
+  confirmationLead: string;
+}> = {
+  apply: {
+    imperative: "Apply",
+    progressive: "Applying",
+    past: "Applied",
+    completed: "applied",
+    confirmationLead: "Applies the selected action to",
+  },
+  record: {
+    imperative: "Record",
+    progressive: "Recording",
+    past: "Recorded",
+    completed: "recorded",
+    confirmationLead: "Records the reviewed decision for",
+  },
+  track: {
+    imperative: "Plan",
+    progressive: "Planning",
+    past: "Planned",
+    completed: "planned",
+    confirmationLead: "Plans the tracked step for",
+  },
+};
+
 function EnumerableApply({
   area,
   members,
@@ -178,6 +209,7 @@ function EnumerableApply({
   mutationsEnabled,
   requiresConfirmation,
   requiresRationale,
+  effectKind,
   policyNote,
   label,
 }: {
@@ -188,6 +220,7 @@ function EnumerableApply({
   mutationsEnabled: boolean;
   requiresConfirmation: boolean;
   requiresRationale: boolean;
+  effectKind: DecisionEffectKind;
   policyNote: string;
   label: string;
 }) {
@@ -200,6 +233,9 @@ function EnumerableApply({
   const [completed, setCompleted] = useState<Set<string>>(() => new Set());
 
   const included = remainingDecideMembers(members, excluded, completed);
+  const actionCopy = ENUMERABLE_ACTION_COPY[effectKind];
+  const isSingleton = members.length === 1;
+  const singletonMember = isSingleton ? members[0] : null;
 
   const apply = useCallback(async (operatorRationale: string) => {
     if (!mutationsEnabled || running || included.length === 0) return;
@@ -243,14 +279,14 @@ function EnumerableApply({
     setRunning(false);
     if (failed) {
       setProgress({ done: completedThisRun, total: included.length });
-      setError(completedThisRun > 0 ? `Applied ${completedThisRun} of ${included.length}; ${failed}. Refreshing owner truth.` : failed);
+      setError(completedThisRun > 0 ? `${actionCopy.past} ${completedThisRun} of ${included.length}; ${failed}. Refreshing owner truth.` : failed);
       router.refresh();
     }
     else {
       setOpen(false);
       router.refresh();
     }
-  }, [area, included, mutationsEnabled, requiresConfirmation, requiresRationale, running, router]);
+  }, [actionCopy.past, area, included, mutationsEnabled, requiresConfirmation, requiresRationale, running, router]);
 
   const trigger = useCallback(() => {
     if (!mutationsEnabled || running || included.length === 0) return;
@@ -279,7 +315,7 @@ function EnumerableApply({
                   className="h-4 w-4 shrink-0 accent-work"
                 />
                 <span className="min-w-0 flex-1 truncate text-xs text-muted" title={m.id}>
-                  {m.label}{isCompleted ? " · applied" : ""}
+                  {m.label}{isCompleted ? ` · ${actionCopy.completed}` : ""}
                 </span>
                 <code className="mono shrink-0 text-2xs text-faint" title={m.id}>
                   {m.id.length > 18 ? `${m.id.slice(0, 16)}…` : m.id}
@@ -297,12 +333,20 @@ function EnumerableApply({
           title={mutationsEnabled ? undefined : "Launch via 'compound console --operator' to act from a pinned console."}
         >
           {running
-            ? `Applying ${progress?.done ?? 0}/${progress?.total ?? included.length}…`
-            : requiresConfirmation
+            ? isSingleton
+              ? `${actionCopy.progressive}…`
+              : `${actionCopy.progressive} ${progress?.done ?? 0}/${progress?.total ?? included.length}…`
+            : isSingleton
+              ? label
+              : requiresConfirmation
               ? `Review ${included.length} of ${members.length}`
-              : `Apply ${included.length} of ${members.length}`}
+              : `${actionCopy.imperative} ${included.length} of ${members.length}`}
         </Button>
-        <span className="text-2xs text-faint">each member is applied on its own; excluded members are skipped</span>
+        <span className="text-2xs text-faint">
+          {isSingleton && policyNote
+            ? policyNote
+            : `Each member is ${actionCopy.completed} on its own; excluded members are skipped.`}
+        </span>
       </div>
       {!open && error ? <span role="alert" className="text-2xs leading-snug text-crit">{error}</span> : null}
 
@@ -312,9 +356,17 @@ function EnumerableApply({
           <Dialog.Content className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-lg border border-hair bg-panel p-5 shadow-lg focus:outline-none">
             <Dialog.Title className="text-md font-semibold text-ink">Confirm {label}</Dialog.Title>
             <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted">
-              Applies {included.length} selected member{included.length === 1 ? "" : "s"} one at a time. Excluded members remain unchanged; completed members are not retried.
+              {isSingleton ? (
+                <>This will run <span className="font-medium text-ink">“{label}”</span> for {singletonMember?.label ?? "this item"}.</>
+              ) : (
+                <>{actionCopy.confirmationLead} {included.length} selected members, one at a time. Excluded members remain unchanged; completed members are not retried.</>
+              )}
+              {policyNote ? (
+                <span className="mt-3 block rounded-md border border-hair bg-soft px-3 py-2 text-xs leading-relaxed text-muted">
+                  <span className="font-semibold text-ink">Safety boundary:</span> {policyNote}
+                </span>
+              ) : null}
             </Dialog.Description>
-            {policyNote ? <div className="mt-3 rounded-md border border-hair bg-soft px-3 py-2 text-xs leading-relaxed text-muted">{policyNote}</div> : null}
             {requiresRationale ? (
               <label className="mt-3 flex flex-col gap-1">
                 <span className="text-2xs font-bold uppercase text-faint">Rationale <span className="text-crit">*</span></span>
@@ -340,7 +392,13 @@ function EnumerableApply({
                 onClick={() => void apply(rationale)}
                 title={requiresRationale && !rationale.trim() ? RATIONALE_REQUIRED_MESSAGE : undefined}
               >
-                {running ? `Applying ${progress?.done ?? 0}/${progress?.total ?? included.length}…` : `Confirm ${included.length}`}
+                {running
+                  ? isSingleton
+                    ? `${actionCopy.progressive}…`
+                    : `${actionCopy.progressive} ${progress?.done ?? 0}/${progress?.total ?? included.length}…`
+                  : isSingleton
+                    ? `Confirm ${label}`
+                    : `Confirm ${included.length}`}
               </Button>
             </div>
           </Dialog.Content>
@@ -588,6 +646,7 @@ function DecisionDetail({
               mutationsEnabled={mutationsEnabled}
               requiresConfirmation={act.requiresConfirmation}
               requiresRationale={act.requiresRationale}
+              effectKind={act.effectKind}
               policyNote={act.policyNote}
               label={act.label}
             />

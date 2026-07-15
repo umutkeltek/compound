@@ -18,7 +18,10 @@ import {
 import {
   type GenericActionGate,
   type GenericActionResolution,
+  type GenericResolutionRead,
   type ResolvedGenericAction,
+  readReviewResolutionProjection,
+  reviewResolutionGuardFromRead,
   resolveGenericAction,
 } from "@/lib/generic-actions";
 
@@ -245,6 +248,21 @@ export function decisionCommandFailureResponse(
     preview,
     effect: decisionExecutionEffect(area, failure.stdout, preview),
   }, { status: decisionFailureStatus(area, failure.stdout, failure.stderr) });
+}
+
+export function reviewResolutionCommandFailureResponse(
+  failure: { message: string; stdout: string; stderr: string },
+): Response {
+  const payload = firstJsonObject(failure.stdout) ?? firstJsonObject(failure.stderr);
+  const errorCode = str(payload?.error_code);
+  const conflict = errorCode === "stale_action_revision" || errorCode === "owner_action_present";
+  return Response.json({
+    ok: false,
+    stdout: failure.stdout,
+    stderr: str(payload?.error) || failure.stderr || failure.message,
+    error_code: errorCode || undefined,
+    refs: extractDecisionRefs(failure.stdout, failure.stderr || failure.message),
+  }, { status: conflict ? 409 : 500 });
 }
 
 function decisionExecutionEffect(area: string, stdout: string, preview: boolean): DecisionExecutionEffect | null {
@@ -503,6 +521,8 @@ const GENERIC_GATE_STATUS: Record<GenericActionGate, number> = {
   "gate-1-shell-form": 403,
   "gate-2-allowlist": 403,
   "gate-3-global-allowlist": 403,
+  "owner-action-present": 409,
+  "stale-action-revision": 409,
   "rationale-required": 422,
   // A projection that did not answer is a slow door, not a missing item —
   // 503 tells the client "retry", where the old collapse into 404 told the
@@ -515,16 +535,29 @@ const REVIEW_RESOLUTION_DECISIONS = {
   review_resolution_dismiss: { decision: "dismissed", label: "Dismiss" },
 } as const;
 
-// Fixed adapter for cards whose owner exposes no executable action. It accepts
-// only a named resolution id + item id + operator reason, then constructs the
-// canonical CLI argv server-side. Returning null preserves the existing generic
-// projection resolver for every non-resolution action.
+function reviewResolutionDecision(actionId: string): (typeof REVIEW_RESOLUTION_DECISIONS)[keyof typeof REVIEW_RESOLUTION_DECISIONS] | null {
+  if (!Object.prototype.hasOwnProperty.call(REVIEW_RESOLUTION_DECISIONS, actionId)) return null;
+  return REVIEW_RESOLUTION_DECISIONS[actionId as keyof typeof REVIEW_RESOLUTION_DECISIONS];
+}
+
+type ReviewResolutionContext = {
+  area: string;
+  expectedRevision: string;
+  read: GenericResolutionRead;
+};
+
+// Fixed adapter for cards whose owner exposes no executable action. A named
+// resolution id + item id + operator reason is necessary but not sufficient:
+// live owner truth must still expose no action and match the rendered revision.
+// Only then is canonical CLI argv constructed server-side. Returning null
+// preserves the existing generic projection resolver for non-resolution acts.
 export function resolveReviewResolutionAction(
   actionId: string,
   itemId: string,
   reason?: string,
+  context?: ReviewResolutionContext,
 ): GenericActionResolution | null {
-  const config = REVIEW_RESOLUTION_DECISIONS[actionId as keyof typeof REVIEW_RESOLUTION_DECISIONS];
+  const config = reviewResolutionDecision(actionId);
   if (!config) return null;
   const cleanReason = (reason ?? "").trim();
   if (!cleanReason) {
@@ -536,12 +569,32 @@ export function resolveReviewResolutionAction(
       },
     };
   }
+  if (!context) {
+    return {
+      ok: false,
+      rejection: {
+        gate: "projection-unavailable",
+        message: "fresh owner truth is required before a review disposition can be recorded",
+      },
+    };
+  }
+  const guard = reviewResolutionGuardFromRead(
+    context.read,
+    context.area,
+    itemId,
+    context.expectedRevision,
+  );
+  if (!guard.ok) return guard;
   const action: ResolvedGenericAction = {
     argv: [
       "reviews",
       "resolve",
       "--item",
       itemId,
+      "--area",
+      context.area,
+      "--expected-revision",
+      guard.revision,
       "--decision",
       config.decision,
       "--reason",
@@ -552,9 +605,7 @@ export function resolveReviewResolutionAction(
     label: config.label,
     requiresReview: true,
     policyNote: "records a reversible review disposition only; underlying authority is unchanged",
-    // Fixed adapter, not projection-derived: there is no owner action revision
-    // to go stale, so the stale-revision gate applies only to resolver actions.
-    revision: "",
+    revision: guard.revision,
   };
   return { ok: true, action };
 }
@@ -579,12 +630,29 @@ async function executeGenericAction(
     return Response.json({ ok: false, stderr: "itemId is required" }, { status: 400 });
   }
 
-  const reviewResolution = resolveReviewResolutionAction(actionId, itemId, rationale);
+  const isReviewResolution = reviewResolutionDecision(actionId) !== null;
+  const reviewResolution = isReviewResolution
+    ? resolveReviewResolutionAction(
+        actionId,
+        itemId,
+        rationale,
+        {
+          area,
+          expectedRevision,
+          read: await readReviewResolutionProjection(area),
+        },
+      )
+    : null;
   let action: ResolvedGenericAction;
   if (reviewResolution) {
     if (!reviewResolution.ok) {
+      const errorCode = reviewResolution.rejection.gate === "stale-action-revision"
+        ? "stale_action_revision"
+        : reviewResolution.rejection.gate === "owner-action-present"
+          ? "owner_action_present"
+          : undefined;
       return Response.json(
-        { ok: false, stderr: reviewResolution.rejection.message },
+        { ok: false, error_code: errorCode, stderr: reviewResolution.rejection.message },
         { status: GENERIC_GATE_STATUS[reviewResolution.rejection.gate] },
       );
     }
@@ -629,6 +697,7 @@ async function executeGenericAction(
     });
   } catch (error) {
     const failure = compoundFailure(error);
+    if (isReviewResolution) return reviewResolutionCommandFailureResponse(failure);
     return Response.json({
       ok: false,
       stdout: failure.stdout,

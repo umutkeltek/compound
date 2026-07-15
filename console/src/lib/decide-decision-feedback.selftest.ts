@@ -124,6 +124,32 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
     }
   }
 
+  // (e2) Enumerable owner actions must name singleton work directly and
+  // describe tracked actions as planning, not authority application. The
+  // owner-projected policy note stays visible before confirmation and is
+  // included in the dialog description announced by Radix.
+  {
+    const src = read("components/decide/DecideQueue.tsx");
+    const dialogDescription = src.match(/<Dialog\.Description[^>]*>([\s\S]*?)<\/Dialog\.Description>/)?.[1] ?? "";
+    if (!/effectKind=\{act\.effectKind\}/.test(src)) {
+      fail("DecideQueue.tsx does not pass the server-derived effect kind into EnumerableApply");
+    } else if (!/confirmationLead:\s*"Plans the tracked step for"/.test(src)) {
+      fail("DecideQueue.tsx still describes tracked planning as a generic apply");
+    } else if (!/const isSingleton = members\.length === 1/.test(src) || !/isSingleton\s*\n\s*\? label/.test(src)) {
+      fail("DecideQueue.tsx does not use the owner action label for a singleton trigger");
+    } else if (!/isSingleton && policyNote\s*\n\s*\? policyNote/.test(src)) {
+      fail("DecideQueue.tsx does not surface the singleton policy boundary before confirmation");
+    } else if (!/isSingleton/.test(dialogDescription) || !/\{label\}/.test(dialogDescription) || !/singletonMember\?\.label/.test(dialogDescription)) {
+      fail("DecideQueue.tsx singleton dialog does not name the owner action and target");
+    } else if (!/policyNote/.test(dialogDescription)) {
+      fail("DecideQueue.tsx policy boundary is outside Dialog.Description and will not be announced with the confirmation");
+    } else if (!/isSingleton\s*\n\s*\? `Confirm \$\{label\}`/.test(src)) {
+      fail("DecideQueue.tsx singleton confirmation control still has a count-only accessible name");
+    } else {
+      pass("DecideQueue.tsx uses owner-specific singleton copy and announces the owner policy boundary in the confirmation dialog");
+    }
+  }
+
   /* ---------- f2: missing-owner naming (not the bare label) ---------- */
 
   // (f) The pure owner-unavailable message names the specific area and the

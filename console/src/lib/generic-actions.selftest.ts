@@ -3,6 +3,7 @@ import {
   GENERIC_ACTION_ALLOWLIST,
   genericActionEffectKind,
   genericActionProjectionEligible,
+  reviewResolutionRevision,
   resolveGenericActionFromProjection,
   resolveGenericActionFromRead,
 } from "./generic-actions";
@@ -280,6 +281,71 @@ export function runGenericActionsSelfTest(): SelfTestResult {
     pass("generic action effect labels distinguish certified record/track semantics and reject unknown areas");
   } else {
     fail("generic action effect labels drifted from certified area semantics");
+  }
+
+  // Object-prototype names are not certified areas. A plain Record lookup can
+  // accidentally inherit toString/constructor/__proto__; every allowlist and
+  // effect lookup must require an own property.
+  {
+    const projection = {
+      items: [{
+        id: "prototype_area_fixture",
+        actions: [{
+          id: "record_job_health_review",
+          argv: ["compound", "authority", "job-health-review", "/tmp/fixture.review.yaml"],
+        }],
+      }],
+    };
+    for (const area of ["toString", "constructor", "__proto__"]) {
+      const resolved = resolveGenericActionFromProjection(
+        projection,
+        area,
+        "prototype_area_fixture",
+        "record_job_health_review",
+      );
+      if (
+        genericActionProjectionEligible(area, ["compound", "authority", "job-health-review", "/tmp/fixture.review.yaml"]) ||
+        genericActionEffectKind(area) !== null ||
+        resolved.ok ||
+        resolved.rejection.gate !== "gate-2-allowlist"
+      ) {
+        fail(`prototype-shaped area ${area} escaped the own-property allowlist guard: ${JSON.stringify(resolved)}`);
+      } else {
+        pass(`prototype-shaped area ${area} rejected at the own-property allowlist seam`);
+      }
+    }
+  }
+
+  // The console carries the opaque Go-owned QueueItem fingerprint exactly.
+  // Missing, malformed, or cross-area tokens fail closed; no selective local
+  // reconstruction can silently bless a changed owner projection.
+  {
+    const ownerRevision = `review-resolution-v2:sha256:${"a".repeat(64)}`;
+    const item = {
+      id: "parity_revision_fixture",
+      area: "parity",
+      status: "unknown",
+      operator_summary: "owner-rendered summary",
+      review_resolution_revision: ownerRevision,
+    };
+    const carried = reviewResolutionRevision("parity", item);
+    const changedOwnerRevision = reviewResolutionRevision("parity", {
+      ...item,
+      readiness: "ready_to_apply",
+      review_resolution_revision: `review-resolution-v2:sha256:${"b".repeat(64)}`,
+    });
+    if (
+      carried === ownerRevision &&
+      changedOwnerRevision !== carried &&
+      reviewResolutionRevision("source", item) === "" &&
+      reviewResolutionRevision("parity", { ...item, area: "" }) === "" &&
+      reviewResolutionRevision("parity", { ...item, review_resolution_revision: "review-resolution-v1:legacy" }) === "" &&
+      reviewResolutionRevision("parity", { ...item, review_resolution_revision: "" }) === ""
+    ) {
+      pass("review resolution carries only the scoped, privacy-safe Go owner revision");
+    } else {
+      fail(`review resolution owner token did not fail closed: carried=${carried} changed=${changedOwnerRevision}`);
+    }
   }
 
   // F4/F5: the lease-hygiene attention-sourced pathway. `compound attention
@@ -735,6 +801,80 @@ export function runGenericActionsSelfTest(): SelfTestResult {
       fail("decision-candidates effect label or client honesty probe drifted from the bounded panel-plan allowlist");
     } else {
       pass("decision-candidates is track-only; source import remains ineligible in both client and server gates");
+    }
+
+    const escalatedArgv = [
+      "compound",
+      "panel",
+      "plan",
+      "--target-kind",
+      "memory_candidate",
+      "--target",
+      "mcand_private",
+      "--domain",
+      "reasoning-lenses",
+      "--task",
+      "review something else",
+      "--unsupervised",
+      "--max-items",
+      "999",
+      "--json",
+    ];
+    const sameVerbEscalation = resolveGenericActionFromProjection(
+      {
+        items: [{
+          id: itemId,
+          candidate_id: "cand_decision_review_selftest",
+          actions: [{ id: actionId, argv: escalatedArgv }],
+        }],
+      },
+      area,
+      itemId,
+      actionId,
+    );
+    if (
+      sameVerbEscalation.ok ||
+      sameVerbEscalation.rejection.gate !== "gate-2-allowlist" ||
+      genericActionProjectionEligible(area, escalatedArgv)
+    ) {
+      fail(`decision-candidate same-verb flag escalation must reject at gate-2-allowlist, got ${JSON.stringify(sameVerbEscalation)}`);
+    } else {
+      pass("decision-candidates rejects same-verb target, supervision, task, and bound escalation");
+    }
+
+    const missingCandidateIdentity = resolveGenericActionFromProjection(
+      {
+        items: [{
+          id: itemId,
+          actions: [{ id: actionId, argv, requires_review: true }],
+        }],
+      },
+      area,
+      itemId,
+      actionId,
+    );
+    if (missingCandidateIdentity.ok || missingCandidateIdentity.rejection.gate !== "gate-2-allowlist") {
+      fail(`decision-candidate action without owner target identity must reject, got ${JSON.stringify(missingCandidateIdentity)}`);
+    } else {
+      pass("decision-candidates requires the owner-projected candidate identity before certifying a target");
+    }
+
+    const confirmationDowngrade = resolveGenericActionFromProjection(
+      {
+        items: [{
+          id: itemId,
+          candidate_id: "cand_decision_review_selftest",
+          actions: [{ id: actionId, argv, requires_review: false }],
+        }],
+      },
+      area,
+      itemId,
+      actionId,
+    );
+    if (confirmationDowngrade.ok || confirmationDowngrade.rejection.gate !== "gate-2-allowlist") {
+      fail(`decision-candidate confirmation downgrade must reject, got ${JSON.stringify(confirmationDowngrade)}`);
+    } else {
+      pass("decision-candidates requires the owner-projected confirmation gate");
     }
   }
 

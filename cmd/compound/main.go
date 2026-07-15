@@ -351,7 +351,7 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
   compound reviews [--json] [--area A] [--include-archived] read-only owner-review artifact queue; no apply
-  compound reviews resolve --item ID --decision reviewed|parked|dismissed --reason TEXT [--json]; add --undo --reason TEXT to restore visibility
+  compound reviews resolve --item ID --area AREA --expected-revision REVISION --decision reviewed|parked|dismissed --reason TEXT [--json]; add --undo --reason TEXT to restore visibility
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt> ActionIntent -> PolicyDecision; import policy authorities / mutate halt through its locked command
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds

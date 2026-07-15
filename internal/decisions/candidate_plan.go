@@ -1,7 +1,10 @@
 package decisions
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -10,7 +13,12 @@ import (
 	"compound/internal/reviewartifact"
 )
 
-const DecisionCandidatePlanSchemaVersion = "compound.decision_candidate_plan.v0.1"
+const (
+	DecisionCandidatePlanSchemaVersion = "compound.decision_candidate_plan.v0.1"
+	DecisionCandidateReviewArea        = "decision-candidates"
+	DecisionCandidateReviewActionID    = "plan_decision_candidate_review"
+	decisionCandidateReviewTask        = "review falsifier, review trigger, source ownership, and second-order effects"
+)
 
 // DecisionCandidatePlan is a reviewed DecisionLifecycle source proposal from a
 // distiller decision candidate. It never mutates decision source files and never
@@ -199,6 +207,87 @@ func RecordDecisionCandidatePlan(homePath string, plan DecisionCandidatePlan) (D
 	}
 	paths, err := reviewartifact.Write(homePath, "decision-candidates", plan.ID, plan, " ", RenderDecisionCandidatePlanReview(plan))
 	return DecisionCandidatePlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
+}
+
+// AnnotateDecisionCandidateQueue gives each still-open DecisionLifecycle draft
+// one bounded next step through the existing panel owner. The action creates
+// review evidence only: accepting, importing, or writing a decision source
+// remains a separate owner-approved operation.
+func AnnotateDecisionCandidateQueue(report *reviewartifact.QueueReport) {
+	if report == nil {
+		return
+	}
+	for i := range report.Items {
+		item := &report.Items[i]
+		if item.Area != DecisionCandidateReviewArea {
+			continue
+		}
+		annotateDecisionCandidateQueueItem(item)
+	}
+}
+
+func annotateDecisionCandidateQueueItem(item *reviewartifact.QueueItem) {
+	item.Actions = nil
+	if item.Status != "review_required" {
+		return
+	}
+	data, err := os.ReadFile(item.JSONPath)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "decision candidate review artifact unreadable")
+		return
+	}
+	var plan DecisionCandidatePlan
+	if err := json.Unmarshal(data, &plan); err != nil ||
+		plan.SchemaVersion != DecisionCandidatePlanSchemaVersion ||
+		strings.TrimSpace(plan.ID) == "" || strings.TrimSpace(plan.CandidateID) == "" {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "decision candidate review artifact invalid")
+		return
+	}
+	homePath := decisionCandidateReviewHome(item.JSONPath)
+	if homePath == "" {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "decision candidate review home unresolved")
+		return
+	}
+	candidate, err := readDecisionCandidate(homePath, plan.CandidateID)
+	if err != nil || candidate.Verdict != candidates.Park {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "decision candidate is no longer available for panel review")
+		return
+	}
+	argv := decisionCandidatePanelPlanArgv(plan.CandidateID)
+	item.CandidateID = plan.CandidateID
+	item.GroupKey = decisionCandidateReviewGroupKey(plan)
+	item.Owner = "internal/decisions"
+	item.NextAction = "plan decision-specific lens review"
+	item.Actions = []reviewartifact.Action{{
+		ID:             DecisionCandidateReviewActionID,
+		Label:          "Plan decision review",
+		Command:        shellCommand(argv),
+		Argv:           argv,
+		RequiresReview: true,
+		PolicyNote:     "creates review evidence only; decision source and authority stay unchanged",
+	}}
+}
+
+func decisionCandidatePanelPlanArgv(candidateID string) []string {
+	return []string{
+		"compound", "panel", "plan",
+		"--target-kind", "decision_candidate",
+		"--target", strings.TrimSpace(candidateID),
+		"--domain", "reasoning-lenses",
+		"--task", decisionCandidateReviewTask,
+		"--supervised",
+		"--max-items", "1",
+		"--json",
+	}
+}
+
+func decisionCandidateReviewHome(path string) string {
+	areaDir := filepath.Dir(strings.TrimSpace(path))
+	reviewsDir := filepath.Dir(areaDir)
+	if filepath.Base(areaDir) != DecisionCandidateReviewArea || filepath.Base(reviewsDir) != "reviews" {
+		return ""
+	}
+	return filepath.Dir(reviewsDir)
 }
 
 func RenderDecisionCandidatePlanReview(plan DecisionCandidatePlan) string {

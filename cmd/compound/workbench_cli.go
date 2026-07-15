@@ -1185,6 +1185,7 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 		return reviewartifact.QueueReport{}, err
 	}
 	decisions.AnnotateLifecycleRepairQueue(&report)
+	decisions.AnnotateDecisionCandidateQueue(&report)
 	decisions.AnnotateAutonomyGrantMintQueue(&report, homePath)
 	product.AnnotateReviewQueue(&report)
 	product.AnnotateOutboundDryRunEvidenceQueue(&report)

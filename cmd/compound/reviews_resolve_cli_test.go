@@ -34,22 +34,62 @@ func TestReviewsResolveCLISubprocess(t *testing.T) {
 
 func TestReviewsResolveRequiresReasonUsage(t *testing.T) {
 	homePath := initReviewsResolveCLIHome(t)
-	code, output := runReviewsResolveCLI(t, homePath, "resolve", "--item", "route_promotion_resolve_fixture", "--decision", "parked")
+	revision := reviewResolveRevisionFor(t, homePath, "parity", "parity_unknown_fixture")
+	code, output := runReviewsResolveCLI(t, homePath,
+		"resolve", "--item", "parity_unknown_fixture", "--area", "parity",
+		"--expected-revision", revision, "--decision", "parked",
+	)
 	if code == 0 {
 		t.Fatalf("resolve without --reason exited 0: %s", output)
 	}
-	if !strings.Contains(output, "usage: compound reviews resolve --item ID --decision reviewed|parked|dismissed --reason TEXT [--json]") {
+	if !strings.Contains(output, reviewsResolveUsage) {
 		t.Fatalf("resolve without reason missing usage: %s", output)
 	}
 }
 
-func TestReviewsResolveRouteReviewIsSidecarOnlyAndUndoRestoresArchiveVisibility(t *testing.T) {
+func TestReviewsResolveRequiresOwnerAreaAndRevisionBeforeWriting(t *testing.T) {
 	homePath := initReviewsResolveCLIHome(t)
+	revision := reviewResolveRevisionFor(t, homePath, "parity", "parity_unknown_fixture")
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "missing area",
+			args: []string{
+				"resolve", "--item", "parity_unknown_fixture",
+				"--expected-revision", revision, "--decision", "parked", "--reason", "fixture reason",
+			},
+		},
+		{
+			name: "missing revision",
+			args: []string{
+				"resolve", "--item", "parity_unknown_fixture", "--area", "parity",
+				"--decision", "parked", "--reason", "fixture reason",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := snapshotReviewsResolveHome(t, homePath)
+			code, output := runReviewsResolveCLI(t, homePath, tt.args...)
+			if code == 0 || !strings.Contains(output, reviewsResolveUsage) {
+				t.Fatalf("missing owner scope exit=%d output=%s", code, output)
+			}
+			assertReviewsResolveHomeUnchanged(t, before, homePath)
+		})
+	}
+}
+
+func TestReviewsResolveGenericReviewIsSidecarOnlyAndUndoRestoresArchiveVisibility(t *testing.T) {
+	homePath := initReviewsResolveCLIHome(t)
+	revision := reviewResolveRevisionFor(t, homePath, "parity", "parity_unknown_fixture")
 	before := snapshotReviewsResolveHome(t, homePath)
 
 	code, output := runReviewsResolveCLI(t, homePath,
-		"resolve", "--item", "route_promotion_resolve_fixture", "--decision", "parked",
-		"--reason", "hold this route claim until the next evidence window", "--json",
+		"resolve", "--item", "parity_unknown_fixture", "--area", "parity",
+		"--expected-revision", revision, "--decision", "parked",
+		"--reason", "hold this parity evidence until the next evidence window", "--json",
 	)
 	if code != 0 {
 		t.Fatalf("resolve exit=%d output=%s", code, output)
@@ -72,30 +112,30 @@ func TestReviewsResolveRouteReviewIsSidecarOnlyAndUndoRestoresArchiveVisibility(
 			receiptRel = rel
 		}
 	}
-	if sidecarRel != "reviews/route-promotions/route_promotion_resolve_fixture.reviewed.json" || receiptRel == "" {
+	if sidecarRel != "reviews/parity/parity_unknown_fixture.reviewed.json" || receiptRel == "" {
 		t.Fatalf("resolve added unexpected files: %v", added)
 	}
 	if got := resolved["sidecar_path"]; got == "" || got == nil {
 		t.Fatalf("resolve JSON missing sidecar_path: %v", resolved)
 	}
 
-	queue, err := buildReviewQueueReport(homePath, "route-promotions", false)
+	queue, err := buildReviewQueueReport(homePath, "parity", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(queue.Items) != 1 || queue.Items[0].Status != "recorded" || queue.Items[0].Readiness != "no_action" || queue.Counts.ReviewRequired != 0 {
-		t.Fatalf("resolved route review is not terminal: %+v", queue)
+		t.Fatalf("resolved parity review is not terminal: %+v", queue)
 	}
 	dryRun, err := home.ArchiveOperationalHistory(homePath, home.OperationalArchiveOptions{Kinds: []string{"review"}, DryRun: true}, cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !archiveReportHasPath(dryRun, "reviews/route-promotions/route_promotion_resolve_fixture.json") {
+	if !archiveReportHasPath(dryRun, "reviews/parity/parity_unknown_fixture.json") {
 		t.Fatalf("resolved item not selected by archive dry-run: %+v", dryRun)
 	}
 
 	code, output = runReviewsResolveCLI(t, homePath,
-		"resolve", "--item", "route_promotion_resolve_fixture", "--undo",
+		"resolve", "--item", "parity_unknown_fixture", "--undo",
 		"--reason", "new evidence requires returning this card to review", "--json",
 	)
 	if code != 0 {
@@ -104,18 +144,18 @@ func TestReviewsResolveRouteReviewIsSidecarOnlyAndUndoRestoresArchiveVisibility(
 	if _, err := os.Stat(filepath.Join(homePath, filepath.FromSlash(sidecarRel))); !os.IsNotExist(err) {
 		t.Fatalf("undo must remove active sidecar, stat err=%v", err)
 	}
-	queue, err = buildReviewQueueReport(homePath, "route-promotions", false)
+	queue, err = buildReviewQueueReport(homePath, "parity", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(queue.Items) != 1 || queue.Items[0].Status != "review_required" || queue.Counts.ReviewRequired != 1 {
+	if len(queue.Items) != 1 || queue.Items[0].Status != "unknown" || queue.Counts.ReviewRequired != 1 {
 		t.Fatalf("undo did not restore prior visibility: %+v", queue)
 	}
 	dryRun, err = home.ArchiveOperationalHistory(homePath, home.OperationalArchiveOptions{Kinds: []string{"review"}, DryRun: true}, cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if archiveReportHasPath(dryRun, "reviews/route-promotions/route_promotion_resolve_fixture.json") {
+	if archiveReportHasPath(dryRun, "reviews/parity/parity_unknown_fixture.json") {
 		t.Fatalf("undone item still selected by archive dry-run: %+v", dryRun)
 	}
 
@@ -146,6 +186,12 @@ func initReviewsResolveCLIHome(t *testing.T) string {
 	t.Helper()
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reviewartifact.Write(homePath, "parity", "parity_unknown_fixture", map[string]any{
+		"id":     "parity_unknown_fixture",
+		"status": "unknown",
+	}, " ", "# Parity review fixture\n"); err != nil {
 		t.Fatal(err)
 	}
 	review := routeevidence.PromotionReview{
@@ -268,11 +314,127 @@ func countMatchingFiles(files map[string]string, prefix, suffix string) int {
 func TestReviewsResolveUnknownItem(t *testing.T) {
 	homePath := initReviewsResolveCLIHome(t)
 	code, output := runReviewsResolveCLI(t, homePath,
-		"resolve", "--item", "missing_review_item", "--decision", "dismissed",
+		"resolve", "--item", "missing_review_item", "--area", "parity",
+		"--expected-revision", "review-resolution-v2:sha256:"+strings.Repeat("a", 64), "--decision", "dismissed",
 		"--reason", "the fixture should not exist",
 	)
 	if code == 0 || !strings.Contains(output, `unknown review item "missing_review_item"`) {
 		t.Fatalf("unknown item exit=%d output=%s", code, output)
+	}
+}
+
+func TestReviewsResolveStaleRevisionWritesNeitherSidecarNorReceipt(t *testing.T) {
+	homePath := initReviewsResolveCLIHome(t)
+	staleRevision := reviewResolveRevisionFor(t, homePath, "parity", "parity_unknown_fixture")
+	path := filepath.Join(homePath, "reviews", "parity", "parity_unknown_fixture.json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["status"] = "review_required"
+	body, err = json.MarshalIndent(payload, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(body, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotReviewsResolveHome(t, homePath)
+	code, output := runReviewsResolveCLI(t, homePath,
+		"resolve", "--item", "parity_unknown_fixture", "--area", "parity",
+		"--expected-revision", staleRevision, "--decision", "parked",
+		"--reason", "this request rendered before owner state changed", "--json",
+	)
+	if code == 0 || !strings.Contains(output, "changed since it was rendered") {
+		t.Fatalf("stale revision exit=%d output=%s", code, output)
+	}
+	var staleConflict reviewsResolveErrorResult
+	if err := json.Unmarshal([]byte(output), &staleConflict); err != nil || staleConflict.ErrorCode != "stale_action_revision" {
+		t.Fatalf("stale revision missing structured conflict code: err=%v result=%+v output=%s", err, staleConflict, output)
+	}
+	assertReviewsResolveHomeUnchanged(t, before, homePath)
+}
+
+func TestReviewsResolveWrongAreaWritesNeitherSidecarNorReceipt(t *testing.T) {
+	homePath := initReviewsResolveCLIHome(t)
+	revision := reviewResolveRevisionFor(t, homePath, "parity", "parity_unknown_fixture")
+	before := snapshotReviewsResolveHome(t, homePath)
+	code, output := runReviewsResolveCLI(t, homePath,
+		"resolve", "--item", "parity_unknown_fixture", "--area", "route-promotions",
+		"--expected-revision", revision, "--decision", "dismissed",
+		"--reason", "the supplied area is deliberately wrong", "--json",
+	)
+	if code == 0 || !strings.Contains(output, `unknown review item "parity_unknown_fixture" in area "route-promotions"`) {
+		t.Fatalf("wrong area exit=%d output=%s", code, output)
+	}
+	assertReviewsResolveHomeUnchanged(t, before, homePath)
+}
+
+func TestReviewsResolveFreshOwnerActionWritesNeitherSidecarNorReceipt(t *testing.T) {
+	homePath := initReviewsResolveCLIHome(t)
+	revision := reviewResolveRevisionFor(t, homePath, "route-promotions", "route_promotion_resolve_fixture")
+	before := snapshotReviewsResolveHome(t, homePath)
+	code, output := runReviewsResolveCLI(t, homePath,
+		"resolve", "--item", "route_promotion_resolve_fixture", "--area", "route-promotions",
+		"--expected-revision", revision, "--decision", "dismissed",
+		"--reason", "a synthetic disposition must not hide the owner action", "--json",
+	)
+	if code == 0 || !strings.Contains(output, "now has an owner action") {
+		t.Fatalf("fresh owner action exit=%d output=%s", code, output)
+	}
+	var ownerConflict reviewsResolveErrorResult
+	if err := json.Unmarshal([]byte(output), &ownerConflict); err != nil || ownerConflict.ErrorCode != "owner_action_present" {
+		t.Fatalf("owner action missing structured conflict code: err=%v result=%+v output=%s", err, ownerConflict, output)
+	}
+	assertReviewsResolveHomeUnchanged(t, before, homePath)
+}
+
+func TestReviewResolutionGroupHasActionRejectsMatchingGroupOnlyAction(t *testing.T) {
+	item := reviewartifact.QueueItem{Area: "parity", ID: "parity_group_member"}
+	groups := []reviewartifact.QueueGroup{{
+		Area:            "parity",
+		ItemIDs:         []string{"parity_group_member"},
+		SafeBatchAction: &reviewartifact.Action{ID: "group_owner_action"},
+	}}
+	if !reviewResolutionGroupHasAction(groups, item) {
+		t.Fatal("matching group-only safe_batch_action was not detected")
+	}
+	if reviewResolutionGroupHasAction(groups, reviewartifact.QueueItem{Area: "parity", ID: "other"}) {
+		t.Fatal("group action matched an unrelated item")
+	}
+	if reviewResolutionGroupHasAction(groups, reviewartifact.QueueItem{Area: "source", ID: item.ID}) {
+		t.Fatal("group action matched an unrelated area")
+	}
+}
+
+func reviewResolveRevisionFor(t *testing.T, homePath, area, itemID string) string {
+	t.Helper()
+	report, err := buildReviewQueueReport(homePath, area, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range report.Items {
+		if item.ID == itemID {
+			if item.ReviewResolutionRevision == "" {
+				t.Fatalf("review item %s/%s has no owner revision", area, itemID)
+			}
+			return item.ReviewResolutionRevision
+		}
+	}
+	t.Fatalf("review item %s/%s not found", area, itemID)
+	return ""
+}
+
+func assertReviewsResolveHomeUnchanged(t *testing.T, before map[string]string, homePath string) {
+	t.Helper()
+	after := snapshotReviewsResolveHome(t, homePath)
+	added, changed, removed := snapshotDelta(before, after)
+	if len(added) != 0 || len(changed) != 0 || len(removed) != 0 {
+		t.Fatalf("rejected resolve mutated home: added=%v changed=%v removed=%v", added, changed, removed)
 	}
 }
 

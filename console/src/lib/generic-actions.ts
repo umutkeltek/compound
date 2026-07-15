@@ -52,6 +52,8 @@ export type GenericActionGate =
   | "gate-1-shell-form"
   | "gate-2-allowlist"
   | "gate-3-global-allowlist"
+  | "owner-action-present"
+  | "stale-action-revision"
   | "rationale-required"
   | "projection-unavailable"
   | "not-found";
@@ -100,6 +102,11 @@ export type GenericActionResolution =
  *      apply — read-only planning, safe to certify). Verified live
  *      2026-07-09 (area had 2 items, 0 review_required at seed time) against
  *      the Go source.
+ *  - "decision-candidates": internal/decisions/candidate_plan.go annotates
+ *    each readable, still-parked DecisionLifecycle draft with exactly one
+ *    bounded `panel plan --target-kind decision_candidate --target <id>
+ *    --supervised --max-items 1 --json` action. It creates review evidence;
+ *    it never imports, accepts, promotes, or writes decision source material.
  *
  *  - "route-promotions": internal/routeevidence/review_queue.go emits
  *    `actions: [{id: "route_promotion_record",
@@ -135,6 +142,7 @@ export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "job-health": [["authority", "job-health-review"]],
   "source-control-cleanup": [["authority", "dirty-review"]],
   "observation-candidates": [["panel", "plan"]],
+  "decision-candidates": [["panel", "plan"]],
   "route-promotions": [["route", "promotion-record"]],
   "panel-verdicts": [["panel", "verdict-record"]],
   "lease-hygiene": [["home", "archive-history"]],
@@ -142,12 +150,17 @@ export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "harness-edit-proposals": [["authority", "harness-edit-review"]],
 };
 
+function hasOwnKey<T extends object>(value: T, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 export type GenericActionEffectKind = "apply" | "record" | "track";
 
 const GENERIC_ACTION_EFFECT_KIND: Record<string, GenericActionEffectKind> = {
   "job-health": "record",
   "source-control-cleanup": "record",
   "observation-candidates": "track",
+  "decision-candidates": "track",
   "route-promotions": "record",
   "panel-verdicts": "record",
   "lease-hygiene": "apply",
@@ -156,7 +169,7 @@ const GENERIC_ACTION_EFFECT_KIND: Record<string, GenericActionEffectKind> = {
 };
 
 export function genericActionEffectKind(area: string): GenericActionEffectKind | null {
-  return GENERIC_ACTION_EFFECT_KIND[area] ?? null;
+  return hasOwnKey(GENERIC_ACTION_EFFECT_KIND, area) ? GENERIC_ACTION_EFFECT_KIND[area] ?? null : null;
 }
 
 /**
@@ -173,6 +186,51 @@ export function genericActionRevision(rawAction: unknown): string {
     arr(action.argv).map(String),
     requiresReview,
   ])}`;
+}
+
+const DECISION_CANDIDATE_ACTION_ID = "plan_decision_candidate_review";
+const DECISION_CANDIDATE_REVIEW_TASK =
+  "review falsifier, review trigger, source ownership, and second-order effects";
+
+function decisionCandidatePlanArgvMatches(rawArgv: unknown, expectedCandidateId = ""): boolean {
+  const argv = arr(rawArgv).map(String);
+  // The argv-only fallback is for client presentation honesty. The server
+  // resolver always supplies the non-empty owner-projected candidate id.
+  const candidateId = expectedCandidateId || argv[6] || "";
+  if (!candidateId) return false;
+  const expected = [
+    "compound",
+    "panel",
+    "plan",
+    "--target-kind",
+    "decision_candidate",
+    "--target",
+    candidateId,
+    "--domain",
+    "reasoning-lenses",
+    "--task",
+    DECISION_CANDIDATE_REVIEW_TASK,
+    "--supervised",
+    "--max-items",
+    "1",
+    "--json",
+  ];
+  return argv.length === expected.length && argv.every((value, index) => value === expected[index]);
+}
+
+const REVIEW_RESOLUTION_REVISION_PATTERN = /^review-resolution-v2:sha256:[0-9a-f]{64}$/;
+
+/**
+ * Opaque optimistic-concurrency token for a synthetic Park/Dismiss control.
+ * Go stamps it after every owner annotator and the final queue recount. The
+ * console deliberately does not reproduce that hash from a selective client
+ * view: one meaning owner computes it, every other runtime only carries it.
+ */
+export function reviewResolutionRevision(area: string, rawItem: unknown): string {
+  const item = rawItem && typeof rawItem === "object" ? rawItem as Json : {};
+  if (!area || str(item.area) !== area) return "";
+  const revision = str(item.review_resolution_revision);
+  return REVIEW_RESOLUTION_REVISION_PATTERN.test(revision) ? revision : "";
 }
 
 /**
@@ -211,8 +269,9 @@ const GENERIC_GLOBAL_ARGV_ALLOWLIST: string[][] = [
 export function genericActionProjectionEligible(area: string, rawArgv: unknown): boolean {
   const argv = arr(rawArgv).map(String);
   if (argv.length < 2 || argv[0] !== "compound") return false;
+  if (area === "decision-candidates" && !decisionCandidatePlanArgvMatches(argv)) return false;
   const bare = argv.slice(1);
-  const areaAllowlist = GENERIC_ACTION_ALLOWLIST[area];
+  const areaAllowlist = hasOwnKey(GENERIC_ACTION_ALLOWLIST, area) ? GENERIC_ACTION_ALLOWLIST[area] : undefined;
   return Boolean(
     areaAllowlist &&
       argvMatchesAllowlist(bare, areaAllowlist) &&
@@ -278,11 +337,32 @@ export function resolveGenericActionFromProjection(
     };
   }
 
+  const decisionCandidateId = item ? str(item.candidate_id) : "";
+  const actionRequiresReview = Boolean(action.requires_review ?? action.requires_confirmation);
+  if (
+    area === "decision-candidates" &&
+    (
+      actionId !== DECISION_CANDIDATE_ACTION_ID ||
+      !item ||
+      !decisionCandidateId ||
+      !actionRequiresReview ||
+      !decisionCandidatePlanArgvMatches(rawArgv, decisionCandidateId)
+    )
+  ) {
+    return {
+      ok: false,
+      rejection: {
+        gate: "gate-2-allowlist",
+        message: `action "${actionId}" is not the exact bounded decision-candidate review plan`,
+      },
+    };
+  }
+
   const bareArgv = rawArgv.slice(1);
 
   // Gate 2: area must be certified AND the resolved verb must match one of
   // that area's certified prefixes.
-  const areaAllowlist = GENERIC_ACTION_ALLOWLIST[area];
+  const areaAllowlist = hasOwnKey(GENERIC_ACTION_ALLOWLIST, area) ? GENERIC_ACTION_ALLOWLIST[area] : undefined;
   if (!areaAllowlist || !argvMatchesAllowlist(bareArgv, areaAllowlist)) {
     return {
       ok: false,
@@ -399,6 +479,69 @@ export type GenericResolutionRead = {
   value: Json | null;
   error: string | null;
 };
+
+export type ReviewResolutionGuard =
+  | { ok: true; revision: string }
+  | { ok: false; rejection: GenericActionRejection };
+
+/**
+ * Fail-closed guard for the fixed Park/Dismiss adapter. The item must still
+ * exist in the exact area, expose no item- or group-scoped owner action, and
+ * match the revision the operator actually reviewed.
+ */
+export function reviewResolutionGuardFromRead(
+  read: GenericResolutionRead,
+  area: string,
+  itemId: string,
+  expectedRevision: string,
+): ReviewResolutionGuard {
+  if (read.status !== "live") {
+    return {
+      ok: false,
+      rejection: {
+        gate: "projection-unavailable",
+        message:
+          `the reviews projection did not return fresh owner truth, so no disposition was recorded` +
+          (read.error ? ` (${read.error})` : ""),
+      },
+    };
+  }
+  const item = arr(read.value?.items).find((candidate) => str(candidate.id) === itemId) ?? null;
+  if (!item || str(item.area) !== area) {
+    return {
+      ok: false,
+      rejection: { gate: "not-found", message: `review item ${area}/${itemId} is no longer available` },
+    };
+  }
+  const groups = arr(read.value?.groups).filter((group) => arr(group.item_ids).map(String).includes(itemId));
+  const hasOwnerAction =
+    arr(item.actions).length > 0 ||
+    groups.some((group) => Boolean(group.safe_batch_action || group.action));
+  if (hasOwnerAction) {
+    return {
+      ok: false,
+      rejection: {
+        gate: "owner-action-present",
+        message: "the owner now exposes an action for this review; refresh and use that governed workflow",
+      },
+    };
+  }
+  const revision = reviewResolutionRevision(area, item);
+  if (!expectedRevision || revision !== expectedRevision) {
+    return {
+      ok: false,
+      rejection: {
+        gate: "stale-action-revision",
+        message: "review state changed since this disposition was rendered; refresh before deciding",
+      },
+    };
+  }
+  return { ok: true, revision };
+}
+
+export async function readReviewResolutionProjection(area: string): Promise<GenericResolutionRead> {
+  return runProjection(["reviews", "--json", "--area", area], { timeoutMs: GENERIC_RESOLUTION_TIMEOUT_MS });
+}
 
 /**
  * Pure status gate between the projection read and the three-gate core: an

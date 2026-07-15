@@ -44,9 +44,18 @@ func OperatorCardForDecisionCandidatePlan(p DecisionCandidatePlan) (reviewartifa
 	return reviewartifact.NewOperatorCard(
 		fmt.Sprintf("Decision lifecycle has candidate %s. Review it?", choice),
 		context,
-		"decision-candidates|"+reviewartifact.FirstNonEmpty(p.LifecycleDraft.Kind, "decision"),
+		decisionCandidateReviewGroupKey(p),
 		"decision source changes only after reviewed approval",
 	)
+}
+
+func decisionCandidateReviewGroupKey(p DecisionCandidatePlan) string {
+	identity := reviewartifact.FirstNonEmpty(p.ID, p.CandidateID, p.DecisionKey, "decision")
+	key := reviewartifact.Slugify(identity, 72)
+	if key == "" {
+		key = "decision"
+	}
+	return DecisionCandidateReviewArea + "|" + key
 }
 
 func firstRepairTitle(p LifecycleRepairPlan) string {
