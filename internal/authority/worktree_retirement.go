@@ -1,0 +1,681 @@
+package authority
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+const (
+	WorktreeRetirementPlanSchemaVersion = "compound.worktree_retirement_plan.v0.1"
+
+	WorktreeCandidateContained       = "contained"
+	WorktreeCandidatePatchEquivalent = "patch_equivalent"
+	WorktreeCandidateUnique          = "unique"
+
+	WorktreeLivenessUnused  WorktreeLivenessState = "unused"
+	WorktreeLivenessActive  WorktreeLivenessState = "active"
+	WorktreeLivenessUnknown WorktreeLivenessState = "unknown"
+)
+
+// WorktreeRetirementGit is the complete Git seam used by retirement planning
+// and application. Callers see one argv vector per subprocess; implementations
+// must never run through a shell.
+type WorktreeRetirementGit interface {
+	Run(ctx context.Context, repo string, args ...string) (string, error)
+}
+
+// ExecWorktreeRetirementGit runs Git with repository hooks disabled. A
+// reference-transaction hook is an unreviewed mutation surface, including for
+// update-ref, so the adapter never inherits repository hook behavior.
+type ExecWorktreeRetirementGit struct{}
+
+func (ExecWorktreeRetirementGit) Run(ctx context.Context, repo string, args ...string) (string, error) {
+	gitArgs := []string{"-c", "core.hooksPath=" + os.DevNull, "-C", repo}
+	cmd := exec.CommandContext(ctx, "git", append(gitArgs, args...)...)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if err != nil {
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		return strings.TrimSpace(string(out)), &WorktreeRetirementCommandError{
+			Argv:     append([]string{"git"}, append(gitArgs, args...)...),
+			ExitCode: exitCode,
+			Output:   strings.TrimSpace(string(out)),
+		}
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+type WorktreeRetirementCommandError struct {
+	Argv     []string
+	ExitCode int
+	Output   string
+}
+
+func (e *WorktreeRetirementCommandError) Error() string {
+	message := strings.TrimSpace(e.Output)
+	if message == "" {
+		message = fmt.Sprintf("exit code %d", e.ExitCode)
+	}
+	return strings.Join(e.Argv, " ") + ": " + message
+}
+
+type WorktreeLivenessState string
+
+type WorktreeLivenessObservation struct {
+	State    WorktreeLivenessState `json:"state"`
+	Evidence string                `json:"evidence,omitempty"`
+}
+
+type WorktreeRetirementLiveness interface {
+	Observe(ctx context.Context, worktreePath string) WorktreeLivenessObservation
+}
+
+type WorktreeRetirementDependencies struct {
+	Git      WorktreeRetirementGit
+	Liveness WorktreeRetirementLiveness
+}
+
+type WorktreeRetirementOwnerProof struct {
+	WorkID          string `json:"work_id"`
+	State           string `json:"state"`
+	LeaseHolder     string `json:"lease_holder"`
+	LeaseClaimedAt  string `json:"lease_claimed_at"`
+	LeaseWorkSHA256 string `json:"lease_work_sha256"`
+	WorkDigest      string `json:"work_digest"`
+}
+
+type WorktreeRetirementSourceProof struct {
+	WorkID                string   `json:"work_id"`
+	State                 string   `json:"state"`
+	ProofComplete         bool     `json:"proof_complete"`
+	ActionIntentIDs       []string `json:"action_intent_ids"`
+	PolicyDecisionID      string   `json:"policy_decision_id"`
+	ReceiptID             string   `json:"receipt_id"`
+	TransitionID          string   `json:"transition_id"`
+	CommitArtifactRef     string   `json:"commit_artifact_ref"`
+	CommitTip             string   `json:"commit_tip"`
+	LandCheckID           string   `json:"land_check_id"`
+	LandCheckEvidenceRef  string   `json:"land_check_evidence_ref"`
+	LandCheckStatus       string   `json:"land_check_status"`
+	LandCheckCandidateTip string   `json:"land_check_candidate_tip"`
+	LandCheckFileDigest   string   `json:"land_check_file_digest"`
+}
+
+type WorktreeRetirementPlanRequest struct {
+	RepoRoot       string
+	WorktreePath   string
+	CandidateRef   string
+	AuthorityRef   string
+	PublicationRef string
+	OwnerProof     WorktreeRetirementOwnerProof
+	SourceProof    WorktreeRetirementSourceProof
+	RecoveryRefs   []string
+}
+
+type WorktreeRetirementWorktree struct {
+	Path       string                      `json:"path"`
+	Head       string                      `json:"head"`
+	BranchRef  string                      `json:"branch_ref,omitempty"`
+	GitDir     string                      `json:"git_dir,omitempty"`
+	Locked     bool                        `json:"locked"`
+	LockReason string                      `json:"lock_reason,omitempty"`
+	Prunable   bool                        `json:"prunable"`
+	Clean      bool                        `json:"clean"`
+	Liveness   WorktreeLivenessObservation `json:"liveness"`
+}
+
+type WorktreeRetirementPlan struct {
+	SchemaVersion         string                        `json:"schema_version"`
+	ID                    string                        `json:"id"`
+	CreatedAt             string                        `json:"created_at"`
+	Status                string                        `json:"status"`
+	RepoRoot              string                        `json:"repo_root"`
+	RepositoryFingerprint string                        `json:"repository_fingerprint"`
+	Worktree              *WorktreeRetirementWorktree   `json:"worktree,omitempty"`
+	CandidateRef          string                        `json:"candidate_ref,omitempty"`
+	CandidateTip          string                        `json:"candidate_tip"`
+	AuthorityRef          string                        `json:"authority_ref"`
+	AuthorityTip          string                        `json:"authority_tip"`
+	PublicationRef        string                        `json:"publication_ref"`
+	PublicationTip        string                        `json:"publication_tip"`
+	CandidateRelation     string                        `json:"candidate_relation"`
+	OwnerProof            WorktreeRetirementOwnerProof  `json:"owner_proof"`
+	SourceProof           WorktreeRetirementSourceProof `json:"source_proof"`
+	RecoveryRefs          []string                      `json:"recovery_refs"`
+	Eligible              bool                          `json:"eligible"`
+	BlockReasons          []string                      `json:"block_reasons"`
+	PlanDigest            string                        `json:"plan_digest"`
+}
+
+type retirementWorktreeRecord struct {
+	Path       string
+	Head       string
+	BranchRef  string
+	Locked     bool
+	LockReason string
+	Prunable   bool
+}
+
+func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlanRequest, deps WorktreeRetirementDependencies, now time.Time) (WorktreeRetirementPlan, error) {
+	if deps.Git == nil {
+		deps.Git = ExecWorktreeRetirementGit{}
+	}
+	if deps.Liveness == nil {
+		deps.Liveness = LSOFWorktreeRetirementLiveness{}
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if strings.TrimSpace(req.WorktreePath) == "" && strings.TrimSpace(req.CandidateRef) == "" {
+		return WorktreeRetirementPlan{}, fmt.Errorf("at least one of worktree path or candidate ref is required")
+	}
+	root, err := canonicalRetirementRepo(ctx, deps.Git, req.RepoRoot)
+	if err != nil {
+		return WorktreeRetirementPlan{}, err
+	}
+	if err := validateRetirementRef(ctx, deps.Git, root, req.AuthorityRef, "refs/heads/"); err != nil {
+		return WorktreeRetirementPlan{}, fmt.Errorf("authority ref: %w", err)
+	}
+	if err := validateRetirementRef(ctx, deps.Git, root, req.PublicationRef, "refs/remotes/"); err != nil {
+		return WorktreeRetirementPlan{}, fmt.Errorf("publication ref: %w", err)
+	}
+	authorityTip, err := retirementResolveCommit(ctx, deps.Git, root, req.AuthorityRef)
+	if err != nil {
+		return WorktreeRetirementPlan{}, fmt.Errorf("resolve authority ref: %w", err)
+	}
+	publicationTip, err := retirementResolveCommit(ctx, deps.Git, root, req.PublicationRef)
+	if err != nil {
+		return WorktreeRetirementPlan{}, fmt.Errorf("resolve publication ref: %w", err)
+	}
+	identity, err := ReadGitRepositoryIdentity(root, authorityTip)
+	if err != nil {
+		return WorktreeRetirementPlan{}, fmt.Errorf("repository fingerprint: %w", err)
+	}
+
+	plan := WorktreeRetirementPlan{
+		SchemaVersion:         WorktreeRetirementPlanSchemaVersion,
+		CreatedAt:             now.UTC().Format(time.RFC3339Nano),
+		Status:                "review_required",
+		RepoRoot:              root,
+		RepositoryFingerprint: identity.Fingerprint,
+		CandidateRef:          strings.TrimSpace(req.CandidateRef),
+		AuthorityRef:          strings.TrimSpace(req.AuthorityRef),
+		AuthorityTip:          authorityTip,
+		PublicationRef:        strings.TrimSpace(req.PublicationRef),
+		PublicationTip:        publicationTip,
+		OwnerProof:            req.OwnerProof,
+		SourceProof:           req.SourceProof,
+		RecoveryRefs:          sortedUniqueNonEmpty(req.RecoveryRefs),
+		CandidateRelation:     WorktreeCandidateUnique,
+	}
+	block := func(code string) {
+		if code != "" && !containsStringValue(plan.BlockReasons, code) {
+			plan.BlockReasons = append(plan.BlockReasons, code)
+		}
+	}
+
+	if authorityTip != publicationTip {
+		block("authority_publication_tip_mismatch")
+	}
+	if err := validateRetirementOwnerProof(req.OwnerProof); err != nil {
+		block("owner_work_not_running_with_exact_lease: " + err.Error())
+	}
+	if err := validateRetirementSourceProof(req.SourceProof); err != nil {
+		block("source_work_proof_invalid: " + err.Error())
+	}
+	if len(plan.RecoveryRefs) == 0 {
+		block("recovery_evidence_required")
+	}
+
+	recordsOutput, err := deps.Git.Run(ctx, root, "worktree", "list", "--porcelain")
+	if err != nil {
+		return WorktreeRetirementPlan{}, fmt.Errorf("list registered worktrees: %w", err)
+	}
+	records, err := parseRetirementWorktrees(recordsOutput)
+	if err != nil {
+		return WorktreeRetirementPlan{}, err
+	}
+	if len(records) == 0 || !sameRetirementPath(records[0].Path, root) {
+		return WorktreeRetirementPlan{}, fmt.Errorf("--repo must name the canonical main worktree root")
+	}
+
+	candidateTip := ""
+	if strings.TrimSpace(req.WorktreePath) != "" {
+		worktree, found, inspectErr := inspectRetirementWorktree(ctx, deps, root, req.WorktreePath, records)
+		if inspectErr != nil {
+			return WorktreeRetirementPlan{}, inspectErr
+		}
+		plan.Worktree = worktree
+		if !found {
+			block("worktree_not_registered_metadata_repair_required")
+		} else {
+			candidateTip = worktree.Head
+			if sameRetirementPath(worktree.Path, root) {
+				block("canonical_main_worktree_cannot_be_retired")
+			}
+			if worktree.Prunable {
+				block("worktree_prunable_metadata_repair_required")
+			}
+			if worktree.Locked {
+				block("worktree_locked_manual_unlock_required")
+			}
+			if !worktree.Clean {
+				block("worktree_dirty")
+			}
+			switch worktree.Liveness.State {
+			case WorktreeLivenessUnused:
+			case WorktreeLivenessActive:
+				block("worktree_live")
+			default:
+				block("worktree_liveness_unknown")
+			}
+		}
+	}
+
+	if plan.CandidateRef != "" {
+		if err := validateRetirementRef(ctx, deps.Git, root, plan.CandidateRef, "refs/heads/"); err != nil {
+			return WorktreeRetirementPlan{}, fmt.Errorf("candidate ref: %w", err)
+		}
+		if plan.CandidateRef == plan.AuthorityRef || plan.CandidateRef == plan.PublicationRef {
+			block("candidate_ref_is_authority_or_publication")
+		}
+		refTip, resolveErr := retirementResolveCommit(ctx, deps.Git, root, plan.CandidateRef)
+		if resolveErr != nil {
+			block("candidate_ref_missing")
+		} else if candidateTip != "" && candidateTip != refTip {
+			block("worktree_ref_tip_mismatch")
+		} else {
+			candidateTip = refTip
+		}
+		if plan.Worktree != nil && plan.Worktree.BranchRef != "" && plan.Worktree.BranchRef != plan.CandidateRef {
+			block("worktree_branch_ref_mismatch")
+		}
+	}
+	plan.CandidateTip = candidateTip
+	if !validRetirementObjectID(candidateTip) {
+		block("candidate_tip_missing")
+	} else {
+		if req.SourceProof.CommitTip != candidateTip {
+			block("candidate_tip_source_commit_mismatch")
+		}
+		relation, relationErr := classifyRetirementCandidate(ctx, deps.Git, root, candidateTip, authorityTip, publicationTip)
+		if relationErr != nil {
+			return WorktreeRetirementPlan{}, relationErr
+		}
+		plan.CandidateRelation = relation
+		if relation == WorktreeCandidateUnique {
+			block("candidate_contains_unique_commits")
+		}
+	}
+
+	sort.Strings(plan.BlockReasons)
+	plan.Eligible = len(plan.BlockReasons) == 0
+	if !plan.Eligible {
+		plan.Status = "blocked"
+	}
+	key, _ := json.Marshal(struct {
+		Root      string
+		Worktree  *WorktreeRetirementWorktree
+		Ref       string
+		Candidate string
+		Authority string
+		Publish   string
+		Owner     string
+		Source    string
+	}{root, plan.Worktree, plan.CandidateRef, plan.CandidateTip, plan.AuthorityTip, plan.PublicationTip, plan.OwnerProof.WorkID, plan.SourceProof.WorkID})
+	plan.ID = "wtr_" + digestRetirementHex(key)[:12]
+	plan.PlanDigest = WorktreeRetirementPlanDigest(plan)
+	return plan, nil
+}
+
+func WorktreeRetirementPlanDigest(plan WorktreeRetirementPlan) string {
+	plan.PlanDigest = ""
+	encoded, _ := json.Marshal(plan)
+	return "sha256:" + digestRetirementHex(encoded)
+}
+
+func validateRetirementOwnerProof(proof WorktreeRetirementOwnerProof) error {
+	if strings.TrimSpace(proof.WorkID) == "" || proof.State != "running" || strings.TrimSpace(proof.LeaseHolder) == "" || strings.TrimSpace(proof.LeaseClaimedAt) == "" {
+		return fmt.Errorf("running work id and lease holder/timestamp required")
+	}
+	if !validRetirementHex(proof.LeaseWorkSHA256, 64) || !validRetirementDigest(proof.WorkDigest) {
+		return fmt.Errorf("lease/work digests required")
+	}
+	return nil
+}
+
+func validateRetirementSourceProof(proof WorktreeRetirementSourceProof) error {
+	if strings.TrimSpace(proof.WorkID) == "" || proof.State != "completed" || !proof.ProofComplete {
+		return fmt.Errorf("completed terminal proof chain required")
+	}
+	if len(proof.ActionIntentIDs) == 0 || strings.TrimSpace(proof.PolicyDecisionID) == "" || strings.TrimSpace(proof.ReceiptID) == "" || strings.TrimSpace(proof.TransitionID) == "" {
+		return fmt.Errorf("action policy receipt transition ids required")
+	}
+	if !validRetirementObjectID(proof.CommitTip) || proof.CommitArtifactRef != "commit:"+proof.CommitTip {
+		return fmt.Errorf("consistent full commit artifact required")
+	}
+	if proof.LandCheckStatus != "landed" || proof.LandCheckCandidateTip != proof.CommitTip {
+		return fmt.Errorf("landed land-check matching commit required")
+	}
+	if !strings.HasPrefix(proof.LandCheckID, "landcheck_") || proof.LandCheckEvidenceRef != "land-check:"+proof.LandCheckID || !validRetirementDigest(proof.LandCheckFileDigest) {
+		return fmt.Errorf("sealed land-check evidence required")
+	}
+	return nil
+}
+
+func canonicalRetirementRepo(ctx context.Context, git WorktreeRetirementGit, value string) (string, error) {
+	path := strings.TrimSpace(value)
+	if path == "" || !filepath.IsAbs(path) {
+		return "", fmt.Errorf("repository root must be an absolute path")
+	}
+	canonical, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("resolve repository root: %w", err)
+	}
+	root, err := git.Run(ctx, canonical, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("repository root: %w", err)
+	}
+	root, err = filepath.EvalSymlinks(filepath.Clean(root))
+	if err != nil {
+		return "", fmt.Errorf("resolve Git root: %w", err)
+	}
+	if root != canonical {
+		return "", fmt.Errorf("repository root must name exact Git worktree root %s", root)
+	}
+	return root, nil
+}
+
+func validateRetirementRef(ctx context.Context, git WorktreeRetirementGit, repo, ref, prefix string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || !strings.HasPrefix(ref, prefix) || strings.TrimPrefix(ref, prefix) == "" {
+		return fmt.Errorf("full canonical %s ref required, got %q", prefix, ref)
+	}
+	if _, err := git.Run(ctx, repo, "check-ref-format", ref); err != nil {
+		return fmt.Errorf("invalid canonical ref %q: %w", ref, err)
+	}
+	return nil
+}
+
+func retirementResolveCommit(ctx context.Context, git WorktreeRetirementGit, repo, ref string) (string, error) {
+	out, err := git.Run(ctx, repo, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	if !validRetirementObjectID(out) {
+		return "", fmt.Errorf("ref %s did not resolve to a full commit id", ref)
+	}
+	return out, nil
+}
+
+func parseRetirementWorktrees(raw string) ([]retirementWorktreeRecord, error) {
+	var records []retirementWorktreeRecord
+	var current *retirementWorktreeRecord
+	flush := func() {
+		if current != nil {
+			records = append(records, *current)
+			current = nil
+		}
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			flush()
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			flush()
+			current = &retirementWorktreeRecord{Path: strings.TrimPrefix(line, "worktree ")}
+		case current == nil:
+			return nil, fmt.Errorf("malformed git worktree porcelain output")
+		case strings.HasPrefix(line, "HEAD "):
+			current.Head = strings.TrimPrefix(line, "HEAD ")
+		case strings.HasPrefix(line, "branch "):
+			current.BranchRef = strings.TrimPrefix(line, "branch ")
+		case line == "locked":
+			current.Locked = true
+		case strings.HasPrefix(line, "locked "):
+			current.Locked = true
+			current.LockReason = strings.TrimPrefix(line, "locked ")
+		case line == "prunable" || strings.HasPrefix(line, "prunable "):
+			current.Prunable = true
+		}
+	}
+	flush()
+	for _, record := range records {
+		if strings.TrimSpace(record.Path) == "" || !validRetirementObjectID(record.Head) {
+			return nil, fmt.Errorf("registered worktree has incomplete identity")
+		}
+	}
+	return records, nil
+}
+
+func inspectRetirementWorktree(ctx context.Context, deps WorktreeRetirementDependencies, repo, requested string, records []retirementWorktreeRecord) (*WorktreeRetirementWorktree, bool, error) {
+	path, err := filepath.Abs(strings.TrimSpace(requested))
+	if err != nil {
+		return nil, false, err
+	}
+	path = filepath.Clean(path)
+	if canonical, evalErr := filepath.EvalSymlinks(path); evalErr == nil {
+		path = canonical
+	}
+	var record *retirementWorktreeRecord
+	for i := range records {
+		if sameRetirementPath(records[i].Path, path) {
+			record = &records[i]
+			break
+		}
+	}
+	if record == nil {
+		return &WorktreeRetirementWorktree{Path: path, Liveness: WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: "not registered"}}, false, nil
+	}
+	observed := &WorktreeRetirementWorktree{
+		Path: path, Head: record.Head, BranchRef: record.BranchRef,
+		Locked: record.Locked, LockReason: record.LockReason, Prunable: record.Prunable,
+		Liveness: WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: "not probed"},
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		observed.Liveness.Evidence = "registered path unavailable: " + statErr.Error()
+		return observed, true, nil
+	}
+	root, err := deps.Git.Run(ctx, path, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect candidate worktree root: %w", err)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(filepath.Clean(root))
+	if err != nil || canonicalRoot != path {
+		return nil, false, fmt.Errorf("candidate worktree path does not name exact registered root")
+	}
+	commonDir, err := deps.Git.Run(ctx, path, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect candidate Git common dir: %w", err)
+	}
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(path, commonDir)
+	}
+	commonDir, _ = filepath.Abs(commonDir)
+	repoCommon, err := deps.Git.Run(ctx, repo, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return nil, false, err
+	}
+	if !filepath.IsAbs(repoCommon) {
+		repoCommon = filepath.Join(repo, repoCommon)
+	}
+	repoCommon, _ = filepath.Abs(repoCommon)
+	if filepath.Clean(commonDir) != filepath.Clean(repoCommon) {
+		return nil, false, fmt.Errorf("candidate worktree belongs to another repository")
+	}
+	gitDir, err := deps.Git.Run(ctx, path, "rev-parse", "--git-dir")
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect candidate Git dir: %w", err)
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(path, gitDir)
+	}
+	gitDir, _ = filepath.Abs(gitDir)
+	observed.GitDir = filepath.Clean(gitDir)
+	status, err := deps.Git.Run(ctx, path, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect candidate cleanliness: %w", err)
+	}
+	observed.Clean = strings.TrimSpace(status) == ""
+	observed.Liveness = deps.Liveness.Observe(ctx, path)
+	return observed, true, nil
+}
+
+func classifyRetirementCandidate(ctx context.Context, git WorktreeRetirementGit, repo, candidate, authority, publication string) (string, error) {
+	containedAuthority, err := retirementIsAncestor(ctx, git, repo, candidate, authority)
+	if err != nil {
+		return "", err
+	}
+	containedPublication, err := retirementIsAncestor(ctx, git, repo, candidate, publication)
+	if err != nil {
+		return "", err
+	}
+	if containedAuthority && containedPublication {
+		return WorktreeCandidateContained, nil
+	}
+	authorityEquivalent, err := retirementCherryHasNoPlus(ctx, git, repo, authority, candidate)
+	if err != nil {
+		return "", err
+	}
+	publicationEquivalent, err := retirementCherryHasNoPlus(ctx, git, repo, publication, candidate)
+	if err != nil {
+		return "", err
+	}
+	if authorityEquivalent && publicationEquivalent {
+		return WorktreeCandidatePatchEquivalent, nil
+	}
+	return WorktreeCandidateUnique, nil
+}
+
+func retirementIsAncestor(ctx context.Context, git WorktreeRetirementGit, repo, ancestor, descendant string) (bool, error) {
+	_, err := git.Run(ctx, repo, "merge-base", "--is-ancestor", ancestor, descendant)
+	if err == nil {
+		return true, nil
+	}
+	var commandErr *WorktreeRetirementCommandError
+	if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("check candidate ancestry: %w", err)
+}
+
+func retirementCherryHasNoPlus(ctx context.Context, git WorktreeRetirementGit, repo, upstream, candidate string) (bool, error) {
+	out, err := git.Run(ctx, repo, "cherry", upstream, candidate)
+	if err != nil {
+		return false, fmt.Errorf("classify candidate patches: %w", err)
+	}
+	seen := false
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		seen = true
+		if strings.HasPrefix(line, "+") {
+			return false, nil
+		}
+	}
+	return seen, nil
+}
+
+func sameRetirementPath(a, b string) bool {
+	ac, aerr := filepath.EvalSymlinks(filepath.Clean(a))
+	bc, berr := filepath.EvalSymlinks(filepath.Clean(b))
+	if aerr == nil {
+		a = ac
+	}
+	if berr == nil {
+		b = bc
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func sortedUniqueNonEmpty(values []string) []string {
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			seen[value] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func containsStringValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func validRetirementObjectID(value string) bool {
+	return validRetirementHex(value, 40) || validRetirementHex(value, 64)
+}
+
+func validRetirementDigest(value string) bool {
+	return strings.HasPrefix(value, "sha256:") && validRetirementHex(strings.TrimPrefix(value, "sha256:"), 64)
+}
+
+func validRetirementHex(value string, size int) bool {
+	if len(value) != size {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func digestRetirementHex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// LSOFWorktreeRetirementLiveness is the production fail-closed process/open
+// file probe. macOS lsof uses exit 1 with no output for no matches.
+type LSOFWorktreeRetirementLiveness struct{}
+
+func (LSOFWorktreeRetirementLiveness) Observe(ctx context.Context, worktreePath string) WorktreeLivenessObservation {
+	cmd := exec.CommandContext(ctx, "lsof", "-n", "-P", "+D", worktreePath)
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if text != "" {
+		return WorktreeLivenessObservation{State: WorktreeLivenessActive, Evidence: text}
+	}
+	if err == nil {
+		return WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: "lsof returned no matching files"}
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: "lsof exit 1 with no matching files"}
+	}
+	return WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: err.Error()}
+}
