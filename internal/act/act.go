@@ -3,14 +3,12 @@ package act
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/finding"
 	"compound/internal/home"
 	"compound/internal/policy"
@@ -21,7 +19,7 @@ import (
 // content-addressed dir — never the repo). Same bytes -> same ref, so capture is
 // idempotent and a revert can restore the exact pre-image bytes by ref. It also carries
 // the home root so Execute can RECORD each governed write's receipt/transition to the
-// canonical event store (home/events), keeping the returned ids resolvable.
+// canonical event store, keeping the returned ids resolvable.
 type ArtifactStore = home.ArtifactStore
 
 // NewArtifactStore roots the store at COMPOUND_HOME/artifacts/sha256, creating it.
@@ -29,23 +27,20 @@ func NewArtifactStore(homePath string) (*ArtifactStore, error) {
 	return home.NewArtifactStore(homePath)
 }
 
-// recordEnvelope persists a validated receipt/transition to the home's canonical event store at
-// home/events/<id>.json — the same store product.RecordTransition and the executor/event readers
-// use. Same id -> same file (idempotent). This is what makes a returned receipt_id/transition_id
-// resolve to a real envelope, closing the "governed action invisible to the event layer" gap.
+// recordEnvelope persists a validated receipt/transition through the canonical event-store seam.
+// Same id overwrites the current loose record (the existing idempotent behavior). This is what
+// makes a returned receipt_id/transition_id resolve to a real envelope, closing the "governed
+// action invisible to the event layer" gap.
 func recordEnvelope(home, id string, v any) error {
 	if strings.TrimSpace(home) == "" {
 		return fmt.Errorf("cannot record %q without a home", id)
 	}
-	dir := filepath.Join(home, "events")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(v, "", " ")
+	store, err := eventstore.Open(home)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, id+".json"), append(b, '\n'), 0o644)
+	_, err = store.PutJSON(id, v, " ")
+	return err
 }
 
 // recordEnvelopeFn indirects recordEnvelope so a test can force the post-write persistence failure
@@ -55,7 +50,7 @@ func recordEnvelope(home, id string, v any) error {
 var recordEnvelopeFn = recordEnvelope
 
 // preflightEventStore proves the home's canonical event store is writable BEFORE any target
-// mutation, by ensuring home/events exists and round-tripping a uniquely-named probe file. It
+// mutation by round-tripping a uniquely-named probe through the physical owner. It
 // converts the common post-write persistence failures (a missing or unwritable events dir) into a
 // pre-write abort, so a governed write cannot leave a mutated-but-unreceipted target. A leftover
 // probe cleanup error is non-fatal: writability is already proven, and the probe name never ends in
@@ -64,17 +59,13 @@ func preflightEventStore(homePath string) error {
 	if strings.TrimSpace(homePath) == "" {
 		return fmt.Errorf("act: cannot preflight event store without a home")
 	}
-	dir := filepath.Join(homePath, "events")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("act: event store not writable: %w", err)
-	}
-	probe, err := os.CreateTemp(dir, ".act-preflight-*")
+	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return fmt.Errorf("act: event store not writable: %w", err)
 	}
-	name := probe.Name()
-	_ = probe.Close()
-	_ = os.Remove(name)
+	if err := store.Preflight(); err != nil {
+		return fmt.Errorf("act: event store not writable: %w", err)
+	}
 	return nil
 }
 

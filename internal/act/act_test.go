@@ -324,13 +324,25 @@ func TestExecutePersistsReceiptAndTransitionToEvents(t *testing.T) {
 	}
 
 	eventsDir := filepath.Join(home, "events")
-	for _, tc := range []struct{ kind, id string }{
-		{"receipt", res.Receipt.ID},
-		{"transition", res.Transition.ID},
+	for _, tc := range []struct {
+		kind    string
+		id      string
+		payload any
+	}{
+		{"receipt", res.Receipt.ID, res.Receipt},
+		{"transition", res.Transition.ID, res.Transition},
 	} {
 		data, err := os.ReadFile(filepath.Join(eventsDir, tc.id+".json"))
 		if err != nil {
 			t.Fatalf("%s must be recorded to the canonical event store (home/events/%s.json): %v", tc.kind, tc.id, err)
+		}
+		want, err := json.MarshalIndent(tc.payload, "", " ")
+		if err != nil {
+			t.Fatalf("marshal expected %s: %v", tc.kind, err)
+		}
+		want = append(want, '\n')
+		if !bytes.Equal(data, want) {
+			t.Fatalf("recorded %s bytes changed\ngot:  %q\nwant: %q", tc.kind, data, want)
 		}
 		var probe struct {
 			ID string `json:"id"`

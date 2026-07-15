@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 const (
@@ -239,8 +240,12 @@ func ResolveQueueItem(homePath string, item QueueItem, input ResolutionInput, no
 	}
 	sidecarRef := relativeHomeRef(homePath, sidecarPath)
 	receipt := resolutionReceipt(receiptID, actor, item.Area, now, "resolve", decision, reason, sourceRef, sidecarRef, true)
-	receiptPath := filepath.Join(homePath, "events", receipt.ID+".json")
-	if err := writeResolutionPair(receiptPath, receipt, sidecarPath, resolution); err != nil {
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return ReviewResolutionResult{}, err
+	}
+	put, err := writeResolutionPair(store, receipt, sidecarPath, resolution)
+	if err != nil {
 		return ReviewResolutionResult{}, err
 	}
 	readiness := "no_action"
@@ -258,7 +263,7 @@ func ResolveQueueItem(homePath string, item QueueItem, input ResolutionInput, no
 		Readiness:     readiness,
 		SidecarPath:   sidecarPath,
 		ReceiptID:     receipt.ID,
-		ReceiptPath:   receiptPath,
+		ReceiptPath:   put.DiagnosticPath,
 		UndoHint:      undoHint,
 	}, nil
 }
@@ -292,12 +297,16 @@ func UndoQueueItem(homePath string, item QueueItem, input UndoResolutionInput, n
 	if err := receipt.Validate(); err != nil {
 		return ReviewResolutionResult{}, err
 	}
-	receiptPath := filepath.Join(homePath, "events", receipt.ID+".json")
-	if err := writeExclusiveJSON(receiptPath, receipt); err != nil {
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return ReviewResolutionResult{}, err
+	}
+	put, err := store.PutJSONExclusive(receipt.ID, receipt, " ")
+	if err != nil {
 		return ReviewResolutionResult{}, err
 	}
 	if err := os.Remove(sidecarPath); err != nil {
-		_ = os.Remove(receiptPath)
+		_ = store.Remove(receipt.ID)
 		return ReviewResolutionResult{}, fmt.Errorf("remove active review resolution: %w", err)
 	}
 	return ReviewResolutionResult{
@@ -311,7 +320,7 @@ func UndoQueueItem(homePath string, item QueueItem, input UndoResolutionInput, n
 		Readiness:     active.PreviousReadiness,
 		SidecarPath:   sidecarPath,
 		ReceiptID:     receipt.ID,
-		ReceiptPath:   receiptPath,
+		ReceiptPath:   put.DiagnosticPath,
 		RestoredVisibility: map[string]string{
 			"status":    active.PreviousStatus,
 			"readiness": active.PreviousReadiness,
@@ -382,18 +391,22 @@ func resolutionReceipt(id, actor, area string, now time.Time, operation, decisio
 	return receipt
 }
 
-func writeResolutionPair(receiptPath string, receipt envelope.Receipt, sidecarPath string, resolution ReviewResolution) error {
+func writeResolutionPair(store *eventstore.Store, receipt envelope.Receipt, sidecarPath string, resolution ReviewResolution) (eventstore.PutResult, error) {
 	if err := receipt.Validate(); err != nil {
-		return fmt.Errorf("review resolution receipt invalid: %w", err)
+		return eventstore.PutResult{}, fmt.Errorf("review resolution receipt invalid: %w", err)
 	}
-	if err := writeExclusiveJSON(receiptPath, receipt); err != nil {
-		return err
+	if store == nil {
+		return eventstore.PutResult{}, fmt.Errorf("review resolution event store required")
+	}
+	put, err := store.PutJSONExclusive(receipt.ID, receipt, " ")
+	if err != nil {
+		return eventstore.PutResult{}, err
 	}
 	if err := writeExclusiveJSON(sidecarPath, resolution); err != nil {
-		_ = os.Remove(receiptPath)
-		return err
+		_ = store.Remove(receipt.ID)
+		return eventstore.PutResult{}, err
 	}
-	return nil
+	return put, nil
 }
 
 func writeExclusiveJSON(path string, payload any) error {

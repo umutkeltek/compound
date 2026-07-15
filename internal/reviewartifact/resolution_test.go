@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/eventstore"
 	"compound/internal/home"
 )
 
@@ -120,12 +121,21 @@ func TestResolveUnknownStatusReviewAreasAndUndo(t *testing.T) {
 			if len(initial.Items) != 1 || initial.Items[0].Status != "unknown" {
 				t.Fatalf("initial unknown item = %+v", initial)
 			}
-			if _, err := ResolveQueueItem(homePath, initial.Items[0], ResolutionInput{
+			result, err := ResolveQueueItem(homePath, initial.Items[0], ResolutionInput{
 				Decision: tc.decision,
 				Reason:   "explicit operator disposition for unknown-status fixture",
 				Actor:    "operator",
-			}, resolutionTestNow); err != nil {
+			}, resolutionTestNow)
+			if err != nil {
 				t.Fatal(err)
+			}
+			receiptBytes, err := os.ReadFile(result.ReceiptPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(string(receiptBytes), "{\n \"schema_version\"") ||
+				!strings.HasSuffix(string(receiptBytes), "\n") || strings.HasSuffix(string(receiptBytes), "\n\n") {
+				t.Fatalf("resolution receipt is not one-space JSON with exactly one newline: %q", receiptBytes)
 			}
 			resolved, err := Queue(homePath, QueueOptions{Area: tc.area}, resolutionTestNow)
 			if err != nil {
@@ -192,5 +202,66 @@ func TestResolveQueueItemRequiresReasonBeforeWriting(t *testing.T) {
 	}
 	if _, err := os.Stat(strings.TrimSuffix(report.Items[0].JSONPath, ".json") + ".reviewed.json"); !os.IsNotExist(err) {
 		t.Fatalf("blank reason wrote a sidecar: %v", err)
+	}
+}
+
+func TestWriteResolutionPairRollsBackReceiptWhenSidecarExclusiveWriteFails(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecarPath := filepath.Join(homePath, "reviews", "bench", "bench_pair.reviewed.json")
+	if err := os.MkdirAll(filepath.Dir(sidecarPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sidecarPath, []byte("existing sidecar\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	receipt := resolutionReceipt(
+		"rec_pair_rollback",
+		"operator",
+		"bench",
+		resolutionTestNow,
+		"resolve",
+		"parked",
+		"retain evidence while the mismatch is investigated",
+		"reviews/bench/bench_pair.json",
+		"reviews/bench/bench_pair.reviewed.json",
+		true,
+	)
+	resolution := ReviewResolution{
+		SchemaVersion:     ReviewResolutionSchemaVersion,
+		ID:                "rres_pair_rollback",
+		Status:            "recorded",
+		Decision:          "parked",
+		Reason:            "retain evidence while the mismatch is investigated",
+		Actor:             "operator",
+		ReviewedBy:        "operator",
+		ResolvedAt:        resolutionTestNow.Format(time.RFC3339),
+		SourceArtifactRef: "reviews/bench/bench_pair.json",
+		PreviousStatus:    "unknown",
+		PreviousBand:      BandNeedsYou,
+		ReceiptID:         receipt.ID,
+		UndoHint:          "compound reviews resolve --item bench_pair --undo --reason '<why>'",
+	}
+
+	if _, err := writeResolutionPair(store, receipt, sidecarPath, resolution); err == nil {
+		t.Fatal("paired write unexpectedly replaced an existing sidecar")
+	}
+	exists, err := store.Exists(receipt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("receipt survived failed paired sidecar publication")
+	}
+	data, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "existing sidecar\n" {
+		t.Fatalf("existing sidecar changed: %q", data)
 	}
 }

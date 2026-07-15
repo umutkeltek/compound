@@ -2,6 +2,7 @@ package retrievalparity
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,11 +10,48 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/reviewartifact"
 )
 
 var parityTestNow = time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+
+func TestAppendRowPreservesRetrievalTrafficBytes(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := home.Init(homePath, "test", parityTestNow); err != nil {
+		t.Fatal(err)
+	}
+	row := NewRow(
+		ConsumerRecall,
+		"alpha beta",
+		[]string{"claim://b", "claim://a"},
+		1500*time.Microsecond,
+		true,
+		parityTestNow,
+	)
+	if err := appendRow(homePath, row); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.OpenRetrievalTraffic()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	got, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "{\"schema_version\":\"compound.retrieval_traffic.v0.2\",\"classifier_version\":\"consumer-token-count.v0\",\"consumer\":\"recall\",\"query_class\":\"recall/tokens:2-4\",\"query_sha256\":\"sha256:1a989ea86150171c687b0727f218eedbb94c4665a7da9b0add1bf5de607f2bf1\",\"query\":\"alpha beta\",\"result_refs\":[\"claim://a\",\"claim://b\"],\"result_count\":2,\"latency_ms\":1.5,\"engine_available\":true,\"timestamp\":\"2026-07-14T12:00:00Z\"}\n"
+	if string(got) != want {
+		t.Fatalf("retrieval traffic bytes changed\ngot:  %q\nwant: %q", got, want)
+	}
+}
 
 func TestOrientInputStaysHomeLocalAndReportCarriesOnlyItsHash(t *testing.T) {
 	input := OrientInput{

@@ -10,11 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"compound/internal/eventstore"
 	"compound/internal/home"
 )
 
@@ -22,8 +22,6 @@ const (
 	JournalSchemaVersion     = "compound.retrieval_traffic.v0.2"
 	OrientInputSchemaVersion = "compound.orient_input.v0.1"
 	ClassifierVersion        = "consumer-token-count.v0"
-	JournalRelPath           = "events/retrieval-traffic.ndjson"
-	hookEventJournalRelPath  = "events/hook-events.ndjson"
 
 	ConsumerOrient = "orient"
 	ConsumerRecall = "recall"
@@ -169,21 +167,11 @@ func appendRow(homePath string, row Row) error {
 	if err := validateRow(row); err != nil {
 		return err
 	}
-	path := filepath.Join(homePath, filepath.FromSlash(JournalRelPath))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.Marshal(row)
+	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, err = file.Write(append(data, '\n'))
-	return err
+	return store.AppendRetrievalTraffic(row)
 }
 
 func normalizeRow(row Row) Row {
@@ -266,8 +254,11 @@ func LoadJournal(homePath string) ([]Row, error) {
 }
 
 func loadJournal(homePath string, tolerateMalformed bool) ([]Row, []string, error) {
-	path := filepath.Join(homePath, filepath.FromSlash(JournalRelPath))
-	file, err := os.Open(path)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	file, err := store.OpenRetrievalTraffic()
 	if os.IsNotExist(err) {
 		return []Row{}, nil, nil
 	}
@@ -314,8 +305,11 @@ func loadJournal(homePath string, tolerateMalformed bool) ([]Row, []string, erro
 // duration/result tuple, so parity coverage counts the gap without fabricating
 // an orient observation.
 func liveContextBreakerCount(homePath string, windowStart, windowEnd time.Time) (int, error) {
-	path := filepath.Join(homePath, filepath.FromSlash(hookEventJournalRelPath))
-	file, err := os.Open(path)
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return 0, err
+	}
+	file, err := store.OpenHookEvents()
 	if os.IsNotExist(err) {
 		return 0, nil
 	}
