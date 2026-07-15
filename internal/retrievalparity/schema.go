@@ -970,6 +970,10 @@ func BuildReport(fixtureRef, consumer string, k int, coverage Coverage, rows []R
 
 func BuildReportWithIdentity(identity ReplayIdentity, coverage Coverage, rows []ReplayRow, now time.Time) Report {
 	identity = normalizeReplayIdentity(identity)
+	reportID := reviewartifact.ID("parity_", identity.FixtureRef, identity.Consumer, now.UTC().Format(time.RFC3339Nano))
+	if identity.ExpectEngine != "" || identity.ForbidEngine != "" {
+		reportID = reviewartifact.ID("parity_", identity.FixtureRef, identity.Consumer, identity.ExpectEngine, identity.ForbidEngine, now.UTC().Format(time.RFC3339Nano))
+	}
 	coverage.KnownGaps = uniqueSorted(coverage.KnownGaps)
 	if coverage.WindowStart == "" || coverage.WindowEnd == "" {
 		coverage.KnownGaps = uniqueSorted(append(coverage.KnownGaps, "fixture_window_unrecorded"))
@@ -978,7 +982,7 @@ func BuildReportWithIdentity(identity ReplayIdentity, coverage Coverage, rows []
 	report := Report{
 		Header: envelope.Header{
 			SchemaVersion: ReportSchemaVersion,
-			ID:            reviewartifact.ID("parity_", identity.FixtureRef, identity.Consumer, identity.ExpectEngine, identity.ForbidEngine, now.UTC().Format(time.RFC3339Nano)),
+			ID:            reportID,
 			CreatedAt:     now.UTC().Format(time.RFC3339Nano),
 			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
 			Scope:         envelope.Scope{Surface: ReviewArea},

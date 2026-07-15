@@ -255,6 +255,219 @@ func TestParityReplayEngineAvailabilityFollowsConsumerFallback(t *testing.T) {
 	}
 }
 
+func TestParityReplayExpectedEngineFailsWhenLexicalMatchesRefs(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	query := "synthetic expected replacement engine marker"
+	wantRef := seedParityClaim(t, homePath, query, now)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer:     retrievalparity.ConsumerQuery,
+			Query:        query,
+			ExpectedRefs: []string{wantRef},
+		}},
+	})
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerQuery,
+		"--expect-engine", "breadth",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code == 0 || report.ParityPassed || report.ExpectEngine != "breadth" || len(report.Rows) != 1 {
+		t.Fatalf("expected-engine replay code=%d report=%+v", code, report)
+	}
+	row := report.Rows[0]
+	if len(row.LostHits) != 0 || !slices.Contains(row.ResultRefs, wantRef) {
+		t.Fatalf("data parity must stay green while dependency fails: %+v", row)
+	}
+	if row.EngineDependency == nil || row.EngineDependency.Outcome != retrievalparity.EngineOutcomeUsed || row.EngineDependency.ObservedEngine != "lexical" || row.DependencyPassed == nil || *row.DependencyPassed {
+		t.Fatalf("lexical dependency evidence = %+v", row)
+	}
+}
+
+func TestParityReplayForbidsRequestedGBrainWhenOrientRefsMatch(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	wantRef := seedParityClaim(t, homePath, "synthetic forbidden gbrain result", now)
+	query := "token disjoint forbidden dependency probe"
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer:     retrievalparity.ConsumerOrient,
+			Query:        query,
+			OrientInput:  parityTestOrientInput(t, homePath),
+			ExpectedRefs: []string{wantRef},
+		}},
+	})
+	t.Setenv(parityFakeSidecarEnv, "1")
+	t.Setenv(parityFakeSidecarHitID, strings.TrimPrefix(wantRef, "claim://"))
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", os.Args[0]+" -test.run="+parityFakeSidecarTestRun)
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "gbrain")
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FoldPositions(mem.PositionFoldOptions{}, now); err != nil {
+		t.Fatal(err)
+	}
+	report, _, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerOrient,
+		"--forbid-engine", "gbrain",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code == 0 || report.ParityPassed || report.ForbidEngine != "gbrain" || len(report.Rows) != 1 {
+		t.Fatalf("forbidden-engine replay code=%d report=%+v", code, report)
+	}
+	row := report.Rows[0]
+	if len(row.LostHits) != 0 || !slices.Contains(row.ResultRefs, wantRef) {
+		t.Fatalf("matching orient refs must remain visible in the failed dependency row: %+v", row)
+	}
+	if row.EngineDependency == nil || row.EngineDependency.RequestedEngine != "gbrain" || row.EngineDependency.ObservedEngine != "parity-test-breadth" || row.EngineDependency.Outcome != retrievalparity.EngineOutcomeUsed || row.DependencyPassed == nil || *row.DependencyPassed {
+		t.Fatalf("forbidden gbrain dependency evidence = %+v", row)
+	}
+}
+
+func TestParityReplayForbidsGBrainWhenCapabilitiesProbeFails(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	query := "synthetic broken gbrain fallback marker"
+	wantRef := seedParityClaim(t, homePath, query, now)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer:     retrievalparity.ConsumerOrient,
+			Query:        query,
+			OrientInput:  parityTestOrientInput(t, homePath),
+			ExpectedRefs: []string{wantRef},
+		}},
+	})
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", filepath.Join(t.TempDir(), "missing-gbrain"))
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "gbrain")
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerOrient,
+		"--forbid-engine", "gbrain",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code == 0 || len(report.Rows) != 1 || len(report.Rows[0].LostHits) != 0 {
+		t.Fatalf("broken forbidden gbrain replay code=%d report=%+v", code, report)
+	}
+	evidence := report.Rows[0].EngineDependency
+	if evidence == nil || evidence.RequestedEngine != "gbrain" || evidence.ObservedEngine != "" || !evidence.Attempted || evidence.Outcome != retrievalparity.EngineOutcomeDegraded || evidence.ErrorClass != retrievalparity.EngineErrorUnavailable {
+		t.Fatalf("probe-failure gbrain evidence = %+v", evidence)
+	}
+}
+
+func TestParityReplayRejectsMissingEngineExpectationValue(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer: retrievalparity.ConsumerQuery,
+			Query:    "missing dependency flag value",
+		}},
+	})
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, reportPath, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerQuery,
+		"--expect-engine",
+	}, now)
+	if err == nil || code != 2 || reportPath != "" || !strings.Contains(err.Error(), "--expect-engine requires") {
+		t.Fatalf("missing expect-engine value code=%d report=%q err=%v", code, reportPath, err)
+	}
+}
+
+func TestParityReplayRejectsMalformedOrContradictoryEngineContract(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer: retrievalparity.ConsumerQuery,
+			Query:    "invalid dependency contract",
+		}},
+	})
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "malformed", args: []string{"--expect-engine", "../gbrain"}, want: "identity invalid"},
+		{name: "contradictory", args: []string{"--expect-engine", "gbrain", "--forbid-engine", "gbrain"}, want: "contradict"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"--fixture", fixturePath, "--consumer", retrievalparity.ConsumerQuery}
+			args = append(args, tt.args...)
+			_, reportPath, code, err := runMemoryParityReplay(homePath, store, args, now)
+			if err == nil || code != 2 || reportPath != "" || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("invalid engine contract code=%d report=%q err=%v", code, reportPath, err)
+			}
+		})
+	}
+}
+
+func TestParityReplayWithoutEngineFlagsPreservesSuccessSemantics(t *testing.T) {
+	now := time.Now().UTC()
+	homePath := newParityTestHome(t, now)
+	query := "synthetic compatibility engine marker"
+	wantRef := seedParityClaim(t, homePath, query, now)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer:     retrievalparity.ConsumerQuery,
+			Query:        query,
+			ExpectedRefs: []string{wantRef},
+		}},
+	})
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, _, code, err := runMemoryParityReplay(homePath, store, []string{
+		"--fixture", fixturePath,
+		"--consumer", retrievalparity.ConsumerQuery,
+	}, now)
+	if err != nil || code != 0 || !report.ParityPassed || report.ExpectEngine != "" || report.ForbidEngine != "" || report.DependencyPassed != nil {
+		t.Fatalf("compatibility replay code=%d err=%v report=%+v", code, err, report)
+	}
+	row := report.Rows[0]
+	if row.EngineDependency == nil || row.EngineDependency.ObservedEngine != "lexical" || row.EngineDependency.Outcome != retrievalparity.EngineOutcomeUsed || row.DependencyPassed == nil || !*row.DependencyPassed {
+		t.Fatalf("compatibility row evidence = %+v", row)
+	}
+}
+
 func TestRetrievalJournalCLIAndBestEffortFailure(t *testing.T) {
 	now := time.Now().UTC()
 	homePath := newParityTestHome(t, now)

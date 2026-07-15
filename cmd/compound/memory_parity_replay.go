@@ -44,7 +44,15 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 	fixturePath := valueFlag(args, "--fixture")
 	consumer := strings.TrimSpace(valueFlag(args, "--consumer"))
 	if fixturePath == "" || consumer == "" {
-		return retrievalparity.Report{}, "", 2, fmt.Errorf("usage: compound memory parity-replay --fixture <file.json> --consumer orient|query [--k N (query only)] [--resume-from <checkpoint.json>] [--json]")
+		return retrievalparity.Report{}, "", 2, fmt.Errorf("usage: compound memory parity-replay --fixture <file.json> --consumer orient|query [--k N (query only)] [--expect-engine ID] [--forbid-engine ID] [--resume-from <checkpoint.json>] [--json]")
+	}
+	expectEngine, err := parityEngineFlag(args, "--expect-engine")
+	if err != nil {
+		return retrievalparity.Report{}, "", 2, err
+	}
+	forbidEngine, err := parityEngineFlag(args, "--forbid-engine")
+	if err != nil {
+		return retrievalparity.Report{}, "", 2, err
 	}
 	if consumer != retrievalparity.ConsumerOrient && consumer != retrievalparity.ConsumerQuery {
 		return retrievalparity.Report{}, "", 2, fmt.Errorf("consumer must be orient or query")
@@ -78,7 +86,16 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 		return retrievalparity.Report{}, "", 1, fmt.Errorf("fixture has no %s rows", consumer)
 	}
 
-	identity := retrievalparity.NewReplayIdentity(fixtureRef, consumer, k)
+	identity, err := retrievalparity.NewReplayIdentityWithDependency(
+		fixtureRef,
+		consumer,
+		k,
+		expectEngine,
+		forbidEngine,
+	)
+	if err != nil {
+		return retrievalparity.Report{}, "", 2, err
+	}
 	checkpoint := retrievalparity.NewCheckpoint(identity, fixture.Coverage)
 	if resumePath := strings.TrimSpace(valueFlag(args, "--resume-from")); resumePath != "" {
 		checkpoint, err = retrievalparity.LoadCheckpoint(resumePath, identity)
@@ -95,6 +112,7 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 		engineAvailable := false
 		runtimeGap := ""
 		latency := time.Duration(0)
+		var engineEvidence *retrievalparity.EngineDependencyEvidence
 		switch consumer {
 		case retrievalparity.ConsumerOrient:
 			if fixtureRow.OrientInput == nil {
@@ -110,8 +128,10 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 				Topic:       fixtureRow.OrientInput.Topic,
 			}
 			started := time.Now()
-			pack, packErr := contract.PackWithCapabilities(in, orientPolicy(), homePath, now)
+			pack, trace, packErr := contract.PackWithCapabilitiesTraced(in, orientPolicy(), homePath, now)
 			latency = time.Since(started)
+			evidence := parityOrientEngineEvidence(trace)
+			engineEvidence = &evidence
 			if packErr != nil {
 				runtimeGap = "orient_retrieval_error"
 				break
@@ -119,11 +139,10 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 			resultRefs = append(resultRefs, pack.ActiveMemory...)
 			engineAvailable = true
 		case retrievalparity.ConsumerQuery:
-			eng, closeEng := memBreadthEngine()
 			started := time.Now()
-			claims, queryErr := store.QueryBreadth(fixtureRow.Query, k, eng)
-			closeEng()
+			claims, evidence, queryErr := parityQueryBreadthWithEvidence(store, fixtureRow.Query, k)
 			latency = time.Since(started)
+			engineEvidence = &evidence
 			engineAvailable = queryErr == nil
 			switch {
 			case queryErr == nil:
@@ -139,14 +158,18 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 		if runtimeGap != "" {
 			coverage.KnownGaps = append(coverage.KnownGaps, runtimeGap)
 		}
-		checkpoint.Rows = append(checkpoint.Rows, retrievalparity.NewReplayRow(fixtureRow, resultRefs, latency, engineAvailable, runtimeGap))
+		if engineEvidence != nil {
+			checkpoint.Rows = append(checkpoint.Rows, retrievalparity.NewReplayRowWithEngineEvidence(fixtureRow, resultRefs, latency, engineAvailable, *engineEvidence, identity, runtimeGap))
+		} else {
+			checkpoint.Rows = append(checkpoint.Rows, retrievalparity.NewReplayRow(fixtureRow, resultRefs, latency, engineAvailable, runtimeGap))
+		}
 		checkpoint.Completed = len(checkpoint.Rows)
 		checkpoint.Coverage = coverage
 		if err := retrievalparity.WriteCheckpoint(homePath, &checkpoint); err != nil {
 			return retrievalparity.Report{}, "", 1, fmt.Errorf("write parity checkpoint: %w", err)
 		}
 	}
-	report := retrievalparity.BuildReport(fixtureRef, consumer, k, checkpoint.Coverage, checkpoint.Rows, now)
+	report := retrievalparity.BuildReportWithIdentity(identity, checkpoint.Coverage, checkpoint.Rows, now)
 	reportPath, err := retrievalparity.WriteReport(homePath, report)
 	if err != nil {
 		return report, "", 1, err
@@ -155,6 +178,130 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 		return report, reportPath, 1, nil
 	}
 	return report, reportPath, 0, nil
+}
+
+func parityEngineFlag(args []string, name string) (string, error) {
+	seen := false
+	value := ""
+	for i, arg := range args {
+		if arg != name {
+			continue
+		}
+		if seen {
+			return "", fmt.Errorf("%s may be provided only once", name)
+		}
+		seen = true
+		if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") || strings.TrimSpace(args[i+1]) == "" {
+			return "", fmt.Errorf("%s requires an engine id", name)
+		}
+		value = strings.TrimSpace(args[i+1])
+	}
+	return value, nil
+}
+
+func parityOrientEngineEvidence(trace contract.EngineDependencyTrace) retrievalparity.EngineDependencyEvidence {
+	return retrievalparity.EngineDependencyEvidence{
+		Attempted:        trace.Attempted,
+		RequestedEngine:  trace.RequestedEngine,
+		ObservedEngine:   trace.ObservedEngine,
+		Embedder:         trace.Embedder,
+		CorpusGeneration: trace.CorpusGeneration,
+		Outcome:          trace.Outcome,
+		ErrorClass:       trace.ErrorClass,
+	}
+}
+
+func parityQueryBreadthWithEvidence(store *mem.Store, query string, k int) ([]mem.Claim, retrievalparity.EngineDependencyEvidence, error) {
+	eng, closeEng := memBreadthEngine()
+	defer closeEng()
+	evidence := retrievalparity.EngineDependencyEvidence{
+		Attempted:       true,
+		RequestedEngine: parityRequestedEngineIdentity(),
+	}
+	parityObserveEngineCapabilities(&evidence, eng.Capabilities(), false)
+	claims, err := store.QueryBreadth(query, k, eng)
+	if err != nil {
+		evidence.Outcome, evidence.ErrorClass = parityEngineErrorEvidence(err)
+		return nil, evidence, err
+	}
+	parityObserveEngineCapabilities(&evidence, eng.Capabilities(), true)
+	if evidence.ObservedEngine == "" {
+		evidence.Outcome = retrievalparity.EngineOutcomeRefused
+		evidence.ErrorClass = retrievalparity.EngineErrorProtocolVersion
+	} else {
+		evidence.Outcome = retrievalparity.EngineOutcomeUsed
+	}
+	return claims, evidence, nil
+}
+
+func parityObserveEngineCapabilities(evidence *retrievalparity.EngineDependencyEvidence, caps mem.EngineCapabilities, successful bool) {
+	if evidence == nil {
+		return
+	}
+	if name := paritySafeEngineIdentity(caps.Name); name != "protocol" || successful {
+		evidence.ObservedEngine = name
+	}
+	evidence.Embedder = paritySafeEmbedderIdentity(caps.Embedder)
+	if caps.CorpusGen >= 0 {
+		evidence.CorpusGeneration = caps.CorpusGen
+	}
+}
+
+func parityRequestedEngineIdentity() string {
+	if profile := paritySafeEngineIdentity(os.Getenv("COMPOUND_MEMORY_CLI_PROFILE")); profile != "" {
+		return profile
+	}
+	if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) != "" {
+		return "protocol"
+	}
+	return "lexical"
+}
+
+func paritySafeEngineIdentity(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) == 0 || len(value) > 64 {
+		return ""
+	}
+	for i, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || (i > 0 && (r == '.' || r == '_' || r == '-')) {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func paritySafeEmbedderIdentity(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) == 0 || len(value) > 128 {
+		return ""
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' || r == ':' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func parityEngineErrorEvidence(err error) (string, string) {
+	switch {
+	case errors.Is(err, mem.ErrEmbedderMismatch):
+		return retrievalparity.EngineOutcomeRefused, retrievalparity.EngineErrorEmbedderMismatch
+	case errors.Is(err, mem.ErrProtocolVersion):
+		return retrievalparity.EngineOutcomeRefused, retrievalparity.EngineErrorProtocolVersion
+	case errors.Is(err, mem.ErrEngineAhead):
+		return retrievalparity.EngineOutcomeRefused, retrievalparity.EngineErrorEngineAhead
+	case errors.Is(err, mem.ErrEngineServedUnownedClaim):
+		return retrievalparity.EngineOutcomeRefused, retrievalparity.EngineErrorUnownedClaim
+	case errors.Is(err, mem.ErrUnsupported):
+		return retrievalparity.EngineOutcomeDegraded, retrievalparity.EngineErrorUnsupported
+	case errors.Is(err, mem.ErrEngineUnavailable):
+		return retrievalparity.EngineOutcomeDegraded, retrievalparity.EngineErrorUnavailable
+	default:
+		return retrievalparity.EngineOutcomeDegraded, retrievalparity.EngineErrorRetrieval
+	}
 }
 
 func cmdMemoryParityFreeze(homePath string, args []string) {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/reviewartifact"
 )
 
 var parityTestNow = time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
@@ -501,6 +502,19 @@ func TestEngineEvidencePersistsZeroCorpusGeneration(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"corpus_generation":0`) {
 		t.Fatalf("zero corpus generation omitted from engine evidence: %s", raw)
+	}
+}
+
+func TestBuildReportWithoutDependencyKeepsLegacyID(t *testing.T) {
+	fixtureRef := HashQuery("legacy report identity fixture")
+	row := NewReplayRow(FixtureRow{
+		Consumer: ConsumerQuery,
+		Query:    "legacy report identity",
+	}, nil, time.Millisecond, true)
+	report := BuildReport(fixtureRef, ConsumerQuery, 10, Coverage{}, []ReplayRow{row}, parityTestNow)
+	want := reviewartifact.ID("parity_", fixtureRef, ConsumerQuery, parityTestNow.UTC().Format(time.RFC3339Nano))
+	if report.ID != want {
+		t.Fatalf("report id = %q, want backward-compatible %q", report.ID, want)
 	}
 }
 
