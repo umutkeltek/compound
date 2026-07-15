@@ -18,6 +18,7 @@ import (
 )
 
 const receiptedActionReservationSchemaVersion = "compound.receipted_action_reservation.v0.1"
+const receiptedActionCompletionSchemaVersion = "compound.receipted_action_completion.v0.1"
 
 // receiptedActionReservation closes the gap between governed admission and an
 // adapter's external publication. While present, the work lifecycle cannot
@@ -31,6 +32,24 @@ type receiptedActionReservation struct {
 	TransitionID      string `json:"transition_id"`
 	AuthorizedAt      string `json:"authorized_at"`
 	TransactionDigest string `json:"transaction_digest"`
+}
+
+// receiptedActionCompletion is the immutable replay identity written only
+// after every receipted-action artifact has converged. Its output digests bind
+// the complete schema-valid Receipt, Transition, and lifecycle Event instead
+// of a selected field subset.
+type receiptedActionCompletion struct {
+	SchemaVersion     string `json:"schema_version"`
+	WorkID            string `json:"work_id"`
+	ActionID          string `json:"action_intent_id"`
+	PolicyDecisionID  string `json:"policy_decision_id"`
+	ReceiptID         string `json:"receipt_id"`
+	TransitionID      string `json:"transition_id"`
+	AuthorizedAt      string `json:"authorized_at"`
+	TransactionDigest string `json:"transaction_digest"`
+	ReceiptSHA256     string `json:"receipt_sha256"`
+	TransitionSHA256  string `json:"transition_sha256"`
+	EventSHA256       string `json:"event_sha256"`
 }
 
 // ReserveReceiptedAction atomically revalidates governed admission and creates
@@ -104,7 +123,7 @@ func (s *Store) RecordReservedReceiptedAction(workID string, in ReceiptedActionI
 			if !completed {
 				return fmt.Errorf("work %s has no receipted action reservation for %s", workID, in.Action.ID)
 			}
-			if !reflect.DeepEqual(completion, expected) {
+			if !reflect.DeepEqual(completion.reservation(), expected) {
 				return fmt.Errorf("work %s completed receipted action %s conflicts with requested transaction", workID, completion.ActionID)
 			}
 			out, recordErr = s.replayCompletedReceiptedAction(workID, in, completion)
@@ -117,7 +136,7 @@ func (s *Store) RecordReservedReceiptedAction(workID string, in ReceiptedActionI
 		if recordErr != nil {
 			return recordErr
 		}
-		return s.completeReceiptedActionReservation(path, expected)
+		return s.completeReceiptedActionReservation(path, expected, out)
 	})
 	return out, err
 }
@@ -302,27 +321,39 @@ func (s *Store) clearReceiptedActionReservation(path string, expected receiptedA
 	return syncReceiptedActionDir(filepath.Dir(path))
 }
 
-func (s *Store) completeReceiptedActionReservation(path string, expected receiptedActionReservation) error {
+func (s *Store) completeReceiptedActionReservation(path string, expected receiptedActionReservation, result ReceiptedActionResult) error {
+	events, err := s.admissionEventsFor(expected.WorkID)
+	if err != nil {
+		return err
+	}
+	event, err := completedReceiptedActionEvent(events, result.Action, result.Decision, result.Receipt, result.Transition)
+	if err != nil {
+		return err
+	}
+	expectedCompletion, err := newReceiptedActionCompletion(expected, result.Receipt, result.Transition, event)
+	if err != nil {
+		return err
+	}
 	completion, present, completionPath, err := s.preflightReceiptedActionCompletion(expected.WorkID, expected.ActionID)
 	if err != nil {
 		return err
 	}
-	if present && !reflect.DeepEqual(completion, expected) {
+	if present && !reflect.DeepEqual(completion, expectedCompletion) {
 		return fmt.Errorf("work %s completed receipted action %s conflicts with reservation", expected.WorkID, expected.ActionID)
 	}
 	if !present {
 		if err := ensureReceiptedActionPendingDir(filepath.Dir(completionPath)); err != nil {
 			return err
 		}
-		if err := s.writeReceiptedActionBoundary("reservation_completion", completionPath, &expected); err != nil {
+		if err := s.writeReceiptedActionBoundary("reservation_completion", completionPath, &expectedCompletion); err != nil {
 			return err
 		}
 	}
 	return s.clearReceiptedActionReservation(path, expected)
 }
 
-func (s *Store) preflightReceiptedActionCompletion(workID, actionID string) (receiptedActionReservation, bool, string, error) {
-	var completion receiptedActionReservation
+func (s *Store) preflightReceiptedActionCompletion(workID, actionID string) (receiptedActionCompletion, bool, string, error) {
+	var completion receiptedActionCompletion
 	if filepath.Base(workID) != workID || !strings.HasPrefix(workID, "work_") {
 		return completion, false, "", fmt.Errorf("invalid receipted-action work id %q", workID)
 	}
@@ -358,7 +389,73 @@ func (s *Store) preflightReceiptedActionCompletion(workID, actionID string) (rec
 	return completion, true, path, nil
 }
 
-func (s *Store) replayCompletedReceiptedAction(workID string, in ReceiptedActionInput, completion receiptedActionReservation) (ReceiptedActionResult, error) {
+func newReceiptedActionCompletion(reservation receiptedActionReservation, receipt envelope.Receipt, transition envelope.Transition, event Event) (receiptedActionCompletion, error) {
+	receiptDigest, err := exactReceiptedActionDigest(receipt)
+	if err != nil {
+		return receiptedActionCompletion{}, fmt.Errorf("digest completed receipted action receipt: %w", err)
+	}
+	transitionDigest, err := exactReceiptedActionDigest(transition)
+	if err != nil {
+		return receiptedActionCompletion{}, fmt.Errorf("digest completed receipted action transition: %w", err)
+	}
+	eventDigest, err := exactReceiptedActionDigest(event)
+	if err != nil {
+		return receiptedActionCompletion{}, fmt.Errorf("digest completed receipted action event: %w", err)
+	}
+	completion := receiptedActionCompletion{
+		SchemaVersion: receiptedActionCompletionSchemaVersion,
+		WorkID:        reservation.WorkID, ActionID: reservation.ActionID, PolicyDecisionID: reservation.PolicyDecisionID,
+		ReceiptID: reservation.ReceiptID, TransitionID: reservation.TransitionID,
+		AuthorizedAt: reservation.AuthorizedAt, TransactionDigest: reservation.TransactionDigest,
+		ReceiptSHA256: receiptDigest, TransitionSHA256: transitionDigest, EventSHA256: eventDigest,
+	}
+	if err := completion.validate(); err != nil {
+		return receiptedActionCompletion{}, err
+	}
+	return completion, nil
+}
+
+func (c receiptedActionCompletion) reservation() receiptedActionReservation {
+	return receiptedActionReservation{
+		SchemaVersion: receiptedActionReservationSchemaVersion,
+		WorkID:        c.WorkID, ActionID: c.ActionID, PolicyDecisionID: c.PolicyDecisionID,
+		ReceiptID: c.ReceiptID, TransitionID: c.TransitionID,
+		AuthorizedAt: c.AuthorizedAt, TransactionDigest: c.TransactionDigest,
+	}
+}
+
+func (c receiptedActionCompletion) validate() error {
+	if c.SchemaVersion != receiptedActionCompletionSchemaVersion {
+		return fmt.Errorf("schema_version must be %q", receiptedActionCompletionSchemaVersion)
+	}
+	if err := c.reservation().validate(); err != nil {
+		return err
+	}
+	for _, item := range []struct {
+		name, value string
+	}{
+		{name: "receipt_sha256", value: c.ReceiptSHA256},
+		{name: "transition_sha256", value: c.TransitionSHA256},
+		{name: "event_sha256", value: c.EventSHA256},
+	} {
+		digest, err := hex.DecodeString(item.value)
+		if err != nil || len(digest) != sha256.Size {
+			return fmt.Errorf("%s must be a SHA-256 hex digest", item.name)
+		}
+	}
+	return nil
+}
+
+func exactReceiptedActionDigest(value any) (string, error) {
+	body, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func (s *Store) replayCompletedReceiptedAction(workID string, in ReceiptedActionInput, completion receiptedActionCompletion) (ReceiptedActionResult, error) {
 	var out ReceiptedActionResult
 	action, present, err := s.preflightReceiptedAction(in.Action)
 	if err != nil {
@@ -385,12 +482,26 @@ func (s *Store) replayCompletedReceiptedAction(workID string, in ReceiptedAction
 	if err := receipt.Validate(); err != nil {
 		return out, fmt.Errorf("completed receipted action %s receipt invalid: %w", completion.ActionID, err)
 	}
+	receiptDigest, err := exactReceiptedActionDigest(receipt)
+	if err != nil {
+		return out, fmt.Errorf("completed receipted action %s receipt digest failed: %w", completion.ActionID, err)
+	}
+	if receiptDigest != completion.ReceiptSHA256 {
+		return out, fmt.Errorf("completed receipted action %s receipt digest conflicts with completion identity", completion.ActionID)
+	}
 	var transition envelope.Transition
 	if err := s.readJSON(s.envPath(completion.TransitionID), &transition); err != nil {
 		return out, fmt.Errorf("completed receipted action %s transition unreadable: %w", completion.ActionID, err)
 	}
 	if err := transition.Validate(); err != nil {
 		return out, fmt.Errorf("completed receipted action %s transition invalid: %w", completion.ActionID, err)
+	}
+	transitionDigest, err := exactReceiptedActionDigest(transition)
+	if err != nil {
+		return out, fmt.Errorf("completed receipted action %s transition digest failed: %w", completion.ActionID, err)
+	}
+	if transitionDigest != completion.TransitionSHA256 {
+		return out, fmt.Errorf("completed receipted action %s transition digest conflicts with completion identity", completion.ActionID)
 	}
 	w, err := s.recoverPendingClaimBeforeMutation(workID)
 	if err != nil {
@@ -410,13 +521,13 @@ func (s *Store) replayCompletedReceiptedAction(workID string, in ReceiptedAction
 	if err != nil {
 		return out, err
 	}
-	if err := validateCompletedReceiptedActionEvent(events, action, decision, receipt, transition); err != nil {
+	if err := validateCompletedReceiptedActionEvent(events, action, decision, receipt, transition, completion); err != nil {
 		return out, err
 	}
 	return ReceiptedActionResult{Work: w, Action: action, Decision: decision, Receipt: receipt, Transition: transition, Replayed: true}, nil
 }
 
-func validateCompletedReceiptedActionOutcome(w envelope.WorkEnvelope, in ReceiptedActionInput, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition, completion receiptedActionReservation) error {
+func validateCompletedReceiptedActionOutcome(w envelope.WorkEnvelope, in ReceiptedActionInput, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition, completion receiptedActionCompletion) error {
 	outcome := strings.TrimSpace(in.Outcome)
 	if outcome == "" {
 		outcome = "completed"
@@ -445,7 +556,23 @@ func validateCompletedReceiptedActionOutcome(w envelope.WorkEnvelope, in Receipt
 	return nil
 }
 
-func validateCompletedReceiptedActionEvent(events []Event, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition) error {
+func validateCompletedReceiptedActionEvent(events []Event, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition, completion receiptedActionCompletion) error {
+	event, err := completedReceiptedActionEvent(events, action, decision, receipt, transition)
+	if err != nil {
+		return err
+	}
+	digest, err := exactReceiptedActionDigest(event)
+	if err != nil {
+		return fmt.Errorf("completed receipted action %s event digest failed: %w", action.ID, err)
+	}
+	if digest != completion.EventSHA256 {
+		return fmt.Errorf("completed receipted action %s event digest conflicts with completion identity", action.ID)
+	}
+	return nil
+}
+
+func completedReceiptedActionEvent(events []Event, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition) (Event, error) {
+	var matched Event
 	wantAttached := []string{action.ID, decision.ID, receipt.ID, transition.ID}
 	matching := 0
 	for _, event := range events {
@@ -455,12 +582,13 @@ func validateCompletedReceiptedActionEvent(events []Event, action envelope.Actio
 		if event.WorkID != action.IDs.WorkID || event.From != event.To || event.By != action.Actor ||
 			event.Note != "receipted action recorded: "+action.Action+" (policy "+decision.Outcome+")" ||
 			!reflect.DeepEqual(event.Attached, wantAttached) {
-			return fmt.Errorf("completed receipted action %s event conflicts with reserved outcome", action.ID)
+			return Event{}, fmt.Errorf("completed receipted action %s event conflicts with reserved outcome", action.ID)
 		}
+		matched = event
 		matching++
 	}
 	if matching != 1 {
-		return fmt.Errorf("completed receipted action %s has %d matching lifecycle events", action.ID, matching)
+		return Event{}, fmt.Errorf("completed receipted action %s has %d matching lifecycle events", action.ID, matching)
 	}
-	return nil
+	return matched, nil
 }
