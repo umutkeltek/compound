@@ -13,7 +13,18 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	homepkg "compound/internal/home"
+	"compound/internal/work"
 )
+
+type ambiguousPermissionRootedCAS struct{}
+
+func (ambiguousPermissionRootedCAS) State() homepkg.RootedFileCASState {
+	return homepkg.RootedFileCASAmbiguous
+}
+
+func (ambiguousPermissionRootedCAS) Commit() error   { return errors.New("ambiguous publication") }
+func (ambiguousPermissionRootedCAS) Rollback() error { return errors.New("ambiguous publication") }
 
 func TestPermissionAuthorityValidation(t *testing.T) {
 	tests := []struct {
@@ -735,6 +746,121 @@ func TestApplyPermissionsAbortsReservationAfterSafePublicationRollback(t *testin
 	}
 	if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); !os.IsNotExist(err) {
 		t.Fatalf("safe rollback retained permission pending: %v", err)
+	}
+}
+
+func TestApplyPermissionsRetainsReservationForAmbiguousBeginPublication(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	if err := homepkg.Init(homePath, "test", time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	before, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "operator:test", Actor: "operator:test", SuccessPredicate: "permission outcome", State: "ready"}, time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(w.ID, "operator:test", time.Date(2026, 7, 15, 12, 0, 1, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "operator:test"}, time.Date(2026, 7, 15, 12, 0, 2, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	action.IDs.WorkID = w.ID
+	decision.IDs.WorkID = w.ID
+	decision.ActionIntentID = action.ID
+
+	inputFor := func(outcome PermissionApplyOutcome) (work.ReceiptedActionInput, time.Time, error) {
+		authorizedAt, err := time.Parse(time.RFC3339Nano, outcome.AuthorizedAt)
+		if err != nil {
+			return work.ReceiptedActionInput{}, time.Time{}, err
+		}
+		return work.ReceiptedActionInput{
+			Action: outcome.Action, PreEvaluatedDecision: &outcome.Decision, ExpectedWorkState: "running",
+			Outcome: "completed", Changed: outcome.Changed, Summary: "permission activation completed", MoveType: "control_plane_repair",
+			BeforeRefs: []string{"sha256:" + digest(outcome.Render.Preimage)}, AfterRefs: []string{outcome.Render.Artifact.ContentSHA256},
+		}, authorizedAt, nil
+	}
+	reserve := func(outcome PermissionApplyOutcome, authorize PermissionApplyAuthorization) error {
+		in, at, err := inputFor(outcome)
+		if err != nil {
+			return err
+		}
+		return store.ReserveReceiptedAction(w.ID, in, at, func() error {
+			return authorize(outcome.Action, outcome.Decision, at)
+		})
+	}
+	abort := func(outcome PermissionApplyOutcome) error {
+		return store.AbortReceiptedActionReservation(w.ID, outcome.Action.ID)
+	}
+	finalize := func(outcome PermissionApplyOutcome) error {
+		in, at, err := inputFor(outcome)
+		if err != nil {
+			return err
+		}
+		_, err = store.RecordReservedReceiptedAction(w.ID, in, at)
+		return err
+	}
+
+	injected := errors.New("rooted CAS returned ambiguous after publication")
+	previousBegin := beginPermissionRootedFileCAS
+	beginPermissionRootedFileCAS = func(root *os.Root, canonicalName, recoveryName string, _ []byte, _ os.FileInfo, _ []byte, _ os.FileInfo) (permissionRootedCAS, error) {
+		preimage, err := root.ReadFile(canonicalName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		postimage, err := root.ReadFile(recoveryName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := root.WriteFile(canonicalName, postimage, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := root.WriteFile(recoveryName, preimage, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return ambiguousPermissionRootedCAS{}, injected
+	}
+	t.Cleanup(func() { beginPermissionRootedFileCAS = previousBegin })
+	_, err = ApplyPermissions(homePath, approved, action, decision, allowPermissionApply, reserve, abort, finalize)
+	if !errors.Is(err, injected) || !IsPermissionApplyFinalizationPending(err) {
+		t.Fatalf("ApplyPermissions error = %v, want ambiguous publication pending recovery", err)
+	}
+	if actual, err := os.ReadFile(targetPath); err != nil || !bytesEqual(actual, approved.Content) {
+		t.Fatalf("ambiguous publication canonical = %q err=%v", actual, err)
+	}
+	if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); err != nil {
+		t.Fatalf("ambiguous publication removed pending evidence: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying", Actor: "operator:test"}, time.Date(2026, 7, 15, 12, 2, 0, 0, time.UTC)); err == nil || !strings.Contains(err.Error(), "pending receipted action "+action.ID) {
+		t.Fatalf("ambiguous publication released work reservation: %v", err)
+	}
+
+	beginPermissionRootedFileCAS = previousBegin
+	rejected := errors.New("stop after recovering ambiguous publication")
+	_, err = ApplyPermissions(homePath, approved, action, decision, func(envelope.ActionIntent, envelope.PolicyDecision, time.Time) error {
+		return rejected
+	}, reserve, abort, finalize)
+	if !errors.Is(err, rejected) {
+		t.Fatalf("recovery retry error = %v", err)
+	}
+	if actual, err := os.ReadFile(targetPath); err != nil || !bytesEqual(actual, before) {
+		t.Fatalf("ambiguous publication recovery did not restore preimage: body=%q err=%v", actual, err)
+	}
+	if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); !os.IsNotExist(err) {
+		t.Fatalf("recovered ambiguous publication retained pending evidence: %v", err)
+	}
+	if advanced, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying", Actor: "operator:test"}, time.Date(2026, 7, 15, 12, 3, 0, 0, time.UTC)); err != nil || advanced.State != "verifying" {
+		t.Fatalf("recovered ambiguous publication retained work reservation: work=%+v err=%v", advanced, err)
 	}
 }
 
