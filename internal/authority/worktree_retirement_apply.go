@@ -1,0 +1,637 @@
+package authority
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"time"
+
+	"compound/internal/envelope"
+	"compound/internal/policy"
+)
+
+const (
+	WorktreeRetirementPendingSchemaVersion = "compound.worktree_retirement_pending.v0.1"
+	WorktreeRetirementResultSchemaVersion  = "compound.worktree_retirement_result.v0.1"
+
+	WorktreeRetirementPhasePrepared        = "prepared"
+	WorktreeRetirementPhaseWorktreeRemoved = "worktree_removed"
+	WorktreeRetirementPhaseRefDeleted      = "ref_deleted"
+	WorktreeRetirementPhaseVerified        = "verified"
+)
+
+type WorktreeRetirementApplyRequest struct {
+	HomePath         string
+	PlanPath         string
+	ReviewReportPath string
+	Actor            string
+	OwnerProof       WorktreeRetirementOwnerProof
+	SourceProof      WorktreeRetirementSourceProof
+}
+
+type WorktreeRetirementActionOutcome struct {
+	Action       envelope.ActionIntent   `json:"action"`
+	Decision     envelope.PolicyDecision `json:"decision"`
+	Outcome      string                  `json:"outcome"`
+	Changed      bool                    `json:"changed"`
+	Summary      string                  `json:"summary"`
+	ProofRefs    []string                `json:"proof_refs"`
+	BeforeRefs   []string                `json:"before_refs"`
+	AfterRefs    []string                `json:"after_refs"`
+	FailureCause *envelope.FailureCause  `json:"failure_cause,omitempty"`
+}
+
+type WorktreeRetirementActionProof struct {
+	ActionIntentID   string `json:"action_intent_id"`
+	PolicyDecisionID string `json:"policy_decision_id"`
+	ReceiptID        string `json:"receipt_id"`
+	TransitionID     string `json:"transition_id"`
+}
+
+type WorktreeRetirementApplyDependencies struct {
+	Git           WorktreeRetirementGit
+	Liveness      WorktreeRetirementLiveness
+	Evaluate      func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error)
+	RecordOutcome func(outcome WorktreeRetirementActionOutcome, now time.Time) (WorktreeRetirementActionProof, error)
+	// AfterPhase is an injectable crash boundary used to prove durable resume.
+	AfterPhase func(phase string) error
+}
+
+type WorktreeRetirementPending struct {
+	SchemaVersion       string                  `json:"schema_version"`
+	PlanID              string                  `json:"plan_id"`
+	PlanDigest          string                  `json:"plan_digest"`
+	AuthorizationDigest string                  `json:"authorization_digest"`
+	Actor               string                  `json:"actor"`
+	Phase               string                  `json:"phase"`
+	Action              envelope.ActionIntent   `json:"action"`
+	Decision            envelope.PolicyDecision `json:"decision"`
+	UpdatedAt           string                  `json:"updated_at"`
+	PendingDigest       string                  `json:"pending_digest"`
+}
+
+type WorktreeRetirementResult struct {
+	SchemaVersion       string `json:"schema_version"`
+	ID                  string `json:"id"`
+	CreatedAt           string `json:"created_at"`
+	Status              string `json:"status"`
+	Phase               string `json:"phase"`
+	PlanID              string `json:"plan_id"`
+	PlanDigest          string `json:"plan_digest"`
+	AuthorizationDigest string `json:"authorization_digest"`
+	Actor               string `json:"actor"`
+	WorktreeRemoved     bool   `json:"worktree_removed"`
+	RefDeleted          bool   `json:"ref_deleted"`
+	AuthorityTip        string `json:"authority_tip"`
+	PublicationTip      string `json:"publication_tip"`
+	ActionIntentID      string `json:"action_intent_id,omitempty"`
+	PolicyDecisionID    string `json:"policy_decision_id,omitempty"`
+	ReceiptID           string `json:"receipt_id,omitempty"`
+	TransitionID        string `json:"transition_id,omitempty"`
+	Error               string `json:"error,omitempty"`
+	PendingPath         string `json:"pending_path"`
+	ResultPath          string `json:"result_path"`
+	ResultDigest        string `json:"result_digest"`
+	Replayed            bool   `json:"replayed,omitempty"`
+}
+
+func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyRequest, deps WorktreeRetirementApplyDependencies, now time.Time) (WorktreeRetirementResult, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if deps.Git == nil {
+		deps.Git = ExecWorktreeRetirementGit{}
+	}
+	if deps.Liveness == nil {
+		deps.Liveness = LSOFWorktreeRetirementLiveness{}
+	}
+	if deps.Evaluate == nil {
+		deps.Evaluate = func(action envelope.ActionIntent, at time.Time) (envelope.PolicyDecision, error) {
+			return policy.Evaluate(action, policy.DefaultConfig(), at), nil
+		}
+	}
+	if deps.RecordOutcome == nil {
+		return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement action outcome recorder required")
+	}
+	actor := strings.TrimSpace(req.Actor)
+	if actor == "" {
+		return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement actor required")
+	}
+	homePath, err := filepath.Abs(filepath.Clean(req.HomePath))
+	if err != nil || strings.TrimSpace(req.HomePath) == "" {
+		return WorktreeRetirementResult{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	planPath, err := filepath.Abs(filepath.Clean(req.PlanPath))
+	if err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+	reportPath, err := filepath.Abs(filepath.Clean(req.ReviewReportPath))
+	if err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+	plan, err := LoadWorktreeRetirementPlan(planPath)
+	if err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+	if !plan.Eligible {
+		return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement plan is not eligible")
+	}
+	report, err := ValidateAuthorizedWorktreeRetirement(planPath, reportPath)
+	if err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+	if actor != plan.OwnerProof.LeaseHolder || actor != req.OwnerProof.LeaseHolder {
+		return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement actor is not owner work lease holder")
+	}
+	if !reflect.DeepEqual(req.SourceProof, plan.SourceProof) {
+		return WorktreeRetirementResult{}, fmt.Errorf("source work proof drift before retirement")
+	}
+	if err := validateRetirementOwnerProof(req.OwnerProof); err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+	if err := validateRetirementSourceProof(req.SourceProof); err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+
+	dir := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+	pendingPath := filepath.Join(dir, plan.ID+".retirement.pending.json")
+	resultPath := filepath.Join(dir, plan.ID+".retirement.result.json")
+	if existing, loadErr := loadWorktreeRetirementResult(resultPath); loadErr == nil && existing.Status == "completed" {
+		if err := validateWorktreeRetirementResult(existing, plan, report, resultPath); err != nil {
+			return WorktreeRetirementResult{}, err
+		}
+		if err := verifyRetirementFinalState(ctx, deps.Git, plan); err != nil {
+			return WorktreeRetirementResult{}, fmt.Errorf("completed retirement result no longer matches Git state: %w", err)
+		}
+		existing.Replayed = true
+		return existing, nil
+	} else if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		return WorktreeRetirementResult{}, loadErr
+	}
+
+	pending, pendingExists, err := loadWorktreeRetirementPending(pendingPath)
+	if err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+	if pendingExists {
+		if err := validateWorktreeRetirementPending(pending, plan, report, actor); err != nil {
+			return WorktreeRetirementResult{}, err
+		}
+		if !sameRetirementOwnerLease(req.OwnerProof, plan.OwnerProof) {
+			return WorktreeRetirementResult{}, fmt.Errorf("owner work lease drift before retirement resume")
+		}
+		if pending.Phase == WorktreeRetirementPhasePrepared {
+			fresh, err := BuildWorktreeRetirementPlan(ctx, WorktreeRetirementPlanRequest{
+				RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
+				AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
+				OwnerProof: req.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
+			}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness}, now)
+			if err != nil {
+				return WorktreeRetirementResult{}, err
+			}
+			if err := compareRetirementPlanState(plan, fresh); err != nil {
+				return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement state drift before prepared resume: %w", err)
+			}
+		} else if err := verifyRetirementResumeState(ctx, deps.Git, plan, pending.Phase); err != nil {
+			return WorktreeRetirementResult{}, err
+		}
+	} else {
+		if !reflect.DeepEqual(req.OwnerProof, plan.OwnerProof) {
+			return WorktreeRetirementResult{}, fmt.Errorf("owner work or lease drift before retirement")
+		}
+		fresh, err := BuildWorktreeRetirementPlan(ctx, WorktreeRetirementPlanRequest{
+			RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
+			AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
+			OwnerProof: req.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
+		}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness}, now)
+		if err != nil {
+			return WorktreeRetirementResult{}, err
+		}
+		if err := compareRetirementPlanState(plan, fresh); err != nil {
+			return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement state drift before mutation: %w", err)
+		}
+		action := newWorktreeRetirementAction(plan, report, actor, now)
+		decision, err := deps.Evaluate(action, now)
+		if err != nil {
+			return WorktreeRetirementResult{}, err
+		}
+		if err := action.Validate(); err != nil {
+			return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement action invalid: %w", err)
+		}
+		if err := decision.Validate(); err != nil {
+			return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement policy invalid: %w", err)
+		}
+		if decision.ActionIntentID != action.ID || decision.IDs.WorkID != action.IDs.WorkID || !policy.Allowed(decision) {
+			return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement policy does not allow exact action")
+		}
+		pending = WorktreeRetirementPending{
+			SchemaVersion: WorktreeRetirementPendingSchemaVersion,
+			PlanID:        plan.ID, PlanDigest: plan.PlanDigest, AuthorizationDigest: report.AuthorizationDigest,
+			Actor: actor, Phase: WorktreeRetirementPhasePrepared, Action: action, Decision: decision,
+		}
+		if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+			return WorktreeRetirementResult{}, err
+		}
+	}
+
+	baseResult := WorktreeRetirementResult{
+		SchemaVersion: WorktreeRetirementResultSchemaVersion,
+		ID:            "wtrres_" + digestRetirementHex([]byte(plan.ID + "|" + report.AuthorizationDigest))[:12],
+		CreatedAt:     now.UTC().Format(time.RFC3339Nano), Status: "running", Phase: pending.Phase,
+		PlanID: plan.ID, PlanDigest: plan.PlanDigest, AuthorizationDigest: report.AuthorizationDigest, Actor: actor,
+		AuthorityTip: plan.AuthorityTip, PublicationTip: plan.PublicationTip,
+		ActionIntentID: pending.Action.ID, PolicyDecisionID: pending.Decision.ID,
+		PendingPath: pendingPath, ResultPath: resultPath,
+	}
+	if pending.Phase == WorktreeRetirementPhasePrepared && deps.AfterPhase != nil {
+		if err := deps.AfterPhase(pending.Phase); err != nil {
+			return baseResult, err
+		}
+	}
+
+	if pending.Phase == WorktreeRetirementPhasePrepared && plan.Worktree != nil {
+		if _, err := deps.Git.Run(ctx, plan.RepoRoot, "worktree", "remove", plan.Worktree.Path); err != nil {
+			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, false, "worktree removal failed", err, now)
+		}
+		if err := verifyRetirementWorktreeAbsent(ctx, deps.Git, plan); err != nil {
+			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, true, "worktree removal could not be verified", err, now)
+		}
+		pending.Phase = WorktreeRetirementPhaseWorktreeRemoved
+		if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+			return baseResult, err
+		}
+		baseResult.Phase = pending.Phase
+		baseResult.WorktreeRemoved = true
+		if deps.AfterPhase != nil {
+			if err := deps.AfterPhase(pending.Phase); err != nil {
+				return baseResult, err
+			}
+		}
+	}
+
+	refReady := plan.CandidateRef != "" && (pending.Phase == WorktreeRetirementPhasePrepared || pending.Phase == WorktreeRetirementPhaseWorktreeRemoved)
+	if refReady {
+		if _, err := deps.Git.Run(ctx, plan.RepoRoot, "update-ref", "-d", plan.CandidateRef, plan.CandidateTip); err != nil {
+			baseResult.WorktreeRemoved = plan.Worktree != nil && pending.Phase == WorktreeRetirementPhaseWorktreeRemoved
+			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, baseResult.WorktreeRemoved, "candidate ref CAS deletion failed", err, now)
+		}
+		if err := verifyRetirementRefAbsent(ctx, deps.Git, plan); err != nil {
+			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, true, "candidate ref deletion could not be verified", err, now)
+		}
+		pending.Phase = WorktreeRetirementPhaseRefDeleted
+		if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+			return baseResult, err
+		}
+		baseResult.Phase = pending.Phase
+		baseResult.RefDeleted = true
+		baseResult.WorktreeRemoved = plan.Worktree != nil
+		if deps.AfterPhase != nil {
+			if err := deps.AfterPhase(pending.Phase); err != nil {
+				return baseResult, err
+			}
+		}
+	}
+
+	if err := verifyRetirementFinalState(ctx, deps.Git, plan); err != nil {
+		return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, true, "final retirement verification failed", err, now)
+	}
+	pending.Phase = WorktreeRetirementPhaseVerified
+	if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+		return baseResult, err
+	}
+	baseResult.Phase = pending.Phase
+	baseResult.WorktreeRemoved = plan.Worktree != nil
+	baseResult.RefDeleted = plan.CandidateRef != ""
+	proof, err := deps.RecordOutcome(WorktreeRetirementActionOutcome{
+		Action: pending.Action, Decision: pending.Decision, Outcome: "completed", Changed: true,
+		Summary:    "retired redundant Git worktree/ref without changing authority or publication tips",
+		ProofRefs:  worktreeRetirementApplyProofRefs(plan, report),
+		BeforeRefs: []string{"git-ref:" + plan.CandidateRef + "@" + plan.CandidateTip},
+		AfterRefs:  []string{"worktree-retirement-result:" + baseResult.ID},
+	}, now)
+	if err != nil {
+		return baseResult, fmt.Errorf("record worktree retirement outcome: %w", err)
+	}
+	if proof.ActionIntentID != pending.Action.ID || proof.PolicyDecisionID != pending.Decision.ID || strings.TrimSpace(proof.ReceiptID) == "" || strings.TrimSpace(proof.TransitionID) == "" {
+		return baseResult, fmt.Errorf("worktree retirement outcome proof chain incomplete")
+	}
+	baseResult.Status = "completed"
+	baseResult.ActionIntentID = proof.ActionIntentID
+	baseResult.PolicyDecisionID = proof.PolicyDecisionID
+	baseResult.ReceiptID = proof.ReceiptID
+	baseResult.TransitionID = proof.TransitionID
+	if err := persistWorktreeRetirementResult(resultPath, &baseResult); err != nil {
+		return baseResult, err
+	}
+	if err := os.Remove(pendingPath); err != nil && !os.IsNotExist(err) {
+		return baseResult, err
+	}
+	return baseResult, nil
+}
+
+func newWorktreeRetirementAction(plan WorktreeRetirementPlan, report WorktreeRetirementReviewReport, actor string, now time.Time) envelope.ActionIntent {
+	evidence := worktreeRetirementApplyProofRefs(plan, report)
+	id := "act_" + digestRetirementHex([]byte(plan.ID + "|" + report.AuthorizationDigest + "|" + actor))[:12]
+	return envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent, ID: id, CreatedAt: now.UTC().Format(time.RFC3339Nano),
+			Producer: envelope.Producer{Kind: "cli", Name: "compound"}, IDs: envelope.IDs{WorkID: plan.OwnerProof.WorkID},
+			Authority: envelope.Authority{SourceClass: "runtime", Status: "current"}, Privacy: "private", Risk: "tier1",
+			EvidenceRefs: evidence, Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		Actor: actor, Capability: "source-control.worktree-retire", Action: "retire_redundant_git_surface",
+		Target:        envelope.ActionTarget{Kind: "git-repository", ID: plan.ID, Path: plan.RepoRoot},
+		MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "repo",
+		Preview:      "remove the exact clean inactive linked worktree and CAS-delete the exact redundant local ref",
+		RollbackPlan: "restore the sealed candidate tip from a cited recovery artifact into a new local ref/worktree",
+	}
+}
+
+func compareRetirementPlanState(sealed, fresh WorktreeRetirementPlan) error {
+	if !fresh.Eligible {
+		return fmt.Errorf("fresh plan is blocked: %s", strings.Join(fresh.BlockReasons, "; "))
+	}
+	if sealed.RepoRoot != fresh.RepoRoot || sealed.RepositoryFingerprint != fresh.RepositoryFingerprint ||
+		sealed.CandidateRef != fresh.CandidateRef || sealed.CandidateTip != fresh.CandidateTip ||
+		sealed.AuthorityRef != fresh.AuthorityRef || sealed.AuthorityTip != fresh.AuthorityTip ||
+		sealed.PublicationRef != fresh.PublicationRef || sealed.PublicationTip != fresh.PublicationTip ||
+		sealed.CandidateRelation != fresh.CandidateRelation || !reflect.DeepEqual(sealed.OwnerProof, fresh.OwnerProof) ||
+		!reflect.DeepEqual(sealed.SourceProof, fresh.SourceProof) || !reflect.DeepEqual(sealed.RecoveryRefs, fresh.RecoveryRefs) {
+		return fmt.Errorf("sealed repository/ref/proof state changed")
+	}
+	if (sealed.Worktree == nil) != (fresh.Worktree == nil) {
+		return fmt.Errorf("sealed worktree presence changed")
+	}
+	if sealed.Worktree != nil {
+		a, b := sealed.Worktree, fresh.Worktree
+		if a.Path != b.Path || a.Head != b.Head || a.BranchRef != b.BranchRef || a.GitDir != b.GitDir || a.Locked != b.Locked || a.Prunable != b.Prunable || a.Clean != b.Clean || a.Liveness.State != b.Liveness.State {
+			return fmt.Errorf("sealed worktree identity/cleanliness/liveness changed")
+		}
+	}
+	return nil
+}
+
+func verifyRetirementResumeState(ctx context.Context, git WorktreeRetirementGit, plan WorktreeRetirementPlan, phase string) error {
+	authority, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.AuthorityRef)
+	if err != nil || authority != plan.AuthorityTip {
+		return fmt.Errorf("authority ref drift before retirement resume")
+	}
+	publication, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.PublicationRef)
+	if err != nil || publication != plan.PublicationTip {
+		return fmt.Errorf("publication ref drift before retirement resume")
+	}
+	switch phase {
+	case WorktreeRetirementPhaseWorktreeRemoved:
+		if err := verifyRetirementWorktreeAbsent(ctx, git, plan); err != nil {
+			return err
+		}
+		if plan.CandidateRef != "" {
+			tip, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.CandidateRef)
+			if err != nil || tip != plan.CandidateTip {
+				return fmt.Errorf("candidate ref drift before retirement resume")
+			}
+		}
+	case WorktreeRetirementPhaseRefDeleted, WorktreeRetirementPhaseVerified:
+		return verifyRetirementFinalState(ctx, git, plan)
+	default:
+		return fmt.Errorf("unknown retirement pending phase %q", phase)
+	}
+	return nil
+}
+
+func verifyRetirementFinalState(ctx context.Context, git WorktreeRetirementGit, plan WorktreeRetirementPlan) error {
+	if plan.Worktree != nil {
+		if err := verifyRetirementWorktreeAbsent(ctx, git, plan); err != nil {
+			return err
+		}
+	}
+	if plan.CandidateRef != "" {
+		if err := verifyRetirementRefAbsent(ctx, git, plan); err != nil {
+			return err
+		}
+	}
+	authority, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.AuthorityRef)
+	if err != nil || authority != plan.AuthorityTip {
+		return fmt.Errorf("authority ref changed during retirement")
+	}
+	publication, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.PublicationRef)
+	if err != nil || publication != plan.PublicationTip {
+		return fmt.Errorf("publication ref changed during retirement")
+	}
+	if len(plan.RecoveryRefs) == 0 {
+		return fmt.Errorf("recovery evidence disappeared")
+	}
+	return nil
+}
+
+func verifyRetirementWorktreeAbsent(ctx context.Context, git WorktreeRetirementGit, plan WorktreeRetirementPlan) error {
+	if plan.Worktree == nil {
+		return nil
+	}
+	out, err := git.Run(ctx, plan.RepoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return err
+	}
+	records, err := parseRetirementWorktrees(out)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if sameRetirementPath(record.Path, plan.Worktree.Path) {
+			return fmt.Errorf("retired worktree remains registered")
+		}
+	}
+	if _, err := os.Stat(plan.Worktree.Path); err == nil || !os.IsNotExist(err) {
+		return fmt.Errorf("retired worktree path still exists")
+	}
+	return nil
+}
+
+func verifyRetirementRefAbsent(ctx context.Context, git WorktreeRetirementGit, plan WorktreeRetirementPlan) error {
+	if plan.CandidateRef == "" {
+		return nil
+	}
+	_, err := git.Run(ctx, plan.RepoRoot, "rev-parse", "--verify", plan.CandidateRef)
+	if err == nil {
+		return fmt.Errorf("retired candidate ref still exists")
+	}
+	var commandErr *WorktreeRetirementCommandError
+	if errors.As(err, &commandErr) && (commandErr.ExitCode == 1 || commandErr.ExitCode == 128) {
+		return nil
+	}
+	return err
+}
+
+func recordWorktreeRetirementFailure(deps WorktreeRetirementApplyDependencies, plan WorktreeRetirementPlan, report WorktreeRetirementReviewReport, pending WorktreeRetirementPending, result WorktreeRetirementResult, resultPath string, changed bool, summary string, cause error, now time.Time) (WorktreeRetirementResult, error) {
+	status := "failed"
+	if changed {
+		status = "partial"
+	}
+	result.Status = status
+	result.Phase = pending.Phase
+	result.Error = cause.Error()
+	result.WorktreeRemoved = plan.Worktree != nil && (pending.Phase == WorktreeRetirementPhaseWorktreeRemoved || pending.Phase == WorktreeRetirementPhaseRefDeleted || pending.Phase == WorktreeRetirementPhaseVerified)
+	result.RefDeleted = plan.CandidateRef != "" && (pending.Phase == WorktreeRetirementPhaseRefDeleted || pending.Phase == WorktreeRetirementPhaseVerified)
+	proof, recordErr := deps.RecordOutcome(WorktreeRetirementActionOutcome{
+		Action: pending.Action, Decision: pending.Decision, Outcome: "failed", Changed: changed,
+		Summary: summary + ": " + cause.Error(), ProofRefs: worktreeRetirementApplyProofRefs(plan, report),
+		FailureCause: &envelope.FailureCause{SurfaceOutcome: status, Mechanism: summary},
+	}, now)
+	if recordErr == nil {
+		result.ActionIntentID = proof.ActionIntentID
+		result.PolicyDecisionID = proof.PolicyDecisionID
+		result.ReceiptID = proof.ReceiptID
+		result.TransitionID = proof.TransitionID
+	}
+	if persistErr := persistWorktreeRetirementResult(resultPath, &result); persistErr != nil {
+		return result, persistErr
+	}
+	if recordErr != nil {
+		return result, fmt.Errorf("%s; record failure outcome: %v", cause, recordErr)
+	}
+	return result, cause
+}
+
+func persistWorktreeRetirementPending(path string, pending *WorktreeRetirementPending, now time.Time) error {
+	pending.UpdatedAt = now.UTC().Format(time.RFC3339Nano)
+	pending.PendingDigest = worktreeRetirementPendingDigest(*pending)
+	return writeRetirementDurableJSON(path, pending)
+}
+
+func worktreeRetirementPendingDigest(pending WorktreeRetirementPending) string {
+	pending.PendingDigest = ""
+	data, _ := json.Marshal(pending)
+	return "sha256:" + digestRetirementHex(data)
+}
+
+func loadWorktreeRetirementPending(path string) (WorktreeRetirementPending, bool, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return WorktreeRetirementPending{}, false, nil
+	}
+	if err != nil {
+		return WorktreeRetirementPending{}, false, err
+	}
+	var pending WorktreeRetirementPending
+	if err := json.Unmarshal(data, &pending); err != nil {
+		return WorktreeRetirementPending{}, false, err
+	}
+	if !validRetirementDigest(pending.PendingDigest) || pending.PendingDigest != worktreeRetirementPendingDigest(pending) {
+		return WorktreeRetirementPending{}, false, fmt.Errorf("worktree retirement pending digest mismatch")
+	}
+	return pending, true, nil
+}
+
+func validateWorktreeRetirementPending(pending WorktreeRetirementPending, plan WorktreeRetirementPlan, report WorktreeRetirementReviewReport, actor string) error {
+	if pending.SchemaVersion != WorktreeRetirementPendingSchemaVersion || pending.PlanID != plan.ID || pending.PlanDigest != plan.PlanDigest || pending.AuthorizationDigest != report.AuthorizationDigest || pending.Actor != actor {
+		return fmt.Errorf("worktree retirement pending identity mismatch")
+	}
+	if err := pending.Action.Validate(); err != nil {
+		return err
+	}
+	if err := pending.Decision.Validate(); err != nil || pending.Decision.ActionIntentID != pending.Action.ID || !policy.Allowed(pending.Decision) {
+		return fmt.Errorf("worktree retirement pending policy invalid")
+	}
+	return nil
+}
+
+func persistWorktreeRetirementResult(path string, result *WorktreeRetirementResult) error {
+	result.ResultDigest = worktreeRetirementResultDigest(*result)
+	return writeRetirementDurableJSON(path, result)
+}
+
+func worktreeRetirementResultDigest(result WorktreeRetirementResult) string {
+	result.ResultDigest = ""
+	result.Replayed = false
+	data, _ := json.Marshal(result)
+	return "sha256:" + digestRetirementHex(data)
+}
+
+func loadWorktreeRetirementResult(path string) (WorktreeRetirementResult, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+	var result WorktreeRetirementResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return WorktreeRetirementResult{}, err
+	}
+	return result, nil
+}
+
+func validateWorktreeRetirementResult(result WorktreeRetirementResult, plan WorktreeRetirementPlan, report WorktreeRetirementReviewReport, path string) error {
+	if result.SchemaVersion != WorktreeRetirementResultSchemaVersion || result.PlanID != plan.ID || result.PlanDigest != plan.PlanDigest || result.AuthorizationDigest != report.AuthorizationDigest || filepath.Clean(result.ResultPath) != filepath.Clean(path) {
+		return fmt.Errorf("worktree retirement result identity mismatch")
+	}
+	if !validRetirementDigest(result.ResultDigest) || result.ResultDigest != worktreeRetirementResultDigest(result) {
+		return fmt.Errorf("worktree retirement result digest mismatch")
+	}
+	return nil
+}
+
+func writeRetirementDurableJSON(path string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".worktree-retirement-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+func worktreeRetirementApplyProofRefs(plan WorktreeRetirementPlan, report WorktreeRetirementReviewReport) []string {
+	refs := worktreeRetirementEvidenceRefs(plan)
+	refs = append(refs, report.SourceDigest, report.AuthorizationDigest, "worktree-retirement-review:"+report.ID)
+	return sortedUniqueNonEmpty(refs)
+}
+
+func retirementWorktreePath(plan WorktreeRetirementPlan) string {
+	if plan.Worktree == nil {
+		return ""
+	}
+	return plan.Worktree.Path
+}
+
+func sameRetirementOwnerLease(a, b WorktreeRetirementOwnerProof) bool {
+	return a.WorkID == b.WorkID && a.State == "running" && b.State == "running" && a.LeaseHolder == b.LeaseHolder && a.LeaseClaimedAt == b.LeaseClaimedAt
+}
