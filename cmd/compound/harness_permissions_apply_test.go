@@ -306,7 +306,7 @@ func TestHarnessGenerateApplyFailureRecordsFailedReceiptWithoutFalseSuccess(t *t
 	installHarnessPermissionGrant(t, homePath, targetPath)
 	before, _ := os.ReadFile(targetPath)
 	previous := applyHarnessPermissions
-	applyHarnessPermissions = func(string, harness.PermissionRender, envelope.ActionIntent, envelope.PolicyDecision, harness.PermissionApplyAuthorization) (harness.PermissionRender, error) {
+	applyHarnessPermissions = func(string, harness.PermissionRender, envelope.ActionIntent, envelope.PolicyDecision, harness.PermissionApplyAuthorization, harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
 		return harness.PermissionRender{}, errors.New("injected permission apply failure")
 	}
 	t.Cleanup(func() { applyHarnessPermissions = previous })
@@ -353,12 +353,12 @@ func TestHarnessGenerateApplyAuthorityChangeAfterApprovalIsReceiptedAsFailure(t 
 	installHarnessPermissionGrant(t, homePath, targetPath)
 	before, _ := os.ReadFile(targetPath)
 	previous := applyHarnessPermissions
-	applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization) (harness.PermissionRender, error) {
+	applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization, finalize harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
 		writeHarnessApplyJSON(t, harness.PermissionAuthorityPath(home, "claude_code"), harness.PermissionAuthority{
 			SchemaVersion: harness.PermissionAuthoritySchemaVersion, Harness: "claude_code", AuthorityRef: harness.PermissionAuthorityRef("claude_code"), TargetPath: targetPath + ".changed",
 			Permissions: harness.PermissionRules{Allow: []string{"Write"}, DefaultMode: "auto"}, AutoMode: harness.AutoModePolicy{Allow: []string{"$defaults", "Write"}},
 		})
-		return harness.ApplyPermissions(home, approved, action, decision, authorize)
+		return harness.ApplyPermissions(home, approved, action, decision, authorize, finalize)
 	}
 	t.Cleanup(func() { applyHarnessPermissions = previous })
 	var stdout, stderr bytes.Buffer
@@ -436,9 +436,9 @@ func TestHarnessGenerateApplyRevalidatesWorkLeaseAndGrantInsideMutation(t *testi
 				t.Fatal(err)
 			}
 			previous := applyHarnessPermissions
-			applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization) (harness.PermissionRender, error) {
+			applyHarnessPermissions = func(home string, approved harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization, finalize harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
 				tc.mutate(t, home, w.ID, targetPath)
-				return previous(home, approved, action, decision, authorize)
+				return previous(home, approved, action, decision, authorize, finalize)
 			}
 			t.Cleanup(func() { applyHarnessPermissions = previous })
 
@@ -478,7 +478,7 @@ func TestHarnessGenerateApplyRevalidatesDecisionExpiryInsideMutation(t *testing.
 		t.Fatal(err)
 	}
 	previous := applyHarnessPermissions
-	applyHarnessPermissions = func(_ string, _ harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization) (harness.PermissionRender, error) {
+	applyHarnessPermissions = func(_ string, _ harness.PermissionRender, action envelope.ActionIntent, decision envelope.PolicyDecision, authorize harness.PermissionApplyAuthorization, _ harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
 		return harness.PermissionRender{}, authorize(action, decision, runNow.Add(2*time.Hour))
 	}
 	t.Cleanup(func() { applyHarnessPermissions = previous })
@@ -499,6 +499,159 @@ func TestHarnessGenerateApplyRevalidatesDecisionExpiryInsideMutation(t *testing.
 	}
 	if _, err := os.Stat(harness.HarnessArtifactManifestPath(homePath)); !os.IsNotExist(err) {
 		t.Fatalf("expired decision wrote manifest: %v", err)
+	}
+}
+
+func TestHarnessGenerateApplyRecoversExactPublishedOutcomeBeforeNewAction(t *testing.T) {
+	homePath, targetPath, w := setupHarnessPermissionApplyWork(t, "operator:test", "running")
+	installHarnessPermissionGrant(t, homePath, targetPath)
+	firstNow := cliTestNow.Add(3 * time.Minute)
+	render, err := harness.RenderPermissions(homePath, "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedActionID := actIDFor(
+		"act_", w.ID, "harness.permissions.apply", "claude_code", render.Artifact.SourceRevision,
+		firstNow.UTC().Format(time.RFC3339Nano),
+	)
+	injected := errors.New("injected receipt store interruption")
+	previousRecord := recordHarnessPermissionOutcome
+	recordHarnessPermissionOutcome = func(*work.Store, string, work.ReceiptedActionInput, time.Time) (work.ReceiptedActionResult, error) {
+		return work.ReceiptedActionResult{}, injected
+	}
+	t.Cleanup(func() { recordHarnessPermissionOutcome = previousRecord })
+	var stdout, stderr bytes.Buffer
+	code := runHarnessGenerateApply([]string{
+		"--harness", "claude_code", "--apply", "--work", w.ID, "--actor", "operator:test", "--json",
+	}, &stdout, &stderr, firstNow)
+	if code != 1 || !strings.Contains(strings.ToLower(stderr.String()), "pending finalization") {
+		t.Fatalf("first code=%d stderr=%s", code, stderr.String())
+	}
+	if _, err := os.Stat(harness.PermissionApplyPendingPath(homePath, "claude_code")); err != nil {
+		t.Fatalf("published mutation lost pending identity: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", expectedActionID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("failed finalizer emitted a competing action envelope: %v", err)
+	}
+
+	recordHarnessPermissionOutcome = previousRecord
+	stdout.Reset()
+	stderr.Reset()
+	code = runHarnessGenerateApply([]string{
+		"--harness", "claude_code", "--apply", "--work", w.ID, "--actor", "operator:test", "--json",
+	}, &stdout, &stderr, firstNow.Add(time.Hour))
+	if code != 0 {
+		t.Fatalf("recovery code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var report harnessPermissionApplyReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.ActionIntentID != expectedActionID || !report.Changed || !report.TargetChanged || !report.ManifestChanged {
+		t.Fatalf("recovered report lost original outcome: %+v", report)
+	}
+	var receipt envelope.Receipt
+	readHarnessApplyJSON(t, filepath.Join(homePath, "events", report.ReceiptID+".json"), &receipt)
+	wantFiles := []string{targetPath, harness.HarnessArtifactManifestPath(homePath)}
+	if receipt.Outcome != "completed" || !receipt.StateDelta.Changed || !reflect.DeepEqual(receipt.StateDelta.FilesChanged, wantFiles) {
+		t.Fatalf("recovered receipt = %+v, want files %v", receipt, wantFiles)
+	}
+	if _, err := os.Stat(harness.PermissionApplyPendingPath(homePath, "claude_code")); !os.IsNotExist(err) {
+		t.Fatalf("successful recovery left pending identity: %v", err)
+	}
+}
+
+func TestHarnessGenerateApplyReceiptsManifestOnlyMutationAsChanged(t *testing.T) {
+	homePath, targetPath, w := setupHarnessPermissionApplyWork(t, "operator:test", "running")
+	installHarnessPermissionGrant(t, homePath, targetPath)
+	render, err := harness.RenderPermissions(homePath, "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, render.Content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := runHarnessGenerateApply([]string{
+		"--harness", "claude_code", "--apply", "--work", w.ID, "--actor", "operator:test", "--json",
+	}, &stdout, &stderr, cliTestNow.Add(3*time.Minute))
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var report harnessPermissionApplyReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Changed || report.TargetChanged || !report.ManifestChanged {
+		t.Fatalf("manifest-only report = %+v", report)
+	}
+	var receipt envelope.Receipt
+	readHarnessApplyJSON(t, filepath.Join(homePath, "events", report.ReceiptID+".json"), &receipt)
+	if receipt.Outcome != "completed" || !receipt.StateDelta.Changed ||
+		!reflect.DeepEqual(receipt.StateDelta.FilesChanged, []string{harness.HarnessArtifactManifestPath(homePath)}) {
+		t.Fatalf("manifest-only receipt = %+v", receipt)
+	}
+}
+
+func TestHarnessGenerateApplyFailedPostReadRecordsObservationFailure(t *testing.T) {
+	homePath, targetPath, w := setupHarnessPermissionApplyWork(t, "operator:test", "running")
+	installHarnessPermissionGrant(t, homePath, targetPath)
+	preimage, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousApply := applyHarnessPermissions
+	applyHarnessPermissions = func(string, harness.PermissionRender, envelope.ActionIntent, envelope.PolicyDecision, harness.PermissionApplyAuthorization, harness.PermissionApplyFinalize) (harness.PermissionRender, error) {
+		return harness.PermissionRender{}, errors.New("injected permission apply failure")
+	}
+	t.Cleanup(func() { applyHarnessPermissions = previousApply })
+	previousRead := readPermissionTargetForObservation
+	readPermissionTargetForObservation = func(path string) ([]byte, error) {
+		if path == targetPath {
+			return nil, os.ErrPermission
+		}
+		return os.ReadFile(path)
+	}
+	t.Cleanup(func() { readPermissionTargetForObservation = previousRead })
+
+	var stdout, stderr bytes.Buffer
+	code := runHarnessGenerateApply([]string{
+		"--harness", "claude_code", "--apply", "--work", w.ID, "--actor", "operator:test", "--json",
+	}, &stdout, &stderr, cliTestNow.Add(3*time.Minute))
+	if code != 1 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	var receipt envelope.Receipt
+	var transition envelope.Transition
+	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		switch {
+		case strings.HasPrefix(entry.Name(), "rec_"):
+			readHarnessApplyJSON(t, filepath.Join(homePath, "events", entry.Name()), &receipt)
+		case strings.HasPrefix(entry.Name(), "tr_"):
+			readHarnessApplyJSON(t, filepath.Join(homePath, "events", entry.Name()), &transition)
+		}
+	}
+	preimageRef := "sha256:" + permissionApplyDigest(preimage)
+	if receipt.Outcome != "failed" || !receipt.StateDelta.Changed ||
+		!reflect.DeepEqual(receipt.StateDelta.FilesChanged, []string{targetPath}) || receipt.FailureCause == nil ||
+		!strings.Contains(strings.ToLower(receipt.FailureCause.Mechanism), "observation") {
+		t.Fatalf("failed observation receipt = %+v", receipt)
+	}
+	if containsString(transition.AfterRefs, preimageRef) {
+		t.Fatalf("failed post-read substituted preimage as postimage: %+v", transition.AfterRefs)
+	}
+	foundObservationError := false
+	for _, ref := range transition.AfterRefs {
+		if strings.HasPrefix(ref, "observation_error:permission-target-read:") {
+			foundObservationError = true
+		}
+	}
+	if !foundObservationError {
+		t.Fatalf("transition missing post-read observation failure: %+v", transition.AfterRefs)
 	}
 }
 
