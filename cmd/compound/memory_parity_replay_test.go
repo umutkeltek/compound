@@ -337,6 +337,15 @@ func TestParityReplayForbidsRequestedGBrainWhenOrientRefsMatch(t *testing.T) {
 	if row.EngineDependency == nil || row.EngineDependency.RequestedEngine != "gbrain" || row.EngineDependency.ObservedEngine != "parity-test-breadth" || row.EngineDependency.Outcome != retrievalparity.EngineOutcomeUsed || row.DependencyPassed == nil || *row.DependencyPassed {
 		t.Fatalf("forbidden gbrain dependency evidence = %+v", row)
 	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, privateValue := range []string{query, os.Args[0], os.Getenv("COMPOUND_MEM_ENGINE_BIN")} {
+		if privateValue != "" && strings.Contains(string(raw), privateValue) {
+			t.Fatalf("parity report leaked query/command evidence %q: %s", privateValue, raw)
+		}
+	}
 }
 
 func TestParityReplayForbidsGBrainWhenCapabilitiesProbeFails(t *testing.T) {

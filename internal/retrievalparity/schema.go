@@ -81,7 +81,7 @@ type EngineDependencyEvidence struct {
 	Attempted        bool   `json:"attempted"`
 	RequestedEngine  string `json:"requested_engine,omitempty"`
 	ObservedEngine   string `json:"observed_engine,omitempty"`
-	Embedder         string `json:"embedder,omitempty"`
+	Embedder         string `json:"embedder"`
 	CorpusGeneration int64  `json:"corpus_generation"`
 	Outcome          string `json:"outcome"`
 	ErrorClass       string `json:"error_class,omitempty"`

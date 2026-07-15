@@ -12,6 +12,18 @@ func (unavailableTraceEngine) Capabilities() mem.EngineCapabilities {
 	return mem.EngineCapabilities{Name: "protocol", Breadth: true}
 }
 
+type invalidNameTraceEngine struct{}
+
+func (invalidNameTraceEngine) Capabilities() mem.EngineCapabilities {
+	return mem.EngineCapabilities{Name: "invalid/engine", Breadth: true, Embedder: "test:embedder:3:f32"}
+}
+
+func (invalidNameTraceEngine) Index([]mem.Claim, int64) error { return nil }
+
+func (invalidNameTraceEngine) Query(string, string, []string, int) ([]mem.Hit, error) {
+	return nil, nil
+}
+
 func (unavailableTraceEngine) Index([]mem.Claim, int64) error {
 	return mem.ErrEngineUnavailable
 }
@@ -51,5 +63,29 @@ func TestPackWithCapabilitiesTracedRecordsBrokenConfiguredEngine(t *testing.T) {
 	}
 	if trace.Embedder != "" || trace.CorpusGeneration != 0 {
 		t.Fatalf("failed engine must not invent capability evidence: %+v", trace)
+	}
+}
+
+func TestPackWithCapabilitiesTracedRefusesUnreportableEngineIdentity(t *testing.T) {
+	homePath := t.TempDir()
+	original := breadthEngineFactory
+	breadthEngineFactory = func(string) (mem.Engine, func()) {
+		return invalidNameTraceEngine{}, func() {}
+	}
+	t.Cleanup(func() { breadthEngineFactory = original })
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "opaque-test-command")
+
+	_, trace, err := PackWithCapabilitiesTraced(Input{
+		Harness:  "codex",
+		Cwd:      "/workspace/synthetic",
+		Task:     "reject an unreportable engine identity",
+		RepoKind: "product",
+		Mode:     "execute",
+	}, DefaultPolicy(), homePath, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trace.Attempted || trace.ObservedEngine != "" || trace.Outcome != EngineOutcomeRefused || trace.ErrorClass != EngineErrorProtocolVersion {
+		t.Fatalf("invalid-name trace = %+v, want bounded protocol refusal", trace)
 	}
 }

@@ -1483,8 +1483,13 @@ func semanticTaskRanksTraced(homePath string, in Input, trace *EngineDependencyT
 		if caps.CorpusGen >= 0 {
 			trace.CorpusGeneration = caps.CorpusGen
 		}
-		trace.Outcome = EngineOutcomeUsed
-		trace.ErrorClass = ""
+		if trace.ObservedEngine == "" {
+			trace.Outcome = EngineOutcomeRefused
+			trace.ErrorClass = EngineErrorProtocolVersion
+		} else {
+			trace.Outcome = EngineOutcomeUsed
+			trace.ErrorClass = ""
+		}
 	}
 	if len(claims) == 0 {
 		return nil

@@ -505,6 +505,24 @@ func TestEngineEvidencePersistsZeroCorpusGeneration(t *testing.T) {
 	}
 }
 
+func TestEngineEvidencePersistsEmptyEmbedder(t *testing.T) {
+	row := NewReplayRowWithEngineEvidence(FixtureRow{
+		Consumer: ConsumerQuery,
+		Query:    "lexical engine has an explicit empty embedder",
+	}, nil, time.Millisecond, true, EngineDependencyEvidence{
+		Attempted:      true,
+		ObservedEngine: "lexical",
+		Outcome:        EngineOutcomeUsed,
+	}, NewReplayIdentity(HashQuery("empty-embedder-fixture"), ConsumerQuery, 10))
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"embedder":""`) {
+		t.Fatalf("empty embedder omitted from engine evidence: %s", raw)
+	}
+}
+
 func TestBuildReportWithoutDependencyKeepsLegacyID(t *testing.T) {
 	fixtureRef := HashQuery("legacy report identity fixture")
 	row := NewReplayRow(FixtureRow{
