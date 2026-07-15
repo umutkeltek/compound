@@ -54,6 +54,16 @@ func TestPermissionAuthorityValidation(t *testing.T) {
 	}
 }
 
+func TestPermissionApplyPathsUseCatalogOwnedHabitats(t *testing.T) {
+	homePath := filepath.Join(string(os.PathSeparator), "owned", ".compound")
+	if got, want := PermissionApplyPendingPath(homePath, "claude_code"), filepath.Join(homePath, "work", "transactions", "harness-permissions", "claude_code.json"); got != want {
+		t.Fatalf("permission pending path = %q, want %q", got, want)
+	}
+	if got, want := permissionApplyLockPath(homePath), filepath.Join(homePath, "lock", "harness-permissions.lock"); got != want {
+		t.Fatalf("permission lock path = %q, want %q", got, want)
+	}
+}
+
 func TestLoadPermissionAuthorityRejectsWrongHarnessFile(t *testing.T) {
 	homePath := t.TempDir()
 	policy := permissionFixture([]string{"Read"})
@@ -208,6 +218,22 @@ func TestApplyPermissionsWritesManagedRulesAndArtifactIdempotently(t *testing.T)
 	}
 }
 
+func TestApplyPermissionsCreatesNoUnknownTopLevelHabitats(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	if _, err := applyGovernedPermissions(t, homePath, "claude_code"); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := homepkg.InspectHabitat(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inventory.OK || len(inventory.UnknownRoots) != 0 || len(inventory.UnknownEntries) != 0 {
+		t.Fatalf("permission apply created unknown habitat: %+v", inventory)
+	}
+}
+
 func TestApplyPermissionsFirstAdoptionOfPreexistingManagedRulesIsImmediatelyStable(t *testing.T) {
 	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
 	writeTestJSON(t, targetPath, map[string]any{
@@ -308,6 +334,77 @@ func TestApplyPermissionsInterruptedWriteIsVisibleAndRecovered(t *testing.T) {
 	}
 	if _, err := os.Stat(PermissionApplyPendingPath(homePath, "claude_code")); !os.IsNotExist(err) {
 		t.Fatalf("pending transaction remains after recovery: %v", err)
+	}
+}
+
+func TestApplyPermissionsRecoversLegacyPendingTransaction(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	previousHook := applyPermissionsAfterTargetWrite
+	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
+		t.Fatal("interrupted apply error = nil")
+	}
+	applyPermissionsAfterTargetWrite = previousHook
+	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
+
+	canonicalPath := filepath.Join(homePath, "work", "transactions", "harness-permissions", "claude_code.json")
+	legacyPath := filepath.Join(homePath, "transactions", "harness-permissions", "claude_code.json")
+	if canonicalPath != PermissionApplyPendingPath(homePath, "claude_code") {
+		t.Fatalf("test canonical path disagrees with constructor: %q", PermissionApplyPendingPath(homePath, "claude_code"))
+	}
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(canonicalPath, legacyPath); err != nil {
+		t.Fatal(err)
+	}
+	report, err := PermissionDrift(homePath, "claude_code")
+	if err != nil || !report.Drifted || !strings.Contains(strings.Join(report.Details, " "), "incomplete permission apply transaction") {
+		t.Fatalf("legacy pending drift = %+v err=%v", report, err)
+	}
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err != nil {
+		t.Fatalf("recover legacy apply: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy pending remains after recovery: %v", err)
+	}
+	if _, err := os.Stat(canonicalPath); !os.IsNotExist(err) {
+		t.Fatalf("canonical pending remains after recovery: %v", err)
+	}
+}
+
+func TestApplyPermissionsRefusesCoexistingCanonicalAndLegacyPendingTransactions(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
+	previousHook := applyPermissionsAfterTargetWrite
+	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
+		t.Fatal("interrupted apply error = nil")
+	}
+	applyPermissionsAfterTargetWrite = previousHook
+	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
+
+	canonicalPath := PermissionApplyPendingPath(homePath, "claude_code")
+	legacyPath := filepath.Join(homePath, "transactions", "harness-permissions", "claude_code.json")
+	body, err := os.ReadFile(canonicalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePermissionPrivateFileAtomic(legacyPath, body); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil || !strings.Contains(err.Error(), "canonical and legacy") {
+		t.Fatalf("coexisting pending apply error = %v, want fail-closed ambiguity", err)
+	}
+	for _, path := range []string{canonicalPath, legacyPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("coexisting pending state was not preserved at %s: %v", path, err)
+		}
 	}
 }
 

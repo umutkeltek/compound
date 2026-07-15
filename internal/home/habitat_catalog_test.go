@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -131,9 +132,9 @@ func TestHabitatCatalogClassifiesEveryKnownRootAndMakesBridgeDebtExplicit(t *tes
 		"contracts", "create-plans", "credit-harvest", "decisions", "dispatch-advances",
 		"dispatch-claims", "dispatch-plans", "dispatch-step-runs", "dispatch-steps", "distill",
 		"events", "evidence", "exports", "imports", "inbox", "indexes", "lanebeliefs",
-		"ledger", "lock", "logs", "observed", "packs", "panel-runs", "private",
+		"ledger", "lock", "locks", "logs", "observed", "packs", "panel-runs", "private",
 		"projections", "registries", "reports", "reviewed-fixtures", "reviews",
-		"run-observations", "runs", "runtime", "snapshots", "sources", "state", "tmp", "work",
+		"run-observations", "runs", "runtime", "snapshots", "sources", "state", "tmp", "transactions", "work",
 	}
 	for _, root := range knownRoots {
 		entry, ok := HabitatForPath(root)
@@ -151,6 +152,39 @@ func TestHabitatCatalogClassifiesEveryKnownRootAndMakesBridgeDebtExplicit(t *tes
 		if strings.HasPrefix(entry.Prefix, "projections/") && entry.Backup && entry.Compact {
 			t.Fatalf("protected projection cannot also be compactable: %+v", entry)
 		}
+	}
+}
+
+func TestHabitatCatalogOwnsPermissionActuatorCanonicalAndLegacyPaths(t *testing.T) {
+	canonicalTransactions, ok := HabitatForPath("work/transactions/harness-permissions/claude_code.json")
+	if !ok || canonicalTransactions.Prefix != "work/transactions" || canonicalTransactions.Status != HabitatStatusActive || canonicalTransactions.Class != HabitatClassOperational || !canonicalTransactions.Backup || canonicalTransactions.Compact || !canonicalTransactions.PlacementAllowed {
+		t.Fatalf("canonical permission transaction habitat is not durable operational state: %+v ok=%t", canonicalTransactions, ok)
+	}
+	canonicalLock, ok := HabitatForPath("lock/harness-permissions.lock")
+	if !ok || canonicalLock.Prefix != "lock" || canonicalLock.Status != HabitatStatusActive || canonicalLock.Class != HabitatClassTransient || !canonicalLock.PlacementAllowed {
+		t.Fatalf("canonical permission lock habitat is not owned transient state: %+v ok=%t", canonicalLock, ok)
+	}
+	for _, tc := range []struct {
+		path, prefix, canonical string
+	}{
+		{path: "locks/harness-permissions.lock", prefix: "locks", canonical: "lock"},
+		{path: "transactions/harness-permissions/claude_code.json", prefix: "transactions", canonical: "work/transactions"},
+	} {
+		entry, ok := HabitatForPath(tc.path)
+		if !ok || entry.Prefix != tc.prefix || entry.Status != HabitatStatusBridge || entry.CanonicalPrefix != tc.canonical || !entry.Backup || entry.Compact || entry.PlacementAllowed || entry.RetirementCondition == "" {
+			t.Fatalf("legacy permission habitat %q hides compatibility debt: %+v ok=%t", tc.path, entry, ok)
+		}
+	}
+
+	homePath := t.TempDir()
+	writeHomeFile(t, homePath, "locks/harness-permissions.lock", "")
+	writeHomeFile(t, homePath, "transactions/harness-permissions/claude_code.json", `{}`)
+	inventory, err := InspectHabitat(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inventory.OK || !reflect.DeepEqual(inventory.BridgeRoots, []string{"locks", "transactions"}) {
+		t.Fatalf("legacy permission roots are not explicit bridges: %+v", inventory)
 	}
 }
 
