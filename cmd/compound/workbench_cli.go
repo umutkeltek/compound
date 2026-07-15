@@ -14,6 +14,7 @@ import (
 	"compound/internal/authority"
 	"compound/internal/capgraph"
 	"compound/internal/decisions"
+	"compound/internal/director"
 	"compound/internal/distiller"
 	"compound/internal/home"
 	"compound/internal/mem"
@@ -1189,6 +1190,7 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	product.AnnotateOutboundDryRunEvidenceQueue(&report)
 	authority.AnnotateJobHealthQueue(&report)
 	authority.AnnotateSourceControlCleanupQueue(&report)
+	director.AnnotateHarnessEditProposalQueue(&report)
 	runtimebinding.AnnotateRepairQueue(&report)
 	capgraph.AnnotateCapabilityEvaluationQueue(&report)
 	capgraph.AnnotateExternalRepoIntakeQueue(&report)

@@ -6448,7 +6448,7 @@ func openMemStore() (*mem.Store, string) {
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
@@ -6708,6 +6708,10 @@ func cmdAuthority(args []string) {
 			os.Exit(1)
 		}
 		printJSON(report)
+		return
+	}
+	if args[0] == "harness-edit-review" {
+		runAuthorityHarnessEditReview(args, homePath)
 		return
 	}
 	if args[0] == "resolve" {
