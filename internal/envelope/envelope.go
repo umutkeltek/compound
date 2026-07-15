@@ -41,6 +41,10 @@ var (
 	Reversibilities   = []string{"none", "easy", "manual", "hard", "irreversible"}
 	PolicyOutcomes    = []string{"allow", "allow_with_obligations", "hold", "deny"}
 	MoveTypes         = []string{"outward_delta", "memory_delta", "rule_delta", "control_plane_repair", "audit_only"}
+	// DeltaCauses is the causal CLASS of a source-truth change carried on a Transition's optional
+	// Cause (see TransitionCause and docs/architecture/transition.md). It lets a future agent choose
+	// repair/retirement/acceptance/invalidation instead of re-litigating the old value.
+	DeltaCauses = []string{"repair", "retire", "accept", "invalidate"}
 	ProofMedia        = []string{"web-ui", "ios", "cli", "api", "none"}
 	ProjectionKinds   = []string{"memory", "skill", "product", "cost", "risk", "taste", "routing", "human_attention", "rule", "control_plane"}
 	ProjectionRoles   = []string{"offered", "used", "missed", "false_triggered", "validated", "candidate", "promoted", "parked", "rejected", "proof"}
@@ -961,15 +965,28 @@ type SecondOrder struct {
 	ShouldDecay           bool   `json:"should_decay"`
 	RevisitAt             string `json:"revisit_at,omitempty"`
 }
+// TransitionCause is the OPTIONAL causal cross-ref carried with a Transition: the causal CLASS of
+// the source-truth change (delta_cause), the refs that caused it (caused_by_refs), and who is
+// expected to act next (next_consumer, empty => audit_only). It ships a proven subset of the
+// future-branch semantics in docs/architecture/transition.md; opens_branches[]/prevents_branch are
+// deferred until a real consumer exists. Additive + omitempty: absence leaves every existing
+// Transition unaffected.
+type TransitionCause struct {
+	DeltaCause   string   `json:"delta_cause"`             // one of DeltaCauses
+	CausedByRefs []string `json:"caused_by_refs"`          // >=1 non-empty: work_id / decision: / commit / source:<path>#rev
+	NextConsumer string   `json:"next_consumer,omitempty"` // empty => audit_only
+}
+
 type Transition struct {
 	Header
-	SourceTraceID string      `json:"source_trace_id,omitempty"`
-	BeforeRefs    []string    `json:"before_refs"`
-	ActionRefs    []string    `json:"action_refs"`
-	AfterRefs     []string    `json:"after_refs"`
-	StateDelta    string      `json:"state_delta,omitempty"`
-	Projections   Projections `json:"projections"`
-	SecondOrder   SecondOrder `json:"second_order"`
+	SourceTraceID string           `json:"source_trace_id,omitempty"`
+	BeforeRefs    []string         `json:"before_refs"`
+	ActionRefs    []string         `json:"action_refs"`
+	AfterRefs     []string         `json:"after_refs"`
+	StateDelta    string           `json:"state_delta,omitempty"`
+	Projections   Projections      `json:"projections"`
+	SecondOrder   SecondOrder      `json:"second_order"`
+	Cause         *TransitionCause `json:"cause,omitempty"`
 }
 
 func (e *Transition) Kind() string { return "transition" }
@@ -983,6 +1000,12 @@ func (e *Transition) Validate() error {
 		v.enum(fmt.Sprintf("projections.typed[%d].kind", i), p.Kind, ProjectionKinds, true)
 		v.enum(fmt.Sprintf("projections.typed[%d].role", i), p.Role, ProjectionRoles, true)
 		v.req(fmt.Sprintf("projections.typed[%d].ref", i), p.Ref)
+	}
+	if e.Cause != nil {
+		v.enum("cause.delta_cause", e.Cause.DeltaCause, DeltaCauses, true)
+		if len(nonEmpty(e.Cause.CausedByRefs)) == 0 {
+			v.addf("cause.caused_by_refs requires at least one non-empty ref")
+		}
 	}
 	return v.result(e.Kind())
 }
