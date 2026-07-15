@@ -310,6 +310,48 @@ func agentLaneNodeID(tuple agentLaneTuple) string {
 	return AgentLaneNodeID(tuple)
 }
 
+// ResolveLaneRef maps a lane reference to its canonical agent-lane node id, or reports
+// (_, false) when the ref does not name exactly one imported agent-lane node. It is the single
+// no-guessing lane resolver (B0, resolving MR-2/MR-3): every emitted lane identity flows
+// through here, byte-identical to slice A's AgentLaneNodeID output, never re-slugged.
+//
+// Resolution (store-backed truth, mirroring routeevidence's preparation-lane pattern):
+//  1. Node-id passthrough — a ref that IS an imported (non-retired) agent-lane node id
+//     resolves to itself.
+//  2. Short-id mapping — a ref mapped by AgentLaneNodeIDFromShortLaneID (the MR-3 short↔node
+//     map) resolves ONLY when that mapped node is itself imported.
+//  3. Everything else → ("", false).
+//
+// Store membership is the discriminator that satisfies falsifier (l): a bare harness ("codex")
+// and an actor string ("agent-harness:0f0f0f0f") both *do* have a deterministic short-id
+// mapping, but they map to synthetic nodes no import ever produced, so they never resolve —
+// harness-level and actor-level evidence stays zero-evidence, never a guess. A store read
+// error fails closed (unresolvable) so a declaration gate rejects rather than mis-attributes.
+func (s *Store) ResolveLaneRef(ref string) (string, bool) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", false
+	}
+	nodes, err := s.AgentLaneNodes()
+	if err != nil {
+		return "", false
+	}
+	imported := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		if n.Retired {
+			continue
+		}
+		imported[n.ID] = true
+	}
+	if imported[ref] {
+		return ref, true
+	}
+	if nodeID, ok := AgentLaneNodeIDFromShortLaneID(ref); ok && imported[nodeID] {
+		return nodeID, true
+	}
+	return "", false
+}
+
 func AgentLaneNodeIDFromShortLaneID(laneID string) (string, bool) {
 	tuple, ok := AgentLaneTupleFromShortLaneID(laneID)
 	if !ok {
