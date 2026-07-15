@@ -404,48 +404,126 @@ func runConsoleSupervisedCommand(plan consoleLaunchPlan, command []string, signa
 	}
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
+	pgid := cmd.Process.Pid
+	leaderDone := false
+	waitForGroupExit := func(timeout time.Duration) (bool, error) {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		poll := time.NewTicker(10 * time.Millisecond)
+		defer poll.Stop()
+		waitCh := waited
+		if leaderDone {
+			waitCh = nil
+		}
+		for {
+			alive, err := consoleProcessGroupAlive(pgid)
+			if err != nil {
+				return false, err
+			}
+			if leaderDone && !alive {
+				return true, nil
+			}
+			select {
+			case <-waitCh:
+				leaderDone = true
+				waitCh = nil
+			case <-poll.C:
+			case <-timer.C:
+				return false, nil
+			}
+		}
+	}
+	forceGroupExit := func() error {
+		if err := signalConsoleProcessGroup(pgid, syscall.SIGKILL); err != nil {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("force console process group shutdown: %w", err)
+		}
+		stopped, err := waitForGroupExit(consoleShutdownGrace)
+		if err != nil {
+			return fmt.Errorf("verify forced console process group shutdown: %w", err)
+		}
+		if !stopped {
+			_ = cmd.Process.Kill()
+			return fmt.Errorf("console process group %d still exists after forced shutdown", pgid)
+		}
+		return nil
+	}
 	select {
 	case err := <-waited:
+		leaderDone = true
+		alive, groupErr := consoleProcessGroupAlive(pgid)
+		if groupErr != nil {
+			return fmt.Errorf("inspect console process group after leader exit: %w", groupErr)
+		}
+		if alive {
+			if cleanupErr := forceGroupExit(); cleanupErr != nil {
+				return cleanupErr
+			}
+		}
 		return err
 	case received := <-signals:
 		sig, ok := received.(syscall.Signal)
 		if !ok {
 			sig = syscall.SIGTERM
 		}
-		if err := syscall.Kill(-cmd.Process.Pid, sig); err != nil && err != syscall.ESRCH {
+		if err := signalConsoleProcessGroup(pgid, sig); err != nil {
 			_ = cmd.Process.Kill()
-			<-waited
+			_, _ = waitForGroupExit(consoleShutdownGrace)
 			return fmt.Errorf("forward console termination: %w", err)
 		}
-		timer := time.NewTimer(consoleShutdownGrace)
-		defer timer.Stop()
-		select {
-		case <-waited:
-			return nil
-		case <-timer.C:
-			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-				_ = cmd.Process.Kill()
-				<-waited
-				return fmt.Errorf("force console shutdown after %s: %w", consoleShutdownGrace, err)
-			}
-			<-waited
+		stopped, err := waitForGroupExit(consoleShutdownGrace)
+		if err != nil {
+			_ = forceGroupExit()
+			return fmt.Errorf("verify console process group shutdown: %w", err)
+		}
+		if stopped {
 			return nil
 		}
+		if err := forceGroupExit(); err != nil {
+			return fmt.Errorf("force console shutdown after %s: %w", consoleShutdownGrace, err)
+		}
+		return nil
+	}
+}
+
+func signalConsoleProcessGroup(pgid int, sig syscall.Signal) error {
+	err := syscall.Kill(-pgid, sig)
+	if err == syscall.ESRCH {
+		return nil
+	}
+	return err
+}
+
+func consoleProcessGroupAlive(pgid int) (bool, error) {
+	err := syscall.Kill(-pgid, 0)
+	switch err {
+	case nil, syscall.EPERM:
+		return true, nil
+	case syscall.ESRCH:
+		return false, nil
+	default:
+		return false, err
 	}
 }
 
 func acquireConsoleLifecycleLock(consoleDir string) (*os.File, error) {
-	lockDir := filepath.Join(consoleDir, ".next")
-	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve console lifecycle lock directory: %w", err)
+	}
+	lockDir := filepath.Join(cacheDir, "compound", "locks")
+	if err := os.MkdirAll(lockDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create console lifecycle lock directory: %w", err)
 	}
-	lock, err := os.OpenFile(filepath.Join(lockDir, "compound-console-3777.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	endpointHash := sha256.Sum256([]byte(consoleListenAddress))
+	lockName := "console-" + hex.EncodeToString(endpointHash[:8]) + ".lock"
+	lock, err := os.OpenFile(filepath.Join(lockDir, lockName), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open console lifecycle lock: %w", err)
 	}
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = lock.Close()
-		return nil, fmt.Errorf("console lifecycle is already active for %s; run compound console status --json: %w", consoleDir, err)
+		return nil, fmt.Errorf("console lifecycle is already active for %s (requested from %s); run compound console status --json: %w", consoleListenAddress, consoleDir, err)
 	}
 	return lock, nil
 }
@@ -497,14 +575,14 @@ func buildConsoleLifecycleLaunchPlan(lifecycle, consoleDirFlag string, privateFa
 		"COMPOUND_CONSOLE_MUTATIONS":  "1",
 		"COMPOUND_HOME":               homePath,
 	}
-	command := []string{"bun", "run", "_next:dev"}
+	command := []string{"bun", "run", "next", "dev", "-H", "127.0.0.1", "-p", "3777"}
 	if lifecycle == consoleLifecycleBuild {
 		env["COMPOUND_CONSOLE_BUILD_KIND"] = "production"
-		command = []string{"bun", "run", "_next:build"}
+		command = []string{"bun", "run", "next", "build"}
 	}
 	if lifecycle == consoleLifecycleServe {
 		env["COMPOUND_CONSOLE_BUILD_KIND"] = "production"
-		command = []string{"bun", "run", "_next:serve"}
+		command = []string{"bun", "run", "next", "start", "-H", "127.0.0.1", "-p", "3777"}
 	}
 	if privateFallbacks {
 		env["COMPOUND_CONSOLE_PRIVATE_FALLBACKS"] = "1"

@@ -21,9 +21,10 @@ unsafe. Use `compound console dev --operator` when choosing the canonical
 default is intentional.
 
 `compound console --operator` remains a compatibility alias for `dev`. The
-documented package scripts delegate back to these CLI lifecycle owners; the
-underscore-prefixed `_next:*` scripts are implementation details. A per-console
-advisory lock serializes every lifecycle command. `build` also holds the
+documented package scripts delegate back to these CLI lifecycle owners; no
+package script exposes an unmanaged Next lifecycle. The CLI invokes the local
+Next binary only after acquiring an endpoint-scoped advisory lock shared by
+every checkout. `build` also holds the
 canonical `127.0.0.1:3777` listener for the full build, so no second runtime can
 start while production artifacts are changing. Development writes
 `.next/development`; production build and serve use `.next/production`.

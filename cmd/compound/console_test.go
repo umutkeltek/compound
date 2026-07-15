@@ -23,7 +23,7 @@ func TestConsoleLifecycleDryRunsExposeDistinctDevBuildAndServePlans(t *testing.T
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"scripts":{"_next:dev":"next dev","_next:build":"next build","_next:serve":"next start"}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"private":true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	homePath := filepath.Join(root, ".compound")
@@ -35,7 +35,7 @@ func TestConsoleLifecycleDryRunsExposeDistinctDevBuildAndServePlans(t *testing.T
 	if dev.Lifecycle != "dev" {
 		t.Fatalf("dev lifecycle = %q, want dev", dev.Lifecycle)
 	}
-	if got, want := dev.Command, []string{"bun", "run", "_next:dev"}; !sameStringSlice(got, want) {
+	if got, want := dev.Command, []string{"bun", "run", "next", "dev", "-H", "127.0.0.1", "-p", "3777"}; !sameStringSlice(got, want) {
 		t.Fatalf("dev command = %v, want %v", got, want)
 	}
 	if got := dev.Env["COMPOUND_CONSOLE_BUILD_KIND"]; got != "development" {
@@ -45,7 +45,7 @@ func TestConsoleLifecycleDryRunsExposeDistinctDevBuildAndServePlans(t *testing.T
 	if build.Lifecycle != "build" {
 		t.Fatalf("build lifecycle = %q, want build", build.Lifecycle)
 	}
-	if got, want := build.Command, []string{"bun", "run", "_next:build"}; !sameStringSlice(got, want) {
+	if got, want := build.Command, []string{"bun", "run", "next", "build"}; !sameStringSlice(got, want) {
 		t.Fatalf("build command = %v, want %v", got, want)
 	}
 	if got := build.Env["COMPOUND_CONSOLE_BUILD_KIND"]; got != "production" {
@@ -55,7 +55,7 @@ func TestConsoleLifecycleDryRunsExposeDistinctDevBuildAndServePlans(t *testing.T
 	if serve.Lifecycle != "serve" {
 		t.Fatalf("serve lifecycle = %q, want serve", serve.Lifecycle)
 	}
-	if got, want := serve.Command, []string{"bun", "run", "_next:serve"}; !sameStringSlice(got, want) {
+	if got, want := serve.Command, []string{"bun", "run", "next", "start", "-H", "127.0.0.1", "-p", "3777"}; !sameStringSlice(got, want) {
 		t.Fatalf("serve command = %v, want %v", got, want)
 	}
 	if got := serve.Env["COMPOUND_CONSOLE_BUILD_KIND"]; got != "production" {
@@ -74,7 +74,7 @@ func TestConsoleBuildReservesCanonicalPortBeforeBun(t *testing.T) {
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"scripts":{"_next:build":"next build"}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"private":true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	binDir := filepath.Join(root, "bin")
@@ -102,21 +102,26 @@ func TestConsoleBuildReservesCanonicalPortBeforeBun(t *testing.T) {
 	}
 }
 
-func TestConsoleLifecycleLockRejectsConcurrentArtifactOwner(t *testing.T) {
-	consoleDir := filepath.Join(t.TempDir(), "console")
-	first, err := acquireConsoleLifecycleLock(consoleDir)
+func TestConsoleLifecycleLockRejectsConcurrentWorktreesForTheSameEndpoint(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	consoleDirA := filepath.Join(root, "worktree-a", "console")
+	consoleDirB := filepath.Join(root, "worktree-b", "console")
+	first, err := acquireConsoleLifecycleLock(consoleDirA)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer releaseConsoleLifecycleLock(first)
 
-	if _, err := acquireConsoleLifecycleLock(consoleDir); err == nil || !strings.Contains(err.Error(), "already active") {
-		t.Fatalf("second lifecycle lock error = %v, want already active", err)
+	if second, err := acquireConsoleLifecycleLock(consoleDirB); err == nil || !strings.Contains(err.Error(), "already active") {
+		releaseConsoleLifecycleLock(second)
+		t.Fatalf("second worktree lifecycle lock error = %v, want endpoint-global already active", err)
 	}
 
 	releaseConsoleLifecycleLock(first)
 	first = nil
-	third, err := acquireConsoleLifecycleLock(consoleDir)
+	third, err := acquireConsoleLifecycleLock(consoleDirB)
 	if err != nil {
 		t.Fatalf("lock was not released with its descriptor: %v", err)
 	}
@@ -129,7 +134,7 @@ func TestConsoleServeRefusesMissingProductionBuildBeforeBun(t *testing.T) {
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"scripts":{"_next:serve":"next start"}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"private":true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	binDir := filepath.Join(root, "bin")
@@ -162,7 +167,7 @@ func TestConsoleLifecycleCanRequireAnExplicitHome(t *testing.T) {
 	if err := os.MkdirAll(consoleDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"scripts":{"_next:dev":"next dev"}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(consoleDir, "package.json"), []byte(`{"private":true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, stderr, err := invokeConsoleCommand(
@@ -306,52 +311,183 @@ func TestConsoleSupervisorForwardsTerminationToChildGroup(t *testing.T) {
 func TestConsoleSupervisorKillsChildGroupAfterTerminationGrace(t *testing.T) {
 	root := t.TempDir()
 	pidPath := filepath.Join(root, "child.pid")
+	heartbeatPath := filepath.Join(root, "heartbeat")
 	script := filepath.Join(root, "ignores-term.sh")
-	body := "#!/bin/sh\ntrap '' TERM INT HUP\nprintf '%s' \"$$\" > \"$CONSOLE_PID_PATH\"\nwhile :; do sleep 1; done\n"
+	body := "#!/bin/sh\ntrap '' TERM INT HUP\ntmp=\"${CONSOLE_PID_PATH}.tmp.$$\"\nprintf '%s' \"$$\" > \"$tmp\"\nmv \"$tmp\" \"$CONSOLE_PID_PATH\"\nwhile :; do printf . >> \"$CONSOLE_HEARTBEAT_PATH\"; sleep 0.05; done\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	plan := consoleLaunchPlan{
 		ConsoleDir: root,
 		Env: map[string]string{
-			"CONSOLE_PID_PATH": pidPath,
+			"CONSOLE_PID_PATH":       pidPath,
+			"CONSOLE_HEARTBEAT_PATH": heartbeatPath,
 		},
 	}
 	signals := make(chan os.Signal, 1)
 	done := make(chan error, 1)
+	returned := false
 	go func() {
 		done <- runConsoleSupervisedCommand(plan, []string{script}, signals)
 	}()
+	defer func() {
+		cleanupConsoleSupervisorTest(signals, done, pidPath, returned)
+	}()
 
-	var childPID int
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		body, err := os.ReadFile(pidPath)
-		if err == nil {
-			childPID, err = strconv.Atoi(strings.TrimSpace(string(body)))
-			if err != nil {
-				t.Fatalf("parse supervised child pid: %v", err)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("supervised child did not start")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	defer func() { _ = syscall.Kill(-childPID, syscall.SIGKILL) }()
+	leaderPID := waitForTestPIDFile(t, pidPath, 3*time.Second)
+	waitForTestPath(t, heartbeatPath, 3*time.Second)
 
+	shutdownTimeout := 2*consoleShutdownGrace + time.Second
 	signals <- syscall.SIGTERM
 	select {
 	case err := <-done:
+		returned = true
 		if err != nil {
 			t.Fatalf("supervisor returned after forced shutdown: %v", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(shutdownTimeout):
 		t.Fatal("supervisor waited forever for a child that ignored termination")
 	}
-	if err := syscall.Kill(-childPID, 0); err != syscall.ESRCH {
-		t.Fatalf("supervised child process group still exists after forced shutdown: %v", err)
+	waitForTestProcessGroupExit(t, leaderPID, time.Second)
+}
+
+func TestConsoleSupervisorKillsResidualGroupWhenLeaderExitsOnTermination(t *testing.T) {
+	root := t.TempDir()
+	leaderPIDPath := filepath.Join(root, "leader.pid")
+	childPIDPath := filepath.Join(root, "child.pid")
+	heartbeatPath := filepath.Join(root, "child-heartbeat")
+	script := filepath.Join(root, "leader-exits.sh")
+	body := "#!/bin/sh\nleader_tmp=\"${CONSOLE_LEADER_PID}.tmp.$$\"\nprintf '%s' \"$$\" > \"$leader_tmp\"\nmv \"$leader_tmp\" \"$CONSOLE_LEADER_PID\"\n( trap '' TERM INT HUP; while :; do printf . >> \"$CONSOLE_CHILD_HEARTBEAT\"; sleep 0.05; done ) &\nchild=$!\nchild_tmp=\"${CONSOLE_CHILD_PID}.tmp.$$\"\nprintf '%s' \"$child\" > \"$child_tmp\"\nmv \"$child_tmp\" \"$CONSOLE_CHILD_PID\"\ntrap 'exit 0' TERM INT HUP\nwait \"$child\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan := consoleLaunchPlan{
+		ConsoleDir: root,
+		Env: map[string]string{
+			"CONSOLE_LEADER_PID":      leaderPIDPath,
+			"CONSOLE_CHILD_PID":       childPIDPath,
+			"CONSOLE_CHILD_HEARTBEAT": heartbeatPath,
+		},
+	}
+	signals := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	returned := false
+	go func() { done <- runConsoleSupervisedCommand(plan, []string{script}, signals) }()
+	defer func() {
+		cleanupConsoleSupervisorTest(signals, done, leaderPIDPath, returned)
+	}()
+
+	leaderPID := waitForTestPIDFile(t, leaderPIDPath, 3*time.Second)
+	_ = waitForTestPIDFile(t, childPIDPath, 3*time.Second)
+	waitForTestPath(t, heartbeatPath, 3*time.Second)
+	shutdownTimeout := 2*consoleShutdownGrace + time.Second
+	signals <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		returned = true
+		if err != nil {
+			t.Fatalf("supervisor returned after leader termination: %v", err)
+		}
+	case <-time.After(shutdownTimeout):
+		t.Fatal("supervisor did not return after the leader exited")
+	}
+	waitForTestProcessGroupExit(t, leaderPID, time.Second)
+}
+
+func cleanupConsoleSupervisorTest(signals chan os.Signal, done <-chan error, pidPath string, returned bool) {
+	select {
+	case signals <- syscall.SIGKILL:
+	default:
+	}
+	killTestProcessGroupFromPIDFile(pidPath)
+	if !returned {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+	}
+	killTestProcessGroupFromPIDFile(pidPath)
+}
+
+func killTestProcessGroupFromPIDFile(path string) {
+	pid, err := readTestPIDFile(path)
+	if err != nil {
+		return
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(-pid, 0); err == syscall.ESRCH {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForTestPIDFile(t *testing.T, path string, timeout time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		pid, err := readTestPIDFile(path)
+		if err == nil {
+			return pid
+		}
+		if !os.IsNotExist(err) {
+			t.Fatalf("read atomic pid file %s: %v", path, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for atomic pid file %s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func readTestPIDFile(path string) (int, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil {
+		return 0, err
+	}
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid pid %d", pid)
+	}
+	return pid, nil
+}
+
+func waitForTestPath(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForTestProcessGroupExit(t *testing.T, pgid int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		err := syscall.Kill(-pgid, 0)
+		if err == syscall.ESRCH {
+			return
+		}
+		if err != nil && err != syscall.EPERM {
+			t.Fatalf("probe supervised process group %d: %v", pgid, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("supervised process group %d still exists after bounded shutdown poll", pgid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -407,7 +543,7 @@ func TestConsoleNextBuildDirectoriesAreLifecycleIsolated(t *testing.T) {
 	}
 }
 
-func TestConsolePackageScriptsPinLifecycleBuildKinds(t *testing.T) {
+func TestConsolePackageScriptsExposeOnlyOwnedLifecycles(t *testing.T) {
 	packagePath, err := filepath.Abs(filepath.Join("..", "..", "console", "package.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -425,11 +561,10 @@ func TestConsolePackageScriptsPinLifecycleBuildKinds(t *testing.T) {
 	for _, tc := range []struct {
 		script string
 		owner  string
-		kind   string
 	}{
-		{script: "dev", owner: "console dev", kind: "development"},
-		{script: "build", owner: "console build", kind: "production"},
-		{script: "serve", owner: "console serve", kind: "production"},
+		{script: "dev", owner: "console dev"},
+		{script: "build", owner: "console build"},
+		{script: "serve", owner: "console serve"},
 	} {
 		if got := pkg.Scripts[tc.script]; !strings.Contains(got, tc.owner) {
 			t.Fatalf("%s script = %q, want CLI owner %q", tc.script, got, tc.owner)
@@ -437,10 +572,13 @@ func TestConsolePackageScriptsPinLifecycleBuildKinds(t *testing.T) {
 		if got := pkg.Scripts[tc.script]; !strings.Contains(got, "--require-explicit-home") {
 			t.Fatalf("%s script = %q, want explicit-home guard", tc.script, got)
 		}
-		raw := pkg.Scripts["_next:"+tc.script]
-		want := "COMPOUND_CONSOLE_BUILD_KIND=" + tc.kind
-		if !strings.Contains(raw, want) {
-			t.Fatalf("_next:%s script = %q, want explicit %q", tc.script, raw, want)
+		if got := pkg.Scripts[tc.script]; strings.Contains(got, "next ") {
+			t.Fatalf("%s script bypasses the CLI lifecycle owner: %q", tc.script, got)
+		}
+	}
+	for name := range pkg.Scripts {
+		if strings.HasPrefix(name, "_next:") {
+			t.Fatalf("package exposes unmanaged Next lifecycle script %q", name)
 		}
 	}
 }
@@ -547,7 +685,7 @@ func TestConsoleOperatorDryRunWiresLocalMutationEnv(t *testing.T) {
 	if plan.Mode != "operator" || !plan.DryRun || !plan.MutationsEnabled || plan.PrivateFallbacks {
 		t.Fatalf("operator launch flags = %+v", plan)
 	}
-	if got, want := plan.Command, []string{"bun", "run", "_next:dev"}; !sameStringSlice(got, want) {
+	if got, want := plan.Command, []string{"bun", "run", "next", "dev", "-H", "127.0.0.1", "-p", "3777"}; !sameStringSlice(got, want) {
 		t.Fatalf("command = %v, want %v", got, want)
 	}
 	if plan.ConsoleDir != consoleDir {
