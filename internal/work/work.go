@@ -1606,6 +1606,13 @@ func landCheckEvidenceRefs(refs []string) []string {
 // --- persistence helpers ---
 
 func (s *Store) writeJSON(path string, v any) error {
+	if strings.HasPrefix(path, "compound://events/") {
+		ref, err := eventstore.ParseReference(path)
+		if err != nil {
+			return err
+		}
+		return s.writeEventJSON(ref.ID(), v)
+	}
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
@@ -1946,6 +1953,9 @@ func closeProjectionRefs(rec envelope.Receipt, contextPackID string) []envelope.
 }
 
 func (s *Store) readJSON(path string, v any) error {
+	if strings.HasPrefix(path, "compound://events/") {
+		return s.readEventJSON(path, v)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

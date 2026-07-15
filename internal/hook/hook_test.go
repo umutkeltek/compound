@@ -879,21 +879,17 @@ func TestUserPromptPersistsProposedWorkWithContext(t *testing.T) {
 	if len(events) != 1 || events[0].To != "proposed" || !containsString(events[0].Attached, pack.Header.ID) {
 		t.Fatalf("lifecycle events = %+v, want proposed attached to context pack", events)
 	}
-	hookEventPath := filepath.Join(homePath, "events", res.Event.ID+".json")
 	hookStreamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
-	for _, path := range []string{res.Injection.ContextRequestPath, res.Injection.ContextPackPath, res.Injection.Path, filepath.Join(homePath, "work", "work", cand.ID+".json"), hookEventPath, hookStreamPath} {
+	for _, path := range []string{res.Injection.ContextRequestPath, res.Injection.ContextPackPath, res.Injection.Path, filepath.Join(homePath, "work", "work", cand.ID+".json"), hookStreamPath} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected persisted artifact %s: %v", path, err)
 		}
 	}
-	hookBytes, err := os.ReadFile(hookEventPath)
-	if err != nil {
-		t.Fatalf("read hook event: %v", err)
+	if !hookEventRecordExists(t, homePath, res.Event.ID) {
+		t.Fatalf("expected persisted hook event %s", res.Event.ID)
 	}
 	var persisted envelope.HookEvent
-	if err := json.Unmarshal(hookBytes, &persisted); err != nil {
-		t.Fatalf("parse hook event: %v", err)
-	}
+	hookBytes := readHookEventRecord(t, homePath, res.Event.ID, &persisted)
 	if persisted.IDs.WorkID != cand.ID || persisted.IDs.ContextPackID != pack.ID {
 		t.Fatalf("hook ids = %+v, want work %s context %s", persisted.IDs, cand.ID, pack.ID)
 	}
@@ -1189,9 +1185,9 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 		!containsString(review.EvidenceRefs, pd.EvidenceRefs[0]) {
 		t.Fatalf("review work evidence refs = %v, want policy and source-control refs", review.EvidenceRefs)
 	}
-	for _, ref := range []string{filepath.Join("events", "act_dirty_write.json"), filepath.Join("events", pd.ID+".json")} {
-		if _, err := os.Stat(filepath.Join(homePath, ref)); err != nil {
-			t.Fatalf("missing persisted gate artifact %s: %v", ref, err)
+	for _, id := range []string{"act_dirty_write", pd.ID} {
+		if !hookEventRecordExists(t, homePath, id) {
+			t.Fatalf("missing persisted gate artifact %s", id)
 		}
 	}
 }
@@ -1237,8 +1233,8 @@ func TestPreToolUseSkipsHeldGateReviewOutsideCompoundRepo(t *testing.T) {
 	if !containsString(res.Event.SideEffects, "compound://events/"+pd.ID) {
 		t.Fatalf("side effects = %v, want persisted policy decision artifact %s", res.Event.SideEffects, pd.ID)
 	}
-	if _, err := os.Stat(filepath.Join(homePath, "events", pd.ID+".json")); err != nil {
-		t.Fatalf("policy decision artifact not written: %v", err)
+	if !hookEventRecordExists(t, homePath, pd.ID) {
+		t.Fatal("policy decision artifact not written")
 	}
 	// But NO held operator-review debt is filed for a repo that is not compound's own.
 	if n := countHeldGateReviews(t, store); n != 0 {
@@ -1391,14 +1387,8 @@ func TestPreToolUseResolvesRelativeTargetAgainstHookCwd(t *testing.T) {
 	if gotAction.Target.Path != wantTargetPath {
 		t.Fatalf("produced action target path = %q, want resolved %q", gotAction.Target.Path, wantTargetPath)
 	}
-	actionBytes, err := os.ReadFile(filepath.Join(homePath, "events", "act_dirty_relative.json"))
-	if err != nil {
-		t.Fatalf("read persisted action: %v", err)
-	}
 	var persistedAction envelope.ActionIntent
-	if err := json.Unmarshal(actionBytes, &persistedAction); err != nil {
-		t.Fatalf("parse persisted action: %v", err)
-	}
+	readHookEventRecord(t, homePath, "act_dirty_relative", &persistedAction)
 	if persistedAction.Target.Path != wantTargetPath {
 		t.Fatalf("persisted action target path = %q, want resolved %q", persistedAction.Target.Path, wantTargetPath)
 	}
@@ -1666,15 +1656,8 @@ func TestSessionEndWithoutWorkIDRecordsReceiptEvent(t *testing.T) {
 	if got := kinds(res.Produced); len(got) != 0 {
 		t.Fatalf("produced = %v, want no receipt/transition without work id", got)
 	}
-	eventPath := filepath.Join(homePath, "events", res.Event.Header.ID+".json")
-	b, err := os.ReadFile(eventPath)
-	if err != nil {
-		t.Fatalf("read persisted hook event: %v", err)
-	}
 	var persisted envelope.HookEvent
-	if err := json.Unmarshal(b, &persisted); err != nil {
-		t.Fatalf("parse persisted hook event: %v", err)
-	}
+	readHookEventRecord(t, homePath, res.Event.Header.ID, &persisted)
 	if persisted.IDs.SessionID != "sess_live_end" || persisted.IDs.WorkID != "" {
 		t.Fatalf("persisted ids = %+v, want session-only", persisted.IDs)
 	}

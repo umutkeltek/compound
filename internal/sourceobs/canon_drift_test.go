@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/eventstore"
 )
 
 func countCanonCandidateFiles(t *testing.T, home string) int {
@@ -59,7 +60,11 @@ func canonBaseline(t *testing.T, home string, now time.Time, pairs []CanonPathNo
 
 func readCanonEvents(t *testing.T, home string) []string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(home, "events"))
+	store, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.Scan(eventstore.ScanOptions{})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -67,10 +72,8 @@ func readCanonEvents(t *testing.T, home string) []string {
 		t.Fatal(err)
 	}
 	var out []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			out = append(out, e.Name())
-		}
+	for _, entry := range entries {
+		out = append(out, entry.Name)
 	}
 	return out
 }

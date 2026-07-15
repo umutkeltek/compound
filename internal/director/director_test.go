@@ -12,6 +12,7 @@ import (
 	"compound/internal/authority"
 	"compound/internal/decisions"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/mem"
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
@@ -399,11 +400,15 @@ func loadTransition(t *testing.T, home, id string) envelope.Transition {
 
 func readEnvelope(t *testing.T, home, id string, out any) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(home, "events", id+".json"))
+	store, err := eventstore.Open(home)
 	if err != nil {
 		t.Fatalf("read envelope %s: %v", id, err)
 	}
-	if err := json.Unmarshal(data, out); err != nil {
+	record, err := store.Read(id)
+	if err != nil {
+		t.Fatalf("read envelope %s: %v", id, err)
+	}
+	if err := json.Unmarshal(record.Bytes, out); err != nil {
 		t.Fatalf("parse envelope %s: %v", id, err)
 	}
 }

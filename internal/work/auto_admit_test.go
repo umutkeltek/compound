@@ -241,7 +241,7 @@ func TestAutoAdmitOperatorOnlyRiskFrontierAlwaysWins(t *testing.T) {
 			if err := action.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.writeJSON(s.envPath(action.ID), &action); err != nil {
+			if err := s.replaceEvent(action.ID, &action); err != nil {
 				t.Fatal(err)
 			}
 			res, err := s.AdmitAuto(id, eligible, fixedNow)

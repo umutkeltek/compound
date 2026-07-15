@@ -85,19 +85,19 @@ func TestRecordReceiptedActionKeepsParentOpenAndIsStateIdempotent(t *testing.T) 
 		t.Fatalf("intermediate action proof leaked into parent completion projection: %+v", open)
 	}
 
-	paths := []string{
-		s.envPath(result.Action.ID),
-		s.envPath(result.Decision.ID),
-		s.envPath(result.Receipt.ID),
-		s.envPath(result.Transition.ID),
+	ids := []string{
+		result.Action.ID,
+		result.Decision.ID,
+		result.Receipt.ID,
+		result.Transition.ID,
 	}
 	before := map[string]string{}
-	for _, path := range paths {
-		body, err := os.ReadFile(path)
+	for _, id := range ids {
+		body, err := s.eventBytes(id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		before[path] = string(body)
+		before[id] = string(body)
 	}
 	replay, err := s.RecordReceiptedAction(w.ID, ReceiptedActionInput{
 		Action:                     action,
@@ -110,13 +110,13 @@ func TestRecordReceiptedActionKeepsParentOpenAndIsStateIdempotent(t *testing.T) 
 	if err != nil || !replay.Replayed || replay.Receipt.ID != result.Receipt.ID || replay.Transition.ID != result.Transition.ID {
 		t.Fatalf("idempotent replay failed: err=%v result=%+v", err, replay)
 	}
-	for _, path := range paths {
-		body, err := os.ReadFile(path)
+	for _, id := range ids {
+		body, err := s.eventBytes(id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(body) != before[path] {
-			t.Fatalf("replay rewrote %s", filepath.Base(path))
+		if string(body) != before[id] {
+			t.Fatalf("replay rewrote %s", id)
 		}
 	}
 }
@@ -268,7 +268,7 @@ func TestRecordReceiptedActionBlocksNewActionUntilIncompletePrefixRecovers(t *te
 				t.Fatal("blocked action B changed pending ownership")
 			}
 			for _, id := range receiptedActionArtifactIDs(w.ID, bInput.Action.ID, claimID) {
-				if _, err := os.Stat(s.envPath(id)); !os.IsNotExist(err) {
+				if exists, err := s.eventExists(id); err != nil || exists {
 					t.Fatalf("blocked action B left artifact %s: %v", id, err)
 				}
 			}
@@ -455,7 +455,7 @@ func TestRecordReceiptedActionRejectsReadyWorkBeforeWriting(t *testing.T) {
 	if string(afterWork) != string(beforeWork) || string(afterEvents) != string(beforeEvents) {
 		t.Fatal("ready-state rejection changed work or event chronology")
 	}
-	if _, err := os.Stat(s.envPath(in.Action.ID)); !os.IsNotExist(err) {
+	if exists, err := s.eventExists(in.Action.ID); err != nil || exists {
 		t.Fatalf("ready-state rejection left action artifact: %v", err)
 	}
 	if _, err := os.Stat(receiptedActionPendingTestPath(s, w.ID)); !os.IsNotExist(err) {
@@ -488,7 +488,7 @@ func TestRecordReceiptedActionRejectsMalformedPendingRecord(t *testing.T) {
 	if err == nil || result.Replayed || !strings.Contains(err.Error(), "pending receipted action") {
 		t.Fatalf("malformed pending record did not fail closed: err=%v result=%+v", err, result)
 	}
-	if _, err := os.Stat(s.envPath(in.Action.ID)); !os.IsNotExist(err) {
+	if exists, err := s.eventExists(in.Action.ID); err != nil || exists {
 		t.Fatalf("malformed pending record allowed action artifact: %v", err)
 	}
 	afterWork, err := os.ReadFile(s.workPath(w.ID))
@@ -681,7 +681,7 @@ func TestRecordReceiptedActionRejectsHistoricalReplayWithCorruptNewerPolicyLink(
 	}
 	corruptDecision := b.Decision
 	corruptDecision.ActionIntentID = a.Action.ID
-	if err := s.writeJSON(s.envPath(b.Decision.ID), &corruptDecision); err != nil {
+	if err := s.replaceEvent(b.Decision.ID, &corruptDecision); err != nil {
 		t.Fatal(err)
 	}
 	beforeWork, err := os.ReadFile(s.workPath(w.ID))
@@ -969,7 +969,7 @@ func TestRecordReceiptedActionRefusesInvalidWorkEnvelope(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "work envelope invalid") {
 		t.Fatalf("invalid work envelope was completed: err=%v result=%+v", err, result)
 	}
-	if _, statErr := os.Stat(s.envPath(action.ID)); !os.IsNotExist(statErr) {
+	if exists, statErr := s.eventExists(action.ID); statErr != nil || exists {
 		t.Fatalf("invalid work envelope wrote action artifact: %v", statErr)
 	}
 }
@@ -1224,7 +1224,7 @@ func assertReceiptedActionConverged(t *testing.T, s *Store, workID string, resul
 		if item.id == "" {
 			t.Fatalf("recovered transaction has an empty artifact id: %+v", result)
 		}
-		if _, err := os.Stat(s.envPath(item.id)); err != nil {
+		if exists, err := s.eventExists(item.id); err != nil || !exists {
 			t.Fatalf("artifact %s missing: %v", item.id, err)
 		}
 	}

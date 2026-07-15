@@ -379,10 +379,7 @@ func assertCandidateInboxStates(t *testing.T, dir, wantState string) {
 
 func readJSONFile(t *testing.T, path string, target any) {
 	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := readTestPath(t, path)
 	if err := json.Unmarshal(data, target); err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}

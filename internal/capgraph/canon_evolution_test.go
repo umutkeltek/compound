@@ -3,37 +3,41 @@ package capgraph
 import (
 	"bytes"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
+
+	"compound/internal/eventstore"
 )
 
 func canonEventFiles(t *testing.T, homePath string) []string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
+	store, err := eventstore.Open(homePath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		t.Fatal(err)
 	}
+	entries, err := store.Scan(eventstore.ScanOptions{})
+	if err != nil {
+		return nil
+	}
 	var out []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			out = append(out, e.Name())
-		}
+	for _, entry := range entries {
+		out = append(out, entry.Name)
 	}
 	return out
 }
 
 func assertCanonEventBytes(t *testing.T, homePath string, transition any, id string) {
 	t.Helper()
-	got, err := os.ReadFile(filepath.Join(homePath, "events", id+".json"))
+	store, err := eventstore.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := json.MarshalIndent(transition, "", "  ")
+	record, err := store.Read(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := record.Bytes
+	want, err := json.Marshal(transition)
 	if err != nil {
 		t.Fatal(err)
 	}

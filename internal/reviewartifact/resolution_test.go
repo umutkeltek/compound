@@ -129,13 +129,17 @@ func TestResolveUnknownStatusReviewAreasAndUndo(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			receiptBytes, err := os.ReadFile(result.ReceiptPath)
+			events, err := eventstore.Open(homePath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.HasPrefix(string(receiptBytes), "{\n \"schema_version\"") ||
-				!strings.HasSuffix(string(receiptBytes), "\n") || strings.HasSuffix(string(receiptBytes), "\n\n") {
-				t.Fatalf("resolution receipt is not one-space JSON with exactly one newline: %q", receiptBytes)
+			receipt, err := events.Read(result.ReceiptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(string(receipt.Bytes), "{\"schema_version\"") ||
+				!strings.HasSuffix(string(receipt.Bytes), "\n") || strings.HasSuffix(string(receipt.Bytes), "\n\n") {
+				t.Fatalf("resolution receipt is not canonical JSON with exactly one newline: %q", receipt.Bytes)
 			}
 			resolved, err := Queue(homePath, QueueOptions{Area: tc.area}, resolutionTestNow)
 			if err != nil {
@@ -164,18 +168,12 @@ func TestResolveUnknownStatusReviewAreasAndUndo(t *testing.T) {
 			if len(restored.Items) != 1 || restored.Items[0].Status != "unknown" || restored.Counts.ReviewRequired != 1 {
 				t.Fatalf("restored unknown item = %+v", restored)
 			}
-			entries, err := os.ReadDir(filepath.Join(homePath, "events"))
+			entries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"rec_"}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			receipts := 0
-			for _, entry := range entries {
-				if strings.HasPrefix(entry.Name(), "rec_") && strings.HasSuffix(entry.Name(), ".json") {
-					receipts++
-				}
-			}
-			if receipts != 2 {
-				t.Fatalf("resolve+undo receipts = %d, want 2", receipts)
+			if len(entries) != 2 {
+				t.Fatalf("resolve+undo receipts = %d, want 2", len(entries))
 			}
 		})
 	}

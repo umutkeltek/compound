@@ -390,19 +390,13 @@ func writeAskCodexJobNamed(t *testing.T, name, threadID, turnID, workID string) 
 func askEventKindCounts(t *testing.T, homePath string) map[string]int {
 	t.Helper()
 	counts := map[string]int{}
-	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	entries := testEventEntries(t, homePath)
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(homePath, "events", entry.Name()))
+		record, err := entry.Read()
 		if err != nil {
 			t.Fatal(err)
 		}
-		kind, err := envelope.ValidateBytes(data)
+		kind, err := envelope.ValidateBytes(record.Bytes)
 		if err == nil {
 			counts[kind]++
 		}

@@ -62,10 +62,10 @@ func TestAdvanceRecordsPolicyAction(t *testing.T) {
 		t.Fatalf("advance run chain = %v, claimed=%v", advanced.RunIDs, claimed.RunIDs)
 	}
 	advanceActionID := advanced.RunIDs[len(claimed.RunIDs)]
-	if _, err := os.Stat(s.envPath(advanceActionID)); err != nil {
+	if exists, err := s.eventExists(advanceActionID); err != nil || !exists {
 		t.Fatalf("advance action envelope missing: %v", err)
 	}
-	if _, err := os.Stat(s.envPath(advanced.PolicyDecisionID)); err != nil {
+	if exists, err := s.eventExists(advanced.PolicyDecisionID); err != nil || !exists {
 		t.Fatalf("advance policy envelope missing: %v", err)
 	}
 	closed, err := s.Close(w.ID, CloseInput{

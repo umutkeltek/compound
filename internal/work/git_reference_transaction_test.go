@@ -1,7 +1,6 @@
 package work
 
 import (
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -245,7 +244,7 @@ func assertTerminalClosePersistedBeforeGitCommit(t *testing.T, store *Store, wor
 		t.Fatalf("terminal lifecycle event incomplete before Git commit: %+v", closed)
 	}
 	for _, id := range closed.Attached {
-		if _, err := os.Stat(store.envPath(id)); err != nil {
+		if exists, err := store.eventExists(id); err != nil || !exists {
 			t.Fatalf("terminal envelope %s not persisted before Git commit: %v", id, err)
 		}
 	}

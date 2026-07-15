@@ -1552,8 +1552,8 @@ func TestSourceObserveBatchCLIAppliesRouteEvidence(t *testing.T) {
 	if ev.SelectedTarget.Provider != "fixture-provider" || ev.SelectedTarget.Model != "fixture-model" || ev.CostMicros != 2400 || ev.Usage.TotalTokens != 150 {
 		t.Fatalf("route evidence = %+v", ev)
 	}
-	if _, err := os.Stat(filepath.Join(homePath, "events", result.TransitionID+".json")); err != nil {
-		t.Fatalf("route transition missing: %v", err)
+	if !testEventExists(t, homePath, result.TransitionID) {
+		t.Fatal("route transition missing")
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("route evidence apply must not create product signals ledger: %v", err)
@@ -1590,8 +1590,8 @@ func TestSourceObserveBatchCLIAppliesEventsToTraceEnvelope(t *testing.T) {
 	if authority.Status != "ok" || authority.TraceCount != 1 || len(authority.SourceAuthority) != 1 || authority.SourceAuthority[0].ID != result.SourceAuthorityID {
 		t.Fatalf("event authority = %+v result=%+v", authority, result)
 	}
-	if _, err := os.Stat(filepath.Join(homePath, "events", result.TraceIDs[0]+".json")); err != nil {
-		t.Fatalf("trace envelope missing: %v", err)
+	if !testEventExists(t, homePath, result.TraceIDs[0]) {
+		t.Fatal("trace envelope missing")
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("event apply must not create product signals ledger: %v", err)
@@ -5765,11 +5765,11 @@ grants:
 	if !stringSliceContains(got.RunIDs, report.ActionIntentID) || got.PolicyDecisionID != report.PolicyDecisionID {
 		t.Fatalf("work action chain not recorded: runs=%v policy=%q report=%+v", got.RunIDs, got.PolicyDecisionID, report)
 	}
-	if _, err := os.Stat(filepath.Join(homePath, "events", report.ActionIntentID+".json")); err != nil {
-		t.Fatalf("action intent envelope not persisted: %v", err)
+	if !testEventExists(t, homePath, report.ActionIntentID) {
+		t.Fatal("action intent envelope not persisted")
 	}
-	if _, err := os.Stat(filepath.Join(homePath, "events", report.PolicyDecisionID+".json")); err != nil {
-		t.Fatalf("policy decision envelope not persisted: %v", err)
+	if !testEventExists(t, homePath, report.PolicyDecisionID) {
+		t.Fatal("policy decision envelope not persisted")
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("review finding action must not promote claims, stat err=%v", err)
@@ -5859,8 +5859,8 @@ grants:
 	if got.State != "completed" || got.IDs.TransitionID == "" || !stringSliceContains(got.RunIDs, report.ActionIntentID) {
 		t.Fatalf("auto work not closed through action chain: work=%+v report=%+v", got, report)
 	}
-	if _, err := os.Stat(filepath.Join(homePath, "events", got.IDs.TransitionID+".json")); err != nil {
-		t.Fatalf("transition envelope not persisted: %v", err)
+	if !testEventExists(t, homePath, got.IDs.TransitionID) {
+		t.Fatal("transition envelope not persisted")
 	}
 	if _, err := os.Stat(filepath.Join(runRoot, target)); err != nil {
 		t.Fatalf("finding json not written: %v", err)
@@ -6289,23 +6289,13 @@ func TestHookPreToolUseHoldsDirtySourceControlMutation(t *testing.T) {
 			t.Fatalf("hook pre-tool-use output missing %q:\n%s", want, out)
 		}
 	}
-	for _, rel := range []string{filepath.Join("events", "act_dirty_cli.json"), filepath.Join("ledger", "claims.jsonl")} {
-		if _, err := os.Stat(filepath.Join(homePath, rel)); err != nil {
-			t.Fatalf("missing runtime artifact %s: %v", rel, err)
-		}
+	if !testEventExists(t, homePath, "act_dirty_cli") {
+		t.Fatal("missing runtime action act_dirty_cli")
 	}
-	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); err != nil {
+		t.Fatalf("missing runtime claims ledger: %v", err)
 	}
-	foundPolicy := false
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "pol_") && strings.HasSuffix(entry.Name(), ".json") {
-			foundPolicy = true
-			break
-		}
-	}
-	if !foundPolicy {
+	if len(testEventEntries(t, homePath, "pol_")) == 0 {
 		t.Fatalf("policy decision artifact missing in events dir")
 	}
 	listOut := captureStdout(t, func() {
@@ -7534,8 +7524,8 @@ func TestRouteImportProviderLedgerWritesEvidenceWithoutClaims(t *testing.T) {
 		strings.Contains(string(rowData), "ignored") {
 		t.Fatalf("bad imported route evidence:\n%s", rowData)
 	}
-	if _, err := os.Stat(filepath.Join(homePath, "events", trID+".json")); err != nil {
-		t.Fatalf("transition not recorded: %v", err)
+	if !testEventExists(t, homePath, trID) {
+		t.Fatalf("transition %s not recorded", trID)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("provider-ledger import must not promote claims, stat err=%v", err)
@@ -12757,11 +12747,7 @@ Success: operator-only work should not be Codex adjacent packet.
 
 func readFile(t *testing.T, path string) string {
 	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
+	return string(readTestPath(t, path))
 }
 
 func createReleaseGoalHoldsDB(t *testing.T, dbPath string) {

@@ -8,6 +8,7 @@ import (
 
 	"compound/internal/act"
 	"compound/internal/behaviorallens"
+	"compound/internal/eventstore"
 	"compound/internal/policy"
 )
 
@@ -345,13 +346,17 @@ func TestAppliedDemoteReceiptResolvesInEventStore(t *testing.T) {
 		t.Fatalf("want exactly one applied modulation, got %+v", res.Modulations)
 	}
 	m := res.Modulations[0]
+	events, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []string{m.ReceiptID, m.TransitionID} {
 		if id == "" {
 			t.Fatalf("applied modulation must carry receipt+transition ids: %+v", m)
 		}
-		p := filepath.Join(home, "events", id+".json")
-		if _, err := os.Stat(p); err != nil {
-			t.Fatalf("ledger references %s but it does not resolve in the canonical event store (%s): %v", id, p, err)
+		exists, err := events.Exists(id)
+		if err != nil || !exists {
+			t.Fatalf("ledger reference %s does not resolve in the canonical event store: exists=%v err=%v", id, exists, err)
 		}
 	}
 }

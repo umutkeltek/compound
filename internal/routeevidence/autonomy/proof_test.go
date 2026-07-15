@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	homepkg "compound/internal/home"
 	"compound/internal/routeevidence"
 	autonomy "compound/internal/routeevidence/autonomy"
@@ -100,10 +101,7 @@ func TestCompileFailsClosedWhenReceiptIdentityDoesNotMatchRef(t *testing.T) {
 	seedSample(t, home, plan, "receipt-id-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
 	victim := seedSample(t, home, plan, "receipt-id-mismatch", proofNow.Add(-24*time.Hour), sampleOptions{})
 	aliasID := "rec_filename_alias"
-	receiptRaw, err := os.ReadFile(filepath.Join(home, "events", victim.ReceiptID+".json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	receiptRaw := readAutonomyEvent(t, home, victim.ReceiptID, nil)
 	if err := os.WriteFile(filepath.Join(home, "events", aliasID+".json"), receiptRaw, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -118,13 +116,17 @@ func TestCompileFailsClosedOnSymlinkedTerminalReceipt(t *testing.T) {
 	home := t.TempDir()
 	plan := installPlan(t, home, false)
 	seedSample(t, home, plan, "receipt-symlink-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
-	victim := seedSample(t, home, plan, "receipt-symlink", proofNow.Add(-24*time.Hour), sampleOptions{})
-	receiptPath := filepath.Join(home, "events", victim.ReceiptID+".json")
+	seedSample(t, home, plan, "receipt-symlink", proofNow.Add(-24*time.Hour), sampleOptions{})
+	segmentPaths, err := filepath.Glob(filepath.Join(home, "events", "segments", "receipt", "*.jsonl"))
+	if err != nil || len(segmentPaths) != 1 {
+		t.Fatalf("receipt segments = %v, err=%v, want one", segmentPaths, err)
+	}
+	receiptPath := segmentPaths[0]
 	receiptRaw, err := os.ReadFile(receiptPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	escapedPath := filepath.Join(home, "escaped-receipts", victim.ReceiptID+".json")
+	escapedPath := filepath.Join(home, "escaped-receipts", filepath.Base(receiptPath))
 	if err := os.MkdirAll(filepath.Dir(escapedPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +140,7 @@ func TestCompileFailsClosedOnSymlinkedTerminalReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "receipt file must be a regular file") {
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "receipt segment file must be a regular file") {
 		t.Fatalf("symlinked terminal receipt did not fail closed: %v", err)
 	}
 }
@@ -1283,35 +1285,16 @@ func removeTerminalWorkEvent(t *testing.T, home, workID string) {
 
 func rewriteReceiptCreatedAt(t *testing.T, home, receiptID string, createdAt time.Time) {
 	t.Helper()
-	path := filepath.Join(home, "events", receiptID+".json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var receipt envelope.Receipt
-	if err := json.Unmarshal(raw, &receipt); err != nil {
-		t.Fatal(err)
-	}
+	readAutonomyEvent(t, home, receiptID, &receipt)
 	receipt.CreatedAt = createdAt.UTC().Format(time.RFC3339)
-	updated, err := json.MarshalIndent(receipt, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, append(updated, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	replaceAutonomyEvent(t, home, receiptID, &receipt)
 }
 
 func resealTerminalReceiptSnapshot(t *testing.T, home, receiptID string) {
 	t.Helper()
-	receiptRaw, err := os.ReadFile(filepath.Join(home, "events", receiptID+".json"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var receipt envelope.Receipt
-	if err := json.Unmarshal(receiptRaw, &receipt); err != nil {
-		t.Fatal(err)
-	}
+	readAutonomyEvent(t, home, receiptID, &receipt)
 	canonical, err := json.Marshal(receipt)
 	if err != nil {
 		t.Fatal(err)
@@ -1359,21 +1342,40 @@ func resealTerminalReceiptSnapshot(t *testing.T, home, receiptID string) {
 
 func appendReceiptProofRef(t *testing.T, home, receiptID, proofRef string) {
 	t.Helper()
-	path := filepath.Join(home, "events", receiptID+".json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var receipt envelope.Receipt
-	if err := json.Unmarshal(raw, &receipt); err != nil {
-		t.Fatal(err)
-	}
+	readAutonomyEvent(t, home, receiptID, &receipt)
 	receipt.ProofRefs = append(receipt.ProofRefs, proofRef)
-	updated, err := json.MarshalIndent(receipt, "", "  ")
+	replaceAutonomyEvent(t, home, receiptID, &receipt)
+}
+
+func readAutonomyEvent(t *testing.T, home, id string, target any) []byte {
+	t.Helper()
+	store, err := eventstore.Open(home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, append(updated, '\n'), 0o644); err != nil {
+	record, err := store.Read(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != nil {
+		if err := json.Unmarshal(record.Bytes, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return record.Bytes
+}
+
+func replaceAutonomyEvent(t *testing.T, home, id string, value any) {
+	t.Helper()
+	store, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutJSON(id, value, "  "); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -326,16 +326,13 @@ func TestHarnessGenerateApplyFailureRecordsFailedReceiptWithoutFalseSuccess(t *t
 	}
 	var failedReceipt envelope.Receipt
 	var failedTransition envelope.Transition
-	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	entries := testEventEntries(t, homePath)
 	for _, entry := range entries {
 		switch {
-		case strings.HasPrefix(entry.Name(), "rec_"):
-			readHarnessApplyJSON(t, filepath.Join(homePath, "events", entry.Name()), &failedReceipt)
-		case strings.HasPrefix(entry.Name(), "tr_"):
-			readHarnessApplyJSON(t, filepath.Join(homePath, "events", entry.Name()), &failedTransition)
+		case strings.HasPrefix(entry.ID, "rec_"):
+			readTestEventJSON(t, homePath, entry.ID, &failedReceipt)
+		case strings.HasPrefix(entry.ID, "tr_"):
+			readTestEventJSON(t, homePath, entry.ID, &failedTransition)
 		}
 	}
 	if failedReceipt.Outcome != "failed" || failedReceipt.StateDelta.Changed || failedReceipt.FailureCause == nil ||
@@ -376,10 +373,10 @@ func TestHarnessGenerateApplyAuthorityChangeAfterApprovalIsReceiptedAsFailure(t 
 	store, _ := work.Open(homePath)
 	recorded, _ := store.Get(w.ID)
 	var receipt envelope.Receipt
-	entries, _ := os.ReadDir(filepath.Join(homePath, "events"))
+	entries := testEventEntries(t, homePath, "rec_")
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "rec_") {
-			readHarnessApplyJSON(t, filepath.Join(homePath, "events", entry.Name()), &receipt)
+		if strings.HasPrefix(entry.ID, "rec_") {
+			readTestEventJSON(t, homePath, entry.ID, &receipt)
 		}
 	}
 	if recorded.PolicyDecisionID == "" || receipt.Outcome != "failed" || receipt.FailureCause == nil {
@@ -530,8 +527,8 @@ func TestHarnessGenerateApplyRecoversExactPublishedOutcomeBeforeNewAction(t *tes
 	if _, err := os.Stat(harness.PermissionApplyPendingPath(homePath, "claude_code")); err != nil {
 		t.Fatalf("published mutation lost pending identity: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(homePath, "events", expectedActionID+".json")); !os.IsNotExist(err) {
-		t.Fatalf("failed finalizer emitted a competing action envelope: %v", err)
+	if testEventExists(t, homePath, expectedActionID) {
+		t.Fatal("failed finalizer emitted a competing action envelope")
 	}
 	store, err := work.Open(homePath)
 	if err != nil {
@@ -694,16 +691,13 @@ func TestHarnessGenerateApplyFailedPostReadRecordsObservationFailure(t *testing.
 	}
 	var receipt envelope.Receipt
 	var transition envelope.Transition
-	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	entries := testEventEntries(t, homePath)
 	for _, entry := range entries {
 		switch {
-		case strings.HasPrefix(entry.Name(), "rec_"):
-			readHarnessApplyJSON(t, filepath.Join(homePath, "events", entry.Name()), &receipt)
-		case strings.HasPrefix(entry.Name(), "tr_"):
-			readHarnessApplyJSON(t, filepath.Join(homePath, "events", entry.Name()), &transition)
+		case strings.HasPrefix(entry.ID, "rec_"):
+			readTestEventJSON(t, homePath, entry.ID, &receipt)
+		case strings.HasPrefix(entry.ID, "tr_"):
+			readTestEventJSON(t, homePath, entry.ID, &transition)
 		}
 	}
 	preimageRef := "sha256:" + permissionApplyDigest(preimage)
@@ -785,10 +779,7 @@ func writeHarnessApplyJSON(t *testing.T, path string, value any) {
 
 func readHarnessApplyJSON(t *testing.T, path string, value any) {
 	t.Helper()
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	body := readTestPath(t, path)
 	if err := json.Unmarshal(body, value); err != nil {
 		t.Fatal(err)
 	}

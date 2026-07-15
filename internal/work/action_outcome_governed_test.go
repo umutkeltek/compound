@@ -331,7 +331,7 @@ func tamperGovernedReceipt(t *testing.T, s *Store, result ReceiptedActionResult,
 	if err := receipt.Validate(); err != nil {
 		t.Fatalf("receipt tamper is not schema-valid: %v", err)
 	}
-	if err := s.writeJSON(s.envPath(receipt.ID), &receipt); err != nil {
+	if err := s.replaceEvent(receipt.ID, &receipt); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -346,7 +346,7 @@ func tamperGovernedTransition(t *testing.T, s *Store, result ReceiptedActionResu
 	if err := transition.Validate(); err != nil {
 		t.Fatalf("transition tamper is not schema-valid: %v", err)
 	}
-	if err := s.writeJSON(s.envPath(transition.ID), &transition); err != nil {
+	if err := s.replaceEvent(transition.ID, &transition); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -515,7 +515,7 @@ func TestRecordReceiptedActionRefusesInvalidPreEvaluatedSecurityDecisionWithoutW
 				t.Fatal("refused pre-evaluated action changed work")
 			}
 			for _, id := range []string{action.ID, decision.ID} {
-				if _, statErr := os.Stat(s.envPath(id)); !os.IsNotExist(statErr) {
+				if exists, statErr := s.eventExists(id); statErr != nil || exists {
 					t.Fatalf("refused pre-evaluated action persisted %s: %v", id, statErr)
 				}
 			}

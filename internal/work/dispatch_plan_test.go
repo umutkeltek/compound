@@ -163,10 +163,10 @@ func TestDispatchClaimClaimsSelectedReadyWork(t *testing.T) {
 	if _, err := s.readLease(ready.ID); err != nil {
 		t.Fatalf("dispatch claim must write lease: %v", err)
 	}
-	if _, err := os.Stat(s.envPath(result.ActionIntentID)); err != nil {
+	if exists, err := s.eventExists(result.ActionIntentID); err != nil || !exists {
 		t.Fatalf("claim action envelope missing: %v", err)
 	}
-	if _, err := os.Stat(s.envPath(result.PolicyDecisionID)); err != nil {
+	if exists, err := s.eventExists(result.PolicyDecisionID); err != nil || !exists {
 		t.Fatalf("claim policy envelope missing: %v", err)
 	}
 }

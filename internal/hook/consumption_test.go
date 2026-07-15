@@ -216,8 +216,8 @@ func TestSessionEndReceiptLandsOnlyInEventDoor(t *testing.T) {
 	rec := res.Produced[0].(*envelope.Receipt)
 
 	// The receipt landed in the event door.
-	if _, err := os.Stat(filepath.Join(home, "events", rec.ID+".json")); err != nil {
-		t.Fatalf("receipt did not reach the event door: %v", err)
+	if !hookEventRecordExists(t, home, rec.ID) {
+		t.Fatal("receipt did not reach the event door")
 	}
 	// No receipt-kind file exists anywhere OUTSIDE events/ (no legacy/double-write sink).
 	if err := filepath.Walk(home, func(p string, info os.FileInfo, err error) error {

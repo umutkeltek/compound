@@ -11,6 +11,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/mem"
 	"compound/internal/reviewartifact"
 	"compound/internal/work"
@@ -182,9 +183,13 @@ func assertApplyWorkProof(t *testing.T, home string, run Run, memoryTransitionID
 	if w.State != "completed" || w.IDs.TransitionID != run.TransitionID {
 		t.Fatalf("work proof = state %s transition %s, run transition %s", w.State, w.IDs.TransitionID, run.TransitionID)
 	}
+	events, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []string{run.ReceiptID, run.TransitionID, memoryTransitionID} {
-		if _, err := os.Stat(filepath.Join(home, "events", id+".json")); err != nil {
-			t.Fatalf("missing event envelope %s: %v", id, err)
+		if exists, err := events.Exists(id); err != nil || !exists {
+			t.Fatalf("missing event envelope %s: exists=%v err=%v", id, exists, err)
 		}
 	}
 	var receipt envelope.Receipt
@@ -227,9 +232,23 @@ func readCandidateForTest(t *testing.T, home, id string) mem.Candidate {
 
 func readJSONForTest(t *testing.T, path string, target any) {
 	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	var data []byte
+	if filepath.Base(filepath.Dir(path)) == "events" && strings.HasSuffix(path, ".json") {
+		store, err := eventstore.Open(filepath.Dir(filepath.Dir(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := store.Read(strings.TrimSuffix(filepath.Base(path), ".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = record.Bytes
+	} else {
+		var err error
+		data, err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := json.Unmarshal(data, target); err != nil {
 		t.Fatal(err)

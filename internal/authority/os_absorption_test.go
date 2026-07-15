@@ -12,6 +12,7 @@ import (
 	"compound/internal/capgraph"
 	"compound/internal/decisions"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/policy"
 	"compound/internal/routeevidence"
@@ -748,7 +749,11 @@ func TestOSAbsorptionWorkPacketAuthorityProofRequiresReceiptTransitionChain(t *t
 	closePacketAuthorityWork(t, homePath, sourcePacket, true, now)
 	listedPacket := writePacketAuthorityFixture(t, t.TempDir(), "listed-packet.md", "Listed packet")
 	listedClosed := closePacketAuthorityWork(t, homePath, listedPacket, false, now.Add(time.Minute))
-	if err := os.Remove(filepath.Join(homePath, "events", listedClosed.Transition.ID+".json")); err != nil {
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := events.Remove(listedClosed.Transition.ID); err != nil {
 		t.Fatalf("remove transition falsifier: %v", err)
 	}
 

@@ -48,6 +48,10 @@ type GatedWriteback struct {
 // doctor CLIs delegate to; the spine no longer lives in the CLI.
 func RunGatedWriteback(in GatedWriteback) (GatedWritebackResult, error) {
 	var result GatedWritebackResult
+	// Lifecycle-generated ids include UnixNano. Give each distinct governed
+	// move its own instant even when the caller supplies one batch timestamp;
+	// otherwise two same-state advances mint one id with different content.
+	at := func(step time.Duration) time.Time { return in.Now.Add(step) }
 	workStore, err := work.Open(in.Home)
 	if err != nil {
 		return result, err
@@ -60,16 +64,16 @@ func RunGatedWriteback(in GatedWriteback) (GatedWritebackResult, error) {
 	if err != nil {
 		return result, err
 	}
-	if _, err := workStore.Claim(w.ID, in.Actor, in.Now); err != nil {
+	if _, err := workStore.Claim(w.ID, in.Actor, at(1)); err != nil {
 		return result, err
 	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "running", Actor: in.Actor, Note: in.RunningNote}, in.Now); err != nil {
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "running", Actor: in.Actor, Note: in.RunningNote}, at(2)); err != nil {
 		return result, err
 	}
 	ai := in.ActionIntentFor(w.ID)
 	pd := in.Evaluate(ai)
 	gate := in.GateFor(ai, pd)
-	checked, err := EvaluateGate(gate, &pd, in.Now)
+	checked, err := EvaluateGate(gate, &pd, at(3))
 	if err != nil {
 		return result, err
 	}
@@ -81,7 +85,7 @@ func RunGatedWriteback(in GatedWriteback) (GatedWritebackResult, error) {
 			Actor:    in.Actor,
 			Summary:  in.BlockedSummary(checked.Status, checked.ID),
 			Changed:  true,
-		}, in.Now)
+		}, at(4))
 		if closeErr == nil {
 			checked.ReceiptRef = closeRes.Receipt.ID
 			result.ReceiptID = closeRes.Receipt.ID
@@ -92,7 +96,7 @@ func RunGatedWriteback(in GatedWriteback) (GatedWritebackResult, error) {
 		}
 		return result, closeErr
 	}
-	if _, err := workStore.RecordAction(w.ID, ai, pd, in.Now); err != nil {
+	if _, err := workStore.RecordAction(w.ID, ai, pd, at(4)); err != nil {
 		return result, err
 	}
 	verification := in.Verification
@@ -105,7 +109,7 @@ func RunGatedWriteback(in GatedWriteback) (GatedWritebackResult, error) {
 		ArtifactID:     checked.ID,
 		VerificationID: verification,
 		Note:           in.CheckedNote,
-	}, in.Now); err != nil {
+	}, at(5)); err != nil {
 		return result, err
 	}
 	closeRes, err := workStore.Close(w.ID, work.CloseInput{
@@ -114,7 +118,7 @@ func RunGatedWriteback(in GatedWriteback) (GatedWritebackResult, error) {
 		Actor:    in.Actor,
 		Summary:  in.AllowedSummary(checked.Status, checked.ID),
 		Changed:  true,
-	}, in.Now)
+	}, at(6))
 	if err != nil {
 		return result, err
 	}

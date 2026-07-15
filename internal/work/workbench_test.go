@@ -1364,13 +1364,13 @@ func TestWorkbenchDoesNotProjectCrossWorkTerminalProofComplete(t *testing.T) {
 			case "transition":
 				crossWork := closed.Transition
 				crossWork.IDs.WorkID = "work_elsewhere"
-				if err := s.writeJSON(s.envPath(crossWork.ID), &crossWork); err != nil {
+				if err := s.replaceEvent(crossWork.ID, &crossWork); err != nil {
 					t.Fatal(err)
 				}
 			case "receipt":
 				crossWork := closed.Receipt
 				crossWork.IDs.WorkID = "work_elsewhere"
-				if err := s.writeJSON(s.envPath(crossWork.ID), &crossWork); err != nil {
+				if err := s.replaceEvent(crossWork.ID, &crossWork); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1467,7 +1467,7 @@ func TestWorkbenchUsesEffectiveChangedForLegacyProofBearingReceipt(t *testing.T)
 	}
 	legacy := closed.Receipt
 	legacy.StateDelta.Changed = false
-	if err := s.writeJSON(s.envPath(legacy.ID), &legacy); err != nil {
+	if err := s.replaceEvent(legacy.ID, &legacy); err != nil {
 		t.Fatal(err)
 	}
 

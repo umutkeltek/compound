@@ -14,6 +14,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 var t0 = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
@@ -633,8 +634,12 @@ func TestImportProviderLedgerFileTailRecordsRouteEvidenceOnly(t *testing.T) {
 	if strings.Count(string(rowData), "\n") != 1 || !strings.Contains(string(rowData), "req_new") || strings.Contains(string(rowData), "req_old") {
 		t.Fatalf("bad route evidence ledger:\n%s", rowData)
 	}
-	if _, err := os.Stat(filepath.Join(home, "events", summary.Results[0].Transition.ID+".json")); err != nil {
-		t.Fatalf("transition not recorded: %v", err)
+	store, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := store.Exists(summary.Results[0].Transition.ID); err != nil || !exists {
+		t.Fatalf("transition not recorded: exists=%v err=%v", exists, err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("provider-ledger import must not promote claims, stat err=%v", err)
@@ -770,6 +775,17 @@ func writeEvidenceFile(t *testing.T, dir string, ev Evidence) string {
 
 func readFile(t *testing.T, path string) []byte {
 	t.Helper()
+	if filepath.Base(filepath.Dir(path)) == "events" && strings.HasSuffix(path, ".json") {
+		store, err := eventstore.Open(filepath.Dir(filepath.Dir(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := store.Read(strings.TrimSuffix(filepath.Base(path), ".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return record.Bytes
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

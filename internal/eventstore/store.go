@@ -1,7 +1,6 @@
 // Package eventstore is the sole physical owner of COMPOUND_HOME/events record
-// layout. The current engine intentionally remains one loose JSON file per
-// event; callers consume logical references and Store operations so a later
-// engine swap does not reopen repository-wide path construction.
+// layout. New records use framed append-only segments; legacy loose records
+// remain a read fallback until the separately governed migration slice.
 package eventstore
 
 import (
@@ -29,7 +28,8 @@ const (
 // Store owns event records and the named compatibility streams under one home.
 // Open validates configuration only; read-only callers do not create state.
 type Store struct {
-	home string
+	home   string
+	engine *engine
 }
 
 // Record is one event read through the seam. DiagnosticPath is intentionally
@@ -77,10 +77,19 @@ type Entry struct {
 }
 
 func Open(homePath string) (*Store, error) {
+	return openWithConfig(homePath, engineConfig{})
+}
+
+func openWithConfig(homePath string, config engineConfig) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
 	}
-	return &Store{home: filepath.Clean(homePath)}, nil
+	clean := filepath.Clean(homePath)
+	engine, err := newEngine(clean, config)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{home: clean, engine: engine}, nil
 }
 
 // Ensure creates the current physical event root for a writer.
@@ -91,20 +100,13 @@ func (s *Store) Ensure() error {
 	return os.MkdirAll(s.rootPath(), 0o755)
 }
 
-// Preflight proves the current loose store can create and remove a file. Probe
-// cleanup remains best-effort, matching the governed-act preflight contract.
+// Preflight proves the selected engine can lock, create, sync, and remove a
+// probe before a governed mutation reaches its post-write persistence phase.
 func (s *Store) Preflight() error {
-	if err := s.Ensure(); err != nil {
-		return err
+	if s == nil || s.engine == nil {
+		return fmt.Errorf("event store requires a home")
 	}
-	probe, err := os.CreateTemp(s.rootPath(), ".eventstore-preflight-*")
-	if err != nil {
-		return err
-	}
-	name := probe.Name()
-	_ = probe.Close()
-	_ = os.Remove(name)
-	return nil
+	return s.engine.preflight()
 }
 
 func (s *Store) rootPath() string { return filepath.Join(s.home, eventsDirName) }
@@ -121,130 +123,76 @@ func (s *Store) resolve(raw string) (Reference, string, error) {
 	return ref, s.recordPath(ref), nil
 }
 
-// Read resolves a bare, logical, or historical reference through the current
-// loose engine.
+// Read resolves a bare, logical, or historical reference. Segments are
+// authoritative when both representations contain the same id.
 func (s *Store) Read(raw string) (Record, error) {
-	ref, path, err := s.resolve(raw)
+	ref, err := ParseReference(raw)
 	if err != nil {
 		return Record{}, err
 	}
-	data, err := os.ReadFile(path)
+	stored, err := s.engine.getByID(ref.ID(), "")
 	if err != nil {
 		return Record{}, err
 	}
-	return Record{ID: ref.ID(), Reference: ref, Bytes: data, DiagnosticPath: path}, nil
+	return Record{ID: ref.ID(), Reference: ref, Bytes: stored.bytes, DiagnosticPath: stored.diagnosticPath}, nil
 }
 
 // ReadRegular is the fail-closed rooted variant used where a symlinked record
 // or events ancestor must never qualify as authority evidence.
 func (s *Store) ReadRegular(raw, kind string) (Record, error) {
-	ref, path, err := s.resolve(raw)
+	ref, err := ParseReference(raw)
 	if err != nil {
 		return Record{}, err
 	}
-	data, err := home.ReadRootedRegularFile(s.home, path, kind)
+	stored, err := s.engine.getByID(ref.ID(), kind)
 	if err != nil {
 		return Record{}, err
 	}
-	return Record{ID: ref.ID(), Reference: ref, Bytes: data, DiagnosticPath: path}, nil
+	return Record{ID: ref.ID(), Reference: ref, Bytes: stored.bytes, DiagnosticPath: stored.diagnosticPath}, nil
 }
 
 func (s *Store) Exists(raw string) (bool, error) {
-	_, path, err := s.resolve(raw)
+	_, err := s.Read(raw)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
 		return false, err
 	}
-	_, err = os.Stat(path)
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, os.ErrNotExist):
-		return false, nil
-	default:
-		return false, err
-	}
+	return true, nil
 }
 
 func (s *Store) Remove(raw string) error {
-	_, path, err := s.resolve(raw)
+	ref, err := ParseReference(raw)
 	if err != nil {
 		return err
 	}
-	return os.Remove(path)
+	return s.engine.remove(ref.ID())
 }
 
-// PutJSON preserves the existing overwrite mode and caller-selected indent.
+// PutJSON keeps the slice-1 signature while the segment engine makes same-id
+// retries idempotent and refuses same-id/different-record conflicts.
 func (s *Store) PutJSON(id string, value any, indent string) (PutResult, error) {
-	ref, err := ReferenceForID(id)
-	if err != nil {
-		return PutResult{}, err
-	}
-	data, err := marshalJSONLine(value, indent)
-	if err != nil {
-		return PutResult{}, err
-	}
-	if err := s.Ensure(); err != nil {
-		return PutResult{}, err
-	}
-	path := s.recordPath(ref)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return PutResult{}, err
-	}
-	return putResult(ref, path, true), nil
+	return s.putJSON(id, value, indent, putIdempotent, AtomicOptions{})
 }
 
-// PutJSONExclusive preserves O_EXCL publication and removes a partial file on
-// write or close failure.
+// PutJSONExclusive retains the caller-visible os.ErrExist contract.
 func (s *Store) PutJSONExclusive(id string, value any, indent string) (PutResult, error) {
-	ref, err := ReferenceForID(id)
-	if err != nil {
-		return PutResult{}, err
-	}
-	data, err := marshalJSONLine(value, indent)
-	if err != nil {
-		return PutResult{}, err
-	}
-	if err := s.Ensure(); err != nil {
-		return PutResult{}, err
-	}
-	path := s.recordPath(ref)
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return PutResult{}, err
-	}
-	// Preserve the review-artifact writer's historical single Write call. In
-	// particular, a nil-error short write is not retried in this parity slice.
-	if err := writeOnce(file, data); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return PutResult{}, err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return PutResult{}, err
-	}
-	return putResult(ref, path, true), nil
+	return s.putJSON(id, value, indent, putExclusive, AtomicOptions{})
 }
 
-// PutJSONIfAbsent preserves trace import's current stat-then-write behavior:
-// an existing id is a silent skip, not an ErrIDConflict.
+// PutJSONIfAbsent silently keeps either existing representation.
 func (s *Store) PutJSONIfAbsent(id string, value any, indent string) (PutResult, error) {
-	ref, err := ReferenceForID(id)
-	if err != nil {
-		return PutResult{}, err
-	}
-	path := s.recordPath(ref)
-	if _, err := os.Stat(path); err == nil {
-		return putResult(ref, path, false), nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return PutResult{}, err
-	}
-	return s.PutJSON(id, value, indent)
+	return s.putJSON(id, value, indent, putIfAbsent, AtomicOptions{})
 }
 
-// PutJSONAtomic publishes a synced sibling temp by rename. Callers select
-// directory sync and optional injected boundaries to preserve their contract.
+// PutJSONAtomic retains the injected publication boundaries while delegating
+// durability to the append engine.
 func (s *Store) PutJSONAtomic(id string, value any, indent string, opts AtomicOptions) (PutResult, error) {
+	return s.putJSON(id, value, indent, putAtomic, opts)
+}
+
+func (s *Store) putJSON(id string, value any, indent string, mode putMode, opts AtomicOptions) (PutResult, error) {
 	ref, err := ReferenceForID(id)
 	if err != nil {
 		return PutResult{}, err
@@ -253,58 +201,19 @@ func (s *Store) PutJSONAtomic(id string, value any, indent string, opts AtomicOp
 	if err != nil {
 		return PutResult{}, err
 	}
-	if err := s.Ensure(); err != nil {
-		return PutResult{}, err
+	outcome, err := s.engine.put(id, data, mode, opts)
+	result := PutResult{
+		Reference:      ref,
+		Created:        outcome.created,
+		DiagnosticPath: outcome.diagnosticPath,
 	}
-	path := s.recordPath(ref)
-	tmp, err := os.CreateTemp(s.rootPath(), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return PutResult{}, err
+		return result, err
 	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}()
-	if err := tmp.Chmod(0o644); err != nil {
-		return PutResult{}, err
+	if result.DiagnosticPath == "" {
+		result.DiagnosticPath = ref.String()
 	}
-	writer := opts.Write
-	if writer == nil {
-		writer = writeFull
-	}
-	if err := writer(tmp, data); err != nil {
-		return PutResult{}, err
-	}
-	if err := tmp.Sync(); err != nil {
-		return PutResult{}, err
-	}
-	if err := tmp.Close(); err != nil {
-		return PutResult{}, err
-	}
-	if opts.BeforePublish != nil {
-		if err := opts.BeforePublish(); err != nil {
-			return PutResult{}, err
-		}
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return PutResult{}, err
-	}
-	if opts.SyncDirectory {
-		if err := syncDirectory(s.rootPath()); err != nil {
-			return PutResult{}, err
-		}
-	}
-	if opts.AfterPublish != nil {
-		if err := opts.AfterPublish(); err != nil {
-			return PutResult{}, err
-		}
-	}
-	return putResult(ref, path, true), nil
-}
-
-func putResult(ref Reference, path string, created bool) PutResult {
-	return PutResult{Reference: ref, Created: created, DiagnosticPath: path}
+	return result, nil
 }
 
 func marshalJSONLine(value any, indent string) ([]byte, error) {
@@ -347,34 +256,34 @@ func syncDirectory(path string) error {
 	return nil
 }
 
-// Scan returns matching loose records in deterministic filename order. It
-// never opens them; each caller retains its fail-fast or warning policy via
-// Entry.Read.
+// Scan validates segment truth, unions legacy loose records, and returns stable
+// logical entries. Segment records win duplicate ids.
 func (s *Store) Scan(opts ScanOptions) ([]Entry, error) {
-	dirEntries, err := os.ReadDir(s.rootPath())
+	records, invalid, err := s.engine.scanAll(opts.RegularOnly)
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]Entry, 0, len(dirEntries))
-	for _, dirEntry := range dirEntries {
-		name := dirEntry.Name()
-		if dirEntry.IsDir() || !strings.HasSuffix(name, ".json") {
-			continue
+	// Fail closed on an invalid loose filename that MATCHES the requested
+	// prefixes: the caller asked for those records, so a name it cannot
+	// reference is an error to surface, never an entry to silently skip.
+	// Nonmatching invalid names stay ignorable (the caller never asked).
+	for _, bad := range invalid {
+		if matchesPrefix(strings.TrimSuffix(bad.name, ".json"), opts.Prefixes) {
+			return nil, fmt.Errorf("invalid event scan entry %q: %w", bad.name, bad.err)
 		}
-		if opts.RegularOnly && !dirEntry.Type().IsRegular() {
-			continue
-		}
-		id := strings.TrimSuffix(name, ".json")
+	}
+	entries := make([]Entry, 0, len(records))
+	for id := range records {
 		if !matchesPrefix(id, opts.Prefixes) {
 			continue
 		}
 		ref, err := ReferenceForID(id)
 		if err != nil {
-			return nil, fmt.Errorf("invalid event scan entry %q: %w", name, err)
+			return nil, fmt.Errorf("invalid event scan entry %q: %w", id, err)
 		}
 		entries = append(entries, Entry{
 			ID:        id,
-			Name:      name,
+			Name:      id + ".json",
 			Reference: ref,
 			store:     s,
 		})

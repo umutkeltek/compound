@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/eventsource"
+	"compound/internal/eventstore"
 )
 
 // TestOSAbsorptionEventSourceAuthorityProof exercises the
@@ -228,9 +229,13 @@ func deleteEventSourceSpotCheckTrace(t *testing.T, compoundHome, sourcePath stri
 		if rec.SourcePath != sourcePath || len(rec.TraceIDs) == 0 {
 			continue
 		}
-		tracePath := filepath.Join(compoundHome, "events", rec.TraceIDs[0]+".json")
-		if err := os.Remove(tracePath); err != nil {
-			t.Fatalf("remove trace fixture %s: %v", tracePath, err)
+		store, err := eventstore.Open(compoundHome)
+		if err != nil {
+			t.Fatalf("open event store: %v", err)
+		}
+		traceID := rec.TraceIDs[len(rec.TraceIDs)-1]
+		if err := store.Remove(traceID); err != nil {
+			t.Fatalf("remove trace fixture %s: %v", traceID, err)
 		}
 		return
 	}

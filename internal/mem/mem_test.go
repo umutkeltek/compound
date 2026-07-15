@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/eventstore"
 )
 
 var t0 = time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
@@ -770,16 +771,16 @@ func TestPartialPromotionRecoveryReusesPersistedTransition(t *testing.T) {
 	if err != nil || len(claimsAfterFailure) != 1 {
 		t.Fatalf("partial promotion claims = %+v, err=%v", claimsAfterFailure, err)
 	}
-	eventsPath := filepath.Join(s.home, "events")
-	eventsAfterFailure, err := os.ReadDir(eventsPath)
+	eventsAfterFailure, err := s.eventStore.Scan(eventstore.ScanOptions{})
 	if err != nil || len(eventsAfterFailure) != 1 {
 		t.Fatalf("partial promotion events = %+v, err=%v", eventsAfterFailure, err)
 	}
-	firstEventName := eventsAfterFailure[0].Name()
-	firstEventBytes, err := os.ReadFile(filepath.Join(eventsPath, firstEventName))
+	firstEventID := eventsAfterFailure[0].ID
+	firstEvent, err := eventsAfterFailure[0].Read()
 	if err != nil {
 		t.Fatal(err)
 	}
+	firstEventBytes := firstEvent.Bytes
 
 	recovered, err := s.Adjudicate(captured[0].ID, "promote", "work_projection_failure", t0.Add(time.Second))
 	if err != nil || recovered.Claim == nil || recovered.Transition == nil {
@@ -788,21 +789,22 @@ func TestPartialPromotionRecoveryReusesPersistedTransition(t *testing.T) {
 	if recovered.Claim.ID != claimsAfterFailure[0].ID {
 		t.Fatalf("recovery minted another claim: recovered=%s original=%s", recovered.Claim.ID, claimsAfterFailure[0].ID)
 	}
-	eventsAfterRecovery, err := os.ReadDir(eventsPath)
+	eventsAfterRecovery, err := s.eventStore.Scan(eventstore.ScanOptions{})
 	if err != nil || len(eventsAfterRecovery) != 1 {
 		t.Fatalf("recovery duplicated transition: %+v, err=%v", eventsAfterRecovery, err)
 	}
-	if eventsAfterRecovery[0].Name() != firstEventName {
-		t.Fatalf("recovery replaced transition identity: got=%s want=%s", eventsAfterRecovery[0].Name(), firstEventName)
+	if eventsAfterRecovery[0].ID != firstEventID {
+		t.Fatalf("recovery replaced transition identity: got=%s want=%s", eventsAfterRecovery[0].ID, firstEventID)
 	}
-	eventBytesAfterRecovery, err := os.ReadFile(filepath.Join(eventsPath, firstEventName))
+	eventAfterRecovery, err := eventsAfterRecovery[0].Read()
 	if err != nil {
 		t.Fatal(err)
 	}
+	eventBytesAfterRecovery := eventAfterRecovery.Bytes
 	if string(eventBytesAfterRecovery) != string(firstEventBytes) {
 		t.Fatal("recovery rewrote the already-persisted transition")
 	}
-	wantBytes, err := json.MarshalIndent(recovered.Transition, "", "  ")
+	wantBytes, err := json.Marshal(recovered.Transition)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -904,7 +906,7 @@ func TestPartialPromotionRecoveryUsesClaimDerivedTransitionIdentity(t *testing.T
 	if recovered.Transition.ID != wantID {
 		t.Fatalf("recovery reused unrelated transition %s, want claim-derived %s", recovered.Transition.ID, wantID)
 	}
-	events, err := os.ReadDir(eventsPath)
+	events, err := s.eventStore.Scan(eventstore.ScanOptions{})
 	if err != nil || len(events) != 2 {
 		t.Fatalf("identity recovery events = %+v, err=%v", events, err)
 	}

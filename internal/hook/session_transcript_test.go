@@ -61,8 +61,8 @@ func TestSessionEndWorklessTranscriptProducesContentReceipt(t *testing.T) {
 	if !containsString(res.Event.SideEffects, "compound://events/"+rec.ID) {
 		t.Fatalf("hook side effects = %v, want receipt event ref", res.Event.SideEffects)
 	}
-	if _, err := os.Stat(filepath.Join(home, "events", rec.ID+".json")); err != nil {
-		t.Fatalf("receipt not persisted in event door: %v", err)
+	if !hookEventRecordExists(t, home, rec.ID) {
+		t.Fatal("receipt not persisted in event door")
 	}
 }
 
@@ -139,11 +139,8 @@ func TestSessionEndWorklessReceiptPersistsEmptyEvidenceArrayWithoutOperatorSpans
 		t.Fatalf("produced = %v, want [receipt]", got)
 	}
 	rec := res.Produced[0].(*envelope.Receipt)
-	persisted, err := os.ReadFile(filepath.Join(home, "events", rec.ID+".json"))
-	if err != nil {
-		t.Fatalf("read persisted receipt: %v", err)
-	}
-	if !strings.Contains(string(persisted), `"evidence_refs": []`) || strings.Contains(string(persisted), `"evidence_refs": null`) {
+	persisted := readHookEventRecord(t, home, rec.ID, nil)
+	if !strings.Contains(string(persisted), `"evidence_refs":[]`) || strings.Contains(string(persisted), `"evidence_refs":null`) {
 		t.Fatalf("persisted receipt must encode an empty evidence array, got:\n%s", persisted)
 	}
 }

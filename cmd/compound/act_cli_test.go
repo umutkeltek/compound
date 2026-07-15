@@ -135,7 +135,7 @@ func TestActRepointWritesWithGrantAndRecordsReceipt(t *testing.T) {
 	if recID == "" {
 		t.Fatalf("expected a receipt_id in output: %q", out.String())
 	}
-	if _, err := os.Stat(filepath.Join(home, "events", recID+".json")); err != nil {
-		t.Fatalf("receipt %s must resolve in the canonical event store: %v", recID, err)
+	if !testEventExists(t, home, recID) {
+		t.Fatalf("receipt %s must resolve in the canonical event store", recID)
 	}
 }

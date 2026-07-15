@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 func TestBuildExecutionRouteEvidenceMetadataOnly(t *testing.T) {
@@ -188,13 +189,16 @@ func TestRecordExecutionRouteTransitionWritesEnvelope(t *testing.T) {
 	if err := RecordExecutionRouteTransition(home, tr); err != nil {
 		t.Fatalf("record transition: %v", err)
 	}
-	path := filepath.Join(home, "events", tr.ID+".json")
-	data, err := os.ReadFile(path)
+	store, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.Read(tr.ID)
 	if err != nil {
 		t.Fatalf("read transition: %v", err)
 	}
 	var got envelope.Transition
-	if err := json.Unmarshal(data, &got); err != nil {
+	if err := json.Unmarshal(record.Bytes, &got); err != nil {
 		t.Fatalf("decode transition: %v", err)
 	}
 	if got.ID != tr.ID || got.Projections.Routing[0] != ev.ID {

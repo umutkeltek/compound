@@ -167,10 +167,7 @@ func TestReviewsResolveGenericReviewIsSidecarOnlyAndUndoRestoresArchiveVisibilit
 		if !strings.HasPrefix(rel, "events/rec_") || !strings.HasSuffix(rel, ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(homePath, filepath.FromSlash(rel)))
-		if err != nil {
-			t.Fatal(err)
-		}
+		data := readTestPath(t, filepath.Join(homePath, filepath.FromSlash(rel)))
 		if kind, err := envelope.ValidateBytes(data); err != nil || kind != "receipt" {
 			t.Fatalf("receipt %s validation kind=%q err=%v", rel, kind, err)
 		}
@@ -253,22 +250,34 @@ func snapshotReviewsResolveHome(t *testing.T, root string) map[string]string {
 		if err != nil {
 			return err
 		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
 		if entry.IsDir() {
+			if rel == "events/segments" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
 		sum := sha256.Sum256(data)
-		out[filepath.ToSlash(rel)] = hex.EncodeToString(sum[:])
+		out[rel] = hex.EncodeToString(sum[:])
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	for _, entry := range testEventEntries(t, root) {
+		record, err := entry.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(record.Bytes)
+		out["events/"+entry.ID+".json"] = hex.EncodeToString(sum[:])
 	}
 	return out
 }

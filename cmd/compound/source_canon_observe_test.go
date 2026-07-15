@@ -113,17 +113,19 @@ func TestCanonObserveFailedMintDoesNotConsumeBaseline(t *testing.T) {
 	if got := canonObsManifestHash(t, home, "harness-canon", fA); got != baselineHash {
 		t.Fatalf("failed mint consumed the drift: manifest hash advanced from %s to %s", baselineHash, got)
 	}
-	// No transition event survived the failed mint.
-	if n := countFilesWithPrefix(t, home, "tr_canon_"); n != 0 {
-		t.Fatalf("failed mint left %d transition event(s)", n)
-	}
-
 	candidatesAfterFail := countFilesWithPrefix(t, home, "src_cand_")
 
 	// Restore events so a clean rerun can proceed, then re-observe in observation-only mode: the drift
 	// must still be detected (proving it was never consumed) and re-parking must not duplicate candidates.
 	if err := os.Remove(eventsPath); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.MkdirAll(eventsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// No transition event survived the failed mint.
+	if n := len(testEventEntries(t, home, "tr_canon_")); n != 0 {
+		t.Fatalf("failed mint left %d transition event(s)", n)
 	}
 	var rstdout, rstderr bytes.Buffer
 	code = runSourceCanonObserve([]string{"--family", "harness-canon"}, &rstdout, &rstderr, canonObsNow.Add(2*time.Hour))
@@ -242,7 +244,7 @@ func TestCanonObserveHappyPathMintsCommitsThenRerunClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("happy path failed: code=%d stderr=%s", code, stderr.String())
 	}
-	if n := countFilesWithPrefix(t, home, "tr_canon_"); n != 1 {
+	if n := len(testEventEntries(t, home, "tr_canon_")); n != 1 {
 		t.Fatalf("happy path must mint exactly one transition, got %d", n)
 	}
 	if got := canonObsManifestHash(t, home, "harness-canon", fA); got == baselineHash {
@@ -254,7 +256,7 @@ func TestCanonObserveHappyPathMintsCommitsThenRerunClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("clean rerun failed: code=%d stderr=%s", code, rstderr.String())
 	}
-	if n := countFilesWithPrefix(t, home, "tr_canon_"); n != 1 {
+	if n := len(testEventEntries(t, home, "tr_canon_")); n != 1 {
 		t.Fatalf("rerun with no change must mint nothing new, got %d transition event(s)", n)
 	}
 }

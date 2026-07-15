@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 )
 
 func TestImportOSEventsWritesTraceEnvelopesIdempotently(t *testing.T) {
@@ -205,7 +206,7 @@ func TestShowTraceServesEnvelopeWithSourceRef(t *testing.T) {
 	if !strings.Contains(detail.SourceRef, "os-control-events@") || !strings.Contains(detail.SourceRef, fixture) {
 		t.Fatalf("source_ref must name stream + source path, got %q", detail.SourceRef)
 	}
-	if !strings.HasSuffix(detail.TracePath, filepath.Join("events", id+".json")) {
+	if detail.TracePath != "compound://events/"+id {
 		t.Fatalf("trace served from wrong path: %q", detail.TracePath)
 	}
 	if err := detail.Trace.Validate(); err != nil {
@@ -367,9 +368,23 @@ func TestImportOSEventsAcceptsAgentRunShape(t *testing.T) {
 
 func readJSON(t *testing.T, path string, v any) {
 	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	var b []byte
+	if filepath.Base(filepath.Dir(path)) == "events" && strings.HasSuffix(path, ".json") {
+		store, err := eventstore.Open(filepath.Dir(filepath.Dir(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := store.Read(strings.TrimSuffix(filepath.Base(path), ".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b = record.Bytes
+	} else {
+		var err error
+		b, err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := json.Unmarshal(b, v); err != nil {
 		t.Fatal(err)

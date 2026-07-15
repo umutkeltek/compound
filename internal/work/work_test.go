@@ -228,10 +228,10 @@ func TestClaimConflict(t *testing.T) {
 	if claimed.PolicyDecisionID == "" || len(claimed.RunIDs) != beforeRuns+1 {
 		t.Fatalf("claim must record policy/action chain: runs=%v policy=%q", claimed.RunIDs, claimed.PolicyDecisionID)
 	}
-	if _, err := os.Stat(s.envPath(claimed.RunIDs[beforeRuns])); err != nil {
+	if exists, err := s.eventExists(claimed.RunIDs[beforeRuns]); err != nil || !exists {
 		t.Fatalf("claim action envelope missing: %v", err)
 	}
-	if _, err := os.Stat(s.envPath(claimed.PolicyDecisionID)); err != nil {
+	if exists, err := s.eventExists(claimed.PolicyDecisionID); err != nil || !exists {
 		t.Fatalf("claim policy envelope missing: %v", err)
 	}
 	if _, err := s.Claim(w.ID, "agent_b", fixedNow); err == nil {

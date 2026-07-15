@@ -88,7 +88,7 @@ func TestProofChainDoctorFailsMismatchedTerminalWorkID(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 	closed.Receipt.IDs.WorkID = "work_other"
-	if err := s.writeJSON(s.envPath(closed.Receipt.ID), &closed.Receipt); err != nil {
+	if err := s.replaceEvent(closed.Receipt.ID, &closed.Receipt); err != nil {
 		t.Fatalf("write corrupted receipt: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestProofChainDoctorFailsTerminalPolicyActionMismatch(t *testing.T) {
 		t.Fatalf("read policy decision: %v", err)
 	}
 	pd.ActionIntentID = "act_missing_from_work"
-	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+	if err := s.replaceEvent(pd.ID, &pd); err != nil {
 		t.Fatalf("write corrupted policy decision: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestProofChainDoctorFailsMissingTransitionActionRef(t *testing.T) {
 	}
 
 	closed.Transition.ActionRefs = nil
-	if err := s.writeJSON(s.envPath(closed.Transition.ID), &closed.Transition); err != nil {
+	if err := s.replaceEvent(closed.Transition.ID, &closed.Transition); err != nil {
 		t.Fatalf("write corrupted transition: %v", err)
 	}
 

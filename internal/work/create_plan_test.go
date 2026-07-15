@@ -406,7 +406,7 @@ func TestCreateRecordsAdmissionPolicyBeforeWork(t *testing.T) {
 	if ai.Capability != "work.create" || ai.IDs.WorkID != w.ID {
 		t.Fatalf("admission action not bound to work: %+v", ai)
 	}
-	if _, err := os.Stat(s.envPath(w.PolicyDecisionID)); err != nil {
+	if exists, err := s.eventExists(w.PolicyDecisionID); err != nil || !exists {
 		t.Fatalf("admission policy missing: %v", err)
 	}
 	_, events, err := s.Show(w.ID)

@@ -100,6 +100,18 @@ import (
 
 var eventBytes, eventReadErr = os.ReadFile(filepath.Join(homePath, "events", "rec_example.json"))
 `)
+	mustWriteArchFixture(t, repo, "internal/act/raw_persistence_proof.go", `package act
+
+import (
+	"os"
+	"path/filepath"
+)
+
+func persisted(home, id string) (bool, error) {
+	_, err := os.Stat(filepath.Join(home, "events", id+".json"))
+	return err == nil, err
+}
+`)
 	mustWriteArchFixture(t, repo, "internal/reader/diagnostic.go", `package reader
 
 import (
@@ -127,6 +139,7 @@ func reopen(store *eventstore.Store, id string) ([]byte, error) {
 		"internal/reader/retrieval.go",
 		"internal/reader/global.go",
 		"internal/reader/global_read.go",
+		"internal/act/raw_persistence_proof.go",
 		"internal/reader/diagnostic.go",
 	}
 	for _, want := range wantFiles {

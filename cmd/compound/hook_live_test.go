@@ -525,21 +525,14 @@ func runCodexPreToolUse(t *testing.T, input string) claudeLiveHookResponse {
 
 func readLiveMutationActions(t *testing.T, homePath, workPrefix string) []envelope.ActionIntent {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	actions := []envelope.ActionIntent{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "act_live_") || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		data, readErr := os.ReadFile(filepath.Join(homePath, "events", entry.Name()))
+	for _, entry := range testEventEntries(t, homePath, "act_live_") {
+		record, readErr := entry.Read()
 		if readErr != nil {
 			t.Fatal(readErr)
 		}
 		var action envelope.ActionIntent
-		if json.Unmarshal(data, &action) == nil && strings.HasPrefix(action.IDs.WorkID, workPrefix) && action.Action == "multi_edit_file" {
+		if json.Unmarshal(record.Bytes, &action) == nil && strings.HasPrefix(action.IDs.WorkID, workPrefix) && action.Action == "multi_edit_file" {
 			actions = append(actions, action)
 		}
 	}

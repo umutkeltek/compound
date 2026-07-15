@@ -11,6 +11,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/eventsource"
+	"compound/internal/eventstore"
 	"compound/internal/knowledge"
 	"compound/internal/mem"
 	"compound/internal/product"
@@ -437,8 +438,12 @@ func TestApplyRouteEvidenceRecordsJoinedRoutingTransition(t *testing.T) {
 	if ev.SelectedTarget.Provider != "fixture-provider" || ev.SelectedTarget.Model != "fixture-model" || ev.Usage.TotalTokens != 150 || ev.CostMicros != 2400 || ev.LatencyMS != 87 {
 		t.Fatalf("route evidence = %+v", ev)
 	}
-	if _, err := os.Stat(filepath.Join(home, "events", result.TransitionID+".json")); err != nil {
-		t.Fatalf("route transition missing: %v", err)
+	events, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := events.Exists(result.TransitionID); err != nil || !exists {
+		t.Fatalf("route transition missing: exists=%v err=%v", exists, err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("route evidence apply must not create product signals ledger: %v", err)
@@ -501,11 +506,15 @@ func TestApplyEventsWritesTraceEnvelopeMaterial(t *testing.T) {
 	if authority.Status != "ok" || authority.TraceCount != 1 || len(authority.SourceAuthority) != 1 || authority.SourceAuthority[0].ID != result.SourceAuthorityID {
 		t.Fatalf("event authority = %+v result=%+v", authority, result)
 	}
-	tracePath := filepath.Join(home, "events", result.TraceIDs[0]+".json")
-	traceBody, err := os.ReadFile(tracePath)
+	events, err := eventstore.Open(home)
 	if err != nil {
 		t.Fatal(err)
 	}
+	trace, err := events.Read(result.TraceIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	traceBody := trace.Bytes
 	if !strings.Contains(string(traceBody), "Observation event became trace material") || !strings.Contains(string(traceBody), "artifact_sha256:fixture-event") {
 		t.Fatalf("trace body missing observation evidence:\n%s", string(traceBody))
 	}
@@ -952,9 +961,23 @@ func signalCount(model product.LoopModel, metric string) int {
 
 func readJSONFile(t *testing.T, path string, dest any) {
 	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	var data []byte
+	if filepath.Base(filepath.Dir(path)) == "events" && strings.HasSuffix(path, ".json") {
+		store, err := eventstore.Open(filepath.Dir(filepath.Dir(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := store.Read(strings.TrimSuffix(filepath.Base(path), ".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = record.Bytes
+	} else {
+		var err error
+		data, err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := json.Unmarshal(data, dest); err != nil {
 		t.Fatalf("parse %s: %v", path, err)

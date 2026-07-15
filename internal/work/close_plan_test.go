@@ -179,10 +179,10 @@ func TestCloseRecordsPolicyAction(t *testing.T) {
 		t.Fatalf("close run chain = %v, before=%v", closed.Work.RunIDs, before.RunIDs)
 	}
 	closeActionID := closed.Work.RunIDs[len(before.RunIDs)]
-	if _, err := os.Stat(s.envPath(closeActionID)); err != nil {
+	if exists, err := s.eventExists(closeActionID); err != nil || !exists {
 		t.Fatalf("close action envelope missing: %v", err)
 	}
-	if _, err := os.Stat(s.envPath(closed.Work.PolicyDecisionID)); err != nil {
+	if exists, err := s.eventExists(closed.Work.PolicyDecisionID); err != nil || !exists {
 		t.Fatalf("close policy envelope missing: %v", err)
 	}
 	if !contains(closed.Transition.ActionRefs, closeActionID) {

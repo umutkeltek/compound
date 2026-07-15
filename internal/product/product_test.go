@@ -13,6 +13,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/mem"
 	"compound/internal/writeback"
 )
@@ -1262,24 +1263,28 @@ func findSignal(signals []Signal, id string) Signal {
 
 func readTransition(t *testing.T, home, id string) envelope.Transition {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(home, "events", id+".json"))
+	store, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.Read(id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var tr envelope.Transition
-	if err := json.Unmarshal(b, &tr); err != nil {
+	if err := json.Unmarshal(record.Bytes, &tr); err != nil {
 		t.Fatal(err)
 	}
 	if err := tr.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	want, err := json.MarshalIndent(&tr, "", " ")
+	want, err := json.Marshal(&tr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want = append(want, '\n')
-	if !bytes.Equal(b, want) {
-		t.Fatalf("product transition bytes changed\ngot:  %q\nwant: %q", b, want)
+	if !bytes.Equal(record.Bytes, want) {
+		t.Fatalf("product transition bytes changed\ngot:  %q\nwant: %q", record.Bytes, want)
 	}
 	return tr
 }

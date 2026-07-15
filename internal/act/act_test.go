@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/finding"
 	"compound/internal/policy"
 )
@@ -323,7 +325,10 @@ func TestExecutePersistsReceiptAndTransitionToEvents(t *testing.T) {
 		t.Fatalf("governed write failed: %v", err)
 	}
 
-	eventsDir := filepath.Join(home, "events")
+	events, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		kind    string
 		id      string
@@ -332,11 +337,12 @@ func TestExecutePersistsReceiptAndTransitionToEvents(t *testing.T) {
 		{"receipt", res.Receipt.ID, res.Receipt},
 		{"transition", res.Transition.ID, res.Transition},
 	} {
-		data, err := os.ReadFile(filepath.Join(eventsDir, tc.id+".json"))
+		record, err := events.Read(tc.id)
 		if err != nil {
-			t.Fatalf("%s must be recorded to the canonical event store (home/events/%s.json): %v", tc.kind, tc.id, err)
+			t.Fatalf("%s must resolve through the canonical event store: %v", tc.kind, err)
 		}
-		want, err := json.MarshalIndent(tc.payload, "", " ")
+		data := record.Bytes
+		want, err := json.Marshal(tc.payload)
 		if err != nil {
 			t.Fatalf("marshal expected %s: %v", tc.kind, err)
 		}
@@ -356,10 +362,11 @@ func TestExecutePersistsReceiptAndTransitionToEvents(t *testing.T) {
 	}
 
 	// The recorded receipt round-trips through its real validator — a faithful envelope, not a stub.
-	recData, err := os.ReadFile(filepath.Join(eventsDir, res.Receipt.ID+".json"))
+	recRecord, err := events.Read(res.Receipt.ID)
 	if err != nil {
 		t.Fatalf("read recorded receipt: %v", err)
 	}
+	recData := recRecord.Bytes
 	var rec envelope.Receipt
 	if err := json.Unmarshal(recData, &rec); err != nil {
 		t.Fatalf("recorded receipt unmarshal: %v", err)
@@ -546,4 +553,32 @@ func TestExecuteRecordsRecoveryFindingWhenRollbackFails(t *testing.T) {
 	if !strings.Contains(err.Error(), f.ID) {
 		t.Fatalf("error must name the recovery finding id %q, got: %v", f.ID, err)
 	}
+}
+
+func TestRecordEnvelopeRequiresPostWriteStoreRead(t *testing.T) {
+	proofErr := errors.New("injected Store.Read persistence proof failure")
+	store := &persistenceProofStore{readErr: proofErr}
+	if err := recordEnvelopeWithStore(store, "rec_proof", map[string]string{"id": "rec_proof"}); !errors.Is(err, proofErr) {
+		t.Fatalf("recordEnvelopeWithStore error = %v, want persistence proof error", err)
+	}
+	if store.puts != 1 || store.reads != 1 {
+		t.Fatalf("put/read calls = %d/%d, want 1/1", store.puts, store.reads)
+	}
+}
+
+type persistenceProofStore struct {
+	puts    int
+	reads   int
+	readErr error
+}
+
+func (s *persistenceProofStore) PutJSON(id string, value any, indent string) (eventstore.PutResult, error) {
+	s.puts++
+	ref, err := eventstore.ReferenceForID(id)
+	return eventstore.PutResult{Reference: ref, Created: true}, err
+}
+
+func (s *persistenceProofStore) Read(id string) (eventstore.Record, error) {
+	s.reads++
+	return eventstore.Record{}, s.readErr
 }

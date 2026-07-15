@@ -533,20 +533,24 @@ func TestRepoTargetActionEvidenceCannotDisappearBeforeClose(t *testing.T) {
 			if err := action.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.writeJSON(store.envPath(action.ID), &action); err != nil {
+			if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunID: action.ID}, now.Add(4*time.Minute)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunID: action.ID}, now.Add(4*time.Minute)); err != nil {
+			// Advance records the durable reference before the synthetic target is
+			// published so this target remains the latest action-family frame. The
+			// test can then exercise the event-store seam's rollback operation
+			// without rewriting older append-only history.
+			if err := store.writeJSON(store.envPath(action.ID), &action); err != nil {
 				t.Fatal(err)
 			}
 			switch mutate {
 			case "missing":
-				if err := os.Remove(store.envPath(action.ID)); err != nil {
+				if err := store.removeEvent(action.ID); err != nil {
 					t.Fatal(err)
 				}
 			case "mismatched":
 				action.IDs.WorkID = "work_other"
-				if err := store.writeJSON(store.envPath(action.ID), &action); err != nil {
+				if err := store.replaceEvent(action.ID, &action); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -28,9 +28,9 @@ func NewArtifactStore(homePath string) (*ArtifactStore, error) {
 }
 
 // recordEnvelope persists a validated receipt/transition through the canonical event-store seam.
-// Same id overwrites the current loose record (the existing idempotent behavior). This is what
-// makes a returned receipt_id/transition_id resolve to a real envelope, closing the "governed
-// action invisible to the event layer" gap.
+// A successful return includes a post-write Store.Read proof, so a returned
+// receipt_id/transition_id is resolvable through the canonical engine rather
+// than inferred from a now-obsolete loose-file path.
 func recordEnvelope(home, id string, v any) error {
 	if strings.TrimSpace(home) == "" {
 		return fmt.Errorf("cannot record %q without a home", id)
@@ -39,8 +39,26 @@ func recordEnvelope(home, id string, v any) error {
 	if err != nil {
 		return err
 	}
-	_, err = store.PutJSON(id, v, " ")
-	return err
+	return recordEnvelopeWithStore(store, id, v)
+}
+
+type envelopePersistenceStore interface {
+	PutJSON(id string, value any, indent string) (eventstore.PutResult, error)
+	Read(raw string) (eventstore.Record, error)
+}
+
+func recordEnvelopeWithStore(store envelopePersistenceStore, id string, value any) error {
+	if _, err := store.PutJSON(id, value, " "); err != nil {
+		return err
+	}
+	record, err := store.Read(id)
+	if err != nil {
+		return fmt.Errorf("prove event %s persistence through Store.Read: %w", id, err)
+	}
+	if record.ID != id {
+		return fmt.Errorf("prove event %s persistence through Store.Read: resolved id %q", id, record.ID)
+	}
+	return nil
 }
 
 // recordEnvelopeFn indirects recordEnvelope so a test can force the post-write persistence failure

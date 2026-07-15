@@ -724,8 +724,17 @@ func ApplySignal(homePath string, store *mem.Store, doc SignalDocument, sourcePa
 		return Report{}, err
 	}
 	signal.EvidenceRefs = compact(append(append(signal.EvidenceRefs, evidence.ID), doc.EvidenceRefs...))
-	if err := appendUniqueSignal(homePath, signal); err != nil {
+	persistedSignal, err := persistUniqueSignal(homePath, signal)
+	if err != nil {
 		return Report{}, err
+	}
+	// A replay with no source observed_at receives the original ingestion time
+	// from the persisted signal. That keeps the stable transition id paired with
+	// byte-identical transition content across legitimate retries.
+	signal = persistedSignal
+	transitionAt, err := time.Parse(time.RFC3339, signal.ObservedAt)
+	if err != nil {
+		return Report{}, fmt.Errorf("product signal %q observed_at %q: %w", signal.ID, signal.ObservedAt, err)
 	}
 	tr, err := BuildLoopTransition(LoopTransitionInput{
 		Kind:         "product_signal",
@@ -736,7 +745,7 @@ func ApplySignal(homePath string, store *mem.Store, doc SignalDocument, sourcePa
 		AfterRefs:    append([]string{"product_signal:" + signal.ID, evidence.ID}, signal.EvidenceRefs...),
 		EvidenceRefs: signal.EvidenceRefs,
 		Summary:      fmt.Sprintf("product signal %s recorded; no product surface changed", signal.ID),
-	}, now)
+	}, transitionAt)
 	if err != nil {
 		return Report{}, err
 	}
@@ -1910,23 +1919,31 @@ func sourceIssueFollowUpHypothesis(review SourceIssueReview, now time.Time) Hypo
 }
 
 func appendUniqueSignal(homePath string, signal Signal) error {
+	_, err := persistUniqueSignal(homePath, signal)
+	return err
+}
+
+func persistUniqueSignal(homePath string, signal Signal) (Signal, error) {
 	path := signalsLog(homePath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return Signal{}, err
 	}
 	signals, err := loadSignals(homePath)
 	if err != nil {
-		return err
+		return Signal{}, err
 	}
 	for _, existing := range signals {
 		if existing.ID == signal.ID {
 			if !sameSignal(existing, signal) {
-				return fmt.Errorf("product signal %q already exists with different content", signal.ID)
+				return Signal{}, fmt.Errorf("product signal %q already exists with different content", signal.ID)
 			}
-			return nil
+			return existing, nil
 		}
 	}
-	return appendJSONL(path, &signal)
+	if err := appendJSONL(path, &signal); err != nil {
+		return Signal{}, err
+	}
+	return signal, nil
 }
 
 func writeHypothesisCandidate(homePath string, c HypothesisCandidate) error {

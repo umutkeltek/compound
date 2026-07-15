@@ -96,38 +96,28 @@ func TestParseReferenceRejectsPhysicalAndUnsafeShapes(t *testing.T) {
 	}
 }
 
-func TestPutJSONPreservesIndentAndExactlyOneNewline(t *testing.T) {
+func TestPutJSONCanonicalizesRecordAndReturnsLogicalDiagnosticRef(t *testing.T) {
 	t.Parallel()
 
 	store := openTestStore(t)
-	payload := struct {
-		ID   string `json:"id"`
-		Meta struct {
-			State string `json:"state"`
-		} `json:"meta"`
-	}{ID: "rec_bytes"}
-	payload.Meta.State = "ok"
-
 	for _, tc := range []struct {
 		name   string
 		id     string
 		indent string
-		want   string
 	}{
 		{
 			name:   "one space",
 			id:     "rec_one",
 			indent: " ",
-			want:   "{\n \"id\": \"rec_bytes\",\n \"meta\": {\n  \"state\": \"ok\"\n }\n}\n",
 		},
 		{
 			name:   "two spaces",
 			id:     "rec_two",
 			indent: "  ",
-			want:   "{\n  \"id\": \"rec_bytes\",\n  \"meta\": {\n    \"state\": \"ok\"\n  }\n}\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]any{"id": tc.id, "meta": map[string]string{"state": "ok"}}
 			result, err := store.PutJSON(tc.id, payload, tc.indent)
 			if err != nil {
 				t.Fatal(err)
@@ -139,39 +129,42 @@ func TestPutJSONPreservesIndentAndExactlyOneNewline(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := string(record.Bytes); got != tc.want {
-				t.Fatalf("bytes differ\ngot:\n%q\nwant:\n%q", got, tc.want)
+			if got, want := string(record.Bytes), `{"id":"`+tc.id+`","meta":{"state":"ok"}}`+"\n"; got != want {
+				t.Fatalf("canonical bytes = %q, want %q", got, want)
 			}
 			if result.DiagnosticPath == "" || record.DiagnosticPath != result.DiagnosticPath {
 				t.Fatalf("diagnostic path mismatch: put=%q read=%q", result.DiagnosticPath, record.DiagnosticPath)
+			}
+			if result.DiagnosticPath != result.Reference.String() {
+				t.Fatalf("segment diagnostic ref = %q, want logical %q", result.DiagnosticPath, result.Reference)
 			}
 		})
 	}
 }
 
-func TestPutModesPreserveOverwriteExclusiveAndSkipIfPresent(t *testing.T) {
+func TestPutModesPreserveConflictExclusiveAndSkipIfPresent(t *testing.T) {
 	t.Parallel()
 
 	store := openTestStore(t)
-	if _, err := store.PutJSON("rec_mode", map[string]string{"value": "first"}, " "); err != nil {
+	if _, err := store.PutJSON("rec_mode", map[string]string{"id": "rec_mode", "value": "first"}, " "); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PutJSON("rec_mode", map[string]string{"value": "overwritten"}, " "); err != nil {
-		t.Fatalf("overwrite: %v", err)
+	if _, err := store.PutJSON("rec_mode", map[string]string{"id": "rec_mode", "value": "overwritten"}, " "); !errors.Is(err, ErrIDConflict) {
+		t.Fatalf("conflict error = %v, want ErrIDConflict", err)
 	}
-	overwritten, err := store.Read("compound://events/rec_mode")
+	first, err := store.Read("compound://events/rec_mode")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(overwritten.Bytes, []byte("overwritten")) {
-		t.Fatalf("overwrite did not replace bytes: %s", overwritten.Bytes)
+	if !bytes.Contains(first.Bytes, []byte("first")) || bytes.Contains(first.Bytes, []byte("overwritten")) {
+		t.Fatalf("conflict changed stored bytes: %s", first.Bytes)
 	}
 
-	if _, err := store.PutJSONExclusive("rec_mode", map[string]string{"value": "exclusive"}, " "); !errors.Is(err, os.ErrExist) {
+	if _, err := store.PutJSONExclusive("rec_mode", map[string]string{"id": "rec_mode", "value": "exclusive"}, " "); !errors.Is(err, os.ErrExist) {
 		t.Fatalf("exclusive existing error = %v, want os.ErrExist", err)
 	}
 
-	created, err := store.PutJSONIfAbsent("rec_mode", map[string]string{"value": "skipped"}, " ")
+	created, err := store.PutJSONIfAbsent("rec_mode", map[string]string{"id": "rec_mode", "value": "skipped"}, " ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,11 +175,11 @@ func TestPutModesPreserveOverwriteExclusiveAndSkipIfPresent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(stable.Bytes, overwritten.Bytes) {
-		t.Fatalf("if-absent changed stable bytes\nbefore=%q\nafter=%q", overwritten.Bytes, stable.Bytes)
+	if !bytes.Equal(stable.Bytes, first.Bytes) {
+		t.Fatalf("if-absent changed stable bytes\nbefore=%q\nafter=%q", first.Bytes, stable.Bytes)
 	}
 
-	created, err = store.PutJSONIfAbsent("trace_new", map[string]string{"value": "created"}, "  ")
+	created, err = store.PutJSONIfAbsent("trace_new", map[string]string{"id": "trace_new", "value": "created"}, "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +212,7 @@ func TestPutJSONAtomicPreservesPublicationHooksAndCleansTemp(t *testing.T) {
 
 	store := openTestStore(t)
 	var phases []string
-	result, err := store.PutJSONAtomic("tr_atomic", map[string]string{"state": "ok"}, "  ", AtomicOptions{
+	result, err := store.PutJSONAtomic("tr_atomic", map[string]string{"id": "tr_atomic", "state": "ok"}, "  ", AtomicOptions{
 		SyncDirectory: true,
 		Write: func(file *os.File, data []byte) error {
 			phases = append(phases, "write")
@@ -259,14 +252,13 @@ func TestPutJSONAtomicPreservesPublicationHooksAndCleansTemp(t *testing.T) {
 	if want := []string{"write", "before_publish", "after_publish"}; !reflect.DeepEqual(phases, want) {
 		t.Fatalf("phases = %v, want %v", phases, want)
 	}
-	entries, err := os.ReadDir(filepath.Dir(result.DiagnosticPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if strings.Contains(entry.Name(), ".tmp-") {
-			t.Fatalf("atomic temp leaked: %s", entry.Name())
+	if err := filepath.WalkDir(store.engine.segRoot, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && strings.Contains(entry.Name(), ".tmp-") {
+			t.Errorf("atomic temp leaked: %s", path)
 		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -288,8 +280,17 @@ func TestOpenIsReadOnlyAndPreflightCleansItsProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("preflight left artifacts: %v", entries)
+	if len(entries) != 1 || entries[0].Name() != segmentsDirName || !entries[0].IsDir() {
+		t.Fatalf("preflight artifacts = %v, want only segment infrastructure", entries)
+	}
+	segmentEntries, err := os.ReadDir(store.engine.segRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range segmentEntries {
+		if strings.Contains(entry.Name(), "preflight") {
+			t.Fatalf("preflight probe leaked: %s", entry.Name())
+		}
 	}
 }
 
@@ -309,10 +310,10 @@ func TestCountAndRemoveUseResolvedRecords(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("count = %d, want 2", count)
 	}
-	if err := store.Remove("compound://events/rec_a"); err != nil {
+	if err := store.Remove("compound://events/rec_b"); err != nil {
 		t.Fatal(err)
 	}
-	if exists, err := store.Exists("events/rec_a.json"); err != nil || exists {
+	if exists, err := store.Exists("events/rec_b.json"); err != nil || exists {
 		t.Fatalf("removed record exists=%v err=%v", exists, err)
 	}
 	missing, err := Open(filepath.Join(t.TempDir(), "missing"))
@@ -355,7 +356,7 @@ func TestPutJSONAtomicFailureBoundariesPreserveVisibility(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := openTestStore(t)
-			_, err := store.PutJSONAtomic("tr_failure", map[string]string{"state": "new"}, "  ", tc.opts)
+			_, err := store.PutJSONAtomic("tr_failure", map[string]string{"id": "tr_failure", "state": "new"}, "  ", tc.opts)
 			if !errors.Is(err, boom) {
 				t.Fatalf("error = %v, want injected failure", err)
 			}
