@@ -176,6 +176,55 @@ func BuildSourceManifest(sourceFamily string, paths []string, now time.Time) (So
 	return manifest, nil
 }
 
+// CanonPathNode binds one harness-canon source file to the capability-graph node it evolves.
+// The node ref (e.g. "harness:codex", "tool:oracle") is runtime data supplied at invocation, never
+// a hardcoded list in tracked source.
+type CanonPathNode struct {
+	Path    string
+	NodeRef string
+}
+
+// BuildCanonManifest declares a harness-canon source family as a source-manifest whose every item
+// carries its capability-graph node in CompoundEntityRefs and stays source_in_place (a canon file
+// is watched evidence, not an owned snapshot). The item id/source-key stay path-derived so a later
+// re-baseline of the same file replaces in place rather than forking a supersession chain. It takes
+// `now` for deterministic timestamps, consistent with BuildSourceManifest.
+func BuildCanonManifest(sourceFamily string, pairs []CanonPathNode, now time.Time) (SourceManifest, error) {
+	sourceFamily = strings.TrimSpace(sourceFamily)
+	if sourceFamily == "" {
+		return SourceManifest{}, fmt.Errorf("source family required")
+	}
+	if len(pairs) == 0 {
+		return SourceManifest{}, fmt.Errorf("at least one path=node pair required")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	manifest := SourceManifest{
+		SchemaVersion: SourceManifestSchemaVersion,
+		ID:            "srcman_" + safeManifestName(sourceFamily),
+		SourceFamily:  sourceFamily,
+		AuthorityRef:  SourceManifestAuthorityRef(sourceFamily),
+		Lifecycle:     defaultSourceManifestLifecycle(),
+	}
+	for _, pair := range pairs {
+		nodeRef := strings.TrimSpace(pair.NodeRef)
+		if nodeRef == "" {
+			return SourceManifest{}, fmt.Errorf("canon manifest item %q requires a node ref", pair.Path)
+		}
+		item, err := buildSourceManifestItem(sourceFamily, pair.Path)
+		if err != nil {
+			return SourceManifest{}, err
+		}
+		item.BodyPolicy = "source_in_place"
+		item.CompoundEntityRefs = []string{nodeRef}
+		manifest.Items = append(manifest.Items, item)
+	}
+	sort.SliceStable(manifest.Items, func(i, j int) bool { return manifest.Items[i].ID < manifest.Items[j].ID })
+	manifest.GeneratedAt = sourceManifestGeneratedAt(manifest.Items, now)
+	return manifest, nil
+}
+
 // BuildOwnedSourceManifest captures exact source bytes into Compound's immutable
 // artifact store. SourceRef remains provenance; it is no longer needed to recover
 // the body after this function succeeds.
