@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/capgraph"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/observation"
@@ -49,6 +50,8 @@ func cmdSource(args []string) {
 		cmdSourceManifestMaterialize(args[1:])
 	case "manifest-materialize-dump":
 		cmdSourceManifestMaterializeDump(args[1:])
+	case "canon-observe":
+		cmdSourceCanonObserve(args[1:])
 	case "observation-verdict-plan":
 		cmdSourceObservationVerdictPlan(args[1:])
 	case "observation-verdict-review":
@@ -60,7 +63,7 @@ func cmdSource(args []string) {
 }
 
 func sourceUsage() string {
-	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-advance <family> --to <state> --work <id> --by <actor> --proof <gate>=<ref>... [--confirm] [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | manifest-materialize-dump <family> --target <path> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-advance <family> --to <state> --work <id> --by <actor> --proof <gate>=<ref>... [--confirm] [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | manifest-materialize-dump <family> --target <path> [--json] | canon-observe --family <id> [--file <path>=<node-id> ...] [--cause-class repair|retire|accept|invalidate] [--caused-by <ref> ...] [--next-consumer <who>] [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
 func cmdSourceObserve(args []string) {
@@ -720,6 +723,149 @@ func cmdSourceManifestMaterializeDump(args []string) {
 	}
 	fmt.Printf("materialized dump: %s\n", report.TargetPath)
 	fmt.Printf("body: %s bytes=%d already_exists=%t\n", report.BodyRef, report.Bytes, report.AlreadyExists)
+}
+
+// cmdSourceCanonObserve is the harness co-evolution front door. With --file pairs it (re)baselines
+// the canon source-manifest family (0 transitions on initial capture); it then observes live drift
+// into no-promote candidates, and when drift is non-empty and --caused-by is supplied it mints ONE
+// cause-carrying Transition projected onto the touched capability-graph nodes. Importer observes;
+// ObjectFamily mints.
+func cmdSourceCanonObserve(args []string) {
+	usage := "usage: compound source canon-observe --family <id> [--file <path>=<node-id> ...] [--cause-class repair|retire|accept|invalidate] [--caused-by <ref> ...] [--next-consumer <who>] [--json]"
+	family := ""
+	causeClass := ""
+	nextConsumer := ""
+	jsonOut := false
+	var filePairs []sourceobs.CanonPathNode
+	var causedBy []string
+	needValue := func(i int) string {
+		if i+1 >= len(args) {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		return args[i+1]
+	}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--family":
+			family = needValue(i)
+			i++
+		case "--file":
+			pathNode := needValue(i)
+			i++
+			path, node, ok := strings.Cut(pathNode, "=")
+			path, node = strings.TrimSpace(path), strings.TrimSpace(node)
+			if !ok || path == "" || node == "" {
+				fmt.Fprintln(os.Stderr, "source canon-observe: --file expects <path>=<node-id>")
+				os.Exit(2)
+			}
+			filePairs = append(filePairs, sourceobs.CanonPathNode{Path: path, NodeRef: node})
+		case "--cause-class":
+			causeClass = needValue(i)
+			i++
+		case "--caused-by":
+			causedBy = append(causedBy, needValue(i))
+			i++
+		case "--next-consumer":
+			nextConsumer = needValue(i)
+			i++
+		default:
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+	}
+	if strings.TrimSpace(family) == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	now := time.Now()
+
+	baselineItems := 0
+	if len(filePairs) > 0 {
+		manifest, err := sourceobs.BuildCanonManifest(family, filePairs, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "source canon-observe:", err)
+			os.Exit(1)
+		}
+		if _, err := sourceobs.RecordSourceManifest(homePath, manifest); err != nil {
+			fmt.Fprintln(os.Stderr, "source canon-observe:", err)
+			os.Exit(1)
+		}
+		baselineItems = len(manifest.Items)
+	}
+
+	drift, err := sourceobs.ObserveCanonDrift(homePath, family, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source canon-observe:", err)
+		os.Exit(1)
+	}
+
+	var evolution capgraph.CanonEvolutionReport
+	minted := false
+	if len(drift.ChangedRefs) > 0 && len(causedBy) > 0 {
+		evidence := append([]string{}, drift.CandidateIDs...)
+		evidence = append(evidence, drift.NoPromoteIDs...)
+		evidence = append(evidence, drift.ChangedRefs...)
+		_, rep, err := capgraph.RecordCanonEvolution(homePath, capgraph.CanonEvolutionInput{
+			NodeRefs:     drift.NodeRefs,
+			DeltaCause:   causeClass,
+			CausedByRefs: causedBy,
+			NextConsumer: nextConsumer,
+			ChangedRefs:  drift.ChangedRefs,
+			EvidenceRefs: evidence,
+		}, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "source canon-observe:", err)
+			os.Exit(1)
+		}
+		evolution = rep
+		minted = true
+	}
+
+	if jsonOut {
+		printJSON(struct {
+			Family        string                        `json:"family"`
+			BaselineItems int                           `json:"baseline_items"`
+			Drift         sourceobs.CanonDriftReport    `json:"drift"`
+			Evolution     capgraph.CanonEvolutionReport `json:"evolution"`
+		}{Family: family, BaselineItems: baselineItems, Drift: drift, Evolution: evolution})
+		return
+	}
+
+	fmt.Printf("# harness canon-observe %s\n\n", family)
+	if len(filePairs) > 0 {
+		fmt.Printf("- baseline_items: %d\n", baselineItems)
+	}
+	fmt.Printf("- changed: %d\n", len(drift.ChangedRefs))
+	for _, ref := range drift.NodeRefs {
+		fmt.Printf("- node: %s\n", ref)
+	}
+	for _, id := range drift.CandidateIDs {
+		fmt.Printf("- candidate: %s\n", id)
+	}
+	for _, id := range drift.NoPromoteIDs {
+		fmt.Printf("- no_promote: %s\n", id)
+	}
+	if minted {
+		if strings.TrimSpace(evolution.TransitionID) != "" {
+			fmt.Printf("- transition: %s\n", evolution.TransitionID)
+		}
+		for _, id := range evolution.EnsuredNodeIDs {
+			fmt.Printf("- ensured_node: %s\n", id)
+		}
+		for _, ref := range evolution.SkippedNodeRefs {
+			fmt.Printf("- skipped_node: %s\n", ref)
+		}
+	} else if len(filePairs) > 0 {
+		fmt.Printf("- transitions: 0 (initial capture)\n")
+	}
 }
 
 func cmdSourceObservationVerdictPlan(args []string) {
