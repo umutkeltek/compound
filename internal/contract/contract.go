@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -30,6 +31,34 @@ import (
 	"compound/internal/projection"
 	"compound/internal/work"
 )
+
+const (
+	EngineOutcomeNotAttempted = "not_attempted"
+	EngineOutcomeUsed         = "used"
+	EngineOutcomeDegraded     = "degraded"
+	EngineOutcomeRefused      = "refused"
+
+	EngineErrorUnavailable      = "unavailable"
+	EngineErrorUnsupported      = "unsupported"
+	EngineErrorEmbedderMismatch = "embedder_mismatch"
+	EngineErrorProtocolVersion  = "protocol_version"
+	EngineErrorEngineAhead      = "engine_ahead"
+	EngineErrorUnownedClaim     = "unowned_claim"
+	EngineErrorRetrieval        = "retrieval_error"
+)
+
+// EngineDependencyTrace is bounded, privacy-safe evidence about the rented breadth
+// dependency used while assembling a ContextPack. It never carries a command, argv,
+// environment value, query, or raw engine error.
+type EngineDependencyTrace struct {
+	Attempted        bool
+	RequestedEngine  string
+	ObservedEngine   string
+	Embedder         string
+	CorpusGeneration int64
+	Outcome          string
+	ErrorClass       string
+}
 
 const (
 	defaultRepoKind                  = "product"
@@ -594,6 +623,19 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 // PackWithCapabilities appends CapabilityGraph offers to the ContextPack. It is
 // still orientation-only: surfaced capabilities are included refs, not execution.
 func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now time.Time) (envelope.ContextPack, error) {
+	return packWithCapabilities(in, pol, homePath, now, nil)
+}
+
+// PackWithCapabilitiesTraced preserves PackWithCapabilities behavior while also
+// returning bounded evidence about the breadth dependency used by the real orient
+// consumer path.
+func PackWithCapabilitiesTraced(in Input, pol OrientationPolicy, homePath string, now time.Time) (envelope.ContextPack, EngineDependencyTrace, error) {
+	trace := EngineDependencyTrace{Outcome: EngineOutcomeNotAttempted}
+	pack, err := packWithCapabilities(in, pol, homePath, now, &trace)
+	return pack, trace, err
+}
+
+func packWithCapabilities(in Input, pol OrientationPolicy, homePath string, now time.Time, trace *EngineDependencyTrace) (envelope.ContextPack, error) {
 	pack := Pack(in, pol, now)
 	if strings.TrimSpace(homePath) == "" {
 		return pack, nil
@@ -647,7 +689,7 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		pack.SummaryMD += fmt.Sprintf(" %d active decision ref(s) included from Compound runtime.", len(decisions))
 	}
 	// One breadth-engine call feeds both loaders (owned engine ranks; ledger still gates).
-	semanticRanks := semanticTaskRanks(homePath, in)
+	semanticRanks := semanticTaskRanksTraced(homePath, in, trace)
 	memoryRefs, excludedMemoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
 	if err != nil {
 		return pack, err
@@ -1391,6 +1433,13 @@ const semanticTaskRankK = 24
 // fails because the embedder/sidecar is down). Weights are descending rank positions (not raw
 // cosine) so they compose with the small-integer entity/token scores instead of swamping them.
 func semanticTaskRanks(homePath string, in Input) map[string]float64 {
+	return semanticTaskRanksTraced(homePath, in, nil)
+}
+
+func semanticTaskRanksTraced(homePath string, in Input, trace *EngineDependencyTrace) map[string]float64 {
+	if trace != nil {
+		trace.RequestedEngine = requestedEngineIdentity()
+	}
 	if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" {
 		return nil
 	}
@@ -1399,12 +1448,45 @@ func semanticTaskRanks(homePath string, in Input) map[string]float64 {
 	}
 	store, err := mem.Open(homePath)
 	if err != nil {
+		if trace != nil {
+			trace.Outcome = EngineOutcomeDegraded
+			trace.ErrorClass = EngineErrorRetrieval
+		}
 		return nil
+	}
+	if trace != nil {
+		trace.Attempted = true
 	}
 	eng, closeEng := breadthEngineFactory(homePath)
 	defer closeEng()
+	if trace != nil {
+		caps := eng.Capabilities()
+		if observed := boundedEngineIdentity(caps.Name); observed != "protocol" {
+			trace.ObservedEngine = observed
+		}
+		trace.Embedder = boundedEmbedderIdentity(caps.Embedder)
+		if caps.CorpusGen > 0 {
+			trace.CorpusGeneration = caps.CorpusGen
+		}
+	}
 	claims, err := store.QueryBreadth(in.Task, semanticTaskRankK, eng)
-	if err != nil || len(claims) == 0 {
+	if err != nil {
+		if trace != nil {
+			trace.Outcome, trace.ErrorClass = classifyEngineTraceError(err)
+		}
+		return nil
+	}
+	if trace != nil {
+		caps := eng.Capabilities()
+		trace.ObservedEngine = boundedEngineIdentity(caps.Name)
+		trace.Embedder = boundedEmbedderIdentity(caps.Embedder)
+		if caps.CorpusGen >= 0 {
+			trace.CorpusGeneration = caps.CorpusGen
+		}
+		trace.Outcome = EngineOutcomeUsed
+		trace.ErrorClass = ""
+	}
+	if len(claims) == 0 {
 		return nil
 	}
 	ranks := make(map[string]float64, len(claims))
@@ -1412,6 +1494,63 @@ func semanticTaskRanks(homePath string, in Input) map[string]float64 {
 		ranks[c.ID] = float64(len(claims) - i)
 	}
 	return ranks
+}
+
+func requestedEngineIdentity() string {
+	if profile := boundedEngineIdentity(os.Getenv("COMPOUND_MEMORY_CLI_PROFILE")); profile != "" {
+		return profile
+	}
+	if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) != "" {
+		return "protocol"
+	}
+	return ""
+}
+
+func boundedEngineIdentity(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) == 0 || len(value) > 64 {
+		return ""
+	}
+	for i, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || (i > 0 && (r == '.' || r == '_' || r == '-')) {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func boundedEmbedderIdentity(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) == 0 || len(value) > 128 {
+		return ""
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' || r == ':' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func classifyEngineTraceError(err error) (string, string) {
+	switch {
+	case errors.Is(err, mem.ErrEmbedderMismatch):
+		return EngineOutcomeRefused, EngineErrorEmbedderMismatch
+	case errors.Is(err, mem.ErrProtocolVersion):
+		return EngineOutcomeRefused, EngineErrorProtocolVersion
+	case errors.Is(err, mem.ErrEngineAhead):
+		return EngineOutcomeRefused, EngineErrorEngineAhead
+	case errors.Is(err, mem.ErrEngineServedUnownedClaim):
+		return EngineOutcomeRefused, EngineErrorUnownedClaim
+	case errors.Is(err, mem.ErrUnsupported):
+		return EngineOutcomeDegraded, EngineErrorUnsupported
+	case errors.Is(err, mem.ErrEngineUnavailable):
+		return EngineOutcomeDegraded, EngineErrorUnavailable
+	default:
+		return EngineOutcomeDegraded, EngineErrorRetrieval
+	}
 }
 
 // topicScopeForInput resolves a topic slug to the set of subtree slugs ambient recall
