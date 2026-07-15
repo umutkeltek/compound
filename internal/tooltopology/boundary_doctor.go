@@ -184,6 +184,8 @@ func sourceFreshnessPolicy(record capgraph.SourceAuthorityRecord) (int, string, 
 		return 14 * 24, "refresh source owner, then compound capability import-skills --os-skill-json " + record.SourcePath, true
 	case "os-plugin-serving-board-json":
 		return 14 * 24, "refresh source owner, then compound capability import-skills --os-plugin-board-json " + record.SourcePath, true
+	case "harness-canon-file":
+		return 14 * 24, "compound source canon-observe --family harness-canon", true
 	default:
 		return 0, "", false
 	}
