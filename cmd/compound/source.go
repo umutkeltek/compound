@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -731,6 +732,15 @@ func cmdSourceManifestMaterializeDump(args []string) {
 // cause-carrying Transition projected onto the touched capability-graph nodes. Importer observes;
 // ObjectFamily mints.
 func cmdSourceCanonObserve(args []string) {
+	if code := runSourceCanonObserve(args, os.Stdout, os.Stderr, time.Now()); code != 0 {
+		os.Exit(code)
+	}
+}
+
+// runSourceCanonObserve is the testable body of `compound source canon-observe`. It returns a
+// process exit code (0 ok, 1 runtime failure, 2 usage/coupling violation) and writes to the given
+// writers instead of the process streams so falsifiers can assert exit codes and output in-process.
+func runSourceCanonObserve(args []string, stdout, stderr io.Writer, now time.Time) int {
 	usage := "usage: compound source canon-observe --family <id> [--file <path>=<node-id> ...] [--cause-class repair|retire|accept|invalidate] [--caused-by <ref> ...] [--next-consumer <who>] [--json]"
 	family := ""
 	causeClass := ""
@@ -738,73 +748,69 @@ func cmdSourceCanonObserve(args []string) {
 	jsonOut := false
 	var filePairs []sourceobs.CanonPathNode
 	var causedBy []string
-	needValue := func(i int) string {
-		if i+1 >= len(args) {
-			fmt.Fprintln(os.Stderr, usage)
-			os.Exit(2)
-		}
-		return args[i+1]
-	}
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
+		arg := args[i]
+		switch arg {
 		case "--json":
 			jsonOut = true
-		case "--family":
-			family = needValue(i)
-			i++
-		case "--file":
-			pathNode := needValue(i)
-			i++
-			path, node, ok := strings.Cut(pathNode, "=")
-			path, node = strings.TrimSpace(path), strings.TrimSpace(node)
-			if !ok || path == "" || node == "" {
-				fmt.Fprintln(os.Stderr, "source canon-observe: --file expects <path>=<node-id>")
-				os.Exit(2)
+		case "--family", "--file", "--cause-class", "--caused-by", "--next-consumer":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, usage)
+				return 2
 			}
-			filePairs = append(filePairs, sourceobs.CanonPathNode{Path: path, NodeRef: node})
-		case "--cause-class":
-			causeClass = needValue(i)
+			val := args[i+1]
 			i++
-		case "--caused-by":
-			causedBy = append(causedBy, needValue(i))
-			i++
-		case "--next-consumer":
-			nextConsumer = needValue(i)
-			i++
+			switch arg {
+			case "--family":
+				family = val
+			case "--file":
+				path, node, ok := strings.Cut(val, "=")
+				path, node = strings.TrimSpace(path), strings.TrimSpace(node)
+				if !ok || path == "" || node == "" {
+					fmt.Fprintln(stderr, "source canon-observe: --file expects <path>=<node-id>")
+					return 2
+				}
+				filePairs = append(filePairs, sourceobs.CanonPathNode{Path: path, NodeRef: node})
+			case "--cause-class":
+				causeClass = val
+			case "--caused-by":
+				causedBy = append(causedBy, val)
+			case "--next-consumer":
+				nextConsumer = val
+			}
 		default:
-			fmt.Fprintln(os.Stderr, usage)
-			os.Exit(2)
+			fmt.Fprintln(stderr, usage)
+			return 2
 		}
 	}
 	if strings.TrimSpace(family) == "" {
-		fmt.Fprintln(os.Stderr, usage)
-		os.Exit(2)
+		fmt.Fprintln(stderr, usage)
+		return 2
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
-		os.Exit(1)
+		fmt.Fprintln(stderr, "error:", err, "(run `compound home init`)")
+		return 1
 	}
-	now := time.Now()
 
 	baselineItems := 0
 	if len(filePairs) > 0 {
 		manifest, err := sourceobs.BuildCanonManifest(family, filePairs, now)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "source canon-observe:", err)
-			os.Exit(1)
+			fmt.Fprintln(stderr, "source canon-observe:", err)
+			return 1
 		}
 		if _, err := sourceobs.RecordSourceManifest(homePath, manifest); err != nil {
-			fmt.Fprintln(os.Stderr, "source canon-observe:", err)
-			os.Exit(1)
+			fmt.Fprintln(stderr, "source canon-observe:", err)
+			return 1
 		}
 		baselineItems = len(manifest.Items)
 	}
 
 	drift, err := sourceobs.ObserveCanonDrift(homePath, family, now)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "source canon-observe:", err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, "source canon-observe:", err)
+		return 1
 	}
 
 	var evolution capgraph.CanonEvolutionReport
@@ -822,50 +828,56 @@ func cmdSourceCanonObserve(args []string) {
 			EvidenceRefs: evidence,
 		}, now)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "source canon-observe:", err)
-			os.Exit(1)
+			fmt.Fprintln(stderr, "source canon-observe:", err)
+			return 1
 		}
 		evolution = rep
 		minted = true
 	}
 
 	if jsonOut {
-		printJSON(struct {
+		b, err := json.MarshalIndent(struct {
 			Family        string                        `json:"family"`
 			BaselineItems int                           `json:"baseline_items"`
 			Drift         sourceobs.CanonDriftReport    `json:"drift"`
 			Evolution     capgraph.CanonEvolutionReport `json:"evolution"`
-		}{Family: family, BaselineItems: baselineItems, Drift: drift, Evolution: evolution})
-		return
+		}{Family: family, BaselineItems: baselineItems, Drift: drift, Evolution: evolution}, "", "  ")
+		if err != nil {
+			fmt.Fprintln(stderr, "source canon-observe:", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, string(b))
+		return 0
 	}
 
-	fmt.Printf("# harness canon-observe %s\n\n", family)
+	fmt.Fprintf(stdout, "# harness canon-observe %s\n\n", family)
 	if len(filePairs) > 0 {
-		fmt.Printf("- baseline_items: %d\n", baselineItems)
+		fmt.Fprintf(stdout, "- baseline_items: %d\n", baselineItems)
 	}
-	fmt.Printf("- changed: %d\n", len(drift.ChangedRefs))
+	fmt.Fprintf(stdout, "- changed: %d\n", len(drift.ChangedRefs))
 	for _, ref := range drift.NodeRefs {
-		fmt.Printf("- node: %s\n", ref)
+		fmt.Fprintf(stdout, "- node: %s\n", ref)
 	}
 	for _, id := range drift.CandidateIDs {
-		fmt.Printf("- candidate: %s\n", id)
+		fmt.Fprintf(stdout, "- candidate: %s\n", id)
 	}
 	for _, id := range drift.NoPromoteIDs {
-		fmt.Printf("- no_promote: %s\n", id)
+		fmt.Fprintf(stdout, "- no_promote: %s\n", id)
 	}
 	if minted {
 		if strings.TrimSpace(evolution.TransitionID) != "" {
-			fmt.Printf("- transition: %s\n", evolution.TransitionID)
+			fmt.Fprintf(stdout, "- transition: %s\n", evolution.TransitionID)
 		}
 		for _, id := range evolution.EnsuredNodeIDs {
-			fmt.Printf("- ensured_node: %s\n", id)
+			fmt.Fprintf(stdout, "- ensured_node: %s\n", id)
 		}
 		for _, ref := range evolution.SkippedNodeRefs {
-			fmt.Printf("- skipped_node: %s\n", ref)
+			fmt.Fprintf(stdout, "- skipped_node: %s\n", ref)
 		}
 	} else if len(filePairs) > 0 {
-		fmt.Printf("- transitions: 0 (initial capture)\n")
+		fmt.Fprintf(stdout, "- transitions: 0 (initial capture)\n")
 	}
+	return 0
 }
 
 func cmdSourceObservationVerdictPlan(args []string) {
