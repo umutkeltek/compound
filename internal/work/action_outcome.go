@@ -501,10 +501,20 @@ func (s *Store) pendingReceiptedActionID(workID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !present {
-		return "", nil
+	reservation, reserved, _, err := s.preflightReceiptedActionReservation(workID)
+	if err != nil {
+		return "", err
 	}
-	return pending.ActionID, nil
+	if present && reserved && pending.ActionID != reservation.ActionID {
+		return "", fmt.Errorf("work %s has conflicting pending receipted actions %s and %s", workID, pending.ActionID, reservation.ActionID)
+	}
+	if present {
+		return pending.ActionID, nil
+	}
+	if reserved {
+		return reservation.ActionID, nil
+	}
+	return "", nil
 }
 
 func (p receiptedActionPending) validate() error {
