@@ -173,3 +173,14 @@ later `ActionIntent` + `PolicyDecision`. This keeps `orient`/ContextPack (read) 
 promoted into a durable contract/check/decision — or subtracted — its workbench entry is marked
 `promoted → <destination>` and archived, so observation logs stay thin (consumed entries leave them).
 This is the archive half of the compounding-knowledge loop (`../roadmap/phases.md`).
+
+**Harness co-evolution (shipped subset).** `Transition.Cause` (`internal/envelope`) ships a proven
+subset of the above: `delta_cause` + `caused_by_refs` (≥1, validated only when `Cause != nil`) +
+`next_consumer` (empty ⇒ `audit_only`). `opens_branches[]` / `prevents_branch` stay deferred — dead
+schema without a consumer. The `harness co-evolution` slice wires it end to end: harness-canon files
+are a source-manifest family; `compound source canon-observe` (Importer `sourceobs.ObserveCanonDrift`)
+re-hashes them, parks one no-promote `CapabilityObs` candidate per drifted file, and the ObjectFamily
+`capgraph.RecordCanonEvolution` mints ONE cause-carrying `Transition` projected onto the touched
+capability nodes as `capability://<node-id>` in the flat `Projections.Skill` (no new `ProjectionKind`).
+Two read surfaces: the manifest json (baseline of record) and `events/tr_*.json` filtered by the
+`capability://<node>` projection.
