@@ -787,6 +787,15 @@ func runSourceCanonObserve(args []string, stdout, stderr io.Writer, now time.Tim
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
+	// D4 flag coupling: any of --cause-class/--caused-by/--next-consumer implies a COMPLETE cause (a
+	// cause class AND at least one caused-by ref). A partial cause is a usage error (exit 2) raised
+	// BEFORE the home is resolved or touched, so an incomplete flag set never silently skips minting.
+	causeFlagsPresent := strings.TrimSpace(causeClass) != "" || len(causedBy) > 0 || strings.TrimSpace(nextConsumer) != ""
+	if causeFlagsPresent && (strings.TrimSpace(causeClass) == "" || len(causedBy) == 0) {
+		fmt.Fprintln(stderr, "source canon-observe: --cause-class and at least one --caused-by are required together (any cause flag implies both)")
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
 	homePath, err := home.Resolve("")
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err, "(run `compound home init`)")
@@ -807,41 +816,63 @@ func runSourceCanonObserve(args []string, stdout, stderr io.Writer, now time.Tim
 		baselineItems = len(manifest.Items)
 	}
 
-	drift, err := sourceobs.ObserveCanonDrift(homePath, family, now)
+	// Two-phase drift: observe (park candidates, NO baseline write) → mint → commit baseline. A failed
+	// mint returns before the commit, leaving the stored baseline at its old hash so the identical
+	// drift stays re-detectable and the transition is never silently lost.
+	drift, manifest, err := sourceobs.ObserveCanonDrift(homePath, family, now)
 	if err != nil {
 		fmt.Fprintln(stderr, "source canon-observe:", err)
 		return 1
 	}
 
+	observationOnly := len(causedBy) == 0 // D4 guarantees no partial cause flags reach here
 	var evolution capgraph.CanonEvolutionReport
 	minted := false
-	if len(drift.ChangedRefs) > 0 && len(causedBy) > 0 {
-		evidence := append([]string{}, drift.CandidateIDs...)
-		evidence = append(evidence, drift.NoPromoteIDs...)
-		evidence = append(evidence, drift.ChangedRefs...)
-		_, rep, err := capgraph.RecordCanonEvolution(homePath, capgraph.CanonEvolutionInput{
-			NodeRefs:     drift.NodeRefs,
-			DeltaCause:   causeClass,
-			CausedByRefs: causedBy,
-			NextConsumer: nextConsumer,
-			ChangedRefs:  drift.ChangedRefs,
-			EvidenceRefs: evidence,
-		}, now)
-		if err != nil {
+	notMintedReason := ""
+	if len(drift.ChangedRefs) > 0 {
+		if observationOnly {
+			notMintedReason = "observation-only: no --cause-class/--caused-by"
+		} else {
+			evidence := append([]string{}, drift.CandidateIDs...)
+			evidence = append(evidence, drift.NoPromoteIDs...)
+			evidence = append(evidence, drift.ChangedRefs...)
+			_, rep, mintErr := capgraph.RecordCanonEvolution(homePath, capgraph.CanonEvolutionInput{
+				NodeRefs:     drift.NodeRefs,
+				DeltaCause:   causeClass,
+				CausedByRefs: causedBy,
+				NextConsumer: nextConsumer,
+				ChangedRefs:  drift.ChangedRefs,
+				EvidenceRefs: evidence,
+			}, now)
+			if mintErr != nil {
+				// Do NOT commit the baseline: the identical drift must stay re-detectable.
+				fmt.Fprintln(stderr, "source canon-observe:", mintErr)
+				return 1
+			}
+			evolution = rep
+			minted = true
+		}
+	}
+
+	// Commit the rebaselined manifest only after the drift is recorded: a successful mint, or an
+	// explicit observation-only run (no cause flags at all — consuming the drift is then the operator's
+	// choice). A complete cause with no drift has nothing to consume, so the baseline is left as-is.
+	if minted || observationOnly {
+		if err := sourceobs.CommitCanonBaseline(homePath, manifest); err != nil {
 			fmt.Fprintln(stderr, "source canon-observe:", err)
 			return 1
 		}
-		evolution = rep
-		minted = true
 	}
 
 	if jsonOut {
 		b, err := json.MarshalIndent(struct {
-			Family        string                        `json:"family"`
-			BaselineItems int                           `json:"baseline_items"`
-			Drift         sourceobs.CanonDriftReport    `json:"drift"`
-			Evolution     capgraph.CanonEvolutionReport `json:"evolution"`
-		}{Family: family, BaselineItems: baselineItems, Drift: drift, Evolution: evolution}, "", "  ")
+			Family           string                        `json:"family"`
+			BaselineItems    int                           `json:"baseline_items"`
+			Drift            sourceobs.CanonDriftReport    `json:"drift"`
+			Evolution        capgraph.CanonEvolutionReport `json:"evolution"`
+			TransitionMinted bool                          `json:"transition_minted"`
+			NotMintedReason  string                        `json:"not_minted_reason"`
+		}{Family: family, BaselineItems: baselineItems, Drift: drift, Evolution: evolution, TransitionMinted: minted, NotMintedReason: notMintedReason}, "", "  ")
 		if err != nil {
 			fmt.Fprintln(stderr, "source canon-observe:", err)
 			return 1
@@ -874,6 +905,8 @@ func runSourceCanonObserve(args []string, stdout, stderr io.Writer, now time.Tim
 		for _, ref := range evolution.SkippedNodeRefs {
 			fmt.Fprintf(stdout, "- skipped_node: %s\n", ref)
 		}
+	} else if notMintedReason != "" {
+		fmt.Fprintf(stdout, "- transition: not minted (%s)\n", notMintedReason)
 	} else if len(filePairs) > 0 {
 		fmt.Fprintf(stdout, "- transitions: 0 (initial capture)\n")
 	}

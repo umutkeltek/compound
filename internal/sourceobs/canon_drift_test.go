@@ -1,6 +1,7 @@
 package sourceobs
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,27 @@ import (
 
 	"compound/internal/capgraph"
 )
+
+func countCanonCandidateFiles(t *testing.T, home string) int {
+	t.Helper()
+	count := 0
+	err := filepath.WalkDir(home, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if !d.IsDir() && strings.HasPrefix(d.Name(), "src_cand_") {
+			count++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", home, err)
+	}
+	return count
+}
 
 var tCanon = time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 
@@ -80,7 +102,7 @@ func TestCanonObserveUnchangedMintsNothing(t *testing.T) {
 	}
 	canonBaseline(t, home, tCanon, pairs)
 
-	report, err := ObserveCanonDrift(home, "harness-canon", tCanon.Add(time.Hour))
+	report, _, err := ObserveCanonDrift(home, "harness-canon", tCanon.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +138,7 @@ func TestCanonObserveDriftMintsOnePerChangedFileAndOneTransition(t *testing.T) {
 	writeCanonFile(t, fC, `{"k":2}`)
 
 	later := tCanon.Add(time.Hour)
-	drift, err := ObserveCanonDrift(home, "harness-canon", later)
+	drift, _, err := ObserveCanonDrift(home, "harness-canon", later)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +208,7 @@ func TestCanonObserveProjectionRefResolvesToRegisteredNode(t *testing.T) {
 	writeCanonFile(t, fC, `{"k":2}`)
 
 	later := tCanon.Add(time.Hour)
-	drift, err := ObserveCanonDrift(home, "harness-canon", later)
+	drift, _, err := ObserveCanonDrift(home, "harness-canon", later)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +267,7 @@ func TestCanonObserveUnknownKindNodeRefParksNotSilent(t *testing.T) {
 	writeCanonFile(t, fG, "gremlin-body-2")
 
 	later := tCanon.Add(time.Hour)
-	drift, err := ObserveCanonDrift(home, "harness-canon", later)
+	drift, _, err := ObserveCanonDrift(home, "harness-canon", later)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,5 +336,54 @@ func TestHarnessCanonSourceHasNoPersonalPath(t *testing.T) {
 				t.Fatalf("%s contains forbidden personal fragment %q", f, frag)
 			}
 		}
+	}
+}
+
+// Falsifier 9 (two-phase drift + idempotent re-park): ObserveCanonDrift parks candidates but does NOT
+// commit the baseline, so re-observing the same drift still detects it and re-parks the SAME candidate
+// (no duplicate). Only CommitCanonBaseline consumes the drift. This is the transaction-safety contract
+// D1 relies on; against the earlier "re-store inside observe" design the second observe would see no
+// drift and this test would fail.
+func TestObserveCanonDriftIsTwoPhaseAndReparkIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	srcDir := t.TempDir()
+	fA := filepath.Join(srcDir, "a.toml")
+	writeCanonFile(t, fA, "alpha")
+	pairs := []CanonPathNode{{Path: fA, NodeRef: "harness:claude_code"}}
+	canonBaseline(t, home, tCanon, pairs)
+	writeCanonFile(t, fA, "alpha-mutated")
+
+	later := tCanon.Add(time.Hour)
+	drift1, manifest, err := ObserveCanonDrift(home, "harness-canon", later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drift1.ChangedRefs) != 1 || len(drift1.CandidateIDs) != 1 {
+		t.Fatalf("first observe = %+v, want one changed ref and one candidate", drift1)
+	}
+
+	// Observe did NOT commit the baseline: a second observe still detects the same drift, and re-parking
+	// overwrites the same content-addressed candidate rather than spraying a duplicate.
+	drift2, _, err := ObserveCanonDrift(home, "harness-canon", later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drift2.ChangedRefs) != 1 || len(drift2.CandidateIDs) != 1 {
+		t.Fatalf("second observe = %+v, want the drift to still be detectable (baseline uncommitted)", drift2)
+	}
+	if got := countCanonCandidateFiles(t, home); got != 1 {
+		t.Fatalf("re-park duplicated candidate files: got %d, want 1", got)
+	}
+
+	// Only committing the rebaselined manifest consumes the drift.
+	if err := CommitCanonBaseline(home, manifest); err != nil {
+		t.Fatal(err)
+	}
+	drift3, _, err := ObserveCanonDrift(home, "harness-canon", later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drift3.ChangedRefs) != 0 {
+		t.Fatalf("CommitCanonBaseline did not consume the drift: %+v", drift3)
 	}
 }
