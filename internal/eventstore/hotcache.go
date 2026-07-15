@@ -30,6 +30,20 @@ type hotSegmentEntry struct {
 	byID  map[string]parsedFrame
 }
 
+// segmentParseObserver is a test-only seam fired on every FULL parse of a hot
+// (index-0) segment — both a memo-miss reparse here and the regularKind bypass
+// in segmentFrame (scan.go). It is nil in production and never surfaces in the
+// public API; a falsifier installs it to prove a projection's thousands of
+// Gets collapse to one parse per hot segment (counter-seam precedent:
+// work_13c545e392ed).
+var segmentParseObserver func(path string)
+
+func notifyHotParse(path string) {
+	if segmentParseObserver != nil {
+		segmentParseObserver(path)
+	}
+}
+
 // hotFrames returns the id→frame map for the given hot segment, parsing the
 // file only when that path's memo is absent or stale. Later duplicates
 // overwrite earlier ones, matching segmentFrame's newest-occurrence-wins
@@ -44,6 +58,7 @@ func (e *engine) hotFrames(path string) (map[string]parsedFrame, error) {
 	if entry, ok := e.hotCache.entries[path]; ok && entry.size == st.Size() && entry.mtime.Equal(st.ModTime()) {
 		return entry.byID, nil
 	}
+	notifyHotParse(path)
 	frames, err := e.readSegment(path, true, "")
 	if err != nil {
 		return nil, err

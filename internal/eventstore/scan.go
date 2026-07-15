@@ -68,6 +68,7 @@ func (e *engine) segmentFrame(id, regularKind string) (segmentHit, bool, error) 
 			}
 			continue
 		}
+		notifyHotParse(segment.path)
 		frames, err := e.readSegment(segment.path, true, regularKind)
 		if err != nil {
 			return segmentHit{}, false, err
