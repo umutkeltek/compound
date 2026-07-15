@@ -522,5 +522,124 @@ export function runGenericActionsSelfTest(): SelfTestResult {
     }
   }
 
+  // B5: the harness-edit-proposals area. internal/director annotates each open
+  // harness-edit card with ONE action {id:"harness-edit.whitelist", argv:
+  // ["compound","authority","harness-edit-review",<card>,"--decision",
+  // "whitelist","--json"]} -- the CLI REQUIRES --rationale, so the projected
+  // argv deliberately omits it and the operator's text is appended post-gates.
+  {
+    const area = "harness-edit-proposals";
+    const projection = {
+      items: [
+        {
+          id: "dirprop_selftest",
+          actions: [
+            {
+              id: "harness-edit.whitelist",
+              label: "Allow edits to this surface",
+              argv: [
+                "compound",
+                "authority",
+                "harness-edit-review",
+                "/tmp/reviews/harness-edit-proposals/dirprop_selftest.json",
+                "--decision",
+                "whitelist",
+                "--json",
+              ],
+              requires_review: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    // (b5-a) Without a rationale the CLI-required flag is missing -> rejected at
+    // rationale-required (NOT silently run with a placeholder).
+    const none = resolveGenericActionFromProjection(
+      projection,
+      area,
+      "dirprop_selftest",
+      "harness-edit.whitelist",
+    );
+    if (none.ok || none.rejection.gate !== "rationale-required") {
+      fail(`harness-edit whitelist without rationale should reject at rationale-required, got ${JSON.stringify(none)}`);
+    } else {
+      pass("harness-edit-proposals without rationale rejected at rationale-required");
+    }
+
+    // (b5-b) With a rationale it resolves ok and the operator's text is the LAST
+    // argv element (appended verbatim, never a shell string).
+    const rationale = "agents may trim dead offers here; $(echo x) is just text";
+    const withText = resolveGenericActionFromProjection(
+      projection,
+      area,
+      "dirprop_selftest",
+      "harness-edit.whitelist",
+      rationale,
+    );
+    if (!withText.ok) {
+      fail(`harness-edit whitelist with rationale should pass, got ${JSON.stringify(withText)}`);
+    } else {
+      const argv = withText.action.argv;
+      if (argv[argv.length - 2] !== "--rationale" || argv[argv.length - 1] !== rationale) {
+        fail(`harness-edit final argv must END with ["--rationale", <text>], got ${JSON.stringify(argv)}`);
+      } else if (!argv.includes("--json") || argv.includes("--decision") === false) {
+        fail(`harness-edit resolved argv lost its projected flags: ${JSON.stringify(argv)}`);
+      } else {
+        pass("harness-edit-proposals with rationale resolves ok; argv ends with [--rationale, <text>]");
+      }
+    }
+
+    // (b5-c) A forged argv (a real but UNcertified verb for this area) keyed
+    // under the same area/item/actionId is rejected at gate-2 -- certification is
+    // per-area+verb, not "any authority subcommand".
+    const forged = resolveGenericActionFromProjection(
+      {
+        items: [
+          {
+            id: "dirprop_selftest",
+            actions: [
+              {
+                id: "harness-edit.whitelist",
+                argv: ["compound", "authority", "dirty-review", "/tmp/x.yaml"],
+                requires_review: true,
+              },
+            ],
+          },
+        ],
+      },
+      area,
+      "dirprop_selftest",
+      "harness-edit.whitelist",
+      "rationale supplied",
+    );
+    if (forged.ok || forged.rejection.gate !== "gate-2-allowlist") {
+      fail(`forged harness-edit argv (authority dirty-review) should reject at gate-2-allowlist, got ${JSON.stringify(forged)}`);
+    } else {
+      pass("forged harness-edit argv (authority dirty-review) rejected at gate-2-allowlist");
+    }
+
+    // (b5-d) The effect label + client-side honesty probe agree with the
+    // certified allowlist for this area.
+    if (genericActionEffectKind(area) !== "record") {
+      fail(`harness-edit-proposals effect kind = ${genericActionEffectKind(area)}, want record`);
+    } else if (
+      !genericActionProjectionEligible(area, [
+        "compound",
+        "authority",
+        "harness-edit-review",
+        "/tmp/x.json",
+        "--decision",
+        "whitelist",
+        "--json",
+      ]) ||
+      genericActionProjectionEligible(area, ["compound", "authority", "dirty-review", "/tmp/x.yaml"])
+    ) {
+      fail("genericActionProjectionEligible drifted for harness-edit-proposals");
+    } else {
+      pass("harness-edit-proposals effect kind is record and the eligibility probe agrees with the allowlist");
+    }
+  }
+
   return { ok, details };
 }

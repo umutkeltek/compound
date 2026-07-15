@@ -138,6 +138,7 @@ export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "panel-verdicts": [["panel", "verdict-record"]],
   "lease-hygiene": [["home", "archive-history"]],
   "skill-surfacing": [["capability", "import-surfacing-misses"]],
+  "harness-edit-proposals": [["authority", "harness-edit-review"]],
 };
 
 export type GenericActionEffectKind = "apply" | "record" | "track";
@@ -150,6 +151,7 @@ const GENERIC_ACTION_EFFECT_KIND: Record<string, GenericActionEffectKind> = {
   "panel-verdicts": "record",
   "lease-hygiene": "apply",
   "skill-surfacing": "apply",
+  "harness-edit-proposals": "record",
 };
 
 export function genericActionEffectKind(area: string): GenericActionEffectKind | null {
@@ -183,6 +185,7 @@ export function genericActionRevision(rawAction: unknown): string {
 export const RATIONALE_REQUIRED_AREAS: ReadonlySet<string> = new Set([
   "route-promotions",
   "panel-verdicts",
+  "harness-edit-proposals",
 ]);
 
 /**
@@ -200,6 +203,7 @@ const GENERIC_GLOBAL_ARGV_ALLOWLIST: string[][] = [
   ["panel", "verdict-record"],
   ["home", "archive-history"],
   ["capability", "import-surfacing-misses"],
+  ["authority", "harness-edit-review"],
 ];
 
 /** Client-side honesty probe using the same two allowlists as execution. */
