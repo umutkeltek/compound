@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -232,6 +233,9 @@ func TestApplyPermissionsCreatesNoUnknownTopLevelHabitats(t *testing.T) {
 	if !inventory.OK || len(inventory.UnknownRoots) != 0 || len(inventory.UnknownEntries) != 0 {
 		t.Fatalf("permission apply created unknown habitat: %+v", inventory)
 	}
+	if _, err := os.Stat(filepath.Join(homePath, "locks")); !os.IsNotExist(err) {
+		t.Fatalf("permission apply perpetuated legacy lock root: %v", err)
+	}
 }
 
 func TestApplyPermissionsFirstAdoptionOfPreexistingManagedRulesIsImmediatelyStable(t *testing.T) {
@@ -344,11 +348,11 @@ func TestApplyPermissionsRecoversLegacyPendingTransaction(t *testing.T) {
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	previousHook := applyPermissionsAfterTargetWrite
 	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
+	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
 	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
 		t.Fatal("interrupted apply error = nil")
 	}
 	applyPermissionsAfterTargetWrite = previousHook
-	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
 
 	canonicalPath := filepath.Join(homePath, "work", "transactions", "harness-permissions", "claude_code.json")
 	legacyPath := filepath.Join(homePath, "transactions", "harness-permissions", "claude_code.json")
@@ -383,11 +387,11 @@ func TestApplyPermissionsRefusesCoexistingCanonicalAndLegacyPendingTransactions(
 	approved, action, decision := governedPermissionApproval(t, homePath, "claude_code")
 	previousHook := applyPermissionsAfterTargetWrite
 	applyPermissionsAfterTargetWrite = func() error { return os.ErrClosed }
+	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
 	if _, err := applyPermissionsForTest(homePath, approved, action, decision, allowPermissionApply, finalizePermissionApply); err == nil {
 		t.Fatal("interrupted apply error = nil")
 	}
 	applyPermissionsAfterTargetWrite = previousHook
-	t.Cleanup(func() { applyPermissionsAfterTargetWrite = previousHook })
 
 	canonicalPath := PermissionApplyPendingPath(homePath, "claude_code")
 	legacyPath := filepath.Join(homePath, "transactions", "harness-permissions", "claude_code.json")
@@ -405,6 +409,62 @@ func TestApplyPermissionsRefusesCoexistingCanonicalAndLegacyPendingTransactions(
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("coexisting pending state was not preserved at %s: %v", path, err)
 		}
+	}
+}
+
+func TestPermissionApplyLockWaitsForPreexistingLegacyLock(t *testing.T) {
+	homePath := t.TempDir()
+	legacyPath := filepath.Join(homePath, "locks", "harness-permissions.lock")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyFile, err := os.OpenFile(legacyPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(legacyFile.Fd()), syscall.LOCK_EX); err != nil {
+		_ = legacyFile.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Flock(int(legacyFile.Fd()), syscall.LOCK_UN)
+		_ = legacyFile.Close()
+	})
+
+	started := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- withPermissionApplyLock(homePath, func() error {
+			entered <- struct{}{}
+			return nil
+		})
+	}()
+	<-started
+	select {
+	case <-entered:
+		t.Fatal("permission mutation lifecycle entered while pre-existing legacy lock was held")
+	case err := <-done:
+		t.Fatalf("permission lock returned before legacy release: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	if err := syscall.Flock(int(legacyFile.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("permission mutation lifecycle did not enter after legacy lock release")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("permission lock did not complete after legacy lock release")
 	}
 }
 

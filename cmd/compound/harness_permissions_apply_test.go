@@ -570,6 +570,68 @@ func TestHarnessGenerateApplyRecoversExactPublishedOutcomeBeforeNewAction(t *tes
 	}
 }
 
+func TestHarnessGenerateApplyRecoversLegacyPublishedOutcomeAfterGrantRevocation(t *testing.T) {
+	homePath, targetPath, w := setupHarnessPermissionApplyWork(t, "operator:test", "running")
+	installHarnessPermissionGrant(t, homePath, targetPath)
+	firstNow := cliTestNow.Add(3 * time.Minute)
+	render, err := harness.RenderPermissions(homePath, "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedActionID := actIDFor(
+		"act_", w.ID, "harness.permissions.apply", "claude_code", render.Artifact.SourceRevision,
+		firstNow.UTC().Format(time.RFC3339Nano),
+	)
+	previousRecord := recordReservedHarnessPermissionOutcome
+	recordReservedHarnessPermissionOutcome = func(*work.Store, string, work.ReceiptedActionInput, time.Time) (work.ReceiptedActionResult, error) {
+		return work.ReceiptedActionResult{}, errors.New("injected legacy recovery interruption")
+	}
+	t.Cleanup(func() { recordReservedHarnessPermissionOutcome = previousRecord })
+
+	var stdout, stderr bytes.Buffer
+	code := runHarnessGenerateApply([]string{
+		"--harness", "claude_code", "--apply", "--work", w.ID, "--actor", "operator:test", "--json",
+	}, &stdout, &stderr, firstNow)
+	if code != 1 || !strings.Contains(strings.ToLower(stderr.String()), "pending finalization") {
+		t.Fatalf("first code=%d stderr=%s", code, stderr.String())
+	}
+	canonicalPath := harness.PermissionApplyPendingPath(homePath, "claude_code")
+	legacyPath := filepath.Join(homePath, "transactions", "harness-permissions", "claude_code.json")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(canonicalPath, legacyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	writeHarnessApplyJSON(t, filepath.Join(homePath, "config", "policy.yaml"), policy.DefaultConfig())
+	recordReservedHarnessPermissionOutcome = previousRecord
+	stdout.Reset()
+	stderr.Reset()
+	code = runHarnessGenerateApply([]string{
+		"--harness", "claude_code", "--apply", "--work", w.ID, "--actor", "operator:test", "--json",
+	}, &stdout, &stderr, firstNow.Add(time.Hour))
+	if code != 0 {
+		t.Fatalf("legacy recovery code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var report harnessPermissionApplyReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.ActionIntentID != expectedActionID || report.ReceiptID == "" || report.TransitionID == "" || !report.Changed || !report.TargetChanged || !report.ManifestChanged {
+		t.Fatalf("legacy recovery lost exact recorded outcome: %+v", report)
+	}
+	var receipt envelope.Receipt
+	readHarnessApplyJSON(t, filepath.Join(homePath, "events", report.ReceiptID+".json"), &receipt)
+	wantFiles := []string{targetPath, harness.HarnessArtifactManifestPath(homePath)}
+	if receipt.Outcome != "completed" || !receipt.StateDelta.Changed || !reflect.DeepEqual(receipt.StateDelta.FilesChanged, wantFiles) {
+		t.Fatalf("legacy recovered receipt = %+v, want files %v", receipt, wantFiles)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("successful recovery left legacy pending identity: %v", err)
+	}
+}
+
 func TestHarnessGenerateApplyReceiptsManifestOnlyMutationAsChanged(t *testing.T) {
 	homePath, targetPath, w := setupHarnessPermissionApplyWork(t, "operator:test", "running")
 	installHarnessPermissionGrant(t, homePath, targetPath)
