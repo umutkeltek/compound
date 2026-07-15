@@ -938,6 +938,56 @@ func TestValidatePermissionApplyPendingRejectsAliasedAndDerivedIdentity(t *testi
 	}
 }
 
+func TestPermissionRecoveryCleanupRejectsAliasedLeavesBeforeMutation(t *testing.T) {
+	cleanups := []struct {
+		name string
+		run  func(permissionApplyPending) error
+	}{
+		{name: "published", run: cleanupPublishedPermissionRecovery},
+		{name: "unused", run: cleanupUnusedPermissionRecovery},
+		{name: "interrupted creation", run: func(p permissionApplyPending) error {
+			return cleanupInterruptedPermissionCreation(p, true)
+		}},
+	}
+	aliases := []struct {
+		name   string
+		mutate func(*permissionApplyPending, string)
+	}{
+		{name: "canonical", mutate: func(p *permissionApplyPending, canonical string) {
+			p.RecoveryName = canonical
+		}},
+		{name: "duplicate cleanup leaves", mutate: func(p *permissionApplyPending, _ string) {
+			p.RollbackName = p.RecoveryName
+		}},
+	}
+	for _, cleanup := range cleanups {
+		for _, alias := range aliases {
+			t.Run(cleanup.name+"/"+alias.name, func(t *testing.T) {
+				dir := t.TempDir()
+				targetPath := filepath.Join(dir, "settings.json")
+				intended := []byte("published permissions\n")
+				if err := os.WriteFile(targetPath, intended, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				pending := permissionApplyPending{
+					TargetPath: targetPath, RecoveryName: ".settings.recovery", RollbackName: ".settings.rollback",
+					BeforeExisted: false, IntendedContent: intended,
+				}
+				if err := os.Link(targetPath, filepath.Join(dir, pending.RecoveryName)); err != nil {
+					t.Fatal(err)
+				}
+				alias.mutate(&pending, filepath.Base(targetPath))
+				if err := cleanup.run(pending); err == nil || !strings.Contains(strings.ToLower(err.Error()), "alias") {
+					t.Fatalf("cleanup error = %v, want alias refusal", err)
+				}
+				if actual, err := os.ReadFile(targetPath); err != nil || !bytesEqual(actual, intended) {
+					t.Fatalf("cleanup mutated canonical target: body=%q err=%v", actual, err)
+				}
+			})
+		}
+	}
+}
+
 func governedPermissionApproval(t *testing.T, homePath, harnessName string) (PermissionRender, envelope.ActionIntent, envelope.PolicyDecision) {
 	t.Helper()
 	render, err := RenderPermissions(homePath, harnessName)
