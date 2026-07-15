@@ -662,6 +662,82 @@ export function runGenericActionsSelfTest(): SelfTestResult {
     }
   }
 
+  // B6: a decision-candidate review plan is an evidence-building owner action,
+  // never an acceptance shortcut. The Decisions owner projects one bounded,
+  // supervised panel-plan argv over the freshly resolved candidate id; both
+  // generic allowlists must admit exactly that verb and keep stronger decision
+  // source/import verbs out.
+  {
+    const area = "decision-candidates";
+    const itemId = "dcp_decision_review_selftest";
+    const actionId = "plan_decision_candidate_review";
+    const argv = [
+      "compound",
+      "panel",
+      "plan",
+      "--target-kind",
+      "decision_candidate",
+      "--target",
+      "cand_decision_review_selftest",
+      "--domain",
+      "reasoning-lenses",
+      "--task",
+      "review falsifier, review trigger, source ownership, and second-order effects",
+      "--supervised",
+      "--max-items",
+      "1",
+      "--json",
+    ];
+    const projection = {
+      items: [{
+        id: itemId,
+        candidate_id: "cand_decision_review_selftest",
+        actions: [{
+          id: actionId,
+          label: "Plan decision review",
+          argv,
+          requires_review: true,
+          policy_note: "creates review evidence only; decision source and authority stay unchanged",
+        }],
+      }],
+    };
+    const resolved = resolveGenericActionFromProjection(projection, area, itemId, actionId);
+    if (!resolved.ok) {
+      fail(`decision-candidate panel plan should resolve, got ${JSON.stringify(resolved)}`);
+    } else if (
+      resolved.action.argv.join("\u0000") !== argv.slice(1).join("\u0000") ||
+      !resolved.action.requiresReview ||
+      resolved.action.label !== "Plan decision review"
+    ) {
+      fail(`decision-candidate panel plan lost exact owner argv/confirmation: ${JSON.stringify(resolved.action)}`);
+    } else {
+      pass("decision-candidates resolves the exact bounded panel-plan owner action behind confirmation");
+    }
+
+    const forged = resolveGenericActionFromProjection(
+      {
+        items: [{
+          id: itemId,
+          actions: [{ id: actionId, argv: ["compound", "decisions", "import", "--source", "/tmp/DEC.md"] }],
+        }],
+      },
+      area,
+      itemId,
+      actionId,
+    );
+    if (forged.ok || forged.rejection.gate !== "gate-2-allowlist") {
+      fail(`decision-candidate source import must reject at gate-2-allowlist, got ${JSON.stringify(forged)}`);
+    } else if (
+      genericActionEffectKind(area) !== "track" ||
+      !genericActionProjectionEligible(area, argv) ||
+      genericActionProjectionEligible(area, ["compound", "decisions", "import", "--source", "/tmp/DEC.md"])
+    ) {
+      fail("decision-candidates effect label or client honesty probe drifted from the bounded panel-plan allowlist");
+    } else {
+      pass("decision-candidates is track-only; source import remains ineligible in both client and server gates");
+    }
+  }
+
   // (k) A `stale` read still carries the last-good value: resolution proceeds
   // through the same three gates (staleness of the ACTION is guarded by the
   // revision match in decision-execute.ts, not by refusing to resolve).
