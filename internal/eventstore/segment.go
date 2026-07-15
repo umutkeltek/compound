@@ -309,9 +309,27 @@ func (e *engine) put(id string, record []byte, mode putMode, opts AtomicOptions)
 			return putOutcome{}, err
 		}
 	}
-	path, created, err := e.appendTarget(frame.Family, today)
-	if err != nil {
+	if _, _, err := e.appendFrameAt(frame.Family, today, line); err != nil {
 		return putOutcome{}, err
+	}
+	outcome = putOutcome{created: true, diagnosticPath: logicalReferencePrefix + id}
+	if opts.AfterPublish != nil {
+		if err := opts.AfterPublish(); err != nil {
+			return outcome, err
+		}
+	}
+	return outcome, nil
+}
+
+// appendFrameAt appends one encoded frame line to the family's current segment.
+// The caller must already hold the append lock and must have repaired the target
+// family's tail. It returns the segment path relative to the events dir and the
+// byte offset the frame begins at, so the migration seam can record a precise
+// {segment, offset} manifest coordinate for every folded record.
+func (e *engine) appendFrameAt(family, today string, line []byte) (relPath string, offset int64, err error) {
+	path, created, err := e.appendTarget(family, today)
+	if err != nil {
+		return "", 0, err
 	}
 	flags := os.O_WRONLY | os.O_APPEND
 	if created {
@@ -319,7 +337,7 @@ func (e *engine) put(id string, record []byte, mode putMode, opts AtomicOptions)
 	}
 	file, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
-		return putOutcome{}, err
+		return "", 0, err
 	}
 	closed := false
 	defer func() {
@@ -329,38 +347,36 @@ func (e *engine) put(id string, record []byte, mode putMode, opts AtomicOptions)
 	}()
 	if created {
 		if err := syncDirectory(filepath.Dir(path)); err != nil {
-			return putOutcome{}, err
+			return "", 0, err
 		}
 	}
 	start, err := file.Seek(0, io.SeekEnd)
 	if err != nil {
-		return putOutcome{}, err
+		return "", 0, err
 	}
 	if err := writeFull(file, line); err != nil {
 		truncateErr := file.Truncate(start)
 		syncErr := file.Sync()
 		if truncateErr != nil {
-			return putOutcome{}, fmt.Errorf("append event frame: %v; rollback truncate: %w", err, truncateErr)
+			return "", 0, fmt.Errorf("append event frame: %v; rollback truncate: %w", err, truncateErr)
 		}
 		if syncErr != nil {
-			return putOutcome{}, fmt.Errorf("append event frame: %v; rollback sync: %w", err, syncErr)
+			return "", 0, fmt.Errorf("append event frame: %v; rollback sync: %w", err, syncErr)
 		}
-		return putOutcome{}, err
+		return "", 0, err
 	}
 	if err := file.Sync(); err != nil {
-		return putOutcome{}, err
+		return "", 0, err
 	}
 	if err := file.Close(); err != nil {
-		return putOutcome{}, err
+		return "", 0, err
 	}
 	closed = true
-	outcome = putOutcome{created: true, diagnosticPath: logicalReferencePrefix + id}
-	if opts.AfterPublish != nil {
-		if err := opts.AfterPublish(); err != nil {
-			return outcome, err
-		}
+	rel, relErr := filepath.Rel(e.eventsDir, path)
+	if relErr != nil {
+		rel = path
 	}
-	return outcome, nil
+	return rel, start, nil
 }
 
 func (e *engine) exerciseAtomicWriter(writer func(*os.File, []byte) error, line []byte) error {
@@ -390,18 +406,25 @@ func (e *engine) exerciseAtomicWriter(writer func(*os.File, []byte) error, line 
 }
 
 func (e *engine) checkID(family, id, hash string) (idPresence, string, error) {
-	legacyPath := filepath.Join(e.eventsDir, id+".json")
-	if data, err := os.ReadFile(legacyPath); err == nil {
-		compact, compactErr := canonical(data)
-		if compactErr != nil {
-			return idAbsent, "", corruptionAt(legacyPath, data, 1, 0, compactErr)
+	// A loose record is authoritative for its id only until the migration
+	// completion gate closes. Once completion.json exists the loose layer is no
+	// longer consulted on the write path: migrated ids live in segments and any
+	// reappearing loose file is a legacy-writer regression for the doctor, not
+	// silent authority.
+	if e.legacyFallbackEnabled() {
+		legacyPath := filepath.Join(e.eventsDir, id+".json")
+		if data, err := os.ReadFile(legacyPath); err == nil {
+			compact, compactErr := canonical(data)
+			if compactErr != nil {
+				return idAbsent, "", corruptionAt(legacyPath, data, 1, 0, compactErr)
+			}
+			if recordHash(compact) == hash {
+				return idAlreadyPresent, legacyPath, nil
+			}
+			return idConflict, legacyPath, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return idAbsent, "", err
 		}
-		if recordHash(compact) == hash {
-			return idAlreadyPresent, legacyPath, nil
-		}
-		return idConflict, legacyPath, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return idAbsent, "", err
 	}
 
 	segments, err := e.familySegments(family)

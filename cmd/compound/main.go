@@ -112,6 +112,8 @@ func main() {
 		cmdConsole(os.Args[2:])
 	case "event":
 		cmdEvent(os.Args[2:])
+	case "event-store":
+		cmdEventStore(os.Args[2:])
 	case "writeback":
 		cmdWriteback(os.Args[2:])
 	case "home":
@@ -405,6 +407,7 @@ compound product import <product.yaml>|--project-contract <project.yaml> [--rele
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | intake [--limit N] [--json] | intake-work-plan --card <card_id> [--actor A] [--json] SourceObservation or generic ObservationBatch intake
 compound event import-os <events.ndjson> | event show <trace_id> [--json] | event list [--stream NAME] [--limit N] [--json] | event authority [--json] OS-style append-only events -> TraceEnvelope evidence; forensic reader served from COMPOUND_HOME; optional trace-backed review finding producer
+compound event-store migrate (--dry-run | --apply | --verify) [--batch N] [--json] [--home P] fold legacy loose events/<id>.json records into segments; manifest counts+hashes, originals archived, fail-closed completion gate; --verify reports the gate + degraded:legacy_writer_active
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
 retired Gen-1 tombstones:
