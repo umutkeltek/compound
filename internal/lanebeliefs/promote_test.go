@@ -446,6 +446,44 @@ func TestPromoteCapabilityBeliefIsStandingRaising(t *testing.T) {
 	}
 }
 
+// --- valence table guards the WHOLE tendency vocabulary -----------------------------------------
+
+// The two valence sets must PARTITION the closed tendency vocabulary: every tendency is classified
+// exactly once. If a new tendency joins mem.TendencyVocabulary without a valence, this reds — so a
+// new tendency can never silently default to standing-raising (or standing-lowering) unreviewed.
+func TestPromoteValencePartitionsTendencyVocabulary(t *testing.T) {
+	for _, slug := range mem.TendencyVocabulary {
+		raising := standingRaisingTendencies[slug]
+		lowering := standingLoweringTendencies[slug]
+		if raising == lowering { // both false (unclassified) or both true (double-classified)
+			t.Fatalf("tendency %q must be classified in EXACTLY one valence set (raising=%v lowering=%v)", slug, raising, lowering)
+		}
+		if got := beliefValence(mem.BeliefPredicateTendsTo, slug); (got == ValenceStandingLowering) != lowering {
+			t.Fatalf("beliefValence(%q) = %q, disagrees with the valence table", slug, got)
+		}
+	}
+	// Neither set may contain a slug outside the vocabulary.
+	for slug := range standingRaisingTendencies {
+		if !containsStr(mem.TendencyVocabulary, slug) {
+			t.Fatalf("standing-raising tendency %q is not in the closed vocabulary", slug)
+		}
+	}
+	for slug := range standingLoweringTendencies {
+		if !containsStr(mem.TendencyVocabulary, slug) {
+			t.Fatalf("standing-lowering tendency %q is not in the closed vocabulary", slug)
+		}
+	}
+}
+
+func containsStr(set []string, want string) bool {
+	for _, s := range set {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 // --- unresolved evidence: a parked belief with no backing observations --------------------------
 
 func TestPromoteUnresolvedEvidence(t *testing.T) {
