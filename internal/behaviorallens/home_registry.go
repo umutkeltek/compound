@@ -7,6 +7,7 @@ package behaviorallens
 func operatorPrivateLenses() []Lens {
 	return []Lens{
 		AgreementAsymmetryLens{},
+		ActivityUnaccountedLens{},
 	}
 }
 
