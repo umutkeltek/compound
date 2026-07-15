@@ -168,6 +168,13 @@ inventory-only export pending and fails a missing, corrupt, wrong-ref, or wrong-
 This proves dump-byte custody only. Database restore, schema/application validity, real-consumer replay,
 negative control, write cutover, quiet window, and the operator retirement act remain separate proofs.
 
+Production-reader parity is also dependency-attested, not inferred from matching refs. `memory parity-replay`
+may bind `--expect-engine <id>` and `--forbid-engine <id>` into its checkpoint identity; every orient/query row
+then records bounded requested/observed engine identity, outcome, embedder, and corpus generation from the real
+consumer path. An expected engine passes only when that observed engine was actually used, and a forbidden
+requested or observed engine fails even if result refs match. Omitting both flags preserves the existing parity
+exit contract while still emitting engine evidence.
+
 The current generic v0.2 SourceManifest slice owns regular-file bytes, media type, byte count, permission mode,
 stable inferred source key, and version lineage. Its inferred key uses explicit entity refs when available and
 otherwise path identity. Explicit source IDs and path-move reconciliation are required before bulk migration.
