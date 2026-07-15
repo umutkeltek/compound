@@ -14,12 +14,14 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { LatestMoment } from "@/components/briefing/LatestMoment";
 import {
   actRequestFromAction,
   boardHeadline,
   homeAccount,
   Instrument,
   instrumentActRequest,
+  latestCompoundingMoment,
   ledgerStateFrom,
   renderRepresentation,
   resolveCard,
@@ -228,6 +230,108 @@ export function runRepresentationFalsifiers(): SelfTestResult {
       withCf.includes("would save") && !withoutCf.includes("would save"),
       "SD3: counterfactual preview shown only when computed (honest degradation)",
       "SD3: counterfactual was fabricated when absent, or dropped when present",
+    );
+  }
+
+  // ---------- FR6 (compounding moment): the Briefing may call a completed
+  // move "compounded" only when the ledger proves a real, changed, non-audit
+  // transition. Presentation cannot launder an open claim or an audit into an
+  // outcome. ----------
+  {
+    const eligible = {
+      work_id: "work_examplemoment",
+      state: "completed",
+      changed: true,
+      move_type: "rule_delta",
+      claimed_by: "codex",
+      desired_outcome: "The operator sees the latest proven change in one glance",
+      receipt_id: "rec_examplemoment",
+      transition_id: "tr_examplemoment",
+      claimed_at: "200",
+      evidence_refs: ["check:moment-selector", "live:briefing-render"],
+    };
+    const rejected = [
+      { ...eligible, work_id: "work_audit", move_type: "audit_only" },
+      { ...eligible, work_id: "work_unchanged", changed: false },
+      { ...eligible, work_id: "work_open", state: "running" },
+      { ...eligible, work_id: "work_no_receipt", receipt_id: "" },
+      { ...eligible, work_id: "work_no_transition", transition_id: "" },
+    ];
+
+    const moment = latestCompoundingMoment([
+      { ...eligible, work_id: "work_older", claimed_at: "100" },
+      ...rejected,
+      eligible,
+    ]);
+    check(
+      moment?.kind === "work_landed_alive" && moment.workId === "work_examplemoment",
+      "FR6: latest eligible proof-backed change becomes the compounding moment",
+      `FR6: wrong latest moment selected (${moment?.workId ?? "none"})`,
+    );
+    check(
+      moment?.receiptRef === "rec_examplemoment" && moment.transitionRef === "tr_examplemoment",
+      "FR6: the moment carries both receipt and transition provenance",
+      "FR6: the moment lost receipt or transition provenance",
+    );
+    check(
+      moment?.headline === "The operator sees the latest proven change in one glance" && !moment.headline.includes("work_"),
+      "FR6: primary copy is human-readable and keeps the machine id secondary",
+      `FR6: primary copy exposed a machine id (${moment?.headline ?? "none"})`,
+    );
+    check(
+      latestCompoundingMoment(rejected) === null,
+      "FR6: audit, unchanged, open, and proofless rows cannot render as compounded",
+      "FR6: an ineligible row was laundered into a compounded moment",
+    );
+
+    if (moment) {
+      const html = renderToStaticMarkup(
+        createElement(LatestMoment, {
+          moment,
+          read: { status: "live", lastGoodAt: null },
+        }),
+      );
+      const visible = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+      check(
+        visible.includes("What compounded") &&
+          visible.includes(moment.headline) &&
+          visible.includes("Rule changed") &&
+          visible.includes("by codex"),
+        "FR6: the Briefing moment names the human outcome, move, and producer",
+        `FR6: the rendered moment lost its operator-readable hierarchy (${visible})`,
+      );
+      check(
+        html.includes('aria-label="Proof chain: changed, receipted, transitioned"') &&
+          visible.includes("Receipt") &&
+          visible.includes("Transition"),
+        "FR6: the moment renders a segmented proof chain and split Receipt/Transition footer",
+        "FR6: the rendered moment lost its proof chain or provenance footer",
+      );
+      check(
+        !visible.includes(moment.workId),
+        "FR6: the machine work id stays out of the visible primary story",
+        `FR6: the visible moment exposed the machine id (${moment.workId})`,
+      );
+    }
+
+    const emptyHtml = renderToStaticMarkup(
+      createElement(LatestMoment, {
+        moment: null,
+        read: { status: "live", lastGoodAt: null },
+      }),
+    );
+    const unreachableHtml = renderToStaticMarkup(
+      createElement(LatestMoment, {
+        moment: null,
+        read: { status: "unreachable", lastGoodAt: null },
+      }),
+    );
+    check(
+      emptyHtml.includes("No proof-backed change has landed yet") &&
+        unreachableHtml.includes("feed is unreachable") &&
+        !unreachableHtml.includes("No proof-backed change has landed yet"),
+      "FR6: live-empty and unreachable remain honestly different states",
+      "FR6: the moment conflated a dead workbench door with a confirmed empty ledger",
     );
   }
 

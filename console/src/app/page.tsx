@@ -6,6 +6,7 @@ import { DecideList } from "@/components/briefing/DecideList";
 import { Headline } from "@/components/briefing/Headline";
 import { KnowsStrip } from "@/components/briefing/KnowsStrip";
 import { KpiStrip } from "@/components/briefing/KpiStrip";
+import { LatestMoment } from "@/components/briefing/LatestMoment";
 import { PipelineStrip } from "@/components/briefing/PipelineStrip";
 import { SectionLabel } from "@/components/briefing/primitives";
 import { SelfHealingPanel } from "@/components/briefing/SelfHealingPanel";
@@ -26,6 +27,7 @@ import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
 import { toDate } from "@/lib/time";
+import { latestCompoundingMoment } from "@/representation";
 
 export const dynamic = "force-dynamic";
 
@@ -70,6 +72,7 @@ export default async function Briefing() {
   const continueModel = deriveContinue(workbench, open);
   const stages = pipelineStages(workbench);
   const recent = arr(workbench?.recent);
+  const compounded = latestCompoundingMoment(recent);
 
   // World Δ (7-day move mix) + an honest week-over-week delta (only shown when
   // the recent window reaches back far enough to cover the prior week — §9.6).
@@ -112,14 +115,20 @@ export default async function Briefing() {
     <div className="mx-auto flex flex-col gap-9 pb-16" style={{ maxWidth: "1080px" }}>
       <BriefingHeader now={now} needsYouCount={needsYouGroupCount} oldest={oldest} />
 
-      <Headline
-        top={top}
-        act={act}
-        mutationsEnabled={mutationsEnabled}
-        runningAgents={runningAgents}
-        classA={classAWaiting}
-        read={{ status: attentionRead.status, lastGoodAt: attentionRead.lastGoodAt }}
-      />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Headline
+          top={top}
+          act={act}
+          mutationsEnabled={mutationsEnabled}
+          runningAgents={runningAgents}
+          classA={classAWaiting}
+          read={{ status: attentionRead.status, lastGoodAt: attentionRead.lastGoodAt }}
+        />
+        <LatestMoment
+          moment={compounded}
+          read={{ status: workbenchRead.status, lastGoodAt: workbenchRead.lastGoodAt }}
+        />
+      </div>
 
       <ContinueCard model={continueModel} mutationsReady={mutationsEnabled} />
 

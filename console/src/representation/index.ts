@@ -27,4 +27,6 @@ export { boardHeadline, homeAccount, ledgerStateFrom, resolveCard, resolveStateC
 export { actRequestFromAction, listShapes, registerShape, renderRepresentation } from "./registry";
 export { Instrument, instrumentActRequest } from "./instruments";
 export type { InstrumentKind, InstrumentSetting } from "./instruments";
+export { latestCompoundingMoment } from "./moments";
+export type { CompoundingMoment, CompoundingMove } from "./moments";
 export { RepresentationRack } from "./RepresentationRack";
