@@ -299,6 +299,16 @@ func (s *Store) Scan(opts ScanOptions) ([]Entry, error) {
 type ScanPage struct {
 	Entries []Entry
 	Cursor  string
+	// Resumed is true ONLY when opts.Cursor decoded into a usable cursor AND
+	// the segment-authoritative scanFrom path ran on it — i.e. Entries is
+	// exactly the delta since that cursor, never a superset. It is false for
+	// an empty/garbage/version-mismatched cursor and for legacy-fallback
+	// delegation to a full scan (migration gate open); both of those still
+	// return a correct (if less precise) result, so Resumed's zero value
+	// (false) is the fail-safe default a caller can treat as "full rescan."
+	// A caller MUST NOT skip its own dedup filter on Entries unless Resumed
+	// is true.
+	Resumed bool
 }
 
 // ScanFrom returns the records appended since opts.Cursor and the next cursor.
@@ -309,7 +319,7 @@ type ScanPage struct {
 // byte cursor is issued (Cursor comes back ""), preserving correctness while
 // un-migrated. Existing full-snapshot callers keep using Scan unchanged.
 func (s *Store) ScanFrom(opts ScanOptions) (ScanPage, error) {
-	records, invalid, cursor, err := s.engine.scanFrom(opts.RegularOnly, opts.Cursor)
+	records, invalid, cursor, resumed, err := s.engine.scanFrom(opts.RegularOnly, opts.Cursor)
 	if err != nil {
 		return ScanPage{}, err
 	}
@@ -330,7 +340,7 @@ func (s *Store) ScanFrom(opts ScanOptions) (ScanPage, error) {
 		entries = append(entries, Entry{ID: id, Name: id + ".json", Reference: ref, store: s})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	return ScanPage{Entries: entries, Cursor: cursor}, nil
+	return ScanPage{Entries: entries, Cursor: cursor, Resumed: resumed}, nil
 }
 
 func matchesPrefix(id string, prefixes []string) bool {

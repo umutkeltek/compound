@@ -70,33 +70,41 @@ func decodeScanCursor(raw string) (scanCursor, bool) {
 }
 
 // scanFrom is the incremental sibling of scanAll. It returns only the records
-// appended since cursorStr, plus the next cursor to persist. Semantics:
+// appended since cursorStr, the next cursor to persist, and whether this call
+// actually resumed from a usable cursor on the segment-authoritative path
+// (see the `resumed` return). Semantics:
 //
 //   - While the migration completion gate is OPEN (legacy fallback), the loose
 //     layer is unioned and has no stable ordering a byte cursor can ride, so
 //     scanFrom delegates to a full scanAll and issues an EMPTY cursor. Callers
 //     converge to full-rescan correctness automatically on un-migrated homes.
+//     resumed is always false here.
 //   - Once segment-authoritative, each present segment is parsed only from its
 //     recorded high-water to EOF; a fully-consumed sealed segment is skipped
 //     without an open. New segments (rotation seq++, day-seal) are absent from
 //     the cursor and parse in full exactly once. rm -rf index/ is irrelevant —
 //     the cursor is byte offsets into segment truth, never index state.
-func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]storedRecord, []invalidLooseEntry, string, error) {
+//     resumed reports whether cursorStr itself decoded into a usable cursor
+//     (decodeScanCursor ok) — an empty, garbage, or version-mismatched token
+//     still runs this path (so a fresh cursor is issued) but resumed is false,
+//     matching a full scan's semantics for anything layered on top (e.g. a
+//     LastEventTime dedup filter that must stay authoritative on that call).
+func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]storedRecord, []invalidLooseEntry, string, bool, error) {
 	if e.legacyFallbackEnabled() {
 		records, invalid, err := e.scanAll(regularOnly)
-		return records, invalid, "", err
+		return records, invalid, "", false, err
 	}
 
-	prev, _ := decodeScanCursor(cursorStr)
+	prev, usable := decodeScanCursor(cursorStr)
 	next := scanCursor{Version: scanCursorVersion, Segments: map[string]int64{}}
 	records := map[string]storedRecord{}
 
 	familyEntries, err := os.ReadDir(e.segRoot)
 	if errors.Is(err, os.ErrNotExist) {
-		return records, nil, encodeScanCursor(next), nil
+		return records, nil, encodeScanCursor(next), usable, nil
 	}
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", false, err
 	}
 	families := make([]string, 0, len(familyEntries))
 	for _, entry := range familyEntries {
@@ -109,7 +117,7 @@ func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]stored
 	for _, family := range families {
 		segments, err := e.familySegments(family)
 		if err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", false, err
 		}
 		for index, segment := range segments {
 			rel, relErr := filepath.Rel(e.eventsDir, segment.path)
@@ -118,7 +126,7 @@ func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]stored
 			}
 			frames, highWater, err := e.scanSegmentFrom(segment.path, prev.Segments[rel], index == 0, regularKindForScan(regularOnly))
 			if err != nil {
-				return nil, nil, "", err
+				return nil, nil, "", false, err
 			}
 			next.Segments[rel] = highWater
 			// Newest-occurrence-wins within the returned delta, matching scanAll's
@@ -138,7 +146,7 @@ func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]stored
 			}
 		}
 	}
-	return records, nil, encodeScanCursor(next), nil
+	return records, nil, encodeScanCursor(next), usable, nil
 }
 
 // scanSegmentFrom parses one segment starting at the caller's recorded byte

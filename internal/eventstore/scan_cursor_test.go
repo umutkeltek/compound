@@ -1,6 +1,8 @@
 package eventstore
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -251,5 +253,85 @@ func TestScanFromLooseFallbackIssuesNoCursor(t *testing.T) {
 	}
 	if !reflect.DeepEqual(entryIDs(page.Entries), []string{"rec_l0", "rec_l1"}) {
 		t.Fatalf("loose-fallback delta = %v, want full loose set", entryIDs(page.Entries))
+	}
+	if page.Resumed {
+		t.Fatal("loose-fallback ScanFrom must report Resumed=false (legacy delegation, not a real resume)")
+	}
+}
+
+// Falsifier F3 (packet 2026-07-16-b1-backdated-reconcile-fold): ScanPage.Resumed
+// distinguishes a real segment-authoritative resume from every path that still
+// returns a correct answer but is NOT a precise delta a caller may trust for
+// skipping its own dedup filter — empty cursor, structurally garbage cursor,
+// version-mismatched cursor, and legacy-fallback delegation must all report
+// false; only a usable cursor consumed on the segment-authoritative path may
+// report true.
+func TestScanFromResumedReportsUsableCursorOnly(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})
+	closeCompletionGate(t, store)
+
+	for i := 0; i < 3; i++ {
+		putRecord(t, store, fmt.Sprintf("rec_f%d", i), "compound.receipt.v0.1", now, "v")
+	}
+
+	// (a) empty cursor (first-ever scan) -> false.
+	first, err := store.ScanFrom(ScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Resumed {
+		t.Fatal("empty cursor must report Resumed=false")
+	}
+	if first.Cursor == "" {
+		t.Fatal("segment-authoritative ScanFrom must still issue a non-empty cursor")
+	}
+
+	// (b) usable cursor from the prior call, consumed on the segment path -> true.
+	putRecord(t, store, "rec_f3", "compound.receipt.v0.1", now, "v")
+	second, err := store.ScanFrom(ScanOptions{Cursor: first.Cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Resumed {
+		t.Fatal("a usable cursor on the segment-authoritative path must report Resumed=true")
+	}
+
+	// (c) structurally garbage (non-base64) cursor -> false.
+	garbage, err := store.ScanFrom(ScanOptions{Cursor: "!!!not base64!!!"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if garbage.Resumed {
+		t.Fatal("garbage cursor must report Resumed=false")
+	}
+
+	// (d) version-mismatched cursor -> false. Built by hand: encodeScanCursor
+	// always stamps the CURRENT version, so it cannot produce a mismatch.
+	staleBytes, err := json.Marshal(scanCursor{Version: scanCursorVersion + 1, Segments: map[string]int64{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatched := base64.RawURLEncoding.EncodeToString(staleBytes)
+	versionMismatch, err := store.ScanFrom(ScanOptions{Cursor: mismatched})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if versionMismatch.Resumed {
+		t.Fatal("version-mismatched cursor must report Resumed=false")
+	}
+
+	// (e) legacy-fallback delegation (migration gate open) -> false, even with a
+	// structurally usable cursor in hand.
+	legacyStore := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})
+	for _, id := range []string{"rec_g0", "rec_g1"} {
+		writeLegacyRecord(t, legacyStore, id, eventRecord(id, "compound.receipt.v0.1", now, "loose-"+id))
+	}
+	legacy, err := legacyStore.ScanFrom(ScanOptions{Cursor: first.Cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Resumed {
+		t.Fatal("legacy-fallback ScanFrom must report Resumed=false regardless of cursor shape")
 	}
 }
