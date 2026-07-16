@@ -239,6 +239,74 @@ func TestApplyWorktreeRetirementResumesPreparedIntentWithoutGitMutation(t *testi
 	}
 }
 
+func TestApplyWorktreeRetirementPendingOnlyResumeReevaluatesCurrentPolicyBeforeMutation(t *testing.T) {
+	for _, outcome := range []string{"hold", "deny"} {
+		t.Run(outcome, func(t *testing.T) {
+			fixture := newRetirementGitFixture(t)
+			home, paths, report := authorizedRetirementFixture(t, fixture)
+			crash := errors.New("injected crash with prepared pending transaction")
+			runner := &recordingRetirementGit{delegate: ExecWorktreeRetirementGit{}}
+			records := 0
+			deps := successfulRetirementApplyDependencies(runner, &records)
+			deps.AfterPhase = func(phase string) error {
+				if phase == WorktreeRetirementPhasePrepared {
+					return crash
+				}
+				return nil
+			}
+			req := WorktreeRetirementApplyRequest{
+				HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+				Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+			}
+			if result, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now()); !errors.Is(err, crash) || result.Phase != WorktreeRetirementPhasePrepared {
+				t.Fatalf("prepared crash result=%+v err=%v", result, err)
+			}
+			deps.AfterPhase = nil
+			deps.Evaluate = func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error) {
+				decision := policy.Evaluate(action, policy.DefaultConfig(), now)
+				decision.Outcome = outcome
+				decision.Obligations = nil
+				return decision, nil
+			}
+			_, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(time.Minute))
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "policy") {
+				t.Fatalf("resume policy error=%v", err)
+			}
+			if runner.mutationCount() != 0 || records != 0 || !retirementGitRefExists(fixture.repo, fixture.candidateRef) {
+				t.Fatalf("policy refusal mutated state calls=%+v records=%d", runner.calls, records)
+			}
+		})
+	}
+}
+
+func TestApplyWorktreeRetirementRetriesTransientWorktreeRemovalWithSelfCausedOwnerDigest(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	home, paths, report := authorizedRetirementFixture(t, fixture)
+	injected := errors.New("transient worktree remove failure")
+	runner := &failOnceWorktreeRemoveGit{delegate: ExecWorktreeRetirementGit{}, err: injected}
+	records := 0
+	deps := successfulRetirementApplyDependencies(runner, &records)
+	req := WorktreeRetirementApplyRequest{
+		HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+		Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+	}
+	first, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now())
+	if !errors.Is(err, injected) || first.Status != "failed" || first.WorkDigest == "" || first.WorktreeRemoved {
+		t.Fatalf("first removal result=%+v err=%v", first, err)
+	}
+	if _, err := os.Stat(fixture.worktree); err != nil {
+		t.Fatalf("failed removal changed worktree: %v", err)
+	}
+	req.OwnerProof.WorkDigest = first.WorkDigest
+	second, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != "completed" || runner.removeCalls != 2 || runner.successfulRemoveCalls != 1 || runner.refDeleteCalls != 1 || records != 2 {
+		t.Fatalf("retry result=%+v remove=%d successful=%d delete=%d records=%d", second, runner.removeCalls, runner.successfulRemoveCalls, runner.refDeleteCalls, records)
+	}
+}
+
 func TestApplyWorktreeRetirementCASDriftLeavesRefAndRecordsPartialOutcome(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
 	home, paths, report := authorizedRetirementFixture(t, fixture)
@@ -547,6 +615,30 @@ type failOnceRefDeleteGit struct {
 	failed      bool
 	removeCalls int
 	deleteCalls int
+}
+
+type failOnceWorktreeRemoveGit struct {
+	delegate              WorktreeRetirementGit
+	err                   error
+	failed                bool
+	removeCalls           int
+	successfulRemoveCalls int
+	refDeleteCalls        int
+}
+
+func (r *failOnceWorktreeRemoveGit) Run(ctx context.Context, repo string, args ...string) (string, error) {
+	if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+		r.removeCalls++
+		if !r.failed {
+			r.failed = true
+			return "", r.err
+		}
+		r.successfulRemoveCalls++
+	}
+	if len(args) >= 2 && args[0] == "update-ref" && args[1] == "-d" {
+		r.refDeleteCalls++
+	}
+	return r.delegate.Run(ctx, repo, args...)
 }
 
 type phaseAssertingRetirementGit struct {
