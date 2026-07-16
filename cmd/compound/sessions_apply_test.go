@@ -11,6 +11,7 @@ import (
 	"compound/internal/authority"
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/work"
@@ -246,19 +247,15 @@ func sessionMiningTestEvent(id, sessionID, workID, hookName, sideEffect string) 
 
 func writeSessionHookEvents(t *testing.T, homePath string, events []sessionHookEvent) {
 	t.Helper()
-	path := filepath.Join(homePath, "events", "hook-events.ndjson")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Create(path)
+	// Seed authoritative hook_ records: session mining now reads them through the
+	// eventstore Scan seam, not the frozen hook-events.ndjson stream.
+	store, err := eventstore.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	enc := json.NewEncoder(f)
 	for _, ev := range events {
-		if err := enc.Encode(ev); err != nil {
-			t.Fatal(err)
+		if _, err := store.PutJSON(ev.ID, ev, "  "); err != nil {
+			t.Fatalf("seed hook event %s: %v", ev.ID, err)
 		}
 	}
 }

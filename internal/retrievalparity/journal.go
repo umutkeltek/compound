@@ -309,21 +309,26 @@ func liveContextBreakerCount(homePath string, windowStart, windowEnd time.Time) 
 	if err != nil {
 		return 0, err
 	}
-	file, err := store.OpenHookEvents()
-	if os.IsNotExist(err) {
-		return 0, nil
-	}
+	// Read the authoritative hook_ records through the Scan seam instead of the
+	// frozen hook-events.ndjson compatibility stream. This is a count, so record
+	// order is irrelevant; Scan also dedups (the ndjson could double-count a
+	// re-imported id), which only tightens correctness for the breaker tally.
+	entries, err := store.Scan(eventstore.ScanOptions{Prefixes: []string{"hook_"}, RegularOnly: true})
 	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
 		return 0, err
 	}
-	defer file.Close()
 
 	count := 0
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
+	for _, entry := range entries {
+		rec, err := entry.Read()
+		if err != nil {
+			return 0, err
+		}
 		var record hookBreakerRecord
-		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil || !record.BreakerTripped {
+		if err := json.Unmarshal(rec.Bytes, &record); err != nil || !record.BreakerTripped {
 			continue
 		}
 		if record.HookName != "SessionStart" && record.HookName != "UserPromptSubmit" {
@@ -334,9 +339,6 @@ func liveContextBreakerCount(homePath string, windowStart, windowEnd time.Time) 
 			continue
 		}
 		count++
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, err
 	}
 	return count, nil
 }

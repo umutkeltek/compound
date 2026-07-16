@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/routeevidence"
 	"compound/internal/work"
@@ -188,18 +189,21 @@ func writeExecutorHealthFixtures(t *testing.T, homePath, workID string) {
 	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
 		t.Fatalf("mkdir events: %v", err)
 	}
+	// Seed the authoritative hook_ record (the executors projection now reads via
+	// the eventstore Scan seam, not the frozen hook-events.ndjson stream).
 	hookEvent := map[string]any{
+		"id":         "hook_executor_health_fixture",
 		"created_at": cliTestNow.Add(3 * time.Minute).UTC().Format(time.RFC3339),
 		"harness":    "codex",
 		"hook_name":  "SessionStart",
 		"status":     "ok",
 	}
-	hookLine, err := json.Marshal(hookEvent)
+	store, err := eventstore.Open(homePath)
 	if err != nil {
-		t.Fatalf("marshal hook event: %v", err)
+		t.Fatalf("open event store: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(eventsDir, "hook-events.ndjson"), append(hookLine, '\n'), 0o644); err != nil {
-		t.Fatalf("write hook events: %v", err)
+	if _, err := store.PutJSON("hook_executor_health_fixture", hookEvent, "  "); err != nil {
+		t.Fatalf("seed hook event record: %v", err)
 	}
 
 	ledgerDir := filepath.Join(homePath, "ledger")

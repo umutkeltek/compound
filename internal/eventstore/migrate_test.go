@@ -392,6 +392,68 @@ func TestMigratePostCompletionDetectsLegacyWriterAndDropsLooseFallback(t *testin
 	}
 }
 
+// TestLegacyWriterActiveDetectsFrozenStreamRegrowth is the slice-5B doctor
+// falsifier: after the completion gate closes, hook-events.ndjson and
+// traces.ndjson are frozen (writeHookEvent/recordTrace stop appending). A stream
+// appended to AFTER the gate is a legacy-writer regression that both
+// LegacyWriterActive and `migrate --verify` must surface. A stream frozen at or
+// before completion (or absent entirely) must NOT flag — otherwise the frozen
+// evidence file would false-red every post-migration home.
+func TestLegacyWriterActiveDetectsFrozenStreamRegrowth(t *testing.T) {
+	for _, streamName := range []string{hookEventsStreamName, tracesStreamName} {
+		t.Run(streamName, func(t *testing.T) {
+			store := openMigrateStore(t)
+			seedLoose(t, store, "rec_a", "body-a")
+			if r, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err != nil || !r.Completion.Complete {
+				t.Fatalf("apply: %v %v", err, r.Completion.Reasons)
+			}
+			completionInfo, err := os.Stat(store.engine.completionPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// No stream at all: the healthy pure-segment case never flags.
+			if active, err := store.LegacyWriterActive(); err != nil || active {
+				t.Fatalf("absent stream must not flag legacy writer: active=%v err=%v", active, err)
+			}
+
+			streamPath := filepath.Join(store.home, "events", streamName)
+			if err := os.WriteFile(streamPath, []byte(`{"id":"x"}`+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			// Frozen at/before the gate boundary: not a regression.
+			frozen := completionInfo.ModTime().Add(-time.Second)
+			if err := os.Chtimes(streamPath, frozen, frozen); err != nil {
+				t.Fatal(err)
+			}
+			if active, err := store.LegacyWriterActive(); err != nil || active {
+				t.Fatalf("stream frozen before the gate must not flag: active=%v err=%v", active, err)
+			}
+
+			// Written strictly after the gate boundary: a legacy-writer regression.
+			future := completionInfo.ModTime().Add(time.Hour)
+			if err := os.Chtimes(streamPath, future, future); err != nil {
+				t.Fatal(err)
+			}
+			active, err := store.LegacyWriterActive()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !active {
+				t.Fatalf("%s appended after completion must flag legacy writer", streamName)
+			}
+			vr, err := store.Migrate(MigrateOptions{Mode: ModeVerify})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !vr.Completion.LegacyWriterActive {
+				t.Fatal("verify did not report degraded:legacy_writer_active for stream regrowth")
+			}
+		})
+	}
+}
+
 // Structural perf falsifier: after migration a scan opens O(families×days)
 // segment files, never O(records), and the loose directory is no longer walked.
 func TestMigratePostCompletionScanIsSegmentStructuralNotPerRecord(t *testing.T) {

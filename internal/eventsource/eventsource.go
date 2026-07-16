@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -521,9 +522,14 @@ func recordTrace(homePath string, trace envelope.TraceEnvelope) (bool, error) {
 	if !result.Created {
 		return false, nil
 	}
-	// Preserve the existing dual-write ordering: the loose trace object is
-	// visible before its compatibility-stream row. A stream failure leaves the
-	// object in place, and a retry silently skips it as before.
+	// The trace_ record above is authoritative; ListTraces/loadRecentTraceSummaries
+	// now read it through eventstore.Scan. The traces.ndjson compatibility stream
+	// is frozen once the migration completion gate closes (a post-gate home never
+	// double-writes it); a pre-gate home keeps the dual-write ordering so any
+	// legacy reader stays whole during rollout.
+	if store.MigrationComplete() {
+		return true, nil
+	}
 	if err := store.AppendTrace(trace); err != nil {
 		return false, err
 	}
@@ -684,46 +690,24 @@ func ListTraces(homePath, stream string, limit int) ([]TraceSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := store.OpenTraces()
+	traces, err := scanTraceEnvelopes(store)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var summaries []TraceSummary
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var tr envelope.TraceEnvelope
-		if err := json.Unmarshal([]byte(line), &tr); err != nil {
-			return nil, fmt.Errorf("parse trace list line %d: %w", lineNo, err)
-		}
+	for _, tr := range traces {
 		if stream != "" && tr.Source.Stream != stream {
 			continue
 		}
-		summaries = append(summaries, TraceSummary{
-			ID:            tr.ID,
-			CreatedAt:     tr.CreatedAt,
-			Stream:        tr.Source.Stream,
-			SourceKind:    tr.Source.SourceKind,
-			EventClass:    tr.Source.EventClass,
-			MutationClass: tr.MutationClass,
-			Summary:       tr.Summary,
-		})
+		summaries = append(summaries, traceSummaryOf(tr))
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	// traces.ndjson is append-in-import-order; reverse so the reader sees the
-	// most recently imported traces first.
+	// scanTraceEnvelopes returns the canonical chronological (created_at, id)
+	// order that stands in for the frozen traces.ndjson append order; reverse it
+	// so the reader sees the most recently imported traces first, exactly as the
+	// prior stream-reversal did.
 	for i, j := 0, len(summaries)-1; i < j; i, j = i+1, j-1 {
 		summaries[i], summaries[j] = summaries[j], summaries[i]
 	}
@@ -731,6 +715,51 @@ func ListTraces(homePath, stream string, limit int) ([]TraceSummary, error) {
 		summaries = summaries[:limit]
 	}
 	return summaries, nil
+}
+
+// scanTraceEnvelopes reads every trace_ record through the Scan seam and returns
+// them in canonical chronological order: ascending (created_at, id). This order
+// is the deduped-store stand-in for the frozen traces.ndjson physical append
+// order — on a clean home the two agree byte-for-byte, and for same-created_at
+// records the deterministic id tie-break is strictly better than append order,
+// which does not survive dedup (the ndjson double-counts re-imported ids). A
+// per-record parse failure surfaces fail-closed, matching the prior line reader.
+func scanTraceEnvelopes(store *eventstore.Store) ([]envelope.TraceEnvelope, error) {
+	entries, err := store.Scan(eventstore.ScanOptions{Prefixes: []string{"trace_"}, RegularOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]envelope.TraceEnvelope, 0, len(entries))
+	for _, entry := range entries {
+		rec, err := entry.Read()
+		if err != nil {
+			return nil, err
+		}
+		var tr envelope.TraceEnvelope
+		if err := json.Unmarshal(rec.Bytes, &tr); err != nil {
+			return nil, fmt.Errorf("parse trace %s: %w", entry.ID, err)
+		}
+		out = append(out, tr)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt < out[j].CreatedAt
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func traceSummaryOf(tr envelope.TraceEnvelope) TraceSummary {
+	return TraceSummary{
+		ID:            tr.ID,
+		CreatedAt:     tr.CreatedAt,
+		Stream:        tr.Source.Stream,
+		SourceKind:    tr.Source.SourceKind,
+		EventClass:    tr.Source.EventClass,
+		MutationClass: tr.MutationClass,
+		Summary:       tr.Summary,
+	}
 }
 
 func normalizeTraceReference(raw string) (eventstore.Reference, error) {
@@ -803,45 +832,22 @@ func loadRecentTraceSummaries(homePath string, limit int) ([]TraceSummary, error
 	if err != nil {
 		return nil, err
 	}
-	f, err := store.OpenTraces()
+	traces, err := scanTraceEnvelopes(store)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	defer f.Close()
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		lines = append(lines, line)
-		if len(lines) > limit {
-			lines = lines[1:]
-		}
+	// Keep the most recent `limit` traces in chronological (oldest-first) order,
+	// exactly as the prior sliding window over the append-order tail did — the
+	// chronological (created_at, id) order stands in for physical append order.
+	if limit > 0 && len(traces) > limit {
+		traces = traces[len(traces)-limit:]
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	summaries := make([]TraceSummary, 0, len(lines))
-	for i, line := range lines {
-		var trace envelope.TraceEnvelope
-		if err := json.Unmarshal([]byte(line), &trace); err != nil {
-			return nil, fmt.Errorf("parse trace summary line %d: %w", i+1, err)
-		}
-		summaries = append(summaries, TraceSummary{
-			ID:            trace.ID,
-			CreatedAt:     trace.CreatedAt,
-			Stream:        trace.Source.Stream,
-			SourceKind:    trace.Source.SourceKind,
-			EventClass:    trace.Source.EventClass,
-			MutationClass: trace.MutationClass,
-			Summary:       trace.Summary,
-		})
+	summaries := make([]TraceSummary, 0, len(traces))
+	for _, trace := range traces {
+		summaries = append(summaries, traceSummaryOf(trace))
 	}
 	return summaries, nil
 }

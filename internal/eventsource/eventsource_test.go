@@ -366,6 +366,138 @@ func TestImportOSEventsAcceptsAgentRunShape(t *testing.T) {
 	}
 }
 
+func seedTraceRecord(t *testing.T, home, id, createdAt, stream string) {
+	t.Helper()
+	store, err := eventstore.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tr envelope.TraceEnvelope
+	tr.Header.SchemaVersion = envelope.SVTraceEnvelope
+	tr.Header.ID = id
+	tr.Header.CreatedAt = createdAt
+	tr.Source = envelope.TraceSource{System: "os", Stream: stream}
+	tr.MutationClass = "read"
+	tr.Summary = "summary " + id
+	if _, err := store.PutJSON(id, tr, "  "); err != nil {
+		t.Fatalf("seed trace %s: %v", id, err)
+	}
+}
+
+func summaryIDs(summaries []TraceSummary) []string {
+	out := make([]string, len(summaries))
+	for i, s := range summaries {
+		out[i] = s.ID
+	}
+	return out
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestListTracesOrdersNewestFirstDeterministically is the mandatory slice-5B
+// traces order falsifier. Post-cutover ListTraces reads trace_ records through
+// the Scan seam and reconstructs the "most recent first" contract by sorting on
+// the canonical chronological (created_at, id) order — the deduped-store
+// stand-in for the frozen traces.ndjson append order. On a clean home the two
+// agree byte-for-byte; same-created_at records are tie-broken by id (stable where
+// physical append order is not). loadRecentTraceSummaries returns the same window
+// oldest-first, and a duplicate lingering in the frozen ndjson never leaks in.
+func TestListTracesOrdersNewestFirstDeterministically(t *testing.T) {
+	home := t.TempDir()
+	// Distinct created_at plus one same-created_at tie (c,d at t2).
+	seedTraceRecord(t, home, "trace_a", "2026-07-15T03:00:00Z", "s")
+	seedTraceRecord(t, home, "trace_b", "2026-07-15T01:00:00Z", "s")
+	seedTraceRecord(t, home, "trace_c", "2026-07-15T02:00:00Z", "s")
+	seedTraceRecord(t, home, "trace_d", "2026-07-15T02:00:00Z", "s") // tie with c
+
+	// chronological asc (created_at,id) = [b(t1), c(t2), d(t2), a(t3)];
+	// newest-first = reverse = [a, d, c, b].
+	all, err := ListTraces(home, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := summaryIDs(all), []string{"trace_a", "trace_d", "trace_c", "trace_b"}; !sameStrings(got, want) {
+		t.Fatalf("ListTraces order = %v, want newest-first %v", got, want)
+	}
+
+	// limit caps from the newest end.
+	limited, err := ListTraces(home, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := summaryIDs(limited), []string{"trace_a", "trace_d"}; !sameStrings(got, want) {
+		t.Fatalf("ListTraces limit=2 = %v, want %v", got, want)
+	}
+
+	// The most recent window, oldest-first: last 2 of chronological asc = [d, a].
+	recent, err := loadRecentTraceSummaries(home, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := summaryIDs(recent), []string{"trace_d", "trace_a"}; !sameStrings(got, want) {
+		t.Fatalf("loadRecentTraceSummaries(2) = %v, want oldest-first window %v", got, want)
+	}
+
+	// Dedup proof: duplicate lines lingering in the frozen traces.ndjson (the
+	// pre-cutover double-count) must NOT appear — ListTraces reads the deduped
+	// store, never the stream. Reverting the cutover would make this count 6.
+	streamPath := filepath.Join(home, "events", "traces.ndjson")
+	dupLine := `{"id":"trace_a","created_at":"2026-07-15T03:00:00Z","source":{"system":"os","stream":"s"},"mutation_class":"read"}` + "\n"
+	if err := os.WriteFile(streamPath, []byte(dupLine+dupLine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	afterDup, err := ListTraces(home, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterDup) != 4 {
+		t.Fatalf("ListTraces must ignore frozen ndjson duplicates: got %d records, want 4", len(afterDup))
+	}
+}
+
+// TestImportOSEventsFreezesTraceStreamAfterCompletion proves the writer freeze:
+// on a completion-gated home, imported traces land as authoritative records
+// (reachable via ShowTrace) but the traces.ndjson compatibility stream is never
+// written. A pre-gate home still writes it — covered by
+// TestImportOSEventsWritesTraceEnvelopesIdempotently.
+func TestImportOSEventsFreezesTraceStreamAfterCompletion(t *testing.T) {
+	home := t.TempDir()
+	migDir := filepath.Join(home, "events", "migration")
+	if err := os.MkdirAll(migDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(migDir, "completion.json"), []byte(`{"complete":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	report, err := ImportOSEvents(home, fixture, ImportOptions{Stream: "control-events"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Imported != 2 {
+		t.Fatalf("import = %+v", report)
+	}
+	for _, id := range report.TraceIDs {
+		if _, err := ShowTrace(home, id); err != nil {
+			t.Fatalf("trace %s must be reachable post-freeze: %v", id, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "events", "traces.ndjson")); !os.IsNotExist(err) {
+		t.Fatalf("traces.ndjson must stay frozen (unwritten) on a completed home, stat err=%v", err)
+	}
+}
+
 func readJSON(t *testing.T, path string, v any) {
 	t.Helper()
 	var b []byte

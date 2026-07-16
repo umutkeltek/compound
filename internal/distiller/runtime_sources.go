@@ -3,7 +3,6 @@ package distiller
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -152,31 +151,30 @@ func LoadTraceEnvelopes(homePath string, traceIDs []string) ([]envelope.Envelope
 }
 
 func loadHookEvents(events *eventstore.Store, workID, contextPackID string) ([]envelope.HookEvent, error) {
-	file, err := events.OpenHookEvents()
+	// Read the authoritative hook_ records through the Scan seam. The prior
+	// hook-events.ndjson stream is frozen once migration completes; Scan is the
+	// deduped store view (executorlens doctrine), and the deterministic
+	// (created_at, id) sort below reproduces the previous order byte-for-byte.
+	entries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"hook_"}, RegularOnly: true})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read hook events: %w", err)
 	}
-	defer file.Close()
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("read hook events: %w", err)
-	}
 	var out []envelope.HookEvent
 	seen := map[string]bool{}
-	for lineNo, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	for _, entry := range entries {
+		rec, err := entry.Read()
+		if err != nil {
+			return nil, fmt.Errorf("read hook event %s: %w", entry.ID, err)
 		}
 		var ev envelope.HookEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			return nil, fmt.Errorf("parse hook event line %d: %w", lineNo+1, err)
+		if err := json.Unmarshal(rec.Bytes, &ev); err != nil {
+			return nil, fmt.Errorf("parse hook event %s: %w", entry.ID, err)
 		}
 		if err := ev.Validate(); err != nil {
-			return nil, fmt.Errorf("hook event line %d invalid: %w", lineNo+1, err)
+			return nil, fmt.Errorf("hook event %s invalid: %w", entry.ID, err)
 		}
 		if seen[ev.ID] {
 			continue

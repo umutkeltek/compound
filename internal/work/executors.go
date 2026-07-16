@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/eventstore"
 	"compound/internal/localmodel"
 )
 
@@ -212,15 +213,17 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 		row.WaitReason = firstNonEmptyExecutorString(dispatch.WaitReason, dispatch.Reason)
 	}
 
-	// The legacy existence probe treated any stat error as absent and let the
-	// rest of the projection proceed; retain that non-authoritative behavior.
-	if exists, _ := s.events.HookEventsExists(); exists {
+	// Hook evidence now comes from the authoritative hook_ records via the Scan
+	// seam (the hook-events.ndjson compatibility stream is frozen post-migration).
+	// The source ref is emitted only when hook records are actually present,
+	// preserving the prior "present-and-non-authoritative" contract.
+	hookEvents, hookWarnings, hookEventsPresent, err := s.loadExecutorHookEvents()
+	if err != nil {
+		return ExecutorsProjection{}, err
+	}
+	if hookEventsPresent {
 		projection.SourceRefs = appendSourceRef(projection.SourceRefs, "compound.events.hook_events")
-		hookEvents, warnings, err := s.loadExecutorHookEvents()
-		if err != nil {
-			return ExecutorsProjection{}, err
-		}
-		projection.Integrity = append(projection.Integrity, warnings...)
+		projection.Integrity = append(projection.Integrity, hookWarnings...)
 		applyExecutorHookEvents(rows, hookEvents)
 	}
 
@@ -377,41 +380,45 @@ type executorHookEventLine struct {
 	Status    string `json:"status"`
 }
 
-func (s *Store) loadExecutorHookEvents() ([]executorHookEventLine, []string, error) {
-	f, err := s.events.OpenHookEvents()
+// loadExecutorHookEvents reads the authoritative hook_ records through the Scan
+// seam. present reports whether any hook record exists (the source-ref gate);
+// a per-record decode/created_at problem degrades to a warning keyed by record
+// id, matching the prior non-authoritative line-warning behavior. applyExecutor-
+// HookEvents reduces by max(created_at) per harness, so Scan's record order is
+// immaterial. An unreadable record (permission-denied / corrupt segment) is a
+// hard error, preserving the attention-unavailable path.
+func (s *Store) loadExecutorHookEvents() ([]executorHookEventLine, []string, bool, error) {
+	// Presence is non-authoritative enrichment: a missing or malformed events
+	// layout (e.g. the scan seam cannot enumerate) is treated as "absent" and the
+	// projection proceeds, exactly as the prior lenient existence probe swallowed
+	// stat errors. A record that EXISTS but cannot be read is a hard error below —
+	// that is the attention-unavailable path.
+	entries, err := s.events.Scan(eventstore.ScanOptions{Prefixes: []string{"hook_"}, RegularOnly: true})
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil, nil
-		}
-		return nil, nil, fmt.Errorf("read hook events: %w", err)
+		return nil, nil, false, nil
 	}
-	defer f.Close()
+	if len(entries) == 0 {
+		return nil, nil, false, nil
+	}
 	var out []executorHookEventLine
 	var warnings []string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	for _, entry := range entries {
+		rec, err := entry.Read()
+		if err != nil {
+			return nil, nil, true, fmt.Errorf("read hook events: %w", err)
 		}
 		var ev executorHookEventLine
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			warnings = append(warnings, fmt.Sprintf("hook_events line %d unreadable", lineNo))
+		if err := json.Unmarshal(rec.Bytes, &ev); err != nil {
+			warnings = append(warnings, fmt.Sprintf("hook_events record %s unreadable", entry.ID))
 			continue
 		}
 		if _, err := time.Parse(time.RFC3339, ev.CreatedAt); err != nil {
-			warnings = append(warnings, fmt.Sprintf("hook_events line %d missing created_at", lineNo))
+			warnings = append(warnings, fmt.Sprintf("hook_events record %s missing created_at", entry.ID))
 			continue
 		}
 		out = append(out, ev)
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, warnings, fmt.Errorf("scan hook events: %w", err)
-	}
-	return out, warnings, nil
+	return out, warnings, true, nil
 }
 
 func applyExecutorHookEvents(rows map[string]*ExecutorRow, events []executorHookEventLine) {

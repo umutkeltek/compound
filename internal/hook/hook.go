@@ -1176,8 +1176,16 @@ func writeHookEvent(homePath string, ev envelope.HookEvent, breakerTripped bool)
 	if _, err := store.PutJSON(ev.Header.ID, record, "  "); err != nil {
 		return err
 	}
-	// Preserve object-before-stream publication. A compatibility-stream failure
-	// leaves the loose HookEvent record in place, matching the prior behavior.
+	// The hook_ record above is the authoritative event; out-of-seam readers now
+	// consume it through eventstore.Scan (internal/work, internal/distiller,
+	// cmd/compound/sessions, internal/retrievalparity). The hook-events.ndjson
+	// compatibility stream is frozen once the migration completion gate closes:
+	// a post-gate home never double-writes it (no reader needs it), while a
+	// pre-gate home keeps appending so any legacy reader stays whole during
+	// rollout. Object-before-stream publication is preserved for pre-gate homes.
+	if store.MigrationComplete() {
+		return nil
+	}
 	return store.AppendHookEvent(record)
 }
 

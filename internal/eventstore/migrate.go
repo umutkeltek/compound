@@ -250,9 +250,11 @@ func (s *Store) MigrationComplete() bool {
 	return s.engine.migrationComplete()
 }
 
-// LegacyWriterActive is the post-completion doctor/status check: it is true only
-// when the gate has closed AND a loose events/<id>.json has reappeared, i.e. a
-// legacy writer is still emitting one-record files after the cutover.
+// LegacyWriterActive is the post-completion doctor/status check: after the gate
+// closes it is true when a legacy writer is still emitting through a retired
+// path — either a loose events/<id>.json record has reappeared, or a frozen
+// compatibility stream (hook-events.ndjson / traces.ndjson) was appended to
+// after the cutover. Both classes are regressions the doctor surfaces.
 func (s *Store) LegacyWriterActive() (bool, error) {
 	if s == nil || s.engine == nil {
 		return false, fmt.Errorf("event store requires a home")
@@ -265,7 +267,42 @@ func (s *Store) LegacyWriterActive() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return len(loose) > 0, nil
+	if len(loose) > 0 {
+		return true, nil
+	}
+	return s.engine.legacyStreamRegrew()
+}
+
+// legacyStreamRegrew reports whether a frozen compatibility stream was written
+// after the completion gate closed. Post-migration, hook-events.ndjson and
+// traces.ndjson are read through Scan and never appended again (writeHookEvent /
+// recordTrace skip the append once migrationComplete). completion.json is
+// written exactly once (O_EXCL) and never touched afterwards, so its mtime is a
+// stable freeze boundary: a stream whose mtime is strictly newer than the marker
+// was appended post-freeze — a legacy-writer regression. Absent streams are the
+// healthy pure-segment case and never flag.
+func (e *engine) legacyStreamRegrew() (bool, error) {
+	marker, err := os.Stat(e.completionPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	boundary := marker.ModTime()
+	for _, name := range []string{hookEventsStreamName, tracesStreamName} {
+		info, err := os.Stat(filepath.Join(e.eventsDir, name))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return false, err
+		}
+		if info.ModTime().After(boundary) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *migrator) now() string { return m.engine.clock().UTC().Format(time.RFC3339Nano) }
@@ -832,7 +869,19 @@ func (m *migrator) evaluateCompletion(plan migratePlan, presence map[string]segm
 		}
 	}
 	comp.Complete = len(comp.Reasons) == 0
+	// A legacy writer is active post-gate when a loose record reappeared OR a
+	// frozen compatibility stream (hook-events.ndjson / traces.ndjson) was
+	// appended to after the gate closed. Both classes surface degraded state on
+	// `migrate --verify`. During the FIRST apply the gate is not yet closed, so
+	// legacyStreamRegrew short-circuits to false.
 	comp.LegacyWriterActive = m.engine.migrationComplete() && comp.RemainingLoose > 0
+	if m.engine.migrationComplete() && !comp.LegacyWriterActive {
+		regrew, err := m.engine.legacyStreamRegrew()
+		if err != nil {
+			return CompletionReport{}, err
+		}
+		comp.LegacyWriterActive = regrew
+	}
 	if comp.Complete {
 		comp.CompletedAt = m.now()
 	}

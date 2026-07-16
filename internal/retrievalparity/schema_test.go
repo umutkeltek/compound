@@ -231,14 +231,24 @@ func TestFreezeRecordsLiveContextBreakerAsTypedGap(t *testing.T) {
 	controlPath := writeValidControlReport(t, homePath)
 	Record(homePath, NewRow(ConsumerQuery, "successful baseline traffic", nil, time.Millisecond, true, parityTestNow.Add(-time.Hour)))
 
-	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
-	stream := strings.Join([]string{
-		`{"created_at":"` + parityTestNow.Add(-2*time.Hour).Format(time.RFC3339Nano) + `","hook_name":"SessionStart","breaker_tripped":true}`,
-		`{"created_at":"` + parityTestNow.Add(-time.Hour).Format(time.RFC3339Nano) + `","hook_name":"PreToolUse","breaker_tripped":true}`,
-		`{"created_at":"` + parityTestNow.Add(-48*time.Hour).Format(time.RFC3339Nano) + `","hook_name":"UserPromptSubmit","breaker_tripped":true}`,
-	}, "\n") + "\n"
-	if err := os.WriteFile(streamPath, []byte(stream), 0o644); err != nil {
+	// Seed authoritative hook_ breaker records: liveContextBreakerCount now reads
+	// them through the eventstore Scan seam, not the frozen hook-events.ndjson.
+	store, err := eventstore.Open(homePath)
+	if err != nil {
 		t.Fatal(err)
+	}
+	breakers := []struct {
+		id     string
+		record map[string]any
+	}{
+		{"hook_breaker_sessionstart", map[string]any{"id": "hook_breaker_sessionstart", "created_at": parityTestNow.Add(-2 * time.Hour).Format(time.RFC3339Nano), "hook_name": "SessionStart", "breaker_tripped": true}},
+		{"hook_breaker_pretooluse", map[string]any{"id": "hook_breaker_pretooluse", "created_at": parityTestNow.Add(-time.Hour).Format(time.RFC3339Nano), "hook_name": "PreToolUse", "breaker_tripped": true}},
+		{"hook_breaker_userprompt", map[string]any{"id": "hook_breaker_userprompt", "created_at": parityTestNow.Add(-48 * time.Hour).Format(time.RFC3339Nano), "hook_name": "UserPromptSubmit", "breaker_tripped": true}},
+	}
+	for _, b := range breakers {
+		if _, err := store.PutJSON(b.id, b.record, "  "); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	fixture, _, err := FreezeFromJournal(homePath, 1, "", controlPath, parityTestNow)

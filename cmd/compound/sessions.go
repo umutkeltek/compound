@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -471,33 +470,33 @@ func loadRecentSessionHookEvents(homePath string, cutoff time.Time) ([]sessionHo
 	if err != nil {
 		return nil, nil, err
 	}
-	f, err := store.OpenHookEvents()
+	// Read authoritative hook_ records via the Scan seam (hook-events.ndjson is
+	// frozen post-migration). Session mining groups by harness / preference signal
+	// and accumulates evidence refs in event order, so records are sorted
+	// deterministically by (created_at, id) below — reproducing the prior append
+	// order on a clean home while staying stable across the deduped store.
+	entries, err := store.Scan(eventstore.ScanOptions{Prefixes: []string{"hook_"}, RegularOnly: true})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil
 		}
 		return nil, nil, fmt.Errorf("read hook events: %w", err)
 	}
-	defer f.Close()
 	var out []sessionHookEvent
 	var warnings []string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	for _, entry := range entries {
+		rec, err := entry.Read()
+		if err != nil {
+			return nil, nil, fmt.Errorf("read hook events: %w", err)
 		}
 		var ev sessionHookEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			warnings = append(warnings, fmt.Sprintf("line %d unreadable", lineNo))
+		if err := json.Unmarshal(rec.Bytes, &ev); err != nil {
+			warnings = append(warnings, fmt.Sprintf("record %s unreadable", entry.ID))
 			continue
 		}
 		created, err := time.Parse(time.RFC3339, ev.CreatedAt)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("line %d missing created_at", lineNo))
+			warnings = append(warnings, fmt.Sprintf("record %s missing created_at", entry.ID))
 			continue
 		}
 		if created.Before(cutoff) {
@@ -505,9 +504,12 @@ func loadRecentSessionHookEvents(homePath string, cutoff time.Time) ([]sessionHo
 		}
 		out = append(out, ev)
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, warnings, fmt.Errorf("scan hook events: %w", err)
-	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt < out[j].CreatedAt
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out, warnings, nil
 }
 

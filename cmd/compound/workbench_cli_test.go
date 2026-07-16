@@ -528,17 +528,22 @@ func TestWorkbenchAttentionUnavailableKeepsLastKnownCountAndFlags(t *testing.T) 
 		t.Fatalf("write review sidecar: %v", err)
 	}
 
-	// ExecutorsProjection treats a regular hook-events file it cannot open
-	// (permission denied, not "does not exist") as a hard error — that is
-	// the attention-unavailable path this falsifier exercises.
-	hookEventsPath := filepath.Join(homePath, "events", "hook-events.ndjson")
-	if err := os.WriteFile(hookEventsPath, []byte(`{"created_at":"2026-07-10T00:00:00Z","harness":"codex","hook":"stop"}`+"\n"), 0o644); err != nil {
-		t.Fatalf("write hook events fixture: %v", err)
+	// ExecutorsProjection finds hook_ records through the Scan seam; a record that
+	// EXISTS but cannot be read (permission denied, not "does not exist") is a hard
+	// error — the attention-unavailable path this falsifier exercises. Scan lists
+	// the loose record name without reading it; the failure surfaces at Entry.Read.
+	eventsDir := filepath.Join(homePath, "events")
+	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
+		t.Fatalf("mkdir events: %v", err)
 	}
-	if err := os.Chmod(hookEventsPath, 0o000); err != nil {
-		t.Fatalf("chmod hook events fixture: %v", err)
+	hookRecordPath := filepath.Join(eventsDir, "hook_attention_unavailable.json")
+	if err := os.WriteFile(hookRecordPath, []byte(`{"created_at":"2026-07-10T00:00:00Z","harness":"codex","hook":"stop"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write hook record fixture: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(hookEventsPath, 0o644) })
+	if err := os.Chmod(hookRecordPath, 0o000); err != nil {
+		t.Fatalf("chmod hook record fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hookRecordPath, 0o644) })
 
 	workbenchJSON := captureStdout(t, func() {
 		cmdWorkbench([]string{"--json"})

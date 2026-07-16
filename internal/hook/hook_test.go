@@ -16,6 +16,7 @@ import (
 	"compound/internal/capgraph"
 	"compound/internal/contract"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/harness"
 	"compound/internal/mem"
 	"compound/internal/policy"
@@ -104,6 +105,44 @@ func TestContextObservationExcludesArtifactPersistenceLatency(t *testing.T) {
 	}
 	if res.Context == nil || res.Context.RetrievalLatency != 7*time.Millisecond {
 		t.Fatalf("context observation=%+v, want retrieval_latency=7ms", res.Context)
+	}
+}
+
+// TestWriteHookEventFreezesStreamAfterCompletion proves the writer freeze: on a
+// completion-gated home, a hook fire lands the authoritative hook_ record (the
+// executors/distiller/sessions/retrievalparity readers now consume it via Scan)
+// but never appends to the frozen hook-events.ndjson. A pre-gate home still
+// writes the stream — covered by the breaker/live-context stream assertions.
+func TestWriteHookEventFreezesStreamAfterCompletion(t *testing.T) {
+	homePath := t.TempDir()
+	migDir := filepath.Join(homePath, "events", "migration")
+	if err := os.MkdirAll(migDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(migDir, "completion.json"), []byte(`{"complete":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := baseDeps()
+	deps.HomePath = homePath
+	res, err := Run(Fixture{Hook: "session-start", Harness: "codex", Cwd: "/repo/x", Task: "audit", RepoKind: "product"}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := store.Read(res.Event.ID)
+	if err != nil {
+		t.Fatalf("hook record %s must land post-freeze: %v", res.Event.ID, err)
+	}
+	if !strings.Contains(string(rec.Bytes), res.Event.ID) {
+		t.Fatalf("hook record body missing id %s", res.Event.ID)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", "hook-events.ndjson")); !os.IsNotExist(err) {
+		t.Fatalf("hook-events.ndjson must stay frozen on a completed home, stat err=%v", err)
 	}
 }
 
