@@ -381,26 +381,21 @@ func buildContextWithBreaker(name string, fx Fixture, deps Deps, mode string, no
 			return contextBuild{}, err
 		}
 		in.ReadOnlyRetrieval = fx.Live && name == "UserPromptSubmit"
-		ec := contract.Compile(in, deps.Orient, now)
+		retrievalStarted := hookNow(deps)
+		var ec envelope.EffectiveContract
 		var pack envelope.ContextPack
-		var retrievalLatency time.Duration
 		if strings.TrimSpace(deps.HomePath) != "" {
-			var err error
-			ec, err = contract.CompileWithRuntime(in, deps.Orient, deps.HomePath, now)
+			materialized, err := contract.MaterializeRuntime(in, deps.Orient, deps.HomePath, now)
 			if err != nil {
 				return contextBuild{}, err
 			}
-			retrievalStarted := hookNow(deps)
-			pack, err = contract.PackWithCapabilities(in, deps.Orient, deps.HomePath, now)
-			retrievalLatency = nonNegativeDuration(hookNow(deps).Sub(retrievalStarted))
-			if err != nil {
-				return contextBuild{}, err
-			}
+			ec = materialized.EffectiveContract
+			pack = materialized.ContextPack
 		} else {
-			retrievalStarted := hookNow(deps)
+			ec = contract.Compile(in, deps.Orient, now)
 			pack = contract.Pack(in, deps.Orient, now)
-			retrievalLatency = nonNegativeDuration(hookNow(deps).Sub(retrievalStarted))
 		}
+		retrievalLatency := nonNegativeDuration(hookNow(deps).Sub(retrievalStarted))
 		return contextBuild{Input: in, Contract: ec, Pack: pack, RetrievalLatency: retrievalLatency}, nil
 	}
 	if !fx.Live {
