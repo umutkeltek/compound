@@ -314,6 +314,13 @@ func liveUserPrompt(name string, fx Fixture, deps Deps, now time.Time, mode stri
 	built.Input.TaskContract.Intent = intentRef
 	built.Contract.TaskContract.Intent = intentRef
 	built.Pack.TaskContract.Intent = intentRef
+	// Re-key the persisted objects from the sanitized input they actually contain. The relevance
+	// content above remains the raw-query-built result, but artifact identity must be reproducible
+	// without access to that transient query.
+	sanitizedContract := contract.Compile(built.Input, deps.Orient, now)
+	sanitizedPack := contract.Pack(built.Input, deps.Orient, now)
+	built.Contract.Header = sanitizedContract.Header
+	built.Pack.Header = sanitizedPack.Header
 
 	persistedFX := fx
 	persistedFX.Prompt = ""
