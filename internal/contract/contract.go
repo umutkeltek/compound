@@ -508,6 +508,202 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	return projectRuntimeContract(ec, snapshot), nil
 }
 
+func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace *EngineDependencyTrace) (runtimeSnapshot, error) {
+	var snapshot runtimeSnapshot
+	var err error
+	snapshot.hooks, snapshot.excludedHooks, snapshot.hookRoster, snapshot.hookRevisions, err = loadInstalledHooksForInput(homePath, in)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.hookReadiness, err = hookReadinessForInput(homePath, in)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.capabilityHits, snapshot.capabilityTotal, err = surfaceCapabilityHits(homePath, in)
+	if err != nil {
+		return snapshot, err
+	}
+	if snapshot.capabilityTotal > 0 {
+		snapshot.capabilityRevision, err = capgraph.AuthorityRevision(homePath)
+		if err != nil {
+			return snapshot, err
+		}
+	}
+	snapshot.osAdaptation.offer, snapshot.osAdaptation.rev, snapshot.osAdaptation.ok, err = osAdaptationSteeringOffer(in)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.oracleSecondOpinion.offer, snapshot.oracleSecondOpinion.rev, snapshot.oracleSecondOpinion.ok, err = oracleSecondOpinionOffer(in)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.decisions, snapshot.decisionRevisions, snapshot.excludedDecisions, err = loadDecisionRefs(homePath, in)
+	if err != nil {
+		return snapshot, err
+	}
+	semanticRanks := semanticTaskRanksTraced(homePath, in, trace)
+	snapshot.memoryRefs, snapshot.excludedMemoryRefs, err = loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
+	if err != nil {
+		return snapshot, err
+	}
+	if len(snapshot.memoryRefs) > 0 || len(snapshot.excludedMemoryRefs) > 0 || len(snapshot.positionRefs) > 0 || len(snapshot.excludedPositionRefs) > 0 {
+		snapshot.memoryRevision, err = memoryLedgerRevision(homePath)
+		if err != nil {
+			return snapshot, err
+		}
+	}
+	return snapshot, nil
+}
+
+func projectRuntimeContract(ec envelope.EffectiveContract, snapshot runtimeSnapshot) envelope.EffectiveContract {
+	ec.ActiveHooks = snapshot.hooks
+	ec.HookRoster = snapshot.hookRoster
+	ec.HookReadiness = snapshot.hookReadiness
+	ec.Excluded = append(ec.Excluded, snapshot.excludedHooks...)
+	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, snapshot.hookRevisions)
+	for _, hit := range snapshot.capabilityHits {
+		ec.CapabilityOffers = append(ec.CapabilityOffers, capabilityOffer(hit))
+	}
+	if snapshot.capabilityRevision != "" {
+		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: capgraph.CapabilityGraphAuthorityRef, Rev: snapshot.capabilityRevision}})
+	}
+	for _, runtime := range []runtimeOffer{snapshot.osAdaptation, snapshot.oracleSecondOpinion} {
+		if !runtime.ok {
+			continue
+		}
+		ec.CapabilityOffers = append(ec.CapabilityOffers, runtime.offer)
+		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{runtime.rev})
+	}
+	ec.ActiveDecisions = snapshot.decisions
+	ec.Excluded = append(ec.Excluded, snapshot.excludedDecisions...)
+	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, snapshot.decisionRevisions)
+	ec.Excluded = append(ec.Excluded, snapshot.excludedMemoryRefs...)
+	for _, ref := range snapshot.memoryRefs {
+		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
+	}
+	ec.Excluded = append(ec.Excluded, snapshot.excludedPositionRefs...)
+	for _, ref := range snapshot.positionRefs {
+		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
+	}
+	if snapshot.memoryRevision != "" {
+		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: memoryRelevanceSourceRef, Rev: snapshot.memoryRevision}})
+	}
+	return ec
+}
+
+func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSnapshot) envelope.ContextPack {
+	pack.ActiveHooks = snapshot.hooks
+	pack.HookRoster = snapshot.hookRoster
+	for _, row := range snapshot.hookRoster {
+		if row.Status != "active" {
+			continue
+		}
+		pack.Included = append(pack.Included, envelope.IncludedRef{
+			Ref: row.Ref, SourceClass: "runtime",
+			Reason:     firstNonEmpty(row.Reason, "installed hook selected for harness and task"),
+			Confidence: 1, Status: "current",
+		})
+	}
+	pack.HookReadiness = snapshot.hookReadiness
+	pack.RequiredChecks = append(pack.RequiredChecks, requiredChecksForHookReadiness(snapshot.hookReadiness, in)...)
+	pack.Excluded = append(pack.Excluded, snapshot.excludedHooks...)
+	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, snapshot.hookRevisions)
+	if len(snapshot.hooks) > 0 {
+		pack.SummaryMD += fmt.Sprintf(" %d active hook ref(s) included Compound runtime.", len(snapshot.hooks))
+	}
+	pack.Excluded = append(pack.Excluded, snapshot.excludedDecisions...)
+	for _, ref := range snapshot.decisions {
+		pack.Included = append(pack.Included, envelope.IncludedRef{
+			Ref: ref, SourceClass: "runtime",
+			Reason:     "accepted decision from Compound memory ledger; old source is source-in-place evidence",
+			Confidence: 1, Status: "current",
+		})
+	}
+	pack.ActiveDecisions = snapshot.decisions
+	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, snapshot.decisionRevisions)
+	if len(snapshot.decisions) > 0 {
+		pack.SummaryMD += fmt.Sprintf(" %d active decision ref(s) included from Compound runtime.", len(snapshot.decisions))
+	}
+	pack.Excluded = append(pack.Excluded, snapshot.excludedMemoryRefs...)
+	for _, ref := range snapshot.memoryRefs {
+		pack.ActiveMemory = append(pack.ActiveMemory, ref.Ref)
+		pack.Included = append(pack.Included, envelope.IncludedRef{
+			Ref: ref.Ref, SourceClass: "runtime", Reason: ref.Reason,
+			Confidence: ref.Confidence, Status: "current",
+		})
+	}
+	pack.Excluded = append(pack.Excluded, snapshot.excludedPositionRefs...)
+	for _, ref := range snapshot.positionRefs {
+		pack.ActiveMemory = append(pack.ActiveMemory, ref.Ref)
+		pack.ActivePositions = append(pack.ActivePositions, ref.Position)
+		pack.Included = append(pack.Included, envelope.IncludedRef{
+			Ref: ref.Ref, SourceClass: "runtime", Reason: ref.Reason,
+			Confidence: ref.Confidence, Status: "current",
+		})
+	}
+	if snapshot.memoryRevision != "" {
+		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: memoryRelevanceSourceRef, Rev: snapshot.memoryRevision}})
+	}
+	if len(snapshot.memoryRefs) > 0 {
+		lines := make([]string, 0, len(snapshot.memoryRefs))
+		for _, ref := range snapshot.memoryRefs {
+			lines = append(lines, ref.Line)
+		}
+		pack.SummaryMD += " Compound memory (owned ledger): " + strings.Join(lines, "; ")
+	}
+	if len(snapshot.positionRefs) > 0 {
+		lines := make([]string, 0, len(snapshot.positionRefs))
+		for _, ref := range snapshot.positionRefs {
+			lines = append(lines, ref.Line)
+		}
+		pack.SummaryMD += " Compound positions (folded checkpoint): " + strings.Join(lines, "; ")
+	}
+	if topic := strings.TrimSpace(in.Topic); topic != "" {
+		pack.SummaryMD += fmt.Sprintf(" Ambient recall narrowed to topic %q (subtree-scoped); empty topic leaves recall unchanged.", topic)
+	}
+	pack = appendSnapshotOfferToPack(pack, snapshot.osAdaptation,
+		osAdaptationCapabilityRef,
+		"ContextPack selected private OS-adaptation rule for a control-plane task that mentions adapting old operating-system material; refs only, no private body injection",
+		" 1 context-aware OS adaptation offer included; private rule is refs-only and not imported as authority.")
+	pack = appendSnapshotOfferToPack(pack, snapshot.oracleSecondOpinion,
+		oracleSecondOpinionCapabilityRef,
+		"ContextPack selected private Oracle second-opinion rule for a high-leverage control-plane task; refs only, no private rule body injection",
+		" 1 Oracle second-opinion offer included; private rule is refs-only and Oracle output remains evidence, not authority.")
+	if snapshot.capabilityRevision != "" {
+		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: capgraph.CapabilityGraphAuthorityRef, Rev: snapshot.capabilityRevision}})
+		for _, hit := range snapshot.capabilityHits {
+			pack.CapabilityOffers = append(pack.CapabilityOffers, capabilityOffer(hit))
+			pack.Included = append(pack.Included, envelope.IncludedRef{
+				Ref: "capability://" + hit.Node.ID, SourceClass: "generated",
+				Reason: capabilitySurfaceReason(hit), Confidence: hit.Score, Status: "current",
+			})
+		}
+		if snapshot.capabilityTotal > len(snapshot.capabilityHits) {
+			pack.SummaryMD += fmt.Sprintf(" %d of %d capability offer(s) surfaced; %d omitted from context budget; offers are not execution.", len(snapshot.capabilityHits), snapshot.capabilityTotal, snapshot.capabilityTotal-len(snapshot.capabilityHits))
+		} else {
+			pack.SummaryMD += fmt.Sprintf(" %d capability offer(s) surfaced; offers are not execution.", len(snapshot.capabilityHits))
+		}
+	}
+	return pack
+}
+
+func appendSnapshotOfferToPack(pack envelope.ContextPack, runtime runtimeOffer, ref, reason, summary string) envelope.ContextPack {
+	if !runtime.ok {
+		return pack
+	}
+	pack.CapabilityOffers = append(pack.CapabilityOffers, runtime.offer)
+	pack.Included = append(pack.Included, envelope.IncludedRef{
+		Ref: ref, SourceClass: "private_overlay", Reason: reason, Confidence: 1, Status: "current",
+	})
+	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{runtime.rev})
+	pack.SummaryMD += summary
+	return pack
+}
+
 type EffectiveContractArtifactPaths struct {
 	ContractPath string `json:"contract_path"`
 	LatestPath   string `json:"latest_path"`
