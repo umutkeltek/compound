@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -357,5 +358,61 @@ func TestDoctorComposesOrganState(t *testing.T) {
 	}
 	if rep.FindingsTotal != 2 || rep.FindingsLive != 1 || rep.FindingsSuperseded != 1 {
 		t.Fatalf("findings counts wrong: total=%d live=%d superseded=%d", rep.FindingsTotal, rep.FindingsLive, rep.FindingsSuperseded)
+	}
+}
+
+// TestFindingRecordPersistsEveryEvidenceFlag replays the multi --evidence CLI
+// invocation that silently dropped all but the first ref (live repro
+// find_ddcc04dc0641: 3 of 4 refs lost). It falsifies the single-valueFlag parse
+// and proves the recorded finding carries -- and finding show reads back -- every
+// ref that was passed.
+func TestFindingRecordPersistsEveryEvidenceFlag(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 16, 20, 0, 0, 0, time.UTC)
+
+	args := []string{
+		"--topic", "multi-ev",
+		"--body", "four evidence refs passed at record time",
+		"--evidence", "commit:aaa111",
+		"--evidence", "check:bbb222",
+		"--evidence", "land-check:ccc333",
+		"--evidence", "live:ddd444",
+	}
+
+	want := []string{"commit:aaa111", "check:bbb222", "land-check:ccc333", "live:ddd444"}
+	refs := findingEvidenceRefs(args)
+	if !reflect.DeepEqual(refs, want) {
+		t.Fatalf("findingEvidenceRefs parsed %v, want all four %v", refs, want)
+	}
+
+	rec, err := finding.Record(home, finding.Finding{
+		Topic:        valueFlag(args, "--topic"),
+		Body:         valueFlag(args, "--body"),
+		EvidenceRefs: refs,
+	}, now)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	shown, err := finding.Show(home, rec.ID)
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	if !reflect.DeepEqual(shown.EvidenceRefs, want) {
+		t.Fatalf("finding show evidence = %v, want %v (only the first ref surviving is the original bug)", shown.EvidenceRefs, want)
+	}
+}
+
+// TestFindingEvidenceRefsCommaAndRepeatBackCompat proves the comma-joined form
+// still works, mixes with repeated flags, and drops empty/whitespace refs.
+func TestFindingEvidenceRefsCommaAndRepeatBackCompat(t *testing.T) {
+	got := findingEvidenceRefs([]string{
+		"--evidence", "a,b",
+		"--evidence", " c ",
+		"--evidence", "",
+		"--evidence", "d,,e",
+	})
+	want := []string{"a", "b", "c", "d", "e"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("comma/repeat/empty handling = %v, want %v", got, want)
 	}
 }

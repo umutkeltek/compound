@@ -4279,6 +4279,23 @@ func hasFlag(args []string, name string) bool {
 	return false
 }
 
+// findingEvidenceRefs collects EVERY --evidence occurrence (the flag is
+// repeatable) and also splits any comma-joined value, so `--evidence a
+// --evidence b` and `--evidence a,b` are equivalent. Whitespace-only refs are
+// dropped. The previous single valueFlag read silently kept only the first
+// --evidence and discarded the rest (observed dropping 3 of 4 refs live).
+func findingEvidenceRefs(args []string) []string {
+	var refs []string
+	for _, ev := range valuesFlag(args, "--evidence") {
+		for _, ref := range strings.Split(ev, ",") {
+			if ref = strings.TrimSpace(ref); ref != "" {
+				refs = append(refs, ref)
+			}
+		}
+	}
+	return refs
+}
+
 func flagValue(args []string, name string) string {
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == name {
@@ -4420,7 +4437,7 @@ func cmdFindingDoctor(args []string) {
 }
 
 func cmdFindingRecord(args []string) {
-	const usage = "usage: compound finding record --topic T (--body B | --body-file F) [--work-id W] [--produced-by P] [--supersedes ID] [--evidence REF] [--json]"
+	const usage = "usage: compound finding record --topic T (--body B | --body-file F) [--work-id W] [--produced-by P] [--supersedes ID] [--evidence REF]... [--json]"
 	topic := valueFlag(args, "--topic")
 	body := valueFlag(args, "--body")
 	bodyFile := valueFlag(args, "--body-file")
@@ -4449,9 +4466,7 @@ func cmdFindingRecord(args []string) {
 		ProducedBy: valueFlag(args, "--produced-by"),
 		Supersedes: valueFlag(args, "--supersedes"),
 	}
-	if ev := strings.TrimSpace(valueFlag(args, "--evidence")); ev != "" {
-		f.EvidenceRefs = strings.Split(ev, ",")
-	}
+	f.EvidenceRefs = findingEvidenceRefs(args)
 	rec, err := finding.Record(homePath, f, time.Now().UTC())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -4524,7 +4539,11 @@ func cmdFindingShow(args []string) {
 	if f.Supersedes != "" {
 		fmt.Printf(" supersedes=%s", f.Supersedes)
 	}
-	fmt.Print("\n\n")
+	fmt.Print("\n")
+	if len(f.EvidenceRefs) > 0 {
+		fmt.Printf("evidence: %s\n", strings.Join(f.EvidenceRefs, ", "))
+	}
+	fmt.Print("\n")
 	fmt.Println(f.Body)
 }
 
