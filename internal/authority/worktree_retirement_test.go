@@ -100,6 +100,51 @@ func TestWorktreeRetirementReviewRejectsIneligibleAndNonOperatorAuthorization(t 
 	}
 }
 
+func TestWorktreeRetirementReviewedReportIsCreateExclusiveAndIdempotentForSameContent(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordWorktreeRetirementPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := LoadWorktreeRetirementReview(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.Decision = "authorize_retirement"
+	review.Rationale = "retire exact redundant Git surfaces"
+	review.ReviewedBy = "operator:test"
+	review.ReviewedAt = "2026-07-15T07:01:00Z"
+	now := time.Date(2026, 7, 15, 7, 1, 0, 0, time.UTC)
+	report, err := RecordWorktreeRetirementReview(home, review, paths.ReviewYAMLPath, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordWorktreeRetirementReview(home, review, paths.ReviewYAMLPath, now); err != nil {
+		t.Fatalf("same-content reviewed report replay rejected: %v", err)
+	}
+	tampered := []byte("different reviewed report bytes\n")
+	if err := os.WriteFile(report.ReviewPath, tampered, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordWorktreeRetirementReview(home, review, paths.ReviewYAMLPath, now); err == nil || !strings.Contains(err.Error(), "different") {
+		t.Fatalf("different existing reviewed report bytes overwritten: %v", err)
+	}
+	got, err := os.ReadFile(report.ReviewPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(tampered) {
+		t.Fatalf("different reviewed report bytes were replaced: %q", got)
+	}
+}
+
 func TestBuildWorktreeRetirementPlanContainsCandidateWithoutMutatingGit(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
 	beforeRefs := retirementGitOutput(t, fixture.repo, "show-ref")
