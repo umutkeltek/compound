@@ -204,6 +204,7 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 	if err != nil {
 		return WorktreeRetirementResult{}, err
 	}
+	resumeNeedsPolicyRefreshBeforeRef := false
 	if pendingExists {
 		if err := validateWorktreeRetirementPending(pending, plan, report, actor); err != nil {
 			return WorktreeRetirementResult{}, err
@@ -251,7 +252,7 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 				return WorktreeRetirementResult{}, err
 			}
 		}
-		resumeNeedsPolicyRefreshBeforeRef := plan.Worktree != nil && (pending.Phase == WorktreeRetirementPhasePrepared || pending.Phase == WorktreeRetirementPhaseWorktreeRemovalStarted)
+		resumeNeedsPolicyRefreshBeforeRef = plan.Worktree != nil && (pending.Phase == WorktreeRetirementPhasePrepared || pending.Phase == WorktreeRetirementPhaseWorktreeRemovalStarted)
 		if previousResult != nil {
 			pending.Action = newWorktreeRetirementActionForAttempt(plan, report, actor, now, previousResult.ResultDigest)
 		}
@@ -261,7 +262,6 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
 			return WorktreeRetirementResult{}, err
 		}
-		defer func() { _ = resumeNeedsPolicyRefreshBeforeRef }()
 	} else {
 		if !reflect.DeepEqual(req.OwnerProof, plan.OwnerProof) {
 			return WorktreeRetirementResult{}, fmt.Errorf("owner work or lease drift before retirement")
@@ -351,7 +351,7 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 			}
 		}
 	}
-	if pendingExists && plan.Worktree != nil && plan.CandidateRef != "" && pending.Phase == WorktreeRetirementPhaseWorktreeRemoved {
+	if resumeNeedsPolicyRefreshBeforeRef && plan.CandidateRef != "" && pending.Phase == WorktreeRetirementPhaseWorktreeRemoved {
 		if err := reevaluateWorktreeRetirementResumePolicy(deps, &pending, now); err != nil {
 			return baseResult, err
 		}
