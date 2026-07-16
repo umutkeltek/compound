@@ -184,6 +184,11 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
 - **Guard SHAs are READ, never reconstructed** (self-inflicted false trip 2026-07-09 late):
   compare against a full SHA captured from actual command output this turn (`git rev-parse main`).
   Expanding a short SHA from memory fabricates a guard failure — or worse, a false pass.
+- **Parallel tool calls do NOT deterministically share cwd** (observed 2026-07-16, event-show
+  land): a "main is clean" `git status` read came from the WRONG worktree while a parallel call
+  rebased another branch — and a land-check raced that rebase. Every guard/status/land read goes
+  through explicit `git -C <MAIN-path>`; never pair a git-state mutation with another git read as
+  parallel calls in the same turn.
 - **`pwd` before the guard+merge — shell cwd PERSISTS across commands** (near-miss 2026-07-07):
   after `cd <executor-worktree>` for a battery run, a later `git merge --ff-only <branch>` runs
   INSIDE that worktree ON the branch itself and prints "Already up to date" — a silent no-op that

@@ -70,10 +70,19 @@ Packet citations are evidence, not canon: before building on a cited field/symbo
 exists"), grep the struct/file it names. A premise error becomes a documented deviation + an
 additive fix, not a blocker (learned 2026-07-10, volatile land: packet cited `Claim.ExpiresAt`
 as existing; the field lived on Candidate only — added additively, canon_class precedent).
+When a packet asserts BASE BEHAVIOR as a falsifier premise ("X clobbers/errors/is-absent at
+base"), spot-check that claim against base before dispatch — one grep or one targeted run. A
+scout's behavioral claim can be stale (lived 2026-07-16, posture-guard land: the "clobber
+landmine" had been fixed at `481594b2`; the executor caught it, but a pre-dispatch check was
+cheaper).
 A falsifier can be GREEN-AT-BIRTH (existing structure already satisfies it — e.g. a visibility
 whitelist already excludes the new value). Don't fake red and don't skip it: land the guard test
 anyway and prove its teeth by a scratch mutation (open the gate, show red, revert), then report
-green-at-birth honestly (same land).
+green-at-birth honestly (same land). Executors revert scratch mutations with a TARGETED edit —
+never `git checkout --` on uncommitted work (wipes everything, 2026-07-16 memo-lane incident) and
+never `git stash` in a linked worktree (stash is repo-wide, not worktree-scoped: a pathspec miss
+creates NO entry and the next `pop` dumps a DIFFERENT lane's stash into your tree — lived
+2026-07-16, event-show land; recovered via `git checkout HEAD -- <conflicted files>`).
 Packets live in the dir named by `compound workbench --json` → `offered_packets.source_dir` (currently `docs_private/plan/packets/`; gitignored — executors read them by ABSOLUTE path; fresh
 worktrees don't contain docs_private).
 
