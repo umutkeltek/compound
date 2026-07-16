@@ -108,8 +108,15 @@ func TestObservedFactRoutesToCandidateNotLedger(t *testing.T) {
 
 func TestQueryBreadthReadOnlyValidatesButDoesNotCaptureObservedFact(t *testing.T) {
 	s := storeWith(t, "product:focus", "positioning", "owned capture")
+	owned, err := s.AllCurrent()
+	if err != nil || len(owned) != 1 {
+		t.Fatalf("owned claims = %+v, err=%v", owned, err)
+	}
 	of := ObservedFact{Entity: "engine-query-echo", Predicate: "query_echo", Object: "PRIVATE_QUERY_SENTINEL"}
-	eng := &cannedHitEngine{name: "rented-breadth", hits: []Hit{{Kind: KindObservedFact, Observed: &of}}}
+	eng := &cannedHitEngine{name: "rented-breadth", hits: []Hit{
+		{Kind: KindIndexHit, ClaimID: owned[0].ID, Score: 1},
+		{Kind: KindObservedFact, Observed: &of},
+	}}
 	querier, ok := any(s).(interface {
 		QueryBreadthReadOnly(string, int, Engine) ([]Claim, error)
 	})
@@ -124,8 +131,8 @@ func TestQueryBreadthReadOnlyValidatesButDoesNotCaptureObservedFact(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(claims) != 0 {
-		t.Fatalf("observed fact entered read-only recall: %+v", claims)
+	if len(claims) != 1 || claims[0].ID != owned[0].ID {
+		t.Fatalf("read-only breadth lost owned semantic hit or admitted observed fact: %+v", claims)
 	}
 	after, err := s.AllCandidates()
 	if err != nil {
@@ -133,6 +140,12 @@ func TestQueryBreadthReadOnlyValidatesButDoesNotCaptureObservedFact(t *testing.T
 	}
 	if len(after) != len(before) {
 		t.Fatalf("read-only breadth retrieval captured observed fact: before=%d after=%d", len(before), len(after))
+	}
+	malformed := &cannedHitEngine{name: "rented-breadth", hits: []Hit{{
+		Kind: KindObservedFact, ClaimID: "claim_smuggled", Observed: &of,
+	}}}
+	if _, err := querier.QueryBreadthReadOnly("PRIVATE_QUERY_SENTINEL", 10, malformed); !errors.Is(err, ErrEngineServedUnownedClaim) {
+		t.Fatalf("read-only breadth skipped malformed observed_fact validation: %v", err)
 	}
 }
 

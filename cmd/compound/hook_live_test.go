@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -268,6 +269,10 @@ func TestHookLiveUserPromptSubmitReturnsExactRelevantPrivateContextWithoutWork(t
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr diagnostic missing %q:\n%s", want, stderr)
 		}
+	}
+	pattern := regexp.MustCompile(`^\[claude_code/ok\] UserPromptSubmit — context hook=hook_[0-9a-f]{12} pack=ctx_[0-9a-f]{12} chars=[0-9]+ sha256:[0-9a-f]{64}$`)
+	if !pattern.MatchString(strings.TrimSpace(stderr)) {
+		t.Fatalf("stderr diagnostic carried fields outside the content-free grammar:\n%s", stderr)
 	}
 	assertHomeOmitsString(t, homePath, raw)
 }
