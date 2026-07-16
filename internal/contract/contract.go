@@ -1325,6 +1325,7 @@ func capabilityOffer(hit capgraph.Surfaced) envelope.CapabilityOffer {
 		KnownMissedWhen:       capabilityOfferConstraints(hit.Constraints.KnownMissedWhen),
 		KnownFalseTriggeredBy: capabilityOfferConstraints(hit.Constraints.KnownFalseTriggeredBy),
 		Evidence:              capabilityOfferConstraints(hit.Constraints.Evidence),
+		ConnectionSurfaces:    capabilityOfferConstraints(hit.Constraints.ConnectionSurfaces),
 		CostRiskNote:          hit.Constraints.CostRiskNote,
 	}
 }

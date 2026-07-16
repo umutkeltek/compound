@@ -348,6 +348,7 @@ type CapabilityOffer struct {
 	KnownMissedWhen       []CapabilityOfferConstraint `json:"known_missed_when,omitempty"`
 	KnownFalseTriggeredBy []CapabilityOfferConstraint `json:"known_false_triggered_by,omitempty"`
 	Evidence              []CapabilityOfferConstraint `json:"evidence,omitempty"`
+	ConnectionSurfaces    []CapabilityOfferConstraint `json:"connection_surfaces,omitempty"`
 	CostRiskNote          string                      `json:"cost_risk_note,omitempty"`
 }
 
@@ -470,6 +471,7 @@ func validateCapabilityOffers(v *verr, field string, values []CapabilityOffer) {
 		validateCapabilityOfferConstraints(v, prefix+".known_missed_when", offer.KnownMissedWhen)
 		validateCapabilityOfferConstraints(v, prefix+".known_false_triggered_by", offer.KnownFalseTriggeredBy)
 		validateCapabilityOfferConstraints(v, prefix+".evidence", offer.Evidence)
+		validateCapabilityOfferConstraints(v, prefix+".connection_surfaces", offer.ConnectionSurfaces)
 	}
 }
 

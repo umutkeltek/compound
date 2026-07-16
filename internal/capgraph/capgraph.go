@@ -278,17 +278,18 @@ type SurfaceReport struct {
 }
 
 type SurfaceOfferSummary struct {
-	ID            string   `json:"id"`
-	Kind          string   `json:"kind"`
-	Name          string   `json:"name"`
-	Score         float64  `json:"score"`
-	Why           string   `json:"why"`
-	MatchedTokens []string `json:"matched_tokens,omitempty"`
-	RequiredRefs  []string `json:"required_refs,omitempty"`
-	ConflictRefs  []string `json:"conflict_refs,omitempty"`
-	HarnessRefs   []string `json:"harness_refs,omitempty"`
-	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
-	CostRiskNote  string   `json:"cost_risk_note,omitempty"`
+	ID                    string   `json:"id"`
+	Kind                  string   `json:"kind"`
+	Name                  string   `json:"name"`
+	Score                 float64  `json:"score"`
+	Why                   string   `json:"why"`
+	MatchedTokens         []string `json:"matched_tokens,omitempty"`
+	RequiredRefs          []string `json:"required_refs,omitempty"`
+	ConflictRefs          []string `json:"conflict_refs,omitempty"`
+	HarnessRefs           []string `json:"harness_refs,omitempty"`
+	EvidenceRefs          []string `json:"evidence_refs,omitempty"`
+	ConnectionSurfaceRefs []string `json:"connection_surface_refs,omitempty"`
+	CostRiskNote          string   `json:"cost_risk_note,omitempty"`
 }
 
 type MatchedTokenCount struct {
@@ -300,17 +301,18 @@ func NewSurfaceReport(task, harness string, offers []Surfaced, stats Stats, sour
 	summaries := make([]SurfaceOfferSummary, 0, len(offers))
 	for _, offer := range offers {
 		summaries = append(summaries, SurfaceOfferSummary{
-			ID:            offer.Node.ID,
-			Kind:          offer.Node.Kind,
-			Name:          offer.Node.Name,
-			Score:         offer.Score,
-			Why:           offer.Why,
-			MatchedTokens: append([]string{}, offer.MatchedTokens...),
-			RequiredRefs:  constraintRefs(offer.Constraints.Required),
-			ConflictRefs:  constraintRefs(offer.Constraints.Conflicts),
-			HarnessRefs:   constraintRefs(offer.Constraints.Harnesses),
-			EvidenceRefs:  constraintRefs(offer.Constraints.Evidence),
-			CostRiskNote:  offer.Constraints.CostRiskNote,
+			ID:                    offer.Node.ID,
+			Kind:                  offer.Node.Kind,
+			Name:                  offer.Node.Name,
+			Score:                 offer.Score,
+			Why:                   offer.Why,
+			MatchedTokens:         append([]string{}, offer.MatchedTokens...),
+			RequiredRefs:          constraintRefs(offer.Constraints.Required),
+			ConflictRefs:          constraintRefs(offer.Constraints.Conflicts),
+			HarnessRefs:           constraintRefs(offer.Constraints.Harnesses),
+			EvidenceRefs:          constraintRefs(offer.Constraints.Evidence),
+			ConnectionSurfaceRefs: constraintRefs(offer.Constraints.ConnectionSurfaces),
+			CostRiskNote:          offer.Constraints.CostRiskNote,
 		})
 	}
 	return SurfaceReport{
@@ -399,7 +401,12 @@ type SurfacingConstraints struct {
 	KnownMissedWhen       []SurfacingConstraint `json:"known_missed_when,omitempty"`
 	KnownFalseTriggeredBy []SurfacingConstraint `json:"known_false_triggered_by,omitempty"`
 	Evidence              []SurfacingConstraint `json:"evidence,omitempty"`
-	CostRiskNote          string                `json:"cost_risk_note,omitempty"`
+	// ConnectionSurfaces carries "how do I reach this" facts (config paths,
+	// endpoint, auth mode, settings schema, asserting owner, source revision)
+	// joined from the connection-surface sidecar. Nil when the node has no
+	// record, so absent-record output stays byte-identical to base behavior.
+	ConnectionSurfaces []SurfacingConstraint `json:"connection_surfaces,omitempty"`
+	CostRiskNote       string                `json:"cost_risk_note,omitempty"`
 }
 
 // Surface returns the capability nodes relevant to a task, ranked — and runs NOTHING. Base score
@@ -438,6 +445,10 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		return nil, err
 	}
 	edges, err := s.loadEdges()
+	if err != nil {
+		return nil, err
+	}
+	connections, err := s.connectionSurfaceMap()
 	if err != nil {
 		return nil, err
 	}
@@ -549,7 +560,7 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		if sub[n.ID] > 0 {
 			why += fmt.Sprintf(" -false_triggered=%.1f", sub[n.ID])
 		}
-		constraints := capabilityConstraints(n.ID, edges)
+		constraints := capabilityConstraints(n.ID, edges, connections)
 		addReferenceBearingConstraints(&constraints, n)
 		if n.Kind == "instruction_rule" {
 			addInstructionRuleConstraints(&constraints, n)
@@ -672,9 +683,12 @@ func instructionBoundaryRef(boundary string) string {
 	return "boundary://" + strings.Join(tokenList(boundary), "-")
 }
 
-func capabilityConstraints(nodeID string, edges []Edge) SurfacingConstraints {
+func capabilityConstraints(nodeID string, edges []Edge, connections map[string]ConnectionSurface) SurfacingConstraints {
 	var c SurfacingConstraints
 	c.CostRiskNote = "offer only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision"
+	if cs, ok := connections[nodeID]; ok {
+		c.ConnectionSurfaces = connectionSurfaceConstraints(cs)
+	}
 	add := func(dst *[]SurfacingConstraint, kind, ref, detail string, conf float64) {
 		ref = strings.TrimSpace(ref)
 		if ref == "" {
@@ -718,6 +732,7 @@ func capabilityConstraints(nodeID string, edges []Edge) SurfacingConstraints {
 	sortConstraints(c.KnownMissedWhen)
 	sortConstraints(c.KnownFalseTriggeredBy)
 	sortConstraints(c.Evidence)
+	sortConstraints(c.ConnectionSurfaces)
 	return c
 }
 
