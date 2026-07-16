@@ -663,8 +663,8 @@ func recordWorktreeRetirementFailure(deps WorktreeRetirementApplyDependencies, p
 	result.Status = status
 	result.Phase = pending.Phase
 	result.Error = cause.Error()
-	result.WorktreeRemoved = plan.Worktree != nil && (pending.Phase == WorktreeRetirementPhaseWorktreeRemoved || pending.Phase == WorktreeRetirementPhaseRefDeleted || pending.Phase == WorktreeRetirementPhaseVerified)
-	result.RefDeleted = plan.CandidateRef != "" && (pending.Phase == WorktreeRetirementPhaseRefDeleted || pending.Phase == WorktreeRetirementPhaseVerified)
+	result.WorktreeRemoved = retirementPhaseHasRemovedWorktree(plan, pending.Phase)
+	result.RefDeleted = retirementPhaseHasDeletedRef(plan, pending.Phase)
 	proof, recordErr := deps.RecordOutcome(WorktreeRetirementActionOutcome{
 		Action: pending.Action, Decision: pending.Decision, Outcome: "failed", Changed: changed,
 		Summary: summary + ": " + cause.Error(), ProofRefs: worktreeRetirementApplyProofRefs(plan, report),
