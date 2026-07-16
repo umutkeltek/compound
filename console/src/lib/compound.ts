@@ -133,8 +133,10 @@ async function execRunJson(args: string[], timeoutMs: number): Promise<Json | nu
  *    caller (no cache entry, no in-flight exec) awaits the first real attempt
  *    so it can report the genuine failure instead of an optimistic default.
  *  - cold + concurrent callers for the SAME argv (e.g. Promise.all fan-out):
- *    collapse into one in-flight exec - this is what kills N+1 fan-outs
- *    (packets list per work item, system stats called 3x on one request).
+ *    collapse into one in-flight exec when its timeout can satisfy the new
+ *    caller. A caller with a longer deadline starts one replacement exec so a
+ *    cheap 15s layout read cannot SIGTERM a 45s page projection. This still
+ *    kills same-budget N+1 fan-outs (packets per work item, repeated stats).
  *
  * THE LAW (packet: console-honest-degradation, 2026-07-14 - the "clean seam"
  * bug): a failed or timed-out attempt NEVER overwrites a good cached value
@@ -166,8 +168,14 @@ type RunJsonCacheEntry = {
   lastErrorAt: number | null;
 };
 
+type RunJsonInflightEntry = {
+  timeoutMs: number;
+  token: symbol;
+  promise: Promise<RunJsonCacheEntry>;
+};
+
 const runJsonCache = new Map<string, RunJsonCacheEntry>();
-const runJsonInflight = new Map<string, Promise<RunJsonCacheEntry>>();
+const runJsonInflight = new Map<string, RunJsonInflightEntry>();
 
 let binaryFreshnessCache:
   | {
@@ -242,15 +250,16 @@ async function readRunJsonEntry(args: string[], timeoutMs: number): Promise<RunJ
   }
 
   const inflight = runJsonInflight.get(key);
-  if (inflight) return inflight;
+  if (inflight && inflight.timeoutMs >= timeoutMs) return inflight.promise;
 
+  const token = Symbol(key);
   const promise = execRunJson(args, timeoutMs)
     .then((value) => commitRunJsonSuccess(key, value))
     .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message))
     .finally(() => {
-      runJsonInflight.delete(key);
+      if (runJsonInflight.get(key)?.token === token) runJsonInflight.delete(key);
     });
-  runJsonInflight.set(key, promise);
+  runJsonInflight.set(key, { timeoutMs, token, promise });
   return promise;
 }
 

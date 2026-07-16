@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { invalidateRunJsonCache, runProjection } from "./compound.ts";
+import { invalidateRunJsonCache, runProjection } from "./compound";
 
 export async function runProjectionTimeoutSelfTest(): Promise<{ ok: true; details: string }> {
   invalidateRunJsonCache();
