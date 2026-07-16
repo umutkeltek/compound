@@ -469,6 +469,101 @@ func compareRetirementPlanState(sealed, fresh WorktreeRetirementPlan) error {
 	return nil
 }
 
+func reconcileRetirementWorktreeRemovalStarted(ctx context.Context, deps WorktreeRetirementApplyDependencies, plan WorktreeRetirementPlan, req WorktreeRetirementApplyRequest, now time.Time) (bool, error) {
+	if plan.Worktree == nil {
+		return false, fmt.Errorf("worktree removal started without a sealed worktree")
+	}
+	if err := verifyRetirementStableRefs(ctx, deps.Git, plan, "before worktree removal resume"); err != nil {
+		return false, err
+	}
+	out, err := deps.Git.Run(ctx, plan.RepoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	records, err := parseRetirementWorktrees(out)
+	if err != nil {
+		return false, err
+	}
+	registered := false
+	for _, record := range records {
+		if sameRetirementPath(record.Path, plan.Worktree.Path) {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		if _, statErr := os.Stat(plan.Worktree.Path); os.IsNotExist(statErr) {
+			return true, nil
+		} else if statErr != nil {
+			return false, fmt.Errorf("observe worktree path after started removal: %w", statErr)
+		}
+		return false, fmt.Errorf("worktree removal started state is ambiguous: path exists but is not registered")
+	}
+	fresh, err := BuildWorktreeRetirementPlan(ctx, WorktreeRetirementPlanRequest{
+		RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
+		AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
+		OwnerProof: req.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
+	}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness}, now)
+	if err != nil {
+		return false, err
+	}
+	if err := compareRetirementPlanState(plan, fresh); err != nil {
+		return false, fmt.Errorf("worktree retirement state drift before retrying started removal: %w", err)
+	}
+	return false, nil
+}
+
+func reconcileRetirementRefDeletionStarted(ctx context.Context, git WorktreeRetirementGit, plan WorktreeRetirementPlan) (bool, error) {
+	if plan.CandidateRef == "" {
+		return false, fmt.Errorf("ref deletion started without a sealed candidate ref")
+	}
+	if err := verifyRetirementStableRefs(ctx, git, plan, "before candidate ref deletion resume"); err != nil {
+		return false, err
+	}
+	tip, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.CandidateRef)
+	if err == nil {
+		if tip != plan.CandidateTip {
+			return false, fmt.Errorf("candidate ref drift before retirement resume")
+		}
+		return false, nil
+	}
+	if absentErr := verifyRetirementRefAbsent(ctx, git, plan); absentErr != nil {
+		return false, fmt.Errorf("candidate ref state unknown before retirement resume: %w", absentErr)
+	}
+	return true, nil
+}
+
+func verifyRetirementStableRefs(ctx context.Context, git WorktreeRetirementGit, plan WorktreeRetirementPlan, boundary string) error {
+	authority, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.AuthorityRef)
+	if err != nil || authority != plan.AuthorityTip {
+		return fmt.Errorf("authority ref drift %s", boundary)
+	}
+	publication, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.PublicationRef)
+	if err != nil || publication != plan.PublicationTip {
+		return fmt.Errorf("publication ref drift %s", boundary)
+	}
+	return nil
+}
+
+func retirementPhaseHasRemovedWorktree(plan WorktreeRetirementPlan, phase string) bool {
+	if plan.Worktree == nil {
+		return false
+	}
+	switch phase {
+	case WorktreeRetirementPhaseWorktreeRemoved, WorktreeRetirementPhaseRefDeletionStarted, WorktreeRetirementPhaseRefDeleted, WorktreeRetirementPhaseVerified:
+		return true
+	default:
+		return false
+	}
+}
+
+func retirementPhaseHasDeletedRef(plan WorktreeRetirementPlan, phase string) bool {
+	if plan.CandidateRef == "" {
+		return false
+	}
+	return phase == WorktreeRetirementPhaseRefDeleted || phase == WorktreeRetirementPhaseVerified
+}
+
 func verifyRetirementResumeState(ctx context.Context, git WorktreeRetirementGit, plan WorktreeRetirementPlan, phase string) error {
 	authority, err := retirementResolveCommit(ctx, git, plan.RepoRoot, plan.AuthorityRef)
 	if err != nil || authority != plan.AuthorityTip {
@@ -629,6 +724,16 @@ func validateWorktreeRetirementPending(pending WorktreeRetirementPending, plan W
 	}
 	if err := pending.Decision.Validate(); err != nil || pending.Decision.ActionIntentID != pending.Action.ID || !policy.Allowed(pending.Decision) {
 		return fmt.Errorf("worktree retirement pending policy invalid")
+	}
+	switch pending.Phase {
+	case WorktreeRetirementPhasePrepared,
+		WorktreeRetirementPhaseWorktreeRemovalStarted,
+		WorktreeRetirementPhaseWorktreeRemoved,
+		WorktreeRetirementPhaseRefDeletionStarted,
+		WorktreeRetirementPhaseRefDeleted,
+		WorktreeRetirementPhaseVerified:
+	default:
+		return fmt.Errorf("worktree retirement pending phase invalid: %q", pending.Phase)
 	}
 	return nil
 }
