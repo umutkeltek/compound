@@ -28,7 +28,7 @@ func TestApplyWorktreeRetirementRemovesNonForceThenCASDeletesAndIsIdempotent(t *
 			if outcome.Outcome != "completed" || !outcome.Changed || outcome.Action.Capability != "source-control.worktree-retire" || outcome.Action.Action != "retire_redundant_git_surface" {
 				t.Fatalf("action outcome = %+v", outcome)
 			}
-			return WorktreeRetirementActionProof{ActionIntentID: outcome.Action.ID, PolicyDecisionID: outcome.Decision.ID, ReceiptID: "rec_retirement", TransitionID: "tr_retirement"}, nil
+			return completeRetirementActionProof(outcome, "sha256:"+strings.Repeat("e", 64)), nil
 		},
 	}
 	request := WorktreeRetirementApplyRequest{
@@ -323,6 +323,196 @@ func TestApplyWorktreeRetirementRefusesPolicyAndStateDriftBeforeMutation(t *test
 	}
 }
 
+func TestApplyWorktreeRetirementResumeBindsExactSelfCausedOwnerDigest(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	home, paths, report := authorizedRetirementFixture(t, fixture)
+	injected := errors.New("transient update-ref failure")
+	runner := &failOnceRefDeleteGit{delegate: ExecWorktreeRetirementGit{}, err: injected}
+	records := 0
+	firstDigest := "sha256:" + strings.Repeat("e", 64)
+	secondDigest := "sha256:" + strings.Repeat("f", 64)
+	deps := successfulRetirementApplyDependencies(runner, &records)
+	deps.RecordOutcome = func(outcome WorktreeRetirementActionOutcome, _ time.Time) (WorktreeRetirementActionProof, error) {
+		records++
+		digest := firstDigest
+		if records == 2 {
+			digest = secondDigest
+		}
+		return completeRetirementActionProof(outcome, digest), nil
+	}
+	req := WorktreeRetirementApplyRequest{
+		HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+		Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+	}
+	first, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now())
+	if !errors.Is(err, injected) || first.Status != "partial" || first.WorkDigest != firstDigest || first.LeaseWorkSHA256 != req.OwnerProof.LeaseWorkSHA256 {
+		t.Fatalf("partial result=%+v err=%v", first, err)
+	}
+	req.OwnerProof.WorkDigest = firstDigest
+	second, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != "completed" || second.WorkDigest != secondDigest || runner.removeCalls != 1 || runner.deleteCalls != 2 || records != 2 {
+		t.Fatalf("resumed result=%+v remove=%d delete=%d records=%d", second, runner.removeCalls, runner.deleteCalls, records)
+	}
+}
+
+func TestApplyWorktreeRetirementResumeRefusesUnboundOwnerDigestOrLease(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*WorktreeRetirementOwnerProof)
+		want   string
+	}{
+		{name: "original work digest after self outcome", mutate: func(proof *WorktreeRetirementOwnerProof) {}, want: "work digest"},
+		{name: "unrelated work digest", mutate: func(proof *WorktreeRetirementOwnerProof) { proof.WorkDigest = "sha256:" + strings.Repeat("a", 64) }, want: "work digest"},
+		{name: "lease digest drift", mutate: func(proof *WorktreeRetirementOwnerProof) {
+			proof.WorkDigest = "sha256:" + strings.Repeat("e", 64)
+			proof.LeaseWorkSHA256 = strings.Repeat("a", 64)
+		}, want: "lease"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newRetirementGitFixture(t)
+			home, paths, report := authorizedRetirementFixture(t, fixture)
+			injected := errors.New("transient update-ref failure")
+			runner := &failOnceRefDeleteGit{delegate: ExecWorktreeRetirementGit{}, err: injected}
+			records := 0
+			deps := successfulRetirementApplyDependencies(runner, &records)
+			req := WorktreeRetirementApplyRequest{
+				HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+				Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+			}
+			if _, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now()); !errors.Is(err, injected) {
+				t.Fatalf("first error=%v", err)
+			}
+			tc.mutate(&req.OwnerProof)
+			beforeRemove, beforeDelete := runner.removeCalls, runner.deleteCalls
+			_, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(time.Minute))
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), tc.want) {
+				t.Fatalf("resume error=%v want %q", err, tc.want)
+			}
+			if runner.removeCalls != beforeRemove || runner.deleteCalls != beforeDelete || records != 1 {
+				t.Fatalf("refused resume mutated state remove=%d/%d delete=%d/%d records=%d", runner.removeCalls, beforeRemove, runner.deleteCalls, beforeDelete, records)
+			}
+		})
+	}
+}
+
+func TestApplyWorktreeRetirementFailureOutcomeProofMustBeCompleteBeforeResultPersistence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*WorktreeRetirementActionProof)
+	}{
+		{name: "action mismatch", mutate: func(proof *WorktreeRetirementActionProof) { proof.ActionIntentID = "act_wrong" }},
+		{name: "policy mismatch", mutate: func(proof *WorktreeRetirementActionProof) { proof.PolicyDecisionID = "pol_wrong" }},
+		{name: "missing receipt", mutate: func(proof *WorktreeRetirementActionProof) { proof.ReceiptID = "" }},
+		{name: "missing transition", mutate: func(proof *WorktreeRetirementActionProof) { proof.TransitionID = "" }},
+		{name: "missing lease digest", mutate: func(proof *WorktreeRetirementActionProof) { proof.LeaseWorkSHA256 = "" }},
+		{name: "missing work digest", mutate: func(proof *WorktreeRetirementActionProof) { proof.WorkDigest = "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newRetirementGitFixture(t)
+			home, paths, report := authorizedRetirementFixture(t, fixture)
+			plan, err := LoadWorktreeRetirementPlan(paths.PlanPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			injected := errors.New("transient update-ref failure")
+			runner := &failOnceRefDeleteGit{delegate: ExecWorktreeRetirementGit{}, err: injected}
+			deps := successfulRetirementApplyDependencies(runner, new(int))
+			deps.RecordOutcome = func(outcome WorktreeRetirementActionOutcome, _ time.Time) (WorktreeRetirementActionProof, error) {
+				proof := completeRetirementActionProof(outcome, "sha256:"+strings.Repeat("e", 64))
+				tc.mutate(&proof)
+				return proof, nil
+			}
+			result, err := ApplyWorktreeRetirement(context.Background(), WorktreeRetirementApplyRequest{
+				HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+				Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+			}, deps, time.Now())
+			if err == nil || !strings.Contains(err.Error(), "outcome proof chain incomplete") {
+				t.Fatalf("invalid proof result=%+v err=%v", result, err)
+			}
+			resultPath := filepath.Join(home, "reviews", SourceControlCleanupReviewArea, plan.ID+".retirement.result.json")
+			if _, statErr := os.Stat(resultPath); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid proof persisted result: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestApplyWorktreeRetirementReobservesRecoveryProofBeforeMutation(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	home, paths, report := authorizedRetirementFixture(t, fixture)
+	runner := &recordingRetirementGit{delegate: ExecWorktreeRetirementGit{}}
+	resolver := &controlledRetirementRecoveryResolver{delegate: SHA256FileWorktreeRetirementRecoveryResolver{}, fail: true}
+	records := 0
+	deps := successfulRetirementApplyDependencies(runner, &records)
+	deps.RecoveryResolver = resolver
+	_, err := ApplyWorktreeRetirement(context.Background(), WorktreeRetirementApplyRequest{
+		HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+		Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+	}, deps, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "recovery evidence") {
+		t.Fatalf("recovery refusal error=%v", err)
+	}
+	if runner.mutationCount() != 0 || records != 0 || resolver.calls == 0 {
+		t.Fatalf("recovery refusal mutated state calls=%+v records=%d resolver=%d", runner.calls, records, resolver.calls)
+	}
+}
+
+func TestApplyWorktreeRetirementReobservesRecoveryProofAtFinalBoundary(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	home, paths, report := authorizedRetirementFixture(t, fixture)
+	runner := &recordingRetirementGit{delegate: ExecWorktreeRetirementGit{}}
+	resolver := &controlledRetirementRecoveryResolver{delegate: SHA256FileWorktreeRetirementRecoveryResolver{}, mutationCount: runner.mutationCount}
+	records := 0
+	deps := successfulRetirementApplyDependencies(runner, &records)
+	deps.RecoveryResolver = resolver
+	result, err := ApplyWorktreeRetirement(context.Background(), WorktreeRetirementApplyRequest{
+		HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+		Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+	}, deps, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "recovery evidence") || result.Status != "partial" {
+		t.Fatalf("final recovery result=%+v err=%v", result, err)
+	}
+	if runner.worktreeRemoveCount() != 1 || runner.refDeleteCount() != 1 || records != 1 || resolver.calls < 2 {
+		t.Fatalf("final recovery calls=%+v records=%d resolver=%d", runner.calls, records, resolver.calls)
+	}
+}
+
+func TestApplyWorktreeRetirementReobservesRecoveryProofBeforeResume(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	home, paths, report := authorizedRetirementFixture(t, fixture)
+	runner := &recordingRetirementGit{delegate: ExecWorktreeRetirementGit{}}
+	resolver := &controlledRetirementRecoveryResolver{delegate: SHA256FileWorktreeRetirementRecoveryResolver{}}
+	records := 0
+	deps := successfulRetirementApplyDependencies(runner, &records)
+	deps.RecoveryResolver = resolver
+	crash := errors.New("post-worktree success crash")
+	deps.AfterGitMutation = func(phase string) error {
+		if phase == WorktreeRetirementPhaseWorktreeRemovalStarted {
+			return crash
+		}
+		return nil
+	}
+	req := WorktreeRetirementApplyRequest{
+		HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+		Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+	}
+	if _, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now()); !errors.Is(err, crash) {
+		t.Fatalf("first error=%v", err)
+	}
+	resolver.fail = true
+	deps.AfterGitMutation = nil
+	_, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "recovery evidence") {
+		t.Fatalf("resume recovery error=%v", err)
+	}
+	if runner.worktreeRemoveCount() != 1 || runner.refDeleteCount() != 0 || records != 0 {
+		t.Fatalf("resume recovery mutated state calls=%+v records=%d", runner.calls, records)
+	}
+}
+
 type retirementGitCall struct {
 	repo string
 	args []string
@@ -364,6 +554,21 @@ type phaseAssertingRetirementGit struct {
 	t                   *testing.T
 	worktreeRemoveCount int
 	refDeleteCount      int
+}
+
+type controlledRetirementRecoveryResolver struct {
+	delegate      WorktreeRetirementRecoveryResolver
+	fail          bool
+	calls         int
+	mutationCount func() int
+}
+
+func (r *controlledRetirementRecoveryResolver) Resolve(ctx context.Context, reference string) (WorktreeRetirementRecoveryProof, error) {
+	r.calls++
+	if r.fail || (r.mutationCount != nil && r.mutationCount() > 0) {
+		return WorktreeRetirementRecoveryProof{}, errors.New("recovery evidence unavailable")
+	}
+	return r.delegate.Resolve(ctx, reference)
 }
 
 func (r *phaseAssertingRetirementGit) Run(ctx context.Context, repo string, args ...string) (string, error) {
@@ -463,8 +668,17 @@ func successfulRetirementApplyDependencies(runner WorktreeRetirementGit, records
 		},
 		RecordOutcome: func(outcome WorktreeRetirementActionOutcome, _ time.Time) (WorktreeRetirementActionProof, error) {
 			*records++
-			return WorktreeRetirementActionProof{ActionIntentID: outcome.Action.ID, PolicyDecisionID: outcome.Decision.ID, ReceiptID: "rec_retirement", TransitionID: "tr_retirement"}, nil
+			return completeRetirementActionProof(outcome, "sha256:"+strings.Repeat("e", 64)), nil
 		},
+	}
+}
+
+func completeRetirementActionProof(outcome WorktreeRetirementActionOutcome, workDigest string) WorktreeRetirementActionProof {
+	return WorktreeRetirementActionProof{
+		ActionIntentID: outcome.Action.ID, PolicyDecisionID: outcome.Decision.ID,
+		ReceiptID: "rec_retirement", TransitionID: "tr_retirement",
+		LeaseWorkSHA256: validRetirementOwnerProof().LeaseWorkSHA256,
+		WorkDigest:      workDigest,
 	}
 }
 
