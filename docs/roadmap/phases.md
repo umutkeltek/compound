@@ -43,7 +43,7 @@ obedience; a mutating adapter requires the `PolicyDecision`.
 ## P5 — hook fixture loop  (no live install yet)
 `compound hook {session-start,user-prompt-submit,pre-tool-use,post-tool-use,session-end}` over fixtures.
 **Proof:** SessionStart fixture → HookEvent + redacted ContextRequest + EffectiveContract + ContextPack + exact context injection artifact;
-UserPromptSubmit → redacted ContextRequest + ContextPack + proposed WorkEnvelope tied to `context_pack_id`; PreToolUse → ActionIntent + PolicyDecision; SessionEnd → Receipt + Transition.
+live UserPromptSubmit → redacted ContextRequest + EffectiveContract + ContextPack + exact bounded native injection, with opaque persisted intent and no WorkEnvelope (explicit fixture replay retains proposed-work compatibility); PreToolUse → ActionIntent + PolicyDecision; SessionEnd → Receipt + Transition.
 Capability-aware per harness (a `HarnessRegistry` records what each actually supports).
 
 ## P6 — memory candidate / adjudication  (memory is ONE slice, now)

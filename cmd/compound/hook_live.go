@@ -354,6 +354,12 @@ func applyPatchTargetPaths(command string) []string {
 }
 
 func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome *liveStopTriageOutcome) any {
+	if hookName == "user-prompt-submit" {
+		return claudeLiveHookResponse{HookSpecificOutput: claudeHookSpecificOutput{
+			HookEventName:     hookEnumName(hookName),
+			AdditionalContext: res.Summary,
+		}}
+	}
 	if normalizeLiveHarness(harnessName) == "codex" {
 		if hookName == "pre-tool-use" {
 			out := claudeHookSpecificOutput{HookEventName: hookEnumName(hookName)}

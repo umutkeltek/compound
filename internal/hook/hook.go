@@ -217,7 +217,7 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 		if deps.BeforeContextPersist != nil {
 			deps.BeforeContextPersist()
 		}
-		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack)
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack, renderInjection(ev.Header.ID, built.Pack))
 		if err != nil {
 			return Result{}, err
 		}
@@ -238,10 +238,6 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 }
 
 func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
-	pred := "address user intent"
-	if fx.Task != "" {
-		pred = "address: " + fx.Task
-	}
 	mode := hookRequestedMode(name, fx)
 	built, breaker, err := buildContextWithBreaker(name, fx, deps, mode, now)
 	if breaker != nil {
@@ -250,16 +246,26 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if err != nil {
 		return Result{}, err
 	}
+	if fx.Live {
+		return liveUserPrompt(name, fx, deps, now, mode, built)
+	}
+
+	// Explicit fixture replay retains the legacy proposed-work model used by
+	// migration and lifecycle fixtures. Installed live prompt hooks never enter
+	// this branch.
+	pred := "address user intent"
+	if fx.Task != "" {
+		pred = "address: " + fx.Task
+	}
 	req := buildContextRequest(name, fx, built.Contract, built.Pack, mode, now)
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), nil, now)
 	ev.IDs.ContextPackID = built.Pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
-		var err error
 		if deps.BeforeContextPersist != nil {
 			deps.BeforeContextPersist()
 		}
-		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack)
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack, renderInjection(ev.Header.ID, built.Pack))
 		if err != nil {
 			return Result{}, err
 		}
@@ -274,7 +280,6 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	ev.IDs.WorkID = cand.ID
 	produced := []envelope.Envelope{&cand}
 	if deps.Store != nil && injection != nil {
-		var err error
 		cand, err = deps.Store.Create(create, now)
 		if err != nil {
 			return Result{}, err
@@ -296,6 +301,64 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 			RetrievalLatency: built.RetrievalLatency,
 		},
 	}, nil
+}
+
+// liveUserPrompt treats a prompt as a transient retrieval query, not a durable
+// unit of work. Relevance is computed from the raw task before this function is
+// called; every value exposed to persistence or adapter journaling carries only
+// the opaque intent reference.
+func liveUserPrompt(name string, fx Fixture, deps Deps, now time.Time, mode string, built contextBuild) (Result, error) {
+	intentRef := livePromptIntentRef(fx)
+	built.Input.Task = intentRef
+	built.Input.TaskContract.Intent = intentRef
+	built.Contract.TaskContract.Intent = intentRef
+	built.Pack.TaskContract.Intent = intentRef
+
+	persistedFX := fx
+	persistedFX.Prompt = ""
+	persistedFX.Task = intentRef
+	persistedFX.WorkID = ""
+	req := buildContextRequest(name, persistedFX, built.Contract, built.Pack, mode, now)
+	req.IntentTextRef = intentRef
+
+	ev := newEvent(name, persistedFX, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), nil, now)
+	ev.IDs.ContextPackID = built.Pack.Header.ID
+	rendered := renderInjection(ev.Header.ID, built.Pack)
+	var injection *InjectionArtifact
+	if strings.TrimSpace(deps.HomePath) != "" {
+		if deps.BeforeContextPersist != nil {
+			deps.BeforeContextPersist()
+		}
+		var err error
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack, rendered)
+		if err != nil {
+			return Result{}, err
+		}
+		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContractRef, injection.ContextPackRef, injection.Ref)
+		ev.OutputRef = injection.Ref
+	}
+	return Result{
+		Event:     ev,
+		Produced:  []envelope.Envelope{&req, &built.Contract, &built.Pack},
+		Summary:   rendered,
+		Injection: injection,
+		Context: &ContextObservation{
+			Input:            built.Input,
+			Pack:             built.Pack,
+			RetrievalLatency: built.RetrievalLatency,
+		},
+	}, nil
+}
+
+func livePromptIntentRef(fx Fixture) string {
+	intent := strings.TrimSpace(fx.Prompt)
+	if intent == "" {
+		intent = strings.TrimSpace(fx.Task)
+	}
+	if intent == "" {
+		return ""
+	}
+	return "sha256:" + hashStr(intent)
 }
 
 func buildContextWithBreaker(name string, fx Fixture, deps Deps, mode string, now time.Time) (contextBuild, *Result, error) {
@@ -1117,7 +1180,7 @@ func hookRequestedMode(name string, fx Fixture) string {
 	}
 }
 
-func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest, ec envelope.EffectiveContract, pack envelope.ContextPack) (*InjectionArtifact, error) {
+func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest, ec envelope.EffectiveContract, pack envelope.ContextPack, rendered string) (*InjectionArtifact, error) {
 	if pack.IDs.ContractID != ec.ID {
 		return nil, fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID)
 	}
@@ -1146,7 +1209,7 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 	if err := os.MkdirAll(filepath.Dir(injectionPath), 0o755); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(injectionPath, []byte(renderInjection(hookID, pack)), 0o644); err != nil {
+	if err := os.WriteFile(injectionPath, []byte(rendered), 0o644); err != nil {
 		return nil, err
 	}
 	return &InjectionArtifact{
@@ -1225,26 +1288,6 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	}
 	b.WriteString("- Capability refs are offers only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision.\n\n")
 
-	b.WriteString("## Summary\n")
-	b.WriteString(safeMD(pack.SummaryMD))
-	b.WriteString("\n\n")
-
-	writeCapabilityOfferList(&b, pack.CapabilityOffers)
-
-	writeIncludedList(&b, pack.Included)
-	b.WriteString("\n## Excluded\n")
-	if len(pack.Excluded) == 0 {
-		b.WriteString("- none\n")
-	} else {
-		for _, ref := range pack.Excluded {
-			fmt.Fprintf(&b, "- `%s` reason=%s\n", safeMD(ref.Ref), safeMD(ref.Reason))
-		}
-	}
-	writeStringList(&b, "Active Instructions", pack.ActiveInstructions)
-	writeStringList(&b, "Active Hooks", pack.ActiveHooks)
-	writeHookReadinessList(&b, pack.HookReadiness)
-	writeHookRosterList(&b, pack.HookRoster)
-	writeCappedStringList(&b, "Active Decisions", pack.ActiveDecisions, maxInjectionActiveDecisionRefs, "active decision ref(s)")
 	if len(pack.ActiveMemory) > 0 {
 		shown := prioritizedActiveMemoryRefs(pack.ActiveMemory, pack.ActivePositions)
 		omitted := 0
@@ -1257,9 +1300,42 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 			fmt.Fprintf(&b, "- %d more active memory ref(s) omitted from digest budget\n", omitted)
 		}
 	}
+	writeCappedStringList(&b, "Active Decisions", pack.ActiveDecisions, maxInjectionActiveDecisionRefs, "active decision ref(s)")
 	writeStringList(&b, "Required Checks", pack.RequiredChecks)
 	writeStringList(&b, "Avoid", pack.Avoid)
-	return b.String()
+	writeCapabilityOfferList(&b, pack.CapabilityOffers)
+
+	b.WriteString("## Summary\n")
+	b.WriteString(safeMD(pack.SummaryMD))
+	b.WriteString("\n\n")
+	writeStringList(&b, "Active Instructions", pack.ActiveInstructions)
+	writeStringList(&b, "Active Hooks", pack.ActiveHooks)
+	writeIncludedList(&b, pack.Included)
+	b.WriteString("\n## Excluded\n")
+	if len(pack.Excluded) == 0 {
+		b.WriteString("- none\n")
+	} else {
+		for _, ref := range pack.Excluded {
+			fmt.Fprintf(&b, "- `%s` reason=%s\n", safeMD(ref.Ref), safeMD(ref.Reason))
+		}
+	}
+	writeHookReadinessList(&b, pack.HookReadiness)
+	writeHookRosterList(&b, pack.HookRoster)
+	return capInjectionChars(b.String())
+}
+
+func capInjectionChars(text string) string {
+	runes := []rune(text)
+	if len(runes) <= MaxContextChars {
+		return text
+	}
+	const marker = "\n\n[Compound context truncated; ContextPack JSON retains full provenance.]\n"
+	markerRunes := []rune(marker)
+	limit := MaxContextChars - len(markerRunes)
+	if limit < 0 {
+		limit = 0
+	}
+	return string(runes[:limit]) + marker
 }
 
 func writeCapabilityOfferList(b *strings.Builder, offers []envelope.CapabilityOffer) {
