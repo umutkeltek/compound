@@ -11,7 +11,7 @@
  * (same reason as generic-actions.selftest.ts).
  */
 
-import { remainingDecideMembers } from "./decide-members";
+import { decideReadinessSections, remainingDecideMembers } from "./decide-members";
 import { buildDecideGroups, genericReviewResolutionActs } from "./decide-model";
 import type { Json } from "./compound";
 
@@ -568,8 +568,14 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
     const decided = buildDecideGroups([group], new Map([[item.id, item]]), null, () => item)[0];
     push(
       "uncertified-clean-action-stays-unavailable",
-      decided.act.mode === "copy" && decided.capability.kind === "unavailable",
-      `act=${decided.act.mode} capability=${decided.capability.kind}`,
+      decided.act.mode === "copy" &&
+        decided.capability.kind === "unavailable" &&
+        decided.face.state === "waiting" &&
+        decided.face.stateLabel === "Needs context" &&
+        decided.face.primaryAction == null &&
+        /owner workflow/i.test(decided.face.unavailableReason) &&
+        /manual owner command/i.test(decided.face.unblockPath),
+      `act=${decided.act.mode} capability=${decided.capability.kind} face=${JSON.stringify(decided.face)}`,
     );
   }
 
@@ -607,6 +613,7 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
       count: 1,
       item_ids: [itemId],
       operator_summary: "Review this candidate ruling.",
+      operator_unlock: "A bounded judge review can start without changing decision authority.",
       sample: item,
       safe_batch_action: action,
     } as Json;
@@ -622,8 +629,34 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
         decided.act.members[0].id === itemId &&
         decided.act.members[0].actionId === "plan_decision_candidate_review" &&
         decided.capability.kind === "track" &&
+        decided.face.kind === "Decision" &&
+        decided.face.state === "ready" &&
+        decided.face.stateLabel === "Ready" &&
+        decided.face.whyNow === "A bounded judge review can start without changing decision authority." &&
+        decided.face.primaryAction?.label === "Plan decision review" &&
+        decided.face.primaryAction.effect === "track" &&
+        Boolean(decided.face.owner) &&
         genericReviewResolutionActs(decided).length === 0,
-      `act=${decided.act.mode} effect=${decided.act.mode === "batch-enumerable" ? decided.act.effectKind : "-"} label=${decided.act.mode === "batch-enumerable" ? JSON.stringify(decided.act.label) : "-"} policy=${decided.act.mode === "batch-enumerable" ? JSON.stringify(decided.act.policyNote) : "-"} capability=${decided.capability.kind} resolutions=${genericReviewResolutionActs(decided).length}`,
+      `act=${decided.act.mode} effect=${decided.act.mode === "batch-enumerable" ? decided.act.effectKind : "-"} label=${decided.act.mode === "batch-enumerable" ? JSON.stringify(decided.act.label) : "-"} policy=${decided.act.mode === "batch-enumerable" ? JSON.stringify(decided.act.policyNote) : "-"} capability=${decided.capability.kind} face=${JSON.stringify(decided.face)} resolutions=${genericReviewResolutionActs(decided).length}`,
+    );
+  }
+
+  // 11. The client-safe queue grouper consumes the server-owned face state.
+  //     It must never re-derive actionability from area names or button copy.
+  {
+    const sections = decideReadinessSections([
+      { key: "ready-a", face: { state: "ready" as const } },
+      { key: "waiting-a", face: { state: "waiting" as const } },
+      { key: "ready-b", face: { state: "ready" as const } },
+    ]);
+    push(
+      "queue-groups-by-server-owned-face-state",
+      sections.length === 2 &&
+        sections[0].key === "act_now" &&
+        sections[0].groups.map((group) => group.key).join(",") === "ready-a,ready-b" &&
+        sections[1].key === "needs_context" &&
+        sections[1].groups.map((group) => group.key).join(",") === "waiting-a",
+      `sections=${sections.map((section) => `${section.key}:${section.groups.map((group) => group.key).join(",")}`).join("|")}`,
     );
   }
 

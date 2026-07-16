@@ -234,5 +234,33 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
     }
   }
 
+  /* ---------- f4: object-first face + readiness hierarchy ---------- */
+
+  {
+    const src = read("components/decide/DecideQueue.tsx");
+    if (!/decideReadinessSections\(visible\)/.test(src)) {
+      fail("DecideQueue does not group the visible queue from the server-owned face state");
+    } else if (!/Act now/.test(src) || !/Needs context/.test(src)) {
+      fail("DecideQueue is missing the two explicit readiness group labels");
+    } else {
+      pass("DecideQueue groups the queue into Act now and Needs context from the face state");
+    }
+
+    for (const tab of ["Summary", "Action", "History", "Evidence"]) {
+      if (!new RegExp(`value=["']${tab.toLowerCase()}["'][^>]*>${tab}<`).test(src)) {
+        fail(`Decision face is missing its ${tab} tab`);
+      }
+    }
+    if (!/StateBadge state=\{group\.face\.state\} label=\{group\.face\.stateLabel\}/.test(src)) {
+      fail("Decision face does not render the shared state vocabulary from group.face");
+    } else if (!/Owner<\/span>[\s\S]*group\.face\.owner/.test(src)) {
+      fail("Decision face does not expose the human owner before technical evidence");
+    } else if (!/FreshnessChip[\s\S]*group\.face\.freshness\.generatedAt/.test(src)) {
+      fail("Decision face does not expose projection freshness in its primary header");
+    } else {
+      pass("Decision face exposes state, owner, and freshness before secondary records");
+    }
+  }
+
   return { ok, details };
 }
