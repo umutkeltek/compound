@@ -251,24 +251,17 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 				return WorktreeRetirementResult{}, err
 			}
 		}
+		resumeNeedsPolicyRefreshBeforeRef := plan.Worktree != nil && (pending.Phase == WorktreeRetirementPhasePrepared || pending.Phase == WorktreeRetirementPhaseWorktreeRemovalStarted)
 		if previousResult != nil {
-			action := newWorktreeRetirementActionForAttempt(plan, report, actor, now, previousResult.ResultDigest)
-			decision, err := deps.Evaluate(action, now)
-			if err != nil {
-				return WorktreeRetirementResult{}, err
-			}
-			if err := action.Validate(); err != nil {
-				return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement retry action invalid: %w", err)
-			}
-			if err := decision.Validate(); err != nil || decision.ActionIntentID != action.ID || decision.IDs.WorkID != action.IDs.WorkID || !policy.Allowed(decision) {
-				return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement retry policy does not allow exact action")
-			}
-			pending.Action = action
-			pending.Decision = decision
-			if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
-				return WorktreeRetirementResult{}, err
-			}
+			pending.Action = newWorktreeRetirementActionForAttempt(plan, report, actor, now, previousResult.ResultDigest)
 		}
+		if err := reevaluateWorktreeRetirementResumePolicy(deps, &pending, now); err != nil {
+			return WorktreeRetirementResult{}, err
+		}
+		if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+			return WorktreeRetirementResult{}, err
+		}
+		defer func() { _ = resumeNeedsPolicyRefreshBeforeRef }()
 	} else {
 		if !reflect.DeepEqual(req.OwnerProof, plan.OwnerProof) {
 			return WorktreeRetirementResult{}, fmt.Errorf("owner work or lease drift before retirement")
@@ -356,6 +349,14 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 			if err := deps.AfterPhase(pending.Phase); err != nil {
 				return baseResult, err
 			}
+		}
+	}
+	if pendingExists && plan.Worktree != nil && plan.CandidateRef != "" && pending.Phase == WorktreeRetirementPhaseWorktreeRemoved {
+		if err := reevaluateWorktreeRetirementResumePolicy(deps, &pending, now); err != nil {
+			return baseResult, err
+		}
+		if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+			return baseResult, err
 		}
 	}
 
@@ -519,7 +520,7 @@ func reconcileRetirementWorktreeRemovalStarted(ctx context.Context, deps Worktre
 	fresh, err := BuildWorktreeRetirementPlan(ctx, WorktreeRetirementPlanRequest{
 		RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
 		AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
-		OwnerProof: req.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
+		OwnerProof: plan.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
 	}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver}, now)
 	if err != nil {
 		return false, err
@@ -867,6 +868,21 @@ func validateRetirementResumeOwnerProof(live, sealed WorktreeRetirementOwnerProo
 	if live.WorkDigest != expectedWorkDigest {
 		return fmt.Errorf("owner work digest drift before retirement resume: current digest is not the exact self-caused prior outcome digest")
 	}
+	return nil
+}
+
+func reevaluateWorktreeRetirementResumePolicy(deps WorktreeRetirementApplyDependencies, pending *WorktreeRetirementPending, now time.Time) error {
+	decision, err := deps.Evaluate(pending.Action, now)
+	if err != nil {
+		return err
+	}
+	if err := pending.Action.Validate(); err != nil {
+		return fmt.Errorf("worktree retirement retry action invalid: %w", err)
+	}
+	if err := decision.Validate(); err != nil || decision.ActionIntentID != pending.Action.ID || decision.IDs.WorkID != pending.Action.IDs.WorkID || !policy.Allowed(decision) {
+		return fmt.Errorf("worktree retirement current policy does not allow exact resumed action")
+	}
+	pending.Decision = decision
 	return nil
 }
 
