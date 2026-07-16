@@ -88,6 +88,7 @@ var Classification = map[string]Class{
 	"reviewartifact":  Leaf,
 	"retrievalparity": Leaf, // evaluator organ: read-only traffic recorder/replayer over real retrieval paths; produces evidence reports, owns no object family
 	"stream":          Leaf, // read-only tail organ over events/work.jsonl (byte cursor) + ledger/seq; opens the log read-only and NEVER takes the work-event write lock; emits evidence frames the console SSE route translates, owns no authority object and promotes nothing
+	"verdictflow":     Leaf, // shared plan->record->render->load->annotate scaffolding behind the three panel-verdict review bridges (product/sourceobs/capgraph); writes review artifacts through reviewartifact and reads them back, owns no authority object and performs no terminal effect (ledger/store/writeback stay in the domain callbacks)
 	// memory object family — canonical after Gen-1 package retirement
 	"mem": MemTarget,
 	// importers — keep, upgrade in place

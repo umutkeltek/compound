@@ -92,6 +92,15 @@ var mintHomes = map[string]MintHome{
 	// Its teeth ARE the policy gate — it is the compilation of the "no mutation without a valid
 	// PolicyDecision" ruling — so it is enforcement, not evidence.
 	"organ:act": {Class: MintEnforcement},
+	// verdictflow is the shared plan->record->render->load->annotate scaffolding the three
+	// panel-verdict review bridges had copy-pasted. It writes review artifacts through reviewartifact
+	// and reads them back, but touches no ledger/store/writeback surface and performs no terminal
+	// effect (those stay in the domain callbacks), so it is evidence, not enforcement.
+	"organ:verdictflow": {
+		Class:    MintEvidence,
+		Purpose:  "shared verdict plan->review->apply->annotate scaffolding for panel-verdict bridges (record/load/annotate/reviewed-extras mechanics only; no ledger, store, writeback, or terminal effect)",
+		Consumer: "internal/product, internal/sourceobs, and internal/capgraph verdict adapters (Record*Plan / Annotate*Queue / Load*Review / LatestReviewedFromExtras)",
+	},
 	// finding is the direct-write home for agent-authored operational findings under
 	// COMPOUND_HOME/observed/findings — the POSITIVE counterpart to the placement guard: a governed
 	// place to record a durable operational note instead of inventing a path. It writes only a
