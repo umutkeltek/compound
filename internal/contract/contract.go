@@ -1559,11 +1559,12 @@ const semanticTaskRankK = 24
 
 // semanticTaskRanks returns claimID → relevance weight from the owned breadth engine for the task,
 // used ONLY to sharpen the ambient ranker — the ledger still gates class-tier/visibility (the
-// engine ranks, the ledger gates). It engages precisely when a breadth sidecar is configured
-// (COMPOUND_MEM_ENGINE_BIN) AND the task has content tokens; otherwise, or on ANY engine error, it
-// returns nil so loadMemoryRefs runs exactly as before (bulletproof degradation — orient never
-// fails because the embedder/sidecar is down). Weights are descending rank positions (not raw
-// cosine) so they compose with the small-integer entity/token scores instead of swamping them.
+// engine ranks, the ledger gates). Transient read-only callers use the configured embedder and
+// owned breadth cache in-process; ordinary callers retain the configured sidecar path. Without a
+// configured lane, or on ANY engine error, it returns nil so loadMemoryRefs runs exactly as before
+// (bulletproof degradation — orient never fails because an embedder/sidecar is down). Weights are
+// descending rank positions (not raw cosine) so they compose with the small-integer entity/token
+// scores instead of swamping them.
 func semanticTaskRanks(homePath string, in Input) map[string]float64 {
 	return semanticTaskRanksTraced(homePath, in, nil)
 }
