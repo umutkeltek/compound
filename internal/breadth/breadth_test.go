@@ -407,6 +407,133 @@ func TestVectorCacheLoadGuardsDimAndEmbedderStamp(t *testing.T) {
 	})
 }
 
+func TestVectorCacheCorruptionRebuildsSemanticIndex(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func(t *testing.T, home string, embedder EmbedderAdapter)
+	}{
+		{
+			name: "malformed manifest JSON",
+			corrupt: func(t *testing.T, home string, embedder EmbedderAdapter) {
+				t.Helper()
+				path := filepath.Join(vectorCacheDir(t, home, embedder), "manifest.json")
+				if err := os.WriteFile(path, []byte(`{"schema_version":`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "truncated vector file",
+			corrupt: func(t *testing.T, home string, embedder EmbedderAdapter) {
+				t.Helper()
+				path := vectorsFilePath(t, home, embedder)
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, raw[:len(raw)-1], 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "invalid vector row content",
+			corrupt: func(t *testing.T, home string, embedder EmbedderAdapter) {
+				t.Helper()
+				path := vectorsFilePath(t, home, embedder)
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				const firstRowIDLengthOffset = 8 + 4 + 8
+				binary.LittleEndian.PutUint32(raw[firstRowIDLengthOffset:firstRowIDLengthOffset+4], 0)
+				if err := os.WriteFile(path, raw, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			claims := []mem.ClaimText{
+				{ClaimID: "winner", Text: "orchestration receipts"},
+				{ClaimID: "decoy", Text: "system vocabulary"},
+			}
+			query := "system"
+			vectors := map[string][]float32{
+				query:                  {1, 0},
+				wrapDocText(claims[0]): {1, 0},
+				wrapDocText(claims[1]): {0, 1},
+			}
+			seedEmbedder := newFakeEmbedder(2)
+			seedEmbedder.vectors = vectors
+			seed, err := NewEngine(EngineConfig{Embedder: seedEmbedder, CompoundHome: home})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := seed.IndexWithError(claims, 1); err != nil {
+				t.Fatal(err)
+			}
+			tt.corrupt(t, home, seedEmbedder)
+
+			rebuildEmbedder := newFakeEmbedder(2)
+			rebuildEmbedder.vectors = vectors
+			reload, err := NewEngine(EngineConfig{Embedder: rebuildEmbedder, CompoundHome: home})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reload.IndexWithError(claims, 2); err != nil {
+				t.Fatalf("corrupt derived cache should rebuild: %v", err)
+			}
+			if rebuildEmbedder.calls != 1 {
+				t.Fatalf("cache rebuild embedded %d document batch(es), want 1", rebuildEmbedder.calls)
+			}
+			hits := reload.Query(query, mem.GateList, []string{"winner", "decoy"}, 1)
+			if len(hits) != 1 || hits[0].ClaimID != "winner" {
+				t.Fatalf("rebuilt semantic query = %+v, want winner", hits)
+			}
+			if _, _, err := reload.cache.load(); err != nil {
+				t.Fatalf("rewritten cache is not healthy: %v", err)
+			}
+		})
+	}
+}
+
+func TestVectorCacheOperationalReadErrorIsReturned(t *testing.T) {
+	home := t.TempDir()
+	embedder := newFakeEmbedder(2)
+	eng, err := NewEngine(EngineConfig{Embedder: embedder, CompoundHome: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := []mem.ClaimText{{ClaimID: "c1", Text: "operational read errors stay visible"}}
+	if _, err := eng.IndexWithError(claims, 1); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(vectorCacheDir(t, home, embedder), "manifest.json")
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(manifestPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	reload, err := NewEngine(EngineConfig{Embedder: newFakeEmbedder(2), CompoundHome: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reload.IndexWithError(claims, 2); err == nil {
+		t.Fatal("IndexWithError returned nil for a manifest read-path failure")
+	} else {
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) {
+			t.Fatalf("IndexWithError error = %T %v, want preserved *os.PathError", err, err)
+		}
+	}
+}
+
 func TestVectorQueryDegradesToLexicalWhenEmbedderUnavailable(t *testing.T) {
 	embedder := newFakeEmbedder(4)
 	embedder.failAtCall = 2
