@@ -210,6 +210,10 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 	if now.IsZero() {
 		now = time.Now()
 	}
+	review.ReviewedBy = strings.TrimSpace(review.ReviewedBy)
+	review.Rationale = strings.TrimSpace(review.Rationale)
+	review.ReviewedAt = strings.TrimSpace(review.ReviewedAt)
+	review.EvidenceRefs = sortedUniqueNonEmpty(review.EvidenceRefs)
 	if err := validateWorktreeRetirementReview(review); err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
@@ -233,26 +237,41 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 	if !containsEvery(review.EvidenceRefs, requiredEvidence) {
 		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement review must preserve every plan evidence ref")
 	}
-	if strings.TrimSpace(review.ReviewedAt) == "" {
-		review.ReviewedAt = now.UTC().Format(time.RFC3339Nano)
+	reviewedSourceName := plan.ID + "." + review.ID + ".retirement.reviewed.yaml"
+	reviewedSourcePath := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea, reviewedSourceName)
+	if review.ReviewedAt == "" {
+		existing, err := LoadWorktreeRetirementReview(reviewedSourcePath)
+		switch {
+		case err == nil:
+			if err := validateWorktreeRetirementReview(existing); err != nil {
+				return WorktreeRetirementReviewReport{}, fmt.Errorf("existing worktree retirement reviewed source invalid: %w", err)
+			}
+			if !worktreeRetirementReviewEqualIgnoringReviewedAt(review, existing) {
+				return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement reviewed source already exists with different requested content")
+			}
+			review.ReviewedAt = existing.ReviewedAt
+		case os.IsNotExist(err):
+			review.ReviewedAt = now.UTC().Format(time.RFC3339Nano)
+		default:
+			return WorktreeRetirementReviewReport{}, err
+		}
 	}
-	review.ReviewedBy = strings.TrimSpace(review.ReviewedBy)
-	review.Rationale = strings.TrimSpace(review.Rationale)
-	review.EvidenceRefs = sortedUniqueNonEmpty(review.EvidenceRefs)
+	if err := validateWorktreeRetirementReview(review); err != nil {
+		return WorktreeRetirementReviewReport{}, err
+	}
 	reviewBytes, err := yaml.Marshal(review)
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
-	reviewedSourcePath, err := writeExclusiveWorktreeRetirementArtifact(homePath, plan.ID+"."+review.ID+".retirement.reviewed.yaml", reviewBytes)
+	reviewedSourcePath, err = writeExclusiveWorktreeRetirementArtifact(homePath, reviewedSourceName, reviewBytes)
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
 	sourceDigest := "sha256:" + digestRetirementHex(reviewBytes)
-	createdAt := now.UTC().Format(time.RFC3339Nano)
 	report := WorktreeRetirementReviewReport{
 		SchemaVersion: WorktreeRetirementReviewReportSchemaVersion,
 		ID:            "wtrrr_" + digestRetirementHex([]byte(plan.ID + "|" + review.ID + "|" + sourceDigest))[:12],
-		CreatedAt:     createdAt,
+		CreatedAt:     review.ReviewedAt,
 		Status:        "authorized",
 		PlanID:        plan.ID,
 		PlanDigest:    plan.PlanDigest,
@@ -335,7 +354,18 @@ func validateWorktreeRetirementReview(review WorktreeRetirementReview) error {
 	if !validRetirementDigest(review.PlanDigest) || len(review.EvidenceRefs) == 0 {
 		return fmt.Errorf("worktree retirement review plan digest and evidence required")
 	}
+	if review.ReviewedAt != "" {
+		if _, err := time.Parse(time.RFC3339Nano, review.ReviewedAt); err != nil {
+			return fmt.Errorf("worktree retirement review reviewed_at must be RFC3339Nano: %w", err)
+		}
+	}
 	return nil
+}
+
+func worktreeRetirementReviewEqualIgnoringReviewedAt(a, b WorktreeRetirementReview) bool {
+	return a.SchemaVersion == b.SchemaVersion && a.ID == b.ID && a.PlanID == b.PlanID && a.PlanDigest == b.PlanDigest &&
+		a.Decision == b.Decision && a.Rationale == b.Rationale && a.ReviewedBy == b.ReviewedBy &&
+		stringSlicesEqual(a.EvidenceRefs, b.EvidenceRefs)
 }
 
 func ValidateAuthorizedWorktreeRetirement(planPath, reportPath string) (WorktreeRetirementReviewReport, error) {

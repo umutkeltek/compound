@@ -123,7 +123,6 @@ func runAuthorityWorktreeRetire(homePath string, args []string, stdout, stderr i
 		review.Decision = values["--decision"]
 		review.Rationale = values["--rationale"]
 		review.ReviewedBy = values["--reviewed-by"]
-		review.ReviewedAt = now.UTC().Format(time.RFC3339Nano)
 		report, err := authority.RecordWorktreeRetirementReview(homePath, review, args[1], now)
 		if err != nil {
 			fmt.Fprintln(stderr, "authority worktree-retire review:", err)
