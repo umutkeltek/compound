@@ -116,7 +116,7 @@ func (c *vectorCache) load() (vectorManifest, map[vectorKey]vectorRow, error) {
 	if manifest.WrapTemplateHash != wrapTemplateHash() {
 		return vectorManifest{}, nil, fmt.Errorf("%w: cache %q configured %q", errVectorTemplateMismatch, manifest.WrapTemplateHash, wrapTemplateHash())
 	}
-	rows, err := c.readVectors(manifest.Embedder.Dim)
+	rows, err := c.readVectors(manifest.Embedder.Dim, manifest.ClaimCount, manifest.EmbeddedCount)
 	return manifest, rows, err
 }
 
@@ -135,7 +135,7 @@ func (c *vectorCache) readManifest() (vectorManifest, error) {
 	return manifest, nil
 }
 
-func (c *vectorCache) readVectors(expectedDim int) (map[vectorKey]vectorRow, error) {
+func (c *vectorCache) readVectors(expectedDim, expectedClaimCount, expectedEmbeddedCount int) (map[vectorKey]vectorRow, error) {
 	f, err := os.Open(filepath.Join(c.dir, "vectors.bin"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -144,6 +144,10 @@ func (c *vectorCache) readVectors(expectedDim int) (map[vectorKey]vectorRow, err
 		return nil, err
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, vectorCacheReadError("stat vector cache", err)
+	}
 	r := bufio.NewReader(f)
 	var magic [8]byte
 	if _, err := io.ReadFull(r, magic[:]); err != nil {
@@ -162,6 +166,9 @@ func (c *vectorCache) readVectors(expectedDim int) (map[vectorKey]vectorRow, err
 	count, err := readUint64(r)
 	if err != nil {
 		return nil, vectorCacheReadError("read vector count", err)
+	}
+	if err := validateVectorRowCount(count, expectedClaimCount, expectedEmbeddedCount, expectedDim, info.Size()); err != nil {
+		return nil, err
 	}
 	rows := make(map[vectorKey]vectorRow, int(count))
 	for i := uint64(0); i < count; i++ {
@@ -203,7 +210,41 @@ func (c *vectorCache) readVectors(expectedDim int) (map[vectorKey]vectorRow, err
 		key := vectorKey{claimID: claimID, textHash: textHash}
 		rows[key] = vectorRow{ClaimID: claimID, TextHash: textHash, Vector: vec}
 	}
+	if _, err := r.Peek(1); err == nil {
+		return nil, vectorCacheCorruption("trailing vector row content", nil)
+	} else if !errors.Is(err, io.EOF) {
+		return nil, vectorCacheReadError("check vector cache trailing content", err)
+	}
 	return rows, nil
+}
+
+func validateVectorRowCount(count uint64, expectedClaimCount, expectedEmbeddedCount, expectedDim int, fileSize int64) error {
+	if expectedClaimCount < 0 || expectedEmbeddedCount < 0 {
+		return vectorCacheCorruption(fmt.Sprintf("negative manifest counts claims=%d embedded=%d", expectedClaimCount, expectedEmbeddedCount), nil)
+	}
+	maxInt := uint64(^uint(0) >> 1)
+	if count > maxInt {
+		return vectorCacheCorruption(fmt.Sprintf("row count %d exceeds platform int capacity %d", count, maxInt), nil)
+	}
+	if count != uint64(expectedClaimCount) || count != uint64(expectedEmbeddedCount) {
+		return vectorCacheCorruption(fmt.Sprintf("row count %d != manifest claims=%d embedded=%d", count, expectedClaimCount, expectedEmbeddedCount), nil)
+	}
+	const vectorHeaderBytes = int64(len(vectorMagic) + 4 + 8)
+	if fileSize < vectorHeaderBytes {
+		return vectorCacheCorruption(fmt.Sprintf("vector file size %d smaller than header %d", fileSize, vectorHeaderBytes), nil)
+	}
+	if expectedDim < 0 || uint64(expectedDim) > (^uint64(0)-41)/4 {
+		return vectorCacheCorruption(fmt.Sprintf("invalid vector dimension %d", expectedDim), nil)
+	}
+	// Each row needs an id-length word, at least one id byte, a 32-byte text
+	// hash, a dimension word, and expectedDim float32 values. This conservative
+	// minimum bounds the row count before map allocation or row iteration.
+	minRowBytes := uint64(4+1+32+4) + uint64(expectedDim)*4
+	payloadBytes := uint64(fileSize - vectorHeaderBytes)
+	if count > payloadBytes/minRowBytes {
+		return vectorCacheCorruption(fmt.Sprintf("row count %d exceeds file-derived maximum %d", count, payloadBytes/minRowBytes), nil)
+	}
+	return nil
 }
 
 func vectorCacheReadError(operation string, err error) error {
