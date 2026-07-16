@@ -171,6 +171,15 @@ Shared card grammar: **glyph tile (domain) · title (sans) · state pill (right)
 plain-language body · consequences · one primary act.** Padding 12–14px, `--radius-lg`, hairline
 border, `--shadow-sm` at rest, `--shadow` + 1px lift on hover (`--dur-fast`).
 
+The code contract for that grammar is `representation.ObjectFace`: human kind + label, the shared
+state vocabulary, why it matters now, owner, freshness/confidence, and exactly one primary action
+or an unavailable reason + unblock path. Machine IDs, CLI, and evidence remain secondary. Decide
+is the reference consumer: its focus pane exposes **Summary · Action · History · Evidence**, and
+its queue groups faces by the server-owned state into **Act now** and **Needs context**. Work,
+Briefing, Memory, Agents, Capabilities, and Sources extend this face before inventing a bespoke
+object card; their domain projection still owns truth and governed acts still cross the existing
+action seam.
+
 - **Decision card (triage hero):** domain tile + area label + plain-language headline (13px/600)
   with state pill top-right → body (12.5px muted) → consequences block on `--soft`
   (`if you act →` / `if you wait →`, act line in good-green) → act row: ONE primary button +
