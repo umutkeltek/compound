@@ -3181,8 +3181,25 @@ func cmdHarness(args []string) {
 		}
 		report, err := harness.PermissionDrift(homePath, harnessName)
 		die(err)
+		// --emit-divergence bridges a drifted report into the generic observation
+		// intake (packet work_0fc6126d8fa2): ONE tool_health observation batch,
+		// applied only when drifted (silence-on-match), so the existing
+		// source-intake edge can declare a divergence_declared card. Without the
+		// flag this stays exactly the prior display-only behavior.
+		var emission permissionDivergenceEmission
+		if hasFlag(args[1:], "--emit-divergence") {
+			emission, err = emitPermissionPostureDivergence(homePath, report, time.Now())
+			die(err)
+		}
 		if hasFlag(args[1:], "--json") {
-			die(json.NewEncoder(os.Stdout).Encode(report))
+			if emission.Applied {
+				die(json.NewEncoder(os.Stdout).Encode(struct {
+					harness.PermissionDriftReport
+					permissionDivergenceEmission
+				}{report, emission}))
+			} else {
+				die(json.NewEncoder(os.Stdout).Encode(report))
+			}
 		} else {
 			fmt.Println("# harness drift")
 			fmt.Printf("- harness: %s\n", report.Harness)
@@ -3190,6 +3207,10 @@ func cmdHarness(args []string) {
 			fmt.Printf("- status: %s\n", map[bool]string{true: "drift", false: "clean"}[report.Drifted])
 			for _, detail := range report.Details {
 				fmt.Printf("- detail: %s\n", detail)
+			}
+			if emission.Applied {
+				fmt.Printf("- observation_applied: %s\n", emission.ObservationID)
+				fmt.Printf("- observation_source: %s\n", emission.SourcePath)
 			}
 		}
 		if report.Drifted {
