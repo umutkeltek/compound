@@ -5,6 +5,7 @@ import { type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor }
 import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, reviewResolutionRevision, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
 import { areaPlain } from "@/lib/glossary";
 import { areaOf } from "@/lib/review-data";
+import type { ObjectFace } from "@/representation";
 
 /**
  * The Decide-page view model (Phase 3b). Turns the reviews needs-you groups
@@ -202,7 +203,7 @@ export type DecideGroup = {
   reviewResolutionRevision: string;
   members: DecideMember[];
   evidence: DecideEvidence[];
-  freshness: { generatedAt: string; source: string };
+  face: ObjectFace;
   act: DecideAct;
   capability: DecideCapability;
   /**
@@ -599,6 +600,14 @@ function capabilityForAct(act: DecideAct): DecideCapability {
   return { kind: "apply", label: "Apply now", detail: "A fresh owner-projected action is available behind confirmation." };
 }
 
+function faceConfidence(sample: Json): ObjectFace["confidence"] {
+  const raw = sample.confidence;
+  const parsed = typeof raw === "number" ? raw : Number.parseFloat(str(raw));
+  if (!Number.isFinite(parsed)) return undefined;
+  const value = Math.max(0, Math.min(1, parsed > 1 ? parsed / 100 : parsed));
+  return { value, label: `${Math.round(value * 100)}% confidence` };
+}
+
 /* ---------- public builder ---------- */
 
 export type SampleForGroup = (group: Json) => Json;
@@ -667,6 +676,50 @@ export function buildDecideGroups(
     const members =
       act.mode === "batch-enumerable" ? act.members : readonlyMembers(group, itemByID);
     const brief = briefTarget?.brief ?? null;
+    const capability = capabilityForAct(act);
+    const freshnessRow = group.freshness && typeof group.freshness === "object" ? group.freshness as Json : {};
+    const freshness = {
+      generatedAt: str(attention?.generated_at) || str(freshnessRow.generated_at),
+      source: str(freshnessRow.source) || "compound attention --json",
+    };
+    const copyOnly = act.mode === "copy";
+    const unavailableReason = copyOnly
+      ? reviewResolutionItemId
+        ? `No ${area.replace(/-/g, " ")} owner workflow is built yet.`
+        : capability.detail
+      : "";
+    const primaryAction = copyOnly
+      ? reviewResolutionItemId
+        ? { label: "Review disposition", effect: "record" as const }
+        : null
+      : {
+          label: act.label,
+          effect: capability.kind === "unavailable" ? "apply" as const : capability.kind,
+        };
+    const confidence = faceConfidence(sample);
+    const owner = spec?.title || (area ? area.replace(/-/g, " ") : "Unassigned review owner");
+    const face: ObjectFace = {
+      id: sampleId,
+      kind: "Decision",
+      label: title,
+      state: copyOnly ? "waiting" : "ready",
+      stateLabel: copyOnly ? "Needs context" : "Ready",
+      whyNow:
+        str(group.operator_unlock) ||
+        pl?.consequences?.approve ||
+        pl?.body ||
+        "Your review is the next safe step for this item.",
+      owner,
+      freshness,
+      confidence,
+      primaryAction,
+      unavailableReason,
+      unblockPath: copyOnly
+        ? reviewResolutionItemId
+          ? "Park or dismiss this review with a reason; the underlying authority stays unchanged."
+          : "Use the manual owner command below, or wait for the owner to expose a governed workflow."
+        : "",
+    };
 
     return {
       key: str(group.key) || sampleId,
@@ -689,12 +742,9 @@ export function buildDecideGroups(
       reviewResolutionRevision: reviewResolutionOwnerRevision,
       members,
       evidence,
-      freshness: {
-        generatedAt: str(attention?.generated_at),
-        source: "compound attention --json",
-      },
+      face,
       act,
-      capability: capabilityForAct(act),
+      capability,
       brief,
     };
   });
