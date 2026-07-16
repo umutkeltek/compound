@@ -1,6 +1,7 @@
 package mem
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -88,5 +89,81 @@ func TestSynthesisReconcileResumedBackdatedEventFoldsOnce(t *testing.T) {
 	}
 	if again.ReconcileDismissedCount != 0 {
 		t.Fatalf("steady resumed sweep folded the backdated event again: report=%+v", again)
+	}
+}
+
+func TestSynthesisReconcileFullRescanDedupsFoldedBackdatedEvent(t *testing.T) {
+	fixture := prepareBackdatedReconcileFixture(t)
+
+	folded, err := fixture.store.SynthesisSweep([]string{"reconcile"}, fixture.now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if folded.ReconcileDismissedCount != 1 {
+		t.Fatalf("backdated prerequisite fold dismissed = %d, want 1", folded.ReconcileDismissedCount)
+	}
+	checkpoint, err := fixture.store.loadReconcileCheckpoint(fixture.now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.Cursor = "garbage cursor"
+	if err := writeJSON(fixture.store.reconcileCheckpointPath(), checkpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	rescanned, err := fixture.store.SynthesisSweep([]string{"reconcile"}, fixture.now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rescanned.ReconcileDismissedCount != 0 {
+		t.Fatalf("full rescan folded the backdated event a second time: report=%+v", rescanned)
+	}
+}
+
+func TestSynthesisReconcileResumedBackdatedOutsideWindowIsParked(t *testing.T) {
+	store := newStore(t)
+	closeMemCompletionGate(t, store)
+	now := t0.AddDate(0, 0, 40)
+	baselineAt := now.Add(-2 * time.Hour)
+	claim := reconcileClaim("claim_backdated_park", 1, "project:api", "runtime", "Go", rfc3339(t0))
+	appendReconcileClaim(t, store, claim)
+	writeReconcileTransition(t, store, reconcileTransitionInput{
+		ID:        "tr_reconcile_window_baseline",
+		CreatedAt: rfc3339(baselineAt),
+		Scope:     claim.Entity,
+		ClaimRefs: []string{claim.ID},
+	})
+	if _, err := store.SynthesisSweep([]string{"reconcile"}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	const reason = "backdated_outside_window"
+	outsideID := "tr_reconcile_backdated_outside_window"
+	writeReconcileTransition(t, store, reconcileTransitionInput{
+		ID:        outsideID,
+		CreatedAt: rfc3339(now.AddDate(0, 0, -31)),
+		Scope:     claim.Entity,
+		ClaimRefs: []string{claim.ID},
+	})
+	report, err := store.SynthesisSweep([]string{"reconcile"}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ReconcileDismissedCount != 0 {
+		t.Fatalf("outside-window backdated event folded instead of parking: report=%+v", report)
+	}
+	if report.ReconcileParkedCount != 1 || len(report.ReconcileParkedReasons) != 1 {
+		t.Fatalf("outside-window backdated event was silently dropped: parked=%d reasons=%+v", report.ReconcileParkedCount, report.ReconcileParkedReasons)
+	}
+	parked := report.ReconcileParkedReasons[0]
+	if parked.Reason != reason || parked.Count != 1 || !reflect.DeepEqual(parked.EventIDs, []string{outsideID}) {
+		t.Fatalf("outside-window parked reason = %+v, want reason %q for %s", parked, reason, outsideID)
+	}
+	checkpoint, err := store.loadReconcileCheckpoint(now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.Counts[string(reconcileDispositionPark)] != 1 || !reflect.DeepEqual(checkpoint.ParkedReasons[reason], []string{outsideID}) {
+		t.Fatalf("checkpoint did not retain outside-window parking: counts=%+v reasons=%+v", checkpoint.Counts, checkpoint.ParkedReasons)
 	}
 }
