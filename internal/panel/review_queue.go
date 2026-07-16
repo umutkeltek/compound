@@ -22,9 +22,10 @@ func AnnotateVerdictQueue(report *reviewartifact.QueueReport) {
 	if !hasPanelVerdictQueueItems(report.Items) {
 		return
 	}
+	memoryCandidateIDs := memoryCandidateIDsFromQueueReport(report)
 	homePath := homeFromReviewRoot(report.ReviewRoot)
 	applications := verdictApplicationsByArtifact(report.ReviewRoot)
-	memoryTargets := memoryCandidatePanelTargets(homePath)
+	memoryTargets := memoryCandidatePanelTargets(homePath, memoryCandidateIDs)
 	for i := range report.Items {
 		item := &report.Items[i]
 		if item.Area != verdictReviewArea {
@@ -510,15 +511,42 @@ type memoryCandidatePanelTarget struct {
 	Annotations []mem.CandidateAnnotation
 }
 
-func memoryCandidatePanelTargets(homePath string) map[string]memoryCandidatePanelTarget {
-	if strings.TrimSpace(homePath) == "" {
+func memoryCandidateIDsFromQueueReport(report *reviewartifact.QueueReport) []string {
+	if report == nil {
+		return nil
+	}
+	ids := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, item := range report.Items {
+		if item.Area != verdictReviewArea {
+			continue
+		}
+		verdict, ok := verdictFromQueueItem(item)
+		if !ok || strings.TrimSpace(verdict.Target.Kind) != "memory_candidate" {
+			continue
+		}
+		id := strings.TrimSpace(verdict.Target.Ref)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func memoryCandidatePanelTargets(homePath string, ids []string) map[string]memoryCandidatePanelTarget {
+	if strings.TrimSpace(homePath) == "" || len(ids) == 0 {
 		return nil
 	}
 	store, err := mem.Open(homePath)
 	if err != nil {
 		return nil
 	}
-	candidates, err := store.AllCandidates()
+	candidates, err := store.CandidatesByID(ids)
 	if err != nil {
 		return nil
 	}

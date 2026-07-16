@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/mem"
 	"compound/internal/reviewartifact"
 )
@@ -198,6 +199,173 @@ func TestAnnotateVerdictQueueResolvesAlreadyParkedMemoryCandidate(t *testing.T) 
 	}
 	if report.Counts.ReviewRequired != 0 || report.Counts.OK != 1 {
 		t.Fatalf("review counts = %+v, want no review debt and one ok item", report.Counts)
+	}
+}
+
+func TestAnnotateVerdictQueueIgnoresUnreferencedCorruptMemoryCandidates(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIDs := []string{"cand_point_lookup_alpha", "cand_point_lookup_beta"}
+	for i, candidateID := range wantIDs {
+		run := Run{ID: "prun_point_lookup_" + candidateID, WorkID: "work_point_lookup"}
+		target := TargetInput{
+			Kind:       "memory_candidate",
+			Ref:        candidateID,
+			Visibility: "private",
+			Payload:    json.RawMessage(`{"object":"Point lookup should isolate unrelated candidate corruption."}`),
+		}
+		synthesis := Synthesis{
+			SchemaVersion:         SynthesisSchemaVersion,
+			Decision:              "needs_human",
+			Confidence:            0.75,
+			Rationale:             "Panel requested operator review before promotion.",
+			JudgeRouteEvidenceRef: "route_point_lookup",
+		}
+		if _, err := writeVerdictArtifact(home, run, target, nil, synthesis, time.Date(2026, 7, 4, 0, i, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("write verdict artifact for %s: %v", candidateID, err)
+		}
+		if _, err := store.RecordStableCandidate(mem.Candidate{
+			ID:             candidateID,
+			Entity:         "knowledge:point-lookup:" + candidateID,
+			Predicate:      "supports_isolated_lookup",
+			Object:         "Point lookup should isolate unrelated candidate corruption.",
+			Confidence:     0.8,
+			Derivation:     "deterministic",
+			Visibility:     "private",
+			SourceTraceRef: "point_lookup_fixture",
+		}); err != nil {
+			t.Fatalf("record stable candidate %s: %v", candidateID, err)
+		}
+		if _, err := store.AnnotateCandidate(candidateID, mem.CandidateAnnotation{
+			Kind:             "panel_verdict",
+			Decision:         "annotate",
+			OriginalDecision: "needs_human",
+			RunID:            run.ID,
+			VerdictArtifact:  "panel_verdict_fixture.json",
+			Rationale:        "panel evidence was applied as annotation, not ambient memory",
+			Confidence:       0.75,
+			EvidenceRefs:     []string{"panel_run:" + run.ID},
+		}, time.Date(2026, 7, 4, 0, i, 30, 0, time.UTC)); err != nil {
+			t.Fatalf("annotate candidate %s: %v", candidateID, err)
+		}
+	}
+
+	for _, name := range []string{"000-poison.json", "001-poison.json"} {
+		path := filepath.Join(home, candidates.InboxDir(candidates.Memory), name)
+		if err := os.WriteFile(path, []byte("{not-json"), 0o644); err != nil {
+			t.Fatalf("write poison candidate %s: %v", name, err)
+		}
+	}
+
+	report, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: "panel-verdicts"}, time.Date(2026, 7, 4, 0, 2, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+	AnnotateVerdictQueue(&report)
+	reviewartifact.Recount(&report)
+	if len(report.Items) != len(wantIDs) {
+		t.Fatalf("items = %d, want %d", len(report.Items), len(wantIDs))
+	}
+	for _, item := range report.Items {
+		verdict, ok := verdictFromQueueItem(item)
+		if !ok {
+			t.Fatalf("verdict artifact unreadable for queue item %s", item.ID)
+		}
+		if item.Status != "resolved" || item.Readiness != "no_action" {
+			t.Fatalf("target %s status/readiness = %s/%s, want resolved/no_action", verdict.Target.Ref, item.Status, item.Readiness)
+		}
+		wantNextAction := "memory candidate already parked with 1 annotation(s); panel verdict no longer open review debt (target=memory_candidate/" + verdict.Target.Ref + ")"
+		if item.NextAction != wantNextAction {
+			t.Fatalf("target %s next action = %q, want %q", verdict.Target.Ref, item.NextAction, wantNextAction)
+		}
+	}
+	if report.Counts.ReviewRequired != 0 || report.Counts.OK != len(wantIDs) {
+		t.Fatalf("review counts = %+v, want no review debt and %d ok items", report.Counts, len(wantIDs))
+	}
+}
+
+func TestAnnotateVerdictQueueMissingMemoryCandidateDoesNotBlockSiblings(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		presentID = "cand_point_lookup_present"
+		missingID = "cand_point_lookup_missing"
+	)
+	for i, candidateID := range []string{presentID, missingID} {
+		run := Run{ID: "prun_missing_" + candidateID, WorkID: "work_missing_candidate"}
+		target := TargetInput{
+			Kind:       "memory_candidate",
+			Ref:        candidateID,
+			Visibility: "private",
+			Payload:    json.RawMessage(`{"object":"A missing candidate should not block a readable sibling."}`),
+		}
+		synthesis := Synthesis{
+			SchemaVersion:         SynthesisSchemaVersion,
+			Decision:              "needs_human",
+			Confidence:            0.75,
+			Rationale:             "Panel requested operator review before promotion.",
+			JudgeRouteEvidenceRef: "route_missing_candidate",
+		}
+		if _, err := writeVerdictArtifact(home, run, target, nil, synthesis, time.Date(2026, 7, 4, 1, i, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("write verdict artifact for %s: %v", candidateID, err)
+		}
+	}
+	if _, err := store.RecordStableCandidate(mem.Candidate{
+		ID:             presentID,
+		Entity:         "knowledge:point-lookup:present",
+		Predicate:      "supports_missing_sibling",
+		Object:         "A missing candidate should not block a readable sibling.",
+		Confidence:     0.8,
+		Derivation:     "deterministic",
+		Visibility:     "private",
+		SourceTraceRef: "missing_candidate_fixture",
+	}); err != nil {
+		t.Fatalf("record stable candidate %s: %v", presentID, err)
+	}
+	if _, err := store.AnnotateCandidate(presentID, mem.CandidateAnnotation{
+		Kind:             "panel_verdict",
+		Decision:         "annotate",
+		OriginalDecision: "needs_human",
+		RunID:            "prun_missing_" + presentID,
+		VerdictArtifact:  "panel_verdict_fixture.json",
+		Rationale:        "panel evidence was applied as annotation, not ambient memory",
+		Confidence:       0.75,
+		EvidenceRefs:     []string{"panel_run:prun_missing_" + presentID},
+	}, time.Date(2026, 7, 4, 1, 2, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("annotate candidate %s: %v", presentID, err)
+	}
+
+	report, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: "panel-verdicts"}, time.Date(2026, 7, 4, 1, 3, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+	AnnotateVerdictQueue(&report)
+	if len(report.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(report.Items))
+	}
+	for _, item := range report.Items {
+		verdict, ok := verdictFromQueueItem(item)
+		if !ok {
+			t.Fatalf("verdict artifact unreadable for queue item %s", item.ID)
+		}
+		switch verdict.Target.Ref {
+		case presentID:
+			if item.Status != "resolved" || item.Readiness != "no_action" {
+				t.Fatalf("present sibling status/readiness = %s/%s, want resolved/no_action", item.Status, item.Readiness)
+			}
+		case missingID:
+			if item.Status != "review_required" || item.Readiness != "needs_review" {
+				t.Fatalf("missing target status/readiness = %s/%s, want review_required/needs_review", item.Status, item.Readiness)
+			}
+		default:
+			t.Fatalf("unexpected target %s", verdict.Target.Ref)
+		}
 	}
 }
 

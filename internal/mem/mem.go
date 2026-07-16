@@ -363,6 +363,30 @@ func (s *Store) getCandidate(id string) (Candidate, error) {
 	return c, err
 }
 
+// CandidatesByID returns the readable inbox candidates for the requested IDs.
+// Missing or unreadable candidates are omitted so one damaged file cannot break
+// lookups for its siblings.
+func (s *Store) CandidatesByID(ids []string) (map[string]Candidate, error) {
+	out := make(map[string]Candidate, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		candidate, err := s.getCandidate(id)
+		if err != nil {
+			continue
+		}
+		out[id] = candidate
+	}
+	return out, nil
+}
+
 func (s *Store) mutateCandidateLocked(candID string, mutate func(*Candidate) (bool, error)) (Candidate, bool, error) {
 	c, err := s.getCandidate(candID)
 	if err != nil {
