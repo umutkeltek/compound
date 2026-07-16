@@ -64,15 +64,19 @@ func RecordWorktreeRetirementPlan(homePath string, plan WorktreeRetirementPlan) 
 	if err := ValidateWorktreeRetirementPlan(plan); err != nil {
 		return WorktreeRetirementPlanPaths{}, err
 	}
-	planPath, err := reviewartifact.WriteJSON(homePath, SourceControlCleanupReviewArea, plan.ID+".retirement.json", plan, "  ")
+	planBytes, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		return WorktreeRetirementPlanPaths{}, err
 	}
-	reviewPath, err := reviewartifact.WriteRaw(homePath, SourceControlCleanupReviewArea, plan.ID+".retirement.md", []byte(RenderWorktreeRetirementPlan(plan)))
+	planPath, err := writeExclusiveWorktreeRetirementArtifact(homePath, plan.ID+".retirement.json", append(planBytes, '\n'))
 	if err != nil {
 		return WorktreeRetirementPlanPaths{}, err
 	}
-	reviewYAMLPath, err := reviewartifact.WriteRaw(homePath, SourceControlCleanupReviewArea, plan.ID+".retirement.review.yaml", []byte(RenderWorktreeRetirementReviewYAML(plan)))
+	reviewPath, err := writeExclusiveWorktreeRetirementArtifact(homePath, plan.ID+".retirement.md", []byte(RenderWorktreeRetirementPlan(plan)))
+	if err != nil {
+		return WorktreeRetirementPlanPaths{}, err
+	}
+	reviewYAMLPath, err := writeExclusiveWorktreeRetirementArtifact(homePath, plan.ID+".retirement.review.yaml", []byte(RenderWorktreeRetirementReviewYAML(plan)))
 	if err != nil {
 		return WorktreeRetirementPlanPaths{}, err
 	}
@@ -83,7 +87,7 @@ func ValidateWorktreeRetirementPlan(plan WorktreeRetirementPlan) error {
 	if plan.SchemaVersion != WorktreeRetirementPlanSchemaVersion {
 		return fmt.Errorf("worktree retirement plan schema_version must be %s", WorktreeRetirementPlanSchemaVersion)
 	}
-	if !strings.HasPrefix(plan.ID, "wtr_") || filepath.Base(plan.ID) != plan.ID {
+	if !strings.HasPrefix(plan.ID, "wtr_") || filepath.Base(plan.ID) != plan.ID || plan.ID != WorktreeRetirementPlanID(plan) {
 		return fmt.Errorf("worktree retirement plan id invalid")
 	}
 	if !filepath.IsAbs(plan.RepoRoot) || !validRetirementHex(plan.RepositoryFingerprint, 64) {
@@ -260,7 +264,11 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 	}
 	report.ReviewPath = filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea, plan.ID+"."+review.ID+".retirement.reviewed.json")
 	report.AuthorizationDigest = worktreeRetirementAuthorizationDigest(report)
-	path, err := reviewartifact.WriteJSON(homePath, SourceControlCleanupReviewArea, filepath.Base(report.ReviewPath), report, "  ")
+	reportBytes, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return WorktreeRetirementReviewReport{}, err
+	}
+	path, err := writeExclusiveWorktreeRetirementArtifact(homePath, filepath.Base(report.ReviewPath), append(reportBytes, '\n'))
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
@@ -268,6 +276,43 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement review path mismatch")
 	}
 	return report, nil
+}
+
+func writeExclusiveWorktreeRetirementArtifact(homePath, name string, data []byte) (string, error) {
+	if filepath.Base(name) != name || strings.TrimSpace(name) == "" {
+		return "", fmt.Errorf("worktree retirement artifact name invalid")
+	}
+	dir, err := reviewartifact.Dir(homePath, SourceControlCleanupReviewArea)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, name)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if !os.IsExist(err) {
+			return "", err
+		}
+		existing, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return "", readErr
+		}
+		if bytes.Equal(existing, data) {
+			return path, nil
+		}
+		return "", fmt.Errorf("worktree retirement artifact %s already exists with different bytes", path)
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return "", err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func validateWorktreeRetirementReview(review WorktreeRetirementReview) error {
