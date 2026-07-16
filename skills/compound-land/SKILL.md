@@ -167,13 +167,14 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
 - The guard is the point: if main moved since `MAIN_SHA`, **stop**, rebase, re-run the battery,
   retry. The guard has caught concurrent landings twice; treat a guard trip as normal, not an
   error to force past.
-- **Never put cleanup (worktree remove / `branch -D`) in the same command as the guarded merge**
+- **Never put retirement in the same command as the guarded merge**
   (near-miss 2026-07-09, Packet F): the guard tripped (main had moved a THIRD time that day), the
   `&&`-chain correctly skipped the merge — but a `;`-separated tail in the same command went on to
   battery/install/delete the UNMERGED branch and worktree. Recovery worked only because the tip SHA
   was in the transcript (`git branch recovery-x <sha>`; Agent worktrees share the object DB, so the
-  commits survive worktree removal until gc). Rule: land = its own command; cleanup = a separate
-  command issued only after `git log` shows the branch tip on main.
+  commits survive worktree removal until gc). Rule: land = its own command; retirement is a
+  separately reviewed Compound transaction issued only after `git log` shows the candidate tip is
+  contained or patch-equivalent on both local and published authority.
 - No merge commits onto main; `--ff-only` always.
 - **Racing a fast-landing concurrent lane is how the cwd trap recurs** (observed 2026-07-09 late,
   lane K2 — it bit AGAIN with the rule below already written): after repeated guard trips the
@@ -225,6 +226,17 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   `commit:` artifact.
 - Close the WorkEnvelope through the governed path (`work close-plan` → `work close`) with
   proof refs, so Receipt + Transition exist for the landed change.
+- **Retire the landed worktree/ref only through Compound authority, never with hand-run
+  `git worktree remove`, `git update-ref -d`, or `branch -D`.** A separate running cleanup
+  WorkEnvelope owns the mutation; the landed source WorkEnvelope must already be terminal with a
+  current `land-check`, and at least one content-addressed recovery proof must still resolve. Run
+  `compound authority worktree-retire plan ...`, have the operator record the exact generated YAML
+  with `compound authority worktree-retire review ... --decision authorize_retirement`, then run
+  `compound authority worktree-retire apply ... --actor <cleanup-lease-holder>`. The adapter
+  revalidates Git/work/lease/liveness/recovery state, persists its mutation phases, uses only
+  non-force removal plus expected-tip CAS, and records Receipt + Transition identities on the
+  cleanup work. If any proof is missing or stale, leave the worktree/ref intact; do not fall back to
+  manual cleanup. Plan, review, and apply remain separate commands.
 - Update `docs_private/plan/HANDOFF.md` (when present / operator lane) with what landed, its
   commit SHA, and any opened branch — the next session orients from it.
 - Run the `extract-approach` skill if the change solved a non-trivial problem.
