@@ -244,7 +244,7 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 		!strings.Contains(hookResponse.HookSpecificOutput.AdditionalContext, promoted.Claim.Object) {
 		t.Fatalf("production UserPromptSubmit response = %+v", hookResponse)
 	}
-	assertUserAwarenessProtocolCycle(t, hookRequests, hookResponses, 1)
+	assertUserAwarenessProtocolSidecarUnused(t, hookRequests, hookResponses)
 	afterPrompt := snapshotUserPromptMeaningState(t, homePath)
 	assertUserPromptMeaningStateUnchanged(t, beforePrompt, afterPrompt)
 }
@@ -331,6 +331,22 @@ func assertUserAwarenessProtocolCycle(t *testing.T, requestLog, responseLog stri
 	for _, op := range []string{mem.OpCapabilities, mem.OpIndex, mem.OpQuery} {
 		if counts[op] < minCycles {
 			t.Fatalf("protocol op %s count=%d, want at least %d (all=%v)", op, counts[op], minCycles, counts)
+		}
+	}
+}
+
+func assertUserAwarenessProtocolSidecarUnused(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(bytes.TrimSpace(raw)) != 0 {
+			t.Fatalf("prompt submission unexpectedly started protocol sidecar %s:\n%s", path, raw)
 		}
 	}
 }
