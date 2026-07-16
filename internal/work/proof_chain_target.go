@@ -11,7 +11,17 @@ func (s *Store) ProofChainForWork(workID string) (ProofChainDoctorItem, error) {
 		return ProofChainDoctorItem{}, err
 	}
 	report := ProofChainDoctorReport{}
-	item := s.proofChainItem(w, &report)
+	// Single-work caller: read this one work's lifecycle events directly (the
+	// batch eventsByWorkID seam is for the whole-ledger ProofChainDoctor). This
+	// preserves proofChainItem's former internal eventsFor read and its
+	// events_unreadable degradation exactly.
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		item := ProofChainDoctorItem{WorkID: w.ID, State: w.State}
+		addProofChainProblem(&report, &item, "events_unreadable", "lifecycle events unreadable: "+err.Error())
+		return item, nil
+	}
+	item := s.proofChainItem(w, events, &report)
 	if len(item.Problems) == 0 {
 		item.ProofComplete = true
 	}

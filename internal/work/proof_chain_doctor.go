@@ -90,32 +90,41 @@ func (s *Store) ProofChainDoctor(now time.Time, opts ProofChainDoctorOptions) (P
 		},
 	}
 	report.Counts.WorksChecked = len(works)
+	// One events/work.jsonl read for the whole doctor: eventsByWorkID decodes the
+	// full lifecycle log once under the work-event lock and groups by work_id
+	// (eventsByWork[id] is identical to a per-work eventsFor slice — same filter
+	// and order, see decodeAdmissionEvents). The prior shape re-read+re-decoded
+	// the whole log once per terminal item (proofChainItem) PLUS once per work
+	// item (the orphan scan), so the doctor was O(works x log size). This mirrors
+	// the workbench.go batch seam.
+	eventsByWork, err := s.eventsByWorkID()
+	if err != nil {
+		return ProofChainDoctorReport{}, err
+	}
 	for _, w := range works {
 		if !terminalProofRequired(w.State) {
 			continue
 		}
 		report.Counts.TerminalChecked++
-		item := s.proofChainItem(w, &report)
+		item := s.proofChainItem(w, eventsByWork[w.ID], &report)
 		if len(item.Problems) == 0 {
 			item.ProofComplete = true
 			report.Counts.Complete++
 		}
 		report.Items = append(report.Items, item)
 	}
-	s.addOrphanEnvelopeFindings(works, &report)
+	s.addOrphanEnvelopeFindings(works, eventsByWork, &report)
 	if len(report.Findings) > 0 {
 		report.Status = "fail"
 	}
 	return report, nil
 }
 
-func (s *Store) proofChainItem(w envelope.WorkEnvelope, report *ProofChainDoctorReport) ProofChainDoctorItem {
-	events, err := s.eventsFor(w.ID)
+func (s *Store) proofChainItem(w envelope.WorkEnvelope, events []Event, report *ProofChainDoctorReport) ProofChainDoctorItem {
 	item := ProofChainDoctorItem{WorkID: w.ID, State: w.State}
-	if err != nil {
-		addProofChainProblem(report, &item, "events_unreadable", "lifecycle events unreadable: "+err.Error())
-		return item
-	}
+	// events is the batched eventsByWorkID slice for this work_id; a malformed
+	// log already failed the whole doctor at the batch read, so there is no
+	// per-item events_unreadable path.
 	item.ReceiptID = lastAttachedWithPrefix(events, "rec_")
 	item.TransitionID = firstNonEmpty(w.IDs.TransitionID, lastAttachedWithPrefix(events, "tr_"))
 	item.ActionIntentIDs = compactPrefix(w.RunIDs, "act_")
@@ -223,7 +232,7 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, report *ProofChainDoctor
 	return item
 }
 
-func (s *Store) addOrphanEnvelopeFindings(works []envelope.WorkEnvelope, report *ProofChainDoctorReport) {
+func (s *Store) addOrphanEnvelopeFindings(works []envelope.WorkEnvelope, eventsByWork map[string][]Event, report *ProofChainDoctorReport) {
 	referenced := map[string]bool{}
 	for _, w := range works {
 		for _, ref := range w.RunIDs {
@@ -231,11 +240,7 @@ func (s *Store) addOrphanEnvelopeFindings(works []envelope.WorkEnvelope, report 
 		}
 		addProofChainRef(referenced, w.PolicyDecisionID)
 		addProofChainRef(referenced, w.IDs.TransitionID)
-		events, err := s.eventsFor(w.ID)
-		if err != nil {
-			continue
-		}
-		for _, event := range events {
+		for _, event := range eventsByWork[w.ID] {
 			for _, ref := range event.Attached {
 				addProofChainRef(referenced, ref)
 			}
