@@ -231,7 +231,7 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 	settings := map[string]any{}
 	if len(bytes.TrimSpace(before)) > 0 {
 		if err := json.Unmarshal(before, &settings); err != nil {
-			return PermissionRender{}, fmt.Errorf("parse settings target %s: %w", policy.TargetPath, err)
+			return PermissionRender{}, fmt.Errorf("settings target %s is not valid JSON: %w", policy.TargetPath, err)
 		}
 	}
 	previous, _, err := latestHarnessArtifact(homePath, harness, policy.TargetPath)
