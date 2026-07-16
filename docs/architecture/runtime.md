@@ -249,7 +249,7 @@ harness-compatible output`. The lessons from a mature hook system map cleanly:
 
 ```text
 SessionStart   → ContextRequest + EffectiveContract + ContextPack + context/injections/<hook_event_id>.md   (returns a compact orientation summary and persists exact injected text plus inclusion/exclusion provenance, NOT a universe dump)
-UserPromptSubmit → ContextRequest + EffectiveContract + ContextPack + one bounded injection artifact (live prompts are transient relevance queries: persisted intent is an opaque digest, returned native context is byte-identical to the artifact, and no WorkEnvelope is created; explicit fixture replay may still model proposed work for compatibility)
+UserPromptSubmit → ContextRequest + EffectiveContract + ContextPack + one bounded injection artifact (live prompts are transient relevance queries: persisted intent is an opaque digest, breadth retrieval validates but does not capture observed-fact proposals, native ContextOutput is byte-identical to the artifact, Summary is a content-free id/count/hash diagnostic, and no WorkEnvelope is created; explicit fixture replay may still model proposed work for compatibility)
 PreToolUse     → ActionIntent + PolicyDecision (+ held WorkEnvelope review or exact batch-bound capability for dirty source-control holds)
                                                                   (returns allow | allow_with_obligations | hold | deny)
 PostToolUse    → ToolEvent + ArtifactRef + VerificationCandidate
