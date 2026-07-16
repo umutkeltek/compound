@@ -22,6 +22,46 @@ export type ShapeName =
 
 export type ActEffect = "record" | "apply" | "track";
 
+/**
+ * Shared object-state vocabulary for every operator-facing entity. Individual
+ * projections may use richer lifecycle enums internally; the face translates
+ * them into this small human grammar before rendering.
+ */
+export type ObjectFaceState =
+  | "watching"
+  | "needs_attention"
+  | "ready"
+  | "running"
+  | "waiting"
+  | "blocked"
+  | "completed"
+  | "failed";
+
+export interface ObjectFaceAction {
+  label: string;
+  effect: ActEffect;
+}
+
+/**
+ * The stable human face of a Compound object. IDs and evidence stay available
+ * to the owning surface, but this contract makes identity, state, why-now,
+ * ownership, freshness, and the one next move scan consistently first.
+ */
+export interface ObjectFace {
+  id: string;
+  kind: string;
+  label: string;
+  state: ObjectFaceState;
+  stateLabel: string;
+  whyNow: string;
+  owner: string;
+  freshness: { generatedAt: string; source: string };
+  confidence?: { value: number; label: string };
+  primaryAction: ObjectFaceAction | null;
+  unavailableReason: string;
+  unblockPath: string;
+}
+
 export interface EvidenceFlow {
   nodes: string[];
   /** the one edge that changed this cycle; `gained:false` means an edge was lost. */
