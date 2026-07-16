@@ -357,7 +357,7 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 	if hookName == "user-prompt-submit" {
 		return claudeLiveHookResponse{HookSpecificOutput: claudeHookSpecificOutput{
 			HookEventName:     hookEnumName(hookName),
-			AdditionalContext: res.Summary,
+			AdditionalContext: res.ContextOutput,
 		}}
 	}
 	if normalizeLiveHarness(harnessName) == "codex" {
@@ -382,8 +382,10 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 			out.Reason = stopOutcome.Reason
 		}
 		switch hookName {
-		case "session-start", "user-prompt-submit":
+		case "session-start":
 			out.AdditionalContext = res.Summary
+		case "user-prompt-submit":
+			out.AdditionalContext = res.ContextOutput
 		case "pre-tool-use":
 			if decision, reason := livePermissionDecision(res); decision != "" {
 				out.PermissionDecision = decision
@@ -394,8 +396,10 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 	}
 	out := claudeHookSpecificOutput{HookEventName: hookEnumName(hookName)}
 	switch hookName {
-	case "session-start", "user-prompt-submit":
+	case "session-start":
 		out.AdditionalContext = res.Summary
+	case "user-prompt-submit":
+		out.AdditionalContext = res.ContextOutput
 	case "pre-tool-use":
 		if decision, reason := livePermissionDecision(res); decision != "" {
 			out.PermissionDecision = decision

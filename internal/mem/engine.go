@@ -161,6 +161,17 @@ func (e *LexicalEngine) Query(text, gate string, allowlist []string, k int) ([]H
 // ErrEngineUnavailable / ErrEmbedderMismatch explicitly — callers degrade or refuse, never
 // silently empty.
 func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
+	return s.queryBreadth(text, k, eng, true)
+}
+
+// QueryBreadthReadOnly shares QueryBreadth's validation and ranking path but does not capture
+// valid observed_fact proposals. Live prompt retrieval uses it so an engine echo cannot turn a
+// transient query into a durable candidate. Malformed hits still fail closed.
+func (s *Store) QueryBreadthReadOnly(text string, k int, eng Engine) ([]Claim, error) {
+	return s.queryBreadth(text, k, eng, false)
+}
+
+func (s *Store) queryBreadth(text string, k int, eng Engine, captureObserved bool) ([]Claim, error) {
 	if !eng.Capabilities().Breadth {
 		return nil, ErrUnsupported
 	}
@@ -237,8 +248,10 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 			if h.ClaimID != "" || h.Observed == nil || h.Observed.Entity == "" {
 				return nil, fmt.Errorf("%w: malformed observed_fact (claim_id=%q)", ErrEngineServedUnownedClaim, h.ClaimID)
 			}
-			if err := s.captureObservedFact(engineName, *h.Observed, time.Now()); err != nil {
-				return nil, err
+			if captureObserved {
+				if err := s.captureObservedFact(engineName, *h.Observed, time.Now()); err != nil {
+					return nil, err
+				}
 			}
 		default:
 			return nil, fmt.Errorf("%w: unknown hit kind %q", ErrEngineServedUnownedClaim, h.Kind)

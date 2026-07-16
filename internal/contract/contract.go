@@ -269,14 +269,15 @@ func ResolveRepoKind(flag, cwd string) (kind, via string) {
 
 // Input is a resolved orientation request (repo kind already resolved by the caller).
 type Input struct {
-	Harness      string
-	Cwd          string
-	Task         string
-	TaskContract envelope.TaskContract
-	RepoKind     string
-	RepoKindVia  string // "flag" | "<marker path>" | "default"
-	Mode         string // observe | plan | execute | review
-	Topic        string // optional topic slug; when set, ambient recall narrows to this topic's subtree. Empty = behavior unchanged.
+	Harness           string
+	Cwd               string
+	Task              string
+	TaskContract      envelope.TaskContract
+	RepoKind          string
+	RepoKindVia       string // "flag" | "<marker path>" | "default"
+	Mode              string // observe | plan | execute | review
+	Topic             string // optional topic slug; when set, ambient recall narrows to this topic's subtree. Empty = behavior unchanged.
+	ReadOnlyRetrieval bool   // transient callers may rank through breadth without capturing observed_fact proposals
 }
 
 const installedHooksSchemaVersion = "compound.installed_hooks.v0.1"
@@ -1470,7 +1471,12 @@ func semanticTaskRanksTraced(homePath string, in Input, trace *EngineDependencyT
 			trace.CorpusGeneration = caps.CorpusGen
 		}
 	}
-	claims, err := store.QueryBreadth(in.Task, semanticTaskRankK, eng)
+	var claims []mem.Claim
+	if in.ReadOnlyRetrieval {
+		claims, err = store.QueryBreadthReadOnly(in.Task, semanticTaskRankK, eng)
+	} else {
+		claims, err = store.QueryBreadth(in.Task, semanticTaskRankK, eng)
+	}
 	if err != nil {
 		if trace != nil {
 			trace.Outcome, trace.ErrorClass = classifyEngineTraceError(err)

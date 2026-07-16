@@ -75,24 +75,34 @@ func TestLiveUserPromptIsWorkNeutralAndPersistsOpaqueExactContext(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if last.Summary != string(persisted) {
-		t.Fatalf("returned context differs from persisted injection\nreturned=%q\npersisted=%q", last.Summary, string(persisted))
+	if last.ContextOutput != string(persisted) {
+		t.Fatalf("returned context differs from persisted injection\nreturned=%q\npersisted=%q", last.ContextOutput, string(persisted))
 	}
 	for _, want := range []string{
 		"pricing prompt context should prefer concise progress updates",
 		"capability://skill:codex-pricing",
 	} {
-		if !strings.Contains(last.Summary, want) {
-			t.Fatalf("returned context missing relevant meaning %q:\n%s", want, last.Summary)
+		if !strings.Contains(last.ContextOutput, want) {
+			t.Fatalf("returned context missing relevant meaning %q:\n%s", want, last.ContextOutput)
 		}
 	}
 	for _, forbidden := range []string{raw, "UNRELATED_DATABASE_MARKER_951d", "candidate work"} {
-		if strings.Contains(last.Summary, forbidden) {
-			t.Fatalf("returned context contains forbidden %q:\n%s", forbidden, last.Summary)
+		if strings.Contains(last.ContextOutput, forbidden) {
+			t.Fatalf("returned context contains forbidden %q:\n%s", forbidden, last.ContextOutput)
 		}
 	}
-	if utf8.RuneCountInString(last.Summary) > MaxContextChars {
-		t.Fatalf("returned context chars=%d, max=%d", utf8.RuneCountInString(last.Summary), MaxContextChars)
+	if utf8.RuneCountInString(last.ContextOutput) > MaxContextChars {
+		t.Fatalf("returned context chars=%d, max=%d", utf8.RuneCountInString(last.ContextOutput), MaxContextChars)
+	}
+	for _, want := range []string{last.Event.Header.ID, last.Context.Pack.Header.ID, "chars=", "sha256:"} {
+		if !strings.Contains(last.Summary, want) {
+			t.Fatalf("prompt diagnostic missing %q: %q", want, last.Summary)
+		}
+	}
+	for _, forbidden := range []string{"# Compound Context Injection", "pricing prompt context should prefer concise progress updates"} {
+		if strings.Contains(last.Summary, forbidden) {
+			t.Fatalf("prompt diagnostic leaked context %q: %q", forbidden, last.Summary)
+		}
 	}
 
 	ref := "sha256:" + hashStr(raw)

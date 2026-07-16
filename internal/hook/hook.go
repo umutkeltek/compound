@@ -136,6 +136,7 @@ type Result struct {
 	Event          envelope.HookEvent  `json:"event"`
 	Produced       []envelope.Envelope `json:"produced"`
 	Summary        string              `json:"summary"`
+	ContextOutput  string              `json:"-"`
 	Injection      *InjectionArtifact  `json:"injection,omitempty"`
 	Context        *ContextObservation `json:"-"`
 	BreakerTripped bool                `json:"breaker_tripped,omitempty"`
@@ -338,10 +339,11 @@ func liveUserPrompt(name string, fx Fixture, deps Deps, now time.Time, mode stri
 		ev.OutputRef = injection.Ref
 	}
 	return Result{
-		Event:     ev,
-		Produced:  []envelope.Envelope{&req, &built.Contract, &built.Pack},
-		Summary:   rendered,
-		Injection: injection,
+		Event:         ev,
+		Produced:      []envelope.Envelope{&req, &built.Contract, &built.Pack},
+		Summary:       fmt.Sprintf("context hook=%s pack=%s chars=%d sha256:%s", ev.Header.ID, built.Pack.Header.ID, len([]rune(rendered)), hashStr(rendered)),
+		ContextOutput: rendered,
+		Injection:     injection,
 		Context: &ContextObservation{
 			Input:            built.Input,
 			Pack:             built.Pack,
@@ -371,6 +373,7 @@ func buildContextWithBreaker(name string, fx Fixture, deps Deps, mode string, no
 		if err != nil {
 			return contextBuild{}, err
 		}
+		in.ReadOnlyRetrieval = fx.Live && name == "UserPromptSubmit"
 		ec := contract.Compile(in, deps.Orient, now)
 		var pack envelope.ContextPack
 		var retrievalLatency time.Duration
@@ -1278,37 +1281,64 @@ const maxInjectionActiveDecisionRefs = 12
 // Dedicated sections render the high-signal subsets separately.
 const maxInjectionIncludedRefs = 24
 
+const (
+	maxInjectionHeaderChars            = 400
+	maxInjectionActiveMemoryChars      = 1600
+	maxInjectionActiveDecisionChars    = 700
+	maxInjectionRequiredChecksChars    = 600
+	maxInjectionAvoidChars             = 450
+	maxInjectionCapabilityOfferChars   = 1000
+	maxInjectionSummaryChars           = 500
+	maxInjectionActiveInstructionChars = 650
+)
+
 func renderInjection(hookID string, pack envelope.ContextPack) string {
-	var b strings.Builder
-	b.WriteString("# Compound Context Injection\n\n")
-	fmt.Fprintf(&b, "- Hook event: `%s`\n", safeMD(hookID))
-	fmt.Fprintf(&b, "- Context pack: `%s`\n", safeMD(pack.Header.ID))
+	var header strings.Builder
+	header.WriteString("# Compound Context Injection\n\n")
+	fmt.Fprintf(&header, "- Hook event: `%s`\n", safeMD(hookID))
+	fmt.Fprintf(&header, "- Context pack: `%s`\n", safeMD(pack.Header.ID))
 	if strings.TrimSpace(pack.Header.Scope.Surface) != "" {
-		fmt.Fprintf(&b, "- Scope: `%s`\n", safeMD(pack.Header.Scope.Surface))
+		fmt.Fprintf(&header, "- Scope: `%s`\n", safeMD(pack.Header.Scope.Surface))
 	}
-	b.WriteString("- Capability refs are offers only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision.\n\n")
+	header.WriteString("- Capability refs are offers only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision.\n\n")
+
+	var b strings.Builder
+	b.WriteString(capInjectionSection(header.String(), maxInjectionHeaderChars))
 
 	if len(pack.ActiveMemory) > 0 {
-		shown := prioritizedActiveMemoryRefs(pack.ActiveMemory, pack.ActivePositions)
-		omitted := 0
-		if len(shown) > maxInjectionActiveMemoryRefs {
-			omitted = len(shown) - maxInjectionActiveMemoryRefs
-			shown = shown[:maxInjectionActiveMemoryRefs]
-		}
-		writeActiveMemoryList(&b, pack, shown)
-		if omitted > 0 {
-			fmt.Fprintf(&b, "- %d more active memory ref(s) omitted from digest budget\n", omitted)
-		}
+		writeBudgetedInjectionSection(&b, maxInjectionActiveMemoryChars, func(section *strings.Builder) {
+			shown := prioritizedActiveMemoryRefs(pack.ActiveMemory, pack.ActivePositions)
+			omitted := 0
+			if len(shown) > maxInjectionActiveMemoryRefs {
+				omitted = len(shown) - maxInjectionActiveMemoryRefs
+				shown = shown[:maxInjectionActiveMemoryRefs]
+			}
+			writeActiveMemoryList(section, pack, shown)
+			if omitted > 0 {
+				fmt.Fprintf(section, "- %d more active memory ref(s) omitted from digest budget\n", omitted)
+			}
+		})
 	}
-	writeCappedStringList(&b, "Active Decisions", pack.ActiveDecisions, maxInjectionActiveDecisionRefs, "active decision ref(s)")
-	writeStringList(&b, "Required Checks", pack.RequiredChecks)
-	writeStringList(&b, "Avoid", pack.Avoid)
-	writeCapabilityOfferList(&b, pack.CapabilityOffers)
-
-	b.WriteString("## Summary\n")
-	b.WriteString(safeMD(pack.SummaryMD))
-	b.WriteString("\n\n")
-	writeStringList(&b, "Active Instructions", pack.ActiveInstructions)
+	writeBudgetedInjectionSection(&b, maxInjectionActiveDecisionChars, func(section *strings.Builder) {
+		writeCappedStringList(section, "Active Decisions", pack.ActiveDecisions, maxInjectionActiveDecisionRefs, "active decision ref(s)")
+	})
+	writeBudgetedInjectionSection(&b, maxInjectionRequiredChecksChars, func(section *strings.Builder) {
+		writeStringList(section, "Required Checks", pack.RequiredChecks)
+	})
+	writeBudgetedInjectionSection(&b, maxInjectionAvoidChars, func(section *strings.Builder) {
+		writeStringList(section, "Avoid", pack.Avoid)
+	})
+	writeBudgetedInjectionSection(&b, maxInjectionCapabilityOfferChars, func(section *strings.Builder) {
+		writeCapabilityOfferList(section, pack.CapabilityOffers)
+	})
+	writeBudgetedInjectionSection(&b, maxInjectionSummaryChars, func(section *strings.Builder) {
+		section.WriteString("## Summary\n")
+		section.WriteString(safeMD(pack.SummaryMD))
+		section.WriteString("\n\n")
+	})
+	writeBudgetedInjectionSection(&b, maxInjectionActiveInstructionChars, func(section *strings.Builder) {
+		writeStringList(section, "Active Instructions", pack.ActiveInstructions)
+	})
 	writeStringList(&b, "Active Hooks", pack.ActiveHooks)
 	writeIncludedList(&b, pack.Included)
 	b.WriteString("\n## Excluded\n")
@@ -1322,6 +1352,26 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	writeHookReadinessList(&b, pack.HookReadiness)
 	writeHookRosterList(&b, pack.HookRoster)
 	return capInjectionChars(b.String())
+}
+
+func writeBudgetedInjectionSection(dst *strings.Builder, limit int, render func(*strings.Builder)) {
+	var section strings.Builder
+	render(&section)
+	dst.WriteString(capInjectionSection(section.String(), limit))
+}
+
+func capInjectionSection(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	const marker = "\n[Section truncated; ContextPack JSON retains full provenance.]\n"
+	markerRunes := []rune(marker)
+	contentLimit := limit - len(markerRunes)
+	if contentLimit < 0 {
+		contentLimit = 0
+	}
+	return string(runes[:contentLimit]) + marker
 }
 
 func capInjectionChars(text string) string {
