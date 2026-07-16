@@ -1,11 +1,16 @@
 package contract
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/breadth"
+	"compound/internal/candidates"
+	"compound/internal/capgraph"
 	"compound/internal/mem"
 )
 
@@ -86,5 +91,86 @@ func assertRuntimeJSONEqual(t *testing.T, label string, got, want any) {
 	}
 	if string(gotJSON) != string(wantJSON) {
 		t.Fatalf("%s bytes drifted:\ngot  %s\nwant %s", label, gotJSON, wantJSON)
+	}
+}
+
+type runtimeSemanticEmbedder struct {
+	task      string
+	taskCalls int
+}
+
+func (e *runtimeSemanticEmbedder) Identity() string { return "stub:runtime:2:f32" }
+func (e *runtimeSemanticEmbedder) Dim() int         { return 2 }
+func (e *runtimeSemanticEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, 0, len(texts))
+	for _, text := range texts {
+		if text == e.task {
+			e.taskCalls++
+		}
+		if text == e.task || strings.Contains(text, "deployment automation") || strings.Contains(text, "Worldwide Delivery") {
+			out = append(out, []float32{1, 0})
+		} else {
+			out = append(out, []float32{0, 1})
+		}
+	}
+	return out, nil
+}
+
+func TestMaterializeRuntimeReadOnlySharesInProcessSemanticTaskEmbedding(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := store.Capture([]mem.Candidate{{
+		Entity: "delivery-system", Predicate: "architecture", Object: "deployment automation releases verified artifacts",
+		Confidence: 0.99, Derivation: "deterministic", ClaimType: "architecture",
+		PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "trace_runtime_semantic",
+		SnippetHash: "sha256:runtime-semantic", Visibility: "operational",
+	}}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := store.Adjudicate(captured[0].ID, candidates.Promote, "test", fixedNow)
+	if err != nil || promoted.Claim == nil {
+		t.Fatalf("promote semantic claim: result=%+v err=%v", promoted, err)
+	}
+	graph, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const capabilityID = "skill:worldwide-delivery"
+	if err := graph.Add(capgraph.Node{
+		ID: capabilityID, Kind: "skill", Name: "Worldwide Delivery",
+		Triggers: []string{"deployment automation"}, Weight: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	task := "ship this faster"
+	embedder := &runtimeSemanticEmbedder{task: task}
+	priorResolver := breadthEmbedderResolver
+	breadthEmbedderResolver = func(string) (breadth.EmbedderAdapter, bool) { return embedder, true }
+	t.Cleanup(func() { breadthEmbedderResolver = priorResolver })
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+
+	got, err := MaterializeRuntime(Input{
+		Harness: "codex", Cwd: "/repo/product", Task: task,
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute", ReadOnlyRetrieval: true,
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if embedder.taskCalls != 1 {
+		t.Fatalf("exact semantic task embeddings = %d, want 1 shared by memory and capgraph", embedder.taskCalls)
+	}
+	if !contains(got.ContextPack.ActiveMemory, "claim://"+promoted.Claim.ID) {
+		t.Fatalf("semantic-only memory missing: %v", got.ContextPack.ActiveMemory)
+	}
+	if !hasIncluded(got.ContextPack, "capability://"+capabilityID) {
+		t.Fatalf("semantic-only capability missing: %+v", got.ContextPack.CapabilityOffers)
+	}
+	if got.EngineDependencyTrace.Outcome != EngineOutcomeUsed || got.EngineDependencyTrace.ObservedEngine != breadth.Name {
+		t.Fatalf("in-process semantic trace = %+v", got.EngineDependencyTrace)
 	}
 }
