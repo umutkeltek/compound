@@ -227,16 +227,22 @@ func TestAuthorityWorktreeRetireCLIReviewPreservesGeneratedTemplate(t *testing.T
 		t.Fatal(err)
 	}
 
-	stdout.Reset()
-	stderr.Reset()
-	code = runAuthorityWorktreeRetire(homePath, []string{
+	reviewArgs := []string{
 		"review", planned.Paths.ReviewYAMLPath,
 		"--decision", "authorize_retirement",
 		"--rationale", "preserve the generated template while recording reviewed content",
 		"--reviewed-by", "operator:test", "--json",
-	}, &stdout, &stderr, cliTestNow.Add(11*time.Minute))
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = runAuthorityWorktreeRetire(homePath, reviewArgs, &stdout, &stderr, cliTestNow.Add(11*time.Minute))
 	if code != 0 {
 		t.Fatalf("review code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	firstOutput := append([]byte(nil), stdout.Bytes()...)
+	var firstReport authority.WorktreeRetirementReviewReport
+	if err := json.Unmarshal(firstOutput, &firstReport); err != nil {
+		t.Fatalf("decode first review: %v\n%s", err, firstOutput)
 	}
 	templateAfter, err := os.ReadFile(planned.Paths.ReviewYAMLPath)
 	if err != nil {
@@ -244,6 +250,38 @@ func TestAuthorityWorktreeRetireCLIReviewPreservesGeneratedTemplate(t *testing.T
 	}
 	if !bytes.Equal(templateAfter, templateBefore) {
 		t.Fatalf("review command overwrote generated template:\nbefore:\n%s\nafter:\n%s", templateBefore, templateAfter)
+	}
+	firstSource, err := os.ReadFile(firstReport.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runAuthorityWorktreeRetire(homePath, reviewArgs, &stdout, &stderr, cliTestNow.Add(12*time.Minute))
+	if code != 0 {
+		t.Fatalf("same review replay code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var replayed authority.WorktreeRetirementReviewReport
+	if err := json.Unmarshal(stdout.Bytes(), &replayed); err != nil {
+		t.Fatalf("decode replayed review: %v\n%s", err, stdout.String())
+	}
+	if replayed.ID != firstReport.ID || !bytes.Equal(stdout.Bytes(), firstOutput) {
+		t.Fatalf("same review replay changed report: first=%+v replayed=%+v", firstReport, replayed)
+	}
+	templateAfterReplay, err := os.ReadFile(planned.Paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(templateAfterReplay, templateBefore) {
+		t.Fatalf("same review replay changed generated template")
+	}
+	sourceAfterReplay, err := os.ReadFile(firstReport.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(sourceAfterReplay, firstSource) {
+		t.Fatalf("same review replay changed reviewed source")
 	}
 }
 

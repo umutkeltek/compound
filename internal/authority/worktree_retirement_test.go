@@ -127,8 +127,8 @@ func TestWorktreeRetirementReviewedReportIsCreateExclusiveAndIdempotentForSameCo
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RecordWorktreeRetirementReview(home, review, paths.ReviewYAMLPath, now); err != nil {
-		t.Fatalf("same-content reviewed report replay rejected: %v", err)
+	if _, err := RecordWorktreeRetirementReview(home, review, paths.ReviewYAMLPath, now.Add(time.Minute)); err != nil {
+		t.Fatalf("same-content reviewed report replay at later invocation time rejected: %v", err)
 	}
 	tampered := []byte("different reviewed report bytes\n")
 	if err := os.WriteFile(report.ReviewPath, tampered, 0o600); err != nil {
