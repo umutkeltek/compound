@@ -198,6 +198,9 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 	if deps.Liveness == nil {
 		deps.Liveness = LSOFWorktreeRetirementLiveness{}
 	}
+	if deps.RecoveryResolver == nil {
+		deps.RecoveryResolver = SHA256FileWorktreeRetirementRecoveryResolver{}
+	}
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -242,6 +245,7 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 		SourceProof:           req.SourceProof,
 		RecoveryRefs:          sortedUniqueNonEmpty(req.RecoveryRefs),
 		CandidateRelation:     WorktreeCandidateUnique,
+		SourceRelation:        WorktreeCandidateUnique,
 	}
 	block := func(code string) {
 		if code != "" && !containsStringValue(plan.BlockReasons, code) {
@@ -260,6 +264,13 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 	}
 	if len(plan.RecoveryRefs) == 0 {
 		block("recovery_evidence_required")
+	} else {
+		proofs, recoveryErr := ResolveWorktreeRetirementRecoveryProofs(ctx, plan.RecoveryRefs, deps.RecoveryResolver)
+		if recoveryErr != nil {
+			block("recovery_evidence_invalid: " + recoveryErr.Error())
+		} else {
+			plan.RecoveryProofs = proofs
+		}
 	}
 
 	recordsOutput, err := deps.Git.Run(ctx, root, "worktree", "list", "--porcelain")
@@ -311,6 +322,9 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 		if err := validateRetirementRef(ctx, deps.Git, root, plan.CandidateRef, "refs/heads/"); err != nil {
 			return WorktreeRetirementPlan{}, fmt.Errorf("candidate ref: %w", err)
 		}
+		if plan.CandidateRef == "refs/heads/main" {
+			block("candidate_ref_main_protected")
+		}
 		if plan.CandidateRef == plan.AuthorityRef || plan.CandidateRef == plan.PublicationRef {
 			block("candidate_ref_is_authority_or_publication")
 		}
@@ -330,9 +344,6 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 	if !validRetirementObjectID(candidateTip) {
 		block("candidate_tip_missing")
 	} else {
-		if req.SourceProof.CommitTip != candidateTip {
-			block("candidate_tip_source_commit_mismatch")
-		}
 		relation, relationErr := classifyRetirementCandidate(ctx, deps.Git, root, candidateTip, authorityTip, publicationTip)
 		if relationErr != nil {
 			return WorktreeRetirementPlan{}, relationErr
@@ -341,6 +352,14 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 		if relation == WorktreeCandidateUnique {
 			block("candidate_contains_unique_commits")
 		}
+		sourceRelation, sourceRelationErr := classifyRetirementCandidateAgainst(ctx, deps.Git, root, candidateTip, req.SourceProof.CommitTip)
+		if sourceRelationErr != nil {
+			return WorktreeRetirementPlan{}, sourceRelationErr
+		}
+		plan.SourceRelation = sourceRelation
+		if sourceRelation == WorktreeCandidateUnique {
+			block("candidate_not_contained_or_patch_equivalent_to_source_commit")
+		}
 	}
 
 	sort.Strings(plan.BlockReasons)
@@ -348,19 +367,17 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 	if !plan.Eligible {
 		plan.Status = "blocked"
 	}
-	key, _ := json.Marshal(struct {
-		Root      string
-		Worktree  *WorktreeRetirementWorktree
-		Ref       string
-		Candidate string
-		Authority string
-		Publish   string
-		Owner     string
-		Source    string
-	}{root, plan.Worktree, plan.CandidateRef, plan.CandidateTip, plan.AuthorityTip, plan.PublicationTip, plan.OwnerProof.WorkID, plan.SourceProof.WorkID})
-	plan.ID = "wtr_" + digestRetirementHex(key)[:12]
+	plan.EvidenceRefs = worktreeRetirementPlanEvidenceRefs(plan)
+	plan.ID = WorktreeRetirementPlanID(plan)
 	plan.PlanDigest = WorktreeRetirementPlanDigest(plan)
 	return plan, nil
+}
+
+func WorktreeRetirementPlanID(plan WorktreeRetirementPlan) string {
+	plan.ID = ""
+	plan.PlanDigest = ""
+	encoded, _ := json.Marshal(plan)
+	return "wtr_" + digestRetirementHex(encoded)[:12]
 }
 
 func WorktreeRetirementPlanDigest(plan WorktreeRetirementPlan) string {
@@ -580,6 +597,24 @@ func classifyRetirementCandidate(ctx context.Context, git WorktreeRetirementGit,
 		return "", err
 	}
 	if authorityEquivalent && publicationEquivalent {
+		return WorktreeCandidatePatchEquivalent, nil
+	}
+	return WorktreeCandidateUnique, nil
+}
+
+func classifyRetirementCandidateAgainst(ctx context.Context, git WorktreeRetirementGit, repo, candidate, target string) (string, error) {
+	contained, err := retirementIsAncestor(ctx, git, repo, candidate, target)
+	if err != nil {
+		return "", err
+	}
+	if contained {
+		return WorktreeCandidateContained, nil
+	}
+	equivalent, err := retirementCherryHasNoPlus(ctx, git, repo, target, candidate)
+	if err != nil {
+		return "", err
+	}
+	if equivalent {
 		return WorktreeCandidatePatchEquivalent, nil
 	}
 	return WorktreeCandidateUnique, nil
