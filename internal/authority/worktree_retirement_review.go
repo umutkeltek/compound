@@ -213,10 +213,10 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 	if err := validateWorktreeRetirementReview(review); err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
-	expectedSourcePath := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea, review.PlanID+".retirement.review.yaml")
+	expectedTemplatePath := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea, review.PlanID+".retirement.review.yaml")
 	canonicalSource, err := filepath.Abs(filepath.Clean(sourcePath))
-	if err != nil || canonicalSource != filepath.Clean(expectedSourcePath) {
-		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement review source path must be %s", expectedSourcePath)
+	if err != nil || canonicalSource != filepath.Clean(expectedTemplatePath) {
+		return WorktreeRetirementReviewReport{}, fmt.Errorf("worktree retirement review source path must be %s", expectedTemplatePath)
 	}
 	planPath := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea, review.PlanID+".retirement.json")
 	plan, err := LoadWorktreeRetirementPlan(planPath)
@@ -243,7 +243,8 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
-	if err := os.WriteFile(expectedSourcePath, reviewBytes, 0o600); err != nil {
+	reviewedSourcePath, err := writeExclusiveWorktreeRetirementArtifact(homePath, plan.ID+"."+review.ID+".retirement.reviewed.yaml", reviewBytes)
+	if err != nil {
 		return WorktreeRetirementReviewReport{}, err
 	}
 	sourceDigest := "sha256:" + digestRetirementHex(reviewBytes)
@@ -261,7 +262,7 @@ func RecordWorktreeRetirementReview(homePath string, review WorktreeRetirementRe
 		Rationale:     review.Rationale,
 		ReviewedBy:    review.ReviewedBy,
 		ReviewedAt:    review.ReviewedAt,
-		SourcePath:    expectedSourcePath,
+		SourcePath:    reviewedSourcePath,
 		SourceDigest:  sourceDigest,
 		EvidenceRefs:  sortedUniqueNonEmpty(append(requiredEvidence, sourceDigest, "worktree-retirement-reviewer:"+review.ReviewedBy)),
 	}

@@ -17,7 +17,6 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/policy"
 	"compound/internal/work"
-	"gopkg.in/yaml.v3"
 )
 
 var worktreeRetirementCLILiveness authority.WorktreeRetirementLiveness = authority.LSOFWorktreeRetirementLiveness{}
@@ -125,11 +124,6 @@ func runAuthorityWorktreeRetire(homePath string, args []string, stdout, stderr i
 		review.Rationale = values["--rationale"]
 		review.ReviewedBy = values["--reviewed-by"]
 		review.ReviewedAt = now.UTC().Format(time.RFC3339Nano)
-		data, err := yaml.Marshal(review)
-		if err != nil || os.WriteFile(args[1], data, 0o600) != nil {
-			fmt.Fprintln(stderr, "authority worktree-retire review: cannot write reviewed YAML")
-			return 1
-		}
 		report, err := authority.RecordWorktreeRetirementReview(homePath, review, args[1], now)
 		if err != nil {
 			fmt.Fprintln(stderr, "authority worktree-retire review:", err)
