@@ -318,7 +318,11 @@ func cmdWorkbench(args []string) {
 		os.Exit(1)
 	}
 	reviewQueue := buildWorkbenchReviewQueue(reviewReport)
-	applyAttentionMeter(&reviewQueue, store, reviewReport, report, time.Now())
+	// The attention meter's executor projection reuses this displayed report only
+	// when it was built non-archived (the meter has always been computed from the
+	// non-archived board); an --include-archived report would fold archived work
+	// into the executor counts, so that path still builds its own board.
+	applyAttentionMeter(&reviewQueue, store, reviewReport, report, !includeArchived, time.Now())
 	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface, RoutePlan: routePlan, ReviewQueue: &reviewQueue}
 	if jsonOut {
 		printJSON(output)
@@ -1253,8 +1257,20 @@ func buildWorkbenchReviewQueue(report reviewartifact.QueueReport) workbenchRevie
 // again — the review-artifact-derived value already in Counts.ReviewRequired
 // stands as the last-known count. It never falls back to recomputing an
 // independent total silently; the flag makes the degradation visible.
-func applyAttentionMeter(reviewQueue *workbenchReviewQueue, store *work.Store, reviews reviewartifact.QueueReport, bench work.WorkbenchReport, now time.Time) {
-	executors, err := store.ExecutorsProjection(now)
+func applyAttentionMeter(reviewQueue *workbenchReviewQueue, store *work.Store, reviews reviewartifact.QueueReport, bench work.WorkbenchReport, reuseBenchExecutors bool, now time.Time) {
+	// Reuse the already-built displayed board for the executor projection instead
+	// of walking the whole event store a second time (the executor projection's
+	// dominant cost). The meter reads only report.Counts.NeedsYou/BlockedOnYou,
+	// which attention derives from executor lease-hygiene and Open-derived burden
+	// -- never the Recent-derived LastSuccess/LastFailure -- so a RecentLimit<8
+	// board here does not move the meter. Reuse is gated on a non-archived board
+	// so the meter's counts stay computed from the same non-archived work set as
+	// before; the archived path keeps building its own board.
+	var opts []work.ExecutorsProjectionOptions
+	if reuseBenchExecutors {
+		opts = append(opts, work.ExecutorsProjectionOptions{Workbench: &bench})
+	}
+	executors, err := store.ExecutorsProjection(now, opts...)
 	if err != nil {
 		reviewQueue.AttentionUnavailable = true
 		return

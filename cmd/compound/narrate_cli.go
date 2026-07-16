@@ -133,7 +133,13 @@ func buildNarrateScript(homePath string, mood narrate.Mood, recent int, now time
 	if err != nil {
 		return narrate.Result{}, err
 	}
-	executors, err := store.ExecutorsProjection(now)
+	// Reuse this one Workbench build for the executor projection instead of
+	// letting ExecutorsProjection walk the whole event store a second time
+	// (mirrors attention_cli). narrate's only executor consumer is attention.Build,
+	// which reads the lease-hygiene and burden fields and never the Recent-derived
+	// LastSuccess/LastFailure, so reusing this RecentLimit=recent report does not
+	// change the narrated output while dropping one full event-store walk.
+	executors, err := store.ExecutorsProjection(now, work.ExecutorsProjectionOptions{Workbench: &workbench})
 	if err != nil {
 		return narrate.Result{}, err
 	}
