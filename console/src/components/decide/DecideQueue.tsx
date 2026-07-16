@@ -5,8 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
-import { Button, FreshnessChip } from "@/components/kit";
-import { remainingDecideMembers } from "@/lib/decide-members";
+import { Button, FreshnessChip, StateBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/kit";
+import { decideReadinessSections, remainingDecideMembers } from "@/lib/decide-members";
 import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import type { DecisionEffectKind } from "@/lib/decision-registry";
@@ -501,7 +501,16 @@ function DecisionRow({
         </span>
         <span className="mt-1 line-clamp-2 block text-sm font-semibold leading-snug text-ink">{operatorText(group.title)}</span>
         <span className="mt-2 flex flex-wrap items-center gap-2">
-          <CapabilityStatus group={group} compact />
+          <StateBadge state={group.face.state} label={group.face.stateLabel} />
+          {group.face.primaryAction ? (
+            <span className="min-w-0 truncate text-2xs font-semibold text-muted" title={group.face.primaryAction.label}>
+              Next · {group.face.primaryAction.label}
+            </span>
+          ) : (
+            <span className="min-w-0 truncate text-2xs text-seam" title={group.face.unavailableReason}>
+              Unblock · {group.face.unavailableReason}
+            </span>
+          )}
           {group.count > 1 ? <span className="mono text-2xs text-faint">{group.count} items</span> : null}
         </span>
       </span>
@@ -509,7 +518,7 @@ function DecisionRow({
   );
 }
 
-function EvidenceSection({ group, includeBackground }: { group: DecideGroup; includeBackground: boolean }) {
+function EvidencePanel({ group }: { group: DecideGroup }) {
   const rows = (
     <div className="divide-y divide-hair border-y border-hair">
       {group.evidence.map((evidence, index) => (
@@ -527,29 +536,47 @@ function EvidenceSection({ group, includeBackground }: { group: DecideGroup; inc
   );
 
   return (
-    <details className="group border-t border-hair px-4 py-4">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-semibold text-muted marker:hidden">
-        <span>Background and records</span>
-        <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
-      </summary>
-      {includeBackground && (group.body || group.consequences) ? (
-        <div className="mt-3 rounded-md bg-soft px-3 py-2.5">
-          <div className="text-2xs font-bold uppercase text-faint">Decision background</div>
-          {group.body ? <p className="mt-1 text-xs leading-relaxed text-muted">{group.body}</p> : null}
-          {group.consequences ? (
-            <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} />
-          ) : null}
-        </div>
-      ) : null}
-      <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md bg-soft px-3 py-2">
+    <div className="grid gap-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-md bg-soft px-3 py-2">
         <code className="mono text-2xs text-faint" title={group.sampleId}>{group.sampleId}</code>
         <span className={`text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>
           {group.ageLabel}{group.old ? " · stale" : ""}
         </span>
-        <FreshnessChip generatedAt={group.freshness.generatedAt} source={group.freshness.source} />
+        <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
       </div>
-      {group.evidence.length ? <div className="mt-3">{rows}</div> : null}
-    </details>
+      {group.evidence.length ? rows : (
+        <p className="rounded-md border border-dashed border-hair px-3 py-6 text-center text-xs text-muted">
+          No additional evidence references are projected for this decision.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function HistoryPanel({ group }: { group: DecideGroup }) {
+  return (
+    <div className="grid gap-3">
+      <ol className="grid gap-2" aria-label="Decision history">
+        <li className="grid grid-cols-[auto_1fr] gap-3 rounded-md border border-hair bg-soft px-3 py-2.5">
+          <span aria-hidden className="mt-1 h-2 w-2 rounded-full bg-seam" />
+          <div>
+            <div className="text-xs font-semibold text-ink">Raised for review</div>
+            <p className="mt-0.5 text-xs text-muted">Entered this queue {group.ageLabel}.</p>
+          </div>
+        </li>
+        <li className="grid grid-cols-[auto_1fr] gap-3 rounded-md border border-hair bg-soft px-3 py-2.5">
+          <span aria-hidden className="mt-1 h-2 w-2 rounded-full bg-work" />
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-ink">Current owner projection</span>
+              <StateBadge state={group.face.state} label={group.face.stateLabel} />
+            </div>
+            <p className="mt-1 text-xs text-muted">No later receipt or transition is claimed by this face.</p>
+          </div>
+        </li>
+      </ol>
+      {group.members.length > 1 ? <ReadonlyMembers members={group.members} atomic={group.act.mode === "batch-atomic"} /> : null}
+    </div>
   );
 }
 
@@ -582,11 +609,11 @@ function DecisionDetail({
   onExecuted: (result: ExecuteResult) => void;
 }) {
   const { act } = group;
+  const [tab, setTab] = useState<"summary" | "action" | "history" | "evidence">(
+    group.face.state === "ready" ? "action" : "summary",
+  );
   const effectKind = group.capability.kind === "unavailable" ? "apply" : group.capability.kind;
   const reviewResolutionActs = genericReviewResolutionActs(group);
-  const contextInBackground = act.mode === "copy" || (act.mode === "bespoke" && act.options.length > 1);
-  const showConsequencePair = Boolean(group.consequences && !contextInBackground);
-  const showPrimaryContext = Boolean(group.body && !contextInBackground) || showConsequencePair;
   return (
     <article className="overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
       <header className="px-4 py-4">
@@ -594,92 +621,111 @@ function DecisionDetail({
           <div className="flex min-w-0 items-start gap-3">
             <GlyphTile domain={group.domain} glyph={group.glyph} />
             <div className="min-w-0">
-              <div className="text-2xs font-bold uppercase text-faint" title={group.areaPlain}>{group.areaLabel}</div>
-              <h3 className="mt-1 text-lg font-semibold leading-snug text-ink">{operatorText(group.title)}</h3>
+              <div className="text-2xs font-bold uppercase text-faint">{group.face.kind}</div>
+              <h3 className="mt-1 text-lg font-semibold leading-snug text-ink">{operatorText(group.face.label)}</h3>
             </div>
           </div>
-          <CapabilityStatus group={group} />
+          <StateBadge state={group.face.state} label={group.face.stateLabel} />
+        </div>
+        <div className="mt-3 rounded-md bg-soft px-3 py-2.5">
+          <div className="text-2xs font-bold uppercase tracking-wide text-faint">Why now</div>
+          <p className="mt-1 max-w-read text-sm leading-relaxed text-ink">{group.face.whyNow}</p>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-faint">
+          <span className="inline-flex items-center gap-1.5"><span>Owner</span><strong className="font-semibold text-muted">{group.face.owner}</strong></span>
+          <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
+          {group.face.confidence ? <span className="tabular-nums">{group.face.confidence.label}</span> : null}
         </div>
       </header>
 
-      {showPrimaryContext ? (
-        <section className="border-t border-hair px-4 py-4">
-          {group.body && !contextInBackground ? <p className="max-w-read text-sm leading-relaxed text-muted">{group.body}</p> : null}
-          {group.consequences && showConsequencePair ? (
-            <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} />
-          ) : null}
-        </section>
-      ) : null}
-
-      <section className="border-t border-hair bg-soft/60 px-4 py-4">
-        <div>
-          {group.capability.kind === "unavailable" && act.mode !== "copy" ? (
-            <p className="mb-2 text-sm font-semibold text-seam">
-              {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : group.capability.detail}
-            </p>
-          ) : null}
-          {act.mode === "copy" ? (
-            <div className="grid gap-2 border-l-2 border-seam-line pl-3">
-              <p className="text-sm font-semibold text-seam">
-                {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : group.capability.detail}
-              </p>
-              {reviewResolutionActs.map((resolutionAct) => (
-                <GovernedAct
-                  key={resolutionAct.actionId}
-                  act={resolutionAct}
-                  mutationsEnabled={mutationsEnabled}
-                  effectKind="record"
-                />
-              ))}
-              <details className="text-xs text-muted">
-                <summary className="cursor-pointer font-semibold">Manual owner command</summary>
-                <div className="mt-2"><CopyCmd cmd={act.command} compact /></div>
-                {act.reason ? <p className="mt-2 leading-relaxed text-faint">{act.reason}</p> : null}
-              </details>
-            </div>
-          ) : act.mode === "batch-enumerable" ? (
-            <EnumerableApply
-              area={act.area}
-              members={act.members}
-              excluded={excluded}
-              onToggle={onToggleMember}
-              mutationsEnabled={mutationsEnabled}
-              requiresConfirmation={act.requiresConfirmation}
-              requiresRationale={act.requiresRationale}
-              effectKind={act.effectKind}
-              policyNote={act.policyNote}
-              label={act.label}
-            />
-          ) : (
-            <GovernedAct
-              key={decideActIdentity(act)}
-              act={act}
-              mutationsEnabled={mutationsEnabled}
-              onExecuted={onExecuted}
-              retainedOutcome={retainedOutcome}
-              effectKind={effectKind}
-            />
-          )}
+      <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)} className="border-t border-hair">
+        <div className="overflow-x-auto px-4 py-3">
+          <TabsList label="Decision face">
+            <TabsTrigger value="summary">Summary</TabsTrigger>
+            <TabsTrigger value="action">Action</TabsTrigger>
+            <TabsTrigger value="history">History</TabsTrigger>
+            <TabsTrigger value="evidence" count={group.evidence.length}>Evidence</TabsTrigger>
+          </TabsList>
         </div>
-      </section>
 
-      {group.brief ? (
-        <details className="group border-t border-hair px-4 py-4">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-semibold text-muted marker:hidden">
-            <span>Prepared analysis</span>
-            <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
-          </summary>
-          <div className="mt-3"><BriefPanel brief={group.brief} /></div>
-        </details>
-      ) : null}
+        <TabsContent value="summary">
+          <section className="border-t border-hair px-4 py-4">
+            {group.body ? <p className="max-w-read text-sm leading-relaxed text-muted">{group.body}</p> : (
+              <p className="text-sm leading-relaxed text-muted">This decision is waiting at the owner boundary shown above.</p>
+            )}
+            {group.consequences ? <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} /> : null}
+            {group.brief ? (
+              <details className="group mt-4 border-t border-hair pt-3">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-semibold text-muted marker:hidden">
+                  <span>Prepared analysis</span>
+                  <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
+                </summary>
+                <div className="mt-3"><BriefPanel brief={group.brief} /></div>
+              </details>
+            ) : null}
+          </section>
+        </TabsContent>
 
-      <EvidenceSection group={group} includeBackground={contextInBackground} />
+        <TabsContent value="action">
+          <section className="border-t border-hair bg-soft/60 px-4 py-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-2xs font-bold uppercase tracking-wide text-faint">Primary action</div>
+                <div className="mt-0.5 text-sm font-semibold text-ink">{group.face.primaryAction?.label || "No governed owner action yet"}</div>
+              </div>
+              <CapabilityStatus group={group} />
+            </div>
+            {act.mode === "copy" ? (
+              <div className="grid gap-3 border-l-2 border-seam-line pl-3">
+                <div>
+                  <p className="text-sm font-semibold text-seam">
+                    {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : group.face.unavailableReason}
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed text-muted">{group.face.unblockPath}</p>
+                </div>
+                {reviewResolutionActs.map((resolutionAct) => (
+                  <GovernedAct
+                    key={resolutionAct.actionId}
+                    act={resolutionAct}
+                    mutationsEnabled={mutationsEnabled}
+                    effectKind="record"
+                  />
+                ))}
+                <details className="text-xs text-muted">
+                  <summary className="cursor-pointer font-semibold">Manual owner command</summary>
+                  <div className="mt-2"><CopyCmd cmd={act.command} compact /></div>
+                  {act.reason ? <p className="mt-2 leading-relaxed text-faint">{act.reason}</p> : null}
+                </details>
+              </div>
+            ) : act.mode === "batch-enumerable" ? (
+              <EnumerableApply
+                area={act.area}
+                members={act.members}
+                excluded={excluded}
+                onToggle={onToggleMember}
+                mutationsEnabled={mutationsEnabled}
+                requiresConfirmation={act.requiresConfirmation}
+                requiresRationale={act.requiresRationale}
+                effectKind={act.effectKind}
+                policyNote={act.policyNote}
+                label={act.label}
+              />
+            ) : (
+              <GovernedAct
+                key={decideActIdentity(act)}
+                act={act}
+                mutationsEnabled={mutationsEnabled}
+                onExecuted={onExecuted}
+                retainedOutcome={retainedOutcome}
+                effectKind={effectKind}
+              />
+            )}
+          </section>
+        </TabsContent>
 
-      {group.members.length > 1 ? (
-        <section className="border-t border-hair px-4 py-4">
-          <ReadonlyMembers members={group.members} atomic={act.mode === "batch-atomic"} />
-        </section>
-      ) : null}
+        <TabsContent value="history"><section className="border-t border-hair px-4 py-4"><HistoryPanel group={group} /></section></TabsContent>
+        <TabsContent value="evidence"><section className="border-t border-hair px-4 py-4"><EvidencePanel group={group} /></section></TabsContent>
+      </Tabs>
     </article>
   );
 }
@@ -745,6 +791,8 @@ export function DecideQueue({
     if (!query) return groups;
     return groups.filter((group) => `${group.title} ${group.areaLabel} ${group.body}`.toLowerCase().includes(query));
   }, [groups, filter]);
+  const readinessSections = useMemo(() => decideReadinessSections(visible), [visible]);
+  const visibleIndexByKey = useMemo(() => new Map(visible.map((group, index) => [group.key, index])), [visible]);
 
   useEffect(() => {
     const selectedIsCurrent = groups.some((group) => group.key === selectedKey);
@@ -852,16 +900,34 @@ export function DecideQueue({
 
       <div className="grid items-start gap-4 lg:grid-cols-5">
         <div ref={listRef} className="scroll-mt-16 max-h-[52vh] overflow-y-auto rounded-lg border border-hair bg-panel lg:col-span-2 lg:max-h-none lg:overflow-visible">
-          {visible.length ? visible.map((group, index) => (
-            <DecisionRow
-              key={group.key}
-              group={group}
-              selected={selected?.key === group.key}
-              rowRef={(element) => { rowRefs.current[index] = element; }}
-              onActivate={() => select(group, index, true)}
-              onFocus={() => select(group, index)}
-              onKeyDown={(event) => onRowKey(event, index, group)}
-            />
+          {visible.length ? readinessSections.map((section) => (
+            <section
+              key={section.key}
+              aria-label={section.key === "act_now" ? "Act now decisions" : "Needs context decisions"}
+              className="border-b border-hair last:border-b-0"
+            >
+              <div className={`px-3 py-2.5 ${section.key === "act_now" ? "bg-work-soft" : "bg-seam-soft"}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-bold uppercase tracking-wide text-ink">{section.label}</h3>
+                  <span className="mono rounded-pill border border-hair bg-panel px-2 py-0.5 text-2xs text-muted">{section.groups.length}</span>
+                </div>
+                <p className="mt-0.5 text-2xs text-muted">{section.description}</p>
+              </div>
+              {section.groups.map((group) => {
+                const index = visibleIndexByKey.get(group.key) ?? 0;
+                return (
+                  <DecisionRow
+                    key={group.key}
+                    group={group}
+                    selected={selected?.key === group.key}
+                    rowRef={(element) => { rowRefs.current[index] = element; }}
+                    onActivate={() => select(group, index, true)}
+                    onFocus={() => select(group, index)}
+                    onKeyDown={(event) => onRowKey(event, index, group)}
+                  />
+                );
+              })}
+            </section>
           )) : (
             <p className="border-dashed px-4 py-8 text-center text-sm text-muted">No decision matches “{filter}”.</p>
           )}
@@ -876,7 +942,7 @@ export function DecideQueue({
                   const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
                   listRef.current?.scrollIntoView({ behavior, block: "start" });
                 }}
-                className="inline-flex w-fit items-center gap-1.5 rounded-md border border-hair bg-panel px-2.5 py-1.5 text-xs font-semibold text-muted hover:bg-soft lg:hidden"
+                className="inline-flex min-h-11 w-fit items-center gap-1.5 rounded-md border border-hair bg-panel px-3 py-2 text-xs font-semibold text-muted hover:bg-soft lg:hidden"
               >
                 <span aria-hidden>↑</span>
                 All decisions
