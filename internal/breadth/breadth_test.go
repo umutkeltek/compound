@@ -2,6 +2,7 @@ package breadth
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,22 @@ import (
 
 	"compound/internal/mem"
 )
+
+type recordingBreadthEmbedder struct {
+	inner   *fakeEmbedder
+	batches [][]string
+}
+
+func newRecordingBreadthEmbedder(dim int) *recordingBreadthEmbedder {
+	return &recordingBreadthEmbedder{inner: newFakeEmbedder(dim)}
+}
+
+func (e *recordingBreadthEmbedder) Identity() string { return e.inner.Identity() }
+func (e *recordingBreadthEmbedder) Dim() int         { return e.inner.Dim() }
+func (e *recordingBreadthEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	e.batches = append(e.batches, append([]string(nil), texts...))
+	return e.inner.Embed(ctx, texts)
+}
 
 func TestTokenizeSplitsIdentifiers(t *testing.T) {
 	got := Tokenize("compoundMemory sidecar_breadth EngineHTTP route-plan")
@@ -600,6 +617,82 @@ func TestVectorCacheOperationalReadErrorIsReturned(t *testing.T) {
 	}
 	if reloadEmbedder.calls != 0 {
 		t.Fatalf("operational read error triggered %d rebuild embed call(s), want 0", reloadEmbedder.calls)
+	}
+}
+
+func TestVectorCacheRejectsUntrustedRowCountBeforeAllocation(t *testing.T) {
+	tests := []struct {
+		name  string
+		count uint64
+	}{
+		{name: "beyond platform int capacity", count: ^uint64(0)},
+		{name: "inconsistent with manifest", count: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			claims := []mem.ClaimText{
+				{ClaimID: "winner", Text: "orchestration receipts"},
+				{ClaimID: "decoy", Text: "system vocabulary"},
+			}
+			query := "system"
+			vectors := map[string][]float32{
+				query:                  {1, 0},
+				wrapDocText(claims[0]): {1, 0},
+				wrapDocText(claims[1]): {0, 1},
+			}
+			seedEmbedder := newFakeEmbedder(2)
+			seedEmbedder.vectors = vectors
+			seed, err := NewEngine(EngineConfig{Embedder: seedEmbedder, CompoundHome: home})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := seed.IndexWithError(claims, 1); err != nil {
+				t.Fatal(err)
+			}
+			path := vectorsFilePath(t, home, seedEmbedder)
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const vectorCountOffset = 8 + 4
+			binary.LittleEndian.PutUint64(raw[vectorCountOffset:vectorCountOffset+8], tt.count)
+			if err := os.WriteFile(path, raw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			rebuildEmbedder := newRecordingBreadthEmbedder(2)
+			rebuildEmbedder.inner.vectors = vectors
+			reload, err := NewEngine(EngineConfig{Embedder: rebuildEmbedder, CompoundHome: home})
+			if err != nil {
+				t.Fatal(err)
+			}
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						t.Fatalf("untrusted row count panicked before rebuild: %v", recovered)
+					}
+				}()
+				if _, err := reload.IndexWithError(claims, 2); err != nil {
+					t.Fatalf("untrusted row count should rebuild: %v", err)
+				}
+			}()
+			wantBatch := []string{wrapDocText(claims[0]), wrapDocText(claims[1])}
+			if len(rebuildEmbedder.batches) != 1 || !reflect.DeepEqual(rebuildEmbedder.batches[0], wantBatch) {
+				t.Fatalf("row-count rebuild batches = %+v, want one full-doc batch %+v", rebuildEmbedder.batches, wantBatch)
+			}
+			hits := reload.Query(query, mem.GateList, []string{"winner", "decoy"}, 1)
+			if len(hits) != 1 || hits[0].ClaimID != "winner" {
+				t.Fatalf("rebuilt semantic query = %+v, want winner", hits)
+			}
+			manifest, rows, err := reload.cache.load()
+			if err != nil {
+				t.Fatalf("rewritten cache is not healthy: %v", err)
+			}
+			if manifest.ClaimCount != len(claims) || manifest.EmbeddedCount != len(claims) || len(rows) != len(claims) {
+				t.Fatalf("rewritten cache counts = claims:%d embedded:%d rows:%d, want %d", manifest.ClaimCount, manifest.EmbeddedCount, len(rows), len(claims))
+			}
+		})
 	}
 }
 
