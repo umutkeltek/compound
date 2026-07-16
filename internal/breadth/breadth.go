@@ -449,7 +449,7 @@ func (e *Engine) indexVectors(ctx context.Context, gen int64) error {
 		manifest, loaded, err := e.cache.load()
 		if err != nil {
 			switch {
-			case errors.Is(err, errVectorCacheMiss), errors.Is(err, errVectorTemplateMismatch), errors.Is(err, errVectorDimMismatch):
+			case errors.Is(err, errVectorCacheMiss), errors.Is(err, errVectorCacheCorrupt), errors.Is(err, errVectorTemplateMismatch), errors.Is(err, errVectorDimMismatch):
 				existing = map[vectorKey]vectorRow{}
 			default:
 				return err

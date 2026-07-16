@@ -26,6 +26,7 @@ const (
 var (
 	vectorMagic               = [8]byte{'C', 'B', 'R', 'V', 'E', 'C', '1', '\n'}
 	errVectorCacheMiss        = errors.New("vector cache missing")
+	errVectorCacheCorrupt     = errors.New("vector cache corrupt")
 	errVectorDimMismatch      = errors.New("vector dim mismatch")
 	errVectorEmbedderMismatch = errors.New("vector embedder mismatch")
 	errVectorTemplateMismatch = errors.New("vector wrap template mismatch")
@@ -129,7 +130,7 @@ func (c *vectorCache) readManifest() (vectorManifest, error) {
 	}
 	var manifest vectorManifest
 	if err := json.Unmarshal(raw, &manifest); err != nil {
-		return vectorManifest{}, fmt.Errorf("parse vector manifest: %w", err)
+		return vectorManifest{}, vectorCacheCorruption("parse vector manifest", err)
 	}
 	return manifest, nil
 }
@@ -146,55 +147,55 @@ func (c *vectorCache) readVectors(expectedDim int) (map[vectorKey]vectorRow, err
 	r := bufio.NewReader(f)
 	var magic [8]byte
 	if _, err := io.ReadFull(r, magic[:]); err != nil {
-		return nil, fmt.Errorf("read vector header: %w", err)
+		return nil, vectorCacheReadError("read vector header", err)
 	}
 	if magic != vectorMagic {
-		return nil, fmt.Errorf("%w: bad magic", errVectorDimMismatch)
+		return nil, vectorCacheCorruption("bad magic", errVectorDimMismatch)
 	}
 	headerDim, err := readUint32(r)
 	if err != nil {
-		return nil, fmt.Errorf("read vector dim: %w", err)
+		return nil, vectorCacheReadError("read vector dim", err)
 	}
 	if int(headerDim) != expectedDim {
-		return nil, fmt.Errorf("%w: header dim %d != manifest dim %d", errVectorDimMismatch, headerDim, expectedDim)
+		return nil, vectorCacheCorruption(fmt.Sprintf("header dim %d != manifest dim %d", headerDim, expectedDim), errVectorDimMismatch)
 	}
 	count, err := readUint64(r)
 	if err != nil {
-		return nil, fmt.Errorf("read vector count: %w", err)
+		return nil, vectorCacheReadError("read vector count", err)
 	}
 	rows := make(map[vectorKey]vectorRow, int(count))
 	for i := uint64(0); i < count; i++ {
 		idLen, err := readUint32(r)
 		if err != nil {
-			return nil, fmt.Errorf("read vector row %d id length: %w", i, err)
+			return nil, vectorCacheReadError(fmt.Sprintf("read vector row %d id length", i), err)
 		}
 		if idLen == 0 || idLen > 1<<20 {
-			return nil, fmt.Errorf("vector row %d invalid claim id length %d", i, idLen)
+			return nil, vectorCacheCorruption(fmt.Sprintf("vector row %d invalid claim id length %d", i, idLen), nil)
 		}
 		idBytes := make([]byte, idLen)
 		if _, err := io.ReadFull(r, idBytes); err != nil {
-			return nil, fmt.Errorf("read vector row %d claim id: %w", i, err)
+			return nil, vectorCacheReadError(fmt.Sprintf("read vector row %d claim id", i), err)
 		}
 		var textHash [32]byte
 		if _, err := io.ReadFull(r, textHash[:]); err != nil {
-			return nil, fmt.Errorf("read vector row %d text hash: %w", i, err)
+			return nil, vectorCacheReadError(fmt.Sprintf("read vector row %d text hash", i), err)
 		}
 		rowDim, err := readUint32(r)
 		if err != nil {
-			return nil, fmt.Errorf("read vector row %d dim: %w", i, err)
+			return nil, vectorCacheReadError(fmt.Sprintf("read vector row %d dim", i), err)
 		}
 		if rowDim != headerDim {
-			return nil, fmt.Errorf("%w: row %d dim %d != header dim %d", errVectorDimMismatch, i, rowDim, headerDim)
+			return nil, vectorCacheCorruption(fmt.Sprintf("row %d dim %d != header dim %d", i, rowDim, headerDim), errVectorDimMismatch)
 		}
 		vec := make([]float32, headerDim)
 		for j := range vec {
 			bits, err := readUint32(r)
 			if err != nil {
-				return nil, fmt.Errorf("read vector row %d value %d: %w", i, j, err)
+				return nil, vectorCacheReadError(fmt.Sprintf("read vector row %d value %d", i, j), err)
 			}
 			v := math.Float32frombits(bits)
 			if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
-				return nil, fmt.Errorf("%w: non-finite row %d value %d", errVectorDimMismatch, i, j)
+				return nil, vectorCacheCorruption(fmt.Sprintf("non-finite row %d value %d", i, j), errVectorDimMismatch)
 			}
 			vec[j] = v
 		}
@@ -203,6 +204,21 @@ func (c *vectorCache) readVectors(expectedDim int) (map[vectorKey]vectorRow, err
 		rows[key] = vectorRow{ClaimID: claimID, TextHash: textHash, Vector: vec}
 	}
 	return rows, nil
+}
+
+func vectorCacheReadError(operation string, err error) error {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	return vectorCacheCorruption(operation, err)
+}
+
+func vectorCacheCorruption(detail string, cause error) error {
+	if cause == nil {
+		return fmt.Errorf("%w: %s", errVectorCacheCorrupt, detail)
+	}
+	return fmt.Errorf("%w: %s: %w", errVectorCacheCorrupt, detail, cause)
 }
 
 func (c *vectorCache) write(rows []vectorRow, corpusGen int64) error {
