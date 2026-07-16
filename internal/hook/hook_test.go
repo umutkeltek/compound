@@ -602,6 +602,13 @@ func TestFakeBreadthSidecar(t *testing.T) {
 }
 
 func fakeBreadthSidecar() {
+	if path := os.Getenv("COMPOUND_TEST_FAKE_BREADTH_COUNT_FILE"); path != "" {
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, _ = file.WriteString("start\n")
+			_ = file.Close()
+		}
+	}
 	hitID := os.Getenv("COMPOUND_TEST_FAKE_BREADTH_HIT")
 	echoObserved := os.Getenv("COMPOUND_TEST_FAKE_BREADTH_ECHO_OBSERVED") == "1"
 	dec := json.NewDecoder(os.Stdin)

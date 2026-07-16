@@ -246,6 +246,34 @@ func TestLiveUserPromptBreadthEchoCannotPersistRawQuery(t *testing.T) {
 	assertPromptSentinelAbsentFromTree(t, homePath, raw)
 }
 
+func TestLiveUserPromptMaterializesRuntimeOnce(t *testing.T) {
+	homePath := t.TempDir()
+	countPath := filepath.Join(t.TempDir(), "sidecar-starts.txt")
+	t.Setenv("COMPOUND_TEST_FAKE_BREADTH_SIDECAR", "1")
+	t.Setenv("COMPOUND_TEST_FAKE_BREADTH_COUNT_FILE", countPath)
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", os.Args[0]+" -test.run=TestFakeBreadthSidecar")
+
+	deps := baseDeps()
+	deps.HomePath = homePath
+	res, err := Run(Fixture{
+		Hook: "user-prompt-submit", Harness: "codex", Live: true,
+		Cwd: "/repo/product", RepoKind: "product", Task: "one runtime snapshot", Prompt: "one runtime snapshot",
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.BreakerTripped {
+		t.Fatalf("prompt context breaker tripped: %+v", res)
+	}
+	starts, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(starts), "start\n"); got != 1 {
+		t.Fatalf("prompt runtime semantic sidecar starts = %d, want 1", got)
+	}
+}
+
 func TestLiveUserPromptBreakerCreatesOnlyFailOpenTelemetry(t *testing.T) {
 	homePath := t.TempDir()
 	store, err := work.Open(homePath)
