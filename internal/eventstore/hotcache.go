@@ -2,21 +2,27 @@ package eventstore
 
 import (
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
 
-// hotSegmentCache memoizes the parsed frames of HOT (last-written) segments
-// for the lifetime of one process, keyed by segment path — one live entry per
-// family, so interleaved point reads across families (a proof chain reads
-// act_/pol_/rec_/tr_ in sequence per item) all keep their memo. A single-slot
-// version of this cache thrashed to a 100% miss rate on exactly that pattern
-// (observed live 2026-07-16: 53.7MB hot transition segment × per-Get reparses
-// = 158s CPU-bound attention). Sealed segments resolve through the sidecar
-// index and never enter this cache.
+// hotSegmentCache memoizes the parsed frames of HOT (last-written) segments for
+// the lifetime of one process, keyed by the family's segment DIRECTORY — exactly
+// one live entry per family. Interleaved point reads across families (a proof
+// chain reads act_/pol_/rec_/tr_ in sequence per item) each keep their memo,
+// while a day (or seq) rollover REPLACES the family's entry with the new hot
+// segment instead of stranding the prior one. A single-slot cache thrashed to a
+// 100% miss rate on the cross-family pattern (observed live 2026-07-16: 53.7MB
+// hot transition segment × per-Get reparses = 158s CPU-bound attention); a
+// path-keyed cache fixed the thrash but leaked one dead ~day-of-frames entry per
+// family per rollover in long-lived processes (console supervisor RSS creep).
+// Family-dir keying bounds the memo to families×1 regardless of process age.
+// Sealed segments resolve through the sidecar index and never enter this cache.
 //
-// Stat-guarded: any size or mtime change (a concurrent append moves both)
-// discards that path's memo, so a reader never serves a frame set older than
+// Stat-guarded: the entry records the hot segment path plus its size+mtime; a
+// different path (rollover/rotation) or any size/mtime move (a concurrent
+// append moves both) is a miss, so a reader never serves a frame set older than
 // the file it just statted. regularKind reads bypass the cache — their rooted
 // validation is part of the read contract.
 type hotSegmentCache struct {
@@ -25,6 +31,7 @@ type hotSegmentCache struct {
 }
 
 type hotSegmentEntry struct {
+	path  string
 	size  int64
 	mtime time.Time
 	byID  map[string]parsedFrame
@@ -53,9 +60,10 @@ func (e *engine) hotFrames(path string) (map[string]parsedFrame, error) {
 	if err != nil {
 		return nil, err
 	}
+	key := filepath.Dir(path)
 	e.hotCache.mu.Lock()
 	defer e.hotCache.mu.Unlock()
-	if entry, ok := e.hotCache.entries[path]; ok && entry.size == st.Size() && entry.mtime.Equal(st.ModTime()) {
+	if entry, ok := e.hotCache.entries[key]; ok && entry.path == path && entry.size == st.Size() && entry.mtime.Equal(st.ModTime()) {
 		return entry.byID, nil
 	}
 	notifyHotParse(path)
@@ -70,6 +78,6 @@ func (e *engine) hotFrames(path string) (map[string]parsedFrame, error) {
 	if e.hotCache.entries == nil {
 		e.hotCache.entries = map[string]hotSegmentEntry{}
 	}
-	e.hotCache.entries[path] = hotSegmentEntry{size: st.Size(), mtime: st.ModTime(), byID: byID}
+	e.hotCache.entries[key] = hotSegmentEntry{path: path, size: st.Size(), mtime: st.ModTime(), byID: byID}
 	return byID, nil
 }

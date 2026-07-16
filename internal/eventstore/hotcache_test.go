@@ -476,3 +476,74 @@ func TestHotSegmentForeignAppendVisible(t *testing.T) {
 		t.Fatalf("seed record lost after reparse: %v", err)
 	}
 }
+
+// Falsifier g — rollover eviction. A long-lived process crossing a day (or seq)
+// rollover must not strand the prior segment's parsed frames. The memo is keyed
+// by family DIRECTORY, so the new day's hot segment REPLACES the prior day's
+// entry — one live entry per family, always. Without eviction the entry map
+// grows by one dead ~day-of-frames entry per family per rollover (the console
+// supervisor RSS creep noted in the hot-memo salvage follow-up). RED on the
+// path-keyed base (two entries survive the rollover); GREEN with dir keying.
+// Reads stay correct across the boundary.
+func TestHotSegmentMemoEvictsPriorDayOnRollover(t *testing.T) {
+	day1 := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	clk := day1
+	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return clk }})
+
+	putRecord(t, store, "tr_rollover_day1", "compound.transition.v0.1", day1, "d1")
+	// Warm the day-1 hot memo while day 1 is the hot segment.
+	d1, err := store.Read("tr_rollover_day1")
+	if err != nil {
+		t.Fatalf("day-1 warm read: %v", err)
+	}
+
+	// Cross the day rollover: the new segment becomes hot, day 1 seals.
+	clk = day1.Add(24 * time.Hour)
+	putRecord(t, store, "tr_rollover_day2", "compound.transition.v0.1", clk, "d2")
+	if _, err := store.Read("tr_rollover_day2"); err != nil {
+		t.Fatalf("day-2 read: %v", err)
+	}
+
+	eng := store.engine
+	eng.hotCache.mu.Lock()
+	live := len(eng.hotCache.entries)
+	eng.hotCache.mu.Unlock()
+	if live != 1 {
+		t.Fatalf("hot memo holds %d entries for one family after a day rollover, want 1 (prior-day entry not evicted -> unbounded RSS creep)", live)
+	}
+
+	// Reads stay correct across the boundary: the day-1 id now resolves through
+	// the sealed index, the day-2 id through the fresh hot memo.
+	d1again, err := store.Read("tr_rollover_day1")
+	if err != nil {
+		t.Fatalf("re-read day-1 after rollover: %v", err)
+	}
+	if !bytes.Equal(d1.Bytes, d1again.Bytes) {
+		t.Fatalf("day-1 bytes drifted across rollover:\n before=%s\n after =%s", d1.Bytes, d1again.Bytes)
+	}
+	d2, err := store.Read("tr_rollover_day2")
+	if err != nil {
+		t.Fatalf("re-read day-2: %v", err)
+	}
+	if !bytes.Contains(d2.Bytes, []byte(`"value":"d2"`)) && !bytes.Contains(d2.Bytes, []byte(`"value": "d2"`)) {
+		t.Fatalf("day-2 record body wrong: %s", d2.Bytes)
+	}
+
+	// A within-day seq rotation also evicts: force a new seq segment and confirm
+	// the family still holds exactly one entry.
+	clk = day1.Add(24 * time.Hour)
+	rotated := segmentPath(eng.segRoot, "transition", ingestionDay(clk), 1)
+	line := frameLine(t, "tr_rollover_seq", "compound.transition.v0.1", clk, "seq")
+	if err := os.WriteFile(rotated, line, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Read("tr_rollover_seq"); err != nil {
+		t.Fatalf("read seq-rotated record: %v", err)
+	}
+	eng.hotCache.mu.Lock()
+	liveAfterSeq := len(eng.hotCache.entries)
+	eng.hotCache.mu.Unlock()
+	if liveAfterSeq != 1 {
+		t.Fatalf("hot memo holds %d entries after a seq rotation, want 1", liveAfterSeq)
+	}
+}

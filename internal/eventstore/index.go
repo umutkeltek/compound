@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"compound/internal/home"
 )
@@ -43,6 +45,48 @@ type cachedSourceHash struct {
 	size             int64
 	modifiedUnixNano int64
 	hash             string
+}
+
+// segmentIndexCache memoizes the fully-loaded, validated sidecar index of a
+// SEALED segment for the lifetime of one process, keyed by the index-file path.
+// Without it every point read of a sealed record re-opened and re-JSON-parsed
+// the whole .idx file (loadOrBuildIndex). After the 03:00 UTC day seal, a
+// projection or close path that Gets tens of thousands of sealed records each
+// re-parsed a multi-MB index — the sealed twin of the hot-segment reparse fixed
+// in 6aa94840/0cd766b2 (observed live 2026-07-16: ConsumeReceipts CPU-bound in
+// loadOrBuildIndex).
+//
+// Stat-guarded on BOTH files: the index file (size+mtime, so a rebuild or an
+// `rm -rf index/` recovery re-parse invalidates the memo) AND the sealed
+// segment (size+mtime, so the existing drift contract still re-validates the
+// moment the segment underneath moves). A memo hit skips the read, the JSON
+// parse, and the O(entries) range revalidation; a miss falls through to the
+// unchanged load/validate/rebuild path. The index stays cache, never authority.
+type segmentIndexCache struct {
+	mu      sync.Mutex
+	entries map[string]indexCacheEntry
+}
+
+type indexCacheEntry struct {
+	idxSize  int64
+	idxMtime time.Time
+	segSize  int64
+	segMtime time.Time
+	index    segmentIndex
+}
+
+// indexParseObserver is a test-only seam fired on every FULL read+parse of a
+// sealed segment's sidecar index — the exact operation the memo eliminates. It
+// is nil in production and never surfaces in the public API; a falsifier
+// installs it to prove a projection's thousands of sealed Gets collapse to one
+// index parse per segment (counter-seam precedent: segmentParseObserver,
+// work_dde825bbd7a5).
+var indexParseObserver func(path string)
+
+func notifyIndexParse(path string) {
+	if indexParseObserver != nil {
+		indexParseObserver(path)
+	}
 }
 
 func (e *engine) indexPath(family string, segment segmentFile) string {
@@ -93,6 +137,9 @@ func (e *engine) readIndexedFrame(family string, segment segmentFile, id, regula
 
 func (e *engine) loadOrBuildIndex(family string, segment segmentFile) (segmentIndex, error) {
 	path := e.indexPath(family, segment)
+	if index, ok := e.cachedIndex(path, segment.path); ok {
+		return index, nil
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return e.rebuildIndex(family, segment, "index missing")
@@ -100,6 +147,7 @@ func (e *engine) loadOrBuildIndex(family string, segment segmentFile) (segmentIn
 	if err != nil {
 		return segmentIndex{}, err
 	}
+	notifyIndexParse(path)
 	var index segmentIndex
 	if err := json.Unmarshal(data, &index); err != nil {
 		return e.rebuildIndex(family, segment, fmt.Sprintf("index decode failed: %v", err))
@@ -109,7 +157,60 @@ func (e *engine) loadOrBuildIndex(family string, segment segmentFile) (segmentIn
 	} else if reason != "" {
 		return e.rebuildIndex(family, segment, reason)
 	}
+	e.rememberIndex(path, segment.path, index)
 	return index, nil
+}
+
+// cachedIndex returns the memoized validated index for idxPath when both the
+// index file and its sealed segment are byte-for-byte stat-identical to the
+// snapshot taken at memo time. Stat happens before the lock (mirroring
+// hotFrames) so a slow syscall never serializes readers; the returned index's
+// Entries map is never mutated in place, so serving it after releasing the lock
+// is race-free even against a concurrent rememberIndex overwrite.
+func (e *engine) cachedIndex(idxPath, segPath string) (segmentIndex, bool) {
+	idxInfo, err := os.Stat(idxPath)
+	if err != nil {
+		return segmentIndex{}, false
+	}
+	segInfo, err := os.Stat(segPath)
+	if err != nil {
+		return segmentIndex{}, false
+	}
+	e.indexCache.mu.Lock()
+	defer e.indexCache.mu.Unlock()
+	entry, ok := e.indexCache.entries[idxPath]
+	if ok &&
+		entry.idxSize == idxInfo.Size() && entry.idxMtime.Equal(idxInfo.ModTime()) &&
+		entry.segSize == segInfo.Size() && entry.segMtime.Equal(segInfo.ModTime()) {
+		return entry.index, true
+	}
+	return segmentIndex{}, false
+}
+
+// rememberIndex snapshots the index and segment stats and memoizes the parsed
+// index under idxPath. A stat failure between the load and here simply skips the
+// memo (the next Get re-loads) rather than caching an unverifiable entry.
+func (e *engine) rememberIndex(idxPath, segPath string, index segmentIndex) {
+	idxInfo, err := os.Stat(idxPath)
+	if err != nil {
+		return
+	}
+	segInfo, err := os.Stat(segPath)
+	if err != nil {
+		return
+	}
+	e.indexCache.mu.Lock()
+	defer e.indexCache.mu.Unlock()
+	if e.indexCache.entries == nil {
+		e.indexCache.entries = map[string]indexCacheEntry{}
+	}
+	e.indexCache.entries[idxPath] = indexCacheEntry{
+		idxSize:  idxInfo.Size(),
+		idxMtime: idxInfo.ModTime(),
+		segSize:  segInfo.Size(),
+		segMtime: segInfo.ModTime(),
+		index:    index,
+	}
 }
 
 func (e *engine) validateLoadedIndex(segment segmentFile, index segmentIndex) (string, error) {

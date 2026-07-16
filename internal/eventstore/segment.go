@@ -40,6 +40,7 @@ type engine struct {
 	sourceHashMu    sync.Mutex
 	sourceHashes    map[string]cachedSourceHash
 	hotCache        hotSegmentCache
+	indexCache      segmentIndexCache
 }
 
 type putMode uint8

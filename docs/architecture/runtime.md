@@ -73,14 +73,22 @@ their physical access stays inside the event-store seam.
 
 Point reads resolve sealed segments through their sidecar indexes and the single hot (last-written) segment by a
 full parse. Because a bulk migration can fold an entire history into one hot segment per family, that hot parse is
-memoized per process behind a stat guard, keyed by segment path (measured live 2026-07-16: 158-212s attention
-collapsed to single-digit seconds). Repeated Gets against the same hot segment reuse one parsed frame set, and any
-size-or-mtime change (a same- or foreign-process append, torn-tail completion) discards the entry and reparses, so
-a reader never serves state older than the file it just statted. The memo is keyed per path — not a single slot —
-so interleaving Gets across families does not thrash; it is bounded by the live-family count because only
-hot-segment paths ever enter it. Read semantics are byte-identical to the full parse (newest-occurrence-wins,
-offsets preserved), and rooted `ReadRegular` reads bypass the memo entirely so their per-read validation always
-runs.
+memoized per process behind a stat guard, keyed by the family segment DIRECTORY — exactly one live entry per family
+(measured live 2026-07-16: 158-212s attention collapsed to single-digit seconds). Repeated Gets against the same
+hot segment reuse one parsed frame set, and any size-or-mtime change (a same- or foreign-process append, torn-tail
+completion) discards the entry and reparses, so a reader never serves state older than the file it just statted.
+Keying by family directory rather than path means a day or seq rollover REPLACES the family's entry with the new
+hot segment instead of stranding the prior day's parsed frames, so the memo stays bounded by the live-family count
+in a long-lived process instead of accumulating one dead ~day-of-frames entry per family per rollover. Read
+semantics are byte-identical to the full parse (newest-occurrence-wins, offsets preserved), and rooted
+`ReadRegular` reads bypass the memo entirely so their per-read validation always runs.
+
+Sealed-segment sidecar indexes are memoized the same way, keyed by the index-file path and stat-guarded on both the
+index file and its sealed segment. Without it, a projection or close path (ConsumeReceipts reads every receipt)
+re-opened and re-JSON-parsed a multi-MB index on every sealed Get after the day seal (measured live 2026-07-16:
+attention steady-state CPU ~8s → ~4-5s once each sealed index parses once per process). A rebuild or an
+`rm -rf index/` recovery moves the index-file stat and invalidates the memo; a segment that drifts underneath moves
+the segment stat and forces the unchanged validate/rebuild path — the index stays cache, never authority.
 
 ---
 
