@@ -17,6 +17,12 @@ import (
 
 const capgraphSemanticCacheSchemaVersion = "compound.capgraph.semantic_cache.v0.1"
 
+var (
+	errNodeVectorCacheMiss             = errors.New("node vector cache missing")
+	errNodeVectorCacheCorrupt          = errors.New("node vector cache corrupt")
+	errNodeVectorCacheIdentityMismatch = errors.New("node vector cache identity mismatch")
+)
+
 // NodeEmbedder is structural so capgraph never imports the breadth engine.
 type NodeEmbedder interface {
 	Identity() string
@@ -75,7 +81,16 @@ func semanticScores(ctx context.Context, embedder NodeEmbedder, compoundHome str
 		dim = len(taskVector)
 	}
 	cacheDir := filepath.Join(compoundHome, "indexes", "capgraph", sanitizedEmbedderIdentity(identity))
-	manifest, vectors := readNodeVectorCache(cacheDir, identity, dim)
+	manifest, vectors, err := readNodeVectorCache(cacheDir, identity, dim)
+	if err != nil {
+		switch {
+		case errors.Is(err, errNodeVectorCacheMiss), errors.Is(err, errNodeVectorCacheCorrupt):
+			manifest = nodeVectorManifest{}
+			vectors = nil
+		default:
+			return nil, err
+		}
+	}
 	currentManifest := nodeVectorManifest{
 		SchemaVersion:    capgraphSemanticCacheSchemaVersion,
 		EmbedderIdentity: identity,
@@ -184,16 +199,36 @@ func partialNodeVectorManifest(full nodeVectorManifest, vectors map[string][]flo
 	return out
 }
 
-func readNodeVectorCache(dir, identity string, dim int) (nodeVectorManifest, map[string][]float32) {
+func readNodeVectorCache(dir, identity string, dim int) (nodeVectorManifest, map[string][]float32, error) {
 	manifest, err := readNodeVectorManifest(dir)
-	if err != nil || manifest.SchemaVersion != capgraphSemanticCacheSchemaVersion || manifest.EmbedderIdentity != identity || manifest.Dim != dim {
-		return nodeVectorManifest{}, nil
+	if err != nil {
+		return nodeVectorManifest{}, nil, classifyNodeVectorCacheRead("manifest", err)
+	}
+	if manifest.SchemaVersion != capgraphSemanticCacheSchemaVersion {
+		return nodeVectorManifest{}, nil, fmt.Errorf("%w: schema %q", errNodeVectorCacheCorrupt, manifest.SchemaVersion)
+	}
+	if manifest.EmbedderIdentity != identity {
+		return nodeVectorManifest{}, nil, fmt.Errorf("%w: cache %q configured %q", errNodeVectorCacheIdentityMismatch, manifest.EmbedderIdentity, identity)
+	}
+	if manifest.Dim != dim {
+		return nodeVectorManifest{}, nil, fmt.Errorf("%w: cache dim %d configured dim %d", errNodeVectorCacheIdentityMismatch, manifest.Dim, dim)
 	}
 	vectors, err := readNodeVectors(dir, dim)
 	if err != nil {
-		return nodeVectorManifest{}, nil
+		return nodeVectorManifest{}, nil, classifyNodeVectorCacheRead("vectors", err)
 	}
-	return manifest, vectors
+	return manifest, vectors, nil
+}
+
+func classifyNodeVectorCacheRead(component string, err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: %s: %v", errNodeVectorCacheMiss, component, err)
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return fmt.Errorf("read node vector cache %s: %w", component, err)
+	}
+	return fmt.Errorf("%w: %s: %v", errNodeVectorCacheCorrupt, component, err)
 }
 
 func readNodeVectorManifest(dir string) (nodeVectorManifest, error) {
