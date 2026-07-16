@@ -336,7 +336,7 @@ func TestWarmVectorCacheDoesNotRewriteUntilCorpusChanges(t *testing.T) {
 }
 
 func TestVectorCacheLoadGuardsDimAndEmbedderStamp(t *testing.T) {
-	t.Run("dim mismatch hard refuses whole load", func(t *testing.T) {
+	t.Run("corrupt row dimension rebuilds derived cache", func(t *testing.T) {
 		home := t.TempDir()
 		embedder := newFakeEmbedder(4)
 		eng, err := NewEngine(EngineConfig{Embedder: embedder, CompoundHome: home})
@@ -361,8 +361,11 @@ func TestVectorCacheLoadGuardsDimAndEmbedderStamp(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := reload.IndexWithError(claims, 2); !errors.Is(err, errVectorDimMismatch) {
-			t.Fatalf("IndexWithError dim mismatch err = %v, want %v", err, errVectorDimMismatch)
+		if _, err := reload.IndexWithError(claims, 2); err != nil {
+			t.Fatalf("corrupt derived cache should rebuild: %v", err)
+		}
+		if _, err := reload.cache.load(); err != nil {
+			t.Fatalf("rebuilt cache still invalid: %v", err)
 		}
 	})
 
