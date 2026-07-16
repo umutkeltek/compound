@@ -520,7 +520,7 @@ func reconcileRetirementWorktreeRemovalStarted(ctx context.Context, deps Worktre
 		RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
 		AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
 		OwnerProof: req.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
-	}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness}, now)
+	}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver}, now)
 	if err != nil {
 		return false, err
 	}
