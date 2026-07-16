@@ -121,13 +121,26 @@ func TestLandCheckFailsClosedForDirtyTargetAndMovedSnapshot(t *testing.T) {
 		t.Fatalf("caller expected-main snapshot must not replace bound authority, got %v", err)
 	}
 
+	// Unrelated WIP in the target worktree must NOT fabricate a blocked status:
+	// the candidate simply is not on main yet (ready_to_land), and CleanTarget
+	// still honestly reports the whole-tree dirt.
 	writeLandingFile(t, filepath.Join(repo, "dirty.txt"), "uncommitted\n")
-	report, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(2*time.Minute))
+	tolerated, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tolerated.Status != "ready_to_land" || tolerated.CleanTarget {
+		t.Fatalf("unrelated dirt must not gate an untouched landing: %+v", tolerated)
+	}
+
+	// A real uncommitted change to a file the envelope OWNS still fails closed.
+	writeLandingFile(t, filepath.Join(repo, "feature.txt"), "conflicting local edit\n")
+	report, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.Status != "dirty_target" || report.CleanTarget {
-		t.Fatalf("expected dirty_target, got %+v", report)
+		t.Fatalf("expected dirty_target for owned-path dirt, got %+v", report)
 	}
 }
 
@@ -220,7 +233,10 @@ func TestCompletedCodeWorkRevalidatesLandingProofAtClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeLandingFile(t, filepath.Join(repo, "late-dirty.txt"), "dirty after proof\n")
+	// An uncommitted change to a file the envelope OWNS invalidates the recorded
+	// landing proof live: close must refuse rather than land over a conflicting
+	// local edit to the work's own files.
+	writeLandingFile(t, filepath.Join(repo, "feature.txt"), "conflicting local edit after proof\n")
 	plan, err := store.ClosePlan(w.ID, now.Add(4*time.Minute), ClosePlanOptions{
 		Actor:    "codex",
 		Outcome:  "completed",
@@ -234,6 +250,108 @@ func TestCompletedCodeWorkRevalidatesLandingProofAtClose(t *testing.T) {
 	}
 	if _, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "must recheck", ProofRefs: []string{proof.EvidenceRef}}, now.Add(4*time.Minute)); err == nil || !strings.Contains(err.Error(), "dirty_target") {
 		t.Fatalf("close with stale proof err = %v", err)
+	}
+}
+
+// TestLandCheckReportsTruthfulContainmentUnderUnrelatedDirt is the core falsifier
+// for the land-check containment lie: a commit provably on the target branch must
+// report candidate_contained_in_target=true even when the target worktree carries
+// unrelated preserved WIP -- and even when a real owned-path conflict blocks the
+// status, the containment field reports ancestry, never cleanliness.
+func TestLandCheckReportsTruthfulContainmentUnderUnrelatedDirt(t *testing.T) {
+	now := time.Date(2026, 7, 16, 20, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "containment never lies under unrelated dirt", GitDelivery: localGitDelivery(repo, base)}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+
+	// Preserved unrelated WIP: the always-dirty repo / shared-checkout case.
+	writeLandingFile(t, filepath.Join(repo, "unrelated-wip.txt"), "neighbor lane WIP\n")
+
+	landed, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landed.Status != "landed" {
+		t.Fatalf("unrelated dirt must not block a landed commit: %+v", landed)
+	}
+	if !landed.CandidateContainedInTarget || !landed.CandidateContainedInPublication {
+		t.Fatalf("containment fields lied under unrelated dirt: %+v", landed)
+	}
+	if landed.CleanTarget {
+		t.Fatalf("CleanTarget must honestly report the whole-tree dirt: %+v", landed)
+	}
+
+	// A real owned-path conflict blocks the status, but containment stays truthful.
+	writeLandingFile(t, filepath.Join(repo, "feature.txt"), "conflicting local edit\n")
+	blocked, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Status != "dirty_target" {
+		t.Fatalf("owned-path dirt must fail closed: %+v", blocked)
+	}
+	if !blocked.CandidateContainedInTarget {
+		t.Fatalf("blocked status still fabricated containment=false: %+v", blocked)
+	}
+}
+
+// TestCompletedCodeWorkClosesOverPreservedUnrelatedDirt is the falsifier for the
+// shared-checkout hostage class: a published, landed envelope must close even when
+// a neighbor lane's live unrelated WIP dirties the shared checkout after the proof
+// was recorded, because close live-revalidates land-check.
+func TestCompletedCodeWorkClosesOverPreservedUnrelatedDirt(t *testing.T) {
+	now := time.Date(2026, 7, 16, 20, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "published close is not hostage to a neighbor's WIP", GitDelivery: localGitDelivery(repo, base)}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, w.ID, now)
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(150*time.Second))
+	proof, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main", Record: true}, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.Status != "landed" {
+		t.Fatalf("fixture proof = %+v", proof)
+	}
+
+	// A neighbor lane's live, unrelated WIP dirties the shared checkout after the
+	// proof was recorded. Close live-revalidates -- and must still close.
+	writeLandingFile(t, filepath.Join(repo, "neighbor-wip.sh"), "#!/bin/sh\necho neighbor\n")
+
+	plan, err := store.ClosePlan(w.ID, now.Add(4*time.Minute), ClosePlanOptions{Actor: "codex", Outcome: "completed", MoveType: "outward_delta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status == "not_closeable" || strings.Contains(plan.NoAction, "dirty_target") {
+		t.Fatalf("unrelated neighbor WIP must not hold a published close hostage: %+v", plan)
+	}
+	closed, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "landed; neighbor WIP preserved", ProofRefs: []string{proof.EvidenceRef}}, now.Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("close over unrelated dirt: %v", err)
+	}
+	if closed.Work.State != "completed" {
+		t.Fatalf("close result = %+v", closed)
 	}
 }
 

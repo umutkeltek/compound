@@ -267,11 +267,12 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		report.NextAction = fmt.Sprintf("rebuild candidate %s from expected base %s; this tip cannot satisfy the envelope", candidate, expectedBase)
 		return report, nil
 	}
-	if !report.CleanTarget {
-		report.Status = "dirty_target"
-		report.NextAction = fmt.Sprintf("make the %s target worktree clean without discarding unrelated work, then rerun land-check", targetRef)
-		return report, nil
-	}
+	// Containment ancestry is computed from real Git history BEFORE any
+	// worktree-cleanliness gate. A dirty target may still block a landed status,
+	// but the containment fields must never lie about whether the candidate is
+	// provably reachable from the target (and publication) refs. The historical
+	// short-circuit that returned dirty_target here left CandidateContainedInTarget
+	// at its false zero value even for a commit demonstrably on the target branch.
 	report.CandidateContainedInTarget, err = landingIsAncestor(repoPath, candidate, targetSHA)
 	if err != nil {
 		return report, err
@@ -280,6 +281,18 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	if err != nil {
 		return report, err
 	}
+
+	// Cleanliness is scoped to the paths THIS envelope owns (its base..candidate
+	// diff), not the whole worktree. Preserved unrelated WIP in an always-dirty
+	// repo, or a neighbor lane's live WIP in a shared checkout, must not gate a
+	// landing whose own files are untouched -- while a real uncommitted change to
+	// one of the envelope's own files still blocks. The safety property is
+	// unchanged: never land/close over a conflicting change to the work's own files.
+	ownedDirty, ownedDirtyPaths, err := landingOwnedPathsDirty(repoPath, expectedBase, candidate)
+	if err != nil {
+		return report, err
+	}
+
 	if report.CandidateContainedInTarget {
 		if contract.PublicationMode == "required" {
 			report.PublicationSHA, err = runLandingGitOutput(repoPath, "rev-parse", "--verify", contract.PublicationRef+"^{commit}")
@@ -298,7 +311,17 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		} else {
 			report.CandidateContainedInPublication = true
 		}
+		if ownedDirty {
+			report.Status = "dirty_target"
+			report.NextAction = landingOwnedDirtyNextAction(targetRef, ownedDirtyPaths)
+			return report, nil
+		}
 		report.Status = "landed"
+		return report, nil
+	}
+	if ownedDirty {
+		report.Status = "dirty_target"
+		report.NextAction = landingOwnedDirtyNextAction(targetRef, ownedDirtyPaths)
 		return report, nil
 	}
 	if report.TargetAncestorOfCandidate {
@@ -309,6 +332,79 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	report.Status = "rebase_required"
 	report.NextAction = fmt.Sprintf("rebase candidate %s onto current %s tip %s, attach the rebased final tip as commit:<full-sha>, and rerun land-check with that exact tip", candidate, targetRef, targetSHA)
 	return report, nil
+}
+
+// landingOwnedPathsDirty reports whether the target worktree carries any
+// uncommitted (staged, unstaged, or untracked) change to a file this envelope
+// owns -- the set of paths in the candidate's base..candidate diff. Unrelated
+// dirt elsewhere in an always-dirty or shared checkout is deliberately ignored,
+// so a truthful containment result is never held hostage to a neighbor's WIP.
+func landingOwnedPathsDirty(repoPath, expectedBase, candidate string) (bool, []string, error) {
+	ownedPaths, err := landingOwnedPaths(repoPath, expectedBase, candidate)
+	if err != nil {
+		return false, nil, err
+	}
+	if len(ownedPaths) == 0 {
+		return false, nil, nil
+	}
+	// --literal-pathspecs so an owned path that happens to contain glob magic
+	// (*, [, ?) is matched exactly rather than reinterpreted as a pattern.
+	args := append([]string{"--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--"}, ownedPaths...)
+	scoped, err := runLandingGitOutput(repoPath, args...)
+	if err != nil {
+		return false, nil, fmt.Errorf("inspect owned-path worktree status: %w", err)
+	}
+	if scoped == "" {
+		return false, nil, nil
+	}
+	return true, dirtyStatusPaths(scoped), nil
+}
+
+// landingOwnedPaths returns the repo-relative files this envelope's delivery
+// changes (the net base..candidate diff). NUL-delimited output keeps paths with
+// spaces or non-ASCII bytes intact instead of Git's default quoting.
+func landingOwnedPaths(repoPath, expectedBase, candidate string) ([]string, error) {
+	out, err := runLandingGitOutput(repoPath, "diff", "--name-only", "-z", expectedBase, candidate)
+	if err != nil {
+		return nil, fmt.Errorf("compute owned paths %s..%s: %w", expectedBase, candidate, err)
+	}
+	paths := make([]string, 0)
+	for _, f := range strings.Split(out, "\x00") {
+		if f != "" {
+			paths = append(paths, f)
+		}
+	}
+	return paths, nil
+}
+
+// dirtyStatusPaths extracts the affected path from each porcelain-v1 line for a
+// human-readable next action. Rename/copy lines ("XY orig -> dest") report the
+// destination.
+func dirtyStatusPaths(porcelain string) []string {
+	lines := strings.Split(porcelain, "\n")
+	paths := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if len(line) < 4 {
+			continue
+		}
+		entry := strings.TrimSpace(line[3:])
+		if idx := strings.Index(entry, " -> "); idx >= 0 {
+			entry = entry[idx+len(" -> "):]
+		}
+		entry = strings.Trim(entry, "\"")
+		if entry != "" {
+			paths = append(paths, entry)
+		}
+	}
+	return paths
+}
+
+func landingOwnedDirtyNextAction(targetRef string, ownedDirtyPaths []string) string {
+	preview := ownedDirtyPaths
+	if len(preview) > 5 {
+		preview = preview[:5]
+	}
+	return fmt.Sprintf("the %s target worktree has uncommitted changes to files this work owns (%s); commit or set them aside without discarding unrelated work, then rerun land-check", targetRef, strings.Join(preview, ", "))
 }
 
 func latestCommitArtifact(artifactIDs []string) (ref, sha string, found, valid bool) {
