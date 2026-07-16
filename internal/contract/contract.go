@@ -7,6 +7,7 @@
 package contract
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -511,6 +513,7 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace *EngineDependencyTrace) (runtimeSnapshot, error) {
 	var snapshot runtimeSnapshot
 	var err error
+	taskEmbedder := resolveTaskEmbedder(homePath, in.Task)
 	snapshot.hooks, snapshot.excludedHooks, snapshot.hookRoster, snapshot.hookRevisions, err = loadInstalledHooksForInput(homePath, in)
 	if err != nil {
 		return snapshot, err
@@ -519,7 +522,7 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.capabilityHits, snapshot.capabilityTotal, err = surfaceCapabilityHits(homePath, in)
+	snapshot.capabilityHits, snapshot.capabilityTotal, err = surfaceCapabilityHits(homePath, in, taskEmbedder)
 	if err != nil {
 		return snapshot, err
 	}
@@ -541,7 +544,7 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 	if err != nil {
 		return snapshot, err
 	}
-	semanticRanks := semanticTaskRanksTraced(homePath, in, trace)
+	semanticRanks := semanticTaskRanksTracedWithEmbedder(homePath, in, trace, taskEmbedder)
 	snapshot.memoryRefs, snapshot.excludedMemoryRefs, err = loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
 	if err != nil {
 		return snapshot, err
@@ -1054,7 +1057,7 @@ func peerCoarseAge(d time.Duration) string {
 	}
 }
 
-func surfaceCapabilityHits(homePath string, in Input) ([]capgraph.Surfaced, int, error) {
+func surfaceCapabilityHits(homePath string, in Input, embedder breadth.EmbedderAdapter) ([]capgraph.Surfaced, int, error) {
 	if !capgraph.Exists(homePath) {
 		return nil, 0, nil
 	}
@@ -1069,7 +1072,7 @@ func surfaceCapabilityHits(homePath string, in Input) ([]capgraph.Surfaced, int,
 		FilePath: in.Cwd,
 		Phase:    in.Mode,
 	}
-	if embedder, ok := breadth.ResolveEmbedder(homePath); ok {
+	if embedder != nil {
 		surfaceCtx.Embedder = embedder
 		surfaceCtx.EmbedTimeout = 3 * time.Second
 	}
@@ -1479,6 +1482,77 @@ type contextPositionRef struct {
 // measured recall.
 var breadthEngineFactory = mem.DefaultBreadthEngine
 
+var breadthEmbedderResolver = breadth.ResolveEmbedder
+
+type exactTaskMemoizingEmbedder struct {
+	inner breadth.EmbedderAdapter
+	task  string
+
+	mu       sync.Mutex
+	resolved bool
+	vector   []float32
+	err      error
+}
+
+func resolveTaskEmbedder(homePath, task string) breadth.EmbedderAdapter {
+	embedder, ok := breadthEmbedderResolver(homePath)
+	if !ok || embedder == nil {
+		return nil
+	}
+	return &exactTaskMemoizingEmbedder{inner: embedder, task: task}
+}
+
+func (e *exactTaskMemoizingEmbedder) Identity() string { return e.inner.Identity() }
+func (e *exactTaskMemoizingEmbedder) Dim() int         { return e.inner.Dim() }
+
+func (e *exactTaskMemoizingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) != 1 || texts[0] != e.task {
+		return e.inner.Embed(ctx, texts)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.resolved {
+		vectors, err := e.inner.Embed(ctx, texts)
+		e.err = err
+		if err == nil && len(vectors) == 1 {
+			e.vector = append([]float32(nil), vectors[0]...)
+		}
+		e.resolved = true
+	}
+	if e.err != nil {
+		return nil, e.err
+	}
+	if e.vector == nil {
+		return [][]float32{}, nil
+	}
+	return [][]float32{append([]float32(nil), e.vector...)}, nil
+}
+
+type inProcessBreadthEngine struct {
+	engine   *breadth.Engine
+	embedder breadth.EmbedderAdapter
+}
+
+func (e *inProcessBreadthEngine) Capabilities() mem.EngineCapabilities {
+	return mem.EngineCapabilities{
+		Name: breadth.Name, Breadth: true, Embedder: e.embedder.Identity(), CorpusGen: e.engine.CorpusGen(),
+	}
+}
+
+func (e *inProcessBreadthEngine) Index(claims []mem.Claim, gen int64) error {
+	texts := make([]mem.ClaimText, 0, len(claims))
+	for _, claim := range claims {
+		texts = append(texts, mem.ClaimText{ClaimID: claim.ID, Text: mem.ClaimIndexText(claim)})
+	}
+	_, err := e.engine.IndexWithError(texts, gen)
+	return err
+}
+
+func (e *inProcessBreadthEngine) Query(text, gate string, allowlist []string, k int) ([]mem.Hit, error) {
+	result, err := e.engine.QueryWithLanes(text, gate, allowlist, k)
+	return result.Hits, err
+}
+
 // semanticTaskRankK bounds how many breadth hits contribute a relevance weight; the ambient pack
 // only surfaces maxContextMemoryRefs, so a small top-k is plenty.
 const semanticTaskRankK = 24
@@ -1495,10 +1569,21 @@ func semanticTaskRanks(homePath string, in Input) map[string]float64 {
 }
 
 func semanticTaskRanksTraced(homePath string, in Input, trace *EngineDependencyTrace) map[string]float64 {
+	return semanticTaskRanksTracedWithEmbedder(homePath, in, trace, nil)
+}
+
+func semanticTaskRanksTracedWithEmbedder(homePath string, in Input, trace *EngineDependencyTrace, embedder breadth.EmbedderAdapter) map[string]float64 {
 	if trace != nil {
-		trace.RequestedEngine = requestedEngineIdentity()
+		if in.ReadOnlyRetrieval && embedder != nil {
+			trace.RequestedEngine = breadth.Name
+		} else {
+			trace.RequestedEngine = requestedEngineIdentity()
+		}
 	}
-	if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" {
+	if !in.ReadOnlyRetrieval && strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" {
+		return nil
+	}
+	if in.ReadOnlyRetrieval && embedder == nil {
 		return nil
 	}
 	if len(memoryTextTokens(in.Task)) == 0 {
@@ -1515,7 +1600,21 @@ func semanticTaskRanksTraced(homePath string, in Input, trace *EngineDependencyT
 	if trace != nil {
 		trace.Attempted = true
 	}
-	eng, closeEng := breadthEngineFactory(homePath)
+	var eng mem.Engine
+	closeEng := func() {}
+	if in.ReadOnlyRetrieval {
+		core, err := breadth.NewEngine(breadth.EngineConfig{Embedder: embedder, CompoundHome: homePath})
+		if err != nil {
+			if trace != nil {
+				trace.Outcome = EngineOutcomeDegraded
+				trace.ErrorClass = EngineErrorRetrieval
+			}
+			return nil
+		}
+		eng = &inProcessBreadthEngine{engine: core, embedder: embedder}
+	} else {
+		eng, closeEng = breadthEngineFactory(homePath)
+	}
 	defer closeEng()
 	if trace != nil {
 		caps := eng.Capabilities()
