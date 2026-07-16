@@ -194,6 +194,59 @@ func TestAuthorityWorktreeRetireCLIPartialRetryRecordsDistinctHonestActions(t *t
 	}
 }
 
+func TestAuthorityWorktreeRetireCLIReviewPreservesGeneratedTemplate(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newWorktreeRetirementCLIFixture(t, homePath)
+	previousLiveness := worktreeRetirementCLILiveness
+	worktreeRetirementCLILiveness = cliUnusedWorktreeLiveness{}
+	t.Cleanup(func() { worktreeRetirementCLILiveness = previousLiveness })
+
+	var stdout, stderr bytes.Buffer
+	code := runAuthorityWorktreeRetire(homePath, []string{
+		"plan", "--repo", fixture.repo, "--worktree", fixture.worktree,
+		"--ref", fixture.candidateRef, "--authority-ref", "refs/heads/main",
+		"--publication-ref", "refs/remotes/origin/main",
+		"--owner-work", fixture.ownerWorkID, "--source-work", fixture.sourceWorkID,
+		"--recovery-ref", fixture.recoveryRef, "--json",
+	}, &stdout, &stderr, cliTestNow.Add(10*time.Minute))
+	if code != 0 {
+		t.Fatalf("plan code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var planned struct {
+		Paths authority.WorktreeRetirementPlanPaths `json:"paths"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &planned); err != nil {
+		t.Fatalf("decode plan: %v\n%s", err, stdout.String())
+	}
+	templateBefore, err := os.ReadFile(planned.Paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runAuthorityWorktreeRetire(homePath, []string{
+		"review", planned.Paths.ReviewYAMLPath,
+		"--decision", "authorize_retirement",
+		"--rationale", "preserve the generated template while recording reviewed content",
+		"--reviewed-by", "operator:test", "--json",
+	}, &stdout, &stderr, cliTestNow.Add(11*time.Minute))
+	if code != 0 {
+		t.Fatalf("review code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	templateAfter, err := os.ReadFile(planned.Paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(templateAfter, templateBefore) {
+		t.Fatalf("review command overwrote generated template:\nbefore:\n%s\nafter:\n%s", templateBefore, templateAfter)
+	}
+}
+
 type cliUnusedWorktreeLiveness struct{}
 
 func (cliUnusedWorktreeLiveness) Observe(context.Context, string) authority.WorktreeLivenessObservation {

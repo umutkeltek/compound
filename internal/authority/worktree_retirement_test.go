@@ -1,6 +1,7 @@
 package authority
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -142,6 +143,51 @@ func TestWorktreeRetirementReviewedReportIsCreateExclusiveAndIdempotentForSameCo
 	}
 	if string(got) != string(tampered) {
 		t.Fatalf("different reviewed report bytes were replaced: %q", got)
+	}
+}
+
+func TestWorktreeRetirementReviewRejectsDifferentSecondReviewWithoutMutatingFirstSource(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordWorktreeRetirementPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := LoadWorktreeRetirementReview(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Decision = "authorize_retirement"
+	first.Rationale = "retire exact redundant Git surfaces"
+	first.ReviewedBy = "operator:first"
+	first.ReviewedAt = "2026-07-15T07:01:00Z"
+	firstReport, err := RecordWorktreeRetirementReview(home, first, paths.ReviewYAMLPath, time.Date(2026, 7, 15, 7, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSource, err := os.ReadFile(firstReport.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.Rationale = "different reviewed content must not replace the first authorization source"
+	second.ReviewedAt = "2026-07-15T07:02:00Z"
+	if _, err := RecordWorktreeRetirementReview(home, second, paths.ReviewYAMLPath, time.Date(2026, 7, 15, 7, 2, 0, 0, time.UTC)); err == nil || !strings.Contains(err.Error(), "different") {
+		t.Fatalf("different second review was not rejected: %v", err)
+	}
+	got, err := os.ReadFile(firstReport.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, firstSource) {
+		t.Fatalf("rejected second review changed first source bytes:\nfirst:\n%s\nafter:\n%s", firstSource, got)
 	}
 }
 
