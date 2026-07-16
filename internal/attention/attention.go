@@ -1,6 +1,7 @@
 package attention
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ const (
 	SourceReviews   = "reviews"
 	SourceWorkbench = "workbench"
 	SourceExecutor  = "executor"
+	SourceActivity  = "activity"
 
 	KindGateAdmit     = "gate_admit"
 	KindVerdict       = "verdict"
@@ -31,6 +33,7 @@ const (
 	KindHygiene       = "hygiene"
 	KindJobHealth     = "job_health"
 	KindProductMove   = "product_move"
+	KindActivity      = "activity"
 
 	BlastRead               = "read"
 	BlastLocalReversible    = "local_reversible"
@@ -52,6 +55,29 @@ type Inputs struct {
 	Reviews   *reviewartifact.QueueReport
 	Workbench *work.WorkbenchReport
 	Executors *work.ExecutorsProjection
+	// Activity is the operator's Tier-0 ambient-activity day inference (unaccounted blocks). Nil for
+	// every non-activity caller; Build is nil-safe on it. Defined HERE (not imported from
+	// internal/activity) to keep the import direction clean — the CLI builds it from activity outputs.
+	Activity *ActivityDayInput
+}
+
+// ActivityDayInput carries one day's pre-computed unaccounted activity blocks (from
+// internal/activity.InferDay). At most one attention group is built per day: the largest block wins,
+// the rest are counted in the summary.
+type ActivityDayInput struct {
+	Date                string
+	GeneratedAt         string
+	TotalUnaccountedMin int
+	UnaccountedBlocks   []ActivityBlock
+}
+
+// ActivityBlock is one contiguous unaccounted block.
+type ActivityBlock struct {
+	Start       string
+	End         string
+	ActiveMin   int
+	DurationMin int
+	CategoryMix string
 }
 
 type Report struct {
@@ -128,6 +154,7 @@ var knownAreaClassifications = map[string]areaClassification{
 	"parity":                         {Kind: KindHygiene},
 	"route-remorse":                  {Kind: KindContradiction},
 	"lease-hygiene":                  {Kind: KindHygiene, BlastRadius: BlastLocalReversible, Reversibility: Reversible},
+	"activity-unaccounted":           {Kind: KindActivity, BlastRadius: BlastRead, Reversibility: Reversible},
 }
 
 func Build(in Inputs, now time.Time) Report {
@@ -149,6 +176,9 @@ func Build(in Inputs, now time.Time) Report {
 	}
 	if in.Executors != nil {
 		report.Groups = append(report.Groups, groupsFromExecutors(*in.Executors, now)...)
+	}
+	if in.Activity != nil {
+		report.Groups = append(report.Groups, groupsFromActivity(*in.Activity, now)...)
 	}
 	for i := range report.Groups {
 		normalizeGroup(&report.Groups[i], generatedAt, now)
@@ -306,6 +336,48 @@ func groupsFromExecutors(report work.ExecutorsProjection, now time.Time) []Group
 		})
 	}
 	return out
+}
+
+// groupsFromActivity builds AT MOST ONE watching-band group per day from the operator's Tier-0
+// activity day inference: the largest unaccounted block is the headline, the rest are counted in the
+// summary. Zero unaccounted blocks -> zero groups (an accounted or incomplete-coverage day never
+// surfaces — that exclusion happens upstream in internal/activity.InferDay). Evidence only: read
+// blast, reversible, never a gate.
+func groupsFromActivity(in ActivityDayInput, now time.Time) []Group {
+	blocks := in.UnaccountedBlocks
+	if len(blocks) == 0 {
+		return nil
+	}
+	// Largest block wins; ties break by earlier start for determinism.
+	sorted := make([]ActivityBlock, len(blocks))
+	copy(sorted, blocks)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].DurationMin != sorted[j].DurationMin {
+			return sorted[i].DurationMin > sorted[j].DurationMin
+		}
+		return sorted[i].Start < sorted[j].Start
+	})
+	top := sorted[0]
+	freshness := Freshness{GeneratedAt: firstNonEmpty(in.GeneratedAt, now.UTC().Format(time.RFC3339)), Source: SourceActivity}
+	summary := fmt.Sprintf("%d min unaccounted activity (%s) on %s — no compound work accounts for it", top.DurationMin, top.CategoryMix, in.Date)
+	if extra := len(sorted) - 1; extra > 0 {
+		summary += fmt.Sprintf("; +%d more unaccounted block(s), %d min total", extra, in.TotalUnaccountedMin)
+	}
+	return []Group{{
+		Key:             "activity:unaccounted:" + in.Date,
+		Area:            "activity-unaccounted",
+		Band:            BandWatching,
+		Source:          SourceActivity,
+		Kind:            KindActivity,
+		Count:           len(sorted),
+		OperatorSummary: summary,
+		OperatorUnlock:  "Resume, record, or dismiss the thread this time belonged to — the sensor reconciles activity against the work ledger, it never gates.",
+		BlastRadius:     BlastRead,
+		Reversibility:   Reversible,
+		OldestCreatedAt: firstNonEmpty(top.Start, freshness.GeneratedAt),
+		ItemIDs:         []string{"activity-block:" + top.Start},
+		Freshness:       freshness,
+	}}
 }
 
 // leaseHygieneGroup collapses stale-lease residue across every executor row

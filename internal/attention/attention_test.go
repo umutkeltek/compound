@@ -430,6 +430,7 @@ func TestAreaMappingCoversKnownAreasAndUnknownDefault(t *testing.T) {
 		"parity",
 		"route-remorse",
 		"lease-hygiene",
+		"activity-unaccounted",
 	}
 	if len(knownAreaClassifications) != len(known) {
 		t.Fatalf("knownAreaClassifications has %d entries, want %d", len(knownAreaClassifications), len(known))
