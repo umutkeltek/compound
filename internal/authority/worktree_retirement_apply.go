@@ -256,8 +256,10 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		if previousResult != nil {
 			pending.Action = newWorktreeRetirementActionForAttempt(plan, report, actor, now, previousResult.ResultDigest)
 		}
-		if err := reevaluateWorktreeRetirementResumePolicy(deps, &pending, now); err != nil {
-			return WorktreeRetirementResult{}, err
+		if retirementPhaseRequiresGitMutation(plan, pending.Phase) {
+			if err := reevaluateWorktreeRetirementResumePolicy(deps, &pending, now); err != nil {
+				return WorktreeRetirementResult{}, err
+			}
 		}
 		if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
 			return WorktreeRetirementResult{}, err
@@ -353,7 +355,10 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 	}
 	if resumeNeedsPolicyRefreshBeforeRef && plan.CandidateRef != "" && pending.Phase == WorktreeRetirementPhaseWorktreeRemoved {
 		if err := reevaluateWorktreeRetirementResumePolicy(deps, &pending, now); err != nil {
-			return baseResult, err
+			return recordWorktreeRetirementFailure(
+				deps, plan, report, pending, baseResult, resultPath, true,
+				"policy refused remaining candidate ref mutation", err, now,
+			)
 		}
 		if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
 			return baseResult, err
@@ -580,6 +585,13 @@ func retirementPhaseHasDeletedRef(plan WorktreeRetirementPlan, phase string) boo
 		return false
 	}
 	return phase == WorktreeRetirementPhaseRefDeleted || phase == WorktreeRetirementPhaseVerified
+}
+
+func retirementPhaseRequiresGitMutation(plan WorktreeRetirementPlan, phase string) bool {
+	if plan.Worktree != nil && !retirementPhaseHasRemovedWorktree(plan, phase) {
+		return true
+	}
+	return plan.CandidateRef != "" && !retirementPhaseHasDeletedRef(plan, phase)
 }
 
 func verifyRetirementResumeState(ctx context.Context, git WorktreeRetirementGit, plan WorktreeRetirementPlan, phase string) error {
