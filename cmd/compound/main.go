@@ -134,6 +134,8 @@ func main() {
 		cmdWorkbench(os.Args[2:])
 	case "attention":
 		cmdAttention(os.Args[2:])
+	case "activity":
+		cmdActivity(os.Args[2:])
 	case "narrate":
 		cmdNarrate(os.Args[2:])
 	case "stream":
@@ -338,6 +340,7 @@ compound home <init|doctor|where|backup|export|verify|restore|archive-history|re
 compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition
 compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional packet offers, bounded capability offers, and route plan; no dispatch
 compound attention [--json] [--home P] ranked operator-attention projection from reviews, workbench, and executors; no mutation
+compound activity <status|enable|disable|drain|sweep> Tier-0 ambient-activity family: content-free app/idle/lock exhaust -> day-rotated observed/activity segments+spans; enable/disable + drain are grant-gated + fail-closed; zero auto memory candidates
 compound narrate [--json|--text] [--mood decide|wander|worry] [--recent N] [--home P] deterministic correspondent script (compound.narrate.v0.1) composed over attention/orient-changed/receipts; also embedded in orient --operator; reads the orient cursor, never advances it
 compound executors [--json] read-only executor projection from Workbench, leases, and profile guide; no health overclaim
 compound stream (--once [--backlog N] | --follow [--cursor BYTE]) [--json] [--home P] read-only byte-cursor tail over events/work.jsonl + ledger/seq; --once is a bounded snapshot (last N + end-of-log cursor + seq + generated_at), --follow is a live JSONL tail; never takes the work-event write lock
