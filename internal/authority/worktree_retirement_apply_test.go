@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -105,6 +106,103 @@ func TestApplyWorktreeRetirementResumesAfterPersistedWorktreeRemoval(t *testing.
 	}
 	if runner.worktreeRemoveCount() != 1 || runner.refDeleteCount() != 1 {
 		t.Fatalf("resume repeated destructive phase: calls=%+v", runner.calls)
+	}
+}
+
+func TestApplyWorktreeRetirementPersistsStartedPhaseBeforeWorktreeMutationAndRecoversPostSuccessCrash(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	home, paths, report := authorizedRetirementFixture(t, fixture)
+	plan, err := LoadWorktreeRetirementPlan(paths.PlanPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingPath := filepath.Join(home, "reviews", SourceControlCleanupReviewArea, plan.ID+".retirement.pending.json")
+	crash := errors.New("injected crash after worktree removal before completion persistence")
+	runner := &phaseAssertingRetirementGit{delegate: ExecWorktreeRetirementGit{}, pendingPath: pendingPath, t: t}
+	records := 0
+	deps := successfulRetirementApplyDependencies(runner, &records)
+	deps.AfterGitMutation = func(startedPhase string) error {
+		if startedPhase == WorktreeRetirementPhaseWorktreeRemovalStarted {
+			return crash
+		}
+		return nil
+	}
+	req := WorktreeRetirementApplyRequest{
+		HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+		Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+	}
+	result, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now())
+	if !errors.Is(err, crash) || result.Phase != WorktreeRetirementPhaseWorktreeRemovalStarted {
+		t.Fatalf("post-success crash result=%+v err=%v", result, err)
+	}
+	if _, err := os.Stat(fixture.worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree mutation did not happen before crash: %v", err)
+	}
+	if !retirementGitRefExists(fixture.repo, fixture.candidateRef) {
+		t.Fatal("ref deleted before worktree phase recovery")
+	}
+	pending, exists, err := loadWorktreeRetirementPending(pendingPath)
+	if err != nil || !exists || pending.Phase != WorktreeRetirementPhaseWorktreeRemovalStarted {
+		t.Fatalf("persisted pending=%+v exists=%v err=%v", pending, exists, err)
+	}
+	if runner.worktreeRemoveCount != 1 || runner.refDeleteCount != 0 || records != 0 {
+		t.Fatalf("crash calls remove=%d delete=%d records=%d", runner.worktreeRemoveCount, runner.refDeleteCount, records)
+	}
+
+	deps.AfterGitMutation = nil
+	resumed, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Status != "completed" || runner.worktreeRemoveCount != 1 || runner.refDeleteCount != 1 || records != 1 {
+		t.Fatalf("resume result=%+v remove=%d delete=%d records=%d", resumed, runner.worktreeRemoveCount, runner.refDeleteCount, records)
+	}
+}
+
+func TestApplyWorktreeRetirementPersistsStartedPhaseBeforeRefMutationAndRecoversPostSuccessCrash(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	home, paths, report := authorizedRetirementFixture(t, fixture)
+	plan, err := LoadWorktreeRetirementPlan(paths.PlanPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingPath := filepath.Join(home, "reviews", SourceControlCleanupReviewArea, plan.ID+".retirement.pending.json")
+	crash := errors.New("injected crash after ref deletion before completion persistence")
+	runner := &phaseAssertingRetirementGit{delegate: ExecWorktreeRetirementGit{}, pendingPath: pendingPath, t: t}
+	records := 0
+	deps := successfulRetirementApplyDependencies(runner, &records)
+	deps.AfterGitMutation = func(startedPhase string) error {
+		if startedPhase == WorktreeRetirementPhaseRefDeletionStarted {
+			return crash
+		}
+		return nil
+	}
+	req := WorktreeRetirementApplyRequest{
+		HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+		Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+	}
+	result, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now())
+	if !errors.Is(err, crash) || result.Phase != WorktreeRetirementPhaseRefDeletionStarted {
+		t.Fatalf("post-success crash result=%+v err=%v", result, err)
+	}
+	if retirementGitRefExists(fixture.repo, fixture.candidateRef) {
+		t.Fatal("ref mutation did not happen before crash")
+	}
+	pending, exists, err := loadWorktreeRetirementPending(pendingPath)
+	if err != nil || !exists || pending.Phase != WorktreeRetirementPhaseRefDeletionStarted {
+		t.Fatalf("persisted pending=%+v exists=%v err=%v", pending, exists, err)
+	}
+	if runner.worktreeRemoveCount != 1 || runner.refDeleteCount != 1 || records != 0 {
+		t.Fatalf("crash calls remove=%d delete=%d records=%d", runner.worktreeRemoveCount, runner.refDeleteCount, records)
+	}
+
+	deps.AfterGitMutation = nil
+	resumed, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Status != "completed" || runner.worktreeRemoveCount != 1 || runner.refDeleteCount != 1 || records != 1 {
+		t.Fatalf("resume result=%+v remove=%d delete=%d records=%d", resumed, runner.worktreeRemoveCount, runner.refDeleteCount, records)
 	}
 }
 
@@ -258,6 +356,34 @@ type failOnceRefDeleteGit struct {
 	failed      bool
 	removeCalls int
 	deleteCalls int
+}
+
+type phaseAssertingRetirementGit struct {
+	delegate            WorktreeRetirementGit
+	pendingPath         string
+	t                   *testing.T
+	worktreeRemoveCount int
+	refDeleteCount      int
+}
+
+func (r *phaseAssertingRetirementGit) Run(ctx context.Context, repo string, args ...string) (string, error) {
+	if len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+		r.assertPendingPhase(WorktreeRetirementPhaseWorktreeRemovalStarted)
+		r.worktreeRemoveCount++
+	}
+	if len(args) >= 2 && args[0] == "update-ref" && args[1] == "-d" {
+		r.assertPendingPhase(WorktreeRetirementPhaseRefDeletionStarted)
+		r.refDeleteCount++
+	}
+	return r.delegate.Run(ctx, repo, args...)
+}
+
+func (r *phaseAssertingRetirementGit) assertPendingPhase(want string) {
+	r.t.Helper()
+	pending, exists, err := loadWorktreeRetirementPending(r.pendingPath)
+	if err != nil || !exists || pending.Phase != want {
+		r.t.Fatalf("pending before Git mutation=%+v exists=%v err=%v want phase=%s", pending, exists, err, want)
+	}
 }
 
 func (r *failOnceRefDeleteGit) Run(ctx context.Context, repo string, args ...string) (string, error) {
