@@ -106,6 +106,36 @@ func TestObservedFactRoutesToCandidateNotLedger(t *testing.T) {
 	}
 }
 
+func TestQueryBreadthReadOnlyValidatesButDoesNotCaptureObservedFact(t *testing.T) {
+	s := storeWith(t, "product:focus", "positioning", "owned capture")
+	of := ObservedFact{Entity: "engine-query-echo", Predicate: "query_echo", Object: "PRIVATE_QUERY_SENTINEL"}
+	eng := &cannedHitEngine{name: "rented-breadth", hits: []Hit{{Kind: KindObservedFact, Observed: &of}}}
+	querier, ok := any(s).(interface {
+		QueryBreadthReadOnly(string, int, Engine) ([]Claim, error)
+	})
+	if !ok {
+		t.Fatal("Store does not expose read-only breadth retrieval")
+	}
+	before, err := s.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := querier.QueryBreadthReadOnly("PRIVATE_QUERY_SENTINEL", 10, eng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 0 {
+		t.Fatalf("observed fact entered read-only recall: %+v", claims)
+	}
+	after, err := s.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("read-only breadth retrieval captured observed fact: before=%d after=%d", len(before), len(after))
+	}
+}
+
 func findObservedCandidate(t *testing.T, s *Store, entity, pred, obj string) Candidate {
 	t.Helper()
 	cands, err := s.AllCandidates()

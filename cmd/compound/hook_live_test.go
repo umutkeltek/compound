@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -213,11 +214,14 @@ func TestHookLiveUserPromptSubmitReturnsExactRelevantPrivateContextWithoutWork(t
 	}
 	raw := "LIVE_PROMPT_PRIVACY_SENTINEL_88bd pricing prompt context should prefer concise progress updates"
 	input := `{"hook_event_name":"UserPromptSubmit","session_id":"sess_live","cwd":"/repo/product","prompt":` + quoteJSON(raw) + `}`
+	var stderr string
 	out := captureStdout(t, func() {
-		withStdin(t, input, func() {
-			if code := runHookCommand([]string{"user-prompt-submit", "--live", "--harness", "claude-code"}); code != 0 {
-				t.Fatalf("live user-prompt-submit exit = %d", code)
-			}
+		stderr = capturePromptHookStderr(t, func() {
+			withStdin(t, input, func() {
+				if code := runHookCommand([]string{"user-prompt-submit", "--live", "--harness", "claude-code"}); code != 0 {
+					t.Fatalf("live user-prompt-submit exit = %d", code)
+				}
+			})
 		})
 	})
 	context := parseNativePromptContext(t, out, "UserPromptSubmit")
@@ -254,6 +258,16 @@ func TestHookLiveUserPromptSubmitReturnsExactRelevantPrivateContextWithoutWork(t
 	}
 	if len(rows) != 1 || !strings.HasPrefix(rows[0].Query, "sha256:") || strings.Contains(rows[0].Query, raw) {
 		t.Fatalf("prompt retrieval journal retained raw query: %+v", rows)
+	}
+	for _, forbidden := range []string{raw, "# Compound Context Injection", "pricing prompt context should prefer concise progress updates"} {
+		if strings.Contains(stderr, forbidden) {
+			t.Fatalf("stderr duplicated private prompt context %q:\n%s", forbidden, stderr)
+		}
+	}
+	for _, want := range []string{"hook_", "ctx_", "chars=", "sha256:"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr diagnostic missing %q:\n%s", want, stderr)
+		}
 	}
 	assertHomeOmitsString(t, homePath, raw)
 }
@@ -949,4 +963,27 @@ func seedLivePromptContextMeaning(t *testing.T, homePath string) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func capturePromptHookStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+	defer func() { os.Stderr = old }()
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output := <-done
+	_ = r.Close()
+	return output
 }

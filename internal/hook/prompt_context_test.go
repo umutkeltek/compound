@@ -162,6 +162,72 @@ func TestRenderInjectionPrioritizesMeaningWithinWholeContextBound(t *testing.T) 
 	}
 }
 
+func TestRenderInjectionReservesBudgetAcrossPathologicalHighSignalSections(t *testing.T) {
+	const positionRef = "position://prompt-context::reserved-budget"
+	huge := strings.Repeat("界", MaxContextChars*2)
+	pack := envelope.ContextPack{
+		SummaryMD:          "SUMMARY_REPRESENTATIVE " + huge,
+		ActiveMemory:       []string{positionRef},
+		ActivePositions:    []envelope.ActivePosition{{Ref: positionRef, Line: "MEMORY_POSITION_REPRESENTATIVE " + huge}},
+		ActiveDecisions:    []string{"decision://DECISION_REPRESENTATIVE_" + huge},
+		RequiredChecks:     []string{"REQUIRED_REPRESENTATIVE_" + huge},
+		Avoid:              []string{"AVOID_REPRESENTATIVE_" + huge},
+		ActiveInstructions: []string{"instruction://INSTRUCTION_REPRESENTATIVE_" + huge},
+		CapabilityOffers: []envelope.CapabilityOffer{{
+			Ref:   "capability://CAPABILITY_REPRESENTATIVE",
+			Kind:  "skill",
+			Name:  "oversized-capability",
+			Score: 1,
+			Why:   huge,
+		}},
+		Included: []envelope.IncludedRef{{
+			Ref:         positionRef,
+			SourceClass: "runtime",
+			Reason:      "Compound memory folded position; source stores and indexes are evidence, not authority: MEMORY_POSITION_REPRESENTATIVE " + huge,
+			Confidence:  1,
+			Status:      "current",
+		}},
+	}
+	pack.Header.ID = "ctx_pathological_budget"
+	text := renderInjection("hook_pathological_budget", pack)
+	if got := utf8.RuneCountInString(text); got > MaxContextChars {
+		t.Fatalf("pathological injection chars=%d, max=%d", got, MaxContextChars)
+	}
+	for _, want := range []string{
+		"MEMORY_POSITION_REPRESENTATIVE",
+		"DECISION_REPRESENTATIVE",
+		"REQUIRED_REPRESENTATIVE",
+		"AVOID_REPRESENTATIVE",
+		"CAPABILITY_REPRESENTATIVE",
+		"INSTRUCTION_REPRESENTATIVE",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("pathological first section starved later high-signal marker %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestLiveUserPromptBreadthEchoCannotPersistRawQuery(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_TEST_FAKE_BREADTH_SIDECAR", "1")
+	t.Setenv("COMPOUND_TEST_FAKE_BREADTH_ECHO_OBSERVED", "1")
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", os.Args[0]+" -test.run=TestFakeBreadthSidecar")
+	raw := "BREADTH_ECHO_PRIVACY_SENTINEL_4f5c adapt prompt meaning"
+	deps := baseDeps()
+	deps.HomePath = homePath
+	res, err := Run(Fixture{
+		Hook: "user-prompt-submit", Harness: "codex", Live: true,
+		Cwd: "/repo/product", RepoKind: "product", Task: raw, Prompt: raw,
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Context == nil || res.Context.Input.Task != "sha256:"+hashStr(raw) {
+		t.Fatalf("prompt context observation not sanitized: %+v", res.Context)
+	}
+	assertPromptSentinelAbsentFromTree(t, homePath, raw)
+}
+
 func TestLiveUserPromptBreakerCreatesOnlyFailOpenTelemetry(t *testing.T) {
 	homePath := t.TempDir()
 	store, err := work.Open(homePath)

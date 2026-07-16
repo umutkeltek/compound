@@ -603,6 +603,7 @@ func TestFakeBreadthSidecar(t *testing.T) {
 
 func fakeBreadthSidecar() {
 	hitID := os.Getenv("COMPOUND_TEST_FAKE_BREADTH_HIT")
+	echoObserved := os.Getenv("COMPOUND_TEST_FAKE_BREADTH_ECHO_OBSERVED") == "1"
 	dec := json.NewDecoder(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)
 	var corpusGen int64
@@ -627,6 +628,15 @@ func fakeBreadthSidecar() {
 			resp.CorpusGen = corpusGen
 			resp.Indexed = len(req.Claims)
 		case mem.OpQuery:
+			if echoObserved {
+				resp.Hits = []mem.Hit{{
+					Kind: mem.KindObservedFact,
+					Observed: &mem.ObservedFact{
+						Entity: "engine-query-echo", Predicate: "query_echo", Object: req.Text, Snippet: req.Text,
+					},
+				}}
+				break
+			}
 			if hitID != "" && containsString(req.Allowlist, hitID) {
 				resp.Hits = []mem.Hit{{ClaimID: hitID, Score: 0.99}}
 			}
