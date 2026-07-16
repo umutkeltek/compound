@@ -4,16 +4,22 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/contract"
 	"compound/internal/decisions"
+	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/sourceobs"
 	"compound/internal/tooltopology"
@@ -22,7 +28,7 @@ import (
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
-	usage := "usage: compound capability <add|resolve|surface|observe|consume|consume-receipts|usage|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
+	usage := "usage: compound capability <add|resolve|surface|observe|consume|consume-receipts|usage|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-connections|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -219,6 +225,33 @@ func cmdCapability(args []string) {
 			fmt.Printf("- source_no_promote: %s\n", id)
 		}
 		fmt.Printf("- source_authority: %s\n", auth.ID)
+	case "import-connections":
+		now := time.Now()
+		jsonOut := hasFlag(rest, "--json")
+		harnessFilter := flag("--harness")
+		p := posn(map[string]bool{"--harness": true})
+		if len(p) != 0 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-connections [--harness <h>] [--json]")
+			os.Exit(2)
+		}
+		report, err := importCapabilityConnections(store, homePath, harnessFilter, now)
+		die(err)
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# capability import-connections %s\n", report.Status)
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- harnesses: %d\n", len(report.Harnesses))
+		for _, h := range report.Harnesses {
+			fmt.Printf("- harness: %s node=%s minted=%t config_paths=%d revision=%s asserting_owner=%s connection_surface_added=%t\n",
+				h.Harness, h.NodeID, h.NodeMinted, len(h.ConfigPaths), h.SourceRevision, h.AssertingOwner, h.ConnectionSurfaceAdded)
+			fmt.Printf("- source_observation: %s\n", h.SourceObservationID)
+			for _, id := range h.NoPromoteIDs {
+				fmt.Printf("- source_no_promote: %s\n", id)
+			}
+			fmt.Printf("- source_authority: %s\n", h.SourceAuthorityID)
+		}
 	case "import-skills":
 		now := time.Now()
 		osSkillPath := flag("--os-skill-json")
@@ -1224,6 +1257,210 @@ func cmdCapability(args []string) {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
+}
+
+// connectionImportReport is the import-connections door result: which harness
+// nodes gained connection-surface facts, minted idempotently from compound's OWN
+// authority surfaces under the existing capability-graph authority.
+type connectionImportReport struct {
+	SchemaVersion string                    `json:"schema_version"`
+	Status        string                    `json:"status"`
+	AuthorityRef  string                    `json:"authority_ref"`
+	Harnesses     []connectionImportHarness `json:"harnesses"`
+}
+
+type connectionImportHarness struct {
+	Harness                string   `json:"harness"`
+	NodeID                 string   `json:"node_id"`
+	NodeMinted             bool     `json:"node_minted"`
+	ConfigPaths            []string `json:"config_paths"`
+	SettingsSchemaRef      string   `json:"settings_schema_ref,omitempty"`
+	AssertingOwner         string   `json:"asserting_owner"`
+	SourceRevision         string   `json:"source_revision"`
+	SourceObservationID    string   `json:"source_observation_id"`
+	SourceAuthorityID      string   `json:"source_authority_id"`
+	NoPromoteIDs           []string `json:"no_promote_ids,omitempty"`
+	ConnectionSurfaceAdded bool     `json:"connection_surface_added"`
+}
+
+// importCapabilityConnections self-scans COMPOUND_HOME's OWN authority surfaces
+// (harness permission authorities + the installed-hooks manifest) and mints one
+// ConnectionSurface per configured harness under the EXISTING capability-graph
+// authority. It ensures a kind:"harness" node exists (never modifies a
+// pre-existing node), runs the same no-promote lineage ceremony as
+// import-topology (sourceobs + RecordSourceAuthority), and persists the sidecar
+// record. Re-running with unchanged sources is a no-op.
+func importCapabilityConnections(store *capgraph.Store, homePath, harnessFilter string, now time.Time) (connectionImportReport, error) {
+	report := connectionImportReport{
+		SchemaVersion: capgraph.ConnectionSurfaceSchemaVersion,
+		Status:        "ok",
+		AuthorityRef:  capgraph.CapabilityGraphAuthorityRef,
+	}
+	harnessFilter = strings.TrimSpace(harnessFilter)
+
+	matches, err := filepath.Glob(filepath.Join(homePath, "config", "harness-permissions", "*.yaml"))
+	if err != nil {
+		return report, err
+	}
+	sort.Strings(matches)
+
+	// Installed-hooks config paths per harness. This surface is optional -- an
+	// absent manifest is not an error; the harness still has its authority paths.
+	hooksByHarness := map[string][]string{}
+	manifest, herr := contract.LoadInstalledHooksManifest(homePath)
+	if herr != nil && !os.IsNotExist(herr) {
+		return report, herr
+	}
+	if herr == nil {
+		for _, hook := range manifest.Hooks {
+			ref := strings.TrimSpace(hook.Ref)
+			hn := strings.TrimSpace(hook.Harness)
+			if ref == "" || hn == "" {
+				continue
+			}
+			hooksByHarness[hn] = append(hooksByHarness[hn], ref)
+		}
+	}
+
+	// Existing node ids: ensure a harness node, never modify one.
+	nodes, err := store.List()
+	if err != nil {
+		return report, err
+	}
+	existingNode := map[string]bool{}
+	for _, n := range nodes {
+		existingNode[n.ID] = true
+	}
+
+	for _, path := range matches {
+		harnessName := strings.TrimSuffix(filepath.Base(path), ".yaml")
+		if harnessFilter != "" && harnessName != harnessFilter {
+			continue
+		}
+		authority, sourceRevision, err := harness.LoadPermissionAuthority(homePath, harnessName)
+		if err != nil {
+			return report, err
+		}
+		configPaths := dedupeStrings(append([]string{
+			authority.TargetPath,
+			harness.PermissionAuthorityPath(homePath, harnessName),
+		}, hooksByHarness[harnessName]...))
+
+		nodeMinted := false
+		if !existingNode[harnessName] {
+			if err := store.Add(capgraph.Node{
+				ID:       harnessName,
+				Kind:     "harness",
+				Name:     harnessName,
+				Triggers: []string{harnessName},
+			}); err != nil {
+				return report, err
+			}
+			existingNode[harnessName] = true
+			nodeMinted = true
+		}
+
+		cs := capgraph.ConnectionSurface{
+			NodeID:            harnessName,
+			ConfigPaths:       configPaths,
+			SettingsSchemaRef: authority.SchemaVersion,
+			AssertingOwner:    harness.PermissionAuthorityRef(harnessName),
+			SourceRevision:    sourceRevision,
+		}
+
+		obs := connectionImportObservation(harnessName, path, sourceRevision, configPaths, now)
+		sourceReport, err := sourceobs.Apply(homePath, obs, now)
+		if err != nil {
+			return report, fmt.Errorf("source observe: %w", err)
+		}
+		auth, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
+			SourcePath:          path,
+			SourceKind:          "harness_permission_authority",
+			SourceOwner:         harness.PermissionAuthorityRef(harnessName),
+			SourceClass:         "source",
+			SourceRevision:      sourceRevision,
+			SourceObservedAt:    obs.ObservedAt,
+			ImportedVia:         "capability import-connections",
+			NodeIDs:             []string{harnessName},
+			SourceObservationID: sourceReport.ObservationID,
+			NoPromoteIDs:        sourceReport.NoPromoteIDs,
+			EvidenceRefs:        obs.EvidenceRefs,
+		}, now)
+		if err != nil {
+			return report, err
+		}
+		added, err := store.AddConnectionSurface(cs)
+		if err != nil {
+			return report, err
+		}
+		report.Harnesses = append(report.Harnesses, connectionImportHarness{
+			Harness:                harnessName,
+			NodeID:                 harnessName,
+			NodeMinted:             nodeMinted,
+			ConfigPaths:            configPaths,
+			SettingsSchemaRef:      cs.SettingsSchemaRef,
+			AssertingOwner:         cs.AssertingOwner,
+			SourceRevision:         sourceRevision,
+			SourceObservationID:    sourceReport.ObservationID,
+			SourceAuthorityID:      auth.ID,
+			NoPromoteIDs:           sourceReport.NoPromoteIDs,
+			ConnectionSurfaceAdded: added,
+		})
+	}
+	return report, nil
+}
+
+// connectionImportObservation builds the no-promote SourceObservation for a
+// self-scanned harness authority surface. Mirrors sourceobs.FromToolTopology's
+// contract (the tooltopology pattern) but is constructed here because capgraph
+// cannot import sourceobs (that would cycle) and the packet forbids modifying
+// the sourceobs package.
+func connectionImportObservation(harnessName, authorityPath, sourceRevision string, configPaths []string, now time.Time) sourceobs.SourceObservation {
+	owner := harness.PermissionAuthorityRef(harnessName)
+	sum := sha256.Sum256([]byte(strings.Join([]string{harnessName, authorityPath, sourceRevision}, "|")))
+	return sourceobs.SourceObservation{
+		SchemaVersion: sourceobs.SchemaVersion,
+		ID:            "srcobs_conn_" + hex.EncodeToString(sum[:])[:12],
+		AdapterID:     "compound.capability-connections",
+		SourceSystem:  "compound",
+		ObservedAt:    now.UTC().Format(time.RFC3339),
+		SourceRef: sourceobs.SourceRef{
+			Path:        authorityPath,
+			Kind:        "harness_permission_authority",
+			Owner:       owner,
+			SourceClass: "source",
+			Revision:    sourceRevision,
+		},
+		GeneratedView: sourceobs.GeneratedView{
+			ViewKind:    "harness_connection_surface",
+			Consumer:    "compound capability import-connections",
+			Generator:   "compound capability import-connections",
+			Marker:      capgraph.ConnectionSurfaceSchemaVersion,
+			Freshness:   "observed",
+			DriftReason: fmt.Sprintf("config_paths=%d", len(configPaths)),
+		},
+		MapsTo: []sourceobs.MapTarget{{
+			ObjectFamily:   "capability",
+			CandidateKind:  string(candidates.CapabilityObs),
+			EntityHint:     harnessName,
+			PromoteAllowed: false,
+		}},
+		EvidenceRefs: []string{"harness_connection_surface:" + harnessName + ":" + sourceRevision},
+	}
+}
+
+func dedupeStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 func latestCapabilitySourceAuthorityForPath(records []capgraph.SourceAuthorityRecord, sourcePath string) (capgraph.SourceAuthorityRecord, bool) {
