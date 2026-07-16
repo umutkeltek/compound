@@ -436,6 +436,8 @@ func splitIdentifier(s string) []string {
 
 func (e *Engine) indexVectors(ctx context.Context, gen int64) error {
 	existing := map[vectorKey]vectorRow{}
+	var loadedManifest vectorManifest
+	cacheLoaded := false
 	if e.cache == nil && e.embedder.Dim() > 0 {
 		cache, err := newVectorCache(e.compoundHome, e.embedder.Identity())
 		if err != nil {
@@ -444,7 +446,7 @@ func (e *Engine) indexVectors(ctx context.Context, gen int64) error {
 		e.cache = cache
 	}
 	if e.cache != nil {
-		loaded, err := e.cache.load()
+		manifest, loaded, err := e.cache.load()
 		if err != nil {
 			switch {
 			case errors.Is(err, errVectorCacheMiss), errors.Is(err, errVectorTemplateMismatch):
@@ -453,6 +455,8 @@ func (e *Engine) indexVectors(ctx context.Context, gen int64) error {
 				return err
 			}
 		} else {
+			loadedManifest = manifest
+			cacheLoaded = true
 			existing = loaded
 		}
 	}
@@ -496,6 +500,10 @@ func (e *Engine) indexVectors(ctx context.Context, gen int64) error {
 	}
 	if e.cache == nil {
 		return errors.New("vector cache unavailable")
+	}
+	if len(missingTexts) == 0 && cacheLoaded && loadedManifest.CorpusGen == gen &&
+		loadedManifest.ClaimCount == len(rows) && loadedManifest.EmbeddedCount == len(rows) && len(existing) == len(rows) {
+		return nil
 	}
 	if err := e.cache.write(rows, gen); err != nil {
 		return err

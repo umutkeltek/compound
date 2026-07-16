@@ -134,9 +134,12 @@ func semanticScores(ctx context.Context, embedder NodeEmbedder, compoundHome str
 			currentVectors[chunk[i].id] = normalized
 		}
 	}
+	cacheCurrent := len(pending) == 0 && nodeVectorCacheCurrent(manifest, vectors, currentManifest, currentVectors)
 	// Cache write failures should not degrade a successful semantic ranking; the
 	// next call can rebuild from the same source graph.
-	_ = writeNodeVectorCache(cacheDir, currentManifest, currentVectors)
+	if !cacheCurrent {
+		_ = writeNodeVectorCache(cacheDir, currentManifest, currentVectors)
+	}
 	out := make(map[string]float64, len(currentVectors))
 	for id, vec := range currentVectors {
 		if len(vec) == len(taskVector) {
@@ -144,6 +147,19 @@ func semanticScores(ctx context.Context, embedder NodeEmbedder, compoundHome str
 		}
 	}
 	return out, nil
+}
+
+func nodeVectorCacheCurrent(loaded nodeVectorManifest, loadedVectors map[string][]float32, current nodeVectorManifest, currentVectors map[string][]float32) bool {
+	if loaded.SchemaVersion != current.SchemaVersion || loaded.EmbedderIdentity != current.EmbedderIdentity || loaded.Dim != current.Dim ||
+		len(loaded.Nodes) != len(current.Nodes) || len(loadedVectors) != len(currentVectors) {
+		return false
+	}
+	for id, entry := range current.Nodes {
+		if loaded.Nodes[id] != entry || len(loadedVectors[id]) != current.Dim || len(currentVectors[id]) != current.Dim {
+			return false
+		}
+	}
+	return true
 }
 
 // semanticEmbedChunk bounds one embed request so an interrupted cold start

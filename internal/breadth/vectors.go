@@ -101,21 +101,22 @@ func newVectorCache(compoundHome, identity string) (*vectorCache, error) {
 	return &vectorCache{dir: dir, stamp: stamp, identity: identity}, nil
 }
 
-func (c *vectorCache) load() (map[vectorKey]vectorRow, error) {
+func (c *vectorCache) load() (vectorManifest, map[vectorKey]vectorRow, error) {
 	manifest, err := c.readManifest()
 	if err != nil {
-		return nil, err
+		return vectorManifest{}, nil, err
 	}
 	if manifest.SchemaVersion != vectorSchemaVersion {
-		return nil, fmt.Errorf("%w: schema %q", errVectorEmbedderMismatch, manifest.SchemaVersion)
+		return vectorManifest{}, nil, fmt.Errorf("%w: schema %q", errVectorEmbedderMismatch, manifest.SchemaVersion)
 	}
 	if manifest.Embedder.Identity() != c.identity {
-		return nil, fmt.Errorf("%w: cache %q configured %q", errVectorEmbedderMismatch, manifest.Embedder.Identity(), c.identity)
+		return vectorManifest{}, nil, fmt.Errorf("%w: cache %q configured %q", errVectorEmbedderMismatch, manifest.Embedder.Identity(), c.identity)
 	}
 	if manifest.WrapTemplateHash != wrapTemplateHash() {
-		return nil, fmt.Errorf("%w: cache %q configured %q", errVectorTemplateMismatch, manifest.WrapTemplateHash, wrapTemplateHash())
+		return vectorManifest{}, nil, fmt.Errorf("%w: cache %q configured %q", errVectorTemplateMismatch, manifest.WrapTemplateHash, wrapTemplateHash())
 	}
-	return c.readVectors(manifest.Embedder.Dim)
+	rows, err := c.readVectors(manifest.Embedder.Dim)
+	return manifest, rows, err
 }
 
 func (c *vectorCache) readManifest() (vectorManifest, error) {
