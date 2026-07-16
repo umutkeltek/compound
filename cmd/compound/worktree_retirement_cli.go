@@ -201,9 +201,14 @@ func runAuthorityWorktreeRetire(homePath string, args []string, stdout, stderr i
 				if err != nil {
 					return authority.WorktreeRetirementActionProof{}, err
 				}
+				postRecordOwnerProof, err := loadWorktreeRetirementOwnerProof(store, plan.OwnerProof.WorkID)
+				if err != nil {
+					return authority.WorktreeRetirementActionProof{}, err
+				}
 				return authority.WorktreeRetirementActionProof{
 					ActionIntentID: recorded.Action.ID, PolicyDecisionID: recorded.Decision.ID,
 					ReceiptID: recorded.Receipt.ID, TransitionID: recorded.Transition.ID,
+					LeaseWorkSHA256: postRecordOwnerProof.LeaseWorkSHA256, WorkDigest: postRecordOwnerProof.WorkDigest,
 				}, nil
 			},
 		}, now)
