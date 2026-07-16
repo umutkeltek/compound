@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -310,8 +311,33 @@ func writeExclusiveWorktreeRetirementArtifact(homePath, name string, data []byte
 		return "", err
 	}
 	path := filepath.Join(dir, name)
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	tmp, err := os.CreateTemp(dir, "."+name+".tmp-*")
 	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := writeWorktreeRetirementArtifactTemp(tmp, data); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Link(tmpPath, path); err != nil {
 		if !os.IsExist(err) {
 			return "", err
 		}
@@ -319,23 +345,46 @@ func writeExclusiveWorktreeRetirementArtifact(homePath, name string, data []byte
 		if readErr != nil {
 			return "", readErr
 		}
-		if bytes.Equal(existing, data) {
-			return path, nil
+		if !bytes.Equal(existing, data) {
+			return "", fmt.Errorf("worktree retirement artifact %s already exists with different bytes", path)
 		}
-		return "", fmt.Errorf("worktree retirement artifact %s already exists with different bytes", path)
 	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
+	if err := os.Remove(tmpPath); err != nil {
 		return "", err
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		return "", err
+	removeTemp = false
+	if err := syncWorktreeRetirementArtifactDirectory(dir); err != nil {
+		return "", fmt.Errorf("sync worktree retirement artifact directory: %w", err)
 	}
 	return path, nil
+}
+
+var writeWorktreeRetirementArtifactTemp = writeWorktreeRetirementArtifactTempFully
+
+func writeWorktreeRetirementArtifactTempFully(file *os.File, data []byte) error {
+	for remaining := data; len(remaining) > 0; {
+		n, err := file.Write(remaining)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		remaining = remaining[n:]
+	}
+	return nil
+}
+
+func syncWorktreeRetirementArtifactDirectory(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 func validateWorktreeRetirementReview(review WorktreeRetirementReview) error {
