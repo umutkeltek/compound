@@ -87,7 +87,7 @@ func ValidateWorktreeRetirementPlan(plan WorktreeRetirementPlan) error {
 	if plan.SchemaVersion != WorktreeRetirementPlanSchemaVersion {
 		return fmt.Errorf("worktree retirement plan schema_version must be %s", WorktreeRetirementPlanSchemaVersion)
 	}
-	if !strings.HasPrefix(plan.ID, "wtr_") || filepath.Base(plan.ID) != plan.ID || plan.ID != WorktreeRetirementPlanID(plan) {
+	if !strings.HasPrefix(plan.ID, "wtr_") || filepath.Base(plan.ID) != plan.ID {
 		return fmt.Errorf("worktree retirement plan id invalid")
 	}
 	if !filepath.IsAbs(plan.RepoRoot) || !validRetirementHex(plan.RepositoryFingerprint, 64) {
@@ -95,6 +95,9 @@ func ValidateWorktreeRetirementPlan(plan WorktreeRetirementPlan) error {
 	}
 	if !validRetirementDigest(plan.PlanDigest) || plan.PlanDigest != WorktreeRetirementPlanDigest(plan) {
 		return fmt.Errorf("worktree retirement plan digest mismatch")
+	}
+	if plan.ID != WorktreeRetirementPlanID(plan) {
+		return fmt.Errorf("worktree retirement plan id invalid")
 	}
 	if !validRetirementObjectID(plan.AuthorityTip) || !validRetirementObjectID(plan.PublicationTip) {
 		return fmt.Errorf("worktree retirement plan requires full sealed authority tips")
