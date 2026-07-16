@@ -512,67 +512,14 @@ func cmdEvent(args []string) {
 		return
 	}
 	if len(args) >= 1 && args[0] == "show" {
-		jsonOut := false
-		traceID := ""
-		for _, arg := range args[1:] {
-			switch {
-			case arg == "--json":
-				jsonOut = true
-			case strings.HasPrefix(arg, "-"):
-				fmt.Fprintln(os.Stderr, "event show: unknown flag", arg)
-				os.Exit(2)
-			default:
-				if traceID != "" {
-					fmt.Fprintln(os.Stderr, "event show: only one trace id")
-					os.Exit(2)
-				}
-				traceID = arg
-			}
-		}
-		if strings.TrimSpace(traceID) == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound event show <trace_id> [--json]")
-			os.Exit(2)
-		}
-		homePath, err := home.Resolve("")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
-			os.Exit(1)
-		}
-		detail, err := eventsource.ShowTrace(homePath, traceID)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "event show:", err)
-			os.Exit(1)
-		}
-		if jsonOut {
-			printJSON(detail)
-			return
-		}
-		fmt.Printf("# event trace %s\n\n", detail.TraceID)
-		fmt.Printf("- authority: %s\n", detail.AuthorityRef)
-		fmt.Printf("- source_ref: %s\n", detail.SourceRef)
-		fmt.Printf("- stream: %s\n", detail.Source.Stream)
-		fmt.Printf("- source_id: %s\n", detail.Source.SourceID)
-		fmt.Printf("- source_line: %d\n", detail.Source.Line)
-		if detail.Source.SourceKind != "" {
-			fmt.Printf("- source_kind: %s\n", detail.Source.SourceKind)
-		}
-		if detail.Source.EventClass != "" {
-			fmt.Printf("- event_class: %s\n", detail.Source.EventClass)
-		}
-		fmt.Printf("- mutation_class: %s\n", detail.Trace.MutationClass)
-		fmt.Printf("- created_at: %s\n", detail.Trace.CreatedAt)
-		if detail.Trace.Actor != "" {
-			fmt.Printf("- actor: %s\n", detail.Trace.Actor)
-		}
-		if detail.Trace.Summary != "" {
-			fmt.Printf("- summary: %s\n", detail.Trace.Summary)
-		}
-		fmt.Printf("- trace_path: %s\n", detail.TracePath)
-		for _, f := range detail.Trace.FilesTouched {
-			fmt.Printf("- file: %s\n", f)
-		}
-		for _, o := range detail.Trace.Outputs {
-			fmt.Printf("- output: %s\n", o)
+		// runEventShow (cmd/compound/event_show.go) resolves ANY event-store
+		// record kind — trace_ ids stay on eventsource.ShowTrace unchanged;
+		// rec_/hook_/act_/pol_/tr_ ids resolve through the shared eventstore
+		// read seam. cmdEvent only calls os.Exit on a non-zero code (matching
+		// every other branch in this function): the success path must return
+		// normally so existing tests can call cmdEvent directly in-process.
+		if code := runEventShow(args[1:], os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
 		}
 		return
 	}
@@ -643,7 +590,7 @@ func cmdEvent(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "import-os" {
-		fmt.Fprintln(os.Stderr, "usage: compound event import-os <events.ndjson> [--limit N] [--stream NAME] [--review-root DIR] [--review-summary TEXT] | event show <trace_id> [--json] | event list [--stream NAME] [--limit N] [--json] | event authority [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound event import-os <events.ndjson> [--limit N] [--stream NAME] [--review-root DIR] [--review-summary TEXT] | event show <id> [--json] | event list [--stream NAME] [--limit N] [--json] | event authority [--json]")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
