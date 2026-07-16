@@ -87,9 +87,16 @@ func TestConsoleBuildReservesCanonicalPortBeforeBun(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Scope HOME/XDG_CACHE_HOME so the endpoint lifecycle lock is test-local:
+	// without this the helper collides with a LIVE console's flock (os.UserCacheDir
+	// is HOME-derived) and fails on the lock message before the port preflight
+	// under test (observed intermittently red in full-battery runs 2026-07-16).
 	_, stderr, runErr := invokeConsoleCommand(t, []string{
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"COMPOUND_CONSOLE_BUN_MARKER=" + marker,
+		"HOME=" + root,
+		"XDG_CACHE_HOME=" + filepath.Join(root, "cache"),
+		"COMPOUND_HOME=" + filepath.Join(root, ".compound"),
 	}, "build", "--operator", "--console-dir", consoleDir)
 	if runErr == nil {
 		t.Fatal("console build succeeded with canonical port already owned")
@@ -147,9 +154,14 @@ func TestConsoleServeRefusesMissingProductionBuildBeforeBun(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Same lock scoping as the build preflight test: keep the lifecycle lock
+	// test-local so a live console cannot preempt the missing-BUILD_ID check.
 	_, stderr, runErr := invokeConsoleCommand(t, []string{
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"COMPOUND_CONSOLE_BUN_MARKER=" + marker,
+		"HOME=" + root,
+		"XDG_CACHE_HOME=" + filepath.Join(root, "cache"),
+		"COMPOUND_HOME=" + filepath.Join(root, ".compound"),
 	}, "serve", "--operator", "--console-dir", consoleDir)
 	if runErr == nil {
 		t.Fatal("console serve succeeded without a production BUILD_ID")
