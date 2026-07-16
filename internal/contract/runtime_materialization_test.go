@@ -174,3 +174,53 @@ func TestMaterializeRuntimeReadOnlySharesInProcessSemanticTaskEmbedding(t *testi
 		t.Fatalf("in-process semantic trace = %+v", got.EngineDependencyTrace)
 	}
 }
+
+func TestMaterializeRuntimeOrdinaryKeepsRawCapgraphEmbedderAndSidecar(t *testing.T) {
+	home := t.TempDir()
+	graph, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Add(capgraph.Node{
+		ID: "skill:ordinary-semantic", Kind: "skill", Name: "Ordinary Semantic",
+		Triggers: []string{"deployment automation"}, Weight: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	task := "ship ordinary orientation"
+	embedder := &runtimeSemanticEmbedder{task: task}
+	priorResolver := breadthEmbedderResolver
+	breadthEmbedderResolver = func(string) (breadth.EmbedderAdapter, bool) { return embedder, true }
+	t.Cleanup(func() { breadthEmbedderResolver = priorResolver })
+	if resolved := resolveTaskEmbedder(home, task); resolved != embedder {
+		t.Fatalf("ordinary capgraph embedder = %T, want raw configured embedder %T", resolved, embedder)
+	}
+
+	engine := &countingRuntimeEngine{}
+	factoryCalls := 0
+	priorFactory := breadthEngineFactory
+	breadthEngineFactory = func(string) (mem.Engine, func()) {
+		factoryCalls++
+		return engine, func() {}
+	}
+	t.Cleanup(func() { breadthEngineFactory = priorFactory })
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "counting-runtime")
+
+	got, err := MaterializeRuntime(Input{
+		Harness: "codex", Cwd: "/repo/product", Task: task,
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if embedder.taskCalls != 1 {
+		t.Fatalf("ordinary capgraph task embeddings = %d, want 1 raw embedder call", embedder.taskCalls)
+	}
+	if factoryCalls != 1 || engine.queryCalls != 1 {
+		t.Fatalf("ordinary memory retrieval factory/query calls = %d/%d, want sidecar 1/1", factoryCalls, engine.queryCalls)
+	}
+	if got.EngineDependencyTrace.ObservedEngine != "counting-runtime" {
+		t.Fatalf("ordinary engine trace = %+v, want sidecar identity", got.EngineDependencyTrace)
+	}
+}
