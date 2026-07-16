@@ -686,7 +686,7 @@ export function buildDecideGroups(
     const unavailableReason = copyOnly
       ? reviewResolutionItemId
         ? `No ${area.replace(/-/g, " ")} owner workflow is built yet.`
-        : capability.detail
+        : `No safe owner workflow is available. ${capability.detail}`
       : "";
     const primaryAction = copyOnly
       ? reviewResolutionItemId
