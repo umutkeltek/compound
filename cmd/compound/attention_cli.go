@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	"compound/internal/activity"
 	"compound/internal/attention"
 	"compound/internal/home"
 	"compound/internal/work"
@@ -72,6 +74,7 @@ func cmdAttention(args []string) {
 		Reviews:   &reviews,
 		Workbench: &workbench,
 		Executors: &executors,
+		Activity:  activityAttentionInput(homePath, &workbench, now),
 	}, now)
 	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
@@ -83,6 +86,118 @@ func cmdAttention(args []string) {
 		return
 	}
 	printAttentionText(report)
+}
+
+// activityAttentionMaxAgeDays bounds how old the latest span day may be before the activity read
+// yields nothing: a sensor that stopped draining weeks ago must not squat a stale block on the
+// attention board. Staleness-gating over memory is the attention norm; freshness metadata alone
+// would still rank a dead sensor's last day every morning.
+const activityAttentionMaxAgeDays = 3
+
+// activityAttentionInput is the decision-13 additive activity read: latest persisted span day ->
+// activity.InferDay against the workbench's visible envelope/receipt timestamps ->
+// attention.ActivityDayInput. Nil in every quiet case (no spans, stale spans, zero unaccounted
+// blocks). A read error warns on stderr but never blocks the board — this input is enrichment; the
+// attention projection is the product.
+func activityAttentionInput(homePath string, workbench *work.WorkbenchReport, now time.Time) *attention.ActivityDayInput {
+	day, ok, err := activity.LatestSpanDay(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: activity read skipped:", err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	dayStart, err := time.Parse("2006-01-02", day)
+	if err != nil || now.UTC().Sub(dayStart) > time.Duration(activityAttentionMaxAgeDays)*24*time.Hour {
+		return nil
+	}
+	spanFile, ok, err := activity.ReadSpanFile(homePath, day)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: activity read skipped:", err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	inference := activity.InferDay(day, spanFile.Spans, workbenchWorkActivities(workbench))
+	if len(inference.UnaccountedBlocks) == 0 {
+		return nil
+	}
+	input := &attention.ActivityDayInput{
+		Date:                inference.Date,
+		GeneratedAt:         spanFile.GeneratedAt,
+		TotalUnaccountedMin: inference.TotalUnaccountedMin,
+	}
+	for _, block := range inference.UnaccountedBlocks {
+		input.UnaccountedBlocks = append(input.UnaccountedBlocks, attention.ActivityBlock{
+			Start:       block.Start,
+			End:         block.End,
+			ActiveMin:   block.ActiveMin,
+			DurationMin: block.DurationMin,
+			CategoryMix: block.CategoryMix,
+		})
+	}
+	return input
+}
+
+// workbenchWorkActivities extracts every envelope/receipt timestamp the workbench already renders —
+// claim times plus run-observation and route-outcome times, across open AND recent items — as the
+// reconciliation anchors an activity block is "accounted" against (decision 11: work activity for
+// slice 1 = timestamps visible in work.WorkbenchReport).
+func workbenchWorkActivities(report *work.WorkbenchReport) []activity.WorkActivity {
+	if report == nil {
+		return nil
+	}
+	var out []activity.WorkActivity
+	add := func(ref, ts string) {
+		at, ok := workTimestamp(ts)
+		if !ok {
+			return
+		}
+		out = append(out, activity.WorkActivity{Ref: ref, At: at})
+	}
+	items := make([]work.WorkbenchItem, 0, len(report.Open)+len(report.Recent))
+	items = append(items, report.Open...)
+	items = append(items, report.Recent...)
+	for _, item := range items {
+		add(item.WorkID, item.ClaimedAt)
+		for _, obs := range item.RunObservations {
+			add(item.WorkID+":"+obs.ID, obs.GeneratedAt)
+		}
+		for _, route := range item.RouteOutcomes {
+			add(item.WorkID+":"+route.ID, route.CreatedAt)
+		}
+	}
+	return out
+}
+
+// workTimestamp accepts both timestamp encodings the workbench renders: RFC3339 (run observations,
+// route outcomes) and integer epoch values (lease claimed_at is epoch NANOSECONDS, not RFC3339 —
+// grep-verified premise correction). Mirrors internal/work's unexported executorClaimedAtTime
+// (executors.go:783), which is outside this slice's touch boundary.
+func workTimestamp(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed, true
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	switch {
+	case n > 1e16:
+		return time.Unix(0, n), true
+	case n > 1e13:
+		return time.Unix(0, n*int64(time.Microsecond)), true
+	case n > 1e11:
+		return time.Unix(0, n*int64(time.Millisecond)), true
+	default:
+		return time.Unix(n, 0), true
+	}
 }
 
 func printAttentionText(report attention.Report) {
