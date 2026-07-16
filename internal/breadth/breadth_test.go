@@ -364,7 +364,7 @@ func TestVectorCacheLoadGuardsDimAndEmbedderStamp(t *testing.T) {
 		if _, err := reload.IndexWithError(claims, 2); err != nil {
 			t.Fatalf("corrupt derived cache should rebuild: %v", err)
 		}
-		if _, err := reload.cache.load(); err != nil {
+		if _, _, err := reload.cache.load(); err != nil {
 			t.Fatalf("rebuilt cache still invalid: %v", err)
 		}
 	})
