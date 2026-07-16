@@ -73,6 +73,15 @@ func (h MintHome) Valid() bool {
 // Every new organ / registry surface / status note goes here (or is grandfathered with a dated
 // reason). Keys are "<surface>:<id>" (e.g. "organ:scratchpad").
 var mintHomes = map[string]MintHome{
+	// activity is the Tier-0 ambient-activity observed family: it owns the
+	// compound.activity_observation.v0.1 event schema + ActivitySpan reductions under
+	// observed/activity/. It classifies and reconciles activity against the work ledger but blocks
+	// nothing and promotes nothing (zero auto memory candidates), so it is evidence, not enforcement.
+	"organ:activity": {
+		Class:    MintEvidence,
+		Purpose:  "Tier-0 content-free ambient-activity family (compound.activity_observation.v0.1 events + ActivitySpan reductions) under observed/activity/, ingested by a grant-gated fail-closed drain membrane",
+		Consumer: "compound activity CLI (enable/disable/status/drain/sweep) + attention activity-unaccounted watching group + activity-unaccounted operator_private lens",
+	},
 	// eventstore enforces the single physical-layout boundary for COMPOUND_HOME/events. The
 	// architecture doctor blocks any production path construction or filesystem access outside
 	// this package, so the organ is enforcement rather than a second meaning authority.

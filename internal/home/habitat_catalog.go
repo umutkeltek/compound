@@ -109,6 +109,7 @@ func buildHabitatEntries() []HabitatEntry {
 		active("observed", "observed", HabitatClassEvidence, true, true, false),
 		child("observed.tool-output", "observed/tool-output", HabitatClassRebuildable, true, false, true),
 		child("observed.findings", "observed/findings", HabitatClassEvidence, true, true, false),
+		child("observed.activity", "observed/activity", HabitatClassEvidence, true, true, false),
 		active("registries", "registries", HabitatClassAuthority, true, true, false),
 		active("artifacts", "artifacts", HabitatClassEvidence, true, true, false),
 		child("artifacts.sha256", "artifacts/sha256", HabitatClassEvidence, true, true, false),

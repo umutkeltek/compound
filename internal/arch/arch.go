@@ -52,6 +52,7 @@ var Classification = map[string]Class{
 	"writeback": Spine,
 	// object families the spine's transitions create/own/adjudicate (LAYERS.md) — authority for
 	// their objects, never for the runtime grammar
+	"activity":       ObjectFamily,
 	"capgraph":       ObjectFamily,
 	"director":       ObjectFamily,
 	"distiller":      ObjectFamily,

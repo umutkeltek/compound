@@ -72,12 +72,12 @@ Gen-1 memory stack migrated into the spine memory family and retired.
 Capability status note: `capgraph` owns `compound capability skill-plan`; skill candidates now produce reviewed node drafts under `COMPOUND_HOME/reviews/capability-skills/` before any graph import or skill-file write.
 
 ## Packages (`internal/`)
-
 This table is SINGLE-SOURCED from `arch.Classification` (`internal/arch/arch.go`): one row per classified package, Class holding the exact lowercase Class value; `architecture doctor --strict` fails on drift, a missing package, or a stale one.
 
 | Package | Class | Role |
 |---|---|---|
 | `act` | leaf | compound's ONE generic governed outbound-write seam: the single execute-and-receipt wrapper gating every external write on an allowing PolicyDecision plus pre/post-image artifacts and an outward_delta Receipt/Transition; owns no authority object |
+| `activity` | object-family | Tier-0 ambient-activity observed family: owns the compound.activity_observation.v0.1 event schema + ActivitySpan reductions under observed/activity/; content-free by schema, day-rotated, grant-gated fail-closed drain, zero auto memory candidates |
 | `arch` | spine | architecture doctor: enforces package classification, candidate-map integrity, public-doc leak checks, status hot-path budget, and the memory convergence ratchet |
 | `attention` | leaf | ranked read-only projection over reviews/workbench/executors; owns no authority objects |
 | `authority` | importer | external source/path authority records imported through spine memory; path authority preserves entity identity across path/source moves |
