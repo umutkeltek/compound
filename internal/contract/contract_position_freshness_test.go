@@ -2,7 +2,6 @@ package contract
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,35 +25,57 @@ type positionFreshnessFixture struct {
 
 func TestCurrentStateStatusPositionRejectsMutableWorkbenchEvidence(t *testing.T) {
 	fixture := buildPositionFreshnessFixture(t)
+	positionRef := fixture.refs["mutable"]
+	claimRef := "claim://" + fixture.claims["mutable"].ID
+	if contains(fixture.pack.ActiveMemory, positionRef) {
+		t.Errorf("mutable Workbench position remained in active_memory: %v", fixture.pack.ActiveMemory)
+	}
+	if hasActivePositionRef(fixture.pack, positionRef) {
+		t.Errorf("mutable Workbench position remained in active_positions: %+v", fixture.pack.ActivePositions)
+	}
+	if hasIncluded(fixture.pack, positionRef) {
+		t.Errorf("mutable Workbench position remained in included[]: %+v", fixture.pack.Included)
+	}
+	reasons := positionExclusionReasons(fixture.pack, positionRef)
+	if len(reasons) != 1 {
+		t.Fatalf("mutable Workbench position exclusions = %v, want exactly one loud exclusion", reasons)
+	}
+	for _, want := range []string{
+		"current-state position",
+		claimRef,
+		mutableWorkbenchEvidenceRefForTest,
+		"mutable",
+		"unversioned",
+		"compound workbench --json",
+	} {
+		if !strings.Contains(reasons[0], want) {
+			t.Errorf("exclusion reason %q does not contain %q", reasons[0], want)
+		}
+	}
+}
 
-	for _, name := range []string{"both", "claim_only", "position_only"} {
-		positionRef := fixture.refs[name]
-		claimRef := "claim://" + fixture.claims[name].ID
-		if contains(fixture.pack.ActiveMemory, positionRef) {
-			t.Errorf("%s mutable Workbench position remained in active_memory: %v", name, fixture.pack.ActiveMemory)
-		}
-		if hasActivePositionRef(fixture.pack, positionRef) {
-			t.Errorf("%s mutable Workbench position remained in active_positions: %+v", name, fixture.pack.ActivePositions)
-		}
-		if hasIncluded(fixture.pack, positionRef) {
-			t.Errorf("%s mutable Workbench position remained in included[]: %+v", name, fixture.pack.Included)
-		}
-		reasons := positionExclusionReasons(fixture.pack, positionRef)
-		if len(reasons) != 1 {
-			t.Fatalf("%s mutable Workbench position exclusions = %v, want exactly one loud exclusion", name, reasons)
-		}
-		for _, want := range []string{
-			"current-state position",
-			claimRef,
-			mutableWorkbenchEvidenceRefForTest,
-			"mutable",
-			"unversioned",
-			"compound workbench --json",
-		} {
-			if !strings.Contains(reasons[0], want) {
-				t.Errorf("%s exclusion reason %q does not contain %q", name, reasons[0], want)
-			}
-		}
+func TestCurrentStatePositionImmutableSuccessorIsNotTaintedByMutableHistory(t *testing.T) {
+	fixture := buildPositionFreshnessFixture(t)
+	position := fixture.positions["successor"]
+	positionRef := fixture.refs["successor"]
+	oldClaim := fixture.claims["successor_old"]
+	activeClaim := fixture.claims["successor"]
+
+	if !contains(position.EvidenceRefs, mutableWorkbenchEvidenceRefForTest) {
+		t.Fatalf("regression fixture does not preserve old mutable evidence in folded history: %+v", position)
+	}
+	if contains(activeClaim.EvidenceRefs, mutableWorkbenchEvidenceRefForTest) {
+		t.Fatalf("immutable successor unexpectedly cites mutable Workbench evidence: %+v", activeClaim.EvidenceRefs)
+	}
+	if position.ActiveClaimID != activeClaim.ID || !contains(position.ClaimChain, oldClaim.ID) || !contains(position.ClaimChain, activeClaim.ID) {
+		t.Fatalf("regression fixture is not a real same-slot supersession chain: %+v", position)
+	}
+	if !contains(fixture.pack.ActiveMemory, positionRef) || !hasActivePositionRef(fixture.pack, positionRef) || !hasIncluded(fixture.pack, positionRef) {
+		t.Errorf("immutable successor was fossilized by mutable historical evidence: active_memory=%v active_positions=%+v included=%+v",
+			fixture.pack.ActiveMemory, fixture.pack.ActivePositions, fixture.pack.Included)
+	}
+	if reasons := positionExclusionReasons(fixture.pack, positionRef); len(reasons) != 0 {
+		t.Errorf("immutable successor was freshness-excluded by folded historical evidence: %v", reasons)
 	}
 }
 
@@ -113,7 +134,7 @@ func TestCurrentStatePositionExclusionPreservesHistoricalFoldAndLedger(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"both", "claim_only", "position_only"} {
+	for _, name := range []string{"mutable", "successor"} {
 		if !hasFoldedPosition(folded, fixture.positions[name].ID, fixture.claims[name].ID) {
 			t.Errorf("historical fold lost %s status position/claim: positions=%+v", name, folded)
 		}
@@ -122,7 +143,7 @@ func TestCurrentStatePositionExclusionPreservesHistoricalFoldAndLedger(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"both", "claim_only", "position_only"} {
+	for _, name := range []string{"mutable", "successor_old", "successor"} {
 		if !positionDetailHasClaim(detail, fixture.claims[name].ID) {
 			t.Errorf("historical position drilldown lost %s claim %s: %+v", name, fixture.claims[name].ID, detail.Positions)
 		}
@@ -148,9 +169,9 @@ func buildPositionFreshnessFixtureAtHome(t *testing.T, home string) positionFres
 		evidenceRefs []string
 	}
 	seeds := []seed{
-		{name: "both", predicate: "workbench_both_snapshot", object: "Workbench snapshot carried by claim and fold", claimType: "status", evidenceRefs: []string{mutableWorkbenchEvidenceRefForTest}},
-		{name: "claim_only", predicate: "workbench_claim_snapshot", object: "Workbench snapshot carried by claim only", claimType: "status", evidenceRefs: []string{mutableWorkbenchEvidenceRefForTest}},
-		{name: "position_only", predicate: "workbench_position_snapshot", object: "Workbench snapshot carried by position only", claimType: "status", evidenceRefs: []string{"artifact://workbench-position-fixture@sha256:abc"}},
+		{name: "mutable", predicate: "workbench_active_snapshot", object: "Workbench snapshot is mutable", claimType: "status", evidenceRefs: []string{mutableWorkbenchEvidenceRefForTest}},
+		{name: "successor_old", predicate: "workbench_replaced_snapshot", object: "Old Workbench snapshot was mutable", claimType: "status", evidenceRefs: []string{mutableWorkbenchEvidenceRefForTest}},
+		{name: "successor", predicate: "workbench_replaced_snapshot", object: "Current Workbench snapshot is revision-attested", claimType: "status", evidenceRefs: []string{"artifact://workbench-snapshot@sha256:abc"}},
 		{name: "constraint", predicate: "workbench_operating_constraint", object: "Workbench evidence supports durable operator law", claimType: "constraint", evidenceRefs: []string{mutableWorkbenchEvidenceRefForTest}},
 		{name: "unrelated", predicate: "release_status_snapshot", object: "Release status is backed by another source and immutable Workbench revision", claimType: "status", evidenceRefs: []string{"compound://release-status", "compound://workbench?rev=sha256:abc"}},
 	}
@@ -204,17 +225,9 @@ func buildPositionFreshnessFixtureAtHome(t *testing.T, home string) positionFres
 		if !ok {
 			t.Fatalf("folded position has unknown active claim: %+v", position)
 		}
-		switch name {
-		case "claim_only":
-			position.EvidenceRefs = withoutPositionFreshnessRef(position.EvidenceRefs, mutableWorkbenchEvidenceRefForTest)
-		case "position_only":
-			position.EvidenceRefs = append(position.EvidenceRefs, mutableWorkbenchEvidenceRefForTest)
-		}
-		fold.Positions[i] = position
 		positions[name] = position
 		refs[name] = "position://" + position.ID
 	}
-	writePositionFreshnessFold(t, filepath.Join(home, "ledger", "positions.jsonl"), fold.Positions)
 
 	pack, err := PackWithCapabilities(positionFreshnessInput(), DefaultPolicy(), home, fixedNow)
 	if err != nil {
@@ -227,36 +240,10 @@ func positionFreshnessInput() Input {
 	return Input{
 		Harness:     "codex",
 		Cwd:         "/repo/compound",
-		Task:        "report current Compound Workbench release and revisioned status while preserving operator constraints",
+		Task:        "report current Compound Workbench mutable replaced release and revision-attested status while preserving operator constraints",
 		RepoKind:    "control-plane",
 		RepoKindVia: "flag",
 		Mode:        "execute",
-	}
-}
-
-func withoutPositionFreshnessRef(refs []string, remove string) []string {
-	out := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		if ref != remove {
-			out = append(out, ref)
-		}
-	}
-	return out
-}
-
-func writePositionFreshnessFold(t *testing.T, path string, positions []mem.Position) {
-	t.Helper()
-	var body []byte
-	for _, position := range positions {
-		row, err := json.Marshal(position)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body = append(body, row...)
-		body = append(body, '\n')
-	}
-	if err := os.WriteFile(path, body, 0o644); err != nil {
-		t.Fatal(err)
 	}
 }
 
