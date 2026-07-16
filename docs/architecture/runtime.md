@@ -71,6 +71,17 @@ but rejects traversal and physical segment/index paths. The lifecycle and compat
 `events/work.jsonl`, `events/hook-events.ndjson`, and `events/traces.ndjson` retain their existing contracts while
 their physical access stays inside the event-store seam.
 
+Point reads resolve sealed segments through their sidecar indexes and the single hot (last-written) segment by a
+full parse. Because a bulk migration can fold an entire history into one hot segment per family, that hot parse is
+memoized per process behind a stat guard, keyed by segment path (measured live 2026-07-16: 158-212s attention
+collapsed to single-digit seconds). Repeated Gets against the same hot segment reuse one parsed frame set, and any
+size-or-mtime change (a same- or foreign-process append, torn-tail completion) discards the entry and reparses, so
+a reader never serves state older than the file it just statted. The memo is keyed per path — not a single slot —
+so interleaving Gets across families does not thrash; it is bounded by the live-family count because only
+hot-segment paths ever enter it. Read semantics are byte-identical to the full parse (newest-occurrence-wins,
+offsets preserved), and rooted `ReadRegular` reads bypass the memo entirely so their per-read validation always
+runs.
+
 ---
 
 ## 2. The envelope spine (the typed grammar everything runs through)
