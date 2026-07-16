@@ -21,7 +21,7 @@ export type DecideReadinessSection<T> = {
  * The queue never guesses actionability from area names or UI copy. The
  * server-owned ObjectFace state is the only input to this client-safe split.
  */
-export function decideReadinessSections<T extends Pick<DecideGroup, "face">>(
+export function decideReadinessSections<T extends { face: Pick<DecideGroup["face"], "state"> }>(
   groups: T[],
 ): DecideReadinessSection<T>[] {
   const actNow = groups.filter((group) => group.face.state === "ready");

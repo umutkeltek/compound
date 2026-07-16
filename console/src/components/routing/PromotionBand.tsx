@@ -101,7 +101,7 @@ function RouteCard({
             {group.ageLabel}
             {group.old ? " · stale" : ""}
           </span>
-          <FreshnessChip generatedAt={group.freshness.generatedAt} source={group.freshness.source} />
+            <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {act.mode === "copy" ? (
