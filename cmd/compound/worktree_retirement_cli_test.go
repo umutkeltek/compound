@@ -3,11 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestAuthorityWorktreeRetireCLIPlansReviewsAppliesAndRecordsWorkChain(t *tes
 		"--ref", fixture.candidateRef, "--authority-ref", "refs/heads/main",
 		"--publication-ref", "refs/remotes/origin/main",
 		"--owner-work", fixture.ownerWorkID, "--source-work", fixture.sourceWorkID,
-		"--recovery-ref", "sha256:" + strings.Repeat("a", 64), "--json",
+		"--recovery-ref", fixture.recoveryRef, "--json",
 	}, &stdout, &stderr, cliTestNow.Add(10*time.Minute))
 	if code != 0 {
 		t.Fatalf("plan code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
@@ -137,7 +138,7 @@ func TestAuthorityWorktreeRetireCLIPartialRetryRecordsDistinctHonestActions(t *t
 		"plan", "--repo", fixture.repo, "--worktree", fixture.worktree, "--ref", fixture.candidateRef,
 		"--authority-ref", "refs/heads/main", "--publication-ref", "refs/remotes/origin/main",
 		"--owner-work", fixture.ownerWorkID, "--source-work", fixture.sourceWorkID,
-		"--recovery-ref", "sha256:" + strings.Repeat("a", 64), "--json",
+		"--recovery-ref", fixture.recoveryRef, "--json",
 	}, &stdout, &stderr, cliTestNow.Add(10*time.Minute))
 	if code != 0 {
 		t.Fatalf("plan code=%d stderr=%s", code, stderr.String())
@@ -219,6 +220,7 @@ type worktreeRetirementCLIFixture struct {
 	candidateTip string
 	ownerWorkID  string
 	sourceWorkID string
+	recoveryRef  string
 }
 
 func newWorktreeRetirementCLIFixture(t *testing.T, homePath string) worktreeRetirementCLIFixture {
@@ -281,7 +283,17 @@ func newWorktreeRetirementCLIFixture(t *testing.T, homePath string) worktreeReti
 	if _, err := store.Advance(owner.ID, work.AdvanceInput{To: "running", Actor: "codex:test"}, cliTestNow.Add(8*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	return worktreeRetirementCLIFixture{repo: repo, worktree: worktreePath, candidateRef: "refs/heads/candidate", candidateTip: candidate, ownerWorkID: owner.ID, sourceWorkID: source.ID}
+	recoveryRef := writeWorktreeRetirementCLIRecoveryProof(t, filepath.Join(filepath.Dir(repo), "recovery.bundle"), []byte("candidate recovery body"))
+	return worktreeRetirementCLIFixture{repo: repo, worktree: worktreePath, candidateRef: "refs/heads/candidate", candidateTip: candidate, ownerWorkID: owner.ID, sourceWorkID: source.ID, recoveryRef: recoveryRef}
+}
+
+func writeWorktreeRetirementCLIRecoveryProof(t *testing.T, path string, body []byte) string {
+	t.Helper()
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	return "sha256-file:" + hex.EncodeToString(sum[:]) + ":" + path
 }
 
 func commandRefExists(repo, ref string) bool {
