@@ -282,6 +282,7 @@ func TestWarmVectorCacheDoesNotRewriteUntilCorpusChanges(t *testing.T) {
 	if _, err := seed.IndexWithError(claims, 7); err != nil {
 		t.Fatal(err)
 	}
+	wantHits := seed.Query("release artifacts", mem.GateList, []string{"c1", "c2"}, 1)
 	cacheDir := vectorCacheDir(t, home, seedEmbedder)
 	paths := []string{filepath.Join(cacheDir, "manifest.json"), filepath.Join(cacheDir, "vectors.bin")}
 	sentinel := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
@@ -312,8 +313,8 @@ func TestWarmVectorCacheDoesNotRewriteUntilCorpusChanges(t *testing.T) {
 		}
 	}
 	hits := warm.Query("release artifacts", mem.GateList, []string{"c1", "c2"}, 1)
-	if len(hits) != 1 || hits[0].ClaimID != "c1" {
-		t.Fatalf("warm semantic result drifted: %+v", hits)
+	if !reflect.DeepEqual(hits, wantHits) {
+		t.Fatalf("warm semantic result drifted:\ngot  %+v\nwant %+v", hits, wantHits)
 	}
 
 	changedGeneration, err := NewEngine(EngineConfig{Embedder: newFakeEmbedder(6), CompoundHome: home})
