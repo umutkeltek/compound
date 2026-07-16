@@ -28,7 +28,7 @@ import (
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
-	usage := "usage: compound capability <add|resolve|surface|observe|consume|consume-receipts|usage|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-connections|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
+	usage := "usage: compound capability <add|resolve|surface|observe|consume|consume-receipts|usage|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-connections|import-gateway|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -252,6 +252,44 @@ func cmdCapability(args []string) {
 			}
 			fmt.Printf("- source_authority: %s\n", h.SourceAuthorityID)
 		}
+	case "import-gateway":
+		now := time.Now()
+		jsonOut := hasFlag(rest, "--json")
+		gatewayName := flag("--gateway-name")
+		p := posn(map[string]bool{"--gateway-name": true})
+		if len(p) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-gateway <provider-registry.json> [--gateway-name <name>] [--json]")
+			os.Exit(2)
+		}
+		report, err := importCapabilityGateway(store, homePath, p[0], gatewayName, now)
+		die(err)
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# capability import-gateway %s\n", report.Status)
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- gateway: %s\n", report.GatewayName)
+		fmt.Printf("- registry: %s (schema %s)\n", report.RegistryPath, report.RegistrySchema)
+		fmt.Printf("- source_revision: %s\n", report.SourceRevision)
+		for _, n := range report.Nodes {
+			if n.Role == "provider" {
+				fmt.Printf("- node: %s role=provider provider=%s minted=%t endpoint=%s auth_mode=%s connection_surface_added=%t\n",
+					n.NodeID, n.ProviderID, n.NodeMinted, n.Endpoint, n.AuthMode, n.ConnectionSurfaceAdded)
+			} else {
+				fmt.Printf("- node: %s role=root minted=%t connection_surface_added=%t\n",
+					n.NodeID, n.NodeMinted, n.ConnectionSurfaceAdded)
+			}
+		}
+		fmt.Printf("- skipped_providers: %d\n", report.SkippedProviders)
+		for _, id := range report.SkippedProviderIDs {
+			fmt.Printf("- skipped_provider: %s\n", id)
+		}
+		fmt.Printf("- source_observation: %s\n", report.SourceObservationID)
+		for _, id := range report.NoPromoteIDs {
+			fmt.Printf("- source_no_promote: %s\n", id)
+		}
+		fmt.Printf("- source_authority: %s\n", report.SourceAuthorityID)
 	case "import-skills":
 		now := time.Now()
 		osSkillPath := flag("--os-skill-json")
@@ -1449,6 +1487,232 @@ func connectionImportObservation(harnessName, authorityPath, sourceRevision stri
 	}
 }
 
+// gatewayAssertingOwner is the fixed asserting owner for gateway connectivity
+// facts imported from a switchback provider registry. The provider registry --
+// not compound -- is the source that asserts these connectivity descriptors.
+const gatewayAssertingOwner = "switchback://provider-registry"
+
+// gatewayImportNode is one minted node in an import-gateway report: the gateway
+// root or one provider, with its minted / connection-surface-added booleans.
+type gatewayImportNode struct {
+	NodeID                 string `json:"node_id"`
+	Role                   string `json:"role"` // "root" | "provider"
+	ProviderID             string `json:"provider_id,omitempty"`
+	Name                   string `json:"name,omitempty"`
+	Endpoint               string `json:"endpoint,omitempty"`
+	AuthMode               string `json:"auth_mode,omitempty"`
+	NodeMinted             bool   `json:"node_minted"`
+	ConnectionSurfaceAdded bool   `json:"connection_surface_added"`
+}
+
+// gatewayImportReport summarizes an import-gateway run: the gateway root + one
+// node per connectable provider, providers skipped for lack of an endpoint, and
+// the no-promote lineage triad ids. Mirrors the connectionImportReport shape.
+type gatewayImportReport struct {
+	SchemaVersion       string              `json:"schema_version"`
+	Status              string              `json:"status"`
+	AuthorityRef        string              `json:"authority_ref"`
+	GatewayName         string              `json:"gateway_name"`
+	RegistryPath        string              `json:"registry_path"`
+	RegistrySchema      string              `json:"registry_schema"`
+	SourceRevision      string              `json:"source_revision"`
+	Nodes               []gatewayImportNode `json:"nodes"`
+	SkippedProviders    int                 `json:"skipped_providers"`
+	SkippedProviderIDs  []string            `json:"skipped_provider_ids,omitempty"`
+	SourceObservationID string              `json:"source_observation_id"`
+	SourceAuthorityID   string              `json:"source_authority_id"`
+	NoPromoteIDs        []string            `json:"no_promote_ids,omitempty"`
+}
+
+// importCapabilityGateway mints gateway-class capgraph nodes (one gateway root +
+// one node per connectable provider) from an external switchback provider
+// registry, carrying ConnectionSurface connectivity facts (endpoint=base_url,
+// auth_mode=auth_scheme, schema ref, whole-file source revision) under the
+// EXISTING capability-graph authority. It ensures each node without ever
+// rewriting a pre-existing one, runs the same no-promote lineage ceremony as
+// import-connections (sourceobs + RecordSourceAuthority), and persists the
+// sidecar. It FAILS CLOSED before any persistence on an unreadable file or a
+// missing/unknown schema. Facts are connectivity metadata only: no pricing,
+// cost, tier, health, or routing semantics, and no secret/env values are read.
+func importCapabilityGateway(store *capgraph.Store, homePath, registryPath, gatewayName string, now time.Time) (gatewayImportReport, error) {
+	gatewayName = strings.TrimSpace(gatewayName)
+	if gatewayName == "" {
+		gatewayName = "switchback"
+	}
+	report := gatewayImportReport{
+		SchemaVersion: capgraph.ConnectionSurfaceSchemaVersion,
+		Status:        "ok",
+		AuthorityRef:  capgraph.CapabilityGraphAuthorityRef,
+		GatewayName:   gatewayName,
+		RegistryPath:  registryPath,
+	}
+
+	// Fail closed BEFORE any write: unreadable file, non-JSON body, or missing/
+	// unknown schema returns an error and nothing is persisted (no partial import).
+	registry, err := capgraph.LoadProviderRegistry(registryPath)
+	if err != nil {
+		return report, err
+	}
+	report.RegistrySchema = registry.Schema
+	report.SourceRevision = registry.SourceRevision
+
+	nodes, err := store.List()
+	if err != nil {
+		return report, err
+	}
+	existingNode := map[string]bool{}
+	for _, n := range nodes {
+		existingNode[n.ID] = true
+	}
+	ensureNode := func(id, name string) (bool, error) {
+		if existingNode[id] {
+			return false, nil // never rewrite a pre-existing node
+		}
+		if err := store.Add(capgraph.GatewayNode(id, name)); err != nil {
+			return false, err
+		}
+		existingNode[id] = true
+		return true, nil
+	}
+
+	var nodeIDs []string
+
+	// Root node: config path + schema + owner + revision, but NO endpoint/auth
+	// (the registry does not carry the gateway's own listen address).
+	rootID := capgraph.GatewayRootNodeID(gatewayName)
+	rootName := gatewayName + " gateway"
+	rootMinted, err := ensureNode(rootID, rootName)
+	if err != nil {
+		return report, err
+	}
+	rootAdded, err := store.AddConnectionSurface(capgraph.ConnectionSurface{
+		NodeID:            rootID,
+		ConfigPaths:       []string{registryPath},
+		SettingsSchemaRef: registry.Schema,
+		AssertingOwner:    gatewayAssertingOwner,
+		SourceRevision:    registry.SourceRevision,
+	})
+	if err != nil {
+		return report, err
+	}
+	nodeIDs = append(nodeIDs, rootID)
+	report.Nodes = append(report.Nodes, gatewayImportNode{
+		NodeID: rootID, Role: "root", Name: rootName,
+		NodeMinted: rootMinted, ConnectionSurfaceAdded: rootAdded,
+	})
+
+	// Provider nodes: endpoint=base_url. A provider with no id or no base_url has
+	// no connectivity fact to record -- skip it and count it (never silent-drop).
+	for _, p := range registry.Providers {
+		providerID := strings.TrimSpace(p.ID)
+		if providerID == "" {
+			report.SkippedProviders++
+			report.SkippedProviderIDs = append(report.SkippedProviderIDs, "(missing id)")
+			continue
+		}
+		if strings.TrimSpace(p.BaseURL) == "" {
+			report.SkippedProviders++
+			report.SkippedProviderIDs = append(report.SkippedProviderIDs, providerID)
+			continue
+		}
+		nodeID := capgraph.GatewayProviderNodeID(gatewayName, providerID)
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			name = providerID
+		}
+		minted, err := ensureNode(nodeID, name)
+		if err != nil {
+			return report, err
+		}
+		cs := capgraph.ConnectionSurface{
+			NodeID:            nodeID,
+			ConfigPaths:       []string{registryPath},
+			Endpoint:          strings.TrimSpace(p.BaseURL),
+			AuthMode:          strings.TrimSpace(p.AuthScheme),
+			SettingsSchemaRef: registry.Schema,
+			AssertingOwner:    gatewayAssertingOwner,
+			SourceRevision:    registry.SourceRevision,
+		}
+		added, err := store.AddConnectionSurface(cs)
+		if err != nil {
+			return report, err
+		}
+		nodeIDs = append(nodeIDs, nodeID)
+		report.Nodes = append(report.Nodes, gatewayImportNode{
+			NodeID: nodeID, Role: "provider", ProviderID: providerID, Name: name,
+			Endpoint: cs.Endpoint, AuthMode: cs.AuthMode,
+			NodeMinted: minted, ConnectionSurfaceAdded: added,
+		})
+	}
+
+	// Lineage triad: one no-promote SourceObservation for the whole registry file
+	// + a capability-source-authority handoff row; claims.jsonl stays untouched.
+	obs := gatewayImportObservation(gatewayName, registryPath, registry.Schema, registry.SourceRevision, len(report.Nodes), now)
+	sourceReport, err := sourceobs.Apply(homePath, obs, now)
+	if err != nil {
+		return report, fmt.Errorf("source observe: %w", err)
+	}
+	auth, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
+		SourcePath:          registryPath,
+		SourceKind:          "gateway_provider_registry",
+		SourceOwner:         gatewayAssertingOwner,
+		SourceClass:         "source",
+		SourceRevision:      registry.SourceRevision,
+		SourceObservedAt:    obs.ObservedAt,
+		ImportedVia:         "capability import-gateway",
+		NodeIDs:             nodeIDs,
+		SourceObservationID: sourceReport.ObservationID,
+		NoPromoteIDs:        sourceReport.NoPromoteIDs,
+		EvidenceRefs:        obs.EvidenceRefs,
+	}, now)
+	if err != nil {
+		return report, err
+	}
+	report.SourceObservationID = sourceReport.ObservationID
+	report.SourceAuthorityID = auth.ID
+	report.NoPromoteIDs = sourceReport.NoPromoteIDs
+	return report, nil
+}
+
+// gatewayImportObservation builds the no-promote SourceObservation for an
+// imported switchback provider registry. Mirrors connectionImportObservation:
+// constructed here because capgraph cannot import sourceobs (that would cycle)
+// and the packet forbids modifying the sourceobs package. The registry file
+// stays evidence/rollback input; the graph is the surface consumers treat as
+// authority.
+func gatewayImportObservation(gatewayName, registryPath, schema, sourceRevision string, nodeCount int, now time.Time) sourceobs.SourceObservation {
+	sum := sha256.Sum256([]byte(strings.Join([]string{gatewayName, registryPath, sourceRevision}, "|")))
+	return sourceobs.SourceObservation{
+		SchemaVersion: sourceobs.SchemaVersion,
+		ID:            "srcobs_gw_" + hex.EncodeToString(sum[:])[:12],
+		AdapterID:     "compound.capability-gateway",
+		SourceSystem:  "switchback",
+		ObservedAt:    now.UTC().Format(time.RFC3339),
+		SourceRef: sourceobs.SourceRef{
+			Path:        registryPath,
+			Kind:        "gateway_provider_registry",
+			Owner:       gatewayAssertingOwner,
+			SourceClass: "source",
+			Revision:    sourceRevision,
+		},
+		GeneratedView: sourceobs.GeneratedView{
+			ViewKind:    "gateway_connection_surface",
+			Consumer:    "compound capability import-gateway",
+			Generator:   "compound capability import-gateway",
+			Marker:      capgraph.ConnectionSurfaceSchemaVersion,
+			Freshness:   "observed",
+			DriftReason: fmt.Sprintf("gateway=%s schema=%s nodes=%d", gatewayName, schema, nodeCount),
+		},
+		MapsTo: []sourceobs.MapTarget{{
+			ObjectFamily:   "capability",
+			CandidateKind:  string(candidates.CapabilityObs),
+			EntityHint:     gatewayName,
+			PromoteAllowed: false,
+		}},
+		EvidenceRefs: []string{"gateway_connection_surface:" + gatewayName + ":" + sourceRevision},
+	}
+}
+
 func dedupeStrings(values []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(values))
@@ -1489,6 +1753,7 @@ func printCapabilityConstraints(c capgraph.SurfacingConstraints) {
 	printCapabilityConstraintRefs("requires", c.Required)
 	printCapabilityConstraintRefs("conflicts", c.Conflicts)
 	printCapabilityConstraintRefs("harnesses", c.Harnesses)
+	printCapabilityConstraintRefs("connection_surfaces", c.ConnectionSurfaces)
 	printCapabilityConstraintRefs("missed_when", c.KnownMissedWhen)
 	printCapabilityConstraintRefs("false_triggered_by", c.KnownFalseTriggeredBy)
 	printCapabilityConstraintRefs("evidence", c.Evidence)
