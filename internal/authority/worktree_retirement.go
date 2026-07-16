@@ -87,8 +87,24 @@ type WorktreeRetirementLiveness interface {
 }
 
 type WorktreeRetirementDependencies struct {
-	Git      WorktreeRetirementGit
-	Liveness WorktreeRetirementLiveness
+	Git              WorktreeRetirementGit
+	Liveness         WorktreeRetirementLiveness
+	RecoveryResolver WorktreeRetirementRecoveryResolver
+}
+
+// WorktreeRetirementRecoveryProof is verified content-addressed recovery
+// evidence sealed into a retirement plan.
+type WorktreeRetirementRecoveryProof struct {
+	Reference string `json:"reference"`
+	Kind      string `json:"kind"`
+	Digest    string `json:"digest"`
+	Path      string `json:"path"`
+}
+
+// WorktreeRetirementRecoveryResolver keeps recovery storage replaceable while
+// letting every mutation boundary re-prove the exact sealed bytes.
+type WorktreeRetirementRecoveryResolver interface {
+	Resolve(ctx context.Context, reference string) (WorktreeRetirementRecoveryProof, error)
 }
 
 type WorktreeRetirementOwnerProof struct {
@@ -141,26 +157,29 @@ type WorktreeRetirementWorktree struct {
 }
 
 type WorktreeRetirementPlan struct {
-	SchemaVersion         string                        `json:"schema_version"`
-	ID                    string                        `json:"id"`
-	CreatedAt             string                        `json:"created_at"`
-	Status                string                        `json:"status"`
-	RepoRoot              string                        `json:"repo_root"`
-	RepositoryFingerprint string                        `json:"repository_fingerprint"`
-	Worktree              *WorktreeRetirementWorktree   `json:"worktree,omitempty"`
-	CandidateRef          string                        `json:"candidate_ref,omitempty"`
-	CandidateTip          string                        `json:"candidate_tip"`
-	AuthorityRef          string                        `json:"authority_ref"`
-	AuthorityTip          string                        `json:"authority_tip"`
-	PublicationRef        string                        `json:"publication_ref"`
-	PublicationTip        string                        `json:"publication_tip"`
-	CandidateRelation     string                        `json:"candidate_relation"`
-	OwnerProof            WorktreeRetirementOwnerProof  `json:"owner_proof"`
-	SourceProof           WorktreeRetirementSourceProof `json:"source_proof"`
-	RecoveryRefs          []string                      `json:"recovery_refs"`
-	Eligible              bool                          `json:"eligible"`
-	BlockReasons          []string                      `json:"block_reasons"`
-	PlanDigest            string                        `json:"plan_digest"`
+	SchemaVersion         string                            `json:"schema_version"`
+	ID                    string                            `json:"id"`
+	CreatedAt             string                            `json:"created_at"`
+	Status                string                            `json:"status"`
+	RepoRoot              string                            `json:"repo_root"`
+	RepositoryFingerprint string                            `json:"repository_fingerprint"`
+	Worktree              *WorktreeRetirementWorktree       `json:"worktree,omitempty"`
+	CandidateRef          string                            `json:"candidate_ref,omitempty"`
+	CandidateTip          string                            `json:"candidate_tip"`
+	AuthorityRef          string                            `json:"authority_ref"`
+	AuthorityTip          string                            `json:"authority_tip"`
+	PublicationRef        string                            `json:"publication_ref"`
+	PublicationTip        string                            `json:"publication_tip"`
+	CandidateRelation     string                            `json:"candidate_relation"`
+	SourceRelation        string                            `json:"source_relation"`
+	OwnerProof            WorktreeRetirementOwnerProof      `json:"owner_proof"`
+	SourceProof           WorktreeRetirementSourceProof     `json:"source_proof"`
+	RecoveryRefs          []string                          `json:"recovery_refs"`
+	RecoveryProofs        []WorktreeRetirementRecoveryProof `json:"recovery_proofs"`
+	EvidenceRefs          []string                          `json:"evidence_refs"`
+	Eligible              bool                              `json:"eligible"`
+	BlockReasons          []string                          `json:"block_reasons"`
+	PlanDigest            string                            `json:"plan_digest"`
 }
 
 type retirementWorktreeRecord struct {
