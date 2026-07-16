@@ -104,14 +104,14 @@ func TestAuthorityWorktreeRetireCLIPlansReviewsAppliesAndRecordsWorkChain(t *tes
 		t.Fatalf("owner work action chain runs=%v policy=%s", owner.RunIDs, owner.PolicyDecisionID)
 	}
 	for _, id := range []string{result.ActionIntentID, result.PolicyDecisionID, result.ReceiptID, result.TransitionID} {
-		if _, err := os.Stat(filepath.Join(homePath, "events", id+".json")); err != nil {
-			t.Fatalf("missing event %s: %v", id, err)
+		if !testEventExists(t, homePath, id) {
+			t.Fatalf("missing event %s", id)
 		}
 	}
 	var receipt envelope.Receipt
-	readWorktreeRetirementCLIJSON(t, filepath.Join(homePath, "events", result.ReceiptID+".json"), &receipt)
+	readTestEventJSON(t, homePath, result.ReceiptID, &receipt)
 	var transition envelope.Transition
-	readWorktreeRetirementCLIJSON(t, filepath.Join(homePath, "events", result.TransitionID+".json"), &transition)
+	readTestEventJSON(t, homePath, result.TransitionID, &transition)
 	if receipt.IDs.WorkID != fixture.ownerWorkID || transition.IDs.WorkID != fixture.ownerWorkID || !stringSliceContains(transition.ActionRefs, result.ActionIntentID) || !stringSliceContains(transition.AfterRefs, result.ReceiptID) {
 		t.Fatalf("recorded chain receipt=%+v transition=%+v", receipt, transition)
 	}
@@ -390,15 +390,4 @@ func writeWorktreeRetirementCLIRecoveryProof(t *testing.T, path string, body []b
 func commandRefExists(repo, ref string) bool {
 	cmd := exec.Command("git", "-C", repo, "rev-parse", "--verify", ref)
 	return cmd.Run() == nil
-}
-
-func readWorktreeRetirementCLIJSON(t *testing.T, path string, target any) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(data, target); err != nil {
-		t.Fatal(err)
-	}
 }
