@@ -13,17 +13,22 @@ Create a Desktop snapshot zip from the current compound checkout:
   5. zip ~/Desktop/compound.zip
 
 Default mode is for a ChatGPT Pro source audit:
-  - keeps scripts, tools, console source, private docs, .claude, .git,
+  - keeps scripts, tools, console source, private docs, .git,
     root binaries, and other local audit material
+  - always excludes .claude/ (harness session state and agent worktrees —
+    the worktrees are duplicate checkouts of this same tree and were the
+    reason snapshots ballooned past the source folder)
   - excludes dependency/build artifacts: node_modules, .next
   - removes Finder/system junk: .DS_Store, __MACOSX
+  - enforces a hard zip budget (--max-zip-mb, default 500): an oversized
+    zip is deleted and the run fails with the largest staged files listed
   - removes top-level memory/* external clones except names in the keep list
   - writes AUDIT-NOTES.md at the top of the staged copy so an auditor sees
     package-time HEAD/branch/dirty-state/ahead-behind before reading the tree
 
 Use --upload-safe for the smaller public-audit bundle:
   - also excludes .git, node_modules, .next, root binary, bin/, home/,
-    docs_private/, .compound-private/, .claude/, Plans/, and *.private.md
+    docs_private/, .compound-private/, Plans/, and *.private.md
 
 Options:
   --repo PATH              Source repo. Default: git root for this script.
@@ -36,6 +41,9 @@ Options:
   --keep-memory NAME       Keep top-level memory/NAME. Can be repeated.
                            Default keep list: compound.
   --no-default-memory      Clear the default keep-memory list.
+  --max-zip-mb N           Hard budget for the finished zip in MB. Over budget:
+                           list largest staged files, delete the zip, exit 1.
+                           0 disables the check. Default: 500.
   --dry-run                Print actions without deleting, copying, or zipping.
   -h, --help               Show this help.
 
@@ -75,6 +83,7 @@ upload_safe=0
 include_private=1
 include_node_modules=0
 dry_run=0
+max_zip_mb=500
 
 keep_memory=()
 if [[ -n "${COMPOUND_KEEP_MEMORY_PROJECTS:-}" ]]; then
@@ -127,6 +136,12 @@ while [[ $# -gt 0 ]]; do
     --no-default-memory)
       keep_memory=()
       shift
+      ;;
+    --max-zip-mb)
+      [[ $# -ge 2 ]] || die "--max-zip-mb requires a number"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--max-zip-mb must be a non-negative integer"
+      max_zip_mb="$2"
+      shift 2
       ;;
     --dry-run)
       dry_run=1
@@ -228,6 +243,9 @@ $ahead_behind_line
    NOT repo state. Judge modes against this note, not the extracted tree.
 2. Push/branch state advances after snapshot; "ahead N" above reflects
    package time only.
+3. .claude/ (harness session state, including agent worktrees that are
+   duplicate checkouts of this same tree) is always excluded. Its absence
+   is a packaging rule, not repo state.
 
 Cross-check findings against this note before flagging repo hygiene.
 NOTES
@@ -238,6 +256,7 @@ rsync_args=(
   --delete
   --exclude ".DS_Store"
   --exclude "__MACOSX/"
+  --exclude "/.claude/"
   --filter "+ /memory/"
 )
 
@@ -265,7 +284,6 @@ if [[ "$upload_safe" -eq 1 ]]; then
     rsync_args+=(
       --exclude "/docs_private/"
       --exclude "/.compound-private/"
-      --exclude "/.claude/"
       --exclude "/Plans/"
       --exclude "*.private.md"
     )
@@ -302,8 +320,16 @@ if [[ "$dry_run" -eq 0 ]]; then
   )
   file_count="$(find "$stage_path" -type f | wc -l | tr -d ' ')"
   zip_bytes="$(wc -c < "$zip_path" | tr -d ' ')"
+  if [[ "$max_zip_mb" -gt 0 && "$zip_bytes" -gt $((max_zip_mb * 1024 * 1024)) ]]; then
+    printf 'desktop-compound-zip: zip is %s MB, over the %s MB budget. Largest staged files:\n' \
+      "$((zip_bytes / 1024 / 1024))" "$max_zip_mb" >&2
+    find "$stage_path" -type f -size +1m -exec du -k {} + 2>/dev/null \
+      | sort -rn | head -15 | awk '{printf "  %8.1f MB  %s\n", $1/1024, $2}' >&2
+    rm -f -- "$zip_path"
+    die "oversized zip deleted; exclude the offenders above (or raise --max-zip-mb) and re-run"
+  fi
   printf -- '- files: %s\n' "$file_count"
-  printf -- '- zip_bytes: %s\n' "$zip_bytes"
+  printf -- '- zip_bytes: %s (budget: %s MB)\n' "$zip_bytes" "$max_zip_mb"
   printf -- '- audit_notes: %s\n' "$audit_notes_path"
   printf -- '- done: %s\n' "$zip_path"
 else
