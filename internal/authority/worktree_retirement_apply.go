@@ -53,13 +53,16 @@ type WorktreeRetirementActionProof struct {
 	PolicyDecisionID string `json:"policy_decision_id"`
 	ReceiptID        string `json:"receipt_id"`
 	TransitionID     string `json:"transition_id"`
+	LeaseWorkSHA256  string `json:"lease_work_sha256"`
+	WorkDigest       string `json:"work_digest"`
 }
 
 type WorktreeRetirementApplyDependencies struct {
-	Git           WorktreeRetirementGit
-	Liveness      WorktreeRetirementLiveness
-	Evaluate      func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error)
-	RecordOutcome func(outcome WorktreeRetirementActionOutcome, now time.Time) (WorktreeRetirementActionProof, error)
+	Git              WorktreeRetirementGit
+	Liveness         WorktreeRetirementLiveness
+	RecoveryResolver WorktreeRetirementRecoveryResolver
+	Evaluate         func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error)
+	RecordOutcome    func(outcome WorktreeRetirementActionOutcome, now time.Time) (WorktreeRetirementActionProof, error)
 	// AfterPhase is an injectable crash boundary used to prove durable resume.
 	AfterPhase func(phase string) error
 	// AfterGitMutation injects a crash after Git reports success but before the
@@ -98,6 +101,8 @@ type WorktreeRetirementResult struct {
 	PolicyDecisionID    string `json:"policy_decision_id,omitempty"`
 	ReceiptID           string `json:"receipt_id,omitempty"`
 	TransitionID        string `json:"transition_id,omitempty"`
+	LeaseWorkSHA256     string `json:"lease_work_sha256,omitempty"`
+	WorkDigest          string `json:"work_digest,omitempty"`
 	Error               string `json:"error,omitempty"`
 	PendingPath         string `json:"pending_path"`
 	ResultPath          string `json:"result_path"`
@@ -114,6 +119,9 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 	}
 	if deps.Liveness == nil {
 		deps.Liveness = LSOFWorktreeRetirementLiveness{}
+	}
+	if deps.RecoveryResolver == nil {
+		deps.RecoveryResolver = SHA256FileWorktreeRetirementRecoveryResolver{}
 	}
 	if deps.Evaluate == nil {
 		deps.Evaluate = func(action envelope.ActionIntent, at time.Time) (envelope.PolicyDecision, error) {
@@ -162,6 +170,9 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 	if err := validateRetirementSourceProof(req.SourceProof); err != nil {
 		return WorktreeRetirementResult{}, err
 	}
+	if err := VerifyWorktreeRetirementRecoveryProofs(ctx, plan.RecoveryProofs, deps.RecoveryResolver); err != nil {
+		return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement recovery evidence invalid before apply/resume: %w", err)
+	}
 
 	dir := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -197,8 +208,8 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		if err := validateWorktreeRetirementPending(pending, plan, report, actor); err != nil {
 			return WorktreeRetirementResult{}, err
 		}
-		if !sameRetirementOwnerLease(req.OwnerProof, plan.OwnerProof) {
-			return WorktreeRetirementResult{}, fmt.Errorf("owner work lease drift before retirement resume")
+		if err := validateRetirementResumeOwnerProof(req.OwnerProof, plan.OwnerProof, previousResult); err != nil {
+			return WorktreeRetirementResult{}, err
 		}
 		switch pending.Phase {
 		case WorktreeRetirementPhasePrepared:
@@ -206,7 +217,7 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 				RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
 				AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
 				OwnerProof: req.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
-			}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness}, now)
+			}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver}, now)
 			if err != nil {
 				return WorktreeRetirementResult{}, err
 			}
@@ -266,7 +277,7 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 			RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
 			AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
 			OwnerProof: req.OwnerProof, SourceProof: req.SourceProof, RecoveryRefs: plan.RecoveryRefs,
-		}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness}, now)
+		}, WorktreeRetirementDependencies{Git: deps.Git, Liveness: deps.Liveness, RecoveryResolver: deps.RecoveryResolver}, now)
 		if err != nil {
 			return WorktreeRetirementResult{}, err
 		}
@@ -304,6 +315,7 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		PlanID: plan.ID, PlanDigest: plan.PlanDigest, AuthorizationDigest: report.AuthorizationDigest, Actor: actor,
 		AuthorityTip: plan.AuthorityTip, PublicationTip: plan.PublicationTip,
 		ActionIntentID: pending.Action.ID, PolicyDecisionID: pending.Decision.ID,
+		LeaseWorkSHA256: req.OwnerProof.LeaseWorkSHA256, WorkDigest: req.OwnerProof.WorkDigest,
 		PendingPath: pendingPath, ResultPath: resultPath,
 	}
 	baseResult.WorktreeRemoved = retirementPhaseHasRemovedWorktree(plan, pending.Phase)
@@ -386,6 +398,9 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 	if err := verifyRetirementFinalState(ctx, deps.Git, plan); err != nil {
 		return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, true, "final retirement verification failed", err, now)
 	}
+	if err := VerifyWorktreeRetirementRecoveryProofs(ctx, plan.RecoveryProofs, deps.RecoveryResolver); err != nil {
+		return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, true, "final recovery evidence verification failed", err, now)
+	}
 	pending.Phase = WorktreeRetirementPhaseVerified
 	if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
 		return baseResult, err
@@ -403,14 +418,16 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 	if err != nil {
 		return baseResult, fmt.Errorf("record worktree retirement outcome: %w", err)
 	}
-	if proof.ActionIntentID != pending.Action.ID || proof.PolicyDecisionID != pending.Decision.ID || strings.TrimSpace(proof.ReceiptID) == "" || strings.TrimSpace(proof.TransitionID) == "" {
-		return baseResult, fmt.Errorf("worktree retirement outcome proof chain incomplete")
+	if err := validateWorktreeRetirementActionProof(proof, pending, plan); err != nil {
+		return baseResult, err
 	}
 	baseResult.Status = "completed"
 	baseResult.ActionIntentID = proof.ActionIntentID
 	baseResult.PolicyDecisionID = proof.PolicyDecisionID
 	baseResult.ReceiptID = proof.ReceiptID
 	baseResult.TransitionID = proof.TransitionID
+	baseResult.LeaseWorkSHA256 = proof.LeaseWorkSHA256
+	baseResult.WorkDigest = proof.WorkDigest
 	if err := persistWorktreeRetirementResult(resultPath, &baseResult); err != nil {
 		return baseResult, err
 	}
