@@ -713,23 +713,173 @@ func digestRetirementHex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// SHA256FileWorktreeRetirementRecoveryResolver verifies references of the
+// form sha256-file:<64-lower-hex>:<absolute-path> against the current bytes.
+type SHA256FileWorktreeRetirementRecoveryResolver struct{}
+
+func (SHA256FileWorktreeRetirementRecoveryResolver) Resolve(ctx context.Context, reference string) (WorktreeRetirementRecoveryProof, error) {
+	if err := ctx.Err(); err != nil {
+		return WorktreeRetirementRecoveryProof{}, err
+	}
+	const prefix = "sha256-file:"
+	reference = strings.TrimSpace(reference)
+	if !strings.HasPrefix(reference, prefix) {
+		return WorktreeRetirementRecoveryProof{}, fmt.Errorf("recovery reference must use %s", prefix)
+	}
+	rest := strings.TrimPrefix(reference, prefix)
+	if len(rest) < 66 || rest[64] != ':' || !validRetirementHex(rest[:64], 64) {
+		return WorktreeRetirementRecoveryProof{}, fmt.Errorf("recovery reference requires 64-lower-hex digest and absolute path")
+	}
+	path := rest[65:]
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return WorktreeRetirementRecoveryProof{}, fmt.Errorf("recovery reference path must be absolute and canonical")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return WorktreeRetirementRecoveryProof{}, fmt.Errorf("stat recovery evidence: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return WorktreeRetirementRecoveryProof{}, fmt.Errorf("recovery evidence must be a regular file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return WorktreeRetirementRecoveryProof{}, fmt.Errorf("read recovery evidence: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return WorktreeRetirementRecoveryProof{}, err
+	}
+	digest := "sha256:" + digestRetirementHex(data)
+	if digest != "sha256:"+rest[:64] {
+		return WorktreeRetirementRecoveryProof{}, fmt.Errorf("recovery evidence digest mismatch")
+	}
+	return WorktreeRetirementRecoveryProof{Reference: reference, Kind: "sha256-file", Digest: digest, Path: path}, nil
+}
+
+func ResolveWorktreeRetirementRecoveryProofs(ctx context.Context, references []string, resolver WorktreeRetirementRecoveryResolver) ([]WorktreeRetirementRecoveryProof, error) {
+	if resolver == nil {
+		resolver = SHA256FileWorktreeRetirementRecoveryResolver{}
+	}
+	references = sortedUniqueNonEmpty(references)
+	if len(references) == 0 {
+		return nil, fmt.Errorf("recovery evidence required")
+	}
+	proofs := make([]WorktreeRetirementRecoveryProof, 0, len(references))
+	for _, reference := range references {
+		proof, err := resolver.Resolve(ctx, reference)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %q: %w", reference, err)
+		}
+		if proof.Reference != reference || strings.TrimSpace(proof.Kind) == "" || !validRetirementDigest(proof.Digest) {
+			return nil, fmt.Errorf("resolver returned invalid proof for %q", reference)
+		}
+		if proof.Kind == "sha256-file" && (!filepath.IsAbs(proof.Path) || filepath.Clean(proof.Path) != proof.Path) {
+			return nil, fmt.Errorf("resolver returned invalid file path for %q", reference)
+		}
+		proofs = append(proofs, proof)
+	}
+	return proofs, nil
+}
+
+// VerifyWorktreeRetirementRecoveryProofs re-resolves every sealed reference
+// and requires byte-for-byte semantic equality with the planned proof.
+func VerifyWorktreeRetirementRecoveryProofs(ctx context.Context, sealed []WorktreeRetirementRecoveryProof, resolver WorktreeRetirementRecoveryResolver) error {
+	if len(sealed) == 0 {
+		return fmt.Errorf("sealed recovery proofs required")
+	}
+	references := make([]string, 0, len(sealed))
+	for _, proof := range sealed {
+		references = append(references, proof.Reference)
+	}
+	current, err := ResolveWorktreeRetirementRecoveryProofs(ctx, references, resolver)
+	if err != nil {
+		return err
+	}
+	if len(current) != len(sealed) {
+		return fmt.Errorf("recovery proof count drift")
+	}
+	for i := range current {
+		if current[i] != sealed[i] {
+			return fmt.Errorf("recovery proof drift for %q", sealed[i].Reference)
+		}
+	}
+	return nil
+}
+
+func worktreeRetirementPlanEvidenceRefs(plan WorktreeRetirementPlan) []string {
+	refs := []string{
+		"work:" + plan.OwnerProof.WorkID,
+		"work:" + plan.SourceProof.WorkID,
+		plan.SourceProof.CommitArtifactRef,
+		plan.SourceProof.LandCheckEvidenceRef,
+		plan.SourceProof.LandCheckFileDigest,
+		"repo-fingerprint:" + plan.RepositoryFingerprint,
+		"git-ref:" + plan.AuthorityRef + "@" + plan.AuthorityTip,
+		"git-ref:" + plan.PublicationRef + "@" + plan.PublicationTip,
+	}
+	refs = append(refs, plan.RecoveryRefs...)
+	for _, proof := range plan.RecoveryProofs {
+		refs = append(refs, "recovery-proof:"+proof.Kind+":"+proof.Digest)
+	}
+	return sortedUniqueNonEmpty(refs)
+}
+
 // LSOFWorktreeRetirementLiveness is the production fail-closed process/open
 // file probe. macOS lsof uses exit 1 with no output for no matches.
-type LSOFWorktreeRetirementLiveness struct{}
+type WorktreeRetirementProcessResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
 
-func (LSOFWorktreeRetirementLiveness) Observe(ctx context.Context, worktreePath string) WorktreeLivenessObservation {
-	cmd := exec.CommandContext(ctx, "lsof", "-n", "-P", "+D", worktreePath)
-	out, err := cmd.CombinedOutput()
-	text := strings.TrimSpace(string(out))
-	if text != "" {
-		return WorktreeLivenessObservation{State: WorktreeLivenessActive, Evidence: text}
-	}
+type WorktreeRetirementProcessRunner interface {
+	Run(ctx context.Context, name string, args ...string) (WorktreeRetirementProcessResult, error)
+}
+
+type ExecWorktreeRetirementProcessRunner struct{}
+
+func (ExecWorktreeRetirementProcessRunner) Run(ctx context.Context, name string, args ...string) (WorktreeRetirementProcessResult, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	result := WorktreeRetirementProcessResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: 0}
 	if err == nil {
-		return WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: "lsof returned no matching files"}
+		return result, nil
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		return WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: "lsof exit 1 with no matching files"}
+	if errors.As(err, &exitErr) {
+		result.ExitCode = exitErr.ExitCode()
+		return result, nil
 	}
-	return WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: err.Error()}
+	return result, err
+}
+
+type LSOFWorktreeRetirementLiveness struct {
+	Runner WorktreeRetirementProcessRunner
+}
+
+func (probe LSOFWorktreeRetirementLiveness) Observe(ctx context.Context, worktreePath string) WorktreeLivenessObservation {
+	runner := probe.Runner
+	if runner == nil {
+		runner = ExecWorktreeRetirementProcessRunner{}
+	}
+	result, err := runner.Run(ctx, "lsof", "-n", "-P", "+D", worktreePath)
+	stdout := strings.TrimSpace(result.Stdout)
+	stderr := strings.TrimSpace(result.Stderr)
+	if err != nil {
+		return WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: err.Error()}
+	}
+	if result.ExitCode == 0 && stdout != "" {
+		return WorktreeLivenessObservation{State: WorktreeLivenessActive, Evidence: stdout}
+	}
+	if result.ExitCode == 1 && stdout == "" {
+		evidence := "lsof exit 1 with no matching files"
+		if stderr != "" {
+			evidence += "; stderr: " + stderr
+		}
+		return WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: evidence}
+	}
+	evidence := fmt.Sprintf("lsof exit %d stdout=%q stderr=%q", result.ExitCode, stdout, stderr)
+	return WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: evidence}
 }

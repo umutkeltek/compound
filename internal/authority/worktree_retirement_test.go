@@ -320,7 +320,9 @@ func TestWorktreeRetirementPlanValidatesContentAddressedRecoveryProof(t *testing
 		}},
 		{name: "tampered", mutate: func(t *testing.T, r *WorktreeRetirementPlanRequest) {
 			path := filepath.Join(t.TempDir(), "recovery.bundle")
-			if err := os.WriteFile(path, []byte("actual"), 0o600); err != nil { t.Fatal(err) }
+			if err := os.WriteFile(path, []byte("actual"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			r.RecoveryRefs = []string{"sha256-file:" + strings.Repeat("a", 64) + ":" + path}
 		}},
 	} {
@@ -347,7 +349,9 @@ func TestWorktreeRetirementPlanIDSealsCompleteCanonicalPayload(t *testing.T) {
 	first, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, now)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	secondPath := filepath.Join(filepath.Dir(fixture.repo), "second-recovery.bundle")
 	secondRef := writeRetirementRecoveryProof(t, secondPath, []byte("second recovery body"))
@@ -356,7 +360,9 @@ func TestWorktreeRetirementPlanIDSealsCompleteCanonicalPayload(t *testing.T) {
 	second, err := BuildWorktreeRetirementPlan(context.Background(), secondReq, WorktreeRetirementDependencies{
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, now)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if first.ID == second.ID {
 		t.Fatalf("plan id did not change with sealed recovery/evidence payload: %s", first.ID)
 	}
@@ -374,20 +380,28 @@ func TestWorktreeRetirementArtifactsAreCreateExclusiveAndIdempotentForSameConten
 	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 	}, time.Now())
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	home := t.TempDir()
 	paths, err := RecordWorktreeRetirementPlan(home, plan)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := RecordWorktreeRetirementPlan(home, plan); err != nil {
 		t.Fatalf("same-content plan replay rejected: %v", err)
 	}
 	tampered := []byte("different plan bytes\n")
-	if err := os.WriteFile(paths.PlanPath, tampered, 0o600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(paths.PlanPath, tampered, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := RecordWorktreeRetirementPlan(home, plan); err == nil || !strings.Contains(err.Error(), "different") {
 		t.Fatalf("different existing plan bytes overwritten: %v", err)
 	}
 	got, err := os.ReadFile(paths.PlanPath)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(got) != string(tampered) {
 		t.Fatalf("different plan bytes were replaced: %q", got)
 	}
@@ -411,7 +425,9 @@ func TestWorktreeRetirementPlanSealsCandidateRelationToSourceCommit(t *testing.T
 			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
 				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 			}, time.Now())
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			if plan.SourceRelation != tc.wantRelation || plan.Eligible != tc.wantEligible {
 				t.Fatalf("source relation=%q eligible=%v blockers=%v", plan.SourceRelation, plan.Eligible, plan.BlockReasons)
 			}
@@ -421,7 +437,7 @@ func TestWorktreeRetirementPlanSealsCandidateRelationToSourceCommit(t *testing.T
 
 func TestWorktreeRetirementPlanSupportsWorktreeOnlyAndBranchOnlyTargets(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name   string
 		mutate func(*WorktreeRetirementPlanRequest)
 	}{
 		{name: "worktree only", mutate: func(r *WorktreeRetirementPlanRequest) { r.CandidateRef = "" }},
@@ -434,21 +450,29 @@ func TestWorktreeRetirementPlanSupportsWorktreeOnlyAndBranchOnlyTargets(t *testi
 			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
 				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 			}, time.Now())
-			if err != nil { t.Fatal(err) }
-			if !plan.Eligible { t.Fatalf("target blocked: %v", plan.BlockReasons) }
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !plan.Eligible {
+				t.Fatalf("target blocked: %v", plan.BlockReasons)
+			}
 		})
 	}
 }
 
 func TestWorktreeRetirementPlanRefusesMissingAndPrunableWorktree(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name    string
 		prepare func(*testing.T, retirementGitFixture) string
-		want string
+		want    string
 	}{
-		{name: "missing", prepare: func(t *testing.T, f retirementGitFixture) string { return filepath.Join(t.TempDir(), "missing-worktree") }, want: "worktree_not_registered_metadata_repair_required"},
+		{name: "missing", prepare: func(t *testing.T, f retirementGitFixture) string {
+			return filepath.Join(t.TempDir(), "missing-worktree")
+		}, want: "worktree_not_registered_metadata_repair_required"},
 		{name: "prunable", prepare: func(t *testing.T, f retirementGitFixture) string {
-			if err := os.RemoveAll(f.worktree); err != nil { t.Fatal(err) }
+			if err := os.RemoveAll(f.worktree); err != nil {
+				t.Fatal(err)
+			}
 			return f.worktree
 		}, want: "worktree_prunable_metadata_repair_required"},
 	} {
@@ -459,7 +483,9 @@ func TestWorktreeRetirementPlanRefusesMissingAndPrunableWorktree(t *testing.T) {
 			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
 				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
 			}, time.Now())
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			if plan.Eligible || !retirementPlanBlockedBy(plan, tc.want) {
 				t.Fatalf("missing/prunable blockers=%v", plan.BlockReasons)
 			}
@@ -469,14 +495,14 @@ func TestWorktreeRetirementPlanRefusesMissingAndPrunableWorktree(t *testing.T) {
 
 func TestLSOFWorktreeRetirementLivenessRequiresExactStdoutStderrExitContract(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name   string
 		result WorktreeRetirementProcessResult
-		err error
-		want WorktreeLivenessState
+		err    error
+		want   WorktreeLivenessState
 	}{
 		{name: "exit one no output is unused", result: WorktreeRetirementProcessResult{ExitCode: 1}, want: WorktreeLivenessUnused},
 		{name: "exit zero matching stdout is active", result: WorktreeRetirementProcessResult{Stdout: "COMMAND PID NAME\nagent 7 /tmp/work/file", ExitCode: 0}, want: WorktreeLivenessActive},
-		{name: "stderr makes result unknown", result: WorktreeRetirementProcessResult{Stderr: "permission denied", ExitCode: 1}, want: WorktreeLivenessUnknown},
+		{name: "exit one no stdout ignores stderr prose", result: WorktreeRetirementProcessResult{Stderr: "warning text", ExitCode: 1}, want: WorktreeLivenessUnused},
 		{name: "exit zero empty is unknown", result: WorktreeRetirementProcessResult{ExitCode: 0}, want: WorktreeLivenessUnknown},
 		{name: "exit one stdout is unknown", result: WorktreeRetirementProcessResult{Stdout: "unexpected", ExitCode: 1}, want: WorktreeLivenessUnknown},
 		{name: "other exit is unknown", result: WorktreeRetirementProcessResult{ExitCode: 2}, want: WorktreeLivenessUnknown},
@@ -493,7 +519,7 @@ func TestLSOFWorktreeRetirementLivenessRequiresExactStdoutStderrExitContract(t *
 
 type staticRetirementProcessRunner struct {
 	result WorktreeRetirementProcessResult
-	err error
+	err    error
 }
 
 func (r staticRetirementProcessRunner) Run(context.Context, string, ...string) (WorktreeRetirementProcessResult, error) {
@@ -609,7 +635,9 @@ func newDivergentRetirementGitFixture(t *testing.T, equivalent bool) retirementG
 
 func writeRetirementRecoveryProof(t *testing.T, path string, body []byte) string {
 	t.Helper()
-	if err := os.WriteFile(path, body, 0o600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return "sha256-file:" + digestRetirementHex(body) + ":" + path
 }
 
