@@ -191,6 +191,42 @@ func TestWorktreeRetirementReviewRejectsDifferentSecondReviewWithoutMutatingFirs
 	}
 }
 
+func TestExclusiveWorktreeRetirementArtifactDoesNotPublishPartialTempWrite(t *testing.T) {
+	home := t.TempDir()
+	name := "crash-safe.retirement.json"
+	body := []byte("complete retirement artifact bytes\n")
+	injected := errors.New("injected temp write failure")
+	previousWriteTemp := writeWorktreeRetirementArtifactTemp
+	writeWorktreeRetirementArtifactTemp = func(file *os.File, data []byte) error {
+		if _, err := file.Write(data[:len(data)/2]); err != nil {
+			return err
+		}
+		return injected
+	}
+	t.Cleanup(func() { writeWorktreeRetirementArtifactTemp = previousWriteTemp })
+
+	if _, err := writeExclusiveWorktreeRetirementArtifact(home, name, body); !errors.Is(err, injected) {
+		t.Fatalf("partial temp write error = %v, want %v", err, injected)
+	}
+	finalPath := filepath.Join(home, "reviews", SourceControlCleanupReviewArea, name)
+	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
+		t.Fatalf("partial temp write published final artifact: %v", err)
+	}
+
+	writeWorktreeRetirementArtifactTemp = previousWriteTemp
+	path, err := writeExclusiveWorktreeRetirementArtifact(home, name, body)
+	if err != nil {
+		t.Fatalf("retry exact artifact: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("retried artifact bytes = %q, want %q", got, body)
+	}
+}
+
 func TestBuildWorktreeRetirementPlanContainsCandidateWithoutMutatingGit(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
 	beforeRefs := retirementGitOutput(t, fixture.repo, "show-ref")
