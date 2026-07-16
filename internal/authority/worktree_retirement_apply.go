@@ -19,10 +19,12 @@ const (
 	WorktreeRetirementPendingSchemaVersion = "compound.worktree_retirement_pending.v0.1"
 	WorktreeRetirementResultSchemaVersion  = "compound.worktree_retirement_result.v0.1"
 
-	WorktreeRetirementPhasePrepared        = "prepared"
-	WorktreeRetirementPhaseWorktreeRemoved = "worktree_removed"
-	WorktreeRetirementPhaseRefDeleted      = "ref_deleted"
-	WorktreeRetirementPhaseVerified        = "verified"
+	WorktreeRetirementPhasePrepared               = "prepared"
+	WorktreeRetirementPhaseWorktreeRemovalStarted = "worktree_removal_started"
+	WorktreeRetirementPhaseWorktreeRemoved        = "worktree_removed"
+	WorktreeRetirementPhaseRefDeletionStarted     = "ref_deletion_started"
+	WorktreeRetirementPhaseRefDeleted             = "ref_deleted"
+	WorktreeRetirementPhaseVerified               = "verified"
 )
 
 type WorktreeRetirementApplyRequest struct {
@@ -60,6 +62,9 @@ type WorktreeRetirementApplyDependencies struct {
 	RecordOutcome func(outcome WorktreeRetirementActionOutcome, now time.Time) (WorktreeRetirementActionProof, error)
 	// AfterPhase is an injectable crash boundary used to prove durable resume.
 	AfterPhase func(phase string) error
+	// AfterGitMutation injects a crash after Git reports success but before the
+	// corresponding completed phase is persisted.
+	AfterGitMutation func(startedPhase string) error
 }
 
 type WorktreeRetirementPending struct {
@@ -195,7 +200,8 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		if !sameRetirementOwnerLease(req.OwnerProof, plan.OwnerProof) {
 			return WorktreeRetirementResult{}, fmt.Errorf("owner work lease drift before retirement resume")
 		}
-		if pending.Phase == WorktreeRetirementPhasePrepared {
+		switch pending.Phase {
+		case WorktreeRetirementPhasePrepared:
 			fresh, err := BuildWorktreeRetirementPlan(ctx, WorktreeRetirementPlanRequest{
 				RepoRoot: plan.RepoRoot, WorktreePath: retirementWorktreePath(plan), CandidateRef: plan.CandidateRef,
 				AuthorityRef: plan.AuthorityRef, PublicationRef: plan.PublicationRef,
@@ -207,8 +213,32 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 			if err := compareRetirementPlanState(plan, fresh); err != nil {
 				return WorktreeRetirementResult{}, fmt.Errorf("worktree retirement state drift before prepared resume: %w", err)
 			}
-		} else if err := verifyRetirementResumeState(ctx, deps.Git, plan, pending.Phase); err != nil {
-			return WorktreeRetirementResult{}, err
+		case WorktreeRetirementPhaseWorktreeRemovalStarted:
+			removed, err := reconcileRetirementWorktreeRemovalStarted(ctx, deps, plan, req, now)
+			if err != nil {
+				return WorktreeRetirementResult{}, err
+			}
+			if removed {
+				pending.Phase = WorktreeRetirementPhaseWorktreeRemoved
+				if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+					return WorktreeRetirementResult{}, err
+				}
+			}
+		case WorktreeRetirementPhaseRefDeletionStarted:
+			deleted, err := reconcileRetirementRefDeletionStarted(ctx, deps.Git, plan)
+			if err != nil {
+				return WorktreeRetirementResult{}, err
+			}
+			if deleted {
+				pending.Phase = WorktreeRetirementPhaseRefDeleted
+				if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+					return WorktreeRetirementResult{}, err
+				}
+			}
+		default:
+			if err := verifyRetirementResumeState(ctx, deps.Git, plan, pending.Phase); err != nil {
+				return WorktreeRetirementResult{}, err
+			}
 		}
 		if previousResult != nil {
 			action := newWorktreeRetirementActionForAttempt(plan, report, actor, now, previousResult.ResultDigest)
@@ -276,6 +306,8 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 		ActionIntentID: pending.Action.ID, PolicyDecisionID: pending.Decision.ID,
 		PendingPath: pendingPath, ResultPath: resultPath,
 	}
+	baseResult.WorktreeRemoved = retirementPhaseHasRemovedWorktree(plan, pending.Phase)
+	baseResult.RefDeleted = retirementPhaseHasDeletedRef(plan, pending.Phase)
 	if pending.Phase == WorktreeRetirementPhasePrepared && deps.AfterPhase != nil {
 		if err := deps.AfterPhase(pending.Phase); err != nil {
 			return baseResult, err
@@ -283,8 +315,21 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 	}
 
 	if pending.Phase == WorktreeRetirementPhasePrepared && plan.Worktree != nil {
+		pending.Phase = WorktreeRetirementPhaseWorktreeRemovalStarted
+		if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+			return baseResult, err
+		}
+		baseResult.Phase = pending.Phase
+	}
+	if pending.Phase == WorktreeRetirementPhaseWorktreeRemovalStarted {
 		if _, err := deps.Git.Run(ctx, plan.RepoRoot, "worktree", "remove", plan.Worktree.Path); err != nil {
 			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, false, "worktree removal failed", err, now)
+		}
+		baseResult.WorktreeRemoved = true
+		if deps.AfterGitMutation != nil {
+			if err := deps.AfterGitMutation(pending.Phase); err != nil {
+				return baseResult, err
+			}
 		}
 		if err := verifyRetirementWorktreeAbsent(ctx, deps.Git, plan); err != nil {
 			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, true, "worktree removal could not be verified", err, now)
@@ -304,9 +349,22 @@ func ApplyWorktreeRetirement(ctx context.Context, req WorktreeRetirementApplyReq
 
 	refReady := plan.CandidateRef != "" && (pending.Phase == WorktreeRetirementPhasePrepared || pending.Phase == WorktreeRetirementPhaseWorktreeRemoved)
 	if refReady {
+		pending.Phase = WorktreeRetirementPhaseRefDeletionStarted
+		if err := persistWorktreeRetirementPending(pendingPath, &pending, now); err != nil {
+			return baseResult, err
+		}
+		baseResult.Phase = pending.Phase
+	}
+	if pending.Phase == WorktreeRetirementPhaseRefDeletionStarted {
 		if _, err := deps.Git.Run(ctx, plan.RepoRoot, "update-ref", "-d", plan.CandidateRef, plan.CandidateTip); err != nil {
-			baseResult.WorktreeRemoved = plan.Worktree != nil && pending.Phase == WorktreeRetirementPhaseWorktreeRemoved
+			baseResult.WorktreeRemoved = plan.Worktree != nil
 			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, baseResult.WorktreeRemoved, "candidate ref CAS deletion failed", err, now)
+		}
+		baseResult.RefDeleted = true
+		if deps.AfterGitMutation != nil {
+			if err := deps.AfterGitMutation(pending.Phase); err != nil {
+				return baseResult, err
+			}
 		}
 		if err := verifyRetirementRefAbsent(ctx, deps.Git, plan); err != nil {
 			return recordWorktreeRetirementFailure(deps, plan, report, pending, baseResult, resultPath, true, "candidate ref deletion could not be verified", err, now)
