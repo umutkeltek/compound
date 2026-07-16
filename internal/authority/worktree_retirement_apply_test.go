@@ -279,6 +279,117 @@ func TestApplyWorktreeRetirementPendingOnlyResumeReevaluatesCurrentPolicyBeforeM
 	}
 }
 
+func TestApplyWorktreeRetirementResumeRecordsCompletedTruthWithoutReauthorizingFinishedGitMutation(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	home, paths, report := authorizedRetirementFixture(t, fixture)
+	plan, err := LoadWorktreeRetirementPlan(paths.PlanPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRetirementGit{delegate: ExecWorktreeRetirementGit{}}
+	records := 0
+	deps := successfulRetirementApplyDependencies(runner, &records)
+	crash := errors.New("crash after ref deletion before completed phase persistence")
+	deps.AfterGitMutation = func(phase string) error {
+		if phase == WorktreeRetirementPhaseRefDeletionStarted {
+			return crash
+		}
+		return nil
+	}
+	req := WorktreeRetirementApplyRequest{
+		HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+		Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+	}
+	first, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now())
+	if !errors.Is(err, crash) || first.Phase != WorktreeRetirementPhaseRefDeletionStarted {
+		t.Fatalf("post-ref crash result=%+v err=%v", first, err)
+	}
+	pendingPath := filepath.Join(home, "reviews", SourceControlCleanupReviewArea, plan.ID+".retirement.pending.json")
+	pending, exists, err := loadWorktreeRetirementPending(pendingPath)
+	if err != nil || !exists {
+		t.Fatalf("pending exists=%v err=%v", exists, err)
+	}
+	authorizedPolicyID := pending.Decision.ID
+	mutations := runner.mutationCount()
+	policyCalls := 0
+	deps.AfterGitMutation = nil
+	deps.Evaluate = func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error) {
+		policyCalls++
+		decision := policy.Evaluate(action, policy.DefaultConfig(), now)
+		decision.Outcome = "hold"
+		decision.Obligations = nil
+		return decision, nil
+	}
+	result, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "completed" || result.PolicyDecisionID != authorizedPolicyID || records != 1 {
+		t.Fatalf("truth result=%+v authorized_policy=%s records=%d", result, authorizedPolicyID, records)
+	}
+	if policyCalls != 0 || runner.mutationCount() != mutations {
+		t.Fatalf("truth recording reevaluated/mutated policy_calls=%d mutations=%d/%d", policyCalls, runner.mutationCount(), mutations)
+	}
+}
+
+func TestApplyWorktreeRetirementRecordsPolicyDeniedPartialMutationAndCanRetry(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	home, paths, report := authorizedRetirementFixture(t, fixture)
+	crash := errors.New("crash with prepared pending transaction")
+	runner := &recordingRetirementGit{delegate: ExecWorktreeRetirementGit{}}
+	records := 0
+	deps := successfulRetirementApplyDependencies(runner, &records)
+	deps.AfterPhase = func(phase string) error {
+		if phase == WorktreeRetirementPhasePrepared {
+			return crash
+		}
+		return nil
+	}
+	req := WorktreeRetirementApplyRequest{
+		HomePath: home, PlanPath: paths.PlanPath, ReviewReportPath: report.ReviewPath,
+		Actor: "codex:test", OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(fixture.candidateTip),
+	}
+	if _, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now()); !errors.Is(err, crash) {
+		t.Fatalf("prepared crash error=%v", err)
+	}
+	deps.AfterPhase = nil
+	policyCalls := 0
+	allowedPolicyID := ""
+	deps.Evaluate = func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error) {
+		policyCalls++
+		decision := policy.Evaluate(action, policy.DefaultConfig(), now)
+		if policyCalls == 1 {
+			allowedPolicyID = decision.ID
+			return decision, nil
+		}
+		decision.Outcome = "deny"
+		decision.Obligations = nil
+		return decision, nil
+	}
+	partial, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(time.Minute))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "policy") {
+		t.Fatalf("partial policy result=%+v err=%v", partial, err)
+	}
+	if partial.Status != "partial" || !partial.WorktreeRemoved || partial.RefDeleted || partial.PolicyDecisionID != allowedPolicyID || partial.ReceiptID == "" || partial.TransitionID == "" {
+		t.Fatalf("partial result=%+v allowed_policy=%s", partial, allowedPolicyID)
+	}
+	if runner.worktreeRemoveCount() != 1 || runner.refDeleteCount() != 0 || records != 1 || !retirementGitRefExists(fixture.repo, fixture.candidateRef) {
+		t.Fatalf("partial calls=%+v records=%d", runner.calls, records)
+	}
+
+	req.OwnerProof.WorkDigest = partial.WorkDigest
+	deps.Evaluate = func(action envelope.ActionIntent, now time.Time) (envelope.PolicyDecision, error) {
+		return policy.Evaluate(action, policy.DefaultConfig(), now), nil
+	}
+	completed, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != "completed" || runner.worktreeRemoveCount() != 1 || runner.refDeleteCount() != 1 || records != 2 {
+		t.Fatalf("retry result=%+v calls=%+v records=%d", completed, runner.calls, records)
+	}
+}
+
 func TestApplyWorktreeRetirementRetriesTransientWorktreeRemovalWithSelfCausedOwnerDigest(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
 	home, paths, report := authorizedRetirementFixture(t, fixture)
