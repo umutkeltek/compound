@@ -520,7 +520,8 @@ func TestVectorCacheOperationalReadErrorIsReturned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reload, err := NewEngine(EngineConfig{Embedder: newFakeEmbedder(2), CompoundHome: home})
+	reloadEmbedder := newFakeEmbedder(2)
+	reload, err := NewEngine(EngineConfig{Embedder: reloadEmbedder, CompoundHome: home})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,6 +532,9 @@ func TestVectorCacheOperationalReadErrorIsReturned(t *testing.T) {
 		if !errors.As(err, &pathErr) {
 			t.Fatalf("IndexWithError error = %T %v, want preserved *os.PathError", err, err)
 		}
+	}
+	if reloadEmbedder.calls != 0 {
+		t.Fatalf("operational read error triggered %d rebuild embed call(s), want 0", reloadEmbedder.calls)
 	}
 }
 
