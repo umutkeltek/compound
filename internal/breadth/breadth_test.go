@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"compound/internal/mem"
 )
@@ -264,6 +265,72 @@ func TestVectorIncrementalIndexEqualsFullRebuild(t *testing.T) {
 
 	if !bytes.Equal(incrementalVectors, fullVectors) {
 		t.Fatalf("incremental vectors.bin differs from full rebuild")
+	}
+}
+
+func TestWarmVectorCacheDoesNotRewriteUntilCorpusChanges(t *testing.T) {
+	home := t.TempDir()
+	claims := []mem.ClaimText{
+		{ClaimID: "c1", Text: "deployment automation releases artifacts"},
+		{ClaimID: "c2", Text: "capability graph routes tools"},
+	}
+	seedEmbedder := newFakeEmbedder(6)
+	seed, err := NewEngine(EngineConfig{Embedder: seedEmbedder, CompoundHome: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.IndexWithError(claims, 7); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := vectorCacheDir(t, home, seedEmbedder)
+	paths := []string{filepath.Join(cacheDir, "manifest.json"), filepath.Join(cacheDir, "vectors.bin")}
+	sentinel := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+	for _, path := range paths {
+		if err := os.Chtimes(path, sentinel, sentinel); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	warmEmbedder := newFakeEmbedder(6)
+	warm, err := NewEngine(EngineConfig{Embedder: warmEmbedder, CompoundHome: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := warm.IndexWithError(claims, 7); err != nil {
+		t.Fatal(err)
+	}
+	if warmEmbedder.calls != 0 {
+		t.Fatalf("warm cache embedded %d document batch(es), want 0", warmEmbedder.calls)
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.ModTime().Equal(sentinel) {
+			t.Fatalf("warm cache rewrote %s: mtime=%s want=%s", filepath.Base(path), info.ModTime(), sentinel)
+		}
+	}
+	hits := warm.Query("release artifacts", mem.GateList, []string{"c1", "c2"}, 1)
+	if len(hits) != 1 || hits[0].ClaimID != "c1" {
+		t.Fatalf("warm semantic result drifted: %+v", hits)
+	}
+
+	changedGeneration, err := NewEngine(EngineConfig{Embedder: newFakeEmbedder(6), CompoundHome: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := changedGeneration.IndexWithError(claims, 8); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.ModTime().Equal(sentinel) {
+			t.Fatalf("changed corpus generation did not rewrite %s", filepath.Base(path))
+		}
 	}
 }
 

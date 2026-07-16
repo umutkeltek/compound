@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 type semanticStubEmbedder struct {
@@ -175,6 +176,67 @@ func TestNodeVectorCacheIncremental(t *testing.T) {
 	}
 	if len(dirs) != 2 {
 		t.Fatalf("identity-separated cache dirs = %d, want 2", len(dirs))
+	}
+}
+
+func TestWarmNodeVectorCacheDoesNotRewriteUntilNodesChange(t *testing.T) {
+	home, store := newStore(t)
+	nodes := []Node{
+		{ID: "skill:alpha", Kind: "skill", Name: "Alpha", Triggers: []string{"alpha"}},
+		{ID: "skill:beta", Kind: "skill", Name: "Beta", Triggers: []string{"beta"}},
+	}
+	for _, node := range nodes {
+		if err := store.Add(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task := "share with the world"
+	stub := newSemanticStub("stub:mtime:2:f32")
+	stub.vectors[task] = []float32{1, 0}
+	if _, err := store.SurfaceForContext(SurfaceContext{Task: task, Embedder: stub}); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(home, "indexes", "capgraph", sanitizedEmbedderIdentity(stub.Identity()))
+	paths := []string{filepath.Join(cacheDir, "manifest.json"), filepath.Join(cacheDir, "vectors.json")}
+	sentinel := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+	for _, path := range paths {
+		if err := os.Chtimes(path, sentinel, sentinel); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stub.resetCalls()
+	if _, err := store.SurfaceForContext(SurfaceContext{Task: task, Embedder: stub}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.calls) != 1 || !reflect.DeepEqual(stub.calls[0], []string{task}) {
+		t.Fatalf("warm capgraph embedded cached nodes: %+v", stub.calls)
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.ModTime().Equal(sentinel) {
+			t.Fatalf("warm capgraph rewrote %s: mtime=%s want=%s", filepath.Base(path), info.ModTime(), sentinel)
+		}
+	}
+
+	updated := nodes[0]
+	updated.Triggers = []string{"alpha changed"}
+	if err := store.Add(updated); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SurfaceForContext(SurfaceContext{Task: task, Embedder: stub}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.ModTime().Equal(sentinel) {
+			t.Fatalf("changed node did not rewrite %s", filepath.Base(path))
+		}
 	}
 }
 
