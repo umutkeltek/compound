@@ -829,147 +829,15 @@ func packWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if strings.TrimSpace(homePath) == "" {
 		return pack, nil
 	}
-	hooks, excludedHooks, hookRoster, hookRevs, err := loadInstalledHooksForInput(homePath, in)
+	snapshot, err := loadRuntimeSnapshot(in, pol, homePath, trace)
 	if err != nil {
 		return pack, err
 	}
-	pack.ActiveHooks = hooks
-	pack.HookRoster = hookRoster
-	for _, row := range hookRoster {
-		if row.Status != "active" {
-			continue
-		}
-		pack.Included = append(pack.Included, envelope.IncludedRef{
-			Ref:         row.Ref,
-			SourceClass: "runtime",
-			Reason:      firstNonEmpty(row.Reason, "installed hook selected for harness and task"),
-			Confidence:  1,
-			Status:      "current",
-		})
-	}
-	hookReadiness, err := hookReadinessForInput(homePath, in)
-	if err != nil {
-		return pack, err
-	}
-	pack.HookReadiness = hookReadiness
-	pack.RequiredChecks = append(pack.RequiredChecks, requiredChecksForHookReadiness(hookReadiness, in)...)
-	pack.Excluded = append(pack.Excluded, excludedHooks...)
-	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, hookRevs)
-	if len(hooks) > 0 {
-		pack.SummaryMD += fmt.Sprintf(" %d active hook ref(s) included Compound runtime.", len(hooks))
-	}
-	decisions, decisionRevs, excludedDecisions, err := loadDecisionRefs(homePath, in)
-	if err != nil {
-		return pack, err
-	}
-	pack.Excluded = append(pack.Excluded, excludedDecisions...)
-	for _, ref := range decisions {
-		pack.Included = append(pack.Included, envelope.IncludedRef{
-			Ref:         ref,
-			SourceClass: "runtime",
-			Reason:      "accepted decision from Compound memory ledger; old source is source-in-place evidence",
-			Confidence:  1,
-			Status:      "current",
-		})
-	}
-	pack.ActiveDecisions = decisions
-	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, decisionRevs)
-	if len(decisions) > 0 {
-		pack.SummaryMD += fmt.Sprintf(" %d active decision ref(s) included from Compound runtime.", len(decisions))
-	}
-	// One breadth-engine call feeds both loaders (owned engine ranks; ledger still gates).
-	semanticRanks := semanticTaskRanksTraced(homePath, in, trace)
-	memoryRefs, excludedMemoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
-	if err != nil {
-		return pack, err
-	}
-	pack.Excluded = append(pack.Excluded, excludedMemoryRefs...)
-	for _, ref := range memoryRefs {
-		pack.ActiveMemory = append(pack.ActiveMemory, ref.Ref)
-		pack.Included = append(pack.Included, envelope.IncludedRef{
-			Ref:         ref.Ref,
-			SourceClass: "runtime",
-			Reason:      ref.Reason,
-			Confidence:  ref.Confidence,
-			Status:      "current",
-		})
-	}
-	positionRefs, excludedPositionRefs, err := loadPositionRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
-	if err != nil {
-		return pack, err
-	}
-	pack.Excluded = append(pack.Excluded, excludedPositionRefs...)
-	for _, ref := range positionRefs {
-		pack.ActiveMemory = append(pack.ActiveMemory, ref.Ref)
-		pack.ActivePositions = append(pack.ActivePositions, ref.Position)
-		pack.Included = append(pack.Included, envelope.IncludedRef{
-			Ref:         ref.Ref,
-			SourceClass: "runtime",
-			Reason:      ref.Reason,
-			Confidence:  ref.Confidence,
-			Status:      "current",
-		})
-	}
-	if len(memoryRefs) > 0 || len(excludedMemoryRefs) > 0 || len(positionRefs) > 0 || len(excludedPositionRefs) > 0 {
-		rev, err := memoryLedgerRevision(homePath)
-		if err != nil {
-			return pack, err
-		}
-		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: memoryRelevanceSourceRef, Rev: rev}})
-	}
-	if len(memoryRefs) > 0 {
-		lines := make([]string, 0, len(memoryRefs))
-		for _, ref := range memoryRefs {
-			lines = append(lines, ref.Line)
-		}
-		pack.SummaryMD += " Compound memory (owned ledger): " + strings.Join(lines, "; ")
-	}
-	if len(positionRefs) > 0 {
-		lines := make([]string, 0, len(positionRefs))
-		for _, ref := range positionRefs {
-			lines = append(lines, ref.Line)
-		}
-		pack.SummaryMD += " Compound positions (folded checkpoint): " + strings.Join(lines, "; ")
-	}
-	// Stamp the topic narrowing on the artifact even when nothing was excluded, so the pack
-	// always shows recall was topic-scoped; empty topic adds nothing (behavior unchanged).
-	if topic := strings.TrimSpace(in.Topic); topic != "" {
-		pack.SummaryMD += fmt.Sprintf(" Ambient recall narrowed to topic %q (subtree-scoped); empty topic leaves recall unchanged.", topic)
-	}
-	pack, err = appendOSAdaptationSteeringOffer(pack, in)
-	if err != nil {
-		return pack, err
-	}
-	pack, err = appendOracleSecondOpinionOffer(pack, in)
-	if err != nil {
-		return pack, err
-	}
-	surfaced, surfacedTotal, err := surfaceCapabilityHits(homePath, in)
-	if err != nil {
-		return pack, err
-	}
-	if surfacedTotal > 0 {
-		rev, err := capgraph.AuthorityRevision(homePath)
-		if err != nil {
-			return pack, err
-		}
-		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: capgraph.CapabilityGraphAuthorityRef, Rev: rev}})
-		for _, hit := range surfaced {
-			pack.CapabilityOffers = append(pack.CapabilityOffers, capabilityOffer(hit))
-			pack.Included = append(pack.Included, envelope.IncludedRef{
-				Ref:         "capability://" + hit.Node.ID,
-				SourceClass: "generated",
-				Reason:      capabilitySurfaceReason(hit),
-				Confidence:  hit.Score,
-				Status:      "current",
-			})
-		}
-		if surfacedTotal > len(surfaced) {
-			pack.SummaryMD += fmt.Sprintf(" %d of %d capability offer(s) surfaced; %d omitted from context budget; offers are not execution.", len(surfaced), surfacedTotal, surfacedTotal-len(surfaced))
-		} else {
-			pack.SummaryMD += fmt.Sprintf(" %d capability offer(s) surfaced; offers are not execution.", len(surfaced))
-		}
-	}
+	pack = projectRuntimePack(pack, in, snapshot)
+	return appendPackOnlyRuntime(pack, in, homePath, now)
+}
+
+func appendPackOnlyRuntime(pack envelope.ContextPack, in Input, homePath string, now time.Time) (envelope.ContextPack, error) {
 	externalIntake, err := capgraph.ExternalRepoIntakeReportForHome(homePath, in.Task)
 	if err != nil {
 		return pack, err
