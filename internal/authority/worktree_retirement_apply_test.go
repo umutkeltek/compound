@@ -275,6 +275,7 @@ func TestApplyWorktreeRetirementRetriesPartialOnlyWhileExactRefRemains(t *testin
 	if !errors.Is(err, injected) || first.Status != "partial" || !retirementGitRefExists(fixture.repo, fixture.candidateRef) {
 		t.Fatalf("partial first=%+v err=%v", first, err)
 	}
+	req.OwnerProof.WorkDigest = first.WorkDigest
 	second, err := ApplyWorktreeRetirement(context.Background(), req, deps, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
