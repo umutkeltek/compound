@@ -3,6 +3,8 @@ package hook
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,16 +250,47 @@ func TestLiveUserPromptBreadthEchoCannotPersistRawQuery(t *testing.T) {
 
 func TestLiveUserPromptMaterializesRuntimeOnce(t *testing.T) {
 	homePath := t.TempDir()
-	countPath := filepath.Join(t.TempDir(), "sidecar-starts.txt")
-	t.Setenv("COMPOUND_TEST_FAKE_BREADTH_SIDECAR", "1")
-	t.Setenv("COMPOUND_TEST_FAKE_BREADTH_COUNT_FILE", countPath)
-	t.Setenv("COMPOUND_MEM_ENGINE_BIN", os.Args[0]+" -test.run=TestFakeBreadthSidecar")
+	seedPromptContextMemory(t, homePath)
+	graph, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Add(capgraph.Node{
+		ID: "skill:runtime-snapshot", Kind: "skill", Name: "Runtime Snapshot",
+		Triggers: []string{"task scoped materialization"}, Weight: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const task = "one runtime snapshot"
+	taskEmbeds := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		data := make([]map[string]any, 0, len(request.Input))
+		for i, text := range request.Input {
+			if text == task {
+				taskEmbeds++
+			}
+			data = append(data, map[string]any{"index": i, "embedding": []float32{1, 0}})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("COMPOUND_BREADTH_EMBED_PROVIDER", "openai")
+	t.Setenv("COMPOUND_BREADTH_EMBED_MODEL", "runtime-test")
+	t.Setenv("COMPOUND_BREADTH_EMBED_BASE_URL", server.URL)
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
 
 	deps := baseDeps()
 	deps.HomePath = homePath
 	res, err := Run(Fixture{
 		Hook: "user-prompt-submit", Harness: "codex", Live: true,
-		Cwd: "/repo/product", RepoKind: "product", Task: "one runtime snapshot", Prompt: "one runtime snapshot",
+		Cwd: "/repo/product", RepoKind: "product", Task: task, Prompt: task,
 	}, deps, fixedNow)
 	if err != nil {
 		t.Fatal(err)
@@ -265,12 +298,8 @@ func TestLiveUserPromptMaterializesRuntimeOnce(t *testing.T) {
 	if res.BreakerTripped {
 		t.Fatalf("prompt context breaker tripped: %+v", res)
 	}
-	starts, err := os.ReadFile(countPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Count(string(starts), "start\n"); got != 1 {
-		t.Fatalf("prompt runtime semantic sidecar starts = %d, want 1", got)
+	if taskEmbeds != 1 {
+		t.Fatalf("prompt runtime semantic task embeddings = %d, want 1", taskEmbeds)
 	}
 }
 
