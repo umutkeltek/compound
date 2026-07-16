@@ -9,12 +9,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"compound/internal/authority"
+	"compound/internal/candidates"
+	"compound/internal/capgraph"
 	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/retrievalparity"
 	"compound/internal/work"
@@ -185,13 +189,30 @@ func TestHookLiveSessionStartParityRecordsContextSpineRefs(t *testing.T) {
 	}
 }
 
-func TestHookLiveUserPromptSubmitEmitsAdditionalContext(t *testing.T) {
+func TestHookLiveUserPromptSubmitReturnsExactRelevantPrivateContextWithoutWork(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
-	input := `{"hook_event_name":"UserPromptSubmit","session_id":"sess_live","cwd":"/repo/product","prompt":"tighten onboarding copy"}`
+	manifest, err := capgraph.LoadSkillManifest(filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capgraph.ApplySkillManifest(homePath, manifest, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	seedLivePromptContextMeaning(t, homePath)
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := workStore.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := "LIVE_PROMPT_PRIVACY_SENTINEL_88bd pricing prompt context should prefer concise progress updates"
+	input := `{"hook_event_name":"UserPromptSubmit","session_id":"sess_live","cwd":"/repo/product","prompt":` + quoteJSON(raw) + `}`
 	out := captureStdout(t, func() {
 		withStdin(t, input, func() {
 			if code := runHookCommand([]string{"user-prompt-submit", "--live", "--harness", "claude-code"}); code != 0 {
@@ -199,14 +220,42 @@ func TestHookLiveUserPromptSubmitEmitsAdditionalContext(t *testing.T) {
 			}
 		})
 	})
-	var resp claudeLiveHookResponse
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatalf("parse live response: %v\n%s", err, out)
+	context := parseNativePromptContext(t, out, "UserPromptSubmit")
+	persisted := readOnlyPromptInjection(t, homePath)
+	if context != persisted {
+		t.Fatalf("stdout context differs from persisted injection\nstdout=%q\npersisted=%q", context, persisted)
 	}
-	if resp.HookSpecificOutput.HookEventName != "UserPromptSubmit" ||
-		!strings.Contains(resp.HookSpecificOutput.AdditionalContext, "tighten onboarding copy") {
-		t.Fatalf("live user-prompt-submit response = %+v", resp.HookSpecificOutput)
+	for _, want := range []string{
+		"pricing prompt context should prefer concise progress updates",
+		"capability://skill:claude-pricing",
+	} {
+		if !strings.Contains(context, want) {
+			t.Fatalf("prompt context missing relevant meaning %q:\n%s", want, context)
+		}
 	}
+	for _, forbidden := range []string{raw, "UNRELATED_DATABASE_MARKER_141a", "candidate work"} {
+		if strings.Contains(context, forbidden) {
+			t.Fatalf("prompt context contains forbidden %q:\n%s", forbidden, context)
+		}
+	}
+	if got := utf8.RuneCountInString(context); got > hook.MaxContextChars {
+		t.Fatalf("prompt context chars=%d, max=%d", got, hook.MaxContextChars)
+	}
+	after, err := workStore.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("live prompt changed work count %d -> %d", len(before), len(after))
+	}
+	rows, err := retrievalparity.LoadJournal(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !strings.HasPrefix(rows[0].Query, "sha256:") || strings.Contains(rows[0].Query, raw) {
+		t.Fatalf("prompt retrieval journal retained raw query: %+v", rows)
+	}
+	assertHomeOmitsString(t, homePath, raw)
 }
 
 func TestHookLiveContextRetrievalJournalsAfterSuccessfulBreakers(t *testing.T) {
@@ -244,8 +293,15 @@ func TestHookLiveContextRetrievalJournalsAfterSuccessfulBreakers(t *testing.T) {
 		t.Fatalf("live-hook retrieval rows=%d, want %d: %+v", len(rows), len(inputs), rows)
 	}
 	for i, row := range rows {
-		if row.Consumer != retrievalparity.ConsumerOrient || row.Query != inputs[i].prompt || row.OrientInput == nil {
+		if row.Consumer != retrievalparity.ConsumerOrient || row.OrientInput == nil {
 			t.Fatalf("live-hook row %d=%+v", i, row)
+		}
+		if inputs[i].hook == "user-prompt-submit" {
+			if !strings.HasPrefix(row.Query, "sha256:") || strings.Contains(row.Query, inputs[i].prompt) {
+				t.Fatalf("live prompt row %d retained non-opaque intent: %+v", i, row)
+			}
+		} else if row.Query != inputs[i].prompt {
+			t.Fatalf("session-start row %d query=%q, want %q", i, row.Query, inputs[i].prompt)
 		}
 		if row.OrientInput.Harness != "codex" || row.OrientInput.Cwd != repoPath || row.OrientInput.Mode != inputs[i].mode {
 			t.Fatalf("live-hook row %d tuple=%+v", i, row.OrientInput)
@@ -275,7 +331,7 @@ func TestLiveHookParityJournalUsesCapturedRetrievalLatency(t *testing.T) {
 	}
 }
 
-func TestHookLiveCodexUserPromptSubmitEmitsCodexContext(t *testing.T) {
+func TestHookLiveCodexUserPromptSubmitEmitsNativeContext(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -291,16 +347,52 @@ func TestHookLiveCodexUserPromptSubmitEmitsCodexContext(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("codex live user-prompt-submit exit = %d\n%s", code, out)
 	}
-	var resp codexLiveHookResponse
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatalf("parse codex live response: %v\n%s", err, out)
+	context := parseNativePromptContext(t, out, "UserPromptSubmit")
+	if context != readOnlyPromptInjection(t, homePath) || strings.Contains(context, "candidate work") {
+		t.Fatalf("codex prompt did not return exact injection:\n%s", context)
 	}
-	if resp.SchemaVersion != "compound.codex_live_hook_response.v0.1" ||
-		resp.HookName != "UserPromptSubmit" ||
-		resp.Status != "ok" ||
-		resp.EventID == "" ||
-		!strings.Contains(resp.AdditionalContext, "tighten onboarding copy") {
-		t.Fatalf("codex live user-prompt-submit response = %+v", resp)
+}
+
+func TestHookLiveCodexUserPromptSubmitBreakerReturnsNativeEmptyContext(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "config", "repo-kinds.yaml"), []byte("schema_version: invalid\nrepos: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	input := `{"hook_event_name":"UserPromptSubmit","session_id":"sess_codex_prompt_breaker","cwd":"/repo/product","prompt":"breaker prompt"}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"user-prompt-submit", "--live", "--harness", "codex"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("breaker exit=%d, want fail-open 0\n%s", code, out)
+	}
+	if context := parseNativePromptContext(t, out, "UserPromptSubmit"); context != "" {
+		t.Fatalf("breaker context=%q, want empty", context)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if works, err := store.List(); err != nil || len(works) != 0 {
+		t.Fatalf("breaker work=%+v err=%v", works, err)
+	}
+	for _, dir := range []string{"requests", "packs", "injections"} {
+		if entries, err := os.ReadDir(filepath.Join(homePath, "context", dir)); err == nil && len(entries) != 0 {
+			t.Fatalf("breaker persisted partial %s: %+v", dir, entries)
+		}
+	}
+	stream, err := os.ReadFile(filepath.Join(homePath, "events", "hook-events.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stream), `"breaker_tripped":true`) || !strings.Contains(string(stream), `"status":"fail_open"`) {
+		t.Fatalf("breaker telemetry missing:\n%s", stream)
 	}
 }
 
@@ -748,4 +840,113 @@ func withStdin(t *testing.T, raw string, fn func()) {
 func quoteJSON(s string) string {
 	data, _ := json.Marshal(s)
 	return string(data)
+}
+
+func parseNativePromptContext(t *testing.T, raw, wantEvent string) string {
+	t.Helper()
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &top); err != nil {
+		t.Fatalf("parse native prompt response: %v\n%s", err, raw)
+	}
+	if len(top) != 1 || top["hookSpecificOutput"] == nil {
+		t.Fatalf("prompt response must contain only native hookSpecificOutput, got keys=%v\n%s", sortedJSONKeys(top), raw)
+	}
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(top["hookSpecificOutput"], &nested); err != nil {
+		t.Fatalf("parse hookSpecificOutput: %v\n%s", err, raw)
+	}
+	for _, forbidden := range []string{"additional_context", "hook_name", "event_id", "schema_version", "status"} {
+		if _, ok := top[forbidden]; ok {
+			t.Fatalf("prompt response retained private field %q: %s", forbidden, raw)
+		}
+	}
+	var resp claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("parse typed native prompt response: %v\n%s", err, raw)
+	}
+	if resp.HookSpecificOutput.HookEventName != wantEvent {
+		t.Fatalf("native hookEventName=%q, want %q", resp.HookSpecificOutput.HookEventName, wantEvent)
+	}
+	return resp.HookSpecificOutput.AdditionalContext
+}
+
+func sortedJSONKeys(values map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func readOnlyPromptInjection(t *testing.T, homePath string) string {
+	t.Helper()
+	dir := filepath.Join(homePath, "context", "injections")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].IsDir() {
+		t.Fatalf("prompt injection entries=%v, want exactly one file", entries)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func assertHomeOmitsString(t *testing.T, root, forbidden string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), forbidden) {
+			return fmt.Errorf("forbidden prompt found in %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedLivePromptContextMeaning(t *testing.T, homePath string) {
+	t.Helper()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := store.Capture([]mem.Candidate{
+		{
+			Entity: "prompt-context", Predicate: "authority_status",
+			Object:     "pricing prompt context should prefer concise progress updates",
+			Confidence: 0.99, Derivation: "deterministic", ClaimType: "architecture",
+			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "trace_live_prompt_relevant",
+			SnippetHash: "sha256:live-prompt-relevant", Visibility: "operational",
+		},
+		{
+			Entity: "database-maintenance", Predicate: "status",
+			Object:     "UNRELATED_DATABASE_MARKER_141a database vacuum status",
+			Confidence: 0.99, Derivation: "deterministic", ClaimType: "status",
+			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "trace_live_prompt_unrelated",
+			SnippetHash: "sha256:live-prompt-unrelated", Visibility: "operational",
+		},
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range captured {
+		if _, err := store.Adjudicate(candidate.ID, candidates.Promote, "test", cliTestNow); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

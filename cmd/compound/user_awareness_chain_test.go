@@ -232,11 +232,12 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 	if hookCode != 0 {
 		t.Fatalf("production UserPromptSubmit exit=%d output=%s", hookCode, hookOutput)
 	}
-	var hookResponse codexLiveHookResponse
+	var hookResponse claudeLiveHookResponse
 	if err := json.Unmarshal([]byte(hookOutput), &hookResponse); err != nil {
 		t.Fatalf("parse production UserPromptSubmit response: %v\n%s", err, hookOutput)
 	}
-	if hookResponse.HookName != "UserPromptSubmit" || hookResponse.Status != "ok" || strings.TrimSpace(hookResponse.AdditionalContext) == "" {
+	if hookResponse.HookSpecificOutput.HookEventName != "UserPromptSubmit" ||
+		!strings.Contains(hookResponse.HookSpecificOutput.AdditionalContext, promoted.Claim.Object) {
 		t.Fatalf("production UserPromptSubmit response = %+v", hookResponse)
 	}
 	assertUserAwarenessProtocolCycle(t, hookRequests, hookResponses, 1)

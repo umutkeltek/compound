@@ -86,7 +86,7 @@ func TestLiveUserPromptIsWorkNeutralAndPersistsOpaqueExactContext(t *testing.T) 
 			t.Fatalf("returned context missing relevant meaning %q:\n%s", want, last.Summary)
 		}
 	}
-	for _, forbidden := range []string{raw, "UNRELATED_MEMORY_SENTINEL_951d", "candidate work"} {
+	for _, forbidden := range []string{raw, "UNRELATED_DATABASE_MARKER_951d", "candidate work"} {
 		if strings.Contains(last.Summary, forbidden) {
 			t.Fatalf("returned context contains forbidden %q:\n%s", forbidden, last.Summary)
 		}
@@ -211,15 +211,15 @@ func seedPromptContextMemory(t *testing.T, homePath string) {
 	}
 	captured, err := store.Capture([]mem.Candidate{
 		{
-			Entity: "prompt-context", Predicate: "communication_preference",
+			Entity: "prompt-context", Predicate: "authority_status",
 			Object:     "pricing prompt context should prefer concise progress updates",
-			Confidence: 0.99, Derivation: "deterministic", ClaimType: "preference",
+			Confidence: 0.99, Derivation: "deterministic", ClaimType: "architecture",
 			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "trace_prompt_context_relevant",
 			SnippetHash: "sha256:prompt-context-relevant", Visibility: "operational",
 		},
 		{
 			Entity: "database-maintenance", Predicate: "status",
-			Object:     "UNRELATED_MEMORY_SENTINEL_951d database vacuum status",
+			Object:     "UNRELATED_DATABASE_MARKER_951d database vacuum status",
 			Confidence: 0.99, Derivation: "deterministic", ClaimType: "status",
 			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "trace_prompt_context_unrelated",
 			SnippetHash: "sha256:prompt-context-unrelated", Visibility: "operational",
