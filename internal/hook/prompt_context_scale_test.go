@@ -63,8 +63,8 @@ func TestLiveUserPromptScaleStaysInsideNativeBudget(t *testing.T) {
 	if got := deps.Registry.InjectionBudgetMS("codex"); got != 1500 {
 		t.Fatalf("codex injection budget = %dms, want pinned 1500ms", got)
 	}
-	if got := deps.Registry.InjectionBudgetMS("claude-code"); got != 1500 {
-		t.Fatalf("claude injection budget = %dms, want pinned 1500ms", got)
+	if got := deps.Registry.InjectionBudgetMS("claude-code"); got != 1000 {
+		t.Fatalf("claude injection budget = %dms, want existing stricter 1000ms", got)
 	}
 
 	latencies := make([]time.Duration, 0, promptScaleRuns)
