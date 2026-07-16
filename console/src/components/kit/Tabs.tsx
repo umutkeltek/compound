@@ -53,7 +53,7 @@ export function TabsTrigger({
   return (
     <RadixTabs.Trigger
       value={value}
-      className="inline-flex items-center gap-1.5 rounded-sm px-3 py-1 text-xs font-semibold text-muted
+      className="inline-flex min-h-11 touch-manipulation items-center gap-1.5 rounded-sm px-3 py-1 text-xs font-semibold text-muted
                  transition-colors hover:text-ink
                  data-[state=active]:bg-panel data-[state=active]:text-ink data-[state=active]:shadow-sm
                  focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"

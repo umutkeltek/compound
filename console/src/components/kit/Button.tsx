@@ -18,7 +18,7 @@ export type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "classNa
 };
 
 const BASE =
-  "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-semibold " +
+  "inline-flex min-h-11 touch-manipulation items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-semibold " +
   "tabular-nums transition-colors active:translate-y-px disabled:cursor-not-allowed disabled:opacity-55";
 
 const VARIANT: Record<ButtonVariant, (tone: ButtonTone) => string> = {
