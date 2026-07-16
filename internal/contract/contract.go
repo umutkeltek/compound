@@ -1835,6 +1835,15 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 		if rank <= 0 {
 			continue
 		}
+		if reason := currentStatePositionFreshnessExclusionReason(activePosition.Ref, position, activeClaim); reason != "" {
+			excluded = append(excluded, contextPositionRef{
+				Ref:    activePosition.Ref,
+				Reason: reason,
+				Seq:    activeClaim.Seq,
+				Rank:   rank,
+			})
+			continue
+		}
 		out = append(out, contextPositionRef{
 			Ref:        activePosition.Ref,
 			Reason:     positionMemoryReasonPrefix + activePosition.Line,
@@ -1876,6 +1885,30 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 	}
 	sort.Slice(excludedRefs, func(i, j int) bool { return excludedRefs[i].Ref < excludedRefs[j].Ref })
 	return out, excludedRefs, nil
+}
+
+func currentStatePositionFreshnessExclusionReason(positionRef string, position mem.Position, activeClaim mem.Claim) string {
+	if !strings.EqualFold(strings.TrimSpace(activeClaim.ClaimType), "status") {
+		return ""
+	}
+	if !hasBarePositionEvidenceRef(activeClaim.EvidenceRefs, "compound://workbench") &&
+		!hasBarePositionEvidenceRef(position.EvidenceRefs, "compound://workbench") {
+		return ""
+	}
+	return fmt.Sprintf(
+		"current-state position %s backed by claim://%s excluded: compound://workbench evidence is mutable and unversioned; resolve current state with compound workbench --json",
+		positionRef,
+		activeClaim.ID,
+	)
+}
+
+func hasBarePositionEvidenceRef(refs []string, want string) bool {
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func activePositionFromFold(position mem.Position, activeClaim mem.Claim) envelope.ActivePosition {
