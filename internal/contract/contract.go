@@ -432,88 +432,80 @@ func Compile(in Input, pol OrientationPolicy, now time.Time) envelope.EffectiveC
 	}
 }
 
+// RuntimeMaterialization projects one task-scoped runtime snapshot into both
+// artifacts consumed by prompt-time hooks. The trace describes the single
+// semantic-memory dependency used by that snapshot.
+type RuntimeMaterialization struct {
+	EffectiveContract     envelope.EffectiveContract
+	ContextPack           envelope.ContextPack
+	EngineDependencyTrace EngineDependencyTrace
+}
+
+type runtimeOffer struct {
+	offer envelope.CapabilityOffer
+	rev   envelope.SourceRev
+	ok    bool
+}
+
+type runtimeSnapshot struct {
+	hooks                []string
+	excludedHooks        []envelope.ExcludedRef
+	hookRoster           []envelope.HookRosterEntry
+	hookReadiness        []envelope.HookReadiness
+	hookRevisions        []envelope.SourceRev
+	decisions            []string
+	excludedDecisions    []envelope.ExcludedRef
+	decisionRevisions    []envelope.SourceRev
+	memoryRefs           []contextMemoryRef
+	excludedMemoryRefs   []envelope.ExcludedRef
+	positionRefs         []contextPositionRef
+	excludedPositionRefs []envelope.ExcludedRef
+	memoryRevision       string
+	capabilityHits       []capgraph.Surfaced
+	capabilityTotal      int
+	capabilityRevision   string
+	osAdaptation         runtimeOffer
+	oracleSecondOpinion  runtimeOffer
+}
+
+// MaterializeRuntime loads runtime state once and projects the same snapshot
+// into the EffectiveContract and ContextPack. Pack-only contextual additions
+// remain on the ContextPack projection.
+func MaterializeRuntime(in Input, pol OrientationPolicy, homePath string, now time.Time) (RuntimeMaterialization, error) {
+	result := RuntimeMaterialization{
+		EffectiveContract:     Compile(in, pol, now),
+		ContextPack:           Pack(in, pol, now),
+		EngineDependencyTrace: EngineDependencyTrace{Outcome: EngineOutcomeNotAttempted},
+	}
+	if strings.TrimSpace(homePath) == "" {
+		return result, nil
+	}
+	result.EffectiveContract.SourceRevisions = append([]envelope.SourceRev(nil), result.ContextPack.SourceRevisions...)
+	snapshot, err := loadRuntimeSnapshot(in, pol, homePath, &result.EngineDependencyTrace)
+	if err != nil {
+		return result, err
+	}
+	result.EffectiveContract = projectRuntimeContract(result.EffectiveContract, snapshot)
+	result.ContextPack = projectRuntimePack(result.ContextPack, in, snapshot)
+	result.ContextPack, err = appendPackOnlyRuntime(result.ContextPack, in, homePath, now)
+	return result, err
+}
+
 // CompileWithRuntime compiles the static contract and enriches it with runtime
-// state owned by COMPOUND_HOME: installed hook manifest, source file revisions,
-// and accepted decision claims. The pure Compile function stays for fixtures and
-// tests that do not want to touch runtime state.
+// state owned by COMPOUND_HOME. It remains a compatibility wrapper over the
+// shared snapshot loader without paying for ContextPack-only projections.
 func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now time.Time) (envelope.EffectiveContract, error) {
 	ec := Compile(in, pol, now)
 	if strings.TrimSpace(homePath) == "" {
 		return ec, nil
 	}
 	ec.SourceRevisions = resolveSourceRevisions(ec.SourceRevisions, in.Cwd)
-	hooks, excludedHooks, hookRoster, hookRevs, err := loadInstalledHooksForInput(homePath, in)
+	trace := EngineDependencyTrace{Outcome: EngineOutcomeNotAttempted}
+	snapshot, err := loadRuntimeSnapshot(in, pol, homePath, &trace)
 	if err != nil {
 		return ec, err
 	}
-	ec.ActiveHooks = hooks
-	ec.HookRoster = hookRoster
-	hookReadiness, err := hookReadinessForInput(homePath, in)
-	if err != nil {
-		return ec, err
-	}
-	ec.HookReadiness = hookReadiness
-	ec.Excluded = append(ec.Excluded, excludedHooks...)
-	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, hookRevs)
-	capabilityHits, surfacedTotal, err := surfaceCapabilityHits(homePath, in)
-	if err != nil {
-		return ec, err
-	}
-	for _, hit := range capabilityHits {
-		ec.CapabilityOffers = append(ec.CapabilityOffers, capabilityOffer(hit))
-	}
-	if surfacedTotal > 0 {
-		rev, err := capgraph.AuthorityRevision(homePath)
-		if err != nil {
-			return ec, err
-		}
-		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: capgraph.CapabilityGraphAuthorityRef, Rev: rev}})
-	}
-	if offer, rev, ok, err := osAdaptationSteeringOffer(in); err != nil {
-		return ec, err
-	} else if ok {
-		ec.CapabilityOffers = append(ec.CapabilityOffers, offer)
-		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{rev})
-	}
-	if offer, rev, ok, err := oracleSecondOpinionOffer(in); err != nil {
-		return ec, err
-	} else if ok {
-		ec.CapabilityOffers = append(ec.CapabilityOffers, offer)
-		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{rev})
-	}
-	decisions, decisionRevs, excludedDecisions, err := loadDecisionRefs(homePath, in)
-	if err != nil {
-		return ec, err
-	}
-	ec.ActiveDecisions = decisions
-	ec.Excluded = append(ec.Excluded, excludedDecisions...)
-	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, decisionRevs)
-	// One breadth-engine call feeds both loaders (owned engine ranks; ledger still gates).
-	semanticRanks := semanticTaskRanks(homePath, in)
-	memoryRefs, excludedMemoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
-	if err != nil {
-		return ec, err
-	}
-	ec.Excluded = append(ec.Excluded, excludedMemoryRefs...)
-	for _, ref := range memoryRefs {
-		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
-	}
-	positionRefs, excludedPositionRefs, err := loadPositionRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
-	if err != nil {
-		return ec, err
-	}
-	ec.Excluded = append(ec.Excluded, excludedPositionRefs...)
-	for _, ref := range positionRefs {
-		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
-	}
-	if len(memoryRefs) > 0 || len(excludedMemoryRefs) > 0 || len(positionRefs) > 0 || len(excludedPositionRefs) > 0 {
-		rev, err := memoryLedgerRevision(homePath)
-		if err != nil {
-			return ec, err
-		}
-		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: memoryRelevanceSourceRef, Rev: rev}})
-	}
-	return ec, nil
+	return projectRuntimeContract(ec, snapshot), nil
 }
 
 type EffectiveContractArtifactPaths struct {
