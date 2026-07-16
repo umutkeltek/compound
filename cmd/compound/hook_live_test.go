@@ -874,6 +874,14 @@ func parseNativePromptContext(t *testing.T, raw, wantEvent string) string {
 	if err := json.Unmarshal(top["hookSpecificOutput"], &nested); err != nil {
 		t.Fatalf("parse hookSpecificOutput: %v\n%s", err, raw)
 	}
+	if nested["hookEventName"] == nil {
+		t.Fatalf("hookSpecificOutput missing hookEventName: keys=%v\n%s", sortedJSONKeys(nested), raw)
+	}
+	for key := range nested {
+		if key != "hookEventName" && key != "additionalContext" {
+			t.Fatalf("hookSpecificOutput retained unknown field %q: keys=%v\n%s", key, sortedJSONKeys(nested), raw)
+		}
+	}
 	for _, forbidden := range []string{"additional_context", "hook_name", "event_id", "schema_version", "status"} {
 		if _, ok := top[forbidden]; ok {
 			t.Fatalf("prompt response retained private field %q: %s", forbidden, raw)

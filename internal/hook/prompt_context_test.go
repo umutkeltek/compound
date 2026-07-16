@@ -12,6 +12,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/mem"
 	"compound/internal/work"
@@ -115,6 +116,13 @@ func TestLiveUserPromptIsWorkNeutralAndPersistsOpaqueExactContext(t *testing.T) 
 	}
 	if last.Context == nil || last.Context.Input.Task != ref || last.Context.Input.TaskContract.Intent != ref {
 		t.Fatalf("retrieval observation retained prompt: %+v", last.Context)
+	}
+	reproducedContract := contract.Compile(last.Context.Input, deps.Orient, fixedNow)
+	reproducedPack := contract.Pack(last.Context.Input, deps.Orient, fixedNow)
+	if ec.Header.ID != reproducedContract.Header.ID || pack.Header.ID != reproducedPack.Header.ID || pack.Header.IDs.ContractID != reproducedPack.Header.IDs.ContractID {
+		t.Fatalf("persisted prompt ids are not reproducible from sanitized input: contract=%q/%q pack=%q/%q pack_contract=%q/%q",
+			ec.Header.ID, reproducedContract.Header.ID, pack.Header.ID, reproducedPack.Header.ID,
+			pack.Header.IDs.ContractID, reproducedPack.Header.IDs.ContractID)
 	}
 	assertPromptSentinelAbsentFromTree(t, homePath, raw)
 }
