@@ -514,6 +514,9 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 	var snapshot runtimeSnapshot
 	var err error
 	taskEmbedder := resolveTaskEmbedder(homePath, in.Task)
+	if in.ReadOnlyRetrieval && taskEmbedder != nil {
+		taskEmbedder = &exactTaskMemoizingEmbedder{inner: taskEmbedder, task: in.Task}
+	}
 	snapshot.hooks, snapshot.excludedHooks, snapshot.hookRoster, snapshot.hookRevisions, err = loadInstalledHooksForInput(homePath, in)
 	if err != nil {
 		return snapshot, err
@@ -1499,7 +1502,7 @@ func resolveTaskEmbedder(homePath, task string) breadth.EmbedderAdapter {
 	if !ok || embedder == nil {
 		return nil
 	}
-	return &exactTaskMemoizingEmbedder{inner: embedder, task: task}
+	return embedder
 }
 
 func (e *exactTaskMemoizingEmbedder) Identity() string { return e.inner.Identity() }
