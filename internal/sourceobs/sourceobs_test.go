@@ -817,3 +817,80 @@ func writeSourceObservationVerdictPayloadFixture(t *testing.T, home, verdictID s
 	}
 	return path
 }
+
+// TestSourceObservationVerdictRenderRecordGolden pins the render + record + load
+// scaffolding byte-for-byte across the extraction. The two "recorded file == render
+// func output" equalities exercise the shared plan-record seam (verdictflow), so a
+// mutation there reddens this golden without touching sourceobs's own render code.
+func TestSourceObservationVerdictRenderRecordGolden(t *testing.T) {
+	home := t.TempDir()
+	payload := sourceObservationVerdictCandidatePayload{
+		ID:                  "ocand_golden_fixture",
+		Kind:                string(candidates.CapabilityObs),
+		Subject:             "observation:source:generated-view",
+		Statement:           "Synthetic generated-view drift needs source-owner review.",
+		Detail:              "source observation evidence, not truth",
+		Confidence:          0.66,
+		EvidenceRefs:        []string{"fixture:source:golden"},
+		SourceObservationID: "srcobs_golden_fixture",
+	}
+	verdictPath := writeSourceObservationVerdictPayloadFixture(t, home, "panel_verdict_source_golden", payload)
+	plan, err := BuildSourceObservationVerdictPlan(home, verdictPath, "", tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.OwnerKind != "source_observation" || plan.OwnerRef != "srcobs_golden_fixture" || plan.OwnerStatus != "sourceobs" {
+		t.Fatalf("owner derivation drift: %+v", plan)
+	}
+
+	reviewYAML := RenderSourceObservationVerdictReviewYAML(plan)
+	for _, want := range []string{
+		"schema_version: compound.source_observation_verdict_review.v0.1\n",
+		"decision: TODO_decision_record_no_promote_park_reject\n",
+		"candidate_ref: ocand_golden_fixture\n",
+	} {
+		if !strings.Contains(reviewYAML, want) {
+			t.Fatalf("review YAML missing %q:\n%s", want, reviewYAML)
+		}
+	}
+	markdown := renderSourceObservationVerdictPlanMarkdown(plan)
+	if !strings.HasPrefix(markdown, "# Source Observation Verdict Plan: panel_verdict_source_golden\n") {
+		t.Fatalf("markdown header drift:\n%s", markdown)
+	}
+
+	paths, err := RecordSourceObservationVerdictPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readSourceVerdictGoldenFile(t, paths.ReviewYAMLPath); got != reviewYAML {
+		t.Fatalf("recorded review.yaml != render:\n got=%q\nwant=%q", got, reviewYAML)
+	}
+	if got := readSourceVerdictGoldenFile(t, paths.ReviewPath); got != markdown {
+		t.Fatalf("recorded .md != render:\n got=%q\nwant=%q", got, markdown)
+	}
+
+	filled := strings.NewReplacer(
+		"decision: TODO_decision_record_no_promote_park_reject", "decision: record_no_promote",
+		"rationale: TODO_rationale", "rationale: keep reviewed source verdict as no-promote evidence",
+		"confidence: TODO_confidence_0_to_1", "confidence: 0.7",
+	).Replace(reviewYAML)
+	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(filled), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	review, err := LoadSourceObservationVerdictReview(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Decision != "record_no_promote" || review.PlanID != plan.ID || review.CandidateRef != plan.TargetRef || review.Confidence != 0.7 {
+		t.Fatalf("load round-trip drift: %+v", review)
+	}
+}
+
+func readSourceVerdictGoldenFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}

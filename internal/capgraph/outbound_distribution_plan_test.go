@@ -385,3 +385,77 @@ func planHasGate(gates []OutboundDistributionGate, kind string) bool {
 	}
 	return false
 }
+
+// TestOutboundDistributionVerdictRenderRecordGolden pins the render + record + load
+// scaffolding byte-for-byte across the extraction. The two "recorded file == render
+// func output" equalities exercise the shared plan-record seam (verdictflow), so a
+// mutation there reddens this golden without touching capgraph's own render code.
+func TestOutboundDistributionVerdictRenderRecordGolden(t *testing.T) {
+	home := t.TempDir()
+	writeOutboundDistributionFixture(t, home)
+	plan, err := BuildOutboundDistributionVerdictPlan(home, OutboundDistributionVerdictPlanOptions{
+		Task:              "evaluate outbound posting adapter with Postiz",
+		ProductID:         "product:focus-notes",
+		ChangeEvent:       "prepare outbound distribution dry-run",
+		Hypothesis:        "drafted posts can be reviewed before public distribution",
+		ObservationWindow: "7d",
+		DryRunReceiptRef:  "receipt:dry-run",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reviewYAML := RenderOutboundDistributionVerdictReviewYAML(plan)
+	for _, want := range []string{
+		"schema_version: compound.capability.outbound_distribution_verdict_review.v0.1\n",
+		"decision: TODO_decision_adopt_for_dry_run_park_reject\n",
+		"product_id: product:focus-notes\n",
+		"dry_run_receipt_ref: TODO_dry_run_receipt_ref\n",
+	} {
+		if !strings.Contains(reviewYAML, want) {
+			t.Fatalf("review YAML missing %q:\n%s", want, reviewYAML)
+		}
+	}
+	markdown := RenderOutboundDistributionVerdictPlanReview(plan)
+	if !strings.HasPrefix(markdown, "# Outbound Distribution Verdict Plan: product:focus-notes\n") {
+		t.Fatalf("markdown header drift:\n%s", markdown)
+	}
+
+	paths, err := RecordOutboundDistributionVerdictPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readOutboundVerdictGoldenFile(t, paths.ReviewYAMLPath); got != reviewYAML {
+		t.Fatalf("recorded review.yaml != render:\n got=%q\nwant=%q", got, reviewYAML)
+	}
+	if got := readOutboundVerdictGoldenFile(t, paths.ReviewPath); got != markdown {
+		t.Fatalf("recorded .md != render:\n got=%q\nwant=%q", got, markdown)
+	}
+
+	filled := strings.NewReplacer(
+		"TODO_decision_adopt_for_dry_run_park_reject", "park",
+		"TODO_rationale", "keep as evidence until product loop target is chosen",
+		"TODO_confidence_0_to_1", "0.4",
+		"TODO_dry_run_receipt_ref", "receipt:dry-run",
+	).Replace(reviewYAML)
+	reviewPath := filepath.Join(t.TempDir(), "golden-review.yaml")
+	if err := os.WriteFile(reviewPath, []byte(filled), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	review, err := LoadOutboundDistributionVerdictReview(reviewPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Decision != "park" || review.PlanID != plan.ID || review.DryRunReceiptRef != "receipt:dry-run" || review.Confidence != 0.4 {
+		t.Fatalf("load round-trip drift: %+v", review)
+	}
+}
+
+func readOutboundVerdictGoldenFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}

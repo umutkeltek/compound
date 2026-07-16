@@ -176,3 +176,72 @@ func writeProductObservationPanelVerdictFixture(t *testing.T, home string) strin
 	}
 	return path
 }
+
+// TestProductObservationVerdictRenderRecordGolden pins the render + record + load
+// scaffolding byte-for-byte so a later extraction into internal/verdictflow cannot
+// silently change bytes. The two "recorded file == render func output" equalities are
+// the shared plan-record seam's teeth: a mutation in verdictflow's record path reddens
+// them without touching product's own render code.
+func TestProductObservationVerdictRenderRecordGolden(t *testing.T) {
+	home := t.TempDir()
+	verdictPath := writeProductObservationPanelVerdictFixture(t, home)
+	plan, err := BuildObservationVerdictPlan(home, verdictPath, "", tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reviewYAML := RenderObservationVerdictReviewYAML(plan)
+	for _, want := range []string{
+		"schema_version: compound.product_observation_verdict_review.v0.1\n",
+		"decision: TODO_decision_create_hypothesis_candidate_park_reject\n",
+		" - \"distribution_feedback_quality\"\n",
+		" - \"qualified_reply_rate\"\n",
+	} {
+		if !strings.Contains(reviewYAML, want) {
+			t.Fatalf("review YAML missing %q:\n%s", want, reviewYAML)
+		}
+	}
+	markdown := renderObservationVerdictPlanMarkdown(plan)
+	if !strings.HasPrefix(markdown, "# Product Observation Verdict Plan: panel_verdict_fixture_social\n") {
+		t.Fatalf("markdown header drift:\n%s", markdown)
+	}
+
+	paths, err := RecordObservationVerdictPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readProductTestFile(t, paths.ReviewYAMLPath); got != reviewYAML {
+		t.Fatalf("recorded review.yaml != render:\n got=%q\nwant=%q", got, reviewYAML)
+	}
+	if got := readProductTestFile(t, paths.ReviewPath); got != markdown {
+		t.Fatalf("recorded .md != render:\n got=%q\nwant=%q", got, markdown)
+	}
+
+	var reloaded ObservationVerdictPlan
+	data, err := os.ReadFile(paths.PlanPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ID != plan.ID || reloaded.ReviewDraft.ReviewID != plan.ReviewDraft.ReviewID || reloaded.ProductID != plan.ProductID {
+		t.Fatalf("plan round-trip drift: %+v", reloaded)
+	}
+
+	filled := strings.NewReplacer(
+		"decision: TODO_decision_create_hypothesis_candidate_park_reject", "decision: park",
+		"rationale: TODO_rationale", "rationale: keep reviewed observation as product evidence",
+		"confidence: TODO_confidence_0_to_1", "confidence: 0.5",
+	).Replace(reviewYAML)
+	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(filled), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	review, err := LoadObservationVerdictReview(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Decision != "park" || review.PlanID != plan.ID || review.Confidence != 0.5 {
+		t.Fatalf("load round-trip drift: %+v", review)
+	}
+}
