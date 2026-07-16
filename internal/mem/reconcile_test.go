@@ -28,7 +28,7 @@ func TestLoadReconcileEventsFailsClosedOnMalformedRecord(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.loadReconcileEvents(reconcileCheckpoint{}, t0); err == nil ||
+	if _, _, err := s.loadReconcileEvents(reconcileCheckpoint{}, t0); err == nil ||
 		!strings.Contains(err.Error(), "load event rec_malformed.json") {
 		t.Fatalf("malformed reconcile event error = %v", err)
 	}

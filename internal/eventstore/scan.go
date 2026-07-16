@@ -125,6 +125,21 @@ func (e *engine) readSegment(path string, tolerateFinalTorn bool, regularKind st
 	return parseSegmentBytes(path, data, tolerateFinalTorn)
 }
 
+// scanSegmentObserver is a test-only seam fired once per segment ACTUALLY
+// parsed during a Scan/ScanFrom, reporting the frame count and byte count
+// decoded. It is nil in production and never surfaces in the public API. A
+// falsifier installs it to prove an incremental ScanFrom decodes ONLY frames
+// appended since its cursor while a full Scan re-decodes everything (counter-
+// seam precedent: segmentParseObserver in hotcache.go). A skipped fully-
+// consumed segment never fires it — 0 work is 0 events.
+var scanSegmentObserver func(path string, frames int, bytes int64)
+
+func notifyScanParse(path string, frames int, bytes int64) {
+	if scanSegmentObserver != nil {
+		scanSegmentObserver(path, frames, bytes)
+	}
+}
+
 // invalidLooseEntry is a loose events/ file whose name is not a valid record
 // reference. scanAll reports these instead of skipping them: whether an
 // invalid name is ignorable depends on the caller's prefix filter (Scan fails
@@ -157,6 +172,7 @@ func (e *engine) scanAll(regularOnly bool) (map[string]storedRecord, []invalidLo
 				if err != nil {
 					return nil, nil, err
 				}
+				notifyScanParse(segment.path, len(frames), 0)
 				for i := len(frames) - 1; i >= 0; i-- {
 					id := frames[i].Frame.ID
 					if _, exists := records[id]; exists {

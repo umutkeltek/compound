@@ -58,11 +58,18 @@ type SynthesisReconcileParkedReason struct {
 }
 
 type reconcileCheckpoint struct {
-	SchemaVersion       string                 `json:"schema_version"`
-	UpdatedAt           string                 `json:"updated_at"`
-	Since               string                 `json:"since"`
-	LastEventID         string                 `json:"last_event_id,omitempty"`
-	LastEventTime       string                 `json:"last_event_time,omitempty"`
+	SchemaVersion string `json:"schema_version"`
+	UpdatedAt     string `json:"updated_at"`
+	Since         string `json:"since"`
+	LastEventID   string `json:"last_event_id,omitempty"`
+	LastEventTime string `json:"last_event_time,omitempty"`
+	// Cursor is the opaque eventstore Scan resume token (byte high-water per
+	// segment). It advances atomically with the rest of the checkpoint, so a
+	// crash before write leaves both it and LastEventTime unadvanced and the
+	// next sweep re-scans. It is a cache: an empty/stale token converges to a
+	// full rescan, never a skipped event — the LastEventTime/ID filter below is
+	// the semantic authority for which events fold.
+	Cursor              string                 `json:"scan_cursor,omitempty"`
 	DecayRoutedRefs     []string               `json:"decay_routed_refs,omitempty"`
 	LastProcessedReport SynthesisSweepReport   `json:"last_processed_report"`
 	ParkedReasons       map[string][]string    `json:"parked_reasons,omitempty"`
@@ -83,10 +90,11 @@ func (s *Store) synthesisReconcile(report *SynthesisSweepReport, now time.Time) 
 	if err != nil {
 		return err
 	}
-	events, err := s.loadReconcileEvents(checkpoint, now)
+	events, nextCursor, err := s.loadReconcileEvents(checkpoint, now)
 	if err != nil {
 		return err
 	}
+	checkpoint.Cursor = nextCursor
 	claims, err := s.loadClaims()
 	if err != nil {
 		return err
@@ -398,14 +406,24 @@ func (s *Store) currentClaimsByCluster(claims []Claim, superseded map[string]boo
 	return out, nil
 }
 
-func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Time) ([]reconcileEvent, error) {
-	entries, err := s.eventStore.Scan(eventstore.ScanOptions{})
+// loadReconcileEvents folds INCREMENTALLY: it resumes the eventstore Scan from
+// the checkpoint's byte cursor so a second consecutive sweep decodes only frames
+// appended since the last one, instead of re-parsing the whole event history
+// every invocation (the month-two re-parse creep the write-shape spec calls
+// out). The returned next cursor is persisted by the caller. Correctness is
+// unchanged: the byte cursor only skips frames the LastEventTime/ID filter below
+// would have discarded anyway (a monotonic fold has already consumed them), and
+// an empty/stale cursor makes ScanFrom return the full set — a superset the
+// filter narrows identically to the old full-Scan path.
+func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Time) ([]reconcileEvent, string, error) {
+	page, err := s.eventStore.ScanFrom(eventstore.ScanOptions{Cursor: checkpoint.Cursor})
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, checkpoint.Cursor, nil
 		}
-		return nil, err
+		return nil, "", err
 	}
+	entries := page.Entries
 	since := now.AddDate(0, 0, -30)
 	if checkpoint.Since != "" {
 		if t, err := time.Parse(time.RFC3339, checkpoint.Since); err == nil {
@@ -423,11 +441,11 @@ func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Tim
 	for _, entry := range entries {
 		record, err := entry.Read()
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		event, ok, err := readReconcileEvent(entry.Name, record.Bytes)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if !ok {
 			continue
@@ -448,7 +466,7 @@ func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Tim
 		}
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
-	return out, nil
+	return out, page.Cursor, nil
 }
 
 func readReconcileEvent(name string, data []byte) (reconcileEvent, bool, error) {

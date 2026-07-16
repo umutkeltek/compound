@@ -292,6 +292,47 @@ func (s *Store) Scan(opts ScanOptions) ([]Entry, error) {
 	return entries, nil
 }
 
+// ScanPage is one incremental Scan result: the entries visible since the input
+// cursor plus the opaque cursor to persist and pass back next run. A consumer
+// binds a cursor to a fixed scan intent (Prefixes/RegularOnly); changing the
+// query shape invalidates the cursor and it must be discarded (start empty).
+type ScanPage struct {
+	Entries []Entry
+	Cursor  string
+}
+
+// ScanFrom returns the records appended since opts.Cursor and the next cursor.
+// An empty (or unrecoverable) cursor yields a full deterministic scan — the
+// cursor is a cache, never authority, so a lost or stale token always converges
+// to the full-rescan answer rather than skipping records. On a home whose
+// migration completion gate is still open the loose layer is unioned and no
+// byte cursor is issued (Cursor comes back ""), preserving correctness while
+// un-migrated. Existing full-snapshot callers keep using Scan unchanged.
+func (s *Store) ScanFrom(opts ScanOptions) (ScanPage, error) {
+	records, invalid, cursor, err := s.engine.scanFrom(opts.RegularOnly, opts.Cursor)
+	if err != nil {
+		return ScanPage{}, err
+	}
+	for _, bad := range invalid {
+		if matchesPrefix(strings.TrimSuffix(bad.name, ".json"), opts.Prefixes) {
+			return ScanPage{}, fmt.Errorf("invalid event scan entry %q: %w", bad.name, bad.err)
+		}
+	}
+	entries := make([]Entry, 0, len(records))
+	for id := range records {
+		if !matchesPrefix(id, opts.Prefixes) {
+			continue
+		}
+		ref, err := ReferenceForID(id)
+		if err != nil {
+			return ScanPage{}, fmt.Errorf("invalid event scan entry %q: %w", id, err)
+		}
+		entries = append(entries, Entry{ID: id, Name: id + ".json", Reference: ref, store: s})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	return ScanPage{Entries: entries, Cursor: cursor}, nil
+}
+
 func matchesPrefix(id string, prefixes []string) bool {
 	if len(prefixes) == 0 {
 		return true
