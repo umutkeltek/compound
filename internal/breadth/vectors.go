@@ -108,7 +108,7 @@ func (c *vectorCache) load() (vectorManifest, map[vectorKey]vectorRow, error) {
 		return vectorManifest{}, nil, err
 	}
 	if manifest.SchemaVersion != vectorSchemaVersion {
-		return vectorManifest{}, nil, fmt.Errorf("%w: schema %q", errVectorEmbedderMismatch, manifest.SchemaVersion)
+		return vectorManifest{}, nil, fmt.Errorf("%w: schema %q", errVectorCacheCorrupt, manifest.SchemaVersion)
 	}
 	if manifest.Embedder.Identity() != c.identity {
 		return vectorManifest{}, nil, fmt.Errorf("%w: cache %q configured %q", errVectorEmbedderMismatch, manifest.Embedder.Identity(), c.identity)
