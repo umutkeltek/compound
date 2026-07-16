@@ -112,7 +112,7 @@ func TestBuildWorktreeRetirementPlanContainsCandidateWithoutMutatingGit(t *testi
 		PublicationRef: "refs/remotes/origin/main",
 		OwnerProof:     validRetirementOwnerProof(),
 		SourceProof:    validRetirementSourceProof(fixture.candidateTip),
-		RecoveryRefs:   []string{"sha256:" + strings.Repeat("a", 64)},
+		RecoveryRefs:   []string{fixture.recoveryRef},
 	}, WorktreeRetirementDependencies{
 		Git:      ExecWorktreeRetirementGit{},
 		Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
@@ -134,6 +134,9 @@ func TestBuildWorktreeRetirementPlanContainsCandidateWithoutMutatingGit(t *testi
 	}
 	if plan.PlanDigest == "" || plan.PlanDigest != WorktreeRetirementPlanDigest(plan) {
 		t.Fatalf("plan digest is not sealed: %q", plan.PlanDigest)
+	}
+	if len(plan.EvidenceRefs) == 0 || !containsStringValue(plan.EvidenceRefs, fixture.recoveryRef) {
+		t.Fatalf("plan evidence refs do not seal recovery proof: %v", plan.EvidenceRefs)
 	}
 
 	if after := retirementGitOutput(t, fixture.repo, "show-ref"); after != beforeRefs {
@@ -238,6 +241,8 @@ func TestWorktreeRetirementPlanRefusesAuthorityDriftAndIncompleteProofs(t *testi
 		{name: "owner not running", mutate: func(r *WorktreeRetirementPlanRequest) { r.OwnerProof.State = "claimed" }, want: "owner_work_not_running_with_exact_lease"},
 		{name: "source nonterminal", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.State = "running" }, want: "source_work_proof_invalid"},
 		{name: "incomplete chain", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.ProofComplete = false }, want: "source_work_proof_invalid"},
+		{name: "missing receipt", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.ReceiptID = "" }, want: "source_work_proof_invalid"},
+		{name: "missing transition", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.TransitionID = "" }, want: "source_work_proof_invalid"},
 		{name: "missing landcheck", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.LandCheckID = "" }, want: "source_work_proof_invalid"},
 		{name: "mismatched commit", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.LandCheckCandidateTip = strings.Repeat("e", 40) }, want: "source_work_proof_invalid"},
 		{name: "missing recovery", mutate: func(r *WorktreeRetirementPlanRequest) { r.RecoveryRefs = nil }, want: "recovery_evidence_required"},
@@ -284,6 +289,217 @@ func TestWorktreeRetirementPlanRejectsMalformedOrProtectedTargets(t *testing.T) 
 	}
 }
 
+func TestWorktreeRetirementPlanAlwaysRefusesMainCandidateEvenWhenAuthorityIsAnotherHead(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	retirementRunGit(t, fixture.repo, "update-ref", "refs/heads/trunk", fixture.mainTip)
+	req := retirementPlanRequest(fixture)
+	req.WorktreePath = ""
+	req.CandidateRef = "refs/heads/main"
+	req.AuthorityRef = "refs/heads/trunk"
+	req.SourceProof = validRetirementSourceProof(fixture.mainTip)
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Eligible || !retirementPlanBlockedBy(plan, "candidate_ref_main_protected") {
+		t.Fatalf("main candidate blockers = %v", plan.BlockReasons)
+	}
+}
+
+func TestWorktreeRetirementPlanValidatesContentAddressedRecoveryProof(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*testing.T, *WorktreeRetirementPlanRequest)
+	}{
+		{name: "invalid", mutate: func(_ *testing.T, r *WorktreeRetirementPlanRequest) { r.RecoveryRefs = []string{"sha256:deadbeef"} }},
+		{name: "missing", mutate: func(t *testing.T, r *WorktreeRetirementPlanRequest) {
+			path := filepath.Join(t.TempDir(), "missing.bundle")
+			r.RecoveryRefs = []string{"sha256-file:" + strings.Repeat("a", 64) + ":" + path}
+		}},
+		{name: "tampered", mutate: func(t *testing.T, r *WorktreeRetirementPlanRequest) {
+			path := filepath.Join(t.TempDir(), "recovery.bundle")
+			if err := os.WriteFile(path, []byte("actual"), 0o600); err != nil { t.Fatal(err) }
+			r.RecoveryRefs = []string{"sha256-file:" + strings.Repeat("a", 64) + ":" + path}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newRetirementGitFixture(t)
+			req := retirementPlanRequest(fixture)
+			tc.mutate(t, &req)
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+			}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Eligible || !retirementPlanBlockedBy(plan, "recovery_evidence_invalid") {
+				t.Fatalf("recovery plan eligible=%v blockers=%v", plan.Eligible, plan.BlockReasons)
+			}
+		})
+	}
+}
+
+func TestWorktreeRetirementPlanIDSealsCompleteCanonicalPayload(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	now := time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC)
+	first, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, now)
+	if err != nil { t.Fatal(err) }
+
+	secondPath := filepath.Join(filepath.Dir(fixture.repo), "second-recovery.bundle")
+	secondRef := writeRetirementRecoveryProof(t, secondPath, []byte("second recovery body"))
+	secondReq := retirementPlanRequest(fixture)
+	secondReq.RecoveryRefs = []string{secondRef}
+	second, err := BuildWorktreeRetirementPlan(context.Background(), secondReq, WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, now)
+	if err != nil { t.Fatal(err) }
+	if first.ID == second.ID {
+		t.Fatalf("plan id did not change with sealed recovery/evidence payload: %s", first.ID)
+	}
+
+	tampered := first
+	tampered.ID = "wtr_000000000000"
+	tampered.PlanDigest = WorktreeRetirementPlanDigest(tampered)
+	if err := ValidateWorktreeRetirementPlan(tampered); err == nil || !strings.Contains(err.Error(), "id") {
+		t.Fatalf("recomputed digest accepted wrong content id: %v", err)
+	}
+}
+
+func TestWorktreeRetirementArtifactsAreCreateExclusiveAndIdempotentForSameContent(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, time.Now())
+	if err != nil { t.Fatal(err) }
+	home := t.TempDir()
+	paths, err := RecordWorktreeRetirementPlan(home, plan)
+	if err != nil { t.Fatal(err) }
+	if _, err := RecordWorktreeRetirementPlan(home, plan); err != nil {
+		t.Fatalf("same-content plan replay rejected: %v", err)
+	}
+	tampered := []byte("different plan bytes\n")
+	if err := os.WriteFile(paths.PlanPath, tampered, 0o600); err != nil { t.Fatal(err) }
+	if _, err := RecordWorktreeRetirementPlan(home, plan); err == nil || !strings.Contains(err.Error(), "different") {
+		t.Fatalf("different existing plan bytes overwritten: %v", err)
+	}
+	got, err := os.ReadFile(paths.PlanPath)
+	if err != nil { t.Fatal(err) }
+	if string(got) != string(tampered) {
+		t.Fatalf("different plan bytes were replaced: %q", got)
+	}
+}
+
+func TestWorktreeRetirementPlanSealsCandidateRelationToSourceCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		fixture      func(*testing.T) retirementGitFixture
+		sourceTip    func(retirementGitFixture) string
+		wantRelation string
+		wantEligible bool
+	}{
+		{name: "candidate ancestor of source", fixture: newRetirementGitFixture, sourceTip: func(f retirementGitFixture) string { return f.mainTip }, wantRelation: WorktreeCandidateContained, wantEligible: true},
+		{name: "candidate patch equivalent to source", fixture: func(t *testing.T) retirementGitFixture { return newDivergentRetirementGitFixture(t, true) }, sourceTip: func(f retirementGitFixture) string { return f.mainTip }, wantRelation: WorktreeCandidatePatchEquivalent, wantEligible: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := tc.fixture(t)
+			req := retirementPlanRequest(fixture)
+			req.SourceProof = validRetirementSourceProof(tc.sourceTip(fixture))
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+			}, time.Now())
+			if err != nil { t.Fatal(err) }
+			if plan.SourceRelation != tc.wantRelation || plan.Eligible != tc.wantEligible {
+				t.Fatalf("source relation=%q eligible=%v blockers=%v", plan.SourceRelation, plan.Eligible, plan.BlockReasons)
+			}
+		})
+	}
+}
+
+func TestWorktreeRetirementPlanSupportsWorktreeOnlyAndBranchOnlyTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mutate func(*WorktreeRetirementPlanRequest)
+	}{
+		{name: "worktree only", mutate: func(r *WorktreeRetirementPlanRequest) { r.CandidateRef = "" }},
+		{name: "branch only", mutate: func(r *WorktreeRetirementPlanRequest) { r.WorktreePath = "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newRetirementGitFixture(t)
+			req := retirementPlanRequest(fixture)
+			tc.mutate(&req)
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+			}, time.Now())
+			if err != nil { t.Fatal(err) }
+			if !plan.Eligible { t.Fatalf("target blocked: %v", plan.BlockReasons) }
+		})
+	}
+}
+
+func TestWorktreeRetirementPlanRefusesMissingAndPrunableWorktree(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		prepare func(*testing.T, retirementGitFixture) string
+		want string
+	}{
+		{name: "missing", prepare: func(t *testing.T, f retirementGitFixture) string { return filepath.Join(t.TempDir(), "missing-worktree") }, want: "worktree_not_registered_metadata_repair_required"},
+		{name: "prunable", prepare: func(t *testing.T, f retirementGitFixture) string {
+			if err := os.RemoveAll(f.worktree); err != nil { t.Fatal(err) }
+			return f.worktree
+		}, want: "worktree_prunable_metadata_repair_required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newRetirementGitFixture(t)
+			req := retirementPlanRequest(fixture)
+			req.WorktreePath = tc.prepare(t, fixture)
+			plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+				Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+			}, time.Now())
+			if err != nil { t.Fatal(err) }
+			if plan.Eligible || !retirementPlanBlockedBy(plan, tc.want) {
+				t.Fatalf("missing/prunable blockers=%v", plan.BlockReasons)
+			}
+		})
+	}
+}
+
+func TestLSOFWorktreeRetirementLivenessRequiresExactStdoutStderrExitContract(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		result WorktreeRetirementProcessResult
+		err error
+		want WorktreeLivenessState
+	}{
+		{name: "exit one no output is unused", result: WorktreeRetirementProcessResult{ExitCode: 1}, want: WorktreeLivenessUnused},
+		{name: "exit zero matching stdout is active", result: WorktreeRetirementProcessResult{Stdout: "COMMAND PID NAME\nagent 7 /tmp/work/file", ExitCode: 0}, want: WorktreeLivenessActive},
+		{name: "stderr makes result unknown", result: WorktreeRetirementProcessResult{Stderr: "permission denied", ExitCode: 1}, want: WorktreeLivenessUnknown},
+		{name: "exit zero empty is unknown", result: WorktreeRetirementProcessResult{ExitCode: 0}, want: WorktreeLivenessUnknown},
+		{name: "exit one stdout is unknown", result: WorktreeRetirementProcessResult{Stdout: "unexpected", ExitCode: 1}, want: WorktreeLivenessUnknown},
+		{name: "other exit is unknown", result: WorktreeRetirementProcessResult{ExitCode: 2}, want: WorktreeLivenessUnknown},
+		{name: "spawn error is unknown", err: errors.New("spawn failed"), want: WorktreeLivenessUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := LSOFWorktreeRetirementLiveness{Runner: staticRetirementProcessRunner{result: tc.result, err: tc.err}}
+			if got := probe.Observe(context.Background(), "/tmp/synthetic-worktree"); got.State != tc.want {
+				t.Fatalf("liveness=%+v want=%s", got, tc.want)
+			}
+		})
+	}
+}
+
+type staticRetirementProcessRunner struct {
+	result WorktreeRetirementProcessResult
+	err error
+}
+
+func (r staticRetirementProcessRunner) Run(context.Context, string, ...string) (WorktreeRetirementProcessResult, error) {
+	return r.result, r.err
+}
+
 type staticRetirementLiveness struct {
 	state WorktreeLivenessState
 }
@@ -298,6 +514,7 @@ type retirementGitFixture struct {
 	candidateRef string
 	candidateTip string
 	mainTip      string
+	recoveryRef  string
 }
 
 func retirementPlanRequest(f retirementGitFixture) WorktreeRetirementPlanRequest {
@@ -305,7 +522,7 @@ func retirementPlanRequest(f retirementGitFixture) WorktreeRetirementPlanRequest
 		RepoRoot: f.repo, WorktreePath: f.worktree, CandidateRef: f.candidateRef,
 		AuthorityRef: "refs/heads/main", PublicationRef: "refs/remotes/origin/main",
 		OwnerProof: validRetirementOwnerProof(), SourceProof: validRetirementSourceProof(f.candidateTip),
-		RecoveryRefs: []string{"sha256:" + strings.Repeat("a", 64)},
+		RecoveryRefs: []string{f.recoveryRef},
 	}
 }
 
@@ -345,7 +562,8 @@ func newRetirementGitFixture(t *testing.T) retirementGitFixture {
 	retirementRunGit(t, repo, "commit", "-m", "main descendant")
 	mainTip := retirementGitOutput(t, repo, "rev-parse", "refs/heads/main")
 	retirementRunGit(t, repo, "update-ref", "refs/remotes/origin/main", mainTip)
-	return retirementGitFixture{repo: repo, worktree: worktree, candidateRef: candidateRef, candidateTip: candidateTip, mainTip: mainTip}
+	recoveryRef := writeRetirementRecoveryProof(t, filepath.Join(root, "recovery.bundle"), []byte("candidate recovery body"))
+	return retirementGitFixture{repo: repo, worktree: worktree, candidateRef: candidateRef, candidateTip: candidateTip, mainTip: mainTip, recoveryRef: recoveryRef}
 }
 
 func newDivergentRetirementGitFixture(t *testing.T, equivalent bool) retirementGitFixture {
@@ -385,7 +603,14 @@ func newDivergentRetirementGitFixture(t *testing.T, equivalent bool) retirementG
 	retirementRunGit(t, repo, "update-ref", "refs/remotes/origin/main", mainTip)
 	worktree, _ = filepath.EvalSymlinks(worktree)
 	repo, _ = filepath.EvalSymlinks(repo)
-	return retirementGitFixture{repo: repo, worktree: worktree, candidateRef: "refs/heads/candidate", candidateTip: candidateTip, mainTip: mainTip}
+	recoveryRef := writeRetirementRecoveryProof(t, filepath.Join(root, "recovery.bundle"), []byte("divergent candidate recovery body"))
+	return retirementGitFixture{repo: repo, worktree: worktree, candidateRef: "refs/heads/candidate", candidateTip: candidateTip, mainTip: mainTip, recoveryRef: recoveryRef}
+}
+
+func writeRetirementRecoveryProof(t *testing.T, path string, body []byte) string {
+	t.Helper()
+	if err := os.WriteFile(path, body, 0o600); err != nil { t.Fatal(err) }
+	return "sha256-file:" + digestRetirementHex(body) + ":" + path
 }
 
 func retirementPlanBlockedBy(plan WorktreeRetirementPlan, code string) bool {
