@@ -687,17 +687,20 @@ func recordWorktreeRetirementFailure(deps WorktreeRetirementApplyDependencies, p
 		Summary: summary + ": " + cause.Error(), ProofRefs: worktreeRetirementApplyProofRefs(plan, report),
 		FailureCause: &envelope.FailureCause{SurfaceOutcome: status, Mechanism: summary},
 	}, now)
-	if recordErr == nil {
-		result.ActionIntentID = proof.ActionIntentID
-		result.PolicyDecisionID = proof.PolicyDecisionID
-		result.ReceiptID = proof.ReceiptID
-		result.TransitionID = proof.TransitionID
-	}
-	if persistErr := persistWorktreeRetirementResult(resultPath, &result); persistErr != nil {
-		return result, persistErr
-	}
 	if recordErr != nil {
 		return result, fmt.Errorf("%s; record failure outcome: %v", cause, recordErr)
+	}
+	if err := validateWorktreeRetirementActionProof(proof, pending, plan); err != nil {
+		return result, fmt.Errorf("%s; record failure outcome: %w", cause, err)
+	}
+	result.ActionIntentID = proof.ActionIntentID
+	result.PolicyDecisionID = proof.PolicyDecisionID
+	result.ReceiptID = proof.ReceiptID
+	result.TransitionID = proof.TransitionID
+	result.LeaseWorkSHA256 = proof.LeaseWorkSHA256
+	result.WorkDigest = proof.WorkDigest
+	if persistErr := persistWorktreeRetirementResult(resultPath, &result); persistErr != nil {
+		return result, persistErr
 	}
 	return result, cause
 }
@@ -786,6 +789,15 @@ func validateWorktreeRetirementResult(result WorktreeRetirementResult, plan Work
 	if !validRetirementDigest(result.ResultDigest) || result.ResultDigest != worktreeRetirementResultDigest(result) {
 		return fmt.Errorf("worktree retirement result digest mismatch")
 	}
+	if result.Status != "completed" && result.Status != "partial" && result.Status != "failed" {
+		return fmt.Errorf("worktree retirement result status invalid")
+	}
+	if strings.TrimSpace(result.ActionIntentID) == "" || strings.TrimSpace(result.PolicyDecisionID) == "" || strings.TrimSpace(result.ReceiptID) == "" || strings.TrimSpace(result.TransitionID) == "" {
+		return fmt.Errorf("worktree retirement result proof chain incomplete")
+	}
+	if result.LeaseWorkSHA256 != plan.OwnerProof.LeaseWorkSHA256 || !validRetirementDigest(result.WorkDigest) {
+		return fmt.Errorf("worktree retirement result owner proof invalid")
+	}
 	return nil
 }
 
@@ -844,6 +856,32 @@ func retirementWorktreePath(plan WorktreeRetirementPlan) string {
 	return plan.Worktree.Path
 }
 
-func sameRetirementOwnerLease(a, b WorktreeRetirementOwnerProof) bool {
-	return a.WorkID == b.WorkID && a.State == "running" && b.State == "running" && a.LeaseHolder == b.LeaseHolder && a.LeaseClaimedAt == b.LeaseClaimedAt
+func validateRetirementResumeOwnerProof(live, sealed WorktreeRetirementOwnerProof, previous *WorktreeRetirementResult) error {
+	if live.WorkID != sealed.WorkID || live.State != "running" || sealed.State != "running" || live.LeaseHolder != sealed.LeaseHolder || live.LeaseClaimedAt != sealed.LeaseClaimedAt || live.LeaseWorkSHA256 != sealed.LeaseWorkSHA256 {
+		return fmt.Errorf("owner work lease drift before retirement resume")
+	}
+	expectedWorkDigest := sealed.WorkDigest
+	if previous != nil {
+		expectedWorkDigest = previous.WorkDigest
+	}
+	if live.WorkDigest != expectedWorkDigest {
+		return fmt.Errorf("owner work digest drift before retirement resume: current digest is not the exact self-caused prior outcome digest")
+	}
+	return nil
+}
+
+func validateWorktreeRetirementActionProof(proof WorktreeRetirementActionProof, pending WorktreeRetirementPending, plan WorktreeRetirementPlan) error {
+	if proof.ActionIntentID != pending.Action.ID || proof.PolicyDecisionID != pending.Decision.ID {
+		return fmt.Errorf("worktree retirement outcome proof chain incomplete: action or policy mismatch")
+	}
+	if strings.TrimSpace(proof.ReceiptID) == "" {
+		return fmt.Errorf("worktree retirement outcome proof chain incomplete: receipt required")
+	}
+	if strings.TrimSpace(proof.TransitionID) == "" {
+		return fmt.Errorf("worktree retirement outcome proof chain incomplete: transition required")
+	}
+	if proof.LeaseWorkSHA256 != plan.OwnerProof.LeaseWorkSHA256 || !validRetirementDigest(proof.WorkDigest) {
+		return fmt.Errorf("worktree retirement outcome proof chain incomplete: owner work proof invalid")
+	}
+	return nil
 }
