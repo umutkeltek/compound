@@ -2,6 +2,7 @@ package capgraph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -58,6 +59,26 @@ func (s *semanticStubEmbedder) Embed(ctx context.Context, texts []string) ([][]f
 
 func (s *semanticStubEmbedder) resetCalls() {
 	s.calls = nil
+}
+
+func seedSemanticCache(t *testing.T, identity string) (string, *Store, Node, string, *semanticStubEmbedder) {
+	t.Helper()
+	home, store := newStore(t)
+	node := Node{
+		ID: "skill:semantic-cache", Kind: "skill", Name: "Public Boundary Redact",
+		Triggers: []string{"redact before publishing"}, Weight: 1,
+	}
+	if err := store.Add(node); err != nil {
+		t.Fatal(err)
+	}
+	task := "send this everywhere"
+	stub := newSemanticStub(identity)
+	stub.vectors[task] = []float32{1, 0}
+	stub.vectors[nodeEmbedText(node)] = []float32{0.9, 0.1}
+	if _, err := store.SurfaceForContext(SurfaceContext{Task: task, Embedder: stub}); err != nil {
+		t.Fatal(err)
+	}
+	return home, store, node, task, stub
 }
 
 func TestSemanticSurfacesNodeWithoutLiteralOverlap(t *testing.T) {
@@ -237,6 +258,154 @@ func TestWarmNodeVectorCacheDoesNotRewriteUntilNodesChange(t *testing.T) {
 		if info.ModTime().Equal(sentinel) {
 			t.Fatalf("changed node did not rewrite %s", filepath.Base(path))
 		}
+	}
+}
+
+func TestMalformedNodeVectorCacheRebuilds(t *testing.T) {
+	home, store, node, task, _ := seedSemanticCache(t, "stub:malformed:2:f32")
+	cacheDir := filepath.Join(home, "indexes", "capgraph", sanitizedEmbedderIdentity("stub:malformed:2:f32"))
+	if err := os.WriteFile(filepath.Join(cacheDir, "manifest.json"), []byte(`{"schema_version":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rebuild := newSemanticStub("stub:malformed:2:f32")
+	rebuild.vectors[task] = []float32{1, 0}
+	rebuild.vectors[nodeEmbedText(node)] = []float32{0.9, 0.1}
+	got, err := store.SurfaceForContext(SurfaceContext{Task: task, Embedder: rebuild})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if surfacedByID(got, node.ID) == nil {
+		t.Fatalf("rebuilt semantic cache missed node: %+v", got)
+	}
+	if len(rebuild.calls) != 2 || !reflect.DeepEqual(rebuild.calls[0], []string{task}) || !reflect.DeepEqual(rebuild.calls[1], []string{nodeEmbedText(node)}) {
+		t.Fatalf("malformed cache rebuild calls = %+v, want task then node", rebuild.calls)
+	}
+	manifest, err := readNodeVectorManifest(cacheDir)
+	if err != nil {
+		t.Fatalf("rewritten manifest is not healthy: %v", err)
+	}
+	if manifest.SchemaVersion != capgraphSemanticCacheSchemaVersion {
+		t.Fatalf("rewritten schema = %q, want %q", manifest.SchemaVersion, capgraphSemanticCacheSchemaVersion)
+	}
+}
+
+func TestNodeVectorCacheOperationalReadErrorDegradesWithoutNodeWork(t *testing.T) {
+	const identity = "stub:operational:2:f32"
+	home, store, _, task, _ := seedSemanticCache(t, identity)
+	literal, err := store.SurfaceForContext(SurfaceContext{Task: task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(home, "indexes", "capgraph", sanitizedEmbedderIdentity(identity))
+	manifestPath := filepath.Join(cacheDir, "manifest.json")
+	vectorsPath := filepath.Join(cacheDir, "vectors.json")
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(manifestPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+	if err := os.Chtimes(vectorsPath, sentinel, sentinel); err != nil {
+		t.Fatal(err)
+	}
+
+	probe := newSemanticStub(identity)
+	probe.vectors[task] = []float32{1, 0}
+	got, err := store.SurfaceForContext(SurfaceContext{Task: task, Embedder: probe})
+	if err != nil {
+		t.Fatalf("semantic cache read failure should degrade to lexical: %v", err)
+	}
+	if !reflect.DeepEqual(got, literal) {
+		t.Fatalf("operational cache error changed lexical result:\nliteral=%+v\ngot=%+v", literal, got)
+	}
+	if len(probe.calls) != 1 || !reflect.DeepEqual(probe.calls[0], []string{task}) {
+		t.Fatalf("operational cache error embed calls = %+v, want task only", probe.calls)
+	}
+	if info, err := os.Stat(vectorsPath); err != nil {
+		t.Fatal(err)
+	} else if !info.ModTime().Equal(sentinel) {
+		t.Fatalf("operational cache error rewrote vectors: mtime=%s want=%s", info.ModTime(), sentinel)
+	}
+	if info, err := os.Stat(manifestPath); err != nil {
+		t.Fatal(err)
+	} else if !info.IsDir() {
+		t.Fatalf("operational manifest path was replaced: mode=%s", info.Mode())
+	}
+	stats, err := store.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.SemanticLane != semanticLaneDegraded {
+		t.Fatalf("semantic lane = %q, want degraded", stats.SemanticLane)
+	}
+}
+
+func TestNodeVectorCacheIdentityMismatchDegradesWithoutRewrite(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*nodeVectorManifest)
+	}{
+		{name: "embedder identity", mutate: func(m *nodeVectorManifest) { m.EmbedderIdentity = "other:identity:2:f32" }},
+		{name: "dimension identity", mutate: func(m *nodeVectorManifest) { m.Dim++ }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const identity = "stub:identity-guard:2:f32"
+			home, store, _, task, _ := seedSemanticCache(t, identity)
+			literal, err := store.SurfaceForContext(SurfaceContext{Task: task})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cacheDir := filepath.Join(home, "indexes", "capgraph", sanitizedEmbedderIdentity(identity))
+			manifestPath := filepath.Join(cacheDir, "manifest.json")
+			vectorsPath := filepath.Join(cacheDir, "vectors.json")
+			raw, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifest nodeVectorManifest
+			if err := json.Unmarshal(raw, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(&manifest)
+			raw, err = json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(manifestPath, raw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			sentinel := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+			for _, path := range []string{manifestPath, vectorsPath} {
+				if err := os.Chtimes(path, sentinel, sentinel); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			probe := newSemanticStub(identity)
+			probe.vectors[task] = []float32{1, 0}
+			got, err := store.SurfaceForContext(SurfaceContext{Task: task, Embedder: probe})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, literal) {
+				t.Fatalf("identity mismatch changed lexical result:\nliteral=%+v\ngot=%+v", literal, got)
+			}
+			if len(probe.calls) != 1 || !reflect.DeepEqual(probe.calls[0], []string{task}) {
+				t.Fatalf("identity mismatch embed calls = %+v, want task only", probe.calls)
+			}
+			for _, path := range []string{manifestPath, vectorsPath} {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !info.ModTime().Equal(sentinel) {
+					t.Fatalf("identity mismatch rewrote %s: mtime=%s want=%s", filepath.Base(path), info.ModTime(), sentinel)
+				}
+			}
+		})
 	}
 }
 
