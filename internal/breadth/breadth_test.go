@@ -407,6 +407,71 @@ func TestVectorCacheLoadGuardsDimAndEmbedderStamp(t *testing.T) {
 	})
 }
 
+func TestVectorCacheOldSchemaRebuildsSemanticIndex(t *testing.T) {
+	home := t.TempDir()
+	claims := []mem.ClaimText{
+		{ClaimID: "winner", Text: "orchestration receipts"},
+		{ClaimID: "decoy", Text: "system vocabulary"},
+	}
+	query := "system"
+	vectors := map[string][]float32{
+		query:                  {1, 0},
+		wrapDocText(claims[0]): {1, 0},
+		wrapDocText(claims[1]): {0, 1},
+	}
+	seedEmbedder := newFakeEmbedder(2)
+	seedEmbedder.vectors = vectors
+	seed, err := NewEngine(EngineConfig{Embedder: seedEmbedder, CompoundHome: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.IndexWithError(claims, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestPath := filepath.Join(vectorCacheDir(t, home, seedEmbedder), "manifest.json")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldManifest vectorManifest
+	if err := json.Unmarshal(raw, &oldManifest); err != nil {
+		t.Fatal(err)
+	}
+	oldManifest.SchemaVersion = "compound.breadth.index.v0"
+	raw, err = json.Marshal(oldManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rebuildEmbedder := newFakeEmbedder(2)
+	rebuildEmbedder.vectors = vectors
+	reload, err := NewEngine(EngineConfig{Embedder: rebuildEmbedder, CompoundHome: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reload.IndexWithError(claims, 2); err != nil {
+		t.Fatalf("old derived-cache schema should rebuild: %v", err)
+	}
+	if rebuildEmbedder.calls != 1 {
+		t.Fatalf("schema rebuild embedded %d document batch(es), want 1", rebuildEmbedder.calls)
+	}
+	hits := reload.Query(query, mem.GateList, []string{"winner", "decoy"}, 1)
+	if len(hits) != 1 || hits[0].ClaimID != "winner" {
+		t.Fatalf("rebuilt semantic query = %+v, want winner", hits)
+	}
+	manifest, _, err := reload.cache.load()
+	if err != nil {
+		t.Fatalf("rewritten cache is not healthy: %v", err)
+	}
+	if manifest.SchemaVersion != vectorSchemaVersion {
+		t.Fatalf("rewritten cache schema = %q, want %q", manifest.SchemaVersion, vectorSchemaVersion)
+	}
+}
+
 func TestVectorCacheCorruptionRebuildsSemanticIndex(t *testing.T) {
 	tests := []struct {
 		name    string
