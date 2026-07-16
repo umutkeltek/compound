@@ -9,12 +9,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/finding"
+	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hookplan"
 	"compound/internal/landlease"
@@ -39,6 +41,20 @@ type doctorHook struct {
 	ConfigPath string `json:"config_path"`
 }
 
+// doctorPermissionPosture is one harness's read-only permission-authority
+// drift row (packet work_0fc6126d8fa2 -- the operator-legibility half: a
+// silent posture reversion must surface here even if nobody ran
+// `compound harness drift --emit-divergence`). It calls harness.PermissionDrift
+// only; doctor's "writes nothing" contract holds -- emission of an
+// observation batch lives exclusively on the drift verb's --emit-divergence
+// flag, never here.
+type doctorPermissionPosture struct {
+	Harness    string   `json:"harness"`
+	Status     string   `json:"status"` // clean|drift|unknown
+	TargetPath string   `json:"target_path,omitempty"`
+	Details    []string `json:"details,omitempty"`
+}
+
 type doctorReport struct {
 	Home               string       `json:"home"`
 	Hooks              []doctorHook `json:"hooks"`
@@ -52,6 +68,10 @@ type doctorReport struct {
 	FindingsSuperseded int          `json:"findings_superseded"`
 	PlacementMode      string       `json:"placement_guard_mode"`
 	PlacementNote      string       `json:"placement_note,omitempty"`
+
+	// Permission posture: one row per configured harness-permission authority
+	// (config/harness-permissions/*.yaml), read-only via harness.PermissionDrift.
+	PermissionPosture []doctorPermissionPosture `json:"permission_posture,omitempty"`
 
 	// Surfacing coverage: rows = agent lanes/harnesses, columns = communication surfaces
 	// (guard hook · orient · memory injection · peer visibility). Read-only, derived from
@@ -170,7 +190,12 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// 5) Surfacing coverage — read-only lanes/harnesses × communication-surfaces matrix.
+	// 5) Permission posture — per-harness authority drift, read-only (harness.PermissionDrift
+	// only reads; it never renders/applies). Emission of an observation batch stays exclusively
+	// on `compound harness drift --emit-divergence`, never here.
+	rep.PermissionPosture = buildPermissionPostureRows(homePath)
+
+	// 6) Surfacing coverage — read-only lanes/harnesses × communication-surfaces matrix.
 	rep.Surfacing, rep.SurfacingNote, rep.SurfacingInjection = buildSurfacingCoverage(homePath, rep.Hooks, time.Now())
 
 	if hasFlag(args, "--json") {
@@ -222,7 +247,57 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 		fmt.Fprintf(stdout, "  note: %s\n", rep.PlacementNote)
 	}
 
+	printPermissionPosture(stdout, rep)
 	printSurfacing(stdout, rep)
+}
+
+// printPermissionPosture renders the per-harness permission-authority drift
+// rows. Read-only: it never renders or applies -- a drifted row only means
+// `compound harness drift --harness <h> --emit-divergence` will declare a
+// divergence_declared card the next time it runs.
+func printPermissionPosture(stdout io.Writer, rep doctorReport) {
+	fmt.Fprintln(stdout, "\n## permission posture (per-harness authority drift)")
+	if len(rep.PermissionPosture) == 0 {
+		fmt.Fprintln(stdout, "- (no harness-permission authorities configured)")
+		return
+	}
+	for _, p := range rep.PermissionPosture {
+		fmt.Fprintf(stdout, "- %-12s %-7s %s\n", p.Harness, p.Status, p.TargetPath)
+		for _, d := range p.Details {
+			fmt.Fprintf(stdout, "    detail: %s\n", d)
+		}
+		if p.Status == "drift" {
+			fmt.Fprintf(stdout, "  -> `compound harness drift --harness %s --emit-divergence` to declare a divergence card\n", p.Harness)
+		}
+	}
+}
+
+// buildPermissionPostureRows discovers configured harness-permission
+// authorities (config/harness-permissions/*.yaml) and probes each with
+// harness.PermissionDrift -- read-only, writes nothing. A harness whose
+// probe errors (e.g. an unreadable target file) still gets a visible row
+// (status "unknown") rather than silently vanishing from the report.
+func buildPermissionPostureRows(homePath string) []doctorPermissionPosture {
+	matches, err := filepath.Glob(filepath.Join(homePath, "config", "harness-permissions", "*.yaml"))
+	if err != nil {
+		return nil
+	}
+	sort.Strings(matches)
+	var rows []doctorPermissionPosture
+	for _, match := range matches {
+		name := strings.TrimSuffix(filepath.Base(match), ".yaml")
+		report, err := harness.PermissionDrift(homePath, name)
+		if err != nil {
+			rows = append(rows, doctorPermissionPosture{Harness: name, Status: "unknown", Details: []string{err.Error()}})
+			continue
+		}
+		status := "clean"
+		if report.Drifted {
+			status = "drift"
+		}
+		rows = append(rows, doctorPermissionPosture{Harness: name, Status: status, TargetPath: report.TargetPath, Details: report.Details})
+	}
+	return rows
 }
 
 // printSurfacing renders the surfacing-coverage matrix. Cells stay narrow (no table wider than
