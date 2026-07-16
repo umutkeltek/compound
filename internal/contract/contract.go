@@ -1835,7 +1835,7 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 		if rank <= 0 {
 			continue
 		}
-		if reason := currentStatePositionFreshnessExclusionReason(activePosition.Ref, position, activeClaim); reason != "" {
+		if reason := currentStatePositionFreshnessExclusionReason(activePosition.Ref, activeClaim); reason != "" {
 			excluded = append(excluded, contextPositionRef{
 				Ref:    activePosition.Ref,
 				Reason: reason,
@@ -1887,12 +1887,11 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 	return out, excludedRefs, nil
 }
 
-func currentStatePositionFreshnessExclusionReason(positionRef string, position mem.Position, activeClaim mem.Claim) string {
+func currentStatePositionFreshnessExclusionReason(positionRef string, activeClaim mem.Claim) string {
 	if !strings.EqualFold(strings.TrimSpace(activeClaim.ClaimType), "status") {
 		return ""
 	}
-	if !hasBarePositionEvidenceRef(activeClaim.EvidenceRefs, "compound://workbench") &&
-		!hasBarePositionEvidenceRef(position.EvidenceRefs, "compound://workbench") {
+	if !hasBarePositionEvidenceRef(activeClaim.EvidenceRefs, "compound://workbench") {
 		return ""
 	}
 	return fmt.Sprintf(
