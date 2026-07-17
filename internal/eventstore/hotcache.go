@@ -35,6 +35,15 @@ type hotSegmentEntry struct {
 	size  int64
 	mtime time.Time
 	byID  map[string]parsedFrame
+	// divergent holds the ids that have intra-divergent duplicate frames in
+	// this hot segment — an id whose occurrences do not all share the same
+	// SHA256. nil (never an allocated empty map) in the healthy case, since
+	// put() itself refuses to append a conflicting frame; only hand-crafted
+	// or foreign-writer segments produce entries here. checkID's put-path hot
+	// branch consults this to preserve base checkID's "scan every occurrence,
+	// conflict on any hash mismatch" semantics from a single memo lookup
+	// (see hotFramesAndDivergent).
+	divergent map[string]struct{}
 }
 
 // segmentParseObserver is a test-only seam fired on every FULL parse of a hot
@@ -56,28 +65,80 @@ func notifyHotParse(path string) {
 // overwrite earlier ones, matching segmentFrame's newest-occurrence-wins
 // reverse scan.
 func (e *engine) hotFrames(path string) (map[string]parsedFrame, error) {
-	st, err := os.Stat(path)
+	entry, err := e.hotSegmentEntryFor(path)
 	if err != nil {
 		return nil, err
+	}
+	return entry.byID, nil
+}
+
+// hotFramesAndDivergent is hotFrames plus the entry's divergent-id set, used
+// by checkID's put-path hot branch: one memo lookup (fresh: pure map read;
+// stale/cold: the same single full parse hotFrames would have done) yields
+// everything checkID needs to reproduce base checkID's per-frame conflict
+// scan without re-reading the segment itself.
+func (e *engine) hotFramesAndDivergent(path string) (map[string]parsedFrame, map[string]struct{}, error) {
+	entry, err := e.hotSegmentEntryFor(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return entry.byID, entry.divergent, nil
+}
+
+// hotSegmentFresh reports whether the memo already reflects path at its
+// CURRENT size+mtime, without parsing. repairTail's happy-path interior sweep
+// uses this to skip re-verifying bytes a prior hotSegmentEntryFor call in
+// this same process already decoded successfully and that are stat-unchanged
+// since (a hotSegmentEntry is only ever stored after every frame in the file
+// decoded without error).
+func (e *engine) hotSegmentFresh(path string) (bool, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	key := filepath.Dir(path)
+	e.hotCache.mu.Lock()
+	defer e.hotCache.mu.Unlock()
+	entry, ok := e.hotCache.entries[key]
+	return ok && entry.path == path && entry.size == st.Size() && entry.mtime.Equal(st.ModTime()), nil
+}
+
+// hotSegmentEntryFor returns the memoized entry for path's family directory,
+// reparsing only when the memo is absent or its {path, size, mtime} stat
+// guard no longer matches path's current stat. The returned entry (and its
+// byID/divergent maps) is never mutated in place after being stored — callers
+// read it outside the lock.
+func (e *engine) hotSegmentEntryFor(path string) (hotSegmentEntry, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return hotSegmentEntry{}, err
 	}
 	key := filepath.Dir(path)
 	e.hotCache.mu.Lock()
 	defer e.hotCache.mu.Unlock()
 	if entry, ok := e.hotCache.entries[key]; ok && entry.path == path && entry.size == st.Size() && entry.mtime.Equal(st.ModTime()) {
-		return entry.byID, nil
+		return entry, nil
 	}
 	notifyHotParse(path)
 	frames, err := e.readSegment(path, true, "")
 	if err != nil {
-		return nil, err
+		return hotSegmentEntry{}, err
 	}
 	byID := make(map[string]parsedFrame, len(frames))
+	var divergent map[string]struct{}
 	for _, frame := range frames {
+		if prev, ok := byID[frame.Frame.ID]; ok && prev.Frame.SHA256 != frame.Frame.SHA256 {
+			if divergent == nil {
+				divergent = make(map[string]struct{})
+			}
+			divergent[frame.Frame.ID] = struct{}{}
+		}
 		byID[frame.Frame.ID] = frame
 	}
+	entry := hotSegmentEntry{path: path, size: st.Size(), mtime: st.ModTime(), byID: byID, divergent: divergent}
 	if e.hotCache.entries == nil {
 		e.hotCache.entries = map[string]hotSegmentEntry{}
 	}
-	e.hotCache.entries[key] = hotSegmentEntry{path: path, size: st.Size(), mtime: st.ModTime(), byID: byID}
-	return byID, nil
+	e.hotCache.entries[key] = entry
+	return entry, nil
 }

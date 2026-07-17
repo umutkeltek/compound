@@ -450,15 +450,26 @@ func (e *engine) checkID(family, id, hash string) (idPresence, string, error) {
 			continue
 		}
 
-		frames, err := parseSegment(segment.path, false)
+		// Hot (last-written, index-0) segment: resolve through the same
+		// per-process memo the read path uses (hotcache.go) instead of a
+		// full parse per put. repairTail's interior sweep just above
+		// (repair.go) already warms this memo for the common case, so this
+		// is a pure map lookup. divergent reproduces base checkID's
+		// scan-every-occurrence semantics: conflict ⇔ (newest frame's hash
+		// != incoming) OR (id has intra-divergent duplicate frames) — an id
+		// in divergent means SOME occurrence's hash differs from every other,
+		// so it can never equal the incoming hash for all occurrences, which
+		// is exactly base checkID's per-frame mismatch scan collapsed to one
+		// lookup (see hotFramesAndDivergent).
+		byID, divergent, err := e.hotFramesAndDivergent(segment.path)
 		if err != nil {
 			return idAbsent, "", err
 		}
-		for i := len(frames) - 1; i >= 0; i-- {
-			if frames[i].Frame.ID != id {
-				continue
-			}
-			if frames[i].Frame.SHA256 != hash {
+		if _, ok := divergent[id]; ok {
+			return idConflict, logicalReferencePrefix + id, nil
+		}
+		if frame, ok := byID[id]; ok {
+			if frame.Frame.SHA256 != hash {
 				return idConflict, logicalReferencePrefix + id, nil
 			}
 			presence = idAlreadyPresent

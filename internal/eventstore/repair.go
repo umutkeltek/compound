@@ -150,8 +150,26 @@ func (e *engine) repairTail(path string) error {
 	lineStart := windowStart + int64(lineStartInTail)
 	if _, err := decodeFrame(tail[lineStartInTail:finalEnd]); err == nil {
 		// A valid tail is not permission to ignore interior corruption in the
-		// only segment the write path is allowed to repair.
-		return parseSegmentPrefix(path, info.Size())
+		// only segment the write path is allowed to repair. Route the sweep
+		// through the hot memo instead of an unconditional strict reparse:
+		// the tail decode above just validated the final frame under the
+		// exclusive append lock, so a fresh memo entry (built with tolerant
+		// final-torn parsing, which cannot matter here since the final frame
+		// already decoded) is the same every-frame-decoded guarantee the
+		// strict sweep gave. If the memo is already fresh for this exact
+		// {path, size, mtime}, a prior call in this process already gave that
+		// guarantee and stat-unchanged bytes need no reverification. Either
+		// way this warms the memo so the same put's checkID is a pure map
+		// hit — one full parse per cold process, zero when warm.
+		if fresh, err := e.hotSegmentFresh(path); err != nil {
+			return err
+		} else if fresh {
+			return nil
+		}
+		if _, err := e.hotFrames(path); err != nil {
+			return err
+		}
+		return nil
 	}
 	if err := parseSegmentPrefix(path, lineStart); err != nil {
 		return err
