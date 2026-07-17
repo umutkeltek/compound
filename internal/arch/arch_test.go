@@ -173,17 +173,147 @@ func TestDocLeakBaselineCatchesSecretShapeWithoutOverlay(t *testing.T) {
 	}
 }
 
+// TestFindGenericLeakBoundaryGuardAndAllowlists is the pure (no fs/git) unit falsifier
+// for findGenericLeak's shape logic — F3 (RFC2606 email allow), F4 (synthetic path
+// segment allow), and F5 (boundary guard against mid-word/mid-path false positives).
+// Real-shaped disallowed cases are built by string concatenation so this test's own
+// source stays clean under the very gate it is testing.
+func TestFindGenericLeakBoundaryGuardAndAllowlists(t *testing.T) {
+	realEmail := "real" + "person@gm" + "ail.com"
+	realPath := "/Us" + "ers/real" + "person"
+	cases := []struct {
+		name       string
+		line       string
+		wantLeak   bool
+		wantSubstr string
+	}{
+		// F5: boundary guard — "/compound/home/work" (internal/work/land_check_test.go's
+		// proof_path field) and a bare relative file-path string "internal/home/catalog.go"
+		// (a Go source-file path literal, internal/arch/eventstore_guard_test.go) must NOT
+		// match: neither slash is preceded by a real path boundary.
+		{"boundary guard: /compound/home/work", `"proof_path":"/compound/home/work/land-checks/x.json"`, false, ""},
+		{"boundary guard: bare relative file-path string", `mustWriteArchFixture(t, repo, "internal/home/catalog.go", body)`, false, ""},
+		// F3: RFC2606/reserved email domains are allowed.
+		{"RFC2606 allow: .invalid", `"debug_contact": "person@example.invalid"`, false, ""},
+		{"RFC2606 allow: example.com", `"debug_contact": "alice@example.com"`, false, ""},
+		{"RFC2606 allow: example.org", `"debug_contact": "bob@example.org"`, false, ""},
+		{"RFC2606 allow: .test", `"debug_contact": "person@example.test"`, false, ""},
+		// F4: synthetic /Users|/home user segments are allowed.
+		{"synthetic segment allow: faketester", `body := "/Users/faketester/brain/note.md"`, false, ""},
+		{"synthetic segment allow: tester", `t.Setenv("HOME", "/home/tester")`, false, ""},
+		{"synthetic segment allow: testoperator", `"/Users/testoperator/private-notes"`, false, ""},
+		{"synthetic segment allow: example", `"/Users/example/.claude/projects/x.jsonl"`, false, ""},
+		// compound's own public product-home literal (deviation from the packet's
+		// four-segment premise; see genericLeakAllowedPathSegments doc comment).
+		{"compound-home allow: .compound", `"/home/.compound/reviews/area/item.json"`, false, ""},
+		// Real-shaped, disallowed cases MUST fail.
+		{"disallowed email", "contact " + realEmail + " directly", true, realEmail},
+		{"disallowed path segment", realPath + "/secret.txt leaked", true, realPath},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := findGenericLeak(tc.line)
+			if tc.wantLeak && got == "" {
+				t.Fatalf("findGenericLeak(%q) = \"\", want a non-allowlisted leak", tc.line)
+			}
+			if !tc.wantLeak && got != "" {
+				t.Fatalf("findGenericLeak(%q) = %q, want no leak (allowlisted or guarded)", tc.line, got)
+			}
+			if tc.wantSubstr != "" && got != tc.wantSubstr {
+				t.Fatalf("findGenericLeak(%q) = %q, want %q", tc.line, got, tc.wantSubstr)
+			}
+		})
+	}
+}
+
+// TestCheckDocLeakScansTrackedRootAndSourceFilesWithNoOperatorOverlay is the
+// end-to-end falsifier for F1 (root-file coverage), F2 (source coverage with no
+// docs_private overlay present at all), F6 (tracked-only scope), and F7 (fresh-clone
+// armed: no operator overlay anywhere, under --strict). Before this packet: root files
+// (README.md, AGENTS.md, go.mod, .github/**) were never scanned by the generic pass at
+// all (docLeakScanRoots was docs/+skills/ only), and the source-dir generic pass never
+// ran without the gitignored docs_private/source-leak-tokens.txt overlay present — a
+// fresh public clone was blind on both counts. Real-shaped leaks are built by string
+// concatenation so this test's own source stays clean under the gate it is testing.
+func TestCheckDocLeakScansTrackedRootAndSourceFilesWithNoOperatorOverlay(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@example.invalid")
+	runGit("config", "user.name", "test")
+
+	// F1: a ROOT file (never scanned pre-packet) with a real-shaped, non-RFC2606 email.
+	rootEmail := "real" + "person@gm" + "ail.com"
+	rootRel := "README.md"
+	if err := os.WriteFile(filepath.Join(repo, rootRel), []byte("contact: "+rootEmail+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// F2: a SOURCE file with a boundary-guarded, real-shaped /Users/ path — no
+	// docs_private/source-leak-tokens.txt overlay exists anywhere in this repo.
+	sourceRel := filepath.Join("internal", "x", "x.go")
+	realPath := "/Us" + "ers/real" + "person" + "/secret.txt"
+	if err := os.MkdirAll(filepath.Join(repo, "internal", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, sourceRel), []byte("package x\n\n// path: "+realPath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", rootRel, sourceRel)
+
+	// F6: the SAME real-shaped leak, but in an UNTRACKED file — must stay invisible.
+	untrackedRel := filepath.Join("internal", "x", "untracked.go")
+	if err := os.WriteFile(filepath.Join(repo, untrackedRel), []byte("package x\n\n// path: "+realPath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// F7: no docs_private/ overlay anywhere in this repo — the fresh-clone condition —
+	// exercised under --strict.
+	var fails []Finding
+	for _, f := range checkDocLeak(repo, true) {
+		if f.Severity == Fail {
+			fails = append(fails, f)
+		}
+	}
+	if len(fails) != 2 {
+		t.Fatalf("want exactly 2 Fail findings (root email + source path, no double-report), got %+v", fails)
+	}
+	var sawRoot, sawSource bool
+	for _, f := range fails {
+		if strings.Contains(f.Message, rootRel+":") {
+			sawRoot = true
+		}
+		if strings.Contains(f.Message, filepath.ToSlash(sourceRel)+":") {
+			sawSource = true
+		}
+		if strings.Contains(f.Message, "untracked.go") {
+			t.Fatalf("F6: untracked file leaked into findings (scope leak): %+v", f)
+		}
+	}
+	if !sawRoot {
+		t.Fatalf("F1: root file leak not caught: %+v", fails)
+	}
+	if !sawSource {
+		t.Fatalf("F2: source file leak not caught with no operator overlay present: %+v", fails)
+	}
+}
+
 // TestPrivateSourceBodyContractCatchesPlantedBodyAndClearsWhenRemoved is J16's
-// falsifier. checkDocLeak already catches generic /Users/ path and email
-// SHAPES, but only in docs/, and its source-dir pass only matches an
-// operator-configured literal token list — neither ever reaches a semantic
-// "this body came from brain" marker, nor a brain/operating-system path
-// SHAPE landing in internal/cmd/fixtures/tools/console. This guard closes
-// both gaps. The planted fixture uses a synthetic username (never the
-// operator's real one) since it is written to a plain fixture file, not a
-// _test.go file — the guard exempts _test.go from both checks so its own
-// test source can safely describe the sentinel shapes without ever being
-// live evidence against the real repo.
+// falsifier. checkDocLeak's generic identity pass covers every tracked text file (root
+// files, docs, skills, and every source root — see checkDocLeak), and its two TOKEN
+// passes only match an operator-configured literal list — neither ever reaches a
+// semantic "this body came from brain" marker, nor a brain/operating-system path SHAPE
+// landing in internal/cmd/fixtures/tools/console. This guard closes both gaps. The
+// planted fixture uses a synthetic username (never the operator's real one) since it is
+// written to a plain fixture file, not a _test.go file — the guard exempts _test.go from
+// both checks so its own test source can safely describe the sentinel shapes without
+// ever being live evidence against the real repo.
 func TestPrivateSourceBodyContractCatchesPlantedBodyAndClearsWhenRemoved(t *testing.T) {
 	repo := t.TempDir()
 	srcDir := filepath.Join(repo, "internal", "planted")

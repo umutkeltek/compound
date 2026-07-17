@@ -143,14 +143,102 @@ type Report struct {
 	OK       bool // false if any Fail
 }
 
-// genericLeak matches GENERIC operator-private shapes (absolute user/home paths, emails) that must
-// never appear in a public tracked doc. Operator-SPECIFIC forbidden tokens (private tool/product
-// names) are deliberately NOT hardcoded here — putting them in public core would itself leak them.
-// They load from an optional private list (docs_private/leak-tokens.txt, one token per line) so the
-// public core stays clean while a private overlay can enforce its own vocabulary. Universal
-// secret-credential shapes (API-key/token prefixes, PEM headers) ARE shipped, via the embedded
-// baseline below, so the gate is armed by default even without the private overlay.
-var genericLeak = regexp.MustCompile(`(?i)(/Users/[a-z]|/home/[a-z]|[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})`)
+// genericLeak matches GENERIC operator-private IDENTITY shapes (absolute /Users|/home
+// paths, email addresses) that must never appear, unresolved, in a public tracked file.
+// It now runs over the FULL tracked-file universe (see checkDocLeak / leakScanUniverse) —
+// root files, docs, skills, and every source root get the same floor, not just docs/skills.
+// Operator-SPECIFIC forbidden tokens (private tool/product names) are deliberately NOT
+// hardcoded here — putting them in public core would itself leak them. They load from an
+// optional private list (docs_private/leak-tokens.txt, one token per line) so the public
+// core stays clean while a private overlay can enforce its own vocabulary. Universal
+// secret-credential shapes (API-key/token prefixes, PEM headers) ARE shipped, via the
+// embedded baseline below, so the gate is armed by default even without the private overlay.
+//
+// Path alternates are BOUNDARY-GUARDED: `(^|[^/\w])` must precede the slash, so a match
+// requires a real path boundary, not a mid-word/mid-path substring. Without this, a naive
+// scan false-positives whenever an unrelated identifier merely contains a slash followed
+// by "Users" or "home" mid-string — a directory two levels down a longer path whose
+// PARENT segment happens to end in one of those four letters, or a bare relative
+// file-path STRING (e.g. a Go package name embedded as a fixture literal) — neither is
+// an operator's actual home directory.
+//
+// The regex has no allowlist concept of its own (Go's RE2 engine has no lookaround to
+// express one) — every candidate match is post-filtered by findGenericLeak against the
+// RFC2606/synthetic allowlists below. Capture groups: 1 = boundary char (path form only;
+// participates as an empty string when `^` fires), 2 = path family (Users|home), 3 = user
+// segment, 4 = full email, 5 = email domain.
+var genericLeak = regexp.MustCompile(`(?i)(?:(^|[^/\w])/(Users|home)/([a-zA-Z0-9_.\-]+))|([a-z0-9._%+\-]+@([a-z0-9.\-]+\.[a-z]{2,}))`)
+
+// genericLeakAllowedPathSegments are the synthetic /Users|/home user segments already in
+// legitimate use across the tree's own test fixtures (measured 2026-07-17 against the
+// full tracked tree): "example", "faketester", "tester", "testoperator". New fixtures
+// should prefer "example" — the RFC2606-flavored default — over the other three.
+//
+// ".compound" is additive over that measurement: it surfaced only once the generic pass
+// widened to cover console/ and internal/reviewartifact (console/src/lib/generic-actions
+// .selftest.ts, console/src/lib/standing-law.selftest.ts, internal/reviewartifact/
+// brief_test.go use synthetic Linux fixture roots shaped "/home/.compound/..."), neither
+// of which the old docs/skills-only generic pass ever reached. It is not an operator
+// identity segment — it is compound's OWN public product-home directory name, the same
+// carve-out privateSourceBodyPathPrefix already documents for `~/.compound` (deliberately
+// excluded there because it is compound's own home, documented publicly across the repo).
+var genericLeakAllowedPathSegments = map[string]bool{
+	"example":      true,
+	"faketester":   true,
+	"tester":       true,
+	"testoperator": true,
+	".compound":    true,
+}
+
+// genericLeakAllowedEmailDomainsExact and genericLeakAllowedEmailDomainSuffixes are the
+// RFC2606/reserved "this is not a real mailbox" domain shapes. A matched email is allowed
+// iff its domain is exactly one of the *.com/.org/.net reserved names, or ENDS in one of
+// the reserved suffixes (.invalid/.test/.example/.localhost) — everything else fails.
+var genericLeakAllowedEmailDomainsExact = map[string]bool{
+	"example.com": true,
+	"example.org": true,
+	"example.net": true,
+}
+var genericLeakAllowedEmailDomainSuffixes = []string{".invalid", ".test", ".example", ".localhost"}
+
+func isAllowedGenericLeakEmailDomain(domain string) bool {
+	low := strings.ToLower(domain)
+	if genericLeakAllowedEmailDomainsExact[low] {
+		return true
+	}
+	for _, suf := range genericLeakAllowedEmailDomainSuffixes {
+		if strings.HasSuffix(low, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAllowedGenericLeakPathSegment(segment string) bool {
+	return genericLeakAllowedPathSegments[strings.ToLower(segment)]
+}
+
+// findGenericLeak returns the first NON-allowlisted genericLeak match on line, or "" when
+// the line has no match at all, or every match on it is allowlisted (an RFC2606 email
+// domain, or a synthetic /Users|/home user segment). A line can carry more than one
+// candidate match; only an unallowlisted one is reported.
+func findGenericLeak(line string) string {
+	for _, m := range genericLeak.FindAllStringSubmatch(line, -1) {
+		if m[2] != "" { // path form: /Users/<segment> or /home/<segment>
+			if isAllowedGenericLeakPathSegment(m[3]) {
+				continue
+			}
+			return "/" + m[2] + "/" + m[3]
+		}
+		if m[4] != "" { // email form
+			if isAllowedGenericLeakEmailDomain(m[5]) {
+				continue
+			}
+			return m[4]
+		}
+	}
+	return ""
+}
 var statusProofJournalLine = regexp.MustCompile(`(?i)^\s*(?:[-*]\s*)?(?:20[0-9]{2}-[0-9]{2}-[0-9]{2}\b|proof log:|verification run:|test run:|commit [0-9a-f]{7,40}\b)`)
 
 // baselineLeakTokensRaw is the TRACKED, always-shipped generic leak-token list (obvious
@@ -539,9 +627,24 @@ func lineCount(b []byte) int {
 	return n
 }
 
-// checkDocLeak: no operator-private token in tracked docs, and no configured
-// product/example leak token in public source fixtures/tests. docs_private is
+// checkDocLeak: no GENERIC operator-private identity shape (email, absolute /Users|/home
+// path) in ANY tracked text file, and no configured product/example leak token in the
+// docs/skills prose surfaces or the public source fixtures/tests. docs_private is
 // gitignored; public core knows scan mechanics, not private names.
+//
+// Enumeration is the TRACKED-FILE universe (leakScanUniverse: `git ls-files`, or a
+// skip-guarded filesystem walk when repoRoot is not a git worktree) — exactly what a
+// public clone ships, root files included. The GENERIC identity pass (findGenericLeak)
+// runs over that ENTIRE universe: this is the widened, CI-portable floor — armed with no
+// operator overlay, reaching root files (README.md, AGENTS.md, go.mod, .github/**) and
+// every source root, not just docs/skills as before. The two TOKEN passes
+// (docs_private/leak-tokens.txt, docs_private/source-leak-tokens.txt) keep their
+// PRE-EXISTING root scoping (docs+skills prose vs fixtures/internal/cmd/tools/console
+// source) by filtering the same enumerated universe by prefix — only the enumeration
+// mechanism under them changed (filesystem walk -> tracked-file set), not their reach, so
+// existing token-class tests keep pinning identical behavior. One finding per line per
+// class: the generic and token passes run in the SAME loop over the SAME file list, so a
+// line can never be double-reported by two overlapping walks.
 func checkDocLeak(repoRoot string, strict bool) []Finding {
 	var f []Finding
 	// strict is unused for arming now: the embedded baseline arms the gate by default, so
@@ -556,15 +659,42 @@ func checkDocLeak(repoRoot string, strict bool) []Finding {
 		// tool/product names.
 		f = append(f, Finding{"doc-leak", Info, "operator overlay docs_private/leak-tokens.txt absent; tracked baseline leak-token gate armed (" + itoa(len(baselineLeakTokens())) + " generic secret-shape tokens). Add the overlay in the operator home for operator-specific tool/product names."})
 	}
-	f = append(f, scanLeakRoots(repoRoot, docLeakScanRoots(repoRoot), privateToks, true)...)
 	sourceToks, sourcePresent := loadSourceLeakTokens(repoRoot)
-	if sourcePresent {
-		f = append(f, scanLeakRoots(repoRoot, sourceLeakScanRoots(repoRoot), sourceToks, false)...)
+
+	for _, rel := range leakScanUniverse(repoRoot) {
+		b, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		if err != nil {
+			continue
+		}
+		inDocRoot := relUnderAnyPrefix(rel, docLeakScanRootPrefixes)
+		inSourceRoot := sourcePresent && relUnderAnyPrefix(rel, sourceLeakScanRootPrefixes)
+		for i, line := range strings.Split(string(b), "\n") {
+			// GENERIC identity-shape pass: the full tracked universe, no root scoping.
+			if m := findGenericLeak(line); m != "" {
+				f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks " + strconv(m)})
+			}
+			low := strings.ToLower(line)
+			if inDocRoot {
+				for _, t := range privateToks {
+					if strings.Contains(low, t) {
+						f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks private token " + strconv(t)})
+					}
+				}
+			}
+			if inSourceRoot {
+				for _, t := range sourceToks {
+					if strings.Contains(low, t) {
+						f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks private token " + strconv(t)})
+					}
+				}
+			}
+		}
 	}
+
 	// When the overlay is absent the nudge Info above already occupies the summary slot;
 	// this clean-summary fires only for the overlay-present, no-leak case (len == 0).
 	if len(f) == 0 {
-		msg := "public docs + ceremonies clean (generic shapes + baseline + operator overlay list)"
+		msg := "public docs + ceremonies + source + root files clean (generic identity shapes + baseline + operator overlay list)"
 		if sourcePresent {
 			msg += "; configured source surfaces clean"
 		}
@@ -573,62 +703,87 @@ func checkDocLeak(repoRoot string, strict bool) []Finding {
 	return f
 }
 
-// docLeakScanRoots are the public PROSE surfaces the generic doc-leak pass scans:
-// docs/ and the tracked build-ceremony bodies under skills/ (fresh-clone reachable,
-// so a leak into a ceremony body is caught by the same armed gate that guards docs).
-func docLeakScanRoots(repoRoot string) []string {
-	return []string{
-		filepath.Join(repoRoot, "docs"),
-		filepath.Join(repoRoot, "skills"),
+// docLeakScanRootPrefixes are the repo-relative PROSE surfaces the operator-overlay
+// token pass (docs_private/leak-tokens.txt) scans: docs/ and the tracked build-ceremony
+// bodies under skills/ (fresh-clone reachable, so a leak into a ceremony body is caught
+// by the same armed gate that guards docs). Scoping is UNCHANGED from before the
+// tracked-file-enumeration rewrite — only the enumeration mechanism changed.
+var docLeakScanRootPrefixes = []string{"docs", "skills"}
+
+// sourceLeakScanRootPrefixes are the repo-relative surfaces the optional
+// docs_private/source-leak-tokens.txt overlay token pass scans. Scoping unchanged.
+var sourceLeakScanRootPrefixes = []string{"fixtures", "internal", "cmd", "tools", "console"}
+
+// relUnderAnyPrefix reports whether repo-relative path rel is exactly one of prefixes or
+// descends into one of them (rel == p or rel starts with p + "/").
+func relUnderAnyPrefix(rel string, prefixes []string) bool {
+	relSlash := filepath.ToSlash(rel)
+	for _, p := range prefixes {
+		if relSlash == p || strings.HasPrefix(relSlash, p+"/") {
+			return true
+		}
 	}
+	return false
 }
 
 func loadSourceLeakTokens(repoRoot string) (toks []string, present bool) {
 	return loadLeakTokens(filepath.Join(repoRoot, "docs_private", "source-leak-tokens.txt"))
 }
 
-func scanLeakRoots(repoRoot string, roots []string, privateToks []string, generic bool) []Finding {
-	var f []Finding
-	for _, root := range roots {
-		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() || strings.Contains(path, "docs_private") {
-				return nil
-			}
-			if !leakScanFile(path) {
-				return nil
-			}
-			b, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-			rel, _ := filepath.Rel(repoRoot, path)
-			for i, line := range strings.Split(string(b), "\n") {
-				if generic {
-					if m := genericLeak.FindString(line); m != "" {
-						f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks " + strconv(m)})
-					}
-				}
-				low := strings.ToLower(line)
-				for _, t := range privateToks {
-					if strings.Contains(low, t) {
-						f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks private token " + strconv(t)})
-					}
-				}
-			}
-			return nil
-		})
-	}
-	return f
+// leakScanEnumerateSkipDirs is the fallback-walk skip set used ONLY when repoRoot is not
+// a git worktree (several existing tests build a plain temp-dir fixture repo, not a real
+// git repo). The primary enumeration is `git ls-files` (the tracked set — exactly what
+// ships publicly), which excludes docs_private/, node_modules/, .next/, dist/ by
+// construction; this skip set exists only so the plain-dir fallback keeps the same
+// semantics without a git repo to ask.
+var leakScanEnumerateSkipDirs = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	"docs_private": true,
+	".claude":      true,
+	".next":        true,
+	"dist":         true,
 }
 
-func sourceLeakScanRoots(repoRoot string) []string {
-	return []string{
-		filepath.Join(repoRoot, "fixtures"),
-		filepath.Join(repoRoot, "internal"),
-		filepath.Join(repoRoot, "cmd"),
-		filepath.Join(repoRoot, "tools"),
-		filepath.Join(repoRoot, "console"),
+// leakScanUniverse enumerates every candidate doc-leak scan target as repo-relative
+// paths, already narrowed to leakScanFile's text extensions: the tracked-file set
+// (`git ls-files -z`, via gitTrackedFiles) when repoRoot is a git worktree, or a
+// skip-guarded filesystem walk otherwise. Untracked junk in a real git worktree (build
+// caches, stray local files) is invisible here by construction — the gate polices what
+// SHIPS, not the whole working tree (this is also what makes the pass CI-portable: no
+// dependency on which stray files a given checkout happens to contain).
+func leakScanUniverse(repoRoot string) []string {
+	if tracked, err := gitTrackedFiles(repoRoot); err == nil {
+		var rels []string
+		for _, rel := range tracked {
+			if leakScanFile(rel) {
+				rels = append(rels, rel)
+			}
+		}
+		return rels
 	}
+	var rels []string
+	_ = filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != repoRoot && leakScanEnumerateSkipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !leakScanFile(path) {
+			return nil
+		}
+		rel, relErr := filepath.Rel(repoRoot, path)
+		if relErr != nil {
+			rel = path
+		}
+		rels = append(rels, rel)
+		return nil
+	})
+	return rels
 }
 
 func leakScanFile(path string) bool {
@@ -710,7 +865,7 @@ var privateSourceBodySkipDirs = map[string]bool{
 // personal path into a tracked file"). Not a leaked product name (checkDocLeak's
 // job), but the structural signatures of a wholesale body-copy: a
 // `source_of_truth: <private-source>` frontmatter marker, an absolute
-// /Users/.../{brain,operating-system,.gbrain}/ path prefix, or a tilde
+// /Users/<name>/{brain,operating-system,.gbrain}/ path prefix, or a tilde
 // ~/{.gbrain,Projects/operating-system}/ home path.
 //
 // SCOPE is `git ls-files` (tracked files only — exactly what ships publicly);
