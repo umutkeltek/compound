@@ -587,12 +587,48 @@ type rebaselinePhysicalProof struct {
 }
 
 type rebaselinePhysicalJournalWire struct {
-	SchemaVersion string                   `json:"schema_version"`
-	SidecarPath   string                   `json:"sidecar_path"`
-	PriorExisted  bool                     `json:"prior_existed"`
-	PreImageRef   string                   `json:"pre_image_ref"`
-	PostImageRef  string                   `json:"post_image_ref"`
-	Proofs        []RebaselinePendingProof `json:"proofs"`
+	SchemaVersion   string                           `json:"schema_version"`
+	SidecarPath     string                           `json:"sidecar_path"`
+	PriorExisted    bool                             `json:"prior_existed"`
+	PreImageRef     string                           `json:"pre_image_ref"`
+	PostImageRef    string                           `json:"post_image_ref"`
+	AuthorityBundle RebaselinePendingAuthorityBundle `json:"authority_bundle"`
+	Proofs          []RebaselinePendingProof         `json:"proofs"`
+}
+
+// RebaselinePendingAuthorityBundle is an opaque physical binding for the
+// governance records an adapter needs to recover a rebaseline. Eventstore owns
+// only the exact canonical JSON bytes and their digest; the adapter owns every
+// schema and relationship inside Record.
+type RebaselinePendingAuthorityBundle struct {
+	RecordSHA256 string          `json:"record_sha256"`
+	Record       json.RawMessage `json:"record"`
+}
+
+// NewRebaselinePendingAuthorityBundle binds an opaque authority record to its
+// exact canonical JSON bytes without interpreting its contents.
+func NewRebaselinePendingAuthorityBundle(record []byte) (RebaselinePendingAuthorityBundle, error) {
+	canonicalRecord, err := canonical(record)
+	if err != nil {
+		return RebaselinePendingAuthorityBundle{}, fmt.Errorf("authority bundle record: %w", err)
+	}
+	return RebaselinePendingAuthorityBundle{RecordSHA256: rebaselineProofRecordHash(canonicalRecord), Record: canonicalRecord}, nil
+}
+
+// CanonicalRecord validates the physical hash binding and returns a copy of
+// the canonical opaque record for the adapter that owns its meaning.
+func (b RebaselinePendingAuthorityBundle) CanonicalRecord() ([]byte, error) {
+	canonicalRecord, err := canonical(b.Record)
+	if err != nil {
+		return nil, fmt.Errorf("authority bundle record: %w", err)
+	}
+	if strings.TrimSpace(b.RecordSHA256) == "" {
+		return nil, fmt.Errorf("authority bundle record_sha256 is required")
+	}
+	if b.RecordSHA256 != rebaselineProofRecordHash(canonicalRecord) {
+		return nil, fmt.Errorf("authority bundle record_sha256 does not match canonical record bytes")
+	}
+	return append([]byte(nil), canonicalRecord...), nil
 }
 
 // RebaselinePendingProof is the eventstore-owned physical proof binding. The
@@ -917,6 +953,9 @@ func parseRebaselinePhysicalJournal(raw []byte, expectedSidecar string) (rebasel
 	}
 	if err := validateRebaselineArtifactRef(wire.PostImageRef); err != nil {
 		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal post_image_ref: %w", err)
+	}
+	if _, err := wire.AuthorityBundle.CanonicalRecord(); err != nil {
+		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal authority_bundle: %w", err)
 	}
 	if len(wire.Proofs) != 2 {
 		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal requires exactly two opaque proofs")
