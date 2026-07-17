@@ -73,6 +73,11 @@ export type DecideMember = {
   /** Per-member action id for the generic pathway; "" when none. */
   actionId: string;
   expectedRevision: string;
+  actionLabel: string;
+  requiresReview: boolean;
+  policyNote: string;
+  proposedAt: string;
+  proposedAtLabel: string;
 };
 
 export type DecideAct =
@@ -257,12 +262,23 @@ function memberOf(area: string, id: string, itemByID: Map<string, Json>): Decide
     ? arr(item.actions).find((candidate) => genericActionProjectionEligible(area, (candidate as Json).argv))
     : null;
   const argv = action ? cleanArgv((action as Json).argv) : null;
+  const candidateRule = decisionCandidateRule(item ?? {});
+  const proposedAt = str(item?.created_at);
   return {
     id,
-    label: str(item?.context_label) || str(item?.operator_summary) || id,
+    label: area === "decision-candidates"
+      ? candidateRule || str(item?.operator_summary) || id
+      : area === "harness-edit-proposals"
+        ? harnessProposalLabel(str(item?.operator_summary)) || str(item?.context_label) || id
+        : str(item?.operator_summary) || str(item?.context_label) || id,
     argv,
     actionId: action ? str((action as Json).id) : "",
     expectedRevision: action ? genericActionRevision(action) : "",
+    actionLabel: action ? str((action as Json).label) : "",
+    requiresReview: Boolean(action && ((action as Json).requires_review ?? (action as Json).requires_confirmation)),
+    policyNote: operatorPolicyNote(area, action ? str((action as Json).policy_note) : ""),
+    proposedAt,
+    proposedAtLabel: localDateTime(proposedAt),
   };
 }
 
@@ -307,6 +323,67 @@ function groupCreatedAt(group: Json, itemByID: Map<string, Json>): string {
 function isOldAge(createdAt: string): boolean {
   const d = toDate(createdAt);
   return d ? Date.now() - d.getTime() > 48 * 3600 * 1000 : false;
+}
+
+function localDateTime(value: string): string {
+  const date = toDate(value);
+  if (!date) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function decisionCandidateRule(item: Json): string {
+  const lifecycleDraft = item.lifecycle_draft && typeof item.lifecycle_draft === "object"
+    ? item.lifecycle_draft as Json
+    : {};
+  const raw = (
+    str(item.detail) ||
+    str(item.object) ||
+    str(item.statement) ||
+    str(lifecycleDraft.choice) ||
+    str(item.context_label)
+  ).replace(/^Ruling:\s*/i, "").trim();
+
+  if (
+    /^Hold destructive actions:\s*cloud resources,\s*signing,\s*submission,\s*doctrine changes require owner approval$/i.test(raw) ||
+    /^Hold destructive actions:\s*cloud resources,\s*signing(?:…|\.\.\.)?$/i.test(raw)
+  ) {
+    return "Agents pause for your approval before destructive cloud changes, release signing or submission, or changes to Compound's operating rules.";
+  }
+  return raw;
+}
+
+function operatorPolicyNote(area: string, projected: string): string {
+  if (area === "decision-candidates" && projected) {
+    return "This prepares review evidence only. The proposed rule stays unadopted.";
+  }
+  if (area === "harness-edit-proposals" && !projected) {
+    return "Approving a proposal authorizes only that capability map edit. It does not apply the edit.";
+  }
+  return projected;
+}
+
+function hyphenatedLabel(value: string): string {
+  return value.trim().replace(/\s+/g, "-");
+}
+
+function harnessProposalLabel(summary: string): string {
+  const parity = summary.match(
+    /^Compound suggests to close the (.+?) capability graph parity gap because (\d+) bench cases miss graph nodes\. Review the edit\?$/i,
+  );
+  if (parity) {
+    const count = Number(parity[2]);
+    return `Make ${count} missing ${count === 1 ? "capability" : "capabilities"} discoverable to the ${hyphenatedLabel(parity[1])} check`;
+  }
+  const surfacing = summary.match(
+    /^Compound suggests to strengthen (.+?) surfacing on the (.+?) split because hit-at-1 is ([0-9.]+)% on .+?\. Review the edit\?$/i,
+  );
+  if (surfacing) {
+    return `Improve the first result for ${hyphenatedLabel(surfacing[1])}'s ${hyphenatedLabel(surfacing[2])} test cases (currently ${surfacing[3]}% correct)`;
+  }
+  return summary;
 }
 
 /** Preserve the owner-projected evidence body; labels alone erase judgment context. */
@@ -528,11 +605,38 @@ function resolveAct(
         requiresConfirmation: sba.requires_review !== false,
         requiresRationale: RATIONALE_REQUIRED_AREAS.has(area),
         effectKind: genericEffect,
-        policyNote: str(sba.policy_note),
+        policyNote: operatorPolicyNote(area, str(sba.policy_note)),
       };
     }
     const atomic = batchAtomicAct(sba, group, sample);
     if (atomic) return atomic;
+  }
+
+  // B2) No atomic group action exists, but every represented member carries
+  // its own certified owner action. Expose them as explicitly separate
+  // operations: the client executes one item at a time and persists partial
+  // progress. This composes existing item authority; it does not mint a batch
+  // command or imply all-or-nothing semantics.
+  if (genericEffect) {
+    const enumerable = enumerableMembers(group, itemByID);
+    if (enumerable) {
+      const count = enumerable.length;
+      const sharedPolicy = enumerable.every((member) => member.policyNote === enumerable[0]?.policyNote)
+        ? enumerable[0]?.policyNote ?? ""
+        : "";
+      return {
+        mode: "batch-enumerable",
+        area,
+        label: count === 1
+          ? enumerable[0]?.actionLabel || "Review proposal"
+          : `Review ${count} proposals`,
+        members: enumerable,
+        requiresConfirmation: enumerable.some((member) => member.requiresReview),
+        requiresRationale: RATIONALE_REQUIRED_AREAS.has(area),
+        effectKind: genericEffect,
+        policyNote: operatorPolicyNote(area, sharedPolicy),
+      };
+    }
   }
 
   // C) generic pathway — a non-bespoke area whose projection action passes the
@@ -671,7 +775,15 @@ export function buildDecideGroups(
       : "";
 
     const hasDecisionCard = Boolean(sample.decision_card && typeof sample.decision_card === "object");
-    const title = (hasDecisionCard ? pl?.headline : "") || str(group.operator_summary) || pl?.headline || "Review this decision.";
+    const candidateRule = area === "decision-candidates"
+      ? decisionCandidateRule(sample)
+      : "";
+    const isHarnessEditGroup = area === "harness-edit-proposals";
+    const title = candidateRule
+      ? "Review a proposed operating rule"
+      : isHarnessEditGroup
+        ? "Choose which capability map fixes to allow"
+      : (hasDecisionCard ? pl?.headline : "") || str(group.operator_summary) || pl?.headline || "Review this decision.";
     const evidence = groupEvidence(group, pl?.evidence ?? []);
     const members =
       act.mode === "batch-enumerable" ? act.members : readonlyMembers(group, itemByID);
@@ -688,16 +800,26 @@ export function buildDecideGroups(
         ? `No ${area.replace(/-/g, " ")} owner workflow is built yet.`
         : `No safe owner workflow is available. ${capability.detail}`
       : "";
+    const actionDescription = area === "decision-candidates"
+      ? "Creates review evidence only. It does not adopt the rule or change decision authority."
+      : isHarnessEditGroup
+        ? "Select the fixes you want to allow. Each approval authorizes only that map edit; it does not apply the edit."
+      : capability.detail;
     const primaryAction = copyOnly
       ? reviewResolutionItemId
-        ? { label: "Review disposition", effect: "record" as const }
+        ? { label: "Review disposition", effect: "record" as const, description: "Records your queue disposition without changing the underlying authority." }
         : null
       : {
-          label: act.label,
+          label: area === "decision-candidates" ? "Prepare independent review" : act.label,
           effect: capability.kind === "unavailable" ? "apply" as const : capability.kind,
+          description: actionDescription,
         };
     const confidence = faceConfidence(sample);
-    const owner = spec?.title || (area ? area.replace(/-/g, " ") : "Unassigned review owner");
+    const owner = candidateRule
+      ? "Decision review"
+      : isHarnessEditGroup
+      ? "Capability map editor"
+      : spec?.title || (area ? area.replace(/-/g, " ") : "Unassigned review owner");
     const face: ObjectFace = {
       id: sampleId,
       kind: "Decision",
@@ -705,11 +827,17 @@ export function buildDecideGroups(
       state: copyOnly ? "waiting" : "ready",
       stateLabel: copyOnly ? "Needs context" : "Ready",
       whyNow:
-        str(group.operator_unlock) ||
-        pl?.consequences?.approve ||
-        pl?.body ||
-        "Your review is the next safe step for this item.",
+        candidateRule
+          ? "This is not the final approval. Compound first needs an independent review before this rule can enter the decision source."
+          : isHarnessEditGroup
+            ? "Some checks ask for capabilities that Compound cannot find even though they should be available."
+          : str(group.operator_unlock) ||
+            pl?.consequences?.approve ||
+            pl?.body ||
+            "Your review is the next safe step for this item.",
       owner,
+      proposedAt: createdAt,
+      proposedAtLabel: localDateTime(createdAt),
       freshness,
       confidence,
       primaryAction,
@@ -730,7 +858,11 @@ export function buildDecideGroups(
       glyph: spec?.glyph || (area ? area[0].toUpperCase() : "•"),
       title,
       unlock: str(group.operator_unlock) || pl?.consequences?.approve || "",
-      body: pl?.body || "",
+      body: candidateRule
+        ? `Proposed rule: ${candidateRule}`
+        : isHarnessEditGroup
+          ? `${count} proposed fix${count === 1 ? "" : "es"} would help Compound find capabilities it currently misses. Nothing changes until you approve a proposal.`
+          : pl?.body || "",
       consequences: pl?.consequences ?? null,
       chips: (pl?.chips ?? []).map((c) => ({ label: c.label, tone: String(c.tone) })),
       count,

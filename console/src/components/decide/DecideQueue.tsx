@@ -306,7 +306,10 @@ function EnumerableApply({
           const isIncluded = !excluded.has(m.id) && !isCompleted;
           return (
             <li key={m.id}>
-              <label className={`flex min-h-8 cursor-pointer items-center gap-2 rounded-sm px-2 py-1 ${isCompleted ? "cursor-default opacity-60" : "hover:bg-soft"}`}>
+              <label
+                title={m.id}
+                className={`flex min-h-8 cursor-pointer items-center gap-2 rounded-sm px-2 py-1 ${isCompleted ? "cursor-default opacity-60" : "hover:bg-soft"}`}
+              >
                 <input
                   type="checkbox"
                   checked={isIncluded}
@@ -314,12 +317,16 @@ function EnumerableApply({
                   onChange={() => onToggle(m.id)}
                   className="h-4 w-4 shrink-0 accent-work"
                 />
-                <span className="min-w-0 flex-1 truncate text-xs text-muted" title={m.id}>
-                  {m.label}{isCompleted ? ` · ${actionCopy.completed}` : ""}
+                <span className="min-w-0 flex-1" title={m.label}>
+                  <span className="line-clamp-2 block text-xs leading-snug text-muted">
+                    {m.label}{isCompleted ? ` · ${actionCopy.completed}` : ""}
+                  </span>
+                  {m.proposedAtLabel ? (
+                    <time dateTime={m.proposedAt} className="mt-0.5 block text-2xs tabular-nums text-faint">
+                      Proposed {m.proposedAtLabel}
+                    </time>
+                  ) : null}
                 </span>
-                <code className="mono shrink-0 text-2xs text-faint" title={m.id}>
-                  {m.id.length > 18 ? `${m.id.slice(0, 16)}…` : m.id}
-                </code>
               </label>
             </li>
           );
@@ -422,13 +429,10 @@ function ReadonlyMembers({ members, atomic }: { members: DecideMember[]; atomic:
       ) : null}
       <ul className="mt-2 flex flex-col gap-1">
         {members.slice(0, 60).map((m) => (
-          <li key={m.id} className="flex items-center justify-between gap-2">
-            <span className="min-w-0 truncate text-2xs text-muted" title={m.id}>
+          <li key={m.id}>
+            <span className="block min-w-0 truncate text-2xs text-muted" title={m.id}>
               {m.label}
             </span>
-            <code className="mono shrink-0 text-2xs text-faint" title={m.id}>
-              {m.id.length > 16 ? `${m.id.slice(0, 14)}…` : m.id}
-            </code>
           </li>
         ))}
       </ul>
@@ -497,7 +501,13 @@ function DecisionRow({
       <span className="min-w-0">
         <span className="flex items-center justify-between gap-2">
           <span className="truncate text-2xs font-bold uppercase text-faint" title={group.areaPlain}>{group.areaLabel}</span>
-          <span className={`shrink-0 text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>{group.ageLabel}</span>
+          <time
+            dateTime={group.face.proposedAt || undefined}
+            title={group.face.proposedAtLabel || "Proposal time unavailable"}
+            className={`shrink-0 text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}
+          >
+            {group.ageLabel}
+          </time>
         </span>
         <span className="mt-1 line-clamp-2 block text-sm font-semibold leading-snug text-ink">{operatorText(group.title)}</span>
         <span className="mt-2 flex flex-wrap items-center gap-2">
@@ -542,7 +552,10 @@ function EvidencePanel({ group }: { group: DecideGroup }) {
         <span className={`text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>
           {group.ageLabel}{group.old ? " · stale" : ""}
         </span>
-        <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
+        <span className="inline-flex items-center gap-1.5">
+          <span className="text-faint">Queue refreshed</span>
+          <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
+        </span>
       </div>
       {group.evidence.length ? rows : (
         <p className="rounded-md border border-dashed border-hair px-3 py-6 text-center text-xs text-muted">
@@ -561,7 +574,11 @@ function HistoryPanel({ group }: { group: DecideGroup }) {
           <span aria-hidden className="mt-1 h-2 w-2 rounded-full bg-seam" />
           <div>
             <div className="text-xs font-semibold text-ink">Raised for review</div>
-            <p className="mt-0.5 text-xs text-muted">Entered this queue {group.ageLabel}.</p>
+            <p className="mt-0.5 text-xs text-muted">
+              {group.face.proposedAtLabel ? (
+                <><time dateTime={group.face.proposedAt}>{group.face.proposedAtLabel}</time> ({group.ageLabel}).</>
+              ) : `Proposal time unavailable (${group.ageLabel}).`}
+            </p>
           </div>
         </li>
         <li className="grid grid-cols-[auto_1fr] gap-3 rounded-md border border-hair bg-soft px-3 py-2.5">
@@ -632,8 +649,19 @@ function DecisionDetail({
           <p className="mt-1 max-w-read text-sm leading-relaxed text-ink">{group.face.whyNow}</p>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-faint">
+          <span className="inline-flex items-center gap-1.5">
+            <span>Proposed</span>
+            {group.face.proposedAtLabel ? (
+              <time dateTime={group.face.proposedAt} className="font-semibold tabular-nums text-muted">
+                {group.face.proposedAtLabel} ({group.ageLabel})
+              </time>
+            ) : <strong className="font-semibold text-muted">Time unavailable</strong>}
+          </span>
           <span className="inline-flex items-center gap-1.5"><span>Owner</span><strong className="font-semibold text-muted">{group.face.owner}</strong></span>
-          <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
+          <span className="inline-flex items-center gap-1.5">
+            <span>Queue refreshed</span>
+            <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
+          </span>
           {group.face.confidence ? <span className="tabular-nums">{group.face.confidence.label}</span> : null}
         </div>
       </header>
@@ -672,6 +700,9 @@ function DecisionDetail({
               <div>
                 <div className="text-2xs font-bold uppercase tracking-wide text-faint">Primary action</div>
                 <div className="mt-0.5 text-sm font-semibold text-ink">{group.face.primaryAction?.label || "No governed owner action yet"}</div>
+                {group.face.primaryAction?.description ? (
+                  <p className="mt-1 max-w-read text-xs leading-relaxed text-muted">{group.face.primaryAction.description}</p>
+                ) : null}
               </div>
               <CapabilityStatus group={group} />
             </div>
@@ -708,7 +739,7 @@ function DecisionDetail({
                 requiresRationale={act.requiresRationale}
                 effectKind={act.effectKind}
                 policyNote={act.policyNote}
-                label={act.label}
+                label={group.face.primaryAction?.label || act.label}
               />
             ) : (
               <GovernedAct

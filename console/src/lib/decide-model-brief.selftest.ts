@@ -624,16 +624,18 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
         decided.act.effectKind === "track" &&
         decided.act.requiresConfirmation === true &&
         decided.act.label === "Plan decision review" &&
-        decided.act.policyNote === "creates review evidence only; decision source and authority stay unchanged" &&
+        decided.act.policyNote === "This prepares review evidence only. The proposed rule stays unadopted." &&
         decided.act.members.length === 1 &&
         decided.act.members[0].id === itemId &&
         decided.act.members[0].actionId === "plan_decision_candidate_review" &&
         decided.capability.kind === "track" &&
         decided.face.kind === "Decision" &&
+        decided.face.label === "Review a proposed operating rule" &&
         decided.face.state === "ready" &&
         decided.face.stateLabel === "Ready" &&
-        decided.face.whyNow === "A bounded judge review can start without changing decision authority." &&
-        decided.face.primaryAction?.label === "Plan decision review" &&
+        decided.face.whyNow === "This is not the final approval. Compound first needs an independent review before this rule can enter the decision source." &&
+        decided.face.primaryAction?.label === "Prepare independent review" &&
+        decided.face.primaryAction.description === "Creates review evidence only. It does not adopt the rule or change decision authority." &&
         decided.face.primaryAction.effect === "track" &&
         Boolean(decided.face.owner) &&
         genericReviewResolutionActs(decided).length === 0,
@@ -804,6 +806,133 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
       "actionable-card-gets-no-derived-acts",
       genericReviewResolutionActs(actionable).length === 0,
       `acts=${genericReviewResolutionActs(actionable).length}`,
+    );
+  }
+
+  // A decision candidate must read like a decision, not like a lifecycle
+  // record. The face also owns proposal time so queue age is not confused
+  // with projection freshness.
+  {
+    const area = "decision-candidates";
+    const itemId = "dcp_story_fixture";
+    const createdAt = "2026-07-11T04:09:15Z";
+    const action = {
+      id: "plan_decision_candidate_review",
+      label: "Plan decision review",
+      argv: [
+        "compound", "panel", "plan", "--target-kind", "decision_candidate",
+        "--target", "candidate_story_fixture", "--domain", "reasoning-lenses",
+        "--task", "review falsifier, review trigger, source ownership, and second-order effects",
+        "--supervised", "--max-items", "1", "--json",
+      ],
+      requires_review: true,
+      policy_note: "creates review evidence only; decision source and authority stay unchanged",
+    } as Json;
+    const item = {
+      id: itemId,
+      area,
+      candidate_id: "candidate_story_fixture",
+      context_label: "Ruling: Hold destructive actions: cloud resources, signing…",
+      created_at: createdAt,
+      actions: [action],
+    } as Json;
+    const group = {
+      key: "decision-candidates|story",
+      area,
+      count: 1,
+      item_ids: [itemId],
+      operator_summary: "Decision lifecycle has candidate Ruling Keep approval boundaries proportional to consequence. Review it?",
+      operator_unlock: "decision source changes only after reviewed approval",
+      sample: item,
+      safe_batch_action: action,
+    } as Json;
+    const [decided] = buildDecideGroups([group], new Map([[itemId, item]]), null, () => item);
+    const actionDescription = decided.face.primaryAction && "description" in decided.face.primaryAction
+      ? String(decided.face.primaryAction.description)
+      : "";
+    const proposedAt = "proposedAt" in decided.face ? String(decided.face.proposedAt) : "";
+    const proposedAtLabel = "proposedAtLabel" in decided.face ? String(decided.face.proposedAtLabel) : "";
+    push(
+      "decision-candidate-face-explains-question-step-and-proposal-time",
+      decided.face.label === "Review a proposed operating rule" &&
+        decided.body === "Proposed rule: Agents pause for your approval before destructive cloud changes, release signing or submission, or changes to Compound's operating rules." &&
+        decided.face.whyNow === "This is not the final approval. Compound first needs an independent review before this rule can enter the decision source." &&
+        decided.face.owner === "Decision review" &&
+        decided.face.primaryAction?.label === "Prepare independent review" &&
+        actionDescription === "Creates review evidence only. It does not adopt the rule or change decision authority." &&
+        proposedAt === createdAt && proposedAtLabel.length > 0,
+      `label=${JSON.stringify(decided.face.label)} body=${JSON.stringify(decided.body)} why=${JSON.stringify(decided.face.whyNow)} action=${JSON.stringify(decided.face.primaryAction)} proposed=${JSON.stringify({ proposedAt, proposedAtLabel })}`,
+    );
+  }
+
+  // A group with no atomic batch command can still be actionable when every
+  // member carries its own certified owner action. Expose those separate
+  // actions instead of claiming that no workflow exists.
+  {
+    const area = "harness-edit-proposals";
+    const items = [
+      {
+        id: "dirprop_story_alpha",
+        area,
+        operator_summary: "Compound suggests to close the capability suite capability graph parity gap because 7 bench cases miss graph nodes. Review the edit?",
+        context_label: "capability edges",
+        created_at: "2026-07-10T02:02:00Z",
+        actions: [{
+          id: "harness-edit.whitelist",
+          label: "Allow edits to this surface",
+          argv: ["compound", "authority", "harness-edit-review", "/tmp/dirprop_story_alpha.json", "--decision", "whitelist", "--json"],
+          requires_review: true,
+        }],
+      },
+      {
+        id: "dirprop_story_bravo",
+        area,
+        operator_summary: "Compound suggests to strengthen capability suite surfacing on the held in split because hit-at-1 is 20% on held in. Review the edit?",
+        context_label: "capability edges",
+        created_at: "2026-07-11T01:37:35Z",
+        actions: [{
+          id: "harness-edit.whitelist",
+          label: "Allow edits to this surface",
+          argv: ["compound", "authority", "harness-edit-review", "/tmp/dirprop_story_bravo.json", "--decision", "whitelist", "--json"],
+          requires_review: true,
+        }],
+      },
+    ] as Json[];
+    const itemByID = new Map(items.map((item) => [String(item.id), item]));
+    const group = {
+      key: "harness-edit-proposals|capability_edges",
+      area,
+      count: 2,
+      item_ids: items.map((item) => item.id),
+      operator_summary: "Compound found capability graph gaps. Review the edits?",
+      operator_unlock: "the capability graph regains the edges the bench expects",
+      terminal_reason: "actions are item-specific; no safe batch action exposed",
+      sample: items[0],
+    } as Json;
+    const [decided] = buildDecideGroups([group], itemByID, null, () => items[0]);
+    const act = decided.act;
+    push(
+      "item-specific-certified-actions-are-exposed-without-inventing-a-batch-owner",
+      act.mode === "batch-enumerable" &&
+        act.label === "Review 2 proposals" &&
+        act.effectKind === "record" &&
+        act.requiresConfirmation &&
+        act.requiresRationale &&
+        act.policyNote === "Approving a proposal authorizes only that capability map edit. It does not apply the edit." &&
+        act.members.length === 2 &&
+        act.members.every((member) => member.actionId === "harness-edit.whitelist") &&
+        act.members.map((member) => member.label).join("|") ===
+          "Make 7 missing capabilities discoverable to the capability-suite check|Improve the first result for capability-suite's held-in test cases (currently 20% correct)" &&
+        act.members.every((member) => "proposedAtLabel" in member && String(member.proposedAtLabel).length > 0) &&
+        decided.face.state === "ready" &&
+        decided.face.stateLabel === "Ready" &&
+        decided.face.label === "Choose which capability map fixes to allow" &&
+        decided.body === "2 proposed fixes would help Compound find capabilities it currently misses. Nothing changes until you approve a proposal." &&
+        decided.face.whyNow === "Some checks ask for capabilities that Compound cannot find even though they should be available." &&
+        decided.face.owner === "Capability map editor" &&
+        decided.face.primaryAction?.label === "Review 2 proposals" &&
+        decided.face.primaryAction.description === "Select the fixes you want to allow. Each approval authorizes only that map edit; it does not apply the edit.",
+      `act=${act.mode}${act.mode === "batch-enumerable" ? ` label=${JSON.stringify(act.label)} members=${JSON.stringify(act.members)}` : ""} face=${JSON.stringify(decided.face)}`,
     );
   }
 

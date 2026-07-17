@@ -40,6 +40,8 @@ export type ObjectFaceState =
 export interface ObjectFaceAction {
   label: string;
   effect: ActEffect;
+  /** Plain-language boundary for what this step does and does not do. */
+  description: string;
 }
 
 /**
@@ -55,6 +57,10 @@ export interface ObjectFace {
   stateLabel: string;
   whyNow: string;
   owner: string;
+  /** When the represented proposal was created. */
+  proposedAt: string;
+  /** Server-formatted local date/time for stable hydration and scanning. */
+  proposedAtLabel: string;
   freshness: { generatedAt: string; source: string };
   confidence?: { value: number; label: string };
   primaryAction: ObjectFaceAction | null;
