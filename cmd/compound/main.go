@@ -80,11 +80,43 @@ func versionString() string {
 	return fmt.Sprintf("compound %s (build %s)", version, buildSHAOrDev())
 }
 
+func prepareGlobalArgs(args []string) ([]string, error) {
+	prepared := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] != "--home" {
+			prepared = append(prepared, args[i])
+			continue
+		}
+		if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
+			return nil, fmt.Errorf("--home requires a non-blank value")
+		}
+
+		// This exact-token scan intentionally shares the existing CLI helpers' known
+		// blindness: a bare --home intended as another flag's value is still global.
+		absHome, err := filepath.Abs(args[i+1])
+		if err != nil {
+			return nil, fmt.Errorf("resolve --home: %w", err)
+		}
+		if err := os.Setenv("COMPOUND_HOME", absHome); err != nil {
+			return nil, fmt.Errorf("set COMPOUND_HOME: %w", err)
+		}
+		i++
+	}
+	return prepared, nil
+}
+
 func main() {
-	if len(os.Args) < 2 {
+	args, err := prepareGlobalArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		usage()
 		os.Exit(2)
 	}
+	if len(args) == 0 {
+		usage()
+		os.Exit(2)
+	}
+	os.Args = append([]string{os.Args[0]}, args...)
 	switch os.Args[1] {
 	case "version", "--version", "-v":
 		fmt.Println(versionString())
