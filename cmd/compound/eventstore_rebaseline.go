@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -10,6 +14,7 @@ import (
 	"compound/internal/act"
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
+	"compound/internal/finding"
 	"compound/internal/home"
 	"compound/internal/policy"
 )
@@ -101,21 +106,142 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 	}
 
 	before := preview.Current
+
+	// Capture the sidecar's EXACT prior bytes (or explicit absence) BEFORE the mutation, so a
+	// post-mutation record failure can restore it byte-identical. Read-only capture — never a write.
+	priorBytes, hadSidecar, err := readSidecarRaw(preview.SidecarPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "error: capture prior sidecar bytes:", err)
+		return 1
+	}
+	beforeRef := baselineBeforeRef(priorBytes, hadSidecar)
+
 	baseline, err := store.RebaselineStreams(now)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	receipt, transition := rebaselineReceiptAndTransition(ai, before, baseline.Streams, now)
+
+	// From here the sidecar is MUTATED. Every failure below is routed through rebaselineRollback,
+	// which restores the prior bytes (or removes the sidecar if it was absent) and, only if that
+	// restore ALSO fails, lands a durable recovery finding — so no path returns an error with the
+	// trust sidecar left mutated but without durable proof.
+	afterBytes, err := os.ReadFile(preview.SidecarPath)
+	if err != nil {
+		return rebaselineRollback(homePath, stderr, preview.SidecarPath, priorBytes, hadSidecar,
+			ai, "", beforeRef, now, fmt.Errorf("read back new sidecar bytes: %w", err))
+	}
+	afterRef := baselineAfterRef(afterBytes)
+
+	receipt, transition := rebaselineReceiptAndTransition(ai, before, baseline.Streams, beforeRef, afterRef, now)
 	if err := recordEventstoreEnvelope(store, receipt.ID, &receipt); err != nil {
-		fmt.Fprintln(stderr, "error: rebaseline written but receipt could not be recorded:", err)
-		return 1
+		return rebaselineRollback(homePath, stderr, preview.SidecarPath, priorBytes, hadSidecar,
+			ai, receipt.ID, beforeRef, now, fmt.Errorf("record receipt %s: %w", receipt.ID, err))
 	}
 	if err := recordEventstoreEnvelope(store, transition.ID, &transition); err != nil {
-		fmt.Fprintln(stderr, "error: rebaseline written but transition could not be recorded:", err)
-		return 1
+		return rebaselineRollback(homePath, stderr, preview.SidecarPath, priorBytes, hadSidecar,
+			ai, transition.ID, beforeRef, now, fmt.Errorf("record transition %s: %w", transition.ID, err))
 	}
 	return printRebaselineResult(stdout, baseline, receipt, transition, jsonOut)
+}
+
+// eventstore-baseline evidence-ref prefixes and the verification ref carried on every
+// rebaseline receipt/transition, so the exact before/after sidecar content is reconstructable
+// from proof alone (which content-address maps to which side of the mutation).
+const (
+	baselineBeforeRefPrefix = "eventstore-baseline-before"
+	baselineAfterRefPrefix  = "eventstore-baseline-after"
+	// rebaselineVerificationRef names the falsifier that proves the durable-proof-or-rollback
+	// teeth (red-without → green-with). It is populated into the receipt's state_delta.verification.
+	rebaselineVerificationRef = "falsifier:cmd/compound/eventstore_rebaseline_test.go#durable-proof-or-rollback"
+)
+
+// readSidecarRaw returns the sidecar's exact bytes and whether it existed. Absence is not an
+// error: a home that has never been re-baselined after migration may legitimately have no
+// operator-written sidecar yet. Read-only by construction.
+func readSidecarRaw(path string) (data []byte, existed bool, err error) {
+	data, err = os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+// baselineBeforeRef content-addresses the prior sidecar bytes, or records explicit absence, so the
+// pre-mutation trust state is reconstructable from the receipt alone.
+func baselineBeforeRef(prior []byte, existed bool) string {
+	if !existed {
+		return baselineBeforeRefPrefix + ":absent"
+	}
+	return baselineBeforeRefPrefix + ":" + sha256Ref(prior)
+}
+
+// baselineAfterRef content-addresses the post-mutation sidecar bytes as they landed on disk.
+func baselineAfterRef(after []byte) string {
+	return baselineAfterRefPrefix + ":" + sha256Ref(after)
+}
+
+func sha256Ref(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// restoreSidecarFn indirects restoreSidecar so a test can force the restore failure that wedges the
+// rollback (the recovery-finding path). Swapped ONLY in tests; the production path always calls the
+// real restoreSidecar.
+var restoreSidecarFn = restoreSidecar
+
+// restoreSidecar returns the sidecar to its captured prior state: the exact prior bytes written back,
+// or the file removed if there was no sidecar before. This is the obligation-bound cleanup of the
+// mutation we just performed under the already-granted PolicyDecision — the RollbackPlan the
+// ActionIntent staked, now actually executed — not a new governed act.
+func restoreSidecar(path string, prior []byte, existed bool) error {
+	if !existed {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return os.WriteFile(path, prior, 0o644)
+}
+
+// rebaselineRollback restores the trust sidecar's prior bytes after a post-mutation failure, so
+// `event-store rebaseline` can never leave a mutated stream-baseline.json without durable proof. If
+// the restore itself fails it lands a durable recovery finding (the SAME finding home
+// act.afterWriteFailure uses) naming the sidecar path, the prior state, the receipt/transition id
+// attempted, and the manual recovery required — and names that finding in the returned error. It
+// always returns exit code 1 with a message that says the baseline was rolled back (or that manual
+// recovery is required). It never re-gates: rollback is covered by the decision that admitted the
+// forward write.
+func rebaselineRollback(homePath string, stderr io.Writer, sidecarPath string, prior []byte, existed bool, ai envelope.ActionIntent, attemptedID, beforeRef string, now time.Time, cause error) int {
+	priorState := "absent"
+	if existed {
+		priorState = beforeRef
+	}
+	if rbErr := restoreSidecarFn(sidecarPath, prior, existed); rbErr != nil {
+		body := fmt.Sprintf(
+			"event-store rebaseline mutated the trust sidecar but the receipt/transition could not be recorded AND the sidecar could not be rolled back — manual recovery required.\n"+
+				"action_intent: %s\nsidecar_path: %s\nprior_state: %s\nattempted_event_id: %s\npersistence_error: %v\nrollback_error: %v\n",
+			ai.ID, sidecarPath, priorState, attemptedID, cause, rbErr)
+		rec, ferr := finding.Record(homePath, finding.Finding{
+			Topic:        "eventstore-rebaseline-recovery/" + ai.Target.ID,
+			Body:         body,
+			ProducedBy:   "cmd/compound eventstore rebaseline",
+			WorkID:       ai.IDs.WorkID,
+			EvidenceRefs: []string{beforeRef},
+		}, now)
+		if ferr != nil {
+			fmt.Fprintf(stderr, "error: rebaseline %v; rollback FAILED (%v); recovery finding could not be recorded (%v) — sidecar %s left MUTATED (prior state %s); MANUAL RECOVERY REQUIRED\n", cause, rbErr, ferr, sidecarPath, priorState)
+			return 1
+		}
+		fmt.Fprintf(stderr, "error: rebaseline %v; rollback FAILED (%v) — recorded recovery finding %s; sidecar %s left MUTATED (prior state %s); MANUAL RECOVERY REQUIRED\n", cause, rbErr, rec.ID, sidecarPath, priorState)
+		return 1
+	}
+	fmt.Fprintf(stderr, "error: rebaseline %v — stream-baseline.json rolled back to prior state (%s) at %s\n", cause, priorState, sidecarPath)
+	return 1
 }
 
 // rebaselineIntent builds the external_side_effect / easy / local ActionIntent
@@ -149,10 +275,15 @@ func rebaselineIntent(workID string, target envelope.ActionTarget, now time.Time
 
 // rebaselineReceiptAndTransition mirrors act.go's receiptAndTransition shape
 // (an outward_delta Receipt + Transition over before/after state), built
-// locally because act's builder is unexported.
-func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[string]int64, now time.Time) (envelope.Receipt, envelope.Transition) {
+// locally because act's builder is unexported. beforeRef/afterRef are the
+// content-addressed sidecar hashes (or "absent"): they land in EvidenceRefs on
+// both the receipt and the transition so the mutation is reconstructable from
+// proof alone, alongside the existing human-readable size summary.
+func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[string]int64, beforeRef, afterRef string, now time.Time) (envelope.Receipt, envelope.Transition) {
 	nowStr := now.UTC().Format(time.RFC3339)
 	summary := fmt.Sprintf("event-store rebaseline %s: %v -> %v", ai.Target.Path, before, after)
+	baselineRefs := []string{beforeRef, afterRef}
+	verificationRefs := []string{rebaselineVerificationRef}
 
 	receipt := envelope.Receipt{
 		Header: envelope.Header{
@@ -164,7 +295,7 @@ func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier1",
-			EvidenceRefs:  []string{},
+			EvidenceRefs:  append([]string{}, baselineRefs...),
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
 		Outcome:  "completed",
@@ -174,7 +305,7 @@ func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[
 			Summary:      summary,
 			FilesChanged: []string{ai.Target.Path},
 			Artifacts:    []string{},
-			Verification: []string{},
+			Verification: verificationRefs,
 		},
 		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
 		Skills: envelope.ReceiptSkills{Used: []string{ai.Capability}, Missed: []string{}, Candidate: []string{}, UsedDeclared: true},
@@ -192,7 +323,7 @@ func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier1",
-			EvidenceRefs:  []string{},
+			EvidenceRefs:  append([]string{}, baselineRefs...),
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
 		ActionRefs: []string{ai.ID},
