@@ -118,3 +118,57 @@ func TestBuildLiveClaudeStatusSnapshotSupplementsMissingWeeklyCapacity(t *testin
 		t.Fatalf("live fallback render = %q", line)
 	}
 }
+
+func TestSupplementLiveClaudeCapacityProbesOnlyWhenOwnedSourcesAreEmpty(t *testing.T) {
+	now := time.Date(2026, 7, 17, 2, 0, 0, 0, time.UTC)
+	snapshot, err := statussurface.BuildClaudeSnapshot([]byte(`{"context_window":{"used_percentage":20}}`), now, statussurface.Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeCalls := 0
+	merged := supplementLiveClaudeCapacity(
+		snapshot,
+		statussurface.Snapshot{},
+		false,
+		now,
+		func(string, time.Time) (routeevidence.LaneCapacity, error) {
+			return routeevidence.LaneCapacity{State: routeevidence.CapacityUnknown}, nil
+		},
+		func(time.Time) (statussurface.CapacityEvidence, error) {
+			probeCalls++
+			return statussurface.CapacityEvidence{Status: statussurface.StatusLive, RemainingPercent: 24, Source: "compound/codexbar-live"}, nil
+		},
+	)
+	if probeCalls != 1 {
+		t.Fatalf("live probe calls = %d, want 1", probeCalls)
+	}
+	line, err := statussurface.Render(merged, statussurface.RenderOptions{Theme: statussurface.ThemeAuto, Width: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(line, "wk 24%") {
+		t.Fatalf("live probe did not reach render: %q", line)
+	}
+
+	probeCalls = 0
+	fromCache := supplementLiveClaudeCapacity(
+		snapshot,
+		merged,
+		true,
+		now.Add(time.Minute),
+		func(string, time.Time) (routeevidence.LaneCapacity, error) {
+			return routeevidence.LaneCapacity{State: routeevidence.CapacityUnknown}, nil
+		},
+		func(time.Time) (statussurface.CapacityEvidence, error) {
+			probeCalls++
+			return statussurface.CapacityEvidence{}, nil
+		},
+	)
+	if probeCalls != 0 {
+		t.Fatalf("fresh reduced projection still triggered %d live probe(s)", probeCalls)
+	}
+	line, err = statussurface.Render(fromCache, statussurface.RenderOptions{Theme: statussurface.ThemeAuto, Width: 120})
+	if err != nil || !strings.Contains(line, "wk 24%") {
+		t.Fatalf("fresh capacity projection was not reused: line=%q err=%v", line, err)
+	}
+}
