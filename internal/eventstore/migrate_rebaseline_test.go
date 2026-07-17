@@ -463,6 +463,21 @@ func TestRebaselinePhysicalJournalRejectsArbitraryMarkerBeforeMutation(t *testin
 	}
 }
 
+func TestRebaselinePhysicalJournalRejectsWrongWorkIDFamily(t *testing.T) {
+	store := openTestStore(t)
+	err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		journal := newTestPhysicalRebaselineJournal(t, tx, []byte("pre"), true, []byte("post"))
+		wrongWorkFamily := strings.ReplaceAll(string(journal.Raw), "work_physical_rebaseline", "rec_not_a_work")
+		return tx.WritePending([]byte(wrongWorkFamily))
+	})
+	if err == nil {
+		t.Fatal("journal accepted receipt/transition work IDs outside the work family")
+	}
+	if _, exists, readErr := store.ReadRebaselinePending(); readErr != nil || exists {
+		t.Fatalf("invalid work-family journal reached disk: exists=%t err=%v", exists, readErr)
+	}
+}
+
 func TestRebaselinePhysicalJournalBindsImageArguments(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
