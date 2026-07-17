@@ -19,10 +19,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
-
-	"compound/internal/envelope"
 )
 
 const (
@@ -53,9 +52,9 @@ const (
 	// itself stays write-once (see writeCompletion); this file is the ONE thing a
 	// governed verb is allowed to rewrite.
 	streamBaselineFileName = "stream-baseline.json"
-	// rebaselineLockName guards the sidecar with its OWN lock, distinct from
-	// migrateLockName's whole-migration-run lock, so a re-baseline never blocks
-	// (or is blocked by) a live migrate apply/verify.
+	// rebaselineLockName guards every sidecar/journal transaction and the narrow
+	// initial-baseline + completion publication boundary. It remains distinct
+	// from migrateLockName's whole migration-run lock.
 	rebaselineLockName        = ".rebaseline.lock"
 	rebaselinePendingFileName = "rebaseline-pending.json"
 
@@ -63,77 +62,13 @@ const (
 	streamBaselineReasonRebaseline = "rebaseline"
 )
 
-const RebaselinePendingSchema = "compound.eventstore.rebaseline_pending.v0.1"
-
 var (
 	ErrRebaselineFinalizationPending = errors.New("event-store rebaseline finalization pending")
 	ErrRebaselineStateConflict       = errors.New("event-store rebaseline state conflict")
+	ErrRebaselineTransactionClosed   = errors.New("event-store rebaseline transaction is closed")
 )
 
-// RebaselinePending is the crash-recovery journal for the one governed
-// stream-baseline mutation. It carries the exact validated proof envelopes so
-// recovery can roll forward without inventing a second action or mutation.
-type RebaselinePending struct {
-	SchemaVersion     string              `json:"schema_version"`
-	SidecarPath       string              `json:"sidecar_path"`
-	PriorExisted      bool                `json:"prior_existed"`
-	PreImageRef       string              `json:"pre_image_ref"`
-	PostImageRef      string              `json:"post_image_ref"`
-	BeforeEvidenceRef string              `json:"before_evidence_ref"`
-	AfterEvidenceRef  string              `json:"after_evidence_ref"`
-	ActionIntentID    string              `json:"action_intent_id"`
-	PolicyDecisionID  string              `json:"policy_decision_id"`
-	AuthorityRevision string              `json:"authority_revision"`
-	Receipt           envelope.Receipt    `json:"receipt"`
-	Transition        envelope.Transition `json:"transition"`
-}
-
-func (p RebaselinePending) Validate(expectedSidecar string) error {
-	if p.SchemaVersion != RebaselinePendingSchema {
-		return fmt.Errorf("rebaseline pending schema_version=%q, want %q", p.SchemaVersion, RebaselinePendingSchema)
-	}
-	if strings.TrimSpace(p.SidecarPath) == "" || p.SidecarPath != expectedSidecar {
-		return fmt.Errorf("rebaseline pending sidecar_path=%q, want %q", p.SidecarPath, expectedSidecar)
-	}
-	for name, value := range map[string]string{
-		"pre_image_ref": p.PreImageRef, "post_image_ref": p.PostImageRef,
-		"before_evidence_ref": p.BeforeEvidenceRef, "after_evidence_ref": p.AfterEvidenceRef,
-		"action_intent_id": p.ActionIntentID, "policy_decision_id": p.PolicyDecisionID,
-		"authority_revision": p.AuthorityRevision,
-	} {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("rebaseline pending %s is required", name)
-		}
-	}
-	if err := p.Receipt.Validate(); err != nil {
-		return fmt.Errorf("rebaseline pending receipt: %w", err)
-	}
-	if err := p.Transition.Validate(); err != nil {
-		return fmt.Errorf("rebaseline pending transition: %w", err)
-	}
-	if len(p.Transition.ActionRefs) == 0 || p.Transition.ActionRefs[0] != p.ActionIntentID || p.Receipt.IDs.WorkID != p.Transition.IDs.WorkID {
-		return fmt.Errorf("rebaseline pending proof identity mismatch")
-	}
-	if !containsExact(p.Receipt.ProofRefs, p.PreImageRef) || !containsExact(p.Receipt.ProofRefs, p.PostImageRef) ||
-		!containsExact(p.Receipt.StateDelta.Artifacts, p.PreImageRef) || !containsExact(p.Receipt.StateDelta.Artifacts, p.PostImageRef) ||
-		!containsExact(p.Transition.BeforeRefs, p.PreImageRef) || !containsExact(p.Transition.AfterRefs, p.PostImageRef) ||
-		!containsExact(p.Receipt.EvidenceRefs, p.BeforeEvidenceRef) || !containsExact(p.Receipt.EvidenceRefs, p.AfterEvidenceRef) ||
-		!containsExact(p.Receipt.EvidenceRefs, p.PreImageRef) || !containsExact(p.Receipt.EvidenceRefs, p.PostImageRef) ||
-		!containsExact(p.Transition.EvidenceRefs, p.BeforeEvidenceRef) || !containsExact(p.Transition.EvidenceRefs, p.AfterEvidenceRef) ||
-		!containsExact(p.Transition.EvidenceRefs, p.PreImageRef) || !containsExact(p.Transition.EvidenceRefs, p.PostImageRef) {
-		return fmt.Errorf("rebaseline pending proof refs do not bind journaled pre/post images")
-	}
-	return nil
-}
-
-func containsExact(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
+var syncRebaselineDirectoryFn = syncDirectory
 
 // ErrMigrationConflict halts a run when a loose record and a segment record
 // share an id but differ in content. Both bodies are preserved for the operator;
@@ -154,10 +89,11 @@ const (
 // at a precise phase boundary for one id (segment committed / manifest written)
 // so the resume-idempotency falsifiers exercise real crash windows.
 type MigrateOptions struct {
-	Mode           MigrateMode
-	BatchSize      int
-	beforeManifest func(id string) error
-	beforeArchive  func(id string) error
+	Mode                  MigrateMode
+	BatchSize             int
+	beforeManifest        func(id string) error
+	beforeArchive         func(id string) error
+	beforeInitialBaseline func() error
 }
 
 // MigrateRejection names a loose file that could not be folded and why. A
@@ -538,6 +474,44 @@ func writeBytesAtomic(path string, data []byte) error {
 	return syncDirectory(dir)
 }
 
+func writeBytesExclusiveAtomic(path string, data []byte) (bool, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, err
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return false, err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := writeFull(tmp, data); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Link(tmpPath, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := syncDirectory(dir); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // writeStreamBaselineAtomic writes the sidecar via tmp+rename (never O_EXCL —
 // unlike completion.json this file IS meant to be rewritten, only ever through
 // a governed writer) so a reader never observes a partially written file.
@@ -550,10 +524,9 @@ func writeStreamBaselineAtomic(path string, baseline StreamBaseline) error {
 	return writeBytesAtomic(path, data)
 }
 
-// acquireRebaselineLock guards the sidecar with its own lock (rebaselineLockName),
-// separate from acquireRunLock's whole-migration-run lock, so a re-baseline
-// never blocks (or is blocked by) a live migrate apply/verify — only a second
-// concurrent re-baseline.
+// acquireRebaselineLock guards the sidecar/journal transaction and the narrow
+// initial-baseline + completion publication boundary. It never spans migration
+// batches, but it prevents completion and a governed rebaseline from interleaving.
 func (e *engine) acquireRebaselineLock() (*appendLock, error) {
 	if err := os.MkdirAll(e.migrationRoot(), 0o755); err != nil {
 		return nil, err
@@ -572,7 +545,9 @@ func (e *engine) acquireRebaselineLock() (*appendLock, error) {
 // RebaselineTransaction is a lock-scoped handle. Callers cannot construct one,
 // so journal, sidecar, and recovery operations share the same rebaseline lock.
 type RebaselineTransaction struct {
-	store *Store
+	store  *Store
+	mu     sync.Mutex
+	active bool
 }
 
 func (s *Store) WithRebaselineTransaction(fn func(*RebaselineTransaction) error) (retErr error) {
@@ -591,7 +566,24 @@ func (s *Store) WithRebaselineTransaction(fn func(*RebaselineTransaction) error)
 			retErr = releaseErr
 		}
 	}()
-	return fn(&RebaselineTransaction{store: s})
+	tx := &RebaselineTransaction{store: s, active: true}
+	defer tx.deactivate()
+	return fn(tx)
+}
+
+func (tx *RebaselineTransaction) deactivate() {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	tx.active = false
+}
+
+func (tx *RebaselineTransaction) lockActive() error {
+	tx.mu.Lock()
+	if !tx.active {
+		tx.mu.Unlock()
+		return ErrRebaselineTransactionClosed
+	}
+	return nil
 }
 
 func (tx *RebaselineTransaction) PendingPath() string {
@@ -600,47 +592,73 @@ func (tx *RebaselineTransaction) PendingPath() string {
 
 func (tx *RebaselineTransaction) SidecarPath() string { return tx.store.engine.streamBaselinePath() }
 
-func (tx *RebaselineTransaction) ReadPending() (RebaselinePending, bool, error) {
-	data, err := os.ReadFile(tx.PendingPath())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return RebaselinePending{}, false, nil
-		}
-		return RebaselinePending{}, false, err
+func (s *Store) ReadRebaselinePending() ([]byte, bool, error) {
+	if s == nil || s.engine == nil {
+		return nil, false, fmt.Errorf("event store requires a home")
 	}
-	var pending RebaselinePending
-	if err := json.Unmarshal(data, &pending); err != nil {
-		return RebaselinePending{}, false, fmt.Errorf("parse rebaseline pending %s: %w", tx.PendingPath(), err)
-	}
-	if err := pending.Validate(tx.SidecarPath()); err != nil {
-		return pending, true, err
-	}
-	return pending, true, nil
+	return readRebaselinePendingRaw(filepath.Join(s.engine.migrationRoot(), rebaselinePendingFileName))
 }
 
-func (tx *RebaselineTransaction) WritePending(pending RebaselinePending) error {
-	if err := pending.Validate(tx.SidecarPath()); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(pending, "", "  ")
+func readRebaselinePendingRaw(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+func (tx *RebaselineTransaction) ReadPending() ([]byte, bool, error) {
+	if err := tx.lockActive(); err != nil {
+		return nil, false, err
+	}
+	defer tx.mu.Unlock()
+	return readRebaselinePendingRaw(tx.PendingPath())
+}
+
+func (tx *RebaselineTransaction) WritePending(pending []byte) error {
+	if err := tx.lockActive(); err != nil {
 		return err
 	}
-	return writeBytesAtomic(tx.PendingPath(), append(data, '\n'))
+	defer tx.mu.Unlock()
+	if len(pending) == 0 {
+		return fmt.Errorf("rebaseline pending bytes required")
+	}
+	return writeBytesAtomic(tx.PendingPath(), pending)
 }
 
 func (tx *RebaselineTransaction) ClearPending() error {
-	err := os.Remove(tx.PendingPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
+	if err := tx.lockActive(); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(tx.PendingPath()))
+	defer tx.mu.Unlock()
+	marker, exists, err := readRebaselinePendingRaw(tx.PendingPath())
+	if err != nil || !exists {
+		return err
+	}
+	if err := os.Remove(tx.PendingPath()); err != nil {
+		return err
+	}
+	if err := syncRebaselineDirectoryFn(filepath.Dir(tx.PendingPath())); err != nil {
+		if restoreErr := writeBytesAtomic(tx.PendingPath(), marker); restoreErr != nil {
+			return fmt.Errorf("sync pending removal: %v; restore exact pending marker: %w", err, restoreErr)
+		}
+		return fmt.Errorf("sync pending removal (exact marker restored): %w", err)
+	}
+	return nil
 }
 
 func (tx *RebaselineTransaction) ReadSidecar() ([]byte, bool, error) {
+	if err := tx.lockActive(); err != nil {
+		return nil, false, err
+	}
+	defer tx.mu.Unlock()
+	return tx.readSidecarRaw()
+}
+
+func (tx *RebaselineTransaction) readSidecarRaw() ([]byte, bool, error) {
 	data, err := os.ReadFile(tx.SidecarPath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -652,10 +670,18 @@ func (tx *RebaselineTransaction) ReadSidecar() ([]byte, bool, error) {
 }
 
 func (tx *RebaselineTransaction) FreshPreview() (StreamBaselinePreview, error) {
+	if err := tx.lockActive(); err != nil {
+		return StreamBaselinePreview{}, err
+	}
+	defer tx.mu.Unlock()
 	return tx.store.previewStreamBaselineRaw()
 }
 
 func (tx *RebaselineTransaction) Plan(now time.Time) (StreamBaseline, []byte, error) {
+	if err := tx.lockActive(); err != nil {
+		return StreamBaseline{}, nil, err
+	}
+	defer tx.mu.Unlock()
 	if !tx.store.engine.migrationComplete() {
 		return StreamBaseline{}, nil, fmt.Errorf("event-store rebaseline: migration is not complete; nothing to re-baseline (run `compound event-store migrate --apply` first)")
 	}
@@ -672,7 +698,11 @@ func (tx *RebaselineTransaction) Plan(now time.Time) (StreamBaseline, []byte, er
 }
 
 func (tx *RebaselineTransaction) WriteSidecarCAS(expected []byte, expectedExisted bool, replacement []byte) error {
-	current, existed, err := tx.ReadSidecar()
+	if err := tx.lockActive(); err != nil {
+		return err
+	}
+	defer tx.mu.Unlock()
+	current, existed, err := tx.readSidecarRaw()
 	if err != nil {
 		return err
 	}
@@ -683,7 +713,11 @@ func (tx *RebaselineTransaction) WriteSidecarCAS(expected []byte, expectedExiste
 }
 
 func (tx *RebaselineTransaction) RollbackSidecarCAS(expectedPost, prior []byte, priorExisted bool) error {
-	current, existed, err := tx.ReadSidecar()
+	if err := tx.lockActive(); err != nil {
+		return err
+	}
+	defer tx.mu.Unlock()
+	current, existed, err := tx.readSidecarRaw()
 	if err != nil {
 		return err
 	}
@@ -697,6 +731,21 @@ func (tx *RebaselineTransaction) RollbackSidecarCAS(expectedPost, prior []byte, 
 		return err
 	}
 	return syncDirectory(filepath.Dir(tx.SidecarPath()))
+}
+
+func (tx *RebaselineTransaction) VerifySidecarCAS(expected []byte) error {
+	if err := tx.lockActive(); err != nil {
+		return err
+	}
+	defer tx.mu.Unlock()
+	current, exists, err := tx.readSidecarRaw()
+	if err != nil {
+		return err
+	}
+	if !exists || !bytes.Equal(current, expected) {
+		return fmt.Errorf("%w: sidecar does not match expected post-image", ErrRebaselineStateConflict)
+	}
+	return nil
 }
 
 // StreamBaselinePreview is the current-vs-proposed projection for `compound
@@ -755,38 +804,6 @@ func (s *Store) previewStreamBaselineRaw() (StreamBaselinePreview, error) {
 		preview.Current = baseline.Streams
 	}
 	return preview, nil
-}
-
-// RebaselineStreams is the governed mutation itself: the caller (cmd/compound)
-// is responsible for minting the ActionIntent, evaluating policy, and refusing
-// on a non-allowing PolicyDecision BEFORE calling this — mirroring how an
-// act.Adapter's write only ever runs after Execute's gate has already passed.
-// This method carries no policy awareness of its own; it only refuses when
-// there is nothing to re-baseline (migration incomplete), which is true
-// regardless of any grant.
-func (s *Store) RebaselineStreams(now time.Time) (StreamBaseline, error) {
-	var result StreamBaseline
-	err := s.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
-		if _, exists, err := tx.ReadPending(); err != nil {
-			return err
-		} else if exists {
-			return ErrRebaselineFinalizationPending
-		}
-		prior, existed, err := tx.ReadSidecar()
-		if err != nil {
-			return err
-		}
-		baseline, data, err := tx.Plan(now)
-		if err != nil {
-			return err
-		}
-		if err := tx.WriteSidecarCAS(prior, existed, data); err != nil {
-			return err
-		}
-		result = baseline
-		return nil
-	})
-	return result, err
 }
 
 func (m *migrator) now() string { return m.engine.clock().UTC().Format(time.RFC3339Nano) }
@@ -1461,34 +1478,34 @@ func (m *migrator) writeCompletion(comp CompletionReport) error {
 	if err := os.MkdirAll(m.engine.migrationRoot(), 0o755); err != nil {
 		return err
 	}
+	lock, err := m.engine.acquireRebaselineLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	if _, exists, err := readRebaselinePendingRaw(filepath.Join(m.engine.migrationRoot(), rebaselinePendingFileName)); err != nil {
+		return err
+	} else if exists {
+		return ErrRebaselineFinalizationPending
+	}
+	if m.opts.beforeInitialBaseline != nil {
+		if err := m.opts.beforeInitialBaseline(); err != nil {
+			return err
+		}
+	}
+	if err := m.engine.writeInitialStreamBaseline(m.now()); err != nil {
+		return err
+	}
+	// completion.json is the externally visible gate and is deliberately
+	// published LAST, after the initial baseline is durable under the same lock.
 	comp.Schema = completionSchema
 	data, err := json.MarshalIndent(comp, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	f, err := os.OpenFile(m.engine.completionPath(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return nil
-		}
-		return err
-	}
-	if err := writeFull(f, data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := syncDirectory(m.engine.migrationRoot()); err != nil {
-		return err
-	}
-	return m.engine.writeInitialStreamBaseline(m.now())
+	_, err = writeBytesExclusiveAtomic(m.engine.completionPath(), data)
+	return err
 }
 
 // writeInitialStreamBaseline records the frozen streams' sizes AT completion
@@ -1500,22 +1517,22 @@ func (m *migrator) writeCompletion(comp CompletionReport) error {
 // which writeCompletion's O_EXCL branch short-circuits before ever calling
 // this) is left untouched.
 func (e *engine) writeInitialStreamBaseline(recordedAt string) error {
-	path := e.streamBaselinePath()
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 	sizes, err := e.currentStreamSizes()
 	if err != nil {
 		return err
 	}
-	return writeStreamBaselineAtomic(path, StreamBaseline{
+	baseline := StreamBaseline{
 		Schema:     streamBaselineSchema,
 		RecordedAt: recordedAt,
 		Reason:     streamBaselineReasonCompletion,
 		Streams:    sizes,
-	})
+	}
+	data, err := json.MarshalIndent(baseline, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = writeBytesExclusiveAtomic(e.streamBaselinePath(), append(data, '\n'))
+	return err
 }
 
 // acquireRunLock guards against two concurrent migrations. It is a whole-run

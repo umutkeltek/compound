@@ -4,11 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
-
-	"compound/internal/envelope"
 )
 
 // These tests prove the frozen-stream doctor's byte-size baseline (see
@@ -133,12 +132,12 @@ func TestLegacyStreamRegrewFallsBackToMtimeWhenSidecarAbsent(t *testing.T) {
 }
 
 // FALSIFIERS F2 (re-baseline path) + F3 (teeth after re-baseline), exercised
-// directly against the eventstore primitive (Store.RebaselineStreams): a
+// directly against the eventstore transaction primitive: a
 // completed home whose stream legitimately grew reports degraded; re-baselining
 // records the grown size as the new trusted baseline and verify goes back to
 // ok; a further append after THAT flips degraded again — re-baselining is not
 // a one-time escape hatch, it re-arms the same doctor at the new size.
-func TestRebaselineStreamsAcceptsGrowthThenDetectsFurtherGrowth(t *testing.T) {
+func TestRebaselineTransactionAcceptsGrowthThenDetectsFurtherGrowth(t *testing.T) {
 	store := openMigrateStore(t)
 	seedLoose(t, store, "rec_f2", "body-f2")
 
@@ -168,9 +167,7 @@ func TestRebaselineStreamsAcceptsGrowthThenDetectsFurtherGrowth(t *testing.T) {
 		t.Fatal("grown stream must flag degraded BEFORE re-baselining")
 	}
 
-	if _, err := store.RebaselineStreams(migrateNow.Add(time.Hour)); err != nil {
-		t.Fatalf("rebaseline: %v", err)
-	}
+	applyTestRebaseline(t, store, migrateNow.Add(time.Hour))
 	baseline, ok, err := readStreamBaseline(store.engine.streamBaselinePath())
 	if err != nil || !ok {
 		t.Fatalf("expected a rebaselined sidecar: ok=%v err=%v", ok, err)
@@ -212,10 +209,13 @@ func TestRebaselineStreamsAcceptsGrowthThenDetectsFurtherGrowth(t *testing.T) {
 	}
 }
 
-// RebaselineStreams refuses (and touches nothing) when migration is not complete.
-func TestRebaselineStreamsRefusesWhenMigrationIncomplete(t *testing.T) {
+// The physical transaction refuses (and touches nothing) when migration is not complete.
+func TestRebaselineTransactionRefusesWhenMigrationIncomplete(t *testing.T) {
 	store := openMigrateStore(t)
-	if _, err := store.RebaselineStreams(migrateNow); err == nil {
+	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		_, _, err := tx.Plan(migrateNow)
+		return err
+	}); err == nil {
 		t.Fatal("expected an error re-baselining a home with no completed migration")
 	}
 	if _, err := os.Stat(store.engine.streamBaselinePath()); !os.IsNotExist(err) {
@@ -252,7 +252,7 @@ func TestPendingRebaselineFailsClosedForBaselineReaders(t *testing.T) {
 	if report, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err != nil || !report.Completion.Complete {
 		t.Fatalf("apply: report=%+v err=%v", report, err)
 	}
-	pending := validTestRebaselinePending(t, store)
+	pending := []byte(`{"schema_version":"test.pending"}` + "\n")
 	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
 		return tx.WritePending(pending)
 	}); err != nil {
@@ -296,12 +296,101 @@ func TestRebaselineTransactionCASRollbackRefusesConcurrentState(t *testing.T) {
 	}
 }
 
-func validTestRebaselinePending(t *testing.T, store *Store) RebaselinePending {
+func TestRebaselineTransactionEscapedHandleCannotMutateAfterCallback(t *testing.T) {
+	store := openTestStore(t)
+	var escaped *RebaselineTransaction
+	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		escaped = tx
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := escaped.WritePending([]byte("escaped")); !errors.Is(err, ErrRebaselineTransactionClosed) {
+		t.Fatalf("escaped write err=%v, want closed sentinel", err)
+	}
+	if _, err := os.Stat(escaped.PendingPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("escaped transaction wrote marker: %v", err)
+	}
+}
+
+func TestClearPendingRestoresExactMarkerWhenDirectorySyncFails(t *testing.T) {
+	store := openTestStore(t)
+	marker := []byte("exact raw pending bytes\n")
+	original := syncRebaselineDirectoryFn
+	fail := true
+	syncRebaselineDirectoryFn = func(path string) error {
+		if fail {
+			fail = false
+			return errors.New("forced pending clear directory sync failure")
+		}
+		return original(path)
+	}
+	t.Cleanup(func() { syncRebaselineDirectoryFn = original })
+	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		if err := tx.WritePending(marker); err != nil {
+			return err
+		}
+		if err := tx.ClearPending(); err == nil {
+			t.Fatal("clear unexpectedly succeeded")
+		}
+		got, exists, err := tx.ReadPending()
+		if err != nil || !exists || !reflect.DeepEqual(got, marker) {
+			t.Fatalf("restored marker got=%q exists=%t err=%v", got, exists, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMigrationCompletionPublishesBaselineBeforeCompletionUnderRebaselineLock(t *testing.T) {
+	store := openMigrateStore(t)
+	seedLoose(t, store, "rec_completion_barrier", "body")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.Migrate(MigrateOptions{Mode: ModeApply, beforeInitialBaseline: func() error {
+			close(entered)
+			<-release
+			return nil
+		}})
+		done <- err
+	}()
+	<-entered
+	if store.MigrationComplete() {
+		t.Fatal("completion became visible before initial baseline publication")
+	}
+	if err := store.WithRebaselineTransaction(func(*RebaselineTransaction) error { return nil }); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("second rebaseline transaction err=%v, want lock refusal", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !store.MigrationComplete() {
+		t.Fatal("completion not published after baseline initialization")
+	}
+	if _, ok, err := readStreamBaseline(store.engine.streamBaselinePath()); err != nil || !ok {
+		t.Fatalf("initial baseline missing after completion: ok=%t err=%v", ok, err)
+	}
+}
+
+func applyTestRebaseline(t *testing.T, store *Store, now time.Time) {
 	t.Helper()
-	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
-	receipt := envelope.Receipt{Header: envelope.Header{SchemaVersion: envelope.SVReceipt, ID: "rec_pending", CreatedAt: now, Producer: envelope.Producer{Kind: "cli", Name: "compound"}, IDs: envelope.IDs{WorkID: "work_pending"}, Authority: envelope.Authority{SourceClass: "runtime", Status: "current"}, Privacy: "private", Risk: "tier1", EvidenceRefs: []string{"eventstore-baseline-before:absent", "eventstore-baseline-after:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, Uncertainty: envelope.Uncertainty{Level: "known"}}, Outcome: "completed", MoveType: "outward_delta", StateDelta: envelope.StateDelta{Changed: true, Summary: "test", Artifacts: []string{"artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}, Cost: envelope.ReceiptCost{ModelCalls: []string{}}, Skills: envelope.ReceiptSkills{Used: []string{}, Missed: []string{}, Candidate: []string{}, UsedDeclared: true}, Memory: envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}}, Next: envelope.ReceiptNext{SuggestedWork: []string{}}, ProofRefs: []string{"artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
-	transition := envelope.Transition{Header: envelope.Header{SchemaVersion: envelope.SVTransition, ID: "tr_pending", CreatedAt: now, Producer: envelope.Producer{Kind: "cli", Name: "compound"}, IDs: envelope.IDs{WorkID: "work_pending"}, Authority: envelope.Authority{SourceClass: "runtime", Status: "current"}, Privacy: "private", Risk: "tier1", EvidenceRefs: []string{"eventstore-baseline-before:absent", "eventstore-baseline-after:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, Uncertainty: envelope.Uncertainty{Level: "known"}}, BeforeRefs: []string{"artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, ActionRefs: []string{"act_pending"}, AfterRefs: []string{"artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, Projections: envelope.Projections{}, SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: true}}
-	return RebaselinePending{SchemaVersion: RebaselinePendingSchema, SidecarPath: store.engine.streamBaselinePath(), PriorExisted: false, PreImageRef: "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PostImageRef: "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", BeforeEvidenceRef: "eventstore-baseline-before:absent", AfterEvidenceRef: "eventstore-baseline-after:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ActionIntentID: "act_pending", PolicyDecisionID: "pol_pending", AuthorityRevision: "policy-authority-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Receipt: receipt, Transition: transition}
+	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		prior, existed, err := tx.ReadSidecar()
+		if err != nil {
+			return err
+		}
+		_, post, err := tx.Plan(now)
+		if err != nil {
+			return err
+		}
+		return tx.WriteSidecarCAS(prior, existed, post)
+	}); err != nil {
+		t.Fatalf("rebaseline primitive: %v", err)
+	}
 }
 
 func openForAppend(t *testing.T, path string) *os.File {

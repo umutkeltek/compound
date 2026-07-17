@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,42 +84,6 @@ func seedGrantedRebaselineHome(t *testing.T) (homePath, sidecarPath string) {
 	return homePath, sidecarPath
 }
 
-// makeSegmentsReadOnly wedges the canonical event store's WRITE path (the post-mutation
-// receipt/transition record) by removing traverse/write permission from every segments file and dir,
-// while leaving the sidecar dir (events/migration) writable so RebaselineStreams still succeeds.
-// This is the real, fs-level teeth for the record-after-sidecar-write failure — no test seam.
-func makeSegmentsReadOnly(t *testing.T, homePath string) {
-	t.Helper()
-	segRoot := filepath.Join(homePath, "events", "segments")
-	if _, err := os.Stat(segRoot); err != nil {
-		t.Fatalf("expected a segments dir after migrate --apply: %v", err)
-	}
-	var paths []string
-	if err := filepath.WalkDir(segRoot, func(p string, _ fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		paths = append(paths, p)
-		return nil
-	}); err != nil {
-		t.Fatalf("walk %s: %v", segRoot, err)
-	}
-	// Restore writability BEFORE t.TempDir's RemoveAll runs (t.Cleanup is LIFO; this was
-	// registered after TempDir's cleanup, so it runs first). Parents first so each child stays
-	// reachable while we re-open the tree.
-	t.Cleanup(func() {
-		for _, p := range paths {
-			_ = os.Chmod(p, 0o755)
-		}
-	})
-	// Remove perms deepest-first so a parent stays traversable while we lock its children.
-	for i := len(paths) - 1; i >= 0; i-- {
-		if err := os.Chmod(paths[i], 0o444); err != nil {
-			t.Fatalf("chmod ro %s: %v", paths[i], err)
-		}
-	}
-}
-
 func sha256Hex(t *testing.T, data []byte) string {
 	t.Helper()
 	sum := sha256.Sum256(data)
@@ -136,7 +99,7 @@ func containsRef(refs []string, want string) bool {
 	return false
 }
 
-// FALSIFIER F1 (durable proof or rollback): a record failure AFTER a successful RebaselineStreams
+// FALSIFIER F1 (durable proof or rollback): a record failure AFTER a successful sidecar CAS
 // must restore the sidecar byte-identical to its prior bytes and exit nonzero — never leave a
 // mutated trust sidecar without durable proof. RED at base (base leaves the sidecar mutated and
 // prints "rebaseline written but receipt could not be recorded"); GREEN with the rollback.
@@ -245,8 +208,8 @@ func TestEventStoreRebaselineRecoveryFindingWhenRestoreFails(t *testing.T) {
 	if found == nil {
 		t.Fatalf("no recovery finding named the sidecar path %q and manual recovery", sidecarPath)
 	}
-	if len(found.EvidenceRefs) != 2 {
-		t.Fatalf("recovery finding refs=%v, want pre + actual", found.EvidenceRefs)
+	if len(found.EvidenceRefs) != 3 {
+		t.Fatalf("recovery finding refs=%v, want pre + actual + raw marker", found.EvidenceRefs)
 	}
 	actual, err := os.ReadFile(sidecarPath)
 	if err != nil {
@@ -263,6 +226,14 @@ func TestEventStoreRebaselineRecoveryFindingWhenRestoreFails(t *testing.T) {
 	actualArtifact, err := artifacts.Get(found.EvidenceRefs[1])
 	if err != nil || string(actualArtifact) != string(actual) {
 		t.Fatalf("recovery actual artifact mismatch: err=%v got=%q want=%q", err, actualArtifact, actual)
+	}
+	marker, err := os.ReadFile(filepath.Join(homePath, "events", "migration", "rebaseline-pending.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markerArtifact, err := artifacts.Get(found.EvidenceRefs[2])
+	if err != nil || string(markerArtifact) != string(marker) {
+		t.Fatalf("recovery marker artifact mismatch: err=%v", err)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")); err != nil {
 		t.Fatalf("recovery marker must remain: %v", err)
@@ -362,7 +333,7 @@ func TestEventStoreRebaselineTransitionFailureRollsForwardExactProofOnRetry(t *t
 	if err != nil {
 		t.Fatalf("pending marker missing: %v", err)
 	}
-	var pending eventstore.RebaselinePending
+	var pending rebaselinePending
 	if err := json.Unmarshal(body, &pending); err != nil {
 		t.Fatal(err)
 	}
@@ -436,11 +407,14 @@ func TestEventStoreRebaselineSidecarConflictKeepsJournalAndArtifactsActualState(
 	homePath, _ := seedGrantedRebaselineHome(t)
 	foreign := []byte("foreign concurrent baseline bytes\n")
 	original := writeRebaselineSidecarFn
-	writeRebaselineSidecarFn = func(tx *eventstore.RebaselineTransaction, _ []byte, _ bool, _ []byte) error {
+	writeRebaselineSidecarFn = func(tx *eventstore.RebaselineTransaction, prior []byte, priorExisted bool, post []byte) error {
+		if err := tx.WriteSidecarCAS(prior, priorExisted, post); err != nil {
+			return err
+		}
 		if err := os.WriteFile(tx.SidecarPath(), foreign, 0o644); err != nil {
 			return err
 		}
-		return eventstore.ErrRebaselineStateConflict
+		return nil
 	}
 	t.Cleanup(func() { writeRebaselineSidecarFn = original })
 
@@ -450,6 +424,21 @@ func TestEventStoreRebaselineSidecarConflictKeepsJournalAndArtifactsActualState(
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")); err != nil {
 		t.Fatalf("conflict cleared recovery journal: %v", err)
+	}
+	pendingRaw, err := os.ReadFile(filepath.Join(homePath, "events", "migration", "rebaseline-pending.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := decodeRebaselinePending(pendingRaw, filepath.Join(homePath, "events", "migration", "stream-baseline.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := store.Exists(pending.Receipt.ID); err != nil || exists {
+		t.Fatalf("CAS mismatch persisted completed receipt: exists=%t err=%v", exists, err)
 	}
 	matches, err := filepath.Glob(filepath.Join(homePath, "observed", "findings", "*.json"))
 	if err != nil || len(matches) == 0 {
@@ -463,8 +452,8 @@ func TestEventStoreRebaselineSidecarConflictKeepsJournalAndArtifactsActualState(
 	if err := json.Unmarshal(body, &found); err != nil {
 		t.Fatal(err)
 	}
-	if len(found.EvidenceRefs) != 2 {
-		t.Fatalf("finding refs=%v, want pre + actual", found.EvidenceRefs)
+	if len(found.EvidenceRefs) != 3 {
+		t.Fatalf("finding refs=%v, want pre + actual + raw marker", found.EvidenceRefs)
 	}
 	artifacts, err := home.NewArtifactStore(homePath)
 	if err != nil {
@@ -473,6 +462,273 @@ func TestEventStoreRebaselineSidecarConflictKeepsJournalAndArtifactsActualState(
 	actual, err := artifacts.Get(found.EvidenceRefs[1])
 	if err != nil || string(actual) != string(foreign) {
 		t.Fatalf("actual-state artifact got=%q err=%v want=%q", actual, err, foreign)
+	}
+}
+
+func TestEventStoreRebaselineMalformedPendingIsPreservedAsRecoveryEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "malformed_json", raw: []byte("{not-json\n")},
+		{name: "invalid_schema", raw: []byte(`{"schema_version":"wrong"}` + "\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath, _ := seedGrantedRebaselineHome(t)
+			pendingPath := filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")
+			if err := os.WriteFile(pendingPath, tc.raw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_bad_pending", "--home", homePath)
+			if code == 0 || !strings.Contains(errStr, "recovery finding") {
+				t.Fatalf("code=%d err=%q", code, errStr)
+			}
+			gotRaw, err := os.ReadFile(pendingPath)
+			if err != nil || string(gotRaw) != string(tc.raw) {
+				t.Fatalf("raw pending marker changed: got=%q err=%v want=%q", gotRaw, err, tc.raw)
+			}
+			matches, err := filepath.Glob(filepath.Join(homePath, "observed", "findings", "*.json"))
+			if err != nil || len(matches) != 1 {
+				t.Fatalf("findings=%v err=%v", matches, err)
+			}
+			body, err := os.ReadFile(matches[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found finding.Finding
+			if err := json.Unmarshal(body, &found); err != nil {
+				t.Fatal(err)
+			}
+			for _, ref := range found.EvidenceRefs {
+				if strings.TrimSpace(ref) == "" {
+					t.Fatalf("finding contains empty evidence ref: %v", found.EvidenceRefs)
+				}
+			}
+			if len(found.EvidenceRefs) != 2 {
+				t.Fatalf("refs=%v, want actual state + raw marker", found.EvidenceRefs)
+			}
+			artifacts, err := home.NewArtifactStore(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			markerArtifact, err := artifacts.Get(found.EvidenceRefs[1])
+			if err != nil || string(markerArtifact) != string(tc.raw) {
+				t.Fatalf("raw marker artifact got=%q err=%v want=%q", markerArtifact, err, tc.raw)
+			}
+		})
+	}
+}
+
+func TestEventstoreProofPresenceTreatsUnknownStoredFieldsAsConflict(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 11, 12, 13, 123456789, time.UTC)
+	ai := rebaselineIntent("work_proof_exact", envelope.ActionTarget{Kind: "eventstore_stream_baseline", ID: "stream-baseline", Path: filepath.Join(homePath, "events", "migration", "stream-baseline.json")}, now)
+	preRef := "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	postRef := "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	receipt, _ := rebaselineReceiptAndTransition(ai, map[string]int64{}, map[string]int64{}, "eventstore-baseline-before:absent", "eventstore-baseline-after:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", preRef, postRef, now)
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatal(err)
+	}
+	stored["future_unknown_field"] = map[string]any{"must_not_be_dropped": true}
+	if _, err := store.PutJSON(receipt.ID, stored, " "); err != nil {
+		t.Fatal(err)
+	}
+	state, err := eventstoreProofPresence(store, &receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != proofConflict {
+		t.Fatalf("proof presence=%v, want conflict for unknown stored field", state)
+	}
+}
+
+func TestEventStoreRebaselineSameWorkSameSecondProducesDistinctProofIDs(t *testing.T) {
+	homePath, _ := seedGrantedRebaselineHome(t)
+	base := time.Date(2026, 7, 17, 11, 12, 13, 0, time.UTC)
+	withNanos := base.Add(123456789 * time.Nanosecond)
+	intent := rebaselineIntent("work_timestamp", envelope.ActionTarget{Kind: "eventstore_stream_baseline", ID: "stream-baseline", Path: filepath.Join(homePath, "events", "migration", "stream-baseline.json")}, withNanos)
+	if intent.CreatedAt != withNanos.Format(time.RFC3339Nano) {
+		t.Fatalf("action created_at=%q, want %q", intent.CreatedAt, withNanos.Format(time.RFC3339Nano))
+	}
+	original := rebaselineNowFn
+	clockCalls := 0
+	rebaselineNowFn = func() time.Time {
+		clockCalls++
+		return base.Add(time.Duration(clockCalls) * time.Nanosecond)
+	}
+	t.Cleanup(func() { rebaselineNowFn = original })
+
+	run := func() struct {
+		ReceiptID    string `json:"receipt_id"`
+		TransitionID string `json:"transition_id"`
+	} {
+		out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_same_second", "--home", homePath, "--json")
+		if code != 0 {
+			t.Fatalf("confirm code=%d err=%q out=%q", code, errStr, out)
+		}
+		var result struct {
+			ReceiptID    string `json:"receipt_id"`
+			TransitionID string `json:"transition_id"`
+		}
+		if err := json.Unmarshal([]byte(out), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	first := run()
+	second := run()
+	if first.ReceiptID == second.ReceiptID || first.TransitionID == second.TransitionID {
+		t.Fatalf("same-second confirms collided: first=%+v second=%+v", first, second)
+	}
+	var firstReceipt envelope.Receipt
+	readTestEventJSON(t, homePath, first.ReceiptID, &firstReceipt)
+	var secondReceipt envelope.Receipt
+	readTestEventJSON(t, homePath, second.ReceiptID, &secondReceipt)
+	firstCreated, err := time.Parse(time.RFC3339Nano, firstReceipt.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCreated, err := time.Parse(time.RFC3339Nano, secondReceipt.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstCreated.Equal(secondCreated) || !firstCreated.Truncate(time.Second).Equal(secondCreated.Truncate(time.Second)) {
+		t.Fatalf("receipt timestamps not distinct within same second: %s %s", firstReceipt.CreatedAt, secondReceipt.CreatedAt)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("double confirm stranded journal: %v", err)
+	}
+}
+
+func TestEventStoreRebaselinePendingClearFailureRetriesWithoutSecondMutation(t *testing.T) {
+	homePath, sidecarPath := seedGrantedRebaselineHome(t)
+	original := clearRebaselinePendingFn
+	failed := false
+	clearRebaselinePendingFn = func(tx *eventstore.RebaselineTransaction) error {
+		if !failed {
+			failed = true
+			return errors.New("forced durable pending-clear failure")
+		}
+		return original(tx)
+	}
+	t.Cleanup(func() { clearRebaselinePendingFn = original })
+
+	_, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_clear_retry", "--home", homePath, "--json")
+	if code == 0 || !strings.Contains(errStr, "finalization pending") {
+		t.Fatalf("first confirm code=%d err=%q", code, errStr)
+	}
+	pendingPath := filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")
+	raw, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := decodeRebaselinePending(raw, sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postBeforeRetry, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearRebaselinePendingFn = original
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_must_not_replace", "--home", homePath, "--json")
+	if code != 0 {
+		t.Fatalf("retry code=%d err=%q out=%q", code, errStr, out)
+	}
+	var result struct {
+		ReceiptID    string `json:"receipt_id"`
+		TransitionID string `json:"transition_id"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ReceiptID != pending.Receipt.ID || result.TransitionID != pending.Transition.ID {
+		t.Fatalf("retry replaced exact proof: got=%+v pending=%s/%s", result, pending.Receipt.ID, pending.Transition.ID)
+	}
+	postAfterRetry, err := os.ReadFile(sidecarPath)
+	if err != nil || string(postAfterRetry) != string(postBeforeRetry) {
+		t.Fatalf("retry second-mutated sidecar: err=%v", err)
+	}
+	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
+		t.Fatalf("retry did not clear pending marker: %v", err)
+	}
+}
+
+func TestEventStoreRebaselineRecoversNoProofPreAndPostJournalStates(t *testing.T) {
+	for _, state := range []string{"pre", "post"} {
+		t.Run(state, func(t *testing.T) {
+			homePath, sidecarPath := seedGrantedRebaselineHome(t)
+			pre, err := os.ReadFile(sidecarPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := recordEventstoreEnvelopeFn
+			failed := false
+			recordEventstoreEnvelopeFn = func(store *eventstore.Store, value envelope.Envelope) error {
+				if _, ok := value.(*envelope.Transition); ok && !failed {
+					failed = true
+					return errors.New("seed pending state before transition")
+				}
+				return original(store, value)
+			}
+			_, _, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_seed_"+state, "--home", homePath)
+			recordEventstoreEnvelopeFn = original
+			t.Cleanup(func() { recordEventstoreEnvelopeFn = original })
+			if code == 0 {
+				t.Fatal("seed transition failure unexpectedly succeeded")
+			}
+			pendingPath := filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")
+			raw, err := os.ReadFile(pendingPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending, err := decodeRebaselinePending(raw, sidecarPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := eventstore.Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Remove(pending.Receipt.ID); err != nil {
+				t.Fatalf("remove seeded receipt: %v", err)
+			}
+			if state == "pre" {
+				if err := os.WriteFile(sidecarPath, pre, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_recovered_"+state, "--home", homePath, "--json")
+			if code != 0 {
+				t.Fatalf("recovery code=%d err=%q out=%q", code, errStr, out)
+			}
+			var result struct {
+				ReceiptID string `json:"receipt_id"`
+			}
+			if err := json.Unmarshal([]byte(out), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.ReceiptID == pending.Receipt.ID {
+				t.Fatalf("no-proof recovery reused abandoned receipt %s", result.ReceiptID)
+			}
+			var receipt envelope.Receipt
+			readTestEventJSON(t, homePath, result.ReceiptID, &receipt)
+			if len(receipt.ProofRefs) < 1 || receipt.ProofRefs[0] != pending.PreImageRef {
+				t.Fatalf("recovery did not proceed from exact preimage: proof=%v want_pre=%s", receipt.ProofRefs, pending.PreImageRef)
+			}
+			if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
+				t.Fatalf("recovery stranded marker: %v", err)
+			}
+		})
 	}
 }
 
@@ -535,11 +791,43 @@ func TestEventStoreRebaselineAuthorityFaceIsLiveAndConfirmReevaluatesPolicy(t *t
 		t.Fatal(err)
 	}
 	_, errStr, code = runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_fresh_policy", "--home", homePath)
-	if code == 0 || !strings.Contains(errStr, "authority refused") {
+	if code == 0 || !strings.Contains(errStr, "refused") {
 		t.Fatalf("confirm did not freshly refuse changed policy: code=%d err=%q", code, errStr)
 	}
 	after, err := os.ReadFile(sidecarPath)
 	if err != nil || string(after) != string(before) {
 		t.Fatalf("refused confirm mutated sidecar")
+	}
+}
+
+func TestEventStoreRebaselineFreshInLockAuthorityCanRefuseAllowedPreflight(t *testing.T) {
+	homePath, sidecarPath := seedGrantedRebaselineHome(t)
+	before, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := loadRebaselinePolicyFn
+	calls := 0
+	loadRebaselinePolicyFn = func(path string) (policy.Config, string, error) {
+		calls++
+		if calls == 1 {
+			return original(path)
+		}
+		return policy.DefaultConfig(), "changed-after-preflight", nil
+	}
+	t.Cleanup(func() { loadRebaselinePolicyFn = original })
+	_, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_fresh_in_lock", "--home", homePath)
+	if code == 0 || !strings.Contains(errStr, "authority refused") {
+		t.Fatalf("confirm code=%d err=%q, want fresh in-lock refusal", code, errStr)
+	}
+	if calls != 2 {
+		t.Fatalf("policy load calls=%d, want preflight + in-lock evaluation", calls)
+	}
+	after, err := os.ReadFile(sidecarPath)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("fresh refusal mutated sidecar: err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("fresh refusal wrote pending marker: %v", err)
 	}
 }

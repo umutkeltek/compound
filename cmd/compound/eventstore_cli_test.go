@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -204,6 +205,11 @@ func TestEventStoreRebaselineRefusesWithoutGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lockPath := filepath.Join(homePath, "events", "migration", ".rebaseline.lock")
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	homeBefore := snapshotHomeFiles(t, homePath)
 
 	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_nogrant", "--home", homePath)
 	if code == 0 {
@@ -227,6 +233,38 @@ func TestEventStoreRebaselineRefusesWithoutGrant(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")); !os.IsNotExist(err) {
 		t.Fatalf("refused confirm wrote pending journal: %v", err)
 	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("refused confirm created rebaseline lock: %v", err)
+	}
+	if homeAfter := snapshotHomeFiles(t, homePath); !reflect.DeepEqual(homeAfter, homeBefore) {
+		t.Fatalf("refused confirm changed home:\nbefore=%v\nafter=%v", homeBefore, homeAfter)
+	}
+}
+
+func snapshotHomeFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(body)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 // --confirm requires --work (a governed act belongs to a work), mirroring `compound act`.
