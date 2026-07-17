@@ -316,5 +316,34 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
     }
   }
 
+  /* ---------- f6: long confirmation stays reachable ---------- */
+
+  // AuthorityFace adds enough real content to overflow a phone or short
+  // window. The shared dialog therefore owns a structural layout contract:
+  // viewport-bounded shell, one contained scroll region for all descriptive
+  // content, and a non-scrolling action row. A max-height on the wrong node
+  // or scrolling the buttons with the content does not satisfy this guard.
+  {
+    const src = read("components/kit/ConfirmDialog.tsx");
+    const content = src.match(/<Dialog\.Content[\s\S]*?<\/Dialog\.Content>/)?.[0] ?? "";
+    const scrollRegion = content.match(/<div\s+className="min-h-0 flex-1 overflow-y-auto overscroll-contain[^\"]*"[^>]*>([\s\S]*?)<\/div>\s*<div className="mt-4 flex shrink-0/)?.[1] ?? "";
+
+    if (!/max-h-\[calc\(100dvh-2rem\)\]/.test(content) ||
+        !/w-\[calc\(100vw-2rem\)\]/.test(content) ||
+        !/flex[^\"]*flex-col[^\"]*overflow-hidden/.test(content)) {
+      fail("ConfirmDialog shell is not bounded to narrow/short viewports with contained overflow");
+    } else if (!scrollRegion ||
+        !/Dialog\.Description/.test(scrollRegion) ||
+        !/policyNote/.test(scrollRegion) ||
+        !/argv/.test(scrollRegion) ||
+        !/children/.test(scrollRegion)) {
+      fail("ConfirmDialog does not keep all long descriptive/authority content inside its scroll region");
+    } else if (!/className="mt-4 flex shrink-0[^\"]*border-t[^\"]*pt-4"/.test(content)) {
+      fail("ConfirmDialog actions are not pinned outside the scroll region");
+    } else {
+      pass("ConfirmDialog is viewport-bounded; long authority content scrolls while actions remain reachable");
+    }
+  }
+
   return { ok, details };
 }
