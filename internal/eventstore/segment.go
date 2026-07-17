@@ -39,8 +39,6 @@ type engine struct {
 	warnOnce        sync.Once
 	sourceHashMu    sync.Mutex
 	sourceHashes    map[string]cachedSourceHash
-	hotCache        hotSegmentCache
-	indexCache      segmentIndexCache
 }
 
 type putMode uint8

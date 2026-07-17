@@ -366,3 +366,49 @@ func TestPutSealedIDResolvesViaIndexNotHotMemo(t *testing.T) {
 		t.Fatal("dup put against sealed-only id mutated the sealed segment")
 	}
 }
+
+// F8 — consumer lifecycle (the live-flow falsifier this package's F1 could
+// not see). The real import path (routeevidence.RecordTransition) calls
+// eventstore.Open PER ROW, so an engine-scoped memo dies with every row and
+// the hot segment is still full-parsed once per put — the 2026-07-17 live
+// run proved F1 green while the real 5000-row all-dup import stayed slow.
+// The hot-segment and sealed-index memos are therefore package-level and
+// path-keyed (absolute paths; distinct homes cannot collide): N all-dup puts
+// through N FRESH stores on the same home must still full-parse the hot
+// segment exactly once process-wide.
+func TestPutAllDupAcrossFreshStoreOpensParsesOnce(t *testing.T) {
+	now := time.Date(2026, 7, 17, 11, 0, 0, 0, time.UTC)
+	config := engineConfig{clock: func() time.Time { return now }}
+	first := openConfiguredStore(t, config)
+	home := first.engine.home
+	day := ingestionDay(now)
+
+	trPath := hotSegmentPath(first, "transition", day)
+	for i := 0; i < 200; i++ {
+		id := fmt.Sprintf("tr_freshopen_%04d", i)
+		appendFile(t, trPath, frameLine(t, id, "compound.transition.v0.1", now, fmt.Sprintf("v%04d", i)))
+	}
+
+	dupID := "tr_freshopen_0000"
+	hotCount, restore := installParseCounter(t)
+	defer restore()
+
+	const n = 50
+	for i := 0; i < n; i++ {
+		store, err := openWithConfig(home, config)
+		if err != nil {
+			t.Fatalf("fresh open %d: %v", i, err)
+		}
+		result, err := store.PutJSON(dupID, eventRecord(dupID, "compound.transition.v0.1", now, "v0000"), "  ")
+		if err != nil {
+			t.Fatalf("all-dup put %d via fresh store: %v", i, err)
+		}
+		if result.Created {
+			t.Fatalf("all-dup put %d via fresh store unexpectedly created a record", i)
+		}
+	}
+
+	if got := hotCount(trPath); got != 1 {
+		t.Fatalf("hot segment full-parsed %d times across %d all-dup puts through fresh store opens, want 1 (memo must be package-level, not engine-scoped)", got, n)
+	}
+}

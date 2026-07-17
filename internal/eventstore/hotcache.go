@@ -25,10 +25,20 @@ import (
 // append moves both) is a miss, so a reader never serves a frame set older than
 // the file it just statted. regularKind reads bypass the cache — their rooted
 // validation is part of the read contract.
+//
+// PACKAGE-level, not engine-scoped: real consumers (routeevidence's
+// RecordTransition, most CLI verbs) call eventstore.Open per operation, so an
+// engine-scoped memo dies with every call and a 5000-row all-dup import still
+// full-parsed the hot segment once per row live (2026-07-17) while the
+// single-store falsifier stayed green. Keys are absolute paths, so distinct
+// homes in one process cannot collide, and the stat guard — not cache scope —
+// is what keeps a shared entry correct.
 type hotSegmentCache struct {
 	mu      sync.Mutex
 	entries map[string]hotSegmentEntry
 }
+
+var sharedHotCache hotSegmentCache
 
 type hotSegmentEntry struct {
 	path  string
@@ -97,9 +107,9 @@ func (e *engine) hotSegmentFresh(path string) (bool, error) {
 		return false, err
 	}
 	key := filepath.Dir(path)
-	e.hotCache.mu.Lock()
-	defer e.hotCache.mu.Unlock()
-	entry, ok := e.hotCache.entries[key]
+	sharedHotCache.mu.Lock()
+	defer sharedHotCache.mu.Unlock()
+	entry, ok := sharedHotCache.entries[key]
 	return ok && entry.path == path && entry.size == st.Size() && entry.mtime.Equal(st.ModTime()), nil
 }
 
@@ -114,9 +124,9 @@ func (e *engine) hotSegmentEntryFor(path string) (hotSegmentEntry, error) {
 		return hotSegmentEntry{}, err
 	}
 	key := filepath.Dir(path)
-	e.hotCache.mu.Lock()
-	defer e.hotCache.mu.Unlock()
-	if entry, ok := e.hotCache.entries[key]; ok && entry.path == path && entry.size == st.Size() && entry.mtime.Equal(st.ModTime()) {
+	sharedHotCache.mu.Lock()
+	defer sharedHotCache.mu.Unlock()
+	if entry, ok := sharedHotCache.entries[key]; ok && entry.path == path && entry.size == st.Size() && entry.mtime.Equal(st.ModTime()) {
 		return entry, nil
 	}
 	notifyHotParse(path)
@@ -136,9 +146,9 @@ func (e *engine) hotSegmentEntryFor(path string) (hotSegmentEntry, error) {
 		byID[frame.Frame.ID] = frame
 	}
 	entry := hotSegmentEntry{path: path, size: st.Size(), mtime: st.ModTime(), byID: byID, divergent: divergent}
-	if e.hotCache.entries == nil {
-		e.hotCache.entries = map[string]hotSegmentEntry{}
+	if sharedHotCache.entries == nil {
+		sharedHotCache.entries = map[string]hotSegmentEntry{}
 	}
-	e.hotCache.entries[key] = entry
+	sharedHotCache.entries[key] = entry
 	return entry, nil
 }

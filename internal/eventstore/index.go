@@ -67,6 +67,13 @@ type segmentIndexCache struct {
 	entries map[string]indexCacheEntry
 }
 
+// Package-level for the same reason as sharedHotCache: consumers open a fresh
+// Store per operation, and an engine-scoped memo would reload+revalidate every
+// sealed segment's sidecar index on every one of their calls. Keys are
+// absolute index paths; the double stat guard (index file + sealed segment)
+// carries correctness, not cache scope.
+var sharedIndexCache segmentIndexCache
+
 type indexCacheEntry struct {
 	idxSize  int64
 	idxMtime time.Time
@@ -176,9 +183,9 @@ func (e *engine) cachedIndex(idxPath, segPath string) (segmentIndex, bool) {
 	if err != nil {
 		return segmentIndex{}, false
 	}
-	e.indexCache.mu.Lock()
-	defer e.indexCache.mu.Unlock()
-	entry, ok := e.indexCache.entries[idxPath]
+	sharedIndexCache.mu.Lock()
+	defer sharedIndexCache.mu.Unlock()
+	entry, ok := sharedIndexCache.entries[idxPath]
 	if ok &&
 		entry.idxSize == idxInfo.Size() && entry.idxMtime.Equal(idxInfo.ModTime()) &&
 		entry.segSize == segInfo.Size() && entry.segMtime.Equal(segInfo.ModTime()) {
@@ -199,12 +206,12 @@ func (e *engine) rememberIndex(idxPath, segPath string, index segmentIndex) {
 	if err != nil {
 		return
 	}
-	e.indexCache.mu.Lock()
-	defer e.indexCache.mu.Unlock()
-	if e.indexCache.entries == nil {
-		e.indexCache.entries = map[string]indexCacheEntry{}
+	sharedIndexCache.mu.Lock()
+	defer sharedIndexCache.mu.Unlock()
+	if sharedIndexCache.entries == nil {
+		sharedIndexCache.entries = map[string]indexCacheEntry{}
 	}
-	e.indexCache.entries[idxPath] = indexCacheEntry{
+	sharedIndexCache.entries[idxPath] = indexCacheEntry{
 		idxSize:  idxInfo.Size(),
 		idxMtime: idxInfo.ModTime(),
 		segSize:  segInfo.Size(),

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -92,12 +93,26 @@ func TestHotSegmentCacheSurvivesCrossFamilyInterleaving(t *testing.T) {
 		t.Fatal(err)
 	}
 	eng := store.engine
-	eng.hotCache.mu.Lock()
-	live := len(eng.hotCache.entries)
-	eng.hotCache.mu.Unlock()
+	live := liveHotEntriesUnder(eng.segRoot)
 	if live < 2 {
 		t.Fatalf("cross-family reads must keep one memo entry per family, got %d live entries (single-slot thrash)", live)
 	}
+}
+
+// liveHotEntriesUnder counts sharedHotCache entries belonging to one store's
+// segment root. The cache is package-level (keys are absolute family dirs), so
+// bounded-size assertions must scope to their own home — the per-family
+// eviction property they guard is unchanged.
+func liveHotEntriesUnder(segRoot string) int {
+	sharedHotCache.mu.Lock()
+	defer sharedHotCache.mu.Unlock()
+	live := 0
+	for key := range sharedHotCache.entries {
+		if strings.HasPrefix(key, segRoot+string(os.PathSeparator)) {
+			live++
+		}
+	}
+	return live
 }
 
 // --- salvaged from hotcache-repair-20260716 (parallel land superseded by
@@ -505,9 +520,7 @@ func TestHotSegmentMemoEvictsPriorDayOnRollover(t *testing.T) {
 	}
 
 	eng := store.engine
-	eng.hotCache.mu.Lock()
-	live := len(eng.hotCache.entries)
-	eng.hotCache.mu.Unlock()
+	live := liveHotEntriesUnder(eng.segRoot)
 	if live != 1 {
 		t.Fatalf("hot memo holds %d entries for one family after a day rollover, want 1 (prior-day entry not evicted -> unbounded RSS creep)", live)
 	}
@@ -540,9 +553,7 @@ func TestHotSegmentMemoEvictsPriorDayOnRollover(t *testing.T) {
 	if _, err := store.Read("tr_rollover_seq"); err != nil {
 		t.Fatalf("read seq-rotated record: %v", err)
 	}
-	eng.hotCache.mu.Lock()
-	liveAfterSeq := len(eng.hotCache.entries)
-	eng.hotCache.mu.Unlock()
+	liveAfterSeq := liveHotEntriesUnder(eng.segRoot)
 	if liveAfterSeq != 1 {
 		t.Fatalf("hot memo holds %d entries after a seq rotation, want 1", liveAfterSeq)
 	}
