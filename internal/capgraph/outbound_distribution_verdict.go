@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"compound/internal/reviewartifact"
+	"compound/internal/verdictflow"
 
 	"gopkg.in/yaml.v3"
 )
@@ -199,22 +199,12 @@ func RecordOutboundDistributionVerdictPlan(homePath string, plan OutboundDistrib
 	if strings.TrimSpace(plan.ID) == "" {
 		return OutboundDistributionVerdictPlanPaths{}, fmt.Errorf("outbound distribution verdict plan id required")
 	}
-	dir, err := reviewartifact.Dir(homePath, OutboundDistributionVerdictReviewArea)
-	if err != nil {
-		return OutboundDistributionVerdictPlanPaths{}, err
-	}
-	paths := OutboundDistributionVerdictPlanPaths{
-		PlanPath:       filepath.Join(dir, plan.ID+".json"),
-		ReviewPath:     filepath.Join(dir, plan.ID+".md"),
-		ReviewYAMLPath: filepath.Join(dir, plan.ID+".review.yaml"),
-	}
-	if _, err := reviewartifact.Write(homePath, OutboundDistributionVerdictReviewArea, plan.ID, plan, "  ", RenderOutboundDistributionVerdictPlanReview(plan)); err != nil {
-		return paths, err
-	}
-	if _, err := reviewartifact.WriteRaw(homePath, OutboundDistributionVerdictReviewArea, plan.ID+".review.yaml", []byte(RenderOutboundDistributionVerdictReviewYAML(plan))); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	arts, err := verdictflow.RecordPlan(homePath, OutboundDistributionVerdictReviewArea, plan.ID, "  ", plan, RenderOutboundDistributionVerdictPlanReview(plan), RenderOutboundDistributionVerdictReviewYAML(plan))
+	return OutboundDistributionVerdictPlanPaths{
+		PlanPath:       arts.PlanPath,
+		ReviewPath:     arts.ReviewPath,
+		ReviewYAMLPath: arts.ReviewYAMLPath,
+	}, err
 }
 
 func RenderOutboundDistributionVerdictPlanReview(plan OutboundDistributionVerdictPlan) string {
@@ -341,16 +331,7 @@ func RecordOutboundDistributionVerdictReview(homePath string, review OutboundDis
 }
 
 func AnnotateOutboundDistributionVerdictQueue(report *reviewartifact.QueueReport) {
-	if report == nil {
-		return
-	}
-	for i := range report.Items {
-		item := &report.Items[i]
-		if item.Area != OutboundDistributionVerdictReviewArea {
-			continue
-		}
-		annotateOutboundDistributionVerdictItem(item)
-	}
+	verdictflow.AnnotateQueue(report, OutboundDistributionVerdictReviewArea, annotateOutboundDistributionVerdictItem)
 }
 
 func annotateOutboundDistributionVerdictItem(item *reviewartifact.QueueItem) {
@@ -451,27 +432,11 @@ func outboundDistributionVerdictPlanFromQueueItem(item reviewartifact.QueueItem)
 }
 
 func outboundDistributionVerdictReviewedFromExtras(paths []string) (OutboundDistributionVerdictReviewReport, bool) {
-	var found OutboundDistributionVerdictReviewReport
-	for _, path := range paths {
-		if !strings.HasSuffix(path, ".reviewed.json") {
-			continue
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var report OutboundDistributionVerdictReviewReport
-		if err := json.Unmarshal(data, &report); err != nil {
-			continue
-		}
-		if report.Status != "recorded" {
-			continue
-		}
-		if found.ID == "" || report.CreatedAt > found.CreatedAt {
-			found = report
-		}
-	}
-	return found, found.ID != ""
+	return verdictflow.LatestReviewedFromExtras(paths,
+		func(r OutboundDistributionVerdictReviewReport) bool { return r.Status == "recorded" },
+		func(r OutboundDistributionVerdictReviewReport) string { return r.ID },
+		func(r OutboundDistributionVerdictReviewReport) string { return r.CreatedAt },
+	)
 }
 
 func outboundDistributionVerdictReviewYAMLPath(item reviewartifact.QueueItem) string {

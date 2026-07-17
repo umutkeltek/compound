@@ -1,3 +1,9 @@
+// review.go is a deliberate plan+annotate SUBSET of the panel-verdict review flow: it builds a
+// review plan and annotates the queue, then hands off to `compound panel plan`. It has no
+// Load/Validate/Apply loop and a different domain model (Batch/Observation/RouteDecision/LensStack),
+// so it intentionally does NOT use internal/verdictflow (which owns the shared
+// plan->record->render->load->annotate scaffolding for the product/sourceobs/capgraph verdict bridges).
+
 package observation
 
 import (

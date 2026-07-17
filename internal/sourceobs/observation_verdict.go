@@ -11,6 +11,7 @@ import (
 	"compound/internal/candidates"
 	"compound/internal/panel"
 	"compound/internal/reviewartifact"
+	"compound/internal/verdictflow"
 	"compound/internal/writeback"
 	"gopkg.in/yaml.v3"
 )
@@ -161,7 +162,7 @@ func BuildSourceObservationVerdictPlan(homePath, verdictPath, targetPath string,
 	ownerKind, ownerRef, ownerStatus := sourceObservationVerdictOwner(payload, verdict.Target.Ref)
 	evidenceRefs := append([]string{}, verdict.EvidenceRefs...)
 	evidenceRefs = append(evidenceRefs, payload.EvidenceRefs...)
-	evidenceRefs = sourceObservationVerdictUniqueSorted(sourceObservationVerdictCompact(append(evidenceRefs,
+	evidenceRefs = reviewartifact.UniqueSorted(verdictflow.Compact(append(evidenceRefs,
 		"panel_verdict:"+verdict.ID,
 		"capability_observation:"+payload.ID,
 		verdictPath,
@@ -228,22 +229,12 @@ func RecordSourceObservationVerdictPlan(homePath string, plan SourceObservationV
 	if strings.TrimSpace(plan.ID) == "" {
 		return SourceObservationVerdictPlanPaths{}, fmt.Errorf("source observation verdict plan id required")
 	}
-	dir, err := reviewartifact.Dir(homePath, SourceObservationVerdictReviewArea)
-	if err != nil {
-		return SourceObservationVerdictPlanPaths{}, err
-	}
-	paths := SourceObservationVerdictPlanPaths{
-		PlanPath:       filepath.Join(dir, plan.ID+".json"),
-		ReviewPath:     filepath.Join(dir, plan.ID+".md"),
-		ReviewYAMLPath: filepath.Join(dir, plan.ID+".review.yaml"),
-	}
-	if _, err := reviewartifact.Write(homePath, SourceObservationVerdictReviewArea, plan.ID, plan, " ", renderSourceObservationVerdictPlanMarkdown(plan)); err != nil {
-		return paths, err
-	}
-	if _, err := reviewartifact.WriteRaw(homePath, SourceObservationVerdictReviewArea, plan.ID+".review.yaml", []byte(RenderSourceObservationVerdictReviewYAML(plan))); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	arts, err := verdictflow.RecordPlan(homePath, SourceObservationVerdictReviewArea, plan.ID, " ", plan, renderSourceObservationVerdictPlanMarkdown(plan), RenderSourceObservationVerdictReviewYAML(plan))
+	return SourceObservationVerdictPlanPaths{
+		PlanPath:       arts.PlanPath,
+		ReviewPath:     arts.ReviewPath,
+		ReviewYAMLPath: arts.ReviewYAMLPath,
+	}, err
 }
 
 func RenderSourceObservationVerdictReviewYAML(plan SourceObservationVerdictPlan) string {
@@ -302,7 +293,7 @@ func ApplySourceObservationVerdictReview(homePath string, review SourceObservati
 	review.SourceRef = "source-observation-verdict-review:" + filepath.Base(sourcePath)
 	evidenceRefs := append([]string{}, plan.EvidenceRefs...)
 	evidenceRefs = append(evidenceRefs, review.EvidenceRefs...)
-	evidenceRefs = sourceObservationVerdictUniqueSorted(sourceObservationVerdictCompact(append(evidenceRefs,
+	evidenceRefs = reviewartifact.UniqueSorted(verdictflow.Compact(append(evidenceRefs,
 		"source_observation_verdict_review:"+review.ID,
 		"panel_verdict:"+plan.VerdictID,
 	)))
@@ -353,7 +344,7 @@ func ValidateSourceObservationVerdictReview(review SourceObservationVerdictRevie
 	if strings.ContainsAny(review.PlanID, `/\`) || strings.ContainsAny(review.VerdictID, `/\`) || strings.ContainsAny(review.CandidateRef, `/\`) {
 		return fmt.Errorf("source observation verdict review ids must not contain path separators")
 	}
-	if !sourceObservationVerdictOneOf(review.Decision, []string{"record_no_promote", "park", "reject"}) {
+	if !verdictflow.OneOf(review.Decision, []string{"record_no_promote", "park", "reject"}) {
 		return fmt.Errorf("source observation verdict review decision must be record_no_promote|park|reject, got %q", review.Decision)
 	}
 	if strings.TrimSpace(review.Rationale) == "" || strings.HasPrefix(strings.TrimSpace(review.Rationale), "TODO") {
@@ -362,23 +353,14 @@ func ValidateSourceObservationVerdictReview(review SourceObservationVerdictRevie
 	if review.Confidence < 0 || review.Confidence > 1 {
 		return fmt.Errorf("source observation verdict review confidence must be between 0 and 1")
 	}
-	if len(sourceObservationVerdictCompact(review.EvidenceRefs)) == 0 {
+	if len(verdictflow.Compact(review.EvidenceRefs)) == 0 {
 		return fmt.Errorf("source observation verdict review evidence_refs required")
 	}
 	return nil
 }
 
 func AnnotateObservationVerdictQueue(report *reviewartifact.QueueReport) {
-	if report == nil {
-		return
-	}
-	for i := range report.Items {
-		item := &report.Items[i]
-		if item.Area != SourceObservationVerdictReviewArea {
-			continue
-		}
-		annotateSourceObservationVerdictItem(item)
-	}
+	verdictflow.AnnotateQueue(report, SourceObservationVerdictReviewArea, annotateSourceObservationVerdictItem)
 }
 
 func annotateSourceObservationVerdictItem(item *reviewartifact.QueueItem) {
@@ -424,7 +406,7 @@ func annotateSourceObservationVerdictItem(item *reviewartifact.QueueItem) {
 	item.Actions = []reviewartifact.Action{{
 		ID:             "record_source_observation_verdict_review",
 		Label:          "Record source observation verdict review",
-		Command:        sourceObservationVerdictJoinShell([]string{"compound", "source", "observation-verdict-review", reviewPath}),
+		Command:        verdictflow.ShellJoin([]string{"compound", "source", "observation-verdict-review", reviewPath}),
 		Argv:           []string{"compound", "source", "observation-verdict-review", reviewPath},
 		RequiresReview: true,
 	}}
@@ -463,9 +445,9 @@ func sourceObservationVerdictDecisionCard(plan SourceObservationVerdictPlan, rev
 			{Label: "boundary", Severity: "warning", Question: "What must stay outside this bridge?", Detail: strings.Join(plan.Boundaries, "; ")},
 		},
 		Choices: []reviewartifact.DecisionCardChoice{
-			{ID: "record_no_promote", Label: "Record No-Promote", Effect: "Records source-owned no-promote evidence for the reviewed observation verdict.", Command: sourceObservationVerdictJoinShell(argv), Argv: argv, RequiresReview: true},
-			{ID: "park", Label: "Park", Effect: "Keeps reviewed verdict as parked source evidence without promotion or product mutation.", Command: sourceObservationVerdictJoinShell(argv), Argv: argv, RequiresReview: true},
-			{ID: "reject", Label: "Reject", Effect: "Records that this panel verdict should not feed source/product/memory work.", Command: sourceObservationVerdictJoinShell(argv), Argv: argv, RequiresReview: true},
+			{ID: "record_no_promote", Label: "Record No-Promote", Effect: "Records source-owned no-promote evidence for the reviewed observation verdict.", Command: verdictflow.ShellJoin(argv), Argv: argv, RequiresReview: true},
+			{ID: "park", Label: "Park", Effect: "Keeps reviewed verdict as parked source evidence without promotion or product mutation.", Command: verdictflow.ShellJoin(argv), Argv: argv, RequiresReview: true},
+			{ID: "reject", Label: "Reject", Effect: "Records that this panel verdict should not feed source/product/memory work.", Command: verdictflow.ShellJoin(argv), Argv: argv, RequiresReview: true},
 		},
 	}
 }
@@ -616,27 +598,13 @@ func sourceObservationVerdictReviewYAMLPath(item reviewartifact.QueueItem) strin
 }
 
 func sourceObservationVerdictReviewedFromExtras(paths []string) (SourceObservationVerdictReviewReport, bool) {
-	var found SourceObservationVerdictReviewReport
-	for _, path := range paths {
-		if !strings.HasSuffix(path, ".reviewed.json") {
-			continue
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var report SourceObservationVerdictReviewReport
-		if err := json.Unmarshal(data, &report); err != nil {
-			continue
-		}
-		if report.SchemaVersion != SourceObservationVerdictReportSchemaVersion || report.ID == "" || report.Status == "" {
-			continue
-		}
-		if found.ID == "" || report.CreatedAt > found.CreatedAt {
-			found = report
-		}
-	}
-	return found, found.ID != ""
+	return verdictflow.LatestReviewedFromExtras(paths,
+		func(r SourceObservationVerdictReviewReport) bool {
+			return r.SchemaVersion == SourceObservationVerdictReportSchemaVersion && r.ID != "" && r.Status != ""
+		},
+		func(r SourceObservationVerdictReviewReport) string { return r.ID },
+		func(r SourceObservationVerdictReviewReport) string { return r.CreatedAt },
+	)
 }
 
 func sourceObservationVerdictArtifactStem(path string) string {
@@ -646,47 +614,4 @@ func sourceObservationVerdictArtifactStem(path string) string {
 	}
 	stem := strings.TrimSuffix(base, filepath.Ext(base))
 	return strings.TrimSuffix(stem, ".review")
-}
-
-func sourceObservationVerdictCompact(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" && !strings.HasPrefix(value, "TODO") {
-			out = append(out, value)
-		}
-	}
-	return out
-}
-
-func sourceObservationVerdictUniqueSorted(values []string) []string {
-	return reviewartifact.UniqueSorted(values)
-}
-
-func sourceObservationVerdictOneOf(value string, allowed []string) bool {
-	value = strings.TrimSpace(value)
-	for _, candidate := range allowed {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
-}
-
-func sourceObservationVerdictJoinShell(args []string) string {
-	parts := make([]string, 0, len(args))
-	for _, arg := range args {
-		parts = append(parts, sourceObservationVerdictShellArg(arg))
-	}
-	return strings.Join(parts, " ")
-}
-
-func sourceObservationVerdictShellArg(arg string) string {
-	if arg == "" {
-		return "''"
-	}
-	if strings.ContainsAny(arg, " \t\n\"'\\$`") {
-		return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
-	}
-	return arg
 }

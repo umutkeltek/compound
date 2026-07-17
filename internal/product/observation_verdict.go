@@ -12,7 +12,7 @@ import (
 	"compound/internal/mem"
 	"compound/internal/panel"
 	"compound/internal/reviewartifact"
-	"gopkg.in/yaml.v3"
+	"compound/internal/verdictflow"
 )
 
 const (
@@ -237,22 +237,12 @@ func RecordObservationVerdictPlan(homePath string, plan ObservationVerdictPlan) 
 	if strings.TrimSpace(plan.ID) == "" {
 		return ObservationVerdictPlanPaths{}, fmt.Errorf("product observation verdict plan id required")
 	}
-	dir, err := reviewartifact.Dir(homePath, ObservationVerdictReviewArea)
-	if err != nil {
-		return ObservationVerdictPlanPaths{}, err
-	}
-	paths := ObservationVerdictPlanPaths{
-		PlanPath:       filepath.Join(dir, plan.ID+".json"),
-		ReviewPath:     filepath.Join(dir, plan.ID+".md"),
-		ReviewYAMLPath: filepath.Join(dir, plan.ID+".review.yaml"),
-	}
-	if _, err := reviewartifact.Write(homePath, ObservationVerdictReviewArea, plan.ID, plan, " ", renderObservationVerdictPlanMarkdown(plan)); err != nil {
-		return paths, err
-	}
-	if _, err := reviewartifact.WriteRaw(homePath, ObservationVerdictReviewArea, plan.ID+".review.yaml", []byte(RenderObservationVerdictReviewYAML(plan))); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	arts, err := verdictflow.RecordPlan(homePath, ObservationVerdictReviewArea, plan.ID, " ", plan, renderObservationVerdictPlanMarkdown(plan), RenderObservationVerdictReviewYAML(plan))
+	return ObservationVerdictPlanPaths{
+		PlanPath:       arts.PlanPath,
+		ReviewPath:     arts.ReviewPath,
+		ReviewYAMLPath: arts.ReviewYAMLPath,
+	}, err
 }
 
 func RenderObservationVerdictReviewYAML(plan ObservationVerdictPlan) string {
@@ -284,15 +274,7 @@ func RenderObservationVerdictReviewYAML(plan ObservationVerdictPlan) string {
 }
 
 func LoadObservationVerdictReview(path string) (ObservationVerdictReview, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ObservationVerdictReview{}, err
-	}
-	var review ObservationVerdictReview
-	if err := yaml.Unmarshal(data, &review); err != nil {
-		return ObservationVerdictReview{}, err
-	}
-	return review, nil
+	return verdictflow.LoadReview[ObservationVerdictReview](path)
 }
 
 func ApplyObservationVerdictReview(homePath string, store *mem.Store, review ObservationVerdictReview, sourcePath string, now time.Time) (ObservationVerdictReviewReport, error) {
@@ -421,19 +403,6 @@ func ValidateObservationVerdictReview(review ObservationVerdictReview) error {
 		}
 	}
 	return nil
-}
-
-func AnnotateObservationVerdictQueue(report *reviewartifact.QueueReport) {
-	if report == nil {
-		return
-	}
-	for i := range report.Items {
-		item := &report.Items[i]
-		if item.Area != ObservationVerdictReviewArea {
-			continue
-		}
-		annotateObservationVerdictItem(item)
-	}
 }
 
 func annotateObservationVerdictItem(item *reviewartifact.QueueItem) {
@@ -671,25 +640,11 @@ func observationVerdictReviewYAMLPath(item reviewartifact.QueueItem) string {
 }
 
 func observationVerdictReviewedFromExtras(paths []string) (ObservationVerdictReviewReport, bool) {
-	var found ObservationVerdictReviewReport
-	for _, path := range paths {
-		if !strings.HasSuffix(path, ".reviewed.json") {
-			continue
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var report ObservationVerdictReviewReport
-		if err := json.Unmarshal(data, &report); err != nil {
-			continue
-		}
-		if report.SchemaVersion != ObservationVerdictReviewReportSchemaVersion || report.ID == "" || report.Status == "" {
-			continue
-		}
-		if found.ID == "" || report.CreatedAt > found.CreatedAt {
-			found = report
-		}
-	}
-	return found, found.ID != ""
+	return verdictflow.LatestReviewedFromExtras(paths,
+		func(r ObservationVerdictReviewReport) bool {
+			return r.SchemaVersion == ObservationVerdictReviewReportSchemaVersion && r.ID != "" && r.Status != ""
+		},
+		func(r ObservationVerdictReviewReport) string { return r.ID },
+		func(r ObservationVerdictReviewReport) string { return r.CreatedAt },
+	)
 }
