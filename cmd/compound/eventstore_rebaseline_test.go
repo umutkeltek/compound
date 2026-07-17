@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -98,6 +99,103 @@ func containsRef(refs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type testRebaselineAuthorityBundle struct {
+	RecordSHA256 string          `json:"record_sha256"`
+	Record       json.RawMessage `json:"record"`
+}
+
+func testAuthorityBundleHash(t *testing.T, record []byte) string {
+	t.Helper()
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, record); err != nil {
+		t.Fatal(err)
+	}
+	return "sha256:" + sha256Hex(t, compact.Bytes())
+}
+
+func tamperRebaselineAuthorityBundle(t *testing.T, pendingRaw []byte, recomputeHash bool) []byte {
+	t.Helper()
+	var journal map[string]json.RawMessage
+	if err := json.Unmarshal(pendingRaw, &journal); err != nil {
+		t.Fatal(err)
+	}
+	var bundle testRebaselineAuthorityBundle
+	if raw := journal["authority_bundle"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &bundle); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		var authority policy.AuthorityFace
+		if err := json.Unmarshal(journal["policy_authority"], &authority); err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(struct {
+			ActionIntent    json.RawMessage `json:"action_intent"`
+			PolicyDecision  json.RawMessage `json:"policy_decision"`
+			PolicyAuthority json.RawMessage `json:"policy_authority"`
+			PolicySource    string          `json:"policy_source"`
+		}{journal["action_intent"], journal["policy_decision"], journal["policy_authority"], authority.PolicySource})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bundle = testRebaselineAuthorityBundle{RecordSHA256: testAuthorityBundleHash(t, body), Record: body}
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(bundle.Record, &body); err != nil {
+		t.Fatal(err)
+	}
+	var authority policy.AuthorityFace
+	if err := json.Unmarshal(body["policy_authority"], &authority); err != nil {
+		t.Fatal(err)
+	}
+	authority.Revision = "policy-authority-v1:sha256:" + strings.Repeat("0", 64)
+	authority.Wording = "Allowed by tampered authority"
+	authorityRaw, err := json.Marshal(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body["policy_authority"] = authorityRaw
+	tamperedRecord, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle.Record = tamperedRecord
+	if recomputeHash {
+		bundle.RecordSHA256 = testAuthorityBundleHash(t, tamperedRecord)
+	}
+	bundleRaw, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal["authority_bundle"] = bundleRaw
+	forged, err := json.MarshalIndent(journal, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(forged, '\n')
+}
+
+func seedPendingRebaselineRetry(t *testing.T) (homePath, sidecarPath, pendingPath string) {
+	t.Helper()
+	homePath, sidecarPath = seedGrantedRebaselineHome(t)
+	original := recordEventstoreEnvelopeFn
+	failed := false
+	recordEventstoreEnvelopeFn = func(store *eventstore.Store, value envelope.Envelope) error {
+		if _, ok := value.(*envelope.Transition); ok && !failed {
+			failed = true
+			return errors.New("forced transition write failure")
+		}
+		return original(store, value)
+	}
+	t.Cleanup(func() { recordEventstoreEnvelopeFn = original })
+	_, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_authority_bundle_retry", "--home", homePath)
+	recordEventstoreEnvelopeFn = original
+	if code == 0 || !strings.Contains(errStr, "finalization pending") {
+		t.Fatalf("seed pending code=%d err=%q", code, errStr)
+	}
+	return homePath, sidecarPath, filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")
 }
 
 // FALSIFIER F1 (durable proof or rollback): a record failure AFTER a successful sidecar CAS
@@ -359,8 +457,10 @@ func TestEventStoreRebaselineTransitionFailureRollsForwardExactProofOnRetry(t *t
 		t.Fatalf("retry code=%d out=%q err=%q", code, out, errStr)
 	}
 	var result struct {
-		ReceiptID    string `json:"receipt_id"`
-		TransitionID string `json:"transition_id"`
+		ReceiptID       string               `json:"receipt_id"`
+		TransitionID    string               `json:"transition_id"`
+		PolicyAuthority policy.AuthorityFace `json:"policy_authority"`
+		PolicySource    string               `json:"policy_source"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatal(err)
@@ -368,12 +468,69 @@ func TestEventStoreRebaselineTransitionFailureRollsForwardExactProofOnRetry(t *t
 	if result.ReceiptID != pending.Receipt.ID || result.TransitionID != pending.Transition.ID {
 		t.Fatalf("retry invented proof ids: got %s %s want %s %s", result.ReceiptID, result.TransitionID, pending.Receipt.ID, pending.Transition.ID)
 	}
+	if result.PolicyAuthority.SchemaVersion != policy.AuthorityFaceSchema || !result.PolicyAuthority.Current || !result.PolicyAuthority.Allowed || strings.TrimSpace(result.PolicySource) == "" {
+		t.Fatalf("retry omitted validated policy authority: authority=%+v source=%q", result.PolicyAuthority, result.PolicySource)
+	}
 	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
 		t.Fatalf("pending marker not cleared after exact roll-forward: %v", err)
 	}
 	postAfterRetry, err := os.ReadFile(sidecarPath)
 	if err != nil || string(postAfterRetry) != string(postBeforeRetry) {
 		t.Fatalf("retry performed a second mutation: err=%v before=%q after=%q", err, postBeforeRetry, postAfterRetry)
+	}
+}
+
+func TestEventStoreRebaselineRejectsTamperedAuthorityBundleHash(t *testing.T) {
+	homePath, sidecarPath, pendingPath := seedPendingRebaselineRetry(t)
+	raw, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := tamperRebaselineAuthorityBundle(t, raw, false)
+	if err := os.WriteFile(pendingPath, forged, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_reject_bundle_hash", "--home", homePath)
+	if code == 0 || !strings.Contains(errStr, "recovery finding") {
+		t.Fatalf("tampered authority bundle hash authorized retry: code=%d out=%q err=%q", code, out, errStr)
+	}
+	after, err := os.ReadFile(sidecarPath)
+	if err != nil || !reflect.DeepEqual(after, before) {
+		t.Fatalf("tampered bundle retry changed sidecar: err=%v before=%q after=%q", err, before, after)
+	}
+	if got, err := os.ReadFile(pendingPath); err != nil || !reflect.DeepEqual(got, forged) {
+		t.Fatalf("tampered bundle journal changed: err=%v got=%q want=%q", err, got, forged)
+	}
+}
+
+func TestEventStoreRebaselineRejectsRehashedAuthorityProjectionMismatch(t *testing.T) {
+	homePath, sidecarPath, pendingPath := seedPendingRebaselineRetry(t)
+	raw, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := tamperRebaselineAuthorityBundle(t, raw, true)
+	if err := os.WriteFile(pendingPath, forged, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_reject_bundle_projection", "--home", homePath)
+	if code == 0 || !strings.Contains(errStr, "recovery finding") {
+		t.Fatalf("rehashed authority projection mismatch authorized retry: code=%d out=%q err=%q", code, out, errStr)
+	}
+	after, err := os.ReadFile(sidecarPath)
+	if err != nil || !reflect.DeepEqual(after, before) {
+		t.Fatalf("rehashed mismatch retry changed sidecar: err=%v before=%q after=%q", err, before, after)
+	}
+	if got, err := os.ReadFile(pendingPath); err != nil || !reflect.DeepEqual(got, forged) {
+		t.Fatalf("rehashed mismatch journal changed: err=%v got=%q want=%q", err, got, forged)
 	}
 }
 
