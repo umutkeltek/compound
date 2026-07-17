@@ -376,6 +376,66 @@ func TestEventStoreRebaselineTransitionFailureRollsForwardExactProofOnRetry(t *t
 	}
 }
 
+func TestEventStoreRebaselineInvalidGovernanceProofCannotAuthorizeFinalization(t *testing.T) {
+	homePath, sidecarPath := seedGrantedRebaselineHome(t)
+	original := recordEventstoreEnvelopeFn
+	failed := false
+	recordEventstoreEnvelopeFn = func(store *eventstore.Store, value envelope.Envelope) error {
+		if _, ok := value.(*envelope.Transition); ok && !failed {
+			failed = true
+			return errors.New("forced transition write failure")
+		}
+		return original(store, value)
+	}
+	t.Cleanup(func() { recordEventstoreEnvelopeFn = original })
+
+	_, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_invalid_governance_proof", "--home", homePath)
+	if code == 0 || !strings.Contains(errStr, "finalization pending") {
+		t.Fatalf("first call code=%d err=%q, want pending finalization", code, errStr)
+	}
+	pendingPath := filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")
+	raw, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var forged map[string]any
+	if err := json.Unmarshal(raw, &forged); err != nil {
+		t.Fatal(err)
+	}
+	// These proof-shaped governance records are deliberately invalid. The old
+	// adapter ignored them and trusted only free-floating IDs, so a retry could
+	// finalize and clear the journal without a valid ActionIntent/PolicyDecision.
+	forged["action_intent"] = map[string]any{"schema_version": envelope.SVActionIntent, "id": "act_fabricated"}
+	forged["policy_decision"] = map[string]any{"schema_version": envelope.SVPolicyDecision, "id": "pol_fabricated"}
+	forged["policy_authority"] = map[string]any{"schema_version": policy.AuthorityFaceSchema, "current": true, "allowed": true}
+	forgedRaw, err := json.MarshalIndent(forged, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgedRaw = append(forgedRaw, '\n')
+	if err := os.WriteFile(pendingPath, forgedRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	postBeforeRetry, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recordEventstoreEnvelopeFn = original
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_must_not_authorize_fabricated_proof", "--home", homePath)
+	if code == 0 || !strings.Contains(errStr, "recovery finding") {
+		t.Fatalf("invalid governance proof authorized finalization: code=%d out=%q err=%q", code, out, errStr)
+	}
+	gotRaw, err := os.ReadFile(pendingPath)
+	if err != nil || !reflect.DeepEqual(gotRaw, forgedRaw) {
+		t.Fatalf("invalid journal was cleared or rewritten: err=%v got=%q want=%q", err, gotRaw, forgedRaw)
+	}
+	postAfterRetry, err := os.ReadFile(sidecarPath)
+	if err != nil || !reflect.DeepEqual(postAfterRetry, postBeforeRetry) {
+		t.Fatalf("invalid governance retry mutated sidecar: err=%v before=%q after=%q", err, postBeforeRetry, postAfterRetry)
+	}
+}
+
 func TestEventStoreRebaselineRecordErrorAfterDurableReceiptDoesNotRollback(t *testing.T) {
 	homePath, sidecarPath := seedGrantedRebaselineHome(t)
 	before, err := os.ReadFile(sidecarPath)

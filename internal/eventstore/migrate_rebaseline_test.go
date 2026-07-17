@@ -478,6 +478,30 @@ func TestRebaselinePhysicalJournalRejectsWrongWorkIDFamily(t *testing.T) {
 	}
 }
 
+func TestRebaselinePhysicalJournalWriteIsCreateOnlyAcrossCrash(t *testing.T) {
+	store := openTestStore(t)
+	var first []byte
+	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		journal := newTestPhysicalRebaselineJournal(t, tx, []byte("pre"), true, []byte("post-one"))
+		first = append([]byte(nil), journal.Raw...)
+		return tx.WritePending(journal.Raw)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		replacement := newTestPhysicalRebaselineJournal(t, tx, []byte("pre"), true, []byte("post-two"))
+		return tx.WritePending(replacement.Raw)
+	})
+	if !errors.Is(err, ErrRebaselineStateConflict) {
+		t.Fatalf("second journal write err=%v, want state conflict", err)
+	}
+	got, exists, readErr := store.ReadRebaselinePending()
+	if readErr != nil || !exists || !reflect.DeepEqual(got, first) {
+		t.Fatalf("crash journal was replaced: got=%q exists=%t err=%v want=%q", got, exists, readErr, first)
+	}
+}
+
 func TestRebaselinePhysicalJournalBindsImageArguments(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
