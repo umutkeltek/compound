@@ -51,6 +51,161 @@ func TestAutonomyAdmissionLockSerializesWriters(t *testing.T) {
 	}
 }
 
+func TestAutonomyAdmissionLockHeldProbe(t *testing.T) {
+	home := t.TempDir()
+	held, err := AutonomyAdmissionLockHeld(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		t.Fatal("unheld autonomy admission lock reported held")
+	}
+	if err := WithAutonomyAdmissionLock(home, func() error {
+		held, err := AutonomyAdmissionLockHeld(home)
+		if err != nil {
+			return err
+		}
+		if !held {
+			return fmt.Errorf("held autonomy admission lock reported free")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAutonomyAdmissionLockEpochSpansAcquisitionAndRestoresPriorBytes(t *testing.T) {
+	home := t.TempDir()
+	lockPath, err := autonomyAdmissionLockPath(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prior := []byte("prior lock-file bytes\n")
+	if err := os.WriteFile(lockPath, prior, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	if err := WithAutonomyAdmissionLock(home, func() error {
+		held, epoch, err := AutonomyAdmissionLockState(home)
+		if err != nil {
+			return err
+		}
+		if !held || epoch == "" {
+			return fmt.Errorf("held autonomy lock has no validated epoch: held=%t epoch=%q", held, epoch)
+		}
+		first = epoch
+		held, second, err := AutonomyAdmissionLockState(home)
+		if err != nil {
+			return err
+		}
+		if !held || second != first {
+			return fmt.Errorf("one acquisition changed epoch: first=%q second=%q held=%t", first, second, held)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	held, epoch, err := AutonomyAdmissionLockState(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held || epoch != "" {
+		t.Fatalf("released autonomy lock retained live state: held=%t epoch=%q", held, epoch)
+	}
+	restored, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restored) != string(prior) {
+		t.Fatalf("prior lock-file bytes not restored: got %q want %q", restored, prior)
+	}
+}
+
+func TestAutonomyAdmissionLockEpochChangesAfterReleaseAndReacquire(t *testing.T) {
+	home := t.TempDir()
+	readEpoch := func() string {
+		t.Helper()
+		var observed string
+		if err := WithAutonomyAdmissionLock(home, func() error {
+			held, epoch, err := AutonomyAdmissionLockState(home)
+			if err != nil {
+				return err
+			}
+			if !held || epoch == "" {
+				return fmt.Errorf("acquisition epoch unavailable: held=%t epoch=%q", held, epoch)
+			}
+			observed = epoch
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return observed
+	}
+	first := readEpoch()
+	second := readEpoch()
+	if first == second {
+		t.Fatalf("release/reacquire reused epoch %q", first)
+	}
+}
+
+func TestAutonomyAdmissionLockReportsSubprocessEpochAndIgnoresCrashStaleBytes(t *testing.T) {
+	home := t.TempDir()
+	cmd, entered, err := startAutonomyLockHelper(home, "hold")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case line := <-entered:
+		if line != "entered" {
+			t.Fatalf("unexpected child handshake: %q", line)
+		}
+	case <-time.After(time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("child process did not acquire lock")
+	}
+	held, childEpoch, err := AutonomyAdmissionLockState(home)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatal(err)
+	}
+	if !held || childEpoch == "" {
+		_ = cmd.Process.Kill()
+		t.Fatalf("subprocess lock has no validated epoch: held=%t epoch=%q", held, childEpoch)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	var epoch string
+	held, epoch, err = AutonomyAdmissionLockState(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held || epoch != "" {
+		t.Fatalf("crash-stale epoch treated as live: held=%t epoch=%q", held, epoch)
+	}
+	var reacquired string
+	if err := WithAutonomyAdmissionLock(home, func() error {
+		held, epoch, err := AutonomyAdmissionLockState(home)
+		if err != nil {
+			return err
+		}
+		if !held || epoch == "" {
+			return fmt.Errorf("reacquired lock has no validated epoch: held=%t epoch=%q", held, epoch)
+		}
+		reacquired = epoch
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if reacquired == childEpoch {
+		t.Fatalf("post-crash acquisition reused stale epoch %q", childEpoch)
+	}
+}
+
 func TestAutonomyAdmissionLockSerializesProcesses(t *testing.T) {
 	home := t.TempDir()
 	var cmd *exec.Cmd

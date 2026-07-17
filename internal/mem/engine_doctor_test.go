@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	homepkg "compound/internal/home"
 )
 
 func TestEngineDoctorProvesLedgerUnchanged(t *testing.T) {
@@ -182,6 +184,358 @@ func TestEngineDoctorRejectsMutationDuringRetry(t *testing.T) {
 	}
 	if len(report.EngineViolations) == 0 || !strings.Contains(strings.Join(report.EngineViolations, "; "), "retry-engine-owned-view") {
 		t.Fatalf("retry mutation must name the offending path: %+v", report)
+	}
+}
+
+func TestLedgerDigestRejectsPathReplacementDuringRootedRead(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	const rel = "path-replacement-probe"
+	target := filepath.Join(s.home, "ledger", rel)
+	replacement := filepath.Join(s.home, "ledger", "path-replacement-candidate")
+	if err := os.WriteFile(target, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replacement, []byte("after"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := ledgerDoctorAfterEntryLstat
+	replaced := false
+	ledgerDoctorAfterEntryLstat = func(observed string) {
+		if observed != rel || replaced {
+			return
+		}
+		replaced = true
+		if err := os.Rename(replacement, target); err != nil {
+			t.Errorf("replace ledger path: %v", err)
+		}
+	}
+	t.Cleanup(func() { ledgerDoctorAfterEntryLstat = previous })
+
+	if _, err := s.LedgerDigest(); err == nil || !strings.Contains(err.Error(), "changed during rooted read") {
+		t.Fatalf("path replacement must fail rooted snapshot read, got %v", err)
+	}
+}
+
+func TestLedgerDigestRejectsAncestorReplacementDuringRootedRead(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	const rel = "ancestor-replacement/probe"
+	ledgerPath := filepath.Join(s.home, "ledger")
+	ancestorPath := filepath.Join(ledgerPath, "ancestor-replacement")
+	displacedPath := filepath.Join(ledgerPath, "ancestor-displaced")
+	replacementPath := filepath.Join(ledgerPath, "ancestor-candidate")
+	if err := os.Mkdir(ancestorPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(ancestorPath, "probe")
+	if err := os.WriteFile(target, []byte("stable inode"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(replacementPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(target, filepath.Join(replacementPath, "probe")); err != nil {
+		t.Fatal(err)
+	}
+	previous := ledgerDoctorAfterEntryLstat
+	replaced := false
+	ledgerDoctorAfterEntryLstat = func(observed string) {
+		if observed != rel || replaced {
+			return
+		}
+		replaced = true
+		if err := os.Rename(ancestorPath, displacedPath); err != nil {
+			t.Errorf("displace ledger ancestor: %v", err)
+			return
+		}
+		if err := os.Rename(replacementPath, ancestorPath); err != nil {
+			t.Errorf("replace ledger ancestor: %v", err)
+		}
+	}
+	t.Cleanup(func() { ledgerDoctorAfterEntryLstat = previous })
+
+	if _, err := s.LedgerDigest(); err == nil || !strings.Contains(err.Error(), "path changed during rooted") {
+		t.Fatalf("ancestor replacement must fail rooted snapshot read, got %v", err)
+	}
+}
+
+func TestLedgerDigestRejectsRootReplacementDuringRootedRead(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	const rel = "root-replacement-probe"
+	ledgerPath := filepath.Join(s.home, "ledger")
+	displacedPath := filepath.Join(s.home, "ledger-displaced")
+	if err := os.WriteFile(filepath.Join(ledgerPath, rel), []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := ledgerDoctorAfterEntryLstat
+	replaced := false
+	ledgerDoctorAfterEntryLstat = func(observed string) {
+		if observed != rel || replaced {
+			return
+		}
+		replaced = true
+		if err := os.Rename(ledgerPath, displacedPath); err != nil {
+			t.Errorf("displace ledger root: %v", err)
+			return
+		}
+		if err := os.Mkdir(ledgerPath, 0o755); err != nil {
+			t.Errorf("replace ledger root: %v", err)
+		}
+	}
+	t.Cleanup(func() { ledgerDoctorAfterEntryLstat = previous })
+
+	if _, err := s.LedgerDigest(); err == nil || !strings.Contains(err.Error(), "ledger root changed during rooted snapshot") {
+		t.Fatalf("root replacement must fail rooted snapshot read, got %v", err)
+	}
+}
+
+func TestLedgerDigestRejectsAppendAfterFileReadBeforeFinalLstat(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	const rel = "late-append-probe.jsonl"
+	target := filepath.Join(s.home, "ledger", rel)
+	if err := os.WriteFile(target, []byte("{\"row\":1}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := ledgerDoctorBeforeFinalEntryLstat
+	appended := false
+	ledgerDoctorBeforeFinalEntryLstat = func(observed string) {
+		if observed != rel || appended {
+			return
+		}
+		appended = true
+		file, err := os.OpenFile(target, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Errorf("open late append target: %v", err)
+			return
+		}
+		if _, err := file.Write([]byte("{\"row\":2}\n")); err != nil {
+			t.Errorf("append after file stat: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Errorf("close late append target: %v", err)
+		}
+	}
+	t.Cleanup(func() { ledgerDoctorBeforeFinalEntryLstat = previous })
+
+	if _, err := s.LedgerDigest(); err == nil || !strings.Contains(err.Error(), "changed during rooted read") {
+		t.Fatalf("append after fd stat must fail rooted snapshot read, got %v", err)
+	}
+}
+
+func TestLedgerDigestRejectsEarlierFileAppendWhileLaterEntryIsRead(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	const earlierRel = "aa-earlier-read.jsonl"
+	const laterRel = "zz-later-read.jsonl"
+	earlierPath := filepath.Join(s.home, "ledger", earlierRel)
+	if err := os.WriteFile(earlierPath, []byte("{\"row\":1}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.home, "ledger", laterRel), []byte("{\"row\":2}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := ledgerDoctorAfterEntryLstat
+	appended := false
+	ledgerDoctorAfterEntryLstat = func(observed string) {
+		if observed != laterRel || appended {
+			return
+		}
+		appended = true
+		file, err := os.OpenFile(earlierPath, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Errorf("open earlier ledger file for append: %v", err)
+			return
+		}
+		if _, err := file.Write([]byte("{\"row\":3}\n")); err != nil {
+			t.Errorf("append earlier ledger file: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Errorf("close earlier ledger file: %v", err)
+		}
+	}
+	t.Cleanup(func() { ledgerDoctorAfterEntryLstat = previous })
+
+	if _, err := s.LedgerDigest(); err == nil || !strings.Contains(err.Error(), "changed during rooted enumeration") {
+		t.Fatalf("later-entry work must not hide an append to an already-read file, got %v", err)
+	}
+}
+
+func TestLedgerDoctorSnapshotRejectsReleaseAndReacquireAcrossInventory(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- homepkg.WithAutonomyAdmissionLock(s.home, func() error {
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+	}()
+	<-firstEntered
+	held, firstEpoch, err := homepkg.AutonomyAdmissionLockState(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !held || firstEpoch == "" {
+		t.Fatalf("first acquisition has no epoch: held=%t epoch=%q", held, firstEpoch)
+	}
+
+	secondEntered := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- homepkg.WithAutonomyAdmissionLock(s.home, func() error {
+			close(secondEntered)
+			<-releaseSecond
+			return nil
+		})
+	}()
+	previous := ledgerDoctorDirectoryRead
+	reacquired := false
+	ledgerDoctorDirectoryRead = func(label, phase string) {
+		if label != "." || phase != "before" || reacquired {
+			return
+		}
+		reacquired = true
+		close(releaseFirst)
+		if err := <-firstDone; err != nil {
+			t.Errorf("release first acquisition: %v", err)
+			return
+		}
+		<-secondEntered
+	}
+	t.Cleanup(func() { ledgerDoctorDirectoryRead = previous })
+
+	snapshot, snapshotErr := s.ledgerDoctorSnapshotFromDisk()
+	close(releaseSecond)
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if snapshotErr != nil {
+		t.Fatal(snapshotErr)
+	}
+	if !reacquired {
+		t.Fatal("snapshot did not cross the release/reacquire seam")
+	}
+	if snapshot.ownerLockEpoch != "" {
+		t.Fatalf("two acquisitions were misreported as one continuous epoch %q", snapshot.ownerLockEpoch)
+	}
+}
+
+func TestLedgerDigestPinsOriginalFileSetAcrossAmbientReplaceAndRestore(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	ledgerPath := filepath.Join(s.home, "ledger")
+	if err := os.WriteFile(filepath.Join(ledgerPath, "original-file-set"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want, err := s.LedgerDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parkedPath := filepath.Join(s.home, "ledger-pinned-original")
+	decoyPath := filepath.Join(s.home, "ledger-decoy")
+	if err := os.Mkdir(decoyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(decoyPath, "decoy-file-set"), []byte("decoy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := ledgerDoctorDirectoryRead
+	swapped := false
+	completed := false
+	ledgerDoctorDirectoryRead = func(label, phase string) {
+		if label != "." || completed {
+			return
+		}
+		switch phase {
+		case "before":
+			if err := os.Rename(ledgerPath, parkedPath); err != nil {
+				t.Errorf("park pinned ledger root: %v", err)
+				return
+			}
+			if err := os.Rename(decoyPath, ledgerPath); err != nil {
+				t.Errorf("install decoy ledger root: %v", err)
+				return
+			}
+			swapped = true
+		case "after":
+			if !swapped {
+				return
+			}
+			if err := os.Rename(ledgerPath, decoyPath); err != nil {
+				t.Errorf("remove decoy ledger root: %v", err)
+				return
+			}
+			if err := os.Rename(parkedPath, ledgerPath); err != nil {
+				t.Errorf("restore pinned ledger root: %v", err)
+				return
+			}
+			swapped = false
+			completed = true
+		}
+	}
+	t.Cleanup(func() { ledgerDoctorDirectoryRead = previous })
+
+	got, err := s.LedgerDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !completed {
+		t.Fatal("ambient replace/restore seam did not execute")
+	}
+	if got != want {
+		t.Fatalf("ambient decoy changed pinned ledger file set: got %s want %s", got, want)
+	}
+}
+
+func TestUnresolvedArtifactProbePinsOriginalRootAcrossAmbientReplaceAndRestore(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	const rel = ".execution-route-evidence.jsonl.1.aaaaaaaaaaaa.bbbbbbbbbbbb.swap"
+	ledgerPath := filepath.Join(s.home, "ledger")
+	if err := os.WriteFile(filepath.Join(ledgerPath, rel), []byte("pending"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parkedPath := filepath.Join(s.home, "ledger-pending-original")
+	decoyPath := filepath.Join(s.home, "ledger-pending-decoy")
+	if err := os.Mkdir(decoyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previous := ledgerDoctorArtifactProbe
+	swapped := false
+	ledgerDoctorArtifactProbe = func(observed, phase string) {
+		if observed != rel {
+			return
+		}
+		switch phase {
+		case "before":
+			if err := os.Rename(ledgerPath, parkedPath); err != nil {
+				t.Errorf("park pending ledger root: %v", err)
+				return
+			}
+			if err := os.Rename(decoyPath, ledgerPath); err != nil {
+				t.Errorf("install pending decoy root: %v", err)
+				return
+			}
+			swapped = true
+		case "after":
+			if !swapped {
+				return
+			}
+			if err := os.Rename(ledgerPath, decoyPath); err != nil {
+				t.Errorf("remove pending decoy root: %v", err)
+				return
+			}
+			if err := os.Rename(parkedPath, ledgerPath); err != nil {
+				t.Errorf("restore pending ledger root: %v", err)
+				return
+			}
+			swapped = false
+		}
+	}
+	t.Cleanup(func() { ledgerDoctorArtifactProbe = previous })
+
+	violations := s.unresolvedConcurrentLedgerArtifacts([]string{rel})
+	if !strings.Contains(strings.Join(violations, "; "), "remained unresolved") {
+		t.Fatalf("rooted artifact probe missed pending sibling behind ambient decoy: %+v", violations)
 	}
 }
 

@@ -1,18 +1,22 @@
 package mem
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+
+	homepkg "compound/internal/home"
+	routecodec "compound/internal/routeevidence/codec"
 )
 
 // EngineDoctorReport proves the rented breadth engine can serve recall without
@@ -34,6 +38,8 @@ type EngineDoctorReport struct {
 	AdvancedRows        int                `json:"advanced_rows,omitempty"`     // governed rows OTHER compound processes appended during the probe
 	Note                string             `json:"note,omitempty"`              // INFO surfaced when a benign concurrent-writer retry proved the ledger
 	EngineViolations    []string           `json:"engine_violations,omitempty"` // ledger paths/rows attributable to the rented engine (hard invariant failure)
+	pendingArtifacts    []string           // exact governed publication sibling relpaths present in the attempt's final snapshot
+	finalOwnerLockEpoch string             // one canonical autonomy-admission lock acquisition spanning the final snapshot
 }
 
 type EngineDoctorHit struct {
@@ -88,11 +94,12 @@ func (s *Store) EngineDoctor(query string, k int, eng Engine) (EngineDoctorRepor
 	}
 	// The owned ledger digest moved while the rented engine ran. Attribute the delta:
 	// only an engine-attributed mutation keeps the invariant red.
-	delta := s.classifyLedgerDeltaSince(before)
+	delta := s.classifyLedgerDeltaSince(before, report.finalOwnerLockEpoch)
 	if !delta.legit() {
 		report.EngineViolations = delta.violations
 		return report, fmt.Errorf("rented engine mutated owned ledger: %s", strings.Join(delta.violations, "; "))
 	}
+	delta.pendingArtifacts = append(delta.pendingArtifacts, report.pendingArtifacts...)
 	// Benign concurrent governed writers advanced the ledger under the doctor. Retry the
 	// hop ONCE against the fresh generation to observe a quiet window.
 	retry, retryBefore, retryErr := s.engineDoctorAttempt(query, k, eng)
@@ -100,6 +107,10 @@ func (s *Store) EngineDoctor(query string, k int, eng Engine) (EngineDoctorRepor
 	retry.OwnerLedgerAdvanced = true
 	retry.AdvancedRows = delta.rows
 	if retryErr == nil && retry.LedgerUnchanged {
+		if violations := s.unresolvedConcurrentLedgerArtifacts(delta.pendingArtifacts); len(violations) > 0 {
+			retry.EngineViolations = violations
+			return retry, fmt.Errorf("owned ledger publication did not resolve: %s", strings.Join(violations, "; "))
+		}
 		retry.Note = fmt.Sprintf("ledger advanced %d row(s) during doctor (concurrent legit writers); verified against fresh gen", delta.rows)
 		return retry, nil
 	}
@@ -117,10 +128,15 @@ func (s *Store) EngineDoctor(query string, k int, eng Engine) (EngineDoctorRepor
 	}
 	// The ledger moved again during the stable retry. An engine write is still red;
 	// otherwise the ledger is simply too hot to prove a quiet window this run.
-	retryDelta := s.classifyLedgerDeltaSince(retryBefore)
+	retryDelta := s.classifyLedgerDeltaSince(retryBefore, retry.finalOwnerLockEpoch)
 	if !retryDelta.legit() {
 		retry.EngineViolations = retryDelta.violations
 		return retry, fmt.Errorf("rented engine mutated owned ledger: %s", strings.Join(retryDelta.violations, "; "))
+	}
+	retryDelta.pendingArtifacts = append(retryDelta.pendingArtifacts, retry.pendingArtifacts...)
+	if violations := s.unresolvedConcurrentLedgerArtifacts(append(delta.pendingArtifacts, retryDelta.pendingArtifacts...)); len(violations) > 0 {
+		retry.EngineViolations = violations
+		return retry, fmt.Errorf("owned ledger publication did not resolve: %s", strings.Join(violations, "; "))
 	}
 	retry.AdvancedRows = delta.rows + retryDelta.rows
 	retry.Note = fmt.Sprintf("ledger remained active across both doctor attempts (%d concurrent legit row(s)); ownership preserved by governed append attribution; current synchronization not certified", retry.AdvancedRows)
@@ -155,6 +171,7 @@ func (s *Store) engineDoctorAttempt(query string, k int, eng Engine) (EngineDoct
 	report.LedgerGenAfter = after.gen
 	report.LedgerHashAfter = after.digest
 	report.LedgerUnchanged = before.digest == after.digest
+	report.finalOwnerLockEpoch = after.ownerLockEpoch
 	if qerr != nil {
 		report.Error = qerr.Error()
 		switch {
@@ -170,6 +187,13 @@ func (s *Store) engineDoctorAttempt(query string, k int, eng Engine) (EngineDoct
 			return report, before, qerr
 		}
 	}
+	report.pendingArtifacts = s.routeEvidenceSnapshotArtifactPaths(after)
+	if report.LedgerUnchanged {
+		if violations := s.unresolvedConcurrentLedgerArtifacts(report.pendingArtifacts); len(violations) > 0 {
+			report.EngineViolations = violations
+			return report, before, fmt.Errorf("owned ledger has unresolved route evidence publication: %s", strings.Join(violations, "; "))
+		}
+	}
 	if !report.LedgerUnchanged {
 		// EngineDoctor attributes this delta (concurrent legit writers vs. an engine
 		// mutation). It is a hard failure only when the delta is engine-attributed.
@@ -183,18 +207,21 @@ func (s *Store) engineDoctorAttempt(query string, k int, eng Engine) (EngineDoct
 type ledgerFileMeta struct {
 	size int64
 	hash string // sha256 hex of the file's bytes
+	info os.FileInfo
 }
 
 type ledgerDoctorSnapshot struct {
-	gen    int64
-	digest string
-	files  map[string]ledgerFileMeta // relpath -> fingerprint, captured under the same shared lock as digest
+	gen            int64
+	digest         string
+	files          map[string]ledgerFileMeta // relpath -> fingerprint, captured under the same shared lock as digest
+	ownerLockEpoch string                    // one autonomy-admission lock acquisition held across this snapshot
 }
 
 // ledgerDelta is the attribution verdict for a ledger that moved during a probe.
 type ledgerDelta struct {
-	rows       int      // governed rows appended by legitimate producers
-	violations []string // engine-attributed changes (empty == purely concurrent-legit)
+	rows             int      // governed rows appended by legitimate producers
+	violations       []string // engine-attributed changes (empty == purely concurrent-legit)
+	pendingArtifacts []string // exact governed CAS siblings that must resolve during the bounded retry
 }
 
 func (d ledgerDelta) legit() bool { return len(d.violations) == 0 }
@@ -206,48 +233,258 @@ func (d ledgerDelta) legit() bool { return len(d.violations) == 0 }
 // engine-attributed and named. It re-reads the live ledger, which is race-tolerant:
 // legit appends stay legit (the before-prefix is unchanged) and an engine artifact
 // persists.
-func (s *Store) classifyLedgerDeltaSince(before ledgerDoctorSnapshot) ledgerDelta {
+func (s *Store) classifyLedgerDeltaSince(before ledgerDoctorSnapshot, currentOwnerLockEpoch string) ledgerDelta {
 	root := filepath.Join(s.home, "ledger")
 	var delta ledgerDelta
+	ledgerRoot, rootInfo, err := openLedgerDoctorRoot(root)
+	if err != nil {
+		delta.violations = append(delta.violations, "cannot open rooted ledger delta: "+err.Error())
+		return delta
+	}
+	defer ledgerRoot.Close()
 	seen := make(map[string]bool, len(before.files))
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, werr error) error {
-		if werr != nil {
-			return werr
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, rerr := filepath.Rel(root, path)
-		if rerr != nil {
-			return rerr
-		}
-		seen[rel] = true
-		b, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
-		}
-		prev, existed := before.files[rel]
-		cur := sha256.Sum256(b)
-		if existed && hex.EncodeToString(cur[:]) == prev.hash {
-			return nil // unchanged since the pre-query snapshot
-		}
-		classifyChangedLedgerFile(rel, b, prev, existed, &delta)
-		return nil
-	})
+	// Retain bodies only for the canonical route log and exact candidate CAS
+	// siblings. Generic files are classified as they are read so a doctor over a
+	// large ledger does not retain every owned body in memory.
+	current := make(map[string][]byte)
+	currentMeta := make(map[string]ledgerFileMeta, len(before.files))
+	entries, err := enumerateLedgerDoctorFiles(ledgerRoot, rootInfo)
 	if err != nil {
 		delta.violations = append(delta.violations, "cannot inspect ledger delta: "+err.Error())
 		return delta
 	}
+	for _, entry := range entries {
+		rel, b, info := entry.rel, entry.body, entry.info
+		seen[rel] = true
+		currentMeta[rel] = ledgerFileMeta{size: int64(len(b)), hash: sha256Hex(b), info: info}
+		_, _, exactSwap := parseRouteEvidenceSwapLeaf(rel)
+		if rel == routeEvidenceLedgerFile || exactSwap {
+			current[rel] = b
+		}
+		if !exactSwap {
+			prev, existed := before.files[rel]
+			if !existed || currentMeta[rel].hash != prev.hash {
+				classifyChangedLedgerFile(rel, b, prev, existed, &delta)
+			}
+		}
+	}
+	if err := validateLedgerDoctorRoot(root, ledgerRoot, rootInfo); err != nil {
+		delta.violations = append(delta.violations, "cannot inspect ledger delta: "+err.Error())
+		return delta
+	}
+	legitSwap := make(map[string]bool)
+	for rel := range current {
+		if legitimateRouteEvidenceSwapTransition(rel, before, current, currentMeta, currentOwnerLockEpoch) {
+			legitSwap[rel] = true
+			delta.pendingArtifacts = append(delta.pendingArtifacts, rel)
+		}
+	}
 	for rel := range before.files {
-		if seen[rel] {
+		if _, exists := current[rel]; exists {
 			continue
 		}
-		if filepath.Base(rel) == "seq.tmp" {
+		if legitimateRouteEvidenceSwapTransition(rel, before, current, currentMeta, currentOwnerLockEpoch) {
+			legitSwap[rel] = true
+		}
+	}
+	for rel, b := range current {
+		if rel == routeEvidenceLedgerFile {
+			continue // classified during the walk; retained only as CAS-pair evidence
+		}
+		prev, existed := before.files[rel]
+		if existed && currentMeta[rel].hash == prev.hash {
+			continue // unchanged since the pre-query snapshot
+		}
+		if legitSwap[rel] {
+			continue
+		}
+		classifyChangedLedgerFile(rel, b, prev, existed, &delta)
+	}
+	for rel := range before.files {
+		if seen[rel] || filepath.Base(rel) == "seq.tmp" {
 			continue // transient counter temp consumed by rename
+		}
+		if legitSwap[rel] {
+			continue
 		}
 		delta.violations = append(delta.violations, "governed ledger file "+rel+" removed during probe (engine-attributed)")
 	}
 	return delta
+}
+
+const routeEvidenceLedgerFile = "execution-route-evidence.jsonl"
+
+// legitimateRouteEvidenceSwapTransition recognizes only the atomic-publication
+// sibling emitted by routeevidence.recordEvidenceLocked. The exact leaf grammar
+// is necessary but insufficient: the name's pre/post digests must match the
+// observed canonical/sibling pair, both entries must be regular files, and the
+// postimage must be the preimage plus exactly one complete JSON object row.
+func legitimateRouteEvidenceSwapTransition(rel string, before ledgerDoctorSnapshot, current map[string][]byte, currentMeta map[string]ledgerFileMeta, currentOwnerLockEpoch string) bool {
+	prePrefix, postPrefix, ok := parseRouteEvidenceSwapLeaf(rel)
+	if !ok {
+		return false
+	}
+	beforeSwap, beforeExists := before.files[rel]
+	currentSwap, currentExists := current[rel]
+	beforeCanonical, beforeCanonicalExists := before.files[routeEvidenceLedgerFile]
+	currentCanonical, currentCanonicalExists := current[routeEvidenceLedgerFile]
+	currentSwapMeta := currentMeta[rel]
+	currentCanonicalMeta := currentMeta[routeEvidenceLedgerFile]
+	regular := func(meta ledgerFileMeta) bool { return meta.info != nil && meta.info.Mode().IsRegular() }
+	pre := func(meta ledgerFileMeta) bool { return regular(meta) && strings.HasPrefix(meta.hash, prePrefix) }
+	post := func(meta ledgerFileMeta) bool { return regular(meta) && strings.HasPrefix(meta.hash, postPrefix) }
+	same := func(left, right ledgerFileMeta) bool {
+		return regular(left) && regular(right) && os.SameFile(left.info, right.info) && left.hash == right.hash
+	}
+	emptyPre := ledgerFileMeta{hash: sha256Hex(nil)}
+	if !strings.HasPrefix(emptyPre.hash, prePrefix) {
+		emptyPre = ledgerFileMeta{}
+	}
+	if (beforeExists && before.ownerLockEpoch == "") || (!beforeExists && currentExists && currentOwnerLockEpoch == "") {
+		return false
+	}
+
+	// Prepared sibling appeared but publication has not linearized yet. This is
+	// tentative owner activity only: the caller records it as pending and refuses
+	// every benign/busy return until a later snapshot proves it resolved.
+	if !beforeExists && currentExists {
+		switch {
+		case beforeCanonicalExists && currentCanonicalExists && same(beforeCanonical, currentCanonicalMeta) && pre(beforeCanonical) && post(currentSwapMeta):
+			return routeEvidencePostimageAppendsOneRow(beforeCanonical, currentSwap)
+		case beforeCanonicalExists && currentCanonicalExists && same(beforeCanonical, currentSwapMeta) && pre(beforeCanonical) && post(currentCanonicalMeta):
+			return routeEvidencePostimageAppendsOneRow(beforeCanonical, currentCanonical)
+		case !beforeCanonicalExists && !currentCanonicalExists && emptyPre.hash != "" && post(currentSwapMeta):
+			return routeEvidencePostimageAppendsOneRow(emptyPre, currentSwap)
+		case !beforeCanonicalExists && currentCanonicalExists && emptyPre.hash != "" && post(currentCanonicalMeta) && same(currentSwapMeta, currentCanonicalMeta):
+			return routeEvidencePostimageAppendsOneRow(emptyPre, currentCanonical)
+		}
+	}
+
+	if !beforeExists || !currentCanonicalExists {
+		return false
+	}
+	// Existing-canonical exchange observed: the prepared postimage inode becomes
+	// canonical; if Commit has not run, the displaced canonical inode is the
+	// sibling. These cross-name identities are the rooted-CAS proof.
+	if beforeCanonicalExists && pre(beforeCanonical) && post(beforeSwap) && same(beforeSwap, currentCanonicalMeta) {
+		if currentExists && (!pre(currentSwapMeta) || !same(beforeCanonical, currentSwapMeta)) {
+			return false
+		}
+		return routeEvidencePostimageAppendsOneRow(beforeCanonical, currentCanonical)
+	}
+	// Doctor began after an existing-canonical exchange. Commit removes the
+	// displaced preimage sibling while the canonical postimage inode stays put.
+	if beforeCanonicalExists && post(beforeCanonical) && pre(beforeSwap) && !currentExists && same(beforeCanonical, currentCanonicalMeta) {
+		return routeEvidencePostimageAppendsOneRow(beforeSwap, currentCanonical)
+	}
+	// First publication uses a hard link: canonical and sibling share the exact
+	// postimage inode until Commit removes the sibling name.
+	if beforeCanonicalExists && post(beforeCanonical) && post(beforeSwap) && same(beforeCanonical, beforeSwap) && same(beforeCanonical, currentCanonicalMeta) {
+		if currentExists && !same(beforeSwap, currentSwapMeta) {
+			return false
+		}
+		return emptyPre.hash != "" && routeEvidencePostimageAppendsOneRow(emptyPre, currentCanonical)
+	}
+	// First-publication link/Commit completed between snapshots from a prepared
+	// sibling observed while canonical was still absent.
+	if !beforeCanonicalExists && emptyPre.hash != "" && post(beforeSwap) && same(beforeSwap, currentCanonicalMeta) {
+		if currentExists && !same(beforeSwap, currentSwapMeta) {
+			return false
+		}
+		return routeEvidencePostimageAppendsOneRow(emptyPre, currentCanonical)
+	}
+	return false
+}
+
+func parseRouteEvidenceSwapLeaf(rel string) (string, string, bool) {
+	if filepath.Base(rel) != rel {
+		return "", "", false
+	}
+	prefix := "." + routeEvidenceLedgerFile + "."
+	if !strings.HasPrefix(rel, prefix) || !strings.HasSuffix(rel, ".swap") {
+		return "", "", false
+	}
+	parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(rel, prefix), ".swap"), ".")
+	if len(parts) != 3 {
+		return "", "", false
+	}
+	pid, err := strconv.ParseUint(parts[0], 10, 64)
+	if err != nil || pid == 0 || strconv.FormatUint(pid, 10) != parts[0] || !lowerHex12(parts[1]) || !lowerHex12(parts[2]) || parts[1] == parts[2] {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
+func lowerHex12(value string) bool {
+	if len(value) != 12 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && hex.EncodeToString(decoded) == value
+}
+
+func routeEvidencePostimageAppendsOneRow(pre ledgerFileMeta, postimage []byte) bool {
+	if pre.hash == "" || int64(len(postimage)) <= pre.size || sha256Hex(postimage) == pre.hash || sha256Hex(postimage[:pre.size]) != pre.hash {
+		return false
+	}
+	appended := postimage[pre.size:]
+	if len(appended) < 2 || appended[len(appended)-1] != '\n' || strings.Count(string(appended), "\n") != 1 {
+		return false
+	}
+	row := appended[:len(appended)-1]
+	evidence, err := routecodec.Decode(row)
+	if err != nil {
+		return false
+	}
+	canonical, err := routecodec.Encode(evidence)
+	return err == nil && bytes.Equal(canonical, row)
+}
+
+func (s *Store) routeEvidenceSnapshotArtifactPaths(snapshot ledgerDoctorSnapshot) []string {
+	var paths []string
+	for rel := range snapshot.files {
+		if _, _, ok := parseRouteEvidenceSwapLeaf(rel); ok {
+			paths = append(paths, rel)
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func (s *Store) unresolvedConcurrentLedgerArtifacts(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	var violations []string
+	rootPath := filepath.Join(s.home, "ledger")
+	root, rootInfo, err := openLedgerDoctorRoot(rootPath)
+	if err != nil {
+		return []string{"cannot verify governed publication artifacts through rooted ledger: " + err.Error()}
+	}
+	defer root.Close()
+	seen := make(map[string]bool, len(paths))
+	for _, rel := range paths {
+		if seen[rel] {
+			continue
+		}
+		seen[rel] = true
+		if _, _, ok := parseRouteEvidenceSwapLeaf(rel); !ok {
+			violations = append(violations, "cannot verify non-canonical governed publication artifact "+filepath.Base(rel))
+			continue
+		}
+		ledgerDoctorArtifactProbe(rel, "before")
+		_, err := root.Lstat(rel)
+		ledgerDoctorArtifactProbe(rel, "after")
+		if err == nil {
+			violations = append(violations, "governed publication artifact "+filepath.Base(rel)+" remained unresolved across doctor retry")
+		} else if !os.IsNotExist(err) {
+			violations = append(violations, "cannot verify governed publication artifact "+filepath.Base(rel)+": "+err.Error())
+		}
+	}
+	if err := validateLedgerDoctorRoot(rootPath, root, rootInfo); err != nil {
+		violations = append(violations, "cannot verify governed publication artifacts through rooted ledger: "+err.Error())
+	}
+	return violations
 }
 
 // classifyChangedLedgerFile attributes one changed/new ledger file to a legitimate
@@ -346,11 +583,23 @@ func (s *Store) ledgerDoctorSnapshotFromDisk() (ledgerDoctorSnapshot, error) {
 		return ledgerDoctorSnapshot{}, err
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	heldBefore, epochBefore, err := homepkg.AutonomyAdmissionLockState(s.home)
+	if err != nil {
+		return ledgerDoctorSnapshot{}, err
+	}
 	digest, files, err := s.ledgerDigestAndInventory()
 	if err != nil {
 		return ledgerDoctorSnapshot{}, err
 	}
-	return ledgerDoctorSnapshot{gen: s.currentGen(), digest: digest, files: files}, nil
+	heldAfter, epochAfter, err := homepkg.AutonomyAdmissionLockState(s.home)
+	if err != nil {
+		return ledgerDoctorSnapshot{}, err
+	}
+	ownerLockEpoch := ""
+	if heldBefore && heldAfter && epochBefore != "" && epochBefore == epochAfter {
+		ownerLockEpoch = epochBefore
+	}
+	return ledgerDoctorSnapshot{gen: s.currentGen(), digest: digest, files: files, ownerLockEpoch: ownerLockEpoch}, nil
 }
 
 // LedgerDigest hashes every file under COMPOUND_HOME/ledger with stable relative
@@ -365,40 +614,307 @@ func (s *Store) LedgerDigest() (string, error) {
 // returned digest stays byte-for-byte compatible with existing before/after comparisons.
 func (s *Store) ledgerDigestAndInventory() (string, map[string]ledgerFileMeta, error) {
 	root := filepath.Join(s.home, "ledger")
-	var files []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		files = append(files, path)
-		return nil
-	})
+	ledgerRoot, rootInfo, err := openLedgerDoctorRoot(root)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", map[string]ledgerFileMeta{}, nil
 		}
 		return "", nil, err
 	}
-	sort.Strings(files)
+	defer ledgerRoot.Close()
+	files, err := enumerateLedgerDoctorFiles(ledgerRoot, rootInfo)
+	if err != nil {
+		return "", nil, err
+	}
 	inv := make(map[string]ledgerFileMeta, len(files))
 	h := sha256.New()
-	for _, path := range files {
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return "", nil, err
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return "", nil, err
-		}
-		h.Write([]byte(rel))
+	for _, file := range files {
+		h.Write([]byte(file.rel))
 		h.Write([]byte{0})
-		h.Write(b)
+		h.Write(file.body)
 		h.Write([]byte{0})
-		inv[rel] = ledgerFileMeta{size: int64(len(b)), hash: sha256Hex(b)}
+		inv[file.rel] = ledgerFileMeta{size: int64(len(file.body)), hash: sha256Hex(file.body), info: file.info}
+	}
+	if err := validateLedgerDoctorRoot(root, ledgerRoot, rootInfo); err != nil {
+		return "", nil, err
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), inv, nil
+}
+
+var (
+	ledgerDoctorAfterEntryLstat       = func(string) {}
+	ledgerDoctorBeforeFinalEntryLstat = func(string) {}
+	ledgerDoctorDirectoryRead         = func(string, string) {}
+	ledgerDoctorArtifactProbe         = func(string, string) {}
+)
+
+func openLedgerDoctorRoot(path string) (*os.Root, os.FileInfo, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.IsDir() {
+		return nil, nil, fmt.Errorf("ledger root must be a real directory: %s", path)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	opened, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, nil, err
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		_ = root.Close()
+		return nil, nil, err
+	}
+	if after.Mode()&os.ModeSymlink != 0 || !after.IsDir() || !os.SameFile(before, opened) || !os.SameFile(opened, after) {
+		_ = root.Close()
+		return nil, nil, fmt.Errorf("ledger root changed during rooted open: %s", path)
+	}
+	return root, opened, nil
+}
+
+func validateLedgerDoctorRoot(path string, root *os.Root, expected os.FileInfo) error {
+	opened, err := root.Stat(".")
+	if err != nil {
+		return err
+	}
+	final, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if final.Mode()&os.ModeSymlink != 0 || !final.IsDir() || !os.SameFile(expected, opened) || !os.SameFile(opened, final) {
+		return fmt.Errorf("ledger root changed during rooted snapshot: %s", path)
+	}
+	return nil
+}
+
+type ledgerDoctorFile struct {
+	rel  string
+	body []byte
+	info os.FileInfo
+}
+
+func enumerateLedgerDoctorFiles(root *os.Root, expectedRoot os.FileInfo) ([]ledgerDoctorFile, error) {
+	if root == nil || expectedRoot == nil || !expectedRoot.IsDir() {
+		return nil, fmt.Errorf("ledger rooted enumeration requires a pinned directory")
+	}
+	files, err := enumerateLedgerDoctorDirectory(root, "", expectedRoot)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
+	return files, nil
+}
+
+func enumerateLedgerDoctorDirectory(root *os.Root, prefix string, expected os.FileInfo) ([]ledgerDoctorFile, error) {
+	before, err := root.Lstat(".")
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.IsDir() || !os.SameFile(expected, before) {
+		return nil, fmt.Errorf("ledger snapshot directory changed before rooted enumeration: %s", ledgerDoctorDirectoryLabel(prefix))
+	}
+	directory, err := root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	opened, err := directory.Stat()
+	if err != nil {
+		_ = directory.Close()
+		return nil, err
+	}
+	if !opened.IsDir() || !os.SameFile(before, opened) {
+		_ = directory.Close()
+		return nil, fmt.Errorf("ledger snapshot directory changed during rooted open: %s", ledgerDoctorDirectoryLabel(prefix))
+	}
+	label := ledgerDoctorDirectoryLabel(prefix)
+	ledgerDoctorDirectoryRead(label, "before")
+	entries, readErr := directory.ReadDir(-1)
+	ledgerDoctorDirectoryRead(label, "after")
+	openedAfter, statErr := directory.Stat()
+	closeErr := directory.Close()
+	if err := errors.Join(readErr, statErr, closeErr); err != nil {
+		return nil, err
+	}
+	if !openedAfter.IsDir() || !os.SameFile(opened, openedAfter) {
+		return nil, fmt.Errorf("ledger snapshot directory changed during rooted read: %s", label)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	direct := make(map[string]os.FileInfo, len(entries))
+	files := make([]ledgerDoctorFile, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "" || name == "." || filepath.Base(name) != name || !filepath.IsLocal(name) {
+			return nil, fmt.Errorf("ledger snapshot directory returned invalid entry %q", name)
+		}
+		rel := name
+		if prefix != "" {
+			rel = filepath.Join(prefix, name)
+		}
+		info, err := root.Lstat(name)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("ledger snapshot entry must be a regular file with no symlink path: %s", rel)
+		}
+		direct[name] = info
+		switch {
+		case info.IsDir():
+			child, err := root.OpenRoot(name)
+			if err != nil {
+				return nil, err
+			}
+			childOpened, openErr := child.Stat(".")
+			linkAfter, linkErr := root.Lstat(name)
+			if err := errors.Join(openErr, linkErr); err != nil {
+				_ = child.Close()
+				return nil, err
+			}
+			if !childOpened.IsDir() || linkAfter.Mode()&os.ModeSymlink != 0 || !linkAfter.IsDir() ||
+				!os.SameFile(info, childOpened) || !os.SameFile(childOpened, linkAfter) {
+				_ = child.Close()
+				return nil, fmt.Errorf("ledger snapshot path changed during rooted directory open: %s", rel)
+			}
+			children, childErr := enumerateLedgerDoctorDirectory(child, rel, childOpened)
+			childFinal, childStatErr := child.Stat(".")
+			linkFinal, linkStatErr := root.Lstat(name)
+			childCloseErr := child.Close()
+			if err := errors.Join(childErr, childStatErr, linkStatErr, childCloseErr); err != nil {
+				return nil, err
+			}
+			if !childFinal.IsDir() || linkFinal.Mode()&os.ModeSymlink != 0 || !linkFinal.IsDir() ||
+				!os.SameFile(info, childFinal) || !os.SameFile(childFinal, linkFinal) {
+				return nil, fmt.Errorf("ledger snapshot path changed during rooted enumeration: %s", rel)
+			}
+			files = append(files, children...)
+		case info.Mode().IsRegular():
+			body, finalInfo, err := readLedgerDoctorLeaf(root, name, rel, info)
+			if err != nil {
+				return nil, err
+			}
+			direct[name] = finalInfo
+			files = append(files, ledgerDoctorFile{rel: rel, body: body, info: finalInfo})
+		default:
+			return nil, fmt.Errorf("ledger snapshot entry must be a regular file: %s", rel)
+		}
+	}
+	finalEntries, err := readLedgerDoctorDirectoryNames(root)
+	if err != nil {
+		return nil, err
+	}
+	if !sameLedgerDoctorDirectoryNames(entries, finalEntries) {
+		return nil, fmt.Errorf("ledger snapshot file set changed during rooted enumeration: %s", label)
+	}
+	for name, expectedEntry := range direct {
+		final, err := root.Lstat(name)
+		if err != nil {
+			return nil, err
+		}
+		stable := final.Mode()&os.ModeSymlink == 0
+		if expectedEntry.Mode().IsRegular() {
+			stable = stable && final.Mode().IsRegular() && sameLedgerDoctorFileVersion(expectedEntry, final)
+		} else {
+			stable = stable && expectedEntry.IsDir() && final.IsDir() && os.SameFile(expectedEntry, final)
+		}
+		if !stable {
+			return nil, fmt.Errorf("ledger snapshot entry changed during rooted enumeration: %s", filepath.Join(prefix, name))
+		}
+	}
+	final, err := root.Stat(".")
+	if err != nil {
+		return nil, err
+	}
+	if !final.IsDir() || !os.SameFile(expected, final) {
+		return nil, fmt.Errorf("ledger snapshot directory changed during rooted enumeration: %s", label)
+	}
+	return files, nil
+}
+
+func readLedgerDoctorLeaf(root *os.Root, name, rel string, expected os.FileInfo) ([]byte, os.FileInfo, error) {
+	leafBefore, err := root.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if leafBefore.Mode()&os.ModeSymlink != 0 || !leafBefore.Mode().IsRegular() || !os.SameFile(expected, leafBefore) {
+		return nil, nil, fmt.Errorf("ledger snapshot entry changed before rooted read: %s", rel)
+	}
+	ledgerDoctorAfterEntryLstat(rel)
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	body, readErr := io.ReadAll(file)
+	openedAfter, statErr := file.Stat()
+	closeErr := file.Close()
+	if err := errors.Join(readErr, statErr, closeErr); err != nil {
+		return nil, nil, err
+	}
+	ledgerDoctorBeforeFinalEntryLstat(rel)
+	leafAfter, err := root.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if leafAfter.Mode()&os.ModeSymlink != 0 || !leafAfter.Mode().IsRegular() ||
+		!sameLedgerDoctorFileVersion(expected, opened) || !sameLedgerDoctorFileVersion(opened, openedAfter) ||
+		!sameLedgerDoctorFileVersion(openedAfter, leafAfter) || int64(len(body)) != openedAfter.Size() {
+		return nil, nil, fmt.Errorf("ledger snapshot entry changed during rooted read: %s", rel)
+	}
+	return body, openedAfter, nil
+}
+
+func sameLedgerDoctorFileVersion(left, right os.FileInfo) bool {
+	return left != nil && right != nil && os.SameFile(left, right) &&
+		left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
+}
+
+func readLedgerDoctorDirectoryNames(root *os.Root) ([]os.DirEntry, error) {
+	directory, err := root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	opened, err := directory.Stat()
+	if err != nil {
+		_ = directory.Close()
+		return nil, err
+	}
+	entries, readErr := directory.ReadDir(-1)
+	openedAfter, statErr := directory.Stat()
+	closeErr := directory.Close()
+	if err := errors.Join(readErr, statErr, closeErr); err != nil {
+		return nil, err
+	}
+	if !opened.IsDir() || !openedAfter.IsDir() || !os.SameFile(opened, openedAfter) {
+		return nil, fmt.Errorf("ledger snapshot directory changed while verifying file set")
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
+}
+
+func sameLedgerDoctorDirectoryNames(left, right []os.DirEntry) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index].Name() != right[index].Name() {
+			return false
+		}
+	}
+	return true
+}
+
+func ledgerDoctorDirectoryLabel(prefix string) string {
+	if prefix == "" {
+		return "."
+	}
+	return prefix
 }
