@@ -190,15 +190,18 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
-// DefaultRegistry returns the registry that ships in the generic product: the sycophancy lens only.
-// operator_private lenses (e.g. the deferred receipt-asymmetry lens) are registered by a home that
-// opts in — they are never in the default shipped set.
+// DefaultRegistry returns the registry that ships in the generic product: the public_safe lenses
+// (sycophancy, hedging, counter-metric). operator_private lenses (e.g. agreement-asymmetry) are
+// registered by a home that opts in — they are never in the default shipped set.
 func DefaultRegistry() *Registry {
 	r := NewRegistry()
 	if err := r.Register(SycophancyLens{}); err != nil {
 		panic("behaviorallens: default registry registration failed: " + err.Error())
 	}
 	if err := r.Register(HedgingLens{}); err != nil {
+		panic("behaviorallens: default registry registration failed: " + err.Error())
+	}
+	if err := r.Register(CounterMetricLens{}); err != nil {
 		panic("behaviorallens: default registry registration failed: " + err.Error())
 	}
 	return r
