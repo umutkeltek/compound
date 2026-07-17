@@ -129,25 +129,31 @@ type DispatchPlanSource struct {
 }
 
 type DispatchPlanItem struct {
-	WorkID                string                `json:"work_id"`
-	State                 string                `json:"state"`
-	Owner                 string                `json:"owner,omitempty"`
-	GitDeliveryBound      bool                  `json:"git_delivery_bound,omitempty"`
-	ExpectedBaseSHA       string                `json:"expected_base_sha,omitempty"`
-	RepositoryFingerprint string                `json:"repository_fingerprint,omitempty"`
-	LandingStatus         string                `json:"landing_status,omitempty"`
-	SuccessPredicate      string                `json:"success_predicate,omitempty"`
-	DesiredOutcome        string                `json:"desired_outcome,omitempty"`
-	Action                string                `json:"action"`
-	Command               []string              `json:"command,omitempty"`
-	Reason                string                `json:"reason"`
-	NextAction            string                `json:"next_action,omitempty"`
-	EvidenceRefs          []string              `json:"evidence_refs,omitempty"`
-	ActionContext         *WorkActionContext    `json:"action_context,omitempty"`
-	ClaimPolicy           *ClaimPolicySummary   `json:"claim_policy,omitempty"`
-	AdvancePolicy         *AdvancePolicySummary `json:"advance_policy,omitempty"`
-	ClosePolicy           *ClosePolicySummary   `json:"close_policy,omitempty"`
-	ClosePlanReady        bool                  `json:"close_plan_ready,omitempty"`
+	WorkID                string `json:"work_id"`
+	State                 string `json:"state"`
+	Owner                 string `json:"owner,omitempty"`
+	GitDeliveryBound      bool   `json:"git_delivery_bound,omitempty"`
+	ExpectedBaseSHA       string `json:"expected_base_sha,omitempty"`
+	RepositoryFingerprint string `json:"repository_fingerprint,omitempty"`
+	LandingStatus         string `json:"landing_status,omitempty"`
+	SuccessPredicate      string `json:"success_predicate,omitempty"`
+	// PredicateCommand is the success predicate parsed as a single runnable command
+	// (CommandShapedPredicate, standing_proof.go) — the deterministic qualification signal
+	// for an external re-execute-and-verify driver. Derived at plan render time, never
+	// stored; absent for prose/multi-line predicates. Distinct from Command, which is the
+	// next lifecycle action, and from the continue/dispatch-step lifecycle loops.
+	PredicateCommand string                `json:"predicate_command,omitempty"`
+	DesiredOutcome   string                `json:"desired_outcome,omitempty"`
+	Action           string                `json:"action"`
+	Command          []string              `json:"command,omitempty"`
+	Reason           string                `json:"reason"`
+	NextAction       string                `json:"next_action,omitempty"`
+	EvidenceRefs     []string              `json:"evidence_refs,omitempty"`
+	ActionContext    *WorkActionContext    `json:"action_context,omitempty"`
+	ClaimPolicy      *ClaimPolicySummary   `json:"claim_policy,omitempty"`
+	AdvancePolicy    *AdvancePolicySummary `json:"advance_policy,omitempty"`
+	ClosePolicy      *ClosePolicySummary   `json:"close_policy,omitempty"`
+	ClosePlanReady   bool                  `json:"close_plan_ready,omitempty"`
 	// ClaimedBy is the live lease holder (WorkbenchItem.ClaimedBy, workbench.go:678-681),
 	// carried through so a dispatch surface can skip an item held by a different actor
 	// instead of silently offering it. Additive; empty when unclaimed.
@@ -1554,6 +1560,9 @@ func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 		EvidenceRefs:          append([]string{}, item.EvidenceRefs...),
 		ActionContext:         cloneWorkActionContext(item.ActionContext),
 		ClaimedBy:             item.ClaimedBy,
+	}
+	if cmd, ok := CommandShapedPredicate(out.SuccessPredicate); ok {
+		out.PredicateCommand = cmd
 	}
 	if item.LandingStatus == "repository_identity_migration_required" {
 		out.Action = "review"

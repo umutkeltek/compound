@@ -1345,3 +1345,54 @@ func TestDispatchStepRunImportsSourcePacketOnceThenAdvances(t *testing.T) {
 		t.Fatalf("source packet was mutated")
 	}
 }
+
+// predicate_command is the deterministic qualification signal for an external
+// loop-until-verified driver: present on a dispatch candidate exactly when the envelope's
+// success predicate is command-shaped (single-line runnable command per CommandShapedPredicate),
+// absent for prose and multi-line predicates. Derived at plan render time, never stored.
+func TestDispatchPlanSurfacesPredicateCommand(t *testing.T) {
+	s := newStore(t)
+	cmdWork, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "go test ./internal/work/ -count=1"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proseWork, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "candidate reaches a verified state delta"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	multiWork, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "go test ./internal/work/\nthen review the output"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.DispatchPlan(fixedNow, DispatchPlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]DispatchPlanItem{}
+	for _, item := range plan.Candidates {
+		byID[item.WorkID] = item
+	}
+	got, ok := byID[cmdWork.ID]
+	if !ok {
+		t.Fatalf("command-predicate work %s missing from plan candidates", cmdWork.ID)
+	}
+	if got.PredicateCommand != "go test ./internal/work/ -count=1" {
+		t.Fatalf("predicate_command = %q, want the command-shaped predicate verbatim", got.PredicateCommand)
+	}
+	for label, id := range map[string]string{"prose": proseWork.ID, "multi-line": multiWork.ID} {
+		item, ok := byID[id]
+		if !ok {
+			t.Fatalf("%s work %s missing from plan candidates", label, id)
+		}
+		if item.PredicateCommand != "" {
+			t.Fatalf("%s predicate must not surface a command, got %q", label, item.PredicateCommand)
+		}
+		raw, err := json.Marshal(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "predicate_command") {
+			t.Fatalf("%s item JSON must omit predicate_command entirely: %s", label, raw)
+		}
+	}
+}
