@@ -187,6 +187,160 @@ func TestBuildWorktreeInventoryUnreadableFactIsolatedAsUnknown(t *testing.T) {
 	}
 }
 
+// I1 (identity exact-evidence): a row whose branch ref matches a nonterminal
+// envelope's worktree-branch: artifact gains work_id+state; a row with no
+// artifact stays honestly bare, and a single match notes no ambiguity.
+func TestJoinWorktreeEnvelopeIdentityExactEvidence(t *testing.T) {
+	rows := []WorktreeInventoryRow{
+		{BranchRef: "refs/heads/lane-a", Branch: "lane-a", Reason: "r-a"},
+		{BranchRef: "refs/heads/lane-b", Branch: "lane-b", Reason: "r-b"},
+	}
+	joinWorktreeEnvelopeIdentity(rows, []WorktreeEnvelopeArtifact{
+		{WorkID: "work_a", State: "running", BranchRef: "refs/heads/lane-a", CreatedAt: "2026-07-17T10:00:00Z"},
+	})
+	if rows[0].WorkID != "work_a" || rows[0].WorkState != "running" {
+		t.Fatalf("lane-a should carry exact identity: %+v", rows[0])
+	}
+	if strings.Contains(rows[0].Reason, "ambiguous") {
+		t.Fatalf("single match must not note ambiguity: %q", rows[0].Reason)
+	}
+	if rows[1].WorkID != "" || rows[1].WorkState != "" {
+		t.Fatalf("lane-b has no artifact and must stay honestly bare: %+v", rows[1])
+	}
+}
+
+// I2 (dangling tolerated): a worktree-branch: ref matching no row — including
+// the known dangling refs/heads/(pending-dispatch) on work_2f9b20dc6661 — is
+// silently ignored: no error, no annotation, no row touched.
+func TestJoinWorktreeEnvelopeIdentityIgnoresDanglingRefs(t *testing.T) {
+	rows := []WorktreeInventoryRow{{BranchRef: "refs/heads/lane-a", Reason: "r-a"}}
+	before := rows[0]
+	joinWorktreeEnvelopeIdentity(rows, []WorktreeEnvelopeArtifact{
+		{WorkID: "work_dangling", State: "running", BranchRef: "refs/heads/(pending-dispatch)", CreatedAt: "2026-07-17T10:00:00Z"},
+		{WorkID: "work_other", State: "running", BranchRef: "refs/heads/lane-z", CreatedAt: "2026-07-17T10:00:00Z"},
+	})
+	if rows[0] != before {
+		t.Fatalf("non-matching refs (incl. the known dangling pending-dispatch) must not touch any row: %+v", rows[0])
+	}
+}
+
+// I3 (ambiguity): when two nonterminal envelopes name one branch, the newest
+// (CreatedAt, then WorkID) wins and the row's reason notes the ambiguity naming
+// the winner.
+func TestJoinWorktreeEnvelopeIdentityNewestWinsOnAmbiguity(t *testing.T) {
+	rows := []WorktreeInventoryRow{{BranchRef: "refs/heads/lane-a", Reason: "r-a"}}
+	joinWorktreeEnvelopeIdentity(rows, []WorktreeEnvelopeArtifact{
+		{WorkID: "work_old", State: "claimed", BranchRef: "refs/heads/lane-a", CreatedAt: "2026-07-17T09:00:00Z"},
+		{WorkID: "work_new", State: "running", BranchRef: "refs/heads/lane-a", CreatedAt: "2026-07-17T11:00:00Z"},
+	})
+	if rows[0].WorkID != "work_new" || rows[0].WorkState != "running" {
+		t.Fatalf("newest nonterminal envelope must win: %+v", rows[0])
+	}
+	if !strings.Contains(rows[0].Reason, "ambiguous") || !strings.Contains(rows[0].Reason, "work_new") {
+		t.Fatalf("ambiguity must be noted in the reason naming the winner: %q", rows[0].Reason)
+	}
+}
+
+// Keep annotation is a pure annotation: a kept row KEEPS its ground-truth class
+// (W-regression: a kept stalled_unlanded stays stalled_unlanded) and only its
+// next_action defers to the operator decision. Unkept rows are untouched.
+func TestAnnotateWorktreeKeepsDefersNextActionKeepsClass(t *testing.T) {
+	rows := []WorktreeInventoryRow{
+		{BranchRef: "refs/heads/lane-a", Class: WorktreeClassStalledUnlanded, NextAction: "unlanded work — check lane liveness before salvage or keep"},
+		{BranchRef: "refs/heads/lane-b", Class: WorktreeClassLandedClean, NextAction: "retire via compound authority worktree-retire (governed)"},
+	}
+	kept := annotateWorktreeKeeps(rows, map[string]WorktreeKeepAnnotation{
+		"refs/heads/lane-a": {DecisionID: "keep-1", Revisit: "auth refactor lands"},
+	})
+	if kept != 1 {
+		t.Fatalf("kept count = %d, want 1", kept)
+	}
+	if rows[0].Class != WorktreeClassStalledUnlanded {
+		t.Fatalf("kept stalled_unlanded must stay stalled_unlanded: %+v", rows[0])
+	}
+	if !rows[0].Kept || rows[0].KeepDecisionID != "keep-1" || rows[0].KeepRevisit != "auth refactor lands" {
+		t.Fatalf("kept row annotation wrong: %+v", rows[0])
+	}
+	if !strings.Contains(rows[0].NextAction, "kept by operator decision keep-1") || !strings.Contains(rows[0].NextAction, "revisit: auth refactor lands") {
+		t.Fatalf("kept next_action wrong: %q", rows[0].NextAction)
+	}
+	if rows[1].Kept || rows[1].NextAction == "" || strings.Contains(rows[1].NextAction, "kept by operator") {
+		t.Fatalf("unkept row must be untouched: %+v", rows[1])
+	}
+}
+
+// End-to-end through BuildWorktreeInventory over a real fixture: keeps annotate
+// (class unchanged, counts.kept incremented, next_action deferred), identity
+// joins the exact envelope, the dangling ref is ignored, and readable keeps omit
+// the keeps_readable field.
+func TestBuildWorktreeInventoryAppliesLedgerJoins(t *testing.T) {
+	fix := newWorktreeInventoryFixture(t)
+	readable := true
+	inv, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: inventoryFakeLiveness{active: map[string]bool{fix.laneLive: true}},
+	}, fix.repo, WorktreeInventoryOptions{
+		Now: inventoryFutureNow(),
+		Keeps: map[string]WorktreeKeepAnnotation{
+			"refs/heads/lane-stalled": {DecisionID: "keep-stalled", Revisit: "salvage decided"},
+		},
+		KeepsReadable: &readable,
+		Envelopes: []WorktreeEnvelopeArtifact{
+			{WorkID: "work_live", State: "running", BranchRef: "refs/heads/lane-live", CreatedAt: "2026-07-17T10:00:00Z"},
+			{WorkID: "work_dangling", State: "running", BranchRef: "refs/heads/(pending-dispatch)", CreatedAt: "2026-07-17T10:00:00Z"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stalled := inventoryRowByBranch(t, inv, "lane-stalled")
+	if stalled.Class != WorktreeClassStalledUnlanded {
+		t.Fatalf("kept annotation must not change class, got %q: %+v", stalled.Class, stalled)
+	}
+	if !stalled.Kept || stalled.KeepDecisionID != "keep-stalled" || !strings.Contains(stalled.NextAction, "kept by operator decision keep-stalled") {
+		t.Fatalf("lane-stalled should be annotated kept: %+v", stalled)
+	}
+	if inv.Counts.Kept != 1 {
+		t.Fatalf("counts.kept = %d, want 1", inv.Counts.Kept)
+	}
+	live := inventoryRowByBranch(t, inv, "lane-live")
+	if live.WorkID != "work_live" || live.WorkState != "running" {
+		t.Fatalf("lane-live should carry exact identity: %+v", live)
+	}
+	landed := inventoryRowByBranch(t, inv, "lane-landed")
+	if landed.WorkID != "" || landed.Kept {
+		t.Fatalf("lane-landed has no envelope and no keep — must be bare: %+v", landed)
+	}
+	if inv.KeepsReadable != nil {
+		t.Fatalf("readable keeps must omit keeps_readable, got %v", *inv.KeepsReadable)
+	}
+}
+
+// K3 projection: unreadable keeps surface keeps_readable:false and annotate
+// nothing — honest, not guessed.
+func TestBuildWorktreeInventoryUnreadableKeepsFailClosed(t *testing.T) {
+	fix := newWorktreeInventoryFixture(t)
+	unreadable := false
+	inv, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: inventoryFakeLiveness{},
+	}, fix.repo, WorktreeInventoryOptions{
+		Now:           inventoryFutureNow(),
+		Keeps:         map[string]WorktreeKeepAnnotation{"refs/heads/lane-landed": {DecisionID: "keep-x", Revisit: "x"}},
+		KeepsReadable: &unreadable,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.KeepsReadable == nil || *inv.KeepsReadable {
+		t.Fatalf("unreadable keeps must surface keeps_readable:false: %v", inv.KeepsReadable)
+	}
+	if inv.Counts.Kept != 0 {
+		t.Fatalf("unreadable keeps must annotate nothing: kept=%d", inv.Counts.Kept)
+	}
+	if inventoryRowByBranch(t, inv, "lane-landed").Kept {
+		t.Fatalf("unreadable keeps must not annotate any row")
+	}
+}
+
 // --- fixtures & fakes ---
 
 type worktreeInventoryFixture struct {

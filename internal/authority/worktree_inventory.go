@@ -48,13 +48,48 @@ type WorktreeInventoryDependencies struct {
 	Liveness WorktreeRetirementLiveness
 }
 
+// WorktreeKeepAnnotation is the caller-composed projection of an active operator
+// worktree-keep, keyed elsewhere by branch ref. Like the retirement gate, this
+// package stays mem-free: the CLI loads keeps from the decisions reader and
+// passes this shape in, so a kept row is an annotation over ground truth, never
+// a class the projection invented.
+type WorktreeKeepAnnotation struct {
+	DecisionID string
+	Revisit    string
+}
+
+// WorktreeEnvelopeArtifact is one nonterminal work envelope's claim on a branch
+// via a worktree-branch:<ref> artifact. The CLI lists envelopes from the work
+// store and passes exact-evidence tuples in; the join is a pure function over
+// rows + these tuples so it is unit-testable without a real store. CreatedAt
+// (RFC3339) breaks ambiguity: newest nonterminal wins.
+type WorktreeEnvelopeArtifact struct {
+	WorkID    string
+	State     string
+	BranchRef string
+	CreatedAt string
+}
+
 // WorktreeInventoryOptions carries the injected clock (tests) and the activity
 // window. AuthorityRef defaults to refs/heads/main; classification is measured
-// against that tip's containment.
+// against that tip's containment. Keeps/Envelopes are OPTIONAL ledger inputs the
+// CLI composes (they are absent for pure ground-truth callers): Keeps annotates
+// kept rows, Envelopes joins exact work identity.
 type WorktreeInventoryOptions struct {
 	Now            time.Time
 	ActivityWindow time.Duration
 	AuthorityRef   string
+	// Keeps maps branch ref -> active operator keep. Only consulted when
+	// KeepsReadable is a non-nil &true.
+	Keeps map[string]WorktreeKeepAnnotation
+	// KeepsReadable, when non-nil, means the CLI consulted keep records: &true =
+	// readable (annotate from Keeps), &false = unreadable (annotate nothing, and
+	// the envelope reports keeps_readable:false — honest, not guessed). nil means
+	// keeps were not consulted (ground-truth-only callers) and the field is
+	// omitted from the envelope.
+	KeepsReadable *bool
+	// Envelopes carry nonterminal work->branch identity for the join.
+	Envelopes []WorktreeEnvelopeArtifact
 }
 
 // WorktreeInventoryRow is one classified worktree. Every row carries a
@@ -78,6 +113,17 @@ type WorktreeInventoryRow struct {
 	Reason         string                      `json:"reason"`
 	NextAction     string                      `json:"next_action"`
 	IsMain         bool                        `json:"is_main"`
+	// WorkID/WorkState join an exact nonterminal envelope that names this row's
+	// branch ref via a worktree-branch: artifact (identity, slice 2). Absent when
+	// no envelope carries exact evidence — the row is then honestly bare.
+	WorkID    string `json:"work_id,omitempty"`
+	WorkState string `json:"work_state,omitempty"`
+	// Kept + KeepDecisionID + KeepRevisit annotate an operator keep-decision. A
+	// kept row KEEPS its ground-truth class (annotation, never a reclassification)
+	// but its next_action defers to the operator decision.
+	Kept           bool   `json:"kept,omitempty"`
+	KeepDecisionID string `json:"keep_decision_id,omitempty"`
+	KeepRevisit    string `json:"keep_revisit,omitempty"`
 }
 
 type WorktreeInventoryCounts struct {
@@ -88,6 +134,7 @@ type WorktreeInventoryCounts struct {
 	LandedClean     int `json:"landed_clean"`
 	Probe           int `json:"probe"`
 	Unknown         int `json:"unknown"`
+	Kept            int `json:"kept"`
 }
 
 // WorktreeInventory is the versioned read-only projection envelope.
@@ -101,16 +148,25 @@ type WorktreeInventory struct {
 	ActivityWindow string                  `json:"activity_window"`
 	Rows           []WorktreeInventoryRow  `json:"rows"`
 	Counts         WorktreeInventoryCounts `json:"counts"`
+	// KeepsReadable is emitted only as false, when the CLI consulted keep records
+	// and could not read them: no kept annotations are trustworthy, so the
+	// projection says so instead of implying none exist. Omitted otherwise.
+	KeepsReadable *bool `json:"keeps_readable,omitempty"`
 }
 
 // BuildWorktreeInventory classifies every Git worktree of repo from ground
-// truth alone. It is strictly read-only: it invokes only read verbs through the
-// injected Git seam and never mutates a ref, index, or working tree.
+// truth alone, then joins OPTIONAL ledger evidence the caller composed. It is
+// strictly read-only: it invokes only read verbs through the injected Git seam
+// and never mutates a ref, index, or working tree.
 //
-// v1 asserts NO lane/envelope identity. A WorkEnvelope's git_delivery binds the
-// canonical repository root (…/compound), not a lane worktree path, so there is
-// no exact evidence today to join an envelope to a worktree. The branch name IS
-// the lane label; the ledger join arrives with slice 2's keep-decision records.
+// Classification is pure Git ground truth. Ledger evidence is additive and
+// exact-only: a WorkEnvelope's git_delivery binds the canonical repository root
+// (…/compound), not a lane worktree path, so the ONLY exact envelope↔worktree
+// evidence is a dispatch-time worktree-branch:<ref> artifact that names the
+// row's branch ref (opts.Envelopes). Codex-runtime worktrees are separate clones
+// absent from `git worktree list`, so the identity join only ever covers linked
+// worktrees. Operator keep-decisions (opts.Keeps) annotate a row without
+// changing its class. Both inputs are empty for ground-truth-only callers.
 func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependencies, repo string, opts WorktreeInventoryOptions) (WorktreeInventory, error) {
 	if deps.Git == nil {
 		deps.Git = ExecWorktreeRetirementGit{}
@@ -189,7 +245,89 @@ func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependenc
 			inv.Counts.Unknown++
 		}
 	}
+
+	// Ledger joins run over the finished ground-truth rows: exact work identity
+	// first, then operator keep annotations. Both are no-ops when the CLI passed
+	// no ledger inputs. Keeps are honored only when the CLI reports them readable;
+	// unreadable keeps annotate nothing and surface as keeps_readable:false.
+	joinWorktreeEnvelopeIdentity(inv.Rows, opts.Envelopes)
+	if opts.KeepsReadable != nil {
+		if *opts.KeepsReadable {
+			inv.Counts.Kept = annotateWorktreeKeeps(inv.Rows, opts.Keeps)
+		} else {
+			unreadable := false
+			inv.KeepsReadable = &unreadable
+		}
+	}
 	return inv, nil
+}
+
+// joinWorktreeEnvelopeIdentity annotates each row with the exact nonterminal
+// work envelope that names its branch ref via a worktree-branch: artifact. Only
+// exact BranchRef matches join — a dangling ref that matches no row is silently
+// ignored (no error, no annotation). When several nonterminal envelopes name one
+// branch, the newest (CreatedAt, then WorkID) wins and the row's reason notes
+// the ambiguity. Pure over rows + tuples so it is testable without a store.
+func joinWorktreeEnvelopeIdentity(rows []WorktreeInventoryRow, envelopes []WorktreeEnvelopeArtifact) {
+	if len(envelopes) == 0 {
+		return
+	}
+	byBranch := map[string][]WorktreeEnvelopeArtifact{}
+	for _, e := range envelopes {
+		ref := strings.TrimSpace(e.BranchRef)
+		if ref == "" || strings.TrimSpace(e.WorkID) == "" {
+			continue
+		}
+		byBranch[ref] = append(byBranch[ref], e)
+	}
+	for i := range rows {
+		ref := strings.TrimSpace(rows[i].BranchRef)
+		if ref == "" {
+			continue
+		}
+		matches := byBranch[ref]
+		if len(matches) == 0 {
+			continue
+		}
+		best := matches[0]
+		for _, m := range matches[1:] {
+			if m.CreatedAt > best.CreatedAt || (m.CreatedAt == best.CreatedAt && m.WorkID > best.WorkID) {
+				best = m
+			}
+		}
+		rows[i].WorkID = best.WorkID
+		rows[i].WorkState = best.State
+		if len(matches) > 1 {
+			rows[i].Reason += fmt.Sprintf(" (ambiguous identity: %d nonterminal envelopes name this branch; newest %s shown)", len(matches), best.WorkID)
+		}
+	}
+}
+
+// annotateWorktreeKeeps annotates rows whose branch ref carries an active
+// operator keep, keeping each row's ground-truth class (annotation, never a
+// reclassification) but deferring its next_action to the operator decision.
+// Returns the number of kept rows.
+func annotateWorktreeKeeps(rows []WorktreeInventoryRow, keeps map[string]WorktreeKeepAnnotation) int {
+	if len(keeps) == 0 {
+		return 0
+	}
+	kept := 0
+	for i := range rows {
+		ref := strings.TrimSpace(rows[i].BranchRef)
+		if ref == "" {
+			continue
+		}
+		keep, ok := keeps[ref]
+		if !ok {
+			continue
+		}
+		rows[i].Kept = true
+		rows[i].KeepDecisionID = keep.DecisionID
+		rows[i].KeepRevisit = keep.Revisit
+		rows[i].NextAction = fmt.Sprintf("kept by operator decision %s — revisit: %s", keep.DecisionID, keep.Revisit)
+		kept++
+	}
+	return kept
 }
 
 func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDependencies, root, mainTip string, rec retirementWorktreeRecord, isMain bool, now time.Time, window time.Duration) WorktreeInventoryRow {
