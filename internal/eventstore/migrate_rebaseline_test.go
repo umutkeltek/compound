@@ -364,15 +364,31 @@ func TestMigrationCompletionPublishesBaselineBeforeCompletionUnderRebaselineLock
 	if err := store.WithRebaselineTransaction(func(*RebaselineTransaction) error { return nil }); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second rebaseline transaction err=%v, want lock refusal", err)
 	}
+	appendDone := make(chan error, 1)
+	go func() {
+		appendDone <- store.AppendHookEvent(map[string]string{"kind": "in-flight-before-completion"})
+	}()
+	select {
+	case err := <-appendDone:
+		t.Fatalf("frozen-stream append crossed the completion boundary lock before release: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		// The append must block on the same boundary lock until completion is visible.
+	}
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+	if err := <-appendDone; err != nil {
+		t.Fatalf("blocked append should return successfully after completion: %v", err)
 	}
 	if !store.MigrationComplete() {
 		t.Fatal("completion not published after baseline initialization")
 	}
 	if _, ok, err := readStreamBaseline(store.engine.streamBaselinePath()); err != nil || !ok {
 		t.Fatalf("initial baseline missing after completion: ok=%t err=%v", ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(store.home, "events", hookEventsStreamName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("frozen stream created after completion: %v", err)
 	}
 }
 
