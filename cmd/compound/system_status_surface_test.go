@@ -135,9 +135,12 @@ func TestSupplementLiveClaudeCapacityProbesOnlyWhenOwnedSourcesAreEmpty(t *testi
 		func(string, time.Time) (routeevidence.LaneCapacity, error) {
 			return routeevidence.LaneCapacity{State: routeevidence.CapacityUnknown}, nil
 		},
-		func(time.Time) (statussurface.CapacityEvidence, error) {
+		func(time.Time) (claudeCapacityEvidence, error) {
 			probeCalls++
-			return statussurface.CapacityEvidence{Status: statussurface.StatusLive, RemainingPercent: 24, Source: "compound/codexbar-live"}, nil
+			return claudeCapacityEvidence{
+				FiveHour: statussurface.CapacityEvidence{Status: statussurface.StatusLive, RemainingPercent: 63, Source: "compound/codexbar-live"},
+				Weekly:   statussurface.CapacityEvidence{Status: statussurface.StatusLive, RemainingPercent: 24, Source: "compound/codexbar-live"},
+			}, nil
 		},
 	)
 	if probeCalls != 1 {
@@ -147,7 +150,7 @@ func TestSupplementLiveClaudeCapacityProbesOnlyWhenOwnedSourcesAreEmpty(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(line, "wk 24%") {
+	if !strings.Contains(line, "5h 63%") || !strings.Contains(line, "wk 24%") {
 		t.Fatalf("live probe did not reach render: %q", line)
 	}
 
@@ -160,16 +163,16 @@ func TestSupplementLiveClaudeCapacityProbesOnlyWhenOwnedSourcesAreEmpty(t *testi
 		func(string, time.Time) (routeevidence.LaneCapacity, error) {
 			return routeevidence.LaneCapacity{State: routeevidence.CapacityUnknown}, nil
 		},
-		func(time.Time) (statussurface.CapacityEvidence, error) {
+		func(time.Time) (claudeCapacityEvidence, error) {
 			probeCalls++
-			return statussurface.CapacityEvidence{}, nil
+			return claudeCapacityEvidence{}, nil
 		},
 	)
 	if probeCalls != 0 {
 		t.Fatalf("fresh reduced projection still triggered %d live probe(s)", probeCalls)
 	}
 	line, err = statussurface.Render(fromCache, statussurface.RenderOptions{Theme: statussurface.ThemeAuto, Width: 120})
-	if err != nil || !strings.Contains(line, "wk 24%") {
+	if err != nil || !strings.Contains(line, "5h 63%") || !strings.Contains(line, "wk 24%") {
 		t.Fatalf("fresh capacity projection was not reused: line=%q err=%v", line, err)
 	}
 }
@@ -182,6 +185,7 @@ func TestParseCodexBarClaudeCapacitySelectsFreshConstrainingWeeklyWindow(t *test
 	    "usage":{
 	      "accountEmail":"must-not-survive@example.invalid",
 	      "updatedAt":"2026-07-17T19:59:00Z",
+	      "primary":{"usedPercent":37,"windowMinutes":300,"resetsAt":"2026-07-17T21:59:59Z"},
 	      "secondary":{"usedPercent":74,"windowMinutes":10080,"resetsAt":"2026-07-21T16:00:00Z"},
 	      "extraRateWindows":[
 	        {"id":"daily-routines","window":{"usedPercent":0,"windowMinutes":10080}},
@@ -194,13 +198,16 @@ func TestParseCodexBarClaudeCapacitySelectsFreshConstrainingWeeklyWindow(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if evidence.Status != statussurface.StatusLive || evidence.RemainingPercent != 22 || evidence.Source != "compound/codexbar-live" {
+	if evidence.FiveHour.Status != statussurface.StatusLive || evidence.FiveHour.RemainingPercent != 63 || evidence.FiveHour.Source != "compound/codexbar-live" {
+		t.Fatalf("five-hour capacity evidence = %+v", evidence.FiveHour)
+	}
+	if evidence.Weekly.Status != statussurface.StatusLive || evidence.Weekly.RemainingPercent != 22 || evidence.Weekly.Source != "compound/codexbar-live" {
 		t.Fatalf("capacity evidence = %+v", evidence)
 	}
-	if evidence.ResetsAt.Format(time.RFC3339) != "2026-07-21T16:00:00Z" {
-		t.Fatalf("capacity reset = %s", evidence.ResetsAt)
+	if evidence.FiveHour.ResetsAt.Format(time.RFC3339) != "2026-07-17T21:59:59Z" || evidence.Weekly.ResetsAt.Format(time.RFC3339) != "2026-07-21T16:00:00Z" {
+		t.Fatalf("capacity resets = five-hour %s weekly %s", evidence.FiveHour.ResetsAt, evidence.Weekly.ResetsAt)
 	}
-	if strings.Contains(evidence.Source, "must-not-survive") {
+	if strings.Contains(evidence.FiveHour.Source+evidence.Weekly.Source, "must-not-survive") {
 		t.Fatalf("capacity evidence retained identity: %+v", evidence)
 	}
 
@@ -227,13 +234,13 @@ func TestProbeCodexBarClaudeCapacityUsesBoundedDirectArgv(t *testing.T) {
 		}
 		return []byte(`[{
 		  "provider":"claude",
-		  "usage":{"updatedAt":"2026-07-17T19:59:00Z","secondary":{"usedPercent":74,"windowMinutes":10080,"resetsAt":"2026-07-21T16:00:00Z"}}
+		  "usage":{"updatedAt":"2026-07-17T19:59:00Z","primary":{"usedPercent":37,"windowMinutes":300,"resetsAt":"2026-07-17T21:59:59Z"},"secondary":{"usedPercent":74,"windowMinutes":10080,"resetsAt":"2026-07-21T16:00:00Z"}}
 		}]`), nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !called || evidence.RemainingPercent != 26 {
+	if !called || evidence.FiveHour.RemainingPercent != 63 || evidence.Weekly.RemainingPercent != 26 {
 		t.Fatalf("probe result = called %v evidence %+v", called, evidence)
 	}
 }

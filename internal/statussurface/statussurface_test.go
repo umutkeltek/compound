@@ -138,6 +138,30 @@ func TestSupplementWeeklyCapacityNeverOverridesNativeOrInventsUnknownLimit(t *te
 	}
 }
 
+func TestSupplementFiveHourCapacityFillsMissingNativeLimitWithoutOverridingIt(t *testing.T) {
+	snapshot, err := BuildClaudeSnapshot([]byte(`{"context_window":{"used_percentage":20}}`), testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reset := testNow.Add(3 * time.Hour)
+	merged := SupplementFiveHourCapacity(snapshot, CapacityEvidence{
+		Status: StatusLive, RemainingPercent: 63, ResetsAt: reset, Source: "compound/codexbar-live",
+	}, Snapshot{})
+	five := limitByKind(t, merged, LimitFiveHour)
+	if five.UsedPercent != 37 || five.RemainingPercent != 63 || !five.ResetsAt.Equal(reset) || five.Source != "compound/codexbar-live" {
+		t.Fatalf("five-hour supplement = %+v", five)
+	}
+
+	native, err := BuildClaudeSnapshot([]byte(claudeFixture), testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native = SupplementFiveHourCapacity(native, CapacityEvidence{Status: StatusLive, RemainingPercent: 99, Source: "fallback"}, Snapshot{})
+	if got := limitByKind(t, native, LimitFiveHour); got.RemainingPercent != 66 || got.Source != "claude/statusline.rate_limits" {
+		t.Fatalf("fallback replaced native five-hour limit: %+v", got)
+	}
+}
+
 func TestSnapshotStoreIsAtomicPrivateAndStaleAware(t *testing.T) {
 	home := t.TempDir()
 	snapshot, err := BuildClaudeSnapshot([]byte(claudeFixture), testNow, Snapshot{})

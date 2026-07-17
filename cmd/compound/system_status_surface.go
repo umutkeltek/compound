@@ -170,33 +170,50 @@ func supplementLiveClaudeCapacity(
 	previousFresh bool,
 	now time.Time,
 	readCapacity func(string, time.Time) (routeevidence.LaneCapacity, error),
-	probe func(time.Time) (statussurface.CapacityEvidence, error),
+	probe func(time.Time) (claudeCapacityEvidence, error),
 ) statussurface.Snapshot {
-	for _, limit := range snapshot.Limits {
-		if limit.Kind == statussurface.LimitSevenDay && limit.Status == statussurface.StatusLive {
-			return snapshot
+	if !hasLiveStatusLimit(snapshot, statussurface.LimitSevenDay) {
+		if capacity, err := readCapacity("claude", now); err == nil && capacity.State != routeevidence.CapacityUnknown {
+			snapshot = statussurface.SupplementWeeklyCapacity(snapshot, statussurface.CapacityEvidence{
+				Status: statussurface.StatusLive, RemainingPercent: capacity.Remaining, ResetsAt: capacity.ResetsAt,
+				Source: "compound/routeevidence:" + strings.TrimSpace(capacity.Source),
+			}, previous)
 		}
-	}
-	if capacity, err := readCapacity("claude", now); err == nil && capacity.State != routeevidence.CapacityUnknown {
-		return statussurface.SupplementWeeklyCapacity(snapshot, statussurface.CapacityEvidence{
-			Status: statussurface.StatusLive, RemainingPercent: capacity.Remaining, ResetsAt: capacity.ResetsAt,
-			Source: "compound/routeevidence:" + strings.TrimSpace(capacity.Source),
-		}, previous)
 	}
 	if previousFresh {
 		for _, limit := range previous.Limits {
-			if limit.Kind == statussurface.LimitSevenDay && limit.Status == statussurface.StatusLive {
-				return statussurface.SupplementWeeklyCapacity(snapshot, statussurface.CapacityEvidence{
-					Status: statussurface.StatusLive, RemainingPercent: limit.RemainingPercent,
-					ResetsAt: limit.ResetsAt, Source: limit.Source,
-				}, previous)
+			if limit.Status != statussurface.StatusLive {
+				continue
+			}
+			evidence := statussurface.CapacityEvidence{
+				Status: statussurface.StatusLive, RemainingPercent: limit.RemainingPercent,
+				ResetsAt: limit.ResetsAt, Source: limit.Source,
+			}
+			switch limit.Kind {
+			case statussurface.LimitFiveHour:
+				snapshot = statussurface.SupplementFiveHourCapacity(snapshot, evidence, previous)
+			case statussurface.LimitSevenDay:
+				snapshot = statussurface.SupplementWeeklyCapacity(snapshot, evidence, previous)
 			}
 		}
 	}
+	if hasLiveStatusLimit(snapshot, statussurface.LimitFiveHour) && hasLiveStatusLimit(snapshot, statussurface.LimitSevenDay) {
+		return snapshot
+	}
 	if probe != nil {
 		if evidence, err := probe(now); err == nil {
-			return statussurface.SupplementWeeklyCapacity(snapshot, evidence, previous)
+			snapshot = statussurface.SupplementFiveHourCapacity(snapshot, evidence.FiveHour, previous)
+			snapshot = statussurface.SupplementWeeklyCapacity(snapshot, evidence.Weekly, previous)
 		}
 	}
 	return snapshot
+}
+
+func hasLiveStatusLimit(snapshot statussurface.Snapshot, kind statussurface.LimitKind) bool {
+	for _, limit := range snapshot.Limits {
+		if limit.Kind == kind && limit.Status == statussurface.StatusLive {
+			return true
+		}
+	}
+	return false
 }

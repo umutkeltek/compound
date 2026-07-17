@@ -29,6 +29,7 @@ type codexBarClaudeUsage struct {
 	Provider string `json:"provider"`
 	Usage    *struct {
 		UpdatedAt string                  `json:"updatedAt"`
+		Primary   *codexBarCapacityWindow `json:"primary"`
 		Secondary *codexBarCapacityWindow `json:"secondary"`
 		Extra     []struct {
 			Window codexBarCapacityWindow `json:"window"`
@@ -36,10 +37,15 @@ type codexBarClaudeUsage struct {
 	} `json:"usage"`
 }
 
-func parseCodexBarClaudeCapacity(body []byte, now time.Time) (statussurface.CapacityEvidence, error) {
+type claudeCapacityEvidence struct {
+	FiveHour statussurface.CapacityEvidence
+	Weekly   statussurface.CapacityEvidence
+}
+
+func parseCodexBarClaudeCapacity(body []byte, now time.Time) (claudeCapacityEvidence, error) {
 	var rows []codexBarClaudeUsage
 	if err := json.Unmarshal(body, &rows); err != nil {
-		return statussurface.CapacityEvidence{}, fmt.Errorf("decode CodexBar Claude usage: %w", err)
+		return claudeCapacityEvidence{}, fmt.Errorf("decode CodexBar Claude usage: %w", err)
 	}
 	for _, row := range rows {
 		if !strings.EqualFold(strings.TrimSpace(row.Provider), "claude") || row.Usage == nil {
@@ -47,13 +53,17 @@ func parseCodexBarClaudeCapacity(body []byte, now time.Time) (statussurface.Capa
 		}
 		updatedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(row.Usage.UpdatedAt))
 		if err != nil {
-			return statussurface.CapacityEvidence{}, errors.New("CodexBar Claude usage has no valid updatedAt")
+			return claudeCapacityEvidence{}, errors.New("CodexBar Claude usage has no valid updatedAt")
 		}
 		age := now.Sub(updatedAt)
 		if age < -5*time.Minute || age > codexBarCapacityFreshness {
-			return statussurface.CapacityEvidence{}, fmt.Errorf("CodexBar Claude usage is stale by %s", age.Round(time.Second))
+			return claudeCapacityEvidence{}, fmt.Errorf("CodexBar Claude usage is stale by %s", age.Round(time.Second))
 		}
 
+		var evidence claudeCapacityEvidence
+		if row.Usage.Primary != nil && validCodexBarWindow(*row.Usage.Primary, 5*60) {
+			evidence.FiveHour = reduceCodexBarWindow(*row.Usage.Primary)
+		}
 		windows := make([]codexBarCapacityWindow, 0, 1+len(row.Usage.Extra))
 		if row.Usage.Secondary != nil {
 			windows = append(windows, *row.Usage.Secondary)
@@ -64,7 +74,7 @@ func parseCodexBarClaudeCapacity(body []byte, now time.Time) (statussurface.Capa
 		var selected codexBarCapacityWindow
 		found := false
 		for _, window := range windows {
-			if window.WindowMinutes != 7*24*60 || window.UsedPercent == nil || math.IsNaN(*window.UsedPercent) || math.IsInf(*window.UsedPercent, 0) || *window.UsedPercent < 0 || *window.UsedPercent > 100 {
+			if !validCodexBarWindow(window, 7*24*60) {
 				continue
 			}
 			if !found || *window.UsedPercent > *selected.UsedPercent {
@@ -72,39 +82,51 @@ func parseCodexBarClaudeCapacity(body []byte, now time.Time) (statussurface.Capa
 				found = true
 			}
 		}
-		if !found {
-			return statussurface.CapacityEvidence{}, errors.New("CodexBar Claude usage has no weekly window")
+		if found {
+			evidence.Weekly = reduceCodexBarWindow(selected)
 		}
-
-		var resetsAt time.Time
-		if value := strings.TrimSpace(selected.ResetsAt); value != "" {
-			resetsAt, _ = time.Parse(time.RFC3339, value)
+		if evidence.FiveHour.Status != statussurface.StatusLive && evidence.Weekly.Status != statussurface.StatusLive {
+			return claudeCapacityEvidence{}, errors.New("CodexBar Claude usage has no five-hour or weekly window")
 		}
-		return statussurface.CapacityEvidence{
-			Status:           statussurface.StatusLive,
-			RemainingPercent: 100 - *selected.UsedPercent,
-			ResetsAt:         resetsAt.UTC(),
-			Source:           "compound/codexbar-live",
-		}, nil
+		return evidence, nil
 	}
-	return statussurface.CapacityEvidence{}, errors.New("CodexBar output has no Claude usage row")
+	return claudeCapacityEvidence{}, errors.New("CodexBar output has no Claude usage row")
 }
 
-func probeCodexBarClaudeCapacity(now time.Time) (statussurface.CapacityEvidence, error) {
+func validCodexBarWindow(window codexBarCapacityWindow, minutes int) bool {
+	return window.WindowMinutes == minutes && window.UsedPercent != nil &&
+		!math.IsNaN(*window.UsedPercent) && !math.IsInf(*window.UsedPercent, 0) &&
+		*window.UsedPercent >= 0 && *window.UsedPercent <= 100
+}
+
+func reduceCodexBarWindow(window codexBarCapacityWindow) statussurface.CapacityEvidence {
+	var resetsAt time.Time
+	if value := strings.TrimSpace(window.ResetsAt); value != "" {
+		resetsAt, _ = time.Parse(time.RFC3339, value)
+	}
+	return statussurface.CapacityEvidence{
+		Status:           statussurface.StatusLive,
+		RemainingPercent: 100 - *window.UsedPercent,
+		ResetsAt:         resetsAt.UTC(),
+		Source:           "compound/codexbar-live",
+	}
+}
+
+func probeCodexBarClaudeCapacity(now time.Time) (claudeCapacityEvidence, error) {
 	return probeCodexBarClaudeCapacityWithRunner(now, func(ctx context.Context, command string, args ...string) ([]byte, error) {
 		return exec.CommandContext(ctx, command, args...).Output()
 	})
 }
 
-func probeCodexBarClaudeCapacityWithRunner(now time.Time, run statusCapacityCommandRunner) (statussurface.CapacityEvidence, error) {
+func probeCodexBarClaudeCapacityWithRunner(now time.Time, run statusCapacityCommandRunner) (claudeCapacityEvidence, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), codexBarProbeTimeout)
 	defer cancel()
 	body, err := run(ctx, "codexbar", "usage", "--provider", "claude", "--source", "auto", "--format", "json", "--no-color")
 	if err != nil {
-		return statussurface.CapacityEvidence{}, fmt.Errorf("probe CodexBar Claude usage: %w", err)
+		return claudeCapacityEvidence{}, fmt.Errorf("probe CodexBar Claude usage: %w", err)
 	}
 	if len(body) > maxCodexBarProbeBytes {
-		return statussurface.CapacityEvidence{}, errors.New("CodexBar Claude usage exceeds 1 MiB")
+		return claudeCapacityEvidence{}, errors.New("CodexBar Claude usage exceeds 1 MiB")
 	}
 	return parseCodexBarClaudeCapacity(body, now)
 }
