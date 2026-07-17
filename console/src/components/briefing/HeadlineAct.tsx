@@ -6,6 +6,7 @@ import { useState } from "react";
 import { CliCaption } from "@/components/CopyCmd";
 import { Button } from "@/components/kit/Button";
 import { ConfirmDialog } from "@/components/kit/ConfirmDialog";
+import { authoritySummarySegments } from "@/lib/action-authority";
 import type { HeadlineActDescriptor } from "@/lib/briefing";
 import { buildHeadlineActionRequest } from "@/lib/governed-action-client";
 
@@ -37,6 +38,10 @@ export function HeadlineAct({
   const [rationale, setRationale] = useState("");
 
   const preview = act.argv[0] === "compound" ? act.argv.slice(1) : act.argv;
+  const authority = act.authority;
+  const confirmationBody = authority
+    ? authoritySummarySegments(authority).join(" · ")
+    : "Runs the current owner action through Compound; the adapter revalidates the target and policy before execution.";
 
   if (!mutationsEnabled) {
     // Honest fallback: no live button when mutations are gated off — the exact
@@ -99,7 +104,7 @@ export function HeadlineAct({
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         title={act.label}
-        body="Runs a governed compound command. Each target still gets its own PolicyDecision; this cannot be undone from here."
+        body={confirmationBody}
         argv={preview}
         confirmLabel={act.label}
         pending={phase === "pending"}

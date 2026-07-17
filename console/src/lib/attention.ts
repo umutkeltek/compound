@@ -33,6 +33,10 @@ export interface AttentionAction {
   argv: string[];
   kind: AttentionActionKind;
   requires_confirmation: boolean;
+  /** Go-owned execution authority. Preserved byte-for-shape; parsed by the consumer. */
+  action_intent?: Json;
+  policy_decision?: Json;
+  policy_authority?: Json;
 }
 
 export interface AttentionFreshness {
@@ -84,12 +88,17 @@ export interface AttentionReport {
 function toAction(raw: unknown): AttentionAction | null {
   if (!raw || typeof raw !== "object") return null;
   const a = raw as Json;
+  const objectField = (value: unknown): Json | undefined =>
+    value != null && typeof value === "object" && !Array.isArray(value) ? value as Json : undefined;
   return {
     id: str(a.id),
     label: str(a.label),
     argv: arr(a.argv).map(String),
     kind: str(a.kind) as AttentionActionKind,
     requires_confirmation: Boolean(a.requires_confirmation),
+    action_intent: objectField(a.action_intent),
+    policy_decision: objectField(a.policy_decision),
+    policy_authority: objectField(a.policy_authority),
   };
 }
 
@@ -150,9 +159,8 @@ export async function getAttention(): Promise<AttentionReport | null> {
  * console-honest-degradation, passthrough). Same normalizer, but exposes
  * status/lastGoodAt/error so a caller renders the honest-degradation model -
  * never assume a non-null report means "live"; check `read.status`. Only the
- * briefing uses this today (a real `compound attention --json` runs ~20s, so
- * it needs the extended per-door timeout); every other caller keeps using the
- * plain `getAttention()` above, unaffected.
+ * Every mutation-capable attention consumer uses this form so action
+ * readiness is bound to the read's actual live/stale/unreachable status.
  */
 export async function getAttentionProjection(opts?: { timeoutMs?: number }): Promise<{
   read: ProjectionRead;

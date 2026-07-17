@@ -12,7 +12,11 @@
  */
 
 import { decideReadinessSections, remainingDecideMembers } from "./decide-members";
+import { toAttentionReport } from "./attention";
+import { authoritySummarySegments } from "./action-authority";
+import { headlineAct } from "./briefing";
 import { buildDecideGroups, genericReviewResolutionActs } from "./decide-model";
+import { manualCopyCommandFor } from "./decide-resolution-acts";
 import type { Json } from "./compound";
 
 type Check = { name: string; ok: boolean; detail: string };
@@ -55,6 +59,78 @@ function validBriefPayload(preparedBy = "switchback_api"): Json {
   };
 }
 
+function authorityActionFixture(itemId = "scr_authority_face"): Json {
+  const scope = { entity_id: itemId, project_id: "compound", surface: "reviews" };
+  const target = { kind: "review_artifact", id: itemId };
+  return {
+    id: "record_source_control_cleanup_review",
+    label: "Record the current source-control review",
+    argv: ["compound", "authority", "dirty-review", `/tmp/${itemId}.review.yaml`, "--json"],
+    requires_review: false,
+    action_intent: {
+      schema_version: "compound.action_intent.v0.1",
+      id: `act_${itemId}`,
+      created_at: "2026-07-17T12:00:00Z",
+      producer: { kind: "cli", name: "compound", version: "fixture" },
+      ids: { work_id: "work_authority_face" },
+      scope,
+      authority: { source_class: "runtime", status: "current" },
+      privacy: "private",
+      risk: "tier1",
+      evidence_refs: ["evidence:authority-face"],
+      uncertainty: { level: "known" },
+      actor: "operator-console",
+      capability: "source-control-review",
+      action: "record exact review",
+      target,
+      mutation_class: "local_reversible",
+      reversibility: "easy",
+      blast_radius: "local_reversible",
+      estimated_cost: { usd: 0, tokens: 0, human_review_minutes: 1 },
+      rollback_plan: "supersede the recorded review",
+    },
+    policy_decision: {
+      schema_version: "compound.policy_decision.v0.1",
+      id: `pol_${itemId}`,
+      created_at: "2026-07-17T12:00:01Z",
+      producer: { kind: "policy", name: "compound", version: "fixture" },
+      ids: { work_id: "work_authority_face" },
+      scope,
+      authority: { source_class: "runtime", status: "current" },
+      privacy: "private",
+      risk: "tier1",
+      evidence_refs: ["evidence:policy-face"],
+      uncertainty: { level: "known" },
+      action_intent_id: `act_${itemId}`,
+      outcome: "allow",
+      reasons: ["current policy allows the exact action"],
+      obligations: [],
+      standing_grant_id: "grant_authority_face",
+    },
+    policy_authority: {
+      schema_version: "compound.policy_authority_face.v0.1",
+      revision: `policy-authority-v1:sha256:${"e".repeat(64)}`,
+      current: true,
+      allowed: true,
+      wording: "Allowed by current policy",
+      action_intent_id: `act_${itemId}`,
+      policy_decision_id: `pol_${itemId}`,
+      policy_outcome: "allow",
+      standing_grant_id: "grant_authority_face",
+      target,
+      target_scope: "private",
+      blast_radius: "local_reversible",
+      reversibility: "easy",
+      verified_recoverability: "verified",
+      operator_control_continuity: "continuous",
+      policy_source: "fixture-policy",
+      exact_gate: "standing_scope",
+      expected_receipt: "source-control review receipt",
+      expected_proof: ["proof:review-recorded"],
+    },
+  };
+}
+
 function build(group: Json, itemByID: Map<string, Json>) {
   const [decided] = buildDecideGroups([group], itemByID, null, () => itemByID.get("member_a")!);
   return decided;
@@ -63,6 +139,114 @@ function build(group: Json, itemByID: Map<string, Json>) {
 export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] } {
   const checks: Check[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
+
+  // The real console passes ProjectionRead status into the model. Only a live,
+  // current, allowed Go authority bundle may mount an act; held remains exact
+  // policy context, while stale/malformed are waiting with no synthetic act.
+  {
+    const itemId = "scr_authority_face";
+    const allowedAction = authorityActionFixture(itemId);
+    const item = { id: itemId, area: "source-control-cleanup", actions: [allowedAction] } as Json;
+    const group = {
+      key: "source-control-cleanup|authority-face",
+      area: "source-control-cleanup",
+      count: 1,
+      item_ids: [itemId],
+      sample: item,
+      safe_batch_action: allowedAction,
+      operator_summary: "Review the current source-control record.",
+    } as Json;
+    const attention = {
+      schema_version: "compound.attention.v0.1",
+      generated_at: "2026-07-17T12:00:02Z",
+      counts: {},
+      top: null,
+      groups: [{ ...group, action: { ...allowedAction, kind: "one_click", requires_confirmation: false } }],
+    } as Parameters<typeof buildDecideGroups>[2];
+    const buildWith = (action: Json, status: "live" | "stale" | "unreachable") => {
+      const nextItem = { ...item, actions: [action] } as Json;
+      const nextGroup = { ...group, sample: nextItem, safe_batch_action: action } as Json;
+      const nextAttention = {
+        ...attention,
+        groups: [{ ...nextGroup, action: { ...action, kind: "one_click", requires_confirmation: false } }],
+      } as Parameters<typeof buildDecideGroups>[2];
+      return buildDecideGroups(
+        [nextGroup],
+        new Map([[itemId, nextItem]]),
+        nextAttention,
+        () => nextItem,
+        status,
+      )[0];
+    };
+    const live = buildWith(allowedAction, "live");
+    const heldAction = structuredClone(allowedAction);
+    heldAction.policy_decision.outcome = "hold";
+    heldAction.policy_decision.standing_grant_id = "";
+    heldAction.policy_authority.allowed = false;
+    heldAction.policy_authority.policy_outcome = "hold";
+    heldAction.policy_authority.standing_grant_id = "";
+    heldAction.policy_authority.wording = "Needs your decision · current policy holds this action";
+    heldAction.policy_authority.exact_gate = "policy_hold";
+    const held = buildWith(heldAction, "live");
+    const stale = buildWith(allowedAction, "stale");
+    const malformedAction = structuredClone(allowedAction);
+    delete malformedAction.policy_decision;
+    const malformed = buildWith(malformedAction, "live");
+    const missingDisplayAction = structuredClone(allowedAction);
+    delete missingDisplayAction.action_intent.blast_radius;
+    delete missingDisplayAction.policy_authority.blast_radius;
+    const missingDisplay = buildWith(missingDisplayAction, "live");
+    const normalizedAttention = toAttentionReport(attention as Json);
+    const headlineLive = headlineAct(normalizedAttention?.groups[0] ?? null, "live");
+    const headlineStale = headlineAct(normalizedAttention?.groups[0] ?? null, "stale");
+    const headlineAuthoritySummary = live.face.authority ? authoritySummarySegments(live.face.authority).join(" · ") : "";
+    push(
+      "objectface-readiness-is-live-authority-bound",
+        live.act.mode === "generic" &&
+        live.act.requiresConfirmation === true &&
+        live.act.actionIntentId === `act_${itemId}` &&
+        live.act.expectedAuthorityRevision === allowedAction.policy_authority.revision &&
+        live.face.state === "ready" &&
+        live.face.primaryAction?.label === allowedAction.policy_authority.wording &&
+        live.authorityBound === true &&
+        live.face.authority?.expectedReceipt === "source-control review receipt" &&
+        live.face.authority.rollbackPlan === "supersede the recorded review" &&
+        live.face.authority.target.id === itemId &&
+        live.face.authority.targetScope === "private" &&
+        live.face.authority.blastRadius === "local_reversible" &&
+        live.face.authority.reversibility === "easy" &&
+        live.face.authority.verifiedRecoverability === "verified" &&
+        live.face.authority.operatorControlContinuity === "continuous" &&
+        live.face.authority.policySource === "fixture-policy" &&
+        live.face.authority.exactGate === "standing_scope" &&
+        live.face.authority.expectedProof.join(",") === "proof:review-recorded" &&
+        held.act.mode === "copy" &&
+        held.face.state === "needs_attention" &&
+        held.face.stateLabel === heldAction.policy_authority.wording &&
+        held.face.primaryAction == null &&
+        stale.act.mode === "copy" &&
+        stale.face.state === "waiting" &&
+        stale.face.primaryAction == null &&
+        malformed.act.mode === "copy" &&
+        malformed.face.state === "waiting" &&
+        malformed.face.authority == null &&
+        missingDisplay.act.mode === "copy" &&
+        missingDisplay.face.state === "waiting" &&
+        missingDisplay.face.authority == null &&
+        headlineLive?.pathway === "generic" &&
+        headlineLive.requiresConfirmation === true &&
+        headlineLive.actionIntentId === `act_${itemId}` &&
+        headlineLive.expectedAuthorityRevision === allowedAction.policy_authority.revision &&
+        headlineLive.label === allowedAction.policy_authority.wording &&
+        headlineStale == null &&
+        headlineAuthoritySummary.includes("Standing grant: grant_authority_face") &&
+        manualCopyCommandFor(stale) == null &&
+        manualCopyCommandFor(malformed) == null &&
+        genericReviewResolutionActs(stale).length === 0 &&
+        genericReviewResolutionActs(malformed).length === 0,
+      `live=${live.act.mode}/${live.face.state}/${JSON.stringify(live.face.authority)} held=${held.act.mode}/${held.face.state}/${held.face.stateLabel} stale=${stale.act.mode}/${stale.face.state} malformed=${malformed.act.mode}/${malformed.face.state} missing_display=${missingDisplay.act.mode}/${missingDisplay.face.state}/${missingDisplay.face.authority == null} headline=${headlineLive?.pathway}/${headlineLive?.label}/stale:${headlineStale == null}/grant:${headlineAuthoritySummary.includes("Standing grant: grant_authority_face")} manual=${manualCopyCommandFor(stale)}/${manualCopyCommandFor(malformed)} synthetic=${genericReviewResolutionActs(stale).length}/${genericReviewResolutionActs(malformed).length}`,
+    );
+  }
 
   // 1. The seam-audit falsifier: group.sample points at member_a (no brief);
   //    the brief lives on member_b, the SECOND member — exactly the shape the
@@ -604,7 +788,7 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
     const item = {
       id: itemId,
       area,
-      context_label: "Hold destructive actions",
+      context_label: "Require an explicit decision when recovery is not verified",
       actions: [action],
     } as Json;
     const group = {
@@ -765,6 +949,7 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
         resolutionAct?.reasonRequired === true &&
         resolutionAct.expectedRevision === ownerRevision &&
         resolutionAct.effectKind === "record" &&
+        manualCopyCommandFor(decided) === decided.act.command &&
         resolutionAct.decisionOptions?.map((option) => option.value).join(",") === "review_resolution_park,review_resolution_dismiss" &&
         before === after,
       `model_unchanged=${before === after} controls=${acts.length} revision=${resolutionAct?.expectedRevision ?? ""} options=${JSON.stringify(resolutionAct?.decisionOptions?.map((option) => option.value))}`,
@@ -832,7 +1017,7 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
       id: itemId,
       area,
       candidate_id: "candidate_story_fixture",
-      context_label: "Ruling: Hold destructive actions: cloud resources, signing…",
+      context_label: "Ruling: High-consequence mutations require an explicit operator decision when recovery is not verified or operator control may be impaired.",
       created_at: createdAt,
       actions: [action],
     } as Json;
@@ -855,7 +1040,7 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
     push(
       "decision-candidate-face-explains-question-step-and-proposal-time",
       decided.face.label === "Review a proposed operating rule" &&
-        decided.body === "Proposed rule: Agents pause for your approval before destructive cloud changes, release signing or submission, or changes to Compound's operating rules." &&
+        decided.body === "Proposed rule: High-consequence mutations require an explicit operator decision when recovery is not verified or operator control may be impaired." &&
         decided.face.whyNow === "This is not the final approval. Compound first needs an independent review before this rule can enter the decision source." &&
         decided.face.owner === "Decision review" &&
         decided.face.primaryAction?.label === "Prepare independent review" &&

@@ -5,7 +5,7 @@ import { PromotionBand } from "@/components/routing/PromotionBand";
 import { RouteTraffic } from "@/components/routing/RouteTraffic";
 import { RoutingTabs } from "@/components/routing/RoutingTabs";
 import { FreshnessChip, PageHeader, RouteIcon, SectionHeader } from "@/components/kit";
-import { getAttention } from "@/lib/attention";
+import { getAttentionProjection } from "@/lib/attention";
 import { getReviews, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
@@ -63,14 +63,15 @@ function RoutePlanCard({ classes }: { classes: string[] }) {
 }
 
 export default async function RoutingPage() {
-  const [attention, reviews, lanes, traffic] = await Promise.all([
-    getAttention(),
+  const [attentionProjection, reviews, lanes, traffic] = await Promise.all([
+    getAttentionProjection({ timeoutMs: 45_000 }),
     getReviews(),
     getModelLanes(),
     getRouteTraffic(),
   ]);
 
-  const promotion = buildRoutePromotionModel(reviews, attention);
+  const { read: attentionRead, report: attention } = attentionProjection;
+  const promotion = buildRoutePromotionModel(reviews, attention, attentionRead.status);
   const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
 
   return (
@@ -80,7 +81,7 @@ export default async function RoutingPage() {
         title="Routing & cost"
         right={
           <>
-            <FreshnessChip generatedAt={str(attention?.generated_at)} source="compound attention --json" />
+            <FreshnessChip generatedAt={attentionRead.generatedAt ?? str(attention?.generated_at)} source="compound attention --json" />
             {lanes?.generatedAt ? (
               <FreshnessChip generatedAt={lanes.generatedAt} source="compound route model-capabilities --json" />
             ) : null}

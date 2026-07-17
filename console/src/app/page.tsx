@@ -61,7 +61,7 @@ export default async function Briefing() {
   const top = attention?.top ?? needsYouGroups[0] ?? null;
   const needsYouGroupCount = attention?.counts?.needs_you_groups ?? needsYouGroups.length;
   const decideGroups = needsYouGroups.slice(0, 6);
-  const act = headlineAct(top);
+  const act = headlineAct(top, attentionRead.status);
   const oldest = oldestCreatedAt(needsYouGroups);
   // Any Class-A gate waiting → the hero glows amber (§9.2/§9.4).
   const classAWaiting = hasClassAGate(needsYouGroups);

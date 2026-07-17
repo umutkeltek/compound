@@ -2,6 +2,11 @@ import type { DecideAct, DecideGroup } from "@/lib/decide-model";
 
 type GenericDecideAct = Extract<DecideAct, { mode: "generic" }>;
 
+/** Authority-bound copy faces explain a gate; they never advertise a bypass command. */
+export function manualCopyCommandFor(group: DecideGroup): string | null {
+  return !group.authorityBound && group.act.mode === "copy" ? group.act.command : null;
+}
+
 // Generic resolution controls are derived at render time so the serialized
 // DecideGroup stays unchanged. Only an honest-copy card representing exactly
 // one Reviews-backed item qualifies; Attention-only and aggregate cards get none.
@@ -13,7 +18,12 @@ type GenericDecideAct = Extract<DecideAct, { mode: "generic" }>;
 // components, and decide-model's module graph reaches node:child_process via
 // @/lib/compound — type-only imports keep this file client-bundle-safe.
 export function genericReviewResolutionActs(group: DecideGroup): GenericDecideAct[] {
-  if (group.act.mode !== "copy" || !group.reviewResolutionItemId || !group.reviewResolutionRevision) return [];
+  if (
+    group.authorityBound ||
+    group.act.mode !== "copy" ||
+    !group.reviewResolutionItemId ||
+    !group.reviewResolutionRevision
+  ) return [];
   const copyCommand = group.act.command;
   return [{
     mode: "generic",

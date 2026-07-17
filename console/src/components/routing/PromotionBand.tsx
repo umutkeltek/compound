@@ -4,6 +4,7 @@ import { CopyCmd } from "@/components/CopyCmd";
 import { GovernedAct } from "@/components/decide/GovernedAct";
 import { ArrowUpIcon, ClockIcon, EmptyState, FreshnessChip, IdRef, SectionHeader, StateBadge } from "@/components/kit";
 import type { DecideGroup } from "@/lib/decide-model";
+import { manualCopyCommandFor } from "@/lib/decide-resolution-acts";
 import { decideActIdentity } from "@/lib/governed-action-client";
 
 /**
@@ -63,6 +64,7 @@ function RouteCard({
   mutationsEnabled: boolean;
 }) {
   const { act } = group;
+  const manualCopyCommand = manualCopyCommandFor(group);
   return (
     <article
       className={`rounded-lg border border-hair bg-panel px-4 py-3.5 shadow-sm transition-shadow hover:shadow ${
@@ -106,9 +108,10 @@ function RouteCard({
         <div className="flex flex-wrap items-center gap-2">
           {act.mode === "copy" ? (
             <div className="flex flex-col items-end gap-1">
-              <CopyCmd cmd={act.command} compact />
+              {manualCopyCommand ? <CopyCmd cmd={manualCopyCommand} compact /> : null}
               <span className="text-2xs text-faint">
-                No one-click action wired yet{act.reason ? ` — ${act.reason}` : ""}.
+                {group.authorityBound ? group.face.unavailableReason : "No one-click action wired yet"}
+                {!group.authorityBound && act.reason ? ` — ${act.reason}` : ""}.
               </span>
             </div>
           ) : act.mode === "batch-enumerable" ? (

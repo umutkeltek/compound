@@ -10,8 +10,9 @@ import { decideReadinessSections, remainingDecideMembers } from "@/lib/decide-me
 import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import type { DecisionEffectKind } from "@/lib/decision-registry";
-import { decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
+import { buildEnumerableActionRequest, decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
 import { ownerUnavailableMessage } from "@/lib/glossary";
+import type { AuthorityFace } from "@/representation";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
@@ -254,14 +255,12 @@ function EnumerableApply({
         const response = await fetch("/api/decision/execute", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
+          body: JSON.stringify(buildEnumerableActionRequest(
             area,
-            itemId: member.id,
-            actionId: member.actionId,
-            expectedRevision: member.expectedRevision,
-            confirmed: requiresConfirmation,
-            rationale: operatorRationale.trim(),
-          }),
+            member,
+            requiresConfirmation,
+            operatorRationale.trim(),
+          )),
         });
         const body = (await response.json().catch(() => null)) as { ok?: boolean; stderr?: string } | null;
         if (!response.ok || !body?.ok) {
@@ -370,7 +369,7 @@ function EnumerableApply({
               )}
               {policyNote ? (
                 <span className="mt-3 block rounded-md border border-hair bg-soft px-3 py-2 text-xs leading-relaxed text-muted">
-                  <span className="font-semibold text-ink">Safety boundary:</span> {policyNote}
+                  <span className="font-semibold text-ink">Owner note:</span> {policyNote}
                 </span>
               ) : null}
             </Dialog.Description>
@@ -467,6 +466,56 @@ function CapabilityStatus({ group, compact = false }: { group: DecideGroup; comp
     >
       {group.capability.label}
     </span>
+  );
+}
+
+function AuthorityFaceDetails({ authority }: { authority: AuthorityFace }) {
+  const target = [
+    authority.target.kind,
+    authority.target.id,
+    authority.target.path,
+  ].filter(Boolean).join(" · ");
+  const rows = [
+    ["Target", target || "Not specified by owner"],
+    ["Target scope", authority.targetScope],
+    ["Blast radius", authority.blastRadius],
+    ["Reversibility", authority.reversibility],
+    ["Rollback plan", authority.rollbackPlan || "Not provided by owner"],
+    ["Verified recoverability", authority.verifiedRecoverability],
+    ["Operator-control continuity", authority.operatorControlContinuity],
+    ["Policy source", authority.policySource],
+    ["Standing grant", authority.standingGrantId || "No standing grant"],
+    ["Exact gate", authority.exactGate],
+    ["Expected receipt", authority.expectedReceipt || "Not specified by owner"],
+  ] as const;
+
+  return (
+    <section className="mx-4 mb-4 rounded-md border border-hair bg-soft px-3 py-3" aria-label={authority.current ? "Current action authority" : "Non-current authority evidence"}>
+      <div className="text-2xs font-bold uppercase tracking-wide text-faint">
+        {authority.current ? "Current action authority" : "Non-current authority evidence"}
+      </div>
+      <p className="mt-1 text-sm font-semibold leading-relaxed text-ink">{authority.wording}</p>
+      <dl className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="min-w-0">
+            <dt className="text-2xs font-semibold uppercase tracking-wide text-faint">{label}</dt>
+            <dd className="mt-0.5 break-words text-xs leading-relaxed text-muted">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-3 border-t border-hair pt-2">
+        <div className="text-2xs font-semibold uppercase tracking-wide text-faint">Expected proof</div>
+        {authority.expectedProof.length ? (
+          <ul className="mt-1 flex flex-col gap-1">
+            {authority.expectedProof.map((proof) => (
+              <li key={proof}><code className="mono break-all text-2xs text-muted">{proof}</code></li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-xs text-muted">Not specified by owner</p>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -602,10 +651,10 @@ function decisionIdentity(group: DecideGroup): string {
   if (act.mode === "bespoke") {
     return `${group.key}:${act.mode}:${act.itemId}:${act.expectedRevision}:${act.options.map((option) => option.value).join(",")}`;
   }
-  if (act.mode === "generic") return `${group.key}:${act.mode}:${act.itemId}:${act.actionId}:${act.expectedRevision}:${act.requiresConfirmation}:${act.effectKind}`;
+  if (act.mode === "generic") return `${group.key}:${act.mode}:${act.itemId}:${act.actionId}:${act.expectedRevision}:${act.actionIntentId ?? ""}:${act.expectedAuthorityRevision ?? ""}:${act.requiresConfirmation}:${act.effectKind}`;
   if (act.mode === "batch-atomic") return `${group.key}:${act.mode}:${act.itemId}:${act.option}:${act.argv?.join(" ") ?? ""}`;
   if (act.mode === "batch-enumerable") {
-    return `${group.key}:${act.mode}:${act.requiresConfirmation}:${act.requiresRationale}:${act.effectKind}:${act.members.map((member) => `${member.id}:${member.actionId}:${member.expectedRevision}`).join("|")}`;
+    return `${group.key}:${act.mode}:${act.requiresConfirmation}:${act.requiresRationale}:${act.effectKind}:${act.members.map((member) => `${member.id}:${member.actionId}:${member.expectedRevision}:${member.actionIntentId ?? ""}:${member.expectedAuthorityRevision ?? ""}`).join("|")}`;
   }
   return `${group.key}:${act.mode}:${act.command}`;
 }
@@ -666,6 +715,8 @@ function DecisionDetail({
         </div>
       </header>
 
+      {group.face.authority ? <AuthorityFaceDetails authority={group.face.authority} /> : null}
+
       <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)} className="border-t border-hair">
         <div className="overflow-x-auto px-4 py-3">
           <TabsList label="Decision face">
@@ -722,11 +773,13 @@ function DecisionDetail({
                     effectKind="record"
                   />
                 ))}
-                <details className="text-xs text-muted">
-                  <summary className="cursor-pointer font-semibold">Manual owner command</summary>
-                  <div className="mt-2"><CopyCmd cmd={act.command} compact /></div>
-                  {act.reason ? <p className="mt-2 leading-relaxed text-faint">{act.reason}</p> : null}
-                </details>
+                {!group.authorityBound ? (
+                  <details className="text-xs text-muted">
+                    <summary className="cursor-pointer font-semibold">Manual owner command</summary>
+                    <div className="mt-2"><CopyCmd cmd={act.command} compact /></div>
+                    {act.reason ? <p className="mt-2 leading-relaxed text-faint">{act.reason}</p> : null}
+                  </details>
+                ) : null}
               </div>
             ) : act.mode === "batch-enumerable" ? (
               <EnumerableApply

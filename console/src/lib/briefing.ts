@@ -11,7 +11,9 @@
  */
 
 import type { AttentionGroup } from "@/lib/attention";
-import { arr, num, str, type Json } from "@/lib/compound";
+import { arr, num, str, type Json, type ProjectionStatus } from "@/lib/compound";
+import { parseActionAuthorityBundle } from "@/lib/action-authority";
+import type { AuthorityFace } from "@/representation";
 import { toDate } from "@/lib/time";
 import { genericActionProjectionEligible, genericActionRevision, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
 import { specFor } from "@/lib/decision-registry";
@@ -59,6 +61,7 @@ export type HeadlineActDescriptor = {
   /** Exact Go-owned authority identity carried to the click-time preflight. */
   actionIntentId?: string;
   expectedAuthorityRevision?: string;
+  authority?: AuthorityFace;
   /** Bespoke projection fields shown in the confirmation command. */
   fields?: Record<string, string>;
   label: string;
@@ -68,9 +71,18 @@ export type HeadlineActDescriptor = {
   rationaleRequired: boolean;
 };
 
-export function headlineAct(group: AttentionGroup | null): HeadlineActDescriptor | null {
+export function headlineAct(
+  group: AttentionGroup | null,
+  projectionStatus?: ProjectionStatus,
+): HeadlineActDescriptor | null {
   const action = group?.action;
   if (!group || !action) return null;
+  const authorityBound = projectionStatus !== undefined;
+  const authority = authorityBound ? parseActionAuthorityBundle(action) : null;
+  if (
+    authorityBound &&
+    (projectionStatus !== "live" || !authority || !authority.current || !authority.allowed)
+  ) return null;
   // Copy-only backend forms (e.g. panel per-item `/bin/sh -lc`) are never run
   // from a card — honest, no button.
   if (action.kind === "copy_only") return null;
@@ -78,11 +90,11 @@ export function headlineAct(group: AttentionGroup | null): HeadlineActDescriptor
   const argv = arr(action.argv).map(String);
   if (argv.length < 2 || argv[0] !== "compound") return null;
   const bare = argv.slice(1); // drop leading "compound"
-  const label = str(action.label) || "Act";
-  const requiresConfirmation = Boolean(action.requires_confirmation);
+  const label = authority?.wording || str(action.label) || "Act";
+  const requiresConfirmation = Boolean(action.requires_confirmation) || Boolean(specFor(str(group.area))?.requiresConfirmation);
 
   // Panel run apply — exact owner action + exact argv shape only.
-  if (str(action.id) === "panel_run_apply") {
+  if (!authorityBound && str(action.id) === "panel_run_apply") {
     const runId = bare[3] ?? "";
     if (
       bare.length !== 5 ||
@@ -96,7 +108,7 @@ export function headlineAct(group: AttentionGroup | null): HeadlineActDescriptor
   }
 
   // Panel grouped verdict record — bespoke `panel-verdict-record-group`.
-  if (str(action.id) === "panel_verdict_record_group") {
+  if (!authorityBound && str(action.id) === "panel_verdict_record_group") {
     const groupKey = str(group.key);
     if (
       bare.length !== 8 ||
@@ -131,7 +143,7 @@ export function headlineAct(group: AttentionGroup | null): HeadlineActDescriptor
   // (generic-actions GENERIC_ACTION_ALLOWLIST). An un-certified area would 403
   // on click, so we render no button for it (honest).
   const area = str(group.area);
-  if (!specFor(area) && genericActionProjectionEligible(area, argv)) {
+  if ((!specFor(area) || authorityBound) && genericActionProjectionEligible(area, argv)) {
     const itemIDs = group.item_ids.filter(Boolean);
     const itemId = action.kind === "batch" ? str(group.key) : itemIDs.length === 1 ? itemIDs[0] : "";
     if (!itemId) return null;
@@ -141,6 +153,9 @@ export function headlineAct(group: AttentionGroup | null): HeadlineActDescriptor
       itemId,
       actionId: str(action.id),
       expectedRevision: genericActionRevision(action),
+      actionIntentId: authority?.actionIntentId,
+      expectedAuthorityRevision: authority?.authorityRevision,
+      authority: authority ?? undefined,
       label,
       argv,
       requiresConfirmation,

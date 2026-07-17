@@ -125,7 +125,13 @@ export default async function Decide({
     ...groupsForBand(reviews, "needs_you", attention),
   ];
   const orderedGroups = enrichAttentionGroups(attentionNeedsYouGroups(attention), reviewEnrichmentGroups);
-  const decideGroups = buildDecideGroups(orderedGroups, itemByID, attention, (g) => sampleForGroup(g, itemByID));
+  const decideGroups = buildDecideGroups(
+    orderedGroups,
+    itemByID,
+    attention,
+    (g) => sampleForGroup(g, itemByID),
+    attentionRead.status,
+  );
 
   const watchingEntries = sortByAge(
     [...groupsForBand(reviews, "watching", attention), ...externalWatching.map(asWatchingEntry)],

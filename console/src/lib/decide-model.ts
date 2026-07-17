@@ -1,11 +1,12 @@
-import { arr, num, reviewCommand, str, type Json } from "@/lib/compound";
+import { arr, num, reviewCommand, str, type Json, type ProjectionStatus } from "@/lib/compound";
+import { parseActionAuthorityBundle } from "@/lib/action-authority";
 import { ago, toDate } from "@/lib/time";
 import type { AttentionReport } from "@/lib/attention";
 import { type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor } from "@/lib/decision-registry";
 import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, reviewResolutionRevision, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
 import { areaPlain } from "@/lib/glossary";
 import { areaOf } from "@/lib/review-data";
-import type { ObjectFace } from "@/representation";
+import type { AuthorityFace, ObjectFace } from "@/representation";
 
 /**
  * The Decide-page view model (Phase 3b). Turns the reviews needs-you groups
@@ -75,6 +76,7 @@ export type DecideMember = {
   expectedRevision: string;
   actionIntentId?: string;
   expectedAuthorityRevision?: string;
+  authority?: AuthorityFace;
   actionLabel: string;
   requiresReview: boolean;
   policyNote: string;
@@ -219,6 +221,8 @@ export type DecideGroup = {
   face: ObjectFace;
   act: DecideAct;
   capability: DecideCapability;
+  /** True when the caller supplied a real ProjectionRead status and strict authority readiness applies. */
+  authorityBound?: boolean;
   /**
    * A prepared, propose-only translation of this decision — optional so
    * existing DecideGroup literals built outside buildDecideGroups (e.g. the
@@ -270,6 +274,7 @@ function memberOf(area: string, id: string, itemByID: Map<string, Json>): Decide
     ? arr(item.actions).find((candidate) => genericActionProjectionEligible(area, (candidate as Json).argv))
     : null;
   const argv = action ? cleanArgv((action as Json).argv) : null;
+  const authority = action ? parseActionAuthorityBundle(action) : null;
   const candidateRule = decisionCandidateRule(item ?? {});
   const proposedAt = str(item?.created_at);
   return {
@@ -282,8 +287,13 @@ function memberOf(area: string, id: string, itemByID: Map<string, Json>): Decide
     argv,
     actionId: action ? str((action as Json).id) : "",
     expectedRevision: action ? genericActionRevision(action) : "",
-    actionLabel: action ? str((action as Json).label) : "",
-    requiresReview: Boolean(action && ((action as Json).requires_review ?? (action as Json).requires_confirmation)),
+    actionIntentId: authority?.actionIntentId,
+    expectedAuthorityRevision: authority?.authorityRevision,
+    authority: authority ?? undefined,
+    actionLabel: authority?.wording || (action ? str((action as Json).label) : ""),
+    requiresReview: Boolean(
+      action && ((action as Json).requires_review ?? (action as Json).requires_confirmation),
+    ) || Boolean(specFor(area)?.requiresConfirmation),
     policyNote: operatorPolicyNote(area, action ? str((action as Json).policy_note) : ""),
     proposedAt,
     proposedAtLabel: localDateTime(proposedAt),
@@ -354,12 +364,6 @@ function decisionCandidateRule(item: Json): string {
     str(item.context_label)
   ).replace(/^Ruling:\s*/i, "").trim();
 
-  if (
-    /^Hold destructive actions:\s*cloud resources,\s*signing,\s*submission,\s*doctrine changes require owner approval$/i.test(raw) ||
-    /^Hold destructive actions:\s*cloud resources,\s*signing(?:…|\.\.\.)?$/i.test(raw)
-  ) {
-    return "Agents pause for your approval before destructive cloud changes, release signing or submission, or changes to Compound's operating rules.";
-  }
   return raw;
 }
 
@@ -550,6 +554,97 @@ function batchAtomicAct(action: Json, group: Json, sample: Json): DecideAct | nu
   };
 }
 
+function strictAuthorityAction(
+  group: Json,
+  sample: Json,
+  attnAction: Json | null,
+  itemByID: Map<string, Json>,
+): { action: Json; authority: AuthorityFace } | null {
+  const candidates: Json[] = [];
+  if (attnAction) candidates.push(attnAction);
+  const batch = safeBatchAction(group);
+  if (batch) candidates.push(batch);
+
+  const memberIDs = [...new Set(arr(group.item_ids).map(String).filter(Boolean))];
+  // A single item may carry its exact owner action only on the Reviews item.
+  // A multi-item group must expose group authority or remain per-member; one
+  // member's face cannot authorize the rest of the batch.
+  if (memberIDs.length === 1) {
+    const member = itemByID.get(memberIDs[0]);
+    candidates.push(...arr(member?.actions).filter((value): value is Json => Boolean(value) && typeof value === "object"));
+    candidates.push(...arr(sample.actions).filter((value): value is Json => Boolean(value) && typeof value === "object"));
+  }
+
+  for (const action of candidates) {
+    const authority = parseActionAuthorityBundle(action);
+    if (authority) return { action, authority };
+  }
+  return null;
+}
+
+function strictAllowedAct(
+  group: Json,
+  sample: Json,
+  sampleId: string,
+  exact: { action: Json; authority: AuthorityFace } | null,
+  itemByID: Map<string, Json>,
+): DecideAct {
+  const area = areaOf(group);
+  const effectKind = genericActionEffectKind(area);
+
+  if (exact && effectKind && genericActionProjectionEligible(area, exact.action.argv)) {
+    const actionID = str(exact.action.id);
+    const kind = str(exact.action.kind);
+    const itemIDs = [...new Set(arr(group.item_ids).map(String).filter(Boolean))];
+    const batchTarget = kind === "batch" || (!kind && itemIDs.length > 1);
+    const targetID = batchTarget ? str(group.key) : itemIDs.length === 1 ? itemIDs[0] : "";
+    if (actionID && targetID) {
+      return {
+        mode: "generic",
+        area,
+        itemId: targetID,
+        actionId: actionID,
+        expectedRevision: genericActionRevision(exact.action),
+        actionIntentId: exact.authority.actionIntentId,
+        expectedAuthorityRevision: exact.authority.authorityRevision,
+        label: exact.authority.wording,
+        argv: cleanArgv(exact.action.argv),
+        requiresConfirmation: Boolean(
+          exact.action.requires_review ?? exact.action.requires_confirmation,
+        ) || Boolean(specFor(area)?.requiresConfirmation),
+        copyCommand: fallbackCommand(group, sample),
+        effectKind,
+        effectDescription: exact.authority.expectedReceipt,
+      };
+    }
+  }
+
+  if (effectKind) {
+    const enumerable = enumerableMembers(group, itemByID);
+    if (
+      enumerable &&
+      enumerable.every((member) => member.authority?.current && member.authority.allowed)
+    ) {
+      return {
+        mode: "batch-enumerable",
+        area,
+        label: enumerable.length === 1 ? enumerable[0].actionLabel : `Review ${enumerable.length} exact actions`,
+        members: enumerable,
+        requiresConfirmation: enumerable.some((member) => member.requiresReview),
+        requiresRationale: RATIONALE_REQUIRED_AREAS.has(area),
+        effectKind,
+        policyNote: "",
+      };
+    }
+  }
+
+  return {
+    mode: "copy",
+    command: fallbackCommand(group, sample),
+    reason: "The current owner authority has no executable adapter on this surface.",
+  };
+}
+
 /* ---------- the resolver ---------- */
 
 function resolveAct(
@@ -730,6 +825,7 @@ export function buildDecideGroups(
   itemByID: Map<string, Json>,
   attention: AttentionReport | null,
   sampleFor: SampleForGroup,
+  projectionStatus?: ProjectionStatus,
 ): DecideGroup[] {
   const attnByKey = new Map<string, Json>();
   const attnByArea = new Map<string, Json>();
@@ -750,6 +846,13 @@ export function buildDecideGroups(
 
     const attn = attnByKey.get(str(group.key)) ?? attnByArea.get(area) ?? null;
     const attnAction = attn && typeof attn.action === "object" ? (attn.action as Json) : null;
+    const authorityBound = projectionStatus !== undefined;
+    const exactAuthority = authorityBound
+      ? strictAuthorityAction(group, sample, attnAction, itemByID)
+      : null;
+    // A stale last-good action may explain why the feed degraded, but it must
+    // never be presented as current action authority.
+    const authority = projectionStatus === "live" ? exactAuthority?.authority ?? null : null;
 
     // External-repo intake is a per-repository reviewed-artifact workflow.
     // An Attention group can contain several repositories, but the bespoke
@@ -761,7 +864,21 @@ export function buildDecideGroups(
           command: "compound reviews --area external-repo-intake",
           reason: "Each repository requires its own reviewed owner artifact before it can be decided.",
         }
-      : resolveAct(group, sample, sampleId, attnAction, itemByID);
+      : authorityBound
+        ? projectionStatus !== "live"
+          ? {
+              mode: "copy",
+              command: fallbackCommand(group, sample),
+              reason: "Current owner authority evidence is not live.",
+            }
+          : !authority || !authority.current || !authority.allowed
+            ? {
+                mode: "copy",
+                command: fallbackCommand(group, sample),
+                reason: authority?.wording || "No complete current owner authority bundle is available.",
+              }
+            : strictAllowedAct(group, sample, sampleId, exactAuthority, itemByID)
+        : resolveAct(group, sample, sampleId, attnAction, itemByID);
     const createdAt = groupCreatedAt(group, itemByID);
     const count = num(group.count) || arr(group.item_ids).length || 1;
     const representedMemberIDs = [...new Set(arr(group.item_ids).map(String).filter(Boolean))];
@@ -772,6 +889,7 @@ export function buildDecideGroups(
       Boolean(soleReviewItem && arr(soleReviewItem.actions).length > 0) ||
       Boolean(group.safe_batch_action || group.action);
     const reviewResolutionItemId =
+      !authorityBound &&
       act.mode === "copy" &&
       count === 1 &&
       soleReviewItem &&
@@ -796,24 +914,59 @@ export function buildDecideGroups(
     const members =
       act.mode === "batch-enumerable" ? act.members : readonlyMembers(group, itemByID);
     const brief = briefTarget?.brief ?? null;
-    const capability = capabilityForAct(act);
     const freshnessRow = group.freshness && typeof group.freshness === "object" ? group.freshness as Json : {};
     const freshness = {
       generatedAt: str(attention?.generated_at) || str(freshnessRow.generated_at),
       source: str(freshnessRow.source) || "compound attention --json",
     };
     const copyOnly = act.mode === "copy";
+    const authorityHeld = Boolean(
+      authorityBound && projectionStatus === "live" && authority?.current && !authority.allowed,
+    );
+    const authorityReady = Boolean(
+      authorityBound && projectionStatus === "live" && authority?.current && authority.allowed && !copyOnly,
+    );
+    const authorityUnavailableReason = !authorityBound
+      ? ""
+      : projectionStatus !== "live"
+        ? `Owner authority evidence is ${projectionStatus}; execution is unavailable.`
+        : !authority
+          ? "No complete current owner authority bundle is available."
+          : !authority.current
+            ? "The owner authority bundle is not current."
+            : !authority.allowed
+              ? authority.wording
+              : act.mode === "copy"
+                ? act.reason
+                : "";
+    const capability = authorityBound && copyOnly
+      ? {
+          kind: "unavailable" as const,
+          label: authorityHeld ? "Needs decision" : "Action unavailable",
+          detail: authorityUnavailableReason,
+        }
+      : capabilityForAct(act);
     const unavailableReason = copyOnly
-      ? reviewResolutionItemId
-        ? `No ${area.replace(/-/g, " ")} owner workflow is built yet.`
-        : `No safe owner workflow is available. ${capability.detail}`
+      ? authorityBound
+        ? authorityUnavailableReason
+        : reviewResolutionItemId
+          ? `No ${area.replace(/-/g, " ")} owner workflow is built yet.`
+          : `No safe owner workflow is available. ${capability.detail}`
       : "";
     const actionDescription = area === "decision-candidates"
       ? "Creates review evidence only. It does not adopt the rule or change decision authority."
       : isHarnessEditGroup
         ? "Select the fixes you want to allow. Each approval authorizes only that map edit; it does not apply the edit."
       : capability.detail;
-    const primaryAction = copyOnly
+    const primaryAction = authorityBound
+      ? authorityReady && authority
+        ? {
+            label: authority.wording,
+            effect: capability.kind === "unavailable" ? "apply" as const : capability.kind,
+            description: authority.expectedReceipt,
+          }
+        : null
+      : copyOnly
       ? reviewResolutionItemId
         ? { label: "Review disposition", effect: "record" as const, description: "Records your queue disposition without changing the underlying authority." }
         : null
@@ -832,8 +985,24 @@ export function buildDecideGroups(
       id: sampleId,
       kind: "Decision",
       label: title,
-      state: copyOnly ? "waiting" : "ready",
-      stateLabel: copyOnly ? "Needs context" : "Ready",
+      state: authorityBound
+        ? authorityHeld
+          ? "needs_attention"
+          : authorityReady
+            ? "ready"
+            : "waiting"
+        : copyOnly ? "waiting" : "ready",
+      stateLabel: authorityBound
+        ? authorityHeld && authority
+          ? authority.wording
+          : authorityReady
+            ? "Ready"
+            : projectionStatus !== "live"
+              ? "Owner evidence not live"
+              : !authority || !authority.current
+                ? "Authority unavailable"
+                : "Action adapter unavailable"
+        : copyOnly ? "Needs context" : "Ready",
       whyNow:
         candidateRule
           ? "This is not the final approval. Compound first needs an independent review before this rule can enter the decision source."
@@ -848,13 +1017,22 @@ export function buildDecideGroups(
       proposedAtLabel: localDateTime(createdAt),
       freshness,
       confidence,
+      authority,
       primaryAction,
       unavailableReason,
-      unblockPath: copyOnly
-        ? reviewResolutionItemId
-          ? "Park or dismiss this review with a reason; the underlying authority stays unchanged."
-          : "Use the manual owner command below, or wait for the owner to expose a governed workflow."
-        : "",
+      unblockPath: authorityBound && copyOnly
+        ? authorityHeld && authority
+          ? `Gate: ${authority.exactGate}. Refresh after current authority changes.`
+          : projectionStatus !== "live"
+            ? "Refresh current owner evidence before acting."
+            : !authority || !authority.current
+              ? "Wait for the owner projection to emit a complete current authority bundle."
+              : "Use the owner surface after it exposes an authority-bound adapter."
+        : copyOnly
+          ? reviewResolutionItemId
+            ? "Park or dismiss this review with a reason; the underlying authority stays unchanged."
+            : "Use the manual owner command below, or wait for the owner to expose a governed workflow."
+          : "",
     };
 
     return {
@@ -885,6 +1063,7 @@ export function buildDecideGroups(
       face,
       act,
       capability,
+      authorityBound,
       brief,
     };
   });

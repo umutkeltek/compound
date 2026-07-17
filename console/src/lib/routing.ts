@@ -1,4 +1,4 @@
-import { arr, num, runJson, str, type Json } from "@/lib/compound";
+import { arr, num, runJson, str, type Json, type ProjectionStatus } from "@/lib/compound";
 import type { AttentionReport } from "@/lib/attention";
 import { buildDecideGroups, type DecideGroup } from "@/lib/decide-model";
 import { areaOf, groupsForBand } from "@/lib/review-data";
@@ -235,10 +235,11 @@ function buildBand(
   reviews: Json | null,
   attention: AttentionReport | null,
   itemByID: Map<string, Json>,
+  projectionStatus?: ProjectionStatus,
 ): DecideGroup[] {
   const routeGroups = groupsForBand(reviews, band, attention).filter((g) => isRouteArea(areaOf(g)));
   const ordered = orderByAttention(routeGroups, attention, itemByID);
-  return buildDecideGroups(ordered, itemByID, attention, (g) => sampleForGroup(g, itemByID)).filter((g) =>
+  return buildDecideGroups(ordered, itemByID, attention, (g) => sampleForGroup(g, itemByID), projectionStatus).filter((g) =>
     isRouteArea(g.area),
   );
 }
@@ -246,10 +247,11 @@ function buildBand(
 export function buildRoutePromotionModel(
   reviews: Json | null,
   attention: AttentionReport | null,
+  projectionStatus?: ProjectionStatus,
 ): RoutePromotionModel {
   const itemByID = buildItemIndex(reviews);
-  const needsYou = buildBand("needs_you", reviews, attention, itemByID);
-  const watching = buildBand("watching", reviews, attention, itemByID);
+  const needsYou = buildBand("needs_you", reviews, attention, itemByID, projectionStatus);
+  const watching = buildBand("watching", reviews, attention, itemByID, projectionStatus);
 
   const classA = arr(attention?.groups).some(
     (g: Json) =>

@@ -105,6 +105,8 @@ export interface ObjectFace {
   proposedAtLabel: string;
   freshness: { generatedAt: string; source: string };
   confidence?: { value: number; label: string };
+  /** Exact owner-issued authority for this face's action, or null when unavailable. */
+  authority: AuthorityFace | null;
   primaryAction: ObjectFaceAction | null;
   unavailableReason: string;
   unblockPath: string;
