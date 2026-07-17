@@ -12,9 +12,13 @@ import (
 	"compound/internal/work"
 )
 
-const executorsUsage = "usage: compound executors [--json] [--probe-local] [--lm-studio-url URL] [--probe-jobs] [--jobs-state-dir DIR]"
+const executorsUsage = "usage: compound executors [--json] [--probe-local] [--lm-studio-url URL] [--probe-jobs] [--jobs-state-dir DIR]\n       compound executors worktrees [--json] [--repo PATH] [--activity-window-min N]"
 
 func cmdExecutors(args []string) {
+	if len(args) > 0 && args[0] == "worktrees" {
+		cmdExecutorsWorktrees(args[1:])
+		return
+	}
 	jsonOut := false
 	probeLocal := false
 	probeJobs := false
