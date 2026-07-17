@@ -333,42 +333,68 @@ func TestRebaselineTransactionCopiedHandleCannotMutateAfterCallback(t *testing.T
 	}
 }
 
-func TestRebaselineTransactionWriteSidecarCASRequiresExactPendingMarker(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		setup func(*RebaselineTransaction) error
+func TestRebaselineTransactionMutationsRequireExactPendingMarker(t *testing.T) {
+	operations := []struct {
+		name    string
+		initial string
+		run     func(*RebaselineTransaction) error
+	}{
+		{name: "write", initial: "pre", run: func(tx *RebaselineTransaction) error {
+			return tx.WriteSidecarCAS([]byte("pre"), true, []byte("post"))
+		}},
+		{name: "rollback", initial: "post", run: func(tx *RebaselineTransaction) error {
+			return tx.RollbackSidecarCAS([]byte("post"), []byte("pre"), true)
+		}},
+		{name: "clear", initial: "pre", run: func(tx *RebaselineTransaction) error {
+			return tx.ClearPending()
+		}},
+	}
+	markers := []struct {
+		name     string
+		replaced bool
 	}{
 		{name: "missing"},
-		{name: "replaced", setup: func(tx *RebaselineTransaction) error {
-			if err := tx.WritePending([]byte("owned pending marker\n")); err != nil {
-				return err
-			}
-			return os.WriteFile(tx.PendingPath(), []byte("foreign pending marker\n"), 0o644)
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := openTestStore(t)
-			path := store.engine.streamBaselinePath()
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte("pre"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
-				if tc.setup != nil {
-					if err := tc.setup(tx); err != nil {
-						return err
+		{name: "replaced", replaced: true},
+	}
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			for _, marker := range markers {
+				t.Run(marker.name, func(t *testing.T) {
+					store := openTestStore(t)
+					path := store.engine.streamBaselinePath()
+					if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+						t.Fatal(err)
 					}
-				}
-				return tx.WriteSidecarCAS([]byte("pre"), true, []byte("post"))
-			})
-			if !errors.Is(err, ErrRebaselineStateConflict) {
-				t.Fatalf("WriteSidecarCAS err=%v, want pending-marker conflict", err)
-			}
-			body, readErr := os.ReadFile(path)
-			if readErr != nil || string(body) != "pre" {
-				t.Fatalf("unjournaled CAS mutated sidecar: body=%q err=%v", body, readErr)
+					if err := os.WriteFile(path, []byte(operation.initial), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+						if marker.replaced {
+							if err := tx.WritePending([]byte("owned pending marker\n")); err != nil {
+								return err
+							}
+							if err := os.WriteFile(tx.PendingPath(), []byte("foreign pending marker\n"), 0o644); err != nil {
+								return err
+							}
+						}
+						return operation.run(tx)
+					})
+					if !errors.Is(err, ErrRebaselineStateConflict) {
+						t.Fatalf("%s err=%v, want pending-marker conflict", operation.name, err)
+					}
+					body, readErr := os.ReadFile(path)
+					if readErr != nil || string(body) != operation.initial {
+						t.Fatalf("unjournaled %s mutated sidecar: body=%q err=%v", operation.name, body, readErr)
+					}
+					pending, exists, readErr := store.ReadRebaselinePending()
+					if marker.replaced {
+						if readErr != nil || !exists || string(pending) != "foreign pending marker\n" {
+							t.Fatalf("%s erased foreign marker: pending=%q exists=%t err=%v", operation.name, pending, exists, readErr)
+						}
+					} else if readErr != nil || exists {
+						t.Fatalf("%s created missing marker: exists=%t err=%v", operation.name, exists, readErr)
+					}
+				})
 			}
 		})
 	}
@@ -490,31 +516,37 @@ func TestMigrationCompletionRetryRefreshesProvisionalCompletionBaseline(t *testi
 }
 
 func TestMigrationCompletionRefusesNonCompletionBaseline(t *testing.T) {
-	store := openMigrateStore(t)
-	seedLoose(t, store, "rec_completion_refuse", "body")
-	path := store.engine.streamBaselinePath()
-	governed := StreamBaseline{
-		Schema:     streamBaselineSchema,
-		RecordedAt: migrateNow.Format(time.RFC3339Nano),
-		Reason:     streamBaselineReasonRebaseline,
-		Streams:    map[string]int64{},
-	}
-	if err := writeStreamBaselineAtomic(path, governed); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err == nil || !strings.Contains(err.Error(), "rebaseline") {
-		t.Fatalf("completion accepted non-completion baseline: %v", err)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil || !reflect.DeepEqual(after, before) {
-		t.Fatalf("completion overwrote governed baseline: err=%v", err)
-	}
-	if store.MigrationComplete() {
-		t.Fatal("completion published despite governed baseline conflict")
+	for _, tc := range []struct {
+		name     string
+		baseline StreamBaseline
+		wantErr  string
+	}{
+		{name: "governed reason", baseline: StreamBaseline{Schema: streamBaselineSchema, Reason: streamBaselineReasonRebaseline, Streams: map[string]int64{}}, wantErr: "reason"},
+		{name: "wrong schema", baseline: StreamBaseline{Schema: "unexpected.stream-baseline", Reason: streamBaselineReasonCompletion, Streams: map[string]int64{}}, wantErr: "schema"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openMigrateStore(t)
+			seedLoose(t, store, "rec_completion_refuse", "body")
+			path := store.engine.streamBaselinePath()
+			tc.baseline.RecordedAt = migrateNow.Format(time.RFC3339Nano)
+			if err := writeStreamBaselineAtomic(path, tc.baseline); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err == nil || !errors.Is(err, ErrRebaselineStateConflict) || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("completion accepted conflicting baseline: %v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatalf("completion overwrote conflicting baseline: err=%v", err)
+			}
+			if store.MigrationComplete() {
+				t.Fatal("completion published despite baseline conflict")
+			}
+		})
 	}
 }
 
