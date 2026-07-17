@@ -47,6 +47,13 @@ type PermissionAuthority struct {
 	TargetPath    string          `json:"target_path" yaml:"target_path"`
 	Permissions   PermissionRules `json:"permissions" yaml:"permissions"`
 	AutoMode      AutoModePolicy  `json:"auto_mode" yaml:"auto_mode"`
+	// Settings declares an owned dotted-path key set for a TOML target
+	// (surgical line-edit mode). A dotted prefix names a TOML table (e.g.
+	// "features.guardian_approval" owns the guardian_approval key inside
+	// [features]); no dot means a top-level key. Only present for harnesses
+	// that opt into TOML posture ownership; nil/empty keeps the existing
+	// JSON-settings rendering path.
+	Settings map[string]any `json:"settings,omitempty" yaml:"settings,omitempty"`
 }
 
 type HarnessArtifact struct {
@@ -192,6 +199,24 @@ func (p PermissionAuthority) Validate() error {
 			return fmt.Errorf("auto_mode.allow must contain $defaults once, first")
 		}
 	}
+	if len(p.Settings) > 0 {
+		paths := make([]string, 0, len(p.Settings))
+		for path := range p.Settings {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		for _, path := range paths {
+			if strings.TrimSpace(path) == "" {
+				return fmt.Errorf("settings contains an empty key path")
+			}
+			if _, _, err := splitTOMLSettingPath(path); err != nil {
+				return err
+			}
+			if _, err := formatTOMLScalar(path, p.Settings[path]); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -222,6 +247,9 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 	policy, sourceRevision, err := LoadPermissionAuthority(homePath, harness)
 	if err != nil {
 		return PermissionRender{}, err
+	}
+	if tomlSettingsMode(policy) {
+		return renderTOMLPermissions(harness, policy, sourceRevision)
 	}
 	before, err := os.ReadFile(policy.TargetPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -1190,6 +1218,10 @@ func sameHarnessArtifact(a, b HarnessArtifact) bool {
 }
 
 func PermissionDrift(homePath, harness string) (PermissionDriftReport, error) {
+	policy, _, err := LoadPermissionAuthority(homePath, harness)
+	if err != nil {
+		return PermissionDriftReport{}, err
+	}
 	render, err := RenderPermissions(homePath, harness)
 	if err != nil {
 		return PermissionDriftReport{}, err
@@ -1201,6 +1233,9 @@ func PermissionDrift(homePath, harness string) (PermissionDriftReport, error) {
 	}
 	if pending {
 		report.Details = append(report.Details, "incomplete permission apply transaction requires recovery")
+	}
+	if tomlSettingsMode(policy) {
+		return tomlPermissionDrift(policy, render, report)
 	}
 	current, err := os.ReadFile(render.TargetPath)
 	if err != nil {
