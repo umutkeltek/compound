@@ -259,6 +259,11 @@ SessionEnd     → same receipt family, telemetry-only — SessionEnd can never 
                                                                   and some harnesses have no SessionEnd at all (capability: SessionEndReceipt)
 ```
 
+A workless `SessionEnd` receipt is content-free with respect to transcript text: its summary carries
+opaque SHA-256 refs for the first user and last assistant text plus tool/window metadata. The raw
+messages remain in the private source transcript referenced as evidence and are never copied into
+`COMPOUND_HOME` receipt or event bodies.
+
 For Codex, the live `Stop` adapter is also the stuck/resume consumer. It binds the thread and turn to one
 open WorkEnvelope, extracts only a terminal blocking question from the existing transcript reader, and may
 return `decision: "block"` with a cited continuation only when current operator-provenanced standing law and
