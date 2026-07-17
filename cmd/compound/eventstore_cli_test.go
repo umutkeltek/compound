@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"compound/internal/policy"
 )
 
 func runEventStoreCLI(t *testing.T, args ...string) (string, string, int) {
@@ -115,5 +119,193 @@ func TestEventStoreMigrateUsageLineIsRegisteredAtTopLevel(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "compound event-store migrate ") {
 		t.Fatalf("top-level usage() must document `compound event-store migrate`")
+	}
+	if !strings.Contains(string(data), "compound event-store rebaseline ") {
+		t.Fatalf("top-level usage() must document `compound event-store rebaseline`")
+	}
+}
+
+// FALSIFIER (refusal floor): rebaseline refuses outright — in BOTH preview and
+// --confirm — when the home never completed migration; there is nothing to
+// re-baseline yet, and no sidecar is written.
+func TestEventStoreRebaselineRefusesWhenMigrationIncomplete(t *testing.T) {
+	homePath := t.TempDir()
+
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--home", homePath)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit with no completed migration; stdout=%q", out)
+	}
+	if !strings.Contains(errStr, "migration is not complete") {
+		t.Fatalf("expected a migration-incomplete message, got stderr=%q", errStr)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", "migration", "stream-baseline.json")); !os.IsNotExist(err) {
+		t.Fatalf("no sidecar should exist: stat err=%v", err)
+	}
+
+	_, errStr, code = runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_incomplete", "--home", homePath)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit on --confirm with no completed migration")
+	}
+	if !strings.Contains(errStr, "migration is not complete") {
+		t.Fatalf("expected a migration-incomplete message on confirm, got stderr=%q", errStr)
+	}
+}
+
+// FALSIFIER F6 (preview render): the dry-run default writes nothing and
+// projects current -> proposed sizes for each frozen stream.
+func TestEventStoreRebaselineDryRunWritesNothing(t *testing.T) {
+	homePath := t.TempDir()
+	seedLooseCLIRecord(t, homePath, "rec_rb_dry", "x")
+	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
+	if err := os.MkdirAll(filepath.Dir(streamPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(streamPath, []byte(`{"id":"pre"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runEventStoreCLI(t, "migrate", "--apply", "--home", homePath); code != 0 {
+		t.Fatalf("apply exit=%d", code)
+	}
+	sidecarPath := filepath.Join(homePath, "events", "migration", "stream-baseline.json")
+	before, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatalf("expected the auto-written sidecar after apply: %v", err)
+	}
+
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--home", homePath)
+	if code != 0 {
+		t.Fatalf("dry-run should succeed, got code=%d stderr=%q", code, errStr)
+	}
+	if !strings.Contains(out, "dry-run") {
+		t.Fatalf("dry-run output should say so, got %q", out)
+	}
+	if !strings.Contains(out, "proposed=") {
+		t.Fatalf("dry-run should project proposed sizes, got %q", out)
+	}
+	after, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("dry-run must not write the sidecar")
+	}
+}
+
+// FALSIFIER F4 (governance floor): --confirm WITHOUT an allowing PolicyDecision
+// refuses and leaves the sidecar byte-identical.
+func TestEventStoreRebaselineRefusesWithoutGrant(t *testing.T) {
+	homePath := t.TempDir()
+	seedLooseCLIRecord(t, homePath, "rec_rb_nogrant", "x")
+	if _, _, code := runEventStoreCLI(t, "migrate", "--apply", "--home", homePath); code != 0 {
+		t.Fatalf("apply exit=%d", code)
+	}
+	sidecarPath := filepath.Join(homePath, "events", "migration", "stream-baseline.json")
+	before, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_nogrant", "--home", homePath)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit with no allowing PolicyDecision; stdout=%q", out)
+	}
+	if !strings.Contains(errStr, "refused") {
+		t.Fatalf("expected a refusal message, got stderr=%q", errStr)
+	}
+	after, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("sidecar mutated despite refusal")
+	}
+}
+
+// --confirm requires --work (a governed act belongs to a work), mirroring `compound act`.
+func TestEventStoreRebaselineConfirmRequiresWork(t *testing.T) {
+	homePath := t.TempDir()
+	seedLooseCLIRecord(t, homePath, "rec_rb_nowork", "x")
+	if _, _, code := runEventStoreCLI(t, "migrate", "--apply", "--home", homePath); code != 0 {
+		t.Fatalf("apply exit=%d", code)
+	}
+	if _, _, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--home", homePath); code != 2 {
+		t.Fatalf("expected exit=2 without --work, got %d", code)
+	}
+}
+
+// FALSIFIERS F2 (re-baseline path) + F6 (confirm render): a completed home
+// whose hook-events.ndjson legitimately grew reports degraded; a GRANTED
+// --confirm performs the governed write, records a resolvable receipt +
+// transition, and `migrate --verify` reports ok again afterward.
+func TestEventStoreRebaselineWritesWithGrantAndClosesTheGateAgain(t *testing.T) {
+	homePath := t.TempDir()
+	seedLooseCLIRecord(t, homePath, "rec_rb_grant", "x")
+	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
+	if err := os.MkdirAll(filepath.Dir(streamPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(streamPath, []byte(`{"id":"pre"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runEventStoreCLI(t, "migrate", "--apply", "--home", homePath); code != 0 {
+		t.Fatalf("apply exit=%d", code)
+	}
+
+	// Legitimate growth AFTER completion (the gap this whole packet closes).
+	f, err := os.OpenFile(streamPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"id":"grew"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, _, code := runEventStoreCLI(t, "migrate", "--verify", "--home", homePath); code == 0 {
+		t.Fatalf("expected verify to report degraded before rebaseline:\n%s", out)
+	}
+
+	sidecarPath := filepath.Join(homePath, "events", "migration", "stream-baseline.json")
+	grantSrc := filepath.Join(homePath, "rebaseline-grant.yaml")
+	raw := "generated_at: \"2026-07-16T12:00:00Z\"\n" +
+		"grants:\n" +
+		"  - grant_id: grant_rebaseline\n" +
+		"    capabilities: [\"" + eventStoreRebaselineCapability + "\"]\n" +
+		"    target_scope: \"" + sidecarPath + "\"\n" +
+		"    mutation_class: external_side_effect\n" +
+		"    reversibility_ceiling: reversible\n" +
+		"    blast_radius: local\n"
+	if err := os.WriteFile(grantSrc, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write grant source: %v", err)
+	}
+	if _, err := policy.ImportStandingGrants(homePath, grantSrc, time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("import standing grants: %v", err)
+	}
+
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_rebaseline", "--home", homePath, "--json")
+	if code != 0 {
+		t.Fatalf("granted confirm should succeed, got code=%d stderr=%q\n%s", code, errStr, out)
+	}
+	var result struct {
+		ReceiptID    string `json:"receipt_id"`
+		TransitionID string `json:"transition_id"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("parse rebaseline output json: %v (%q)", err, out)
+	}
+	if result.ReceiptID == "" || result.TransitionID == "" {
+		t.Fatalf("expected receipt_id and transition_id in output: %q", out)
+	}
+	if !testEventExists(t, homePath, result.ReceiptID) {
+		t.Fatalf("receipt %s must resolve in the canonical event store", result.ReceiptID)
+	}
+	if !testEventExists(t, homePath, result.TransitionID) {
+		t.Fatalf("transition %s must resolve in the canonical event store", result.TransitionID)
+	}
+
+	if out2, errStr2, code2 := runEventStoreCLI(t, "migrate", "--verify", "--home", homePath); code2 != 0 {
+		t.Fatalf("verify should report ok after rebaseline: code=%d stderr=%s\n%s", code2, errStr2, out2)
 	}
 }
