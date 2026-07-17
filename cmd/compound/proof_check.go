@@ -241,6 +241,7 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		// primary path; a bun-absent host must SKIP the gate, not ENOENT through the re-exec).
 		{Name: "console-attention-consistency-smoke", Command: consoleBunSmokeCommand("scripts/attention-consistency-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-attention-consistency-smoke"},
 		{Name: "console-work-language-smoke", Command: consoleBunSmokeCommand("scripts/work-language-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-work-language-smoke"},
+		{Name: "console-work-legibility-smoke", Command: consoleBunSmokeCommand("scripts/work-legibility-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-work-legibility-smoke"},
 		{Name: "console-ask-triage-smoke", Command: consoleBunSmokeCommand("scripts/ask-triage-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-ask-triage-smoke"},
 		{Name: "console-representation-falsifiers-smoke", Command: consoleBunSmokeCommand("scripts/representation-falsifiers-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-representation-falsifiers-smoke"},
 		{Name: "console-representation-cluster-guard-smoke", Command: consoleSmokeCommand("scripts/representation-cluster-guard-smoke.mjs"), Dir: "console", ProofRef: "console-representation-cluster-guard-smoke"},
