@@ -259,6 +259,52 @@ func BuildClaudeSnapshot(body []byte, now time.Time, previous Snapshot) (Snapsho
 	return snapshot, nil
 }
 
+// SupplementWeeklyCapacity fills the weekly window only when Claude's native status payload did
+// not provide one. Native harness evidence always wins; unknown fallback evidence stays unknown.
+func SupplementWeeklyCapacity(snapshot Snapshot, evidence CapacityEvidence, previous Snapshot) Snapshot {
+	if snapshot.Harness != HarnessClaude || evidence.Status != StatusLive {
+		return snapshot
+	}
+	for _, limit := range snapshot.Limits {
+		if limit.Kind == LimitSevenDay && limit.Status == StatusLive {
+			return snapshot
+		}
+	}
+
+	weekly := LimitWindow{
+		Kind:             LimitSevenDay,
+		Status:           StatusLive,
+		RemainingPercent: clampPercent(evidence.RemainingPercent),
+		ResetsAt:         evidence.ResetsAt,
+		Source:           evidence.Source,
+	}
+	weekly.UsedPercent = 100 - weekly.RemainingPercent
+	replaced := false
+	for index := range snapshot.Limits {
+		if snapshot.Limits[index].Kind == LimitSevenDay {
+			snapshot.Limits[index] = weekly
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		snapshot.Limits = append(snapshot.Limits, weekly)
+	}
+
+	additional := make([]Metric, 0, len(snapshot.Limits))
+	for _, limit := range snapshot.Limits {
+		additional = append(additional, Metric{Status: limit.Status, UsedPercent: limit.UsedPercent, RemainingPercent: limit.RemainingPercent})
+	}
+	previousMode := ModeUnknown
+	if previous.SchemaVersion == SchemaVersion && previous.Harness == HarnessClaude {
+		previousMode = previous.Mode
+	}
+	snapshot.Mode = SelectMode(snapshot.Context, additional, previousMode)
+	snapshot.RouteGuidance = guidanceForMode(snapshot.Mode)
+	snapshot.InferenceClass, snapshot.RecommendedTheme = InferDisplayClass(snapshot.Mode)
+	return snapshot
+}
+
 // BuildCodexSnapshot adapts Compound's already-reduced capacity evidence. Exact Codex context and
 // weekly values stay visible through the native footer; this projection never reads a session body.
 func BuildCodexSnapshot(evidence CapacityEvidence, now time.Time, previous Snapshot) Snapshot {

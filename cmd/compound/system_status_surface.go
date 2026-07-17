@@ -109,6 +109,16 @@ func parseStatusHarness(value string) statussurface.Harness {
 }
 
 func buildLiveStatusSnapshot(harness statussurface.Harness, stdin io.Reader, homePath string, now time.Time) (statussurface.Snapshot, error) {
+	return buildLiveStatusSnapshotWithCapacityReader(harness, stdin, homePath, now, routeevidence.ReadLaneCapacity)
+}
+
+func buildLiveStatusSnapshotWithCapacityReader(
+	harness statussurface.Harness,
+	stdin io.Reader,
+	homePath string,
+	now time.Time,
+	readCapacity func(string, time.Time) (routeevidence.LaneCapacity, error),
+) (statussurface.Snapshot, error) {
 	if harness != statussurface.HarnessClaude && harness != statussurface.HarnessCodex {
 		return statussurface.Snapshot{}, errors.New("--harness must be claude or codex")
 	}
@@ -133,8 +143,18 @@ func buildLiveStatusSnapshot(harness statussurface.Harness, stdin io.Reader, hom
 		if err != nil {
 			return statussurface.Snapshot{}, err
 		}
+		if capacity, capacityErr := readCapacity("claude", now); capacityErr == nil {
+			status := statussurface.StatusUnknown
+			if capacity.State != routeevidence.CapacityUnknown {
+				status = statussurface.StatusLive
+			}
+			snapshot = statussurface.SupplementWeeklyCapacity(snapshot, statussurface.CapacityEvidence{
+				Status: status, RemainingPercent: capacity.Remaining, ResetsAt: capacity.ResetsAt,
+				Source: "compound/routeevidence:" + strings.TrimSpace(capacity.Source),
+			}, previous)
+		}
 	} else {
-		capacity, err := routeevidence.ReadLaneCapacity("codex", now)
+		capacity, err := readCapacity("codex", now)
 		if err != nil {
 			return statussurface.Snapshot{}, err
 		}

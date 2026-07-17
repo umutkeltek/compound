@@ -86,6 +86,58 @@ func TestAdaptiveModeUsesHysteresis(t *testing.T) {
 	}
 }
 
+func TestSupplementWeeklyCapacityFillsMissingNativeLimitAndRecomputesInference(t *testing.T) {
+	input := `{
+	  "model": {"display_name": "Fable 5"},
+	  "context_window": {"context_window_size": 1000000, "used_percentage": 20}
+	}`
+	snapshot, err := BuildClaudeSnapshot([]byte(input), testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Mode != ModeFlow || len(snapshot.Limits) != 0 {
+		t.Fatalf("native snapshot = mode %q limits %+v", snapshot.Mode, snapshot.Limits)
+	}
+
+	reset := testNow.Add(48 * time.Hour)
+	merged := SupplementWeeklyCapacity(snapshot, CapacityEvidence{
+		Status: StatusLive, RemainingPercent: 20, ResetsAt: reset, Source: "compound/routeevidence:codexbar/usage-history",
+	}, Snapshot{})
+	weekly := limitByKind(t, merged, LimitSevenDay)
+	if weekly.Status != StatusLive || weekly.UsedPercent != 80 || weekly.RemainingPercent != 20 || !weekly.ResetsAt.Equal(reset) {
+		t.Fatalf("supplemented weekly limit = %+v", weekly)
+	}
+	if weekly.Source != "compound/routeevidence:codexbar/usage-history" {
+		t.Fatalf("weekly source = %q", weekly.Source)
+	}
+	if merged.Mode != ModeConserve || merged.RouteGuidance != GuidancePreservePrimary || merged.InferenceClass != InferenceCapacity || merged.RecommendedTheme != ThemePAIOps {
+		t.Fatalf("adaptive state = mode %q guidance %q class %q theme %q", merged.Mode, merged.RouteGuidance, merged.InferenceClass, merged.RecommendedTheme)
+	}
+}
+
+func TestSupplementWeeklyCapacityNeverOverridesNativeOrInventsUnknownLimit(t *testing.T) {
+	native, err := BuildClaudeSnapshot([]byte(claudeFixture), testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := SupplementWeeklyCapacity(native, CapacityEvidence{
+		Status: StatusLive, RemainingPercent: 90, Source: "compound/routeevidence:fallback",
+	}, Snapshot{})
+	weekly := limitByKind(t, merged, LimitSevenDay)
+	if weekly.RemainingPercent != 18 || weekly.Source != "claude/statusline.rate_limits" {
+		t.Fatalf("fallback replaced native weekly limit: %+v", weekly)
+	}
+
+	withoutNative, err := BuildClaudeSnapshot([]byte(`{"context_window":{"used_percentage":20}}`), testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := SupplementWeeklyCapacity(withoutNative, CapacityEvidence{Status: StatusUnknown, RemainingPercent: 25}, Snapshot{})
+	if len(unknown.Limits) != 0 || unknown.Mode != ModeFlow {
+		t.Fatalf("unknown evidence invented capacity: mode %q limits %+v", unknown.Mode, unknown.Limits)
+	}
+}
+
 func TestSnapshotStoreIsAtomicPrivateAndStaleAware(t *testing.T) {
 	home := t.TempDir()
 	snapshot, err := BuildClaudeSnapshot([]byte(claudeFixture), testNow, Snapshot{})
