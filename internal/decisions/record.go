@@ -52,7 +52,13 @@ type RecordInput struct {
 	MinTerminalSamples int    // autonomy grant: deterministic latest-terminal sample count
 	MinWindowDays      int    // autonomy grant: minimum span between oldest/newest selected sample
 	MaxFailures        int    // autonomy grant: maximum failed/blocked/no-op receipts in that window
-	Now                time.Time
+	// A worktree-keep record (Scope == WorktreeKeepScope, Kind grant) reuses the
+	// existing operator flags — no new CLI surface: the single Keywords entry is
+	// the protected branch ref (refs/heads/<name>), Title is the required reason,
+	// and ReviewTrigger is the required revisit condition. Admission validation
+	// enforces all three below; the branch ref lands in WorktreeBranchRef, not in
+	// the freeze keyword scope.
+	Now time.Time
 }
 
 // RecordReport is what `compound decisions record` prints/returns: where the
@@ -112,13 +118,40 @@ func Record(store *mem.Store, homePath string, in RecordInput) (RecordReport, er
 			return RecordReport{}, fmt.Errorf("decisions record: --max-failures must be >= 0 and less than --min-terminal-samples")
 		}
 	}
+	// Worktree-keep scope validation mirrors the autonomy-scope block: it reuses
+	// existing flags (Keywords=branch ref, Title=reason, ReviewTrigger=revisit)
+	// and refuses a keep that cannot pin an exact branch or lacks a revisit
+	// condition. Reason non-emptiness is already guaranteed by the --title check.
+	var worktreeKeepBranchRef string
+	if strings.TrimSpace(in.Scope) == WorktreeKeepScope {
+		if kind != KindGrant {
+			return RecordReport{}, fmt.Errorf("decisions record: --scope %s requires --kind grant", WorktreeKeepScope)
+		}
+		keepKeywords := cleanRecordStrings(in.Keywords)
+		if len(keepKeywords) != 1 {
+			return RecordReport{}, fmt.Errorf("decisions record: --scope %s requires exactly one --keyword branch ref", WorktreeKeepScope)
+		}
+		worktreeKeepBranchRef = keepKeywords[0]
+		if !strings.HasPrefix(worktreeKeepBranchRef, "refs/heads/") || strings.TrimSpace(strings.TrimPrefix(worktreeKeepBranchRef, "refs/heads/")) == "" {
+			return RecordReport{}, fmt.Errorf("decisions record: --scope %s branch ref must start with refs/heads/, got %q", WorktreeKeepScope, worktreeKeepBranchRef)
+		}
+		if strings.TrimSpace(in.ReviewTrigger) == "" {
+			return RecordReport{}, fmt.Errorf("decisions record: --scope %s requires a --review-trigger revisit condition", WorktreeKeepScope)
+		}
+	}
 	now := in.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
 	id := strings.TrimSpace(in.ID)
 	if id == "" {
-		id = "operator-" + kind + "-" + digest12(title+"|"+kind)
+		if worktreeKeepBranchRef != "" {
+			// Key the stable id by branch ref so keeps for distinct branches with an
+			// identical reason never collide onto one decision id.
+			id = "operator-worktree-keep-" + digest12(worktreeKeepBranchRef+"|"+title)
+		} else {
+			id = "operator-" + kind + "-" + digest12(title+"|"+kind)
+		}
 	}
 	falsifier := strings.TrimSpace(in.Falsifier)
 	if falsifier == "" {
@@ -129,6 +162,15 @@ func Record(store *mem.Store, homePath string, in RecordInput) (RecordReport, er
 		reviewTrigger = defaultRecordReviewTrigger
 	}
 
+	// For a worktree-keep the single keyword IS the protected branch ref, not a
+	// freeze predicate keyword — it lands in WorktreeBranchRef and the freeze
+	// scope stays empty so the record never reads as a freeze.
+	freezeOwnerGlobs := cleanRecordStrings(in.OwnerGlobs)
+	freezeKeywords := cleanRecordStrings(in.Keywords)
+	if worktreeKeepBranchRef != "" {
+		freezeOwnerGlobs = nil
+		freezeKeywords = nil
+	}
 	fm := decFrontmatter{
 		ID:                 id,
 		Title:              title,
@@ -138,14 +180,15 @@ func Record(store *mem.Store, homePath string, in RecordInput) (RecordReport, er
 		ReviewedBy:         reviewedBy,
 		Scope:              strings.TrimSpace(in.Scope),
 		Domains:            cleanRecordStrings(in.Domains),
-		FreezeOwnerGlobs:   cleanRecordStrings(in.OwnerGlobs),
-		FreezeKeywords:     cleanRecordStrings(in.Keywords),
+		FreezeOwnerGlobs:   freezeOwnerGlobs,
+		FreezeKeywords:     freezeKeywords,
 		AutoAdmitClass:     autoClass,
 		MinTerminalSamples: in.MinTerminalSamples,
 		MinWindowDays:      in.MinWindowDays,
 		MaxFailures:        in.MaxFailures,
 		Falsifier:          falsifier,
 		ReviewTrigger:      reviewTrigger,
+		WorktreeBranchRef:  worktreeKeepBranchRef,
 	}
 	if undoOf := strings.TrimSpace(in.UndoOf); undoOf != "" {
 		fm.Supersedes = []string{undoOf}

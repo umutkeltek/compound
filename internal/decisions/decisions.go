@@ -43,6 +43,15 @@ const (
 	// cross proposed -> admitted after deterministic evidence proves its bound.
 	AutonomyGrantScope = "autonomy-evidence-threshold"
 
+	// WorktreeKeepScope is the exact operator-decision scope that pins a worktree
+	// branch against retirement cleanup (worktree-tracking slice 2). A keep is a
+	// KindGrant record whose scope is this value; it carries the protected branch
+	// ref (worktree_branch_ref) plus a required revisit condition (review_trigger)
+	// and reason (the decision choice), and only counts with operator ReviewedBy
+	// provenance — an agent-authored keep is inert (no self-keep), mirroring the
+	// autonomy grant's operator-provenance gate.
+	WorktreeKeepScope = "worktree-keep"
+
 	StatusProposed   = "proposed"
 	StatusAccepted   = "accepted"
 	StatusSuperseded = "superseded"
@@ -87,6 +96,10 @@ type Lifecycle struct {
 	MinTerminalSamples int      `json:"min_terminal_samples,omitempty"`
 	MinWindowDays      int      `json:"min_window_days,omitempty"`
 	MaxFailures        int      `json:"max_failures,omitempty"`
+	// WorktreeBranchRef is a worktree-keep record's protected branch ref
+	// (refs/heads/<name>) — the stable worktree identity slice 1 renders. Empty
+	// for every other decision scope (additive; no existing source sets it).
+	WorktreeBranchRef string `json:"worktree_branch_ref,omitempty"`
 }
 
 // LifecycleGap identifies a promoted decision claim missing lifecycle proof.
@@ -190,6 +203,9 @@ type decFrontmatter struct {
 	MinTerminalSamples int      `yaml:"min_terminal_samples"`
 	MinWindowDays      int      `yaml:"min_window_days"`
 	MaxFailures        int      `yaml:"max_failures"`
+	// WorktreeBranchRef mirrors the worktree-keep record's protected branch ref;
+	// additive and empty for every other decision source.
+	WorktreeBranchRef string `yaml:"worktree_branch_ref"`
 }
 
 type DecisionImportReport struct {
@@ -295,6 +311,9 @@ func importPolicyDecisionLocked(store *mem.Store, path string, now time.Time) (D
 	}
 	if f.ReviewedBy != "" {
 		q["reviewed_by"] = strings.TrimSpace(f.ReviewedBy)
+	}
+	if f.WorktreeBranchRef != "" {
+		q["worktree_branch_ref"] = strings.TrimSpace(f.WorktreeBranchRef)
 	}
 	if len(f.FreezeOwnerGlobs) > 0 {
 		q["freeze_owner_globs"] = strings.Join(f.FreezeOwnerGlobs, ",")
@@ -797,6 +816,7 @@ func LifecycleFromClaim(c mem.Claim) Lifecycle {
 		MinTerminalSamples: qualifierInt(q, "min_terminal_samples"),
 		MinWindowDays:      qualifierInt(q, "min_window_days"),
 		MaxFailures:        qualifierInt(q, "max_failures"),
+		WorktreeBranchRef:  q["worktree_branch_ref"],
 	}
 }
 
@@ -826,6 +846,7 @@ func LifecycleFromCandidate(c mem.Candidate) Lifecycle {
 		MinTerminalSamples: qualifierInt(q, "min_terminal_samples"),
 		MinWindowDays:      qualifierInt(q, "min_window_days"),
 		MaxFailures:        qualifierInt(q, "max_failures"),
+		WorktreeBranchRef:  q["worktree_branch_ref"],
 	}
 }
 
