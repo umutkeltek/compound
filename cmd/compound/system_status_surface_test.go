@@ -58,7 +58,7 @@ func TestSystemStatusSurfaceClaudeSnapshotAndRender(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(line, "[CONSERVE]") || !strings.Contains(line, "ctx 52%") || !strings.Contains(line, "5h 39%") || !strings.Contains(line, "wk 24%") {
+	if !strings.HasPrefix(line, "!! PAI.OPS !! [CONSERVE]") || !strings.Contains(line, "ctx 52%") || !strings.Contains(line, "5h 39%") || !strings.Contains(line, "wk 24%") {
 		t.Fatalf("render = %q", line)
 	}
 }

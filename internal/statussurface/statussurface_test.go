@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
 
 var testNow = time.Date(2026, 7, 17, 1, 15, 0, 0, time.UTC)
@@ -133,17 +134,37 @@ func TestRenderThemesAndCodexThemeAreDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, theme := range ThemeIDs() {
-		line, err := Render(snapshot, RenderOptions{Theme: theme, Width: 120, Color: theme != ThemePAIMono})
+	for _, tc := range []struct {
+		theme  string
+		prefix string
+	}{
+		{ThemePAINexus, "< PAI:NEXUS >"},
+		{ThemePAIFocus, "// PAI.FOCUS //"},
+		{ThemePAIOps, "!! PAI.OPS !!"},
+		{ThemePAIMono, ".. PAI.MONO .."},
+	} {
+		line, err := Render(snapshot, RenderOptions{Theme: tc.theme, Width: 120, Color: false})
 		if err != nil {
-			t.Fatalf("render %s: %v", theme, err)
+			t.Fatalf("render %s: %v", tc.theme, err)
 		}
-		if strings.TrimSpace(line) == "" || !strings.Contains(line, "ctx 59%") {
-			t.Fatalf("render %s = %q", theme, line)
+		if !strings.HasPrefix(line, tc.prefix) || !strings.Contains(line, "ctx 59%") {
+			t.Fatalf("render %s = %q", tc.theme, line)
 		}
-		if theme == ThemePAIMono && strings.Contains(line, "\x1b[") {
-			t.Fatalf("mono theme contains ANSI: %q", line)
+		if strings.ContainsAny(line, "\n\r") {
+			t.Fatalf("render %s is not one line: %q", tc.theme, line)
 		}
+		for _, r := range line {
+			if r > unicode.MaxASCII {
+				t.Fatalf("render %s contains non-ASCII rune %q: %q", tc.theme, r, line)
+			}
+		}
+	}
+	mono, err := Render(snapshot, RenderOptions{Theme: ThemePAIMono, Width: 120, Color: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(mono, "\x1b[") {
+		t.Fatalf("mono theme contains ANSI: %q", mono)
 	}
 	short, err := Render(snapshot, RenderOptions{Theme: ThemePAINexus, Width: 34, Color: false})
 	if err != nil {
@@ -152,11 +173,16 @@ func TestRenderThemesAndCodexThemeAreDeterministic(t *testing.T) {
 	if displayWidth(short) > 34 {
 		t.Fatalf("render width = %d: %q", displayWidth(short), short)
 	}
+	for _, r := range short {
+		if r > unicode.MaxASCII {
+			t.Fatalf("truncated render contains non-ASCII rune %q: %q", r, short)
+		}
+	}
 	auto, err := Render(snapshot, RenderOptions{Theme: ThemeAuto, Width: 120, Color: false})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(auto, "[CONSERVE]") {
+	if !strings.HasPrefix(auto, "!! PAI.OPS !! [CONSERVE]") {
 		t.Fatalf("auto theme did not select capacity information profile: %q", auto)
 	}
 

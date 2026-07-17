@@ -490,13 +490,13 @@ func Render(snapshot Snapshot, options RenderOptions) (string, error) {
 	var line string
 	switch options.Theme {
 	case ThemePAINexus:
-		line = fmt.Sprintf("◈ %s · ctx %s · 5h %s · wk %s · %s", strings.ToUpper(string(snapshot.Harness)), ctx, five, week, mode)
+		line = fmt.Sprintf("< PAI:NEXUS > %s :: ctx %s :: 5h %s :: wk %s :: %s", strings.ToUpper(string(snapshot.Harness)), ctx, five, week, mode)
 	case ThemePAIFocus:
-		line = fmt.Sprintf("ctx %s · wk %s · %s", ctx, week, mode)
+		line = fmt.Sprintf("// PAI.FOCUS // ctx %s :: wk %s :: %s", ctx, week, mode)
 	case ThemePAIOps:
-		line = fmt.Sprintf("[%s] ctx %s | 5h %s | wk %s", mode, ctx, five, week)
+		line = fmt.Sprintf("!! PAI.OPS !! [%s] ctx %s | 5h %s | wk %s", mode, ctx, five, week)
 	case ThemePAIMono:
-		line = fmt.Sprintf("%s ctx %s 5h %s wk %s %s", strings.ToUpper(string(snapshot.Harness)), ctx, five, week, mode)
+		line = fmt.Sprintf(".. PAI.MONO .. %s ctx %s 5h %s wk %s %s", strings.ToUpper(string(snapshot.Harness)), ctx, five, week, mode)
 	}
 	if options.Width > 0 {
 		line = truncateDisplay(line, options.Width)
@@ -555,10 +555,10 @@ func truncateDisplay(value string, width int) string {
 		return value
 	}
 	if width == 1 {
-		return "…"
+		return "~"
 	}
 	runes := []rune(value)
-	return string(runes[:width-1]) + "…"
+	return string(runes[:width-1]) + "~"
 }
 
 func displayWidth(value string) int {
