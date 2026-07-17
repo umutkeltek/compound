@@ -7,9 +7,8 @@
 // if any non-`command` string reads as a CLI invocation, or if a command that
 // was lifted out of prose has gone missing (moved, not deleted).
 //
-// Run: bun scripts/work-legibility-smoke.mjs
-// Deliberately NOT wired into the portable proof-check step list — see the
-// manual-only allowlist row in cmd/compound/proof_check_inventory_test.go.
+// Run directly with `bun scripts/work-legibility-smoke.mjs`, or through the
+// Bun-gated console-work-legibility-smoke step in the portable proof-check.
 
 import { WORK_COPY } from "../src/lib/work-copy.ts";
 
