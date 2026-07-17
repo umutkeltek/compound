@@ -70,6 +70,7 @@ type Config struct {
 type EvaluationContext struct {
 	SourceControl *SourceControlContext  `json:"source_control,omitempty"`
 	Placement     *PlacementGuardContext `json:"placement,omitempty"`
+	Authority     *AuthorityContext      `json:"authority,omitempty"`
 }
 
 // SourceControlContext is a read-only git status observation for the action target.
@@ -191,6 +192,9 @@ func EvaluateWithContext(ai envelope.ActionIntent, cfg Config, ctx EvaluationCon
 	}
 	if ctx.Placement != nil {
 		pd = applyPlacementGuardContext(pd, ai, cfg, *ctx.Placement, now)
+	}
+	if ctx.Authority != nil {
+		pd = applyAuthorityContext(pd, ai, cfg, *ctx.Authority, now)
 	}
 	return pd
 }
