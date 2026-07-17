@@ -21,6 +21,7 @@ import {
   type GenericActionResolution,
   type GenericResolutionRead,
   type ResolvedGenericAction,
+  legacyAuthorityCutoverGuardFromRead,
   readReviewResolutionProjection,
   reviewResolutionGuardFromRead,
   resolveGenericAction,
@@ -43,6 +44,7 @@ type ResolvedAuthorityIdentity = Pick<
 
 const ACTION_INTENT_ID = /^act_\S+$/;
 const ACTION_AUTHORITY_REVISION = /^policy-authority-v1:sha256:[0-9a-f]{64}$/;
+const LEGACY_AUTHORITY_CUTOVER_AREAS: ReadonlySet<string> = new Set(["source-control-cleanup"]);
 
 /**
  * Validate the identity carried by an ObjectFace act, then (when a freshly
@@ -80,6 +82,44 @@ export function actionAuthorityRequestError(
         stderr: "action authority changed since it was rendered; refresh and review current policy",
       },
       { status: 409 },
+    );
+  }
+  return null;
+}
+
+/**
+ * Preserve legacy bespoke callers until their concrete item has cut over,
+ * while making every request that claims stamped authority carry the complete
+ * optimistic identity tuple. A non-v2 legacy revision is not such a claim.
+ */
+export function actionAuthorityAdmissionError(
+  actionId: string,
+  preview: boolean,
+  request: ActionAuthorityRequest,
+): Response | null {
+  const claimsStampedAuthority = Boolean(
+    actionId ||
+    request.actionIntentId ||
+    request.expectedAuthorityRevision ||
+    request.expectedRevision.startsWith("generic-action-v2:"),
+  );
+  if (!claimsStampedAuthority) return null;
+  if (!actionId) {
+    return Response.json(
+      {
+        ok: false,
+        error_code: "malformed_authority_request",
+        stderr: "action id, action revision, ActionIntent id, and AuthorityFace revision are required",
+      },
+      { status: 400 },
+    );
+  }
+  const identityError = actionAuthorityRequestError(null, request);
+  if (identityError) return identityError;
+  if (preview) {
+    return Response.json(
+      { ok: false, error_code: "preview_unsupported", stderr: "stamped owner actions do not support bespoke preview" },
+      { status: 400 },
     );
   }
   return null;
@@ -490,28 +530,24 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   if ("confidence" in fields) fields.confidence = String(clamp01(fields.confidence));
 
   const authorityRequest = { expectedRevision, actionIntentId, expectedAuthorityRevision };
-  // Every mutation through this one adapter must name the exact rendered
-  // ActionIntent and AuthorityFace. Legacy bespoke bodies are not a second,
-  // identity-free permission path. Write-free owner previews remain exempt.
-  if (!preview) {
-    if (!actionId) {
-      return Response.json(
-        {
-          ok: false,
-          error_code: "malformed_authority_request",
-          stderr: "action id, action revision, ActionIntent id, and AuthorityFace revision are required",
-        },
-        { status: 400 },
-      );
-    }
-    const malformedAuthority = actionAuthorityRequestError(null, authorityRequest);
-    if (malformedAuthority) return malformedAuthority;
-  }
+  const admissionError = actionAuthorityAdmissionError(actionId, preview, authorityRequest);
+  if (admissionError) return admissionError;
 
   // Every execution path re-resolves owner truth outside the short read cache.
   // This must happen before the generic branch as well as the bespoke branch.
   invalidateRunJsonCache();
   const spec = specFor(area);
+  // Legacy bespoke callers remain live until owner truth proves that THIS
+  // concrete item has a complete current stamped action. Once it does, the
+  // editable legacy body is stale UI and cannot bypass the stamped semantics.
+  if (!preview && !actionId && spec && LEGACY_AUTHORITY_CUTOVER_AREAS.has(area)) {
+    const cutover = legacyAuthorityCutoverGuardFromRead(
+      await readReviewResolutionProjection(area),
+      area,
+      itemId,
+    );
+    if (!cutover.ok) return genericActionRejectionResponse(cutover.rejection);
+  }
   // An exact Go-projected action keeps its semantics even when the area also
   // has a legacy editable bespoke form. The server resolves argv from the
   // owner projection and applies both existing allowlists; client fields can

@@ -514,6 +514,10 @@ export type GenericResolutionRead = {
   error: string | null;
 };
 
+export type LegacyAuthorityCutoverGuard =
+  | { ok: true }
+  | { ok: false; rejection: GenericActionRejection };
+
 export type ReviewResolutionGuard =
   | { ok: true; revision: string }
   | { ok: false; rejection: GenericActionRejection };
@@ -607,6 +611,62 @@ export function resolveGenericActionFromRead(
     ? adaptAttentionProjectionForArea(read.value, area)
     : read.value;
   return resolveGenericActionFromProjection(projection, area, itemId, actionId, rationale);
+}
+
+/**
+ * Guard a narrowly declared legacy-to-stamped cutover for one concrete item.
+ * Once that producer is armed, an owner action of any policy outcome owns the
+ * semantics. Missing/malformed/non-current authority and unavailable owner
+ * truth fail closed; only a live item with no owner action may use its legacy
+ * bespoke form.
+ */
+export function legacyAuthorityCutoverGuardFromRead(
+  read: GenericResolutionRead,
+  area: string,
+  itemId: string,
+): LegacyAuthorityCutoverGuard {
+  if (read.status !== "live") {
+    return {
+      ok: false,
+      rejection: {
+        gate: "projection-unavailable",
+        message: `current owner truth is ${read.status}; the legacy action cannot run` +
+          (read.error ? ` (${read.error})` : ""),
+      },
+    };
+  }
+  const projection = ATTENTION_SOURCED_GENERIC_AREAS.has(area)
+    ? adaptAttentionProjectionForArea(read.value, area)
+    : read.value;
+  const { item, group } = findItemOrGroup(projection, itemId);
+  const actions = item
+    ? arr(item.actions)
+    : group
+      ? [group.safe_batch_action ?? group.action].filter(Boolean)
+      : [];
+  if (actions.length === 0) return { ok: true };
+  for (const raw of actions) {
+    const action = raw && typeof raw === "object" ? raw as Json : null;
+    const actionId = str(action?.id);
+    const authority = parseActionAuthorityBundle(action);
+    if (!actionId || !authority || !authority.current) {
+      return {
+        ok: false,
+        rejection: {
+          gate: "authority-unavailable",
+          message: "the current owner action has incomplete or non-current authority; refresh before acting",
+        },
+      };
+    }
+    return {
+      ok: false,
+      rejection: {
+        gate: "owner-action-present",
+        message: `the owner now exposes action "${actionId}" for this item; refresh and use that governed workflow`,
+      },
+    };
+  }
+  return { ok: true };
 }
 
 /**

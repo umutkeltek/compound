@@ -4,6 +4,7 @@ import {
   genericActionEffectKind,
   genericActionProjectionEligible,
   genericActionRevision,
+  legacyAuthorityCutoverGuardFromRead,
   reviewResolutionRevision,
   resolveGenericActionFromProjection,
   resolveGenericActionFromRead,
@@ -145,6 +146,48 @@ export function runGenericActionsSelfTest(): SelfTestResult {
       fail("cross-linked, malformed, display-incomplete, or partial authority bundle was accepted");
     } else {
       pass("authority parser preserves exact display fields and rejects partial/cross-linked/display-incomplete bundles");
+    }
+  }
+
+  // The armed legacy cutover distinguishes absence from broken authority:
+  // only a live concrete item with no owner action may use the old form.
+  {
+    const area = "source-control-cleanup";
+    const itemId = "scr_cutover_fixture";
+    const readWith = (action: unknown, status: "live" | "stale" = "live") => ({
+      status,
+      value: { items: [{ id: itemId, area, actions: action == null ? [] : [action] }] },
+      error: status === "live" ? null : "owner refresh failed",
+    });
+    const valid = authorityAction({ id: "record_source_control_cleanup_review" });
+    const malformed = structuredClone(valid);
+    delete (malformed as Record<string, unknown>).policy_authority;
+    const nonCurrent = structuredClone(valid);
+    (nonCurrent.policy_authority as Record<string, unknown>).current = false;
+    const held = structuredClone(valid);
+    (held.policy_decision as Record<string, unknown>).outcome = "hold";
+    (held.policy_decision as Record<string, unknown>).standing_grant_id = "";
+    (held.policy_authority as Record<string, unknown>).allowed = false;
+    (held.policy_authority as Record<string, unknown>).policy_outcome = "hold";
+    (held.policy_authority as Record<string, unknown>).standing_grant_id = "";
+
+    const absent = legacyAuthorityCutoverGuardFromRead(readWith(null), area, itemId);
+    const present = legacyAuthorityCutoverGuardFromRead(readWith(valid), area, itemId);
+    const broken = legacyAuthorityCutoverGuardFromRead(readWith(malformed), area, itemId);
+    const old = legacyAuthorityCutoverGuardFromRead(readWith(nonCurrent), area, itemId);
+    const heldGuard = legacyAuthorityCutoverGuardFromRead(readWith(held), area, itemId);
+    const stale = legacyAuthorityCutoverGuardFromRead(readWith(valid, "stale"), area, itemId);
+    if (
+      !absent.ok ||
+      present.ok || present.rejection.gate !== "owner-action-present" ||
+      broken.ok || broken.rejection.gate !== "authority-unavailable" ||
+      old.ok || old.rejection.gate !== "authority-unavailable" ||
+      heldGuard.ok || heldGuard.rejection.gate !== "owner-action-present" ||
+      stale.ok || stale.rejection.gate !== "projection-unavailable"
+    ) {
+      fail(`legacy cutover guard drifted: ${JSON.stringify({ absent, present, broken, old, heldGuard, stale })}`);
+    } else {
+      pass("legacy cutover allows absent action and fails closed on present/malformed/non-current/held/stale owner truth");
     }
   }
 

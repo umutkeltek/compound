@@ -13,6 +13,7 @@
 
 import {
   actionAuthorityRequestError,
+  actionAuthorityAdmissionError,
   decisionCommandFailureResponse,
   decisionFailureStatus,
   decisionStaleRevisionResponse,
@@ -217,35 +218,52 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
     );
   }
 
-  // A legacy bespoke-shaped mutation body cannot route around the exact
-  // ActionIntent + AuthorityFace identity merely because a registry owner
-  // still exists. This rejection happens before item resolution or argv build.
+  // Untouched legacy callers remain compatible until their concrete producer
+  // cuts over. Any request that claims stamped authority must carry the whole
+  // tuple; partial identity cannot downgrade itself into a legacy request.
   {
-    const response = await executeDecision({
-      area: "source-control-cleanup",
-      itemId: "not-a-valid-source-review",
-      option: "owner_action_required",
-      fields: { rationale: "legacy client body" },
-      confirmed: true,
+    const legacy = actionAuthorityAdmissionError("", false, {
+      expectedRevision: "legacy-owner-revision",
+      actionIntentId: "",
+      expectedAuthorityRevision: "",
     });
-    const identityWithoutAction = await executeDecision({
-      area: "source-control-cleanup",
-      itemId: "not-a-valid-source-review",
-      option: "owner_action_required",
-      fields: { rationale: "legacy client body with copied identity" },
+    const partial = actionAuthorityAdmissionError("", false, {
       expectedRevision: "generic-action-v2:[legacy]",
       actionIntentId: "act_legacy_bespoke",
       expectedAuthorityRevision: `policy-authority-v1:sha256:${"f".repeat(64)}`,
-      confirmed: true,
     });
-    const payload = await response.json() as { error_code?: string };
-    const identityWithoutActionPayload = await identityWithoutAction.json() as { error_code?: string };
+    const missingTuple = actionAuthorityAdmissionError("record_source_control_cleanup_review", false, {
+      expectedRevision: "",
+      actionIntentId: "",
+      expectedAuthorityRevision: "",
+    });
+    const preview = actionAuthorityAdmissionError("", true, {
+      expectedRevision: "",
+      actionIntentId: "",
+      expectedAuthorityRevision: "",
+    });
+    const partialPreview = actionAuthorityAdmissionError("", true, {
+      expectedRevision: "generic-action-v2:[preview]",
+      actionIntentId: "act_preview_partial",
+      expectedAuthorityRevision: "",
+    });
+    const fullPreview = actionAuthorityAdmissionError("record_source_control_cleanup_review", true, {
+      expectedRevision: "generic-action-v2:[preview]",
+      actionIntentId: "act_preview_complete",
+      expectedAuthorityRevision: `policy-authority-v1:sha256:${"e".repeat(64)}`,
+    });
+    const partialPayload = partial ? await partial.json() as { error_code?: string } : {};
+    const missingPayload = missingTuple ? await missingTuple.json() as { error_code?: string } : {};
+    const partialPreviewPayload = partialPreview ? await partialPreview.json() as { error_code?: string } : {};
+    const fullPreviewPayload = fullPreview ? await fullPreview.json() as { error_code?: string } : {};
     push(
-      "legacy-bespoke-mutation-requires-exact-authority-identity",
-      response.status === 400 && payload.error_code === "malformed_authority_request" &&
-        identityWithoutAction.status === 400 &&
-        identityWithoutActionPayload.error_code === "malformed_authority_request",
-      `empty=${response.status}/${payload.error_code ?? "missing"} identity_without_action=${identityWithoutAction.status}/${identityWithoutActionPayload.error_code ?? "missing"}`,
+      "legacy-callers-remain-compatible-while-stamped-claims-require-full-identity",
+      legacy == null && preview == null &&
+        partial?.status === 400 && partialPayload.error_code === "malformed_authority_request" &&
+        missingTuple?.status === 400 && missingPayload.error_code === "malformed_authority_request" &&
+        partialPreview?.status === 400 && partialPreviewPayload.error_code === "malformed_authority_request" &&
+        fullPreview?.status === 400 && fullPreviewPayload.error_code === "preview_unsupported",
+      `legacy=${legacy == null} preview=${preview == null} partial=${partial?.status}/${partialPayload.error_code} missing=${missingTuple?.status}/${missingPayload.error_code} partial_preview=${partialPreview?.status}/${partialPreviewPayload.error_code} full_preview=${fullPreview?.status}/${fullPreviewPayload.error_code}`,
     );
   }
 
@@ -461,8 +479,8 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
     );
   }
 
-  // 11. Preview is a bespoke owner contract. A generic-shaped preview request
-  //     must be rejected before action resolution can reach a mutation.
+  // 11. Preview is a bespoke owner contract. An actionId-only preview claims
+  //     stamped authority without its tuple and is rejected before resolution.
   {
     const response = await executeDecision({
       area: "generic-preview-fixture",
@@ -473,7 +491,7 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
     const payload = await response.json() as { ok?: boolean; error_code?: string };
     push(
       "generic-preview-rejected-before-resolution",
-      response.status === 400 && payload.ok === false && payload.error_code === "preview_unsupported",
+      response.status === 400 && payload.ok === false && payload.error_code === "malformed_authority_request",
       `response=${response.status} code=${payload.error_code ?? "missing"}`,
     );
   }
