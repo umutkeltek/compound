@@ -94,7 +94,7 @@ func TestOrientOperatorReportMatchesRawHomeState(t *testing.T) {
 	now := time.Date(2026, 7, 2, 20, 30, 0, 0, time.UTC)
 	seedOrientOperatorHome(t, homePath, now)
 
-	report, err := buildOrientOperatorReport(homePath, 5, now)
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient operator report: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestOrientOperatorReportMatchesRawHomeState(t *testing.T) {
 		t.Fatalf("recent evidence refs = %+v, want receipt proof ref", report.Changed.Recent[0].EvidenceRefs)
 	}
 
-	second, err := buildOrientOperatorReport(homePath, 5, now.Add(time.Minute))
+	second, err := buildOrientOperatorReport(homePath, 5, now.Add(time.Minute), "")
 	if err != nil {
 		t.Fatalf("second orient operator report: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestOrientOperatorUsesMemoryCandidateAuthorityForNeedsMe(t *testing.T) {
 		t.Fatalf("raw candidate state = %q, want proposed fixture proving raw file alone is misleading", got)
 	}
 
-	report := buildOrientNeedsMe(homePath, reviewartifact.QueueReport{}, work.WorkbenchReport{}, now)
+	report := buildOrientNeedsMe(homePath, reviewartifact.QueueReport{}, work.WorkbenchReport{}, now, "")
 	memoryInbox := findOrientCandidateInbox(t, orientOperatorReport{NeedsMe: report}, string(candidates.Memory))
 	if memoryInbox.Count != 1 || memoryInbox.ActionableCount != 0 {
 		t.Fatalf("memory inbox = %+v, want authority-parked non-actionable source metadata", memoryInbox)
@@ -242,7 +242,7 @@ func TestOrientOperatorResolvesPanelLensGapAfterReviewedLensImport(t *testing.T)
 		t.Fatalf("write capability observation: %v", err)
 	}
 
-	report := buildOrientNeedsMe(homePath, reviewartifact.QueueReport{}, work.WorkbenchReport{}, now)
+	report := buildOrientNeedsMe(homePath, reviewartifact.QueueReport{}, work.WorkbenchReport{}, now, "")
 	capabilityInbox := findOrientCandidateInbox(t, orientOperatorReport{NeedsMe: report}, string(candidates.CapabilityObs))
 	if capabilityInbox.Count != 1 || capabilityInbox.ActionableCount != 0 {
 		t.Fatalf("capability observation inbox = %+v, want resolved non-actionable lens gap", capabilityInbox)
@@ -278,7 +278,7 @@ func TestOrientOperatorTreatsTerminalCandidateVerdictAsNonActionable(t *testing.
 		t.Fatalf("write consumed capability observation: %v", err)
 	}
 
-	report := buildOrientNeedsMe(homePath, reviewartifact.QueueReport{}, work.WorkbenchReport{}, now)
+	report := buildOrientNeedsMe(homePath, reviewartifact.QueueReport{}, work.WorkbenchReport{}, now, "")
 	capabilityInbox := findOrientCandidateInbox(t, orientOperatorReport{NeedsMe: report}, string(candidates.CapabilityObs))
 	if capabilityInbox.Count != 1 || capabilityInbox.ActionableCount != 0 {
 		t.Fatalf("capability inbox = %+v, want parked verdict non-actionable despite needs_review state", capabilityInbox)
@@ -339,7 +339,7 @@ func TestOrientOperatorCarriesObservationReviewDebtProjection(t *testing.T) {
 		t.Fatalf("write observation panel verdict: %v", err)
 	}
 
-	report, err := buildOrientOperatorReport(homePath, 5, now)
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient operator report: %v", err)
 	}
@@ -429,7 +429,7 @@ func TestOrientOperatorCarriesReviewedCapabilityFeedbackImpact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record capability feedback plan: %v", err)
 	}
-	pending, err := buildOrientOperatorReport(homePath, 5, now.Add(-20*time.Minute))
+	pending, err := buildOrientOperatorReport(homePath, 5, now.Add(-20*time.Minute), "")
 	if err != nil {
 		t.Fatalf("pending orient report: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestOrientOperatorCarriesReviewedCapabilityFeedbackImpact(t *testing.T) {
 	if _, err := panelpkg.RecordPanelCapabilityFeedbackReview(homePath, review, editedReview, now.Add(-10*time.Minute)); err != nil {
 		t.Fatalf("record edited feedback review: %v", err)
 	}
-	applied, err := buildOrientOperatorReport(homePath, 5, now)
+	applied, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("applied orient report: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestOrientOperatorCarriesAdaptationIntakeProjection(t *testing.T) {
 		t.Fatalf("write capability evaluation artifact: %v", err)
 	}
 
-	report, err := buildOrientOperatorReport(homePath, 5, now)
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient operator report: %v", err)
 	}
@@ -723,7 +723,7 @@ func TestOrientOperatorCarriesSourceControlReviewProjection(t *testing.T) {
 		t.Fatalf("record source-control review: %v", err)
 	}
 
-	report, err := buildOrientOperatorReport(homePath, 5, now)
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient operator report: %v", err)
 	}
@@ -806,7 +806,7 @@ func TestOrientOperatorTreatsTamperedMutationAuthorizationAsOpen(t *testing.T) {
 	report.NextAction = "tampered after authorization was sealed"
 	writeOrientJSONFixture(t, report.ReviewPath, report)
 
-	orient, err := buildOrientOperatorReport(homePath, 5, now)
+	orient, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient operator report: %v", err)
 	}
@@ -828,7 +828,7 @@ func TestOrientOperatorCarriesProductLoopEvidenceDebtProjection(t *testing.T) {
 	now := time.Date(2026, 7, 4, 11, 30, 0, 0, time.UTC)
 	seedOrientProductLoopProjectionHome(t, homePath, now)
 
-	report, err := buildOrientOperatorReport(homePath, 5, now)
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient operator report: %v", err)
 	}
@@ -905,7 +905,7 @@ func TestOrientOperatorSurfacesHeldValveAdjacentProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create conversation held work: %v", err)
 	}
-	report, err := buildOrientOperatorReport(homePath, 5, now)
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient operator report: %v", err)
 	}
@@ -1010,7 +1010,7 @@ func TestOrientOperatorSuppressesResolvedDispatchStepRun(t *testing.T) {
 		t.Fatalf("close work: %v", err)
 	}
 
-	report, err := buildOrientOperatorReport(homePath, 5, now)
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient operator report: %v", err)
 	}
@@ -1311,7 +1311,7 @@ func TestOrientOperatorSurfacesMemoryReviewCardsFromHeldRunArtifacts(t *testing.
 		"refs":  []string{},
 	})
 
-	report, err := buildOrientOperatorReport(homePath, 5, now)
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient report: %v", err)
 	}
@@ -1370,7 +1370,7 @@ func TestOrientOperatorSurfacesASCGateCardsForHeldWork(t *testing.T) {
 		t.Fatalf("create held work: %v", err)
 	}
 
-	report, err := buildOrientOperatorReport(homePath, 5, now)
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient report: %v", err)
 	}
@@ -1433,7 +1433,7 @@ func TestOrientOperatorSurfacesAdmissionPreviewReviewCardContext(t *testing.T) {
 		t.Fatalf("review-card work plan: %v", err)
 	}
 
-	report, err := buildOrientOperatorReport(homePath, 5, now)
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
 	if err != nil {
 		t.Fatalf("orient operator report: %v", err)
 	}
@@ -1554,4 +1554,231 @@ func countJSONFiles(t *testing.T, dir string) int {
 		}
 	}
 	return count
+}
+
+// strangerFixtureCandidate builds a minimal memory candidate for the S3b dealer tests below,
+// using PromotionBasis explicit_confirmation so raw Capture admits it into "proposed" (a human
+// gate is required) rather than auto-filing it straight to a terminal state (policy.ResolveAdjudication
+// auto-files runtime_proof/trusted_deterministic_import/curated_page/decision_record bases —
+// see internal/policy/adjudication_policy.go — which would make every dealer test fixture
+// terminal before the dealer ever saw it). Entity/object are unique per call, domain qualifier
+// sets the topic axis (mem.CandidateListItem.Topic()) when non-empty.
+func strangerFixtureCandidate(entity, topic string) mem.Candidate {
+	c := mem.Candidate{
+		Entity:         entity,
+		Predicate:      "status",
+		Object:         entity + "-value",
+		Confidence:     0.9,
+		Derivation:     "extracted",
+		PromotionBasis: candidates.BasisExplicitConfirmation,
+		SourceTraceRef: "trace://" + entity,
+		SnippetHash:    "sha256:" + entity,
+	}
+	if topic != "" {
+		c.Qualifiers = map[string]string{"domain": topic}
+	}
+	return c
+}
+
+// strangerFixturePromote promotes a strangerFixtureCandidate (PromotionBasis
+// explicit_confirmation) through its required two-step flow: park, then an operator
+// confirmation, then AdjudicateExplicitConfirmation — the same sequence
+// internal/mem's promoteForTest helper uses (unexported, so replicated here for
+// cmd/compound tests).
+func strangerFixturePromote(t *testing.T, s *mem.Store, candidateID string, now time.Time) {
+	t.Helper()
+	if _, err := s.Adjudicate(candidateID, "park", "", now); err != nil {
+		t.Fatalf("park before confirmation: %v", err)
+	}
+	evidence, err := s.RecordOperatorConfirmation(candidateID, "test fixture confirms "+candidateID, "operator:test", now)
+	if err != nil {
+		t.Fatalf("record operator confirmation: %v", err)
+	}
+	if _, err := s.AdjudicateExplicitConfirmation(candidateID, evidence.ID, "", now); err != nil {
+		t.Fatalf("adjudicate explicit confirmation: %v", err)
+	}
+}
+
+// TestOrientStrangerCardDealerFalsifiers covers the S3b dealer's F5-F7 falsifiers directly
+// against dealOrientStrangerCard (packet D4/D5/D7).
+func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
+	t.Run("f5 topic-excluded-only candidate is not dealt", func(t *testing.T) {
+		homePath := t.TempDir()
+		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+		if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		s, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:f5-excluded-only", "topic-x")}, now.Add(-30*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if card := dealOrientStrangerCard(s, homePath, "topic-x", now); card != nil {
+			t.Fatalf("excluded-topic-only candidate must not be dealt: %+v", card)
+		}
+	})
+
+	t.Run("f5 different-topic candidate is dealt exactly once", func(t *testing.T) {
+		homePath := t.TempDir()
+		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+		if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		s, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.Capture([]mem.Candidate{
+			strangerFixtureCandidate("entity:f5-excluded", "topic-x"),
+			strangerFixtureCandidate("entity:f5-eligible", "topic-y"),
+		}, now.Add(-30*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		card := dealOrientStrangerCard(s, homePath, "topic-x", now)
+		if card == nil {
+			t.Fatal("expected a stranger card from the different-topic candidate")
+		}
+		if len(card.Refs) != 1 || card.Refs[0] != got[1].ID {
+			t.Fatalf("dealt card = %+v, want exactly the eligible (topic-y) candidate %s", card, got[1].ID)
+		}
+		if !strings.HasPrefix(card.ID, "stranger:") || !strings.Contains(card.Summary, "stranger") {
+			t.Fatalf("card must honestly label itself stranger: %+v", card)
+		}
+	})
+
+	t.Run("f6 terminal-state candidates are never dealt", func(t *testing.T) {
+		homePath := t.TempDir()
+		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+		if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		s, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.Capture([]mem.Candidate{
+			strangerFixtureCandidate("entity:f6-rejected", ""),
+			strangerFixtureCandidate("entity:f6-no-promote", ""),
+			strangerFixtureCandidate("entity:f6-promoted", ""),
+		}, now.Add(-time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Adjudicate(got[0].ID, "reject", "", now.Add(-50*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Adjudicate(got[1].ID, "no_promote", "", now.Add(-50*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		strangerFixturePromote(t, s, got[2].ID, now.Add(-50*time.Minute))
+		if card := dealOrientStrangerCard(s, homePath, "", now); card != nil {
+			t.Fatalf("rejected/no_promote/promoted candidates must never be dealt: %+v", card)
+		}
+	})
+
+	t.Run("f7 dealing appends exactly one row and honors the 7-day cooldown", func(t *testing.T) {
+		homePath := t.TempDir()
+		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+		if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		s, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:f7-cooldown", "")}, now.Add(-30*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		card := dealOrientStrangerCard(s, homePath, "", now)
+		if card == nil {
+			t.Fatal("expected a deal on the first orient")
+		}
+		rows, err := mem.ReadStrangerDealtLog(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].CandidateRef != got[0].ID {
+			t.Fatalf("dealt-log = %+v, want exactly one row for %s", rows, got[0].ID)
+		}
+
+		// Still within the 7-day cooldown: the same (only) candidate must not be re-dealt,
+		// and no second row is appended.
+		if again := dealOrientStrangerCard(s, homePath, "", now.Add(3*time.Hour)); again != nil {
+			t.Fatalf("cooldown must suppress re-dealing within 7 days: %+v", again)
+		}
+		rowsAfter, err := mem.ReadStrangerDealtLog(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rowsAfter) != 1 {
+			t.Fatalf("no card dealt -> no new dealt-log row, got %+v", rowsAfter)
+		}
+
+		// Past the cooldown window the candidate is eligible again.
+		if later := dealOrientStrangerCard(s, homePath, "", now.Add(8*24*time.Hour)); later == nil {
+			t.Fatal("candidate should be eligible again once the 7-day cooldown has elapsed")
+		}
+	})
+
+	t.Run("f7 unreadable dealt-log degrades to no card no crash", func(t *testing.T) {
+		homePath := t.TempDir()
+		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+		if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		s, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:f7-corrupt-log", "")}, now.Add(-30*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		logPath := filepath.Join(homePath, filepath.FromSlash(mem.StrangerDealtLogRelPath))
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(logPath, []byte("not valid json\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// Must degrade to no card, no panic — never deal blind against an unverifiable cooldown.
+		if card := dealOrientStrangerCard(s, homePath, "", now); card != nil {
+			t.Fatalf("corrupt dealt-log must degrade to no card, got %+v", card)
+		}
+	})
+}
+
+// TestOrientOperatorReportIncludesDealtStrangerCard proves the D7 wiring end to end: a single
+// eligible candidate produces exactly one stranger card inside the SAME TensionCards.Items list
+// contested-claim/standing-law cards use (no new report field).
+func TestOrientOperatorReportIncludesDealtStrangerCard(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	s, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:wiring-proof", "")}, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.NeedsMe.TensionCards == nil || len(report.NeedsMe.TensionCards.Items) != 1 {
+		t.Fatalf("expected exactly one stranger tension card, got %+v", report.NeedsMe.TensionCards)
+	}
+	card := report.NeedsMe.TensionCards.Items[0]
+	if !strings.HasPrefix(card.ID, "stranger:") || len(card.Refs) != 1 || card.Refs[0] != got[0].ID {
+		t.Fatalf("card = %+v, want a stranger card naming %s", card, got[0].ID)
+	}
 }

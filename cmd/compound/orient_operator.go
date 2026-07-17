@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -377,6 +378,8 @@ type orientOperatorCursor struct {
 func cmdOrientOperator(homePath string, args []string) {
 	jsonOut := false
 	recent := 5
+	strangerExcludeTopic := ""
+	usage := "usage: compound orient --operator [--json] [--recent N] [--stranger-exclude-topic SLUG]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--operator":
@@ -384,7 +387,7 @@ func cmdOrientOperator(homePath string, args []string) {
 			jsonOut = true
 		case "--recent":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "usage: compound orient --operator [--json] [--recent N]")
+				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(2)
 			}
 			i++
@@ -394,12 +397,22 @@ func cmdOrientOperator(homePath string, args []string) {
 				os.Exit(2)
 			}
 			recent = n
+		case "--stranger-exclude-topic":
+			// D4: v1 "current topic" signal — excludes this topic's subtree from the S3b
+			// stranger pool. Absent => no topic exclusion (dealer still restricts to
+			// proposed|parked candidates and the dealt-log cooldown).
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			i++
+			strangerExcludeTopic = args[i]
 		default:
-			fmt.Fprintln(os.Stderr, "usage: compound orient --operator [--json] [--recent N]")
+			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
 	}
-	report, err := buildOrientOperatorReport(homePath, recent, time.Now())
+	report, err := buildOrientOperatorReport(homePath, recent, time.Now(), strangerExcludeTopic)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orient --operator:", err)
 		os.Exit(1)
@@ -411,7 +424,7 @@ func cmdOrientOperator(homePath string, args []string) {
 	printOrientOperatorReport(report)
 }
 
-func buildOrientOperatorReport(homePath string, recent int, now time.Time) (orientOperatorReport, error) {
+func buildOrientOperatorReport(homePath string, recent int, now time.Time, strangerExcludeTopic string) (orientOperatorReport, error) {
 	if recent <= 0 {
 		recent = 5
 	}
@@ -438,7 +451,7 @@ func buildOrientOperatorReport(homePath string, recent int, now time.Time) (orie
 	report := orientOperatorReport{
 		SchemaVersion:  orientOperatorReportSchemaVersion,
 		GeneratedAt:    now.UTC().Format(time.RFC3339),
-		NeedsMe:        buildOrientNeedsMe(homePath, reviews, workbench, now),
+		NeedsMe:        buildOrientNeedsMe(homePath, reviews, workbench, now, strangerExcludeTopic),
 		Running:        buildOrientRunning(homePath, workbench, now),
 		SessionContext: buildOrientSessionContext(workbench),
 		Changed:        buildOrientChanged(homePath, workbench, currentSeq, cursor.LastSeenSeq, firstRun, cursorPath),
@@ -634,7 +647,7 @@ func orientLoopActionCards(cards []product.LoopActionCard) []orientLoopActionCar
 	return out
 }
 
-func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, workbench work.WorkbenchReport, now time.Time) orientNeedsMe {
+func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, workbench work.WorkbenchReport, now time.Time, strangerExcludeTopic string) orientNeedsMe {
 	out := orientNeedsMe{
 		CandidateInboxes:   []orientCandidateInbox{},
 		ReviewRequired:     reviews.Counts.ReviewRequired,
@@ -642,7 +655,7 @@ func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, wor
 		ObservationReviews: buildOrientObservationReviews(reviews),
 	}
 	out.CapabilityFeedback = buildOrientCapabilityFeedback(homePath, reviews, now)
-	out.TensionCards = buildOrientTensionCards(homePath, reviews, now)
+	out.TensionCards = buildOrientTensionCards(homePath, reviews, now, strangerExcludeTopic)
 	out.AdaptationIntake = buildOrientAdaptationIntake(reviews)
 	out.SourceControl = buildOrientSourceControl(reviews)
 	out.SourceIntake = buildOrientSourceIntake(homePath, now)
@@ -926,7 +939,7 @@ func buildOrientObservationReviews(reviews reviewartifact.QueueReport) *orientOb
 	return &out
 }
 
-func buildOrientTensionCards(homePath string, reviews reviewartifact.QueueReport, now time.Time) *orientTensionCards {
+func buildOrientTensionCards(homePath string, reviews reviewartifact.QueueReport, now time.Time, strangerExcludeTopic string) *orientTensionCards {
 	store, err := mem.Open(homePath)
 	if err != nil {
 		return nil
@@ -946,7 +959,118 @@ func buildOrientTensionCards(homePath string, reviews reviewartifact.QueueReport
 	if err != nil {
 		return nil
 	}
-	return selectOrientTensionCards(reviews, liveClaims, superseded, view)
+	cards := selectOrientTensionCards(reviews, liveClaims, superseded, view)
+	// S3b (D4/D5/D7): deal at most ONE cross-topic un-promoted "stranger" card, appended
+	// into the same Items list the contested-claim/standing-law cards use. A nil dealer
+	// result (no eligible candidate, cooldown, or a degraded dealt-log) leaves cards
+	// exactly as selectOrientTensionCards produced it.
+	if stranger := dealOrientStrangerCard(store, homePath, strangerExcludeTopic, now); stranger != nil {
+		if cards == nil {
+			cards = &orientTensionCards{Items: []orientTensionCard{}, Commands: []orientDrillDown{}}
+		}
+		cards.Items = append(cards.Items, *stranger)
+		cards.Commands = append(cards.Commands, orientDrillDown{Label: "stranger card", Command: []string{"compound", "memory", "candidates", "--state", "parked"}})
+	}
+	return cards
+}
+
+// strangerCardCooldown is D5's re-deal cooldown: a candidate already dealt as a stranger card
+// within this window is not dealt again, so one untouched candidate cannot monopolize every
+// session's one weak-tie slot.
+const strangerCardCooldown = 7 * 24 * time.Hour
+
+// dealOrientStrangerCard is the S3b weak-tie dealer (packet D4/D5/D7): at most ONE cross-topic,
+// un-promoted (proposed|parked) memory candidate is dealt per orient as a `stranger` tension
+// card, honoring the 7-day cooldown and an optional --stranger-exclude-topic subtree exclusion.
+// Every successful deal appends one row to mem's dealt-log (D5) so the S3a report's
+// dealt->caused join (D2/F8) has a denominator. A missing/unreadable dealt-log, or a log-write
+// failure, degrades to NO card + no crash (F7) — it never blindly re-deals nor panics; a card is
+// only ever considered dealt once its log row is durably appended.
+func dealOrientStrangerCard(store *mem.Store, homePath, excludeTopic string, now time.Time) *orientTensionCard {
+	pool, err := strangerCandidatePool(store, now)
+	if err != nil {
+		return nil
+	}
+	var excludeSet map[string]bool
+	if trimmed := strings.TrimSpace(excludeTopic); trimmed != "" {
+		subtree, err := store.TopicSubtree(trimmed)
+		if err != nil {
+			return nil
+		}
+		excludeSet = make(map[string]bool, len(subtree))
+		for _, slug := range subtree {
+			excludeSet[slug] = true
+		}
+	}
+	dealt, err := mem.ReadStrangerDealtLog(homePath)
+	if err != nil {
+		// Unreadable/corrupt dealt-log: fail closed (F7) rather than deal blind — a
+		// cooldown we cannot verify must not be silently treated as expired.
+		return nil
+	}
+	cooled := map[string]bool{}
+	for _, row := range dealt {
+		dealtAt, perr := time.Parse(time.RFC3339, strings.TrimSpace(row.Ts))
+		if perr != nil {
+			continue
+		}
+		if now.Sub(dealtAt) < strangerCardCooldown {
+			cooled[row.CandidateRef] = true
+		}
+	}
+	var chosen *mem.CandidateListItem
+	for i := range pool {
+		c := &pool[i]
+		if cooled[c.ID] {
+			continue
+		}
+		if excludeSet != nil && excludeSet[c.Topic()] {
+			continue
+		}
+		chosen = c
+		break // pool is sorted oldest-first, so the first eligible candidate wins
+	}
+	if chosen == nil {
+		return nil
+	}
+	topic := chosen.Topic()
+	cardID := "stranger:" + chosen.ID
+	summary := fmt.Sprintf("stranger: %s.%s = %s (topic: %s, state: %s) — cross-topic, un-adjudicated", chosen.Entity, chosen.Predicate, chosen.Object, topic, chosen.State)
+	row := mem.StrangerDealtRow{Ts: now.UTC().Format(time.RFC3339), CardID: cardID, CandidateRef: chosen.ID, Topic: topic}
+	if err := mem.AppendStrangerDealtRow(homePath, row); err != nil {
+		// A card is only "dealt" once its log row lands (D5): a write failure means it
+		// was never dealt this session (F7's no-crash contract), not a silently
+		// unlogged deal that would break the dealt-log's own invariant.
+		return nil
+	}
+	return &orientTensionCard{
+		ID:      cardID,
+		Summary: summary,
+		Refs:    []string{chosen.ID},
+		Command: []string{"compound", "memory", "adjudicate", chosen.ID},
+	}
+}
+
+// strangerCandidatePool returns every proposed|parked memory candidate via the packet's named
+// query surface (Store.ListCandidates — authority-admitted, not the raw inbox state; see
+// TestOrientOperatorUsesMemoryCandidateAuthorityForNeedsMe for why raw state is misleading),
+// sorted oldest-first so the dealer's selection is deterministic given equal inputs.
+func strangerCandidatePool(store *mem.Store, now time.Time) ([]mem.CandidateListItem, error) {
+	var pool []mem.CandidateListItem
+	for _, state := range []string{"proposed", "parked"} {
+		report, err := store.ListCandidates(now, mem.CandidateListOptions{State: state})
+		if err != nil {
+			return nil, err
+		}
+		pool = append(pool, report.Items...)
+	}
+	sort.Slice(pool, func(i, j int) bool {
+		if pool[i].CreatedAt != pool[j].CreatedAt {
+			return pool[i].CreatedAt < pool[j].CreatedAt
+		}
+		return pool[i].ID < pool[j].ID
+	})
+	return pool, nil
 }
 
 func selectOrientTensionCards(reviews reviewartifact.QueueReport, liveClaims, superseded map[string]bool, view decisions.StandingLawView) *orientTensionCards {
