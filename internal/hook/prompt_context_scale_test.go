@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -14,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/contract"
 	"compound/internal/mem"
@@ -22,16 +22,21 @@ import (
 )
 
 const (
-	promptScaleClaimCount = 632
-	promptScaleNodeCount  = 670
-	promptScaleRuns       = 10
-	promptScaleTarget     = "SCALE_TARGET_MEANING"
+	promptScaleRawClaimCount     = 10_351
+	promptScaleCurrentClaimCount = 632
+	promptScaleEdgeCount         = 66_371
+	promptScaleEntityHistoryRows = 100_000
+	promptScaleNodeCount         = 670
+	promptScaleRuns              = 20
+	promptScaleTarget            = "SCALE_TARGET_MEANING"
 )
 
 func TestLiveUserPromptScaleStaysInsideNativeBudget(t *testing.T) {
 	homePath := t.TempDir()
 	seedPromptScaleMemory(t, homePath)
+	seedPromptScaleEntityHistory(t, homePath)
 	seedPromptScaleCapabilities(t, homePath)
+	assertPromptScaleShape(t, homePath)
 
 	embedder := newPromptScaleEmbedServer(t)
 	t.Setenv("COMPOUND_BREADTH_EMBED_PROVIDER", "openai")
@@ -143,45 +148,200 @@ func TestLiveUserPromptScaleStaysInsideNativeBudget(t *testing.T) {
 	t.Logf("prompt scale latency p95=%s max=%s distribution=%v", p95, maxLatency, latencies)
 }
 
+func seedPromptScaleEntityHistory(t *testing.T, homePath string) {
+	t.Helper()
+	path := filepath.Join(homePath, "ledger", "entities.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := bufio.NewWriterSize(file, 1<<20)
+	encoder := json.NewEncoder(writer)
+	for i := 0; i < promptScaleEntityHistoryRows; i++ {
+		entity := mem.Entity{
+			Slug:      fmt.Sprintf("topic:unrelated-%03d", i%128),
+			Kind:      "topic",
+			Aliases:   []string{fmt.Sprintf("archived unrelated alias %06d", i)},
+			CreatedAt: fixedNow.Add(time.Duration(i) * time.Microsecond).Format(time.RFC3339Nano),
+		}
+		if err := encoder.Encode(entity); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func seedPromptScaleMemory(t *testing.T, homePath string) {
 	t.Helper()
 	store, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidatesIn := make([]mem.Candidate, 0, promptScaleClaimCount)
-	candidatesIn = append(candidatesIn, mem.Candidate{
-		Entity: "release-transit", Predicate: "architecture",
-		Object:     promptScaleTarget + " deployment automation releases verified artifacts",
-		Confidence: 0.99, Derivation: "deterministic", ClaimType: "architecture",
-		PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "trace_scale_target",
-		SnippetHash: "sha256:scale-target", Visibility: "operational",
-	})
-	for i := 1; i < promptScaleClaimCount; i++ {
-		candidatesIn = append(candidatesIn, mem.Candidate{
-			Entity: fmt.Sprintf("scale-filler-%03d", i), Predicate: "status",
-			Object:     fmt.Sprintf("mechanical corpus evidence parcel %03d", i),
-			Confidence: 0.9, Derivation: "deterministic", ClaimType: "status",
-			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: fmt.Sprintf("trace_scale_%03d", i),
-			SnippetHash: fmt.Sprintf("sha256:scale-%03d", i), Visibility: "operational",
-		})
+	claimsPath := filepath.Join(homePath, "ledger", "claims.jsonl")
+	edgesPath := filepath.Join(homePath, "ledger", "edges.jsonl")
+	if err := os.MkdirAll(filepath.Dir(claimsPath), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	captured, err := store.Capture(candidatesIn, fixedNow)
+	claimsFile, err := os.Create(claimsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, candidate := range captured {
-		if _, err := store.Adjudicate(candidate.ID, candidates.Promote, "test", fixedNow.Add(time.Duration(i)*time.Millisecond)); err != nil {
-			t.Fatalf("promote claim %d: %v", i, err)
+	claimsWriter := bufio.NewWriterSize(claimsFile, 1<<20)
+	claimsEncoder := json.NewEncoder(claimsWriter)
+	supersessionEdges := make([]mem.Edge, 0, promptScaleRawClaimCount-promptScaleCurrentClaimCount)
+	seq := int64(0)
+	for entityIndex := 0; entityIndex < promptScaleCurrentClaimCount; entityIndex++ {
+		chainLength := promptScaleRawClaimCount / promptScaleCurrentClaimCount
+		if entityIndex < promptScaleRawClaimCount%promptScaleCurrentClaimCount {
+			chainLength++
+		}
+		previousID := ""
+		for version := 0; version < chainLength; version++ {
+			seq++
+			id := fmt.Sprintf("claim_scale_%03d_%02d", entityIndex, version)
+			entity := fmt.Sprintf("scale-filler-%03d", entityIndex)
+			predicate := "status"
+			object := fmt.Sprintf("historical mechanical corpus evidence parcel %03d version %02d", entityIndex, version)
+			claimType := "status"
+			confidence := 0.9
+			if entityIndex == 0 && version == chainLength-1 {
+				entity = "release-transit"
+				predicate = "architecture"
+				object = promptScaleTarget + " deployment automation releases verified artifacts"
+				claimType = "architecture"
+				confidence = 0.99
+			}
+			claim := mem.Claim{
+				ID: id, Seq: seq, Entity: entity, Predicate: predicate, Object: object,
+				ValidFrom: fixedNow.Format(time.RFC3339Nano), Confidence: confidence,
+				Derivation: "deterministic", ClaimType: claimType,
+				PromotionBasis: "runtime-proof", EvidenceRefs: []string{"trace_scale_history"},
+				Supersedes: previousID, Visibility: "operational", State: mem.ClaimStatePromoted,
+				CreatedAt: fixedNow.Add(time.Duration(seq) * time.Microsecond).Format(time.RFC3339Nano),
+			}
+			if err := claimsEncoder.Encode(claim); err != nil {
+				t.Fatal(err)
+			}
+			if previousID != "" {
+				supersessionEdges = append(supersessionEdges, mem.Edge{
+					Kind: mem.EdgeKindSupersedes, From: id, To: previousID, Confidence: 1,
+					CreatedAt: fixedNow.Add(time.Duration(seq) * time.Microsecond).Format(time.RFC3339Nano),
+				})
+			}
+			previousID = id
 		}
 	}
-	claims, err := store.AllCurrent()
+	if err := claimsWriter.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := claimsFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if seq != promptScaleRawClaimCount {
+		t.Fatalf("constructed raw claims = %d, want %d", seq, promptScaleRawClaimCount)
+	}
+
+	edgesFile, err := os.Create(edgesPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(claims) != promptScaleClaimCount {
-		t.Fatalf("seeded claims = %d, want %d", len(claims), promptScaleClaimCount)
+	edgesWriter := bufio.NewWriterSize(edgesFile, 1<<20)
+	edgesEncoder := json.NewEncoder(edgesWriter)
+	edgeSeq := seq
+	for i := range supersessionEdges {
+		edgeSeq++
+		supersessionEdges[i].Seq = edgeSeq
+		if err := edgesEncoder.Encode(supersessionEdges[i]); err != nil {
+			t.Fatal(err)
+		}
 	}
+	for edgeIndex := len(supersessionEdges); edgeIndex < promptScaleEdgeCount; edgeIndex++ {
+		edgeSeq++
+		edge := mem.Edge{
+			Seq: edgeSeq, Kind: "relates",
+			From:       fmt.Sprintf("scale-filler-%03d", edgeIndex%promptScaleCurrentClaimCount),
+			To:         fmt.Sprintf("scale-filler-%03d", (edgeIndex*17+1)%promptScaleCurrentClaimCount),
+			Confidence: 0.75,
+			CreatedAt:  fixedNow.Add(time.Duration(edgeSeq) * time.Microsecond).Format(time.RFC3339Nano),
+		}
+		if err := edgesEncoder.Encode(edge); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := edgesWriter.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := edgesFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "ledger", "seq"), []byte(fmt.Sprintf("%d\n", edgeSeq)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FoldPositions(mem.PositionFoldOptions{}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertPromptScaleShape(t *testing.T, homePath string) {
+	t.Helper()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawClaims, err := store.LedgerClaims()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rawClaims) != promptScaleRawClaimCount {
+		t.Fatalf("raw claim rows = %d, want %d", len(rawClaims), promptScaleRawClaimCount)
+	}
+	currentClaims, err := store.AllCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(currentClaims) != promptScaleCurrentClaimCount {
+		t.Fatalf("current visible claims = %d, want %d", len(currentClaims), promptScaleCurrentClaimCount)
+	}
+	if got := countPromptScaleJSONLLines(t, filepath.Join(homePath, "ledger", "edges.jsonl")); got != promptScaleEdgeCount {
+		t.Fatalf("edge rows = %d, want %d", got, promptScaleEdgeCount)
+	}
+	if got := countPromptScaleJSONLLines(t, filepath.Join(homePath, "ledger", "entities.jsonl")); got != promptScaleEntityHistoryRows {
+		t.Fatalf("entity history rows = %d, want %d", got, promptScaleEntityHistoryRows)
+	}
+	capStore, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := capStore.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.NodeCount != promptScaleNodeCount {
+		t.Fatalf("capability nodes = %d, want %d", stats.NodeCount, promptScaleNodeCount)
+	}
+}
+
+func countPromptScaleJSONLLines(t *testing.T, path string) int {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	count := 0
+	for scanner.Scan() {
+		count++
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func seedPromptScaleCapabilities(t *testing.T, homePath string) {
@@ -308,8 +468,14 @@ func promptScaleCacheTimes(t *testing.T, homePath string) map[string]time.Time {
 			t.Fatal(err)
 		}
 	}
-	if len(times) != 4 {
-		t.Fatalf("semantic cache files = %d, want 4: %v", len(times), times)
+	positionsPath := filepath.Join(homePath, "ledger", "positions.jsonl")
+	positionsInfo, err := os.Stat(positionsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	times[positionsPath] = positionsInfo.ModTime()
+	if len(times) != 5 {
+		t.Fatalf("semantic cache/projection files = %d, want 5: %v", len(times), times)
 	}
 	return times
 }
