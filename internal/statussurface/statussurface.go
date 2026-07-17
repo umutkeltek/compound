@@ -26,6 +26,7 @@ const (
 	ThemePAIFocus = "pai-focus"
 	ThemePAIOps   = "pai-ops"
 	ThemePAIMono  = "pai-mono"
+	ThemeAuto     = "auto"
 )
 
 type Harness string
@@ -63,6 +64,17 @@ const (
 	GuidanceConfirmCapacity  RouteGuidance = "confirm_capacity"
 )
 
+// InferenceClass selects an information profile, not merely a color palette. It is derived
+// deterministically from current capacity state and can be overridden by choosing a concrete theme.
+type InferenceClass string
+
+const (
+	InferenceFocus    InferenceClass = "focus"
+	InferenceBalanced InferenceClass = "balanced"
+	InferenceCapacity InferenceClass = "capacity"
+	InferenceFallback InferenceClass = "fallback"
+)
+
 type LimitKind string
 
 const (
@@ -90,16 +102,18 @@ type LimitWindow struct {
 }
 
 type Snapshot struct {
-	SchemaVersion  string        `json:"schema_version"`
-	GeneratedAt    time.Time     `json:"generated_at"`
-	FreshUntil     time.Time     `json:"fresh_until,omitempty"`
-	Harness        Harness       `json:"harness"`
-	Model          string        `json:"model,omitempty"`
-	Context        Metric        `json:"context"`
-	Limits         []LimitWindow `json:"limits"`
-	Mode           Mode          `json:"mode"`
-	RouteGuidance  RouteGuidance `json:"route_guidance"`
-	InputRetention string        `json:"input_retention"`
+	SchemaVersion    string         `json:"schema_version"`
+	GeneratedAt      time.Time      `json:"generated_at"`
+	FreshUntil       time.Time      `json:"fresh_until,omitempty"`
+	Harness          Harness        `json:"harness"`
+	Model            string         `json:"model,omitempty"`
+	Context          Metric         `json:"context"`
+	Limits           []LimitWindow  `json:"limits"`
+	Mode             Mode           `json:"mode"`
+	RouteGuidance    RouteGuidance  `json:"route_guidance"`
+	InferenceClass   InferenceClass `json:"inference_class"`
+	RecommendedTheme string         `json:"recommended_theme"`
+	InputRetention   string         `json:"input_retention"`
 }
 
 // SelectMode applies entry thresholds plus exit hysteresis. The prior mode only delays a
@@ -144,6 +158,19 @@ func guidanceForMode(mode Mode) RouteGuidance {
 		return GuidanceRouteAlternative
 	default:
 		return GuidanceConfirmCapacity
+	}
+}
+
+func InferDisplayClass(mode Mode) (InferenceClass, string) {
+	switch mode {
+	case ModeFlow:
+		return InferenceFocus, ThemePAIFocus
+	case ModeWatch:
+		return InferenceBalanced, ThemePAINexus
+	case ModeConserve, ModeCritical:
+		return InferenceCapacity, ThemePAIOps
+	default:
+		return InferenceFallback, ThemePAIMono
 	}
 }
 
@@ -221,6 +248,7 @@ func BuildClaudeSnapshot(body []byte, now time.Time, previous Snapshot) (Snapsho
 	}
 	snapshot.Mode = SelectMode(snapshot.Context, additional, previousMode)
 	snapshot.RouteGuidance = guidanceForMode(snapshot.Mode)
+	snapshot.InferenceClass, snapshot.RecommendedTheme = InferDisplayClass(snapshot.Mode)
 	return snapshot, nil
 }
 
@@ -375,6 +403,7 @@ func (s Store) ReadFresh(harness Harness, now time.Time) (Snapshot, bool, error)
 	if now.After(freshUntil) {
 		snapshot.Mode = ModeUnknown
 		snapshot.RouteGuidance = GuidanceConfirmCapacity
+		snapshot.InferenceClass, snapshot.RecommendedTheme = InferDisplayClass(ModeUnknown)
 		if snapshot.Context.Status == StatusLive {
 			snapshot.Context.Status = StatusStale
 		}
@@ -391,7 +420,8 @@ func (s Store) ReadFresh(harness Harness, now time.Time) (Snapshot, bool, error)
 func unknownSnapshot(harness Harness, now time.Time) Snapshot {
 	return Snapshot{SchemaVersion: SchemaVersion, GeneratedAt: now.UTC(), Harness: harness,
 		Context: Metric{Status: StatusUnknown}, Limits: []LimitWindow{}, Mode: ModeUnknown,
-		RouteGuidance: GuidanceConfirmCapacity, InputRetention: "derived_metadata_only;raw_discarded"}
+		RouteGuidance: GuidanceConfirmCapacity, InferenceClass: InferenceFallback,
+		RecommendedTheme: ThemePAIMono, InputRetention: "derived_metadata_only;raw_discarded"}
 }
 
 type RenderOptions struct {
@@ -405,8 +435,11 @@ func ThemeIDs() []string {
 }
 
 func Render(snapshot Snapshot, options RenderOptions) (string, error) {
-	if options.Theme == "" {
-		options.Theme = ThemePAINexus
+	if options.Theme == "" || options.Theme == ThemeAuto {
+		options.Theme = snapshot.RecommendedTheme
+		if options.Theme == "" {
+			_, options.Theme = InferDisplayClass(snapshot.Mode)
+		}
 	}
 	if !validTheme(options.Theme) {
 		return "", fmt.Errorf("unknown status surface theme %q", options.Theme)
