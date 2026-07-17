@@ -463,21 +463,6 @@ func TestRebaselinePhysicalJournalRejectsArbitraryMarkerBeforeMutation(t *testin
 	}
 }
 
-func TestRebaselinePhysicalJournalRejectsWrongWorkIDFamily(t *testing.T) {
-	store := openTestStore(t)
-	err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
-		journal := newTestPhysicalRebaselineJournal(t, tx, []byte("pre"), true, []byte("post"))
-		wrongWorkFamily := strings.ReplaceAll(string(journal.Raw), "work_physical_rebaseline", "rec_not_a_work")
-		return tx.WritePending([]byte(wrongWorkFamily))
-	})
-	if err == nil {
-		t.Fatal("journal accepted receipt/transition work IDs outside the work family")
-	}
-	if _, exists, readErr := store.ReadRebaselinePending(); readErr != nil || exists {
-		t.Fatalf("invalid work-family journal reached disk: exists=%t err=%v", exists, readErr)
-	}
-}
-
 func TestRebaselinePhysicalJournalWriteIsCreateOnlyAcrossCrash(t *testing.T) {
 	store := openTestStore(t)
 	var first []byte
@@ -856,20 +841,24 @@ func newTestPhysicalRebaselineJournal(t *testing.T, tx *RebaselineTransaction, p
 	if err != nil {
 		t.Fatal(err)
 	}
+	receiptProof, err := NewRebaselinePendingProof(receiptID, receiptRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitionProof, err := NewRebaselinePendingProof(transitionID, transitionRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
 	raw, err := json.MarshalIndent(struct {
-		SchemaVersion     string          `json:"schema_version"`
-		SidecarPath       string          `json:"sidecar_path"`
-		PriorExisted      bool            `json:"prior_existed"`
-		PreImageRef       string          `json:"pre_image_ref"`
-		PostImageRef      string          `json:"post_image_ref"`
-		BeforeEvidenceRef string          `json:"before_evidence_ref"`
-		AfterEvidenceRef  string          `json:"after_evidence_ref"`
-		ActionIntentID    string          `json:"action_intent_id"`
-		PolicyDecisionID  string          `json:"policy_decision_id"`
-		AuthorityRevision string          `json:"authority_revision"`
-		Receipt           json.RawMessage `json:"receipt"`
-		Transition        json.RawMessage `json:"transition"`
-	}{SchemaVersion: "compound.eventstore.rebaseline_pending.v0.1", SidecarPath: tx.SidecarPath(), PriorExisted: priorExisted, PreImageRef: preRef, PostImageRef: postRef, BeforeEvidenceRef: "eventstore-baseline-before:test", AfterEvidenceRef: "eventstore-baseline-after:test", ActionIntentID: actionID, PolicyDecisionID: "pol_physical_rebaseline", AuthorityRevision: "authority:physical-rebaseline", Receipt: receiptRaw, Transition: transitionRaw}, "", "  ")
+		SchemaVersion     string                   `json:"schema_version"`
+		SidecarPath       string                   `json:"sidecar_path"`
+		PriorExisted      bool                     `json:"prior_existed"`
+		PreImageRef       string                   `json:"pre_image_ref"`
+		PostImageRef      string                   `json:"post_image_ref"`
+		BeforeEvidenceRef string                   `json:"before_evidence_ref"`
+		AfterEvidenceRef  string                   `json:"after_evidence_ref"`
+		Proofs            []RebaselinePendingProof `json:"proofs"`
+	}{SchemaVersion: "compound.eventstore.rebaseline_pending.v0.1", SidecarPath: tx.SidecarPath(), PriorExisted: priorExisted, PreImageRef: preRef, PostImageRef: postRef, BeforeEvidenceRef: "eventstore-baseline-before:test", AfterEvidenceRef: "eventstore-baseline-after:test", Proofs: []RebaselinePendingProof{receiptProof, transitionProof}}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}

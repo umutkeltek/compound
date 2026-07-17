@@ -578,50 +578,44 @@ type rebaselinePhysicalJournal struct {
 	PriorExisted bool
 	PreImageRef  string
 	PostImageRef string
-	Receipt      rebaselinePhysicalProof
-	Transition   rebaselinePhysicalProof
+	Proofs       []rebaselinePhysicalProof
 }
 
 type rebaselinePhysicalProof struct {
 	ID        string
-	WorkID    string
 	Canonical []byte
 }
 
 type rebaselinePhysicalJournalWire struct {
-	SchemaVersion     string          `json:"schema_version"`
-	SidecarPath       string          `json:"sidecar_path"`
-	PriorExisted      bool            `json:"prior_existed"`
-	PreImageRef       string          `json:"pre_image_ref"`
-	PostImageRef      string          `json:"post_image_ref"`
-	ActionIntentID    string          `json:"action_intent_id"`
-	PolicyDecisionID  string          `json:"policy_decision_id"`
-	AuthorityRevision string          `json:"authority_revision"`
-	Receipt           json.RawMessage `json:"receipt"`
-	Transition        json.RawMessage `json:"transition"`
+	SchemaVersion string                   `json:"schema_version"`
+	SidecarPath   string                   `json:"sidecar_path"`
+	PriorExisted  bool                     `json:"prior_existed"`
+	PreImageRef   string                   `json:"pre_image_ref"`
+	PostImageRef  string                   `json:"post_image_ref"`
+	Proofs        []RebaselinePendingProof `json:"proofs"`
 }
 
-type rebaselinePhysicalReceiptWire struct {
-	SchemaVersion string `json:"schema_version"`
-	ID            string `json:"id"`
-	IDs           struct {
-		WorkID string `json:"work_id"`
-	} `json:"ids"`
-	StateDelta struct {
-		Artifacts []string `json:"artifacts"`
-	} `json:"state_delta"`
-	ProofRefs []string `json:"proof_refs"`
+// RebaselinePendingProof is the eventstore-owned physical proof binding. The
+// record body is deliberately opaque here: the adapter that owns its meaning
+// validates the envelope. Eventstore only binds one generic event id to exact
+// canonical JSON bytes and their digest.
+type RebaselinePendingProof struct {
+	ID           string          `json:"id"`
+	RecordSHA256 string          `json:"record_sha256"`
+	Record       json.RawMessage `json:"record"`
 }
 
-type rebaselinePhysicalTransitionWire struct {
-	SchemaVersion string `json:"schema_version"`
-	ID            string `json:"id"`
-	IDs           struct {
-		WorkID string `json:"work_id"`
-	} `json:"ids"`
-	BeforeRefs []string `json:"before_refs"`
-	ActionRefs []string `json:"action_refs"`
-	AfterRefs  []string `json:"after_refs"`
+// NewRebaselinePendingProof builds an opaque physical proof binding without
+// interpreting the record's schema or relationships.
+func NewRebaselinePendingProof(id string, record []byte) (RebaselinePendingProof, error) {
+	proof := RebaselinePendingProof{ID: id, Record: append(json.RawMessage(nil), record...)}
+	canonicalRecord, err := proof.validateAndCanonicalize()
+	if err != nil {
+		return RebaselinePendingProof{}, err
+	}
+	proof.Record = canonicalRecord
+	proof.RecordSHA256 = rebaselineProofRecordHash(canonicalRecord)
+	return proof, nil
 }
 
 type RebaselineTransaction struct {
@@ -723,14 +717,21 @@ func (tx *RebaselineTransaction) WritePending(pending []byte) error {
 		return err
 	}
 	defer tx.state.mu.Unlock()
-	tx.state.pending = nil
-	tx.state.journal = nil
 	journal, err := parseRebaselinePhysicalJournal(pending, tx.SidecarPath())
 	if err != nil {
 		return err
 	}
-	if err := writeBytesAtomic(tx.PendingPath(), pending); err != nil {
+	if _, exists, err := readRebaselinePendingRaw(tx.PendingPath()); err != nil {
 		return err
+	} else if exists {
+		return fmt.Errorf("%w: durable rebaseline pending journal already exists", ErrRebaselineStateConflict)
+	}
+	created, err := writeBytesExclusiveAtomic(tx.PendingPath(), pending)
+	if err != nil {
+		return err
+	}
+	if !created {
+		return fmt.Errorf("%w: durable rebaseline pending journal already exists", ErrRebaselineStateConflict)
 	}
 	tx.state.pending = append([]byte(nil), pending...)
 	tx.state.journal = &journal
@@ -911,89 +912,49 @@ func parseRebaselinePhysicalJournal(raw []byte, expectedSidecar string) (rebasel
 	if wire.SidecarPath != expectedSidecar || strings.TrimSpace(wire.SidecarPath) == "" {
 		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal sidecar_path=%q, want %q", wire.SidecarPath, expectedSidecar)
 	}
-	for name, value := range map[string]string{
-		"action_intent_id":   wire.ActionIntentID,
-		"policy_decision_id": wire.PolicyDecisionID,
-		"authority_revision": wire.AuthorityRevision,
-	} {
-		if strings.TrimSpace(value) == "" {
-			return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal %s is required", name)
-		}
-	}
 	if err := validateRebaselineArtifactRef(wire.PreImageRef); err != nil {
 		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal pre_image_ref: %w", err)
 	}
 	if err := validateRebaselineArtifactRef(wire.PostImageRef); err != nil {
 		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal post_image_ref: %w", err)
 	}
-	if ref, err := ReferenceForID(wire.ActionIntentID); err != nil || !strings.HasPrefix(ref.ID(), "act_") {
-		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal action_intent_id=%q is invalid", wire.ActionIntentID)
+	if len(wire.Proofs) != 2 {
+		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal requires exactly two opaque proofs")
 	}
-	if ref, err := ReferenceForID(wire.PolicyDecisionID); err != nil || !strings.HasPrefix(ref.ID(), "pol_") {
-		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal policy_decision_id=%q is invalid", wire.PolicyDecisionID)
+	proofs := make([]rebaselinePhysicalProof, 0, len(wire.Proofs))
+	seen := make(map[string]bool, len(wire.Proofs))
+	for i := range wire.Proofs {
+		proof := wire.Proofs[i]
+		canonicalRecord, err := proof.validateAndCanonicalize()
+		if err != nil {
+			return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal proofs[%d]: %w", i, err)
+		}
+		if seen[proof.ID] {
+			return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal duplicate proof id %q", proof.ID)
+		}
+		seen[proof.ID] = true
+		proofs = append(proofs, rebaselinePhysicalProof{ID: proof.ID, Canonical: canonicalRecord})
 	}
-	receipt, receiptWire, err := parseRebaselinePhysicalReceipt(wire.Receipt)
-	if err != nil {
-		return rebaselinePhysicalJournal{}, err
-	}
-	transition, transitionWire, err := parseRebaselinePhysicalTransition(wire.Transition)
-	if err != nil {
-		return rebaselinePhysicalJournal{}, err
-	}
-	if receipt.WorkID == "" || receipt.WorkID != transition.WorkID {
-		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal proof work_id mismatch")
-	}
-	if len(transitionWire.ActionRefs) == 0 || transitionWire.ActionRefs[0] != wire.ActionIntentID {
-		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal transition action_ref mismatch")
-	}
-	if !physicalRefContains(receiptWire.ProofRefs, wire.PreImageRef) || !physicalRefContains(receiptWire.ProofRefs, wire.PostImageRef) ||
-		!physicalRefContains(receiptWire.StateDelta.Artifacts, wire.PreImageRef) || !physicalRefContains(receiptWire.StateDelta.Artifacts, wire.PostImageRef) ||
-		!physicalRefContains(transitionWire.BeforeRefs, wire.PreImageRef) || !physicalRefContains(transitionWire.AfterRefs, wire.PostImageRef) {
-		return rebaselinePhysicalJournal{}, fmt.Errorf("physical rebaseline journal proof refs do not bind pre/post images")
-	}
-	return rebaselinePhysicalJournal{PriorExisted: wire.PriorExisted, PreImageRef: wire.PreImageRef, PostImageRef: wire.PostImageRef, Receipt: receipt, Transition: transition}, nil
+	return rebaselinePhysicalJournal{PriorExisted: wire.PriorExisted, PreImageRef: wire.PreImageRef, PostImageRef: wire.PostImageRef, Proofs: proofs}, nil
 }
 
-func parseRebaselinePhysicalReceipt(raw []byte) (rebaselinePhysicalProof, rebaselinePhysicalReceiptWire, error) {
-	var wire rebaselinePhysicalReceiptWire
-	if err := json.Unmarshal(raw, &wire); err != nil {
-		return rebaselinePhysicalProof{}, wire, fmt.Errorf("parse physical rebaseline receipt: %w", err)
+func (p RebaselinePendingProof) validateAndCanonicalize() ([]byte, error) {
+	if _, err := ReferenceForID(p.ID); err != nil {
+		return nil, fmt.Errorf("proof id: %w", err)
 	}
-	if wire.SchemaVersion != "compound.receipt.v0.1" || !strings.HasPrefix(wire.ID, "rec_") || !strings.HasPrefix(wire.IDs.WorkID, "work_") {
-		return rebaselinePhysicalProof{}, wire, fmt.Errorf("physical rebaseline receipt identity is invalid")
-	}
-	if _, err := ReferenceForID(wire.ID); err != nil {
-		return rebaselinePhysicalProof{}, wire, fmt.Errorf("physical rebaseline receipt id: %w", err)
-	}
-	if _, err := ReferenceForID(wire.IDs.WorkID); err != nil {
-		return rebaselinePhysicalProof{}, wire, fmt.Errorf("physical rebaseline receipt work_id: %w", err)
-	}
-	compact, err := canonical(raw)
+	canonicalRecord, err := canonical(p.Record)
 	if err != nil {
-		return rebaselinePhysicalProof{}, wire, err
+		return nil, fmt.Errorf("proof record: %w", err)
 	}
-	return rebaselinePhysicalProof{ID: wire.ID, WorkID: wire.IDs.WorkID, Canonical: compact}, wire, nil
+	if p.RecordSHA256 != "" && p.RecordSHA256 != rebaselineProofRecordHash(canonicalRecord) {
+		return nil, fmt.Errorf("proof record_sha256 does not match canonical record bytes")
+	}
+	return canonicalRecord, nil
 }
 
-func parseRebaselinePhysicalTransition(raw []byte) (rebaselinePhysicalProof, rebaselinePhysicalTransitionWire, error) {
-	var wire rebaselinePhysicalTransitionWire
-	if err := json.Unmarshal(raw, &wire); err != nil {
-		return rebaselinePhysicalProof{}, wire, fmt.Errorf("parse physical rebaseline transition: %w", err)
-	}
-	if wire.SchemaVersion != "compound.transition.v0.1" || !strings.HasPrefix(wire.ID, "tr_") || !strings.HasPrefix(wire.IDs.WorkID, "work_") {
-		return rebaselinePhysicalProof{}, wire, fmt.Errorf("physical rebaseline transition identity is invalid")
-	}
-	if _, err := ReferenceForID(wire.ID); err != nil {
-		return rebaselinePhysicalProof{}, wire, fmt.Errorf("physical rebaseline transition id: %w", err)
-	}
-	if _, err := ReferenceForID(wire.IDs.WorkID); err != nil {
-		return rebaselinePhysicalProof{}, wire, fmt.Errorf("physical rebaseline transition work_id: %w", err)
-	}
-	compact, err := canonical(raw)
-	if err != nil {
-		return rebaselinePhysicalProof{}, wire, err
-	}
-	return rebaselinePhysicalProof{ID: wire.ID, WorkID: wire.IDs.WorkID, Canonical: compact}, wire, nil
+func rebaselineProofRecordHash(canonicalRecord []byte) string {
+	sum := sha256.Sum256(canonicalRecord)
+	return fmt.Sprintf("sha256:%x", sum)
 }
 
 func validateRebaselineArtifactRef(ref string) error {
@@ -1015,15 +976,6 @@ func validateRebaselineArtifactRef(ref string) error {
 func rebaselineArtifactRef(body []byte) string {
 	sum := sha256.Sum256(body)
 	return rebaselineArtifactRefPrefix + hex.EncodeToString(sum[:])
-}
-
-func physicalRefContains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func (j *rebaselinePhysicalJournal) requireImageBinding(prior []byte, priorExisted bool, post []byte) error {
@@ -1059,21 +1011,33 @@ func (tx *RebaselineTransaction) physicalProofPresenceLocked(proof rebaselinePhy
 	return rebaselineProofConflict, nil
 }
 
-func (tx *RebaselineTransaction) journalProofPresenceLocked(journal *rebaselinePhysicalJournal) (rebaselinePhysicalProofPresence, rebaselinePhysicalProofPresence, error) {
-	receipt, err := tx.physicalProofPresenceLocked(journal.Receipt)
-	if err != nil {
-		return rebaselineProofConflict, rebaselineProofConflict, err
+func (tx *RebaselineTransaction) journalProofPresenceLocked(journal *rebaselinePhysicalJournal) (rebaselinePhysicalProofPresence, error) {
+	presence := rebaselineProofAbsent
+	for i, proof := range journal.Proofs {
+		current, err := tx.physicalProofPresenceLocked(proof)
+		if err != nil {
+			return rebaselineProofConflict, err
+		}
+		if current == rebaselineProofConflict {
+			return rebaselineProofConflict, nil
+		}
+		if i == 0 {
+			presence = current
+			continue
+		}
+		if current != presence {
+			return rebaselineProofConflict, nil
+		}
 	}
-	transition, err := tx.physicalProofPresenceLocked(journal.Transition)
-	return receipt, transition, err
+	return presence, nil
 }
 
 func (tx *RebaselineTransaction) requireProofsAbsentLocked(journal *rebaselinePhysicalJournal) error {
-	receipt, transition, err := tx.journalProofPresenceLocked(journal)
+	presence, err := tx.journalProofPresenceLocked(journal)
 	if err != nil {
 		return err
 	}
-	if receipt != rebaselineProofAbsent || transition != rebaselineProofAbsent {
+	if presence != rebaselineProofAbsent {
 		return fmt.Errorf("%w: canonical rebaseline proof exists before physical mutation", ErrRebaselineStateConflict)
 	}
 	return nil
@@ -1084,19 +1048,19 @@ func (tx *RebaselineTransaction) requireClearTerminalStateLocked(journal *rebase
 	if err != nil {
 		return err
 	}
-	receipt, transition, err := tx.journalProofPresenceLocked(journal)
+	proofs, err := tx.journalProofPresenceLocked(journal)
 	if err != nil {
 		return err
 	}
 	currentIsPre := currentExisted == journal.PriorExisted && ((!currentExisted && len(current) == 0) || (currentExisted && journal.PreImageRef == rebaselineArtifactRef(current)))
 	currentIsPost := currentExisted && journal.PostImageRef == rebaselineArtifactRef(current)
-	if currentIsPre && receipt == rebaselineProofAbsent && transition == rebaselineProofAbsent {
+	if currentIsPre && proofs == rebaselineProofAbsent {
 		return nil
 	}
-	if currentIsPost && receipt == rebaselineProofExact && transition == rebaselineProofExact {
+	if currentIsPost && proofs == rebaselineProofExact {
 		return nil
 	}
-	return fmt.Errorf("%w: rebaseline journal is not at an allowed terminal physical state (pre requires no proof; post requires exact receipt and transition)", ErrRebaselineStateConflict)
+	return fmt.Errorf("%w: rebaseline journal is not at an allowed terminal physical state (pre requires no proof; post requires all exact journal proofs)", ErrRebaselineStateConflict)
 }
 
 // StreamBaselinePreview is the current-vs-proposed projection for `compound

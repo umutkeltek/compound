@@ -30,18 +30,19 @@ const eventStoreRebaselineCapability = "eventstore.stream_baseline.rewrite"
 const rebaselinePendingSchema = eventstore.RebaselinePendingSchema
 
 type rebaselinePending struct {
-	SchemaVersion     string              `json:"schema_version"`
-	SidecarPath       string              `json:"sidecar_path"`
-	PriorExisted      bool                `json:"prior_existed"`
-	PreImageRef       string              `json:"pre_image_ref"`
-	PostImageRef      string              `json:"post_image_ref"`
-	BeforeEvidenceRef string              `json:"before_evidence_ref"`
-	AfterEvidenceRef  string              `json:"after_evidence_ref"`
-	ActionIntentID    string              `json:"action_intent_id"`
-	PolicyDecisionID  string              `json:"policy_decision_id"`
-	AuthorityRevision string              `json:"authority_revision"`
-	Receipt           envelope.Receipt    `json:"receipt"`
-	Transition        envelope.Transition `json:"transition"`
+	SchemaVersion     string                              `json:"schema_version"`
+	SidecarPath       string                              `json:"sidecar_path"`
+	PriorExisted      bool                                `json:"prior_existed"`
+	PreImageRef       string                              `json:"pre_image_ref"`
+	PostImageRef      string                              `json:"post_image_ref"`
+	BeforeEvidenceRef string                              `json:"before_evidence_ref"`
+	AfterEvidenceRef  string                              `json:"after_evidence_ref"`
+	ActionIntent      envelope.ActionIntent               `json:"action_intent"`
+	PolicyDecision    envelope.PolicyDecision             `json:"policy_decision"`
+	PolicyAuthority   policy.AuthorityFace                `json:"policy_authority"`
+	Proofs            []eventstore.RebaselinePendingProof `json:"proofs"`
+	Receipt           envelope.Receipt                    `json:"-"`
+	Transition        envelope.Transition                 `json:"-"`
 }
 
 func (p rebaselinePending) Validate(expectedSidecar string) error {
@@ -54,12 +55,13 @@ func (p rebaselinePending) Validate(expectedSidecar string) error {
 	for name, value := range map[string]string{
 		"pre_image_ref": p.PreImageRef, "post_image_ref": p.PostImageRef,
 		"before_evidence_ref": p.BeforeEvidenceRef, "after_evidence_ref": p.AfterEvidenceRef,
-		"action_intent_id": p.ActionIntentID, "policy_decision_id": p.PolicyDecisionID,
-		"authority_revision": p.AuthorityRevision,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("rebaseline pending %s is required", name)
 		}
+	}
+	if err := act.Gate(p.ActionIntent, p.PolicyDecision); err != nil {
+		return fmt.Errorf("rebaseline pending governed action: %w", err)
 	}
 	if err := p.Receipt.Validate(); err != nil {
 		return fmt.Errorf("rebaseline pending receipt: %w", err)
@@ -67,8 +69,34 @@ func (p rebaselinePending) Validate(expectedSidecar string) error {
 	if err := p.Transition.Validate(); err != nil {
 		return fmt.Errorf("rebaseline pending transition: %w", err)
 	}
-	if len(p.Transition.ActionRefs) == 0 || p.Transition.ActionRefs[0] != p.ActionIntentID || p.Receipt.IDs.WorkID != p.Transition.IDs.WorkID {
+	expectedTarget := envelope.ActionTarget{Kind: "eventstore_stream_baseline", ID: "stream-baseline", Path: expectedSidecar}
+	if p.ActionIntent.Capability != eventStoreRebaselineCapability || p.ActionIntent.Action != "rebaseline_stream_sizes" ||
+		p.ActionIntent.Target != expectedTarget || p.ActionIntent.MutationClass != "external_side_effect" {
+		return fmt.Errorf("rebaseline pending action does not bind the rebaseline capability and target")
+	}
+	workID := p.ActionIntent.IDs.WorkID
+	if !strings.HasPrefix(workID, "work_") || p.PolicyDecision.IDs.WorkID != workID || p.Receipt.IDs.WorkID != workID || p.Transition.IDs.WorkID != workID ||
+		len(p.Transition.ActionRefs) == 0 || p.Transition.ActionRefs[0] != p.ActionIntent.ID {
 		return fmt.Errorf("rebaseline pending proof identity mismatch")
+	}
+	if err := validateRebaselinePendingAuthority(p); err != nil {
+		return err
+	}
+	if len(p.Proofs) != 2 || p.Proofs[0].ID != p.Receipt.ID || p.Proofs[1].ID != p.Transition.ID {
+		return fmt.Errorf("rebaseline pending opaque proofs do not bind receipt and transition ids")
+	}
+	for i, binding := range []struct {
+		proof eventstore.RebaselinePendingProof
+		value envelope.Envelope
+	}{{p.Proofs[0], &p.Receipt}, {p.Proofs[1], &p.Transition}} {
+		raw, err := json.Marshal(binding.value)
+		if err != nil {
+			return err
+		}
+		expected, err := eventstore.NewRebaselinePendingProof(envelopeID(binding.value), raw)
+		if err != nil || binding.proof.RecordSHA256 != expected.RecordSHA256 {
+			return fmt.Errorf("rebaseline pending proofs[%d] does not bind exact envelope bytes", i)
+		}
 	}
 	if !hasRebaselineRef(p.Receipt.ProofRefs, p.PreImageRef) || !hasRebaselineRef(p.Receipt.ProofRefs, p.PostImageRef) ||
 		!hasRebaselineRef(p.Receipt.StateDelta.Artifacts, p.PreImageRef) || !hasRebaselineRef(p.Receipt.StateDelta.Artifacts, p.PostImageRef) ||
@@ -78,6 +106,19 @@ func (p rebaselinePending) Validate(expectedSidecar string) error {
 		!hasRebaselineRef(p.Transition.EvidenceRefs, p.BeforeEvidenceRef) || !hasRebaselineRef(p.Transition.EvidenceRefs, p.AfterEvidenceRef) ||
 		!hasRebaselineRef(p.Transition.EvidenceRefs, p.PreImageRef) || !hasRebaselineRef(p.Transition.EvidenceRefs, p.PostImageRef) {
 		return fmt.Errorf("rebaseline pending proof refs do not bind journaled pre/post images")
+	}
+	return nil
+}
+
+func validateRebaselinePendingAuthority(p rebaselinePending) error {
+	authority := p.PolicyAuthority
+	if authority.SchemaVersion != policy.AuthorityFaceSchema || strings.TrimSpace(authority.Revision) == "" || !authority.Current || !authority.Allowed ||
+		authority.ActionIntentID != p.ActionIntent.ID || authority.PolicyDecisionID != p.PolicyDecision.ID || authority.PolicyOutcome != p.PolicyDecision.Outcome ||
+		authority.StandingGrantID != p.PolicyDecision.StandingGrantID || authority.Target != p.ActionIntent.Target || authority.TargetScope != "private" ||
+		authority.BlastRadius != p.ActionIntent.BlastRadius || authority.Reversibility != p.ActionIntent.Reversibility ||
+		authority.VerifiedRecoverability != policy.RecoverabilityVerified || authority.OperatorControlContinuity != policy.OperatorControlContinuous ||
+		strings.TrimSpace(authority.PolicySource) == "" || strings.TrimSpace(authority.ExactGate) == "" || strings.TrimSpace(authority.ExpectedReceipt) == "" || len(authority.ExpectedProof) == 0 {
+		return fmt.Errorf("rebaseline pending policy authority is invalid or does not bind the governed action")
 	}
 	return nil
 }
@@ -263,7 +304,7 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 		if err := transition.Validate(); err != nil {
 			return fmt.Errorf("validate rebaseline transition before mutation: %w", err)
 		}
-		pending := rebaselinePending{SchemaVersion: rebaselinePendingSchema, SidecarPath: preview.SidecarPath, PriorExisted: priorExisted, PreImageRef: preImageRef, PostImageRef: postImageRef, BeforeEvidenceRef: beforeRef, AfterEvidenceRef: afterRef, ActionIntentID: ai.ID, PolicyDecisionID: evaluation.Decision.ID, AuthorityRevision: evaluation.Authority.Revision, Receipt: receipt, Transition: transition}
+		pending := rebaselinePending{SchemaVersion: rebaselinePendingSchema, SidecarPath: preview.SidecarPath, PriorExisted: priorExisted, PreImageRef: preImageRef, PostImageRef: postImageRef, BeforeEvidenceRef: beforeRef, AfterEvidenceRef: afterRef, ActionIntent: ai, PolicyDecision: evaluation.Decision, PolicyAuthority: evaluation.Authority, Receipt: receipt, Transition: transition}
 		pendingRaw, err := encodeRebaselinePending(pending, preview.SidecarPath)
 		if err != nil {
 			return fmt.Errorf("encode rebaseline pending journal: %w", err)
@@ -382,6 +423,15 @@ func decodeRebaselinePending(raw []byte, expectedSidecar string) (rebaselinePend
 	if err := json.Unmarshal(raw, &pending); err != nil {
 		return rebaselinePending{}, fmt.Errorf("parse rebaseline pending: %w", err)
 	}
+	if len(pending.Proofs) != 2 {
+		return pending, fmt.Errorf("rebaseline pending requires exactly two opaque proofs")
+	}
+	if err := json.Unmarshal(pending.Proofs[0].Record, &pending.Receipt); err != nil {
+		return pending, fmt.Errorf("parse rebaseline pending receipt proof: %w", err)
+	}
+	if err := json.Unmarshal(pending.Proofs[1].Record, &pending.Transition); err != nil {
+		return pending, fmt.Errorf("parse rebaseline pending transition proof: %w", err)
+	}
 	if err := pending.Validate(expectedSidecar); err != nil {
 		return pending, err
 	}
@@ -389,6 +439,23 @@ func decodeRebaselinePending(raw []byte, expectedSidecar string) (rebaselinePend
 }
 
 func encodeRebaselinePending(pending rebaselinePending, expectedSidecar string) ([]byte, error) {
+	receiptRaw, err := json.Marshal(&pending.Receipt)
+	if err != nil {
+		return nil, err
+	}
+	transitionRaw, err := json.Marshal(&pending.Transition)
+	if err != nil {
+		return nil, err
+	}
+	receiptProof, err := eventstore.NewRebaselinePendingProof(pending.Receipt.ID, receiptRaw)
+	if err != nil {
+		return nil, err
+	}
+	transitionProof, err := eventstore.NewRebaselinePendingProof(pending.Transition.ID, transitionRaw)
+	if err != nil {
+		return nil, err
+	}
+	pending.Proofs = []eventstore.RebaselinePendingProof{receiptProof, transitionProof}
 	if err := pending.Validate(expectedSidecar); err != nil {
 		return nil, err
 	}
@@ -568,7 +635,7 @@ func recordRebaselineRecoveryFinding(homePath string, artifacts *home.ArtifactSt
 			return fmt.Errorf("rebaseline recovery required (%v); artifact raw pending marker: %w", cause, artifactErr)
 		}
 	}
-	body := fmt.Sprintf("event-store rebaseline manual recovery required.\nsidecar_path: %s\nprior_existed: %t\ncurrent_existed: %t\npre_image_ref: %s\nexpected_post_ref: %s\ncurrent_state_ref: %s\npending_marker_ref: %s\naction_intent_id: %s\nreceipt_id: %s\ntransition_id: %s\ncause: %v\n", tx.SidecarPath(), pending.PriorExisted, currentExisted, pending.PreImageRef, pending.PostImageRef, currentRef, markerRef, pending.ActionIntentID, pending.Receipt.ID, pending.Transition.ID, cause)
+	body := fmt.Sprintf("event-store rebaseline manual recovery required.\nsidecar_path: %s\nprior_existed: %t\ncurrent_existed: %t\npre_image_ref: %s\nexpected_post_ref: %s\ncurrent_state_ref: %s\npending_marker_ref: %s\naction_intent_id: %s\nreceipt_id: %s\ntransition_id: %s\ncause: %v\n", tx.SidecarPath(), pending.PriorExisted, currentExisted, pending.PreImageRef, pending.PostImageRef, currentRef, markerRef, pending.ActionIntent.ID, pending.Receipt.ID, pending.Transition.ID, cause)
 	evidenceRefs := nonEmptyRebaselineRefs(pending.PreImageRef, currentRef, markerRef)
 	rec, err := finding.Record(homePath, finding.Finding{Topic: "eventstore-rebaseline-recovery/stream-baseline", Body: body, ProducedBy: "cmd/compound eventstore rebaseline", WorkID: pending.Receipt.IDs.WorkID, EvidenceRefs: evidenceRefs}, now)
 	if err != nil {
