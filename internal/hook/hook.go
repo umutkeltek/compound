@@ -877,7 +877,7 @@ func sourceControlContextForAction(homePath, targetPath string, now time.Time) (
 	if err != nil {
 		return nil, "", nil, err
 	}
-	_, entity, facts, report, err := authority.ImportGitSnapshot(targetPath, existing)
+	snapshot, entity, facts, report, err := authority.ImportGitSnapshot(targetPath, existing)
 	if err != nil {
 		return nil, "", nil, nil
 	}
@@ -903,6 +903,8 @@ func sourceControlContextForAction(homePath, targetPath string, now time.Time) (
 			Unstaged:                report.Unstaged,
 			Untracked:               report.Untracked,
 			ChangedPaths:            report.ChangedPaths,
+			TargetPath:              snapshot.TargetPath,
+			TargetStatus:            snapshot.TargetStatus,
 			ChangedStateFingerprint: report.ChangedStateFingerprint,
 			EvidenceRefs:            []string{report.EvidenceRef},
 		}, report.GitRoot, []string{

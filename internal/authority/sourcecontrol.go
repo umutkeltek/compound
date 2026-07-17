@@ -40,6 +40,8 @@ type SourceControlSnapshot struct {
 	Unstaged                int    `json:"unstaged"`
 	Untracked               int    `json:"untracked"`
 	ChangedPaths            int    `json:"changed_paths"`
+	TargetPath              string `json:"target_path,omitempty"`
+	TargetStatus            string `json:"target_status,omitempty"` // clean | dirty | unknown
 	ChangedStateFingerprint string `json:"changed_state_fingerprint,omitempty"`
 	EvidenceRef             string `json:"evidence_ref"`
 }
@@ -135,6 +137,16 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 	if changed > 0 {
 		status = "dirty"
 	}
+	targetPath, targetErr := CanonicalSourceControlMutationTarget(root, requestedPath)
+	targetStatus := "clean"
+	if targetErr != nil {
+		targetStatus = "unknown"
+	} else if status == "dirty" {
+		targetStatus, err = readTargetSourceControlStatus(ctx, root, targetPath)
+		if err != nil {
+			targetStatus = "unknown"
+		}
+	}
 	fingerprint := ""
 	if changed > 0 {
 		fingerprint, err = readChangedStateFingerprint(ctx, root)
@@ -160,10 +172,35 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 		Unstaged:                unstaged,
 		Untracked:               untracked,
 		ChangedPaths:            changed,
+		TargetPath:              targetPath,
+		TargetStatus:            targetStatus,
 		ChangedStateFingerprint: fingerprint,
 		EvidenceRef:             sourceControlEvidenceRef(repositoryID, strings.TrimSpace(head), fingerprint),
 	}
 	return snap, nil
+}
+
+func readTargetSourceControlStatus(ctx context.Context, root, targetPath string) (string, error) {
+	rel, err := filepath.Rel(root, targetPath)
+	if err != nil {
+		return "unknown", err
+	}
+	rel = filepath.Clean(rel)
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "unknown", fmt.Errorf("target path escapes git root")
+	}
+	pathspec := filepath.ToSlash(rel)
+	if pathspec == "" {
+		pathspec = "."
+	}
+	porcelain, err := gitOutput(ctx, root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", pathspec)
+	if err != nil {
+		return "unknown", err
+	}
+	if porcelain == "" {
+		return "clean", nil
+	}
+	return "dirty", nil
 }
 
 type GitRepositoryIdentity = gitrepository.Identity

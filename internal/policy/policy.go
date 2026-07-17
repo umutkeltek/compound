@@ -84,6 +84,8 @@ type SourceControlContext struct {
 	Unstaged                int                            `json:"unstaged,omitempty"`
 	Untracked               int                            `json:"untracked,omitempty"`
 	ChangedPaths            int                            `json:"changed_paths,omitempty"`
+	TargetPath              string                         `json:"target_path,omitempty"`
+	TargetStatus            string                         `json:"target_status,omitempty"`
 	ChangedStateFingerprint string                         `json:"changed_state_fingerprint,omitempty"`
 	ReviewedMutation        *ReviewedSourceControlMutation `json:"reviewed_mutation,omitempty"`
 	EvidenceRefs            []string                       `json:"evidence_refs,omitempty"`
@@ -310,11 +312,15 @@ func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionInt
 		pd.Reasons = append(pd.Reasons, fmt.Sprintf("exact recorded source-control review %s matches repo, full HEAD, changed-state fingerprint, action work, session-bound input, action/class/capability, and target set; dirty escalation not added", sc.ReviewedMutation.ReviewID))
 		return pd
 	}
+	targetStatus := sourceControlTargetStatus(ai, sc)
+	if targetStatus == "clean" {
+		return pd
+	}
 	entity := strings.TrimSpace(sc.EntityRef)
 	if entity == "" {
 		entity = "target repo"
 	}
-	reason := fmt.Sprintf("source_control_status dirty for %s changed_paths=%d; target mutation requires clean or explicitly reviewed repo state", entity, sc.ChangedPaths)
+	reason := fmt.Sprintf("source_control_status dirty for %s changed_paths=%d; target_status %s for %q; target mutation requires a clean target or explicitly reviewed repo state", entity, sc.ChangedPaths, targetStatus, ai.Target.Path)
 	if sc.ReviewedMutation != nil {
 		reason += "; recorded review did not exactly match the live state and mutation"
 	}
@@ -327,6 +333,19 @@ func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionInt
 		pd.ID = idFor("pol_", ai.ID, "hold", "source-control-dirty", ts(now))
 	}
 	return pd
+}
+
+func sourceControlTargetStatus(ai envelope.ActionIntent, sc SourceControlContext) string {
+	status := strings.TrimSpace(sc.TargetStatus)
+	if status != "clean" && status != "dirty" {
+		return "unknown"
+	}
+	target := strings.TrimSpace(sc.TargetPath)
+	actionTarget := strings.TrimSpace(ai.Target.Path)
+	if target == "" || actionTarget == "" || filepath.Clean(target) != filepath.Clean(actionTarget) {
+		return "unknown"
+	}
+	return status
 }
 
 func reviewedSourceControlMutationMatches(ai envelope.ActionIntent, sc SourceControlContext) bool {
