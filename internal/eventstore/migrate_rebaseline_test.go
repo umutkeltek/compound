@@ -1,7 +1,10 @@
 package eventstore
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -252,9 +255,13 @@ func TestPendingRebaselineFailsClosedForBaselineReaders(t *testing.T) {
 	if report, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err != nil || !report.Completion.Complete {
 		t.Fatalf("apply: report=%+v err=%v", report, err)
 	}
-	pending := []byte(`{"schema_version":"test.pending"}` + "\n")
 	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
-		return tx.WritePending(pending)
+		prior, existed, err := tx.ReadSidecar()
+		if err != nil {
+			return err
+		}
+		journal := newTestPhysicalRebaselineJournal(t, tx, prior, existed, []byte("post"))
+		return tx.WritePending(journal.Raw)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +286,8 @@ func TestRebaselineTransactionCASRollbackRefusesConcurrentState(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
-		if err := tx.WritePending([]byte("test rollback pending marker\n")); err != nil {
+		journal := newTestPhysicalRebaselineJournal(t, tx, []byte("pre"), true, []byte("post"))
+		if err := tx.WritePending(journal.Raw); err != nil {
 			return err
 		}
 		if err := tx.WriteSidecarCAS([]byte("pre"), true, []byte("post")); err != nil {
@@ -370,7 +378,8 @@ func TestRebaselineTransactionMutationsRequireExactPendingMarker(t *testing.T) {
 					}
 					err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
 						if marker.replaced {
-							if err := tx.WritePending([]byte("owned pending marker\n")); err != nil {
+							journal := newTestPhysicalRebaselineJournal(t, tx, []byte("pre"), true, []byte("post"))
+							if err := tx.WritePending(journal.Raw); err != nil {
 								return err
 							}
 							if err := os.WriteFile(tx.PendingPath(), []byte("foreign pending marker\n"), 0o644); err != nil {
@@ -402,7 +411,6 @@ func TestRebaselineTransactionMutationsRequireExactPendingMarker(t *testing.T) {
 
 func TestClearPendingRestoresExactMarkerWhenDirectorySyncFails(t *testing.T) {
 	store := openTestStore(t)
-	marker := []byte("exact raw pending bytes\n")
 	original := syncRebaselineDirectoryFn
 	fail := true
 	syncRebaselineDirectoryFn = func(path string) error {
@@ -414,15 +422,199 @@ func TestClearPendingRestoresExactMarkerWhenDirectorySyncFails(t *testing.T) {
 	}
 	t.Cleanup(func() { syncRebaselineDirectoryFn = original })
 	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
-		if err := tx.WritePending(marker); err != nil {
+		journal := newTestPhysicalRebaselineJournal(t, tx, nil, false, []byte("post"))
+		if err := tx.WritePending(journal.Raw); err != nil {
 			return err
 		}
 		if err := tx.ClearPending(); err == nil {
 			t.Fatal("clear unexpectedly succeeded")
 		}
 		got, exists, err := tx.ReadPending()
-		if err != nil || !exists || !reflect.DeepEqual(got, marker) {
+		if err != nil || !exists || !reflect.DeepEqual(got, journal.Raw) {
 			t.Fatalf("restored marker got=%q exists=%t err=%v", got, exists, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRebaselinePhysicalJournalRejectsArbitraryMarkerBeforeMutation(t *testing.T) {
+	store := openTestStore(t)
+	path := store.engine.streamBaselinePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("pre"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		if err := tx.WritePending([]byte(`{"schema_version":"arbitrary"}` + "\n")); err != nil {
+			return err
+		}
+		return tx.WriteSidecarCAS([]byte("pre"), true, []byte("post"))
+	})
+	if err == nil {
+		t.Fatal("arbitrary non-empty marker authorized sidecar mutation")
+	}
+	body, readErr := os.ReadFile(path)
+	if readErr != nil || string(body) != "pre" {
+		t.Fatalf("arbitrary marker changed sidecar: body=%q err=%v", body, readErr)
+	}
+}
+
+func TestRebaselinePhysicalJournalBindsImageArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		journalPrior    []byte
+		journalExisted  bool
+		journalPost     []byte
+		expected        []byte
+		expectedExisted bool
+		replacement     []byte
+	}{
+		{name: "prior existence", journalPrior: nil, journalExisted: false, journalPost: []byte("post"), expected: []byte("pre"), expectedExisted: true, replacement: []byte("post")},
+		{name: "pre image", journalPrior: []byte("other-pre"), journalExisted: true, journalPost: []byte("post"), expected: []byte("pre"), expectedExisted: true, replacement: []byte("post")},
+		{name: "post image", journalPrior: []byte("pre"), journalExisted: true, journalPost: []byte("other-post"), expected: []byte("pre"), expectedExisted: true, replacement: []byte("post")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := store.engine.streamBaselinePath()
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("pre"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+				journal := newTestPhysicalRebaselineJournal(t, tx, tc.journalPrior, tc.journalExisted, tc.journalPost)
+				if err := tx.WritePending(journal.Raw); err != nil {
+					return err
+				}
+				return tx.WriteSidecarCAS(tc.expected, tc.expectedExisted, tc.replacement)
+			})
+			if !errors.Is(err, ErrRebaselineStateConflict) {
+				t.Fatalf("image mismatch err=%v, want conflict", err)
+			}
+			body, readErr := os.ReadFile(path)
+			if readErr != nil || string(body) != "pre" {
+				t.Fatalf("image mismatch changed sidecar: body=%q err=%v", body, readErr)
+			}
+		})
+	}
+}
+
+func TestRebaselinePhysicalJournalRequiresProofAbsenceForMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		initial   []byte
+		putProof  func(*testing.T, *Store, testPhysicalRebaselineJournal)
+		operation func(*RebaselineTransaction) error
+	}{
+		{name: "write receipt present", initial: []byte("pre"), putProof: func(t *testing.T, store *Store, journal testPhysicalRebaselineJournal) {
+			putTestPhysicalProof(t, store, journal.ReceiptID, journal.ReceiptRaw)
+		}, operation: func(tx *RebaselineTransaction) error { return tx.WriteSidecarCAS([]byte("pre"), true, []byte("post")) }},
+		{name: "rollback transition present", initial: []byte("post"), putProof: func(t *testing.T, store *Store, journal testPhysicalRebaselineJournal) {
+			putTestPhysicalProof(t, store, journal.TransitionID, journal.TransitionRaw)
+		}, operation: func(tx *RebaselineTransaction) error {
+			return tx.RollbackSidecarCAS([]byte("post"), []byte("pre"), true)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := store.engine.streamBaselinePath()
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, tc.initial, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+				journal := newTestPhysicalRebaselineJournal(t, tx, []byte("pre"), true, []byte("post"))
+				if err := tx.WritePending(journal.Raw); err != nil {
+					return err
+				}
+				tc.putProof(t, store, journal)
+				return tc.operation(tx)
+			})
+			if !errors.Is(err, ErrRebaselineStateConflict) {
+				t.Fatalf("proof-bearing mutation err=%v, want conflict", err)
+			}
+			body, readErr := os.ReadFile(path)
+			if readErr != nil || !bytesEqual(body, tc.initial) {
+				t.Fatalf("proof-bearing mutation changed sidecar: body=%q err=%v", body, readErr)
+			}
+		})
+	}
+}
+
+func TestRebaselinePhysicalJournalClearRequiresTerminalState(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		current       []byte
+		putReceipt    bool
+		putTransition bool
+		wantOK        bool
+	}{
+		{name: "pre with receipt", current: []byte("pre"), putReceipt: true},
+		{name: "post missing transition", current: []byte("post"), putReceipt: true},
+		{name: "post missing receipt", current: []byte("post"), putTransition: true},
+		{name: "post exact proofs", current: []byte("post"), putReceipt: true, putTransition: true, wantOK: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := store.engine.streamBaselinePath()
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, tc.current, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var marker []byte
+			err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+				journal := newTestPhysicalRebaselineJournal(t, tx, []byte("pre"), true, []byte("post"))
+				marker = append([]byte(nil), journal.Raw...)
+				if err := tx.WritePending(journal.Raw); err != nil {
+					return err
+				}
+				if tc.putReceipt {
+					putTestPhysicalProof(t, store, journal.ReceiptID, journal.ReceiptRaw)
+				}
+				if tc.putTransition {
+					putTestPhysicalProof(t, store, journal.TransitionID, journal.TransitionRaw)
+				}
+				return tx.ClearPending()
+			})
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("exact terminal clear: %v", err)
+				}
+				if _, exists, readErr := store.ReadRebaselinePending(); readErr != nil || exists {
+					t.Fatalf("exact terminal clear retained marker: exists=%t err=%v", exists, readErr)
+				}
+				return
+			}
+			if !errors.Is(err, ErrRebaselineStateConflict) {
+				t.Fatalf("nonterminal clear err=%v, want conflict", err)
+			}
+			got, exists, readErr := store.ReadRebaselinePending()
+			if readErr != nil || !exists || !reflect.DeepEqual(got, marker) {
+				t.Fatalf("nonterminal clear lost marker: got=%q exists=%t err=%v", got, exists, readErr)
+			}
+		})
+	}
+}
+
+func TestRebaselinePhysicalJournalMalformedReadPreservesRaw(t *testing.T) {
+	store := openTestStore(t)
+	raw := []byte(`{"schema_version":"broken","receipt":`)
+	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		if err := os.WriteFile(tx.PendingPath(), raw, 0o644); err != nil {
+			return err
+		}
+		got, exists, err := tx.ReadPending()
+		if err == nil || !exists || !reflect.DeepEqual(got, raw) {
+			t.Fatalf("malformed read got=%q exists=%t err=%v", got, exists, err)
 		}
 		return nil
 	}); err != nil {
@@ -553,9 +745,6 @@ func TestMigrationCompletionRefusesNonCompletionBaseline(t *testing.T) {
 func applyTestRebaseline(t *testing.T, store *Store, now time.Time) {
 	t.Helper()
 	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
-		if err := tx.WritePending([]byte("test rebaseline pending marker\n")); err != nil {
-			return err
-		}
 		prior, existed, err := tx.ReadSidecar()
 		if err != nil {
 			return err
@@ -564,14 +753,98 @@ func applyTestRebaseline(t *testing.T, store *Store, now time.Time) {
 		if err != nil {
 			return err
 		}
+		journal := newTestPhysicalRebaselineJournal(t, tx, prior, existed, post)
+		if err := tx.WritePending(journal.Raw); err != nil {
+			return err
+		}
 		if err := tx.WriteSidecarCAS(prior, existed, post); err != nil {
 			return err
 		}
+		putTestPhysicalProof(t, store, journal.ReceiptID, journal.ReceiptRaw)
+		putTestPhysicalProof(t, store, journal.TransitionID, journal.TransitionRaw)
 		return tx.ClearPending()
 	}); err != nil {
 		t.Fatalf("rebaseline primitive: %v", err)
 	}
 }
+
+type testPhysicalRebaselineJournal struct {
+	Raw           []byte
+	ReceiptID     string
+	ReceiptRaw    []byte
+	TransitionID  string
+	TransitionRaw []byte
+}
+
+func newTestPhysicalRebaselineJournal(t *testing.T, tx *RebaselineTransaction, prior []byte, priorExisted bool, post []byte) testPhysicalRebaselineJournal {
+	t.Helper()
+	preRef := fmt.Sprintf("artifact:sha256:%x", sha256.Sum256(prior))
+	postRef := fmt.Sprintf("artifact:sha256:%x", sha256.Sum256(post))
+	const workID = "work_physical_rebaseline"
+	const actionID = "act_physical_rebaseline"
+	const receiptID = "rec_physical_rebaseline"
+	const transitionID = "tr_physical_rebaseline"
+	receiptRaw, err := json.Marshal(struct {
+		SchemaVersion string `json:"schema_version"`
+		ID            string `json:"id"`
+		IDs           struct {
+			WorkID string `json:"work_id"`
+		} `json:"ids"`
+		StateDelta struct {
+			Artifacts []string `json:"artifacts"`
+		} `json:"state_delta"`
+		ProofRefs []string `json:"proof_refs"`
+	}{SchemaVersion: "compound.receipt.v0.1", ID: receiptID, IDs: struct {
+		WorkID string `json:"work_id"`
+	}{WorkID: workID}, StateDelta: struct {
+		Artifacts []string `json:"artifacts"`
+	}{Artifacts: []string{preRef, postRef}}, ProofRefs: []string{preRef, postRef}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitionRaw, err := json.Marshal(struct {
+		SchemaVersion string `json:"schema_version"`
+		ID            string `json:"id"`
+		IDs           struct {
+			WorkID string `json:"work_id"`
+		} `json:"ids"`
+		BeforeRefs []string `json:"before_refs"`
+		ActionRefs []string `json:"action_refs"`
+		AfterRefs  []string `json:"after_refs"`
+	}{SchemaVersion: "compound.transition.v0.1", ID: transitionID, IDs: struct {
+		WorkID string `json:"work_id"`
+	}{WorkID: workID}, BeforeRefs: []string{preRef}, ActionRefs: []string{actionID}, AfterRefs: []string{postRef}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.MarshalIndent(struct {
+		SchemaVersion     string          `json:"schema_version"`
+		SidecarPath       string          `json:"sidecar_path"`
+		PriorExisted      bool            `json:"prior_existed"`
+		PreImageRef       string          `json:"pre_image_ref"`
+		PostImageRef      string          `json:"post_image_ref"`
+		BeforeEvidenceRef string          `json:"before_evidence_ref"`
+		AfterEvidenceRef  string          `json:"after_evidence_ref"`
+		ActionIntentID    string          `json:"action_intent_id"`
+		PolicyDecisionID  string          `json:"policy_decision_id"`
+		AuthorityRevision string          `json:"authority_revision"`
+		Receipt           json.RawMessage `json:"receipt"`
+		Transition        json.RawMessage `json:"transition"`
+	}{SchemaVersion: "compound.eventstore.rebaseline_pending.v0.1", SidecarPath: tx.SidecarPath(), PriorExisted: priorExisted, PreImageRef: preRef, PostImageRef: postRef, BeforeEvidenceRef: "eventstore-baseline-before:test", AfterEvidenceRef: "eventstore-baseline-after:test", ActionIntentID: actionID, PolicyDecisionID: "pol_physical_rebaseline", AuthorityRevision: "authority:physical-rebaseline", Receipt: receiptRaw, Transition: transitionRaw}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testPhysicalRebaselineJournal{Raw: append(raw, '\n'), ReceiptID: receiptID, ReceiptRaw: receiptRaw, TransitionID: transitionID, TransitionRaw: transitionRaw}
+}
+
+func putTestPhysicalProof(t *testing.T, store *Store, id string, raw []byte) {
+	t.Helper()
+	if _, err := store.PutJSON(id, json.RawMessage(raw), " "); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func bytesEqual(a, b []byte) bool { return reflect.DeepEqual(a, b) }
 
 func openForAppend(t *testing.T, path string) *os.File {
 	t.Helper()
