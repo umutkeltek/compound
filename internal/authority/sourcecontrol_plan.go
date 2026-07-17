@@ -234,6 +234,9 @@ func buildSourceControlReviewPlan(snapshot SourceControlSnapshot, workID string,
 		)
 	}
 	plan.PlanDigest = SourceControlReviewPlanDigest(plan)
+	if err := ValidateSourceControlReviewPlan(plan); err != nil {
+		return SourceControlReviewPlan{}, err
+	}
 	return plan, nil
 }
 
@@ -247,15 +250,168 @@ func SourceControlReviewPlanDigest(plan SourceControlReviewPlan) string {
 	return fmt.Sprintf("sha256:%x", digest[:])
 }
 
+// ValidateSourceControlReviewPlan validates the complete immutable review
+// owner, not only its self-digest. Every writer and consumer uses this seam so
+// a structurally corrupt plan cannot mint, display, or record review authority.
+func ValidateSourceControlReviewPlan(plan SourceControlReviewPlan) error {
+	if plan.SchemaVersion != SourceControlReviewPlanSchemaVersion {
+		return fmt.Errorf("source-control review plan schema_version must be %s, got %q", SourceControlReviewPlanSchemaVersion, plan.SchemaVersion)
+	}
+	if len(plan.ID) <= len("scr_") || !strings.HasPrefix(plan.ID, "scr_") || filepath.Base(plan.ID) != plan.ID {
+		return fmt.Errorf("source-control review plan id must be a bare scr_ id")
+	}
+	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(plan.CreatedAt))
+	if err != nil || createdAt.IsZero() {
+		return fmt.Errorf("source-control review plan created_at must be a non-zero RFC3339 timestamp")
+	}
+	if plan.Status != "review_required" {
+		return fmt.Errorf("source-control review plan status must be review_required, got %q", plan.Status)
+	}
+	if strings.TrimSpace(plan.RepoID) == "" {
+		return fmt.Errorf("source-control review plan repo_id required")
+	}
+	if strings.TrimSpace(plan.GitRoot) == "" || !filepath.IsAbs(plan.GitRoot) {
+		return fmt.Errorf("source-control review plan git_root must be absolute")
+	}
+	if plan.SourceStatus != "dirty" {
+		return fmt.Errorf("source-control review plan source_status must be dirty, got %q", plan.SourceStatus)
+	}
+	if !validGitObjectID(plan.Head) {
+		return fmt.Errorf("source-control review plan head must be a full git object id")
+	}
+	if !validSHA256(plan.ChangedStateFingerprint) {
+		return fmt.Errorf("source-control review plan changed_state_fingerprint must be sha256")
+	}
+	if plan.Ahead < 0 || plan.Behind < 0 || plan.Staged < 0 || plan.Unstaged < 0 || plan.Untracked < 0 {
+		return fmt.Errorf("source-control review plan snapshot counts must be non-negative")
+	}
+	if plan.ChangedPaths <= 0 || plan.ChangedPaths != plan.Staged+plan.Unstaged+plan.Untracked {
+		return fmt.Errorf("source-control review plan changed_paths must equal staged+unstaged+untracked and be positive")
+	}
+	if len(plan.EvidenceRefs) == 0 {
+		return fmt.Errorf("source-control review plan evidence_refs required")
+	}
+	for _, ref := range plan.EvidenceRefs {
+		if strings.TrimSpace(ref) == "" {
+			return fmt.Errorf("source-control review plan evidence_refs must be non-empty")
+		}
+	}
+	if plan.ReviewDraft.ReviewID != plan.ID || filepath.Base(plan.ReviewDraft.ReviewID) != plan.ReviewDraft.ReviewID {
+		return fmt.Errorf("source-control review plan review_draft.review_id must equal plan id")
+	}
+	requiredDraft := []struct {
+		field string
+		value string
+	}{
+		{"title", plan.ReviewDraft.Title},
+		{"situation", plan.ReviewDraft.Situation},
+		{"proposed_next_step", plan.ReviewDraft.ProposedNextStep},
+		{"cleanup_guardrail", plan.ReviewDraft.CleanupGuardrail},
+		{"verification", plan.ReviewDraft.Verification},
+		{"retirement_trigger", plan.ReviewDraft.RetirementTrigger},
+		{"review_note", plan.ReviewDraft.ReviewNote},
+	}
+	for _, field := range requiredDraft {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("source-control review plan review_draft.%s required", field.field)
+		}
+	}
+	if len(plan.ReviewDraft.RequiredEvidence) == 0 {
+		return fmt.Errorf("source-control review plan review_draft.required_evidence required")
+	}
+	for _, ref := range plan.ReviewDraft.RequiredEvidence {
+		if strings.TrimSpace(ref) == "" {
+			return fmt.Errorf("source-control review plan review_draft.required_evidence must be non-empty")
+		}
+	}
+	workID := strings.TrimSpace(plan.WorkID)
+	if plan.WorkID != workID {
+		return fmt.Errorf("source-control review plan work_id must be normalized")
+	}
+	if workID != "" {
+		if len(workID) <= len("work_") || plan.WorkID != workID || !strings.HasPrefix(workID, "work_") || filepath.Base(workID) != workID {
+			return fmt.Errorf("source-control review plan work_id must be a bare work_ id")
+		}
+	}
+	if plan.MutationBinding != nil {
+		if strings.TrimSpace(plan.WorkID) == "" || strings.HasPrefix(plan.WorkID, "work_live_") {
+			return fmt.Errorf("source-control review plan mutation_binding requires a durable owner work_id")
+		}
+		if err := validateNormalizedSourceControlMutationBinding(*plan.MutationBinding); err != nil {
+			return fmt.Errorf("source-control review plan mutation_binding invalid: %w", err)
+		}
+		if plan.MutationBinding.ActionWorkID != strings.TrimSpace(plan.MutationBinding.ActionWorkID) ||
+			plan.MutationBinding.Capability != strings.TrimSpace(plan.MutationBinding.Capability) ||
+			plan.MutationBinding.Action != strings.TrimSpace(plan.MutationBinding.Action) ||
+			plan.MutationBinding.MutationClass != strings.TrimSpace(plan.MutationBinding.MutationClass) {
+			return fmt.Errorf("source-control review plan mutation_binding scalar fields must be normalized")
+		}
+		if len(plan.MutationBinding.ActionWorkID) <= len("work_") || !strings.HasPrefix(plan.MutationBinding.ActionWorkID, "work_") || filepath.Base(plan.MutationBinding.ActionWorkID) != plan.MutationBinding.ActionWorkID {
+			return fmt.Errorf("source-control review plan mutation_binding action_work_id must be a bare work_ id")
+		}
+		if !strings.HasPrefix(plan.MutationBinding.ActionWorkID, "work_live_") && plan.MutationBinding.ActionWorkID != plan.WorkID {
+			return fmt.Errorf("source-control review plan mutation_binding action_work_id must equal owner or be synthetic")
+		}
+		if !validSourceControlMutationClass(plan.MutationBinding.MutationClass) {
+			return fmt.Errorf("source-control review plan mutation_binding mutation_class invalid")
+		}
+		if !stringSlicesEqual(plan.MutationBinding.ActionIntentIDs, sortedUniqueStrings(plan.MutationBinding.ActionIntentIDs)) ||
+			!stringSlicesEqual(plan.MutationBinding.TargetPaths, sortedUniqueStrings(plan.MutationBinding.TargetPaths)) {
+			return fmt.Errorf("source-control review plan mutation_binding identities and targets must be canonical unique order")
+		}
+		root := filepath.Clean(plan.GitRoot)
+		for _, target := range plan.MutationBinding.TargetPaths {
+			if !filepath.IsAbs(target) {
+				return fmt.Errorf("source-control review plan mutation_binding target must be absolute")
+			}
+			canonicalTarget, err := CanonicalSourceControlMutationTarget(root, target)
+			if err != nil || canonicalTarget != target {
+				return fmt.Errorf("source-control review plan mutation_binding target must be canonical")
+			}
+			rel, err := filepath.Rel(root, filepath.Clean(target))
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("source-control review plan mutation_binding target outside git_root")
+			}
+		}
+		if !containsEvery(plan.EvidenceRefs, prefixedActionIntentRefs(plan.MutationBinding.ActionIntentIDs)) {
+			return fmt.Errorf("source-control review plan mutation_binding action evidence missing")
+		}
+	}
+	if !validSHA256(plan.PlanDigest) || plan.PlanDigest != SourceControlReviewPlanDigest(plan) {
+		return fmt.Errorf("source-control review plan plan_digest invalid")
+	}
+	return nil
+}
+
+func validGitObjectID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			return false
+		}
+	}
+	return true
+}
+
+func validSourceControlMutationClass(value string) bool {
+	value = strings.TrimSpace(value)
+	for _, mutationClass := range envelope.MutationClasses {
+		if value == mutationClass {
+			return true
+		}
+	}
+	return false
+}
+
 func RecordSourceControlReviewPlan(homePath string, plan SourceControlReviewPlan) (SourceControlReviewPlanPaths, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return SourceControlReviewPlanPaths{}, fmt.Errorf("COMPOUND_HOME required")
 	}
-	if strings.TrimSpace(plan.ID) == "" {
-		return SourceControlReviewPlanPaths{}, fmt.Errorf("source-control review plan id required")
-	}
-	if !validSHA256(plan.PlanDigest) || plan.PlanDigest != SourceControlReviewPlanDigest(plan) {
-		return SourceControlReviewPlanPaths{}, fmt.Errorf("source-control review plan_digest invalid")
+	if err := ValidateSourceControlReviewPlan(plan); err != nil {
+		return SourceControlReviewPlanPaths{}, err
 	}
 	paths, err := reviewartifact.Write(homePath, SourceControlCleanupReviewArea, plan.ID, plan, "  ", RenderSourceControlReviewPlan(plan))
 	if err != nil {
@@ -376,6 +532,9 @@ func ValidateSourceControlReview(review SourceControlReview) error {
 	if strings.TrimSpace(review.ID) == "" || strings.TrimSpace(review.PlanID) == "" {
 		return fmt.Errorf("source-control review id plan_id required")
 	}
+	if review.ID != filepath.Base(review.ID) {
+		return fmt.Errorf("source-control review id %q must be bare id", review.ID)
+	}
 	if review.PlanID != filepath.Base(review.PlanID) {
 		return fmt.Errorf("source-control review plan_id %q must be bare id", review.PlanID)
 	}
@@ -400,7 +559,22 @@ func ValidateSourceControlReview(review SourceControlReview) error {
 	return nil
 }
 
-func RecordSourceControlReview(homePath string, review SourceControlReview, sourcePath string, now time.Time) (SourceControlReviewReport, error) {
+// SourceControlReviewSourceDigest returns the canonical semantic digest of a
+// validated review source. YAML presentation details are intentionally absent;
+// every typed disposition field remains part of the identity.
+func SourceControlReviewSourceDigest(review SourceControlReview) (string, error) {
+	if err := ValidateSourceControlReview(review); err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(review)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", digest[:]), nil
+}
+
+func RecordSourceControlReview(homePath string, review SourceControlReview, sourcePath string, now time.Time, expectedSourceDigest ...string) (SourceControlReviewReport, error) {
 	createdAt := reviewartifact.Timestamp(now)
 	report := SourceControlReviewReport{
 		SchemaVersion: SourceControlReviewReportSchemaVersion,
@@ -426,6 +600,18 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 		report.Status = "blocked"
 		return report, err
 	}
+	expectedDigest, err := validateExpectedSourceControlReviewDigest(expectedSourceDigest)
+	if err != nil {
+		report.Status = "blocked"
+		return report, err
+	}
+	if expectedDigest != "" {
+		if err := verifySourceControlReviewSourceDigest(sourcePath, review, expectedDigest); err != nil {
+			report.Status = "blocked"
+			return report, err
+		}
+	}
+	expectedReview := review
 	plan, err := loadSourceControlPlanForReview(sourcePath, review.PlanID)
 	if err != nil {
 		report.Status = "blocked"
@@ -434,6 +620,15 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 	if plan.ID != review.PlanID {
 		report.Status = "blocked"
 		return report, fmt.Errorf("source-control review plan_id %q does not match plan %q", review.PlanID, plan.ID)
+	}
+	if review.ID != plan.ReviewDraft.ReviewID {
+		report.Status = "blocked"
+		return report, fmt.Errorf("source-control review id %q does not match plan review_id %q", review.ID, plan.ReviewDraft.ReviewID)
+	}
+	expectedSourcePath := filepath.Join(filepath.Dir(sourcePath), plan.ID+".review.yaml")
+	if filepath.Clean(sourcePath) != filepath.Clean(expectedSourcePath) {
+		report.Status = "blocked"
+		return report, fmt.Errorf("source-control review source path must be %s", expectedSourcePath)
 	}
 	if strings.TrimSpace(plan.RepoID) != "" && review.RepoID != plan.RepoID {
 		report.Status = "blocked"
@@ -471,6 +666,12 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 	report.ReviewedAt = review.ReviewedAt
 	report.EvidenceRefs = reviewartifact.Unique(append(append([]string{}, plan.EvidenceRefs...), report.EvidenceRefs...))
 	report.EvidenceRefs = reviewartifact.Unique(append(report.EvidenceRefs, "source-control-review:"+report.ID))
+	if expectedDigest != "" {
+		if err := verifySourceControlReviewSourceDigest(sourcePath, expectedReview, expectedDigest); err != nil {
+			report.Status = "blocked"
+			return report, err
+		}
+	}
 	sourceDigest, err := writeSourceControlReviewedSource(sourcePath, review)
 	if err != nil {
 		return SourceControlReviewReport{}, err
@@ -492,6 +693,39 @@ func RecordSourceControlReview(homePath string, review SourceControlReview, sour
 		return SourceControlReviewReport{}, err
 	}
 	return report, nil
+}
+
+func validateExpectedSourceControlReviewDigest(values []string) (string, error) {
+	if len(values) > 1 {
+		return "", fmt.Errorf("source-control review expected source digest accepts at most one value")
+	}
+	if len(values) == 0 {
+		return "", nil
+	}
+	digest := strings.TrimSpace(values[0])
+	if !validSHA256(digest) {
+		return "", fmt.Errorf("source-control review expected source digest must be sha256")
+	}
+	return digest, nil
+}
+
+func verifySourceControlReviewSourceDigest(path string, review SourceControlReview, expectedDigest string) error {
+	liveReview, err := LoadSourceControlReview(path)
+	if err != nil {
+		return fmt.Errorf("source digest drift: load current source: %w", err)
+	}
+	liveDigest, err := SourceControlReviewSourceDigest(liveReview)
+	if err != nil {
+		return fmt.Errorf("source digest drift: current source invalid: %w", err)
+	}
+	providedDigest, err := SourceControlReviewSourceDigest(review)
+	if err != nil {
+		return err
+	}
+	if liveDigest != expectedDigest || providedDigest != expectedDigest {
+		return fmt.Errorf("source digest drift: expected %s, current %s", expectedDigest, liveDigest)
+	}
+	return nil
 }
 
 // FindRecordedSourceControlMutationReview returns the newest recorded
@@ -847,6 +1081,13 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 		return
 	}
 	plan, planErr := loadSourceControlPlanFile(item.JSONPath)
+	if planErr != nil {
+		item.Actions = nil
+		item.Readiness = "blocked"
+		item.BlockedReason = "source-control cleanup plan invalid: " + sourceControlQueueError(planErr)
+		item.NextAction = "regenerate dirty-plan from a current source-control snapshot"
+		return
+	}
 	if reviewedPath := sourceControlReviewedPath(*item); reviewedPath != "" {
 		report, reportErr := LoadSourceControlReviewReport(reviewedPath)
 		if sourceControlMutationReviewNeedsValidation(plan, planErr, report, reportErr) {
@@ -870,9 +1111,7 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 		}
 		return
 	}
-	if planErr == nil {
-		annotateSourceControlOperatorCard(item, plan, reviewartifact.BandNeedsYou)
-	}
+	annotateSourceControlOperatorCard(item, plan, reviewartifact.BandNeedsYou)
 	reviewYAML := sourceControlReviewYAMLPath(*item)
 	if reviewYAML == "" {
 		item.Readiness = "blocked"
@@ -880,7 +1119,30 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 		item.NextAction = "regenerate dirty-plan to create review YAML draft"
 		return
 	}
-	argv := []string{"compound", "authority", "dirty-review", reviewYAML}
+	review, err := LoadSourceControlReview(reviewYAML)
+	if err != nil {
+		item.Actions = nil
+		item.Readiness = "blocked"
+		item.BlockedReason = "source-control cleanup review YAML unreadable: " + sourceControlQueueError(err)
+		item.NextAction = "fix source-control cleanup review YAML before recording"
+		return
+	}
+	if err := ValidateSourceControlReview(review); err != nil {
+		item.Actions = nil
+		item.Readiness = "needs_review"
+		item.BlockedReason = sourceControlQueueError(err)
+		item.NextAction = "fill valid source-control cleanup review YAML before recording"
+		return
+	}
+	sourceDigest, err := SourceControlReviewSourceDigest(review)
+	if err != nil {
+		item.Actions = nil
+		item.Readiness = "blocked"
+		item.BlockedReason = "source-control cleanup review digest invalid: " + sourceControlQueueError(err)
+		item.NextAction = "fix source-control cleanup review YAML before recording"
+		return
+	}
+	argv := []string{"compound", "authority", "dirty-review", reviewYAML, "--expected-source-digest", sourceDigest}
 	action := reviewartifact.Action{
 		ID:             "record_source_control_cleanup_review",
 		Label:          "Record source-control cleanup review",
@@ -888,40 +1150,37 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 		Argv:           argv,
 		RequiresReview: true,
 	}
-	action.ActionIntent, action.AuthorityContext = sourceControlRecordReviewAuthoritySeed(*item, plan, reviewYAML, action.ID)
-	item.Actions = []reviewartifact.Action{action}
-	review, err := LoadSourceControlReview(reviewYAML)
-	if err != nil {
+	action.ActionIntent, action.AuthorityContext = sourceControlRecordReviewAuthoritySeed(*item, plan, review, reviewYAML, sourceDigest, action.ID)
+	if action.ActionIntent == nil || action.AuthorityContext == nil {
+		item.Actions = nil
 		item.Readiness = "blocked"
-		item.BlockedReason = "source-control cleanup review YAML unreadable: " + sourceControlQueueError(err)
-		item.NextAction = "fix source-control cleanup review YAML before recording"
+		item.BlockedReason = "source-control review owner authority is incomplete or invalid"
+		item.NextAction = "regenerate dirty-plan under a durable owner work envelope"
 		return
 	}
-	if err := ValidateSourceControlReview(review); err != nil {
-		item.Readiness = "needs_review"
-		item.BlockedReason = sourceControlQueueError(err)
-		item.NextAction = "fill valid source-control cleanup review YAML before recording"
-		return
-	}
+	item.Actions = []reviewartifact.Action{action}
 	item.Readiness = "ready_to_record"
 	item.NextAction = "record reviewed source-control cleanup disposition"
 }
 
-func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan SourceControlReviewPlan, reviewYAML, actionID string) (*envelope.ActionIntent, *policy.AuthorityContext) {
+func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan SourceControlReviewPlan, review SourceControlReview, reviewYAML, sourceDigest, actionID string) (*envelope.ActionIntent, *policy.AuthorityContext) {
 	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(plan.CreatedAt))
 	dir := filepath.Dir(item.JSONPath)
 	validWorkID := len(plan.WorkID) > len("work_") && strings.HasPrefix(plan.WorkID, "work_") &&
 		!strings.HasPrefix(plan.WorkID, "work_live_") && filepath.Base(plan.WorkID) == plan.WorkID
-	validPlanIdentity := plan.ID != "" && plan.ID == item.ID &&
-		filepath.Clean(item.JSONPath) == filepath.Clean(filepath.Join(dir, plan.ID+".json")) &&
-		validSHA256(plan.PlanDigest) && plan.PlanDigest == SourceControlReviewPlanDigest(plan)
+	validPlanIdentity := ValidateSourceControlReviewPlan(plan) == nil && plan.ID == item.ID &&
+		filepath.Clean(item.JSONPath) == filepath.Clean(filepath.Join(dir, plan.ID+".json"))
 	validReviewIdentity := plan.ReviewDraft.ReviewID != "" && filepath.Base(plan.ReviewDraft.ReviewID) == plan.ReviewDraft.ReviewID &&
-		filepath.Clean(reviewYAML) == filepath.Clean(filepath.Join(dir, plan.ID+".review.yaml"))
+		filepath.Clean(reviewYAML) == filepath.Clean(filepath.Join(dir, plan.ID+".review.yaml")) &&
+		ValidateSourceControlReview(review) == nil && review.ID == plan.ReviewDraft.ReviewID && review.PlanID == plan.ID && review.RepoID == plan.RepoID
+	computedSourceDigest, digestErr := SourceControlReviewSourceDigest(review)
+	validReviewIdentity = validReviewIdentity && digestErr == nil && validSHA256(sourceDigest) && sourceDigest == computedSourceDigest
 	if err != nil || createdAt.IsZero() || !validWorkID || !validPlanIdentity || !validReviewIdentity || strings.TrimSpace(actionID) == "" {
 		return nil, nil
 	}
 
-	evidenceRefs := append([]string{}, plan.EvidenceRefs...)
+	evidenceRefs := reviewartifact.Unique(append(append([]string{}, plan.EvidenceRefs...), review.EvidenceRefs...))
+	evidenceRefs = reviewartifact.Unique(append(evidenceRefs, sourceDigest))
 	hasEvidence := false
 	for _, ref := range evidenceRefs {
 		if strings.TrimSpace(ref) != "" {
@@ -940,6 +1199,7 @@ func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan 
 			SchemaVersion: envelope.SVActionIntent,
 			ID: "act_" + reviewartifact.Digest12(strings.Join([]string{
 				"source-control-cleanup", actionID, plan.ID, plan.WorkID, filepath.Clean(reviewYAML),
+				review.Decision, strings.TrimSpace(review.ReviewedBy), strings.TrimSpace(review.NextAction), strings.Join(review.EvidenceRefs, "\x1f"), sourceDigest,
 			}, "\x00")),
 			CreatedAt:    strings.TrimSpace(plan.CreatedAt),
 			Producer:     envelope.Producer{Kind: "owner_projection", Name: "compound"},
@@ -957,7 +1217,7 @@ func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan 
 		MutationClass: "local_reversible",
 		Reversibility: "easy",
 		BlastRadius:   "local",
-		Preview:       "Record the existing reviewed YAML as a source-control cleanup review report.",
+		Preview:       "Record the validated " + review.Decision + " source-control review at " + sourceDigest + ".",
 		RollbackPlan: "Restore " + reviewYAML + " from the immutable review draft in " + planPath +
 			" at " + plan.PlanDigest + " and archive " + reviewReportPath + " from active review state.",
 	}
@@ -968,9 +1228,10 @@ func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan 
 		TargetScope:               "private",
 		VerifiedRecoverability:    policy.RecoverabilityVerified,
 		OperatorControlContinuity: policy.OperatorControlContinuous,
-		ExpectedReceipt:           "Recorded source-control cleanup review report linked to work " + plan.WorkID + "; repository state remains unchanged.",
+		ExpectedReceipt:           "Recorded source-control cleanup review report for " + sourceDigest + " linked to work " + plan.WorkID + "; repository state remains unchanged.",
 		ExpectedProof: append([]string{
 			"review-report:" + reviewReportPath,
+			"review-source:" + sourceDigest,
 			"work:" + plan.WorkID,
 			"recovery-source:" + planPath + "#" + plan.PlanDigest,
 			"restore-target:" + reviewYAML,
@@ -1068,6 +1329,9 @@ func loadSourceControlPlanFile(path string) (SourceControlReviewPlan, error) {
 	if err := json.Unmarshal(data, &plan); err != nil {
 		return SourceControlReviewPlan{}, err
 	}
+	if err := ValidateSourceControlReviewPlan(plan); err != nil {
+		return SourceControlReviewPlan{}, err
+	}
 	return plan, nil
 }
 
@@ -1084,6 +1348,9 @@ func loadSourceControlPlanForReview(reviewPath, planID string) (SourceControlRev
 	}
 	var plan SourceControlReviewPlan
 	if err := json.Unmarshal(data, &plan); err != nil {
+		return SourceControlReviewPlan{}, err
+	}
+	if err := ValidateSourceControlReviewPlan(plan); err != nil {
 		return SourceControlReviewPlan{}, err
 	}
 	return plan, nil

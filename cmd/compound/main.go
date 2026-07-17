@@ -7101,14 +7101,14 @@ func cmdAuthority(args []string) {
 	if args[0] == "dirty-review" {
 		jsonOut := hasFlag(args[1:], "--json")
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--decision D --rationale R --reviewed-by operator:<actor>] [--json]")
+			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--expected-source-digest sha256:...] [--decision D --rationale R --reviewed-by operator:<actor>] [--json]")
 			os.Exit(2)
 		}
-		var decision, rationale, reviewedBy string
+		var decision, rationale, reviewedBy, expectedSourceDigest string
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
 			case "--json":
-			case "--decision", "--rationale", "--reviewed-by":
+			case "--decision", "--rationale", "--reviewed-by", "--expected-source-digest":
 				if i+1 >= len(args) {
 					fmt.Fprintln(os.Stderr, "authority dirty-review: flag value required")
 					os.Exit(2)
@@ -7117,16 +7117,22 @@ func cmdAuthority(args []string) {
 					decision = args[i+1]
 				} else if args[i] == "--rationale" {
 					rationale = args[i+1]
-				} else {
+				} else if args[i] == "--reviewed-by" {
 					reviewedBy = args[i+1]
+				} else {
+					expectedSourceDigest = args[i+1]
 				}
 				i++
 			default:
 				if i != 1 {
-					fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--json]")
+					fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--expected-source-digest sha256:...] [--json]")
 					os.Exit(2)
 				}
 			}
+		}
+		if expectedSourceDigest != "" && (decision != "" || rationale != "" || reviewedBy != "") {
+			fmt.Fprintln(os.Stderr, "authority dirty-review: --expected-source-digest cannot be combined with inline review overrides")
+			os.Exit(2)
 		}
 		review, err := authority.LoadSourceControlReview(args[1])
 		if err != nil {
@@ -7155,7 +7161,12 @@ func cmdAuthority(args []string) {
 				os.Exit(1)
 			}
 		}
-		report, err := authority.RecordSourceControlReview(homePath, review, args[1], time.Now())
+		var report authority.SourceControlReviewReport
+		if expectedSourceDigest != "" {
+			report, err = authority.RecordSourceControlReview(homePath, review, args[1], time.Now(), expectedSourceDigest)
+		} else {
+			report, err = authority.RecordSourceControlReview(homePath, review, args[1], time.Now())
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority dirty-review:", err)
 			os.Exit(1)

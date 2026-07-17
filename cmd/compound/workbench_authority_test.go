@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +16,8 @@ import (
 	"compound/internal/reviewartifact"
 	"compound/internal/work"
 )
+
+const dirtyReviewDigestDriftSubEnv = "COMPOUND_DIRTY_REVIEW_DIGEST_DRIFT_SUB"
 
 func TestBuildReviewQueueReportStampsCurrentOwnerAuthority(t *testing.T) {
 	homePath := t.TempDir()
@@ -56,6 +60,38 @@ func TestBuildReviewQueueReportStampsCurrentOwnerAuthority(t *testing.T) {
 	}
 	if after := workbenchAuthorityWorkCount(t, homePath); after != before {
 		t.Fatalf("review rendering created WorkEnvelopes: before=%d after=%d", before, after)
+	}
+}
+
+func TestBuildReviewQueueReportChangesAuthorityWithReviewMeaning(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	workID := "work_review_authority_meaning"
+	store := openWorkbenchAuthorityWorkStore(t, homePath)
+	if _, err := store.Create(work.CreateInput{WorkID: workID, Owner: "source-control-cleanup", SuccessPredicate: "authority follows exact reviewed meaning"}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	paths := recordWorkbenchAuthorityReview(t, homePath, workID, cliTestNow.Add(time.Minute))
+	first, err := buildReviewQueueReport(homePath, authority.SourceControlCleanupReviewArea, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAction := workbenchAuthorityAction(t, first)
+	review, err := authority.LoadSourceControlReview(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.NextAction = "record a materially different reviewed next action"
+	writeWorkbenchSourceControlReview(t, paths.ReviewYAMLPath, review)
+	second, err := buildReviewQueueReport(homePath, authority.SourceControlCleanupReviewArea, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAction := workbenchAuthorityAction(t, second)
+	if firstAction.ActionIntent.ID == secondAction.ActionIntent.ID || firstAction.PolicyAuthority.Revision == secondAction.PolicyAuthority.Revision {
+		t.Fatalf("semantic review drift retained authority identity: first=%+v second=%+v", firstAction, secondAction)
 	}
 }
 
@@ -188,6 +224,73 @@ func TestStampReviewActionAuthorityRejectsSyntheticOwnerRecord(t *testing.T) {
 	}
 }
 
+func TestAuthorityDirtyReviewRejectsExpectedSourceDigestDrift(t *testing.T) {
+	if os.Getenv(dirtyReviewDigestDriftSubEnv) == "1" {
+		cmdAuthority([]string{
+			"dirty-review",
+			os.Getenv("COMPOUND_DIRTY_REVIEW_DIGEST_PATH"),
+			"--expected-source-digest",
+			os.Getenv("COMPOUND_DIRTY_REVIEW_DIGEST_EXPECTED"),
+			"--json",
+		})
+		return
+	}
+
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	workID := "work_review_authority_digest_drift"
+	store := openWorkbenchAuthorityWorkStore(t, homePath)
+	if _, err := store.Create(work.CreateInput{WorkID: workID, Owner: "source-control-cleanup", SuccessPredicate: "stale reviewed meaning cannot execute"}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	paths := recordWorkbenchAuthorityReview(t, homePath, workID, cliTestNow.Add(time.Minute))
+	report, err := buildReviewQueueReport(homePath, authority.SourceControlCleanupReviewArea, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := workbenchAuthorityAction(t, report)
+	expectedDigest := workbenchActionArgValue(t, action, "--expected-source-digest")
+	review, err := authority.LoadSourceControlReview(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.Decision = "owner_action_required"
+	writeWorkbenchSourceControlReview(t, paths.ReviewYAMLPath, review)
+	before, err := os.ReadFile(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAuthorityDirtyReviewRejectsExpectedSourceDigestDrift$")
+	cmd.Env = append(os.Environ(),
+		dirtyReviewDigestDriftSubEnv+"=1",
+		"COMPOUND_HOME="+homePath,
+		"COMPOUND_DIRTY_REVIEW_DIGEST_PATH="+paths.ReviewYAMLPath,
+		"COMPOUND_DIRTY_REVIEW_DIGEST_EXPECTED="+expectedDigest,
+	)
+	output, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 1 || !strings.Contains(string(output), "source digest drift") {
+		t.Fatalf("dirty-review drift gate = err=%v output=%s", err, output)
+	}
+	after, err := os.ReadFile(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("digest drift refusal rewrote review source\nbefore=%s\nafter=%s", before, after)
+	}
+	reviewed, err := filepath.Glob(filepath.Join(filepath.Dir(paths.ReviewYAMLPath), "*.reviewed.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviewed) != 0 {
+		t.Fatalf("digest drift refusal recorded reports: %v", reviewed)
+	}
+}
+
 func TestBuildReviewQueueReportCarriesCurrentPolicyHold(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -261,7 +364,40 @@ func recordWorkbenchAuthorityReview(t *testing.T, homePath, workID string, now t
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeWorkbenchSourceControlReview(t, paths.ReviewYAMLPath, authority.SourceControlReview{
+		SchemaVersion: authority.SourceControlReviewSchemaVersion,
+		ID:            plan.ReviewDraft.ReviewID,
+		PlanID:        plan.ID,
+		RepoID:        plan.RepoID,
+		Decision:      "parked",
+		Rationale:     "reviewed source-control state remains deliberately parked",
+		Confidence:    1,
+		NextAction:    "keep the reviewed state parked under its owner",
+		EvidenceRefs:  append([]string{}, plan.EvidenceRefs...),
+	})
 	return paths
+}
+
+func writeWorkbenchSourceControlReview(t *testing.T, path string, review authority.SourceControlReview) {
+	t.Helper()
+	data, err := json.MarshalIndent(review, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func workbenchActionArgValue(t *testing.T, action reviewartifact.Action, flag string) string {
+	t.Helper()
+	for i, arg := range action.Argv {
+		if arg == flag && i+1 < len(action.Argv) {
+			return action.Argv[i+1]
+		}
+	}
+	t.Fatalf("action missing %s: %+v", flag, action)
+	return ""
 }
 
 func workbenchAuthorityAction(t *testing.T, report reviewartifact.QueueReport) reviewartifact.Action {

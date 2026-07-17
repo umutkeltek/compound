@@ -86,7 +86,7 @@ func TestRecordSourceControlReviewAnnotatesQueue(t *testing.T) {
 	}
 	AnnotateSourceControlCleanupQueue(&queue)
 	reviewartifact.Recount(&queue)
-	if queue.Counts.ReviewRequired != 1 || queue.Items[0].Readiness != "needs_review" {
+	if queue.Counts.ReviewRequired != 1 || queue.Items[0].Readiness != "needs_review" || len(queue.Items[0].Actions) != 0 {
 		t.Fatalf("unedited source-control review queue = %+v", queue)
 	}
 	reviewYAML := fmt.Sprintf(`schema_version: %s
@@ -112,11 +112,12 @@ evidence_refs:
 	if queue.Counts.ReviewRequired != 1 || queue.Items[0].Readiness != "ready_to_record" || len(queue.Items[0].Actions) != 1 {
 		t.Fatalf("edited source-control review queue = %+v", queue)
 	}
+	expectedSourceDigest := sourceControlExpectedDigestArg(t, queue.Items[0].Actions[0])
 	review, err := LoadSourceControlReview(paths.ReviewYAMLPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := RecordSourceControlReview(home, review, paths.ReviewYAMLPath, time.Date(2026, 6, 29, 12, 3, 0, 0, time.UTC))
+	record, err := RecordSourceControlReview(home, review, paths.ReviewYAMLPath, time.Date(2026, 6, 29, 12, 3, 0, 0, time.UTC), expectedSourceDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +156,7 @@ func TestSourceControlReviewQueueSeedsStableOwnerAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeValidSourceControlReview(t, paths.ReviewYAMLPath, plan)
 
 	first := sourceControlCleanupQueue(t, home)
 	second := sourceControlCleanupQueue(t, home)
@@ -202,6 +204,157 @@ func TestSourceControlReviewQueueSeedsStableOwnerAuthority(t *testing.T) {
 	}
 }
 
+func TestSourceControlReviewAuthorityBindsValidatedDispositionMeaning(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, _, _, _, err := ImportGitSnapshot(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_review_disposition", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordSourceControlReviewPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseReview := writeValidSourceControlReview(t, paths.ReviewYAMLPath, plan)
+	baseAction := sourceControlCleanupQueue(t, home).Items[0].Actions[0]
+	baseDigest := sourceControlExpectedDigestArg(t, baseAction)
+	if !strings.Contains(strings.Join(baseAction.AuthorityContext.ExpectedProof, "\n"), baseDigest) {
+		t.Fatalf("authority proof does not bind exact review source digest: %+v", baseAction.AuthorityContext)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*SourceControlReview)
+	}{
+		{name: "decision", mutate: func(review *SourceControlReview) { review.Decision = "owner_action_required" }},
+		{name: "rationale", mutate: func(review *SourceControlReview) { review.Rationale = "a materially different reviewed rationale" }},
+		{name: "confidence", mutate: func(review *SourceControlReview) { review.Confidence = 0.75 }},
+		{name: "reviewer", mutate: func(review *SourceControlReview) { review.ReviewedBy = "operator:reviewer" }},
+		{name: "next action", mutate: func(review *SourceControlReview) { review.NextAction = "record a different reviewed next action" }},
+		{name: "evidence", mutate: func(review *SourceControlReview) {
+			review.EvidenceRefs = append(review.EvidenceRefs, "evidence:additional")
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			review := baseReview
+			review.EvidenceRefs = append([]string{}, baseReview.EvidenceRefs...)
+			tc.mutate(&review)
+			writeSourceControlReviewValue(t, paths.ReviewYAMLPath, review)
+			action := sourceControlCleanupQueue(t, home).Items[0].Actions[0]
+			if action.ActionIntent.ID == baseAction.ActionIntent.ID || sourceControlExpectedDigestArg(t, action) == baseDigest {
+				t.Fatalf("material review edit retained action identity: base=%+v changed=%+v", baseAction, action)
+			}
+		})
+	}
+}
+
+func TestRecordSourceControlReviewPlanRejectsStructurallyInvalidPlan(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid, err := BuildSourceControlReviewPlan(snapshot, "work_strict_plan", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		want   string
+		mutate func(*SourceControlReviewPlan)
+	}{
+		{name: "schema", want: "schema_version", mutate: func(plan *SourceControlReviewPlan) { plan.SchemaVersion = "compound.source_control_review_plan.v9" }},
+		{name: "status", want: "status", mutate: func(plan *SourceControlReviewPlan) { plan.Status = "recorded" }},
+		{name: "source status", want: "source_status", mutate: func(plan *SourceControlReviewPlan) { plan.SourceStatus = "clean" }},
+		{name: "repo identity", want: "repo_id", mutate: func(plan *SourceControlReviewPlan) { plan.RepoID = "" }},
+		{name: "head identity", want: "head", mutate: func(plan *SourceControlReviewPlan) { plan.Head = "short" }},
+		{name: "fingerprint", want: "changed_state_fingerprint", mutate: func(plan *SourceControlReviewPlan) { plan.ChangedStateFingerprint = "sha256:bad" }},
+		{name: "counts", want: "changed_paths", mutate: func(plan *SourceControlReviewPlan) { plan.ChangedPaths++ }},
+		{name: "draft identity", want: "review_draft.review_id", mutate: func(plan *SourceControlReviewPlan) { plan.ReviewDraft.ReviewID = "scr_other" }},
+		{name: "draft semantics", want: "review_draft.verification", mutate: func(plan *SourceControlReviewPlan) { plan.ReviewDraft.Verification = "" }},
+		{name: "required evidence", want: "review_draft.required_evidence", mutate: func(plan *SourceControlReviewPlan) { plan.ReviewDraft.RequiredEvidence = []string{""} }},
+		{name: "mutation binding", want: "mutation_binding", mutate: func(plan *SourceControlReviewPlan) { plan.MutationBinding = &SourceControlMutationBinding{} }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := valid
+			plan.ReviewDraft.RequiredEvidence = append([]string{}, valid.ReviewDraft.RequiredEvidence...)
+			tc.mutate(&plan)
+			plan.PlanDigest = SourceControlReviewPlanDigest(plan)
+			if _, err := RecordSourceControlReviewPlan(t.TempDir(), plan); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("structurally invalid plan error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRecordSourceControlReviewRejectsStructurallyInvalidPersistedPlan(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_strict_record", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordSourceControlReviewPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := writeValidSourceControlReview(t, paths.ReviewYAMLPath, plan)
+	plan.Status = "recorded"
+	plan.PlanDigest = SourceControlReviewPlanDigest(plan)
+	writeJSON(t, paths.PlanPath, plan)
+	if _, err := RecordSourceControlReview(home, review, paths.ReviewYAMLPath, fixedSourceControlReviewTime.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("record accepted structurally invalid persisted plan: %v", err)
+	}
+}
+
+func TestRecordSourceControlReviewRejectsOrphanReviewIdentity(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_review_identity", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordSourceControlReviewPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := writeValidSourceControlReview(t, paths.ReviewYAMLPath, plan)
+
+	t.Run("review id", func(t *testing.T) {
+		review := valid
+		review.ID = "scr_other"
+		if _, err := RecordSourceControlReview(home, review, paths.ReviewYAMLPath, fixedSourceControlReviewTime.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "review_id") {
+			t.Fatalf("orphan review id accepted: %v", err)
+		}
+	})
+
+	t.Run("source path", func(t *testing.T) {
+		otherPath := filepath.Join(filepath.Dir(paths.ReviewYAMLPath), "other.review.yaml")
+		writeSourceControlReviewValue(t, otherPath, valid)
+		if _, err := RecordSourceControlReview(home, valid, otherPath, fixedSourceControlReviewTime.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "source path") {
+			t.Fatalf("orphan source path accepted: %v", err)
+		}
+	})
+}
+
 func TestSourceControlReviewAuthoritySeedRequiresStableOwnerIdentity(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
@@ -216,6 +369,11 @@ func TestSourceControlReviewAuthoritySeedRequiresStableOwnerIdentity(t *testing.
 	dir := t.TempDir()
 	item := reviewartifact.QueueItem{ID: plan.ID, JSONPath: filepath.Join(dir, plan.ID+".json")}
 	reviewPath := filepath.Join(dir, plan.ID+".review.yaml")
+	review := writeValidSourceControlReview(t, reviewPath, plan)
+	sourceDigest, err := SourceControlReviewSourceDigest(review)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name         string
@@ -245,7 +403,7 @@ func TestSourceControlReviewAuthoritySeedRequiresStableOwnerIdentity(t *testing.
 			if tc.mutateReview != nil {
 				candidateReview = tc.mutateReview(candidateReview)
 			}
-			intent, context := sourceControlRecordReviewAuthoritySeed(candidateItem, candidatePlan, candidateReview, "record_source_control_cleanup_review")
+			intent, context := sourceControlRecordReviewAuthoritySeed(candidateItem, candidatePlan, review, candidateReview, sourceDigest, "record_source_control_cleanup_review")
 			if intent != nil || context != nil {
 				t.Fatalf("invalid owner identity was authority-seeded: intent=%+v context=%+v", intent, context)
 			}
@@ -775,6 +933,45 @@ func sourceControlCleanupQueue(t *testing.T, home string) reviewartifact.QueueRe
 		t.Fatalf("source-control cleanup queue items = %d, want one: %+v", len(queue.Items), queue)
 	}
 	return queue
+}
+
+func writeValidSourceControlReview(t *testing.T, path string, plan SourceControlReviewPlan) SourceControlReview {
+	t.Helper()
+	review := SourceControlReview{
+		SchemaVersion: SourceControlReviewSchemaVersion,
+		ID:            plan.ReviewDraft.ReviewID,
+		PlanID:        plan.ID,
+		RepoID:        plan.RepoID,
+		Decision:      "parked",
+		Rationale:     "reviewed source-control state remains deliberately parked",
+		Confidence:    1,
+		NextAction:    "keep the reviewed state parked under its owner",
+		EvidenceRefs:  append([]string{}, plan.EvidenceRefs...),
+	}
+	writeSourceControlReviewValue(t, path, review)
+	return review
+}
+
+func writeSourceControlReviewValue(t *testing.T, path string, review SourceControlReview) {
+	t.Helper()
+	data, err := json.MarshalIndent(review, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sourceControlExpectedDigestArg(t *testing.T, action reviewartifact.Action) string {
+	t.Helper()
+	for i, arg := range action.Argv {
+		if arg == "--expected-source-digest" && i+1 < len(action.Argv) {
+			return action.Argv[i+1]
+		}
+	}
+	t.Fatalf("source-control action missing expected source digest: %+v", action)
+	return ""
 }
 
 func gitStatusShort(t *testing.T, repo string) string {
