@@ -1126,7 +1126,7 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
       authorityAction.id = projected.id;
       authorityAction.label = projected.label;
       authorityAction.argv = projected.argv;
-      authorityAction.requires_review = true;
+      authorityAction.requires_review = false;
       authorityAction.policy_authority.wording = `Allowed in current scope · reversible · member ${index + 1}`;
       authorityAction.policy_authority.expected_receipt = `member ${index + 1} review receipt`;
       authorityAction.policy_authority.expected_proof = [`proof:member-${index + 1}`];
@@ -1158,9 +1158,10 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
       "live",
     );
     push(
-      "strict-enumerable-member-authorities-reach-confirmation-and-partial-fails-closed",
+      "strict-no-confirm-enumerable-member-authorities-reach-action-surface-and-partial-fails-closed",
       strictAct.mode === "batch-enumerable" &&
         strictAct.members.length === 2 &&
+        strictAct.requiresConfirmation === false &&
         strictAct.members.every((member) => member.actionIntentId && member.expectedAuthorityRevision && member.authority) &&
         strict.face.state === "ready" &&
         strict.face.authority == null &&

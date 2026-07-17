@@ -6,7 +6,12 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
 import { Button, FreshnessChip, StateBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/kit";
-import { decideReadinessSections, enumerableAuthorityFaces, remainingDecideMembers } from "@/lib/decide-members";
+import {
+  decideReadinessSections,
+  enumerableAuthorityFaces,
+  remainingDecideMembers,
+  type EnumerableAuthorityFace,
+} from "@/lib/decide-members";
 import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import type { DecisionEffectKind } from "@/lib/decision-registry";
@@ -335,6 +340,9 @@ function EnumerableApply({
           );
         })}
       </ul>
+      {authorityBound && selectedAuthorityFaces ? (
+        <EnumerableAuthorityList members={selectedAuthorityFaces} />
+      ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="primary"
@@ -383,14 +391,7 @@ function EnumerableApply({
               ) : null}
             </Dialog.Description>
             {authorityBound && selectedAuthorityFaces ? (
-              <section className="mt-4 flex flex-col gap-3" aria-label="Selected member authorities">
-                {selectedAuthorityFaces.map((member) => (
-                  <div key={member.id} className="rounded-md border border-hair bg-soft p-2">
-                    <div className="mb-2 text-xs font-semibold leading-snug text-ink">{member.label}</div>
-                    <AuthorityFaceDetails authority={member.authority} embedded />
-                  </div>
-                ))}
-              </section>
+              <EnumerableAuthorityList members={selectedAuthorityFaces} className="mt-4" />
             ) : null}
             {requiresRationale ? (
               <label className="mt-3 flex flex-col gap-1">
@@ -543,6 +544,25 @@ function AuthorityFaceDetails({
           <p className="mt-1 text-xs text-muted">Not specified by owner</p>
         )}
       </div>
+    </section>
+  );
+}
+
+function EnumerableAuthorityList({
+  members,
+  className = "",
+}: {
+  members: EnumerableAuthorityFace[];
+  className?: string;
+}) {
+  return (
+    <section className={`${className} flex flex-col gap-3`} aria-label="Selected member authorities">
+      {members.map((member) => (
+        <div key={member.id} className="rounded-md border border-hair bg-soft p-2">
+          <div className="mb-2 text-xs font-semibold leading-snug text-ink">{member.label}</div>
+          <AuthorityFaceDetails authority={member.authority} embedded />
+        </div>
+      ))}
     </section>
   );
 }
