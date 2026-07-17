@@ -122,6 +122,10 @@ export type DecideAct =
       area: string;
       label: string;
       members: DecideMember[];
+      /** Full group cardinality; members contains only independently executable items. */
+      representedCount: number;
+      /** Represented members omitted from execution because owner authority is unavailable. */
+      unavailableCount: number;
       requiresConfirmation: boolean;
       requiresRationale: boolean;
       effectKind: DecisionEffectKind;
@@ -313,6 +317,25 @@ function enumerableMembers(group: Json, itemByID: Map<string, Json>): DecideMemb
   const area = areaOf(group);
   const members = ids.map((id) => memberOf(area, id, itemByID));
   return members.every((m) => m.argv && m.argv.length > 0 && m.actionId) ? members : null;
+}
+
+/**
+ * Authority-bound B2 subset: each returned member is independently
+ * executable. Missing, malformed, non-current, or held owner authority is
+ * omitted; this never authorizes the group or fabricates an atomic action.
+ */
+function allowedEnumerableMembers(group: Json, itemByID: Map<string, Json>): DecideMember[] {
+  const area = areaOf(group);
+  return arr(group.item_ids)
+    .map(String)
+    .filter(Boolean)
+    .map((id) => memberOf(area, id, itemByID))
+    .filter((member) => Boolean(
+      member.argv?.length &&
+      member.actionId &&
+      member.authority?.current &&
+      member.authority.allowed,
+    ));
 }
 
 function readonlyMembers(group: Json, itemByID: Map<string, Json>): DecideMember[] {
@@ -619,17 +642,20 @@ function strictAllowedAct(
     }
   }
 
-  if (effectKind) {
-    const enumerable = enumerableMembers(group, itemByID);
-    if (
-      enumerable &&
-      enumerable.every((member) => member.authority?.current && member.authority.allowed)
-    ) {
+  // B2 only: without a represented atomic group action, expose the subset of
+  // members that each carry their own complete current allowed authority.
+  // Missing/held members remain represented but cannot enter the Act.
+  if (effectKind && !safeBatchAction(group)) {
+    const enumerable = allowedEnumerableMembers(group, itemByID);
+    if (enumerable.length > 0) {
+      const representedCount = num(group.count) || arr(group.item_ids).map(String).filter(Boolean).length;
       return {
         mode: "batch-enumerable",
         area,
         label: enumerable.length === 1 ? enumerable[0].actionLabel : `Review ${enumerable.length} exact actions`,
         members: enumerable,
+        representedCount,
+        unavailableCount: Math.max(0, representedCount - enumerable.length),
         requiresConfirmation: enumerable.some((member) => member.requiresReview),
         requiresRationale: RATIONALE_REQUIRED_AREAS.has(area),
         effectKind,
@@ -700,11 +726,14 @@ function resolveAct(
       : null;
     if (enumerable && genericEffect) {
       const count = enumerable.length;
+      const representedCount = num(group.count) || arr(group.item_ids).map(String).filter(Boolean).length;
       return {
         mode: "batch-enumerable",
         area,
         label: str(sba.label) || `Apply ${count} of ${count}`,
         members: enumerable,
+        representedCount,
+        unavailableCount: Math.max(0, representedCount - enumerable.length),
         requiresConfirmation: sba.requires_review !== false,
         requiresRationale: RATIONALE_REQUIRED_AREAS.has(area),
         effectKind: genericEffect,
@@ -724,6 +753,7 @@ function resolveAct(
     const enumerable = enumerableMembers(group, itemByID);
     if (enumerable) {
       const count = enumerable.length;
+      const representedCount = num(group.count) || arr(group.item_ids).map(String).filter(Boolean).length;
       const sharedPolicy = enumerable.every((member) => member.policyNote === enumerable[0]?.policyNote)
         ? enumerable[0]?.policyNote ?? ""
         : "";
@@ -734,6 +764,8 @@ function resolveAct(
           ? enumerable[0]?.actionLabel || "Review proposal"
           : `Review ${count} proposals`,
         members: enumerable,
+        representedCount,
+        unavailableCount: Math.max(0, representedCount - enumerable.length),
         requiresConfirmation: enumerable.some((member) => member.requiresReview),
         requiresRationale: RATIONALE_REQUIRED_AREAS.has(area),
         effectKind: genericEffect,
@@ -919,7 +951,9 @@ export function buildDecideGroups(
       : (hasDecisionCard ? pl?.headline : "") || str(group.operator_summary) || pl?.headline || "Review this decision.";
     const evidence = groupEvidence(group, pl?.evidence ?? []);
     const members =
-      act.mode === "batch-enumerable" ? act.members : readonlyMembers(group, itemByID);
+      act.mode === "batch-enumerable" && act.members.length === representedMemberIDs.length
+        ? act.members
+        : readonlyMembers(group, itemByID);
     const brief = briefTarget?.brief ?? null;
     const freshnessRow = group.freshness && typeof group.freshness === "object" ? group.freshness as Json : {};
     const freshness = {

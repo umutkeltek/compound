@@ -219,6 +219,8 @@ function EnumerableApply({
   policyNote,
   label,
   authorityBound,
+  representedCount,
+  unavailableCount,
 }: {
   area: string;
   members: DecideMember[];
@@ -231,6 +233,8 @@ function EnumerableApply({
   policyNote: string;
   label: string;
   authorityBound: boolean;
+  representedCount: number;
+  unavailableCount: number;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -242,8 +246,12 @@ function EnumerableApply({
 
   const included = remainingDecideMembers(members, excluded, completed);
   const actionCopy = ENUMERABLE_ACTION_COPY[effectKind];
-  const isSingleton = members.length === 1;
+  const isSingleton = representedCount === 1 && members.length === 1;
   const singletonMember = isSingleton ? members[0] : null;
+  const scopeLabel = `${members.length} ready of ${representedCount}`;
+  const unchangedLabel = unavailableCount > 0
+    ? `${unavailableCount} unavailable ${unavailableCount === 1 ? "member remains" : "members remain"} unchanged.`
+    : "";
   const selectedAuthorityFaces = authorityBound ? enumerableAuthorityFaces(included) : [];
   const authorityFacesComplete = selectedAuthorityFaces !== null;
 
@@ -308,6 +316,12 @@ function EnumerableApply({
 
   return (
     <div className="flex flex-col gap-2">
+      {unavailableCount > 0 ? (
+        <section className="rounded-md border border-seam-line bg-seam-soft px-3 py-2" aria-label="Executable member scope">
+          <div className="text-xs font-semibold text-seam">{scopeLabel}</div>
+          <p className="mt-0.5 text-2xs leading-relaxed text-muted">{unchangedLabel}</p>
+        </section>
+      ) : null}
       <ul className="flex flex-col gap-1">
         {members.map((m) => {
           const isCompleted = completed.has(m.id);
@@ -356,12 +370,18 @@ function EnumerableApply({
               : `${actionCopy.progressive} ${progress?.done ?? 0}/${progress?.total ?? included.length}…`
             : isSingleton
               ? label
+              : unavailableCount > 0
+                ? requiresConfirmation
+                  ? `Review ${included.length} ready of ${representedCount}`
+                  : `${actionCopy.imperative} ${included.length} ready of ${representedCount}`
               : requiresConfirmation
               ? `Review ${included.length} of ${members.length}`
               : `${actionCopy.imperative} ${included.length} of ${members.length}`}
         </Button>
         <span className="text-2xs text-faint">
-          {isSingleton && policyNote
+          {unavailableCount > 0
+            ? `Only ready members can run. ${unchangedLabel}`
+            : isSingleton && policyNote
             ? policyNote
             : `Each member is ${actionCopy.completed} on its own; excluded members are skipped.`}
         </span>
@@ -382,7 +402,7 @@ function EnumerableApply({
               {isSingleton ? (
                 <>This will run <span className="font-medium text-ink">“{label}”</span> for {singletonMember?.label ?? "this item"}.</>
               ) : (
-                <>{actionCopy.confirmationLead} {included.length} selected members, one at a time. Excluded members remain unchanged; completed members are not retried.</>
+                <>{actionCopy.confirmationLead} {included.length} selected ready members of {representedCount}, one at a time. {unchangedLabel || "Excluded members remain unchanged."} Completed members are not retried.</>
               )}
               {policyNote ? (
                 <span className="mt-3 block rounded-md border border-hair bg-soft px-3 py-2 text-xs leading-relaxed text-muted">
@@ -643,7 +663,7 @@ function decisionIdentity(group: DecideGroup): string {
   if (act.mode === "generic") return `${group.key}:${act.mode}:${act.itemId}:${act.actionId}:${act.expectedRevision}:${act.actionIntentId ?? ""}:${act.expectedAuthorityRevision ?? ""}:${act.requiresConfirmation}:${act.effectKind}`;
   if (act.mode === "batch-atomic") return `${group.key}:${act.mode}:${act.itemId}:${act.option}:${act.argv?.join(" ") ?? ""}`;
   if (act.mode === "batch-enumerable") {
-    return `${group.key}:${act.mode}:${act.requiresConfirmation}:${act.requiresRationale}:${act.effectKind}:${act.members.map((member) => `${member.id}:${member.actionId}:${member.expectedRevision}:${member.actionIntentId ?? ""}:${member.expectedAuthorityRevision ?? ""}`).join("|")}`;
+    return `${group.key}:${act.mode}:${act.representedCount}:${act.unavailableCount}:${act.requiresConfirmation}:${act.requiresRationale}:${act.effectKind}:${act.members.map((member) => `${member.id}:${member.actionId}:${member.expectedRevision}:${member.actionIntentId ?? ""}:${member.expectedAuthorityRevision ?? ""}`).join("|")}`;
   }
   return `${group.key}:${act.mode}:${act.command}`;
 }
@@ -783,6 +803,8 @@ function DecisionDetail({
                 policyNote={act.policyNote}
                 label={group.face.primaryAction?.label || act.label}
                 authorityBound={group.authorityBound === true}
+                representedCount={act.representedCount}
+                unavailableCount={act.unavailableCount}
               />
             ) : (
               <GovernedAct

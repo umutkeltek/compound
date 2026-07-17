@@ -17,6 +17,7 @@ import { authoritySummarySegments } from "./action-authority";
 import { headlineAct } from "./briefing";
 import { buildDecideGroups, genericReviewResolutionActs } from "./decide-model";
 import { manualCopyCommandFor } from "./decide-resolution-acts";
+import { buildEnumerableActionRequest } from "./governed-action-client";
 import type { Json } from "./compound";
 
 type Check = { name: string; ok: boolean; detail: string };
@@ -1158,9 +1159,11 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
       "live",
     );
     push(
-      "strict-no-confirm-enumerable-member-authorities-reach-action-surface-and-partial-fails-closed",
+      "strict-no-confirm-enumerable-member-authorities-reach-action-surface-and-malformed-member-stays-unchanged",
       strictAct.mode === "batch-enumerable" &&
         strictAct.members.length === 2 &&
+        strictAct.representedCount === 2 &&
+        strictAct.unavailableCount === 0 &&
         strictAct.requiresConfirmation === false &&
         strictAct.members.every((member) => member.actionIntentId && member.expectedAuthorityRevision && member.authority) &&
         strict.face.state === "ready" &&
@@ -1171,10 +1174,81 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
           member.authority.expectedReceipt === `member ${index + 1} review receipt` &&
           member.authority.expectedProof.join(",") === `proof:member-${index + 1}` &&
           authoritySummarySegments(member.authority).length === 13) &&
-        partial.act.mode === "copy" &&
-        partial.face.state === "waiting" &&
-        partial.face.primaryAction == null,
+        partial.act.mode === "batch-enumerable" &&
+        partial.act.members.length === 1 &&
+        partial.act.members[0].id === String(strictItems[0].id) &&
+        partial.face.state === "ready",
       `strict=${strictAct.mode}/${strict.face.state}/faces:${JSON.stringify(selectedFaces)} partial=${partial.act.mode}/${partial.face.state}`,
+    );
+
+    const missingItem = structuredClone(items[1]);
+    const heldId = "dirprop_story_charlie";
+    const heldAction = authorityActionFixture(heldId);
+    heldAction.id = "harness-edit.whitelist";
+    heldAction.label = "Allow edits to this held surface";
+    heldAction.argv = ["compound", "authority", "harness-edit-review", `/tmp/${heldId}.json`, "--decision", "whitelist", "--json"];
+    heldAction.requires_review = true;
+    heldAction.policy_decision.outcome = "hold";
+    heldAction.policy_decision.standing_grant_id = "";
+    heldAction.policy_authority.allowed = false;
+    heldAction.policy_authority.policy_outcome = "hold";
+    heldAction.policy_authority.standing_grant_id = "";
+    heldAction.policy_authority.wording = "Needs your decision · current policy holds this action";
+    const heldItem = {
+      ...structuredClone(items[1]),
+      id: heldId,
+      operator_summary: "Keep the held capability surface unchanged",
+      context_label: heldId,
+      actions: [heldAction],
+    } as Json;
+    const mixedItems = [strictItems[0], missingItem, heldItem];
+    const mixedGroup = {
+      ...group,
+      count: mixedItems.length,
+      item_ids: mixedItems.map((item) => String(item.id)),
+      sample: mixedItems[0],
+    } as Json;
+    const mixedByID = new Map(mixedItems.map((item) => [String(item.id), item]));
+    const [mixed] = buildDecideGroups([mixedGroup], mixedByID, null, () => mixedItems[0], "live");
+    const mixedRequest = mixed.act.mode === "batch-enumerable"
+      ? buildEnumerableActionRequest(area, mixed.act.members[0], mixed.act.requiresConfirmation, "")
+      : null;
+
+    const zeroReadyItems = [missingItem, heldItem];
+    const zeroReadyGroup = {
+      ...group,
+      count: zeroReadyItems.length,
+      item_ids: zeroReadyItems.map((item) => String(item.id)),
+      sample: zeroReadyItems[0],
+    } as Json;
+    const zeroReadyByID = new Map(zeroReadyItems.map((item) => [String(item.id), item]));
+    const [zeroReady] = buildDecideGroups([zeroReadyGroup], zeroReadyByID, null, () => zeroReadyItems[0], "live");
+
+    push(
+      "mixed-authority-b2-exposes-only-complete-current-allowed-members",
+      mixed.act.mode === "batch-enumerable" &&
+        mixed.count === 3 &&
+        mixed.members.length === 3 &&
+        mixed.act.members.length === 1 &&
+        mixed.act.representedCount === 3 &&
+        mixed.act.unavailableCount === 2 &&
+        mixed.act.members[0].id === String(strictItems[0].id) &&
+        mixed.act.members[0].authority?.current === true &&
+        mixed.act.members[0].authority?.allowed === true &&
+        mixed.act.members[0].authority?.expectedReceipt === "member 1 review receipt" &&
+        mixed.act.members[0].authority?.expectedProof.join(",") === "proof:member-1" &&
+        !mixed.act.members.some((member) => member.id === String(missingItem.id) || member.id === heldId) &&
+        mixed.members.every((member) => member.argv === null) &&
+        mixed.face.state === "ready" &&
+        mixedRequest?.itemId === mixed.act.members[0].id &&
+        mixedRequest?.actionId === mixed.act.members[0].actionId &&
+        mixedRequest?.expectedRevision === mixed.act.members[0].expectedRevision &&
+        mixedRequest?.actionIntentId === mixed.act.members[0].actionIntentId &&
+        mixedRequest?.expectedAuthorityRevision === mixed.act.members[0].expectedAuthorityRevision &&
+        mixedRequest?.confirmed === false &&
+        zeroReady.act.mode === "copy" &&
+        zeroReady.face.state === "waiting",
+      `mixed=${mixed.act.mode}/${mixed.face.state}/${mixed.act.mode === "batch-enumerable" ? mixed.act.members.map((member) => member.id).join(",") : "none"} total=${mixed.count}/${mixed.members.length} request=${JSON.stringify(mixedRequest)} zero=${zeroReady.act.mode}/${zeroReady.face.state}`,
     );
   }
 

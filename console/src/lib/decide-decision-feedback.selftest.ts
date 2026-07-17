@@ -135,7 +135,7 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
       fail("DecideQueue.tsx does not pass the server-derived effect kind into EnumerableApply");
     } else if (!/confirmationLead:\s*"Plans the tracked step for"/.test(src)) {
       fail("DecideQueue.tsx still describes tracked planning as a generic apply");
-    } else if (!/const isSingleton = members\.length === 1/.test(src) || !/isSingleton\s*\n\s*\? label/.test(src)) {
+    } else if (!/const isSingleton = representedCount === 1 && members\.length === 1/.test(src) || !/isSingleton\s*\n\s*\? label/.test(src)) {
       fail("DecideQueue.tsx does not use the owner action label for a singleton trigger");
     } else if (!/isSingleton && policyNote\s*\n\s*\? policyNote/.test(src)) {
       fail("DecideQueue.tsx does not surface the singleton policy boundary before confirmation");
@@ -342,6 +342,26 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
       fail("ConfirmDialog actions are not pinned outside the scroll region");
     } else {
       pass("ConfirmDialog is viewport-bounded; long authority content scrolls while actions remain reachable");
+    }
+  }
+
+  /* ---------- f7: partial enumerable scope stays truthful ---------- */
+
+  // The model may expose only independently authorized B2 members, while the
+  // card still represents a larger group. The action UI must keep those two
+  // counts separate and say explicitly that unavailable members do not move.
+  {
+    const src = read("components/decide/DecideQueue.tsx");
+    if (!/representedCount:\s*number/.test(src) ||
+        !/representedCount=\{act\.representedCount\}/.test(src)) {
+      fail("EnumerableApply does not receive the full represented group count");
+    } else if (!/const scopeLabel = `\$\{members\.length\} ready of \$\{representedCount\}`/.test(src) ||
+        !/const unchangedLabel = unavailableCount > 0[\s\S]*unavailable[\s\S]*remain unchanged/.test(src)) {
+      fail("EnumerableApply does not derive exact ready/total and unavailable/unchanged copy");
+    } else if (!/aria-label="Executable member scope"[\s\S]*\{scopeLabel\}[\s\S]*\{unchangedLabel\}/.test(src)) {
+      fail("the mixed-member scope truth is not rendered before the action");
+    } else {
+      pass("partial enumerable UI shows exact ready/total scope and keeps unavailable members unchanged");
     }
   }
 
