@@ -161,39 +161,38 @@ func Decode(data []byte) (Evidence, error) {
 	return ev, nil
 }
 
-// LookupRequestID scans the execution-route-evidence JSONL ledger linearly and
-// returns the first row with request_id. The ledger is append-only and currently
-// small enough that a linear scan is the cheapest idempotency check.
+// LookupRequestID returns the first row with request_id, backed by the
+// incremental request-id index (request_id_index.go) over the
+// execution-route-evidence JSONL ledger: O(bytes appended since the last
+// lookup) amortized instead of a full-ledger linear scan per call.
+//
+// Deliberate strictness change from the prior full scan: a malformed line
+// ANYWHERE in the ledger now errors, not only a malformed line before the
+// first match (today's full scan errored only if the bad line preceded the
+// match). The ledger is a governed, append-only artifact where a malformed
+// line is already fatal to every writer, and there are no production callers
+// of LookupRequestID/HasRequestID outside this package (tests only).
 func LookupRequestID(homePath, requestID string) (Evidence, bool, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return Evidence{}, false, nil
 	}
-	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
-	data, err := os.ReadFile(path)
+	path := filepath.Join(homePath, "ledger", executionRouteEvidenceLedger)
+	refs, missing, err := requestIDRefs(path, requestID)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return Evidence{}, false, nil
-		}
 		return Evidence{}, false, err
 	}
-	for i, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
-		}
-		var ev Evidence
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			return Evidence{}, false, fmt.Errorf("parse execution route evidence line %d: %w", i+1, err)
-		}
-		if ev.RequestID == requestID {
-			if strings.TrimSpace(ev.RecordedVia) == "" {
-				ev.RecordedVia = RecorderGeneric
-			}
-			return ev, true, nil
-		}
+	if missing || len(refs) == 0 {
+		return Evidence{}, false, nil
 	}
-	return Evidence{}, false, nil
+	ev, err := readLineRef(path, refs[0])
+	if err != nil {
+		return Evidence{}, false, err
+	}
+	if strings.TrimSpace(ev.RecordedVia) == "" {
+		ev.RecordedVia = RecorderGeneric
+	}
+	return ev, true, nil
 }
 
 func HasRequestID(homePath, requestID string) (bool, error) {
@@ -374,36 +373,27 @@ func recordEvidenceUniqueRequestID(homePath string, ev Evidence, claim *RequestC
 	return recorded, err
 }
 
+// uniqueEvidenceForRequestID resolves the exactly-one row for requestID via
+// the incremental request-id index (request_id_index.go): refresh the index,
+// then 0 refs -> not found, >1 refs -> today's exact ambiguity error, 1 ref ->
+// seek+read+unmarshal that one row from the ledger file (never cached).
 func uniqueEvidenceForRequestID(homePath, requestID string) (Evidence, bool, error) {
-	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
-	data, err := os.ReadFile(path)
+	path := filepath.Join(homePath, "ledger", executionRouteEvidenceLedger)
+	refs, missing, err := requestIDRefs(path, requestID)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return Evidence{}, false, nil
-		}
 		return Evidence{}, false, err
 	}
-	var match Evidence
-	matches := 0
-	for i, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
-		}
-		var existing Evidence
-		if err := json.Unmarshal([]byte(line), &existing); err != nil {
-			return Evidence{}, false, fmt.Errorf("parse execution route evidence line %d: %w", i+1, err)
-		}
-		if existing.RequestID != requestID {
-			continue
-		}
-		match = existing
-		matches++
+	if missing || len(refs) == 0 {
+		return Evidence{}, false, nil
 	}
-	if matches > 1 {
-		return Evidence{}, false, fmt.Errorf("execution route evidence request_id %q is ambiguous across %d rows", requestID, matches)
+	if len(refs) > 1 {
+		return Evidence{}, false, fmt.Errorf("execution route evidence request_id %q is ambiguous across %d rows", requestID, len(refs))
 	}
-	return match, matches == 1, nil
+	ev, err := readLineRef(path, refs[0])
+	if err != nil {
+		return Evidence{}, false, err
+	}
+	return ev, true, nil
 }
 
 func recordEvidenceLocked(homePath string, ev Evidence) error {
