@@ -138,6 +138,8 @@ func buildHabitatEntries() []HabitatEntry {
 		bridge("legacy.ledger.decisions", "decisions", "ledger/decisions"),
 		bridge("legacy.work.dispatch-advances", "dispatch-advances", "work/dispatch/advances"),
 		bridge("legacy.work.dispatch-claims", "dispatch-claims", "work/dispatch/claims"),
+		bridge("legacy.work.dispatch-close-plans", "dispatch-close-plans", "work/dispatch/close-plans"),
+		bridge("legacy.work.dispatch-closes", "dispatch-closes", "work/dispatch/closes"),
 		bridge("legacy.work.dispatch-plans", "dispatch-plans", "work/dispatch/plans"),
 		bridge("legacy.work.dispatch-step-runs", "dispatch-step-runs", "work/runs/dispatch-step"),
 		bridge("legacy.work.dispatch-steps", "dispatch-steps", "work/dispatch/steps"),
