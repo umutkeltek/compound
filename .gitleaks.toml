@@ -4,6 +4,10 @@
 # `redact` push-floor (redact also does PII / private-path / private-tool-name detection that a
 # generic secret scanner does not; see docs/BOUNDARIES.md and skills/compound-land). gitleaks runs
 # in CI because the `redact` binary is a local tool that isn't installed on a fresh CI runner.
+# Identity-leak shapes (generic email addresses, boundary-guarded absolute /Users|/home paths)
+# are gitleaks' blind spot too — those are covered separately, in the same CI run, by
+# `architecture doctor --strict`'s doc-leak gate (internal/arch), armed by default over every
+# tracked text file with no operator overlay required.
 title = "compound"
 
 [extend]

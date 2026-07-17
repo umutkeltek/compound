@@ -60,10 +60,12 @@ CI (`.github/workflows/ci.yml`) enforces a portable second line on every push an
 fresh-clone-portable subset of `compound proof-check` (run via `proof-check --ci`, single-sourced
 from `cmd/compound/proof_check.go` — go test/vet/build, gofmt, `git diff --check`, `architecture
 doctor --strict` including the armed doc-leak gate, and `memory doctor`) plus a `gitleaks` secret
-scan (config `.gitleaks.toml`). The `redact` public-push floor is the richer, local gate (it also
-detects PII, private paths, and private-tool names a generic scanner misses) and remains required
-before a public push; the CI gitleaks step complements it because `redact` is a local tool not
-installed on a CI runner.
+scan (config `.gitleaks.toml`). The armed doc-leak gate enforces generic identity-leak classes
+(non-RFC2606 email shapes; boundary-guarded absolute /Users|/home path shapes) over every tracked
+text file — root files, docs, skills, and source alike — with no operator overlay required. The
+`redact` public-push floor is the richer, local gate (it also detects PII, private paths, and
+private-tool names a generic scanner misses) and remains required before a public push; the CI
+gitleaks step complements it because `redact` is a local tool not installed on a CI runner.
 
 ## Adapter Contract
 

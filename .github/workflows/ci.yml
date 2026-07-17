@@ -9,6 +9,12 @@ name: CI
 # Both gate sets are SINGLE-SOURCED from cmd/compound/proof_check.go so CI can't drift from a
 # hand-maintained workflow list; plus a portable gitleaks secret scan.
 #
+# `proof-check --ci` runs `architecture doctor --strict`, whose armed doc-leak gate now enforces
+# generic identity-leak classes (non-RFC2606 email shapes; boundary-guarded absolute /Users|/home
+# path shapes) over every TRACKED text file in the repo — root files, docs, skills, and source
+# alike — with no dependency on the gitignored operator overlay, so this floor is live here on a
+# fresh public clone. redact remains the richer local push-floor.
+#
 # The full local battery still runs per skills/compound-land before a push: the installed-binary
 # gates (profiles-check, workbench, codex-pretooluse) and the richer `redact` push-floor
 # (PII / private-path / private-tool-name detection). gitleaks here COMPLEMENTS redact; it does not
