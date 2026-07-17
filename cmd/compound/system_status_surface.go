@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -153,5 +152,3 @@ func buildLiveStatusSnapshot(harness statussurface.Harness, stdin io.Reader, hom
 	}
 	return snapshot, nil
 }
-
-var _ = strconv.IntSize
