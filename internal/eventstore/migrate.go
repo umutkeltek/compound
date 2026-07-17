@@ -608,14 +608,14 @@ type RebaselinePendingProof struct {
 // NewRebaselinePendingProof builds an opaque physical proof binding without
 // interpreting the record's schema or relationships.
 func NewRebaselinePendingProof(id string, record []byte) (RebaselinePendingProof, error) {
-	proof := RebaselinePendingProof{ID: id, Record: append(json.RawMessage(nil), record...)}
-	canonicalRecord, err := proof.validateAndCanonicalize()
-	if err != nil {
-		return RebaselinePendingProof{}, err
+	if _, err := ReferenceForID(id); err != nil {
+		return RebaselinePendingProof{}, fmt.Errorf("proof id: %w", err)
 	}
-	proof.Record = canonicalRecord
-	proof.RecordSHA256 = rebaselineProofRecordHash(canonicalRecord)
-	return proof, nil
+	canonicalRecord, err := canonical(record)
+	if err != nil {
+		return RebaselinePendingProof{}, fmt.Errorf("proof record: %w", err)
+	}
+	return RebaselinePendingProof{ID: id, RecordSHA256: rebaselineProofRecordHash(canonicalRecord), Record: canonicalRecord}, nil
 }
 
 type RebaselineTransaction struct {
@@ -946,7 +946,10 @@ func (p RebaselinePendingProof) validateAndCanonicalize() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("proof record: %w", err)
 	}
-	if p.RecordSHA256 != "" && p.RecordSHA256 != rebaselineProofRecordHash(canonicalRecord) {
+	if strings.TrimSpace(p.RecordSHA256) == "" {
+		return nil, fmt.Errorf("proof record_sha256 is required")
+	}
+	if p.RecordSHA256 != rebaselineProofRecordHash(canonicalRecord) {
 		return nil, fmt.Errorf("proof record_sha256 does not match canonical record bytes")
 	}
 	return canonicalRecord, nil

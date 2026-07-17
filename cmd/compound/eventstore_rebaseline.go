@@ -70,8 +70,8 @@ func (p rebaselinePending) Validate(expectedSidecar string) error {
 		return fmt.Errorf("rebaseline pending transition: %w", err)
 	}
 	expectedTarget := envelope.ActionTarget{Kind: "eventstore_stream_baseline", ID: "stream-baseline", Path: expectedSidecar}
-	if p.ActionIntent.Capability != eventStoreRebaselineCapability || p.ActionIntent.Action != "rebaseline_stream_sizes" ||
-		p.ActionIntent.Target != expectedTarget || p.ActionIntent.MutationClass != "external_side_effect" {
+	if p.ActionIntent.Actor != "operator" || p.ActionIntent.Capability != eventStoreRebaselineCapability || p.ActionIntent.Action != "rebaseline_stream_sizes" ||
+		p.ActionIntent.Target != expectedTarget || p.ActionIntent.MutationClass != "external_side_effect" || p.ActionIntent.Reversibility != "easy" || p.ActionIntent.BlastRadius != "local" {
 		return fmt.Errorf("rebaseline pending action does not bind the rebaseline capability and target")
 	}
 	workID := p.ActionIntent.IDs.WorkID
@@ -112,12 +112,13 @@ func (p rebaselinePending) Validate(expectedSidecar string) error {
 
 func validateRebaselinePendingAuthority(p rebaselinePending) error {
 	authority := p.PolicyAuthority
+	allowedGate := authority.ExactGate == policy.AuthorityGateStandingScope || authority.ExactGate == policy.AuthorityGatePolicyAllow
 	if authority.SchemaVersion != policy.AuthorityFaceSchema || strings.TrimSpace(authority.Revision) == "" || !authority.Current || !authority.Allowed ||
 		authority.ActionIntentID != p.ActionIntent.ID || authority.PolicyDecisionID != p.PolicyDecision.ID || authority.PolicyOutcome != p.PolicyDecision.Outcome ||
 		authority.StandingGrantID != p.PolicyDecision.StandingGrantID || authority.Target != p.ActionIntent.Target || authority.TargetScope != "private" ||
 		authority.BlastRadius != p.ActionIntent.BlastRadius || authority.Reversibility != p.ActionIntent.Reversibility ||
 		authority.VerifiedRecoverability != policy.RecoverabilityVerified || authority.OperatorControlContinuity != policy.OperatorControlContinuous ||
-		strings.TrimSpace(authority.PolicySource) == "" || strings.TrimSpace(authority.ExactGate) == "" || strings.TrimSpace(authority.ExpectedReceipt) == "" || len(authority.ExpectedProof) == 0 {
+		strings.TrimSpace(authority.PolicySource) == "" || !allowedGate || strings.TrimSpace(authority.ExpectedReceipt) == "" || len(authority.ExpectedProof) == 0 {
 		return fmt.Errorf("rebaseline pending policy authority is invalid or does not bind the governed action")
 	}
 	return nil
