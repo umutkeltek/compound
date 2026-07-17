@@ -1519,12 +1519,19 @@ func TestReviewedMutationSkipsUnusableOwnerReportsAndUsesNextExactAuthorization(
 		},
 		sourceControl: &policy.SourceControlContext{
 			EntityRef: snapshot.RepoID, GitRoot: snapshot.GitRoot, Remote: snapshot.Remote, Head: snapshot.Head,
-			Status: snapshot.Status, ChangedPaths: snapshot.ChangedPaths, ChangedStateFingerprint: snapshot.ChangedStateFingerprint,
+			Status: snapshot.Status, Staged: snapshot.Staged, Unstaged: snapshot.Unstaged, Untracked: snapshot.Untracked,
+			ChangedPaths: snapshot.ChangedPaths, ChangedStateFingerprint: snapshot.ChangedStateFingerprint,
 		},
 	}}
 	liveSnapshot, binding, ok := sourceControlMutationBatchBinding(prepared)
 	if !ok {
 		t.Fatal("test mutation did not produce a source-control binding")
+	}
+	if liveSnapshot.Staged != snapshot.Staged || liveSnapshot.Unstaged != snapshot.Unstaged || liveSnapshot.Untracked != snapshot.Untracked ||
+		liveSnapshot.ChangedPaths != liveSnapshot.Staged+liveSnapshot.Unstaged+liveSnapshot.Untracked {
+		t.Fatalf("projected source-control counts = staged:%d unstaged:%d untracked:%d changed:%d, want staged:%d unstaged:%d untracked:%d changed:%d",
+			liveSnapshot.Staged, liveSnapshot.Unstaged, liveSnapshot.Untracked, liveSnapshot.ChangedPaths,
+			snapshot.Staged, snapshot.Unstaged, snapshot.Untracked, snapshot.ChangedPaths)
 	}
 
 	buildPlan := func(owner, actionID string) authority.SourceControlReviewPlan {
@@ -1541,7 +1548,7 @@ func TestReviewedMutationSkipsUnusableOwnerReportsAndUsesNextExactAuthorization(
 	nonCurrentPlan := buildPlan(nonCurrentOwner, "act_reviewed_retry_ready_old")
 	var shadowPlan authority.SourceControlReviewPlan
 	for i := 0; i < 256; i++ {
-		candidate := buildPlan(fmt.Sprintf("work_live_reviewed_retry_shadow_%03d", i), "act_reviewed_retry_shadow_old")
+		candidate := buildPlan(fmt.Sprintf("work_reviewed_retry_shadow_%03d", i), "act_reviewed_retry_shadow_old")
 		if candidate.ID > validPlan.ID && candidate.ID > nonCurrentPlan.ID {
 			shadowPlan = candidate
 			break

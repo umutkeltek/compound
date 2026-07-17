@@ -80,6 +80,9 @@ type SourceControlContext struct {
 	Remote                  string                         `json:"remote,omitempty"`
 	Head                    string                         `json:"head,omitempty"`
 	Status                  string                         `json:"status,omitempty"`
+	Staged                  int                            `json:"staged,omitempty"`
+	Unstaged                int                            `json:"unstaged,omitempty"`
+	Untracked               int                            `json:"untracked,omitempty"`
 	ChangedPaths            int                            `json:"changed_paths,omitempty"`
 	ChangedStateFingerprint string                         `json:"changed_state_fingerprint,omitempty"`
 	ReviewedMutation        *ReviewedSourceControlMutation `json:"reviewed_mutation,omitempty"`

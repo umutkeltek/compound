@@ -721,6 +721,10 @@ func sourceControlMutationBatchBinding(prepared []preparedPreToolAction) (author
 		binding.ActionIntentIDs = append(binding.ActionIntentIDs, item.action.ID)
 	}
 	sc := first.sourceControl
+	if sc.Staged < 0 || sc.Unstaged < 0 || sc.Untracked < 0 || sc.ChangedPaths <= 0 ||
+		sc.ChangedPaths != sc.Staged+sc.Unstaged+sc.Untracked {
+		return authority.SourceControlSnapshot{}, authority.SourceControlMutationBinding{}, false
+	}
 	return authority.SourceControlSnapshot{
 		SchemaVersion:           authority.SourceControlSchemaVersion,
 		RepoID:                  sc.EntityRef,
@@ -728,6 +732,9 @@ func sourceControlMutationBatchBinding(prepared []preparedPreToolAction) (author
 		Remote:                  sc.Remote,
 		Head:                    sc.Head,
 		Status:                  sc.Status,
+		Staged:                  sc.Staged,
+		Unstaged:                sc.Unstaged,
+		Untracked:               sc.Untracked,
 		ChangedPaths:            sc.ChangedPaths,
 		ChangedStateFingerprint: sc.ChangedStateFingerprint,
 	}, binding, true
@@ -735,7 +742,8 @@ func sourceControlMutationBatchBinding(prepared []preparedPreToolAction) (author
 
 func sameSourceControlIdentity(a, b policy.SourceControlContext) bool {
 	return a.EntityRef == b.EntityRef && a.GitRoot == b.GitRoot && a.Remote == b.Remote && a.Head == b.Head &&
-		a.Status == b.Status && a.ChangedPaths == b.ChangedPaths && a.ChangedStateFingerprint == b.ChangedStateFingerprint
+		a.Status == b.Status && a.Staged == b.Staged && a.Unstaged == b.Unstaged && a.Untracked == b.Untracked &&
+		a.ChangedPaths == b.ChangedPaths && a.ChangedStateFingerprint == b.ChangedStateFingerprint
 }
 
 func boundMutationInputHash(ai envelope.ActionIntent) (string, bool) {
@@ -891,6 +899,9 @@ func sourceControlContextForAction(homePath, targetPath string, now time.Time) (
 			Remote:                  report.Remote,
 			Head:                    report.Head,
 			Status:                  report.Status,
+			Staged:                  report.Staged,
+			Unstaged:                report.Unstaged,
+			Untracked:               report.Untracked,
 			ChangedPaths:            report.ChangedPaths,
 			ChangedStateFingerprint: report.ChangedStateFingerprint,
 			EvidenceRefs:            []string{report.EvidenceRef},
