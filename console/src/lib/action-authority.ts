@@ -9,23 +9,45 @@ import type { AuthorityFace, AuthorityFaceScope, AuthorityFaceTarget } from "@/r
 
 type UnknownRecord = Record<string, unknown>;
 
+export type AuthorityDisplay = {
+  wording: string;
+  rows: Array<{ label: string; value: string }>;
+  expectedProof: string[];
+};
+
+/**
+ * One client-safe display projection for the exact Go-owned AuthorityFace.
+ * Renderers may change layout, but they must not reinterpret policy or select
+ * a subset of the owner's action context.
+ */
+export function authorityDisplay(authority: AuthorityFace): AuthorityDisplay {
+  const target = [authority.target.kind, authority.target.id, authority.target.path].filter(Boolean).join(" · ");
+  return {
+    wording: authority.wording,
+    rows: [
+      { label: "Target", value: target || "Not specified by owner" },
+      { label: "Target scope", value: authority.targetScope },
+      { label: "Blast radius", value: authority.blastRadius },
+      { label: "Reversibility", value: authority.reversibility },
+      { label: "Rollback plan", value: authority.rollbackPlan || "Not provided by owner" },
+      { label: "Verified recoverability", value: authority.verifiedRecoverability },
+      { label: "Operator-control continuity", value: authority.operatorControlContinuity },
+      { label: "Policy source", value: authority.policySource },
+      { label: "Standing grant", value: authority.standingGrantId || "No standing grant" },
+      { label: "Exact gate", value: authority.exactGate },
+      { label: "Expected receipt", value: authority.expectedReceipt || "Not specified by owner" },
+    ],
+    expectedProof: authority.expectedProof,
+  };
+}
+
 /** Exact AuthorityFace facts used by compact confirmation surfaces. */
 export function authoritySummarySegments(authority: AuthorityFace): string[] {
-  const target = [authority.target.kind, authority.target.id, authority.target.path].filter(Boolean).join(" · ");
+  const display = authorityDisplay(authority);
   return [
-    authority.wording,
-    `Target: ${target || "not specified by owner"}`,
-    `Target scope: ${authority.targetScope}`,
-    `Blast radius: ${authority.blastRadius}`,
-    `Reversibility: ${authority.reversibility}`,
-    `Rollback plan: ${authority.rollbackPlan || "not provided by owner"}`,
-    `Verified recoverability: ${authority.verifiedRecoverability}`,
-    `Operator-control continuity: ${authority.operatorControlContinuity}`,
-    `Policy source: ${authority.policySource}`,
-    `Standing grant: ${authority.standingGrantId || "none"}`,
-    `Exact gate: ${authority.exactGate}`,
-    `Expected receipt: ${authority.expectedReceipt || "not specified by owner"}`,
-    `Expected proof: ${authority.expectedProof.join(", ") || "not specified by owner"}`,
+    display.wording,
+    ...display.rows.map((row) => `${row.label}: ${row.value}`),
+    `Expected proof: ${display.expectedProof.join(", ") || "Not specified by owner"}`,
   ];
 }
 

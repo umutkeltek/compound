@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { CopyCmd } from "@/components/CopyCmd";
+import { AuthorityFaceDetails } from "@/components/authority/AuthorityFaceDetails";
 import { Button, ConfirmDialog, Field } from "@/components/kit";
 import type { DecideAct, DecideCapability } from "@/lib/decide-model";
 import type { DecisionExecutionEffect, DecisionExecutionRefs } from "@/lib/decision-execute";
 import type { DecisionOption, FieldSpec } from "@/lib/decision-registry";
 import { buildDecideActionRequest, decideActIdentity, fieldValidationMessage, type GovernedSubmitKind } from "@/lib/governed-action-client";
+import type { AuthorityFace } from "@/representation";
 
 export type ExecuteResult = {
   ok: boolean;
@@ -173,6 +175,7 @@ export function DecisionOutcome({
 
 export function GovernedAct({
   act,
+  authority,
   mutationsEnabled,
   registerTrigger,
   onExecuted,
@@ -180,6 +183,7 @@ export function GovernedAct({
   effectKind,
 }: {
   act: SingleAct;
+  authority?: AuthorityFace | null;
   mutationsEnabled: boolean;
   registerTrigger?: (fn: (() => void) | null) => void;
   onExecuted?: (result: ExecuteResult) => void;
@@ -445,12 +449,14 @@ export function GovernedAct({
         open={open}
         onOpenChange={setOpen}
         title={`Confirm ${chosen?.label ?? act.label}`}
-        body={confirmationDescription(act, chosen)}
+        body={authority?.wording ?? confirmationDescription(act, chosen)}
         confirmLabel="Confirm decision"
         pending={state === "pending"}
         onConfirm={() => void submit("confirm", Object.fromEntries(confirmationFields))}
       >
         <div className="grid gap-3">
+          {authority ? <AuthorityFaceDetails authority={authority} embedded /> : null}
+
           {previewResult ? <DecisionOutcome result={previewResult} preview effectKind={effectKind} /> : null}
 
           {act.mode === "batch-atomic" ? (

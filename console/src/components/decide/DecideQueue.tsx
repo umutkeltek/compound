@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
+import { AuthorityFaceDetails } from "@/components/authority/AuthorityFaceDetails";
 import { Button, FreshnessChip, StateBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/kit";
 import {
   decideReadinessSections,
@@ -17,7 +18,6 @@ import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideM
 import type { DecisionEffectKind } from "@/lib/decision-registry";
 import { buildEnumerableActionRequest, decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
 import { ownerUnavailableMessage } from "@/lib/glossary";
-import type { AuthorityFace } from "@/representation";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
@@ -489,65 +489,6 @@ function CapabilityStatus({ group, compact = false }: { group: DecideGroup; comp
   );
 }
 
-function AuthorityFaceDetails({
-  authority,
-  embedded = false,
-}: {
-  authority: AuthorityFace;
-  embedded?: boolean;
-}) {
-  const target = [
-    authority.target.kind,
-    authority.target.id,
-    authority.target.path,
-  ].filter(Boolean).join(" · ");
-  const rows = [
-    ["Target", target || "Not specified by owner"],
-    ["Target scope", authority.targetScope],
-    ["Blast radius", authority.blastRadius],
-    ["Reversibility", authority.reversibility],
-    ["Rollback plan", authority.rollbackPlan || "Not provided by owner"],
-    ["Verified recoverability", authority.verifiedRecoverability],
-    ["Operator-control continuity", authority.operatorControlContinuity],
-    ["Policy source", authority.policySource],
-    ["Standing grant", authority.standingGrantId || "No standing grant"],
-    ["Exact gate", authority.exactGate],
-    ["Expected receipt", authority.expectedReceipt || "Not specified by owner"],
-  ] as const;
-
-  return (
-    <section
-      className={`${embedded ? "" : "mx-4 mb-4"} rounded-md border border-hair bg-soft px-3 py-3`}
-      aria-label={authority.current ? "Current action authority" : "Non-current authority evidence"}
-    >
-      <div className="text-2xs font-bold uppercase tracking-wide text-faint">
-        {authority.current ? "Current action authority" : "Non-current authority evidence"}
-      </div>
-      <p className="mt-1 text-sm font-semibold leading-relaxed text-ink">{authority.wording}</p>
-      <dl className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2">
-        {rows.map(([label, value]) => (
-          <div key={label} className="min-w-0">
-            <dt className="text-2xs font-semibold uppercase tracking-wide text-faint">{label}</dt>
-            <dd className="mt-0.5 break-words text-xs leading-relaxed text-muted">{value}</dd>
-          </div>
-        ))}
-      </dl>
-      <div className="mt-3 border-t border-hair pt-2">
-        <div className="text-2xs font-semibold uppercase tracking-wide text-faint">Expected proof</div>
-        {authority.expectedProof.length ? (
-          <ul className="mt-1 flex flex-col gap-1">
-            {authority.expectedProof.map((proof) => (
-              <li key={proof}><code className="mono break-all text-2xs text-muted">{proof}</code></li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-1 text-xs text-muted">Not specified by owner</p>
-        )}
-      </div>
-    </section>
-  );
-}
-
 function EnumerableAuthorityList({
   members,
   className = "",
@@ -847,6 +788,7 @@ function DecisionDetail({
               <GovernedAct
                 key={decideActIdentity(act)}
                 act={act}
+                authority={group.face.authority}
                 mutationsEnabled={mutationsEnabled}
                 onExecuted={onExecuted}
                 retainedOutcome={retainedOutcome}

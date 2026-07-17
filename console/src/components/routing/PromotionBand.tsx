@@ -1,6 +1,7 @@
 "use client";
 
 import { CopyCmd } from "@/components/CopyCmd";
+import { AuthorityFaceDetails } from "@/components/authority/AuthorityFaceDetails";
 import { GovernedAct } from "@/components/decide/GovernedAct";
 import { ArrowUpIcon, ClockIcon, EmptyState, FreshnessChip, IdRef, SectionHeader, StateBadge } from "@/components/kit";
 import type { DecideGroup } from "@/lib/decide-model";
@@ -97,6 +98,10 @@ function RouteCard({
       ) : null}
       {group.consequences ? <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} /> : null}
 
+      {group.face.authority ? (
+        <AuthorityFaceDetails authority={group.face.authority} embedded className="mt-3" />
+      ) : null}
+
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className={`text-xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>
@@ -120,6 +125,7 @@ function RouteCard({
             <GovernedAct
               key={decideActIdentity(act)}
               act={act}
+              authority={group.face.authority}
               mutationsEnabled={mutationsEnabled}
               effectKind={group.capability.kind === "unavailable" ? "apply" : group.capability.kind}
             />

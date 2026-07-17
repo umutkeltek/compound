@@ -262,5 +262,59 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
     }
   }
 
+  /* ---------- f5: routing preserves exact owner authority ---------- */
+
+  // Routing mounts the same GovernedAct as Decide, so it must also show the
+  // complete Go-owned AuthorityFace before execution and inside any
+  // confirmation that the owner action already requires. This is a wiring
+  // falsifier: removing the shared face from Routing or the dialog must red
+  // even if the server-side authority resolver remains green.
+  {
+    const authorityComponentPath = path.join(SRC_ROOT, "components/authority/AuthorityFaceDetails.tsx");
+    const authorityComponent = fs.existsSync(authorityComponentPath)
+      ? fs.readFileSync(authorityComponentPath, "utf8")
+      : "";
+    const authorityModel = read("lib/action-authority.ts");
+    const decide = read("components/decide/DecideQueue.tsx");
+    const routing = read("components/routing/PromotionBand.tsx");
+    const governed = read("components/decide/GovernedAct.tsx");
+
+    if (!authorityComponent || !/export function AuthorityFaceDetails/.test(authorityComponent)) {
+      fail("the reusable client-safe AuthorityFaceDetails renderer is missing");
+    } else if (!/authorityDisplay\(authority\)/.test(authorityComponent)) {
+      fail("AuthorityFaceDetails does not consume the shared owner-display projection");
+    } else if (!/export function authorityDisplay/.test(authorityModel) || !/authorityDisplay\(authority\)/.test(authorityModel)) {
+      fail("authority summary/details are not derived from one shared display projection");
+    } else {
+      pass("one client-safe AuthorityFace renderer owns the exact details/summary projection");
+    }
+
+    if (!/import \{ AuthorityFaceDetails \} from "@\/components\/authority\/AuthorityFaceDetails"/.test(decide) ||
+        /function AuthorityFaceDetails\(/.test(decide)) {
+      fail("DecideQueue still owns a duplicate AuthorityFace renderer instead of the shared component");
+    } else {
+      pass("DecideQueue reuses the shared AuthorityFace renderer");
+    }
+
+    const routingFace = routing.indexOf("<AuthorityFaceDetails authority={group.face.authority}");
+    const routingAct = routing.indexOf("<GovernedAct");
+    if (!/import \{ AuthorityFaceDetails \} from "@\/components\/authority\/AuthorityFaceDetails"/.test(routing) ||
+        routingFace < 0 || routingAct < 0 || routingFace > routingAct ||
+        !/authority=\{group\.face\.authority\}/.test(routing.slice(routingAct))) {
+      fail("Routing does not show and pass the exact group.face.authority before its governed act");
+    } else {
+      pass("Routing shows the exact owner AuthorityFace before execution and passes it to GovernedAct");
+    }
+
+    const dialog = governed.match(/<ConfirmDialog[\s\S]*?<\/ConfirmDialog>/)?.[0] ?? "";
+    if (!/authority\?: AuthorityFace/.test(governed) ||
+        !/<AuthorityFaceDetails authority=\{authority\}/.test(dialog) ||
+        !/body=\{authority\?\.wording \?\? confirmationDescription/.test(dialog)) {
+      fail("GovernedAct confirmation does not show the full AuthorityFace with exact owner wording");
+    } else {
+      pass("GovernedAct confirmation reuses the full AuthorityFace and exact owner wording");
+    }
+  }
+
   return { ok, details };
 }
