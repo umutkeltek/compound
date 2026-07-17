@@ -725,7 +725,11 @@ func sortGroups(groups []Group) {
 }
 
 func classRank(g Group) int {
-	if g.Reversibility == Irreversible || highBlast(g.BlastRadius) {
+	if validReviewAuthority(g.Action) {
+		if !g.Action.PolicyAuthority.Allowed {
+			return 0
+		}
+	} else if g.Reversibility == Irreversible || highBlast(g.BlastRadius) {
 		return 0
 	}
 	switch g.Kind {

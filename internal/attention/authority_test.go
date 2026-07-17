@@ -33,6 +33,23 @@ func TestReviewAuthorityAllowedBundleIsForwardedAndRunnable(t *testing.T) {
 	}
 }
 
+func TestReviewAuthorityAllowedWideStandingScopeIsNotRegatedByAttention(t *testing.T) {
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	source := attentionAuthorityActionWithRisk(t, now, "compound://policy/effective", true, "easy", "public")
+	report := Build(Inputs{Reviews: singletonAuthorityReport(now, source)}, now)
+
+	group := groupByKey(t, report, "authority-singleton")
+	if group.Action == nil || group.Action.Kind != ActionOneClick || group.Action.RequiresConfirmation {
+		t.Fatalf("standing-scope authority was re-gated by Attention: %+v", group.Action)
+	}
+	if group.Action.PolicyAuthority.ExactGate != policy.AuthorityGateStandingScope {
+		t.Fatalf("fixture gate = %q, want %q", group.Action.PolicyAuthority.ExactGate, policy.AuthorityGateStandingScope)
+	}
+	if group.RiskGrade == RiskGradeGate || Class(group) == RiskGradeGate {
+		t.Fatalf("allowed current authority was reclassified as a gate: risk_grade=%q class=%q group=%+v", group.RiskGrade, Class(group), group)
+	}
+}
+
 func TestReviewAuthorityCurrentHoldRemainsVisibleButCannotRun(t *testing.T) {
 	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
 	source := attentionAuthorityAction(t, now, "compound://policy/effective", false)
@@ -44,6 +61,67 @@ func TestReviewAuthorityCurrentHoldRemainsVisibleButCannotRun(t *testing.T) {
 	}
 	if action.PolicyAuthority.Allowed || action.Kind != ActionCopyOnly || !action.RequiresConfirmation {
 		t.Fatalf("held authority became runnable: %+v", action)
+	}
+}
+
+func TestReviewAuthorityHeldBundleOwnsGateRankAcrossPolicyRiskVocabulary(t *testing.T) {
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		reversibility string
+		blastRadius   string
+	}{
+		{name: "hard reversibility", reversibility: "hard", blastRadius: "repo"},
+		{name: "no reversibility", reversibility: "none", blastRadius: "repo"},
+		{name: "production radius", reversibility: "easy", blastRadius: "production"},
+		{name: "account radius", reversibility: "easy", blastRadius: "account"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			held := attentionAuthorityActionWithRisk(t, now, "compound://policy/effective", false, tt.reversibility, tt.blastRadius)
+			allowed := attentionAuthorityAction(t, now, "compound://policy/effective", true)
+			heldGroup := singletonAuthorityReport(now, held).Groups[0]
+			heldGroup.Key = "held"
+			allowedGroup := singletonAuthorityReport(now, allowed).Groups[0]
+			allowedGroup.Key = "allowed"
+			allowedGroup.Count = 100
+			reviews := &reviewartifact.QueueReport{
+				GeneratedAt: now.Format(time.RFC3339),
+				Groups:      []reviewartifact.QueueGroup{allowedGroup, heldGroup},
+			}
+			report := Build(Inputs{Reviews: reviews}, now)
+			group := groupByKey(t, report, "held")
+			if group.RiskGrade != RiskGradeGate || Class(group) != RiskGradeGate {
+				t.Fatalf("held authority risk_grade/class = %q/%q, want gate for %q/%q", group.RiskGrade, Class(group), tt.reversibility, tt.blastRadius)
+			}
+			if report.Top == nil || report.Top.Key != "held" {
+				t.Fatalf("held authority did not sort ahead of high-volume allowed work: top=%+v groups=%+v", report.Top, report.Groups)
+			}
+		})
+	}
+}
+
+func TestLegacyRiskClassificationStillGatesWithoutAuthority(t *testing.T) {
+	action := &Action{
+		ID:                   "legacy",
+		Argv:                 []string{"compound", "reviews", "inspect"},
+		Kind:                 ActionOneClick,
+		RequiresConfirmation: false,
+	}
+	group := Group{
+		Kind:          KindHygiene,
+		BlastRadius:   BlastPublic,
+		Reversibility: Reversible,
+		Action:        action,
+	}
+
+	if Class(group) != RiskGradeGate {
+		t.Fatalf("legacy public-risk group class = %q, want gate", Class(group))
+	}
+	normalizeAction(action, group)
+	if !action.RequiresConfirmation {
+		t.Fatalf("legacy risk behavior changed: %+v", action)
 	}
 }
 
@@ -231,6 +309,10 @@ func authorityQueueReport(now time.Time, actions ...reviewartifact.Action) revie
 }
 
 func attentionAuthorityAction(t *testing.T, now time.Time, policySource string, allowed bool) reviewartifact.Action {
+	return attentionAuthorityActionWithRisk(t, now, policySource, allowed, "easy", "repo")
+}
+
+func attentionAuthorityActionWithRisk(t *testing.T, now time.Time, policySource string, allowed bool, reversibility, blastRadius string) reviewartifact.Action {
 	t.Helper()
 	estimatedUSD := 0.25
 	estimatedTokens := 10
@@ -253,8 +335,8 @@ func attentionAuthorityAction(t *testing.T, now time.Time, policySource string, 
 		Action:        "update",
 		Target:        envelope.ActionTarget{Kind: "file", Path: "artifacts/item.json"},
 		MutationClass: "local_reversible",
-		Reversibility: "easy",
-		BlastRadius:   "repo",
+		Reversibility: reversibility,
+		BlastRadius:   blastRadius,
 		EstimatedCost: envelope.EstimatedCost{
 			USD:            &estimatedUSD,
 			Tokens:         &estimatedTokens,
