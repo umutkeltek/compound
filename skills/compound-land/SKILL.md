@@ -398,10 +398,12 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   (refuses a dirty tree) and `git branch -d <branch>` (refuses an unmerged branch). Deferring this
   is how 44 scratch trees accumulated by 2026-07-21 (cleared only by an operator-authorized batch
   sweep, `find_4b487836d8b2`): per-land self-cleanup is the rule, batch sweeps are the exception.
-- **Retire an envelope-bound, ref-carrying LANDED asset only through Compound authority, never with
-  hand-run `git worktree remove`, `git update-ref -d`, or `branch -D`.** A separate running cleanup
-  WorkEnvelope owns the mutation; the landed source WorkEnvelope must already be terminal with a
-  current `land-check`, and at least one content-addressed recovery proof must still resolve. Run
+- **Retire the landed worktree/ref only through Compound authority, never with hand-run
+  `git worktree remove`, `git update-ref -d`, or `branch -D`.** A separate running cleanup
+  WorkEnvelope owns the mutation; the landed source WorkEnvelope must already be proof-complete
+  `completed` or `failed` with a current `land-check`, and at least one content-addressed recovery
+  proof must still resolve. A failed source remains failed; cleanup proves only that its workspace
+  surface is redundant. Cancelled and nonterminal source work cannot authorize retirement. Run
   `compound authority worktree-retire plan ...`, have the operator record the exact generated YAML
   with `compound authority worktree-retire review ... --decision authorize_retirement`, then run
   `compound authority worktree-retire apply ... --actor <cleanup-lease-holder>`. The adapter

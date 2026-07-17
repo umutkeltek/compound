@@ -312,8 +312,8 @@ func loadWorktreeRetirementSourceProof(store *work.Store, homePath, workID strin
 	if err != nil {
 		return authority.WorktreeRetirementSourceProof{}, err
 	}
-	if w.State != "completed" || !item.ProofComplete {
-		return authority.WorktreeRetirementSourceProof{}, fmt.Errorf("source work %s needs completed proof chain: %v", w.ID, item.Problems)
+	if (w.State != "completed" && w.State != "failed") || !item.ProofComplete {
+		return authority.WorktreeRetirementSourceProof{}, fmt.Errorf("source work %s needs completed or failed terminal proof chain: %v", w.ID, item.Problems)
 	}
 	commitRef, commitTip, err := latestWorktreeRetirementCommit(w.ArtifactIDs)
 	if err != nil {

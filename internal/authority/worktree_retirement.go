@@ -444,8 +444,8 @@ func validateRetirementOwnerProof(proof WorktreeRetirementOwnerProof) error {
 }
 
 func validateRetirementSourceProof(proof WorktreeRetirementSourceProof) error {
-	if strings.TrimSpace(proof.WorkID) == "" || proof.State != "completed" || !proof.ProofComplete {
-		return fmt.Errorf("completed terminal proof chain required")
+	if strings.TrimSpace(proof.WorkID) == "" || (proof.State != "completed" && proof.State != "failed") || !proof.ProofComplete {
+		return fmt.Errorf("completed or failed terminal proof chain required")
 	}
 	if len(proof.ActionIntentIDs) == 0 || strings.TrimSpace(proof.PolicyDecisionID) == "" || strings.TrimSpace(proof.ReceiptID) == "" || strings.TrimSpace(proof.TransitionID) == "" {
 		return fmt.Errorf("action policy receipt transition ids required")

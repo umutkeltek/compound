@@ -118,6 +118,109 @@ func TestAuthorityWorktreeRetireCLIPlansReviewsAppliesAndRecordsWorkChain(t *tes
 	}
 }
 
+func TestAuthorityWorktreeRetireCLIRetiresRedundantSurfaceWithoutReclassifyingFailedSource(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newWorktreeRetirementCLIFixtureWithSourceOutcome(t, homePath, "failed")
+	previousLiveness := worktreeRetirementCLILiveness
+	worktreeRetirementCLILiveness = cliUnusedWorktreeLiveness{}
+	t.Cleanup(func() { worktreeRetirementCLILiveness = previousLiveness })
+
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeSource, err := store.Get(fixture.sourceWorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeProof, err := store.ProofChainForWork(fixture.sourceWorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeSource.State != "failed" || !beforeProof.ProofComplete || beforeProof.ReceiptID == "" || beforeProof.TransitionID == "" {
+		t.Fatalf("source setup state=%q proof=%+v", beforeSource.State, beforeProof)
+	}
+	var beforeReceipt envelope.Receipt
+	readTestEventJSON(t, homePath, beforeProof.ReceiptID, &beforeReceipt)
+	if beforeReceipt.Outcome != "failed" {
+		t.Fatalf("source receipt outcome=%q, want failed", beforeReceipt.Outcome)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runAuthorityWorktreeRetire(homePath, []string{
+		"plan", "--repo", fixture.repo, "--worktree", fixture.worktree,
+		"--ref", fixture.candidateRef, "--authority-ref", "refs/heads/main",
+		"--publication-ref", "refs/remotes/origin/main",
+		"--owner-work", fixture.ownerWorkID, "--source-work", fixture.sourceWorkID,
+		"--recovery-ref", fixture.recoveryRef, "--json",
+	}, &stdout, &stderr, cliTestNow.Add(10*time.Minute))
+	if code != 0 {
+		t.Fatalf("plan code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var planned struct {
+		Plan  authority.WorktreeRetirementPlan      `json:"plan"`
+		Paths authority.WorktreeRetirementPlanPaths `json:"paths"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &planned); err != nil {
+		t.Fatalf("decode plan: %v\n%s", err, stdout.String())
+	}
+	if !planned.Plan.Eligible || planned.Plan.SourceProof.State != "failed" {
+		t.Fatalf("failed-source plan=%+v", planned.Plan)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runAuthorityWorktreeRetire(homePath, []string{
+		"review", planned.Paths.ReviewYAMLPath,
+		"--decision", "authorize_retirement",
+		"--rationale", "operator authorizes cleanup of the exact redundant surface",
+		"--reviewed-by", "operator:test", "--json",
+	}, &stdout, &stderr, cliTestNow.Add(11*time.Minute))
+	if code != 0 {
+		t.Fatalf("review code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runAuthorityWorktreeRetire(homePath, []string{
+		"apply", planned.Paths.PlanPath, "--actor", "codex:test", "--json",
+	}, &stdout, &stderr, cliTestNow.Add(12*time.Minute))
+	if code != 0 {
+		t.Fatalf("apply code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var result authority.WorktreeRetirementResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode apply: %v\n%s", err, stdout.String())
+	}
+	if result.Status != "completed" || result.ReceiptID == "" || result.TransitionID == "" {
+		t.Fatalf("apply result=%+v", result)
+	}
+	if _, err := os.Stat(fixture.worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree remains: %v", err)
+	}
+	if commandRefExists(fixture.repo, fixture.candidateRef) {
+		t.Fatal("candidate ref remains")
+	}
+
+	afterSource, err := store.Get(fixture.sourceWorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterProof, err := store.ProofChainForWork(fixture.sourceWorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var afterReceipt envelope.Receipt
+	readTestEventJSON(t, homePath, afterProof.ReceiptID, &afterReceipt)
+	if afterSource.State != "failed" || !afterProof.ProofComplete || afterProof.ReceiptID != beforeProof.ReceiptID || afterProof.TransitionID != beforeProof.TransitionID || afterReceipt.Outcome != "failed" {
+		t.Fatalf("retirement reclassified source: before=%+v/%+v after=%+v/%+v receipt=%+v", beforeSource, beforeProof, afterSource, afterProof, afterReceipt)
+	}
+}
+
 func TestAuthorityWorktreeRetireCLIPartialRetryRecordsDistinctHonestActions(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -286,6 +389,37 @@ func TestAuthorityWorktreeRetireCLIReviewPreservesGeneratedTemplate(t *testing.T
 	}
 }
 
+func TestAuthorityWorktreeRetireCLIRefusesStaleSourceLandCheck(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newWorktreeRetirementCLIFixtureWithSourceOutcome(t, homePath, "failed")
+	runLandingCLIGit(t, fixture.repo, "update-ref", "-d", "refs/remotes/origin/main")
+	previousLiveness := worktreeRetirementCLILiveness
+	worktreeRetirementCLILiveness = cliUnusedWorktreeLiveness{}
+	t.Cleanup(func() { worktreeRetirementCLILiveness = previousLiveness })
+
+	var stdout, stderr bytes.Buffer
+	code := runAuthorityWorktreeRetire(homePath, []string{
+		"plan", "--repo", fixture.repo, "--worktree", fixture.worktree,
+		"--ref", fixture.candidateRef, "--authority-ref", "refs/heads/main",
+		"--publication-ref", "refs/remotes/origin/main",
+		"--owner-work", fixture.ownerWorkID, "--source-work", fixture.sourceWorkID,
+		"--recovery-ref", fixture.recoveryRef, "--json",
+	}, &stdout, &stderr, cliTestNow.Add(10*time.Minute))
+	if code != 1 || !bytes.Contains(stderr.Bytes(), []byte("land-check is not currently landed")) {
+		t.Fatalf("stale land-check code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if _, err := os.Stat(fixture.worktree); err != nil {
+		t.Fatalf("stale land-check refusal removed worktree: %v", err)
+	}
+	if !commandRefExists(fixture.repo, fixture.candidateRef) {
+		t.Fatal("stale land-check refusal removed candidate ref")
+	}
+}
+
 type cliUnusedWorktreeLiveness struct{}
 
 func (cliUnusedWorktreeLiveness) Observe(context.Context, string) authority.WorktreeLivenessObservation {
@@ -316,6 +450,10 @@ type worktreeRetirementCLIFixture struct {
 }
 
 func newWorktreeRetirementCLIFixture(t *testing.T, homePath string) worktreeRetirementCLIFixture {
+	return newWorktreeRetirementCLIFixtureWithSourceOutcome(t, homePath, "completed")
+}
+
+func newWorktreeRetirementCLIFixtureWithSourceOutcome(t *testing.T, homePath, sourceOutcome string) worktreeRetirementCLIFixture {
 	t.Helper()
 	repo, base, candidate := initLandingCLIRepo(t)
 	worktreePath := filepath.Join(filepath.Dir(repo), "candidate-worktree")
@@ -360,7 +498,7 @@ func newWorktreeRetirementCLIFixture(t *testing.T, homePath string) worktreeReti
 		t.Fatalf("land-check=%+v err=%v", landed, err)
 	}
 	if _, err := store.Close(source.ID, work.CloseInput{
-		Outcome: "completed", MoveType: "control_plane_repair", Actor: "codex:source", Summary: "candidate landed", Changed: true,
+		Outcome: sourceOutcome, MoveType: "control_plane_repair", Actor: "codex:source", Summary: "candidate landed but source task reached its recorded terminal outcome", Changed: true,
 		ProofRefs: []string{landed.EvidenceRef, "check:source-landed"},
 	}, cliTestNow.Add(5*time.Minute)); err != nil {
 		t.Fatal(err)
