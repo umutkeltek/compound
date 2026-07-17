@@ -93,6 +93,62 @@ func containsString(set []string, v string) bool {
 	return false
 }
 
+func TestPrepareGlobalArgs(t *testing.T) {
+	t.Run("strips home and sets absolute environment", func(t *testing.T) {
+		t.Setenv("COMPOUND_HOME", "fallback-home")
+		got, err := prepareGlobalArgs([]string{"work", "show", "--home", "relative-home", "work_123", "--json"})
+		if err != nil {
+			t.Fatalf("prepare global args: %v", err)
+		}
+		want := []string{"work", "show", "work_123", "--json"}
+		if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+			t.Fatalf("prepared args = %#v, want %#v", got, want)
+		}
+		wantHome, err := filepath.Abs("relative-home")
+		if err != nil {
+			t.Fatalf("absolute expected home: %v", err)
+		}
+		if gotHome := os.Getenv("COMPOUND_HOME"); gotHome != wantHome {
+			t.Fatalf("COMPOUND_HOME = %q, want %q", gotHome, wantHome)
+		}
+	})
+
+	t.Run("rejects missing home value", func(t *testing.T) {
+		t.Setenv("COMPOUND_HOME", "fallback-home")
+		if _, err := prepareGlobalArgs([]string{"work", "show", "--home"}); err == nil {
+			t.Fatal("trailing --home must fail")
+		}
+		if got := os.Getenv("COMPOUND_HOME"); got != "fallback-home" {
+			t.Fatalf("COMPOUND_HOME changed after missing value: %q", got)
+		}
+	})
+
+	t.Run("rejects blank home value", func(t *testing.T) {
+		t.Setenv("COMPOUND_HOME", "fallback-home")
+		if _, err := prepareGlobalArgs([]string{"work", "show", "--home", "  "}); err == nil {
+			t.Fatal("blank --home value must fail")
+		}
+		if got := os.Getenv("COMPOUND_HOME"); got != "fallback-home" {
+			t.Fatalf("COMPOUND_HOME changed after blank value: %q", got)
+		}
+	})
+
+	t.Run("passes non-home args through untouched", func(t *testing.T) {
+		t.Setenv("COMPOUND_HOME", "fallback-home")
+		input := []string{"work", "show", "--home=elsewhere", "work_123", "--json"}
+		got, err := prepareGlobalArgs(input)
+		if err != nil {
+			t.Fatalf("prepare global args: %v", err)
+		}
+		if strings.Join(got, "\x00") != strings.Join(input, "\x00") {
+			t.Fatalf("prepared args = %#v, want exact pass-through %#v", got, input)
+		}
+		if gotHome := os.Getenv("COMPOUND_HOME"); gotHome != "fallback-home" {
+			t.Fatalf("COMPOUND_HOME = %q, want untouched fallback", gotHome)
+		}
+	})
+}
+
 // TestVersionStringEmbedsBuildSHA proves `compound version` carries the build SHA that
 // install.sh's ldflags embed — buildSHA is a package var (set via -X at build time), so
 // the test sets it directly rather than needing a real ldflags-built binary (T3).
