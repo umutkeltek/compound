@@ -23,18 +23,6 @@ func TestProofCheckSmokeInventoryGuard(t *testing.T) {
 	manualOnlySmokes := map[string]string{
 		"work-mutation-trail-smoke.mjs": "requires COMPOUND_BIN (a freshly built compound binary); exercised manually / in strict-local batteries, not in the portable proof-check path",
 		"work-legibility-smoke.mjs":     "static copy-model assertion (imports console WORK_COPY, no binary/home needed); run manually / in local batteries — wiring into the portable proof-check step list is out of the work-page-legibility packet's file scope (proof_check.go owned by a concurrent lane at packet time)",
-		// Runs the real `home doctor` + `executors` doors to pin the two stale-lease
-		// definitions; its proof_check.go registration is owned by a live concurrent
-		// lane at land time. Wire in and DELETE this row in the registration change
-		// (allowlisted-and-wired turns this guard red — cleanup is self-enforcing).
-		"agents-consistency-smoke.mjs": "registration pending: proof_check.go owned by a live concurrent lane at land time; needs COMPOUND_BIN; wire in and DELETE this row in the registration change",
-		// The two rows below are TEMPORARY: their proofCheckSteps registration is owned by a
-		// concurrent live lane (proof_check.go was not editable when this guard landed). Wiring
-		// them in WITHOUT deleting these rows turns this guard red (allowlisted-and-wired), so
-		// cleanup is self-enforcing in the registration change.
-		"projection-degradation-smoke.mjs": "registration pending: proof_check.go owned by a live concurrent lane at guard-landing time; wire in and DELETE this row in the registration change",
-		"projection-doors-smoke.mjs":       "registration pending: proof_check.go owned by a live concurrent lane at guard-landing time; wire in and DELETE this row in the registration change",
-		"stream-door-smoke.mjs":            "registration pending: proof_check.go owned by a live concurrent lane (work_cb8b0961355c) at land time; requires a freshly built COMPOUND_BIN with the `stream` verb; wire in and DELETE this row in the registration change",
 	}
 
 	repoRoot := inventoryGuardRepoRoot(t)
@@ -102,6 +90,7 @@ func TestProofCheckSmokeInventoryGuard(t *testing.T) {
 	}
 
 	var stale []string
+	var pendingRegistration []string
 	for name, reason := range manualOnlySmokes {
 		if strings.TrimSpace(reason) == "" {
 			t.Errorf("manual-only allowlist entry %q has an empty reason", name)
@@ -109,12 +98,30 @@ func TestProofCheckSmokeInventoryGuard(t *testing.T) {
 		if !onDisk[name] {
 			stale = append(stale, name)
 		}
+		// stopgapReason was the placeholder wording for four smokes whose proof_check.go
+		// registration was blocked by a live concurrent lane at allowlist-landing time
+		// (2026-07-17, work_738ac4eabc98 retired the class). Built from two literals so
+		// this guard's own source never re-introduces the retired phrase as one literal
+		// run — the very grep this class of debt is checked against (see the packet)
+		// scans for that exact contiguous wording in this file.
+		stopgapReason := "registration" + " " + "pending"
+		if strings.Contains(strings.ToLower(reason), stopgapReason) {
+			pendingRegistration = append(pendingRegistration, name)
+		}
 	}
 	sort.Strings(stale)
 	if len(stale) > 0 {
 		t.Errorf(
 			"manual-only allowlist entry(ies) reference file(s) no longer on disk (stale allowlist row, remove): %s",
 			strings.Join(stale, ", "),
+		)
+	}
+	sort.Strings(pendingRegistration)
+	if len(pendingRegistration) > 0 {
+		t.Errorf(
+			"manual-only allowlist entry(ies) use the retired stopgap reason wording, which must not recur "+
+				"(wire the smoke into proofCheckSteps and delete the row, or give it a real, non-stopgap reason): %s",
+			strings.Join(pendingRegistration, ", "),
 		)
 	}
 }

@@ -231,14 +231,29 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-decision-execute-smoke", Command: consoleBunSmokeCommand("scripts/decision-execute-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decision-execute-smoke"},
 		{Name: "console-standing-law-smoke", Command: consoleBunSmokeCommand("scripts/standing-law-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-standing-law-smoke"},
 		{Name: "console-memory-data-smoke", Command: consoleBunSmokeCommand("scripts/memory-data-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-memory-data-smoke"},
-		{Name: "console-attention-consistency-smoke", Command: consoleSmokeCommand("scripts/attention-consistency-smoke.mjs"), Dir: "console", SkipIfMissing: "compound", ProofRef: "console-attention-consistency-smoke"},
+		// attention-consistency-smoke imports console TSX (DecideList/Headline) that the node
+		// strip-types runner cannot resolve, so it runs under bun like its TSX-importing siblings
+		// (it re-enters itself via bun when invoked under node — this direct bun invocation is the
+		// primary path; a bun-absent host must SKIP the gate, not ENOENT through the re-exec).
+		{Name: "console-attention-consistency-smoke", Command: consoleBunSmokeCommand("scripts/attention-consistency-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-attention-consistency-smoke"},
 		{Name: "console-work-language-smoke", Command: consoleBunSmokeCommand("scripts/work-language-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-work-language-smoke"},
 		{Name: "console-ask-triage-smoke", Command: consoleBunSmokeCommand("scripts/ask-triage-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-ask-triage-smoke"},
 		{Name: "console-representation-falsifiers-smoke", Command: consoleBunSmokeCommand("scripts/representation-falsifiers-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-representation-falsifiers-smoke"},
 		{Name: "console-representation-cluster-guard-smoke", Command: consoleSmokeCommand("scripts/representation-cluster-guard-smoke.mjs"), Dir: "console", ProofRef: "console-representation-cluster-guard-smoke"},
+		// agents-consistency and projection-doors are pure node (no Bun-only API, no
+		// extensionless/TSX import), but both subprocess a `compound` binary (COMPOUND_BIN or the
+		// literal "compound" on PATH) — skip when that binary is unavailable rather than fail.
+		{Name: "console-agents-consistency-smoke", Command: consoleSmokeCommand("scripts/agents-consistency-smoke.mjs"), Dir: "console", SkipIfMissing: "compound", ProofRef: "console-agents-consistency-smoke"},
+		{Name: "console-projection-doors-smoke", Command: consoleSmokeCommand("scripts/projection-doors-smoke.mjs"), Dir: "console", SkipIfMissing: "compound", ProofRef: "console-projection-doors-smoke"},
 		// bun smokes: these import extensionless TS the node runner cannot resolve, so they run under bun.
 		{Name: "console-stream-tail-smoke", Command: consoleBunSmokeCommand("scripts/stream-tail-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-stream-tail-smoke"},
 		{Name: "console-decide-decision-feedback-smoke", Command: consoleBunSmokeCommand("scripts/decide-decision-feedback-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decide-decision-feedback-smoke"},
+		{Name: "console-projection-degradation-smoke", Command: consoleBunSmokeCommand("scripts/projection-degradation-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-projection-degradation-smoke"},
+		// stream-door-smoke imports the API route via the @/ alias (extensionless TS), so it needs
+		// bun; it resolves its own COMPOUND_BIN (env override, else a self-built temp binary with
+		// the `stream` verb) and its own throwaway COMPOUND_HOME, so no home/binary setup is needed
+		// here beyond the bun runtime gate.
+		{Name: "console-stream-door-smoke", Command: consoleBunSmokeCommand("scripts/stream-door-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-stream-door-smoke"},
 		{Name: "bun-tools-test", Command: []string{"bun", "test", "<tools/*.test.ts>"}, SkipIfMissing: "bun", ProofRef: "bun-tools-test"},
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict", CIPortable: true},
 		{Name: "profiles-check", Command: []string{exe, "profiles", "check", "--installed-only"}, ProofRef: "profiles-check-installed-only"},
