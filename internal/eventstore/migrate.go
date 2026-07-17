@@ -675,8 +675,8 @@ func (tx *RebaselineTransaction) ClearPending() error {
 		return err
 	}
 	defer tx.state.mu.Unlock()
-	marker, exists, err := readRebaselinePendingRaw(tx.PendingPath())
-	if err != nil || !exists {
+	marker, err := tx.requireExactPendingLocked()
+	if err != nil {
 		return err
 	}
 	if err := os.Remove(tx.PendingPath()); err != nil {
@@ -744,15 +744,8 @@ func (tx *RebaselineTransaction) WriteSidecarCAS(expected []byte, expectedExiste
 		return err
 	}
 	defer tx.state.mu.Unlock()
-	if len(tx.state.pending) == 0 {
-		return fmt.Errorf("%w: durable rebaseline pending marker required before sidecar write", ErrRebaselineStateConflict)
-	}
-	pending, exists, err := readRebaselinePendingRaw(tx.PendingPath())
-	if err != nil {
+	if _, err := tx.requireExactPendingLocked(); err != nil {
 		return err
-	}
-	if !exists || !bytes.Equal(pending, tx.state.pending) {
-		return fmt.Errorf("%w: rebaseline pending marker changed before sidecar write", ErrRebaselineStateConflict)
 	}
 	current, existed, err := tx.readSidecarRaw()
 	if err != nil {
@@ -764,11 +757,31 @@ func (tx *RebaselineTransaction) WriteSidecarCAS(expected []byte, expectedExiste
 	return writeBytesAtomic(tx.SidecarPath(), replacement)
 }
 
+// requireExactPendingLocked binds every physical rebaseline mutation to the
+// exact durable journal bytes this active transaction wrote or read. The
+// caller must hold tx.state.mu through lockActive.
+func (tx *RebaselineTransaction) requireExactPendingLocked() ([]byte, error) {
+	if len(tx.state.pending) == 0 {
+		return nil, fmt.Errorf("%w: durable rebaseline pending marker required before mutation", ErrRebaselineStateConflict)
+	}
+	pending, exists, err := readRebaselinePendingRaw(tx.PendingPath())
+	if err != nil {
+		return nil, err
+	}
+	if !exists || !bytes.Equal(pending, tx.state.pending) {
+		return nil, fmt.Errorf("%w: rebaseline pending marker changed before mutation", ErrRebaselineStateConflict)
+	}
+	return pending, nil
+}
+
 func (tx *RebaselineTransaction) RollbackSidecarCAS(expectedPost, prior []byte, priorExisted bool) error {
 	if err := tx.lockActive(); err != nil {
 		return err
 	}
 	defer tx.state.mu.Unlock()
+	if _, err := tx.requireExactPendingLocked(); err != nil {
+		return err
+	}
 	current, existed, err := tx.readSidecarRaw()
 	if err != nil {
 		return err
@@ -1582,6 +1595,9 @@ func (e *engine) writeInitialStreamBaseline(recordedAt string) error {
 		return err
 	}
 	if exists {
+		if current.Schema != streamBaselineSchema {
+			return fmt.Errorf("%w: completion refuses existing stream baseline schema %q", ErrRebaselineStateConflict, current.Schema)
+		}
 		if current.Reason != streamBaselineReasonCompletion {
 			return fmt.Errorf("%w: completion refuses existing stream baseline reason %q", ErrRebaselineStateConflict, current.Reason)
 		}
