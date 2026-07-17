@@ -1,13 +1,229 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"compound/internal/attention"
 	"compound/internal/home"
 	"compound/internal/work"
 )
+
+const attentionReceiptOnlyJSONChildHome = "COMPOUND_ATTENTION_RECEIPT_ONLY_JSON_CHILD_HOME"
+const attentionReceiptOnlyInvalidChildValue = "COMPOUND_ATTENTION_RECEIPT_ONLY_INVALID_CHILD_VALUE"
+
+func TestPrintAttentionTextReceiptOnlyTidyFoldsOnlyNeedsYou(t *testing.T) {
+	report := attention.Report{
+		Counts: attention.Counts{
+			NeedsYou:       4,
+			NeedsYouGroups: 3,
+			Watching:       1,
+		},
+		Groups: []attention.Group{
+			{
+				Key: "gate-needs-you", Band: attention.BandNeedsYou, Source: attention.SourceReviews,
+				Area: "release", Count: 1, OperatorSummary: "Gate decision.", RiskGrade: attention.RiskGradeGate,
+			},
+			{
+				Key: "judge-needs-you", Band: attention.BandNeedsYou, Source: attention.SourceReviews,
+				Area: "verdict", Count: 1, OperatorSummary: "Judge outcome.", RiskGrade: attention.RiskGradeJudge,
+			},
+			{
+				Key: "tidy-needs-you", Band: attention.BandNeedsYou, Source: attention.SourceReviews,
+				Area: "bench", Count: 2, OperatorSummary: "Tidy receipts.", RiskGrade: attention.RiskGradeTidy,
+			},
+			{
+				Key: "tidy-watching", Band: attention.BandWatching, Source: attention.SourceWorkbench,
+				Area: "bench", Count: 1, OperatorSummary: "Watch tidy work.", RiskGrade: attention.RiskGradeTidy,
+			},
+		},
+	}
+	before, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report before render: %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		printAttentionTextWithReceiptOnlyGrade(report, attention.RiskGradeTidy)
+	})
+
+	for _, want := range []string{"Gate decision.", "Judge outcome.", "Watch tidy work."} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("receipt-only render missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "Tidy receipts.") {
+		t.Fatalf("tidy needs_you group remained in receipt-only render:\n%s", output)
+	}
+	if !strings.Contains(output, "1 receipt-only (risk_grade tidy) — still in the ledger; view with --json") {
+		t.Fatalf("receipt-only render missing folded-group count:\n%s", output)
+	}
+	if !strings.Contains(output, "attention needs_you=4 groups=3") {
+		t.Fatalf("receipt-only render mutated the authoritative header counts:\n%s", output)
+	}
+	after, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report after render: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("text-only receipt fold mutated report\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func TestPrintAttentionTextDefaultRemainsByteEquivalent(t *testing.T) {
+	report := attention.Report{
+		Counts: attention.Counts{
+			NeedsYou:       2,
+			NeedsYouGroups: 1,
+			ActionableNow:  1,
+			Watching:       3,
+			BlockedOnYou:   1,
+			FallbackGroups: 1,
+		},
+		Groups: []attention.Group{{
+			Key: "tidy-default", Band: attention.BandNeedsYou, Source: attention.SourceReviews,
+			Area: "bench", Kind: attention.KindHygiene, Count: 2, OperatorSummary: "Routine receipts.",
+			OperatorUnlock: "File the receipts.", BlastRadius: attention.BlastLocalReversible,
+			Reversibility: attention.Reversible, RiskGrade: attention.RiskGradeTidy, Leverage: 1.5,
+			Action:         &attention.Action{ID: "receipt.file", Kind: attention.ActionCopyOnly},
+			TerminalReason: "waiting for filing",
+		}},
+	}
+	want := "attention needs_you=2 groups=1 actionable_now=1 watching=3 blocked_on_you=1 fallback_groups=1\n" +
+		"- tidy 1.50 reviews/bench count=2 Routine receipts. unlock=\"File the receipts.\" action=copy_only/receipt.file reason=\"waiting for filing\"\n"
+
+	defaultOutput := captureStdout(t, func() { printAttentionText(report) })
+	if defaultOutput != want {
+		t.Fatalf("default attention text changed\ngot:\n%s\nwant:\n%s", defaultOutput, want)
+	}
+	emptyGradeOutput := captureStdout(t, func() { printAttentionTextWithReceiptOnlyGrade(report, "") })
+	if emptyGradeOutput != defaultOutput {
+		t.Fatalf("absent receipt-only flag changed text\ndefault:\n%s\nempty-grade:\n%s", defaultOutput, emptyGradeOutput)
+	}
+}
+
+func TestAttentionCLIReceiptOnlyTidyJSONKeepsEveryGroup(t *testing.T) {
+	if homePath := os.Getenv(attentionReceiptOnlyJSONChildHome); homePath != "" {
+		cmdAttention([]string{"--json", "--receipt-only-grade", attention.RiskGradeTidy, "--home", homePath})
+		os.Exit(0)
+	}
+
+	homePath, ready, held := initAttentionReceiptOnlyCLIHome(t)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAttentionCLIReceiptOnlyTidyJSONKeepsEveryGroup$")
+	cmd.Env = append(os.Environ(), attentionReceiptOnlyJSONChildHome+"="+homePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("receipt-only tidy JSON CLI must succeed: %v\n%s", err, output)
+	}
+	var report attention.Report
+	if err := json.Unmarshal(output, &report); err != nil {
+		t.Fatalf("parse receipt-only attention JSON: %v\n%s", err, output)
+	}
+	for _, want := range []string{ready, held} {
+		found := false
+		for _, group := range report.Groups {
+			if containsAttentionString(group.ItemIDs, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("receipt-only JSON dropped work %q: %+v", want, report.Groups)
+		}
+	}
+	for _, group := range report.Groups {
+		if group.RiskGrade == "" || group.RiskGrade != attention.Class(group) {
+			t.Fatalf("group %q risk_grade = %q, want Class(group)=%q", group.Key, group.RiskGrade, attention.Class(group))
+		}
+	}
+}
+
+func TestAttentionCLIReceiptOnlyTidyFoldsLiveTextOnly(t *testing.T) {
+	homePath, _, _ := initAttentionReceiptOnlyCLIHome(t)
+
+	defaultOutput := captureStdout(t, func() {
+		cmdAttention([]string{"--home", homePath})
+	})
+	if !strings.Contains(defaultOutput, "1 open work item is blocked on operator review.") {
+		t.Fatalf("default text dropped tidy needs_you group:\n%s", defaultOutput)
+	}
+	if strings.Contains(defaultOutput, "receipt-only") {
+		t.Fatalf("default text unexpectedly enabled receipt-only folding:\n%s", defaultOutput)
+	}
+
+	receiptOnlyOutput := captureStdout(t, func() {
+		cmdAttention([]string{"--receipt-only-grade", attention.RiskGradeTidy, "--home", homePath})
+	})
+	if strings.Contains(receiptOnlyOutput, "1 open work item is blocked on operator review.") {
+		t.Fatalf("receipt-only text retained tidy needs_you group:\n%s", receiptOnlyOutput)
+	}
+	if !strings.Contains(receiptOnlyOutput, "1 safe open work item can move.") {
+		t.Fatalf("receipt-only text dropped non-tidy group:\n%s", receiptOnlyOutput)
+	}
+	if !strings.Contains(receiptOnlyOutput, "1 receipt-only (risk_grade tidy) — still in the ledger; view with --json") {
+		t.Fatalf("receipt-only text missing folded-group count:\n%s", receiptOnlyOutput)
+	}
+	if !strings.Contains(receiptOnlyOutput, "attention needs_you=1 groups=1") {
+		t.Fatalf("receipt-only text changed authoritative counts:\n%s", receiptOnlyOutput)
+	}
+}
+
+func TestAttentionCLIRejectsUnsupportedReceiptOnlyGrades(t *testing.T) {
+	if value := os.Getenv(attentionReceiptOnlyInvalidChildValue); value != "" {
+		cmdAttention([]string{"--receipt-only-grade", value})
+		return
+	}
+
+	for _, value := range []string{attention.RiskGradeGate, attention.RiskGradeJudge, "garbage", " tidy "} {
+		t.Run(value, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestAttentionCLIRejectsUnsupportedReceiptOnlyGrades$")
+			cmd.Env = append(os.Environ(), attentionReceiptOnlyInvalidChildValue+"="+value)
+			output, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("receipt-only grade %q must exit usage 2, got err=%v output=%s", value, err, output)
+			}
+			if exitErr.ExitCode() != 2 {
+				t.Fatalf("receipt-only grade %q exit = %d, want 2; output=%s", value, exitErr.ExitCode(), output)
+			}
+			if !strings.Contains(string(output), attentionUsage) {
+				t.Fatalf("receipt-only grade %q output missing usage: %s", value, output)
+			}
+		})
+	}
+}
+
+func initAttentionReceiptOnlyCLIHome(t *testing.T) (string, string, string) {
+	t.Helper()
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{
+		WorkID: "work_receipt_json_ready", Owner: "compound-core", State: "ready",
+		SuccessPredicate: "ready work remains visible in attention",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create ready work: %v", err)
+	}
+	held, err := store.Create(work.CreateInput{
+		WorkID: "work_receipt_json_held", Owner: "compound-core", State: "held",
+		SuccessPredicate: "held work remains visible in attention",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create held work: %v", err)
+	}
+	return homePath, ready.ID, held.ID
+}
 
 func TestAttentionCLILiveProjectionSeparatesCanMoveFromNeedsOperator(t *testing.T) {
 	homePath := t.TempDir()

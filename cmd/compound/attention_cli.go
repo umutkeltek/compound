@@ -14,7 +14,7 @@ import (
 	"compound/internal/work"
 )
 
-const attentionUsage = "usage: compound attention [--json] [--home P]"
+const attentionUsage = "usage: compound attention [--json] [--receipt-only-grade tidy] [--home P]"
 
 func cmdAttention(args []string) {
 	if hasUsageFlag(args) {
@@ -23,10 +23,18 @@ func cmdAttention(args []string) {
 	}
 	jsonOut := false
 	homeFlag := ""
+	receiptOnlyGrade := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
 			jsonOut = true
+		case "--receipt-only-grade":
+			if i+1 >= len(args) || args[i+1] != attention.RiskGradeTidy {
+				fmt.Fprintln(os.Stderr, attentionUsage)
+				os.Exit(2)
+			}
+			i++
+			receiptOnlyGrade = attention.RiskGradeTidy
 		case "--home":
 			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
 				fmt.Fprintln(os.Stderr, attentionUsage)
@@ -85,7 +93,11 @@ func cmdAttention(args []string) {
 		}
 		return
 	}
-	printAttentionText(report)
+	if receiptOnlyGrade == "" {
+		printAttentionText(report)
+		return
+	}
+	printAttentionTextWithReceiptOnlyGrade(report, receiptOnlyGrade)
 }
 
 // activityAttentionMaxAgeDays bounds how old the latest span day may be before the activity read
@@ -201,6 +213,10 @@ func workTimestamp(value string) (time.Time, bool) {
 }
 
 func printAttentionText(report attention.Report) {
+	printAttentionTextWithReceiptOnlyGrade(report, "")
+}
+
+func printAttentionTextWithReceiptOnlyGrade(report attention.Report, receiptOnlyGrade string) {
 	fmt.Printf("attention needs_you=%d groups=%d actionable_now=%d watching=%d blocked_on_you=%d fallback_groups=%d\n",
 		report.Counts.NeedsYou,
 		report.Counts.NeedsYouGroups,
@@ -209,12 +225,27 @@ func printAttentionText(report attention.Report) {
 		report.Counts.BlockedOnYou,
 		report.Counts.FallbackGroups,
 	)
-	limit := len(report.Groups)
+	groups := report.Groups
+	receiptOnlyCount := 0
+	if receiptOnlyGrade != "" {
+		groups = make([]attention.Group, 0, len(report.Groups))
+		for _, group := range report.Groups {
+			if group.Band == attention.BandNeedsYou && group.RiskGrade == receiptOnlyGrade {
+				receiptOnlyCount++
+				continue
+			}
+			groups = append(groups, group)
+		}
+	}
+	if receiptOnlyCount > 0 {
+		fmt.Printf("%d receipt-only (risk_grade %s) — still in the ledger; view with --json\n", receiptOnlyCount, receiptOnlyGrade)
+	}
+	limit := len(groups)
 	if limit > 10 {
 		limit = 10
 	}
 	for i := 0; i < limit; i++ {
-		group := report.Groups[i]
+		group := groups[i]
 		fmt.Printf("- %s %.2f %s/%s count=%d %s",
 			attention.Class(group),
 			group.Leverage,
