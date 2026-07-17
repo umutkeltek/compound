@@ -34,6 +34,8 @@ func TestPermissionAuthorityValidation(t *testing.T) {
 	}{
 		{"rejects global MCP wildcard", "mcp__*", permissionFixture([]string{"mcp__*"})},
 		{"accepts literal server wildcard", "", permissionFixture([]string{"mcp__gbrain__*"})},
+		{"rejects legacy path-scoped Write rule", "Edit(~/.claude/**)", permissionFixture([]string{"Write(~/.claude/**)"})},
+		{"rejects legacy path-scoped MultiEdit rule", "Edit(~/Projects/**)", permissionFixture([]string{"MultiEdit(~/Projects/**)"})},
 		{"rejects duplicates", "duplicate", permissionFixture([]string{"Read", "Read"})},
 	}
 	badDefaults := permissionFixture([]string{"Read"})
@@ -122,6 +124,42 @@ func TestRenderPermissionsReconcilesManagedSliceAndIsIdempotent(t *testing.T) {
 	}
 	if !reflect.DeepEqual(second.Content, render.Content) {
 		t.Fatalf("second render differs:\n%s\n---\n%s", render.Content, second.Content)
+	}
+}
+
+func TestRenderPermissionsCanonicalizesUnmanagedLegacyFileEditRules(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{
+		"permissions": map[string]any{"allow": []string{
+			"Read",
+			"Write(~/.claude/**)",
+			"MultiEdit(~/.claude/**)",
+			"Edit(~/Projects/**)",
+			"Write(~/Projects/**)",
+			"MultiEdit(~/gbrain/**)",
+			"Write",
+			"Bash(echo Write(example))",
+		}},
+	})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Bash"}))
+
+	render, err := RenderPermissions(homePath, "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	permissions := decodeTestJSON(t, render.Content)["permissions"].(map[string]any)
+	assertStrings(t, permissions["allow"], []string{
+		"Read",
+		"Edit(~/.claude/**)",
+		"Edit(~/Projects/**)",
+		"Edit(~/gbrain/**)",
+		"Write",
+		"Bash(echo Write(example))",
+		"Bash",
+	})
+	if strings.Contains(string(render.Content), "Write(~/.claude/**)") ||
+		strings.Contains(string(render.Content), "MultiEdit(") {
+		t.Fatalf("legacy file-edit rules survived:\n%s", render.Content)
 	}
 }
 

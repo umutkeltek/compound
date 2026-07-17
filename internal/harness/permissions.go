@@ -190,6 +190,11 @@ func (p PermissionAuthority) Validate() error {
 		if strings.TrimSpace(rule) == "mcp__*" {
 			return fmt.Errorf("permissions.allow rule %q is unsupported; use a literal server rule such as mcp__gbrain__*", rule)
 		}
+		if p.Harness == "claude_code" {
+			if canonical, legacy := canonicalClaudeFileEditRule(rule); legacy {
+				return fmt.Errorf("permissions.allow rule %q is unsupported by current Claude Code file checks; use %s", rule, canonical)
+			}
+		}
 	}
 	if len(p.AutoMode.Allow) == 0 || strings.TrimSpace(p.AutoMode.Allow[0]) != "$defaults" {
 		return fmt.Errorf("auto_mode.allow must place $defaults first")
@@ -267,7 +272,11 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 		return PermissionRender{}, err
 	}
 	permissions := objectAt(settings, "permissions")
-	permissions["allow"] = reconcileRules(stringSlice(permissions["allow"]), previous.ManagedEntries["permissions.allow"], policy.Permissions.Allow, false)
+	currentAllow := stringSlice(permissions["allow"])
+	if policy.Harness == "claude_code" {
+		currentAllow = canonicalizeUnmanagedClaudeFileEditRules(currentAllow, previous.ManagedEntries["permissions.allow"])
+	}
+	permissions["allow"] = reconcileRules(currentAllow, previous.ManagedEntries["permissions.allow"], policy.Permissions.Allow, false)
 	permissions["deny"] = reconcileRules(stringSlice(permissions["deny"]), previous.ManagedEntries["permissions.deny"], policy.Permissions.Deny, false)
 	permissions["ask"] = reconcileRules(stringSlice(permissions["ask"]), previous.ManagedEntries["permissions.ask"], policy.Permissions.Ask, false)
 	permissions["defaultMode"] = policy.Permissions.DefaultMode
@@ -1407,6 +1416,38 @@ func reconcileRules(current, previousManaged, desired []string, defaultsFirst bo
 		}
 	}
 	return out
+}
+
+func canonicalizeUnmanagedClaudeFileEditRules(current, previousManaged []string) []string {
+	managed := map[string]bool{}
+	for _, rule := range previousManaged {
+		managed[rule] = true
+	}
+	out, seen := make([]string, 0, len(current)), map[string]bool{}
+	for _, rule := range current {
+		canonical := rule
+		if !managed[rule] {
+			if replacement, legacy := canonicalClaudeFileEditRule(rule); legacy {
+				canonical = replacement
+			}
+		}
+		if seen[canonical] {
+			continue
+		}
+		seen[canonical] = true
+		out = append(out, canonical)
+	}
+	return out
+}
+
+func canonicalClaudeFileEditRule(rule string) (string, bool) {
+	rule = strings.TrimSpace(rule)
+	for _, prefix := range []string{"Write(", "MultiEdit("} {
+		if strings.HasPrefix(rule, prefix) && strings.HasSuffix(rule, ")") {
+			return "Edit(" + strings.TrimPrefix(rule, prefix), true
+		}
+	}
+	return rule, false
 }
 
 func objectAt(root map[string]any, key string) map[string]any {
