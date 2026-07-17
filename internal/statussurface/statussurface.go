@@ -361,7 +361,10 @@ func SnapshotPath(home string, harness Harness) string {
 	return filepath.Join(home, "projections", "status-surface", string(harness)+".json")
 }
 
-func (s Store) Write(snapshot Snapshot) error {
+func (s Store) Write(snapshot *Snapshot) error {
+	if snapshot == nil {
+		return errors.New("status surface snapshot required")
+	}
 	if snapshot.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("status surface schema = %q, want %q", snapshot.SchemaVersion, SchemaVersion)
 	}

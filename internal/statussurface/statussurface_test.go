@@ -92,7 +92,7 @@ func TestSnapshotStoreIsAtomicPrivateAndStaleAware(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := Store{Home: home, TTL: 2 * time.Minute}
-	if err := store.Write(snapshot); err != nil {
+	if err := store.Write(&snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if !snapshot.FreshUntil.Equal(testNow.Add(2 * time.Minute)) {

@@ -147,7 +147,7 @@ func buildLiveStatusSnapshot(harness statussurface.Harness, stdin io.Reader, hom
 			Source: "compound/routeevidence:" + strings.TrimSpace(capacity.Source),
 		}, now, previous)
 	}
-	if err := store.Write(snapshot); err != nil {
+	if err := store.Write(&snapshot); err != nil {
 		return statussurface.Snapshot{}, err
 	}
 	return snapshot, nil
