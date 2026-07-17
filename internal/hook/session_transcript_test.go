@@ -21,7 +21,7 @@ func TestSessionEndWorklessTranscriptProducesContentFreeReceipt(t *testing.T) {
 	const lastAssistant = "Implemented the workless receipt path and verified it privately."
 	path := writeTranscript(t, transcriptHome, strings.Join([]string{
 		`{"type":"user","timestamp":"2026-07-10T01:00:00Z","message":{"role":"user","content":[{"type":"text","text":"` + firstUser + `"}]}}`,
-		`{"type":"assistant","timestamp":"2026-07-10T01:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Loaded /workspace/skills/golang-testing/SKILL.md for this fix."},{"type":"tool_use","name":"Write","input":{"file_path":"internal/hook/session_transcript.go"}},{"type":"tool_use","name":"Edit","input":{"file_path":"internal/hook/hook.go"}},{"type":"tool_use","name":"MultiEdit","input":{"file_path":"internal/hook/consumption.go"}},{"type":"tool_use","name":"Bash","input":{"command":"go test ./internal/hook"}}]}}`,
+		`{"type":"assistant","timestamp":"2026-07-10T01:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Loaded /repo/skills/golang-testing/SKILL.md for this fix."},{"type":"tool_use","name":"Write","input":{"file_path":"internal/hook/session_transcript.go"}},{"type":"tool_use","name":"Edit","input":{"file_path":"internal/hook/hook.go"}},{"type":"tool_use","name":"MultiEdit","input":{"file_path":"internal/hook/consumption.go"}},{"type":"tool_use","name":"Bash","input":{"command":"go test ./internal/hook"}}]}}`,
 		`{"type":"assistant","timestamp":"2026-07-10T01:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"` + lastAssistant + `"}]}}`,
 	}, "\n")+"\n")
 
