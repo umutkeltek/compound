@@ -215,12 +215,23 @@ func TestPutTornTailHealInvalidatesWarmMemo(t *testing.T) {
 	torn := frameLine(t, "rec_f5torn", "compound.receipt.v0.1", now, "torn")
 	appendFile(t, path, torn[:len(torn)/2]) // no trailing newline: torn tail
 
+	// Install the counter only now: the heal branch itself (truncateAndSync)
+	// truncates the torn tail back to exactly the pre-append size but still
+	// moves mtime, so checkID's post-heal memo consult below MUST see a stat
+	// mismatch against the pre-append warm entry and genuinely reparse --
+	// not silently serve the (by coincidence, byte-equal-content) stale map.
+	count, restore := installParseCounter(t)
+	defer restore()
+
 	if _, err := store.PutJSON("rec_f5after", eventRecord("rec_f5after", "compound.receipt.v0.1", now, "after"), "  "); err != nil {
 		t.Fatalf("put after torn tail: %v", err)
 	}
 
 	if len(repairs) != 1 || !strings.Contains(strings.ToLower(repairs[0]), "repair") {
 		t.Fatalf("repair log = %q, want exactly one repair entry", repairs)
+	}
+	if got := count(path); got != 1 {
+		t.Fatalf("parses during the post-heal put = %d, want 1 (the truncate moves mtime even though the heal restores the pre-append size, so the stat guard must still detect it and reparse rather than serve the pre-torn-append warm entry)", got)
 	}
 
 	parsed, err := parseSegment(path, false)
