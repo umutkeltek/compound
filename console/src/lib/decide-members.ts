@@ -1,4 +1,5 @@
 import type { DecideGroup } from "./decide-model";
+import type { AuthorityFace } from "../representation";
 
 export function remainingDecideMembers<T extends { id: string }>(
   members: T[],
@@ -6,6 +7,28 @@ export function remainingDecideMembers<T extends { id: string }>(
   completed: ReadonlySet<string>,
 ): T[] {
   return members.filter((member) => !excluded.has(member.id) && !completed.has(member.id));
+}
+
+export type EnumerableAuthorityFace = {
+  id: string;
+  label: string;
+  authority: AuthorityFace;
+};
+
+/**
+ * Confirmation selector for strict per-member acts. It carries owner faces
+ * unchanged and fails closed on any missing face; policy was already decided
+ * by the server model and is not re-evaluated here.
+ */
+export function enumerableAuthorityFaces<
+  T extends { id: string; label: string; authority?: AuthorityFace },
+>(members: T[]): EnumerableAuthorityFace[] | null {
+  if (members.some((member) => !member.authority)) return null;
+  return members.map((member) => ({
+    id: member.id,
+    label: member.label,
+    authority: member.authority!,
+  }));
 }
 
 export type DecideReadinessSectionKey = "act_now" | "needs_context";

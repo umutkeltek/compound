@@ -11,7 +11,7 @@
  * (same reason as generic-actions.selftest.ts).
  */
 
-import { decideReadinessSections, remainingDecideMembers } from "./decide-members";
+import { decideReadinessSections, enumerableAuthorityFaces, remainingDecideMembers } from "./decide-members";
 import { toAttentionReport } from "./attention";
 import { authoritySummarySegments } from "./action-authority";
 import { headlineAct } from "./briefing";
@@ -1118,6 +1118,62 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
         decided.face.primaryAction?.label === "Review 2 proposals" &&
         decided.face.primaryAction.description === "Select the fixes you want to allow. Each approval authorizes only that map edit; it does not apply the edit.",
       `act=${act.mode}${act.mode === "batch-enumerable" ? ` label=${JSON.stringify(act.label)} members=${JSON.stringify(act.members)}` : ""} face=${JSON.stringify(decided.face)}`,
+    );
+
+    const strictItems = items.map((item, index) => {
+      const authorityAction = authorityActionFixture(String(item.id));
+      const projected = (item.actions as Json[])[0];
+      authorityAction.id = projected.id;
+      authorityAction.label = projected.label;
+      authorityAction.argv = projected.argv;
+      authorityAction.requires_review = true;
+      authorityAction.policy_authority.wording = `Allowed in current scope · reversible · member ${index + 1}`;
+      authorityAction.policy_authority.expected_receipt = `member ${index + 1} review receipt`;
+      authorityAction.policy_authority.expected_proof = [`proof:member-${index + 1}`];
+      return { ...item, actions: [authorityAction] } as Json;
+    });
+    const strictGroup = { ...group, sample: strictItems[0] } as Json;
+    const strictItemsByID = new Map(strictItems.map((item) => [String(item.id), item]));
+    const [strict] = buildDecideGroups(
+      [strictGroup],
+      strictItemsByID,
+      null,
+      () => strictItems[0],
+      "live",
+    );
+    const strictAct = strict.act;
+    const selectedFaces = strictAct.mode === "batch-enumerable"
+      ? enumerableAuthorityFaces(strictAct.members)
+      : null;
+
+    const partialItems = structuredClone(strictItems);
+    delete partialItems[1].actions[0].action_intent.blast_radius;
+    delete partialItems[1].actions[0].policy_authority.blast_radius;
+    const partialByID = new Map(partialItems.map((item) => [String(item.id), item]));
+    const [partial] = buildDecideGroups(
+      [{ ...strictGroup, sample: partialItems[0] }],
+      partialByID,
+      null,
+      () => partialItems[0],
+      "live",
+    );
+    push(
+      "strict-enumerable-member-authorities-reach-confirmation-and-partial-fails-closed",
+      strictAct.mode === "batch-enumerable" &&
+        strictAct.members.length === 2 &&
+        strictAct.members.every((member) => member.actionIntentId && member.expectedAuthorityRevision && member.authority) &&
+        strict.face.state === "ready" &&
+        strict.face.authority == null &&
+        selectedFaces?.length === 2 &&
+        selectedFaces.every((member, index) =>
+          member.authority.wording.endsWith(`member ${index + 1}`) &&
+          member.authority.expectedReceipt === `member ${index + 1} review receipt` &&
+          member.authority.expectedProof.join(",") === `proof:member-${index + 1}` &&
+          authoritySummarySegments(member.authority).length === 13) &&
+        partial.act.mode === "copy" &&
+        partial.face.state === "waiting" &&
+        partial.face.primaryAction == null,
+      `strict=${strictAct.mode}/${strict.face.state}/faces:${JSON.stringify(selectedFaces)} partial=${partial.act.mode}/${partial.face.state}`,
     );
   }
 

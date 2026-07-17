@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
 import { Button, FreshnessChip, StateBadge, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/kit";
-import { decideReadinessSections, remainingDecideMembers } from "@/lib/decide-members";
+import { decideReadinessSections, enumerableAuthorityFaces, remainingDecideMembers } from "@/lib/decide-members";
 import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import type { DecisionEffectKind } from "@/lib/decision-registry";
@@ -213,6 +213,7 @@ function EnumerableApply({
   effectKind,
   policyNote,
   label,
+  authorityBound,
 }: {
   area: string;
   members: DecideMember[];
@@ -224,6 +225,7 @@ function EnumerableApply({
   effectKind: DecisionEffectKind;
   policyNote: string;
   label: string;
+  authorityBound: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -237,9 +239,11 @@ function EnumerableApply({
   const actionCopy = ENUMERABLE_ACTION_COPY[effectKind];
   const isSingleton = members.length === 1;
   const singletonMember = isSingleton ? members[0] : null;
+  const selectedAuthorityFaces = authorityBound ? enumerableAuthorityFaces(included) : [];
+  const authorityFacesComplete = selectedAuthorityFaces !== null;
 
   const apply = useCallback(async (operatorRationale: string) => {
-    if (!mutationsEnabled || running || included.length === 0) return;
+    if (!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete) return;
     if (requiresRationale && !operatorRationale.trim()) {
       setError(RATIONALE_REQUIRED_MESSAGE);
       return;
@@ -285,17 +289,17 @@ function EnumerableApply({
       setOpen(false);
       router.refresh();
     }
-  }, [actionCopy.past, area, included, mutationsEnabled, requiresConfirmation, requiresRationale, running, router]);
+  }, [actionCopy.past, area, authorityFacesComplete, included, mutationsEnabled, requiresConfirmation, requiresRationale, running, router]);
 
   const trigger = useCallback(() => {
-    if (!mutationsEnabled || running || included.length === 0) return;
+    if (!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete) return;
     setError(null);
     if (requiresConfirmation) {
       setOpen(true);
       return;
     }
     void apply("");
-  }, [apply, included.length, mutationsEnabled, requiresConfirmation, running]);
+  }, [apply, authorityFacesComplete, included.length, mutationsEnabled, requiresConfirmation, running]);
 
   return (
     <div className="flex flex-col gap-2">
@@ -334,7 +338,7 @@ function EnumerableApply({
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="primary"
-          disabled={!mutationsEnabled || running || included.length === 0}
+          disabled={!mutationsEnabled || running || included.length === 0 || !authorityFacesComplete}
           onClick={trigger}
           title={mutationsEnabled ? undefined : "Launch via 'compound console --operator' to act from a pinned console."}
         >
@@ -355,6 +359,11 @@ function EnumerableApply({
         </span>
       </div>
       {!open && error ? <span role="alert" className="text-2xs leading-snug text-crit">{error}</span> : null}
+      {authorityBound && !authorityFacesComplete ? (
+        <span role="alert" className="text-2xs leading-snug text-crit">
+          Current member authority is incomplete. Refresh before acting.
+        </span>
+      ) : null}
 
       <Dialog.Root open={open} onOpenChange={(next) => { if (!running) setOpen(next); }}>
         <Dialog.Portal>
@@ -373,6 +382,16 @@ function EnumerableApply({
                 </span>
               ) : null}
             </Dialog.Description>
+            {authorityBound && selectedAuthorityFaces ? (
+              <section className="mt-4 flex flex-col gap-3" aria-label="Selected member authorities">
+                {selectedAuthorityFaces.map((member) => (
+                  <div key={member.id} className="rounded-md border border-hair bg-soft p-2">
+                    <div className="mb-2 text-xs font-semibold leading-snug text-ink">{member.label}</div>
+                    <AuthorityFaceDetails authority={member.authority} embedded />
+                  </div>
+                ))}
+              </section>
+            ) : null}
             {requiresRationale ? (
               <label className="mt-3 flex flex-col gap-1">
                 <span className="text-2xs font-bold uppercase text-faint">Rationale <span className="text-crit">*</span></span>
@@ -469,7 +488,13 @@ function CapabilityStatus({ group, compact = false }: { group: DecideGroup; comp
   );
 }
 
-function AuthorityFaceDetails({ authority }: { authority: AuthorityFace }) {
+function AuthorityFaceDetails({
+  authority,
+  embedded = false,
+}: {
+  authority: AuthorityFace;
+  embedded?: boolean;
+}) {
   const target = [
     authority.target.kind,
     authority.target.id,
@@ -490,7 +515,10 @@ function AuthorityFaceDetails({ authority }: { authority: AuthorityFace }) {
   ] as const;
 
   return (
-    <section className="mx-4 mb-4 rounded-md border border-hair bg-soft px-3 py-3" aria-label={authority.current ? "Current action authority" : "Non-current authority evidence"}>
+    <section
+      className={`${embedded ? "" : "mx-4 mb-4"} rounded-md border border-hair bg-soft px-3 py-3`}
+      aria-label={authority.current ? "Current action authority" : "Non-current authority evidence"}
+    >
       <div className="text-2xs font-bold uppercase tracking-wide text-faint">
         {authority.current ? "Current action authority" : "Non-current authority evidence"}
       </div>
@@ -793,6 +821,7 @@ function DecisionDetail({
                 effectKind={act.effectKind}
                 policyNote={act.policyNote}
                 label={group.face.primaryAction?.label || act.label}
+                authorityBound={group.authorityBound === true}
               />
             ) : (
               <GovernedAct

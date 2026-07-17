@@ -853,6 +853,9 @@ export function buildDecideGroups(
     // A stale last-good action may explain why the feed degraded, but it must
     // never be presented as current action authority.
     const authority = projectionStatus === "live" ? exactAuthority?.authority ?? null : null;
+    const strictAct = authorityBound && projectionStatus === "live"
+      ? strictAllowedAct(group, sample, sampleId, exactAuthority, itemByID)
+      : null;
 
     // External-repo intake is a per-repository reviewed-artifact workflow.
     // An Attention group can contain several repositories, but the bespoke
@@ -871,13 +874,17 @@ export function buildDecideGroups(
               command: fallbackCommand(group, sample),
               reason: "Current owner authority evidence is not live.",
             }
-          : !authority || !authority.current || !authority.allowed
+          : exactAuthority && (!authority || !authority.current || !authority.allowed)
             ? {
                 mode: "copy",
                 command: fallbackCommand(group, sample),
                 reason: authority?.wording || "No complete current owner authority bundle is available.",
               }
-            : strictAllowedAct(group, sample, sampleId, exactAuthority, itemByID)
+            : strictAct ?? {
+                mode: "copy",
+                command: fallbackCommand(group, sample),
+                reason: "No complete current owner authority bundle is available.",
+              }
         : resolveAct(group, sample, sampleId, attnAction, itemByID);
     const createdAt = groupCreatedAt(group, itemByID);
     const count = num(group.count) || arr(group.item_ids).length || 1;
@@ -923,8 +930,18 @@ export function buildDecideGroups(
     const authorityHeld = Boolean(
       authorityBound && projectionStatus === "live" && authority?.current && !authority.allowed,
     );
+    const memberAuthorityReady = Boolean(
+      authorityBound &&
+      projectionStatus === "live" &&
+      act.mode === "batch-enumerable" &&
+      act.members.length > 0 &&
+      act.members.every((member) => member.authority?.current && member.authority.allowed),
+    );
     const authorityReady = Boolean(
-      authorityBound && projectionStatus === "live" && authority?.current && authority.allowed && !copyOnly,
+      authorityBound &&
+      projectionStatus === "live" &&
+      !copyOnly &&
+      ((authority?.current && authority.allowed) || memberAuthorityReady),
     );
     const authorityUnavailableReason = !authorityBound
       ? ""
@@ -959,11 +976,11 @@ export function buildDecideGroups(
         ? "Select the fixes you want to allow. Each approval authorizes only that map edit; it does not apply the edit."
       : capability.detail;
     const primaryAction = authorityBound
-      ? authorityReady && authority
+      ? authorityReady
         ? {
-            label: authority.wording,
+            label: authority?.wording || (act.mode === "copy" ? "Action" : act.label),
             effect: capability.kind === "unavailable" ? "apply" as const : capability.kind,
-            description: authority.expectedReceipt,
+            description: authority?.expectedReceipt || actionDescription,
           }
         : null
       : copyOnly
