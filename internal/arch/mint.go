@@ -101,6 +101,11 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "shared verdict plan->review->apply->annotate scaffolding for panel-verdict bridges (record/load/annotate/reviewed-extras mechanics only; no ledger, store, writeback, or terminal effect)",
 		Consumer: "internal/product, internal/sourceobs, and internal/capgraph verdict adapters (Record*Plan / Annotate*Queue / Load*Review / LatestReviewedFromExtras)",
 	},
+	"organ:statussurface": {
+		Class:    MintEvidence,
+		Purpose:  "body-free adaptive projection of harness-native context and rate-limit metadata with TTL-bound hysteresis and reversible terminal themes",
+		Consumer: "compound system status-surface snapshot/render plus Claude Code statusLine and the Codex theme projection",
+	},
 	// finding is the direct-write home for agent-authored operational findings under
 	// COMPOUND_HOME/observed/findings — the POSITIVE counterpart to the placement guard: a governed
 	// place to record a durable operational note instead of inventing a path. It writes only a
