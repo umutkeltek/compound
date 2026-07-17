@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/envelope"
+	"compound/internal/policy"
 	"compound/internal/reviewartifact"
 	"compound/internal/work"
 )
@@ -126,11 +128,14 @@ type Group struct {
 }
 
 type Action struct {
-	ID                   string   `json:"id"`
-	Label                string   `json:"label"`
-	Argv                 []string `json:"argv"`
-	Kind                 string   `json:"kind"`
-	RequiresConfirmation bool     `json:"requires_confirmation"`
+	ID                   string                   `json:"id"`
+	Label                string                   `json:"label"`
+	Argv                 []string                 `json:"argv"`
+	Kind                 string                   `json:"kind"`
+	RequiresConfirmation bool                     `json:"requires_confirmation"`
+	ActionIntent         *envelope.ActionIntent   `json:"action_intent,omitempty"`
+	PolicyDecision       *envelope.PolicyDecision `json:"policy_decision,omitempty"`
+	PolicyAuthority      *policy.AuthorityFace    `json:"policy_authority,omitempty"`
 }
 
 type Freshness struct {
@@ -221,6 +226,7 @@ func groupsFromReviews(report reviewartifact.QueueReport, now time.Time) []Group
 	out := make([]Group, 0, len(report.Groups))
 	freshness := Freshness{GeneratedAt: firstNonEmpty(report.GeneratedAt, now.UTC().Format(time.RFC3339)), Source: SourceReviews}
 	for _, group := range report.Groups {
+		action := actionFromReviewGroup(group)
 		g := Group{
 			Key:             firstNonEmpty(group.Key, group.Area),
 			Area:            group.Area,
@@ -230,10 +236,14 @@ func groupsFromReviews(report reviewartifact.QueueReport, now time.Time) []Group
 			OperatorSummary: firstNonEmpty(group.OperatorSummary, group.ContextLabel, group.Area),
 			OperatorUnlock:  group.OperatorUnlock,
 			OldestCreatedAt: oldestReviewGroupCreatedAt(group, report.Items),
-			Action:          actionFromReviewGroup(group),
+			Action:          action,
 			TerminalReason:  group.TerminalReason,
 			ItemIDs:         append([]string{}, group.ItemIDs...),
 			Freshness:       freshness,
+		}
+		if validReviewAuthority(action) {
+			g.BlastRadius = action.ActionIntent.BlastRadius
+			g.Reversibility = action.ActionIntent.Reversibility
 		}
 		out = append(out, g)
 	}
@@ -572,20 +582,90 @@ func actionFromReviewGroup(group reviewartifact.QueueGroup) *Action {
 }
 
 func actionFromReviewAction(action reviewartifact.Action, count int) *Action {
-	kind := ActionCopyOnly
-	if cleanCompoundArgv(action.Argv) {
-		kind = ActionOneClick
-		if count > 1 {
-			kind = ActionBatch
-		}
-	}
-	return &Action{
+	projected := &Action{
 		ID:                   firstNonEmpty(action.ID, "review.action"),
 		Label:                firstNonEmpty(action.Label, "Review"),
 		Argv:                 append([]string{}, action.Argv...),
-		Kind:                 kind,
-		RequiresConfirmation: action.RequiresReview || kind == ActionBatch || kind == ActionCopyOnly,
+		Kind:                 ActionCopyOnly,
+		RequiresConfirmation: true,
+		ActionIntent:         cloneActionIntent(action.ActionIntent),
+		PolicyDecision:       clonePolicyDecision(action.PolicyDecision),
+		PolicyAuthority:      clonePolicyAuthority(action.PolicyAuthority),
 	}
+	if !validReviewAuthority(projected) || !projected.PolicyAuthority.Allowed || !cleanCompoundArgv(action.Argv) {
+		return projected
+	}
+	kind := ActionOneClick
+	if count > 1 {
+		kind = ActionBatch
+	}
+	projected.Kind = kind
+	projected.RequiresConfirmation = action.RequiresReview || kind == ActionBatch
+	return projected
+}
+
+func validReviewAuthority(action *Action) bool {
+	if action == nil || action.ActionIntent == nil || action.PolicyDecision == nil || action.PolicyAuthority == nil {
+		return false
+	}
+	// Attention is a projection client: it verifies the producer-owned bundle but
+	// never evaluates policy or reconstructs authority from card text.
+	return policy.ValidateAuthorityBundle(*action.ActionIntent, *action.PolicyDecision, *action.PolicyAuthority) == nil
+}
+
+func cloneActionIntent(source *envelope.ActionIntent) *envelope.ActionIntent {
+	if source == nil {
+		return nil
+	}
+	clone := *source
+	clone.EvidenceRefs = cloneStrings(source.EvidenceRefs)
+	clone.EstimatedCost.USD = cloneFloat64(source.EstimatedCost.USD)
+	clone.EstimatedCost.Tokens = cloneInt(source.EstimatedCost.Tokens)
+	clone.EstimatedCost.HumanReviewMin = cloneInt(source.EstimatedCost.HumanReviewMin)
+	return &clone
+}
+
+func clonePolicyDecision(source *envelope.PolicyDecision) *envelope.PolicyDecision {
+	if source == nil {
+		return nil
+	}
+	clone := *source
+	clone.EvidenceRefs = cloneStrings(source.EvidenceRefs)
+	clone.Reasons = cloneStrings(source.Reasons)
+	clone.Obligations = cloneStrings(source.Obligations)
+	return &clone
+}
+
+func clonePolicyAuthority(source *policy.AuthorityFace) *policy.AuthorityFace {
+	if source == nil {
+		return nil
+	}
+	clone := *source
+	clone.ExpectedProof = cloneStrings(source.ExpectedProof)
+	return &clone
+}
+
+func cloneStrings(source []string) []string {
+	if source == nil {
+		return nil
+	}
+	return append([]string{}, source...)
+}
+
+func cloneFloat64(source *float64) *float64 {
+	if source == nil {
+		return nil
+	}
+	clone := *source
+	return &clone
+}
+
+func cloneInt(source *int) *int {
+	if source == nil {
+		return nil
+	}
+	clone := *source
+	return &clone
 }
 
 func actionFromWorkbenchDispatch(dispatch work.WorkbenchDispatchNext) *Action {

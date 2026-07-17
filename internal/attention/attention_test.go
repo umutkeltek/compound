@@ -448,8 +448,12 @@ func TestCountsAddUp(t *testing.T) {
 	if report.Counts.NeedsYouGroups != 2 {
 		t.Fatalf("needs_you_groups = %d, want 2", report.Counts.NeedsYouGroups)
 	}
-	if report.Counts.ActionableNow != 1 {
-		t.Fatalf("actionable_now = %d, want 1", report.Counts.ActionableNow)
+	if report.Counts.ActionableNow != 0 {
+		t.Fatalf("actionable_now = %d, want 0 because the legacy review action has no authority bundle", report.Counts.ActionableNow)
+	}
+	legacy := groupByKey(t, report, "actionable").Action
+	if legacy == nil || legacy.Kind != ActionCopyOnly || !legacy.RequiresConfirmation {
+		t.Fatalf("legacy review action must remain visible but fail closed: %+v", legacy)
 	}
 	if report.Counts.Watching != 4 {
 		t.Fatalf("watching = %d, want 4", report.Counts.Watching)
