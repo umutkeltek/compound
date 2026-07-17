@@ -37,10 +37,10 @@ func codexTOMLFixtureBody(guardianValue string, hasGuardianKey, hasFeaturesBlock
 		b.WriteString("web_search_request = false\n")
 		b.WriteString("\n")
 	}
-	b.WriteString("[projects.\"/home/operator/workspace\"]\n")
+	b.WriteString("[projects.\"/repo/operator/workspace\"]\n")
 	b.WriteString("trust_level = \"trusted\"\n")
 	b.WriteString("\n")
-	b.WriteString("[projects.\"/home/operator\"]\n")
+	b.WriteString("[projects.\"/repo/operator\"]\n")
 	b.WriteString("trust_level = \"trusted\"\n")
 	b.WriteString("\n")
 	b.WriteString("[hooks.state]\n")
