@@ -224,6 +224,34 @@ func TestClaudeRenderHasNoPAIBranding(t *testing.T) {
 	}
 }
 
+func TestClaudeRenderShowsRemainingContextAsTenSegmentCapacity(t *testing.T) {
+	watch := Snapshot{
+		Harness: HarnessClaude,
+		Context: Metric{Status: StatusLive, RemainingPercent: 72},
+		Limits: []LimitWindow{
+			{Kind: LimitFiveHour, Status: StatusLive, RemainingPercent: 81},
+			{Kind: LimitSevenDay, Status: StatusLive, RemainingPercent: 43},
+		},
+		Mode: ModeWatch,
+	}
+	line, err := Render(watch, RenderOptions{Theme: ThemePAINexus, Width: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "< CLAUDE:WATCH > left: ctx [#######---] 72% | 5h 81% | wk 43%"; line != want {
+		t.Fatalf("watch render = %q, want %q", line, want)
+	}
+
+	unknown := Snapshot{Harness: HarnessClaude, Context: Metric{Status: StatusUnknown}, Mode: ModeUnknown}
+	line, err = Render(unknown, RenderOptions{Theme: ThemePAIMono, Width: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := ".. CLAUDE:UNKNOWN .. left: ctx [??????????] ? | 5h ? | wk ?"; line != want {
+		t.Fatalf("unknown render = %q, want %q", line, want)
+	}
+}
+
 func TestInferDisplayClassChangesThemeAndInformationProfile(t *testing.T) {
 	for _, tc := range []struct {
 		mode  Mode
