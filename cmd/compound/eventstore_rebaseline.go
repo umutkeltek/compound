@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -30,19 +31,28 @@ const eventStoreRebaselineCapability = "eventstore.stream_baseline.rewrite"
 const rebaselinePendingSchema = eventstore.RebaselinePendingSchema
 
 type rebaselinePending struct {
-	SchemaVersion     string                              `json:"schema_version"`
-	SidecarPath       string                              `json:"sidecar_path"`
-	PriorExisted      bool                                `json:"prior_existed"`
-	PreImageRef       string                              `json:"pre_image_ref"`
-	PostImageRef      string                              `json:"post_image_ref"`
-	BeforeEvidenceRef string                              `json:"before_evidence_ref"`
-	AfterEvidenceRef  string                              `json:"after_evidence_ref"`
-	ActionIntent      envelope.ActionIntent               `json:"action_intent"`
-	PolicyDecision    envelope.PolicyDecision             `json:"policy_decision"`
-	PolicyAuthority   policy.AuthorityFace                `json:"policy_authority"`
-	Proofs            []eventstore.RebaselinePendingProof `json:"proofs"`
-	Receipt           envelope.Receipt                    `json:"-"`
-	Transition        envelope.Transition                 `json:"-"`
+	SchemaVersion     string                                      `json:"schema_version"`
+	SidecarPath       string                                      `json:"sidecar_path"`
+	PriorExisted      bool                                        `json:"prior_existed"`
+	PreImageRef       string                                      `json:"pre_image_ref"`
+	PostImageRef      string                                      `json:"post_image_ref"`
+	BeforeEvidenceRef string                                      `json:"before_evidence_ref"`
+	AfterEvidenceRef  string                                      `json:"after_evidence_ref"`
+	AuthorityBundle   eventstore.RebaselinePendingAuthorityBundle `json:"authority_bundle"`
+	Proofs            []eventstore.RebaselinePendingProof         `json:"proofs"`
+	ActionIntent      envelope.ActionIntent                       `json:"-"`
+	PolicyDecision    envelope.PolicyDecision                     `json:"-"`
+	PolicyAuthority   policy.AuthorityFace                        `json:"-"`
+	PolicySource      string                                      `json:"-"`
+	Receipt           envelope.Receipt                            `json:"-"`
+	Transition        envelope.Transition                         `json:"-"`
+}
+
+type rebaselineAuthorityBundle struct {
+	ActionIntent    envelope.ActionIntent   `json:"action_intent"`
+	PolicyDecision  envelope.PolicyDecision `json:"policy_decision"`
+	PolicyAuthority policy.AuthorityFace    `json:"policy_authority"`
+	PolicySource    string                  `json:"policy_source"`
 }
 
 func (p rebaselinePending) Validate(expectedSidecar string) error {
@@ -82,6 +92,18 @@ func (p rebaselinePending) Validate(expectedSidecar string) error {
 	if err := validateRebaselinePendingAuthority(p); err != nil {
 		return err
 	}
+	authorityRaw, err := json.Marshal(rebaselineAuthorityBundle{ActionIntent: p.ActionIntent, PolicyDecision: p.PolicyDecision, PolicyAuthority: p.PolicyAuthority, PolicySource: p.PolicySource})
+	if err != nil {
+		return fmt.Errorf("rebaseline pending authority bundle: %w", err)
+	}
+	expectedAuthority, err := eventstore.NewRebaselinePendingAuthorityBundle(authorityRaw)
+	if err != nil {
+		return fmt.Errorf("rebaseline pending authority bundle: %w", err)
+	}
+	actualAuthority, err := p.AuthorityBundle.CanonicalRecord()
+	if err != nil || p.AuthorityBundle.RecordSHA256 != expectedAuthority.RecordSHA256 || !bytes.Equal(actualAuthority, expectedAuthority.Record) {
+		return fmt.Errorf("rebaseline pending authority bundle does not bind exact governed authority")
+	}
 	if len(p.Proofs) != 2 || p.Proofs[0].ID != p.Receipt.ID || p.Proofs[1].ID != p.Transition.ID {
 		return fmt.Errorf("rebaseline pending opaque proofs do not bind receipt and transition ids")
 	}
@@ -118,7 +140,7 @@ func validateRebaselinePendingAuthority(p rebaselinePending) error {
 		authority.StandingGrantID != p.PolicyDecision.StandingGrantID || authority.Target != p.ActionIntent.Target || authority.TargetScope != "private" ||
 		authority.BlastRadius != p.ActionIntent.BlastRadius || authority.Reversibility != p.ActionIntent.Reversibility ||
 		authority.VerifiedRecoverability != policy.RecoverabilityVerified || authority.OperatorControlContinuity != policy.OperatorControlContinuous ||
-		strings.TrimSpace(authority.PolicySource) == "" || !allowedGate || strings.TrimSpace(authority.ExpectedReceipt) == "" || len(authority.ExpectedProof) == 0 {
+		strings.TrimSpace(authority.PolicySource) == "" || authority.PolicySource != p.PolicySource || strings.TrimSpace(p.PolicySource) == "" || !allowedGate || strings.TrimSpace(authority.ExpectedReceipt) == "" || len(authority.ExpectedProof) == 0 {
 		return fmt.Errorf("rebaseline pending policy authority is invalid or does not bind the governed action")
 	}
 	return nil
@@ -239,13 +261,17 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 	}
 	var result rebaselineResult
 	err = store.WithRebaselineTransaction(func(tx *eventstore.RebaselineTransaction) error {
-		_, _, pendingExists, pendingReadErr := readRebaselinePending(tx)
+		cfg, policySource, err := loadRebaselinePolicyFn(homePath)
+		if err != nil {
+			return err
+		}
+		_, _, pendingExists, pendingReadErr := readRebaselinePendingWithPolicy(tx, cfg, policySource)
 		if pendingExists || pendingReadErr != nil {
 			artifactStore, err := home.NewArtifactStore(homePath)
 			if err != nil {
 				return err
 			}
-			recovered, err := recoverPendingRebaseline(homePath, store, artifactStore, tx, rebaselineNowFn())
+			recovered, err := recoverPendingRebaseline(homePath, store, artifactStore, tx, cfg, policySource, rebaselineNowFn())
 			if err != nil {
 				return err
 			}
@@ -261,10 +287,6 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 		}
 		if !preview.HomeComplete {
 			return fmt.Errorf("event-store rebaseline: migration is not complete; nothing to re-baseline (run `compound event-store migrate --apply` first)")
-		}
-		cfg, policySource, err := loadRebaselinePolicyFn(homePath)
-		if err != nil {
-			return err
 		}
 		now := rebaselineNowFn()
 		target := envelope.ActionTarget{Kind: "eventstore_stream_baseline", ID: "stream-baseline", Path: preview.SidecarPath}
@@ -305,7 +327,10 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 		if err := transition.Validate(); err != nil {
 			return fmt.Errorf("validate rebaseline transition before mutation: %w", err)
 		}
-		pending := rebaselinePending{SchemaVersion: rebaselinePendingSchema, SidecarPath: preview.SidecarPath, PriorExisted: priorExisted, PreImageRef: preImageRef, PostImageRef: postImageRef, BeforeEvidenceRef: beforeRef, AfterEvidenceRef: afterRef, ActionIntent: ai, PolicyDecision: evaluation.Decision, PolicyAuthority: evaluation.Authority, Receipt: receipt, Transition: transition}
+		pending := rebaselinePending{SchemaVersion: rebaselinePendingSchema, SidecarPath: preview.SidecarPath, PriorExisted: priorExisted, PreImageRef: preImageRef, PostImageRef: postImageRef, BeforeEvidenceRef: beforeRef, AfterEvidenceRef: afterRef, ActionIntent: ai, PolicyDecision: evaluation.Decision, PolicyAuthority: evaluation.Authority, PolicySource: policySource, Receipt: receipt, Transition: transition}
+		if err := validateRebaselinePendingCurrentAuthority(pending, cfg, policySource); err != nil {
+			return fmt.Errorf("validate current rebaseline authority before mutation: %w", err)
+		}
 		pendingRaw, err := encodeRebaselinePending(pending, preview.SidecarPath)
 		if err != nil {
 			return fmt.Errorf("encode rebaseline pending journal: %w", err)
@@ -427,6 +452,18 @@ func decodeRebaselinePending(raw []byte, expectedSidecar string) (rebaselinePend
 	if len(pending.Proofs) != 2 {
 		return pending, fmt.Errorf("rebaseline pending requires exactly two opaque proofs")
 	}
+	authorityRaw, err := pending.AuthorityBundle.CanonicalRecord()
+	if err != nil {
+		return pending, fmt.Errorf("parse rebaseline pending authority bundle: %w", err)
+	}
+	var authority rebaselineAuthorityBundle
+	if err := json.Unmarshal(authorityRaw, &authority); err != nil {
+		return pending, fmt.Errorf("parse rebaseline pending authority record: %w", err)
+	}
+	pending.ActionIntent = authority.ActionIntent
+	pending.PolicyDecision = authority.PolicyDecision
+	pending.PolicyAuthority = authority.PolicyAuthority
+	pending.PolicySource = authority.PolicySource
 	if err := json.Unmarshal(pending.Proofs[0].Record, &pending.Receipt); err != nil {
 		return pending, fmt.Errorf("parse rebaseline pending receipt proof: %w", err)
 	}
@@ -440,6 +477,14 @@ func decodeRebaselinePending(raw []byte, expectedSidecar string) (rebaselinePend
 }
 
 func encodeRebaselinePending(pending rebaselinePending, expectedSidecar string) ([]byte, error) {
+	authorityRaw, err := json.Marshal(rebaselineAuthorityBundle{ActionIntent: pending.ActionIntent, PolicyDecision: pending.PolicyDecision, PolicyAuthority: pending.PolicyAuthority, PolicySource: pending.PolicySource})
+	if err != nil {
+		return nil, err
+	}
+	pending.AuthorityBundle, err = eventstore.NewRebaselinePendingAuthorityBundle(authorityRaw)
+	if err != nil {
+		return nil, err
+	}
 	receiptRaw, err := json.Marshal(&pending.Receipt)
 	if err != nil {
 		return nil, err
@@ -476,6 +521,30 @@ func readRebaselinePending(tx *eventstore.RebaselineTransaction) (rebaselinePend
 	return pending, raw, true, err
 }
 
+func readRebaselinePendingWithPolicy(tx *eventstore.RebaselineTransaction, cfg policy.Config, policySource string) (rebaselinePending, []byte, bool, error) {
+	pending, raw, exists, err := readRebaselinePending(tx)
+	if err != nil || !exists {
+		return pending, raw, exists, err
+	}
+	if err := validateRebaselinePendingCurrentAuthority(pending, cfg, policySource); err != nil {
+		return pending, raw, true, err
+	}
+	return pending, raw, true, nil
+}
+
+func validateRebaselinePendingCurrentAuthority(pending rebaselinePending, cfg policy.Config, policySource string) error {
+	currentSource := strings.TrimSpace(policySource)
+	if pending.PolicySource != currentSource {
+		return fmt.Errorf("rebaseline pending policy source changed: stored=%q current=%q", pending.PolicySource, currentSource)
+	}
+	target := envelope.ActionTarget{Kind: "eventstore_stream_baseline", ID: "stream-baseline", Path: pending.SidecarPath}
+	projected := policy.ProjectAuthority(pending.ActionIntent, pending.PolicyDecision, cfg, rebaselineAuthorityContext(target), currentSource)
+	if !reflect.DeepEqual(projected, pending.PolicyAuthority) {
+		return fmt.Errorf("rebaseline pending policy authority no longer matches current exact projection")
+	}
+	return nil
+}
+
 func rebaselineAuthorityContext(target envelope.ActionTarget) policy.EvaluationContext {
 	return policy.EvaluationContext{Authority: &policy.AuthorityContext{
 		TargetScope:               "private",
@@ -495,8 +564,8 @@ const (
 	proofConflict
 )
 
-func recoverPendingRebaseline(homePath string, store *eventstore.Store, artifacts *home.ArtifactStore, tx *eventstore.RebaselineTransaction, now time.Time) (*rebaselineResult, error) {
-	pending, pendingRaw, exists, err := readRebaselinePending(tx)
+func recoverPendingRebaseline(homePath string, store *eventstore.Store, artifacts *home.ArtifactStore, tx *eventstore.RebaselineTransaction, cfg policy.Config, policySource string, now time.Time) (*rebaselineResult, error) {
+	pending, pendingRaw, exists, err := readRebaselinePendingWithPolicy(tx, cfg, policySource)
 	if err != nil {
 		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, pendingRaw, now, err)
 	}
@@ -568,7 +637,7 @@ func recoverPendingRebaseline(homePath string, store *eventstore.Store, artifact
 	if err := json.Unmarshal(post, &baseline); err != nil {
 		return nil, err
 	}
-	return &rebaselineResult{Baseline: baseline, Receipt: pending.Receipt, Transition: pending.Transition, BeforeRef: pending.BeforeEvidenceRef, AfterRef: pending.AfterEvidenceRef}, nil
+	return &rebaselineResult{Baseline: baseline, Receipt: pending.Receipt, Transition: pending.Transition, BeforeRef: pending.BeforeEvidenceRef, AfterRef: pending.AfterEvidenceRef, Evaluation: policy.AuthorityEvaluation{Decision: pending.PolicyDecision, Authority: pending.PolicyAuthority}, PolicySource: pending.PolicySource}, nil
 }
 
 func eventstoreProofPresence(store *eventstore.Store, expected envelope.Envelope) (proofPresence, error) {
