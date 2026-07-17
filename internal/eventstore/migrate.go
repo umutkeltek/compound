@@ -11,6 +11,7 @@ package eventstore
 // falling back to the archived copy.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"compound/internal/envelope"
 )
 
 const (
@@ -53,11 +56,84 @@ const (
 	// rebaselineLockName guards the sidecar with its OWN lock, distinct from
 	// migrateLockName's whole-migration-run lock, so a re-baseline never blocks
 	// (or is blocked by) a live migrate apply/verify.
-	rebaselineLockName = ".rebaseline.lock"
+	rebaselineLockName        = ".rebaseline.lock"
+	rebaselinePendingFileName = "rebaseline-pending.json"
 
 	streamBaselineReasonCompletion = "completion"
 	streamBaselineReasonRebaseline = "rebaseline"
 )
+
+const RebaselinePendingSchema = "compound.eventstore.rebaseline_pending.v0.1"
+
+var (
+	ErrRebaselineFinalizationPending = errors.New("event-store rebaseline finalization pending")
+	ErrRebaselineStateConflict       = errors.New("event-store rebaseline state conflict")
+)
+
+// RebaselinePending is the crash-recovery journal for the one governed
+// stream-baseline mutation. It carries the exact validated proof envelopes so
+// recovery can roll forward without inventing a second action or mutation.
+type RebaselinePending struct {
+	SchemaVersion     string              `json:"schema_version"`
+	SidecarPath       string              `json:"sidecar_path"`
+	PriorExisted      bool                `json:"prior_existed"`
+	PreImageRef       string              `json:"pre_image_ref"`
+	PostImageRef      string              `json:"post_image_ref"`
+	BeforeEvidenceRef string              `json:"before_evidence_ref"`
+	AfterEvidenceRef  string              `json:"after_evidence_ref"`
+	ActionIntentID    string              `json:"action_intent_id"`
+	PolicyDecisionID  string              `json:"policy_decision_id"`
+	AuthorityRevision string              `json:"authority_revision"`
+	Receipt           envelope.Receipt    `json:"receipt"`
+	Transition        envelope.Transition `json:"transition"`
+}
+
+func (p RebaselinePending) Validate(expectedSidecar string) error {
+	if p.SchemaVersion != RebaselinePendingSchema {
+		return fmt.Errorf("rebaseline pending schema_version=%q, want %q", p.SchemaVersion, RebaselinePendingSchema)
+	}
+	if strings.TrimSpace(p.SidecarPath) == "" || p.SidecarPath != expectedSidecar {
+		return fmt.Errorf("rebaseline pending sidecar_path=%q, want %q", p.SidecarPath, expectedSidecar)
+	}
+	for name, value := range map[string]string{
+		"pre_image_ref": p.PreImageRef, "post_image_ref": p.PostImageRef,
+		"before_evidence_ref": p.BeforeEvidenceRef, "after_evidence_ref": p.AfterEvidenceRef,
+		"action_intent_id": p.ActionIntentID, "policy_decision_id": p.PolicyDecisionID,
+		"authority_revision": p.AuthorityRevision,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("rebaseline pending %s is required", name)
+		}
+	}
+	if err := p.Receipt.Validate(); err != nil {
+		return fmt.Errorf("rebaseline pending receipt: %w", err)
+	}
+	if err := p.Transition.Validate(); err != nil {
+		return fmt.Errorf("rebaseline pending transition: %w", err)
+	}
+	if len(p.Transition.ActionRefs) == 0 || p.Transition.ActionRefs[0] != p.ActionIntentID || p.Receipt.IDs.WorkID != p.Transition.IDs.WorkID {
+		return fmt.Errorf("rebaseline pending proof identity mismatch")
+	}
+	if !containsExact(p.Receipt.ProofRefs, p.PreImageRef) || !containsExact(p.Receipt.ProofRefs, p.PostImageRef) ||
+		!containsExact(p.Receipt.StateDelta.Artifacts, p.PreImageRef) || !containsExact(p.Receipt.StateDelta.Artifacts, p.PostImageRef) ||
+		!containsExact(p.Transition.BeforeRefs, p.PreImageRef) || !containsExact(p.Transition.AfterRefs, p.PostImageRef) ||
+		!containsExact(p.Receipt.EvidenceRefs, p.BeforeEvidenceRef) || !containsExact(p.Receipt.EvidenceRefs, p.AfterEvidenceRef) ||
+		!containsExact(p.Receipt.EvidenceRefs, p.PreImageRef) || !containsExact(p.Receipt.EvidenceRefs, p.PostImageRef) ||
+		!containsExact(p.Transition.EvidenceRefs, p.BeforeEvidenceRef) || !containsExact(p.Transition.EvidenceRefs, p.AfterEvidenceRef) ||
+		!containsExact(p.Transition.EvidenceRefs, p.PreImageRef) || !containsExact(p.Transition.EvidenceRefs, p.PostImageRef) {
+		return fmt.Errorf("rebaseline pending proof refs do not bind journaled pre/post images")
+	}
+	return nil
+}
+
+func containsExact(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
 
 // ErrMigrationConflict halts a run when a loose record and a segment record
 // share an id but differ in content. Both bodies are preserved for the operator;
@@ -308,6 +384,9 @@ func (s *Store) LegacyWriterActive() (bool, error) {
 // behaving identically to today. Absent streams are the healthy pure-segment
 // case and never flag.
 func (e *engine) legacyStreamRegrew() (bool, error) {
+	if err := e.failIfRebaselinePending(); err != nil {
+		return false, err
+	}
 	marker, err := os.Stat(e.completionPath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -341,6 +420,16 @@ func (e *engine) legacyStreamRegrew() (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (e *engine) failIfRebaselinePending() error {
+	path := filepath.Join(e.migrationRoot(), rebaselinePendingFileName)
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%w: %s", ErrRebaselineFinalizationPending, path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // StreamBaseline is the schema-stamped sidecar recording each frozen
@@ -379,6 +468,26 @@ func (e *engine) currentStreamSizes() (map[string]int64, error) {
 // as (zero value, false, nil) — never an error — since most homes (any legacy
 // home completed before this change) legitimately have no sidecar yet.
 func readStreamBaseline(path string) (StreamBaseline, bool, error) {
+	pendingPath := filepath.Join(filepath.Dir(path), rebaselinePendingFileName)
+	if _, err := os.Stat(pendingPath); err == nil {
+		return StreamBaseline{}, false, fmt.Errorf("%w: %s", ErrRebaselineFinalizationPending, pendingPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return StreamBaseline{}, false, err
+	}
+	baseline, ok, err := readStreamBaselineRaw(path)
+	if err != nil {
+		return StreamBaseline{}, false, err
+	}
+	// The marker may have appeared between the first check and sidecar read.
+	if _, statErr := os.Stat(pendingPath); statErr == nil {
+		return StreamBaseline{}, false, fmt.Errorf("%w: %s", ErrRebaselineFinalizationPending, pendingPath)
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return StreamBaseline{}, false, statErr
+	}
+	return baseline, ok, nil
+}
+
+func readStreamBaselineRaw(path string) (StreamBaseline, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -393,19 +502,11 @@ func readStreamBaseline(path string) (StreamBaseline, bool, error) {
 	return baseline, true, nil
 }
 
-// writeStreamBaselineAtomic writes the sidecar via tmp+rename (never O_EXCL —
-// unlike completion.json this file IS meant to be rewritten, only ever through
-// a governed writer) so a reader never observes a partially written file.
-func writeStreamBaselineAtomic(path string, baseline StreamBaseline) error {
+func writeBytesAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(baseline, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
@@ -437,6 +538,18 @@ func writeStreamBaselineAtomic(path string, baseline StreamBaseline) error {
 	return syncDirectory(dir)
 }
 
+// writeStreamBaselineAtomic writes the sidecar via tmp+rename (never O_EXCL —
+// unlike completion.json this file IS meant to be rewritten, only ever through
+// a governed writer) so a reader never observes a partially written file.
+func writeStreamBaselineAtomic(path string, baseline StreamBaseline) error {
+	data, err := json.MarshalIndent(baseline, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return writeBytesAtomic(path, data)
+}
+
 // acquireRebaselineLock guards the sidecar with its own lock (rebaselineLockName),
 // separate from acquireRunLock's whole-migration-run lock, so a re-baseline
 // never blocks (or is blocked by) a live migrate apply/verify — only a second
@@ -456,6 +569,136 @@ func (e *engine) acquireRebaselineLock() (*appendLock, error) {
 	return &appendLock{file: file}, nil
 }
 
+// RebaselineTransaction is a lock-scoped handle. Callers cannot construct one,
+// so journal, sidecar, and recovery operations share the same rebaseline lock.
+type RebaselineTransaction struct {
+	store *Store
+}
+
+func (s *Store) WithRebaselineTransaction(fn func(*RebaselineTransaction) error) (retErr error) {
+	if s == nil || s.engine == nil {
+		return fmt.Errorf("event store requires a home")
+	}
+	if fn == nil {
+		return fmt.Errorf("rebaseline transaction callback required")
+	}
+	lock, err := s.engine.acquireRebaselineLock()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if releaseErr := lock.release(); retErr == nil && releaseErr != nil {
+			retErr = releaseErr
+		}
+	}()
+	return fn(&RebaselineTransaction{store: s})
+}
+
+func (tx *RebaselineTransaction) PendingPath() string {
+	return filepath.Join(tx.store.engine.migrationRoot(), rebaselinePendingFileName)
+}
+
+func (tx *RebaselineTransaction) SidecarPath() string { return tx.store.engine.streamBaselinePath() }
+
+func (tx *RebaselineTransaction) ReadPending() (RebaselinePending, bool, error) {
+	data, err := os.ReadFile(tx.PendingPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return RebaselinePending{}, false, nil
+		}
+		return RebaselinePending{}, false, err
+	}
+	var pending RebaselinePending
+	if err := json.Unmarshal(data, &pending); err != nil {
+		return RebaselinePending{}, false, fmt.Errorf("parse rebaseline pending %s: %w", tx.PendingPath(), err)
+	}
+	if err := pending.Validate(tx.SidecarPath()); err != nil {
+		return pending, true, err
+	}
+	return pending, true, nil
+}
+
+func (tx *RebaselineTransaction) WritePending(pending RebaselinePending) error {
+	if err := pending.Validate(tx.SidecarPath()); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(pending, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeBytesAtomic(tx.PendingPath(), append(data, '\n'))
+}
+
+func (tx *RebaselineTransaction) ClearPending() error {
+	err := os.Remove(tx.PendingPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(tx.PendingPath()))
+}
+
+func (tx *RebaselineTransaction) ReadSidecar() ([]byte, bool, error) {
+	data, err := os.ReadFile(tx.SidecarPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+func (tx *RebaselineTransaction) FreshPreview() (StreamBaselinePreview, error) {
+	return tx.store.previewStreamBaselineRaw()
+}
+
+func (tx *RebaselineTransaction) Plan(now time.Time) (StreamBaseline, []byte, error) {
+	if !tx.store.engine.migrationComplete() {
+		return StreamBaseline{}, nil, fmt.Errorf("event-store rebaseline: migration is not complete; nothing to re-baseline (run `compound event-store migrate --apply` first)")
+	}
+	sizes, err := tx.store.engine.currentStreamSizes()
+	if err != nil {
+		return StreamBaseline{}, nil, err
+	}
+	baseline := StreamBaseline{Schema: streamBaselineSchema, RecordedAt: now.UTC().Format(time.RFC3339Nano), Reason: streamBaselineReasonRebaseline, Streams: sizes}
+	data, err := json.MarshalIndent(baseline, "", "  ")
+	if err != nil {
+		return StreamBaseline{}, nil, err
+	}
+	return baseline, append(data, '\n'), nil
+}
+
+func (tx *RebaselineTransaction) WriteSidecarCAS(expected []byte, expectedExisted bool, replacement []byte) error {
+	current, existed, err := tx.ReadSidecar()
+	if err != nil {
+		return err
+	}
+	if existed != expectedExisted || !bytes.Equal(current, expected) {
+		return fmt.Errorf("%w: sidecar changed before write", ErrRebaselineStateConflict)
+	}
+	return writeBytesAtomic(tx.SidecarPath(), replacement)
+}
+
+func (tx *RebaselineTransaction) RollbackSidecarCAS(expectedPost, prior []byte, priorExisted bool) error {
+	current, existed, err := tx.ReadSidecar()
+	if err != nil {
+		return err
+	}
+	if !existed || !bytes.Equal(current, expectedPost) {
+		return fmt.Errorf("%w: sidecar no longer matches planned post-image", ErrRebaselineStateConflict)
+	}
+	if priorExisted {
+		return writeBytesAtomic(tx.SidecarPath(), prior)
+	}
+	if err := os.Remove(tx.SidecarPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncDirectory(filepath.Dir(tx.SidecarPath()))
+}
+
 // StreamBaselinePreview is the current-vs-proposed projection for `compound
 // event-store rebaseline` without --confirm. Current is nil when no sidecar
 // exists yet; Proposed is what re-baselining right now would record. Building
@@ -473,6 +716,27 @@ func (s *Store) PreviewStreamBaseline() (StreamBaselinePreview, error) {
 	if s == nil || s.engine == nil {
 		return StreamBaselinePreview{}, fmt.Errorf("event store requires a home")
 	}
+	if _, err := os.Stat(filepath.Join(s.engine.migrationRoot(), rebaselinePendingFileName)); err == nil {
+		return StreamBaselinePreview{}, fmt.Errorf("%w: %s", ErrRebaselineFinalizationPending, filepath.Join(s.engine.migrationRoot(), rebaselinePendingFileName))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return StreamBaselinePreview{}, err
+	}
+	preview, err := s.previewStreamBaselineRaw()
+	if err != nil {
+		return StreamBaselinePreview{}, err
+	}
+	if _, err := os.Stat(filepath.Join(s.engine.migrationRoot(), rebaselinePendingFileName)); err == nil {
+		return StreamBaselinePreview{}, fmt.Errorf("%w: %s", ErrRebaselineFinalizationPending, filepath.Join(s.engine.migrationRoot(), rebaselinePendingFileName))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return StreamBaselinePreview{}, err
+	}
+	return preview, nil
+}
+
+func (s *Store) previewStreamBaselineRaw() (StreamBaselinePreview, error) {
+	if s == nil || s.engine == nil {
+		return StreamBaselinePreview{}, fmt.Errorf("event store requires a home")
+	}
 	proposed, err := s.engine.currentStreamSizes()
 	if err != nil {
 		return StreamBaselinePreview{}, err
@@ -482,7 +746,7 @@ func (s *Store) PreviewStreamBaseline() (StreamBaselinePreview, error) {
 		SidecarPath:  s.engine.streamBaselinePath(),
 		Proposed:     proposed,
 	}
-	baseline, ok, err := readStreamBaseline(preview.SidecarPath)
+	baseline, ok, err := readStreamBaselineRaw(preview.SidecarPath)
 	if err != nil {
 		return StreamBaselinePreview{}, err
 	}
@@ -501,31 +765,28 @@ func (s *Store) PreviewStreamBaseline() (StreamBaselinePreview, error) {
 // there is nothing to re-baseline (migration incomplete), which is true
 // regardless of any grant.
 func (s *Store) RebaselineStreams(now time.Time) (StreamBaseline, error) {
-	if s == nil || s.engine == nil {
-		return StreamBaseline{}, fmt.Errorf("event store requires a home")
-	}
-	if !s.engine.migrationComplete() {
-		return StreamBaseline{}, fmt.Errorf("event-store rebaseline: migration is not complete; nothing to re-baseline (run `compound event-store migrate --apply` first)")
-	}
-	lock, err := s.engine.acquireRebaselineLock()
-	if err != nil {
-		return StreamBaseline{}, err
-	}
-	defer func() { _ = lock.release() }()
-	sizes, err := s.engine.currentStreamSizes()
-	if err != nil {
-		return StreamBaseline{}, err
-	}
-	baseline := StreamBaseline{
-		Schema:     streamBaselineSchema,
-		RecordedAt: now.UTC().Format(time.RFC3339Nano),
-		Reason:     streamBaselineReasonRebaseline,
-		Streams:    sizes,
-	}
-	if err := writeStreamBaselineAtomic(s.engine.streamBaselinePath(), baseline); err != nil {
-		return StreamBaseline{}, err
-	}
-	return baseline, nil
+	var result StreamBaseline
+	err := s.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		if _, exists, err := tx.ReadPending(); err != nil {
+			return err
+		} else if exists {
+			return ErrRebaselineFinalizationPending
+		}
+		prior, existed, err := tx.ReadSidecar()
+		if err != nil {
+			return err
+		}
+		baseline, data, err := tx.Plan(now)
+		if err != nil {
+			return err
+		}
+		if err := tx.WriteSidecarCAS(prior, existed, data); err != nil {
+			return err
+		}
+		result = baseline
+		return nil
+	})
+	return result, err
 }
 
 func (m *migrator) now() string { return m.engine.clock().UTC().Format(time.RFC3339Nano) }

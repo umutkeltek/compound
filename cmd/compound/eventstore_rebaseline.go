@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -64,33 +66,30 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	jsonOut := hasFlag(args, "--json")
-	now := time.Now()
-
-	preview, err := store.PreviewStreamBaseline()
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 1
-	}
-	if !preview.HomeComplete {
-		fmt.Fprintln(stderr, "event-store rebaseline: migration is not complete; nothing to re-baseline (run `compound event-store migrate --apply` first)")
-		return 1
-	}
-
-	cfg, _, err := policy.LoadConfig(homePath)
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 1
-	}
-	target := envelope.ActionTarget{Kind: "eventstore_stream_baseline", ID: "stream-baseline", Path: preview.SidecarPath}
-
 	if !hasFlag(args, "--confirm") {
+		preview, err := store.PreviewStreamBaseline()
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		if !preview.HomeComplete {
+			fmt.Fprintln(stderr, "event-store rebaseline: migration is not complete; nothing to re-baseline (run `compound event-store migrate --apply` first)")
+			return 1
+		}
+		cfg, policySource, err := loadRebaselinePolicyFn(homePath)
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		target := envelope.ActionTarget{Kind: "eventstore_stream_baseline", ID: "stream-baseline", Path: preview.SidecarPath}
 		work := strings.TrimSpace(flagValue(args, "--work"))
 		if work == "" {
 			work = "work_dryrun"
 		}
+		now := time.Now()
 		ai := rebaselineIntent(work, target, now)
-		pd := policy.Evaluate(ai, cfg, now)
-		return printRebaselinePreview(stdout, preview, pd, jsonOut)
+		evaluation := policy.EvaluateAuthority(ai, cfg, rebaselineAuthorityContext(target), policySource, now)
+		return printRebaselinePreview(stdout, preview, evaluation, policySource, jsonOut)
 	}
 
 	work := strings.TrimSpace(flagValue(args, "--work"))
@@ -98,51 +97,119 @@ func runEventStoreRebaseline(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error: --work W is required for --confirm (a governed act belongs to a work)")
 		return 2
 	}
-	ai := rebaselineIntent(work, target, now)
-	pd := policy.Evaluate(ai, cfg, now)
-	if gateErr := act.Gate(ai, pd); gateErr != nil {
-		fmt.Fprintf(stderr, "refused: %v\n", gateErr)
-		return 1
-	}
+	var result rebaselineResult
+	err = store.WithRebaselineTransaction(func(tx *eventstore.RebaselineTransaction) error {
+		_, pendingExists, pendingReadErr := tx.ReadPending()
+		if pendingExists || pendingReadErr != nil {
+			artifactStore, err := home.NewArtifactStore(homePath)
+			if err != nil {
+				return err
+			}
+			recovered, err := recoverPendingRebaseline(homePath, store, artifactStore, tx, time.Now())
+			if err != nil {
+				return err
+			}
+			if recovered != nil {
+				result = *recovered
+				return nil
+			}
+		}
 
-	before := preview.Current
+		preview, err := tx.FreshPreview()
+		if err != nil {
+			return err
+		}
+		if !preview.HomeComplete {
+			return fmt.Errorf("event-store rebaseline: migration is not complete; nothing to re-baseline (run `compound event-store migrate --apply` first)")
+		}
+		cfg, policySource, err := loadRebaselinePolicyFn(homePath)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		target := envelope.ActionTarget{Kind: "eventstore_stream_baseline", ID: "stream-baseline", Path: preview.SidecarPath}
+		ai := rebaselineIntent(work, target, now)
+		evaluation := policy.EvaluateAuthority(ai, cfg, rebaselineAuthorityContext(target), policySource, now)
+		if !evaluation.Authority.Current || !evaluation.Authority.Allowed {
+			return fmt.Errorf("authority refused: %s", evaluation.Authority.Wording)
+		}
+		if err := act.Gate(ai, evaluation.Decision); err != nil {
+			return fmt.Errorf("refused: %w", err)
+		}
+		artifactStore, err := home.NewArtifactStore(homePath)
+		if err != nil {
+			return err
+		}
 
-	// Capture the sidecar's EXACT prior bytes (or explicit absence) BEFORE the mutation, so a
-	// post-mutation record failure can restore it byte-identical. Read-only capture — never a write.
-	priorBytes, hadSidecar, err := readSidecarRaw(preview.SidecarPath)
-	if err != nil {
-		fmt.Fprintln(stderr, "error: capture prior sidecar bytes:", err)
-		return 1
-	}
-	beforeRef := baselineBeforeRef(priorBytes, hadSidecar)
-
-	baseline, err := store.RebaselineStreams(now)
+		prior, priorExisted, err := tx.ReadSidecar()
+		if err != nil {
+			return err
+		}
+		preImageRef, err := artifactStore.Put(prior)
+		if err != nil {
+			return fmt.Errorf("store baseline pre-image: %w", err)
+		}
+		baseline, post, err := tx.Plan(now)
+		if err != nil {
+			return err
+		}
+		postImageRef, err := artifactStore.Put(post)
+		if err != nil {
+			return fmt.Errorf("store baseline post-image: %w", err)
+		}
+		beforeRef, afterRef := baselineBeforeRef(prior, priorExisted), baselineAfterRef(post)
+		receipt, transition := buildRebaselineEnvelopesFn(ai, preview.Current, baseline.Streams, beforeRef, afterRef, preImageRef, postImageRef, now)
+		if err := receipt.Validate(); err != nil {
+			return fmt.Errorf("validate rebaseline receipt before mutation: %w", err)
+		}
+		if err := transition.Validate(); err != nil {
+			return fmt.Errorf("validate rebaseline transition before mutation: %w", err)
+		}
+		pending := eventstore.RebaselinePending{SchemaVersion: eventstore.RebaselinePendingSchema, SidecarPath: preview.SidecarPath, PriorExisted: priorExisted, PreImageRef: preImageRef, PostImageRef: postImageRef, BeforeEvidenceRef: beforeRef, AfterEvidenceRef: afterRef, ActionIntentID: ai.ID, PolicyDecisionID: evaluation.Decision.ID, AuthorityRevision: evaluation.Authority.Revision, Receipt: receipt, Transition: transition}
+		if err := tx.WritePending(pending); err != nil {
+			return fmt.Errorf("write rebaseline pending journal: %w", err)
+		}
+		if err := writeRebaselineSidecarFn(tx, prior, priorExisted, post); err != nil {
+			current, currentExisted, readErr := tx.ReadSidecar()
+			if readErr == nil && currentExisted == priorExisted && bytes.Equal(current, prior) {
+				if clearErr := tx.ClearPending(); clearErr != nil {
+					return fmt.Errorf("sidecar write failed before mutation (%v); journal clear: %w", err, clearErr)
+				}
+				return err
+			}
+			return recordRebaselineRecoveryFinding(homePath, artifactStore, tx, pending, now, fmt.Errorf("sidecar write conflict: %w", err))
+		}
+		if err := recordEventstoreEnvelopeFn(store, &receipt); err != nil {
+			presence, proveErr := eventstoreProofPresence(store, &receipt)
+			if proveErr != nil || presence == proofConflict {
+				return recordRebaselineRecoveryFinding(homePath, artifactStore, tx, pending, now, fmt.Errorf("record receipt returned %v and durable presence is unprovable: %v", err, proveErr))
+			}
+			if presence == proofAbsent {
+				if rbErr := rollbackRebaselineFn(tx, post, prior, priorExisted); rbErr != nil {
+					return recordRebaselineRecoveryFinding(homePath, artifactStore, tx, pending, now, fmt.Errorf("record receipt: %w; rollback: %v", err, rbErr))
+				}
+				if clearErr := tx.ClearPending(); clearErr != nil {
+					return fmt.Errorf("record receipt: %w; sidecar rolled back but pending journal clear failed: %v", err, clearErr)
+				}
+				return fmt.Errorf("record receipt %s: %w; stream baseline rolled back", receipt.ID, err)
+			}
+			// The write landed even though its caller saw an error. Keep the
+			// truthful post-state and continue exact Transition finalization.
+		}
+		if err := recordEventstoreEnvelopeFn(store, &transition); err != nil {
+			return fmt.Errorf("record transition %s: %w; rebaseline finalization pending (receipt and post-state remain truthful)", transition.ID, err)
+		}
+		if err := tx.ClearPending(); err != nil {
+			return fmt.Errorf("proof recorded but rebaseline finalization pending: %w", err)
+		}
+		result = rebaselineResult{Baseline: baseline, Receipt: receipt, Transition: transition, BeforeRef: beforeRef, AfterRef: afterRef, Evaluation: evaluation, PolicySource: policySource}
+		return nil
+	})
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-
-	// From here the sidecar is MUTATED. Every failure below is routed through rebaselineRollback,
-	// which restores the prior bytes (or removes the sidecar if it was absent) and, only if that
-	// restore ALSO fails, lands a durable recovery finding — so no path returns an error with the
-	// trust sidecar left mutated but without durable proof.
-	afterBytes, err := os.ReadFile(preview.SidecarPath)
-	if err != nil {
-		return rebaselineRollback(homePath, stderr, preview.SidecarPath, priorBytes, hadSidecar,
-			ai, "", beforeRef, now, fmt.Errorf("read back new sidecar bytes: %w", err))
-	}
-	afterRef := baselineAfterRef(afterBytes)
-
-	receipt, transition := rebaselineReceiptAndTransition(ai, before, baseline.Streams, beforeRef, afterRef, now)
-	if err := recordEventstoreEnvelope(store, receipt.ID, &receipt); err != nil {
-		return rebaselineRollback(homePath, stderr, preview.SidecarPath, priorBytes, hadSidecar,
-			ai, receipt.ID, beforeRef, now, fmt.Errorf("record receipt %s: %w", receipt.ID, err))
-	}
-	if err := recordEventstoreEnvelope(store, transition.ID, &transition); err != nil {
-		return rebaselineRollback(homePath, stderr, preview.SidecarPath, priorBytes, hadSidecar,
-			ai, transition.ID, beforeRef, now, fmt.Errorf("record transition %s: %w", transition.ID, err))
-	}
-	return printRebaselineResult(stdout, baseline, receipt, transition, jsonOut)
+	return printRebaselineResult(stdout, result, jsonOut)
 }
 
 // eventstore-baseline evidence-ref prefixes and the verification ref carried on every
@@ -155,20 +222,6 @@ const (
 	// teeth (red-without → green-with). It is populated into the receipt's state_delta.verification.
 	rebaselineVerificationRef = "falsifier:cmd/compound/eventstore_rebaseline_test.go#durable-proof-or-rollback"
 )
-
-// readSidecarRaw returns the sidecar's exact bytes and whether it existed. Absence is not an
-// error: a home that has never been re-baselined after migration may legitimately have no
-// operator-written sidecar yet. Read-only by construction.
-func readSidecarRaw(path string) (data []byte, existed bool, err error) {
-	data, err = os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, false, nil
-		}
-		return nil, false, err
-	}
-	return data, true, nil
-}
 
 // baselineBeforeRef content-addresses the prior sidecar bytes, or records explicit absence, so the
 // pre-mutation trust state is reconstructable from the receipt alone.
@@ -189,59 +242,161 @@ func sha256Ref(data []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// restoreSidecarFn indirects restoreSidecar so a test can force the restore failure that wedges the
-// rollback (the recovery-finding path). Swapped ONLY in tests; the production path always calls the
-// real restoreSidecar.
-var restoreSidecarFn = restoreSidecar
-
-// restoreSidecar returns the sidecar to its captured prior state: the exact prior bytes written back,
-// or the file removed if there was no sidecar before. This is the obligation-bound cleanup of the
-// mutation we just performed under the already-granted PolicyDecision — the RollbackPlan the
-// ActionIntent staked, now actually executed — not a new governed act.
-func restoreSidecar(path string, prior []byte, existed bool) error {
-	if !existed {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		return nil
+var (
+	loadRebaselinePolicyFn     = policy.LoadConfig
+	buildRebaselineEnvelopesFn = rebaselineReceiptAndTransition
+	recordEventstoreEnvelopeFn = recordEventstoreEnvelope
+	writeRebaselineSidecarFn   = func(tx *eventstore.RebaselineTransaction, prior []byte, priorExisted bool, post []byte) error {
+		return tx.WriteSidecarCAS(prior, priorExisted, post)
 	}
-	return os.WriteFile(path, prior, 0o644)
+	rollbackRebaselineFn = func(tx *eventstore.RebaselineTransaction, post, prior []byte, priorExisted bool) error {
+		return tx.RollbackSidecarCAS(post, prior, priorExisted)
+	}
+)
+
+type rebaselineResult struct {
+	Baseline     eventstore.StreamBaseline
+	Receipt      envelope.Receipt
+	Transition   envelope.Transition
+	BeforeRef    string
+	AfterRef     string
+	Evaluation   policy.AuthorityEvaluation
+	PolicySource string
 }
 
-// rebaselineRollback restores the trust sidecar's prior bytes after a post-mutation failure, so
-// `event-store rebaseline` can never leave a mutated stream-baseline.json without durable proof. If
-// the restore itself fails it lands a durable recovery finding (the SAME finding home
-// act.afterWriteFailure uses) naming the sidecar path, the prior state, the receipt/transition id
-// attempted, and the manual recovery required — and names that finding in the returned error. It
-// always returns exit code 1 with a message that says the baseline was rolled back (or that manual
-// recovery is required). It never re-gates: rollback is covered by the decision that admitted the
-// forward write.
-func rebaselineRollback(homePath string, stderr io.Writer, sidecarPath string, prior []byte, existed bool, ai envelope.ActionIntent, attemptedID, beforeRef string, now time.Time, cause error) int {
-	priorState := "absent"
-	if existed {
-		priorState = beforeRef
+func rebaselineAuthorityContext(target envelope.ActionTarget) policy.EvaluationContext {
+	return policy.EvaluationContext{Authority: &policy.AuthorityContext{
+		TargetScope:               "private",
+		VerifiedRecoverability:    policy.RecoverabilityVerified,
+		OperatorControlContinuity: policy.OperatorControlContinuous,
+		ExpectedReceipt:           "validated outward_delta Receipt",
+		ExpectedProof:             []string{"artifact-backed pre-image", "artifact-backed post-image", "Receipt + Transition", "CAS rollback or recovery finding"},
+		EvidenceRefs:              []string{rebaselineVerificationRef, "target:" + target.Path},
+	}}
+}
+
+type proofPresence int
+
+const (
+	proofAbsent proofPresence = iota
+	proofExact
+	proofConflict
+)
+
+func recoverPendingRebaseline(homePath string, store *eventstore.Store, artifacts *home.ArtifactStore, tx *eventstore.RebaselineTransaction, now time.Time) (*rebaselineResult, error) {
+	pending, exists, err := tx.ReadPending()
+	if err != nil {
+		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, now, err)
 	}
-	if rbErr := restoreSidecarFn(sidecarPath, prior, existed); rbErr != nil {
-		body := fmt.Sprintf(
-			"event-store rebaseline mutated the trust sidecar but the receipt/transition could not be recorded AND the sidecar could not be rolled back — manual recovery required.\n"+
-				"action_intent: %s\nsidecar_path: %s\nprior_state: %s\nattempted_event_id: %s\npersistence_error: %v\nrollback_error: %v\n",
-			ai.ID, sidecarPath, priorState, attemptedID, cause, rbErr)
-		rec, ferr := finding.Record(homePath, finding.Finding{
-			Topic:        "eventstore-rebaseline-recovery/" + ai.Target.ID,
-			Body:         body,
-			ProducedBy:   "cmd/compound eventstore rebaseline",
-			WorkID:       ai.IDs.WorkID,
-			EvidenceRefs: []string{beforeRef},
-		}, now)
-		if ferr != nil {
-			fmt.Fprintf(stderr, "error: rebaseline %v; rollback FAILED (%v); recovery finding could not be recorded (%v) — sidecar %s left MUTATED (prior state %s); MANUAL RECOVERY REQUIRED\n", cause, rbErr, ferr, sidecarPath, priorState)
-			return 1
+	if !exists {
+		return nil, nil
+	}
+	pre, err := artifacts.Get(pending.PreImageRef)
+	if err != nil {
+		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, now, fmt.Errorf("read pre-image: %w", err))
+	}
+	post, err := artifacts.Get(pending.PostImageRef)
+	if err != nil {
+		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, now, fmt.Errorf("read post-image: %w", err))
+	}
+	current, currentExists, err := tx.ReadSidecar()
+	if err != nil {
+		return nil, err
+	}
+	currentIsPre := currentExists == pending.PriorExisted && bytes.Equal(current, pre)
+	currentIsPost := currentExists && bytes.Equal(current, post)
+	receiptState, err := eventstoreProofPresence(store, &pending.Receipt)
+	if err != nil {
+		return nil, err
+	}
+	transitionState, err := eventstoreProofPresence(store, &pending.Transition)
+	if err != nil {
+		return nil, err
+	}
+	if receiptState == proofConflict || transitionState == proofConflict || (transitionState == proofExact && receiptState != proofExact) {
+		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, now, fmt.Errorf("conflicting or causally incomplete canonical proof"))
+	}
+	if receiptState == proofAbsent && transitionState == proofAbsent {
+		switch {
+		case currentIsPre:
+			if err := tx.ClearPending(); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		case currentIsPost:
+			if err := rollbackRebaselineFn(tx, post, pre, pending.PriorExisted); err != nil {
+				return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, now, err)
+			}
+			if err := tx.ClearPending(); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		default:
+			return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, now, fmt.Errorf("current sidecar matches neither journaled pre-image nor post-image"))
 		}
-		fmt.Fprintf(stderr, "error: rebaseline %v; rollback FAILED (%v) — recorded recovery finding %s; sidecar %s left MUTATED (prior state %s); MANUAL RECOVERY REQUIRED\n", cause, rbErr, rec.ID, sidecarPath, priorState)
-		return 1
 	}
-	fmt.Fprintf(stderr, "error: rebaseline %v — stream-baseline.json rolled back to prior state (%s) at %s\n", cause, priorState, sidecarPath)
-	return 1
+	if !currentIsPost {
+		return nil, recordRebaselineRecoveryFinding(homePath, artifacts, tx, pending, now, fmt.Errorf("durable receipt exists but sidecar is not the journaled post-image"))
+	}
+	if transitionState == proofAbsent {
+		if err := recordEventstoreEnvelopeFn(store, &pending.Transition); err != nil {
+			return nil, fmt.Errorf("rebaseline finalization pending: persist exact transition %s: %w", pending.Transition.ID, err)
+		}
+	}
+	if err := tx.ClearPending(); err != nil {
+		return nil, fmt.Errorf("rebaseline proof complete but journal clear pending: %w", err)
+	}
+	var baseline eventstore.StreamBaseline
+	if err := json.Unmarshal(post, &baseline); err != nil {
+		return nil, err
+	}
+	return &rebaselineResult{Baseline: baseline, Receipt: pending.Receipt, Transition: pending.Transition, BeforeRef: pending.BeforeEvidenceRef, AfterRef: pending.AfterEvidenceRef}, nil
+}
+
+func eventstoreProofPresence(store *eventstore.Store, expected envelope.Envelope) (proofPresence, error) {
+	id := envelopeID(expected)
+	record, err := store.Read(id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return proofAbsent, nil
+		}
+		return proofAbsent, err
+	}
+	var actual envelope.Envelope
+	switch expected.(type) {
+	case *envelope.Receipt:
+		actual = &envelope.Receipt{}
+	case *envelope.Transition:
+		actual = &envelope.Transition{}
+	default:
+		return proofConflict, fmt.Errorf("unsupported rebaseline proof %T", expected)
+	}
+	if err := json.Unmarshal(record.Bytes, actual); err != nil {
+		return proofConflict, nil
+	}
+	wantJSON, _ := json.Marshal(expected)
+	gotJSON, _ := json.Marshal(actual)
+	if bytes.Equal(wantJSON, gotJSON) {
+		return proofExact, nil
+	}
+	return proofConflict, nil
+}
+
+func recordRebaselineRecoveryFinding(homePath string, artifacts *home.ArtifactStore, tx *eventstore.RebaselineTransaction, pending eventstore.RebaselinePending, now time.Time, cause error) error {
+	current, currentExisted, readErr := tx.ReadSidecar()
+	if readErr != nil {
+		return fmt.Errorf("rebaseline recovery required (%v); read actual state: %w", cause, readErr)
+	}
+	currentRef, artifactErr := artifacts.Put(current)
+	if artifactErr != nil {
+		return fmt.Errorf("rebaseline recovery required (%v); artifact actual state: %w", cause, artifactErr)
+	}
+	body := fmt.Sprintf("event-store rebaseline manual recovery required.\nsidecar_path: %s\nprior_existed: %t\ncurrent_existed: %t\npre_image_ref: %s\nexpected_post_ref: %s\ncurrent_state_ref: %s\naction_intent_id: %s\nreceipt_id: %s\ntransition_id: %s\ncause: %v\n", tx.SidecarPath(), pending.PriorExisted, currentExisted, pending.PreImageRef, pending.PostImageRef, currentRef, pending.ActionIntentID, pending.Receipt.ID, pending.Transition.ID, cause)
+	rec, err := finding.Record(homePath, finding.Finding{Topic: "eventstore-rebaseline-recovery/stream-baseline", Body: body, ProducedBy: "cmd/compound eventstore rebaseline", WorkID: pending.Receipt.IDs.WorkID, EvidenceRefs: []string{pending.PreImageRef, currentRef}}, now)
+	if err != nil {
+		return fmt.Errorf("rebaseline recovery required (%v); recovery finding failed: %w", cause, err)
+	}
+	return fmt.Errorf("rebaseline recovery finding %s recorded; journal retained; MANUAL RECOVERY REQUIRED: %v", rec.ID, cause)
 }
 
 // rebaselineIntent builds the external_side_effect / easy / local ActionIntent
@@ -279,10 +434,12 @@ func rebaselineIntent(workID string, target envelope.ActionTarget, now time.Time
 // content-addressed sidecar hashes (or "absent"): they land in EvidenceRefs on
 // both the receipt and the transition so the mutation is reconstructable from
 // proof alone, alongside the existing human-readable size summary.
-func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[string]int64, beforeRef, afterRef string, now time.Time) (envelope.Receipt, envelope.Transition) {
+func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[string]int64, beforeRef, afterRef, preImageRef, postImageRef string, now time.Time) (envelope.Receipt, envelope.Transition) {
 	nowStr := now.UTC().Format(time.RFC3339)
 	summary := fmt.Sprintf("event-store rebaseline %s: %v -> %v", ai.Target.Path, before, after)
 	baselineRefs := []string{beforeRef, afterRef}
+	artifactRefs := []string{preImageRef, postImageRef}
+	evidenceRefs := append(append([]string{}, baselineRefs...), artifactRefs...)
 	verificationRefs := []string{rebaselineVerificationRef}
 
 	receipt := envelope.Receipt{
@@ -295,7 +452,7 @@ func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier1",
-			EvidenceRefs:  append([]string{}, baselineRefs...),
+			EvidenceRefs:  append([]string{}, evidenceRefs...),
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
 		Outcome:  "completed",
@@ -304,13 +461,14 @@ func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[
 			Changed:      true,
 			Summary:      summary,
 			FilesChanged: []string{ai.Target.Path},
-			Artifacts:    []string{},
+			Artifacts:    append([]string{}, artifactRefs...),
 			Verification: verificationRefs,
 		},
-		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills: envelope.ReceiptSkills{Used: []string{ai.Capability}, Missed: []string{}, Candidate: []string{}, UsedDeclared: true},
-		Memory: envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
-		Next:   envelope.ReceiptNext{SuggestedWork: []string{}},
+		Cost:      envelope.ReceiptCost{ModelCalls: []string{}},
+		Skills:    envelope.ReceiptSkills{Used: []string{ai.Capability}, Missed: []string{}, Candidate: []string{}, UsedDeclared: true},
+		Memory:    envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
+		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
+		ProofRefs: append([]string{}, artifactRefs...),
 	}
 
 	transition := envelope.Transition{
@@ -323,10 +481,12 @@ func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier1",
-			EvidenceRefs:  append([]string{}, baselineRefs...),
+			EvidenceRefs:  append([]string{}, evidenceRefs...),
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
+		BeforeRefs: []string{preImageRef},
 		ActionRefs: []string{ai.ID},
+		AfterRefs:  []string{postImageRef},
 		StateDelta: summary,
 		Projections: envelope.Projections{
 			Memory: []string{}, Skill: []string{ai.Capability}, Product: []string{}, Cost: []string{},
@@ -341,7 +501,14 @@ func rebaselineReceiptAndTransition(ai envelope.ActionIntent, before, after map[
 // event store and proves it resolvable via a post-write Read, mirroring act's
 // own recordEnvelopeWithStore (unexported there, so duplicated here rather
 // than reaching into package act for it).
-func recordEventstoreEnvelope(store *eventstore.Store, id string, value any) error {
+func recordEventstoreEnvelope(store *eventstore.Store, value envelope.Envelope) error {
+	if err := value.Validate(); err != nil {
+		return err
+	}
+	id := envelopeID(value)
+	if id == "" {
+		return fmt.Errorf("eventstore envelope id required for %T", value)
+	}
 	if _, err := store.PutJSON(id, value, " "); err != nil {
 		return err
 	}
@@ -355,13 +522,26 @@ func recordEventstoreEnvelope(store *eventstore.Store, id string, value any) err
 	return nil
 }
 
-func printRebaselinePreview(stdout io.Writer, preview eventstore.StreamBaselinePreview, pd envelope.PolicyDecision, asJSON bool) int {
-	allowed := policy.Allowed(pd)
+func envelopeID(value envelope.Envelope) string {
+	switch typed := value.(type) {
+	case *envelope.Receipt:
+		return typed.ID
+	case *envelope.Transition:
+		return typed.ID
+	default:
+		return ""
+	}
+}
+
+func printRebaselinePreview(stdout io.Writer, preview eventstore.StreamBaselinePreview, evaluation policy.AuthorityEvaluation, policySource string, asJSON bool) int {
+	pd := evaluation.Decision
+	allowed := evaluation.Authority.Current && evaluation.Authority.Allowed
 	if asJSON {
 		out := map[string]any{
 			"mode": "dry-run", "sidecar_path": preview.SidecarPath, "has_sidecar": preview.HasSidecar,
 			"current": preview.Current, "proposed": preview.Proposed,
-			"policy_outcome": pd.Outcome, "allowed": allowed,
+			"policy_outcome": pd.Outcome, "allowed": allowed, "policy_source": policySource,
+			"policy_authority": evaluation.Authority,
 		}
 		if err := encodeJSON(stdout, out); err != nil {
 			fmt.Fprintln(stdout, "error:", err)
@@ -369,6 +549,8 @@ func printRebaselinePreview(stdout io.Writer, preview eventstore.StreamBaselineP
 		}
 		return 0
 	}
+	fmt.Fprintf(stdout, "- authority: %s (current=%t allowed=%t)\n", evaluation.Authority.Wording, evaluation.Authority.Current, evaluation.Authority.Allowed)
+	fmt.Fprintf(stdout, "- policy_source: %s\n", policySource)
 	fmt.Fprintln(stdout, "# event-store rebaseline (dry-run — nothing written)")
 	fmt.Fprintf(stdout, "- sidecar: %s\n", preview.SidecarPath)
 	for _, name := range sortedStreamNames(preview.Proposed) {
@@ -382,12 +564,17 @@ func printRebaselinePreview(stdout io.Writer, preview eventstore.StreamBaselineP
 	return 0
 }
 
-func printRebaselineResult(stdout io.Writer, baseline eventstore.StreamBaseline, receipt envelope.Receipt, transition envelope.Transition, asJSON bool) int {
+func printRebaselineResult(stdout io.Writer, result rebaselineResult, asJSON bool) int {
+	baseline, receipt, transition := result.Baseline, result.Receipt, result.Transition
 	if asJSON {
 		out := map[string]any{
 			"mode": "confirmed", "recorded_at": baseline.RecordedAt, "reason": baseline.Reason,
 			"streams": baseline.Streams, "receipt_id": receipt.ID, "transition_id": transition.ID,
-			"move_type": receipt.MoveType,
+			"move_type": receipt.MoveType, "before_ref": result.BeforeRef, "after_ref": result.AfterRef,
+		}
+		if result.Evaluation.Authority.SchemaVersion != "" {
+			out["policy_authority"] = result.Evaluation.Authority
+			out["policy_source"] = result.PolicySource
 		}
 		if err := encodeJSON(stdout, out); err != nil {
 			fmt.Fprintln(stdout, "error:", err)
@@ -399,6 +586,7 @@ func printRebaselineResult(stdout io.Writer, baseline eventstore.StreamBaseline,
 	for _, name := range sortedStreamNames(baseline.Streams) {
 		fmt.Fprintf(stdout, "- %s: %d\n", name, baseline.Streams[name])
 	}
+	fmt.Fprintf(stdout, "- before_ref: %s\n- after_ref: %s\n", result.BeforeRef, result.AfterRef)
 	fmt.Fprintf(stdout, "- receipt=%s transition=%s move=%s\n", receipt.ID, transition.ID, receipt.MoveType)
 	return 0
 }

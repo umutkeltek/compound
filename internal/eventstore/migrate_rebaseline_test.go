@@ -1,10 +1,14 @@
 package eventstore
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/envelope"
 )
 
 // These tests prove the frozen-stream doctor's byte-size baseline (see
@@ -217,6 +221,87 @@ func TestRebaselineStreamsRefusesWhenMigrationIncomplete(t *testing.T) {
 	if _, err := os.Stat(store.engine.streamBaselinePath()); !os.IsNotExist(err) {
 		t.Fatalf("no sidecar should have been written: stat err=%v", err)
 	}
+}
+
+func TestRebaselineTransactionHoldsLockAcrossCallback(t *testing.T) {
+	store := openTestStore(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- store.WithRebaselineTransaction(func(*RebaselineTransaction) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	err := store.WithRebaselineTransaction(func(*RebaselineTransaction) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("second transaction err=%v, want lock refusal", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPendingRebaselineFailsClosedForBaselineReaders(t *testing.T) {
+	store := openMigrateStore(t)
+	seedLoose(t, store, "rec_pending_reader", "body")
+	if report, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err != nil || !report.Completion.Complete {
+		t.Fatalf("apply: report=%+v err=%v", report, err)
+	}
+	pending := validTestRebaselinePending(t, store)
+	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		return tx.WritePending(pending)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PreviewStreamBaseline(); !errors.Is(err, ErrRebaselineFinalizationPending) {
+		t.Fatalf("preview err=%v, want pending sentinel", err)
+	}
+	if _, err := store.engine.legacyStreamRegrew(); !errors.Is(err, ErrRebaselineFinalizationPending) {
+		t.Fatalf("legacy reader err=%v, want pending sentinel", err)
+	}
+	if _, err := store.Migrate(MigrateOptions{Mode: ModeVerify}); !errors.Is(err, ErrRebaselineFinalizationPending) {
+		t.Fatalf("verify err=%v, want pending sentinel", err)
+	}
+}
+
+func TestRebaselineTransactionCASRollbackRefusesConcurrentState(t *testing.T) {
+	store := openTestStore(t)
+	path := store.engine.streamBaselinePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("pre"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		if err := tx.WriteSidecarCAS([]byte("pre"), true, []byte("post")); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte("foreign"), 0o644); err != nil {
+			return err
+		}
+		return tx.RollbackSidecarCAS([]byte("post"), []byte("pre"), true)
+	})
+	if !errors.Is(err, ErrRebaselineStateConflict) {
+		t.Fatalf("rollback err=%v, want conflict", err)
+	}
+	body, readErr := os.ReadFile(path)
+	if readErr != nil || string(body) != "foreign" {
+		t.Fatalf("CAS rollback overwrote foreign state: body=%q err=%v", body, readErr)
+	}
+}
+
+func validTestRebaselinePending(t *testing.T, store *Store) RebaselinePending {
+	t.Helper()
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	receipt := envelope.Receipt{Header: envelope.Header{SchemaVersion: envelope.SVReceipt, ID: "rec_pending", CreatedAt: now, Producer: envelope.Producer{Kind: "cli", Name: "compound"}, IDs: envelope.IDs{WorkID: "work_pending"}, Authority: envelope.Authority{SourceClass: "runtime", Status: "current"}, Privacy: "private", Risk: "tier1", EvidenceRefs: []string{"eventstore-baseline-before:absent", "eventstore-baseline-after:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, Uncertainty: envelope.Uncertainty{Level: "known"}}, Outcome: "completed", MoveType: "outward_delta", StateDelta: envelope.StateDelta{Changed: true, Summary: "test", Artifacts: []string{"artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}, Cost: envelope.ReceiptCost{ModelCalls: []string{}}, Skills: envelope.ReceiptSkills{Used: []string{}, Missed: []string{}, Candidate: []string{}, UsedDeclared: true}, Memory: envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}}, Next: envelope.ReceiptNext{SuggestedWork: []string{}}, ProofRefs: []string{"artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
+	transition := envelope.Transition{Header: envelope.Header{SchemaVersion: envelope.SVTransition, ID: "tr_pending", CreatedAt: now, Producer: envelope.Producer{Kind: "cli", Name: "compound"}, IDs: envelope.IDs{WorkID: "work_pending"}, Authority: envelope.Authority{SourceClass: "runtime", Status: "current"}, Privacy: "private", Risk: "tier1", EvidenceRefs: []string{"eventstore-baseline-before:absent", "eventstore-baseline-after:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, Uncertainty: envelope.Uncertainty{Level: "known"}}, BeforeRefs: []string{"artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, ActionRefs: []string{"act_pending"}, AfterRefs: []string{"artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, Projections: envelope.Projections{}, SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: true}}
+	return RebaselinePending{SchemaVersion: RebaselinePendingSchema, SidecarPath: store.engine.streamBaselinePath(), PriorExisted: false, PreImageRef: "artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PostImageRef: "artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", BeforeEvidenceRef: "eventstore-baseline-before:absent", AfterEvidenceRef: "eventstore-baseline-after:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ActionIntentID: "act_pending", PolicyDecisionID: "pol_pending", AuthorityRevision: "policy-authority-v1:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Receipt: receipt, Transition: transition}
 }
 
 func openForAppend(t *testing.T, path string) *os.File {

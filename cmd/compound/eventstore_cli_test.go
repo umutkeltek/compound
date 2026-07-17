@@ -219,6 +219,14 @@ func TestEventStoreRebaselineRefusesWithoutGrant(t *testing.T) {
 	if string(before) != string(after) {
 		t.Fatal("sidecar mutated despite refusal")
 	}
+	if entries, err := os.ReadDir(filepath.Join(homePath, "artifacts", "sha256")); err == nil && len(entries) != 0 {
+		t.Fatalf("refused confirm wrote artifact bodies: %v", entries)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("refused confirm wrote pending journal: %v", err)
+	}
 }
 
 // --confirm requires --work (a governed act belongs to a work), mirroring `compound act`.
