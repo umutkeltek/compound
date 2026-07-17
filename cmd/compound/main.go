@@ -839,8 +839,8 @@ func cmdDistiller(args []string) {
 		}
 		now := time.Now()
 		mining, err := distiller.LoadConversationMining(args[1], distiller.ConversationMiningOptions{
-			MinedTagsPath: flagValue(args[2:], "--mined-tags"),
-			LossinessPath: flagValue(args[2:], "--lossiness"),
+			MinedTagsPath: valueFlag(args[2:], "--mined-tags"),
+			LossinessPath: valueFlag(args[2:], "--lossiness"),
 		})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "distiller import-conversation-mining:", err)
@@ -990,8 +990,8 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) >= 1 && args[0] == "eval-plan" {
-		candidateID := flagValue(args[1:], "--candidate")
-		corpusDir := flagValue(args[1:], "--corpus")
+		candidateID := valueFlag(args[1:], "--candidate")
+		corpusDir := valueFlag(args[1:], "--corpus")
 		if candidateID == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound distiller eval-plan --candidate <candidate_id> [--corpus <dir>]")
 			os.Exit(2)
@@ -1030,8 +1030,8 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) >= 1 && args[0] == "improvement-plan" {
-		candidateID := flagValue(args[1:], "--candidate")
-		targetPath := flagValue(args[1:], "--target")
+		candidateID := valueFlag(args[1:], "--candidate")
+		targetPath := valueFlag(args[1:], "--target")
 		if candidateID == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound distiller improvement-plan --candidate <candidate_id> [--target <file>]")
 			os.Exit(2)
@@ -1099,8 +1099,8 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) >= 1 && args[0] == "rule-plan" {
-		candidateID := flagValue(args[1:], "--candidate")
-		targetPath := flagValue(args[1:], "--target")
+		candidateID := valueFlag(args[1:], "--candidate")
+		targetPath := valueFlag(args[1:], "--target")
 		if candidateID == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound distiller rule-plan --candidate <candidate_id> [--target <file>]")
 			os.Exit(2)
@@ -1139,8 +1139,8 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) >= 1 && args[0] == "taste-plan" {
-		candidateID := flagValue(args[1:], "--candidate")
-		targetPath := flagValue(args[1:], "--target")
+		candidateID := valueFlag(args[1:], "--candidate")
+		targetPath := valueFlag(args[1:], "--target")
 		if candidateID == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound distiller taste-plan --candidate <candidate_id> [--target <file>]")
 			os.Exit(2)
@@ -1642,15 +1642,15 @@ func cmdKnowledge(args []string) {
 		}
 		opts := knowledge.ExtractOptions{
 			Pending:             hasFlag(rest, "--pending"),
-			ItemID:              flagValue(rest, "--item"),
+			ItemID:              valueFlag(rest, "--item"),
 			Limit:               limit,
-			SourceKind:          flagValue(rest, "--source-kind"),
-			FixturesDir:         flagValue(rest, "--fixtures"),
-			OpenAICompatibleURL: flagValue(rest, "--openai-compatible-url"),
-			Model:               flagValue(rest, "--model"),
-			APIKeyEnv:           flagValue(rest, "--api-key-env"),
-			EvalCorpusDir:       flagValue(rest, "--eval-corpus"),
-			EvalRoot:            flagValue(rest, "--eval-root"),
+			SourceKind:          valueFlag(rest, "--source-kind"),
+			FixturesDir:         valueFlag(rest, "--fixtures"),
+			OpenAICompatibleURL: valueFlag(rest, "--openai-compatible-url"),
+			Model:               valueFlag(rest, "--model"),
+			APIKeyEnv:           valueFlag(rest, "--api-key-env"),
+			EvalCorpusDir:       valueFlag(rest, "--eval-corpus"),
+			EvalRoot:            valueFlag(rest, "--eval-root"),
 		}
 		if !opts.Pending && strings.TrimSpace(opts.ItemID) == "" {
 			fmt.Fprintln(os.Stderr, extractUsage)
@@ -2780,7 +2780,7 @@ func cmdRoute(args []string) {
 	}
 	if args[0] == "evidence-authority" {
 		recent := 6
-		if v := flagValue(args[1:], "--recent"); v != "" {
+		if v := valueFlag(args[1:], "--recent"); v != "" {
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 0 {
 				fmt.Fprintln(os.Stderr, "route evidence-authority: --recent must be a non-negative integer")
@@ -2814,9 +2814,9 @@ func cmdRoute(args []string) {
 		return
 	}
 	if args[0] == "plan" {
-		candidateID := flagValue(args[1:], "--candidate")
-		capabilityClass := flagValue(args[1:], "--capability-class")
-		targetPath := flagValue(args[1:], "--target")
+		candidateID := valueFlag(args[1:], "--candidate")
+		capabilityClass := valueFlag(args[1:], "--capability-class")
+		targetPath := valueFlag(args[1:], "--target")
 		if (candidateID == "" && capabilityClass == "") || (candidateID != "" && capabilityClass != "") {
 			fmt.Fprintln(os.Stderr, "usage: compound route plan (--candidate <candidate_id> [--target <file>]|--capability-class <class> [--privacy-sensitive])")
 			os.Exit(2)
@@ -2824,7 +2824,7 @@ func cmdRoute(args []string) {
 		if capabilityClass != "" {
 			plan, err := routeevidence.PlanCapabilityRoute(homePath, capabilityClass, routeevidence.CapabilityRoutePlanOptions{
 				PrivacySensitive: hasFlag(args[1:], "--privacy-sensitive"),
-				LatencyClass:     flagValue(args[1:], "--latency-class"),
+				LatencyClass:     valueFlag(args[1:], "--latency-class"),
 			}, time.Now())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "route plan:", err)
@@ -2933,12 +2933,12 @@ func cmdRoute(args []string) {
 		return
 	}
 	if args[0] == "outcome-review" {
-		routeID := flagValue(args[1:], "--route-id")
-		routePath := flagValue(args[1:], "--route-evidence")
-		receiptPath := flagValue(args[1:], "--receipt")
-		receiptID := flagValue(args[1:], "--receipt-id")
-		workID := flagValue(args[1:], "--work-id")
-		targetPath := flagValue(args[1:], "--target")
+		routeID := valueFlag(args[1:], "--route-id")
+		routePath := valueFlag(args[1:], "--route-evidence")
+		receiptPath := valueFlag(args[1:], "--receipt")
+		receiptID := valueFlag(args[1:], "--receipt-id")
+		workID := valueFlag(args[1:], "--work-id")
+		targetPath := valueFlag(args[1:], "--target")
 		ev, rec, err := routeevidence.ResolveOutcomeReviewInputs(homePath, routeevidence.OutcomeReviewSelector{
 			RouteID:           routeID,
 			RouteEvidencePath: routePath,
@@ -3140,7 +3140,7 @@ func cmdHarness(args []string) {
 			}
 			return
 		}
-		harnessName := flagValue(args[1:], "--harness")
+		harnessName := valueFlag(args[1:], "--harness")
 		if harnessName == "" {
 			fmt.Fprintf(os.Stderr, "usage: compound harness %s --harness <name> [--json] [--apply --work <work_id>]\n", target)
 			os.Exit(2)
@@ -4339,17 +4339,20 @@ func findingEvidenceRefs(args []string) []string {
 	return refs
 }
 
+// flagValue was a byte-for-byte behavioral duplicate of valueFlag (same first-occurrence
+// scan, only the loop bound differed) — H7 (2026-07-16/17 B2/B3 CLI seam packet) consolidates
+// the two into one implementation. Every in-scope caller (this file, work_cli.go, and the
+// finding/capture/placement/knowledge/memory CLI surfaces) now calls valueFlag directly; this
+// name survives only as a compatibility forward for callers in files outside that packet's
+// touch boundary (activity_cli.go, doctor_cli.go, act_cli.go, landlease_cli.go,
+// executorlens_cli.go, latenttax_cli.go, capability.go, bench.go, and others — see the packet
+// handoff for the full list). Follow-up: migrate those callers to valueFlag, then delete this.
 func flagValue(args []string, name string) string {
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == name {
-			return args[i+1]
-		}
-	}
-	return ""
+	return valueFlag(args, name)
 }
 
 func intFlag(args []string, name string) (int, error) {
-	raw := flagValue(args, name)
+	raw := valueFlag(args, name)
 	if raw == "" {
 		return 0, nil
 	}
@@ -5930,21 +5933,21 @@ func cmdHome(args []string) {
 		}
 		printHomeDoctor(report)
 	case "backup":
-		report, err := home.Backup(resolve(), flagValue(args, "--target"), time.Now())
+		report, err := home.Backup(resolve(), valueFlag(args, "--target"), time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "home backup:", err)
 			os.Exit(1)
 		}
 		printHomeArchiveReport("backup", report)
 	case "export":
-		report, err := home.ExportPublicFixture(resolve(), flagValue(args, "--target"), time.Now())
+		report, err := home.ExportPublicFixture(resolve(), valueFlag(args, "--target"), time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "home export:", err)
 			os.Exit(1)
 		}
 		printHomeArchiveReport("export", report)
 	case "verify":
-		archivePath := flagValue(args, "--archive")
+		archivePath := valueFlag(args, "--archive")
 		if archivePath == "" && len(restPos) > 0 {
 			archivePath = restPos[0]
 		}
@@ -5959,11 +5962,11 @@ func cmdHome(args []string) {
 		}
 		printHomeVerifyReport(report)
 	case "restore":
-		archivePath := flagValue(args, "--archive")
+		archivePath := valueFlag(args, "--archive")
 		if archivePath == "" && len(restPos) > 0 {
 			archivePath = restPos[0]
 		}
-		targetPath := flagValue(args, "--target")
+		targetPath := valueFlag(args, "--target")
 		if archivePath == "" || targetPath == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound home restore <archive.tar.gz> --target <empty-home-path>")
 			os.Exit(2)
@@ -6440,7 +6443,7 @@ func cmdSchema(args []string) {
 			os.Exit(2)
 		}
 		if args[1] == "--all" {
-			dir := flagValue(args[2:], "--dir")
+			dir := valueFlag(args[2:], "--dir")
 			if dir == "" {
 				all := map[string]any{}
 				for _, c := range schema.Contracts() {
@@ -6750,12 +6753,12 @@ func cmdAuthority(args []string) {
 		// so behavior stays byte-identical to before these flags existed.
 		if hasFlag(fillFlags, "--decision") {
 			fill := authority.JobHealthReviewFillInput{
-				Decision:   flagValue(fillFlags, "--decision"),
-				Rationale:  flagValue(fillFlags, "--rationale"),
-				NextAction: flagValue(fillFlags, "--next-action"),
+				Decision:   valueFlag(fillFlags, "--decision"),
+				Rationale:  valueFlag(fillFlags, "--rationale"),
+				NextAction: valueFlag(fillFlags, "--next-action"),
 			}
 			if hasFlag(fillFlags, "--confidence") {
-				conf, err := strconv.ParseFloat(flagValue(fillFlags, "--confidence"), 64)
+				conf, err := strconv.ParseFloat(valueFlag(fillFlags, "--confidence"), 64)
 				if err != nil {
 					fmt.Fprintln(os.Stderr, "authority job-health-review: --confidence must be a number")
 					os.Exit(2)
@@ -7007,7 +7010,7 @@ func cmdAuthority(args []string) {
 				os.Exit(2)
 			}
 		}
-		workID := flagValue(args[2:], "--work-id")
+		workID := valueFlag(args[2:], "--work-id")
 		actionIntentIDs := valuesFlag(args[2:], "--action-intent")
 		var mutationBinding *authority.SourceControlMutationBinding
 		if len(actionIntentIDs) > 0 {
@@ -7484,7 +7487,7 @@ func cmdProduct(args []string) {
 			fmt.Printf("- transition: %s\n", report.TransitionIDs[0])
 		}
 	case "canonical-metrics":
-		productID := flagValue(args[1:], "--product")
+		productID := valueFlag(args[1:], "--product")
 		var sourcePath string
 		for i := 1; i < len(args); i++ {
 			switch {
@@ -7601,8 +7604,8 @@ func cmdProduct(args []string) {
 			fmt.Printf("- issue: %s\n", issueID)
 		}
 	case "hypothesis-plan":
-		candidateID := flagValue(args[1:], "--candidate")
-		targetPath := flagValue(args[1:], "--target")
+		candidateID := valueFlag(args[1:], "--candidate")
+		targetPath := valueFlag(args[1:], "--target")
 		if candidateID == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound product hypothesis-plan --candidate <candidate_id> [--target <file>]")
 			os.Exit(2)
@@ -7635,8 +7638,8 @@ func cmdProduct(args []string) {
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- signal_draft: %s\n", paths.SignalDraftPath)
 	case "observation-verdict-plan":
-		verdictPath := flagValue(args[1:], "--verdict")
-		targetPath := flagValue(args[1:], "--target")
+		verdictPath := valueFlag(args[1:], "--verdict")
+		targetPath := valueFlag(args[1:], "--target")
 		if verdictPath == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound product observation-verdict-plan --verdict <panel-verdict.json> [--target <file>]")
 			os.Exit(2)
@@ -7668,9 +7671,9 @@ func cmdProduct(args []string) {
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "review-plan":
-		hypothesisID := flagValue(args[1:], "--hypothesis")
-		signalID := flagValue(args[1:], "--signal")
-		targetPath := flagValue(args[1:], "--target")
+		hypothesisID := valueFlag(args[1:], "--hypothesis")
+		signalID := valueFlag(args[1:], "--signal")
+		targetPath := valueFlag(args[1:], "--target")
 		if hypothesisID == "" || signalID == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound product review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>]")
 			os.Exit(2)
@@ -7703,9 +7706,9 @@ func cmdProduct(args []string) {
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "action-plan":
-		productID := flagValue(args[1:], "--product")
-		cardID := flagValue(args[1:], "--card")
-		targetPath := flagValue(args[1:], "--target")
+		productID := valueFlag(args[1:], "--product")
+		cardID := valueFlag(args[1:], "--card")
+		targetPath := valueFlag(args[1:], "--target")
 		if productID == "" || cardID == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound product action-plan --product <product_id> --card <card_id> [--target <file>]")
 			os.Exit(2)
@@ -7738,9 +7741,9 @@ func cmdProduct(args []string) {
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "source-issue-plan":
-		productID := flagValue(args[1:], "--product")
-		issueID := flagValue(args[1:], "--issue")
-		targetPath := flagValue(args[1:], "--target")
+		productID := valueFlag(args[1:], "--product")
+		issueID := valueFlag(args[1:], "--issue")
+		targetPath := valueFlag(args[1:], "--target")
 		if productID == "" || issueID == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound product source-issue-plan --product <product_id> --issue <issue_id> [--target <file>]")
 			os.Exit(2)
@@ -7773,8 +7776,8 @@ func cmdProduct(args []string) {
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "outbound-dry-run-plan":
-		reviewedReceiptPath := flagValue(args[1:], "--reviewed-receipt")
-		targetPath := flagValue(args[1:], "--target")
+		reviewedReceiptPath := valueFlag(args[1:], "--reviewed-receipt")
+		targetPath := valueFlag(args[1:], "--target")
 		if reviewedReceiptPath == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound product outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>]")
 			os.Exit(2)
@@ -7807,9 +7810,9 @@ func cmdProduct(args []string) {
 		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "review":
 		rest := args[1:]
-		reviewedBy := strings.TrimSpace(flagValue(rest, "--reviewed-by"))
+		reviewedBy := strings.TrimSpace(valueFlag(rest, "--reviewed-by"))
 		if reviewedBy == "" {
-			reviewedBy = strings.TrimSpace(flagValue(rest, "--actor"))
+			reviewedBy = strings.TrimSpace(valueFlag(rest, "--actor"))
 		}
 		reviewPath := ""
 		for i := 0; i < len(rest); i++ {
@@ -7900,8 +7903,8 @@ func cmdProduct(args []string) {
 		fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
 		fmt.Printf("- reviewed: %s\n", report.ReviewedPath)
 	case "action-work-plan":
-		reviewedPath := flagValue(args[1:], "--reviewed")
-		actor := strings.TrimSpace(flagValue(args[1:], "--actor"))
+		reviewedPath := valueFlag(args[1:], "--reviewed")
+		actor := strings.TrimSpace(valueFlag(args[1:], "--actor"))
 		jsonOut := hasFlag(args[1:], "--json")
 		if reviewedPath == "" || actor == "" {
 			// No silent default actor: fabricated provenance on the last door
@@ -8211,8 +8214,8 @@ func cmdDecisions(args []string) {
 	store, homePath := openMemStore()
 	switch sub {
 	case "candidate-plan":
-		candidateID := flagValue(args[1:], "--candidate")
-		targetPath := flagValue(args[1:], "--target")
+		candidateID := valueFlag(args[1:], "--candidate")
+		targetPath := valueFlag(args[1:], "--target")
 		if candidateID == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound decisions candidate-plan --candidate <candidate_id> [--target <file>]")
 			os.Exit(2)
