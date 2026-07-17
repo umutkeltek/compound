@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -206,5 +207,33 @@ func TestParseCodexBarClaudeCapacitySelectsFreshConstrainingWeeklyWindow(t *test
 	stale := strings.Replace(string(body), "2026-07-17T19:59:00Z", "2026-07-17T19:40:00Z", 1)
 	if _, err := parseCodexBarClaudeCapacity([]byte(stale), now); err == nil {
 		t.Fatal("stale CodexBar evidence was accepted")
+	}
+}
+
+func TestProbeCodexBarClaudeCapacityUsesBoundedDirectArgv(t *testing.T) {
+	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
+	called := false
+	evidence, err := probeCodexBarClaudeCapacityWithRunner(now, func(ctx context.Context, command string, args ...string) ([]byte, error) {
+		called = true
+		if command != "codexbar" {
+			t.Fatalf("probe command = %q", command)
+		}
+		got := strings.Join(args, " ")
+		if got != "usage --provider claude --source auto --format json --no-color" {
+			t.Fatalf("probe args = %q", got)
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("probe context has no deadline")
+		}
+		return []byte(`[{
+		  "provider":"claude",
+		  "usage":{"updatedAt":"2026-07-17T19:59:00Z","secondary":{"usedPercent":74,"windowMinutes":10080,"resetsAt":"2026-07-21T16:00:00Z"}}
+		}]`), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called || evidence.RemainingPercent != 26 {
+		t.Fatalf("probe result = called %v evidence %+v", called, evidence)
 	}
 }

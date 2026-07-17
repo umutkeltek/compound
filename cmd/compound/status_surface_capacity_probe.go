@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -12,6 +14,10 @@ import (
 )
 
 const codexBarCapacityFreshness = 10 * time.Minute
+const codexBarProbeTimeout = 8 * time.Second
+const maxCodexBarProbeBytes = 1 << 20
+
+type statusCapacityCommandRunner func(context.Context, string, ...string) ([]byte, error)
 
 type codexBarCapacityWindow struct {
 	UsedPercent   *float64 `json:"usedPercent"`
@@ -82,4 +88,23 @@ func parseCodexBarClaudeCapacity(body []byte, now time.Time) (statussurface.Capa
 		}, nil
 	}
 	return statussurface.CapacityEvidence{}, errors.New("CodexBar output has no Claude usage row")
+}
+
+func probeCodexBarClaudeCapacity(now time.Time) (statussurface.CapacityEvidence, error) {
+	return probeCodexBarClaudeCapacityWithRunner(now, func(ctx context.Context, command string, args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, command, args...).Output()
+	})
+}
+
+func probeCodexBarClaudeCapacityWithRunner(now time.Time, run statusCapacityCommandRunner) (statussurface.CapacityEvidence, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), codexBarProbeTimeout)
+	defer cancel()
+	body, err := run(ctx, "codexbar", "usage", "--provider", "claude", "--source", "auto", "--format", "json", "--no-color")
+	if err != nil {
+		return statussurface.CapacityEvidence{}, fmt.Errorf("probe CodexBar Claude usage: %w", err)
+	}
+	if len(body) > maxCodexBarProbeBytes {
+		return statussurface.CapacityEvidence{}, errors.New("CodexBar Claude usage exceeds 1 MiB")
+	}
+	return parseCodexBarClaudeCapacity(body, now)
 }

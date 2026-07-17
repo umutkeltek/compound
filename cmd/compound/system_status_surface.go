@@ -143,7 +143,7 @@ func buildLiveStatusSnapshotWithCapacityReader(
 		if err != nil {
 			return statussurface.Snapshot{}, err
 		}
-		snapshot = supplementLiveClaudeCapacity(snapshot, previous, fresh, now, readCapacity, nil)
+		snapshot = supplementLiveClaudeCapacity(snapshot, previous, fresh, now, readCapacity, probeCodexBarClaudeCapacity)
 	} else {
 		capacity, err := readCapacity("codex", now)
 		if err != nil {
@@ -172,6 +172,11 @@ func supplementLiveClaudeCapacity(
 	readCapacity func(string, time.Time) (routeevidence.LaneCapacity, error),
 	probe func(time.Time) (statussurface.CapacityEvidence, error),
 ) statussurface.Snapshot {
+	for _, limit := range snapshot.Limits {
+		if limit.Kind == statussurface.LimitSevenDay && limit.Status == statussurface.StatusLive {
+			return snapshot
+		}
+	}
 	if capacity, err := readCapacity("claude", now); err == nil && capacity.State != routeevidence.CapacityUnknown {
 		return statussurface.SupplementWeeklyCapacity(snapshot, statussurface.CapacityEvidence{
 			Status: statussurface.StatusLive, RemainingPercent: capacity.Remaining, ResetsAt: capacity.ResetsAt,
