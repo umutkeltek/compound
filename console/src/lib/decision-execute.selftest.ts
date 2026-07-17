@@ -6,18 +6,22 @@
  * hold-record command as if it could change routing authority).
  *
  * These checks pin the agreement contract at the pure layer (no spawned CLI):
- * Generic execution remains available only when no bespoke owner exists.
+ * an exact authority-bound projected action wins; a legacy bespoke body is
+ * not an identity-free mutation path.
  * Runs under bun via scripts/decision-execute-smoke.mjs.
  */
 
 import {
+  actionAuthorityRequestError,
   decisionCommandFailureResponse,
   decisionFailureStatus,
   decisionStaleRevisionResponse,
   executeDecision,
+  exactActionOwnerConstraint,
   extractDecisionRefs,
   genericActionRevisionMatches,
   genericActionAllowedForOwner,
+  genericActionRejectionResponse,
   missingBespokeConfirmation,
   renderedRevisionMatches,
   reviewResolutionCommandFailureResponse,
@@ -27,6 +31,7 @@ import { headlineAct, type HeadlineActDescriptor } from "./briefing";
 import type { AttentionGroup } from "./attention";
 import {
   buildDecideActionRequest,
+  buildEnumerableActionRequest,
   buildHeadlineActionRequest,
   type ClientDecideAct,
   decideActIdentity,
@@ -52,11 +57,196 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
   const checks: Check[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
 
+  // ObjectFace requests carry all three optimistic identities. Missing or
+  // malformed identity is a bad request; drift against the freshly resolved
+  // owner action is a conflict. Projection failure and a current hold keep
+  // their distinct retry/decision status.
+  {
+    const authorityRevision = `policy-authority-v1:sha256:${"a".repeat(64)}`;
+    const action = {
+      revision: "generic-action-v2:[fixture]",
+      actionIntentId: "act_authority_fixture",
+      authorityRevision,
+    };
+    const missing = actionAuthorityRequestError(action, {
+      expectedRevision: "",
+      actionIntentId: "",
+      expectedAuthorityRevision: "",
+    });
+    const matching = actionAuthorityRequestError(action, {
+      expectedRevision: action.revision,
+      actionIntentId: action.actionIntentId,
+      expectedAuthorityRevision: authorityRevision,
+    });
+    const actionDrift = actionAuthorityRequestError(action, {
+      expectedRevision: "generic-action-v2:[other]",
+      actionIntentId: action.actionIntentId,
+      expectedAuthorityRevision: authorityRevision,
+    });
+    const intentDrift = actionAuthorityRequestError(action, {
+      expectedRevision: action.revision,
+      actionIntentId: "act_other",
+      expectedAuthorityRevision: authorityRevision,
+    });
+    const authorityDrift = actionAuthorityRequestError(action, {
+      expectedRevision: action.revision,
+      actionIntentId: action.actionIntentId,
+      expectedAuthorityRevision: `policy-authority-v1:sha256:${"b".repeat(64)}`,
+    });
+    const missingPayload = missing ? await missing.json() as { error_code?: string } : {};
+    const driftPayloads = await Promise.all(
+      [actionDrift, intentDrift, authorityDrift].map(async (response) =>
+        response ? await response.json() as { error_code?: string } : {}),
+    );
+    const hold = genericActionRejectionResponse({ gate: "authority-not-allowed", message: "Needs your decision · current policy holds this action" });
+    const unavailable = genericActionRejectionResponse({ gate: "projection-unavailable", message: "owner projection is not live" });
+    push(
+      "authority-request-identity-is-required-and-drift-bound",
+      missing?.status === 400 &&
+        missingPayload.error_code === "malformed_authority_request" &&
+        matching === null &&
+        [actionDrift, intentDrift, authorityDrift].every((response) => response?.status === 409) &&
+        driftPayloads.every((payload) => payload.error_code === "authority_drift") &&
+        hold.status === 409 &&
+        unavailable.status === 503,
+      `missing=${missing?.status}/${missingPayload.error_code} matching=${matching == null} drift=${[actionDrift, intentDrift, authorityDrift].map((response, index) => `${response?.status}/${driftPayloads[index]?.error_code}`).join(",")} hold=${hold.status} unavailable=${unavailable.status}`,
+    );
+  }
+
+  // Every ObjectFace transport shape carries the same ActionIntent and
+  // AuthorityFace identity, including enumerable members and the headline.
+  {
+    const authorityRevision = `policy-authority-v1:sha256:${"c".repeat(64)}`;
+    const authorityIdentity = {
+      actionIntentId: "act_transport_fixture",
+      expectedAuthorityRevision: authorityRevision,
+    };
+    const generic = {
+      mode: "generic" as const,
+      area: "source-control-cleanup",
+      itemId: "scr_transport",
+      actionId: "record_source_control_cleanup_review",
+      expectedRevision: "generic-action-v2:[transport]",
+      ...authorityIdentity,
+      label: "Record review",
+      argv: ["authority", "dirty-review", "/tmp/review.yaml"],
+      requiresConfirmation: true,
+      copyCommand: "compound reviews --area source-control-cleanup",
+      effectKind: "record" as const,
+    };
+    const bespoke = {
+      mode: "bespoke" as const,
+      area: "source-control-cleanup",
+      itemId: "scr_transport",
+      option: "",
+      options: [],
+      defaultOption: "",
+      label: "Record review",
+      requiresConfirmation: true,
+      argv: ["authority", "dirty-review", "/tmp/review.yaml"],
+      policyNote: "",
+      fields: [],
+      expectedRevision: "generic-action-v2:[transport]",
+      ...authorityIdentity,
+      supportsPreview: false,
+      effectKind: "record" as const,
+    };
+    const member = {
+      id: "scr_transport",
+      actionId: "record_source_control_cleanup_review",
+      expectedRevision: "generic-action-v2:[transport]",
+      ...authorityIdentity,
+    };
+    const headlineDescriptor = {
+      pathway: "generic" as const,
+      area: "source-control-cleanup",
+      itemId: "scr_transport",
+      actionId: "record_source_control_cleanup_review",
+      expectedRevision: "generic-action-v2:[transport]",
+      ...authorityIdentity,
+      label: "Record review",
+      argv: ["compound", "authority", "dirty-review", "/tmp/review.yaml"],
+      requiresConfirmation: true,
+      rationaleRequired: false,
+    };
+    const genericBody = buildDecideActionRequest(generic, "", {}, "confirm");
+    const bespokeBody = buildDecideActionRequest(bespoke, "", {}, "confirm");
+    const memberBody = buildEnumerableActionRequest("source-control-cleanup", member, true, "");
+    const headlineBody = buildHeadlineActionRequest(headlineDescriptor, "", "confirm");
+    const bodies = [genericBody, bespokeBody, memberBody, headlineBody];
+    const changedIdentity = decideActIdentity({ ...generic, expectedAuthorityRevision: `policy-authority-v1:sha256:${"d".repeat(64)}` });
+    push(
+      "authority-identity-propagates-across-objectface-transports",
+      bodies.every((body) =>
+        body.actionIntentId === authorityIdentity.actionIntentId &&
+        body.expectedAuthorityRevision === authorityRevision) &&
+        decideActIdentity(generic) !== changedIdentity &&
+        String(memberBody.actionId) === member.actionId,
+      `bodies=${JSON.stringify(bodies)} identity_changed=${decideActIdentity(generic) !== changedIdentity}`,
+    );
+  }
+
   {
     const owner = specFor("source-control-cleanup");
     const item = { id: "scr_fixture", json_path: "/tmp/scr_fixture.json", actions: [{ argv: ["compound", "authority", "dirty-review", "/tmp/scr_fixture.review.yaml"] }] } as Json;
     const options = owner?.optionsFor?.(item) ?? [];
     push("source-control-has-explicit-decision-owner", options.length === 4 && owner?.requiresConfirmation === true, `options=${options.map((option) => option.value).join(",")}`);
+  }
+
+  // An exact stamped action keeps precedence over the editable legacy form,
+  // but it must satisfy both the generic gates and the area's narrower owner
+  // contract. The legacy owner may only narrow; it cannot rebuild the action.
+  {
+    const owner = specFor("source-control-cleanup");
+    const exact = {
+      argv: ["authority", "dirty-review", "/tmp/scr_fixture.review.yaml", "--json"],
+      requiresReview: false,
+    };
+    const allowed = exactActionOwnerConstraint(owner, "scr_fixture", exact);
+    const invalidTarget = exactActionOwnerConstraint(owner, "not-a-source-review", exact);
+    const foreignVerb = exactActionOwnerConstraint(owner, "scr_fixture", {
+      ...exact,
+      argv: ["authority", "job-health-review", "/tmp/scr_fixture.review.yaml", "--json"],
+    });
+    push(
+      "exact-projected-action-is-narrowed-by-bespoke-owner",
+      allowed.ok && allowed.requiresConfirmation === true &&
+        !invalidTarget.ok && invalidTarget.status === 400 &&
+        !foreignVerb.ok && foreignVerb.status === 403,
+      `allowed=${JSON.stringify(allowed)} invalid_target=${JSON.stringify(invalidTarget)} foreign_verb=${JSON.stringify(foreignVerb)}`,
+    );
+  }
+
+  // A legacy bespoke-shaped mutation body cannot route around the exact
+  // ActionIntent + AuthorityFace identity merely because a registry owner
+  // still exists. This rejection happens before item resolution or argv build.
+  {
+    const response = await executeDecision({
+      area: "source-control-cleanup",
+      itemId: "not-a-valid-source-review",
+      option: "owner_action_required",
+      fields: { rationale: "legacy client body" },
+      confirmed: true,
+    });
+    const identityWithoutAction = await executeDecision({
+      area: "source-control-cleanup",
+      itemId: "not-a-valid-source-review",
+      option: "owner_action_required",
+      fields: { rationale: "legacy client body with copied identity" },
+      expectedRevision: "generic-action-v2:[legacy]",
+      actionIntentId: "act_legacy_bespoke",
+      expectedAuthorityRevision: `policy-authority-v1:sha256:${"f".repeat(64)}`,
+      confirmed: true,
+    });
+    const payload = await response.json() as { error_code?: string };
+    const identityWithoutActionPayload = await identityWithoutAction.json() as { error_code?: string };
+    push(
+      "legacy-bespoke-mutation-requires-exact-authority-identity",
+      response.status === 400 && payload.error_code === "malformed_authority_request" &&
+        identityWithoutAction.status === 400 &&
+        identityWithoutActionPayload.error_code === "malformed_authority_request",
+      `empty=${response.status}/${payload.error_code ?? "missing"} identity_without_action=${identityWithoutAction.status}/${identityWithoutActionPayload.error_code ?? "missing"}`,
+    );
   }
 
   const spec = specFor("route-promotions");
@@ -862,7 +1052,7 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
         grant?.supportsPreview !== true &&
         grant?.idPattern.test("agm_job_health") === true &&
         grant?.idPattern.test("agm_") === false &&
-        argv?.join(" ") === wantArgv.join(" ") &&
+        argv?.join("\u0000") === wantArgv.join("\u0000") &&
         reject({ min_terminal_samples: "5", min_window_days: "7", max_failures: "5" }) == null &&
         reject({ min_terminal_samples: "0", min_window_days: "7", max_failures: "0" }) == null &&
         reject({ min_terminal_samples: "abc", min_window_days: "7", max_failures: "0" }) == null &&

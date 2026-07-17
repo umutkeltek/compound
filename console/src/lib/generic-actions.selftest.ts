@@ -3,10 +3,12 @@ import {
   GENERIC_ACTION_ALLOWLIST,
   genericActionEffectKind,
   genericActionProjectionEligible,
+  genericActionRevision,
   reviewResolutionRevision,
   resolveGenericActionFromProjection,
   resolveGenericActionFromRead,
 } from "./generic-actions";
+import { parseActionAuthorityBundle } from "./action-authority";
 
 /**
  * The depth test for Phase 3a (Plans/i-am-not-happy-rosy-floyd.md Part 4):
@@ -24,6 +26,82 @@ import {
  */
 export type SelfTestResult = { ok: boolean; details: string[] };
 
+function authorityAction(overrides: Record<string, unknown> = {}) {
+  const scope = { entity_id: "review_fixture", project_id: "compound", surface: "reviews" };
+  const target = { kind: "review_artifact", id: "review_fixture" };
+  const actionIntent = {
+    schema_version: "compound.action_intent.v0.1",
+    id: "act_authority_fixture",
+    created_at: "2026-07-17T12:00:00Z",
+    producer: { kind: "cli", name: "compound", version: "fixture" },
+    ids: { work_id: "work_authority_fixture" },
+    scope,
+    authority: { source_class: "runtime", status: "current" },
+    privacy: "private",
+    risk: "tier1",
+    evidence_refs: ["evidence:authority-fixture"],
+    uncertainty: { level: "known" },
+    actor: "operator-console",
+    capability: "review-record",
+    action: "record current review",
+    target,
+    mutation_class: "local_reversible",
+    reversibility: "easy",
+    blast_radius: "local_reversible",
+    estimated_cost: { usd: 0, tokens: 0, human_review_minutes: 1 },
+    rollback_plan: "supersede the review record",
+  };
+  const policyDecision = {
+    schema_version: "compound.policy_decision.v0.1",
+    id: "pol_authority_fixture",
+    created_at: "2026-07-17T12:00:01Z",
+    producer: { kind: "policy", name: "compound", version: "fixture" },
+    ids: { work_id: "work_authority_fixture" },
+    scope,
+    authority: { source_class: "runtime", status: "current" },
+    privacy: "private",
+    risk: "tier1",
+    evidence_refs: ["evidence:policy-fixture"],
+    uncertainty: { level: "known" },
+    action_intent_id: "act_authority_fixture",
+    outcome: "allow",
+    reasons: ["standing scope covers the exact target"],
+    obligations: [],
+    standing_grant_id: "grant_fixture",
+  };
+  const policyAuthority = {
+    schema_version: "compound.policy_authority_face.v0.1",
+    revision: `policy-authority-v1:sha256:${"a".repeat(64)}`,
+    current: true,
+    allowed: true,
+    wording: "Allowed by current policy",
+    action_intent_id: "act_authority_fixture",
+    policy_decision_id: "pol_authority_fixture",
+    policy_outcome: "allow",
+    standing_grant_id: "grant_fixture",
+    target,
+    target_scope: "private",
+    blast_radius: "local_reversible",
+    reversibility: "easy",
+    verified_recoverability: "verified",
+    operator_control_continuity: "continuous",
+    policy_source: "fixture-policy",
+    exact_gate: "standing_scope",
+    expected_receipt: "review receipt",
+    expected_proof: ["proof:review-recorded"],
+  };
+  return {
+    id: "record_fixture",
+    label: "Record fixture",
+    argv: ["compound", "authority", "dirty-review", "/tmp/fixture.review.yaml"],
+    requires_review: true,
+    action_intent: actionIntent,
+    policy_decision: policyDecision,
+    policy_authority: policyAuthority,
+    ...overrides,
+  };
+}
+
 export function runGenericActionsSelfTest(): SelfTestResult {
   const details: string[] = [];
   let ok = true;
@@ -33,6 +111,42 @@ export function runGenericActionsSelfTest(): SelfTestResult {
     details.push(`FAIL: ${msg}`);
   };
   const pass = (msg: string) => details.push(`ok: ${msg}`);
+
+  // ObjectFace authority is one exact Go-owned bundle. The console validates
+  // linkage and carries the opaque revision; it never reconstructs policy.
+  {
+    const valid = parseActionAuthorityBundle(authorityAction());
+    const crossLinked = authorityAction();
+    (crossLinked.policy_decision as Record<string, unknown>).action_intent_id = "act_other";
+    const malformed = authorityAction();
+    (malformed.policy_authority as Record<string, unknown>).revision = "client-recomputed";
+    const missingDisplay = authorityAction();
+    delete (missingDisplay.action_intent as Record<string, unknown>).blast_radius;
+    delete (missingDisplay.policy_authority as Record<string, unknown>).blast_radius;
+    const partial = authorityAction();
+    delete (partial as Record<string, unknown>).policy_decision;
+    if (!valid) {
+      fail("complete current authority bundle was rejected");
+    } else if (
+      valid.actionIntentId !== "act_authority_fixture" ||
+      valid.authorityRevision !== `policy-authority-v1:sha256:${"a".repeat(64)}` ||
+      valid.wording !== "Allowed by current policy" ||
+      valid.rollbackPlan !== "supersede the review record" ||
+      valid.expectedReceipt !== "review receipt" ||
+      valid.expectedProof.join(",") !== "proof:review-recorded"
+    ) {
+      fail(`authority bundle lost the Go display contract: ${JSON.stringify(valid)}`);
+    } else if (
+      parseActionAuthorityBundle(crossLinked) ||
+      parseActionAuthorityBundle(malformed) ||
+      parseActionAuthorityBundle(missingDisplay) ||
+      parseActionAuthorityBundle(partial)
+    ) {
+      fail("cross-linked, malformed, display-incomplete, or partial authority bundle was accepted");
+    } else {
+      pass("authority parser preserves exact display fields and rejects partial/cross-linked/display-incomplete bundles");
+    }
+  }
 
   // (a) Gate 1 — a shell-form action (argv[0] !== "compound") must be
   // rejected regardless of area, exactly like panel per-item "/bin/sh -lc
@@ -109,13 +223,13 @@ export function runGenericActionsSelfTest(): SelfTestResult {
         {
           id: "jhp_test123456",
           actions: [
-            {
+            authorityAction({
               id: "record_job_health_review",
               label: "Record job-health review",
               argv: ["compound", "authority", "job-health-review", "/tmp/fixture.review.yaml"],
               requires_review: true,
               policy_note: "records a reviewed job-health decision; no roster mutation",
-            },
+            }),
           ],
         },
       ],
@@ -168,11 +282,11 @@ export function runGenericActionsSelfTest(): SelfTestResult {
       groups: [
         {
           key: "job-health|batch-key",
-          safe_batch_action: {
+          safe_batch_action: authorityAction({
             id: "record_job_health_review_batch",
             argv: ["compound", "authority", "job-health-review", "/tmp/batch.review.yaml"],
             requires_review: true,
-          },
+          }),
         },
       ],
     };
@@ -198,11 +312,11 @@ export function runGenericActionsSelfTest(): SelfTestResult {
         {
           id: "route_promotion_clean",
           actions: [
-            {
+            authorityAction({
               id: "route_promotion_record",
               argv: ["compound", "route", "promotion-record", "--review", "/tmp/rp.json"],
               requires_review: true,
-            },
+            }),
           ],
         },
       ],
@@ -356,13 +470,13 @@ export function runGenericActionsSelfTest(): SelfTestResult {
   // three gates apply without a bespoke reviews area existing for lease
   // hygiene.
   {
-    const leaseHygieneAction = {
+    const leaseHygieneAction = authorityAction({
       id: "lease-hygiene.sweep",
       label: "Sweep leftover claim tags",
       argv: ["compound", "home", "archive-history", "--kind", "lease"],
       kind: "batch",
       requires_confirmation: true,
-    };
+    });
     const attentionFixture = {
       groups: [
         { key: "lease-hygiene", area: "lease-hygiene", action: leaseHygieneAction },
@@ -471,12 +585,12 @@ export function runGenericActionsSelfTest(): SelfTestResult {
           id: "ssfb_20260709_session_backfill",
           area: "skill-surfacing",
           actions: [
-            {
+            authorityAction({
               id: "skill-surfacing.import",
               label: "Fold these misses into the capability graph",
               argv: ["compound", "capability", "import-surfacing-misses", openItemPath],
               requires_review: true,
-            },
+            }),
           ],
         },
       ],
@@ -601,7 +715,7 @@ export function runGenericActionsSelfTest(): SelfTestResult {
         {
           id: "dirprop_selftest",
           actions: [
-            {
+            authorityAction({
               id: "harness-edit.whitelist",
               label: "Allow edits to this surface",
               argv: [
@@ -614,7 +728,7 @@ export function runGenericActionsSelfTest(): SelfTestResult {
                 "--json",
               ],
               requires_review: true,
-            },
+            }),
           ],
         },
       ],
@@ -758,13 +872,13 @@ export function runGenericActionsSelfTest(): SelfTestResult {
       items: [{
         id: itemId,
         candidate_id: "cand_decision_review_selftest",
-        actions: [{
+        actions: [authorityAction({
           id: actionId,
           label: "Plan decision review",
           argv,
           requires_review: true,
           policy_note: "creates review evidence only; decision source and authority stay unchanged",
-        }],
+        })],
       }],
     };
     const resolved = resolveGenericActionFromProjection(projection, area, itemId, actionId);
@@ -878,9 +992,8 @@ export function runGenericActionsSelfTest(): SelfTestResult {
     }
   }
 
-  // (k) A `stale` read still carries the last-good value: resolution proceeds
-  // through the same three gates (staleness of the ACTION is guarded by the
-  // revision match in decision-execute.ts, not by refusing to resolve).
+  // (k) Stale last-good context is display evidence only. It must never cross
+  // the action seam: click-time execution requires a live owner read.
   {
     const read = {
       status: "stale" as const,
@@ -902,12 +1015,98 @@ export function runGenericActionsSelfTest(): SelfTestResult {
       error: "latest refresh attempt failed",
     };
     const res = resolveGenericActionFromRead(read, "lease-hygiene", "lease-hygiene", "lease-hygiene.sweep");
-    if (!res.ok) {
-      fail(`stale read with a last-good value failed to resolve: ${res.rejection.gate} - ${res.rejection.message}`);
-    } else if (res.action.argv.join(" ") !== "home archive-history --kind lease") {
-      fail(`stale read resolved unexpected argv: ${JSON.stringify(res.action.argv)}`);
+    if (res.ok) {
+      fail(`stale read resolved executable argv: ${JSON.stringify(res.action.argv)}`);
+    } else if (res.rejection.gate !== "projection-unavailable") {
+      fail(`stale read rejected at ${res.rejection.gate}, want projection-unavailable`);
     } else {
-      pass("stale read with a last-good value still resolves (revision match stays the freshness guard)");
+      pass("stale last-good context cannot resolve an executable action");
+    }
+  }
+
+  // ObjectFace actions require one complete, current, allowed authority
+  // bundle. The action revision binds the action tuple + stable authority
+  // identity, while equivalent policy reevaluations may rotate pol_ ids/time.
+  {
+    const area = "source-control-cleanup";
+    const itemId = "scr_authority_fixture";
+    const baseAction = authorityAction({
+      id: "record_source_control_cleanup_review",
+      label: "Record source-control review",
+    });
+    const projection = { items: [{ id: itemId, area, actions: [baseAction] }] };
+    const resolved = resolveGenericActionFromProjection(
+      projection,
+      area,
+      itemId,
+      "record_source_control_cleanup_review",
+    );
+    const missing = structuredClone(baseAction);
+    delete (missing as Record<string, unknown>).policy_authority;
+    const malformed = structuredClone(baseAction);
+    (malformed.policy_authority as Record<string, unknown>).action_intent_id = "act_other";
+    const held = structuredClone(baseAction);
+    const heldDecision = held.policy_decision as Record<string, unknown>;
+    const heldFace = held.policy_authority as Record<string, unknown>;
+    heldDecision.outcome = "hold";
+    heldDecision.standing_grant_id = "";
+    heldFace.allowed = false;
+    heldFace.policy_outcome = "hold";
+    heldFace.standing_grant_id = "";
+    heldFace.wording = "Needs your decision · current policy holds this action";
+    heldFace.exact_gate = "policy_hold";
+
+    const missingResolution = resolveGenericActionFromProjection(
+      { items: [{ id: itemId, actions: [missing] }] },
+      area,
+      itemId,
+      "record_source_control_cleanup_review",
+    );
+    const malformedResolution = resolveGenericActionFromProjection(
+      { items: [{ id: itemId, actions: [malformed] }] },
+      area,
+      itemId,
+      "record_source_control_cleanup_review",
+    );
+    const heldResolution = resolveGenericActionFromProjection(
+      { items: [{ id: itemId, actions: [held] }] },
+      area,
+      itemId,
+      "record_source_control_cleanup_review",
+    );
+
+    const reevaluated = structuredClone(baseAction);
+    (reevaluated.policy_decision as Record<string, unknown>).id = "pol_authority_reevaluated";
+    (reevaluated.policy_decision as Record<string, unknown>).created_at = "2026-07-17T12:05:00Z";
+    (reevaluated.policy_authority as Record<string, unknown>).policy_decision_id = "pol_authority_reevaluated";
+    const changedAction = structuredClone(baseAction);
+    changedAction.argv = [...changedAction.argv, "--json"];
+    const changedAuthority = structuredClone(baseAction);
+    (changedAuthority.policy_authority as Record<string, unknown>).revision =
+      `policy-authority-v1:sha256:${"b".repeat(64)}`;
+
+    if (!resolved.ok) {
+      fail(`live allowed authority action did not resolve: ${JSON.stringify(resolved)}`);
+    } else if (
+      resolved.action.actionIntentId !== "act_authority_fixture" ||
+      resolved.action.authorityRevision !== `policy-authority-v1:sha256:${"a".repeat(64)}` ||
+      !resolved.action.revision.startsWith("generic-action-v2:")
+    ) {
+      fail(`resolved action lost authority identity: ${JSON.stringify(resolved.action)}`);
+    } else if (
+      missingResolution.ok || missingResolution.rejection.gate !== "authority-unavailable" ||
+      malformedResolution.ok || malformedResolution.rejection.gate !== "authority-unavailable" ||
+      heldResolution.ok || heldResolution.rejection.gate !== "authority-not-allowed"
+    ) {
+      fail(`missing/malformed/held authority gates drifted: ${JSON.stringify({ missingResolution, malformedResolution, heldResolution })}`);
+    } else if (
+      genericActionRevision(baseAction) !== genericActionRevision(reevaluated) ||
+      genericActionRevision(baseAction) === genericActionRevision(changedAction) ||
+      genericActionRevision(baseAction) === genericActionRevision(changedAuthority)
+    ) {
+      fail("generic action v2 revision must ignore only policy decision identity/time and bind action + AuthorityFace");
+    } else {
+      pass("live allowed authority resolves; missing/malformed/held reject; v2 revision binds action + AuthorityFace only");
     }
   }
 

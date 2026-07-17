@@ -1,5 +1,7 @@
 import { arr, type Json, type ProjectionStatus, runProjection, str } from "@/lib/compound";
+import { parseActionAuthorityBundle } from "@/lib/action-authority";
 import { argvMatchesAllowlist } from "@/lib/decision-registry";
+import type { AuthorityFace } from "@/representation";
 
 /*
  * The generic governed-action pathway — Phase 3a of the console redesign
@@ -20,10 +22,10 @@ import { argvMatchesAllowlist } from "@/lib/decision-registry";
  *      through the same governed `runCompound` + cache-invalidate path the
  *      bespoke registry uses.
  *
- * This path only ever engages when `area` has NO entry in the bespoke
- * REGISTRY (decision-execute.ts checks `specFor(area)` first; bespoke always
- * wins). Adding a bespoke spec for an area removes it from this path
- * automatically — no change needed here.
+ * An exact Go-projected `actionId` engages this path before any legacy bespoke
+ * form, even when the area still has a registry entry. That preserves the
+ * stamped action semantics and prevents editable client fields from replacing
+ * the ActionIntent. Without an exact action id, no mutation is admitted.
  *
  * Three gates, in order, each with a distinct rejection reason:
  *   1. `gate-1-shell-form`     — resolved argv[0] must be literally
@@ -53,6 +55,8 @@ export type GenericActionGate =
   | "gate-2-allowlist"
   | "gate-3-global-allowlist"
   | "owner-action-present"
+  | "authority-unavailable"
+  | "authority-not-allowed"
   | "stale-action-revision"
   | "rationale-required"
   | "projection-unavailable"
@@ -66,6 +70,9 @@ export type ResolvedGenericAction = {
   requiresReview: boolean;
   policyNote: string;
   revision: string;
+  actionIntentId: string;
+  authorityRevision: string;
+  authority: AuthorityFace;
 };
 
 export type GenericActionRejection = {
@@ -180,11 +187,15 @@ export function genericActionEffectKind(area: string): GenericActionEffectKind |
 export function genericActionRevision(rawAction: unknown): string {
   const action = rawAction && typeof rawAction === "object" ? rawAction as Json : {};
   const requiresReview = Boolean(action.requires_review ?? action.requires_confirmation);
-  return `generic-action-v1:${JSON.stringify([
+  const actionIntent = action.action_intent && typeof action.action_intent === "object" ? action.action_intent as Json : {};
+  const authority = action.policy_authority && typeof action.policy_authority === "object" ? action.policy_authority as Json : {};
+  return `generic-action-v2:${JSON.stringify([
     str(action.id),
     str(action.label),
     arr(action.argv).map(String),
     requiresReview,
+    str(actionIntent.id),
+    str(authority.revision),
   ])}`;
 }
 
@@ -412,6 +423,26 @@ export function resolveGenericActionFromProjection(
     finalArgv = [...bareArgv, "--rationale", text];
   }
 
+  const authority = parseActionAuthorityBundle(action);
+  if (!authority || !authority.current) {
+    return {
+      ok: false,
+      rejection: {
+        gate: "authority-unavailable",
+        message: `action "${actionId}" has no complete current owner authority bundle`,
+      },
+    };
+  }
+  if (!authority.allowed) {
+    return {
+      ok: false,
+      rejection: {
+        gate: "authority-not-allowed",
+        message: authority.wording,
+      },
+    };
+  }
+
   return {
     ok: true,
     action: {
@@ -427,6 +458,9 @@ export function resolveGenericActionFromProjection(
       requiresReview: Boolean(action.requires_review ?? action.requires_confirmation),
       policyNote: str(action.policy_note),
       revision: genericActionRevision(action),
+      actionIntentId: authority.actionIntentId,
+      authorityRevision: authority.authorityRevision,
+      authority,
     },
   };
 }
@@ -544,14 +578,11 @@ export async function readReviewResolutionProjection(area: string): Promise<Gene
 }
 
 /**
- * Pure status gate between the projection read and the three-gate core: an
- * `unreachable` read (no success has EVER landed for this argv — the cold
- * exec failed or timed out) means "the projection did not answer", NEVER
- * "your item does not exist". Collapsing the two was the cold-cache 404:
- * the operator clicked a rendered, real button and was told the item was
- * gone. A `stale` read still carries the last-good value, so resolution
- * proceeds — the action-revision match in decision-execute.ts remains the
- * freshness guard for the argv itself.
+ * Pure status gate between the projection read and the three-gate core. Only
+ * a live read can authorize execution. `stale` may still carry a last-good
+ * value for explanation, while `unreachable` means no successful value has
+ * ever landed for this argv; neither may cross the action seam. Collapsing an
+ * unavailable read into "your item does not exist" was the cold-cache 404.
  */
 export function resolveGenericActionFromRead(
   read: GenericResolutionRead,
@@ -560,14 +591,14 @@ export function resolveGenericActionFromRead(
   actionId: string,
   rationale?: string,
 ): GenericActionResolution {
-  if (read.status === "unreachable") {
+  if (read.status !== "live") {
     const source = ATTENTION_SOURCED_GENERIC_AREAS.has(area) ? "attention" : "reviews";
     return {
       ok: false,
       rejection: {
         gate: "projection-unavailable",
         message:
-          `the ${source} projection did not answer in time, so nothing was run — retry in a moment` +
+          `the ${source} projection is not live, so nothing was run — retry in a moment` +
           (read.error ? ` (${read.error})` : ""),
       },
     };

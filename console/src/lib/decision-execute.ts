@@ -17,6 +17,7 @@ import {
 } from "@/lib/compound";
 import {
   type GenericActionGate,
+  type GenericActionRejection,
   type GenericActionResolution,
   type GenericResolutionRead,
   type ResolvedGenericAction,
@@ -24,6 +25,89 @@ import {
   reviewResolutionGuardFromRead,
   resolveGenericAction,
 } from "@/lib/generic-actions";
+
+export type ActionAuthorityRequest = {
+  expectedRevision: string;
+  actionIntentId: string;
+  expectedAuthorityRevision: string;
+};
+
+export type ExactActionOwnerConstraint =
+  | { ok: true; requiresConfirmation: boolean }
+  | { ok: false; status: 400 | 403; message: string };
+
+type ResolvedAuthorityIdentity = Pick<
+  ResolvedGenericAction,
+  "revision" | "actionIntentId" | "authorityRevision"
+>;
+
+const ACTION_INTENT_ID = /^act_\S+$/;
+const ACTION_AUTHORITY_REVISION = /^policy-authority-v1:sha256:[0-9a-f]{64}$/;
+
+/**
+ * Validate the identity carried by an ObjectFace act, then (when a freshly
+ * resolved owner action is supplied) compare all three optimistic tokens.
+ * The AuthorityFace revision remains opaque; this seam only carries/compares.
+ */
+export function actionAuthorityRequestError(
+  current: ResolvedAuthorityIdentity | null,
+  request: ActionAuthorityRequest,
+): Response | null {
+  if (
+    !request.expectedRevision.startsWith("generic-action-v2:") ||
+    !ACTION_INTENT_ID.test(request.actionIntentId) ||
+    !ACTION_AUTHORITY_REVISION.test(request.expectedAuthorityRevision)
+  ) {
+    return Response.json(
+      {
+        ok: false,
+        error_code: "malformed_authority_request",
+        stderr: "action revision, ActionIntent id, and AuthorityFace revision are required",
+      },
+      { status: 400 },
+    );
+  }
+  if (!current) return null;
+  if (
+    current.revision !== request.expectedRevision ||
+    current.actionIntentId !== request.actionIntentId ||
+    current.authorityRevision !== request.expectedAuthorityRevision
+  ) {
+    return Response.json(
+      {
+        ok: false,
+        error_code: "authority_drift",
+        stderr: "action authority changed since it was rendered; refresh and review current policy",
+      },
+      { status: 409 },
+    );
+  }
+  return null;
+}
+
+/**
+ * An exact owner-projected action keeps its stamped argv semantics, but a
+ * legacy area owner remains a narrowing contract. Apply its target shape,
+ * argv prefix, and confirmation floor in addition to the generic/global
+ * allowlists; never rebuild argv from editable legacy fields.
+ */
+export function exactActionOwnerConstraint(
+  spec: DecisionAreaSpec | null,
+  itemId: string,
+  action: Pick<ResolvedGenericAction, "argv" | "requiresReview">,
+): ExactActionOwnerConstraint {
+  if (!spec) return { ok: true, requiresConfirmation: action.requiresReview };
+  if (!spec.idPattern.test(itemId)) {
+    return { ok: false, status: 400, message: `invalid id for ${spec.area}` };
+  }
+  if (!argvMatchesAllowlist(action.argv, spec.argvAllowlist)) {
+    return { ok: false, status: 403, message: `command not allowed for ${spec.area}` };
+  }
+  return {
+    ok: true,
+    requiresConfirmation: action.requiresReview || Boolean(spec.requiresConfirmation),
+  };
+}
 
 export type DecisionExecutionRefs = {
   action_refs: string[];
@@ -391,6 +475,10 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   const preview = body.preview === true;
   const rationale = typeof body.rationale === "string" ? body.rationale : "";
   const expectedRevision = typeof body.expectedRevision === "string" ? body.expectedRevision.trim() : "";
+  const actionIntentId = typeof body.actionIntentId === "string" ? body.actionIntentId.trim() : "";
+  const expectedAuthorityRevision = typeof body.expectedAuthorityRevision === "string"
+    ? body.expectedAuthorityRevision.trim()
+    : "";
   const reason = typeof body.reason === "string" ? body.reason : rationale;
 
   const fields: Record<string, string> = {};
@@ -401,10 +489,44 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   }
   if ("confidence" in fields) fields.confidence = String(clamp01(fields.confidence));
 
+  const authorityRequest = { expectedRevision, actionIntentId, expectedAuthorityRevision };
+  // Every mutation through this one adapter must name the exact rendered
+  // ActionIntent and AuthorityFace. Legacy bespoke bodies are not a second,
+  // identity-free permission path. Write-free owner previews remain exempt.
+  if (!preview) {
+    if (!actionId) {
+      return Response.json(
+        {
+          ok: false,
+          error_code: "malformed_authority_request",
+          stderr: "action id, action revision, ActionIntent id, and AuthorityFace revision are required",
+        },
+        { status: 400 },
+      );
+    }
+    const malformedAuthority = actionAuthorityRequestError(null, authorityRequest);
+    if (malformedAuthority) return malformedAuthority;
+  }
+
   // Every execution path re-resolves owner truth outside the short read cache.
   // This must happen before the generic branch as well as the bespoke branch.
   invalidateRunJsonCache();
   const spec = specFor(area);
+  // An exact Go-projected action keeps its semantics even when the area also
+  // has a legacy editable bespoke form. The server resolves argv from the
+  // owner projection and applies both existing allowlists; client fields can
+  // never replace the stamped ActionIntent.
+  if (!preview && actionId) {
+    return executeGenericAction(
+      area,
+      itemId,
+      actionId,
+      authorityRequest,
+      confirmed,
+      reason,
+      spec,
+    );
+  }
   if (!spec) {
     if (preview) {
       return Response.json(
@@ -418,7 +540,7 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
     // this is the ONLY way areas without a bespoke spec become executable.
     // A bespoke spec always wins: this branch never runs when `spec` exists.
     if (genericActionAllowedForOwner(false, actionId)) {
-      return executeGenericAction(area, itemId, actionId, expectedRevision, confirmed, reason);
+      return executeGenericAction(area, itemId, actionId, authorityRequest, confirmed, reason, null);
     }
     return Response.json({ ok: false, stderr: `unknown decision area: ${area}` }, { status: 400 });
   }
@@ -522,6 +644,8 @@ const GENERIC_GATE_STATUS: Record<GenericActionGate, number> = {
   "gate-2-allowlist": 403,
   "gate-3-global-allowlist": 403,
   "owner-action-present": 409,
+  "authority-unavailable": 409,
+  "authority-not-allowed": 409,
   "stale-action-revision": 409,
   "rationale-required": 422,
   // A projection that did not answer is a slow door, not a missing item —
@@ -529,6 +653,22 @@ const GENERIC_GATE_STATUS: Record<GenericActionGate, number> = {
   // operator their real button pointed at nothing (the cold-cache act 404).
   "projection-unavailable": 503,
 };
+
+export function genericActionRejectionResponse(rejection: GenericActionRejection): Response {
+  const errorCode = rejection.gate === "stale-action-revision"
+    ? "stale_action_revision"
+    : rejection.gate === "owner-action-present"
+      ? "owner_action_present"
+      : rejection.gate === "authority-unavailable" || rejection.gate === "authority-not-allowed"
+        ? "authority_drift"
+        : rejection.gate === "projection-unavailable"
+          ? "projection_unavailable"
+          : undefined;
+  return Response.json(
+    { ok: false, error_code: errorCode, stderr: rejection.message },
+    { status: GENERIC_GATE_STATUS[rejection.gate] },
+  );
+}
 
 const REVIEW_RESOLUTION_DECISIONS = {
   review_resolution_park: { decision: "parked", label: "Park" },
@@ -585,7 +725,7 @@ export function resolveReviewResolutionAction(
     context.expectedRevision,
   );
   if (!guard.ok) return guard;
-  const action: ResolvedGenericAction = {
+  const action = {
     argv: [
       "reviews",
       "resolve",
@@ -606,25 +746,27 @@ export function resolveReviewResolutionAction(
     requiresReview: true,
     policyNote: "records a reversible review disposition only; underlying authority is unchanged",
     revision: guard.revision,
-  };
+  } as ResolvedGenericAction;
   return { ok: true, action };
 }
 
 
 /**
  * The generic governed-action pathway (Phase 3a): executes an area's
- * backend-declared action when no bespoke REGISTRY spec exists. Every argv
- * comes from resolveGenericAction's fresh server-side re-resolution — this
- * function never trusts client argv. The rendered action revision must match
- * the freshly resolved owner action before confirmation can authorize it.
+ * backend-declared action. Every argv comes from resolveGenericAction's fresh
+ * server-side re-resolution — this function never trusts client argv. When a
+ * legacy REGISTRY spec remains, it narrows the exact action without replacing
+ * its semantics. The rendered action revision must match the freshly resolved
+ * owner action before confirmation can authorize it.
  */
 async function executeGenericAction(
   area: string,
   itemId: string,
   actionId: string,
-  expectedRevision: string,
+  authorityRequest: ActionAuthorityRequest,
   confirmed: boolean,
   rationale?: string,
+  areaSpec: DecisionAreaSpec | null = null,
 ): Promise<Response> {
   if (!itemId) {
     return Response.json({ ok: false, stderr: "itemId is required" }, { status: 400 });
@@ -638,7 +780,7 @@ async function executeGenericAction(
         rationale,
         {
           area,
-          expectedRevision,
+          expectedRevision: authorityRequest.expectedRevision,
           read: await readReviewResolutionProjection(area),
         },
       )
@@ -646,38 +788,23 @@ async function executeGenericAction(
   let action: ResolvedGenericAction;
   if (reviewResolution) {
     if (!reviewResolution.ok) {
-      const errorCode = reviewResolution.rejection.gate === "stale-action-revision"
-        ? "stale_action_revision"
-        : reviewResolution.rejection.gate === "owner-action-present"
-          ? "owner_action_present"
-          : undefined;
-      return Response.json(
-        { ok: false, error_code: errorCode, stderr: reviewResolution.rejection.message },
-        { status: GENERIC_GATE_STATUS[reviewResolution.rejection.gate] },
-      );
+      return genericActionRejectionResponse(reviewResolution.rejection);
     }
     action = reviewResolution.action;
   } else {
     const resolution = await resolveGenericAction(area, itemId, actionId, rationale);
     if (!resolution.ok) {
-      return Response.json(
-        { ok: false, stderr: resolution.rejection.message },
-        { status: GENERIC_GATE_STATUS[resolution.rejection.gate] },
-      );
-    }
-    if (!genericActionRevisionMatches(resolution.action.revision, expectedRevision)) {
-      return Response.json(
-        {
-          ok: false,
-          error_code: "stale_action_revision",
-          stderr: "owner action changed since it was rendered; refresh and review the current command",
-        },
-        { status: 409 },
-      );
+      return genericActionRejectionResponse(resolution.rejection);
     }
     action = resolution.action;
   }
-  if (action.requiresReview && !confirmed) {
+  const authorityConflict = actionAuthorityRequestError(action, authorityRequest);
+  if (authorityConflict) return authorityConflict;
+  const ownerConstraint = exactActionOwnerConstraint(areaSpec, itemId, action);
+  if (!ownerConstraint.ok) {
+    return Response.json({ ok: false, stderr: ownerConstraint.message }, { status: ownerConstraint.status });
+  }
+  if (ownerConstraint.requiresConfirmation && !confirmed) {
     return Response.json(
       { ok: false, stderr: `action "${action.actionId}" requires confirmation before it runs` },
       { status: 428 },

@@ -44,6 +44,48 @@ export interface ObjectFaceAction {
   description: string;
 }
 
+/** Public-safe normalized target carried by the Go-owned AuthorityFace. */
+export interface AuthorityFaceTarget {
+  kind: string;
+  id: string;
+  path: string;
+}
+
+/** Public-safe normalized scope carried by the Go-owned AuthorityFace. */
+export interface AuthorityFaceScope {
+  entityId: string;
+  projectId: string;
+  productId: string;
+  surface: string;
+}
+
+/**
+ * The exact current policy representation for one action. This is display
+ * authority, not a client-side policy evaluator; its revision stays opaque.
+ */
+export interface AuthorityFace {
+  actionIntentId: string;
+  policyDecisionId: string;
+  authorityRevision: string;
+  current: boolean;
+  allowed: boolean;
+  policyOutcome: "allow" | "allow_with_obligations" | "hold" | "deny";
+  standingGrantId: string;
+  wording: string;
+  target: AuthorityFaceTarget;
+  targetScope: string;
+  scope: AuthorityFaceScope;
+  blastRadius: string;
+  reversibility: string;
+  rollbackPlan: string;
+  verifiedRecoverability: "verified" | "not_verified" | "unknown";
+  operatorControlContinuity: "continuous" | "impaired" | "unknown";
+  policySource: string;
+  exactGate: string;
+  expectedReceipt: string;
+  expectedProof: string[];
+}
+
 /**
  * The stable human face of a Compound object. IDs and evidence stay available
  * to the owning surface, but this contract makes identity, state, why-now,

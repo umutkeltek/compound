@@ -73,6 +73,8 @@ export type DecideMember = {
   /** Per-member action id for the generic pathway; "" when none. */
   actionId: string;
   expectedRevision: string;
+  actionIntentId?: string;
+  expectedAuthorityRevision?: string;
   actionLabel: string;
   requiresReview: boolean;
   policyNote: string;
@@ -94,6 +96,8 @@ export type DecideAct =
       policyNote: string;
       fields: FieldSpec[];
       expectedRevision: string;
+      actionIntentId?: string;
+      expectedAuthorityRevision?: string;
       supportsPreview: boolean;
       effectKind: DecisionEffectKind;
     }
@@ -108,6 +112,8 @@ export type DecideAct =
       policyNote: string;
       requiresConfirmation: boolean;
       memberCount: number;
+      actionIntentId?: string;
+      expectedAuthorityRevision?: string;
     }
   | {
       mode: "batch-enumerable";
@@ -125,6 +131,8 @@ export type DecideAct =
       itemId: string;
       actionId: string;
       expectedRevision: string;
+      actionIntentId?: string;
+      expectedAuthorityRevision?: string;
       label: string;
       argv: string[] | null;
       requiresConfirmation: boolean;

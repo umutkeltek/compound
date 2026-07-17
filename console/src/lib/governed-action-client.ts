@@ -25,7 +25,15 @@ export function fieldValidationMessage(field: Pick<FieldSpec, "name" | "label">)
 
 export function decideActIdentity(act: ClientDecideAct): string {
   if (act.mode === "bespoke") {
-    return JSON.stringify([act.mode, act.area, act.itemId, act.expectedRevision, act.options.map((option) => option.value)]);
+    return JSON.stringify([
+      act.mode,
+      act.area,
+      act.itemId,
+      act.expectedRevision,
+      act.actionIntentId ?? "",
+      act.expectedAuthorityRevision ?? "",
+      act.options.map((option) => option.value),
+    ]);
   }
   if (act.mode === "generic") {
     return JSON.stringify([
@@ -35,12 +43,23 @@ export function decideActIdentity(act: ClientDecideAct): string {
       act.actionId,
       act.decisionOptions?.map((option) => option.value) ?? [],
       act.expectedRevision,
+      act.actionIntentId ?? "",
+      act.expectedAuthorityRevision ?? "",
       act.argv,
       act.requiresConfirmation,
       act.effectKind,
     ]);
   }
-  return JSON.stringify([act.mode, act.area, act.itemId, act.option, act.argv, act.requiresConfirmation]);
+  return JSON.stringify([
+    act.mode,
+    act.area,
+    act.itemId,
+    act.option,
+    act.actionIntentId ?? "",
+    act.expectedAuthorityRevision ?? "",
+    act.argv,
+    act.requiresConfirmation,
+  ]);
 }
 
 export function headlineActIdentity(act: HeadlineActDescriptor): string {
@@ -51,6 +70,8 @@ export function headlineActIdentity(act: HeadlineActDescriptor): string {
     act.option ?? "",
     act.actionId ?? "",
     act.expectedRevision ?? "",
+    act.actionIntentId ?? "",
+    act.expectedAuthorityRevision ?? "",
     act.argv,
     act.requiresConfirmation,
     act.rationaleRequired,
@@ -68,7 +89,15 @@ export function buildDecideActionRequest(
     const selectedAction = act.decisionOptions?.some((option) => option.value === selectedOption)
       ? selectedOption
       : act.actionId;
-    const request: Record<string, unknown> = { area: act.area, itemId: act.itemId, actionId: selectedAction, expectedRevision: act.expectedRevision, confirmed };
+    const request: Record<string, unknown> = {
+      area: act.area,
+      itemId: act.itemId,
+      actionId: selectedAction,
+      expectedRevision: act.expectedRevision,
+      actionIntentId: act.actionIntentId ?? "",
+      expectedAuthorityRevision: act.expectedAuthorityRevision ?? "",
+      confirmed,
+    };
     // The fixed review-resolution adapter is the only generic consumer of a
     // reason; it validates presence server-side, so send it only when asked.
     if (act.reasonRequired) request.reason = String(fields.reason ?? "");
@@ -80,6 +109,8 @@ export function buildDecideActionRequest(
     option: act.mode === "bespoke" ? selectedOption : act.option,
     fields,
     expectedRevision: act.mode === "bespoke" ? act.expectedRevision : "",
+    actionIntentId: act.actionIntentId ?? "",
+    expectedAuthorityRevision: act.expectedAuthorityRevision ?? "",
     preview: kind === "preview",
     confirmed,
   };
@@ -92,7 +123,45 @@ export function buildHeadlineActionRequest(
 ): Record<string, unknown> {
   const confirmed = confirmedFor(kind);
   if (act.pathway === "bespoke") {
-    return { area: act.area, itemId: act.itemId, option: act.option, fields: act.fields ?? {}, confirmed };
+    return {
+      area: act.area,
+      itemId: act.itemId,
+      option: act.option,
+      fields: act.fields ?? {},
+      actionIntentId: act.actionIntentId ?? "",
+      expectedAuthorityRevision: act.expectedAuthorityRevision ?? "",
+      confirmed,
+    };
   }
-  return { area: act.area, itemId: act.itemId, actionId: act.actionId, expectedRevision: act.expectedRevision ?? "", confirmed, rationale };
+  return {
+    area: act.area,
+    itemId: act.itemId,
+    actionId: act.actionId,
+    expectedRevision: act.expectedRevision ?? "",
+    actionIntentId: act.actionIntentId ?? "",
+    expectedAuthorityRevision: act.expectedAuthorityRevision ?? "",
+    confirmed,
+    rationale,
+  };
+}
+
+export function buildEnumerableActionRequest(
+  area: string,
+  member: Pick<
+    import("./decide-model").DecideMember,
+    "id" | "actionId" | "expectedRevision" | "actionIntentId" | "expectedAuthorityRevision"
+  >,
+  confirmed: boolean,
+  rationale: string,
+): Record<string, unknown> {
+  return {
+    area,
+    itemId: member.id,
+    actionId: member.actionId,
+    expectedRevision: member.expectedRevision,
+    actionIntentId: member.actionIntentId ?? "",
+    expectedAuthorityRevision: member.expectedAuthorityRevision ?? "",
+    confirmed,
+    rationale,
+  };
 }

@@ -56,6 +56,9 @@ export type HeadlineActDescriptor = {
   actionId?: string;
   /** Exact rendered generic owner action; server returns 409 on drift. */
   expectedRevision?: string;
+  /** Exact Go-owned authority identity carried to the click-time preflight. */
+  actionIntentId?: string;
+  expectedAuthorityRevision?: string;
   /** Bespoke projection fields shown in the confirmation command. */
   fields?: Record<string, string>;
   label: string;
