@@ -14,12 +14,15 @@ import (
 	"compound/internal/envelope"
 )
 
-func TestSessionEndWorklessTranscriptProducesContentReceipt(t *testing.T) {
+func TestSessionEndWorklessTranscriptProducesContentFreeReceipt(t *testing.T) {
 	home := t.TempDir()
-	path := writeTranscript(t, home, strings.Join([]string{
-		`{"type":"user","timestamp":"2026-07-10T01:00:00Z","message":{"role":"user","content":[{"type":"text","text":"Please restore SessionEnd receipt parity."}]}}`,
+	transcriptHome := t.TempDir()
+	const firstUser = "Please restore SessionEnd receipt parity with private input."
+	const lastAssistant = "Implemented the workless receipt path and verified it privately."
+	path := writeTranscript(t, transcriptHome, strings.Join([]string{
+		`{"type":"user","timestamp":"2026-07-10T01:00:00Z","message":{"role":"user","content":[{"type":"text","text":"` + firstUser + `"}]}}`,
 		`{"type":"assistant","timestamp":"2026-07-10T01:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Loaded /workspace/skills/golang-testing/SKILL.md for this fix."},{"type":"tool_use","name":"Write","input":{"file_path":"internal/hook/session_transcript.go"}},{"type":"tool_use","name":"Edit","input":{"file_path":"internal/hook/hook.go"}},{"type":"tool_use","name":"MultiEdit","input":{"file_path":"internal/hook/consumption.go"}},{"type":"tool_use","name":"Bash","input":{"command":"go test ./internal/hook"}}]}}`,
-		`{"type":"assistant","timestamp":"2026-07-10T01:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Implemented the workless receipt path and verified it."}]}}`,
+		`{"type":"assistant","timestamp":"2026-07-10T01:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"` + lastAssistant + `"}]}}`,
 	}, "\n")+"\n")
 
 	deps := baseDeps()
@@ -41,11 +44,16 @@ func TestSessionEndWorklessTranscriptProducesContentReceipt(t *testing.T) {
 	if rec.IDs.WorkID != "" || rec.IDs.SessionID != "sess_content" {
 		t.Fatalf("receipt ids = %+v, want session-only receipt", rec.IDs)
 	}
-	if !strings.Contains(rec.StateDelta.Summary, "Please restore SessionEnd receipt parity.") {
-		t.Fatalf("summary missing first ask: %q", rec.StateDelta.Summary)
+	if strings.Contains(rec.StateDelta.Summary, firstUser) || strings.Contains(rec.StateDelta.Summary, lastAssistant) {
+		t.Fatalf("summary retained raw transcript content: %q", rec.StateDelta.Summary)
 	}
-	if !strings.Contains(rec.StateDelta.Summary, "Implemented the workless receipt path") {
-		t.Fatalf("summary missing outcome hint: %q", rec.StateDelta.Summary)
+	for _, want := range []string{
+		"task_ref: sha256:" + hashStr(firstUser),
+		"outcome_hint_ref: sha256:" + hashStr(lastAssistant),
+	} {
+		if !strings.Contains(rec.StateDelta.Summary, want) {
+			t.Fatalf("summary missing content-free ref %q: %q", want, rec.StateDelta.Summary)
+		}
 	}
 	if !strings.Contains(rec.StateDelta.Summary, "tool_calls: 4 (bash: 1)") {
 		t.Fatalf("summary missing tool/bash counts: %q", rec.StateDelta.Summary)
@@ -63,6 +71,32 @@ func TestSessionEndWorklessTranscriptProducesContentReceipt(t *testing.T) {
 	}
 	if !hookEventRecordExists(t, home, rec.ID) {
 		t.Fatal("receipt not persisted in event door")
+	}
+	assertHomeOmitsTranscriptText(t, home, firstUser, lastAssistant)
+}
+
+func assertHomeOmitsTranscriptText(t *testing.T, home string, forbidden ...string) {
+	t.Helper()
+	err := filepath.WalkDir(home, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, raw := range forbidden {
+			if strings.Contains(string(body), raw) {
+				t.Fatalf("COMPOUND_HOME file %s retained raw transcript text", path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan COMPOUND_HOME for raw transcript text: %v", err)
 	}
 }
 
