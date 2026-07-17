@@ -156,6 +156,52 @@ func TestSourceControlDirtyEscalatesMutation(t *testing.T) {
 	}
 }
 
+func TestSourceControlDirtyRepoUsesExactTargetStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceJSON string
+		class      string
+		want       string
+	}{
+		{
+			name:       "clean target keeps reversible baseline",
+			sourceJSON: `{"entity_ref":"repo:demo","git_root":"/repo/demo","status":"dirty","changed_paths":2,"target_path":"docs/x.md","target_status":"clean"}`,
+			class:      "local_reversible",
+			want:       "allow_with_obligations",
+		},
+		{
+			name:       "dirty target holds",
+			sourceJSON: `{"entity_ref":"repo:demo","git_root":"/repo/demo","status":"dirty","changed_paths":2,"target_path":"docs/x.md","target_status":"dirty"}`,
+			class:      "local_reversible",
+			want:       "hold",
+		},
+		{
+			name:       "unknown target holds",
+			sourceJSON: `{"entity_ref":"repo:demo","git_root":"/repo/demo","status":"dirty","changed_paths":2,"target_path":"docs/x.md"}`,
+			class:      "local_reversible",
+			want:       "hold",
+		},
+		{
+			name:       "clean target does not relax destructive baseline",
+			sourceJSON: `{"entity_ref":"repo:demo","git_root":"/repo/demo","status":"dirty","changed_paths":2,"target_path":"docs/x.md","target_status":"clean"}`,
+			class:      "destructive",
+			want:       "hold",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sc SourceControlContext
+			if err := json.Unmarshal([]byte(tt.sourceJSON), &sc); err != nil {
+				t.Fatal(err)
+			}
+			pd := EvaluateWithContext(mkAction(tt.class, "easy", "docs/x.md", "repo"), DefaultConfig(), EvaluationContext{SourceControl: &sc}, fixedNow)
+			if pd.Outcome != tt.want {
+				t.Fatalf("outcome = %q reasons=%v, want %q", pd.Outcome, pd.Reasons, tt.want)
+			}
+		})
+	}
+}
+
 func TestSourceControlCleanOrReadDoesNotEscalate(t *testing.T) {
 	clean := EvaluationContext{SourceControl: &SourceControlContext{EntityRef: "repo:demo", Status: "clean", EvidenceRefs: []string{"source-control:repo:demo:abc123"}}}
 	if pd := EvaluateWithContext(mkAction("local_reversible", "easy", "docs/x.md", "repo"), DefaultConfig(), clean, fixedNow); pd.Outcome != "allow_with_obligations" {

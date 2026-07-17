@@ -1241,6 +1241,42 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 	}
 }
 
+func TestPreToolUseAllowsDirtyRepoMutationWhenTargetIsClean(t *testing.T) {
+	repo := initHookGitRepo(t)
+	homePath := filepath.Join(repo, ".compound")
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("unrelated change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(repo, "clean-target.md")
+
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := baseDeps()
+	deps.HomePath = homePath
+	deps.Store = store
+	ai := newDirtyWriteAction("act_clean_target", "work_clean_target", target)
+
+	res, err := Run(Fixture{Hook: "pre-tool-use", Harness: "claude_code", WorkID: "work_clean_target", Action: ai}, deps, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pd := res.Produced[1].(*envelope.PolicyDecision)
+	if res.Event.Status != "ok" || pd.Outcome != "allow_with_obligations" {
+		t.Fatalf("event/policy = %q/%q reasons=%v, want ok/allow_with_obligations for a clean target in a dirty repo", res.Event.Status, pd.Outcome, pd.Reasons)
+	}
+	if reasonHas(pd.Reasons, "source_control_status dirty") {
+		t.Fatalf("policy reasons = %v, unrelated dirty paths must not hold a clean target", pd.Reasons)
+	}
+	if n := countHeldGateReviews(t, store); n != 0 {
+		t.Fatalf("held gate-reviews = %d, want 0 for a clean target", n)
+	}
+}
+
 // T1 (scope): a policy-blocked dirty edit to a path OUTSIDE compound's own repo must NOT
 // mint a held gate-review, yet the Gate must still block and the PolicyDecision audit must
 // still be written. This fails against the unscoped mint (which held for any dirty repo).

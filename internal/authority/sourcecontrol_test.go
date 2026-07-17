@@ -72,6 +72,36 @@ func TestImportGitSnapshotCapturesDirtyRepoState(t *testing.T) {
 	}
 }
 
+func TestReadGitSnapshotReportsRequestedTargetStatus(t *testing.T) {
+	repo := initGitRepo(t)
+	dirtyTarget := filepath.Join(repo, "README.md")
+	writeFile(t, dirtyTarget, "changed\n")
+	cleanTarget := filepath.Join(repo, "clean-target.md")
+
+	dirty, err := ReadGitSnapshot(dirtyTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean, err := ReadGitSnapshot(cleanTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirtyJSON, err := json.Marshal(dirty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanJSON, err := json.Marshal(clean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dirtyJSON), `"target_status":"dirty"`) {
+		t.Fatalf("dirty target snapshot missing target_status=dirty: %s", dirtyJSON)
+	}
+	if !strings.Contains(string(cleanJSON), `"target_status":"clean"`) {
+		t.Fatalf("clean target snapshot missing target_status=clean: %s", cleanJSON)
+	}
+}
+
 func TestSourceControlFingerprintChangesWithContentPathAndIndexState(t *testing.T) {
 	repo := initGitRepo(t)
 	readme := filepath.Join(repo, "README.md")
