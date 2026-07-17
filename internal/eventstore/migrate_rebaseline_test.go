@@ -313,6 +313,64 @@ func TestRebaselineTransactionEscapedHandleCannotMutateAfterCallback(t *testing.
 	}
 }
 
+func TestRebaselineTransactionCopiedHandleCannotMutateAfterCallback(t *testing.T) {
+	store := openTestStore(t)
+	var escaped RebaselineTransaction
+	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		escaped = *tx
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := escaped.WritePending([]byte("copied escape")); !errors.Is(err, ErrRebaselineTransactionClosed) {
+		t.Fatalf("copied escaped write err=%v, want closed sentinel", err)
+	}
+	if _, err := os.Stat(escaped.PendingPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("copied escaped transaction wrote marker: %v", err)
+	}
+}
+
+func TestRebaselineTransactionWriteSidecarCASRequiresExactPendingMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*RebaselineTransaction) error
+	}{
+		{name: "missing"},
+		{name: "replaced", setup: func(tx *RebaselineTransaction) error {
+			if err := tx.WritePending([]byte("owned pending marker\n")); err != nil {
+				return err
+			}
+			return os.WriteFile(tx.PendingPath(), []byte("foreign pending marker\n"), 0o644)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTestStore(t)
+			path := store.engine.streamBaselinePath()
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("pre"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+				if tc.setup != nil {
+					if err := tc.setup(tx); err != nil {
+						return err
+					}
+				}
+				return tx.WriteSidecarCAS([]byte("pre"), true, []byte("post"))
+			})
+			if !errors.Is(err, ErrRebaselineStateConflict) {
+				t.Fatalf("WriteSidecarCAS err=%v, want pending-marker conflict", err)
+			}
+			body, readErr := os.ReadFile(path)
+			if readErr != nil || string(body) != "pre" {
+				t.Fatalf("unjournaled CAS mutated sidecar: body=%q err=%v", body, readErr)
+			}
+		})
+	}
+}
+
 func TestClearPendingRestoresExactMarkerWhenDirectorySyncFails(t *testing.T) {
 	store := openTestStore(t)
 	marker := []byte("exact raw pending bytes\n")
@@ -389,6 +447,71 @@ func TestMigrationCompletionPublishesBaselineBeforeCompletionUnderRebaselineLock
 	}
 	if _, err := os.Stat(filepath.Join(store.home, "events", hookEventsStreamName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("frozen stream created after completion: %v", err)
+	}
+}
+
+func TestMigrationCompletionRetryRefreshesProvisionalCompletionBaseline(t *testing.T) {
+	store := openMigrateStore(t)
+	seedLoose(t, store, "rec_completion_retry", "body")
+	streamPath := filepath.Join(store.home, "events", hookEventsStreamName)
+	if err := os.WriteFile(streamPath, []byte(`{"id":"before-provisional"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.engine.writeInitialStreamBaseline(migrateNow.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("write provisional completion baseline: %v", err)
+	}
+	if store.MigrationComplete() {
+		t.Fatal("provisional baseline unexpectedly published completion")
+	}
+	if err := store.AppendHookEvent(map[string]string{"kind": "grew-before-completion-retry"}); err != nil {
+		t.Fatal(err)
+	}
+	wantInfo, err := os.Stat(streamPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Migrate(MigrateOptions{Mode: ModeApply})
+	if err != nil || !report.Completion.Complete {
+		t.Fatalf("completion retry: report=%+v err=%v", report, err)
+	}
+	baseline, ok, err := readStreamBaseline(store.engine.streamBaselinePath())
+	if err != nil || !ok {
+		t.Fatalf("read refreshed completion baseline: ok=%t err=%v", ok, err)
+	}
+	if got := baseline.Streams[hookEventsStreamName]; got != wantInfo.Size() {
+		t.Fatalf("retry left stale provisional baseline size=%d, want current=%d", got, wantInfo.Size())
+	}
+	if active, err := store.LegacyWriterActive(); err != nil || active {
+		t.Fatalf("freshly completed retry must remain healthy: active=%t err=%v", active, err)
+	}
+}
+
+func TestMigrationCompletionRefusesNonCompletionBaseline(t *testing.T) {
+	store := openMigrateStore(t)
+	seedLoose(t, store, "rec_completion_refuse", "body")
+	path := store.engine.streamBaselinePath()
+	governed := StreamBaseline{
+		Schema:     streamBaselineSchema,
+		RecordedAt: migrateNow.Format(time.RFC3339Nano),
+		Reason:     streamBaselineReasonRebaseline,
+		Streams:    map[string]int64{},
+	}
+	if err := writeStreamBaselineAtomic(path, governed); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err == nil || !strings.Contains(err.Error(), "rebaseline") {
+		t.Fatalf("completion accepted non-completion baseline: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !reflect.DeepEqual(after, before) {
+		t.Fatalf("completion overwrote governed baseline: err=%v", err)
+	}
+	if store.MigrationComplete() {
+		t.Fatal("completion published despite governed baseline conflict")
 	}
 }
 

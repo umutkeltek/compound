@@ -335,14 +335,19 @@ func TestEventStoreRebaselineWritesWithGrantAndClosesTheGateAgain(t *testing.T) 
 		t.Fatalf("granted confirm should succeed, got code=%d stderr=%q\n%s", code, errStr, out)
 	}
 	var result struct {
-		ReceiptID    string `json:"receipt_id"`
-		TransitionID string `json:"transition_id"`
+		ReceiptID      string               `json:"receipt_id"`
+		TransitionID   string               `json:"transition_id"`
+		PolicySource   string               `json:"policy_source"`
+		PolicyAuthority policy.AuthorityFace `json:"policy_authority"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("parse rebaseline output json: %v (%q)", err, out)
 	}
 	if result.ReceiptID == "" || result.TransitionID == "" {
 		t.Fatalf("expected receipt_id and transition_id in output: %q", out)
+	}
+	if result.PolicySource == "" || !result.PolicyAuthority.Current || !result.PolicyAuthority.Allowed {
+		t.Fatalf("confirmed JSON omitted current allowing authority: %+v", result)
 	}
 	if !testEventExists(t, homePath, result.ReceiptID) {
 		t.Fatalf("receipt %s must resolve in the canonical event store", result.ReceiptID)

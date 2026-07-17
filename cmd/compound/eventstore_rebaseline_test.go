@@ -403,6 +403,71 @@ func TestEventStoreRebaselineRecordErrorAfterDurableReceiptDoesNotRollback(t *te
 	}
 }
 
+func TestEventStoreRebaselineRecordErrorAfterDurableTransitionFinalizesOnRetry(t *testing.T) {
+	homePath, sidecarPath := seedGrantedRebaselineHome(t)
+	original := recordEventstoreEnvelopeFn
+	failed := false
+	recordEventstoreEnvelopeFn = func(store *eventstore.Store, value envelope.Envelope) error {
+		if _, ok := value.(*envelope.Transition); ok && !failed {
+			failed = true
+			if err := original(store, value); err != nil {
+				return err
+			}
+			return errors.New("injected readback error after durable transition")
+		}
+		return original(store, value)
+	}
+	t.Cleanup(func() { recordEventstoreEnvelopeFn = original })
+
+	_, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_durable_transition", "--home", homePath, "--json")
+	if code == 0 || !strings.Contains(errStr, "finalization pending") {
+		t.Fatalf("first call code=%d err=%q, want truthful pending state", code, errStr)
+	}
+	pendingPath := filepath.Join(homePath, "events", "migration", "rebaseline-pending.json")
+	raw, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := decodeRebaselinePending(raw, sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := eventstoreProofPresence(store, &pending.Transition); err != nil || state != proofExact {
+		t.Fatalf("transition did not land durably before recorder error: state=%v err=%v", state, err)
+	}
+	postBeforeRetry, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recordEventstoreEnvelopeFn = original
+	out, errStr, code := runEventStoreCLI(t, "rebaseline", "--confirm", "--work", "work_must_not_replace_durable_transition", "--home", homePath, "--json")
+	if code != 0 {
+		t.Fatalf("retry code=%d out=%q err=%q", code, out, errStr)
+	}
+	var result struct {
+		ReceiptID    string `json:"receipt_id"`
+		TransitionID string `json:"transition_id"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ReceiptID != pending.Receipt.ID || result.TransitionID != pending.Transition.ID {
+		t.Fatalf("retry replaced exact durable proof: got=%s/%s want=%s/%s", result.ReceiptID, result.TransitionID, pending.Receipt.ID, pending.Transition.ID)
+	}
+	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
+		t.Fatalf("retry did not clear finalized marker: %v", err)
+	}
+	postAfterRetry, err := os.ReadFile(sidecarPath)
+	if err != nil || !strings.EqualFold(string(postAfterRetry), string(postBeforeRetry)) {
+		t.Fatalf("retry performed a second sidecar mutation: err=%v", err)
+	}
+}
+
 func TestEventStoreRebaselineSidecarConflictKeepsJournalAndArtifactsActualState(t *testing.T) {
 	homePath, _ := seedGrantedRebaselineHome(t)
 	foreign := []byte("foreign concurrent baseline bytes\n")
