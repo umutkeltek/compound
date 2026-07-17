@@ -191,10 +191,8 @@ the native Codex adapter returns `permissionDecision=deny` for a hold. `compound
 as `compound://registries/placement-rules` under `COMPOUND_HOME`; the source view is evidence/rollback
 input after import, while PreToolUse reads the Compound-owned registry.
 
-A mutation of a dirty target can proceed only through an exact recorded capability, not a general cleanup
-acknowledgement. PreToolUse observes the requested target separately from whole-repository status: unrelated
-dirty paths do not escalate a routine reversible edit, while a dirty or unknown target remains fail-closed.
-The first blocked PreToolUse persists its ActionIntents with one session-bound,
+A dirty-repository mutation can proceed only through an exact recorded capability, not a general cleanup
+acknowledgement. The first blocked PreToolUse persists its ActionIntents with one session-bound,
 content-free mutation-input digest shared by the complete target batch. `compound authority dirty-plan
 <repo> --work-id <owner-work> --action-intent <id>...` loads those persisted actions and derives the
 action work id, digest, capability, action, mutation class, and canonical target set itself. The owner work
