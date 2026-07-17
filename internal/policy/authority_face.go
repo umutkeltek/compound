@@ -84,6 +84,23 @@ type AuthorityEvaluation struct {
 // face onto its existing action projection and re-evaluate on the action-time
 // projection read.
 func EvaluateAuthority(ai envelope.ActionIntent, cfg Config, ctx EvaluationContext, policySource string, now time.Time) AuthorityEvaluation {
+	effective := effectiveAuthorityContext(ai, cfg, ctx)
+	pd := EvaluateWithContext(ai, cfg, effective, now)
+	face := ProjectAuthority(ai, pd, cfg, effective, policySource)
+	return AuthorityEvaluation{Decision: pd, Authority: face}
+}
+
+// ProjectAuthority re-projects the exact policy-owned operator face for a
+// stored ActionIntent + PolicyDecision using current policy configuration,
+// owner-supplied outcome context, and policy source. Recovery adapters use this
+// to fail closed when a stored face no longer matches current authority without
+// duplicating revision or wording logic outside policy.
+func ProjectAuthority(ai envelope.ActionIntent, pd envelope.PolicyDecision, cfg Config, ctx EvaluationContext, policySource string) AuthorityFace {
+	effective := effectiveAuthorityContext(ai, cfg, ctx)
+	return authorityFace(ai, pd, cfg, effective.Authority, policySource)
+}
+
+func effectiveAuthorityContext(ai envelope.ActionIntent, cfg Config, ctx EvaluationContext) EvaluationContext {
 	// Evaluate is the compatibility path for existing adapters that do not
 	// render an AuthorityFace. EvaluateAuthority is stricter: once an owner asks
 	// for an operator face, absence of verified recovery is itself current
@@ -100,9 +117,7 @@ func EvaluateAuthority(ai envelope.ActionIntent, cfg Config, ctx EvaluationConte
 			effective.Authority = &copyOfAuthority
 		}
 	}
-	pd := EvaluateWithContext(ai, cfg, effective, now)
-	face := authorityFace(ai, pd, cfg, effective.Authority, policySource)
-	return AuthorityEvaluation{Decision: pd, Authority: face}
+	return effective
 }
 
 func applyAuthorityContext(pd envelope.PolicyDecision, ai envelope.ActionIntent, cfg Config, ctx AuthorityContext, now time.Time) envelope.PolicyDecision {
