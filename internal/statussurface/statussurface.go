@@ -116,6 +116,13 @@ type Snapshot struct {
 	InputRetention   string         `json:"input_retention"`
 }
 
+type CapacityEvidence struct {
+	Status           MetricStatus
+	RemainingPercent float64
+	ResetsAt         time.Time
+	Source           string
+}
+
 // SelectMode applies entry thresholds plus exit hysteresis. The prior mode only delays a
 // downgrade; fresh evidence can always escalate immediately.
 func SelectMode(primary Metric, additional []Metric, previous Mode) Mode {
@@ -250,6 +257,32 @@ func BuildClaudeSnapshot(body []byte, now time.Time, previous Snapshot) (Snapsho
 	snapshot.RouteGuidance = guidanceForMode(snapshot.Mode)
 	snapshot.InferenceClass, snapshot.RecommendedTheme = InferDisplayClass(snapshot.Mode)
 	return snapshot, nil
+}
+
+// BuildCodexSnapshot adapts Compound's already-reduced capacity evidence. Exact Codex context and
+// weekly values stay visible through the native footer; this projection never reads a session body.
+func BuildCodexSnapshot(evidence CapacityEvidence, now time.Time, previous Snapshot) Snapshot {
+	limit := LimitWindow{Kind: LimitSevenDay, Status: evidence.Status, ResetsAt: evidence.ResetsAt, Source: evidence.Source}
+	if evidence.Status == StatusLive {
+		limit.RemainingPercent = clampPercent(evidence.RemainingPercent)
+		limit.UsedPercent = 100 - limit.RemainingPercent
+	}
+	previousMode := ModeUnknown
+	if previous.SchemaVersion == SchemaVersion && previous.Harness == HarnessCodex {
+		previousMode = previous.Mode
+	}
+	snapshot := Snapshot{
+		SchemaVersion:  SchemaVersion,
+		GeneratedAt:    now.UTC(),
+		Harness:        HarnessCodex,
+		Context:        Metric{Status: StatusUnknown, Source: "codex/native-footer"},
+		Limits:         []LimitWindow{limit},
+		InputRetention: "derived_metadata_only;no_session_input",
+	}
+	snapshot.Mode = SelectMode(snapshot.Context, []Metric{{Status: limit.Status, UsedPercent: limit.UsedPercent, RemainingPercent: limit.RemainingPercent}}, previousMode)
+	snapshot.RouteGuidance = guidanceForMode(snapshot.Mode)
+	snapshot.InferenceClass, snapshot.RecommendedTheme = InferDisplayClass(snapshot.Mode)
+	return snapshot
 }
 
 func reduceNativeLimit(kind LimitKind, input *nativeLimit) LimitWindow {

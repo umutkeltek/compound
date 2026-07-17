@@ -12,7 +12,7 @@ import (
 
 func cmdSystem(args []string) {
 	if len(args) == 0 || hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage> [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage|status-surface> [--json]")
 		if len(args) == 0 {
 			os.Exit(2)
 		}
@@ -179,8 +179,10 @@ func cmdSystem(args []string) {
 		fmt.Printf("- resolved: %s\n", report.ResolvedAs)
 		fmt.Printf("- found: %t\n", report.Found)
 		fmt.Printf("- steps: %d\n", len(report.Steps))
+	case "status-surface":
+		cmdSystemStatusSurface(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage> [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage|status-surface> [--json]")
 		os.Exit(2)
 	}
 }
