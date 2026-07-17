@@ -14,8 +14,8 @@ func TestQueueGroupActionBindsStableAuthorityIdentity(t *testing.T) {
 	if first.PolicyDecision.ID == second.PolicyDecision.ID {
 		t.Fatalf("fixture needs fresh policy decision ids: %q", first.PolicyDecision.ID)
 	}
-	if first.AuthorityFace.Revision != second.AuthorityFace.Revision {
-		t.Fatalf("fixture needs one stable authority revision: first=%q second=%q", first.AuthorityFace.Revision, second.AuthorityFace.Revision)
+	if first.PolicyAuthority.Revision != second.PolicyAuthority.Revision {
+		t.Fatalf("fixture needs one stable authority revision: first=%q second=%q", first.PolicyAuthority.Revision, second.PolicyAuthority.Revision)
 	}
 
 	if got, reason := queueGroupAction(reviewAuthorityGroup(), reviewAuthorityItems(first, second)); got == nil || reason != "" {
@@ -23,7 +23,7 @@ func TestQueueGroupActionBindsStableAuthorityIdentity(t *testing.T) {
 	}
 
 	changed := validReviewAuthorityAction(t, time.Date(2026, 7, 17, 9, 1, 0, 0, time.UTC), "compound://policy/revised")
-	if changed.AuthorityFace.Revision == first.AuthorityFace.Revision {
+	if changed.PolicyAuthority.Revision == first.PolicyAuthority.Revision {
 		t.Fatal("fixture did not change the owner authority revision")
 	}
 	if got, reason := queueGroupAction(reviewAuthorityGroup(), reviewAuthorityItems(first, changed)); got != nil || reason == "" {
@@ -40,19 +40,19 @@ func TestQueueGroupActionFailsClosedForPartialOrMalformedAuthority(t *testing.T)
 	}{
 		{name: "action intent only", mutate: func(action *Action) {
 			action.PolicyDecision = nil
-			action.AuthorityFace = nil
+			action.PolicyAuthority = nil
 		}},
 		{name: "decision missing", mutate: func(action *Action) {
 			action.PolicyDecision = nil
 		}},
 		{name: "authority face missing", mutate: func(action *Action) {
-			action.AuthorityFace = nil
+			action.PolicyAuthority = nil
 		}},
 		{name: "malformed authority face", mutate: func(action *Action) {
-			action.AuthorityFace.Current = false
+			action.PolicyAuthority.Current = false
 		}},
 		{name: "mismatched authority face", mutate: func(action *Action) {
-			action.AuthorityFace.ActionIntentID = "act_other"
+			action.PolicyAuthority.ActionIntentID = "act_other"
 		}},
 	}
 
@@ -115,13 +115,13 @@ func validReviewAuthorityAction(t *testing.T, now time.Time, policySource string
 		ExpectedProof:             []string{"proof:recovery-path"},
 	}}, policySource, now)
 	return Action{
-		ID:             "owner_action",
-		Label:          "Apply",
-		Command:        "compound owner apply",
-		Argv:           []string{"compound", "owner", "apply"},
-		ActionIntent:   &ai,
-		PolicyDecision: &got.Decision,
-		AuthorityFace:  &got.Authority,
+		ID:              "owner_action",
+		Label:           "Apply",
+		Command:         "compound owner apply",
+		Argv:            []string{"compound", "owner", "apply"},
+		ActionIntent:    &ai,
+		PolicyDecision:  &got.Decision,
+		PolicyAuthority: &got.Authority,
 	}
 }
 
@@ -153,9 +153,9 @@ func cloneReviewAuthorityAction(in Action) Action {
 		copyOfDecision := *in.PolicyDecision
 		out.PolicyDecision = &copyOfDecision
 	}
-	if in.AuthorityFace != nil {
-		copyOfFace := *in.AuthorityFace
-		out.AuthorityFace = &copyOfFace
+	if in.PolicyAuthority != nil {
+		copyOfFace := *in.PolicyAuthority
+		out.PolicyAuthority = &copyOfFace
 	}
 	return out
 }

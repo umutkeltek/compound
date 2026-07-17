@@ -364,6 +364,9 @@ func TestValidateAuthorityBundleAcceptsOnlyExactCurrentIdentity(t *testing.T) {
 		{name: "policy work identity mismatch", mutate: func(_ *envelope.ActionIntent, pd *envelope.PolicyDecision, _ *AuthorityFace) {
 			pd.IDs.WorkID = "work_other"
 		}},
+		{name: "policy scope mismatch", mutate: func(_ *envelope.ActionIntent, pd *envelope.PolicyDecision, _ *AuthorityFace) {
+			pd.Scope = envelope.Scope{EntityID: "entity_other"}
+		}},
 		{name: "wrong face schema", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
 			face.SchemaVersion = "compound.policy_authority_face.invalid"
 		}},

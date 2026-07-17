@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -97,6 +98,9 @@ func ValidateAuthorityBundle(ai envelope.ActionIntent, pd envelope.PolicyDecisio
 	}
 	if strings.TrimSpace(pd.IDs.WorkID) == "" || pd.IDs.WorkID != ai.IDs.WorkID {
 		return fmt.Errorf("authority bundle work identity mismatch")
+	}
+	if !reflect.DeepEqual(pd.Scope, ai.Scope) {
+		return fmt.Errorf("authority bundle scope mismatch")
 	}
 	if face.SchemaVersion != AuthorityFaceSchema {
 		return fmt.Errorf("authority bundle face schema_version invalid")

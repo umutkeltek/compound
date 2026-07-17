@@ -141,15 +141,15 @@ type QueueItem struct {
 // Action is a non-mutating operator hint attached by the domain owner that
 // knows how a review artifact is safely consumed.
 type Action struct {
-	ID             string                   `json:"id"`
-	Label          string                   `json:"label"`
-	Command        string                   `json:"command"`
-	Argv           []string                 `json:"argv,omitempty"`
-	RequiresReview bool                     `json:"requires_review,omitempty"`
-	PolicyNote     string                   `json:"policy_note,omitempty"`
-	ActionIntent   *envelope.ActionIntent   `json:"action_intent,omitempty"`
-	PolicyDecision *envelope.PolicyDecision `json:"policy_decision,omitempty"`
-	AuthorityFace  *policy.AuthorityFace    `json:"authority_face,omitempty"`
+	ID              string                   `json:"id"`
+	Label           string                   `json:"label"`
+	Command         string                   `json:"command"`
+	Argv            []string                 `json:"argv,omitempty"`
+	RequiresReview  bool                     `json:"requires_review,omitempty"`
+	PolicyNote      string                   `json:"policy_note,omitempty"`
+	ActionIntent    *envelope.ActionIntent   `json:"action_intent,omitempty"`
+	PolicyDecision  *envelope.PolicyDecision `json:"policy_decision,omitempty"`
+	PolicyAuthority *policy.AuthorityFace    `json:"policy_authority,omitempty"`
 }
 
 // DecisionCard is a read-only, operator-facing explanation of a review item.
@@ -429,20 +429,20 @@ type actionAuthorityIdentity struct {
 }
 
 func authorityIdentity(action Action) (actionAuthorityIdentity, error) {
-	present := action.ActionIntent != nil || action.PolicyDecision != nil || action.AuthorityFace != nil
+	present := action.ActionIntent != nil || action.PolicyDecision != nil || action.PolicyAuthority != nil
 	if !present {
 		return actionAuthorityIdentity{}, nil
 	}
-	if action.ActionIntent == nil || action.PolicyDecision == nil || action.AuthorityFace == nil {
+	if action.ActionIntent == nil || action.PolicyDecision == nil || action.PolicyAuthority == nil {
 		return actionAuthorityIdentity{}, fmt.Errorf("partial authority bundle")
 	}
-	if err := policy.ValidateAuthorityBundle(*action.ActionIntent, *action.PolicyDecision, *action.AuthorityFace); err != nil {
+	if err := policy.ValidateAuthorityBundle(*action.ActionIntent, *action.PolicyDecision, *action.PolicyAuthority); err != nil {
 		return actionAuthorityIdentity{}, err
 	}
 	return actionAuthorityIdentity{
 		Present:        true,
 		ActionIntentID: action.ActionIntent.ID,
-		FaceRevision:   action.AuthorityFace.Revision,
+		FaceRevision:   action.PolicyAuthority.Revision,
 	}, nil
 }
 
