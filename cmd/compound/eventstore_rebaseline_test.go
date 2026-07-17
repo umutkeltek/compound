@@ -399,16 +399,16 @@ func TestEventStoreRebaselineInvalidGovernanceProofCannotAuthorizeFinalization(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	var forged map[string]any
+	var forged map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &forged); err != nil {
 		t.Fatal(err)
 	}
 	// These proof-shaped governance records are deliberately invalid. The old
 	// adapter ignored them and trusted only free-floating IDs, so a retry could
 	// finalize and clear the journal without a valid ActionIntent/PolicyDecision.
-	forged["action_intent"] = map[string]any{"schema_version": envelope.SVActionIntent, "id": "act_fabricated"}
-	forged["policy_decision"] = map[string]any{"schema_version": envelope.SVPolicyDecision, "id": "pol_fabricated"}
-	forged["policy_authority"] = map[string]any{"schema_version": policy.AuthorityFaceSchema, "current": true, "allowed": true}
+	forged["action_intent"] = json.RawMessage(`{"schema_version":"` + envelope.SVActionIntent + `","id":"act_fabricated"}`)
+	forged["policy_decision"] = json.RawMessage(`{"schema_version":"` + envelope.SVPolicyDecision + `","id":"pol_fabricated"}`)
+	forged["policy_authority"] = json.RawMessage(`{"schema_version":"` + policy.AuthorityFaceSchema + `","current":true,"allowed":true}`)
 	forgedRaw, err := json.MarshalIndent(forged, "", "  ")
 	if err != nil {
 		t.Fatal(err)
