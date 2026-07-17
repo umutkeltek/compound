@@ -37,6 +37,7 @@ import (
 	"compound/internal/act"
 	"compound/internal/behaviorallens"
 	"compound/internal/envelope"
+	"compound/internal/finding"
 	"compound/internal/policy"
 
 	"gopkg.in/yaml.v3"
@@ -317,7 +318,13 @@ func Plan(home string, now time.Time) (ModulationResult, error) {
 // the governed act seam. It is fail-closed (no threshold => OFF, no write) and governed by
 // construction: policy.Evaluate builds the PolicyDecision and act.Execute refuses to write without an
 // allowing decision for that exact intent. A refused demote leaves the route store byte-identical.
-// Every applied demote is persisted to the action ledger so Revert can undo it.
+// Every applied demote is persisted to the action ledger so Revert can undo it — so BEFORE the
+// per-lane mutation loop this proves the action ledger itself is appendable (preflightActionLedger)
+// and aborts before any route-store mutation if it is not. If the ledger append for an applied
+// demote fails ANYWAY (a failure mode the preflight cannot fully rule out — e.g. disk pressure
+// between preflight and append), afterAppendFailure attempts a compensating governed revert of the
+// just-applied demote, or lands a durable recovery finding — a demote must never become
+// unrevertable by a silently swallowed ledger-append error.
 func Modulate(home string, policyCfg policy.Config, workID string, now time.Time) (ModulationResult, error) {
 	cfg, err := LoadThresholds(home)
 	if err != nil {
@@ -337,6 +344,14 @@ func Modulate(home string, policyCfg policy.Config, workID string, now time.Time
 	}
 	adapter := act.NewConfigKeyAdapter()
 	storePath := RouteStorePath(home)
+
+	// Ledger writability PREFLIGHT before the per-lane mutation loop: prove the action ledger path
+	// is appendable BEFORE any route-store mutation happens this pass. A wedge at the ledger path
+	// itself (e.g. a directory sitting where the jsonl file must be) aborts here, byte-identical
+	// route store, zero new receipts/transitions — never a mutated-but-unrecorded demote.
+	if err := preflightActionLedger(home); err != nil {
+		return ModulationResult{}, err
+	}
 
 	for _, sig := range signals {
 		th, ok := matchOne(cfg, sig)
@@ -407,8 +422,13 @@ func Modulate(home string, policyCfg policy.Config, workID string, now time.Time
 			ReceiptID: result.Receipt.ID, TransitionID: result.Transition.ID,
 			CreatedAt: now.UTC().Format(time.RFC3339),
 		}
-		if err := appendActionRecord(home, rec); err != nil {
-			return ModulationResult{}, err
+		if err := appendActionRecordFn(home, rec); err != nil {
+			// The demote itself succeeded (route store mutated, receipt/transition recorded through
+			// act's own event store) but OUR ledger row — the only place Revert() looks to find an
+			// open demote — never landed. Left alone this is exactly the permanent strand the package
+			// header promises never happens. Compensate or land a recovery finding; never a bare
+			// return that strands silently.
+			return afterAppendFailure(home, policyCfg, store, adapter, ai, result, sig, th, root, err, now)
 		}
 		res.Modulations = append(res.Modulations, Modulation{
 			LensID: sig.LensID, Lane: sig.Subject, Root: root, Visibility: sig.Visibility,
@@ -538,6 +558,99 @@ type actionRecord struct {
 	TransitionID   string  `json:"transition_id"`
 	CreatedAt      string  `json:"created_at"`
 }
+
+// preflightActionLedger proves the action-ledger path is appendable BEFORE any route-store
+// mutation, by attempting the exact open the real append later performs — MkdirAll the parent, then
+// open the ledger PATH ITSELF in create/append mode — and closing WITHOUT writing a byte. The real
+// failure mode this exists to catch is the ledger path itself being wedged (e.g. a directory sitting
+// where the jsonl file must be): a probe file written elsewhere in the same parent directory would
+// NOT catch that, because the parent stays writable while only the leaf name is wedged. O_APPEND
+// never truncates, so a pre-existing ledger's bytes are left untouched; if the file was absent,
+// closing without a Write leaves it either still absent or a zero-byte file that parses identically
+// to absent (loadActionRecords treats both as zero records) — never junk content either way.
+func preflightActionLedger(home string) error {
+	path := actionLedgerPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("lensmodulator: action ledger directory not writable: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("lensmodulator: action ledger not writable: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("lensmodulator: action ledger not writable: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("lensmodulator: action ledger not writable: %w", err)
+	}
+	return nil
+}
+
+// afterAppendFailure handles a ledger-append failure that occurs AFTER a successful act.Execute: the
+// demote is otherwise complete (route store mutated, receipt/transition recorded in the canonical
+// event store) but this organ's OWN action-ledger row — the only place Revert() looks to find an
+// open demote (latestOpenDemote) — never landed. Left alone, Revert() would report "no open demote
+// for lane" FOREVER: a permanent strand, exactly what the package header's "REVERSIBLE by
+// construction" invariant promises never happens.
+//
+// So: attempt a compensating governed revert THROUGH THE SAME act seam, restoring the pre-image the
+// original act.Result already captured (result.PreImage — no re-read needed). If that succeeds the
+// route store is back at baseline and there is nothing left to strand: a ledger with no row for a
+// lane that is NOT demoted matches reality exactly, as if the demote had never been attempted. If the
+// compensating revert ALSO fails, land a durable, operator-visible recovery finding naming the lane,
+// receipt/transition ids, and pre/post image refs — manual recovery, never a silently swallowed
+// error.
+func afterAppendFailure(home string, policyCfg policy.Config, store *act.ArtifactStore, adapter act.Adapter, ai envelope.ActionIntent, result act.Result, sig behaviorallens.InferredSignal, th Threshold, root string, appendErr error, now time.Time) (ModulationResult, error) {
+	revertAI := act.RevertIntent(ai, result, now)
+	revertPD := policy.Evaluate(revertAI, policyCfg, now)
+	revRes, revErr := act.Execute(store, adapter, revertAI, revertPD, result.PreImage, now)
+	if revErr == nil {
+		// Best-effort: log the compensating revert to our own ledger too. Its failure is NOT fatal —
+		// the route store is already back at baseline, so a ledger with no row for this lane matches
+		// reality (not demoted). Swallowed on purpose: retrying through the same failing append would
+		// only recurse into the same problem this function exists to route around.
+		_ = appendActionRecordFn(home, actionRecord{
+			SchemaVersion: ActionRecordSchemaVersion, Kind: "revert", WorkID: ai.IDs.WorkID,
+			Lane: sig.Subject, Root: root, LensID: sig.LensID, Visibility: string(sig.Visibility),
+			StorePath: ai.Target.Path, Baseline: th.Baseline, DemoteTo: th.DemoteTo, Threshold: th.MinValue,
+			Capability: CapabilityDemote, ActionIntentID: revertAI.ID,
+			PreImageRef: revRes.PreImageRef, PostImageRef: revRes.PostImageRef,
+			ReceiptID: revRes.Receipt.ID, TransitionID: revRes.Transition.ID,
+			CreatedAt: now.UTC().Format(time.RFC3339),
+		})
+		return ModulationResult{}, fmt.Errorf(
+			"lensmodulator: action ledger append failed for lane %q demote (%v); compensating revert succeeded (revert receipt %s) — route store restored to pre-image, demote NOT stranded",
+			sig.Subject, appendErr, revRes.Receipt.ID)
+	}
+
+	rec, ferr := finding.Record(home, finding.Finding{
+		Topic: "lensmodulator-recovery/" + sig.Subject,
+		Body: fmt.Sprintf(
+			"lensmodulator demote left UNRECORDED in the action ledger and the compensating revert FAILED — manual recovery required.\n"+
+				"lane: %s\naction_intent: %s\nreceipt_id: %s\ntransition_id: %s\n"+
+				"pre_image_ref: %s\npost_image_ref: %s\nledger_append_error: %v\nrevert_error: %v\n",
+			sig.Subject, ai.ID, result.Receipt.ID, result.Transition.ID, result.PreImageRef, result.PostImageRef, appendErr, revErr),
+		ProducedBy:   "internal/lensmodulator",
+		WorkID:       ai.IDs.WorkID,
+		EvidenceRefs: []string{result.PreImageRef, result.PostImageRef},
+	}, now)
+	if ferr != nil {
+		return ModulationResult{}, fmt.Errorf(
+			"lensmodulator: action ledger append FAILED (%v), compensating revert FAILED (%v), AND recovery finding could not be recorded (%v) — lane %q left DEMOTED with NO ledger record; MANUAL RECOVERY REQUIRED (receipt %s, transition %s, pre_image_ref %s, post_image_ref %s)",
+			appendErr, revErr, ferr, sig.Subject, result.Receipt.ID, result.Transition.ID, result.PreImageRef, result.PostImageRef)
+	}
+	return ModulationResult{}, fmt.Errorf(
+		"lensmodulator: action ledger append failed (%v) and compensating revert failed (%v) — recorded recovery finding %s for lane %q; MANUAL RECOVERY REQUIRED (receipt %s, transition %s)",
+		appendErr, revErr, rec.ID, sig.Subject, result.Receipt.ID, result.Transition.ID)
+}
+
+// appendActionRecordFn indirects appendActionRecord so a test can force the post-act ledger-append
+// failure (the compensating-revert / recovery-finding paths in afterAppendFailure) that the real
+// filesystem will not produce once preflightActionLedger has proven the ledger writable. It is
+// unexported and swapped ONLY in tests, mirroring internal/act's recordEnvelopeFn seam; the
+// production path always calls the real appendActionRecord.
+var appendActionRecordFn = appendActionRecord
 
 func appendActionRecord(home string, rec actionRecord) error {
 	path := actionLedgerPath(home)
