@@ -38,6 +38,9 @@ func TestSystemStatusSurfaceClaudeSnapshotAndRender(t *testing.T) {
 	if snapshot.Harness != statussurface.HarnessClaude || snapshot.InferenceClass != statussurface.InferenceCapacity {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
+	if !snapshot.FreshUntil.Equal(now.Add(2 * time.Minute)) {
+		t.Fatalf("snapshot output freshness = %s, want persisted TTL boundary", snapshot.FreshUntil)
+	}
 	persisted, err := os.ReadFile(statussurface.SnapshotPath(homePath, statussurface.HarnessClaude))
 	if err != nil {
 		t.Fatal(err)

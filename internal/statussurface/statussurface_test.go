@@ -95,6 +95,9 @@ func TestSnapshotStoreIsAtomicPrivateAndStaleAware(t *testing.T) {
 	if err := store.Write(snapshot); err != nil {
 		t.Fatal(err)
 	}
+	if !snapshot.FreshUntil.Equal(testNow.Add(2 * time.Minute)) {
+		t.Fatalf("write did not return the persisted freshness boundary: %s", snapshot.FreshUntil)
+	}
 	path := SnapshotPath(home, HarnessClaude)
 	info, err := os.Stat(path)
 	if err != nil {
