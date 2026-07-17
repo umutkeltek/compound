@@ -23,7 +23,7 @@ const claudeFixture = `{
   },
   "rate_limits": {
     "five_hour": {"used_percentage": 34, "resets_at": "2026-07-17T04:00:00Z"},
-    "seven_day": {"utilization": 82, "resets_at": 1784764800},
+    "seven_day": {"utilization": 82, "resets_at": 946684800},
     "seven_day_opus": {"used_percentage": 51},
     "seven_day_sonnet": {"used_percentage": 12}
   }
