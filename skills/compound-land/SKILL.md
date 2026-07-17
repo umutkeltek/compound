@@ -182,6 +182,13 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   that chain is exactly what puts the merge inside the worktree. The window does not need
   shrinking: rebase/verify in the worktree first, then guard+merge as its own command from MAIN.
   If main moves in between, the guard trips and you loop — the loop is the design.
+  When the loop provably cannot converge — a concurrent lane lands FASTER than your battery cycle
+  (lived 2026-07-17, rebaseline land: two trips in a row, ~15-min lands vs ~13-min batteries) —
+  the sanctioned counter is to acquire the land-lease BEFORE the rebase+battery and hold it
+  through the merge, refreshing its TTL from a background loop (re-acquire with the SAME holder
+  every ~4 min). Lease-respecting lanes queue instead of racing. STOP the refresher (TaskStop)
+  before releasing, or a late re-acquire silently re-holds a freed lease; and hold-across-battery
+  is for convergence failure only, never the default (it serializes everyone behind you).
 - **Guard SHAs are READ, never reconstructed** (self-inflicted false trip 2026-07-09 late):
   compare against a full SHA captured from actual command output this turn (`git rev-parse main`).
   Expanding a short SHA from memory fabricates a guard failure — or worse, a false pass.

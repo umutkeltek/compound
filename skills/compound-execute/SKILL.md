@@ -77,6 +77,13 @@ base"), spot-check that claim against base before dispatch — one grep or one t
 scout's behavioral claim can be stale (lived 2026-07-16, posture-guard land: the "clobber
 landmine" had been fixed at `481594b2`; the executor caught it, but a pre-dispatch check was
 cheaper).
+When a packet grants a narrow file set, probe the COLLATERAL INVENTORY tests before drawing the
+fence: hardcoded step-count/proof-ref/name lists in sibling test files (`main_test.go`-style)
+break mechanically when the granted files change, and an executor who correctly respects the
+boundary can only hand you the remedy (lived 2026-07-17, smoke-inventory land: wiring four
+smokes broke the dry-run gate inventory one file over; lander applied the executor's exact
+remedy in the same land). Either grant the collateral file explicitly or pre-write the remedy
+into the packet.
 A falsifier can be GREEN-AT-BIRTH (existing structure already satisfies it — e.g. a visibility
 whitelist already excludes the new value). Don't fake red and don't skip it: land the guard test
 anyway and prove its teeth by a scratch mutation (open the gate, show red, revert), then report
