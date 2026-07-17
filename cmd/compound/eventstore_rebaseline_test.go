@@ -334,8 +334,8 @@ func TestEventStoreRebaselineTransitionFailureRollsForwardExactProofOnRetry(t *t
 	if err != nil {
 		t.Fatalf("pending marker missing: %v", err)
 	}
-	var pending rebaselinePending
-	if err := json.Unmarshal(body, &pending); err != nil {
+	pending, err := decodeRebaselinePending(body, sidecarPath)
+	if err != nil {
 		t.Fatal(err)
 	}
 	var receipt envelope.Receipt

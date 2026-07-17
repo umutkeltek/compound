@@ -487,6 +487,38 @@ func TestRebaselinePhysicalJournalWriteIsCreateOnlyAcrossCrash(t *testing.T) {
 	}
 }
 
+func TestRebaselinePhysicalJournalRequiresExactProofHash(t *testing.T) {
+	store := openTestStore(t)
+	err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		journal := newTestPhysicalRebaselineJournal(t, tx, []byte("pre"), true, []byte("post"))
+		var wire map[string]json.RawMessage
+		if err := json.Unmarshal(journal.Raw, &wire); err != nil {
+			return err
+		}
+		var proofs []RebaselinePendingProof
+		if err := json.Unmarshal(wire["proofs"], &proofs); err != nil {
+			return err
+		}
+		proofs[0].RecordSHA256 = ""
+		proofRaw, err := json.Marshal(proofs)
+		if err != nil {
+			return err
+		}
+		wire["proofs"] = proofRaw
+		forged, err := json.MarshalIndent(wire, "", "  ")
+		if err != nil {
+			return err
+		}
+		return tx.WritePending(append(forged, '\n'))
+	})
+	if err == nil {
+		t.Fatal("physical journal accepted a proof with no exact record hash")
+	}
+	if _, exists, readErr := store.ReadRebaselinePending(); readErr != nil || exists {
+		t.Fatalf("hashless physical journal reached disk: exists=%t err=%v", exists, readErr)
+	}
+}
+
 func TestRebaselinePhysicalJournalBindsImageArguments(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
