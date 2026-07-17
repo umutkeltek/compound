@@ -62,10 +62,12 @@ naming concurrent lanes' surfaces) · privacy law (repo is destined public; priv
 If the packet creates a NEW `internal/` package: include its `arch.Classification` entry
 (spine/object-family/leaf/mem-target/importer) in scope — the arch doctor fails the battery on
 unclassified packages (learned 2026-07-09, corpus-indexer land; lander patched it as a follow-up
-commit). A new ORGAN needs TWO gates, not one: the classification map AND a two-class `MintHome`
-entry in `internal/arch/mint.go` (`organ:<name>`, purpose + named consumer) — classification alone
-leaves the doctor red with `new organ has no two-class home` (learned 2026-07-13, narrate land;
-executor closed it additively).
+commit). A new ORGAN needs THREE coupled gates, not one: the classification map, a two-class
+`MintHome` entry in `internal/arch/mint.go` (`organ:<name>`, purpose + named consumer), AND a
+`docs/architecture/status.md` package-table parity row — the doctor enforces Classification↔status.md
+parity, and status.md sits AT its 250-line hot-path cap, so the new row usually forces a
+compensating same-topic note merge elsewhere in the file (learned 2026-07-17, verdictflow land;
+follow-up candidate: generate the table from Classification).
 Packet citations are evidence, not canon: before building on a cited field/symbol ("X already
 exists"), grep the struct/file it names. A premise error becomes a documented deviation + an
 additive fix, not a blocker (learned 2026-07-10, volatile land: packet cited `Claim.ExpiresAt`
@@ -83,6 +85,11 @@ never `git checkout --` on uncommitted work (wipes everything, 2026-07-16 memo-l
 never `git stash` in a linked worktree (stash is repo-wide, not worktree-scoped: a pathspec miss
 creates NO entry and the next `pop` dumps a DIFFERENT lane's stash into your tree — lived
 2026-07-16, event-show land; recovered via `git checkout HEAD -- <conflicted files>`).
+An INTERRUPTED lane's banked WIP must be assumed to contain unreverted scratch mutations until a
+successor re-proves every falsifier's teeth on it (lived 2026-07-17, freeze-doctor land: the
+salvage carried a disabled policy gate — `false && gateErr != nil` — a live governance bypass;
+the successor's mandatory teeth-re-proof caught it before landing). Salvage is input, never
+pre-verified work.
 Packets live in the dir named by `compound workbench --json` → `offered_packets.source_dir` (currently `docs_private/plan/packets/`; gitignored — executors read them by ABSOLUTE path; fresh
 worktrees don't contain docs_private).
 
@@ -109,6 +116,13 @@ evidence-file write.
 Background executors notify on completion. If one goes silent: verify pid + log recency before
 believing any status file (K1 died silently for 2h). Codex jobs: ask the companion where the
 worktree is BEFORE re-dispatching.
+**In-harness agents are the OPPOSITE liveness problem** (2026-07-17): their task `.output` files
+are written only at completion — a byte-stub with an old mtime is NOT death evidence, and they
+pause through host sleep and resume on wake (three "dead 6h, zero tokens" agents all finished with
+full handoffs). In-harness liveness = worktree file/git activity between two reads minutes apart.
+Never dispatch a successor onto a lane without that check; if you do dispatch one, its FIRST act
+must be committing the salvaged baseline, and a successor that zero-mutation STOPS on live-collision
+evidence is behaving correctly.
 **After ANY handoff, verify remote state yourself** (`git fetch` + `git log origin/main`): a
 full-tool executor CAN push despite a NO-push fence, and task-notification re-stops give it extra
 turns after its report (observed 2026-07-13, narrate land — executor pushed origin in a
@@ -137,7 +151,11 @@ The recorded successful land-check is attached to the WorkEnvelope and close-pla
 local-target-only state remains `awaiting_publication` when publication is required.
 `rule_delta` REQUIRES a failure/rule/check/guard proof ref. A live proof (the anti-"landed ≠
 working" observation — real home, real flow) belongs on every close whose change has a runtime
-surface.
+surface. A live proof must not mutate the real home on pattern-match: verify an established
+verb's semantics against the CURRENT home state first (lived 2026-07-17: `migrate --apply` on a
+completed home folded post-plan runtime records into the frozen migration manifest and drifted
+the plan digest — find_b642a87db247). Prefer read-only faces (preview/status) as live proof when
+the mutating path is grant-gated anyway.
 
 ## 8 · Route the learnings (the operator's law: "change the system based on the information")
 
