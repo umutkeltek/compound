@@ -248,6 +248,55 @@ func TestExplicitAreaClassificationOutranksKeywordSniffing(t *testing.T) {
 	}
 }
 
+// TestRiskGradeMirrorsClassAtProjectionTime proves Group.RiskGrade is not a second classification
+// path: it is Class(g) frozen onto the wire at normalizeGroup time, for every group from every
+// source, using the two example cases from the packet falsifier — an irreversible group grades
+// gate, a plain low-blast informational group grades tidy.
+func TestRiskGradeMirrorsClassAtProjectionTime(t *testing.T) {
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	report := Build(Inputs{
+		Workbench: &work.WorkbenchReport{
+			GeneratedAt: now.Format(time.RFC3339),
+			Open: []work.WorkbenchItem{
+				{WorkID: "work_irreversible_gate", State: "held", ActionContext: &work.WorkActionContext{ActionSummary: "delete production records"}},
+			},
+		},
+		Reviews: &reviewartifact.QueueReport{
+			GeneratedAt: now.Format(time.RFC3339),
+			Groups: []reviewartifact.QueueGroup{
+				{
+					Key:             "tidy-informational",
+					Area:            "bench",
+					Band:            reviewartifact.BandNeedsYou,
+					Count:           1,
+					OperatorSummary: "Routine bench hygiene note.",
+					ItemIDs:         []string{"tidy-1"},
+				},
+			},
+		},
+	}, now)
+
+	// Every group's risk_grade equals Class(group) — no group escapes the mirror.
+	for _, group := range report.Groups {
+		if want := Class(group); group.RiskGrade != want {
+			t.Fatalf("group %q risk_grade = %q, want %q (must mirror Class)", group.Key, group.RiskGrade, want)
+		}
+	}
+
+	blocked := groupByKey(t, report, "workbench:blocked-on-you")
+	if blocked.Reversibility != Irreversible {
+		t.Fatalf("fixture setup: blocked group reversibility = %q, want %q", blocked.Reversibility, Irreversible)
+	}
+	if blocked.RiskGrade != RiskGradeGate {
+		t.Fatalf("irreversible group risk_grade = %q, want %q", blocked.RiskGrade, RiskGradeGate)
+	}
+
+	tidy := groupByKey(t, report, "tidy-informational")
+	if tidy.RiskGrade != RiskGradeTidy {
+		t.Fatalf("plain low-blast informational group risk_grade = %q, want %q", tidy.RiskGrade, RiskGradeTidy)
+	}
+}
+
 func sameStringSlice(got, want []string) bool {
 	if len(got) != len(want) {
 		return false

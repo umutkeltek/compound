@@ -46,6 +46,14 @@ const (
 	Reversible   = "reversible"
 	Irreversible = "irreversible"
 
+	// RiskGrade values mirror Class(g)'s three-tier admission grade — gate needs a human before
+	// anything moves, judge needs a human's judgment on the outcome, tidy is receipt-only. Exported
+	// so callers (the CLI's --receipt-only-grade flag) validate against the same vocabulary the
+	// classifier emits instead of duplicating string literals.
+	RiskGradeGate  = "gate"
+	RiskGradeJudge = "judge"
+	RiskGradeTidy  = "tidy"
+
 	ActionOneClick = "one_click"
 	ActionBatch    = "batch"
 	ActionCopyOnly = "copy_only"
@@ -108,6 +116,7 @@ type Group struct {
 	OperatorUnlock  string    `json:"operator_unlock"`
 	BlastRadius     string    `json:"blast_radius"`
 	Reversibility   string    `json:"reversibility"`
+	RiskGrade       string    `json:"risk_grade,omitempty"`
 	Leverage        float64   `json:"leverage"`
 	OldestCreatedAt string    `json:"oldest_created_at"`
 	Action          *Action   `json:"action"`
@@ -195,11 +204,11 @@ func Build(in Inputs, now time.Time) Report {
 func Class(g Group) string {
 	switch classRank(g) {
 	case 0:
-		return "gate"
+		return RiskGradeGate
 	case 1:
-		return "judge"
+		return RiskGradeJudge
 	default:
-		return "tidy"
+		return RiskGradeTidy
 	}
 }
 
@@ -464,6 +473,10 @@ func normalizeGroup(g *Group, generatedAt string, now time.Time) {
 			g.Reversibility = deriveReversibility(*g, classification.Reversibility)
 		}
 	}
+	// RiskGrade is DERIVED here, once BlastRadius/Reversibility/Kind have all settled for this
+	// group — the same three-tier Class() every caller already computes, just frozen onto the wire
+	// instead of thrown away outside the CLI text printer. No new classification logic.
+	g.RiskGrade = Class(*g)
 	if g.Count <= 0 {
 		g.Count = maxInt(1, len(g.ItemIDs))
 	}
