@@ -513,10 +513,6 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace *EngineDependencyTrace) (runtimeSnapshot, error) {
 	var snapshot runtimeSnapshot
 	var err error
-	taskEmbedder := resolveTaskEmbedder(homePath, in.Task)
-	if in.ReadOnlyRetrieval && taskEmbedder != nil {
-		taskEmbedder = &exactTaskMemoizingEmbedder{inner: taskEmbedder, task: in.Task}
-	}
 	snapshot.hooks, snapshot.excludedHooks, snapshot.hookRoster, snapshot.hookRevisions, err = loadInstalledHooksForInput(homePath, in)
 	if err != nil {
 		return snapshot, err
@@ -525,10 +521,16 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.capabilityHits, snapshot.capabilityTotal, err = surfaceCapabilityHits(homePath, in, taskEmbedder)
-	if err != nil {
-		return snapshot, err
+	taskEmbedder := resolveTaskEmbedder(homePath, in.Task)
+	if in.ReadOnlyRetrieval && taskEmbedder != nil {
+		taskEmbedder = &exactTaskMemoizingEmbedder{inner: taskEmbedder, task: in.Task}
 	}
+	laneResults := startRuntimeSnapshotLanes(homePath, in, taskEmbedder)
+	lanes := <-laneResults
+	if lanes.err != nil {
+		return snapshot, lanes.err
+	}
+	snapshot.capabilityHits, snapshot.capabilityTotal = lanes.capability.hits, lanes.capability.total
 	if snapshot.capabilityTotal > 0 {
 		snapshot.capabilityRevision, err = capgraph.AuthorityRevision(homePath)
 		if err != nil {
@@ -543,26 +545,181 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.decisions, snapshot.decisionRevisions, snapshot.excludedDecisions, err = loadDecisionRefs(homePath, in)
+	memoryResult := lanes.memory
+	snapshot.decisions, snapshot.decisionRevisions, snapshot.excludedDecisions, err = loadDecisionRefsFromView(in, memoryResult.view)
 	if err != nil {
 		return snapshot, err
 	}
-	semanticRanks := semanticTaskRanksTracedWithEmbedder(homePath, in, trace, taskEmbedder)
-	snapshot.memoryRefs, snapshot.excludedMemoryRefs, err = loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
+	dependencies := captureRuntimeMemoryDependencies(homePath, in, memoryResult.view)
+	if captured := runtimeMemoryDependenciesCaptured; captured != nil {
+		captured()
+	}
+	semantic := semanticTaskRankResultWithEmbedderFromView(homePath, in, trace, taskEmbedder, memoryResult.store, memoryResult.view, &dependencies.RecallCandidate)
+	dependencies.RecallConsumed = semantic.ConsumedRecall
+	semanticRanks := semantic.Ranks
+	snapshot.memoryRefs, snapshot.excludedMemoryRefs, err = loadMemoryRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, &dependencies)
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
+	snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, dependencies.TopicSet)
 	if err != nil {
 		return snapshot, err
 	}
 	if len(snapshot.memoryRefs) > 0 || len(snapshot.excludedMemoryRefs) > 0 || len(snapshot.positionRefs) > 0 || len(snapshot.excludedPositionRefs) > 0 {
-		snapshot.memoryRevision, err = memoryLedgerRevision(homePath)
-		if err != nil {
-			return snapshot, err
-		}
+		snapshot.memoryRevision = runtimeMemoryRevision(memoryResult.view, dependencies)
 	}
 	return snapshot, nil
+}
+
+type runtimeCapabilityLaneResult struct {
+	hits  []capgraph.Surfaced
+	total int
+}
+
+type runtimeMemoryLaneResult struct {
+	store *mem.Store
+	view  *mem.CurrentView
+}
+
+type runtimeSnapshotLaneResult struct {
+	capability runtimeCapabilityLaneResult
+	memory     runtimeMemoryLaneResult
+	err        error
+}
+
+type runtimeLaneOutcome[T any] struct {
+	value T
+	err   error
+}
+
+// joinRuntimeSnapshotLanes starts both independent lanes before awaiting either
+// and always joins both completions, including error paths. A caller can therefore
+// return without leaving background reads or cache work running behind it.
+func joinRuntimeSnapshotLanes[A, B any](left func() (A, error), right func() (B, error)) (A, B, error) {
+	leftDone := make(chan runtimeLaneOutcome[A], 1)
+	rightDone := make(chan runtimeLaneOutcome[B], 1)
+	go func() {
+		value, err := left()
+		leftDone <- runtimeLaneOutcome[A]{value: value, err: err}
+	}()
+	go func() {
+		value, err := right()
+		rightDone <- runtimeLaneOutcome[B]{value: value, err: err}
+	}()
+	leftResult := <-leftDone
+	rightResult := <-rightDone
+	return leftResult.value, rightResult.value, errors.Join(leftResult.err, rightResult.err)
+}
+
+func startRuntimeSnapshotLanes(homePath string, in Input, taskEmbedder breadth.EmbedderAdapter) <-chan runtimeSnapshotLaneResult {
+	done := make(chan runtimeSnapshotLaneResult, 1)
+	go func() {
+		capability, memory, err := joinRuntimeSnapshotLanes(
+			func() (runtimeCapabilityLaneResult, error) {
+				hits, total, err := surfaceCapabilityHits(homePath, in, taskEmbedder)
+				return runtimeCapabilityLaneResult{hits: hits, total: total}, err
+			},
+			func() (runtimeMemoryLaneResult, error) {
+				store, err := mem.Open(homePath)
+				if err != nil {
+					return runtimeMemoryLaneResult{}, err
+				}
+				var view *mem.CurrentView
+				if strings.TrimSpace(in.Topic) == "" {
+					view, err = store.CurrentView()
+				} else {
+					view, err = store.CurrentViewForTopic(in.Topic)
+				}
+				return runtimeMemoryLaneResult{store: store, view: view}, err
+			},
+		)
+		done <- runtimeSnapshotLaneResult{capability: capability, memory: memory, err: err}
+	}()
+	return done
+}
+
+type runtimeTemperatureDependency struct {
+	ClaimID     string  `json:"claim_id"`
+	Temperature float64 `json:"temperature"`
+}
+
+type runtimeTopicDependency struct {
+	Status  string   `json:"status"`
+	Slug    string   `json:"slug,omitempty"`
+	Via     string   `json:"via,omitempty"`
+	Subtree []string `json:"subtree,omitempty"`
+}
+
+type runtimeMemoryDependencies struct {
+	Temperatures        map[string]float64
+	AppliedTemperatures map[string]float64
+	Topic               *runtimeTopicDependency
+	TopicSet            map[string]bool
+	RecallCandidate     mem.ExpandedQuery
+	RecallConsumed      *mem.ExpandedQuery
+}
+
+// runtimeMemoryDependenciesCaptured is a test seam immediately after every
+// auxiliary dependency has been captured and before any consumer runs.
+var runtimeMemoryDependenciesCaptured func()
+
+func captureRuntimeMemoryDependencies(homePath string, in Input, view *mem.CurrentView) runtimeMemoryDependencies {
+	dependencies := runtimeMemoryDependencies{
+		Temperatures:        loadMemoryTemperatures(homePath),
+		AppliedTemperatures: map[string]float64{},
+		RecallCandidate:     mem.ExpandedQuery{Original: in.Task, Text: in.Task},
+	}
+	if topic := strings.TrimSpace(in.Topic); topic != "" {
+		root := topic
+		resolved, captured := view.TopicResolution(topic)
+		if !captured {
+			resolved = mem.EntityResolution{Status: "unresolved"}
+		}
+		if resolved.Status == "resolved" {
+			root = resolved.Slug
+		}
+		subtree := view.TopicSubtree(root)
+		dependencies.Topic = &runtimeTopicDependency{Status: resolved.Status, Slug: resolved.Slug, Via: resolved.Via, Subtree: subtree}
+		dependencies.TopicSet = make(map[string]bool, len(subtree))
+		for _, slug := range subtree {
+			dependencies.TopicSet[slug] = true
+		}
+	}
+	if in.ReadOnlyRetrieval {
+		if aliases, err := mem.LoadRecallAliases(homePath); err == nil {
+			dependencies.RecallCandidate = mem.ExpandQuery(in.Task, aliases)
+		}
+	}
+	return dependencies
+}
+
+// runtimeMemoryRevision fingerprints the exact owned view plus the bounded
+// auxiliary values that affected this task's prompt projection. Unmatched alias
+// rows, absent-claim temperatures, and unrelated entity rows do not churn it.
+func runtimeMemoryRevision(view *mem.CurrentView, captured runtimeMemoryDependencies) string {
+	dependencies := struct {
+		View         string                         `json:"view"`
+		Temperatures []runtimeTemperatureDependency `json:"temperatures,omitempty"`
+		Topic        *runtimeTopicDependency        `json:"topic,omitempty"`
+		RecallAdded  []string                       `json:"recall_added,omitempty"`
+	}{View: view.Revision(), Topic: captured.Topic}
+
+	for claimID, temperature := range captured.AppliedTemperatures {
+		dependencies.Temperatures = append(dependencies.Temperatures, runtimeTemperatureDependency{ClaimID: claimID, Temperature: temperature})
+	}
+	sort.Slice(dependencies.Temperatures, func(i, j int) bool {
+		return dependencies.Temperatures[i].ClaimID < dependencies.Temperatures[j].ClaimID
+	})
+
+	if captured.RecallConsumed != nil && captured.RecallConsumed.Active {
+		dependencies.RecallAdded = append([]string(nil), captured.RecallConsumed.Added...)
+	}
+	body, err := json.Marshal(dependencies)
+	if err != nil {
+		return view.Revision()
+	}
+	digest := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 func projectRuntimeContract(ec envelope.EffectiveContract, snapshot runtimeSnapshot) envelope.EffectiveContract {
@@ -666,7 +823,7 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 		for _, ref := range snapshot.positionRefs {
 			lines = append(lines, ref.Line)
 		}
-		pack.SummaryMD += " Compound positions (folded checkpoint): " + strings.Join(lines, "; ")
+		pack.SummaryMD += " Compound positions (folded current view): " + strings.Join(lines, "; ")
 	}
 	if topic := strings.TrimSpace(in.Topic); topic != "" {
 		pack.SummaryMD += fmt.Sprintf(" Ambient recall narrowed to topic %q (subtree-scoped); empty topic leaves recall unchanged.", topic)
@@ -1577,6 +1734,19 @@ func semanticTaskRanksTraced(homePath string, in Input, trace *EngineDependencyT
 }
 
 func semanticTaskRanksTracedWithEmbedder(homePath string, in Input, trace *EngineDependencyTrace, embedder breadth.EmbedderAdapter) map[string]float64 {
+	return semanticTaskRanksTracedWithEmbedderFromView(homePath, in, trace, embedder, nil, nil, nil)
+}
+
+func semanticTaskRanksTracedWithEmbedderFromView(homePath string, in Input, trace *EngineDependencyTrace, embedder breadth.EmbedderAdapter, store *mem.Store, view *mem.CurrentView, expanded *mem.ExpandedQuery) map[string]float64 {
+	return semanticTaskRankResultWithEmbedderFromView(homePath, in, trace, embedder, store, view, expanded).Ranks
+}
+
+type semanticTaskRankResult struct {
+	Ranks          map[string]float64
+	ConsumedRecall *mem.ExpandedQuery
+}
+
+func semanticTaskRankResultWithEmbedderFromView(homePath string, in Input, trace *EngineDependencyTrace, embedder breadth.EmbedderAdapter, store *mem.Store, view *mem.CurrentView, expanded *mem.ExpandedQuery) semanticTaskRankResult {
 	if trace != nil {
 		if in.ReadOnlyRetrieval && embedder != nil {
 			trace.RequestedEngine = breadth.Name
@@ -1585,21 +1755,24 @@ func semanticTaskRanksTracedWithEmbedder(homePath string, in Input, trace *Engin
 		}
 	}
 	if !in.ReadOnlyRetrieval && strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" {
-		return nil
+		return semanticTaskRankResult{}
 	}
 	if in.ReadOnlyRetrieval && embedder == nil {
-		return nil
+		return semanticTaskRankResult{}
 	}
 	if len(memoryTextTokens(in.Task)) == 0 {
-		return nil
+		return semanticTaskRankResult{}
 	}
-	store, err := mem.Open(homePath)
-	if err != nil {
-		if trace != nil {
-			trace.Outcome = EngineOutcomeDegraded
-			trace.ErrorClass = EngineErrorRetrieval
+	var err error
+	if store == nil {
+		store, err = mem.Open(homePath)
+		if err != nil {
+			if trace != nil {
+				trace.Outcome = EngineOutcomeDegraded
+				trace.ErrorClass = EngineErrorRetrieval
+			}
+			return semanticTaskRankResult{}
 		}
-		return nil
 	}
 	if trace != nil {
 		trace.Attempted = true
@@ -1613,7 +1786,7 @@ func semanticTaskRanksTracedWithEmbedder(homePath string, in Input, trace *Engin
 				trace.Outcome = EngineOutcomeDegraded
 				trace.ErrorClass = EngineErrorRetrieval
 			}
-			return nil
+			return semanticTaskRankResult{}
 		}
 		eng = &inProcessBreadthEngine{engine: core, embedder: embedder}
 	} else {
@@ -1631,8 +1804,18 @@ func semanticTaskRanksTracedWithEmbedder(homePath string, in Input, trace *Engin
 		}
 	}
 	var claims []mem.Claim
+	var consumedRecall *mem.ExpandedQuery
 	if in.ReadOnlyRetrieval {
-		claims, err = store.QueryBreadthReadOnly(in.Task, semanticTaskRankK, eng)
+		if view != nil {
+			if expanded != nil {
+				result, queryErr := store.QueryBreadthReadOnlyFromViewExpandedResult(in.Task, semanticTaskRankK, eng, view, *expanded)
+				claims, consumedRecall, err = result.Claims, result.ConsumedExpansion, queryErr
+			} else {
+				claims, err = store.QueryBreadthReadOnlyFromView(in.Task, semanticTaskRankK, eng, view)
+			}
+		} else {
+			claims, err = store.QueryBreadthReadOnly(in.Task, semanticTaskRankK, eng)
+		}
 	} else {
 		claims, err = store.QueryBreadth(in.Task, semanticTaskRankK, eng)
 	}
@@ -1640,7 +1823,7 @@ func semanticTaskRanksTracedWithEmbedder(homePath string, in Input, trace *Engin
 		if trace != nil {
 			trace.Outcome, trace.ErrorClass = classifyEngineTraceError(err)
 		}
-		return nil
+		return semanticTaskRankResult{}
 	}
 	if trace != nil {
 		caps := eng.Capabilities()
@@ -1658,13 +1841,13 @@ func semanticTaskRanksTracedWithEmbedder(homePath string, in Input, trace *Engin
 		}
 	}
 	if len(claims) == 0 {
-		return nil
+		return semanticTaskRankResult{ConsumedRecall: consumedRecall}
 	}
 	ranks := make(map[string]float64, len(claims))
 	for i, c := range claims {
 		ranks[c.ID] = float64(len(claims) - i)
 	}
-	return ranks
+	return semanticTaskRankResult{Ranks: ranks, ConsumedRecall: consumedRecall}
 }
 
 func requestedEngineIdentity() string {
@@ -1743,6 +1926,25 @@ func topicScopeForInput(store *mem.Store, topic string) (map[string]bool, error)
 	return set, nil
 }
 
+func topicScopeForInputFromView(store *mem.Store, view *mem.CurrentView, topic string) (map[string]bool, error) {
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return nil, nil
+	}
+	root := topic
+	if resolved, err := store.ResolveEntity(topic); err != nil {
+		return nil, err
+	} else if resolved.Status == "resolved" {
+		root = resolved.Slug
+	}
+	subtree := view.TopicSubtree(root)
+	set := make(map[string]bool, len(subtree))
+	for _, slug := range subtree {
+		set[slug] = true
+	}
+	return set, nil
+}
+
 func topicScopeExclusionReason(topic string) string {
 	return fmt.Sprintf("ambient recall narrowed to topic %q; claim outside topic subtree left out of active_memory", strings.TrimSpace(topic))
 }
@@ -1760,20 +1962,41 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule, semanticRanks ma
 	if err != nil {
 		return nil, nil, err
 	}
-	claims, err := store.AllCurrent()
+	view, err := store.CurrentView()
 	if err != nil {
 		return nil, nil, err
 	}
-	topicSet, err := topicScopeForInput(store, in.Topic)
-	if err != nil {
-		return nil, nil, err
+	dependencies := captureRuntimeMemoryDependencies(homePath, in, view)
+	return loadMemoryRefsFromView(in, rule, semanticRanks, view, &dependencies)
+}
+
+func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, dependencies *runtimeMemoryDependencies) ([]contextMemoryRef, []envelope.ExcludedRef, error) {
+	if len(rule.Ambient) == 0 {
+		return nil, nil, nil
 	}
-	temps := loadMemoryTemperatures(homePath)
+	entities := memoryEntityKeys(in)
+	taskTokens := memoryTextTokens(in.Task)
+	if len(entities) == 0 && len(taskTokens) == 0 {
+		return nil, nil, nil
+	}
+	claims := view.Claims()
+	var topicSet map[string]bool
+	var temps map[string]float64
+	if dependencies != nil {
+		topicSet = dependencies.TopicSet
+		temps = dependencies.Temperatures
+	}
 	out := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	excluded := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	for _, claim := range claims {
 		sem := semanticRanks[claim.ID]
+		baseRelevanceRank := memoryRelevanceRank(claim, entities, taskTokens, sem, nil)
 		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens, sem, temps)
+		if dependencies != nil && baseRelevanceRank > 0 {
+			if temperature := memoryTemperatureTerm(temps, claim.ID); temperature != 0 {
+				dependencies.AppliedTemperatures[claim.ID] = temperature
+			}
+		}
 		if topicSet != nil && !mem.ClaimHasTopicRef(claim, topicSet) {
 			// Topic narrowing is a HARD scope gate (mirrors the recall/position topic filter):
 			// a claim outside the subtree never enters ambient recall. Record only the ones that
@@ -1940,21 +2163,28 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 	if err != nil {
 		return nil, nil, err
 	}
-	positions, err := store.LoadFoldedPositions()
+	view, err := store.CurrentView()
 	if err != nil {
 		return nil, nil, err
 	}
+	dependencies := captureRuntimeMemoryDependencies(homePath, in, view)
+	return loadPositionRefsFromView(in, rule, semanticRanks, view, dependencies.TopicSet)
+}
+
+func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, topicSet map[string]bool) ([]contextPositionRef, []envelope.ExcludedRef, error) {
+	if len(rule.Ambient) == 0 {
+		return nil, nil, nil
+	}
+	entities := memoryEntityKeys(in)
+	taskTokens := memoryTextTokens(in.Task)
+	if len(entities) == 0 && len(taskTokens) == 0 {
+		return nil, nil, nil
+	}
+	positions := view.Positions()
 	if len(positions) == 0 {
 		return nil, nil, nil
 	}
-	claims, err := store.AllCurrent()
-	if err != nil {
-		return nil, nil, err
-	}
-	topicSet, err := topicScopeForInput(store, in.Topic)
-	if err != nil {
-		return nil, nil, err
-	}
+	claims := view.Claims()
 	claimByID := map[string]mem.Claim{}
 	for _, claim := range claims {
 		claimByID[claim.ID] = claim
@@ -2120,14 +2350,6 @@ func activePositionLine(positionID, predicate, claimType, stance string, sinceSe
 		line += " [contested]"
 	}
 	return line
-}
-
-func memoryLedgerRevision(homePath string) (string, error) {
-	store, err := mem.Open(homePath)
-	if err != nil {
-		return "", err
-	}
-	return store.LedgerDigest()
 }
 
 // temps is the claim-id → frozen temperature lookup from the memory-temperature projection.
@@ -2391,10 +2613,15 @@ func loadDecisionRefs(homePath string, in Input) ([]string, []envelope.SourceRev
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	claims, err := store.AllCurrent()
+	view, err := store.CurrentView()
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	return loadDecisionRefsFromView(in, view)
+}
+
+func loadDecisionRefsFromView(in Input, view *mem.CurrentView) ([]string, []envelope.SourceRev, []envelope.ExcludedRef, error) {
+	claims := view.Claims()
 	claims = decisionstate.AllActiveDecisions(claims)
 	byRef := map[string]mem.Claim{}
 	for _, c := range claims {

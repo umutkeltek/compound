@@ -2391,8 +2391,16 @@ func TestPackWithCapabilitiesEmptyPositionsCheckpointKeepsClaimRefPath(t *testin
 	if !contains(after.ActiveMemory, claimRef) {
 		t.Fatalf("empty positions checkpoint removed old claim-ref path: active_memory=%v want %s", after.ActiveMemory, claimRef)
 	}
-	if len(after.ActivePositions) != 0 {
-		t.Fatalf("empty positions checkpoint produced active positions: %+v", after.ActivePositions)
+	beforePositions, err := json.Marshal(before.ActivePositions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterPositions, err := json.Marshal(after.ActivePositions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.ActivePositions) == 0 || string(afterPositions) != string(beforePositions) {
+		t.Fatalf("empty positions projection changed the owner-folded current positions: before=%s after=%s", beforePositions, afterPositions)
 	}
 	if !sameStrings(before.ActiveMemory, after.ActiveMemory) || !sameIncludedRefs(before.Included, after.Included) || before.SummaryMD != after.SummaryMD {
 		t.Fatalf("empty positions checkpoint changed claim-ref behavior\nbefore active=%v included=%v summary=%q\nafter active=%v included=%v summary=%q",
