@@ -145,23 +145,56 @@ func buildLiveStatusSnapshotWithCapacityReader(
 		}
 		snapshot = supplementLiveClaudeCapacity(snapshot, previous, fresh, now, readCapacity, probeCodexBarClaudeCapacity)
 	} else {
-		capacity, err := readCapacity("codex", now)
+		snapshot, err = buildLiveCodexStatusSnapshot(previous, fresh, now, readCapacity, probeCodexBarCapacity)
 		if err != nil {
 			return statussurface.Snapshot{}, err
 		}
-		status := statussurface.StatusUnknown
-		if capacity.State != routeevidence.CapacityUnknown {
-			status = statussurface.StatusLive
-		}
-		snapshot = statussurface.BuildCodexSnapshot(statussurface.CapacityEvidence{
-			Status: status, RemainingPercent: capacity.Remaining, ResetsAt: capacity.ResetsAt,
-			Source: "compound/routeevidence:" + strings.TrimSpace(capacity.Source),
-		}, now, previous)
 	}
 	if err := store.Write(&snapshot); err != nil {
 		return statussurface.Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func buildLiveCodexStatusSnapshot(
+	previous statussurface.Snapshot,
+	previousFresh bool,
+	now time.Time,
+	readCapacity func(string, time.Time) (routeevidence.LaneCapacity, error),
+	probe func(string, time.Time) (statusCapacityEvidence, error),
+) (statussurface.Snapshot, error) {
+	capacity, err := readCapacity("codex", now)
+	if err != nil {
+		return statussurface.Snapshot{}, err
+	}
+	evidence := statussurface.CapacityEvidence{
+		Status: statussurface.StatusUnknown,
+		Source: "compound/routeevidence:" + strings.TrimSpace(capacity.Source),
+	}
+	if capacity.State != routeevidence.CapacityUnknown {
+		evidence = statussurface.CapacityEvidence{
+			Status: statussurface.StatusLive, RemainingPercent: capacity.Remaining, ResetsAt: capacity.ResetsAt,
+			Source: "compound/routeevidence:" + strings.TrimSpace(capacity.Source),
+		}
+		return statussurface.BuildCodexSnapshot(evidence, now, previous), nil
+	}
+	if previousFresh && previous.Harness == statussurface.HarnessCodex {
+		for _, limit := range previous.Limits {
+			if limit.Kind == statussurface.LimitSevenDay && limit.Status == statussurface.StatusLive {
+				evidence = statussurface.CapacityEvidence{
+					Status: statussurface.StatusLive, RemainingPercent: limit.RemainingPercent,
+					ResetsAt: limit.ResetsAt, Source: limit.Source,
+				}
+				return statussurface.BuildCodexSnapshot(evidence, now, previous), nil
+			}
+		}
+	}
+	if probe != nil {
+		if live, probeErr := probe("codex", now); probeErr == nil && live.Weekly.Status == statussurface.StatusLive {
+			evidence = live.Weekly
+		}
+	}
+	return statussurface.BuildCodexSnapshot(evidence, now, previous), nil
 }
 
 func supplementLiveClaudeCapacity(

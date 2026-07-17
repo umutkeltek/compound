@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -243,5 +244,129 @@ func TestProbeCodexBarClaudeCapacityUsesBoundedDirectArgv(t *testing.T) {
 	}
 	if !called || evidence.FiveHour.RemainingPercent != 63 || evidence.Weekly.RemainingPercent != 26 {
 		t.Fatalf("probe result = called %v evidence %+v", called, evidence)
+	}
+}
+
+func TestParseCodexBarCapacityReducesCodexWeeklyWithoutIdentity(t *testing.T) {
+	now := time.Date(2026, 7, 17, 21, 20, 30, 0, time.UTC)
+	body := []byte(`[{
+	  "provider":"codex",
+	  "usage":{
+	    "accountEmail":"must-not-survive@example.invalid",
+	    "updatedAt":"2026-07-17T21:20:02Z",
+	    "secondary":{"usedPercent":89,"windowMinutes":10080,"resetsAt":"2026-07-23T04:19:07Z"},
+	    "extraRateWindows":[{"id":"must-not-survive","window":{"usedPercent":0,"windowMinutes":10080,"resetsAt":"2026-07-24T21:20:01Z"}}]
+	  }
+	}]`)
+	evidence, err := parseCodexBarCapacity(body, "codex", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Weekly.Status != statussurface.StatusLive || evidence.Weekly.RemainingPercent != 11 || evidence.Weekly.ResetsAt.Format(time.RFC3339) != "2026-07-23T04:19:07Z" {
+		t.Fatalf("Codex weekly evidence = %+v", evidence.Weekly)
+	}
+	reduced, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(reduced), "must-not-survive") || strings.Contains(string(reduced), "accountEmail") {
+		t.Fatalf("reduced Codex capacity retained identity: %s", reduced)
+	}
+}
+
+func TestBuildLiveCodexStatusSnapshotFallsBackToFreshCodexBarWeeklyCapacity(t *testing.T) {
+	now := time.Date(2026, 7, 17, 21, 20, 30, 0, time.UTC)
+	probeCalls := 0
+	snapshot, err := buildLiveCodexStatusSnapshot(
+		statussurface.Snapshot{},
+		false,
+		now,
+		func(lane string, sampledAt time.Time) (routeevidence.LaneCapacity, error) {
+			if lane != "codex" || !sampledAt.Equal(now) {
+				t.Fatalf("capacity request = lane %q at %s", lane, sampledAt)
+			}
+			return routeevidence.LaneCapacity{State: routeevidence.CapacityUnknown}, nil
+		},
+		func(provider string, sampledAt time.Time) (statusCapacityEvidence, error) {
+			probeCalls++
+			if provider != "codex" || !sampledAt.Equal(now) {
+				t.Fatalf("probe request = provider %q at %s", provider, sampledAt)
+			}
+			return statusCapacityEvidence{Weekly: statussurface.CapacityEvidence{
+				Status: statussurface.StatusLive, RemainingPercent: 11, Source: "compound/codexbar-live",
+			}}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probeCalls != 1 {
+		t.Fatalf("Codex live probe calls = %d, want 1", probeCalls)
+	}
+	weekly := snapshot.Limits[0]
+	if weekly.Status != statussurface.StatusLive || weekly.RemainingPercent != 11 || weekly.Source != "compound/codexbar-live" {
+		t.Fatalf("Codex fallback snapshot = %+v", snapshot)
+	}
+}
+
+func TestBuildLiveCodexStatusSnapshotPrefersFreshRouteEvidence(t *testing.T) {
+	now := time.Date(2026, 7, 17, 21, 20, 30, 0, time.UTC)
+	probeCalls := 0
+	snapshot, err := buildLiveCodexStatusSnapshot(
+		statussurface.Snapshot{},
+		false,
+		now,
+		func(string, time.Time) (routeevidence.LaneCapacity, error) {
+			return routeevidence.LaneCapacity{
+				State: routeevidence.CapacityAlive, Remaining: 44, Source: "codexbar/usage-history",
+			}, nil
+		},
+		func(string, time.Time) (statusCapacityEvidence, error) {
+			probeCalls++
+			return statusCapacityEvidence{Weekly: statussurface.CapacityEvidence{
+				Status: statussurface.StatusLive, RemainingPercent: 11, Source: "compound/codexbar-live",
+			}}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probeCalls != 0 {
+		t.Fatalf("fresh route evidence still triggered %d CodexBar probe(s)", probeCalls)
+	}
+	weekly := snapshot.Limits[0]
+	if weekly.RemainingPercent != 44 || weekly.Source != "compound/routeevidence:codexbar/usage-history" {
+		t.Fatalf("fresh route evidence lost priority: %+v", snapshot)
+	}
+}
+
+func TestRunBoundedStatusCapacityCommandRejectsOversizeStdout(t *testing.T) {
+	t.Setenv("COMPOUND_STATUS_CAPACITY_OVERSIZE_HELPER", "1")
+	_, err := runBoundedStatusCapacityCommand(context.Background(), os.Args[0], "-test.run=TestStatusCapacityOversizeHelperProcess")
+	if !errors.Is(err, errCodexBarProbeOutputTooLarge) {
+		t.Fatalf("bounded command error = %v, want %v", err, errCodexBarProbeOutputTooLarge)
+	}
+}
+
+func TestStatusCapacityOversizeHelperProcess(t *testing.T) {
+	if os.Getenv("COMPOUND_STATUS_CAPACITY_OVERSIZE_HELPER") != "1" {
+		return
+	}
+	chunk := []byte(strings.Repeat("x", 32<<10))
+	for written := 0; written <= maxCodexBarProbeBytes+(32<<10); written += len(chunk) {
+		if _, err := os.Stdout.Write(chunk); err != nil {
+			os.Exit(0)
+		}
+	}
+	os.Exit(0)
+}
+
+func TestProbeCodexBarCapacityRejectsOversizeInjectedRunner(t *testing.T) {
+	now := time.Date(2026, 7, 17, 21, 20, 30, 0, time.UTC)
+	_, err := probeCodexBarCapacityWithRunner("codex", now, func(context.Context, string, ...string) ([]byte, error) {
+		return make([]byte, maxCodexBarProbeBytes+1), nil
+	})
+	if !errors.Is(err, errCodexBarProbeOutputTooLarge) {
+		t.Fatalf("injected oversize error = %v, want %v", err, errCodexBarProbeOutputTooLarge)
 	}
 }
