@@ -137,3 +137,35 @@ func inventoryGuardRepoRoot(t *testing.T) string {
 	// this file lives at <repoRoot>/cmd/compound/proof_check_inventory_test.go
 	return filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
 }
+
+// TestGoTestGateCarriesExplicitDeliberateTimeout pins the go-test gate's per-package
+// -timeout to an EXPLICIT, deliberately chosen budget. The two heaviest suites run
+// 592-602s on a quiet tree — flush against Go's implicit 10m default — so with no
+// explicit flag the full battery is a scheduling-lottery coin flip for every lander
+// (observed: the same SHA flipping ok<->FAIL across consecutive clean-worktree runs).
+// Removing the flag, or changing the budget without editing this test, must be loud:
+// the budget is a recorded decision, never an implicit default.
+func TestGoTestGateCarriesExplicitDeliberateTimeout(t *testing.T) {
+	steps, err := proofCheckSteps("")
+	if err != nil {
+		t.Fatalf("proofCheckSteps: %v", err)
+	}
+	for _, s := range steps {
+		if s.Name != "go-test" {
+			continue
+		}
+		if !s.CIPortable {
+			t.Fatalf("go-test gate must stay CIPortable so the explicit timeout budget governs CI runs too; got CIPortable=false")
+		}
+		for _, arg := range s.Command {
+			if arg == "-timeout=20m" {
+				return
+			}
+			if strings.HasPrefix(arg, "-timeout") {
+				t.Fatalf("go-test gate carries %q — the deliberate budget is -timeout=20m; change it here and in proofCheckSteps together, never silently", arg)
+			}
+		}
+		t.Fatalf("go-test gate command %v carries no explicit -timeout; the implicit 10m default is a coin flip at current suite weight (592-602s heavy packages)", s.Command)
+	}
+	t.Fatalf("no go-test step found in proofCheckSteps inventory")
+}
