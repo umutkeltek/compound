@@ -282,6 +282,8 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory temperature [--json] [--rebuild]"
 	case "observation":
 		return "usage: compound memory observation [--json] [--record]"
+	case "consumption":
+		return "usage: compound memory consumption [--json] [--record]"
 	case "canon":
 		return "usage: compound memory canon [--json]"
 	case "volatile-restore":
@@ -1784,6 +1786,8 @@ func cmdMemory(args []string) {
 		cmdMemoryTemperature(homePath, rest)
 	case "observation":
 		cmdMemoryObservation(homePath, rest)
+	case "consumption":
+		cmdMemoryConsumption(homePath, rest)
 	case "canon":
 		cmdMemoryCanon(store, rest)
 	case "volatile-restore":
