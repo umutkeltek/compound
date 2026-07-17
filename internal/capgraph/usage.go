@@ -185,7 +185,7 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 	if err != nil {
 		return proj, err
 	}
-	entries, err := events.Scan(eventstore.ScanOptions{})
+	entries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"rec_"}})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return proj, nil

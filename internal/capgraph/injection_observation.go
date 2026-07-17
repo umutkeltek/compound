@@ -212,7 +212,7 @@ func BuildInjectionObservationReport(homePath string, opts InjectionObservationO
 	if err != nil {
 		return rep, err
 	}
-	entries, err := events.Scan(eventstore.ScanOptions{})
+	entries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"rec_"}})
 	if err != nil {
 		if os.IsNotExist(err) {
 			rep.Conditions = summarizeInjectionConditions(nil)

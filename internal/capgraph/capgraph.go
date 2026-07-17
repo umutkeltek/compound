@@ -816,7 +816,7 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 	if err != nil {
 		return report, err
 	}
-	entries, err := events.Scan(eventstore.ScanOptions{})
+	entries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"rec_"}})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return report, nil
