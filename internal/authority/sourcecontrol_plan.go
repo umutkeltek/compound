@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -547,11 +548,22 @@ func ValidateSourceControlReview(review SourceControlReview) error {
 	if strings.TrimSpace(review.Rationale) == "" {
 		return fmt.Errorf("source-control review rationale required")
 	}
-	if review.Confidence < 0 || review.Confidence > 1 {
+	if math.IsNaN(review.Confidence) || math.IsInf(review.Confidence, 0) || review.Confidence < 0 || review.Confidence > 1 {
 		return fmt.Errorf("source-control review confidence must be between 0 and 1")
 	}
-	if len(reviewartifact.Unique(review.EvidenceRefs)) == 0 {
+	if len(review.EvidenceRefs) == 0 {
 		return fmt.Errorf("source-control review evidence_refs required")
+	}
+	for _, ref := range review.EvidenceRefs {
+		if strings.TrimSpace(ref) == "" {
+			return fmt.Errorf("source-control review evidence_refs must not contain empty entries")
+		}
+	}
+	if review.ReviewedAt != "" {
+		reviewedAt, err := time.Parse(time.RFC3339, review.ReviewedAt)
+		if err != nil || reviewedAt.IsZero() {
+			return fmt.Errorf("source-control review reviewed_at must be a non-zero RFC3339 timestamp")
+		}
 	}
 	if review.Decision == "authorize_mutation" && !policy.HasOperatorProvenance(review.ReviewedBy) {
 		return fmt.Errorf("source-control authorize_mutation reviewed_by with operator provenance required")

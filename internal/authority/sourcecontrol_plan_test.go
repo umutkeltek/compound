@@ -3,6 +3,7 @@ package authority
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -251,6 +252,68 @@ func TestSourceControlReviewAuthorityBindsValidatedDispositionMeaning(t *testing
 				t.Fatalf("material review edit retained action identity: base=%+v changed=%+v", baseAction, action)
 			}
 		})
+	}
+}
+
+func TestSourceControlReviewConsumersRejectMalformedBodies(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_review_body_validation", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*SourceControlReview)
+	}{
+		{name: "reviewed at malformed", mutate: func(review *SourceControlReview) { review.ReviewedAt = "not-a-timestamp" }},
+		{name: "reviewed at zero", mutate: func(review *SourceControlReview) { review.ReviewedAt = "0001-01-01T00:00:00Z" }},
+		{name: "empty evidence entry", mutate: func(review *SourceControlReview) { review.EvidenceRefs = append(review.EvidenceRefs, "") }},
+		{name: "whitespace evidence entry", mutate: func(review *SourceControlReview) { review.EvidenceRefs = append(review.EvidenceRefs, "   ") }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			paths, err := RecordSourceControlReviewPlan(home, plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			review := writeValidSourceControlReview(t, paths.ReviewYAMLPath, plan)
+			tc.mutate(&review)
+			writeSourceControlReviewValue(t, paths.ReviewYAMLPath, review)
+
+			queue := sourceControlCleanupQueue(t, home)
+			if len(queue.Items[0].Actions) != 0 {
+				t.Errorf("malformed review mounted authority action: %+v", queue.Items[0].Actions)
+			}
+			if _, err := RecordSourceControlReview(home, review, paths.ReviewYAMLPath, fixedSourceControlReviewTime.Add(time.Minute)); err == nil {
+				t.Errorf("malformed review body was recorded: %+v", review)
+			}
+		})
+	}
+}
+
+func TestValidateSourceControlReviewRejectsNonFiniteConfidence(t *testing.T) {
+	valid := SourceControlReview{
+		SchemaVersion: SourceControlReviewSchemaVersion,
+		ID:            "scr_review_confidence",
+		PlanID:        "scr_review_confidence",
+		RepoID:        "repo:confidence",
+		Decision:      "parked",
+		Rationale:     "confidence must be finite",
+		Confidence:    1,
+		EvidenceRefs:  []string{"evidence:confidence"},
+	}
+	for _, confidence := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		review := valid
+		review.Confidence = confidence
+		if err := ValidateSourceControlReview(review); err == nil {
+			t.Fatalf("non-finite confidence accepted: %v", confidence)
+		}
 	}
 }
 
