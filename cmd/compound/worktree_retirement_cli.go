@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"compound/internal/authority"
+	"compound/internal/decisions"
 	"compound/internal/envelope"
 	"compound/internal/policy"
 	"compound/internal/work"
@@ -64,10 +65,15 @@ func runAuthorityWorktreeRetire(homePath string, args []string, stdout, stderr i
 			fmt.Fprintln(stderr, "authority worktree-retire plan:", err)
 			return 1
 		}
+		// Compose operator keep-decisions from the decisions reader; authority stays
+		// mem-free. Fail closed: an unreadable reader marks the request so the gate
+		// blocks (it cannot prove no keep pins the target).
+		keepDecisions, keepsUnreadable := loadWorktreeRetirementKeepDecisions(homePath)
 		plan, err := authority.BuildWorktreeRetirementPlan(context.Background(), authority.WorktreeRetirementPlanRequest{
 			RepoRoot: values["--repo"], WorktreePath: values["--worktree"], CandidateRef: values["--ref"],
 			AuthorityRef: values["--authority-ref"], PublicationRef: values["--publication-ref"],
 			OwnerProof: ownerProof, SourceProof: sourceProof, RecoveryRefs: repeated,
+			KeepDecisions: keepDecisions, KeepsUnreadable: keepsUnreadable,
 		}, authority.WorktreeRetirementDependencies{Git: worktreeRetirementCLIGit, Liveness: worktreeRetirementCLILiveness}, now)
 		if err != nil {
 			fmt.Fprintln(stderr, "authority worktree-retire plan:", err)
@@ -253,6 +259,22 @@ func parseWorktreeRetirementFlags(args []string, allowed map[string]bool, repeat
 		i++
 	}
 	return values, repeated, jsonOut, nil
+}
+
+// loadWorktreeRetirementKeepDecisions projects active operator worktree-keep
+// records into the mem-free shape the retirement gate consumes. The second
+// return is the fail-closed "keeps unreadable" flag: true when the decisions
+// reader could not be read at all (the gate then blocks keep_records_unreadable).
+func loadWorktreeRetirementKeepDecisions(homePath string) (map[string]authority.WorktreeKeepRecord, bool) {
+	keeps, ok := decisions.ActiveWorktreeKeeps(homePath)
+	if !ok {
+		return nil, true
+	}
+	out := make(map[string]authority.WorktreeKeepRecord, len(keeps))
+	for ref, k := range keeps {
+		out[ref] = authority.WorktreeKeepRecord{DecisionID: k.DecisionID, BranchRef: k.BranchRef, Revisit: k.Revisit}
+	}
+	return out, false
 }
 
 func loadWorktreeRetirementOwnerProof(store *work.Store, workID string) (authority.WorktreeRetirementOwnerProof, error) {

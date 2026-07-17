@@ -118,6 +118,13 @@ the admitted WorkEnvelope and is rendered by dispatch; caller prose is not autho
 NEVER touch the real `$COMPOUND_HOME` (test homes only) unless the packet names ONE specific
 evidence-file write.
 
+Once the executor worktree exists and its branch is created, attach the branch as an artifact on
+the envelope so the worktree inventory (`compound executors worktrees`) can join exact envelope
+identity onto the row: `compound work advance <work_id> --to <current-state> --by <actor> --artifact
+worktree-branch:refs/heads/<branch>`. Attach it ONLY after the branch exists — a placeholder like
+`refs/heads/(pending-dispatch)` becomes a dangling ref that matches no worktree and is silently
+ignored, so identity stays exact rather than guessed.
+
 ## 5 · Watch (a "running" status is a claim, not evidence)
 
 Background executors notify on completion. If one goes silent: verify pid + log recency before

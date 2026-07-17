@@ -13,12 +13,106 @@ import (
 	"time"
 
 	"compound/internal/authority"
+	"compound/internal/decisions"
+	"compound/internal/home"
+	"compound/internal/work"
 )
 
 // Injected seams (package vars) so tests can substitute a fake Git + fake
 // Liveness, mirroring worktree_retirement_cli.go's DI convention.
 var worktreeInventoryCLIGit authority.WorktreeRetirementGit = authority.ExecWorktreeRetirementGit{}
 var worktreeInventoryCLILiveness authority.WorktreeRetirementLiveness = authority.LSOFWorktreeRetirementLiveness{}
+
+// worktreeInventoryLedger carries the OPTIONAL ledger inputs the inventory joins
+// over pure Git ground truth: operator keep annotations and nonterminal
+// work→branch identity artifacts.
+type worktreeInventoryLedger struct {
+	Keeps         map[string]authority.WorktreeKeepAnnotation
+	KeepsReadable bool
+	Envelopes     []authority.WorktreeEnvelopeArtifact
+}
+
+// worktreeInventoryCLILedger loads keep + identity ledger inputs from the
+// resolved COMPOUND_HOME. It is a package var so tests run hermetically (a real
+// home is never read in-test); the default reads keeps fail-closed and lists
+// nonterminal envelopes best-effort.
+var worktreeInventoryCLILedger = defaultWorktreeInventoryLedger
+
+func defaultWorktreeInventoryLedger() worktreeInventoryLedger {
+	homePath, err := home.Resolve("")
+	if err != nil {
+		// Cannot resolve a home ⇒ keeps cannot be read (fail closed) and no
+		// identity evidence is available.
+		return worktreeInventoryLedger{KeepsReadable: false}
+	}
+	led := worktreeInventoryLedger{}
+	if keeps, ok := decisions.ActiveWorktreeKeeps(homePath); ok {
+		led.KeepsReadable = true
+		led.Keeps = make(map[string]authority.WorktreeKeepAnnotation, len(keeps))
+		for ref, k := range keeps {
+			led.Keeps[ref] = authority.WorktreeKeepAnnotation{DecisionID: k.DecisionID, Revisit: k.Revisit}
+		}
+	}
+	led.Envelopes = loadWorktreeInventoryEnvelopeArtifacts(homePath)
+	return led
+}
+
+// loadWorktreeInventoryEnvelopeArtifacts lists nonterminal work envelopes and
+// extracts their worktree-branch:<ref> artifacts as exact identity evidence. A
+// read failure yields no evidence (identity is additive and never blocks the
+// projection).
+func loadWorktreeInventoryEnvelopeArtifacts(homePath string) []authority.WorktreeEnvelopeArtifact {
+	store, err := work.Open(homePath)
+	if err != nil {
+		return nil
+	}
+	envs, err := store.List()
+	if err != nil {
+		return nil
+	}
+	var out []authority.WorktreeEnvelopeArtifact
+	for _, w := range envs {
+		if worktreeInventoryTerminalState(w.State) {
+			continue
+		}
+		for _, art := range w.ArtifactIDs {
+			if ref, ok := parseWorktreeBranchArtifact(art); ok {
+				out = append(out, authority.WorktreeEnvelopeArtifact{
+					WorkID: w.ID, State: w.State, BranchRef: ref, CreatedAt: w.CreatedAt,
+				})
+			}
+		}
+	}
+	return out
+}
+
+// parseWorktreeBranchArtifact extracts refs/heads/<name> from a
+// worktree-branch:<ref> artifact. A ref that names no live worktree (e.g. the
+// known dangling refs/heads/(pending-dispatch)) still parses here — the pure
+// join ignores it because no inventory row matches it.
+func parseWorktreeBranchArtifact(artifact string) (string, bool) {
+	const prefix = "worktree-branch:"
+	artifact = strings.TrimSpace(artifact)
+	if !strings.HasPrefix(artifact, prefix) {
+		return "", false
+	}
+	ref := strings.TrimSpace(strings.TrimPrefix(artifact, prefix))
+	if !strings.HasPrefix(ref, "refs/heads/") || strings.TrimSpace(strings.TrimPrefix(ref, "refs/heads/")) == "" {
+		return "", false
+	}
+	return ref, true
+}
+
+// worktreeInventoryTerminalState mirrors the work state machine's terminal set
+// (completed/failed/cancelled): only nonterminal envelopes carry a live lane.
+func worktreeInventoryTerminalState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
 
 const executorsWorktreesUsage = "usage: compound executors worktrees [--json] [--repo PATH] [--activity-window-min N]"
 
@@ -74,12 +168,17 @@ func runExecutorsWorktrees(ctx context.Context, args []string, stdout, stderr io
 		repo = wd
 	}
 
+	led := worktreeInventoryCLILedger()
+	keepsReadable := led.KeepsReadable
 	inv, err := authority.BuildWorktreeInventory(ctx, authority.WorktreeInventoryDependencies{
 		Git:      worktreeInventoryCLIGit,
 		Liveness: worktreeInventoryCLILiveness,
 	}, repo, authority.WorktreeInventoryOptions{
 		Now:            now,
 		ActivityWindow: time.Duration(windowMin) * time.Minute,
+		Keeps:          led.Keeps,
+		KeepsReadable:  &keepsReadable,
+		Envelopes:      led.Envelopes,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -104,15 +203,35 @@ func printWorktreeInventory(w io.Writer, inv authority.WorktreeInventory) {
 	fmt.Fprintf(w, "- repo: %s\n", inv.Repo)
 	fmt.Fprintf(w, "- generated_at: %s\n", inv.GeneratedAt)
 	fmt.Fprintf(w, "- authority: %s @ %s (%s)\n", inv.MainRef, shortWorktreeSHA(inv.MainTip), inv.AuthorityRef)
-	fmt.Fprintf(w, "- counts: total=%d live=%d stalled_unlanded=%d landed_clean=%d probe=%d unknown=%d\n",
-		inv.Counts.Total, inv.Counts.Live, inv.Counts.StalledUnlanded, inv.Counts.LandedClean, inv.Counts.Probe, inv.Counts.Unknown)
+	fmt.Fprintf(w, "- counts: total=%d live=%d stalled_unlanded=%d landed_clean=%d probe=%d unknown=%d kept=%d\n",
+		inv.Counts.Total, inv.Counts.Live, inv.Counts.StalledUnlanded, inv.Counts.LandedClean, inv.Counts.Probe, inv.Counts.Unknown, inv.Counts.Kept)
+	if inv.KeepsReadable != nil && !*inv.KeepsReadable {
+		fmt.Fprintln(w, "- keep records unreadable — kept status not shown; retirement stays blocked until keeps can be read")
+	}
 	fmt.Fprintln(w)
 
-	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "CLASS\tWORKTREE\tAHEAD\tDIRTY\tAGE\tNEXT ACTION")
+	// The WORK column appears only when at least one row joined an exact
+	// nonterminal envelope, so a ground-truth-only listing stays uncluttered.
+	showWork := false
 	for _, row := range inv.Rows {
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\t%s\n",
-			row.Class, worktreeRowLabel(row), row.AheadCommits, row.DirtyFiles, worktreeAgeLabel(row.AgeSeconds), row.NextAction)
+		if row.WorkID != "" {
+			showWork = true
+			break
+		}
+	}
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	if showWork {
+		fmt.Fprintln(tw, "CLASS\tWORKTREE\tWORK\tAHEAD\tDIRTY\tAGE\tNEXT ACTION")
+		for _, row := range inv.Rows {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
+				row.Class, worktreeRowLabel(row), worktreeWorkLabel(row), row.AheadCommits, row.DirtyFiles, worktreeAgeLabel(row.AgeSeconds), row.NextAction)
+		}
+	} else {
+		fmt.Fprintln(tw, "CLASS\tWORKTREE\tAHEAD\tDIRTY\tAGE\tNEXT ACTION")
+		for _, row := range inv.Rows {
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\t%s\n",
+				row.Class, worktreeRowLabel(row), row.AheadCommits, row.DirtyFiles, worktreeAgeLabel(row.AgeSeconds), row.NextAction)
+		}
 	}
 	tw.Flush()
 
@@ -121,6 +240,17 @@ func printWorktreeInventory(w io.Writer, inv authority.WorktreeInventory) {
 	for _, row := range inv.Rows {
 		fmt.Fprintf(w, "- %s [%s]: %s\n", worktreeRowLabel(row), row.Class, row.Reason)
 	}
+}
+
+// worktreeWorkLabel renders a row's joined work identity for the text table.
+func worktreeWorkLabel(row authority.WorktreeInventoryRow) string {
+	if row.WorkID == "" {
+		return "-"
+	}
+	if row.WorkState != "" {
+		return row.WorkID + " (" + row.WorkState + ")"
+	}
+	return row.WorkID
 }
 
 func worktreeRowLabel(row authority.WorktreeInventoryRow) string {

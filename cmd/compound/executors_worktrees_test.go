@@ -13,6 +13,15 @@ import (
 	"compound/internal/authority"
 )
 
+// Keep every test in this package hermetic: never read the operator's real
+// COMPOUND_HOME for keeps/identity. The default (empty, readable) leaves ground
+// truth untouched; tests that exercise ledger joins override this per-case.
+func init() {
+	worktreeInventoryCLILedger = func() worktreeInventoryLedger {
+		return worktreeInventoryLedger{KeepsReadable: true}
+	}
+}
+
 // W6: the CLI renders a versioned JSON envelope whose rows all carry
 // class/reason/next_action, and text mode surfaces the plain-language
 // next-action strings. Runs the real Git seam over a fixture with one
@@ -103,4 +112,139 @@ func newExecutorsWorktreesCLIFixture(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return repo
+}
+
+// setExecutorsWorktreesLedger overrides the ledger loader for one test and
+// restores the hermetic default afterwards.
+func setExecutorsWorktreesLedger(t *testing.T, led worktreeInventoryLedger) {
+	t.Helper()
+	prevLive := worktreeInventoryCLILiveness
+	prevLedger := worktreeInventoryCLILedger
+	worktreeInventoryCLILiveness = cliUnusedWorktreeLiveness{}
+	worktreeInventoryCLILedger = func() worktreeInventoryLedger { return led }
+	t.Cleanup(func() {
+		worktreeInventoryCLILiveness = prevLive
+		worktreeInventoryCLILedger = prevLedger
+	})
+}
+
+func executorsWorktreesCLIRow(t *testing.T, inv authority.WorktreeInventory, branch string) authority.WorktreeInventoryRow {
+	t.Helper()
+	for _, row := range inv.Rows {
+		if row.Branch == branch {
+			return row
+		}
+	}
+	t.Fatalf("no row for branch %q", branch)
+	return authority.WorktreeInventoryRow{}
+}
+
+// The CLI renders joined envelope identity: JSON carries work_id/work_state and
+// text mode surfaces a WORK column only when a row joined an exact envelope. The
+// known dangling refs/heads/(pending-dispatch) artifact is ignored.
+func TestExecutorsWorktreesCLIRendersEnvelopeIdentity(t *testing.T) {
+	repo := newExecutorsWorktreesCLIFixture(t)
+	setExecutorsWorktreesLedger(t, worktreeInventoryLedger{
+		KeepsReadable: true,
+		Envelopes: []authority.WorktreeEnvelopeArtifact{
+			{WorkID: "work_abc123", State: "running", BranchRef: "refs/heads/candidate", CreatedAt: "2026-07-17T10:00:00Z"},
+			{WorkID: "work_dangling", State: "running", BranchRef: "refs/heads/(pending-dispatch)", CreatedAt: "2026-07-17T10:00:00Z"},
+		},
+	})
+	now := time.Now().Add(48 * time.Hour)
+
+	var stdout, stderr bytes.Buffer
+	if code := runExecutorsWorktrees(context.Background(), []string{"--json", "--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("json code=%d stderr=%s", code, stderr.String())
+	}
+	var inv authority.WorktreeInventory
+	if err := json.Unmarshal(stdout.Bytes(), &inv); err != nil {
+		t.Fatalf("decode: %v\n%s", err, stdout.String())
+	}
+	candidate := executorsWorktreesCLIRow(t, inv, "candidate")
+	if candidate.WorkID != "work_abc123" || candidate.WorkState != "running" {
+		t.Fatalf("candidate row should join exact envelope identity: %+v", candidate)
+	}
+	if landed := executorsWorktreesCLIRow(t, inv, "lane-landed"); landed.WorkID != "" {
+		t.Fatalf("lane-landed has no artifact and must stay bare: %+v", landed)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runExecutorsWorktrees(context.Background(), []string{"--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("text code=%d stderr=%s", code, stderr.String())
+	}
+	if text := stdout.String(); !strings.Contains(text, "WORK") || !strings.Contains(text, "work_abc123 (running)") {
+		t.Fatalf("text mode should show a WORK column with the joined work id:\n%s", text)
+	}
+}
+
+// The CLI renders a keep annotation: the kept row keeps its ground-truth class
+// but its next_action defers to the operator decision, both in JSON and text.
+func TestExecutorsWorktreesCLIRendersKeepAnnotation(t *testing.T) {
+	repo := newExecutorsWorktreesCLIFixture(t)
+	setExecutorsWorktreesLedger(t, worktreeInventoryLedger{
+		KeepsReadable: true,
+		Keeps: map[string]authority.WorktreeKeepAnnotation{
+			"refs/heads/candidate": {DecisionID: "keep-candidate", Revisit: "candidate lands or is abandoned"},
+		},
+	})
+	now := time.Now().Add(48 * time.Hour)
+
+	var stdout, stderr bytes.Buffer
+	if code := runExecutorsWorktrees(context.Background(), []string{"--json", "--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("json code=%d stderr=%s", code, stderr.String())
+	}
+	var inv authority.WorktreeInventory
+	if err := json.Unmarshal(stdout.Bytes(), &inv); err != nil {
+		t.Fatalf("decode: %v\n%s", err, stdout.String())
+	}
+	candidate := executorsWorktreesCLIRow(t, inv, "candidate")
+	if !candidate.Kept || candidate.KeepDecisionID != "keep-candidate" {
+		t.Fatalf("candidate row should be annotated kept: %+v", candidate)
+	}
+	if candidate.Class != authority.WorktreeClassStalledUnlanded {
+		t.Fatalf("kept annotation must not change class: %+v", candidate)
+	}
+	if inv.Counts.Kept != 1 {
+		t.Fatalf("counts.kept = %d, want 1", inv.Counts.Kept)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runExecutorsWorktrees(context.Background(), []string{"--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("text code=%d stderr=%s", code, stderr.String())
+	}
+	if text := stdout.String(); !strings.Contains(text, "kept by operator decision keep-candidate") {
+		t.Fatalf("text mode should defer next_action to the keep:\n%s", text)
+	}
+}
+
+// When the ledger reports keeps unreadable, the CLI surfaces keeps_readable:false
+// (JSON) and an honest note (text) instead of implying no keeps exist.
+func TestExecutorsWorktreesCLIReportsKeepsUnreadable(t *testing.T) {
+	repo := newExecutorsWorktreesCLIFixture(t)
+	setExecutorsWorktreesLedger(t, worktreeInventoryLedger{KeepsReadable: false})
+	now := time.Now().Add(48 * time.Hour)
+
+	var stdout, stderr bytes.Buffer
+	if code := runExecutorsWorktrees(context.Background(), []string{"--json", "--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("json code=%d stderr=%s", code, stderr.String())
+	}
+	var inv authority.WorktreeInventory
+	if err := json.Unmarshal(stdout.Bytes(), &inv); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if inv.KeepsReadable == nil || *inv.KeepsReadable {
+		t.Fatalf("unreadable keeps must surface keeps_readable:false: %v", inv.KeepsReadable)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runExecutorsWorktrees(context.Background(), []string{"--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("text code=%d stderr=%s", code, stderr.String())
+	}
+	if text := stdout.String(); !strings.Contains(text, "keep records unreadable") {
+		t.Fatalf("text mode should note keeps unreadable:\n%s", text)
+	}
 }
