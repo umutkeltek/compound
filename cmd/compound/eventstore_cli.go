@@ -24,19 +24,21 @@ func cmdEventStore(args []string) {
 
 func runEventStore(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: compound event-store migrate ...")
+		fmt.Fprintln(stderr, "usage: compound event-store migrate ... | rebaseline ...")
 		return 2
 	}
 	if hasUsageFlag(args) {
-		fmt.Fprintln(stdout, "usage: compound event-store migrate ...")
+		fmt.Fprintln(stdout, "usage: compound event-store migrate ... | rebaseline ...")
 		return 0
 	}
 	switch args[0] {
 	case "migrate":
 		return runEventStoreMigrate(args[1:], stdout, stderr)
+	case "rebaseline":
+		return runEventStoreRebaseline(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "event-store: unknown subcommand", args[0])
-		fmt.Fprintln(stderr, "usage: compound event-store migrate ...")
+		fmt.Fprintln(stderr, "usage: compound event-store migrate ... | rebaseline ...")
 		return 2
 	}
 }
