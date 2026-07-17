@@ -144,6 +144,9 @@ func ValidateAuthorityBundle(ai envelope.ActionIntent, pd envelope.PolicyDecisio
 	}, face.PolicySource) {
 		return fmt.Errorf("authority bundle face context invalid")
 	}
+	if expected := authorityFaceRevision(ai, pd, face); face.Revision != expected {
+		return fmt.Errorf("authority bundle face revision does not match semantics")
+	}
 	return nil
 }
 
@@ -278,7 +281,7 @@ func authorityFace(
 	if contextValid {
 		face.Wording = authorityWording(ai, pd, cfg, input, gate)
 	}
-	face.Revision = authorityFaceRevision(ai, pd, cfg, input, policySource, gate)
+	face.Revision = authorityFaceRevision(ai, pd, face)
 	return face
 }
 
@@ -355,22 +358,57 @@ func authorityWording(ai envelope.ActionIntent, pd envelope.PolicyDecision, cfg 
 	return "Needs your decision · current policy holds this action"
 }
 
-func authorityFaceRevision(ai envelope.ActionIntent, pd envelope.PolicyDecision, cfg Config, ctx AuthorityContext, policySource, gate string) string {
+func authorityFaceRevision(ai envelope.ActionIntent, pd envelope.PolicyDecision, face AuthorityFace) string {
 	stableDecision := struct {
 		Outcome         string   `json:"outcome"`
 		Reasons         []string `json:"reasons"`
 		Obligations     []string `json:"obligations"`
 		StandingGrantID string   `json:"standing_grant_id"`
 		ExpiresAt       string   `json:"expires_at"`
-	}{pd.Outcome, pd.Reasons, pd.Obligations, pd.StandingGrantID, pd.ExpiresAt}
+		EvidenceRefs    []string `json:"evidence_refs"`
+	}{pd.Outcome, pd.Reasons, pd.Obligations, pd.StandingGrantID, pd.ExpiresAt, pd.EvidenceRefs}
+	stableFace := struct {
+		SchemaVersion             string                `json:"schema_version"`
+		Current                   bool                  `json:"current"`
+		Allowed                   bool                  `json:"allowed"`
+		Wording                   string                `json:"wording"`
+		ActionIntentID            string                `json:"action_intent_id"`
+		PolicyOutcome             string                `json:"policy_outcome"`
+		StandingGrantID           string                `json:"standing_grant_id"`
+		Target                    envelope.ActionTarget `json:"target"`
+		TargetScope               string                `json:"target_scope"`
+		BlastRadius               string                `json:"blast_radius"`
+		Reversibility             string                `json:"reversibility"`
+		VerifiedRecoverability    string                `json:"verified_recoverability"`
+		OperatorControlContinuity string                `json:"operator_control_continuity"`
+		PolicySource              string                `json:"policy_source"`
+		ExactGate                 string                `json:"exact_gate"`
+		ExpectedReceipt           string                `json:"expected_receipt"`
+		ExpectedProof             []string              `json:"expected_proof"`
+	}{
+		SchemaVersion:             face.SchemaVersion,
+		Current:                   face.Current,
+		Allowed:                   face.Allowed,
+		Wording:                   face.Wording,
+		ActionIntentID:            face.ActionIntentID,
+		PolicyOutcome:             face.PolicyOutcome,
+		StandingGrantID:           face.StandingGrantID,
+		Target:                    face.Target,
+		TargetScope:               face.TargetScope,
+		BlastRadius:               face.BlastRadius,
+		Reversibility:             face.Reversibility,
+		VerifiedRecoverability:    face.VerifiedRecoverability,
+		OperatorControlContinuity: face.OperatorControlContinuity,
+		PolicySource:              face.PolicySource,
+		ExactGate:                 face.ExactGate,
+		ExpectedReceipt:           face.ExpectedReceipt,
+		ExpectedProof:             face.ExpectedProof,
+	}
 	payload := struct {
-		Action       envelope.ActionIntent `json:"action"`
-		Decision     any                   `json:"decision"`
-		Config       Config                `json:"config"`
-		Context      AuthorityContext      `json:"context"`
-		PolicySource string                `json:"policy_source"`
-		ExactGate    string                `json:"exact_gate"`
-	}{ai, stableDecision, cfg, ctx, strings.TrimSpace(policySource), gate}
+		Action   envelope.ActionIntent `json:"action"`
+		Decision any                   `json:"decision"`
+		Face     any                   `json:"face"`
+	}{ai, stableDecision, stableFace}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return ""

@@ -76,8 +76,65 @@ func TestQueueGroupActionKeepsLegacyActionsWithoutAuthorityCompatible(t *testing
 	}
 }
 
+func TestQueueGroupActionDeepCopiesValidatedAuthority(t *testing.T) {
+	valid := validReviewAuthorityAction(t, time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC), "compound://policy/effective")
+	items := reviewAuthorityItems(valid)
+	got, reason := queueGroupAction(reviewAuthorityGroup(), items)
+	if got == nil || reason != "" {
+		t.Fatalf("valid authority should produce a batch action: action=%+v reason=%q", got, reason)
+	}
+	source := &items[0].Actions[0]
+	if got.ActionIntent == source.ActionIntent || got.PolicyDecision == source.PolicyDecision || got.PolicyAuthority == source.PolicyAuthority {
+		t.Fatal("safe batch action retained an authority object pointer")
+	}
+	if len(got.Argv) == 0 || len(got.ActionIntent.EvidenceRefs) == 0 || len(got.PolicyDecision.EvidenceRefs) == 0 || len(got.PolicyDecision.Reasons) == 0 || len(got.PolicyDecision.Obligations) == 0 || len(got.PolicyAuthority.ExpectedProof) == 0 {
+		t.Fatalf("fixture does not exercise deep-copy slices: %+v", got)
+	}
+
+	wantArgv := got.Argv[0]
+	wantActionID := got.ActionIntent.ID
+	wantActionWorkID := got.ActionIntent.IDs.WorkID
+	wantActionScope := got.ActionIntent.Scope.EntityID
+	wantActionEvidence := got.ActionIntent.EvidenceRefs[0]
+	wantEstimatedUSD := *got.ActionIntent.EstimatedCost.USD
+	wantDecisionWorkID := got.PolicyDecision.IDs.WorkID
+	wantDecisionScope := got.PolicyDecision.Scope.EntityID
+	wantDecisionEvidence := got.PolicyDecision.EvidenceRefs[0]
+	wantReason := got.PolicyDecision.Reasons[0]
+	wantObligation := got.PolicyDecision.Obligations[0]
+	wantProof := got.PolicyAuthority.ExpectedProof[0]
+
+	source.Argv[0] = "changed"
+	source.ActionIntent.ID = "act_changed"
+	source.ActionIntent.IDs.WorkID = "work_changed"
+	source.ActionIntent.Scope.EntityID = "entity_changed"
+	source.ActionIntent.EvidenceRefs[0] = "evidence:changed"
+	*source.ActionIntent.EstimatedCost.USD = 9
+	source.PolicyDecision.IDs.WorkID = "work_changed"
+	source.PolicyDecision.Scope.EntityID = "entity_changed"
+	source.PolicyDecision.EvidenceRefs[0] = "evidence:changed"
+	source.PolicyDecision.Reasons[0] = "changed"
+	source.PolicyDecision.Obligations[0] = "changed"
+	source.PolicyAuthority.ExpectedProof[0] = "proof:changed"
+
+	if got.Argv[0] != wantArgv || got.ActionIntent.ID != wantActionID || got.ActionIntent.IDs.WorkID != wantActionWorkID || got.ActionIntent.Scope.EntityID != wantActionScope || got.ActionIntent.EvidenceRefs[0] != wantActionEvidence || *got.ActionIntent.EstimatedCost.USD != wantEstimatedUSD {
+		t.Fatalf("safe batch action aliases source action intent: %+v", got.ActionIntent)
+	}
+	if got.PolicyDecision.IDs.WorkID != wantDecisionWorkID || got.PolicyDecision.Scope.EntityID != wantDecisionScope || got.PolicyDecision.EvidenceRefs[0] != wantDecisionEvidence || got.PolicyDecision.Reasons[0] != wantReason || got.PolicyDecision.Obligations[0] != wantObligation {
+		t.Fatalf("safe batch action aliases source policy decision: %+v", got.PolicyDecision)
+	}
+	if got.PolicyAuthority.ExpectedProof[0] != wantProof {
+		t.Fatalf("safe batch action aliases source policy authority: %+v", got.PolicyAuthority)
+	}
+}
+
 func validReviewAuthorityAction(t *testing.T, now time.Time, policySource string) Action {
 	t.Helper()
+	estimatedUSD := 0.25
+	estimatedTokens := 10
+	estimatedReviewMinutes := 1
+	maxUSD := 1.0
+	maxTokens := 100
 	ai := envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
@@ -88,6 +145,7 @@ func validReviewAuthorityAction(t *testing.T, now time.Time, policySource string
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier1",
+			EvidenceRefs:  []string{"evidence:review-authority-action"},
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
 		Actor:         "compound",
@@ -97,6 +155,11 @@ func validReviewAuthorityAction(t *testing.T, now time.Time, policySource string
 		MutationClass: "local_reversible",
 		Reversibility: "easy",
 		BlastRadius:   "repo",
+		EstimatedCost: envelope.EstimatedCost{
+			USD:            &estimatedUSD,
+			Tokens:         &estimatedTokens,
+			HumanReviewMin: &estimatedReviewMinutes,
+		},
 	}
 	cfg := policy.DefaultConfig()
 	cfg.StandingGrants = []policy.StandingGrant{{
@@ -106,6 +169,8 @@ func validReviewAuthorityAction(t *testing.T, now time.Time, policySource string
 		ReversibilityCeiling: "reversible",
 		BlastRadius:          ai.BlastRadius,
 		TargetPath:           "artifacts/**",
+		MaxUSD:               &maxUSD,
+		MaxTokens:            &maxTokens,
 	}}
 	got := policy.EvaluateAuthority(ai, cfg, policy.EvaluationContext{Authority: &policy.AuthorityContext{
 		TargetScope:               "private",

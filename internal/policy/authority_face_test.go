@@ -400,6 +400,30 @@ func TestValidateAuthorityBundleAcceptsOnlyExactCurrentIdentity(t *testing.T) {
 		{name: "face standing grant mismatch", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
 			face.StandingGrantID = "grant_other"
 		}},
+		{name: "face exact gate changed under old revision", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.ExactGate = AuthorityGatePolicyAllow
+		}},
+		{name: "face wording changed under old revision", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.Wording = "Authority wording changed"
+		}},
+		{name: "face policy source changed under old revision", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.PolicySource = "compound://policy/revised"
+		}},
+		{name: "face target scope changed under old revision", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.TargetScope = "shared"
+		}},
+		{name: "face recoverability changed under old revision", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.VerifiedRecoverability = RecoverabilityUnknown
+		}},
+		{name: "face control continuity changed under old revision", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.OperatorControlContinuity = OperatorControlImpaired
+		}},
+		{name: "face expected receipt changed under old revision", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.ExpectedReceipt = "a different governed receipt"
+		}},
+		{name: "face expected proof changed under old revision", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.ExpectedProof = append(face.ExpectedProof, "proof:changed")
+		}},
 	}
 
 	for _, tc := range tests {

@@ -407,7 +407,7 @@ func queueGroupAction(group QueueGroup, items []QueueItem) (*Action, string) {
 			return nil, "owner authority bundle is incomplete or invalid; review item details before acting"
 		}
 		if action == nil {
-			copy := next
+			copy := cloneAction(next)
 			action = &copy
 			authority = nextAuthority
 			continue
@@ -420,6 +420,55 @@ func queueGroupAction(group QueueGroup, items []QueueItem) (*Action, string) {
 		return nil, "owner has not exposed a safe action for this decision group"
 	}
 	return action, ""
+}
+
+func cloneAction(action Action) Action {
+	clone := action
+	clone.Argv = cloneActionStrings(action.Argv)
+	if action.ActionIntent != nil {
+		intent := *action.ActionIntent
+		intent.EvidenceRefs = cloneActionStrings(action.ActionIntent.EvidenceRefs)
+		intent.EstimatedCost.USD = cloneActionFloat64(action.ActionIntent.EstimatedCost.USD)
+		intent.EstimatedCost.Tokens = cloneActionInt(action.ActionIntent.EstimatedCost.Tokens)
+		intent.EstimatedCost.HumanReviewMin = cloneActionInt(action.ActionIntent.EstimatedCost.HumanReviewMin)
+		clone.ActionIntent = &intent
+	}
+	if action.PolicyDecision != nil {
+		decision := *action.PolicyDecision
+		decision.EvidenceRefs = cloneActionStrings(action.PolicyDecision.EvidenceRefs)
+		decision.Reasons = cloneActionStrings(action.PolicyDecision.Reasons)
+		decision.Obligations = cloneActionStrings(action.PolicyDecision.Obligations)
+		clone.PolicyDecision = &decision
+	}
+	if action.PolicyAuthority != nil {
+		authority := *action.PolicyAuthority
+		authority.ExpectedProof = cloneActionStrings(action.PolicyAuthority.ExpectedProof)
+		clone.PolicyAuthority = &authority
+	}
+	return clone
+}
+
+func cloneActionStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string{}, values...)
+}
+
+func cloneActionFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneActionInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 type actionAuthorityIdentity struct {
