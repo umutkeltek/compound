@@ -204,10 +204,19 @@ func TestClaudeRenderHasNoPAIBranding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	expected := map[string]string{
+		ThemePAINexus: "< CLAUDE:CONSERVE > left: ctx [######----] 59% | 5h 66% | wk 18%",
+		ThemePAIFocus: "// CLAUDE:CONSERVE // left: ctx [######----] 59% | wk 18%",
+		ThemePAIOps:   "!! CLAUDE:CONSERVE !! left: ctx [######----] 59% | 5h 66% | wk 18%",
+		ThemePAIMono:  ".. CLAUDE:CONSERVE .. left: ctx [######----] 59% | 5h 66% | wk 18%",
+	}
 	for _, theme := range ThemeIDs() {
 		line, err := Render(snapshot, RenderOptions{Theme: theme, Width: 120, Color: false})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if line != expected[theme] {
+			t.Fatalf("render %s = %q, want %q", theme, line, expected[theme])
 		}
 		if strings.Contains(strings.ToUpper(line), "PAI") {
 			t.Fatalf("Claude render leaked retired branding: %q", line)
