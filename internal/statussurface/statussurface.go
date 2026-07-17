@@ -488,15 +488,29 @@ func Render(snapshot Snapshot, options RenderOptions) (string, error) {
 		mode = strings.ToUpper(string(ModeUnknown))
 	}
 	var line string
-	switch options.Theme {
-	case ThemePAINexus:
-		line = fmt.Sprintf("< PAI:NEXUS > %s :: ctx %s :: 5h %s :: wk %s :: %s", strings.ToUpper(string(snapshot.Harness)), ctx, five, week, mode)
-	case ThemePAIFocus:
-		line = fmt.Sprintf("// PAI.FOCUS // ctx %s :: wk %s :: %s", ctx, week, mode)
-	case ThemePAIOps:
-		line = fmt.Sprintf("!! PAI.OPS !! [%s] ctx %s | 5h %s | wk %s", mode, ctx, five, week)
-	case ThemePAIMono:
-		line = fmt.Sprintf(".. PAI.MONO .. %s ctx %s 5h %s wk %s %s", strings.ToUpper(string(snapshot.Harness)), ctx, five, week, mode)
+	if snapshot.Harness == HarnessClaude {
+		bar := remainingBar(snapshot.Context)
+		switch options.Theme {
+		case ThemePAINexus:
+			line = fmt.Sprintf("< CLAUDE:%s > left: ctx %s %s | 5h %s | wk %s", mode, bar, ctx, five, week)
+		case ThemePAIFocus:
+			line = fmt.Sprintf("// CLAUDE:%s // left: ctx %s %s | wk %s", mode, bar, ctx, week)
+		case ThemePAIOps:
+			line = fmt.Sprintf("!! CLAUDE:%s !! left: ctx %s %s | 5h %s | wk %s", mode, bar, ctx, five, week)
+		case ThemePAIMono:
+			line = fmt.Sprintf(".. CLAUDE:%s .. left: ctx %s %s | 5h %s | wk %s", mode, bar, ctx, five, week)
+		}
+	} else {
+		switch options.Theme {
+		case ThemePAINexus:
+			line = fmt.Sprintf("< PAI:NEXUS > %s :: ctx %s :: 5h %s :: wk %s :: %s", strings.ToUpper(string(snapshot.Harness)), ctx, five, week, mode)
+		case ThemePAIFocus:
+			line = fmt.Sprintf("// PAI.FOCUS // ctx %s :: wk %s :: %s", ctx, week, mode)
+		case ThemePAIOps:
+			line = fmt.Sprintf("!! PAI.OPS !! [%s] ctx %s | 5h %s | wk %s", mode, ctx, five, week)
+		case ThemePAIMono:
+			line = fmt.Sprintf(".. PAI.MONO .. %s ctx %s 5h %s wk %s %s", strings.ToUpper(string(snapshot.Harness)), ctx, five, week, mode)
+		}
 	}
 	if options.Width > 0 {
 		line = truncateDisplay(line, options.Width)
@@ -521,6 +535,14 @@ func percentText(metric Metric) string {
 		return "?"
 	}
 	return fmt.Sprintf("%.0f%%", math.Round(metric.RemainingPercent))
+}
+
+func remainingBar(metric Metric) string {
+	if metric.Status != StatusLive {
+		return "[??????????]"
+	}
+	filled := int(math.Round(clampPercent(metric.RemainingPercent) / 10))
+	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", 10-filled) + "]"
 }
 
 func limitText(limits []LimitWindow, kind LimitKind) string {

@@ -138,16 +138,16 @@ func TestRenderThemesAndCodexThemeAreDeterministic(t *testing.T) {
 		theme  string
 		prefix string
 	}{
-		{ThemePAINexus, "< PAI:NEXUS >"},
-		{ThemePAIFocus, "// PAI.FOCUS //"},
-		{ThemePAIOps, "!! PAI.OPS !!"},
-		{ThemePAIMono, ".. PAI.MONO .."},
+		{ThemePAINexus, "< CLAUDE:CONSERVE >"},
+		{ThemePAIFocus, "// CLAUDE:CONSERVE //"},
+		{ThemePAIOps, "!! CLAUDE:CONSERVE !!"},
+		{ThemePAIMono, ".. CLAUDE:CONSERVE .."},
 	} {
 		line, err := Render(snapshot, RenderOptions{Theme: tc.theme, Width: 120, Color: false})
 		if err != nil {
 			t.Fatalf("render %s: %v", tc.theme, err)
 		}
-		if !strings.HasPrefix(line, tc.prefix) || !strings.Contains(line, "ctx 59%") {
+		if !strings.HasPrefix(line, tc.prefix) || !strings.Contains(line, "ctx [######----] 59%") {
 			t.Fatalf("render %s = %q", tc.theme, line)
 		}
 		if strings.ContainsAny(line, "\n\r") {
@@ -182,7 +182,7 @@ func TestRenderThemesAndCodexThemeAreDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(auto, "!! PAI.OPS !! [CONSERVE]") {
+	if !strings.HasPrefix(auto, "!! CLAUDE:CONSERVE !! left:") {
 		t.Fatalf("auto theme did not select capacity information profile: %q", auto)
 	}
 

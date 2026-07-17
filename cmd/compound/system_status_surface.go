@@ -57,7 +57,7 @@ func runSystemStatusSurface(args []string, stdin io.Reader, homePath string, now
 	case "render":
 		fs := newStatusFlagSet("render")
 		harness := fs.String("harness", "", "claude or codex")
-		theme := fs.String("theme", statussurface.ThemeAuto, "auto or a PAI theme id")
+		theme := fs.String("theme", statussurface.ThemeAuto, "auto or a visual style id")
 		width := fs.Int("width", 120, "maximum display width")
 		noColor := fs.Bool("no-color", false, "disable ANSI color")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -78,7 +78,7 @@ func runSystemStatusSurface(args []string, stdin io.Reader, homePath string, now
 	case "theme":
 		fs := newStatusFlagSet("theme")
 		harness := fs.String("harness", "", "codex")
-		theme := fs.String("theme", statussurface.ThemePAINexus, "PAI theme id")
+		theme := fs.String("theme", statussurface.ThemePAINexus, "Codex theme id")
 		if err := fs.Parse(args[1:]); err != nil {
 			return "", err
 		}
