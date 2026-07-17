@@ -199,6 +199,22 @@ func TestRenderThemesAndCodexThemeAreDeterministic(t *testing.T) {
 	}
 }
 
+func TestClaudeRenderHasNoPAIBranding(t *testing.T) {
+	snapshot, err := BuildClaudeSnapshot([]byte(claudeFixture), testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, theme := range ThemeIDs() {
+		line, err := Render(snapshot, RenderOptions{Theme: theme, Width: 120, Color: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(strings.ToUpper(line), "PAI") {
+			t.Fatalf("Claude render leaked retired branding: %q", line)
+		}
+	}
+}
+
 func TestInferDisplayClassChangesThemeAndInformationProfile(t *testing.T) {
 	for _, tc := range []struct {
 		mode  Mode
