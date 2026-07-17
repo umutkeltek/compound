@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ const (
 	AuthorityGatePolicyDeny          = "policy_deny"
 
 	AuthorityOutcomeEvidenceRef = "compound://policy/outcome-authority"
+	authorityFaceRevisionPrefix = "policy-authority-v1:sha256:"
 )
 
 // AuthorityContext carries outcome evidence that is not present on the
@@ -77,6 +79,77 @@ type AuthorityFace struct {
 type AuthorityEvaluation struct {
 	Decision  envelope.PolicyDecision `json:"policy_decision"`
 	Authority AuthorityFace           `json:"policy_authority"`
+}
+
+// ValidateAuthorityBundle checks that a current AuthorityFace is structurally
+// bound to the exact ActionIntent and PolicyDecision it accompanies. It does
+// not evaluate policy; action-time adapters must still resolve current policy
+// through the existing enforcement seam.
+func ValidateAuthorityBundle(ai envelope.ActionIntent, pd envelope.PolicyDecision, face AuthorityFace) error {
+	if err := ai.Validate(); err != nil {
+		return fmt.Errorf("authority bundle action intent: %w", err)
+	}
+	if err := pd.Validate(); err != nil {
+		return fmt.Errorf("authority bundle policy decision: %w", err)
+	}
+	if pd.ActionIntentID != ai.ID {
+		return fmt.Errorf("authority bundle policy decision action_intent_id mismatch")
+	}
+	if strings.TrimSpace(pd.IDs.WorkID) == "" || pd.IDs.WorkID != ai.IDs.WorkID {
+		return fmt.Errorf("authority bundle work identity mismatch")
+	}
+	if face.SchemaVersion != AuthorityFaceSchema {
+		return fmt.Errorf("authority bundle face schema_version invalid")
+	}
+	if !face.Current {
+		return fmt.Errorf("authority bundle face is not current")
+	}
+	if !validAuthorityFaceRevision(face.Revision) {
+		return fmt.Errorf("authority bundle face revision invalid")
+	}
+	if face.ActionIntentID != ai.ID {
+		return fmt.Errorf("authority bundle face action_intent_id mismatch")
+	}
+	if face.PolicyDecisionID != pd.ID {
+		return fmt.Errorf("authority bundle face policy_decision_id mismatch")
+	}
+	if face.Target != ai.Target {
+		return fmt.Errorf("authority bundle face target mismatch")
+	}
+	if face.BlastRadius != ai.BlastRadius {
+		return fmt.Errorf("authority bundle face blast_radius mismatch")
+	}
+	if face.Reversibility != ai.Reversibility {
+		return fmt.Errorf("authority bundle face reversibility mismatch")
+	}
+	if face.PolicyOutcome != pd.Outcome {
+		return fmt.Errorf("authority bundle face policy_outcome mismatch")
+	}
+	if face.StandingGrantID != pd.StandingGrantID {
+		return fmt.Errorf("authority bundle face standing_grant_id mismatch")
+	}
+	if face.Allowed != Allowed(pd) {
+		return fmt.Errorf("authority bundle face allowed outcome mismatch")
+	}
+	if !authorityContextValid(ai, AuthorityContext{
+		TargetScope:               face.TargetScope,
+		VerifiedRecoverability:    face.VerifiedRecoverability,
+		OperatorControlContinuity: face.OperatorControlContinuity,
+		ExpectedReceipt:           face.ExpectedReceipt,
+		ExpectedProof:             face.ExpectedProof,
+	}, face.PolicySource) {
+		return fmt.Errorf("authority bundle face context invalid")
+	}
+	return nil
+}
+
+func validAuthorityFaceRevision(revision string) bool {
+	digest := strings.TrimPrefix(revision, authorityFaceRevisionPrefix)
+	if digest == revision || len(digest) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(digest)
+	return err == nil && len(decoded) == sha256.Size
 }
 
 // EvaluateAuthority evaluates current policy once and projects the resulting
@@ -299,7 +372,7 @@ func authorityFaceRevision(ai envelope.ActionIntent, pd envelope.PolicyDecision,
 		return ""
 	}
 	sum := sha256.Sum256(data)
-	return "policy-authority-v1:sha256:" + hex.EncodeToString(sum[:])
+	return authorityFaceRevisionPrefix + hex.EncodeToString(sum[:])
 }
 
 func firstNonEmptyAuthority(value, fallback string) string {

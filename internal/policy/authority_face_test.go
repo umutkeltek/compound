@@ -3,6 +3,8 @@ package policy
 import (
 	"testing"
 	"time"
+
+	"compound/internal/envelope"
 )
 
 func TestEvaluateAuthorityFaceAllowsExactPrivateReversibleScope(t *testing.T) {
@@ -335,4 +337,109 @@ func mutateAuthorityContext(base AuthorityContext, mutate func(*AuthorityContext
 	copyOfContext.ExpectedProof = append([]string{}, base.ExpectedProof...)
 	mutate(&copyOfContext)
 	return &copyOfContext
+}
+
+func TestValidateAuthorityBundleAcceptsOnlyExactCurrentIdentity(t *testing.T) {
+	ai, decision, face := validAuthorityBundleFixture(t)
+	if err := ValidateAuthorityBundle(ai, decision, face); err != nil {
+		t.Fatalf("exact authority bundle rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*envelope.ActionIntent, *envelope.PolicyDecision, *AuthorityFace)
+	}{
+		{name: "malformed action intent", mutate: func(ai *envelope.ActionIntent, _ *envelope.PolicyDecision, _ *AuthorityFace) {
+			ai.SchemaVersion = "compound.action_intent.invalid"
+		}},
+		{name: "malformed policy decision", mutate: func(_ *envelope.ActionIntent, pd *envelope.PolicyDecision, _ *AuthorityFace) {
+			pd.Outcome = "maybe"
+		}},
+		{name: "policy decision action mismatch", mutate: func(_ *envelope.ActionIntent, pd *envelope.PolicyDecision, _ *AuthorityFace) {
+			pd.ActionIntentID = "act_other"
+		}},
+		{name: "missing policy work identity", mutate: func(_ *envelope.ActionIntent, pd *envelope.PolicyDecision, _ *AuthorityFace) {
+			pd.IDs.WorkID = ""
+		}},
+		{name: "policy work identity mismatch", mutate: func(_ *envelope.ActionIntent, pd *envelope.PolicyDecision, _ *AuthorityFace) {
+			pd.IDs.WorkID = "work_other"
+		}},
+		{name: "wrong face schema", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.SchemaVersion = "compound.policy_authority_face.invalid"
+		}},
+		{name: "noncurrent face", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.Current = false
+		}},
+		{name: "missing face revision", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.Revision = ""
+		}},
+		{name: "malformed face revision", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.Revision = "policy-authority-v1:sha256:not-a-digest"
+		}},
+		{name: "face action mismatch", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.ActionIntentID = "act_other"
+		}},
+		{name: "face decision mismatch", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.PolicyDecisionID = "pol_other"
+		}},
+		{name: "face target mismatch", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.Target.Path = "artifacts/other.json"
+		}},
+		{name: "face blast radius mismatch", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.BlastRadius = "local"
+		}},
+		{name: "face reversibility mismatch", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.Reversibility = "manual"
+		}},
+		{name: "face policy outcome mismatch", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.PolicyOutcome = "hold"
+		}},
+		{name: "face standing grant mismatch", mutate: func(_ *envelope.ActionIntent, _ *envelope.PolicyDecision, face *AuthorityFace) {
+			face.StandingGrantID = "grant_other"
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotAI := ai
+			gotDecision := decision
+			gotFace := face
+			tc.mutate(&gotAI, &gotDecision, &gotFace)
+			if err := ValidateAuthorityBundle(gotAI, gotDecision, gotFace); err == nil {
+				t.Fatal("mismatched authority bundle validated")
+			}
+		})
+	}
+}
+
+func validAuthorityBundleFixture(t *testing.T) (envelope.ActionIntent, envelope.PolicyDecision, AuthorityFace) {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.StandingGrants = []StandingGrant{{
+		ID:                   "grant_bundle_fixture",
+		Capability:           "artifact.update",
+		MutationClass:        "local_reversible",
+		ReversibilityCeiling: "reversible",
+		BlastRadius:          "repo",
+		TargetPath:           "artifacts/**",
+	}}
+	ai := mkAction("local_reversible", "easy", "artifacts/item.json", "repo")
+	ai.Capability = "artifact.update"
+	got := EvaluateAuthority(ai, cfg, EvaluationContext{Authority: &AuthorityContext{
+		TargetScope:               "private",
+		VerifiedRecoverability:    RecoverabilityVerified,
+		OperatorControlContinuity: OperatorControlContinuous,
+		ExpectedReceipt:           "receipt for the governed action",
+		ExpectedProof:             []string{"proof:recovery-path"},
+	}}, "compound://policy/effective", fixedNow)
+	if err := ai.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := got.Decision.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got.Authority.Revision == "" {
+		t.Fatal("fixture authority revision missing")
+	}
+	return ai, got.Decision, got.Authority
 }

@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/home"
+	"compound/internal/policy"
 )
 
 const QueueSchemaVersion = "compound.review_queue.v0.1"
@@ -139,12 +141,15 @@ type QueueItem struct {
 // Action is a non-mutating operator hint attached by the domain owner that
 // knows how a review artifact is safely consumed.
 type Action struct {
-	ID             string   `json:"id"`
-	Label          string   `json:"label"`
-	Command        string   `json:"command"`
-	Argv           []string `json:"argv,omitempty"`
-	RequiresReview bool     `json:"requires_review,omitempty"`
-	PolicyNote     string   `json:"policy_note,omitempty"`
+	ID             string                   `json:"id"`
+	Label          string                   `json:"label"`
+	Command        string                   `json:"command"`
+	Argv           []string                 `json:"argv,omitempty"`
+	RequiresReview bool                     `json:"requires_review,omitempty"`
+	PolicyNote     string                   `json:"policy_note,omitempty"`
+	ActionIntent   *envelope.ActionIntent   `json:"action_intent,omitempty"`
+	PolicyDecision *envelope.PolicyDecision `json:"policy_decision,omitempty"`
+	AuthorityFace  *policy.AuthorityFace    `json:"authority_face,omitempty"`
 }
 
 // DecisionCard is a read-only, operator-facing explanation of a review item.
@@ -385,6 +390,7 @@ func queueGroupKey(item QueueItem) string {
 
 func queueGroupAction(group QueueGroup, items []QueueItem) (*Action, string) {
 	var action *Action
+	var authority actionAuthorityIdentity
 	for _, item := range items {
 		if item.Area != group.Area || queueGroupKey(item) != group.Key || !itemNeedsReviewGroup(item) {
 			continue
@@ -396,12 +402,17 @@ func queueGroupAction(group QueueGroup, items []QueueItem) (*Action, string) {
 			return nil, "group has multiple item actions; review item details before acting"
 		}
 		next := item.Actions[0]
+		nextAuthority, err := authorityIdentity(next)
+		if err != nil {
+			return nil, "owner authority bundle is incomplete or invalid; review item details before acting"
+		}
 		if action == nil {
 			copy := next
 			action = &copy
+			authority = nextAuthority
 			continue
 		}
-		if action.ID != next.ID || action.Command != next.Command || action.RequiresReview != next.RequiresReview || strings.Join(action.Argv, "\x00") != strings.Join(next.Argv, "\x00") {
+		if action.ID != next.ID || action.Command != next.Command || action.RequiresReview != next.RequiresReview || strings.Join(action.Argv, "\x00") != strings.Join(next.Argv, "\x00") || authority != nextAuthority {
 			return nil, "actions are item-specific; no safe batch action exposed"
 		}
 	}
@@ -409,6 +420,30 @@ func queueGroupAction(group QueueGroup, items []QueueItem) (*Action, string) {
 		return nil, "owner has not exposed a safe action for this decision group"
 	}
 	return action, ""
+}
+
+type actionAuthorityIdentity struct {
+	Present        bool
+	ActionIntentID string
+	FaceRevision   string
+}
+
+func authorityIdentity(action Action) (actionAuthorityIdentity, error) {
+	present := action.ActionIntent != nil || action.PolicyDecision != nil || action.AuthorityFace != nil
+	if !present {
+		return actionAuthorityIdentity{}, nil
+	}
+	if action.ActionIntent == nil || action.PolicyDecision == nil || action.AuthorityFace == nil {
+		return actionAuthorityIdentity{}, fmt.Errorf("partial authority bundle")
+	}
+	if err := policy.ValidateAuthorityBundle(*action.ActionIntent, *action.PolicyDecision, *action.AuthorityFace); err != nil {
+		return actionAuthorityIdentity{}, err
+	}
+	return actionAuthorityIdentity{
+		Present:        true,
+		ActionIntentID: action.ActionIntent.ID,
+		FaceRevision:   action.AuthorityFace.Revision,
+	}, nil
 }
 
 func queueGroupEvidenceSummaries(group QueueGroup, items []QueueItem) []EvidenceSummary {
