@@ -528,6 +528,17 @@ func writeStreamBaselineAtomic(path string, baseline StreamBaseline) error {
 // initial-baseline + completion publication boundary. It never spans migration
 // batches, but it prevents completion and a governed rebaseline from interleaving.
 func (e *engine) acquireRebaselineLock() (*appendLock, error) {
+	return e.acquireRebaselineLockWithMode(true)
+}
+
+// acquireRebaselineLockBlocking is used by compatibility-stream writers at
+// the completion boundary. Live hooks wait for the short publication window,
+// then recheck completion under the lock and no-op rather than failing.
+func (e *engine) acquireRebaselineLockBlocking() (*appendLock, error) {
+	return e.acquireRebaselineLockWithMode(false)
+}
+
+func (e *engine) acquireRebaselineLockWithMode(nonBlocking bool) (*appendLock, error) {
 	if err := os.MkdirAll(e.migrationRoot(), 0o755); err != nil {
 		return nil, err
 	}
@@ -535,8 +546,15 @@ func (e *engine) acquireRebaselineLock() (*appendLock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	mode := syscall.LOCK_EX
+	if nonBlocking {
+		mode |= syscall.LOCK_NB
+	}
+	if err := syscall.Flock(int(file.Fd()), mode); err != nil {
 		_ = file.Close()
+		if !nonBlocking {
+			return nil, fmt.Errorf("lock event-store rebaseline boundary: %w", err)
+		}
 		return nil, fmt.Errorf("another event-store re-baseline is already running: %w", err)
 	}
 	return &appendLock{file: file}, nil
@@ -544,10 +562,15 @@ func (e *engine) acquireRebaselineLock() (*appendLock, error) {
 
 // RebaselineTransaction is a lock-scoped handle. Callers cannot construct one,
 // so journal, sidecar, and recovery operations share the same rebaseline lock.
+type rebaselineTransactionState struct {
+	mu      sync.Mutex
+	active  bool
+	pending []byte
+}
+
 type RebaselineTransaction struct {
-	store  *Store
-	mu     sync.Mutex
-	active bool
+	store *Store
+	state *rebaselineTransactionState
 }
 
 func (s *Store) WithRebaselineTransaction(fn func(*RebaselineTransaction) error) (retErr error) {
@@ -566,21 +589,27 @@ func (s *Store) WithRebaselineTransaction(fn func(*RebaselineTransaction) error)
 			retErr = releaseErr
 		}
 	}()
-	tx := &RebaselineTransaction{store: s, active: true}
+	tx := &RebaselineTransaction{store: s, state: &rebaselineTransactionState{active: true}}
 	defer tx.deactivate()
 	return fn(tx)
 }
 
 func (tx *RebaselineTransaction) deactivate() {
-	tx.mu.Lock()
-	defer tx.mu.Unlock()
-	tx.active = false
+	if tx == nil || tx.state == nil {
+		return
+	}
+	tx.state.mu.Lock()
+	defer tx.state.mu.Unlock()
+	tx.state.active = false
 }
 
 func (tx *RebaselineTransaction) lockActive() error {
-	tx.mu.Lock()
-	if !tx.active {
-		tx.mu.Unlock()
+	if tx == nil || tx.state == nil {
+		return ErrRebaselineTransactionClosed
+	}
+	tx.state.mu.Lock()
+	if !tx.state.active {
+		tx.state.mu.Unlock()
 		return ErrRebaselineTransactionClosed
 	}
 	return nil
@@ -614,26 +643,38 @@ func (tx *RebaselineTransaction) ReadPending() ([]byte, bool, error) {
 	if err := tx.lockActive(); err != nil {
 		return nil, false, err
 	}
-	defer tx.mu.Unlock()
-	return readRebaselinePendingRaw(tx.PendingPath())
+	defer tx.state.mu.Unlock()
+	pending, exists, err := readRebaselinePendingRaw(tx.PendingPath())
+	if err != nil {
+		return nil, false, err
+	}
+	tx.state.pending = nil
+	if exists && len(pending) > 0 {
+		tx.state.pending = append([]byte(nil), pending...)
+	}
+	return pending, exists, nil
 }
 
 func (tx *RebaselineTransaction) WritePending(pending []byte) error {
 	if err := tx.lockActive(); err != nil {
 		return err
 	}
-	defer tx.mu.Unlock()
+	defer tx.state.mu.Unlock()
 	if len(pending) == 0 {
 		return fmt.Errorf("rebaseline pending bytes required")
 	}
-	return writeBytesAtomic(tx.PendingPath(), pending)
+	if err := writeBytesAtomic(tx.PendingPath(), pending); err != nil {
+		return err
+	}
+	tx.state.pending = append([]byte(nil), pending...)
+	return nil
 }
 
 func (tx *RebaselineTransaction) ClearPending() error {
 	if err := tx.lockActive(); err != nil {
 		return err
 	}
-	defer tx.mu.Unlock()
+	defer tx.state.mu.Unlock()
 	marker, exists, err := readRebaselinePendingRaw(tx.PendingPath())
 	if err != nil || !exists {
 		return err
@@ -647,6 +688,7 @@ func (tx *RebaselineTransaction) ClearPending() error {
 		}
 		return fmt.Errorf("sync pending removal (exact marker restored): %w", err)
 	}
+	tx.state.pending = nil
 	return nil
 }
 
@@ -654,7 +696,7 @@ func (tx *RebaselineTransaction) ReadSidecar() ([]byte, bool, error) {
 	if err := tx.lockActive(); err != nil {
 		return nil, false, err
 	}
-	defer tx.mu.Unlock()
+	defer tx.state.mu.Unlock()
 	return tx.readSidecarRaw()
 }
 
@@ -673,7 +715,7 @@ func (tx *RebaselineTransaction) FreshPreview() (StreamBaselinePreview, error) {
 	if err := tx.lockActive(); err != nil {
 		return StreamBaselinePreview{}, err
 	}
-	defer tx.mu.Unlock()
+	defer tx.state.mu.Unlock()
 	return tx.store.previewStreamBaselineRaw()
 }
 
@@ -681,7 +723,7 @@ func (tx *RebaselineTransaction) Plan(now time.Time) (StreamBaseline, []byte, er
 	if err := tx.lockActive(); err != nil {
 		return StreamBaseline{}, nil, err
 	}
-	defer tx.mu.Unlock()
+	defer tx.state.mu.Unlock()
 	if !tx.store.engine.migrationComplete() {
 		return StreamBaseline{}, nil, fmt.Errorf("event-store rebaseline: migration is not complete; nothing to re-baseline (run `compound event-store migrate --apply` first)")
 	}
@@ -701,7 +743,17 @@ func (tx *RebaselineTransaction) WriteSidecarCAS(expected []byte, expectedExiste
 	if err := tx.lockActive(); err != nil {
 		return err
 	}
-	defer tx.mu.Unlock()
+	defer tx.state.mu.Unlock()
+	if len(tx.state.pending) == 0 {
+		return fmt.Errorf("%w: durable rebaseline pending marker required before sidecar write", ErrRebaselineStateConflict)
+	}
+	pending, exists, err := readRebaselinePendingRaw(tx.PendingPath())
+	if err != nil {
+		return err
+	}
+	if !exists || !bytes.Equal(pending, tx.state.pending) {
+		return fmt.Errorf("%w: rebaseline pending marker changed before sidecar write", ErrRebaselineStateConflict)
+	}
 	current, existed, err := tx.readSidecarRaw()
 	if err != nil {
 		return err
@@ -716,7 +768,7 @@ func (tx *RebaselineTransaction) RollbackSidecarCAS(expectedPost, prior []byte, 
 	if err := tx.lockActive(); err != nil {
 		return err
 	}
-	defer tx.mu.Unlock()
+	defer tx.state.mu.Unlock()
 	current, existed, err := tx.readSidecarRaw()
 	if err != nil {
 		return err
@@ -737,7 +789,7 @@ func (tx *RebaselineTransaction) VerifySidecarCAS(expected []byte) error {
 	if err := tx.lockActive(); err != nil {
 		return err
 	}
-	defer tx.mu.Unlock()
+	defer tx.state.mu.Unlock()
 	current, exists, err := tx.readSidecarRaw()
 	if err != nil {
 		return err
@@ -1509,13 +1561,11 @@ func (m *migrator) writeCompletion(comp CompletionReport) error {
 }
 
 // writeInitialStreamBaseline records the frozen streams' sizes AT completion
-// time, for a home that completes migration under this change (a home whose
-// gate closed before this change has no sidecar and falls back to the mtime
-// path — see legacyStreamRegrew). It never overwrites an existing sidecar: the
-// governed rebaseline verb is the only rewritable path, so a sidecar that
-// already exists (e.g. a retried apply against an already-completed home,
-// which writeCompletion's O_EXCL branch short-circuits before ever calling
-// this) is left untouched.
+// time. writeCompletion calls it while holding both the migration run lock and
+// the rebaseline boundary lock, with completion.json still absent. A prior
+// reason=completion sidecar is therefore a provisional image from an interrupted
+// publication and is refreshed to current sizes. Any other reason belongs to a
+// governed writer (or is unexpected) and must never be overwritten here.
 func (e *engine) writeInitialStreamBaseline(recordedAt string) error {
 	sizes, err := e.currentStreamSizes()
 	if err != nil {
@@ -1527,12 +1577,28 @@ func (e *engine) writeInitialStreamBaseline(recordedAt string) error {
 		Reason:     streamBaselineReasonCompletion,
 		Streams:    sizes,
 	}
+	current, exists, err := readStreamBaselineRaw(e.streamBaselinePath())
+	if err != nil {
+		return err
+	}
+	if exists {
+		if current.Reason != streamBaselineReasonCompletion {
+			return fmt.Errorf("%w: completion refuses existing stream baseline reason %q", ErrRebaselineStateConflict, current.Reason)
+		}
+		return writeStreamBaselineAtomic(e.streamBaselinePath(), baseline)
+	}
 	data, err := json.MarshalIndent(baseline, "", "  ")
 	if err != nil {
 		return err
 	}
-	_, err = writeBytesExclusiveAtomic(e.streamBaselinePath(), append(data, '\n'))
-	return err
+	created, err := writeBytesExclusiveAtomic(e.streamBaselinePath(), append(data, '\n'))
+	if err != nil {
+		return err
+	}
+	if !created {
+		return fmt.Errorf("%w: stream baseline appeared during completion publication", ErrRebaselineStateConflict)
+	}
+	return nil
 }
 
 // acquireRunLock guards against two concurrent migrations. It is a whole-run

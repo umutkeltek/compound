@@ -279,6 +279,9 @@ func TestRebaselineTransactionCASRollbackRefusesConcurrentState(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		if err := tx.WritePending([]byte("test rollback pending marker\n")); err != nil {
+			return err
+		}
 		if err := tx.WriteSidecarCAS([]byte("pre"), true, []byte("post")); err != nil {
 			return err
 		}
@@ -518,6 +521,9 @@ func TestMigrationCompletionRefusesNonCompletionBaseline(t *testing.T) {
 func applyTestRebaseline(t *testing.T, store *Store, now time.Time) {
 	t.Helper()
 	if err := store.WithRebaselineTransaction(func(tx *RebaselineTransaction) error {
+		if err := tx.WritePending([]byte("test rebaseline pending marker\n")); err != nil {
+			return err
+		}
 		prior, existed, err := tx.ReadSidecar()
 		if err != nil {
 			return err
@@ -526,7 +532,10 @@ func applyTestRebaseline(t *testing.T, store *Store, now time.Time) {
 		if err != nil {
 			return err
 		}
-		return tx.WriteSidecarCAS(prior, existed, post)
+		if err := tx.WriteSidecarCAS(prior, existed, post); err != nil {
+			return err
+		}
+		return tx.ClearPending()
 	}); err != nil {
 		t.Fatalf("rebaseline primitive: %v", err)
 	}

@@ -463,7 +463,7 @@ func TestEventStoreRebaselineRecordErrorAfterDurableTransitionFinalizesOnRetry(t
 		t.Fatalf("retry did not clear finalized marker: %v", err)
 	}
 	postAfterRetry, err := os.ReadFile(sidecarPath)
-	if err != nil || !strings.EqualFold(string(postAfterRetry), string(postBeforeRetry)) {
+	if err != nil || string(postAfterRetry) != string(postBeforeRetry) {
 		t.Fatalf("retry performed a second sidecar mutation: err=%v", err)
 	}
 }

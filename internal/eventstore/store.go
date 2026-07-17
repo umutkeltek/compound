@@ -587,10 +587,12 @@ func regularFileExists(path string) (bool, error) {
 }
 
 func (s *Store) AppendHookEvent(value any) error {
-	return s.appendJSONL(s.hookEventsPath(), value)
+	return s.appendFrozenCompatibilityJSONL(s.hookEventsPath(), value)
 }
 
-func (s *Store) AppendTrace(value any) error { return s.appendJSONL(s.tracesPath(), value) }
+func (s *Store) AppendTrace(value any) error {
+	return s.appendFrozenCompatibilityJSONL(s.tracesPath(), value)
+}
 
 func (s *Store) AppendRetrievalTraffic(value any) error {
 	return s.appendJSONL(s.retrievalTrafficPath(), value)
@@ -604,6 +606,38 @@ func (s *Store) appendJSONL(path string, value any) error {
 	if err != nil {
 		return err
 	}
+	return appendJSONLBytes(path, data)
+}
+
+func (s *Store) appendFrozenCompatibilityJSONL(path string, value any) (retErr error) {
+	// completion.json is write-once. Once visible, the stream is permanently
+	// retired and even invalid compatibility payloads are irrelevant.
+	if s.engine.migrationComplete() {
+		return nil
+	}
+	if err := s.Ensure(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	lock, err := s.engine.acquireRebaselineLockBlocking()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if releaseErr := lock.release(); retErr == nil && releaseErr != nil {
+			retErr = releaseErr
+		}
+	}()
+	if s.engine.migrationComplete() {
+		return nil
+	}
+	return appendJSONLBytes(path, data)
+}
+
+func appendJSONLBytes(path string, data []byte) error {
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err

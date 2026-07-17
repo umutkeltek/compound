@@ -335,9 +335,9 @@ func TestEventStoreRebaselineWritesWithGrantAndClosesTheGateAgain(t *testing.T) 
 		t.Fatalf("granted confirm should succeed, got code=%d stderr=%q\n%s", code, errStr, out)
 	}
 	var result struct {
-		ReceiptID      string               `json:"receipt_id"`
-		TransitionID   string               `json:"transition_id"`
-		PolicySource   string               `json:"policy_source"`
+		ReceiptID       string               `json:"receipt_id"`
+		TransitionID    string               `json:"transition_id"`
+		PolicySource    string               `json:"policy_source"`
 		PolicyAuthority policy.AuthorityFace `json:"policy_authority"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
