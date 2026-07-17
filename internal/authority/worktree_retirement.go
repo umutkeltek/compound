@@ -133,6 +133,17 @@ type WorktreeRetirementSourceProof struct {
 	LandCheckFileDigest   string   `json:"land_check_file_digest"`
 }
 
+// WorktreeKeepRecord is a caller-composed projection of an active operator
+// worktree-keep decision. internal/authority never reads the decisions/mem
+// store itself (it stays mem-free); the CLI loads keeps from the decisions
+// reader and translates them into this shape, exactly as it composes the owner
+// and source proofs. The retirement gate treats a keyed branch as pinned.
+type WorktreeKeepRecord struct {
+	DecisionID string `json:"decision_id"`
+	BranchRef  string `json:"branch_ref"`
+	Revisit    string `json:"revisit,omitempty"`
+}
+
 type WorktreeRetirementPlanRequest struct {
 	RepoRoot       string
 	WorktreePath   string
@@ -142,6 +153,16 @@ type WorktreeRetirementPlanRequest struct {
 	OwnerProof     WorktreeRetirementOwnerProof
 	SourceProof    WorktreeRetirementSourceProof
 	RecoveryRefs   []string
+	// KeepDecisions maps a worktree branch ref (refs/heads/<name>) to the active
+	// operator keep-decision that pins it. Composed by the CLI from the decisions
+	// reader; a target whose branch ref is present is blocked from retirement.
+	KeepDecisions map[string]WorktreeKeepRecord
+	// KeepsUnreadable is set by the CLI when the keep-decision reader failed. The
+	// absence of a keep cannot then be proven, so retirement is blocked
+	// fail-closed. The zero value (false) means "keeps were consulted and none
+	// pins this target" — the safe default for callers (e.g. the apply re-plan)
+	// that do not consult keeps, so this stays additive.
+	KeepsUnreadable bool
 }
 
 type WorktreeRetirementWorktree struct {
@@ -362,6 +383,18 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 		}
 	}
 
+	// Operator keep-decisions pin a branch against cleanup (worktree-tracking
+	// slice 2). Fail closed: if the CLI could not read keep records it cannot
+	// prove none pins this target, so block. Otherwise, if an active keep names
+	// the target branch ref, block and name the decision so the reason is legible.
+	if req.KeepsUnreadable {
+		block("keep_records_unreadable")
+	} else if keepTarget := worktreeRetirementKeepTarget(plan); keepTarget != "" {
+		if keep, ok := req.KeepDecisions[keepTarget]; ok {
+			block("worktree_kept_by_operator_decision: " + keep.DecisionID)
+		}
+	}
+
 	sort.Strings(plan.BlockReasons)
 	plan.Eligible = len(plan.BlockReasons) == 0
 	if !plan.Eligible {
@@ -371,6 +404,20 @@ func BuildWorktreeRetirementPlan(ctx context.Context, req WorktreeRetirementPlan
 	plan.ID = WorktreeRetirementPlanID(plan)
 	plan.PlanDigest = WorktreeRetirementPlanDigest(plan)
 	return plan, nil
+}
+
+// worktreeRetirementKeepTarget is the branch ref an operator keep-decision
+// would pin: the explicit candidate ref when set, else the registered
+// worktree's branch ref. Keeps are keyed by branch ref, so a detached
+// (branchless) target can never be pinned.
+func worktreeRetirementKeepTarget(plan WorktreeRetirementPlan) string {
+	if ref := strings.TrimSpace(plan.CandidateRef); ref != "" {
+		return ref
+	}
+	if plan.Worktree != nil {
+		return strings.TrimSpace(plan.Worktree.BranchRef)
+	}
+	return ""
 }
 
 func WorktreeRetirementPlanID(plan WorktreeRetirementPlan) string {

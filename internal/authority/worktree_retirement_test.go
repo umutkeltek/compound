@@ -392,6 +392,61 @@ func TestWorktreeRetirementPlanRefusesAuthorityDriftAndIncompleteProofs(t *testi
 	}
 }
 
+// K1 (keep blocks retire): an active operator keep for the candidate branch
+// blocks retirement with a reason naming the decision id; the identical request
+// without the keep does NOT carry that block reason. Asserts on the specific
+// reason string, not Eligible.
+func TestWorktreeRetirementPlanBlockedByOperatorKeep(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	deps := WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}
+	now := time.Now()
+
+	// Baseline (no keep): eligible, and the keep block reason is absent.
+	unpinned, err := BuildWorktreeRetirementPlan(context.Background(), retirementPlanRequest(fixture), deps, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unpinned.Eligible {
+		t.Fatalf("baseline should be eligible, blockers=%v", unpinned.BlockReasons)
+	}
+	if retirementPlanBlockedBy(unpinned, "worktree_kept_by_operator_decision") {
+		t.Fatalf("unpinned plan must not carry a keep block: %v", unpinned.BlockReasons)
+	}
+
+	// With an active keep for the candidate branch ref: blocked, naming the id.
+	pinned := retirementPlanRequest(fixture)
+	pinned.KeepDecisions = map[string]WorktreeKeepRecord{
+		fixture.candidateRef: {DecisionID: "keep-lane-abc", BranchRef: fixture.candidateRef, Revisit: "branch lands or is abandoned"},
+	}
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), pinned, deps, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retirementPlanBlockedBy(plan, "worktree_kept_by_operator_decision: keep-lane-abc") {
+		t.Fatalf("kept branch should block naming the decision id: %v", plan.BlockReasons)
+	}
+}
+
+// K3 (fail-closed reads): when the CLI reports keeps unreadable, the plan is
+// blocked with keep_records_unreadable — the absence of a keep cannot be proven,
+// so retirement must not proceed.
+func TestWorktreeRetirementPlanBlockedWhenKeepsUnreadable(t *testing.T) {
+	fixture := newRetirementGitFixture(t)
+	req := retirementPlanRequest(fixture)
+	req.KeepsUnreadable = true
+	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Eligible || !retirementPlanBlockedBy(plan, "keep_records_unreadable") {
+		t.Fatalf("unreadable keeps must fail closed: eligible=%v blockers=%v", plan.Eligible, plan.BlockReasons)
+	}
+}
+
 func TestWorktreeRetirementPlanRejectsMalformedOrProtectedTargets(t *testing.T) {
 	fixture := newRetirementGitFixture(t)
 	req := retirementPlanRequest(fixture)
