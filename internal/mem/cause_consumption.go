@@ -41,10 +41,10 @@ const (
 
 	// The five D1 tier buckets. Every ref in a Cause.CausedByRefs list resolves to exactly one.
 	CauseConsumptionTierPromoted        = "promoted"         // resolves to a live Claim, or Candidate.State==promoted
-	CauseConsumptionTierPreAdjudication = "pre_adjudication"  // Candidate proposed|parked
-	CauseConsumptionTierClosed          = "closed"            // Candidate rejected|no_promote
-	CauseConsumptionTierObservedRaw     = "observed_raw"      // resolves to nothing in mem (raw, never-adjudicated)
-	CauseConsumptionTierNonMemory       = "non_memory"        // known non-memory ref shape (commit:/work_/source:/decision:)
+	CauseConsumptionTierPreAdjudication = "pre_adjudication" // Candidate proposed|parked
+	CauseConsumptionTierClosed          = "closed"           // Candidate rejected|no_promote
+	CauseConsumptionTierObservedRaw     = "observed_raw"     // resolves to nothing in mem (raw, never-adjudicated)
+	CauseConsumptionTierNonMemory       = "non_memory"       // known non-memory ref shape (commit:/work_/source:/decision:)
 )
 
 // causeConsumptionTiers is the fixed, always-zero-filled enumeration order for RefTierCounts so
