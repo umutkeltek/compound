@@ -172,3 +172,39 @@ func TestSupplementLiveClaudeCapacityProbesOnlyWhenOwnedSourcesAreEmpty(t *testi
 		t.Fatalf("fresh capacity projection was not reused: line=%q err=%v", line, err)
 	}
 }
+
+func TestParseCodexBarClaudeCapacitySelectsFreshConstrainingWeeklyWindow(t *testing.T) {
+	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
+	body := []byte(`[
+	  {
+	    "provider":"claude",
+	    "usage":{
+	      "accountEmail":"must-not-survive@example.invalid",
+	      "updatedAt":"2026-07-17T19:59:00Z",
+	      "secondary":{"usedPercent":74,"windowMinutes":10080,"resetsAt":"2026-07-21T16:00:00Z"},
+	      "extraRateWindows":[
+	        {"id":"daily-routines","window":{"usedPercent":0,"windowMinutes":10080}},
+	        {"id":"model-scoped","window":{"usedPercent":78,"windowMinutes":10080,"resetsAt":"2026-07-21T16:00:00Z"}}
+	      ]
+	    }
+	  }
+	]`)
+	evidence, err := parseCodexBarClaudeCapacity(body, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Status != statussurface.StatusLive || evidence.RemainingPercent != 22 || evidence.Source != "compound/codexbar-live" {
+		t.Fatalf("capacity evidence = %+v", evidence)
+	}
+	if evidence.ResetsAt.Format(time.RFC3339) != "2026-07-21T16:00:00Z" {
+		t.Fatalf("capacity reset = %s", evidence.ResetsAt)
+	}
+	if strings.Contains(evidence.Source, "must-not-survive") {
+		t.Fatalf("capacity evidence retained identity: %+v", evidence)
+	}
+
+	stale := strings.Replace(string(body), "2026-07-17T19:59:00Z", "2026-07-17T19:40:00Z", 1)
+	if _, err := parseCodexBarClaudeCapacity([]byte(stale), now); err == nil {
+		t.Fatal("stale CodexBar evidence was accepted")
+	}
+}
