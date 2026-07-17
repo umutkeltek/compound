@@ -52,6 +52,9 @@ func TestBuildClaudeSnapshotReducesNativeContextAndLimitsWithoutBody(t *testing.
 	if snapshot.Mode != ModeConserve || snapshot.RouteGuidance != GuidancePreservePrimary {
 		t.Fatalf("adaptive state = mode %q guidance %q", snapshot.Mode, snapshot.RouteGuidance)
 	}
+	if snapshot.InferenceClass != InferenceCapacity || snapshot.RecommendedTheme != ThemePAIOps {
+		t.Fatalf("inference = class %q theme %q", snapshot.InferenceClass, snapshot.RecommendedTheme)
+	}
 
 	body, err := json.Marshal(snapshot)
 	if err != nil {
@@ -146,6 +149,13 @@ func TestRenderThemesAndCodexThemeAreDeterministic(t *testing.T) {
 	if displayWidth(short) > 34 {
 		t.Fatalf("render width = %d: %q", displayWidth(short), short)
 	}
+	auto, err := Render(snapshot, RenderOptions{Theme: ThemeAuto, Width: 120, Color: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(auto, "[CONSERVE]") {
+		t.Fatalf("auto theme did not select capacity information profile: %q", auto)
+	}
 
 	first, err := RenderCodexTheme(ThemePAINexus)
 	if err != nil {
@@ -157,6 +167,25 @@ func TestRenderThemesAndCodexThemeAreDeterministic(t *testing.T) {
 	}
 	if first != second || !strings.Contains(first, "<plist version=\"1.0\">") || !strings.Contains(first, "PAI Nexus") {
 		t.Fatalf("codex theme is not deterministic TextMate XML: %q", first)
+	}
+}
+
+func TestInferDisplayClassChangesThemeAndInformationProfile(t *testing.T) {
+	for _, tc := range []struct {
+		mode  Mode
+		class InferenceClass
+		theme string
+	}{
+		{ModeFlow, InferenceFocus, ThemePAIFocus},
+		{ModeWatch, InferenceBalanced, ThemePAINexus},
+		{ModeConserve, InferenceCapacity, ThemePAIOps},
+		{ModeCritical, InferenceCapacity, ThemePAIOps},
+		{ModeUnknown, InferenceFallback, ThemePAIMono},
+	} {
+		class, theme := InferDisplayClass(tc.mode)
+		if class != tc.class || theme != tc.theme {
+			t.Fatalf("mode %q = class %q theme %q, want %q/%q", tc.mode, class, theme, tc.class, tc.theme)
+		}
 	}
 }
 

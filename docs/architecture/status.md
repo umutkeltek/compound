@@ -69,7 +69,6 @@ Gen-1 memory stack migrated into the spine memory family and retired.
 - `memory doctor` includes a `recall-quality` hop over a current visible claim, so embedding/sync green cannot hide broken canonical entity recall.
 
 Capability status note: `capgraph` owns `compound capability skill-plan`; skill candidates now produce reviewed node drafts under `COMPOUND_HOME/reviews/capability-skills/` before any graph import or skill-file write.
-
 ## Packages (`internal/`)
 This table is SINGLE-SOURCED from `arch.Classification` (`internal/arch/arch.go`): one row per classified package, Class holding the exact lowercase Class value; `architecture doctor --strict` fails on drift, a missing package, or a stale one.
 
