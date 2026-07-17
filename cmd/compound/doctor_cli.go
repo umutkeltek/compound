@@ -386,8 +386,8 @@ func buildSurfacingCoverage(homePath string, hooks []doctorHook, now time.Time) 
 	for _, h := range hooks {
 		guardByHarness[surfacingHarnessAlias(h.Harness)] = guardStatus(h.Status)
 	}
-	orientByHarness := lastOrientByHarness(homePath)
-	peersByHarness := lastPeersByHarness(homePath)
+	orientByHarness, harnessByContract := scanEffectiveContracts(homePath)
+	peersByHarness := lastPeersByHarness(homePath, harnessByContract)
 	inj := injectionGlobalSummary(homePath, now)
 
 	var rows []surfacingRow
@@ -506,11 +506,22 @@ func hookHarnessList(hooks []doctorHook) []string {
 	return out
 }
 
-// lastOrientByHarness scans the recorded EffectiveContracts (the orient-produced evidence that
-// carries a harness) and returns the most recent orient time per aliased harness. Reading these
-// artifacts directly keeps doctor read-only; a torn or foreign file is skipped, never fatal.
-func lastOrientByHarness(homePath string) map[string]time.Time {
-	out := map[string]time.Time{}
+// scanEffectiveContracts walks contracts/effective EXACTLY ONCE and returns
+// the two artifacts that used to come from two independent walks of the same
+// directory: orientByHarness (the most recent orient time per aliased
+// harness -- what lastOrientByHarness used to return) and harnessByContract
+// (contract_id -> aliased harness, the join table lastPeersByHarness's own
+// first walk used to build). Both are derived from one decoded header per
+// file (P3, find_9edaa8449d55 -- doctor no longer parses every
+// EffectiveContract twice). The two outputs preserve their original,
+// slightly different validity rules: harnessByContract only requires a
+// non-empty id (lastPeersByHarness's join never looked at created_at), while
+// orientByHarness additionally requires created_at to parse. Reading these
+// artifacts directly keeps doctor read-only; a torn or foreign file is
+// skipped, never fatal.
+func scanEffectiveContracts(homePath string) (orientByHarness map[string]time.Time, harnessByContract map[string]string) {
+	orientByHarness = map[string]time.Time{}
+	harnessByContract = map[string]string{}
 	base := filepath.Join(homePath, "contracts", "effective")
 	_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
@@ -522,55 +533,36 @@ func lastOrientByHarness(homePath string) map[string]time.Time {
 		}
 		var head struct {
 			SchemaVersion string `json:"schema_version"`
+			ID            string `json:"id"`
 			Harness       string `json:"harness"`
 			CreatedAt     string `json:"created_at"`
 		}
 		if json.Unmarshal(data, &head) != nil || head.SchemaVersion != envelope.SVEffectiveContract {
 			return nil
 		}
+		alias := surfacingHarnessAlias(head.Harness)
+		if id := strings.TrimSpace(head.ID); id != "" {
+			harnessByContract[id] = alias
+		}
 		t, terr := time.Parse(time.RFC3339, strings.TrimSpace(head.CreatedAt))
 		if terr != nil {
 			return nil
 		}
-		alias := surfacingHarnessAlias(head.Harness)
-		if cur, ok := out[alias]; !ok || t.After(cur) {
-			out[alias] = t
+		if cur, ok := orientByHarness[alias]; !ok || t.After(cur) {
+			orientByHarness[alias] = t
 		}
 		return nil
 	})
-	return out
+	return orientByHarness, harnessByContract
 }
 
 // lastPeersByHarness returns the most recent orient time per aliased harness for which a RECORDED
 // ContextPack carried a non-empty peers section. A recorded pack carries no harness of its own, so
-// its harness is resolved through its effective-contract link (ids.contract_id) against the recorded
-// EffectiveContracts the orient cell already reads. Reading these artifacts directly keeps doctor
-// read-only; a torn or foreign file is skipped, never fatal.
-func lastPeersByHarness(homePath string) map[string]time.Time {
-	// contract_id -> aliased harness, from the recorded EffectiveContracts (they carry the harness).
-	harnessByContract := map[string]string{}
-	_ = filepath.WalkDir(filepath.Join(homePath, "contracts", "effective"), func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
-			return nil
-		}
-		data, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return nil
-		}
-		var head struct {
-			SchemaVersion string `json:"schema_version"`
-			ID            string `json:"id"`
-			Harness       string `json:"harness"`
-		}
-		if json.Unmarshal(data, &head) != nil || head.SchemaVersion != envelope.SVEffectiveContract {
-			return nil
-		}
-		if id := strings.TrimSpace(head.ID); id != "" {
-			harnessByContract[id] = surfacingHarnessAlias(head.Harness)
-		}
-		return nil
-	})
-
+// its harness is resolved through its effective-contract link (ids.contract_id) against
+// harnessByContract, built by the shared contracts/effective walk (scanEffectiveContracts).
+// Reading these artifacts directly keeps doctor read-only; a torn or foreign file is skipped,
+// never fatal.
+func lastPeersByHarness(homePath string, harnessByContract map[string]string) map[string]time.Time {
 	out := map[string]time.Time{}
 	_ = filepath.WalkDir(filepath.Join(homePath, "context", "packs"), func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
