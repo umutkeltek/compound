@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -417,6 +418,46 @@ func TestAuthorityWorktreeRetireCLIRefusesStaleSourceLandCheck(t *testing.T) {
 	}
 	if !commandRefExists(fixture.repo, fixture.candidateRef) {
 		t.Fatal("stale land-check refusal removed candidate ref")
+	}
+}
+
+func TestLoadWorktreeRetirementSourceProofRefusesTerminalReceiptOutcomeMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		receiptOutcome string
+		workState      string
+	}{
+		{name: "failed work with completed receipt", receiptOutcome: "completed", workState: "failed"},
+		{name: "completed work with failed receipt", receiptOutcome: "failed", workState: "completed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+			fixture := newWorktreeRetirementCLIFixtureWithSourceOutcome(t, homePath, tc.receiptOutcome)
+			store, err := work.Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := store.Get(fixture.sourceWorkID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source.State = tc.workState
+			data, err := json.MarshalIndent(source, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(homePath, "work", "work", source.ID+".json"), append(data, '\n'), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			proof, err := loadWorktreeRetirementSourceProof(store, homePath, source.ID, cliTestNow.Add(10*time.Minute))
+			if err == nil || !strings.Contains(err.Error(), "receipt outcome") {
+				t.Fatalf("mismatched terminal state accepted: proof=%+v err=%v", proof, err)
+			}
+		})
 	}
 }
 

@@ -401,9 +401,10 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
 - **Retire the landed worktree/ref only through Compound authority, never with hand-run
   `git worktree remove`, `git update-ref -d`, or `branch -D`.** A separate running cleanup
   WorkEnvelope owns the mutation; the landed source WorkEnvelope must already be proof-complete
-  `completed` or `failed` with a current `land-check`, and at least one content-addressed recovery
-  proof must still resolve. A failed source remains failed; cleanup proves only that its workspace
-  surface is redundant. Cancelled and nonterminal source work cannot authorize retirement. Run
+  `completed` or `failed`, its Receipt outcome must exactly match that terminal state, and it must
+  have a current `land-check` plus at least one content-addressed recovery proof that still resolves.
+  A failed source remains failed; cleanup proves only that its workspace surface is redundant.
+  Cancelled, nonterminal, and state/outcome-mismatched source work cannot authorize retirement. Run
   `compound authority worktree-retire plan ...`, have the operator record the exact generated YAML
   with `compound authority worktree-retire review ... --decision authorize_retirement`, then run
   `compound authority worktree-retire apply ... --actor <cleanup-lease-holder>`. The adapter

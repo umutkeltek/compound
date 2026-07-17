@@ -407,6 +407,7 @@ func TestWorktreeRetirementPlanAllowsProofCompleteFailedSourceWork(t *testing.T)
 	fixture := newRetirementGitFixture(t)
 	req := retirementPlanRequest(fixture)
 	req.SourceProof.State = "failed"
+	req.SourceProof.ReceiptOutcome = "failed"
 
 	plan, err := BuildWorktreeRetirementPlan(context.Background(), req, WorktreeRetirementDependencies{
 		Git: ExecWorktreeRetirementGit{}, Liveness: staticRetirementLiveness{state: WorktreeLivenessUnused},
@@ -519,6 +520,8 @@ func TestWorktreeRetirementPlanRefusesAuthorityDriftAndIncompleteProofs(t *testi
 		{name: "owner not running", mutate: func(r *WorktreeRetirementPlanRequest) { r.OwnerProof.State = "claimed" }, want: "owner_work_not_running_with_exact_lease"},
 		{name: "source nonterminal", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.State = "running" }, want: "source_work_proof_invalid"},
 		{name: "source cancelled", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.State = "cancelled" }, want: "source_work_proof_invalid"},
+		{name: "failed source with completed receipt", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.State = "failed" }, want: "source_work_proof_invalid"},
+		{name: "completed source with failed receipt", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.ReceiptOutcome = "failed" }, want: "source_work_proof_invalid"},
 		{name: "incomplete chain", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.ProofComplete = false }, want: "source_work_proof_invalid"},
 		{name: "missing receipt", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.ReceiptID = "" }, want: "source_work_proof_invalid"},
 		{name: "missing transition", mutate: func(r *WorktreeRetirementPlanRequest) { r.SourceProof.TransitionID = "" }, want: "source_work_proof_invalid"},
@@ -1024,6 +1027,7 @@ func validRetirementSourceProof(commit string) WorktreeRetirementSourceProof {
 		ActionIntentIDs:       []string{"act_source"},
 		PolicyDecisionID:      "pol_source",
 		ReceiptID:             "rec_source",
+		ReceiptOutcome:        "completed",
 		TransitionID:          "tr_source",
 		CommitArtifactRef:     "commit:" + commit,
 		CommitTip:             commit,
