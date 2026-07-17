@@ -83,7 +83,8 @@ func TestBuildLiveClaudeStatusSnapshotSupplementsMissingWeeklyCapacity(t *testin
 	now := time.Date(2026, 7, 17, 2, 0, 0, 0, time.UTC)
 	fixture := `{
 	  "model":{"display_name":"Fable 5"},
-	  "context_window":{"context_window_size":1000000,"used_percentage":20}
+	  "context_window":{"context_window_size":1000000,"used_percentage":20},
+	  "rate_limits":{"five_hour":{"used_percentage":37}}
 	}`
 	reset := now.Add(72 * time.Hour)
 	called := false
