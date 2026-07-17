@@ -34,14 +34,29 @@ const (
 	archiveFilesDirName = "files"
 	defaultMigrateBatch = 500
 
-	planSchema       = "compound.eventstore.migration.plan.v0.1"
-	manifestSchema   = "compound.eventstore.migration.manifest_row.v0.1"
-	completionSchema = "compound.eventstore.migration.completion.v0.1"
-	conflictSchema   = "compound.eventstore.migration.conflict.v0.1"
+	planSchema           = "compound.eventstore.migration.plan.v0.1"
+	manifestSchema       = "compound.eventstore.migration.manifest_row.v0.1"
+	completionSchema     = "compound.eventstore.migration.completion.v0.1"
+	conflictSchema       = "compound.eventstore.migration.conflict.v0.1"
+	streamBaselineSchema = "compound.eventstore.migration.stream_baseline.v0.1"
 
 	statusMigrated       = "migrated"
 	statusAlreadyPresent = "already_present"
 	statusRejected       = "rejected"
+
+	// streamBaselineFileName is the sidecar next to completion.json that records
+	// each frozen compatibility stream's byte size at the moment it was trusted
+	// (migration completion, or a later governed re-baseline). completion.json
+	// itself stays write-once (see writeCompletion); this file is the ONE thing a
+	// governed verb is allowed to rewrite.
+	streamBaselineFileName = "stream-baseline.json"
+	// rebaselineLockName guards the sidecar with its OWN lock, distinct from
+	// migrateLockName's whole-migration-run lock, so a re-baseline never blocks
+	// (or is blocked by) a live migrate apply/verify.
+	rebaselineLockName = ".rebaseline.lock"
+
+	streamBaselineReasonCompletion = "completion"
+	streamBaselineReasonRebaseline = "rebaseline"
 )
 
 // ErrMigrationConflict halts a run when a loose record and a segment record
@@ -167,6 +182,9 @@ func (e *engine) migrationRoot() string  { return filepath.Join(e.eventsDir, mig
 func (e *engine) manifestPath() string   { return filepath.Join(e.migrationRoot(), manifestFileName) }
 func (e *engine) planPath() string       { return filepath.Join(e.migrationRoot(), planFileName) }
 func (e *engine) completionPath() string { return filepath.Join(e.migrationRoot(), completionFileName) }
+func (e *engine) streamBaselinePath() string {
+	return filepath.Join(e.migrationRoot(), streamBaselineFileName)
+}
 
 func (e *engine) archiveRoot() string {
 	return filepath.Join(e.home, archiveTopDirName, archiveGeneration, archiveFilesDirName)
@@ -276,11 +294,19 @@ func (s *Store) LegacyWriterActive() (bool, error) {
 // legacyStreamRegrew reports whether a frozen compatibility stream was written
 // after the completion gate closed. Post-migration, hook-events.ndjson and
 // traces.ndjson are read through Scan and never appended again (writeHookEvent /
-// recordTrace skip the append once migrationComplete). completion.json is
-// written exactly once (O_EXCL) and never touched afterwards, so its mtime is a
-// stable freeze boundary: a stream whose mtime is strictly newer than the marker
-// was appended post-freeze — a legacy-writer regression. Absent streams are the
-// healthy pure-segment case and never flag.
+// recordTrace skip the append once migrationComplete).
+//
+// When a stream-baseline.json sidecar exists AND recorded a size for a given
+// stream, that stream is judged by BYTE SIZE against the recorded baseline —
+// any difference, growth or shrink, is a regression, and an unchanged size is
+// never flagged regardless of mtime (a legitimate mtime bump, e.g. a backup
+// restore or filesystem migration, no longer false-reds the doctor). A stream
+// the sidecar has no entry for (it did not exist at the moment the sidecar was
+// last written) falls back to the mtime boundary, exactly as before the
+// sidecar existed at all — this keeps already-completed legacy homes (no
+// sidecar) and freshly-completed homes whose streams were empty at completion
+// behaving identically to today. Absent streams are the healthy pure-segment
+// case and never flag.
 func (e *engine) legacyStreamRegrew() (bool, error) {
 	marker, err := os.Stat(e.completionPath())
 	if err != nil {
@@ -290,6 +316,10 @@ func (e *engine) legacyStreamRegrew() (bool, error) {
 		return false, err
 	}
 	boundary := marker.ModTime()
+	baseline, hasBaseline, err := readStreamBaseline(e.streamBaselinePath())
+	if err != nil {
+		return false, err
+	}
 	for _, name := range []string{hookEventsStreamName, tracesStreamName} {
 		info, err := os.Stat(filepath.Join(e.eventsDir, name))
 		if err != nil {
@@ -298,11 +328,204 @@ func (e *engine) legacyStreamRegrew() (bool, error) {
 			}
 			return false, err
 		}
+		if hasBaseline {
+			if want, ok := baseline.Streams[name]; ok {
+				if info.Size() != want {
+					return true, nil
+				}
+				continue
+			}
+		}
 		if info.ModTime().After(boundary) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// StreamBaseline is the schema-stamped sidecar recording each frozen
+// compatibility stream's byte size at the moment it was trusted: either the
+// migration's own completion (Reason=="completion") or a later governed
+// `compound event-store rebaseline --confirm` (Reason=="rebaseline"). Streams
+// maps stream file name -> byte size; a stream absent from the map did not
+// exist on disk when this baseline was recorded.
+type StreamBaseline struct {
+	Schema     string           `json:"schema"`
+	RecordedAt string           `json:"recorded_at"`
+	Reason     string           `json:"reason"`
+	Streams    map[string]int64 `json:"streams"`
+}
+
+// currentStreamSizes stats the frozen compatibility streams right now. A
+// stream that does not exist is simply absent from the returned map (never an
+// error) — the same "absent is healthy" rule legacyStreamRegrew already
+// applies for the mtime path.
+func (e *engine) currentStreamSizes() (map[string]int64, error) {
+	sizes := map[string]int64{}
+	for _, name := range []string{hookEventsStreamName, tracesStreamName} {
+		info, err := os.Stat(filepath.Join(e.eventsDir, name))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		sizes[name] = info.Size()
+	}
+	return sizes, nil
+}
+
+// readStreamBaseline reads the sidecar if present. A missing file is reported
+// as (zero value, false, nil) — never an error — since most homes (any legacy
+// home completed before this change) legitimately have no sidecar yet.
+func readStreamBaseline(path string) (StreamBaseline, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return StreamBaseline{}, false, nil
+		}
+		return StreamBaseline{}, false, err
+	}
+	var baseline StreamBaseline
+	if err := json.Unmarshal(data, &baseline); err != nil {
+		return StreamBaseline{}, false, fmt.Errorf("parse stream baseline %s: %w", path, err)
+	}
+	return baseline, true, nil
+}
+
+// writeStreamBaselineAtomic writes the sidecar via tmp+rename (never O_EXCL —
+// unlike completion.json this file IS meant to be rewritten, only ever through
+// a governed writer) so a reader never observes a partially written file.
+func writeStreamBaselineAtomic(path string, baseline StreamBaseline) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(baseline, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		_ = os.Remove(tmpPath)
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		return err
+	}
+	if err := writeFull(tmp, data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	closed = true
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	return syncDirectory(dir)
+}
+
+// acquireRebaselineLock guards the sidecar with its own lock (rebaselineLockName),
+// separate from acquireRunLock's whole-migration-run lock, so a re-baseline
+// never blocks (or is blocked by) a live migrate apply/verify — only a second
+// concurrent re-baseline.
+func (e *engine) acquireRebaselineLock() (*appendLock, error) {
+	if err := os.MkdirAll(e.migrationRoot(), 0o755); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(filepath.Join(e.migrationRoot(), rebaselineLockName), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("another event-store re-baseline is already running: %w", err)
+	}
+	return &appendLock{file: file}, nil
+}
+
+// StreamBaselinePreview is the current-vs-proposed projection for `compound
+// event-store rebaseline` without --confirm. Current is nil when no sidecar
+// exists yet; Proposed is what re-baselining right now would record. Building
+// a preview performs no write.
+type StreamBaselinePreview struct {
+	HomeComplete bool
+	SidecarPath  string
+	HasSidecar   bool
+	Current      map[string]int64
+	Proposed     map[string]int64
+}
+
+// PreviewStreamBaseline computes the preview without mutating anything.
+func (s *Store) PreviewStreamBaseline() (StreamBaselinePreview, error) {
+	if s == nil || s.engine == nil {
+		return StreamBaselinePreview{}, fmt.Errorf("event store requires a home")
+	}
+	proposed, err := s.engine.currentStreamSizes()
+	if err != nil {
+		return StreamBaselinePreview{}, err
+	}
+	preview := StreamBaselinePreview{
+		HomeComplete: s.engine.migrationComplete(),
+		SidecarPath:  s.engine.streamBaselinePath(),
+		Proposed:     proposed,
+	}
+	baseline, ok, err := readStreamBaseline(preview.SidecarPath)
+	if err != nil {
+		return StreamBaselinePreview{}, err
+	}
+	if ok {
+		preview.HasSidecar = true
+		preview.Current = baseline.Streams
+	}
+	return preview, nil
+}
+
+// RebaselineStreams is the governed mutation itself: the caller (cmd/compound)
+// is responsible for minting the ActionIntent, evaluating policy, and refusing
+// on a non-allowing PolicyDecision BEFORE calling this — mirroring how an
+// act.Adapter's write only ever runs after Execute's gate has already passed.
+// This method carries no policy awareness of its own; it only refuses when
+// there is nothing to re-baseline (migration incomplete), which is true
+// regardless of any grant.
+func (s *Store) RebaselineStreams(now time.Time) (StreamBaseline, error) {
+	if s == nil || s.engine == nil {
+		return StreamBaseline{}, fmt.Errorf("event store requires a home")
+	}
+	if !s.engine.migrationComplete() {
+		return StreamBaseline{}, fmt.Errorf("event-store rebaseline: migration is not complete; nothing to re-baseline (run `compound event-store migrate --apply` first)")
+	}
+	lock, err := s.engine.acquireRebaselineLock()
+	if err != nil {
+		return StreamBaseline{}, err
+	}
+	defer func() { _ = lock.release() }()
+	sizes, err := s.engine.currentStreamSizes()
+	if err != nil {
+		return StreamBaseline{}, err
+	}
+	baseline := StreamBaseline{
+		Schema:     streamBaselineSchema,
+		RecordedAt: now.UTC().Format(time.RFC3339Nano),
+		Reason:     streamBaselineReasonRebaseline,
+		Streams:    sizes,
+	}
+	if err := writeStreamBaselineAtomic(s.engine.streamBaselinePath(), baseline); err != nil {
+		return StreamBaseline{}, err
+	}
+	return baseline, nil
 }
 
 func (m *migrator) now() string { return m.engine.clock().UTC().Format(time.RFC3339Nano) }
@@ -1001,7 +1224,37 @@ func (m *migrator) writeCompletion(comp CompletionReport) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return syncDirectory(m.engine.migrationRoot())
+	if err := syncDirectory(m.engine.migrationRoot()); err != nil {
+		return err
+	}
+	return m.engine.writeInitialStreamBaseline(m.now())
+}
+
+// writeInitialStreamBaseline records the frozen streams' sizes AT completion
+// time, for a home that completes migration under this change (a home whose
+// gate closed before this change has no sidecar and falls back to the mtime
+// path — see legacyStreamRegrew). It never overwrites an existing sidecar: the
+// governed rebaseline verb is the only rewritable path, so a sidecar that
+// already exists (e.g. a retried apply against an already-completed home,
+// which writeCompletion's O_EXCL branch short-circuits before ever calling
+// this) is left untouched.
+func (e *engine) writeInitialStreamBaseline(recordedAt string) error {
+	path := e.streamBaselinePath()
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	sizes, err := e.currentStreamSizes()
+	if err != nil {
+		return err
+	}
+	return writeStreamBaselineAtomic(path, StreamBaseline{
+		Schema:     streamBaselineSchema,
+		RecordedAt: recordedAt,
+		Reason:     streamBaselineReasonCompletion,
+		Streams:    sizes,
+	})
 }
 
 // acquireRunLock guards against two concurrent migrations. It is a whole-run
