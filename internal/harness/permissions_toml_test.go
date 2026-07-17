@@ -362,3 +362,64 @@ func TestCodexTOMLFullLifecycleAppliesCleansDriftAndIsIdempotent(t *testing.T) {
 	}
 	assertCodexTOMLDrift(t, homePath, false, "")
 }
+
+// T8: an owned string value carrying control characters — the newline-injection
+// class — renders as ONE single-line TOML basic string with every control byte
+// escaped. Red if the raw bytes pass through: the file gains lines, the value
+// injects what parses as fresh keys/tables, and the target TOML turns invalid
+// (an unterminated string), breaking the live harness config this renderer owns.
+func TestCodexTOMLControlCharacterValueRendersEscaped(t *testing.T) {
+	homePath := t.TempDir()
+	targetPath := filepath.Join(t.TempDir(), "config.toml")
+	before := []byte(codexTOMLFixtureBody("false", true, true))
+	if err := os.WriteFile(targetPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	settings := codexTOMLOwnedSettings()
+	settings["sandbox_mode"] = "danger-full-access\nnetwork_access = false\n[injected]\x01pwn = true"
+	writePermissionFixture(t, homePath, targetPath, codexTOMLAuthorityFixture(settings))
+
+	applied, err := applyGovernedPermissions(t, homePath, "codex")
+	if err != nil {
+		t.Fatalf("apply codex TOML settings: %v", err)
+	}
+	if !applied.Changed {
+		t.Fatal("applied.Changed = false, want true")
+	}
+	after, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	beforeLines, afterLines := splitTOMLLines(before), splitTOMLLines(after)
+	if len(beforeLines) != len(afterLines) {
+		t.Fatalf("control characters split the file: before=%d lines after=%d\nafter:\n%s", len(beforeLines), len(afterLines), after)
+	}
+	want := `sandbox_mode = "danger-full-access\nnetwork_access = false\n[injected]\u0001pwn = true"`
+	var changed []string
+	for i := range beforeLines {
+		if beforeLines[i] != afterLines[i] {
+			changed = append(changed, lineBody(afterLines[i]))
+		}
+	}
+	if len(changed) != 1 || changed[0] != want {
+		t.Fatalf("changed lines = %q, want exactly one escaped single-line assignment %q", changed, want)
+	}
+	for _, raw := range afterLines {
+		if strings.TrimSpace(lineBody(raw)) == "[injected]" {
+			t.Fatalf("value injected a live table header:\n%s", after)
+		}
+	}
+	assertCodexTOMLDrift(t, homePath, false, "")
+}
+
+// T8b: unit pin for the escaper — every TOML-named control escape plus the
+// \uXXXX fallback for the rest of the control range (and DEL, which TOML
+// forbids raw inside a basic string).
+func TestTOMLEscapeBasicStringEscapesControlBytes(t *testing.T) {
+	got := tomlEscapeBasicString("a\\b\"c\nd\re\tf\bg\fh\x7fi\x01j")
+	want := `a\\b\"c\nd\re\tf\bg\fh\u007Fi\u0001j`
+	if got != want {
+		t.Fatalf("tomlEscapeBasicString = %q, want %q", got, want)
+	}
+}

@@ -88,9 +88,39 @@ func formatTOMLScalar(path string, value any) (string, error) {
 	}
 }
 
+// tomlEscapeBasicString renders v as the contents of a single-line TOML basic
+// string. Beyond the quote/backslash escapes, every control character (and
+// DEL, which TOML forbids raw) is escaped — a raw newline in a value would
+// otherwise split the assignment across physical lines: an unterminated
+// string that corrupts the target file and injects value text as live
+// keys/table headers.
 func tomlEscapeBasicString(v string) string {
-	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
-	return replacer.Replace(v)
+	var b strings.Builder
+	for _, r := range v {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\u%04X`, r)
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // renderTOMLPermissions computes the surgical TOML edit for the declared
