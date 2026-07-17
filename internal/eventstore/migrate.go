@@ -959,7 +959,7 @@ func parseRebaselinePhysicalReceipt(raw []byte) (rebaselinePhysicalProof, rebase
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return rebaselinePhysicalProof{}, wire, fmt.Errorf("parse physical rebaseline receipt: %w", err)
 	}
-	if wire.SchemaVersion != "compound.receipt.v0.1" || !strings.HasPrefix(wire.ID, "rec_") || strings.TrimSpace(wire.IDs.WorkID) == "" {
+	if wire.SchemaVersion != "compound.receipt.v0.1" || !strings.HasPrefix(wire.ID, "rec_") || !strings.HasPrefix(wire.IDs.WorkID, "work_") {
 		return rebaselinePhysicalProof{}, wire, fmt.Errorf("physical rebaseline receipt identity is invalid")
 	}
 	if _, err := ReferenceForID(wire.ID); err != nil {
@@ -980,7 +980,7 @@ func parseRebaselinePhysicalTransition(raw []byte) (rebaselinePhysicalProof, reb
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return rebaselinePhysicalProof{}, wire, fmt.Errorf("parse physical rebaseline transition: %w", err)
 	}
-	if wire.SchemaVersion != "compound.transition.v0.1" || !strings.HasPrefix(wire.ID, "tr_") || strings.TrimSpace(wire.IDs.WorkID) == "" {
+	if wire.SchemaVersion != "compound.transition.v0.1" || !strings.HasPrefix(wire.ID, "tr_") || !strings.HasPrefix(wire.IDs.WorkID, "work_") {
 		return rebaselinePhysicalProof{}, wire, fmt.Errorf("physical rebaseline transition identity is invalid")
 	}
 	if _, err := ReferenceForID(wire.ID); err != nil {
