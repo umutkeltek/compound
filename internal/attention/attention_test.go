@@ -258,7 +258,7 @@ func TestRiskGradeMirrorsClassAtProjectionTime(t *testing.T) {
 		Workbench: &work.WorkbenchReport{
 			GeneratedAt: now.Format(time.RFC3339),
 			Open: []work.WorkbenchItem{
-				{WorkID: "work_irreversible_gate", State: "held", ActionContext: &work.WorkActionContext{ActionSummary: "delete production records"}},
+				{WorkID: "work_irreversible_gate", State: "held", ActionContext: &work.WorkActionContext{ActionSummary: "irreversible mutation without verified recovery"}},
 			},
 		},
 		Reviews: &reviewartifact.QueueReport{
