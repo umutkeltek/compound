@@ -231,7 +231,7 @@ func printAttentionTextWithReceiptOnlyGrade(report attention.Report, receiptOnly
 		groups = make([]attention.Group, 0, len(report.Groups))
 		for _, group := range report.Groups {
 			if group.Band == attention.BandNeedsYou && group.RiskGrade == receiptOnlyGrade {
-				receiptOnlyCount++
+				receiptOnlyCount += group.Count
 				continue
 			}
 			groups = append(groups, group)

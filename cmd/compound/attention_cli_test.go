@@ -19,8 +19,8 @@ const attentionReceiptOnlyInvalidChildValue = "COMPOUND_ATTENTION_RECEIPT_ONLY_I
 func TestPrintAttentionTextReceiptOnlyTidyFoldsOnlyNeedsYou(t *testing.T) {
 	report := attention.Report{
 		Counts: attention.Counts{
-			NeedsYou:       4,
-			NeedsYouGroups: 3,
+			NeedsYou:       7,
+			NeedsYouGroups: 4,
 			Watching:       1,
 		},
 		Groups: []attention.Group{
@@ -35,6 +35,10 @@ func TestPrintAttentionTextReceiptOnlyTidyFoldsOnlyNeedsYou(t *testing.T) {
 			{
 				Key: "tidy-needs-you", Band: attention.BandNeedsYou, Source: attention.SourceReviews,
 				Area: "bench", Count: 2, OperatorSummary: "Tidy receipts.", RiskGrade: attention.RiskGradeTidy,
+			},
+			{
+				Key: "tidy-needs-you-second", Band: attention.BandNeedsYou, Source: attention.SourceReviews,
+				Area: "bench", Count: 3, OperatorSummary: "More tidy receipts.", RiskGrade: attention.RiskGradeTidy,
 			},
 			{
 				Key: "tidy-watching", Band: attention.BandWatching, Source: attention.SourceWorkbench,
@@ -56,13 +60,15 @@ func TestPrintAttentionTextReceiptOnlyTidyFoldsOnlyNeedsYou(t *testing.T) {
 			t.Fatalf("receipt-only render missing %q:\n%s", want, output)
 		}
 	}
-	if strings.Contains(output, "Tidy receipts.") {
-		t.Fatalf("tidy needs_you group remained in receipt-only render:\n%s", output)
+	for _, folded := range []string{"Tidy receipts.", "More tidy receipts."} {
+		if strings.Contains(output, folded) {
+			t.Fatalf("tidy needs_you group %q remained in receipt-only render:\n%s", folded, output)
+		}
 	}
-	if !strings.Contains(output, "1 receipt-only (risk_grade tidy) — still in the ledger; view with --json") {
-		t.Fatalf("receipt-only render missing folded-group count:\n%s", output)
+	if !strings.Contains(output, "5 receipt-only (risk_grade tidy) — still in the ledger; view with --json") {
+		t.Fatalf("receipt-only render missing summed item burden:\n%s", output)
 	}
-	if !strings.Contains(output, "attention needs_you=4 groups=3") {
+	if !strings.Contains(output, "attention needs_you=7 groups=4") {
 		t.Fatalf("receipt-only render mutated the authoritative header counts:\n%s", output)
 	}
 	after, err := json.Marshal(report)
