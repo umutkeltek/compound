@@ -192,10 +192,6 @@ func (s *Store) derivePositions(opts PositionFoldOptions, now time.Time) ([]Posi
 	if !now.IsZero() {
 		foldedAt = rfc3339(now)
 	}
-	type key struct{ slot, entity, topic, id string }
-	groups := map[string][]Claim{}
-	keys := map[string]key{}
-	var order []string
 	entity := strings.TrimSpace(opts.Entity)
 	if entity != "" {
 		entity, err = s.canonicalRecallEntity(entity, claims, false)
@@ -203,6 +199,19 @@ func (s *Store) derivePositions(opts PositionFoldOptions, now time.Time) ([]Posi
 			return nil, 0, nil, err
 		}
 	}
+	out := foldPositionRows(claims, superseded, asOf, foldedAt, entity, topicSet)
+	return out, asOf, subtree, nil
+}
+
+// foldPositionRows is the single pure position fold shared by historical/global
+// projection generation and invocation-scoped CurrentView. Callers own input
+// stabilization and optional scope resolution; this function owns slot grouping,
+// ordering, supersession, and Position construction.
+func foldPositionRows(claims []Claim, superseded map[string]bool, asOf int64, foldedAt, entity string, topicSet map[string]bool) []Position {
+	type key struct{ slot, entity, topic, id string }
+	groups := map[string][]Claim{}
+	keys := map[string]key{}
+	var order []string
 	for _, c := range claims {
 		if c.Seq > asOf {
 			continue
@@ -245,7 +254,7 @@ func (s *Store) derivePositions(opts PositionFoldOptions, now time.Time) ([]Posi
 			out = append(out, position)
 		}
 	}
-	return out, asOf, subtree, nil
+	return out
 }
 
 func buildPosition(id, entity, topic string, claims []Claim, superseded map[string]bool, asOf int64, foldedAt string) (Position, bool) {

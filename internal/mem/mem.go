@@ -228,6 +228,10 @@ type Store struct {
 	// lock attempt. Production stores leave it nil.
 	beforeLockObserver func()
 
+	// currentViewAfterClaimsRead is a test seam for pausing a CurrentView while
+	// it still holds the shared memory lock. Production stores leave it nil.
+	currentViewAfterClaimsRead func()
+
 	// ledgerDoctorSnapshotter is a test seam for proving snapshot failures are
 	// propagated instead of being misclassified as ledger mutation. Production
 	// stores leave it nil and snapshot the owned ledger from disk.

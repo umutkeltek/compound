@@ -37,6 +37,8 @@ type EntityResolution struct {
 func (s *Store) entitiesLog() string { return s.home + "/ledger/entities.jsonl" }
 
 // RegisterEntity appends an entity to the registry (append-only; last write wins per slug on load).
+// The registry participates in the memory owner's lock so CurrentView can capture
+// claims, edges, and identity resolution from one coherent generation.
 func (s *Store) RegisterEntity(e Entity, now time.Time) (Entity, error) {
 	if strings.TrimSpace(e.Slug) == "" {
 		return Entity{}, fmt.Errorf("entity needs a slug")
@@ -48,7 +50,8 @@ func (s *Store) RegisterEntity(e Entity, now time.Time) (Entity, error) {
 		e.Visibility = "operational"
 	}
 	e.CreatedAt = rfc3339(now)
-	return e, appendJSONL(s.entitiesLog(), &e)
+	err := s.withLock(func() error { return appendJSONL(s.entitiesLog(), &e) })
+	return e, err
 }
 
 // Entities loads the registry (append-only, last-wins by slug, deterministic order).

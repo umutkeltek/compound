@@ -161,52 +161,95 @@ func (e *LexicalEngine) Query(text, gate string, allowlist []string, k int) ([]H
 // ErrEngineUnavailable / ErrEmbedderMismatch explicitly — callers degrade or refuse, never
 // silently empty.
 func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
-	return s.queryBreadth(text, k, eng, true)
+	view, err := s.CurrentView()
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.queryBreadthFromView(text, k, eng, true, view, nil)
+	return result.Claims, err
 }
 
 // QueryBreadthReadOnly shares QueryBreadth's validation and ranking path but does not capture
 // valid observed_fact proposals. Live prompt retrieval uses it so an engine echo cannot turn a
 // transient query into a durable candidate. Malformed hits still fail closed.
 func (s *Store) QueryBreadthReadOnly(text string, k int, eng Engine) ([]Claim, error) {
-	return s.queryBreadth(text, k, eng, false)
-}
-
-func (s *Store) queryBreadth(text string, k int, eng Engine, captureObserved bool) ([]Claim, error) {
-	if !eng.Capabilities().Breadth {
-		return nil, ErrUnsupported
-	}
-	cur, err := s.currentVisible()
+	view, err := s.CurrentView()
 	if err != nil {
 		return nil, err
 	}
-	gen := s.currentGen()
-	engineGen := eng.Capabilities().CorpusGen
+	result, err := s.queryBreadthFromView(text, k, eng, false, view, nil)
+	return result.Claims, err
+}
+
+// QueryBreadthReadOnlyFromView preserves the normal read-only query ingress,
+// ranking, alias expansion, and fail-closed authority checks while reusing an
+// invocation's already-stabilized memory view.
+func (s *Store) QueryBreadthReadOnlyFromView(text string, k int, eng Engine, view *CurrentView) ([]Claim, error) {
+	result, err := s.queryBreadthFromView(text, k, eng, false, view, nil)
+	return result.Claims, err
+}
+
+// QueryBreadthReadOnlyFromViewExpanded is the invocation-snapshot variant used
+// when the caller has already captured deterministic recall expansion. It
+// prevents the breadth engine and the caller's revision from observing different
+// alias-registry generations.
+func (s *Store) QueryBreadthReadOnlyFromViewExpanded(text string, k int, eng Engine, view *CurrentView, expanded ExpandedQuery) ([]Claim, error) {
+	result, err := s.queryBreadthFromView(text, k, eng, false, view, &expanded)
+	return result.Claims, err
+}
+
+// ReadOnlyBreadthQueryResult distinguishes a captured alias expansion from one
+// that the rented breadth path actually consumed successfully. Callers may bind
+// ConsumedExpansion into freshness only when this result is returned without an
+// error; early exits and failed queries return no dependency.
+type ReadOnlyBreadthQueryResult struct {
+	Claims            []Claim
+	ConsumedExpansion *ExpandedQuery
+}
+
+func (s *Store) QueryBreadthReadOnlyFromViewExpandedResult(text string, k int, eng Engine, view *CurrentView, expanded ExpandedQuery) (ReadOnlyBreadthQueryResult, error) {
+	return s.queryBreadthFromView(text, k, eng, false, view, &expanded)
+}
+
+func (s *Store) queryBreadthFromView(text string, k int, eng Engine, captureObserved bool, view *CurrentView, capturedExpansion *ExpandedQuery) (ReadOnlyBreadthQueryResult, error) {
+	if capturedExpansion != nil && expandedQueryProvided(*capturedExpansion) && capturedExpansion.Original != text {
+		return ReadOnlyBreadthQueryResult{}, fmt.Errorf("captured recall expansion mismatch: original does not match query text")
+	}
+	caps := eng.Capabilities()
+	if !caps.Breadth {
+		return ReadOnlyBreadthQueryResult{}, ErrUnsupported
+	}
+	if view == nil || view.owner != s || view.revision == "" {
+		return ReadOnlyBreadthQueryResult{}, fmt.Errorf("current memory view is required and must belong to this Store instance")
+	}
+	cur := view.claims
+	gen := view.generation
+	engineGen := caps.CorpusGen
 	if engineGen > gen {
-		return nil, fmt.Errorf("%w: engine_gen=%d ledger_gen=%d", ErrEngineAhead, engineGen, gen)
+		return ReadOnlyBreadthQueryResult{}, fmt.Errorf("%w: engine_gen=%d ledger_gen=%d", ErrEngineAhead, engineGen, gen)
 	}
 	if engineGen < gen {
 		if ceng, ok := eng.(contextIndexEngine); ok {
-			edges, err := s.visibleWireEdges(cur, 0.5)
-			if err != nil {
-				return nil, err
+			if err := ceng.IndexWithContext(view.Claims(), view.wireEdges(0.5), gen); err != nil {
+				return ReadOnlyBreadthQueryResult{}, err
 			}
-			if err := ceng.IndexWithContext(cur, edges, gen); err != nil {
-				return nil, err
-			}
-		} else if err := eng.Index(cur, gen); err != nil {
-			return nil, err
+		} else if err := eng.Index(view.Claims(), gen); err != nil {
+			return ReadOnlyBreadthQueryResult{}, err
 		}
 	}
 	allow := make([]string, 0, len(cur))
-	byID := make(map[string]Claim, len(cur))
 	for _, c := range cur {
 		allow = append(allow, c.ID)
-		byID[c.ID] = c
 	}
 	// E1 deterministic query expansion: widen the QUERY only (never the gate).
 	// Absent/empty registry → original text only (fail-open, byte-identical path).
-	reg, _ := LoadRecallAliases(s.home)
-	expanded := ExpandQuery(text, reg)
+	expanded := ExpandedQuery{Original: text, Text: text}
+	if capturedExpansion != nil && expandedQueryProvided(*capturedExpansion) {
+		expanded = cloneExpandedQuery(*capturedExpansion)
+	} else {
+		reg, _ := LoadRecallAliases(s.home)
+		expanded = ExpandQuery(text, reg)
+	}
 	fetchK := k
 	if fetchK > 0 && expanded.Active {
 		// Pull a wider pool so discounted expansion hits can still fill top-k.
@@ -214,12 +257,12 @@ func (s *Store) queryBreadth(text string, k int, eng Engine, captureObserved boo
 	}
 	hits, err := eng.Query(text, GateList, allow, fetchK)
 	if err != nil {
-		return nil, err
+		return ReadOnlyBreadthQueryResult{}, err
 	}
 	if expanded.Active && len(expanded.Added) > 0 {
 		expHits, expErr := eng.Query(strings.Join(expanded.Added, " "), GateList, allow, fetchK)
 		if expErr != nil {
-			return nil, expErr
+			return ReadOnlyBreadthQueryResult{}, expErr
 		}
 		hits = mergeHitsWithExpansionDiscount(hits, expHits, k)
 	} else if k > 0 && len(hits) > k {
@@ -237,27 +280,38 @@ func (s *Store) queryBreadth(text string, k int, eng Engine, captureObserved boo
 		switch h.Kind {
 		case "", KindIndexHit:
 			if h.Observed != nil {
-				return nil, fmt.Errorf("%w: index_hit %q carried an observed payload", ErrEngineServedUnownedClaim, h.ClaimID)
+				return ReadOnlyBreadthQueryResult{}, fmt.Errorf("%w: index_hit %q carried an observed payload", ErrEngineServedUnownedClaim, h.ClaimID)
 			}
-			c, ok := byID[h.ClaimID]
+			c, ok := view.byID[h.ClaimID]
 			if !ok {
-				return nil, fmt.Errorf("%w: %q", ErrEngineServedUnownedClaim, h.ClaimID) // was: silent drop
+				return ReadOnlyBreadthQueryResult{}, fmt.Errorf("%w: %q", ErrEngineServedUnownedClaim, h.ClaimID) // was: silent drop
 			}
-			out = append(out, c)
+			out = append(out, cloneCurrentViewClaim(c))
 		case KindObservedFact:
 			if h.ClaimID != "" || h.Observed == nil || h.Observed.Entity == "" {
-				return nil, fmt.Errorf("%w: malformed observed_fact (claim_id=%q)", ErrEngineServedUnownedClaim, h.ClaimID)
+				return ReadOnlyBreadthQueryResult{}, fmt.Errorf("%w: malformed observed_fact (claim_id=%q)", ErrEngineServedUnownedClaim, h.ClaimID)
 			}
 			if captureObserved {
 				if err := s.captureObservedFact(engineName, *h.Observed, time.Now()); err != nil {
-					return nil, err
+					return ReadOnlyBreadthQueryResult{}, err
 				}
 			}
 		default:
-			return nil, fmt.Errorf("%w: unknown hit kind %q", ErrEngineServedUnownedClaim, h.Kind)
+			return ReadOnlyBreadthQueryResult{}, fmt.Errorf("%w: unknown hit kind %q", ErrEngineServedUnownedClaim, h.Kind)
 		}
 	}
-	return out, nil
+	consumed := cloneExpandedQuery(expanded)
+	return ReadOnlyBreadthQueryResult{Claims: out, ConsumedExpansion: &consumed}, nil
+}
+
+func expandedQueryProvided(expanded ExpandedQuery) bool {
+	return expanded.Original != "" || expanded.Text != "" || expanded.Active || len(expanded.Added) != 0
+}
+
+func cloneExpandedQuery(expanded ExpandedQuery) ExpandedQuery {
+	expanded.Added = append([]string(nil), expanded.Added...)
+	expanded.Matched = append([]string(nil), expanded.Matched...)
+	return expanded
 }
 
 // observed is the derivation minted for a fact the rented breadth engine SURFACED but Compound
