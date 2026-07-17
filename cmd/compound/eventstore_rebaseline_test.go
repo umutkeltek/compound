@@ -560,12 +560,29 @@ func TestEventStoreRebaselineInvalidGovernanceProofCannotAuthorizeFinalization(t
 	if err := json.Unmarshal(raw, &forged); err != nil {
 		t.Fatal(err)
 	}
-	// These proof-shaped governance records are deliberately invalid. The old
-	// adapter ignored them and trusted only free-floating IDs, so a retry could
-	// finalize and clear the journal without a valid ActionIntent/PolicyDecision.
-	forged["action_intent"] = json.RawMessage(`{"schema_version":"` + envelope.SVActionIntent + `","id":"act_fabricated"}`)
-	forged["policy_decision"] = json.RawMessage(`{"schema_version":"` + envelope.SVPolicyDecision + `","id":"pol_fabricated"}`)
-	forged["policy_authority"] = json.RawMessage(`{"schema_version":"` + policy.AuthorityFaceSchema + `","current":true,"allowed":true}`)
+	// These governance records are deliberately invalid but carry a correct
+	// physical bundle hash. The eventstore must accept their opaque binding;
+	// the command adapter must still reject their typed semantics.
+	var bundle testRebaselineAuthorityBundle
+	if err := json.Unmarshal(forged["authority_bundle"], &bundle); err != nil {
+		t.Fatal(err)
+	}
+	var authorityRecords map[string]json.RawMessage
+	if err := json.Unmarshal(bundle.Record, &authorityRecords); err != nil {
+		t.Fatal(err)
+	}
+	authorityRecords["action_intent"] = json.RawMessage(`{"schema_version":"` + envelope.SVActionIntent + `","id":"act_fabricated"}`)
+	authorityRecords["policy_decision"] = json.RawMessage(`{"schema_version":"` + envelope.SVPolicyDecision + `","id":"pol_fabricated"}`)
+	authorityRecords["policy_authority"] = json.RawMessage(`{"schema_version":"` + policy.AuthorityFaceSchema + `","current":true,"allowed":true}`)
+	bundle.Record, err = json.Marshal(authorityRecords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle.RecordSHA256 = testAuthorityBundleHash(t, bundle.Record)
+	forged["authority_bundle"], err = json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
 	forgedRaw, err := json.MarshalIndent(forged, "", "  ")
 	if err != nil {
 		t.Fatal(err)
