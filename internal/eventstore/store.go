@@ -300,14 +300,17 @@ type ScanPage struct {
 	Entries []Entry
 	Cursor  string
 	// Resumed is true ONLY when opts.Cursor decoded into a usable cursor AND
-	// the segment-authoritative scanFrom path ran on it — i.e. Entries is
-	// exactly the delta since that cursor, never a superset. It is false for
-	// an empty/garbage/version-mismatched cursor and for legacy-fallback
-	// delegation to a full scan (migration gate open); both of those still
-	// return a correct (if less precise) result, so Resumed's zero value
-	// (false) is the fail-safe default a caller can treat as "full rescan."
-	// A caller MUST NOT skip its own dedup filter on Entries unless Resumed
-	// is true.
+	// the segment-authoritative scanFrom path consumed every segment strictly
+	// from its recorded byte boundary — i.e. Entries is exactly the delta
+	// since that cursor, never a superset. It is false for an
+	// empty/garbage/version-mismatched cursor, for legacy-fallback delegation
+	// to a full scan (migration gate open), and for a DECODABLE cursor any of
+	// whose offsets forced a whole-segment reparse (offset past EOF, offset
+	// mid-frame, segment replaced by a shorter file): those pages can
+	// re-serve already-consumed frames. All of them still return a correct
+	// (if less precise) result, so Resumed's zero value (false) is the
+	// fail-safe default a caller can treat as "full rescan." A caller MUST
+	// NOT skip its own dedup filter on Entries unless Resumed is true.
 	Resumed bool
 }
 

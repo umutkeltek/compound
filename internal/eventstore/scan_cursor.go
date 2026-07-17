@@ -96,12 +96,17 @@ func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]stored
 	}
 
 	prev, usable := decodeScanCursor(cursorStr)
+	// resumed starts as "the token decoded" and is downgraded the moment any
+	// segment degrades to a whole-file reparse: such a page can re-serve
+	// already-consumed frames (a superset), and a caller that trusts
+	// ScanPage.Resumed to skip its own dedup filter would fold them twice.
+	resumed := usable
 	next := scanCursor{Version: scanCursorVersion, Segments: map[string]int64{}}
 	records := map[string]storedRecord{}
 
 	familyEntries, err := os.ReadDir(e.segRoot)
 	if errors.Is(err, os.ErrNotExist) {
-		return records, nil, encodeScanCursor(next), usable, nil
+		return records, nil, encodeScanCursor(next), resumed, nil
 	}
 	if err != nil {
 		return nil, nil, "", false, err
@@ -124,9 +129,12 @@ func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]stored
 			if relErr != nil {
 				rel = segment.path
 			}
-			frames, highWater, err := e.scanSegmentFrom(segment.path, prev.Segments[rel], index == 0, regularKindForScan(regularOnly))
+			frames, highWater, degraded, err := e.scanSegmentFrom(segment.path, prev.Segments[rel], index == 0, regularKindForScan(regularOnly))
 			if err != nil {
 				return nil, nil, "", false, err
+			}
+			if degraded {
+				resumed = false
 			}
 			next.Segments[rel] = highWater
 			// Newest-occurrence-wins within the returned delta, matching scanAll's
@@ -146,7 +154,7 @@ func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]stored
 			}
 		}
 	}
-	return records, nil, encodeScanCursor(next), usable, nil
+	return records, nil, encodeScanCursor(next), resumed, nil
 }
 
 // scanSegmentFrom parses one segment starting at the caller's recorded byte
@@ -154,33 +162,37 @@ func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]stored
 // offset of the last COMPLETE frame — a tolerated torn tail on the hot segment
 // is excluded so it is re-read once completed). Every reconciliation hazard —
 // a non-boundary offset, a cursor past EOF, a shrunk file — degrades to a full
-// reparse of that segment, never a skip. regularKind, when set, keeps the
-// rooted symlink/traversal guard by reading through home.ReadRootedRegularFile.
-func (e *engine) scanSegmentFrom(path string, consumed int64, tolerateFinalTorn bool, regularKind string) ([]parsedFrame, int64, error) {
+// reparse of that segment, never a skip; degraded reports exactly that case
+// (the parse started before the caller's recorded offset), so scanFrom can
+// withhold ScanPage.Resumed from a page that may re-serve consumed frames.
+// regularKind, when set, keeps the rooted symlink/traversal guard by reading
+// through home.ReadRootedRegularFile.
+func (e *engine) scanSegmentFrom(path string, consumed int64, tolerateFinalTorn bool, regularKind string) (_ []parsedFrame, _ int64, degraded bool, _ error) {
 	if regularKind != "" {
 		data, err := home.ReadRootedRegularFile(e.home, path, regularKind+" segment")
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, false, err
 		}
 		start := alignedStart(data, consumed)
+		degraded = start != consumed
 		frames, highWater, err := parseSegmentSuffix(path, data, start, tolerateFinalTorn)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, degraded, err
 		}
 		if start < int64(len(data)) {
 			notifyScanParse(path, len(frames), int64(len(data))-start)
 		}
-		return frames, highWater, nil
+		return frames, highWater, degraded, nil
 	}
 
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	size := info.Size()
 	start := consumed
@@ -190,26 +202,27 @@ func (e *engine) scanSegmentFrom(path string, consumed int64, tolerateFinalTorn 
 	if start > 0 && start < size {
 		var one [1]byte
 		if _, err := file.ReadAt(one[:], start-1); err != nil && !errors.Is(err, io.EOF) {
-			return nil, 0, err
+			return nil, 0, false, err
 		} else if one[0] != '\n' {
 			start = 0 // not a frame boundary -> reparse the whole segment
 		}
 	}
+	degraded = start != consumed
 	if start >= size {
-		return nil, size, nil // nothing new since the cursor
+		return nil, size, degraded, nil // nothing new since the cursor
 	}
 	buf := make([]byte, size-start)
 	n, err := file.ReadAt(buf, start)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, 0, err
+		return nil, 0, degraded, err
 	}
 	buf = buf[:n]
 	frames, highWater, err := rebaseFrames(path, buf, start, tolerateFinalTorn)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, degraded, err
 	}
 	notifyScanParse(path, len(frames), int64(len(buf)))
-	return frames, highWater, nil
+	return frames, highWater, degraded, nil
 }
 
 // alignedStart returns the byte offset to begin an in-memory suffix parse at.

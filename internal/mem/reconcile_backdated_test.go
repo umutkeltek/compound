@@ -1,6 +1,8 @@
 package mem
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -118,6 +120,70 @@ func TestSynthesisReconcileFullRescanDedupsFoldedBackdatedEvent(t *testing.T) {
 	if rescanned.ReconcileDismissedCount != 0 {
 		t.Fatalf("full rescan folded the backdated event a second time: report=%+v", rescanned)
 	}
+}
+
+// Falsifier: a STALE-BUT-DECODABLE cursor (structurally valid token whose
+// offsets force a whole-segment reparse, e.g. past-EOF after a segment was
+// replaced/truncated) must behave like the garbage-cursor full rescan above:
+// the timestamp/ID filter is the dedup authority and nothing already folded
+// folds again. Red if the store still reports such a page as Resumed=true —
+// the filter-skip then re-serves every consumed event into a double fold.
+func TestSynthesisReconcileStaleButDecodableCursorDoesNotDoubleFold(t *testing.T) {
+	fixture := prepareBackdatedReconcileFixture(t)
+
+	folded, err := fixture.store.SynthesisSweep([]string{"reconcile"}, fixture.now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if folded.ReconcileDismissedCount != 1 {
+		t.Fatalf("backdated prerequisite fold dismissed = %d, want 1", folded.ReconcileDismissedCount)
+	}
+	checkpoint, err := fixture.store.loadReconcileCheckpoint(fixture.now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.Cursor = staleButDecodableCursor(t, checkpoint.Cursor)
+	if err := writeJSON(fixture.store.reconcileCheckpointPath(), checkpoint); err != nil {
+		t.Fatal(err)
+	}
+
+	rescanned, err := fixture.store.SynthesisSweep([]string{"reconcile"}, fixture.now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rescanned.ReconcileDismissedCount != 0 {
+		t.Fatalf("stale-but-decodable cursor re-served consumed events into a double fold: report=%+v", rescanned)
+	}
+}
+
+// staleButDecodableCursor rewrites every per-segment offset in a real cursor
+// token to a past-EOF value, keeping the token structurally valid (version
+// intact, decodable) while guaranteeing the store degrades every segment to a
+// whole-file reparse.
+func staleButDecodableCursor(t *testing.T, token string) string {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		t.Fatalf("checkpoint cursor is not a decodable token: %v", err)
+	}
+	var cursor struct {
+		Version  int              `json:"v"`
+		Segments map[string]int64 `json:"seg"`
+	}
+	if err := json.Unmarshal(raw, &cursor); err != nil {
+		t.Fatalf("checkpoint cursor is not the scan-cursor shape: %v", err)
+	}
+	if len(cursor.Segments) == 0 {
+		t.Fatal("checkpoint cursor holds no segment offsets; fixture no longer exercises the resume path")
+	}
+	for rel := range cursor.Segments {
+		cursor.Segments[rel] = 1 << 40
+	}
+	data, err := json.Marshal(cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(data)
 }
 
 func TestSynthesisReconcileResumedBackdatedOutsideWindowIsParked(t *testing.T) {

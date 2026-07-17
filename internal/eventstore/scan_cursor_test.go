@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -333,5 +334,81 @@ func TestScanFromResumedReportsUsableCursorOnly(t *testing.T) {
 	}
 	if legacy.Resumed {
 		t.Fatal("legacy-fallback ScanFrom must report Resumed=false regardless of cursor shape")
+	}
+}
+
+// Falsifier F4: a STRUCTURALLY VALID cursor whose offset forces a whole-segment
+// reparse (mid-frame offset, past-EOF offset, or a segment replaced by a
+// shorter file) returns already-consumed frames — a superset, not a delta — so
+// it MUST report Resumed=false, or a caller that skips its own dedup filter on
+// Resumed=true (mem reconcile does) double-folds every re-served event. Red if
+// any hazard-degraded page still claims Resumed=true.
+func TestScanFromResumedReportsFalseOnHazardDegradedResume(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})
+	closeCompletionGate(t, store)
+
+	const seeded = 6
+	for i := 0; i < seeded; i++ {
+		putRecord(t, store, fmt.Sprintf("rec_h%d", i), "compound.receipt.v0.1", now, "v")
+	}
+	clean, err := store.ScanFrom(ScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rel := filepath.Join(segmentsDirName, "receipt", ingestionDay(now)+".jsonl")
+	nonBoundary := encodeScanCursor(scanCursor{Version: scanCursorVersion, Segments: map[string]int64{rel: 3}})
+	pastEOF := encodeScanCursor(scanCursor{Version: scanCursorVersion, Segments: map[string]int64{rel: 1 << 40}})
+
+	for name, cursor := range map[string]string{
+		"non-boundary": nonBoundary,
+		"past-eof":     pastEOF,
+	} {
+		page, err := store.ScanFrom(ScanOptions{Cursor: cursor})
+		if err != nil {
+			t.Fatalf("%s cursor: %v", name, err)
+		}
+		if len(page.Entries) == 0 {
+			t.Fatalf("%s cursor returned no entries; fixture no longer exercises the reparse path", name)
+		}
+		if page.Resumed {
+			t.Fatalf("%s cursor degraded to a whole-segment reparse (a superset page) but still reported Resumed=true", name)
+		}
+	}
+
+	// Segment replaced by a shorter file (external truncation — the CACHE-class
+	// hazard the cursor contract promises to survive): the stale clean cursor
+	// must converge to the fresh-scan answer AND report Resumed=false.
+	segPath := filepath.Join(store.engine.eventsDir, rel)
+	data, err := os.ReadFile(segPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(segPath, data[:len(data)/2], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := store.ScanFrom(ScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shrunk, err := store.ScanFrom(ScanOptions{Cursor: clean.Cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(entryIDs(shrunk.Entries), entryIDs(fresh.Entries)) {
+		t.Fatalf("shrunk-segment scan = %v, want fresh-scan convergence %v", entryIDs(shrunk.Entries), entryIDs(fresh.Entries))
+	}
+	if shrunk.Resumed {
+		t.Fatal("shrunk-segment reparse (a superset page) still reported Resumed=true")
+	}
+
+	// Convergence: the cursor issued by the degraded scan resumes cleanly.
+	steady, err := store.ScanFrom(ScanOptions{Cursor: shrunk.Cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steady.Entries) != 0 || !steady.Resumed {
+		t.Fatalf("post-hazard steady scan: entries=%d resumed=%v, want 0/true", len(steady.Entries), steady.Resumed)
 	}
 }

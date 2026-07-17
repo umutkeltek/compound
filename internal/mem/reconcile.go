@@ -458,7 +458,10 @@ func (s *Store) currentClaimsByCluster(claims []Claim, superseded map[string]boo
 // the frames appended since the cursor, by byte-offset construction — every
 // one of them is new, including a backdated append (created_at earlier than
 // checkpoint.LastEventTime, e.g. a migration/import writing historical
-// records past an already-consumed cursor position). Applying the
+// records past an already-consumed cursor position). The store enforces this:
+// a decodable-but-stale cursor whose offsets force a whole-segment reparse (a
+// page that CAN re-serve consumed frames) comes back Resumed=false, so the
+// filter-skip below can never double-fold re-served events. Applying the
 // LastEventTime/ID filter on THAT set would wrongly discard a backdated event
 // exactly because it looks like a dup by timestamp, permanently losing it
 // (the cursor has already moved past its bytes, so no future sweep re-serves
