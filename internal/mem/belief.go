@@ -81,8 +81,29 @@ type LaneResolver interface {
 var (
 	// beliefSlugRe matches a lowercase kebab slug (tendency domain, task-class domain, fold tag).
 	beliefSlugRe = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
-	// beliefRefRe matches a whitespace-free ref/id (evidence refs, source trace, candidate id).
-	beliefRefRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_./-]*$`)
+	// beliefRefRe matches an opaque prefixed-id ref (evidence refs, source trace, candidate id):
+	// one or more lowercase-led alnum segments joined by "_", e.g. rec_<hex>, claim_<hex>,
+	// cand_lanebelief_<hex>, cand_lanebelief_cool_<hex>. It has NO "/" or ":" in the charset at
+	// all, so it can never match a path or a scheme:path value — a belief ref is always an
+	// opaque id, never a filesystem or URI-shaped location.
+	//
+	// Survey (2026-07-17, packet 2026-07-17-critique-d-belief-ref-tightening): every landed
+	// producer of ID/SourceTraceRef/EvidenceRefs on a belief draft is internal/lanebeliefs
+	// (fold.go, cool.go — the only non-test callers of ValidateBeliefDraft in the repo). Shapes
+	// found in landed code + its own test fixtures:
+	//   - fold.go beliefCandidateID/recoveryCandidateID, cool.go coolCandidateID: "cand_lanebelief_"
+	//     (+ "recover_"/"cool_") + a hex suffix — MULTIPLE "_"-joined segments, not one.
+	//   - fold.go draftForObservation: EvidenceRefs = the folded receipt's own ID (envelope
+	//     Receipt.ID, always "rec_"-prefixed — see internal/mem/protocol.go hashLikeClaimID for
+	//     the wider rec_/ev_/cl_/claim_ convention); lanebeliefs' own test fixtures mint receipt
+	//     ids like "rec_green_01", "rec_membership_00" (also multi-segment).
+	//   - cool.go coolingProofRefs: EvidenceRefs = the superseded claim's own EvidenceRefs, or
+	//     (fallback) the claim's own ID — mem.go idFor("claim_", ...), single "_" + 12-hex.
+	//   - SourceTraceRef is never set by any landed producer (always empty on real drafts); the
+	//     charset still applies whenever a caller does set it.
+	// The tail char class keeps [A-Za-z0-9] (not hex-only) per the packet's settled candidate
+	// shape, since nothing observed needs it narrower and belief IDs are opaque, not parsed.
+	beliefRefRe = regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[A-Za-z0-9]+)+$`)
 )
 
 // TendencyBeliefDraft builds a tendency-belief DRAFT: entity = the resolved agent-lane node,
@@ -170,6 +191,14 @@ func resolveBeliefEntity(resolver LaneResolver, laneRef string) (string, error) 
 // guards B2's fold path and any future caller. It refuses anything that is not one of the two
 // ratified belief shapes, running the rule-2 effective-class check on EffectiveCanonClass and
 // requiring every field to be a closed-vocabulary token or a validated slug/id.
+//
+// Admission-only, by survey: every call site (belief.go's own constructors, fold.go, cool.go) is
+// on the WRITE/propose path, before a draft is ever persisted. No load/list/replay path in this
+// repo re-runs it — Store.AllCandidates, loadClaims/loadClaimsRaw, and lanebeliefs.List all read
+// stored JSON straight back with no belief-shape check. So tightening beliefRefRe here changes
+// what a NEW draft may carry; it can never brick a read of an already-stored belief (there is no
+// such read-time gate to trip). If a future caller ever adds validation on load/replay, that
+// caller must carry its own migration note for refs written under the pre-tightening regex.
 func ValidateBeliefDraft(c Candidate) error {
 	// 1. Entity: an agent-lane node id from the B0 resolver (rule 1). Never empty, never guessed.
 	if strings.TrimSpace(c.Entity) == "" {

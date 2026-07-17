@@ -366,3 +366,107 @@ func TestBeliefVocabularyRefusals(t *testing.T) {
 		}
 	})
 }
+
+// pathShapedRefs are SYNTHETIC placeholder-shaped values (repo is public — never a real personal
+// path): a scheme:path ref, a bare absolute path, and a relative traversal. None of these are a
+// belief ref shape (an opaque prefixed id); all four must be refused for ID, SourceTraceRef, and
+// every EvidenceRefs element (packet 2026-07-17-critique-d-belief-ref-tightening, falsifier 1).
+var pathShapedRefs = []string{
+	"source:/Users/x",
+	"source:/home/x",
+	"file:/tmp/x",
+	"/etc/passwd",
+	"../secret",
+}
+
+// F-path: path-shaped refs are refused on ID, SourceTraceRef, and EvidenceRefs. Before the fix,
+// beliefRefRe only rejected a LEADING "/", so "source:/Users/x" and "file:/tmp/x" were ACCEPTED
+// (the actual regression); "/etc/passwd" and "../secret" were already refused at base (leading
+// "/" and leading "." both fail the old regex's required alnum first char) and stay refused here
+// too — this test pins all four as refused post-fix regardless of which were already green.
+func TestBeliefPathShapedRefsRefused(t *testing.T) {
+	store, laneID := newLaneResolver(t)
+	for _, ref := range pathShapedRefs {
+		t.Run("F-path_id_"+ref, func(t *testing.T) {
+			c := validTendency(t, store, laneID)
+			c.ID = ref
+			if err := ValidateBeliefDraft(c); err == nil {
+				t.Fatalf("valve accepted path-shaped id %q", ref)
+			}
+		})
+		t.Run("F-path_source_trace_ref_"+ref, func(t *testing.T) {
+			c := validTendency(t, store, laneID)
+			c.SourceTraceRef = ref
+			if err := ValidateBeliefDraft(c); err == nil {
+				t.Fatalf("valve accepted path-shaped source_trace_ref %q", ref)
+			}
+		})
+		t.Run("F-path_evidence_ref_"+ref, func(t *testing.T) {
+			c := validTendency(t, store, laneID)
+			c.EvidenceRefs = []string{ref}
+			if err := ValidateBeliefDraft(c); err == nil {
+				t.Fatalf("valve accepted path-shaped evidence_ref %q", ref)
+			}
+		})
+	}
+}
+
+// landedRefVocabulary is every ID/EvidenceRefs shape the 2026-07-17 survey found in landed
+// producer code (internal/lanebeliefs is the ONLY non-test caller of ValidateBeliefDraft) plus
+// its own test fixtures, so the tightened regex must keep every one of these green:
+//   - "rec_<hex>": envelope Receipt.ID, stamped onto EvidenceRefs by fold.go draftForObservation
+//     (obs.EvidenceEventID = rec.ID) and used as the cool.go coolingProofRefs fallback shape.
+//   - "claim_<hex>": mem.go idFor("claim_", ...) — the cool.go coolingProofRefs fallback (cl.ID)
+//     when a superseded claim carries no EvidenceRefs of its own.
+//   - "cand_lanebelief_<hex>" / "..._recover_<hex>": fold.go beliefCandidateID/recoveryCandidateID
+//     — stamped onto Candidate.ID, MULTIPLE "_"-joined segments (not a single prefix_hex).
+//   - "cand_lanebelief_cool_<hex>": cool.go coolCandidateID — same multi-segment shape.
+//   - "rec_green_01" / "rec_membership_00": lanebeliefs' own fold_test.go/fold_membership_test.go
+//     fixture receipt ids (multi-segment with a numeric tail) that flow through the same
+//     EvidenceRefs path in a real `go test ./internal/lanebeliefs` run.
+//   - "cand_<hex>" / "work_<hex>" / "ev_<hex>": the wider opaque-id convention this repo uses for
+//     ids of this shape elsewhere (internal/mem/protocol.go hashLikeClaimID: cl_/ev_/rec_/claim_),
+//     included so the regex is proven to accept the general idiom, not just the two literal
+//     prefixes lanebeliefs happens to emit today.
+var landedRefVocabulary = []string{
+	"rec_1a2b3c4d5e6f",
+	"claim_1a2b3c4d5e6f",
+	"cand_lanebelief_1a2b3c4d5e6f7891a2b3",
+	"cand_lanebelief_recover_1a2b3c4d5e6f7891a2b3",
+	"cand_lanebelief_cool_1a2b3c4d5e6f7891a2b3",
+	"rec_green_01",
+	"rec_membership_00",
+	"cand_1a2b3c4d5e6f",
+	"work_1a2b3c4d5e6f",
+	"ev_1a2b3c4d5e6f",
+}
+
+// F-vocab-refs: every landed producer ref shape stays green on ID, SourceTraceRef, and
+// EvidenceRefs after the tightening (falsifier 2 — the whitelist must not regress real vocabulary
+// while closing the path-shaped hole).
+func TestBeliefLandedRefVocabularyAccepted(t *testing.T) {
+	store, laneID := newLaneResolver(t)
+	for _, ref := range landedRefVocabulary {
+		t.Run("F-vocab-refs_id_"+ref, func(t *testing.T) {
+			c := validTendency(t, store, laneID)
+			c.ID = ref
+			if err := ValidateBeliefDraft(c); err != nil {
+				t.Fatalf("valve rejected landed id shape %q: %v", ref, err)
+			}
+		})
+		t.Run("F-vocab-refs_source_trace_ref_"+ref, func(t *testing.T) {
+			c := validTendency(t, store, laneID)
+			c.SourceTraceRef = ref
+			if err := ValidateBeliefDraft(c); err != nil {
+				t.Fatalf("valve rejected landed source_trace_ref shape %q: %v", ref, err)
+			}
+		})
+		t.Run("F-vocab-refs_evidence_ref_"+ref, func(t *testing.T) {
+			c := validTendency(t, store, laneID)
+			c.EvidenceRefs = []string{ref}
+			if err := ValidateBeliefDraft(c); err != nil {
+				t.Fatalf("valve rejected landed evidence_ref shape %q: %v", ref, err)
+			}
+		})
+	}
+}
