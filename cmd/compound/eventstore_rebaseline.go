@@ -27,7 +27,7 @@ import (
 // default capability (see act_cli.go).
 const eventStoreRebaselineCapability = "eventstore.stream_baseline.rewrite"
 
-const rebaselinePendingSchema = "compound.eventstore.rebaseline_pending.v0.1"
+const rebaselinePendingSchema = eventstore.RebaselinePendingSchema
 
 type rebaselinePending struct {
 	SchemaVersion     string              `json:"schema_version"`
