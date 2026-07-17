@@ -881,16 +881,21 @@ func newTestPhysicalRebaselineJournal(t *testing.T, tx *RebaselineTransaction, p
 	if err != nil {
 		t.Fatal(err)
 	}
+	authorityBundle, err := NewRebaselinePendingAuthorityBundle([]byte(`{"opaque":"test authority"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	raw, err := json.MarshalIndent(struct {
-		SchemaVersion     string                   `json:"schema_version"`
-		SidecarPath       string                   `json:"sidecar_path"`
-		PriorExisted      bool                     `json:"prior_existed"`
-		PreImageRef       string                   `json:"pre_image_ref"`
-		PostImageRef      string                   `json:"post_image_ref"`
-		BeforeEvidenceRef string                   `json:"before_evidence_ref"`
-		AfterEvidenceRef  string                   `json:"after_evidence_ref"`
-		Proofs            []RebaselinePendingProof `json:"proofs"`
-	}{SchemaVersion: "compound.eventstore.rebaseline_pending.v0.1", SidecarPath: tx.SidecarPath(), PriorExisted: priorExisted, PreImageRef: preRef, PostImageRef: postRef, BeforeEvidenceRef: "eventstore-baseline-before:test", AfterEvidenceRef: "eventstore-baseline-after:test", Proofs: []RebaselinePendingProof{receiptProof, transitionProof}}, "", "  ")
+		SchemaVersion     string                           `json:"schema_version"`
+		SidecarPath       string                           `json:"sidecar_path"`
+		PriorExisted      bool                             `json:"prior_existed"`
+		PreImageRef       string                           `json:"pre_image_ref"`
+		PostImageRef      string                           `json:"post_image_ref"`
+		BeforeEvidenceRef string                           `json:"before_evidence_ref"`
+		AfterEvidenceRef  string                           `json:"after_evidence_ref"`
+		AuthorityBundle   RebaselinePendingAuthorityBundle `json:"authority_bundle"`
+		Proofs            []RebaselinePendingProof         `json:"proofs"`
+	}{SchemaVersion: "compound.eventstore.rebaseline_pending.v0.1", SidecarPath: tx.SidecarPath(), PriorExisted: priorExisted, PreImageRef: preRef, PostImageRef: postRef, BeforeEvidenceRef: "eventstore-baseline-before:test", AfterEvidenceRef: "eventstore-baseline-after:test", AuthorityBundle: authorityBundle, Proofs: []RebaselinePendingProof{receiptProof, transitionProof}}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
