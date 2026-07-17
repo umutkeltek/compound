@@ -1,14 +1,17 @@
 package lensmodulator
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"compound/internal/act"
 	"compound/internal/behaviorallens"
 	"compound/internal/eventstore"
+	"compound/internal/finding"
 	"compound/internal/policy"
 )
 
@@ -409,6 +412,165 @@ func TestModulateCompensatesCreatedLaneEntryWhenActFails(t *testing.T) {
 		if !present || val != "active" {
 			t.Fatalf("a pre-existing lane entry must be untouched by a failed act: present=%v val=%q", present, val)
 		}
+	}
+}
+
+// FALSIFIER (ledger preflight aborts BEFORE any route-store mutation): a wedge at the action-ledger
+// PATH ITSELF (a directory sitting where the jsonl file must be) must make Modulate abort with the
+// route store left byte-identical (absent) and ZERO new receipts/transitions. Before the preflight
+// this SAME wedge still produced a non-nil error from appendActionRecord's OpenFile — but only AFTER
+// act.Execute had already mutated the route store and recorded a receipt/transition. This test is
+// written to FAIL against that shape: it demands the store stay ABSENT and the event store stay
+// EMPTY, not merely that Modulate returns an error.
+func TestModulateLedgerPreflightAbortsBeforeAnyRouteStoreMutation(t *testing.T) {
+	home := t.TempDir()
+	now := fixedNow()
+	recordSignal(t, home, mkSignal(t, "sycophancy", "lane-a", 0.9, behaviorallens.VisibilityPublicSafe, now))
+	armSycophancy(t, home, now)
+
+	// Wedge the ledger LEAF PATH itself as a directory — MkdirAll(parent) trivially succeeds since the
+	// parent IS this directory's own parent, but OpenFile on the leaf then fails because it is a dir.
+	if err := os.MkdirAll(actionLedgerPath(home), 0o755); err != nil {
+		t.Fatalf("wedge action ledger path: %v", err)
+	}
+
+	if _, err := Modulate(home, grantConfig(home), "work_ledger_wedge", now); err == nil {
+		t.Fatal("expected Modulate to abort when the action ledger path is wedged")
+	}
+
+	if _, err := os.Stat(RouteStorePath(home)); !os.IsNotExist(err) {
+		t.Fatalf("route store must stay ABSENT (byte-identical) when the ledger preflight aborts; stat err=%v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(home, "events"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read events dir: %v", err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Fatalf("want ZERO new receipts/transitions when the ledger preflight aborts, got %d event files: %v", len(entries), names)
+	}
+}
+
+// FALSIFIER (post-act ledger-append backstop, compensating revert): a ledger-append failure AFTER a
+// successful act.Execute must not strand the demote. This forces the append to fail via the
+// package-private seam (appendActionRecordFn, mirroring act's own recordEnvelopeFn test seam) and
+// asserts the compensating revert restores the route store to its pre-image, no recovery finding was
+// needed, a later Revert() correctly finds nothing open (there is genuinely nothing left to revert),
+// and the returned error NAMES the recovery path taken.
+func TestModulateCompensatesLedgerAppendFailureWithRevert(t *testing.T) {
+	home := t.TempDir()
+	now := fixedNow()
+	recordSignal(t, home, mkSignal(t, "sycophancy", "lane-a", 0.9, behaviorallens.VisibilityPublicSafe, now))
+	armSycophancy(t, home, now)
+
+	orig := appendActionRecordFn
+	appendActionRecordFn = func(string, actionRecord) error {
+		return fmt.Errorf("injected ledger append failure")
+	}
+	defer func() { appendActionRecordFn = orig }()
+
+	_, err := Modulate(home, grantConfig(home), "work_ledger_fail_revert", now)
+	if err == nil {
+		t.Fatal("expected Modulate to surface the ledger-append failure")
+	}
+	if !strings.Contains(err.Error(), "compensating revert succeeded") {
+		t.Fatalf("error must name the compensating-revert recovery path, got: %v", err)
+	}
+
+	// The route store is restored to its pre-image (the baseline this pass materialized) — the
+	// demote is NOT stranded even though its OWN ledger row never landed.
+	if v, ok, _ := CurrentAdjustment(home, behaviorallens.VisibilityPublicSafe, "lane-a"); !ok || v != "active" {
+		t.Fatalf("compensating revert must restore the route store to baseline, got value=%q ok=%v", v, ok)
+	}
+
+	// Neither the failed demote row nor the (also-failing, best-effort, swallowed) revert-log
+	// attempt ever landed in OUR ledger — but that is fine: the store itself is back at baseline, so
+	// "no ledger row for this lane" matches reality exactly.
+	if records, lerr := loadActionRecords(home); lerr != nil {
+		t.Fatalf("load action records: %v", lerr)
+	} else if len(records) != 0 {
+		t.Fatalf("want zero action-ledger records for the lane (both appends were injected to fail), got %+v", records)
+	}
+
+	// A subsequent Revert() call correctly finds nothing open — never a stale attempt to revert an
+	// already-restored lane.
+	rev, rerr := Revert(home, grantConfig(home), "lane-a", "work_ledger_fail_revert_check", now.Add(time.Second))
+	if rerr != nil {
+		t.Fatalf("revert: %v", rerr)
+	}
+	if rev.Reverted {
+		t.Fatalf("Revert must find nothing open (compensation already restored baseline), got %+v", rev)
+	}
+
+	// No recovery finding was needed — the compensating revert alone resolved it.
+	if findings, ferr := finding.List(home, "lensmodulator-recovery"); ferr != nil {
+		t.Fatalf("list findings: %v", ferr)
+	} else if len(findings) != 0 {
+		t.Fatalf("no recovery finding should be recorded when the compensating revert succeeds, got %+v", findings)
+	}
+}
+
+// FALSIFIER (post-act ledger-append backstop, durable recovery finding): when the ledger append AND
+// the compensating revert BOTH fail, Modulate must land a durable, operator-visible recovery finding
+// (lane, receipt/transition ids, pre/post image refs) and return an error naming it — never a bare
+// swallowed error that leaves the lane demoted with no trace. The compensating revert is forced to
+// fail by stripping the owner write bit from the route store file INSIDE the injected append seam —
+// which only runs after the forward act.Execute has already completed, so only the later
+// compensating-revert write is blocked, not the original demote.
+func TestModulateRecordsRecoveryFindingWhenCompensatingRevertAlsoFails(t *testing.T) {
+	home := t.TempDir()
+	now := fixedNow()
+	recordSignal(t, home, mkSignal(t, "sycophancy", "lane-a", 0.9, behaviorallens.VisibilityPublicSafe, now))
+	armSycophancy(t, home, now)
+
+	orig := appendActionRecordFn
+	appendActionRecordFn = func(string, actionRecord) error {
+		if err := os.Chmod(RouteStorePath(home), 0o444); err != nil {
+			t.Fatalf("chmod route store read-only: %v", err)
+		}
+		return fmt.Errorf("injected ledger append failure")
+	}
+	defer func() {
+		appendActionRecordFn = orig
+		_ = os.Chmod(RouteStorePath(home), 0o644)
+	}()
+
+	_, err := Modulate(home, grantConfig(home), "work_ledger_fail_recovery", now)
+	if err == nil {
+		t.Fatal("expected Modulate to surface the failure")
+	}
+	if !strings.Contains(err.Error(), "MANUAL RECOVERY REQUIRED") {
+		t.Fatalf("error must flag manual recovery, got: %v", err)
+	}
+
+	findings, ferr := finding.List(home, "lensmodulator-recovery")
+	if ferr != nil {
+		t.Fatalf("list findings: %v", ferr)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want exactly one recovery finding, got %d: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.ProducedBy != "internal/lensmodulator" {
+		t.Fatalf("recovery finding ProducedBy = %q, want internal/lensmodulator", f.ProducedBy)
+	}
+	if !strings.HasPrefix(f.Topic, "lensmodulator-recovery/lane-a") {
+		t.Fatalf("recovery finding topic must name the lane, got %q", f.Topic)
+	}
+	if len(f.EvidenceRefs) != 2 {
+		t.Fatalf("recovery finding must carry pre+post image refs, got %v", f.EvidenceRefs)
+	}
+	if !strings.Contains(err.Error(), f.ID) {
+		t.Fatalf("error must name the recovery finding id %q, got: %v", f.ID, err)
+	}
+
+	// The lane is left DEMOTED (not silently rolled back, not silently un-flagged) — the recovery
+	// finding exists precisely because the demote could NOT be safely auto-reverted.
+	if v, ok, _ := CurrentAdjustment(home, behaviorallens.VisibilityPublicSafe, "lane-a"); !ok || v != "demoted" {
+		t.Fatalf("lane must be left DEMOTED pending manual recovery, got value=%q ok=%v", v, ok)
 	}
 }
 
