@@ -64,6 +64,24 @@ func recordHash(record []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// idPrefixFamilies is the ordered id-prefix -> family vocabulary. familyOf's
+// id-based fallback and the Scan/ScanFrom prefix-routing optimization (see
+// scanFamilyRestriction in store.go) share this ONE table so the I/O routing
+// can never drift from actual family assignment: a new prefix added here
+// updates both consumers consistently. Order matters only in that a later
+// entry must not change the resolved family for an id already matched by an
+// earlier entry (act_live_ and act_ both resolve to "action", so their
+// relative order is immaterial).
+var idPrefixFamilies = []struct{ prefix, family string }{
+	{"tr_", "transition"},
+	{"pol_", "policy"},
+	{"hook_", "hook"},
+	{"act_", "action"},
+	{"act_live_", "action"},
+	{"trace_", "trace"},
+	{"rec_", "receipt"},
+}
+
 func familyOf(record []byte, id string) string {
 	var header frameRecordHeader
 	if len(record) > 0 && json.Unmarshal(record, &header) == nil {
@@ -82,22 +100,34 @@ func familyOf(record []byte, id string) string {
 			return "receipt"
 		}
 	}
-	switch {
-	case strings.HasPrefix(id, "tr_"):
-		return "transition"
-	case strings.HasPrefix(id, "pol_"):
-		return "policy"
-	case strings.HasPrefix(id, "hook_"):
-		return "hook"
-	case strings.HasPrefix(id, "act_"), strings.HasPrefix(id, "act_live_"):
-		return "action"
-	case strings.HasPrefix(id, "trace_"):
-		return "trace"
-	case strings.HasPrefix(id, "rec_"):
-		return "receipt"
-	default:
-		return "other"
+	for _, pf := range idPrefixFamilies {
+		if strings.HasPrefix(id, pf.prefix) {
+			return pf.family
+		}
 	}
+	return "other"
+}
+
+// familyForPrefix reports the single family every id matching a Scan/ScanFrom
+// filter prefix could belong to, using the same idPrefixFamilies vocabulary
+// that assigns record family membership. ok is true only when prefix fully
+// contains one canonical id-prefix as its own prefix -- i.e. every id
+// extending prefix necessarily extends that canonical prefix too, so the
+// named family is a provably exhaustive (never under-inclusive) answer for
+// the filter. A prefix shorter than, or diverging from, every canonical
+// prefix is reported !ok: it could also match an "other"-family id (the
+// unbounded default bucket), and narrowing scan I/O on that guess would risk
+// silently dropping records. Never guess-narrow.
+func familyForPrefix(prefix string) (string, bool) {
+	if prefix == "" {
+		return "", false
+	}
+	for _, pf := range idPrefixFamilies {
+		if strings.HasPrefix(prefix, pf.prefix) {
+			return pf.family, true
+		}
+	}
+	return "", false
 }
 
 func buildFrame(id string, record []byte) (Frame, []byte, error) {

@@ -256,10 +256,33 @@ func syncDirectory(path string) error {
 	return nil
 }
 
+// scanFamilyRestriction derives the exact set of segment family directories
+// worth walking for opts.Prefixes, or nil (no restriction -- walk every
+// family) when Prefixes is empty or any prefix fails to map cleanly onto the
+// familyOf vocabulary (familyForPrefix, frame.go). Routing is a pure I/O
+// optimization: the in-memory matchesPrefix post-filter below remains the
+// sole authority on which records a caller actually receives, byte-for-byte
+// identical to an unrestricted scan. nil is the fail-safe superset -- never
+// guess-narrow.
+func scanFamilyRestriction(prefixes []string) map[string]bool {
+	if len(prefixes) == 0 {
+		return nil
+	}
+	families := make(map[string]bool, len(prefixes))
+	for _, prefix := range prefixes {
+		family, ok := familyForPrefix(prefix)
+		if !ok {
+			return nil
+		}
+		families[family] = true
+	}
+	return families
+}
+
 // Scan validates segment truth, unions legacy loose records, and returns stable
 // logical entries. Segment records win duplicate ids.
 func (s *Store) Scan(opts ScanOptions) ([]Entry, error) {
-	records, invalid, err := s.engine.scanAll(opts.RegularOnly)
+	records, invalid, err := s.engine.scanAll(opts.RegularOnly, scanFamilyRestriction(opts.Prefixes))
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +345,7 @@ type ScanPage struct {
 // byte cursor is issued (Cursor comes back ""), preserving correctness while
 // un-migrated. Existing full-snapshot callers keep using Scan unchanged.
 func (s *Store) ScanFrom(opts ScanOptions) (ScanPage, error) {
-	records, invalid, cursor, resumed, err := s.engine.scanFrom(opts.RegularOnly, opts.Cursor)
+	records, invalid, cursor, resumed, err := s.engine.scanFrom(opts.RegularOnly, opts.Cursor, scanFamilyRestriction(opts.Prefixes))
 	if err != nil {
 		return ScanPage{}, err
 	}

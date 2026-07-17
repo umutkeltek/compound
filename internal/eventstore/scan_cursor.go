@@ -89,9 +89,20 @@ func decodeScanCursor(raw string) (scanCursor, bool) {
 //     still runs this path (so a fresh cursor is issued) but resumed is false,
 //     matching a full scan's semantics for anything layered on top (e.g. a
 //     LastEventTime dedup filter that must stay authoritative on that call).
-func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]storedRecord, []invalidLooseEntry, string, bool, error) {
+//
+// restrictFamilies is the fail-safe-derived set of families opts.Prefixes
+// could possibly match (scanFamilyRestriction, store.go), or nil for no
+// restriction. It only decides which family directories this call walks; the
+// per-segment byte-cursor map (next.Segments) it produces simply has no entry
+// for a family it did not visit, and a later call reading that missing key
+// falls back to a full reparse of that segment via the zero value (see
+// alignedStart / the `start < 0 || start > size` reparse branch below) --
+// the existing cache-not-authority law already makes any intent change (a
+// different Prefixes/RegularOnly between calls) converge to a fuller scan,
+// never a narrower one that could skip a record.
+func (e *engine) scanFrom(regularOnly bool, cursorStr string, restrictFamilies map[string]bool) (map[string]storedRecord, []invalidLooseEntry, string, bool, error) {
 	if e.legacyFallbackEnabled() {
-		records, invalid, err := e.scanAll(regularOnly)
+		records, invalid, err := e.scanAll(regularOnly, restrictFamilies)
 		return records, invalid, "", false, err
 	}
 
@@ -113,9 +124,13 @@ func (e *engine) scanFrom(regularOnly bool, cursorStr string) (map[string]stored
 	}
 	families := make([]string, 0, len(familyEntries))
 	for _, entry := range familyEntries {
-		if entry.IsDir() {
-			families = append(families, entry.Name())
+		if !entry.IsDir() {
+			continue
 		}
+		if restrictFamilies != nil && !restrictFamilies[entry.Name()] {
+			continue
+		}
+		families = append(families, entry.Name())
 	}
 	sort.Strings(families)
 

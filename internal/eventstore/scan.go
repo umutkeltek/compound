@@ -150,16 +150,26 @@ type invalidLooseEntry struct {
 	err  error
 }
 
-func (e *engine) scanAll(regularOnly bool) (map[string]storedRecord, []invalidLooseEntry, error) {
+// scanAll walks every segment family directory and unions legacy loose
+// records. restrictFamilies, when non-nil, is the fail-safe-derived set of
+// families opts.Prefixes could possibly match (scanFamilyRestriction,
+// store.go); families outside that set are skipped without a readdir or
+// parse. nil means no restriction -- walk every family, the same behavior as
+// before routing existed.
+func (e *engine) scanAll(regularOnly bool, restrictFamilies map[string]bool) (map[string]storedRecord, []invalidLooseEntry, error) {
 	records := map[string]storedRecord{}
 	var invalid []invalidLooseEntry
 
 	if familyEntries, err := os.ReadDir(e.segRoot); err == nil {
 		families := make([]string, 0, len(familyEntries))
 		for _, entry := range familyEntries {
-			if entry.IsDir() {
-				families = append(families, entry.Name())
+			if !entry.IsDir() {
+				continue
 			}
+			if restrictFamilies != nil && !restrictFamilies[entry.Name()] {
+				continue
+			}
+			families = append(families, entry.Name())
 		}
 		sort.Strings(families)
 		for _, family := range families {
