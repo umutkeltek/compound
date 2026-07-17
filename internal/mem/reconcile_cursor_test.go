@@ -43,7 +43,7 @@ func TestLoadReconcileEventsIncrementalMatchesFullRescan(t *testing.T) {
 	}
 
 	cp0 := reconcileCheckpoint{Since: rfc3339(t0.AddDate(0, 0, -1))}
-	out1, cursor1, err := s.loadReconcileEvents(cp0, now)
+	out1, cursor1, _, err := s.loadReconcileEvents(cp0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,11 +73,11 @@ func TestLoadReconcileEventsIncrementalMatchesFullRescan(t *testing.T) {
 	incremental := base
 	incremental.Cursor = cursor1
 
-	outBase, _, err := s.loadReconcileEvents(base, now) // full scan, app-filtered
+	outBase, _, _, err := s.loadReconcileEvents(base, now) // full scan, app-filtered
 	if err != nil {
 		t.Fatal(err)
 	}
-	outInc, _, err := s.loadReconcileEvents(incremental, now) // incremental via cursor
+	outInc, _, _, err := s.loadReconcileEvents(incremental, now) // incremental via cursor
 	if err != nil {
 		t.Fatal(err)
 	}

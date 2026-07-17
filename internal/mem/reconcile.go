@@ -23,6 +23,12 @@ const (
 	reconcileParkAmbiguous            = "ambiguous"
 	reconcileParkLowConfidence        = "low_confidence"
 	reconcileParkIneligibleDerivation = "ineligible_derivation"
+	// reconcileParkBackdatedOutsideWindow marks a resumed-scan event whose
+	// CreatedAt falls before the 30-day since-window: it is backdated beyond
+	// retention. The resumed path cannot silently drop it (a full rescan would
+	// never have seen it either, but a resumed sweep DID serve it), so it is
+	// parked with this distinct reason instead.
+	reconcileParkBackdatedOutsideWindow = "backdated_outside_window"
 )
 
 type reconcileDisposition string
@@ -83,6 +89,22 @@ type reconcileEvent struct {
 	Kind        string
 	ScopeEntity string
 	ClaimRefs   []string
+	// Backdated is true when this event's CreatedAt is earlier than the
+	// checkpoint's LastEventTime at the start of this sweep AND it was served
+	// only because the scan resumed from a usable byte cursor (Resumed=true) —
+	// on a full rescan the same event would have been filtered as a dup by the
+	// LastEventTime/ID check. It exists purely for observability (the
+	// backdated_folded count); it never changes disposition.
+	Backdated bool
+}
+
+// reconcileSkippedEvent is a fold-relevant event the resumed scan served that
+// loadReconcileEvents did not include in its output because it fell outside
+// the retention window — the caller parks it under Reason rather than
+// dropping it silently.
+type reconcileSkippedEvent struct {
+	Reason  string
+	EventID string
 }
 
 func (s *Store) synthesisReconcile(report *SynthesisSweepReport, now time.Time) error {
@@ -90,7 +112,7 @@ func (s *Store) synthesisReconcile(report *SynthesisSweepReport, now time.Time) 
 	if err != nil {
 		return err
 	}
-	events, nextCursor, err := s.loadReconcileEvents(checkpoint, now)
+	events, nextCursor, skippedEvents, err := s.loadReconcileEvents(checkpoint, now)
 	if err != nil {
 		return err
 	}
@@ -133,6 +155,9 @@ func (s *Store) synthesisReconcile(report *SynthesisSweepReport, now time.Time) 
 		return err
 	}
 	parked := newReconcileParkedReasons()
+	for _, skip := range skippedEvents {
+		parked.add(skip.Reason, skip.EventID)
+	}
 	routedRefs := map[string]bool{}
 	for _, ref := range checkpoint.DecayRoutedRefs {
 		routedRefs[ref] = true
@@ -147,10 +172,26 @@ func (s *Store) synthesisReconcile(report *SynthesisSweepReport, now time.Time) 
 		protectedFromClear[claimID] = true
 	}
 	recentClaimIDs := map[string]bool{}
+	// lastEvent tracks the high-water event for the checkpoint, seeded from
+	// the PRE-sweep checkpoint value (not just the last item in `events`): a
+	// resumed sweep can serve a backdated event as the only new entry, and
+	// blindly taking "the last event processed" would regress LastEventTime
+	// backward, corrupting the full-rescan path's dedup authority (F2).
 	var lastEvent *reconcileEvent
+	if checkpoint.LastEventTime != "" {
+		if t, err := time.Parse(time.RFC3339, checkpoint.LastEventTime); err == nil {
+			lastEvent = &reconcileEvent{ID: checkpoint.LastEventID, CreatedAt: t}
+		}
+	}
 	for i := range events {
 		event := events[i]
-		lastEvent = &event
+		if event.Backdated {
+			report.ReconcileBackdatedFoldedCount++
+		}
+		if lastEvent == nil || event.CreatedAt.After(lastEvent.CreatedAt) ||
+			(event.CreatedAt.Equal(lastEvent.CreatedAt) && event.ID > lastEvent.ID) {
+			lastEvent = &event
+		}
 		if event.Kind == "receipt" {
 			for _, claimID := range event.ClaimRefs {
 				if _, ok := claimsByID[claimID]; !ok {
@@ -410,18 +451,32 @@ func (s *Store) currentClaimsByCluster(claims []Claim, superseded map[string]boo
 // the checkpoint's byte cursor so a second consecutive sweep decodes only frames
 // appended since the last one, instead of re-parsing the whole event history
 // every invocation (the month-two re-parse creep the write-shape spec calls
-// out). The returned next cursor is persisted by the caller. Correctness is
-// unchanged: the byte cursor only skips frames the LastEventTime/ID filter below
-// would have discarded anyway (a monotonic fold has already consumed them), and
-// an empty/stale cursor makes ScanFrom return the full set — a superset the
-// filter narrows identically to the old full-Scan path.
-func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Time) ([]reconcileEvent, string, error) {
+// out). The returned next cursor is persisted by the caller.
+//
+// The real invariant (the byte cursor is NOT a superset the filter narrows
+// identically on every path): a resumed scan (page.Resumed) returns exactly
+// the frames appended since the cursor, by byte-offset construction — every
+// one of them is new, including a backdated append (created_at earlier than
+// checkpoint.LastEventTime, e.g. a migration/import writing historical
+// records past an already-consumed cursor position). Applying the
+// LastEventTime/ID filter on THAT set would wrongly discard a backdated event
+// exactly because it looks like a dup by timestamp, permanently losing it
+// (the cursor has already moved past its bytes, so no future sweep re-serves
+// it). So the filter is applied ONLY when !page.Resumed (a full rescan, where
+// every already-folded event really is decoded again and the filter is the
+// dedup authority). On the resumed path the filter is skipped entirely, and a
+// backdated-but-in-window event is tagged Backdated for the caller's
+// observability counter. A fold-relevant event on the resumed path older than
+// the 30-day since-window is not folded either way, but the caller parks it
+// (reconcileParkBackdatedOutsideWindow) instead of a silent continue, since a
+// resumed sweep — unlike a fresh full rescan — actually saw it go by.
+func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Time) ([]reconcileEvent, string, []reconcileSkippedEvent, error) {
 	page, err := s.eventStore.ScanFrom(eventstore.ScanOptions{Cursor: checkpoint.Cursor})
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, checkpoint.Cursor, nil
+			return nil, checkpoint.Cursor, nil, nil
 		}
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	entries := page.Entries
 	since := now.AddDate(0, 0, -30)
@@ -438,25 +493,32 @@ func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Tim
 	}
 
 	var out []reconcileEvent
+	var skipped []reconcileSkippedEvent
 	for _, entry := range entries {
 		record, err := entry.Read()
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		event, ok, err := readReconcileEvent(entry.Name, record.Bytes)
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		if !ok {
 			continue
 		}
 		if event.CreatedAt.Before(since) {
+			if page.Resumed {
+				skipped = append(skipped, reconcileSkippedEvent{Reason: reconcileParkBackdatedOutsideWindow, EventID: event.ID})
+			}
 			continue
 		}
-		if hasLast {
+		if hasLast && !page.Resumed {
 			if event.CreatedAt.Before(lastTime) || (event.CreatedAt.Equal(lastTime) && event.ID <= checkpoint.LastEventID) {
 				continue
 			}
+		}
+		if page.Resumed && hasLast && event.CreatedAt.Before(lastTime) {
+			event.Backdated = true
 		}
 		out = append(out, event)
 	}
@@ -466,7 +528,7 @@ func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Tim
 		}
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
-	return out, page.Cursor, nil
+	return out, page.Cursor, skipped, nil
 }
 
 func readReconcileEvent(name string, data []byte) (reconcileEvent, bool, error) {
@@ -598,6 +660,7 @@ func (s *Store) writeReconcileCheckpoint(checkpoint reconcileCheckpoint, report 
 		string(reconcileDispositionDecayRoute): report.ReconcileDecayRoutedCount,
 		string(reconcileDispositionContested):  report.ReconcileContestedCount,
 		string(reconcileDispositionPark):       report.ReconcileParkedCount,
+		"backdated_folded":                     report.ReconcileBackdatedFoldedCount,
 	}
 	checkpoint.ParkedReasons = map[string][]string{}
 	for _, reason := range report.ReconcileParkedReasons {

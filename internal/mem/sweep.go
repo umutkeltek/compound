@@ -19,36 +19,43 @@ const DecayReasonExpired = "parked_stale_never_reinforced"
 var synthesisSweepStages = []string{"cluster", "contradict", "corroborate", "decay", "volatile", "reconcile"}
 
 type SynthesisSweepReport struct {
-	SchemaVersion              string                            `json:"schema_version"`
-	GeneratedAt                string                            `json:"generated_at"`
-	Stages                     []string                          `json:"stages"`
-	CandidateCount             int                               `json:"candidate_count"`
-	ClaimCount                 int                               `json:"claim_count"`
-	ClusterCount               int                               `json:"cluster_count"`
-	EchoFoldProposalCount      int                               `json:"echo_fold_proposal_count"`
-	ContradictionProposalCount int                               `json:"contradiction_proposal_count"`
-	CorroborationProposalCount int                               `json:"corroboration_proposal_count"`
-	DecayedCount               int                               `json:"decayed_count"`
-	VolatileExtendedCount      int                               `json:"volatile_extended_count"`
-	VolatileCooledCount        int                               `json:"volatile_cooled_count"`
-	VolatileCardedCount        int                               `json:"volatile_carded_count"`
-	ReconcileDismissedCount    int                               `json:"dismissed_count"`
-	ReconcileReopenedCount     int                               `json:"reopened_count"`
-	ReconcileRaisedCount       int                               `json:"raised_count"`
-	ReconcileDecayRoutedCount  int                               `json:"decay_routed_count"`
-	ReconcileParkedCount       int                               `json:"parked_count"`
-	ReconcileContestedCount    int                               `json:"contested_count"`
-	ReviewDebtCount            int                               `json:"review_debt_count"`
-	Clusters                   []SynthesisCluster                `json:"clusters,omitempty"`
-	EchoFoldProposals          []SynthesisEchoFoldProposal       `json:"echo_fold_proposals,omitempty"`
-	ContradictionProposals     []SynthesisContradictionProposal  `json:"contradiction_proposals,omitempty"`
-	CorroborationProposals     []SynthesisCorroborationProposal  `json:"corroboration_proposals,omitempty"`
-	ReopenedClaims             []SynthesisClaimReview            `json:"reopened_claims,omitempty"`
-	RaisedSeeds                []SynthesisSeedReview             `json:"raised_seeds,omitempty"`
-	Decayed                    []SynthesisDecayAction            `json:"decayed,omitempty"`
-	VolatileActions            []VolatileSweepAction             `json:"volatile_actions,omitempty"`
-	ReconcileParkedReasons     []SynthesisReconcileParkedReason  `json:"parked_reasons,omitempty"`
-	ReconcileContestedCards    []SynthesisReconcileContestedCard `json:"contested_cards,omitempty"`
+	SchemaVersion              string   `json:"schema_version"`
+	GeneratedAt                string   `json:"generated_at"`
+	Stages                     []string `json:"stages"`
+	CandidateCount             int      `json:"candidate_count"`
+	ClaimCount                 int      `json:"claim_count"`
+	ClusterCount               int      `json:"cluster_count"`
+	EchoFoldProposalCount      int      `json:"echo_fold_proposal_count"`
+	ContradictionProposalCount int      `json:"contradiction_proposal_count"`
+	CorroborationProposalCount int      `json:"corroboration_proposal_count"`
+	DecayedCount               int      `json:"decayed_count"`
+	VolatileExtendedCount      int      `json:"volatile_extended_count"`
+	VolatileCooledCount        int      `json:"volatile_cooled_count"`
+	VolatileCardedCount        int      `json:"volatile_carded_count"`
+	ReconcileDismissedCount    int      `json:"dismissed_count"`
+	ReconcileReopenedCount     int      `json:"reopened_count"`
+	ReconcileRaisedCount       int      `json:"raised_count"`
+	ReconcileDecayRoutedCount  int      `json:"decay_routed_count"`
+	ReconcileParkedCount       int      `json:"parked_count"`
+	ReconcileContestedCount    int      `json:"contested_count"`
+	ReviewDebtCount            int      `json:"review_debt_count"`
+	// ReconcileBackdatedFoldedCount counts fold-relevant events on a resumed
+	// scan whose CreatedAt was earlier than the checkpoint's prior
+	// LastEventTime — served only because the byte cursor resumed past them,
+	// and folded through the normal disposition pipeline instead of the
+	// silent drop a naive dedup filter would have produced. Observability
+	// only; also mirrored into the checkpoint's Counts["backdated_folded"].
+	ReconcileBackdatedFoldedCount int                               `json:"backdated_folded_count"`
+	Clusters                      []SynthesisCluster                `json:"clusters,omitempty"`
+	EchoFoldProposals             []SynthesisEchoFoldProposal       `json:"echo_fold_proposals,omitempty"`
+	ContradictionProposals        []SynthesisContradictionProposal  `json:"contradiction_proposals,omitempty"`
+	CorroborationProposals        []SynthesisCorroborationProposal  `json:"corroboration_proposals,omitempty"`
+	ReopenedClaims                []SynthesisClaimReview            `json:"reopened_claims,omitempty"`
+	RaisedSeeds                   []SynthesisSeedReview             `json:"raised_seeds,omitempty"`
+	Decayed                       []SynthesisDecayAction            `json:"decayed,omitempty"`
+	VolatileActions               []VolatileSweepAction             `json:"volatile_actions,omitempty"`
+	ReconcileParkedReasons        []SynthesisReconcileParkedReason  `json:"parked_reasons,omitempty"`
+	ReconcileContestedCards       []SynthesisReconcileContestedCard `json:"contested_cards,omitempty"`
 }
 
 // SynthesisDecayAction records one parked candidate filed to no_promote by the decay stage.
