@@ -141,15 +141,16 @@ type QueueItem struct {
 // Action is a non-mutating operator hint attached by the domain owner that
 // knows how a review artifact is safely consumed.
 type Action struct {
-	ID              string                   `json:"id"`
-	Label           string                   `json:"label"`
-	Command         string                   `json:"command"`
-	Argv            []string                 `json:"argv,omitempty"`
-	RequiresReview  bool                     `json:"requires_review,omitempty"`
-	PolicyNote      string                   `json:"policy_note,omitempty"`
-	ActionIntent    *envelope.ActionIntent   `json:"action_intent,omitempty"`
-	PolicyDecision  *envelope.PolicyDecision `json:"policy_decision,omitempty"`
-	PolicyAuthority *policy.AuthorityFace    `json:"policy_authority,omitempty"`
+	ID               string                   `json:"id"`
+	Label            string                   `json:"label"`
+	Command          string                   `json:"command"`
+	Argv             []string                 `json:"argv,omitempty"`
+	RequiresReview   bool                     `json:"requires_review,omitempty"`
+	PolicyNote       string                   `json:"policy_note,omitempty"`
+	ActionIntent     *envelope.ActionIntent   `json:"action_intent,omitempty"`
+	PolicyDecision   *envelope.PolicyDecision `json:"policy_decision,omitempty"`
+	PolicyAuthority  *policy.AuthorityFace    `json:"policy_authority,omitempty"`
+	AuthorityContext *policy.AuthorityContext `json:"-"`
 }
 
 // DecisionCard is a read-only, operator-facing explanation of a review item.
@@ -444,6 +445,12 @@ func cloneAction(action Action) Action {
 		authority := *action.PolicyAuthority
 		authority.ExpectedProof = cloneActionStrings(action.PolicyAuthority.ExpectedProof)
 		clone.PolicyAuthority = &authority
+	}
+	if action.AuthorityContext != nil {
+		context := *action.AuthorityContext
+		context.ExpectedProof = cloneActionStrings(action.AuthorityContext.ExpectedProof)
+		context.EvidenceRefs = cloneActionStrings(action.AuthorityContext.EvidenceRefs)
+		clone.AuthorityContext = &context
 	}
 	return clone
 }

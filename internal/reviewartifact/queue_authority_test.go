@@ -84,10 +84,10 @@ func TestQueueGroupActionDeepCopiesValidatedAuthority(t *testing.T) {
 		t.Fatalf("valid authority should produce a batch action: action=%+v reason=%q", got, reason)
 	}
 	source := &items[0].Actions[0]
-	if got.ActionIntent == source.ActionIntent || got.PolicyDecision == source.PolicyDecision || got.PolicyAuthority == source.PolicyAuthority {
+	if got.ActionIntent == source.ActionIntent || got.PolicyDecision == source.PolicyDecision || got.PolicyAuthority == source.PolicyAuthority || got.AuthorityContext == source.AuthorityContext {
 		t.Fatal("safe batch action retained an authority object pointer")
 	}
-	if len(got.Argv) == 0 || len(got.ActionIntent.EvidenceRefs) == 0 || len(got.PolicyDecision.EvidenceRefs) == 0 || len(got.PolicyDecision.Reasons) == 0 || len(got.PolicyDecision.Obligations) == 0 || len(got.PolicyAuthority.ExpectedProof) == 0 {
+	if len(got.Argv) == 0 || len(got.ActionIntent.EvidenceRefs) == 0 || len(got.PolicyDecision.EvidenceRefs) == 0 || len(got.PolicyDecision.Reasons) == 0 || len(got.PolicyDecision.Obligations) == 0 || len(got.PolicyAuthority.ExpectedProof) == 0 || len(got.AuthorityContext.ExpectedProof) == 0 || len(got.AuthorityContext.EvidenceRefs) == 0 {
 		t.Fatalf("fixture does not exercise deep-copy slices: %+v", got)
 	}
 
@@ -103,6 +103,8 @@ func TestQueueGroupActionDeepCopiesValidatedAuthority(t *testing.T) {
 	wantReason := got.PolicyDecision.Reasons[0]
 	wantObligation := got.PolicyDecision.Obligations[0]
 	wantProof := got.PolicyAuthority.ExpectedProof[0]
+	wantContextProof := got.AuthorityContext.ExpectedProof[0]
+	wantContextEvidence := got.AuthorityContext.EvidenceRefs[0]
 
 	source.Argv[0] = "changed"
 	source.ActionIntent.ID = "act_changed"
@@ -116,6 +118,8 @@ func TestQueueGroupActionDeepCopiesValidatedAuthority(t *testing.T) {
 	source.PolicyDecision.Reasons[0] = "changed"
 	source.PolicyDecision.Obligations[0] = "changed"
 	source.PolicyAuthority.ExpectedProof[0] = "proof:changed"
+	source.AuthorityContext.ExpectedProof[0] = "proof:changed"
+	source.AuthorityContext.EvidenceRefs[0] = "evidence:changed"
 
 	if got.Argv[0] != wantArgv || got.ActionIntent.ID != wantActionID || got.ActionIntent.IDs.WorkID != wantActionWorkID || got.ActionIntent.Scope.EntityID != wantActionScope || got.ActionIntent.EvidenceRefs[0] != wantActionEvidence || *got.ActionIntent.EstimatedCost.USD != wantEstimatedUSD {
 		t.Fatalf("safe batch action aliases source action intent: %+v", got.ActionIntent)
@@ -125,6 +129,9 @@ func TestQueueGroupActionDeepCopiesValidatedAuthority(t *testing.T) {
 	}
 	if got.PolicyAuthority.ExpectedProof[0] != wantProof {
 		t.Fatalf("safe batch action aliases source policy authority: %+v", got.PolicyAuthority)
+	}
+	if got.AuthorityContext.ExpectedProof[0] != wantContextProof || got.AuthorityContext.EvidenceRefs[0] != wantContextEvidence {
+		t.Fatalf("safe batch action aliases producer authority context: %+v", got.AuthorityContext)
 	}
 }
 
@@ -172,21 +179,24 @@ func validReviewAuthorityAction(t *testing.T, now time.Time, policySource string
 		MaxUSD:               &maxUSD,
 		MaxTokens:            &maxTokens,
 	}}
-	got := policy.EvaluateAuthority(ai, cfg, policy.EvaluationContext{Authority: &policy.AuthorityContext{
+	authorityContext := &policy.AuthorityContext{
 		TargetScope:               "private",
 		VerifiedRecoverability:    policy.RecoverabilityVerified,
 		OperatorControlContinuity: policy.OperatorControlContinuous,
 		ExpectedReceipt:           "receipt for the governed action",
 		ExpectedProof:             []string{"proof:recovery-path"},
-	}}, policySource, now)
+		EvidenceRefs:              []string{"evidence:owner-outcome"},
+	}
+	got := policy.EvaluateAuthority(ai, cfg, policy.EvaluationContext{Authority: authorityContext}, policySource, now)
 	return Action{
-		ID:              "owner_action",
-		Label:           "Apply",
-		Command:         "compound owner apply",
-		Argv:            []string{"compound", "owner", "apply"},
-		ActionIntent:    &ai,
-		PolicyDecision:  &got.Decision,
-		PolicyAuthority: &got.Authority,
+		ID:               "owner_action",
+		Label:            "Apply",
+		Command:          "compound owner apply",
+		Argv:             []string{"compound", "owner", "apply"},
+		ActionIntent:     &ai,
+		PolicyDecision:   &got.Decision,
+		PolicyAuthority:  &got.Authority,
+		AuthorityContext: authorityContext,
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/policy"
 	"compound/internal/reviewartifact"
 )
 
@@ -134,6 +135,116 @@ evidence_refs:
 	after := gitStatusShort(t, repo)
 	if before != after {
 		t.Fatalf("source-control review mutated repo\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestSourceControlReviewQueueSeedsStableOwnerAuthority(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, _, _, _, err := ImportGitSnapshot(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, 7, 17, 9, 30, 0, 0, time.UTC)
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_review_authority", createdAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordSourceControlReviewPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := sourceControlCleanupQueue(t, home)
+	second := sourceControlCleanupQueue(t, home)
+	if len(first.Items[0].Actions) != 1 || len(second.Items[0].Actions) != 1 {
+		t.Fatalf("source-control review action missing: first=%+v second=%+v", first.Items[0].Actions, second.Items[0].Actions)
+	}
+	action := first.Items[0].Actions[0]
+	again := second.Items[0].Actions[0]
+	if action.ID != "record_source_control_cleanup_review" || action.ActionIntent == nil || action.AuthorityContext == nil {
+		t.Fatalf("source-control review action is not authority-seeded: %+v", action)
+	}
+	if action.ActionIntent.ID != again.ActionIntent.ID || action.ActionIntent.IDs.WorkID != plan.WorkID || action.ActionIntent.CreatedAt != plan.CreatedAt {
+		t.Fatalf("action intent identity is not stable owner identity: first=%+v second=%+v", action.ActionIntent, again.ActionIntent)
+	}
+	if action.ActionIntent.Capability != "review.source_control" || action.ActionIntent.Action != action.ID || action.ActionIntent.Target.Kind != "file" || action.ActionIntent.Target.Path != paths.ReviewYAMLPath {
+		t.Fatalf("action intent does not describe the exact review-record target: %+v", action.ActionIntent)
+	}
+	if action.ActionIntent.Privacy != "private" || action.ActionIntent.Authority.SourceClass != "runtime" || action.ActionIntent.Authority.Status != "current" {
+		t.Fatalf("action intent does not carry private runtime authority: %+v", action.ActionIntent)
+	}
+	if action.ActionIntent.MutationClass != "local_reversible" || action.ActionIntent.Reversibility != "easy" || action.ActionIntent.BlastRadius != "local" {
+		t.Fatalf("action intent outcome dimensions are wrong: %+v", action.ActionIntent)
+	}
+	if err := action.ActionIntent.Validate(); err != nil {
+		t.Fatalf("owner-seeded action intent invalid: %v", err)
+	}
+	ctx := action.AuthorityContext
+	if ctx.TargetScope != "private" || ctx.VerifiedRecoverability != policy.RecoverabilityVerified || ctx.OperatorControlContinuity != policy.OperatorControlContinuous {
+		t.Fatalf("authority context does not carry owner outcome evidence: %+v", ctx)
+	}
+	wantReportPath := filepath.Join(filepath.Dir(paths.ReviewYAMLPath), plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
+	if !strings.Contains(ctx.ExpectedReceipt, "review report") || !strings.Contains(strings.Join(ctx.ExpectedProof, "\n"), wantReportPath) || !strings.Contains(strings.Join(ctx.ExpectedProof, "\n"), plan.WorkID) {
+		t.Fatalf("authority context does not truthfully describe the review report and work trail: %+v", ctx)
+	}
+	encoded, err := json.Marshal(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes := string(encoded); strings.Contains(bytes, "authority_context") || strings.Contains(bytes, "verified_recoverability") {
+		t.Fatalf("producer-only authority context leaked into action JSON: %s", bytes)
+	}
+}
+
+func TestSourceControlReviewAuthoritySeedRequiresStableOwnerIdentity(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, _, _, _, err := ImportGitSnapshot(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_review_authority", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	item := reviewartifact.QueueItem{ID: plan.ID, JSONPath: filepath.Join(dir, plan.ID+".json")}
+	reviewPath := filepath.Join(dir, plan.ID+".review.yaml")
+
+	tests := []struct {
+		name         string
+		mutatePlan   func(*SourceControlReviewPlan)
+		mutateItem   func(*reviewartifact.QueueItem)
+		mutateReview func(string) string
+	}{
+		{name: "missing work identity", mutatePlan: func(plan *SourceControlReviewPlan) { plan.WorkID = "" }},
+		{name: "empty work suffix", mutatePlan: func(plan *SourceControlReviewPlan) { plan.WorkID = "work_" }},
+		{name: "unstable timestamp", mutatePlan: func(plan *SourceControlReviewPlan) { plan.CreatedAt = "not-a-timestamp" }},
+		{name: "mismatched plan path", mutateItem: func(item *reviewartifact.QueueItem) { item.JSONPath = filepath.Join(dir, "other.json") }},
+		{name: "mismatched review path", mutateReview: func(string) string { return filepath.Join(dir, "other.review.yaml") }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			candidatePlan := plan
+			candidateItem := item
+			candidateReview := reviewPath
+			if tc.mutatePlan != nil {
+				tc.mutatePlan(&candidatePlan)
+				candidatePlan.PlanDigest = SourceControlReviewPlanDigest(candidatePlan)
+			}
+			if tc.mutateItem != nil {
+				tc.mutateItem(&candidateItem)
+			}
+			if tc.mutateReview != nil {
+				candidateReview = tc.mutateReview(candidateReview)
+			}
+			intent, context := sourceControlRecordReviewAuthoritySeed(candidateItem, candidatePlan, candidateReview, "record_source_control_cleanup_review")
+			if intent != nil || context != nil {
+				t.Fatalf("invalid owner identity was authority-seeded: intent=%+v context=%+v", intent, context)
+			}
+		})
 	}
 }
 

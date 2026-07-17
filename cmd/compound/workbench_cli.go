@@ -20,6 +20,7 @@ import (
 	"compound/internal/mem"
 	"compound/internal/observation"
 	"compound/internal/panel"
+	"compound/internal/policy"
 	"compound/internal/product"
 	"compound/internal/projection"
 	"compound/internal/reviewartifact"
@@ -1215,8 +1216,76 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	routeevidence.AnnotateRouteOutcomeQueue(&report)
 	sourceobs.AnnotateObservationVerdictQueue(&report)
 	annotateSynthesisReviewQueue(&report)
+	if err := stampReviewActionAuthority(homePath, &report, time.Now()); err != nil {
+		return reviewartifact.QueueReport{}, err
+	}
 	reviewartifact.Recount(&report)
 	return report, nil
+}
+
+func stampReviewActionAuthority(homePath string, report *reviewartifact.QueueReport, now time.Time) error {
+	if report == nil {
+		return fmt.Errorf("review authority report required")
+	}
+	for itemIndex := range report.Items {
+		for actionIndex := range report.Items[itemIndex].Actions {
+			action := &report.Items[itemIndex].Actions[actionIndex]
+			action.PolicyDecision = nil
+			action.PolicyAuthority = nil
+		}
+	}
+
+	cfg, policySource, err := policy.LoadConfig(homePath)
+	if err != nil {
+		return fmt.Errorf("load current policy for review authority: %w", err)
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		return fmt.Errorf("open work store for review authority: %w", err)
+	}
+
+	for itemIndex := range report.Items {
+		for actionIndex := range report.Items[itemIndex].Actions {
+			action := &report.Items[itemIndex].Actions[actionIndex]
+			if action.ActionIntent == nil || action.AuthorityContext == nil {
+				continue
+			}
+			if err := action.ActionIntent.Validate(); err != nil {
+				continue
+			}
+			workID := strings.TrimSpace(action.ActionIntent.IDs.WorkID)
+			if !strings.HasPrefix(workID, "work_") || filepath.Base(workID) != workID {
+				continue
+			}
+			owner, err := workStore.Get(workID)
+			if err != nil || owner.ID != workID || owner.Validate() != nil || reviewAuthorityTerminalWorkState(owner.State) {
+				continue
+			}
+
+			evaluation := policy.EvaluateAuthority(
+				*action.ActionIntent,
+				cfg,
+				policy.EvaluationContext{Authority: action.AuthorityContext},
+				policySource,
+				now,
+			)
+			if err := policy.ValidateAuthorityBundle(*action.ActionIntent, evaluation.Decision, evaluation.Authority); err != nil {
+				continue
+			}
+			action.PolicyDecision = &evaluation.Decision
+			action.PolicyAuthority = &evaluation.Authority
+		}
+	}
+	return nil
+}
+
+func reviewAuthorityTerminalWorkState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildWorkbenchReviewQueue(report reviewartifact.QueueReport) workbenchReviewQueue {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/policy"
 	"compound/internal/reviewartifact"
 	"gopkg.in/yaml.v3"
@@ -880,13 +881,15 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 		return
 	}
 	argv := []string{"compound", "authority", "dirty-review", reviewYAML}
-	item.Actions = []reviewartifact.Action{{
+	action := reviewartifact.Action{
 		ID:             "record_source_control_cleanup_review",
 		Label:          "Record source-control cleanup review",
 		Command:        sourceControlShellJoin(argv),
 		Argv:           argv,
 		RequiresReview: true,
-	}}
+	}
+	action.ActionIntent, action.AuthorityContext = sourceControlRecordReviewAuthoritySeed(*item, plan, reviewYAML, action.ID)
+	item.Actions = []reviewartifact.Action{action}
 	review, err := LoadSourceControlReview(reviewYAML)
 	if err != nil {
 		item.Readiness = "blocked"
@@ -902,6 +905,72 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 	}
 	item.Readiness = "ready_to_record"
 	item.NextAction = "record reviewed source-control cleanup disposition"
+}
+
+func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan SourceControlReviewPlan, reviewYAML, actionID string) (*envelope.ActionIntent, *policy.AuthorityContext) {
+	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(plan.CreatedAt))
+	dir := filepath.Dir(item.JSONPath)
+	validWorkID := len(plan.WorkID) > len("work_") && strings.HasPrefix(plan.WorkID, "work_") && filepath.Base(plan.WorkID) == plan.WorkID
+	validPlanIdentity := plan.ID != "" && plan.ID == item.ID &&
+		filepath.Clean(item.JSONPath) == filepath.Clean(filepath.Join(dir, plan.ID+".json")) &&
+		validSHA256(plan.PlanDigest) && plan.PlanDigest == SourceControlReviewPlanDigest(plan)
+	validReviewIdentity := plan.ReviewDraft.ReviewID != "" && filepath.Base(plan.ReviewDraft.ReviewID) == plan.ReviewDraft.ReviewID &&
+		filepath.Clean(reviewYAML) == filepath.Clean(filepath.Join(dir, plan.ID+".review.yaml"))
+	if err != nil || createdAt.IsZero() || !validWorkID || !validPlanIdentity || !validReviewIdentity || strings.TrimSpace(actionID) == "" {
+		return nil, nil
+	}
+
+	evidenceRefs := append([]string{}, plan.EvidenceRefs...)
+	hasEvidence := false
+	for _, ref := range evidenceRefs {
+		if strings.TrimSpace(ref) != "" {
+			hasEvidence = true
+			break
+		}
+	}
+	if !hasEvidence {
+		return nil, nil
+	}
+	reviewReportPath := filepath.Join(dir, plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
+	actionIntent := &envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID: "act_" + reviewartifact.Digest12(strings.Join([]string{
+				"source-control-cleanup", actionID, plan.ID, plan.WorkID, filepath.Clean(reviewYAML),
+			}, "\x00")),
+			CreatedAt:    strings.TrimSpace(plan.CreatedAt),
+			Producer:     envelope.Producer{Kind: "owner_projection", Name: "compound"},
+			IDs:          envelope.IDs{WorkID: plan.WorkID},
+			Authority:    envelope.Authority{SourceClass: "runtime", Owner: "compound", Status: "current"},
+			Privacy:      "private",
+			Risk:         "tier1",
+			EvidenceRefs: evidenceRefs,
+			Uncertainty:  envelope.Uncertainty{Level: "known"},
+		},
+		Actor:         "compound",
+		Capability:    "review.source_control",
+		Action:        actionID,
+		Target:        envelope.ActionTarget{Kind: "file", Path: filepath.Clean(reviewYAML)},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       "Record the existing reviewed YAML as a source-control cleanup review report.",
+	}
+	if err := actionIntent.Validate(); err != nil {
+		return nil, nil
+	}
+	authorityContext := &policy.AuthorityContext{
+		TargetScope:               "private",
+		VerifiedRecoverability:    policy.RecoverabilityVerified,
+		OperatorControlContinuity: policy.OperatorControlContinuous,
+		ExpectedReceipt:           "Recorded source-control cleanup review report linked to work " + plan.WorkID + "; repository state remains unchanged.",
+		ExpectedProof: append([]string{
+			"review-report:" + reviewReportPath,
+			"work:" + plan.WorkID,
+		}, evidenceRefs...),
+		EvidenceRefs: evidenceRefs,
+	}
+	return actionIntent, authorityContext
 }
 
 func sourceControlMutationReviewNeedsValidation(plan SourceControlReviewPlan, planErr error, report SourceControlReviewReport, reportErr error) bool {
