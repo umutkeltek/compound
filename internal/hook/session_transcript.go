@@ -522,12 +522,19 @@ func cleanTranscriptUserText(s string) string {
 
 func renderSessionReceiptSummary(summary sessionTranscriptSummary, transcriptPath string) string {
 	return strings.Join([]string{
-		"task: " + clipTranscriptText(firstNonEmpty(summary.FirstUser, "(no plain-text user ask captured)"), 400),
-		"outcome_hint: " + clipTranscriptText(firstNonEmpty(summary.LastAssistant, "(none)"), 700),
+		"task_ref: " + transcriptTextRef(summary.FirstUser),
+		"outcome_hint_ref: " + transcriptTextRef(summary.LastAssistant),
 		fmt.Sprintf("tool_calls: %d (bash: %d)", summary.ToolCalls, summary.BashCalls),
 		"window: " + firstNonEmpty(summary.FirstTimestamp, "?") + " -> " + firstNonEmpty(summary.LastTimestamp, "?"),
 		"transcript: " + transcriptPath,
 	}, "\n")
+}
+
+func transcriptTextRef(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "none"
+	}
+	return "sha256:" + hashStr(value)
 }
 
 func firstNonEmpty(values ...string) string {
