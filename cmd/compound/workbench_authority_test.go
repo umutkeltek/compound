@@ -157,6 +157,37 @@ func TestStampReviewActionAuthorityFailsClosedForIncompleteSeeds(t *testing.T) {
 	}
 }
 
+func TestStampReviewActionAuthorityRejectsSyntheticOwnerRecord(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	syntheticWorkID := "work_live_review_authority_record"
+	store := openWorkbenchAuthorityWorkStore(t, homePath)
+	if _, err := store.Create(work.CreateInput{WorkID: syntheticWorkID, Owner: "source-control-cleanup", SuccessPredicate: "synthetic correlation never becomes durable action authority"}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	recordWorkbenchAuthorityReview(t, homePath, "work_review_authority_seed_source", cliTestNow.Add(time.Minute))
+	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: authority.SourceControlCleanupReviewArea}, cliTestNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.AnnotateSourceControlCleanupQueue(&report)
+	action := workbenchAuthorityAction(t, report)
+	if action.ActionIntent == nil || action.AuthorityContext == nil {
+		t.Fatalf("durable source fixture was not seeded: %+v", action)
+	}
+	action.ActionIntent.IDs.WorkID = syntheticWorkID
+	report.Items[0].Actions = []reviewartifact.Action{action}
+	if err := stampReviewActionAuthority(homePath, &report, cliTestNow.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	got := report.Items[0].Actions[0]
+	if got.PolicyDecision != nil || got.PolicyAuthority != nil {
+		t.Fatalf("synthetic work correlation received durable action authority: %+v", got)
+	}
+}
+
 func TestBuildReviewQueueReportCarriesCurrentPolicyHold(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {

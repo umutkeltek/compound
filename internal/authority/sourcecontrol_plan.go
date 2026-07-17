@@ -910,7 +910,8 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan SourceControlReviewPlan, reviewYAML, actionID string) (*envelope.ActionIntent, *policy.AuthorityContext) {
 	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(plan.CreatedAt))
 	dir := filepath.Dir(item.JSONPath)
-	validWorkID := len(plan.WorkID) > len("work_") && strings.HasPrefix(plan.WorkID, "work_") && filepath.Base(plan.WorkID) == plan.WorkID
+	validWorkID := len(plan.WorkID) > len("work_") && strings.HasPrefix(plan.WorkID, "work_") &&
+		!strings.HasPrefix(plan.WorkID, "work_live_") && filepath.Base(plan.WorkID) == plan.WorkID
 	validPlanIdentity := plan.ID != "" && plan.ID == item.ID &&
 		filepath.Clean(item.JSONPath) == filepath.Clean(filepath.Join(dir, plan.ID+".json")) &&
 		validSHA256(plan.PlanDigest) && plan.PlanDigest == SourceControlReviewPlanDigest(plan)
@@ -931,6 +932,8 @@ func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan 
 	if !hasEvidence {
 		return nil, nil
 	}
+	planPath := filepath.Clean(item.JSONPath)
+	reviewYAML = filepath.Clean(reviewYAML)
 	reviewReportPath := filepath.Join(dir, plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
 	actionIntent := &envelope.ActionIntent{
 		Header: envelope.Header{
@@ -950,11 +953,13 @@ func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan 
 		Actor:         "compound",
 		Capability:    "review.source_control",
 		Action:        actionID,
-		Target:        envelope.ActionTarget{Kind: "file", Path: filepath.Clean(reviewYAML)},
+		Target:        envelope.ActionTarget{Kind: "file", Path: reviewYAML},
 		MutationClass: "local_reversible",
 		Reversibility: "easy",
 		BlastRadius:   "local",
 		Preview:       "Record the existing reviewed YAML as a source-control cleanup review report.",
+		RollbackPlan: "Restore " + reviewYAML + " from the immutable review draft in " + planPath +
+			" at " + plan.PlanDigest + " and archive " + reviewReportPath + " from active review state.",
 	}
 	if err := actionIntent.Validate(); err != nil {
 		return nil, nil
@@ -967,6 +972,8 @@ func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan 
 		ExpectedProof: append([]string{
 			"review-report:" + reviewReportPath,
 			"work:" + plan.WorkID,
+			"recovery-source:" + planPath + "#" + plan.PlanDigest,
+			"restore-target:" + reviewYAML,
 		}, evidenceRefs...),
 		EvidenceRefs: evidenceRefs,
 	}

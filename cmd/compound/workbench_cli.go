@@ -1254,7 +1254,7 @@ func stampReviewActionAuthority(homePath string, report *reviewartifact.QueueRep
 				continue
 			}
 			workID := strings.TrimSpace(action.ActionIntent.IDs.WorkID)
-			if !strings.HasPrefix(workID, "work_") || filepath.Base(workID) != workID {
+			if !strings.HasPrefix(workID, "work_") || strings.HasPrefix(workID, "work_live_") || filepath.Base(workID) != workID {
 				continue
 			}
 			owner, err := workStore.Get(workID)

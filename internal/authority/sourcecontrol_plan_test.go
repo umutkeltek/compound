@@ -178,6 +178,9 @@ func TestSourceControlReviewQueueSeedsStableOwnerAuthority(t *testing.T) {
 	if action.ActionIntent.MutationClass != "local_reversible" || action.ActionIntent.Reversibility != "easy" || action.ActionIntent.BlastRadius != "local" {
 		t.Fatalf("action intent outcome dimensions are wrong: %+v", action.ActionIntent)
 	}
+	if !strings.Contains(action.ActionIntent.RollbackPlan, paths.PlanPath) || !strings.Contains(action.ActionIntent.RollbackPlan, paths.ReviewYAMLPath) || !strings.Contains(action.ActionIntent.RollbackPlan, wantSourceControlReviewedReportPath(paths.ReviewYAMLPath, plan)) {
+		t.Fatalf("verified owner recovery is missing an exact plan/YAML/report rollback: %+v", action.ActionIntent)
+	}
 	if err := action.ActionIntent.Validate(); err != nil {
 		t.Fatalf("owner-seeded action intent invalid: %v", err)
 	}
@@ -186,7 +189,8 @@ func TestSourceControlReviewQueueSeedsStableOwnerAuthority(t *testing.T) {
 		t.Fatalf("authority context does not carry owner outcome evidence: %+v", ctx)
 	}
 	wantReportPath := filepath.Join(filepath.Dir(paths.ReviewYAMLPath), plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
-	if !strings.Contains(ctx.ExpectedReceipt, "review report") || !strings.Contains(strings.Join(ctx.ExpectedProof, "\n"), wantReportPath) || !strings.Contains(strings.Join(ctx.ExpectedProof, "\n"), plan.WorkID) {
+	proofs := strings.Join(ctx.ExpectedProof, "\n")
+	if !strings.Contains(ctx.ExpectedReceipt, "review report") || !strings.Contains(proofs, wantReportPath) || !strings.Contains(proofs, plan.WorkID) || !strings.Contains(proofs, paths.PlanPath) || !strings.Contains(proofs, plan.PlanDigest) {
 		t.Fatalf("authority context does not truthfully describe the review report and work trail: %+v", ctx)
 	}
 	encoded, err := json.Marshal(action)
@@ -221,6 +225,7 @@ func TestSourceControlReviewAuthoritySeedRequiresStableOwnerIdentity(t *testing.
 	}{
 		{name: "missing work identity", mutatePlan: func(plan *SourceControlReviewPlan) { plan.WorkID = "" }},
 		{name: "empty work suffix", mutatePlan: func(plan *SourceControlReviewPlan) { plan.WorkID = "work_" }},
+		{name: "synthetic work identity", mutatePlan: func(plan *SourceControlReviewPlan) { plan.WorkID = "work_live_review_authority" }},
 		{name: "unstable timestamp", mutatePlan: func(plan *SourceControlReviewPlan) { plan.CreatedAt = "not-a-timestamp" }},
 		{name: "mismatched plan path", mutateItem: func(item *reviewartifact.QueueItem) { item.JSONPath = filepath.Join(dir, "other.json") }},
 		{name: "mismatched review path", mutateReview: func(string) string { return filepath.Join(dir, "other.review.yaml") }},
@@ -246,6 +251,10 @@ func TestSourceControlReviewAuthoritySeedRequiresStableOwnerIdentity(t *testing.
 			}
 		})
 	}
+}
+
+func wantSourceControlReviewedReportPath(reviewYAML string, plan SourceControlReviewPlan) string {
+	return filepath.Join(filepath.Dir(reviewYAML), plan.ID+"."+plan.ReviewDraft.ReviewID+".reviewed.json")
 }
 
 func TestSourceControlReviewPlanRequiresDirtySnapshot(t *testing.T) {
