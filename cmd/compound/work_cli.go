@@ -250,11 +250,24 @@ func cmdWork(args []string) {
 		}
 		return false
 	}
-	pos := func() string {
-		for _, a := range rest {
-			if !strings.HasPrefix(a, "-") {
-				return a
+	// pos returns the first positional argument in rest, skipping any token that is the VALUE
+	// of a registered value-flag. The flag-blind idiom this replaces returned the first
+	// non-dash token unconditionally, so e.g. `work show --home /tmp/x work_123` (or any other
+	// value-flag whose value doesn't start with "-") silently fed the flag's value to the
+	// command as if it were the positional argument (find_52e26e530829). Callers pass the same
+	// value-flags map they use to validate that subcommand's flags, so extraction and
+	// validation share one definition of "what is a flag here".
+	pos := func(valueFlags map[string]bool) string {
+		for i := 0; i < len(rest); i++ {
+			a := rest[i]
+			if valueFlags[a] {
+				i++
+				continue
 			}
+			if strings.HasPrefix(a, "-") {
+				continue
+			}
+			return a
 		}
 		return ""
 	}
@@ -471,7 +484,13 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "admit-plan":
-		planPath := firstNonEmpty(flag("--plan"), pos())
+		admitPlanFlags := map[string]bool{"--plan": true, "--by": true, "--actor": true}
+		if err := validateKnownFlags(rest, admitPlanFlags, map[string]bool{"--json": true}); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, workUsage("admit-plan"))
+			os.Exit(2)
+		}
+		planPath := firstNonEmpty(flag("--plan"), pos(admitPlanFlags))
 		if planPath == "" {
 			fmt.Fprintln(os.Stderr, workUsage("admit-plan"))
 			os.Exit(2)
@@ -492,7 +511,13 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", report.PlanPath)
 		}
 	case "review-card-plan":
-		cardID := firstNonEmpty(flag("--card"), pos())
+		reviewCardPlanFlags := map[string]bool{"--card": true, "--actor": true, "--by": true}
+		if err := validateKnownFlags(rest, reviewCardPlanFlags, map[string]bool{"--json": true}); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, workUsage("review-card-plan"))
+			os.Exit(2)
+		}
+		cardID := firstNonEmpty(flag("--card"), pos(reviewCardPlanFlags))
 		if cardID == "" {
 			fmt.Fprintln(os.Stderr, workUsage("review-card-plan"))
 			os.Exit(2)
@@ -570,10 +595,20 @@ func cmdWork(args []string) {
 		fmt.Printf("created %s (%s)\n", w.ID, w.State)
 		printJSON(w)
 	case "import-packet":
-		validateCreateState("usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]", false)
-		packetPath := pos()
+		importPacketUsage := "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]"
+		importPacketFlags := map[string]bool{
+			"--owner": true, "--by": true, "--actor": true, "--state": true,
+			"--context-pack": true, "--risk": true, "--privacy": true,
+		}
+		if err := validateKnownFlags(rest, importPacketFlags, nil); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, importPacketUsage)
+			os.Exit(2)
+		}
+		validateCreateState(importPacketUsage, false)
+		packetPath := pos(importPacketFlags)
 		if packetPath == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]")
+			fmt.Fprintln(os.Stderr, importPacketUsage)
 			os.Exit(2)
 		}
 		report, err := store.ImportPacket(packetPath, work.PacketImportOptions{
@@ -588,7 +623,12 @@ func cmdWork(args []string) {
 		fmt.Printf("imported packet %q -> %s created=%v state=%s\n", report.PacketTitle, report.Work.ID, report.Created, report.Work.State)
 		printJSON(report)
 	case "show":
-		w, evs, err := store.Show(pos())
+		if err := validateKnownFlags(rest, nil, map[string]bool{"--json": true}); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, workUsage("show"))
+			os.Exit(2)
+		}
+		w, evs, err := store.Show(pos(nil))
 		die(err)
 		packetPath, packetErr := packetPathForWork(w)
 		packetStatus := packetEnrichmentStatus(packetErr)
@@ -1062,6 +1102,10 @@ func cmdWork(args []string) {
 		}
 	case "claim-plan":
 		usage := "usage: compound work claim-plan <work_id> [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
+		claimPlanValueFlags := map[string]bool{
+			"--actor": true, "--capability": true, "--action": true, "--mutation-class": true,
+			"--reversibility": true, "--blast-radius": true, "--target-kind": true, "--target-id": true, "--target-path": true,
+		}
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--dry-run":
@@ -1078,11 +1122,11 @@ func cmdWork(args []string) {
 				}
 			}
 		}
-		if pos() == "" {
+		if pos(claimPlanValueFlags) == "" {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
-		plan, err := store.ClaimPlan(pos(), time.Now(), work.ClaimPlanOptions{
+		plan, err := store.ClaimPlan(pos(claimPlanValueFlags), time.Now(), work.ClaimPlanOptions{
 			Actor:         flag("--actor"),
 			Capability:    flag("--capability"),
 			Action:        flag("--action"),
@@ -1116,13 +1160,24 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "claim":
+		claimFlags := map[string]bool{"--by": true, "--lane": true}
+		if err := validateKnownFlags(rest, claimFlags, nil); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, workUsage("claim"))
+			os.Exit(2)
+		}
 		// --lane optionally declares the lane: the ref must resolve to a canonical agent-lane
 		// node id (fail-closed) or the claim errors. Absent --lane is byte-identical to before.
-		w, err := store.ClaimWithLane(pos(), flag("--by"), flag("--lane"), time.Now())
+		w, err := store.ClaimWithLane(pos(claimFlags), flag("--by"), flag("--lane"), time.Now())
 		die(err)
 		fmt.Printf("%s claimed by %s (%s) policy=%s\n", w.ID, w.Authority.Owner, w.State, w.PolicyDecisionID)
 	case "advance-plan":
 		usage := workUsage("advance-plan")
+		advancePlanValueFlags := map[string]bool{
+			"--to": true, "--actor": true, "--capability": true, "--action": true, "--mutation-class": true,
+			"--reversibility": true, "--blast-radius": true, "--target-kind": true, "--target-id": true, "--target-path": true,
+			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
+		}
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--dry-run", "--local-only":
@@ -1139,12 +1194,12 @@ func cmdWork(args []string) {
 				}
 			}
 		}
-		if pos() == "" || flag("--to") == "" {
+		if pos(advancePlanValueFlags) == "" || flag("--to") == "" {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
 		gitDelivery := parseGitDelivery(usage)
-		plan, err := store.AdvancePlan(pos(), time.Now(), work.AdvancePlanOptions{
+		plan, err := store.AdvancePlan(pos(advancePlanValueFlags), time.Now(), work.AdvancePlanOptions{
 			Actor:         flag("--actor"),
 			To:            flag("--to"),
 			GitDelivery:   gitDelivery,
@@ -1181,21 +1236,22 @@ func cmdWork(args []string) {
 		}
 	case "advance":
 		usage := workUsage("advance")
-		if err := validateWorkArguments(rest, map[string]bool{
+		advanceValueFlags := map[string]bool{
 			"--to": true, "--by": true, "--actor": true, "--lane": true, "--run": true, "--artifact": true, "--verification": true,
 			"--context-pack": true, "--note": true, "--reason": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
-		}, map[string]bool{"--steal": true, "--local-only": true}, 1); err != nil {
+		}
+		if err := validateWorkArguments(rest, advanceValueFlags, map[string]bool{"--steal": true, "--local-only": true}, 1); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
-		if pos() == "" || flag("--to") == "" {
+		if pos(advanceValueFlags) == "" || flag("--to") == "" {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
 		gitDelivery := parseGitDelivery(usage)
-		w, err := store.Advance(pos(), work.AdvanceInput{
+		w, err := store.Advance(pos(advanceValueFlags), work.AdvanceInput{
 			To:             flag("--to"),
 			Actor:          firstNonEmpty(flag("--by"), flag("--actor")),
 			LaneRef:        flag("--lane"),
@@ -1211,9 +1267,16 @@ func cmdWork(args []string) {
 		die(err)
 		fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)
 	case "observe-run":
-		workID := pos()
+		observeRunUsage := "usage: compound work observe-run <work_id> --trace <trace_id> [--actor A] [--note N] [--json]"
+		observeRunFlags := map[string]bool{"--trace": true, "--by": true, "--actor": true, "--note": true}
+		if err := validateKnownFlags(rest, observeRunFlags, map[string]bool{"--json": true}); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, observeRunUsage)
+			os.Exit(2)
+		}
+		workID := pos(observeRunFlags)
 		if workID == "" || flag("--trace") == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound work observe-run <work_id> --trace <trace_id> [--actor A] [--note N] [--json]")
+			fmt.Fprintln(os.Stderr, observeRunUsage)
 			os.Exit(2)
 		}
 		result, err := store.ObserveRun(workID, work.ObserveRunInput{
@@ -1235,8 +1298,9 @@ func cmdWork(args []string) {
 		}
 	case "land-check":
 		usage := workUsage("land-check")
+		landCheckValueFlags := map[string]bool{"--tip": true, "--repo": true, "--target-ref": true, "--actor": true, "--reason": true}
 		if err := validateWorkArguments(rest,
-			map[string]bool{"--tip": true, "--repo": true, "--target-ref": true, "--actor": true, "--reason": true},
+			landCheckValueFlags,
 			map[string]bool{"--steal": true, "--dry-run": true, "--json": true}, 1); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
@@ -1259,7 +1323,7 @@ func cmdWork(args []string) {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
-		report, err := store.LandCheck(pos(), work.LandCheckOptions{
+		report, err := store.LandCheck(pos(landCheckValueFlags), work.LandCheckOptions{
 			RepoPath:        flag("--repo"),
 			CandidateTipSHA: flag("--tip"),
 			TargetRef:       flag("--target-ref"),
@@ -1282,6 +1346,10 @@ func cmdWork(args []string) {
 		}
 	case "action-plan":
 		usage := "usage: compound work action-plan <work_id> [--actor A] [--move-type type] [--receipt-outcome completed|failed|blocked|no_op] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
+		actionPlanValueFlags := map[string]bool{
+			"--actor": true, "--move-type": true, "--receipt-outcome": true, "--capability": true, "--action": true,
+			"--mutation-class": true, "--reversibility": true, "--blast-radius": true, "--target-kind": true, "--target-id": true, "--target-path": true,
+		}
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--dry-run":
@@ -1298,11 +1366,11 @@ func cmdWork(args []string) {
 				}
 			}
 		}
-		if pos() == "" {
+		if pos(actionPlanValueFlags) == "" {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
-		plan, err := store.ActionExecutionPlan(pos(), time.Now(), work.ActionExecutionPlanOptions{
+		plan, err := store.ActionExecutionPlan(pos(actionPlanValueFlags), time.Now(), work.ActionExecutionPlanOptions{
 			Actor:          flag("--actor"),
 			Capability:     flag("--capability"),
 			Action:         flag("--action"),
@@ -1356,11 +1424,18 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "act":
-		workID := pos()
+		actUsage := "usage: compound work act <work_id> (--intent <action-intent.json> | --plan <action-execution-plan.json>)"
+		actFlags := map[string]bool{"--intent": true, "--plan": true}
+		if err := validateKnownFlags(rest, actFlags, nil); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, actUsage)
+			os.Exit(2)
+		}
+		workID := pos(actFlags)
 		intentFile := flag("--intent")
 		planFile := flag("--plan")
 		if workID == "" || (intentFile == "" && planFile == "") || (intentFile != "" && planFile != "") {
-			fmt.Fprintln(os.Stderr, "usage: compound work act <work_id> (--intent <action-intent.json> | --plan <action-execution-plan.json>)")
+			fmt.Fprintln(os.Stderr, actUsage)
 			os.Exit(2)
 		}
 		var ai envelope.ActionIntent
@@ -1388,6 +1463,10 @@ func cmdWork(args []string) {
 		fmt.Printf("%s: action %s recorded (policy %s, decision %s)\n", w.ID, ai.ID, pd.Outcome, pd.ID)
 	case "close-plan":
 		usage := "usage: compound work close-plan <work_id> (--action-plan <action-execution-plan.json> | --outcome completed|failed|cancelled --move-type <type>) [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--steal --reason R] [--json] [--dry-run]"
+		closePlanValueFlags := map[string]bool{
+			"--outcome": true, "--move-type": true, "--actor": true, "--action-plan": true, "--capability": true, "--action": true,
+			"--mutation-class": true, "--reversibility": true, "--blast-radius": true, "--target-kind": true, "--target-id": true, "--target-path": true, "--reason": true,
+		}
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--dry-run", "--steal":
@@ -1404,11 +1483,11 @@ func cmdWork(args []string) {
 				}
 			}
 		}
-		if pos() == "" || (flag("--action-plan") == "" && (flag("--outcome") == "" || flag("--move-type") == "")) {
+		if pos(closePlanValueFlags) == "" || (flag("--action-plan") == "" && (flag("--outcome") == "" || flag("--move-type") == "")) {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
-		plan, err := store.ClosePlan(pos(), time.Now(), work.ClosePlanOptions{
+		plan, err := store.ClosePlan(pos(closePlanValueFlags), time.Now(), work.ClosePlanOptions{
 			Actor:          flag("--actor"),
 			Outcome:        flag("--outcome"),
 			MoveType:       flag("--move-type"),
@@ -1457,7 +1536,7 @@ func cmdWork(args []string) {
 		}
 	case "close":
 		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--steal --reason R]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, so injected-but-unused refs count as ignored; omitting --used leaves them unknown)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)"
-		if err := validateKnownFlags(rest, map[string]bool{
+		closeValueFlags := map[string]bool{
 			"--outcome":           true,
 			"--move-type":         true,
 			"--summary":           true,
@@ -1475,7 +1554,8 @@ func cmdWork(args []string) {
 			"--memory-parked":     true,
 			"--memory-rejected":   true,
 			"--reason":            true,
-		}, map[string]bool{
+		}
+		if err := validateKnownFlags(rest, closeValueFlags, map[string]bool{
 			"--changed": true,
 			"--steal":   true,
 		}); err != nil {
@@ -1483,7 +1563,7 @@ func cmdWork(args []string) {
 			fmt.Fprintln(os.Stderr, closeUsage)
 			os.Exit(2)
 		}
-		res, err := store.Close(pos(), work.CloseInput{
+		res, err := store.Close(pos(closeValueFlags), work.CloseInput{
 			Outcome:          flag("--outcome"),
 			MoveType:         flag("--move-type"),
 			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),

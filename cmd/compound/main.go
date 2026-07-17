@@ -1595,6 +1595,11 @@ func cmdKnowledge(args []string) {
 	switch args[0] {
 	case "import":
 		rest := args[1:]
+		if err := validateKnownFlags(rest, nil, map[string]bool{"--json": true}); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, "usage: compound knowledge import <export.json> [--json]")
+			os.Exit(2)
+		}
 		path := ""
 		for _, arg := range rest {
 			if !strings.HasPrefix(arg, "-") {
@@ -1936,6 +1941,11 @@ func cmdMemory(args []string) {
 		}
 		cmdMemoryCorpusSearch(homePath, rest)
 	case "timeline":
+		if err := validateKnownFlags(rest, nil, nil); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, memoryUsage("timeline"))
+			os.Exit(2)
+		}
 		claims, err := store.Timeline(pos())
 		die(err)
 		for _, c := range claims {
@@ -4538,6 +4548,11 @@ func cmdFindingList(args []string) {
 }
 
 func cmdFindingShow(args []string) {
+	if err := validateKnownFlags(args, nil, map[string]bool{"--json": true}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, "usage: compound finding show <finding-id> [--json]")
+		os.Exit(2)
+	}
 	jsonOut := hasFlag(args, "--json")
 	id := ""
 	for _, a := range args {
@@ -4660,6 +4675,11 @@ func cmdCaptureRecord(args []string) {
 }
 
 func cmdCaptureShow(args []string) {
+	if err := validateKnownFlags(args, nil, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, "usage: compound capture show <cid>")
+		os.Exit(2)
+	}
 	cid := ""
 	for _, a := range args {
 		if !strings.HasPrefix(a, "-") {
@@ -4746,6 +4766,11 @@ func cmdPlacementTarget(args []string) {
 }
 
 func cmdPlacementResolve(args []string) {
+	if err := validateKnownFlags(args, nil, map[string]bool{"--json": true}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, "usage: compound placement resolve <path> [--json]")
+		os.Exit(2)
+	}
 	jsonOut := hasFlag(args, "--json")
 	path := ""
 	for _, a := range args {
