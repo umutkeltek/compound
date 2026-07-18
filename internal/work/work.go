@@ -161,6 +161,7 @@ type claimPending struct {
 	Lease              Lease                 `json:"lease"`
 	ActionIntentID     string                `json:"action_intent_id"`
 	PolicyDecisionID   string                `json:"policy_decision_id"`
+	RepairOwnerless    bool                  `json:"repair_ownerless,omitempty"`
 	Event              Event                 `json:"event"`
 }
 
@@ -488,17 +489,28 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 		}
 		return recovered, nil
 	}
+	from := w.State
+	repairOwnerless := false
 	if w.State == "claimed" {
-		holder, err := s.validateClaimAuthority(w, false)
+		repairFrom, repair, err := s.ownerlessClaimRepairSource(w)
 		if err != nil {
-			return w, fmt.Errorf("work %s claimed authority is inconsistent: %w", workID, err)
+			return w, fmt.Errorf("work %s inspect ownerless-claim repair: %w", workID, err)
 		}
-		if holder != by {
-			return w, fmt.Errorf("work %s already claimed by %q", workID, holder)
+		if repair {
+			from = repairFrom
+			repairOwnerless = true
+		} else {
+			holder, err := s.validateClaimAuthority(w, false)
+			if err != nil {
+				return w, fmt.Errorf("work %s claimed authority is inconsistent: %w", workID, err)
+			}
+			if holder != by {
+				return w, fmt.Errorf("work %s already claimed by %q", workID, holder)
+			}
+			return w, nil
 		}
-		return w, nil
 	}
-	if !canTransition(w.State, "claimed") {
+	if !repairOwnerless && !canTransition(w.State, "claimed") {
 		return w, fmt.Errorf("cannot claim from state %q (must be ready)", w.State)
 	}
 	plan, err := s.ClaimPlan(workID, now, ClaimPlanOptions{Actor: by})
@@ -512,7 +524,6 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	if err != nil {
 		return w, err
 	}
-	from := w.State
 	w.State = "claimed"
 	w.Authority.Owner = plan.Actor
 	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
@@ -528,13 +539,17 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 		return w, err
 	}
 	lease := Lease{WorkID: workID, By: plan.Actor, ClaimAt: ts(now), LaneID: laneID, WorkSHA256: claimedWorkSHA256}
+	note := "claimed (policy " + plan.Policy.Outcome + ")"
+	if repairOwnerless {
+		note = "ownerless-claim repair (policy " + plan.Policy.Outcome + ")"
+	}
 	event := Event{
 		TS:                 lease.ClaimAt,
 		WorkID:             workID,
 		From:               from,
 		To:                 "claimed",
 		By:                 plan.Actor,
-		Note:               "claimed (policy " + plan.Policy.Outcome + ")",
+		Note:               note,
 		Attached:           []string{plan.ActionIntent.ID, plan.Decision.ID},
 		PreviousWorkSHA256: previousWorkSHA256,
 		WorkSHA256:         claimedWorkSHA256,
@@ -549,6 +564,7 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 		Lease:              lease,
 		ActionIntentID:     plan.ActionIntent.ID,
 		PolicyDecisionID:   plan.Decision.ID,
+		RepairOwnerless:    repairOwnerless,
 		Event:              event,
 	}
 	if err := s.validatePendingClaim(pending); err != nil {
@@ -564,6 +580,37 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 		return w, err
 	}
 	return s.completePendingClaim(pending, true)
+}
+
+// ownerlessClaimRepairSource recognizes only the historical wedge minted by a bare
+// advance: claimed state, no authority owner, no lease, and a current-hash-bound
+// lifecycle tail that crossed a legal state-machine edge into claimed. The returned
+// source state lets the repair claim append a historically replayable claim event.
+func (s *Store) ownerlessClaimRepairSource(w envelope.WorkEnvelope) (string, bool, error) {
+	if w.State != "claimed" || strings.TrimSpace(w.Authority.Owner) != "" {
+		return "", false, nil
+	}
+	if _, err := s.readLease(w.ID); err == nil {
+		return "", false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", false, err
+	}
+	workSHA256, err := workEnvelopeSHA256(w)
+	if err != nil {
+		return "", false, err
+	}
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		return "", false, err
+	}
+	if len(events) == 0 {
+		return "", false, nil
+	}
+	tail := events[len(events)-1]
+	if tail.To != "claimed" || !canTransition(tail.From, "claimed") || tail.WorkSHA256 != workSHA256 {
+		return "", false, nil
+	}
+	return tail.From, true, nil
 }
 
 // These synchronization seams model process death after each authoritative
@@ -639,7 +686,11 @@ func (s *Store) completePendingClaim(pending claimPending, runCrashSeams bool) (
 		}
 		switch currentSHA256 {
 		case pending.PreviousWorkSHA256:
-			if current.State != pending.Event.From {
+			if pending.RepairOwnerless {
+				if current.State != "claimed" || strings.TrimSpace(current.Authority.Owner) != "" {
+					return fmt.Errorf("pending ownerless-claim repair for %s no longer matches an ownerless claimed WorkEnvelope", pending.WorkID)
+				}
+			} else if current.State != pending.Event.From {
 				return fmt.Errorf("pending claim for %s previous state is %q, want %q", pending.WorkID, current.State, pending.Event.From)
 			}
 			if err := s.publishClaimJSON(s.workPath(pending.WorkID), &pending.ClaimedWork); err != nil {
@@ -762,6 +813,9 @@ func (s *Store) validatePendingClaim(pending claimPending) error {
 		!reflect.DeepEqual(event.Attached, []string{pending.ActionIntentID, pending.PolicyDecisionID}) {
 		return fmt.Errorf("pending lifecycle event does not bind exact claim transaction")
 	}
+	if pending.RepairOwnerless != strings.HasPrefix(event.Note, "ownerless-claim repair (policy ") {
+		return fmt.Errorf("pending ownerless-claim repair marker does not match lifecycle event")
+	}
 	if len(pending.ClaimedWork.RunIDs) == 0 ||
 		pending.ClaimedWork.RunIDs[len(pending.ClaimedWork.RunIDs)-1] != pending.ActionIntentID ||
 		pending.ClaimedWork.PolicyDecisionID != pending.PolicyDecisionID {
@@ -856,7 +910,9 @@ func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEn
 	if !oneOf(actionID, claimed.RunIDs) {
 		return fmt.Errorf("claimed Work does not retain its claim action")
 	}
-	if event.Note != "claimed (policy "+decision.Outcome+")" {
+	normalNote := "claimed (policy " + decision.Outcome + ")"
+	repairNote := "ownerless-claim repair (policy " + decision.Outcome + ")"
+	if event.Note != normalNote && event.Note != repairNote {
 		return fmt.Errorf("claim event policy outcome note mismatch")
 	}
 	return nil
