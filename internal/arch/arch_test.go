@@ -442,14 +442,15 @@ func TestCheckDocLeakFailsClosedWhenTrackedPathIsMissing(t *testing.T) {
 func TestCheckDocLeakScansTrackedSymlinkTargetWithoutFollowing(t *testing.T) {
 	repo, runGit := newDocLeakGitRepo(t)
 	linkRel := "private-path.md"
-	realTarget := "/Us" + "ers/real" + "person/private.md"
+	expectedLeak := "/Us" + "ers/real" + "person"
+	realTarget := expectedLeak + "/private.md"
 	if err := os.Symlink(realTarget, filepath.Join(repo, linkRel)); err != nil {
 		t.Fatal(err)
 	}
 	runGit("add", linkRel)
 
 	findings := checkDocLeak(repo, true)
-	if !hasDocLeakFailContaining(findings, linkRel+":", "/Users/realperson") {
+	if !hasDocLeakFailContaining(findings, linkRel+":", expectedLeak) {
 		t.Fatalf("tracked symlink target string escaped the scan: %+v", findings)
 	}
 }

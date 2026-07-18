@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed" // for //go:embed baseline-leak-tokens.txt (armed-by-default doc-leak gate)
+	"fmt"
 	"go/ast"
 	"go/format"
 	"go/parser"
@@ -166,28 +167,20 @@ type Report struct {
 // express one) — every candidate match is post-filtered by findGenericLeak against the
 // RFC2606/synthetic allowlists below. Capture groups: 1 = boundary char (path form only;
 // participates as an empty string when `^` fires), 2 = path family (Users|home), 3 = user
-// segment, 4 = full email, 5 = email domain.
-var genericLeak = regexp.MustCompile(`(?i)(?:(^|[^/\w])/(Users|home)/([a-zA-Z0-9_.\-]+))|([a-z0-9._%+\-]+@([a-z0-9.\-]+\.[a-z]{2,}))`)
+// segment (letter-first), 4 = full email, 5 = email domain.
+var genericLeak = regexp.MustCompile(`(?i)(?:(^|[^/\w])/(Users|home)/([a-z][a-z0-9_.\-]*))|([a-z0-9._%+\-]+@([a-z0-9.\-]+\.[a-z]{2,}))`)
 
 // genericLeakAllowedPathSegments are the synthetic /Users|/home user segments already in
 // legitimate use across the tree's own test fixtures (measured 2026-07-17 against the
 // full tracked tree): "example", "faketester", "tester", "testoperator". New fixtures
-// should prefer "example" — the RFC2606-flavored default — over the other three.
-//
-// ".compound" is additive over that measurement: it surfaced only once the generic pass
-// widened to cover console/ and internal/reviewartifact (console/src/lib/generic-actions
-// .selftest.ts, console/src/lib/standing-law.selftest.ts, internal/reviewartifact/
-// brief_test.go use synthetic Linux fixture roots shaped "/home/.compound/..."), neither
-// of which the old docs/skills-only generic pass ever reached. It is not an operator
-// identity segment — it is compound's OWN public product-home directory name, the same
-// carve-out privateSourceBodyPathPrefix already documents for `~/.compound` (deliberately
-// excluded there because it is compound's own home, documented publicly across the repo).
+// should prefer "example" — the RFC2606-flavored default — over the other three. The
+// letter-first regex keeps hidden directories directly under /home out of this user-home
+// class instead of growing the identity allowlist for product/cache directory names.
 var genericLeakAllowedPathSegments = map[string]bool{
 	"example":      true,
 	"faketester":   true,
 	"tester":       true,
 	"testoperator": true,
-	".compound":    true,
 }
 
 // genericLeakAllowedEmailDomainsExact and genericLeakAllowedEmailDomainSuffixes are the
@@ -239,6 +232,7 @@ func findGenericLeak(line string) string {
 	}
 	return ""
 }
+
 var statusProofJournalLine = regexp.MustCompile(`(?i)^\s*(?:[-*]\s*)?(?:20[0-9]{2}-[0-9]{2}-[0-9]{2}\b|proof log:|verification run:|test run:|commit [0-9a-f]{7,40}\b)`)
 
 // baselineLeakTokensRaw is the TRACKED, always-shipped generic leak-token list (obvious
@@ -661,40 +655,57 @@ func checkDocLeak(repoRoot string, strict bool) []Finding {
 	}
 	sourceToks, sourcePresent := loadSourceLeakTokens(repoRoot)
 
-	for _, rel := range leakScanUniverse(repoRoot) {
-		b, err := os.ReadFile(filepath.Join(repoRoot, rel))
-		if err != nil {
-			continue
-		}
-		inDocRoot := relUnderAnyPrefix(rel, docLeakScanRootPrefixes)
-		inSourceRoot := sourcePresent && relUnderAnyPrefix(rel, sourceLeakScanRootPrefixes)
-		for i, line := range strings.Split(string(b), "\n") {
-			// GENERIC identity-shape pass: the full tracked universe, no root scoping.
-			if m := findGenericLeak(line); m != "" {
-				f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks " + strconv(m)})
+	rels, enumerateErr := leakScanUniverse(repoRoot)
+	if enumerateErr != nil {
+		f = append(f, Finding{"doc-leak", Fail, "tracked-file enumeration failed: " + enumerateErr.Error()})
+	} else {
+		for _, rel := range rels {
+			b, err := readLeakScanBody(repoRoot, rel)
+			if err != nil {
+				f = append(f, Finding{"doc-leak", Fail, rel + ": cannot read tracked text: " + err.Error()})
+				continue
 			}
-			low := strings.ToLower(line)
-			if inDocRoot {
-				for _, t := range privateToks {
-					if strings.Contains(low, t) {
-						f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks private token " + strconv(t)})
+			if !leakScanBodyIsText(b) {
+				continue
+			}
+			inDocRoot := relUnderAnyPrefix(rel, docLeakScanRootPrefixes)
+			inSourceRoot := sourcePresent && relUnderAnyPrefix(rel, sourceLeakScanRootPrefixes)
+			for i, line := range strings.Split(string(b), "\n") {
+				// GENERIC identity-shape pass: the full tracked universe, no root scoping.
+				if m := findGenericLeak(line); m != "" {
+					f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks " + strconv(m)})
+				}
+				low := strings.ToLower(line)
+				if inDocRoot {
+					for _, t := range privateToks {
+						if strings.Contains(low, t) {
+							f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks private token " + strconv(t)})
+						}
 					}
 				}
-			}
-			if inSourceRoot {
-				for _, t := range sourceToks {
-					if strings.Contains(low, t) {
-						f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks private token " + strconv(t)})
+				if inSourceRoot {
+					for _, t := range sourceToks {
+						if strings.Contains(low, t) {
+							f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks private token " + strconv(t)})
+						}
 					}
 				}
 			}
 		}
 	}
 
-	// When the overlay is absent the nudge Info above already occupies the summary slot;
-	// this clean-summary fires only for the overlay-present, no-leak case (len == 0).
-	if len(f) == 0 {
-		msg := "public docs + ceremonies + source + root files clean (generic identity shapes + baseline + operator overlay list)"
+	hasFail := false
+	for _, finding := range f {
+		if finding.Severity == Fail {
+			hasFail = true
+			break
+		}
+	}
+	if !hasFail {
+		msg := "all tracked text blobs clean for generic identity shapes (root + docs + skills + source); public docs + ceremonies clean for baseline leak tokens"
+		if overlayPresent {
+			msg += " + operator overlay tokens"
+		}
 		if sourcePresent {
 			msg += "; configured source surfaces clean"
 		}
@@ -745,27 +756,31 @@ var leakScanEnumerateSkipDirs = map[string]bool{
 	"dist":         true,
 }
 
-// leakScanUniverse enumerates every candidate doc-leak scan target as repo-relative
-// paths, already narrowed to leakScanFile's text extensions: the tracked-file set
-// (`git ls-files -z`, via gitTrackedFiles) when repoRoot is a git worktree, or a
-// skip-guarded filesystem walk otherwise. Untracked junk in a real git worktree (build
-// caches, stray local files) is invisible here by construction — the gate polices what
-// SHIPS, not the whole working tree (this is also what makes the pass CI-portable: no
-// dependency on which stray files a given checkout happens to contain).
-func leakScanUniverse(repoRoot string) []string {
-	if tracked, err := gitTrackedFiles(repoRoot); err == nil {
-		var rels []string
-		for _, rel := range tracked {
-			if leakScanFile(rel) {
-				rels = append(rels, rel)
-			}
+// leakScanUniverse enumerates every candidate doc-leak scan target as a
+// repo-relative path. A .git file/directory positively identifies repoRoot as a
+// Git checkout (normal clone or linked worktree); there, `git ls-files -z` is
+// authoritative and ANY enumeration failure is returned to the caller to fail
+// closed. Only a root with no .git metadata uses the plain-directory fixture
+// fallback. No extension filter belongs here: readLeakScanBody +
+// leakScanBodyIsText classify content, so extensionless and unfamiliar tracked
+// text blobs receive the same identity/token floor.
+func leakScanUniverse(repoRoot string) ([]string, error) {
+	_, err := os.Lstat(filepath.Join(repoRoot, ".git"))
+	switch {
+	case err == nil:
+		tracked, trackedErr := gitTrackedFiles(repoRoot)
+		if trackedErr != nil {
+			return nil, fmt.Errorf("git ls-files: %w", trackedErr)
 		}
-		return rels
+		return tracked, nil
+	case !os.IsNotExist(err):
+		return nil, fmt.Errorf("inspect .git metadata: %w", err)
 	}
+
 	var rels []string
-	_ = filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
+	err = filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
 		if d.IsDir() {
 			if path != repoRoot && leakScanEnumerateSkipDirs[d.Name()] {
@@ -773,19 +788,53 @@ func leakScanUniverse(repoRoot string) []string {
 			}
 			return nil
 		}
-		if !leakScanFile(path) {
-			return nil
-		}
 		rel, relErr := filepath.Rel(repoRoot, path)
 		if relErr != nil {
-			rel = path
+			return relErr
 		}
 		rels = append(rels, rel)
 		return nil
 	})
-	return rels
+	if err != nil {
+		return nil, fmt.Errorf("walk plain-directory fixture: %w", err)
+	}
+	return rels, nil
 }
 
+// readLeakScanBody reads the content that a public checkout actually exposes.
+// Symlinks are scanned as their link-target blob/string and are never followed
+// into external content. Missing, unreadable, or unexpected tracked path types
+// return an error so the caller can fail closed instead of reporting clean.
+func readLeakScanBody(repoRoot, rel string) ([]byte, error) {
+	path := filepath.Join(repoRoot, rel)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, readErr := os.Readlink(path)
+		if readErr != nil {
+			return nil, readErr
+		}
+		return []byte(target), nil
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file or symlink")
+	}
+	return os.ReadFile(path)
+}
+
+// leakScanBodyIsText uses the conventional NUL-byte discriminator: every
+// tracked/fallback body without NUL is treated as text, independent of name or
+// extension. This is deliberately shared by generic and token passes.
+func leakScanBodyIsText(body []byte) bool {
+	return bytes.IndexByte(body, 0) < 0
+}
+
+// leakScanFile is the deliberately narrower file-kind filter owned by
+// checkPrivateSourceBodyContract. The generic/token doc-leak passes classify
+// content instead; keeping these scopes separate prevents this legacy
+// semantic-body guard from widening as collateral.
 func leakScanFile(path string) bool {
 	ext := filepath.Ext(path)
 	switch ext {
