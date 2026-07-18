@@ -10,6 +10,11 @@ import (
 	"syscall"
 )
 
+var (
+	linkCandidateFile        = os.Link
+	syncCandidateDirectoryFn = syncCandidateDirectory
+)
+
 // candidateID rejects an id that is empty or path-shaped (a directory component,
 // "." / "..", or a path separator). A candidate id keys an inbox file path, so a
 // crafted value must never be able to escape inbox/<kind>-candidates/.
@@ -99,22 +104,33 @@ func CreateCandidateIfAbsent(homePath string, kind Kind, id string, payload any)
 			return err
 		}
 		target := filepath.Join(full, id+".json")
-		file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		tempPath, err := stageCandidate(full, data)
 		if err != nil {
+			return err
+		}
+		keepTemp := true
+		defer func() {
+			if keepTemp {
+				_ = os.Remove(tempPath)
+			}
+		}()
+		if err := linkCandidateFile(tempPath, target); err != nil {
+			if removeErr := os.Remove(tempPath); removeErr != nil {
+				return errors.Join(fmt.Errorf("publish candidate: %w", err), fmt.Errorf("remove candidate temp: %w", removeErr))
+			}
+			keepTemp = false
 			if os.IsExist(err) {
 				return classifyExistingCandidate(target, kind, id)
 			}
-			return err
+			return fmt.Errorf("publish candidate: %w", err)
 		}
 		created = true
-		if _, err := file.Write(data); err != nil {
-			_ = file.Close()
-			_ = os.Remove(target)
-			return err
+		if err := os.Remove(tempPath); err != nil {
+			return fmt.Errorf("remove candidate temp: %w", err)
 		}
-		if err := file.Close(); err != nil {
-			_ = os.Remove(target)
-			return err
+		keepTemp = false
+		if err := syncCandidateDirectoryFn(full); err != nil {
+			return fmt.Errorf("sync candidate directory: %w", err)
 		}
 		return nil
 	})
@@ -158,7 +174,7 @@ func replaceCandidate(dir, target string, data []byte) error {
 	if err := os.Rename(tempPath, target); err != nil {
 		return fmt.Errorf("replace candidate: %w", err)
 	}
-	if err := syncCandidateDirectory(dir); err != nil {
+	if err := syncCandidateDirectoryFn(dir); err != nil {
 		return fmt.Errorf("sync candidate directory: %w", err)
 	}
 	return nil
