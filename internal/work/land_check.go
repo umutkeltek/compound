@@ -133,6 +133,36 @@ func (s *Store) LandCheck(workID string, opts LandCheckOptions, now time.Time) (
 	return report, nil
 }
 
+// validateBoundGitDeliveryForLandCheck keeps the full envelope and repository
+// authority checks, but defers required-publication existence to evaluation.
+// A valid remote-tracking ref can legitimately be absent before first publish;
+// malformed, non-canonical, or wrong-branch refs still fail WorkEnvelope
+// validation instead of being mislabeled as awaiting publication.
+func (s *Store) validateBoundGitDeliveryForLandCheck(w envelope.WorkEnvelope) error {
+	if w.GitDelivery == nil {
+		return s.validateBoundGitDelivery(w)
+	}
+	if err := w.Validate(); err != nil {
+		return err
+	}
+	contract := *w.GitDelivery
+	if contract.PublicationMode != strings.TrimSpace(contract.PublicationMode) {
+		return fmt.Errorf("git_delivery.publication_mode %q is not canonical", contract.PublicationMode)
+	}
+	if contract.PublicationRef != strings.TrimSpace(contract.PublicationRef) {
+		return fmt.Errorf("git_delivery.publication_ref %q is not canonical", contract.PublicationRef)
+	}
+	if contract.PublicationMode != "required" {
+		return s.validateBoundGitDelivery(w)
+	}
+
+	withoutPublication := w
+	contract.PublicationMode = "local_only"
+	contract.PublicationRef = ""
+	withoutPublication.GitDelivery = &contract
+	return s.validateBoundGitDelivery(withoutPublication)
+}
+
 func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions, now time.Time) (LandCheckReport, error) {
 	if now.IsZero() {
 		now = time.Now()
@@ -155,7 +185,7 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		}
 		return report, nil
 	}
-	if err := s.validateBoundGitDelivery(w); err != nil {
+	if err := s.validateBoundGitDeliveryForLandCheck(w); err != nil {
 		return LandCheckReport{}, err
 	}
 	contract := *w.GitDelivery
@@ -284,6 +314,15 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 
 	if report.CandidateContainedInTarget {
 		if contract.PublicationMode == "required" {
+			publicationExists, err := landingRefExists(repoPath, contract.PublicationRef)
+			if err != nil {
+				return report, err
+			}
+			if !publicationExists {
+				report.Status = "awaiting_publication"
+				report.NextAction = fmt.Sprintf("publish %s containing candidate %s to %s, then record a fresh land-check", targetBranchRef, candidate, contract.PublicationRef)
+				return report, nil
+			}
 			report.PublicationSHA, err = runLandingGitOutput(repoPath, "rev-parse", "--verify", contract.PublicationRef+"^{commit}")
 			if err != nil {
 				return report, fmt.Errorf("resolve publication ref %s: %w", contract.PublicationRef, err)
@@ -304,7 +343,7 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		// make later worktree state disappear. Surface every dirty path as a
 		// preservation warning so default text clients do not hide foreign WIP.
 		if !report.CleanTarget {
-			report.NextAction = landingContainedDirtyDiagnostic(targetRef, dirtyStatusPaths(statusOutput))
+			report.NextAction = landingContainedDirtyDiagnostic(targetRef, dirtyStatusPaths(statusOutput), contract.PublicationMode)
 		}
 		report.Status = "landed"
 		return report, nil
@@ -405,12 +444,12 @@ func landingOwnedDirtyNextAction(targetRef string, ownedDirtyPaths []string) str
 	return fmt.Sprintf("the %s target worktree has uncommitted changes to files this work owns (%s); commit or set them aside without discarding unrelated work, then rerun land-check", targetRef, strings.Join(preview, ", "))
 }
 
-func landingContainedDirtyDiagnostic(targetRef string, dirtyPaths []string) string {
-	preview := dirtyPaths
-	if len(preview) > 5 {
-		preview = preview[:5]
+func landingContainedDirtyDiagnostic(targetRef string, dirtyPaths []string, publicationMode string) string {
+	authority := "authoritative target ref"
+	if publicationMode == "required" {
+		authority = "authoritative target and publication refs"
 	}
-	return fmt.Sprintf("candidate is already contained in the authoritative target and publication refs; preserve later uncommitted changes in the %s worktree (%s)", targetRef, strings.Join(preview, ", "))
+	return fmt.Sprintf("candidate is already contained in the %s; preserve later uncommitted changes in the %s worktree (%s)", authority, targetRef, strings.Join(dirtyPaths, ", "))
 }
 
 func latestCommitArtifact(artifactIDs []string) (ref, sha string, found, valid bool) {
@@ -669,6 +708,19 @@ func landingCurrentBranchRef(repoPath string) (string, error) {
 		return "", nil
 	}
 	return "", fmt.Errorf("inspect target worktree branch: %w: %s", err, strings.TrimSpace(string(out)))
+}
+
+func landingRefExists(repoPath, ref string) (bool, error) {
+	cmd := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "--quiet", ref)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect Git ref %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
 }
 
 func landingCommitExists(repoPath, sha string) (bool, error) {
