@@ -334,9 +334,9 @@ func snapshotFiles(t *testing.T, root string) map[string]bool {
 }
 
 // TestBuildCauseConsumptionReportJoinsDealtToCaused is F8: the report's dealt->caused join
-// (S3b's kill-condition meter). A dealt candidate cited in a later or same-persisted-second
-// Cause-transition joins; a candidate cited only in an EARLIER transition, or never cited at
-// all, is an honest zero — never a false positive.
+// (S3b's kill-condition meter). A strictly later Cause-transition counts as caused; a
+// same-persisted-second match is causally eligible but remains explicitly ambiguous; a
+// candidate cited only in an EARLIER transition, or never cited at all, is an honest zero.
 func TestBuildCauseConsumptionReportJoinsDealtToCaused(t *testing.T) {
 	homePath := t.TempDir()
 	s, err := Open(homePath)
@@ -373,23 +373,23 @@ func TestBuildCauseConsumptionReportJoinsDealtToCaused(t *testing.T) {
 	if rep.DealtCount != 4 {
 		t.Fatalf("dealt_count = %d, want 4", rep.DealtCount)
 	}
-	if rep.DealtCausedCount != 2 {
-		t.Fatalf("dealt_caused_count = %d, want 2: %+v", rep.DealtCausedCount, rep.DealtCards)
+	if rep.DealtCausedCount != 1 || rep.DealtAmbiguousCount != 1 {
+		t.Fatalf("dealt caused/ambiguous = %d/%d, want 1/1: %+v", rep.DealtCausedCount, rep.DealtAmbiguousCount, rep.DealtCards)
 	}
 	byRef := map[string]CauseConsumptionDealtRow{}
 	for _, row := range rep.DealtCards {
 		byRef[row.CandidateRef] = row
 	}
-	if hit := byRef["cand_hit"]; !hit.Caused || hit.CausedByTransitionID != "tr_f8_hit" {
+	if hit := byRef["cand_hit"]; !hit.Caused || hit.CausalStatus != "caused" || hit.CausedByTransitionID != "tr_f8_hit" {
 		t.Fatalf("cand_hit row = %+v, want caused=true transition=tr_f8_hit", hit)
 	}
-	if sameSecond := byRef["cand_same_second"]; !sameSecond.Caused || sameSecond.CausedByTransitionID != "tr_f8_same_second" {
-		t.Fatalf("cand_same_second row = %+v, want caused=true transition=tr_f8_same_second", sameSecond)
+	if sameSecond := byRef["cand_same_second"]; sameSecond.Caused || sameSecond.CausalStatus != "same_second_ambiguous" || sameSecond.CausedByTransitionID != "" {
+		t.Fatalf("cand_same_second row = %+v, want caused=false causal_status=same_second_ambiguous", sameSecond)
 	}
-	if before := byRef["cand_before"]; before.Caused {
+	if before := byRef["cand_before"]; before.Caused || before.CausalStatus != "not_caused" {
 		t.Fatalf("cand_before row = %+v, want caused=false (earlier transition does not count)", before)
 	}
-	if miss := byRef["cand_miss"]; miss.Caused {
+	if miss := byRef["cand_miss"]; miss.Caused || miss.CausalStatus != "not_caused" {
 		t.Fatalf("cand_miss row = %+v, want caused=false (never cited)", miss)
 	}
 	if strings.TrimSpace(rep.DealtCausedNote) == "" {

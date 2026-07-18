@@ -169,6 +169,7 @@ type CauseConsumptionDealtRow struct {
 	CandidateRef         string `json:"candidate_ref"`
 	Topic                string `json:"topic,omitempty"`
 	DealtAt              string `json:"dealt_at"`
+	CausalStatus         string `json:"causal_status"` // caused | same_second_ambiguous | not_caused
 	Caused               bool   `json:"caused"`
 	CausedByTransitionID string `json:"caused_by_transition_id,omitempty"`
 }
@@ -202,7 +203,10 @@ type CauseConsumptionReport struct {
 	DealtCards       []CauseConsumptionDealtRow `json:"dealt_cards"`
 	DealtCount       int                        `json:"dealt_count"`
 	DealtCausedCount int                        `json:"dealt_caused_count"`
-	DealtCausedNote  string                     `json:"dealt_caused_note"`
+	// DealtAmbiguousCount keeps equal-second matches visible without asserting an ordering the
+	// persisted RFC3339 timestamps cannot prove.
+	DealtAmbiguousCount int    `json:"dealt_ambiguous_count"`
+	DealtCausedNote     string `json:"dealt_caused_note"`
 
 	// CoverageNote is D6's honesty requirement: mint coverage is v1-limited.
 	CoverageNote string `json:"coverage_note"`
@@ -236,7 +240,7 @@ func BuildCauseConsumptionReport(homePath string, now time.Time) (CauseConsumpti
 	if err != nil {
 		if os.IsNotExist(err) {
 			rep.ThesisNote = causeConsumptionThesisNote(0, 0)
-			rep.DealtCausedNote = causeConsumptionDealtNote(0, 0)
+			rep.DealtCausedNote = causeConsumptionDealtNote(0, 0, 0)
 			return rep, nil
 		}
 		return rep, err
@@ -318,24 +322,27 @@ func BuildCauseConsumptionReport(homePath string, now time.Time) (CauseConsumpti
 		rep.DealtCausedNote = "stranger dealt-log unreadable; dealt->caused join skipped this run: " + err.Error()
 		return rep, nil
 	}
-	rows, causedCount := joinDealtCauses(dealt, rep.Transitions)
+	rows, causedCount, ambiguousCount := joinDealtCauses(dealt, rep.Transitions)
 	rep.DealtCards = rows
 	rep.DealtCount = len(rows)
 	rep.DealtCausedCount = causedCount
-	rep.DealtCausedNote = causeConsumptionDealtNote(rep.DealtCount, rep.DealtCausedCount)
+	rep.DealtAmbiguousCount = ambiguousCount
+	rep.DealtCausedNote = causeConsumptionDealtNote(rep.DealtCount, rep.DealtCausedCount, rep.DealtAmbiguousCount)
 
 	return rep, nil
 }
 
-func joinDealtCauses(dealt []StrangerDealtRow, transitions []CauseConsumptionTransitionRow) ([]CauseConsumptionDealtRow, int) {
+func joinDealtCauses(dealt []StrangerDealtRow, transitions []CauseConsumptionTransitionRow) ([]CauseConsumptionDealtRow, int, int) {
 	out := make([]CauseConsumptionDealtRow, 0, len(dealt))
 	caused := 0
+	ambiguous := 0
 	for _, d := range dealt {
 		row := CauseConsumptionDealtRow{
 			CardID:       d.CardID,
 			CandidateRef: d.CandidateRef,
 			Topic:        d.Topic,
 			DealtAt:      d.Ts,
+			CausalStatus: "not_caused",
 		}
 		dealtAt, perr := time.Parse(time.RFC3339, strings.TrimSpace(d.Ts))
 		if perr == nil {
@@ -352,7 +359,12 @@ func joinDealtCauses(dealt []StrangerDealtRow, transitions []CauseConsumptionTra
 					}
 				}
 				if matched {
+					if trAt.Equal(dealtAt) {
+						row.CausalStatus = "same_second_ambiguous"
+						continue
+					}
 					row.Caused = true
+					row.CausalStatus = "caused"
 					row.CausedByTransitionID = tr.TransitionID
 					break
 				}
@@ -360,10 +372,12 @@ func joinDealtCauses(dealt []StrangerDealtRow, transitions []CauseConsumptionTra
 		}
 		if row.Caused {
 			caused++
+		} else if row.CausalStatus == "same_second_ambiguous" {
+			ambiguous++
 		}
 		out = append(out, row)
 	}
-	return out, caused
+	return out, caused, ambiguous
 }
 
 func causeConsumptionThesisNote(memoryShaped, unpromoted int) string {
@@ -373,11 +387,11 @@ func causeConsumptionThesisNote(memoryShaped, unpromoted int) string {
 	return fmt.Sprintf("%d/%d ratio-eligible memory-shaped caused_by_refs currently resolve as un-promoted (pre_adjudication+observed_raw); closed refs remain reported but are excluded", unpromoted, memoryShaped)
 }
 
-func causeConsumptionDealtNote(dealtCount, causedCount int) string {
+func causeConsumptionDealtNote(dealtCount, causedCount, ambiguousCount int) string {
 	if dealtCount == 0 {
 		return "no stranger cards dealt yet; dealt->caused join not yet evaluable"
 	}
-	return fmt.Sprintf("%d/%d dealt stranger cards were cited by a causally eligible Cause-transition's caused_by_refs", causedCount, dealtCount)
+	return fmt.Sprintf("%d/%d dealt stranger cards were cited by a strictly later Cause-transition; %d same-second match(es) remain causally ambiguous", causedCount, dealtCount, ambiguousCount)
 }
 
 // WriteCauseConsumptionRun persists the report as a plain timestamped artifact under
