@@ -2,10 +2,12 @@ package candidates
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // candidateID rejects an id that is empty or path-shaped (a directory component,
@@ -73,11 +75,13 @@ func WriteCandidate(homePath string, kind Kind, id string, payload any) error {
 	if err != nil {
 		return err
 	}
-	full := filepath.Join(homePath, dir)
-	if err := os.MkdirAll(full, 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(full, id+".json"), data, 0o644)
+	return withCandidatePublicationLock(homePath, func() error {
+		full := filepath.Join(homePath, dir)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(full, id+".json"), data, 0o644)
+	})
 }
 
 // CreateCandidateIfAbsent persists a candidate only when its canonical inbox
@@ -88,29 +92,61 @@ func CreateCandidateIfAbsent(homePath string, kind Kind, id string, payload any)
 	if err != nil {
 		return false, err
 	}
-	full := filepath.Join(homePath, dir)
-	if err := os.MkdirAll(full, 0o755); err != nil {
-		return false, err
-	}
-	target := filepath.Join(full, id+".json")
-	file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		if os.IsExist(err) {
-			return false, classifyExistingCandidate(target, kind, id)
+	created := false
+	err = withCandidatePublicationLock(homePath, func() error {
+		full := filepath.Join(homePath, dir)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			return err
 		}
-		return false, err
+		target := filepath.Join(full, id+".json")
+		file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			if os.IsExist(err) {
+				return classifyExistingCandidate(target, kind, id)
+			}
+			return err
+		}
+		created = true
+		if _, err := file.Write(data); err != nil {
+			_ = file.Close()
+			_ = os.Remove(target)
+			return err
+		}
+		if err := file.Close(); err != nil {
+			_ = os.Remove(target)
+			return err
+		}
+		return nil
+	})
+	return created, err
+}
+
+// withCandidatePublicationLock serializes candidate publication across
+// processes. Memory may call a candidate writer while holding mem.lock, so the
+// only permitted nesting is mem.lock -> candidates.lock; this leaf never
+// reaches back into memory or acquires another Compound lock.
+func withCandidatePublicationLock(homePath string, fn func() error) (resultErr error) {
+	lockPath := filepath.Join(homePath, "lock", "candidates.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return fmt.Errorf("create candidate lock directory: %w", err)
 	}
-	created := true
-	if _, err := file.Write(data); err != nil {
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("open candidate publication lock: %w", err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
 		_ = file.Close()
-		_ = os.Remove(target)
-		return created, err
+		return fmt.Errorf("lock candidate publication: %w", err)
 	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(target)
-		return created, err
-	}
-	return created, nil
+	defer func() {
+		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_UN); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("unlock candidate publication: %w", err))
+		}
+		if err := file.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close candidate publication lock: %w", err))
+		}
+	}()
+	return fn()
 }
 
 func candidatePayload(kind Kind, id string, payload any) (string, []byte, error) {
