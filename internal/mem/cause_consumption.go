@@ -175,7 +175,9 @@ type CauseConsumptionReport struct {
 	// RefTierCounts is always all five D1 tiers, zero-filled.
 	RefTierCounts map[string]int `json:"ref_tier_counts"`
 
-	// MemoryShapedRefs = promoted+pre_adjudication+closed+observed_raw (excludes non_memory).
+	// MemoryShapedRefs is the thesis denominator: promoted+pre_adjudication+observed_raw.
+	// Closed refs remain visible in RefTierCounts but are excluded because rejected/no_promote
+	// evidence is no longer eligible to move the system.
 	// UnpromotedRefs = pre_adjudication+observed_raw. ThesisRatio = UnpromotedRefs/MemoryShapedRefs
 	// (0 when MemoryShapedRefs is 0 — never divides by zero; ThesisNote says so explicitly).
 	MemoryShapedRefs int     `json:"memory_shaped_refs"`
@@ -288,7 +290,7 @@ func BuildCauseConsumptionReport(homePath string, now time.Time) (CauseConsumpti
 		return rep.Transitions[i].TransitionID < rep.Transitions[j].TransitionID
 	})
 
-	rep.MemoryShapedRefs = rep.RefTierCounts[CauseConsumptionTierPromoted] + rep.RefTierCounts[CauseConsumptionTierPreAdjudication] + rep.RefTierCounts[CauseConsumptionTierClosed] + rep.RefTierCounts[CauseConsumptionTierObservedRaw]
+	rep.MemoryShapedRefs = rep.RefTierCounts[CauseConsumptionTierPromoted] + rep.RefTierCounts[CauseConsumptionTierPreAdjudication] + rep.RefTierCounts[CauseConsumptionTierObservedRaw]
 	rep.UnpromotedRefs = rep.RefTierCounts[CauseConsumptionTierPreAdjudication] + rep.RefTierCounts[CauseConsumptionTierObservedRaw]
 	if rep.MemoryShapedRefs > 0 {
 		rep.ThesisRatio = float64(rep.UnpromotedRefs) / float64(rep.MemoryShapedRefs)
@@ -352,9 +354,9 @@ func joinDealtCauses(dealt []StrangerDealtRow, transitions []CauseConsumptionTra
 
 func causeConsumptionThesisNote(memoryShaped, unpromoted int) string {
 	if memoryShaped == 0 {
-		return "no memory-shaped caused_by_refs observed yet; motion_from_unpromoted_ratio is not yet meaningful"
+		return "no ratio-eligible memory-shaped caused_by_refs observed yet; motion_from_unpromoted_ratio is not yet meaningful"
 	}
-	return fmt.Sprintf("%d/%d memory-shaped caused_by_refs currently resolve as un-promoted (pre_adjudication+observed_raw); tier resolution reflects current memory state", unpromoted, memoryShaped)
+	return fmt.Sprintf("%d/%d ratio-eligible memory-shaped caused_by_refs currently resolve as un-promoted (pre_adjudication+observed_raw); closed refs remain reported but are excluded", unpromoted, memoryShaped)
 }
 
 func causeConsumptionDealtNote(dealtCount, causedCount int) string {

@@ -170,9 +170,16 @@ func TestBuildCauseConsumptionReportBucketsAndRatio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	closed, err := s.Capture([]Candidate{cand("entity:f2-closed", "status", "closed-value", "")}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(closed[0].ID, "reject", "", t0); err != nil {
+		t.Fatal(err)
+	}
 
 	mustWriteCauseTransition(t, s, "tr_f2_promoted", "work_f2_a", "accept", []string{"claim://" + promoted.Claim.ID}, t0)
-	mustWriteCauseTransition(t, s, "tr_f2_unknown", "work_f2_b", "repair", []string{"cand_never_existed_f2"}, t0.Add(time.Minute))
+	mustWriteCauseTransition(t, s, "tr_f2_unknown", "work_f2_b", "repair", []string{"cand_never_existed_f2", closed[0].ID}, t0.Add(time.Minute))
 	mustWriteTransitionNoCause(t, s, "tr_f2_no_cause", "work_f2_c", t0.Add(2*time.Minute))
 
 	rep, err := BuildCauseConsumptionReport(homePath, t0.Add(time.Hour))
@@ -190,11 +197,11 @@ func TestBuildCauseConsumptionReportBucketsAndRatio(t *testing.T) {
 	if rep.TransitionsWithCause != 2 {
 		t.Fatalf("transitions_with_cause = %d, want 2 (Cause==nil transition must not count): %+v", rep.TransitionsWithCause, rep)
 	}
-	if rep.RefTierCounts[CauseConsumptionTierPromoted] != 1 || rep.RefTierCounts[CauseConsumptionTierObservedRaw] != 1 {
-		t.Fatalf("bucket counts = %+v, want promoted=1 observed_raw=1", rep.RefTierCounts)
+	if rep.RefTierCounts[CauseConsumptionTierPromoted] != 1 || rep.RefTierCounts[CauseConsumptionTierObservedRaw] != 1 || rep.RefTierCounts[CauseConsumptionTierClosed] != 1 {
+		t.Fatalf("bucket counts = %+v, want promoted=1 observed_raw=1 closed=1", rep.RefTierCounts)
 	}
 	if rep.MemoryShapedRefs != 2 || rep.UnpromotedRefs != 1 {
-		t.Fatalf("memory_shaped_refs/unpromoted_refs = %d/%d, want 2/1", rep.MemoryShapedRefs, rep.UnpromotedRefs)
+		t.Fatalf("memory_shaped_refs/unpromoted_refs = %d/%d, want 2/1 (closed remains reported but is excluded from the thesis denominator)", rep.MemoryShapedRefs, rep.UnpromotedRefs)
 	}
 	if rep.ThesisRatio != 0.5 {
 		t.Fatalf("thesis ratio = %v, want 0.5", rep.ThesisRatio)
