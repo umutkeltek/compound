@@ -1565,7 +1565,7 @@ func countJSONFiles(t *testing.T, dir string) int {
 // auto-files runtime_proof/trusted_deterministic_import/curated_page/decision_record bases —
 // see internal/policy/adjudication_policy.go — which would make every dealer test fixture
 // terminal before the dealer ever saw it). Entity/object are unique per call, domain qualifier
-// sets the topic axis (mem.CandidateListItem.Topic()) when non-empty.
+// sets the candidate's domain-aware topic axis.
 func strangerFixtureCandidate(entity, topic string) mem.Candidate {
 	c := mem.Candidate{
 		Entity:         entity,
@@ -1608,7 +1608,7 @@ func finalizeOrientStrangerForTest(t *testing.T, store *mem.Store, homePath, exc
 	if pending == nil {
 		return nil
 	}
-	finalized, err := pending.store.FinalizeStrangerDeal(pending.row, now, strangerCardCooldown)
+	finalized, err := pending.store.FinalizeStrangerDeal(pending.preparation, now, strangerCardCooldown)
 	if err != nil {
 		t.Fatalf("finalize stranger deal: %v", err)
 	}
@@ -1833,6 +1833,87 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 			t.Fatalf("corrupt dealt-log must degrade to no card, got %+v", card)
 		}
 	})
+
+	t.Run("expired oldest candidate does not starve a newer live candidate", func(t *testing.T) {
+		homePath := t.TempDir()
+		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+		if err := home.Init(homePath, "test", now.Add(-3*time.Hour)); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		s, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expired := strangerFixtureCandidate("entity:expired-oldest", "topic-old")
+		expired.ExpiresAt = now.Add(-time.Minute).UTC().Format(time.RFC3339)
+		if _, err := s.Capture([]mem.Candidate{expired}, now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		live, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:live-newer", "topic-live")}, now.Add(-time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		card := finalizeOrientStrangerForTest(t, s, homePath, "", now)
+		if card == nil || len(card.Refs) != 1 || card.Refs[0] != live[0].ID {
+			t.Fatalf("expired oldest candidate starved newer live candidate %s: %+v", live[0].ID, card)
+		}
+	})
+
+	t.Run("topic aliases are canonicalized before subtree exclusion", func(t *testing.T) {
+		homePath := t.TempDir()
+		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+		if err := home.Init(homePath, "test", now.Add(-3*time.Hour)); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		s, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		topics := []byte(`{"topics":[{"slug":"topic-root"},{"slug":"topic-child","aliases":["Child Alias"],"parent":"topic-root"},{"slug":"topic-outside"}]}`)
+		if _, err := s.ImportTopics(topics, now.Add(-3*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		excluded := strangerFixtureCandidate("entity:alias-excluded", "fallback-unrelated")
+		excluded.TopicRefs = []string{"Child Alias"}
+		if _, err := s.Capture([]mem.Candidate{excluded}, now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		outside, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:alias-outside", "topic-outside")}, now.Add(-time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		card := finalizeOrientStrangerForTest(t, s, homePath, "topic-root", now)
+		if card == nil || len(card.Refs) != 1 || card.Refs[0] != outside[0].ID {
+			t.Fatalf("alias of excluded descendant bypassed subtree; want %s, got %+v", outside[0].ID, card)
+		}
+	})
+
+	t.Run("ambiguous topic alias fails closed", func(t *testing.T) {
+		homePath := t.TempDir()
+		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+		if err := home.Init(homePath, "test", now.Add(-3*time.Hour)); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		s, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		topics := []byte(`{"topics":[{"slug":"topic-root"},{"slug":"topic-child-a","aliases":["Shared Child"],"parent":"topic-root"},{"slug":"topic-child-b","aliases":["Shared Child"],"parent":"topic-root"}]}`)
+		if _, err := s.ImportTopics(topics, now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		ambiguous := strangerFixtureCandidate("entity:alias-ambiguous", "fallback-unrelated")
+		ambiguous.TopicRefs = []string{"Shared Child"}
+		if _, err := s.Capture([]mem.Candidate{ambiguous}, now.Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+
+		if card := finalizeOrientStrangerForTest(t, s, homePath, "topic-root", now); card != nil {
+			t.Fatalf("ambiguous topic alias must fail closed, got %+v", card)
+		}
+	})
 }
 
 // TestOrientOperatorReportIncludesDealtStrangerCard proves the D7 wiring end to end: a single
@@ -2030,5 +2111,83 @@ func TestOrientStrangerCardFinalizeFailureSuppressesCard(t *testing.T) {
 	}
 	if string(cursorAfter) != string(cursorBefore) {
 		t.Fatalf("failed deal finalization advanced orient cursor:\nbefore=%s\nafter=%s", cursorBefore, cursorAfter)
+	}
+}
+
+func TestOrientStrangerCardFinalizationRejectsChangedPreparedSnapshot(t *testing.T) {
+	tests := []struct {
+		name         string
+		excludeTopic string
+		mutate       func(*mem.Candidate)
+		prepareHome  func(*testing.T, *mem.Store, time.Time)
+	}{
+		{
+			name:   "card object changed",
+			mutate: func(candidate *mem.Candidate) { candidate.Object = "changed-after-prepare" },
+		},
+		{
+			name:         "candidate joined excluded subtree",
+			excludeTopic: "topic-root",
+			prepareHome: func(t *testing.T, store *mem.Store, now time.Time) {
+				t.Helper()
+				topics := []byte(`{"topics":[{"slug":"topic-root"},{"slug":"topic-child","parent":"topic-root"}]}`)
+				if _, err := store.ImportTopics(topics, now.Add(-time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			mutate: func(candidate *mem.Candidate) { candidate.TopicRefs = []string{"topic-child"} },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+			if err := home.Init(homePath, "test", now.Add(-2*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			store, err := mem.Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.prepareHome != nil {
+				tt.prepareHome(t, store, now)
+			}
+			captured, err := store.Capture([]mem.Candidate{strangerFixtureCandidate("entity:snapshot-"+strings.ReplaceAll(tt.name, " ", "-"), "topic-outside")}, now.Add(-30*time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			previousObserver := orientStrangerDealPreparedObserver
+			orientStrangerDealPreparedObserver = func() {
+				var candidate mem.Candidate
+				if err := candidates.ReadCandidate(homePath, candidates.Memory, captured[0].ID, &candidate); err != nil {
+					t.Fatal(err)
+				}
+				tt.mutate(&candidate)
+				if err := candidates.WriteCandidate(homePath, candidates.Memory, captured[0].ID, &candidate); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() { orientStrangerDealPreparedObserver = previousObserver })
+
+			report, err := buildOrientOperatorReport(homePath, 5, now, tt.excludeTopic)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cards := report.NeedsMe.TensionCards; cards != nil {
+				for _, card := range cards.Items {
+					if card.ID == "stranger:"+captured[0].ID {
+						t.Fatalf("changed prepared snapshot was exposed: %+v", card)
+					}
+				}
+			}
+			rows, err := mem.ReadStrangerDealtLog(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 0 {
+				t.Fatalf("changed prepared snapshot was recorded as dealt: %+v", rows)
+			}
+		})
 	}
 }

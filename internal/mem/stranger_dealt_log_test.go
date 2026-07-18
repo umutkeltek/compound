@@ -52,13 +52,42 @@ func TestReadStrangerDealtLogCorruptLineErrors(t *testing.T) {
 	}
 }
 
+func TestReadStrangerDealtLogRejectsSemanticallyInvalidRows(t *testing.T) {
+	tests := []struct {
+		name string
+		row  string
+	}{
+		{name: "missing timestamp", row: `{"card_id":"stranger:cand_a","candidate_ref":"cand_a"}`},
+		{name: "invalid timestamp", row: `{"ts":"not-a-time","card_id":"stranger:cand_a","candidate_ref":"cand_a"}`},
+		{name: "missing card id", row: `{"ts":"2026-07-17T10:00:00Z","candidate_ref":"cand_a"}`},
+		{name: "missing candidate ref", row: `{"ts":"2026-07-17T10:00:00Z","card_id":"stranger:cand_a"}`},
+		{name: "mismatched card identity", row: `{"ts":"2026-07-17T10:00:00Z","card_id":"stranger:cand_b","candidate_ref":"cand_a"}`},
+		{name: "path shaped candidate ref", row: `{"ts":"2026-07-17T10:00:00Z","card_id":"stranger:../cand_a","candidate_ref":"../cand_a"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			logPath := filepath.Join(homePath, filepath.FromSlash(StrangerDealtLogRelPath))
+			if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(logPath, []byte(tt.row+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if rows, err := ReadStrangerDealtLog(homePath); err == nil {
+				t.Fatalf("semantically invalid cooldown row was accepted: %+v", rows)
+			}
+		})
+	}
+}
+
 func TestAppendStrangerDealtRowWritesOnlyTheOneFile(t *testing.T) {
 	homePath := t.TempDir()
 	if _, err := Open(homePath); err != nil {
 		t.Fatal(err)
 	}
 	before := snapshotFiles(t, homePath)
-	if err := appendStrangerDealtRow(homePath, StrangerDealtRow{Ts: "2026-07-17T10:00:00Z", CardID: "stranger:x", CandidateRef: "cand_x"}); err != nil {
+	if err := appendStrangerDealtRow(homePath, StrangerDealtRow{Ts: "2026-07-17T10:00:00Z", CardID: "stranger:cand_x", CandidateRef: "cand_x"}); err != nil {
 		t.Fatal(err)
 	}
 	after := snapshotFiles(t, homePath)
@@ -85,16 +114,21 @@ func TestFinalizeStrangerDealRevalidatesCandidateState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	context, err := store.NewStrangerDealContext("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := store.PrepareStrangerDeal(captured[0].ID, context, now.Add(-2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparation == nil {
+		t.Fatal("live proposed candidate did not prepare")
+	}
 	if _, err := store.Adjudicate(captured[0].ID, "reject", "", now.Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	row := StrangerDealtRow{
-		Ts:           now.UTC().Format(time.RFC3339),
-		CardID:       "stranger:" + captured[0].ID,
-		CandidateRef: captured[0].ID,
-		Topic:        captured[0].Topic(),
-	}
-	finalized, err := store.FinalizeStrangerDeal(row, now, 7*24*time.Hour)
+	finalized, err := store.FinalizeStrangerDeal(*preparation, now, 7*24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,14 +157,19 @@ func TestFinalizeStrangerDealRevalidatesCandidateExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finalizeAt := preparedAt.Add(2 * time.Hour)
-	row := StrangerDealtRow{
-		Ts:           finalizeAt.UTC().Format(time.RFC3339),
-		CardID:       "stranger:" + captured[0].ID,
-		CandidateRef: captured[0].ID,
-		Topic:        captured[0].Topic(),
+	context, err := store.NewStrangerDealContext("")
+	if err != nil {
+		t.Fatal(err)
 	}
-	finalized, err := store.FinalizeStrangerDeal(row, finalizeAt, 7*24*time.Hour)
+	preparation, err := store.PrepareStrangerDeal(captured[0].ID, context, preparedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparation == nil {
+		t.Fatal("candidate did not prepare before expiry")
+	}
+	finalizeAt := preparedAt.Add(2 * time.Hour)
+	finalized, err := store.FinalizeStrangerDeal(*preparation, finalizeAt, 7*24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

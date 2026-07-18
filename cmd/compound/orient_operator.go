@@ -506,7 +506,7 @@ func buildOrientOperatorReportWithCursorWriter(homePath string, recent int, now 
 		report.Narrate = &script
 	}
 	if pendingStranger != nil {
-		finalized, finalizeErr := pendingStranger.store.FinalizeStrangerDeal(pendingStranger.row, now, strangerCardCooldown, func() error {
+		finalized, finalizeErr := pendingStranger.store.FinalizeStrangerDeal(pendingStranger.preparation, now, strangerCardCooldown, func() error {
 			return cursorWriter(homePath, currentSeq, now)
 		})
 		switch {
@@ -1004,9 +1004,9 @@ const strangerCardCooldown = 7 * 24 * time.Hour
 var orientStrangerDealPreparedObserver func()
 
 type orientPendingStrangerDeal struct {
-	store *mem.Store
-	card  orientTensionCard
-	row   mem.StrangerDealtRow
+	store       *mem.Store
+	card        orientTensionCard
+	preparation mem.StrangerDealPreparation
 }
 
 // prepareOrientStrangerDeal selects at most one cross-topic, proposed/parked candidate without
@@ -1017,16 +1017,9 @@ func prepareOrientStrangerDeal(store *mem.Store, homePath, excludeTopic string, 
 	if err != nil {
 		return nil
 	}
-	var excludeSet map[string]bool
-	if trimmed := strings.TrimSpace(excludeTopic); trimmed != "" {
-		subtree, err := store.TopicSubtree(trimmed)
-		if err != nil {
-			return nil
-		}
-		excludeSet = make(map[string]bool, len(subtree))
-		for _, slug := range subtree {
-			excludeSet[slug] = true
-		}
+	context, err := store.NewStrangerDealContext(excludeTopic)
+	if err != nil {
+		return nil
 	}
 	dealt, err := mem.ReadStrangerDealtLog(homePath)
 	if err != nil {
@@ -1044,53 +1037,43 @@ func prepareOrientStrangerDeal(store *mem.Store, homePath, excludeTopic string, 
 			cooled[row.CandidateRef] = true
 		}
 	}
-	var chosen *mem.CandidateListItem
+	var preparation *mem.StrangerDealPreparation
 	for i := range pool {
-		c := &pool[i]
+		c := pool[i]
 		if cooled[c.ID] {
 			continue
 		}
-		if excludeSet != nil {
-			memberships, err := store.CandidateTopicMembership(c.ID)
-			if err != nil {
-				return nil
-			}
-			excluded := false
-			for _, membership := range memberships {
-				if excludeSet[membership] {
-					excluded = true
-					break
-				}
-			}
-			if excluded {
-				continue
-			}
+		prepared, err := store.PrepareStrangerDeal(c.ID, context, now)
+		if err != nil {
+			return nil
 		}
-		chosen = c
-		break // pool is sorted oldest-first, so the first eligible candidate wins
+		if prepared == nil {
+			continue
+		}
+		preparation = prepared
+		break // pool is sorted oldest-first, so the first currently eligible candidate wins
 	}
-	if chosen == nil {
+	if preparation == nil {
 		return nil
 	}
-	topic := chosen.Topic()
-	cardID := "stranger:" + chosen.ID
+	chosen := preparation.CardSnapshot()
+	cardID := "stranger:" + chosen.CandidateRef
 	relationship := "un-adjudicated weak tie"
 	if strings.TrimSpace(excludeTopic) != "" {
 		relationship = "outside the excluded topic subtree, un-adjudicated"
 	}
-	summary := fmt.Sprintf("stranger: %s.%s = %s (topic: %s, state: %s) — %s", chosen.Entity, chosen.Predicate, chosen.Object, topic, chosen.State, relationship)
-	row := mem.StrangerDealtRow{Ts: now.UTC().Format(time.RFC3339), CardID: cardID, CandidateRef: chosen.ID, Topic: topic}
+	summary := fmt.Sprintf("stranger: %s.%s = %s (topic: %s, state: %s) — %s", chosen.Entity, chosen.Predicate, chosen.Object, chosen.Topic, chosen.State, relationship)
 	if orientStrangerDealPreparedObserver != nil {
 		orientStrangerDealPreparedObserver()
 	}
 	return &orientPendingStrangerDeal{
-		store: store,
-		row:   row,
+		store:       store,
+		preparation: *preparation,
 		card: orientTensionCard{
 			ID:      cardID,
 			Summary: summary,
-			Refs:    []string{chosen.ID},
-			Command: []string{"compound", "memory", "adjudicate", chosen.ID, "--verdict", "park"},
+			Refs:    []string{chosen.CandidateRef},
+			Command: []string{"compound", "memory", "adjudicate", chosen.CandidateRef, "--verdict", "park"},
 		},
 	}
 }

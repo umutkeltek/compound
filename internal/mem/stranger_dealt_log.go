@@ -9,6 +9,7 @@
 package mem
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"compound/internal/candidates"
 )
 
 // StrangerDealtLogRelPath is the home-relative path of the append-only JSONL dealt-log (D5).
@@ -27,12 +30,50 @@ var ErrStrangerDealPairedCommit = errors.New("stranger deal paired commit failed
 
 // StrangerDealtRow is one dealt stranger card: ts is the deal time (RFC3339 UTC), card_id is
 // the orientTensionCard.ID the operator saw, candidate_ref is the dealt Candidate.ID, and topic
-// is that candidate's own topic (CandidateListItem.Topic()) at deal time.
+// is that candidate's own Candidate.Topic() at deal time.
 type StrangerDealtRow struct {
 	Ts           string `json:"ts"`
 	CardID       string `json:"card_id"`
 	CandidateRef string `json:"candidate_ref"`
 	Topic        string `json:"topic,omitempty"`
+}
+
+// StrangerDealCardSnapshot is the card-relevant candidate snapshot prepared from memory
+// authority. The caller renders the optional orient card from these fields; it never reads a
+// second, potentially newer candidate body after preparation.
+type StrangerDealCardSnapshot struct {
+	CandidateRef string
+	Entity       string
+	Predicate    string
+	Object       string
+	State        string
+	Topic        string
+}
+
+// StrangerDealPreparation is the opaque authorization token passed back to the finalizer. Its
+// fingerprint binds the rendered card to the candidate state and topic taxonomy observed during
+// preparation; finalization rebuilds both under the memory lock and suppresses stale cards.
+type StrangerDealPreparation struct {
+	card         StrangerDealCardSnapshot
+	excludeTopic string
+	fingerprint  [sha256.Size]byte
+}
+
+// CardSnapshot returns a copy of the fields the orient surface may render.
+func (p StrangerDealPreparation) CardSnapshot() StrangerDealCardSnapshot {
+	return p.card
+}
+
+type strangerDealFingerprintPayload struct {
+	ID                        string   `json:"id"`
+	Entity                    string   `json:"entity"`
+	Predicate                 string   `json:"predicate"`
+	Object                    string   `json:"object"`
+	State                     string   `json:"state"`
+	Topic                     string   `json:"topic"`
+	ExpiresAt                 string   `json:"expires_at"`
+	RawTopicMemberships       []string `json:"raw_topic_memberships"`
+	CanonicalTopicMemberships []string `json:"canonical_topic_memberships"`
 }
 
 func strangerDealtLogPath(homePath string) string {
@@ -65,6 +106,9 @@ func ReadStrangerDealtLog(homePath string) ([]StrangerDealtRow, error) {
 		if err := json.Unmarshal([]byte(line), &row); err != nil {
 			return nil, err
 		}
+		if err := validateStrangerDealtRow(row); err != nil {
+			return nil, err
+		}
 		out = append(out, row)
 	}
 	return out, nil
@@ -81,6 +125,9 @@ func appendStrangerDealtRow(homePath string, row StrangerDealtRow) error {
 // operation needed by FinalizeStrangerDeal when the caller's paired commit fails. Store's
 // memory lock prevents another production deal append from interleaving before compensation.
 func appendStrangerDealtRowReversible(homePath string, row StrangerDealtRow) (func() error, error) {
+	if err := validateStrangerDealtRow(row); err != nil {
+		return nil, err
+	}
 	path := strangerDealtLogPath(homePath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -132,21 +179,116 @@ func appendStrangerDealtRowReversible(homePath string, row StrangerDealtRow) (fu
 	return rollback, nil
 }
 
+func validateStrangerDealtRow(row StrangerDealtRow) error {
+	if strings.TrimSpace(row.Ts) != row.Ts || row.Ts == "" {
+		return fmt.Errorf("stranger deal ts must be canonical RFC3339 UTC")
+	}
+	parsed, err := time.Parse(time.RFC3339, row.Ts)
+	if err != nil || parsed.UTC().Format(time.RFC3339) != row.Ts {
+		if err != nil {
+			return fmt.Errorf("stranger deal ts: %w", err)
+		}
+		return fmt.Errorf("stranger deal ts must be canonical RFC3339 UTC, got %q", row.Ts)
+	}
+	if err := validateStrangerCandidateRef(row.CandidateRef); err != nil {
+		return err
+	}
+	if row.CardID != "stranger:"+row.CandidateRef {
+		return fmt.Errorf("stranger deal card_id %q does not match candidate_ref %q", row.CardID, row.CandidateRef)
+	}
+	if strings.TrimSpace(row.Topic) != row.Topic {
+		return fmt.Errorf("stranger deal topic must be trimmed")
+	}
+	return nil
+}
+
+func validateStrangerCandidateRef(candidateRef string) error {
+	if candidateRef == "" || strings.TrimSpace(candidateRef) != candidateRef {
+		return fmt.Errorf("stranger deal candidate_ref must be a non-empty bare id")
+	}
+	if candidateRef == "." || candidateRef == ".." || candidateRef != filepath.Base(candidateRef) || strings.ContainsAny(candidateRef, `/\`) {
+		return fmt.Errorf("stranger deal candidate_ref must be a bare id, got %q", candidateRef)
+	}
+	return nil
+}
+
+// PrepareStrangerDeal re-reads one admitted candidate against a per-orient taxonomy snapshot.
+// A nil preparation with nil error means the candidate is no longer live, is expired, or belongs
+// to the excluded subtree; callers continue to the next oldest candidate. Ambiguous identity or
+// damaged authority returns an error so the optional dealer fails closed.
+func (s *Store) PrepareStrangerDeal(candidateID string, context StrangerDealContext, now time.Time) (*StrangerDealPreparation, error) {
+	if now.IsZero() {
+		return nil, fmt.Errorf("stranger deal preparation time is required")
+	}
+	if context.resolver == nil {
+		return nil, fmt.Errorf("stranger deal context is required")
+	}
+	if err := validateStrangerCandidateRef(candidateID); err != nil {
+		return nil, err
+	}
+	var candidate Candidate
+	if err := candidates.ReadCandidate(s.home, candidates.Memory, candidateID, &candidate); err != nil {
+		return nil, err
+	}
+	if candidate.ID == "" {
+		candidate.ID = candidateID
+	}
+	candidate, _ = AdmitCandidate(candidate)
+	if candidate.State != "proposed" && candidate.State != "parked" {
+		return nil, nil
+	}
+	if candidateExpired(candidate, now) {
+		return nil, nil
+	}
+	rawMemberships := normalizeStringRefs(append([]string{candidate.Topic()}, candidate.TopicRefs...))
+	canonicalMemberships, err := canonicalStrangerTopicMembership(candidate, context.resolver, context.topicSlugs)
+	if err != nil {
+		return nil, err
+	}
+	for _, membership := range canonicalMemberships {
+		if context.excluded[membership] {
+			return nil, nil
+		}
+	}
+	card := StrangerDealCardSnapshot{
+		CandidateRef: candidate.ID,
+		Entity:       candidate.Entity,
+		Predicate:    candidate.Predicate,
+		Object:       candidate.Object,
+		State:        candidate.State,
+		Topic:        candidate.Topic(),
+	}
+	payload := strangerDealFingerprintPayload{
+		ID:                        candidate.ID,
+		Entity:                    candidate.Entity,
+		Predicate:                 candidate.Predicate,
+		Object:                    candidate.Object,
+		State:                     candidate.State,
+		Topic:                     candidate.Topic(),
+		ExpiresAt:                 strings.TrimSpace(candidate.ExpiresAt),
+		RawTopicMemberships:       rawMemberships,
+		CanonicalTopicMemberships: canonicalMemberships,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return &StrangerDealPreparation{
+		card:         card,
+		excludeTopic: context.excludeTopic,
+		fingerprint:  sha256.Sum256(encoded),
+	}, nil
+}
+
 // FinalizeStrangerDeal is the single production commit door for a prepared stranger card.
-// Candidate state and cooldown are re-read while Store's cross-process lock is held, then the
-// row is appended inside the same critical section. The bool is false when another orient won
-// the cooldown race or the candidate stopped being proposed/parked; callers must suppress the
-// prepared card in either case.
-func (s *Store) FinalizeStrangerDeal(row StrangerDealtRow, now time.Time, cooldown time.Duration, pairedCommit ...func() error) (bool, error) {
-	candidateRef := strings.TrimSpace(row.CandidateRef)
-	if candidateRef == "" {
-		return false, fmt.Errorf("stranger deal candidate_ref is required")
-	}
-	if strings.TrimSpace(row.CardID) == "" {
-		return false, fmt.Errorf("stranger deal card_id is required")
-	}
-	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(row.Ts)); err != nil {
-		return false, fmt.Errorf("stranger deal ts: %w", err)
+// Candidate content, state, expiry, canonical topic membership, and cooldown are re-read while
+// Store's cross-process lock is held, then the row is appended inside the same critical section.
+// The bool is false when another orient won the cooldown race or the prepared snapshot changed;
+// callers must suppress the prepared card in either case.
+func (s *Store) FinalizeStrangerDeal(preparation StrangerDealPreparation, now time.Time, cooldown time.Duration, pairedCommit ...func() error) (bool, error) {
+	candidateRef := preparation.card.CandidateRef
+	if err := validateStrangerCandidateRef(candidateRef); err != nil {
+		return false, err
 	}
 	if now.IsZero() {
 		return false, fmt.Errorf("stranger deal finalize time is required")
@@ -160,17 +302,15 @@ func (s *Store) FinalizeStrangerDeal(row StrangerDealtRow, now time.Time, cooldo
 
 	finalized := false
 	err := s.withLock(func() error {
-		candidate, err := s.getCandidate(candidateRef)
+		context, err := s.NewStrangerDealContext(preparation.excludeTopic)
+		if err != nil {
+			return fmt.Errorf("rebuild stranger deal context: %w", err)
+		}
+		current, err := s.PrepareStrangerDeal(candidateRef, context, now)
 		if err != nil {
 			return fmt.Errorf("revalidate stranger candidate %s: %w", candidateRef, err)
 		}
-		if candidate.State != "proposed" && candidate.State != "parked" {
-			return nil
-		}
-		if candidateExpired(candidate, now) {
-			return nil
-		}
-		if topic := strings.TrimSpace(row.Topic); topic != "" && candidate.Topic() != topic {
+		if current == nil || current.fingerprint != preparation.fingerprint {
 			return nil
 		}
 
@@ -189,6 +329,12 @@ func (s *Store) FinalizeStrangerDeal(row StrangerDealtRow, now time.Time, cooldo
 			if now.Sub(dealtAt) < cooldown {
 				return nil
 			}
+		}
+		row := StrangerDealtRow{
+			Ts:           now.UTC().Format(time.RFC3339),
+			CardID:       "stranger:" + candidateRef,
+			CandidateRef: candidateRef,
+			Topic:        preparation.card.Topic,
 		}
 		rollback, err := appendStrangerDealtRowReversible(s.home, row)
 		if err != nil {
