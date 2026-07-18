@@ -354,7 +354,7 @@ func causeConsumptionThesisNote(memoryShaped, unpromoted int) string {
 	if memoryShaped == 0 {
 		return "no memory-shaped caused_by_refs observed yet; motion_from_unpromoted_ratio is not yet meaningful"
 	}
-	return fmt.Sprintf("%d/%d memory-shaped caused_by_refs were un-promoted at the time they were cited (pre_adjudication+observed_raw)", unpromoted, memoryShaped)
+	return fmt.Sprintf("%d/%d memory-shaped caused_by_refs currently resolve as un-promoted (pre_adjudication+observed_raw); tier resolution reflects current memory state", unpromoted, memoryShaped)
 }
 
 func causeConsumptionDealtNote(dealtCount, causedCount int) string {

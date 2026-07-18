@@ -307,7 +307,7 @@ func TestBuildCauseConsumptionReportJoinsDealtToCaused(t *testing.T) {
 		{Ts: dealtAt.UTC().Format(time.RFC3339), CardID: "stranger:cand_before", CandidateRef: "cand_before", Topic: "topic-before"},
 		{Ts: dealtAt.UTC().Format(time.RFC3339), CardID: "stranger:cand_miss", CandidateRef: "cand_miss", Topic: "topic-miss"},
 	} {
-		if err := AppendStrangerDealtRow(homePath, row); err != nil {
+		if err := appendStrangerDealtRow(homePath, row); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -452,10 +452,11 @@ func buildOrientOperatorReportWithCursorWriter(homePath string, recent int, now 
 	if err != nil {
 		return orientOperatorReport{}, err
 	}
+	needsMe, pendingStranger := buildOrientNeedsMeWithPendingStranger(homePath, reviews, workbench, now, strangerExcludeTopic)
 	report := orientOperatorReport{
 		SchemaVersion:  orientOperatorReportSchemaVersion,
 		GeneratedAt:    now.UTC().Format(time.RFC3339),
-		NeedsMe:        buildOrientNeedsMe(homePath, reviews, workbench, now, strangerExcludeTopic),
+		NeedsMe:        needsMe,
 		Running:        buildOrientRunning(homePath, workbench, now),
 		SessionContext: buildOrientSessionContext(workbench),
 		Changed:        buildOrientChanged(homePath, workbench, currentSeq, cursor.LastSeenSeq, firstRun, cursorPath),
@@ -505,6 +506,15 @@ func buildOrientOperatorReportWithCursorWriter(homePath string, recent int, now 
 	}
 	if err := cursorWriter(homePath, currentSeq, now); err != nil {
 		return orientOperatorReport{}, err
+	}
+	if pendingStranger != nil {
+		finalized, finalizeErr := pendingStranger.store.FinalizeStrangerDeal(pendingStranger.row, now, strangerCardCooldown)
+		switch {
+		case finalizeErr != nil:
+			report.Warnings = append(report.Warnings, "stranger_card: "+finalizeErr.Error())
+		case finalized:
+			attachOrientStrangerCard(&report, pendingStranger.card)
+		}
 	}
 	return report, nil
 }
@@ -652,6 +662,11 @@ func orientLoopActionCards(cards []product.LoopActionCard) []orientLoopActionCar
 }
 
 func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, workbench work.WorkbenchReport, now time.Time, strangerExcludeTopic string) orientNeedsMe {
+	out, _ := buildOrientNeedsMeWithPendingStranger(homePath, reviews, workbench, now, strangerExcludeTopic)
+	return out
+}
+
+func buildOrientNeedsMeWithPendingStranger(homePath string, reviews reviewartifact.QueueReport, workbench work.WorkbenchReport, now time.Time, strangerExcludeTopic string) (orientNeedsMe, *orientPendingStrangerDeal) {
 	out := orientNeedsMe{
 		CandidateInboxes:   []orientCandidateInbox{},
 		ReviewRequired:     reviews.Counts.ReviewRequired,
@@ -659,7 +674,8 @@ func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, wor
 		ObservationReviews: buildOrientObservationReviews(reviews),
 	}
 	out.CapabilityFeedback = buildOrientCapabilityFeedback(homePath, reviews, now)
-	out.TensionCards = buildOrientTensionCards(homePath, reviews, now, strangerExcludeTopic)
+	var pendingStranger *orientPendingStrangerDeal
+	out.TensionCards, pendingStranger = buildOrientTensionCards(homePath, reviews, now, strangerExcludeTopic)
 	out.AdaptationIntake = buildOrientAdaptationIntake(reviews)
 	out.SourceControl = buildOrientSourceControl(reviews)
 	out.SourceIntake = buildOrientSourceIntake(homePath, now)
@@ -697,7 +713,7 @@ func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, wor
 	}
 	out.OldestItem = oldest
 	out.OldestActionableItem = oldestActionable
-	return out
+	return out, pendingStranger
 }
 
 func orientMemoryReviewCards(workbench work.WorkbenchReport) []orientMemoryReviewCard {
@@ -943,14 +959,14 @@ func buildOrientObservationReviews(reviews reviewartifact.QueueReport) *orientOb
 	return &out
 }
 
-func buildOrientTensionCards(homePath string, reviews reviewartifact.QueueReport, now time.Time, strangerExcludeTopic string) *orientTensionCards {
+func buildOrientTensionCards(homePath string, reviews reviewartifact.QueueReport, now time.Time, strangerExcludeTopic string) (*orientTensionCards, *orientPendingStrangerDeal) {
 	store, err := mem.Open(homePath)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	claims, err := store.AllCurrent()
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	liveClaims, superseded := map[string]bool{}, map[string]bool{}
 	for _, claim := range claims {
@@ -961,21 +977,13 @@ func buildOrientTensionCards(homePath string, reviews reviewartifact.QueueReport
 	}
 	view, err := decisions.StandingLaw(store, homePath, now)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	cards := selectOrientTensionCards(reviews, liveClaims, superseded, view)
-	// S3b (D4/D5/D7): deal at most ONE cross-topic un-promoted "stranger" card, appended
-	// into the same Items list the contested-claim/standing-law cards use. A nil dealer
-	// result (no eligible candidate, cooldown, or a degraded dealt-log) leaves cards
-	// exactly as selectOrientTensionCards produced it.
-	if stranger := dealOrientStrangerCard(store, homePath, strangerExcludeTopic, now); stranger != nil {
-		if cards == nil {
-			cards = &orientTensionCards{Items: []orientTensionCard{}, Commands: []orientDrillDown{}}
-		}
-		cards.Items = append(cards.Items, *stranger)
-		cards.Commands = append(cards.Commands, orientDrillDown{Label: "stranger card", Command: []string{"compound", "memory", "candidates", "--state", "parked"}})
-	}
-	return cards
+	// S3b is prepared read-only here. The report builder writes its cursor first, then
+	// atomically finalizes and attaches the card so a failed report never records a deal.
+	pending := prepareOrientStrangerDeal(store, homePath, strangerExcludeTopic, now)
+	return cards, pending
 }
 
 // strangerCardCooldown is D5's re-deal cooldown: a candidate already dealt as a stranger card
@@ -987,14 +995,16 @@ const strangerCardCooldown = 7 * 24 * time.Hour
 // pool/cooldown filters but before the deal is committed. Production leaves it nil.
 var orientStrangerDealPreparedObserver func()
 
-// dealOrientStrangerCard is the S3b weak-tie dealer (packet D4/D5/D7): at most ONE cross-topic,
-// un-promoted (proposed|parked) memory candidate is dealt per orient as a `stranger` tension
-// card, honoring the 7-day cooldown and an optional --stranger-exclude-topic subtree exclusion.
-// Every successful deal appends one row to mem's dealt-log (D5) so the S3a report's
-// dealt->caused join (D2/F8) has a denominator. A missing/unreadable dealt-log, or a log-write
-// failure, degrades to NO card + no crash (F7) — it never blindly re-deals nor panics; a card is
-// only ever considered dealt once its log row is durably appended.
-func dealOrientStrangerCard(store *mem.Store, homePath, excludeTopic string, now time.Time) *orientTensionCard {
+type orientPendingStrangerDeal struct {
+	store *mem.Store
+	card  orientTensionCard
+	row   mem.StrangerDealtRow
+}
+
+// prepareOrientStrangerDeal selects at most one cross-topic, proposed/parked candidate without
+// mutating the dealt-log. Selection is provisional: Store.FinalizeStrangerDeal rechecks current
+// state and cooldown under the memory lock after the operator report's cursor is durable.
+func prepareOrientStrangerDeal(store *mem.Store, homePath, excludeTopic string, now time.Time) *orientPendingStrangerDeal {
 	pool, err := strangerCandidatePool(store, now)
 	if err != nil {
 		return nil
@@ -1048,18 +1058,26 @@ func dealOrientStrangerCard(store *mem.Store, homePath, excludeTopic string, now
 	if orientStrangerDealPreparedObserver != nil {
 		orientStrangerDealPreparedObserver()
 	}
-	if err := mem.AppendStrangerDealtRow(homePath, row); err != nil {
-		// A card is only "dealt" once its log row lands (D5): a write failure means it
-		// was never dealt this session (F7's no-crash contract), not a silently
-		// unlogged deal that would break the dealt-log's own invariant.
-		return nil
+	return &orientPendingStrangerDeal{
+		store: store,
+		row:   row,
+		card: orientTensionCard{
+			ID:      cardID,
+			Summary: summary,
+			Refs:    []string{chosen.ID},
+			Command: []string{"compound", "memory", "adjudicate", chosen.ID, "--verdict", "park"},
+		},
 	}
-	return &orientTensionCard{
-		ID:      cardID,
-		Summary: summary,
-		Refs:    []string{chosen.ID},
-		Command: []string{"compound", "memory", "adjudicate", chosen.ID},
+}
+
+func attachOrientStrangerCard(report *orientOperatorReport, card orientTensionCard) {
+	if report.NeedsMe.TensionCards == nil {
+		report.NeedsMe.TensionCards = &orientTensionCards{Items: []orientTensionCard{}, Commands: []orientDrillDown{}}
 	}
+	command := orientDrillDown{Label: "stranger card", Command: append([]string{}, card.Command...)}
+	report.NeedsMe.TensionCards.Items = append(report.NeedsMe.TensionCards.Items, card)
+	report.NeedsMe.TensionCards.Commands = append(report.NeedsMe.TensionCards.Commands, command)
+	report.DrillDown = append(report.DrillDown, command)
 }
 
 // strangerCandidatePool returns every proposed|parked memory candidate via the packet's named

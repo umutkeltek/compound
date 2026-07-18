@@ -10,9 +10,11 @@ package mem
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // StrangerDealtLogRelPath is the home-relative path of the append-only JSONL dealt-log (D5).
@@ -63,10 +65,9 @@ func ReadStrangerDealtLog(homePath string) ([]StrangerDealtRow, error) {
 	return out, nil
 }
 
-// AppendStrangerDealtRow appends one dealt-card row to the JSONL log, creating the parent
-// directory if needed. It never writes to the ledger, candidates/, or claims/ — the same
-// write-boundary invariant (F3) the S3a report artifact honors.
-func AppendStrangerDealtRow(homePath string, row StrangerDealtRow) error {
+// appendStrangerDealtRow is the raw append primitive used by FinalizeStrangerDeal while its
+// Store lock is held, plus same-package fixtures that seed the consumption join.
+func appendStrangerDealtRow(homePath string, row StrangerDealtRow) error {
 	path := strangerDealtLogPath(homePath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -84,4 +85,65 @@ func AppendStrangerDealtRow(homePath string, row StrangerDealtRow) error {
 		return err
 	}
 	return nil
+}
+
+// FinalizeStrangerDeal is the single production commit door for a prepared stranger card.
+// Candidate state and cooldown are re-read while Store's cross-process lock is held, then the
+// row is appended inside the same critical section. The bool is false when another orient won
+// the cooldown race or the candidate stopped being proposed/parked; callers must suppress the
+// prepared card in either case.
+func (s *Store) FinalizeStrangerDeal(row StrangerDealtRow, now time.Time, cooldown time.Duration) (bool, error) {
+	candidateRef := strings.TrimSpace(row.CandidateRef)
+	if candidateRef == "" {
+		return false, fmt.Errorf("stranger deal candidate_ref is required")
+	}
+	if strings.TrimSpace(row.CardID) == "" {
+		return false, fmt.Errorf("stranger deal card_id is required")
+	}
+	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(row.Ts)); err != nil {
+		return false, fmt.Errorf("stranger deal ts: %w", err)
+	}
+	if now.IsZero() {
+		return false, fmt.Errorf("stranger deal finalize time is required")
+	}
+	if cooldown <= 0 {
+		return false, fmt.Errorf("stranger deal cooldown must be positive")
+	}
+
+	finalized := false
+	err := s.withLock(func() error {
+		candidate, err := s.getCandidate(candidateRef)
+		if err != nil {
+			return fmt.Errorf("revalidate stranger candidate %s: %w", candidateRef, err)
+		}
+		if candidate.State != "proposed" && candidate.State != "parked" {
+			return nil
+		}
+		if topic := strings.TrimSpace(row.Topic); topic != "" && candidate.Topic() != topic {
+			return nil
+		}
+
+		dealt, err := ReadStrangerDealtLog(s.home)
+		if err != nil {
+			return fmt.Errorf("recheck stranger cooldown: %w", err)
+		}
+		for _, existing := range dealt {
+			if strings.TrimSpace(existing.CandidateRef) != candidateRef {
+				continue
+			}
+			dealtAt, err := time.Parse(time.RFC3339, strings.TrimSpace(existing.Ts))
+			if err != nil {
+				return fmt.Errorf("recheck stranger cooldown for %s: %w", candidateRef, err)
+			}
+			if now.Sub(dealtAt) < cooldown {
+				return nil
+			}
+		}
+		if err := appendStrangerDealtRow(s.home, row); err != nil {
+			return fmt.Errorf("append stranger deal: %w", err)
+		}
+		finalized = true
+		return nil
+	})
+	return finalized, err
 }

@@ -1602,8 +1602,25 @@ func strangerFixturePromote(t *testing.T, s *mem.Store, candidateID string, now 
 	}
 }
 
-// TestOrientStrangerCardDealerFalsifiers covers the S3b dealer's F5-F7 falsifiers directly
-// against dealOrientStrangerCard (packet D4/D5/D7).
+func finalizeOrientStrangerForTest(t *testing.T, store *mem.Store, homePath, excludeTopic string, now time.Time) *orientTensionCard {
+	t.Helper()
+	pending := prepareOrientStrangerDeal(store, homePath, excludeTopic, now)
+	if pending == nil {
+		return nil
+	}
+	finalized, err := pending.store.FinalizeStrangerDeal(pending.row, now, strangerCardCooldown)
+	if err != nil {
+		t.Fatalf("finalize stranger deal: %v", err)
+	}
+	if !finalized {
+		return nil
+	}
+	card := pending.card
+	return &card
+}
+
+// TestOrientStrangerCardDealerFalsifiers covers the S3b dealer's F5-F7 falsifiers across its
+// prepare + Store-owned finalize seam (packet D4/D5/D7).
 func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 	t.Run("f5 topic-excluded-only candidate is not dealt", func(t *testing.T) {
 		homePath := t.TempDir()
@@ -1618,7 +1635,7 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 		if _, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:f5-excluded-only", "topic-x")}, now.Add(-30*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
-		if card := dealOrientStrangerCard(s, homePath, "topic-x", now); card != nil {
+		if card := finalizeOrientStrangerForTest(t, s, homePath, "topic-x", now); card != nil {
 			t.Fatalf("excluded-topic-only candidate must not be dealt: %+v", card)
 		}
 	})
@@ -1640,7 +1657,7 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		card := dealOrientStrangerCard(s, homePath, "topic-x", now)
+		card := finalizeOrientStrangerForTest(t, s, homePath, "topic-x", now)
 		if card == nil {
 			t.Fatal("expected a stranger card from the different-topic candidate")
 		}
@@ -1681,7 +1698,7 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 			t.Fatal(err)
 		}
 		strangerFixturePromote(t, s, got[2].ID, now.Add(-50*time.Minute))
-		if card := dealOrientStrangerCard(s, homePath, "", now); card != nil {
+		if card := finalizeOrientStrangerForTest(t, s, homePath, "", now); card != nil {
 			t.Fatalf("rejected/no_promote/promoted candidates must never be dealt: %+v", card)
 		}
 	})
@@ -1701,7 +1718,7 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		card := dealOrientStrangerCard(s, homePath, "", now)
+		card := finalizeOrientStrangerForTest(t, s, homePath, "", now)
 		if card == nil {
 			t.Fatal("expected a deal on the first orient")
 		}
@@ -1715,7 +1732,7 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 
 		// Still within the 7-day cooldown: the same (only) candidate must not be re-dealt,
 		// and no second row is appended.
-		if again := dealOrientStrangerCard(s, homePath, "", now.Add(3*time.Hour)); again != nil {
+		if again := finalizeOrientStrangerForTest(t, s, homePath, "", now.Add(3*time.Hour)); again != nil {
 			t.Fatalf("cooldown must suppress re-dealing within 7 days: %+v", again)
 		}
 		rowsAfter, err := mem.ReadStrangerDealtLog(homePath)
@@ -1727,7 +1744,7 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 		}
 
 		// Past the cooldown window the candidate is eligible again.
-		if later := dealOrientStrangerCard(s, homePath, "", now.Add(8*24*time.Hour)); later == nil {
+		if later := finalizeOrientStrangerForTest(t, s, homePath, "", now.Add(8*24*time.Hour)); later == nil {
 			t.Fatal("candidate should be eligible again once the 7-day cooldown has elapsed")
 		}
 	})
@@ -1753,7 +1770,7 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Must degrade to no card, no panic — never deal blind against an unverifiable cooldown.
-		if card := dealOrientStrangerCard(s, homePath, "", now); card != nil {
+		if card := finalizeOrientStrangerForTest(t, s, homePath, "", now); card != nil {
 			t.Fatalf("corrupt dealt-log must degrade to no card, got %+v", card)
 		}
 	})
@@ -1818,12 +1835,6 @@ func TestOrientStrangerCardConcurrentReportsFinalizeOneDeal(t *testing.T) {
 	}
 	t.Cleanup(func() { orientStrangerDealPreparedObserver = previousObserver })
 
-	var cursorMu sync.Mutex
-	cursorWriter := func(path string, seq int64, at time.Time) error {
-		cursorMu.Lock()
-		defer cursorMu.Unlock()
-		return writeOrientOperatorCursor(path, seq, at)
-	}
 	type result struct {
 		report orientOperatorReport
 		err    error
@@ -1833,7 +1844,7 @@ func TestOrientStrangerCardConcurrentReportsFinalizeOneDeal(t *testing.T) {
 	for range callers {
 		go func() {
 			<-start
-			report, err := buildOrientOperatorReportWithCursorWriter(homePath, 5, now, "", cursorWriter)
+			report, err := buildOrientOperatorReport(homePath, 5, now, "")
 			results <- result{report: report, err: err}
 		}()
 	}
@@ -1899,5 +1910,51 @@ func TestOrientStrangerCardCursorFailureLeavesNoDealOrCard(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("cursor failure persisted a deal before report success: %+v", rows)
+	}
+}
+
+func TestOrientStrangerCardFinalizeFailureSuppressesCard(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	s, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:append-failure", "")}, now.Add(-30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	previousObserver := orientStrangerDealPreparedObserver
+	orientStrangerDealPreparedObserver = func() {
+		logPath := filepath.Join(homePath, filepath.FromSlash(mem.StrangerDealtLogRelPath))
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+			t.Errorf("prepare dealt-log parent: %v", err)
+			return
+		}
+		if err := os.Symlink(filepath.Join(homePath, "missing", "deals.jsonl"), logPath); err != nil {
+			t.Errorf("install failing dealt-log symlink: %v", err)
+		}
+	}
+	t.Cleanup(func() { orientStrangerDealPreparedObserver = previousObserver })
+
+	report, err := buildOrientOperatorReport(homePath, 5, now, "")
+	if err != nil {
+		t.Fatalf("deal append failure must degrade without failing orient: %v", err)
+	}
+	if cards := report.NeedsMe.TensionCards; cards != nil && len(cards.Items) != 0 {
+		t.Fatalf("failed finalization must suppress the prepared card: %+v", cards)
+	}
+	if !strings.Contains(strings.Join(report.Warnings, "\n"), "stranger_card:") {
+		t.Fatalf("finalization failure must remain observable as a warning: %+v", report.Warnings)
+	}
+	rows, err := mem.ReadStrangerDealtLog(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("failed finalization persisted rows: %+v", rows)
 	}
 }

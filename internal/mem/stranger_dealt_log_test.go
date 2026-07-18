@@ -25,7 +25,7 @@ func TestAppendStrangerDealtRowThenReadRoundTrips(t *testing.T) {
 		{Ts: "2026-07-17T11:00:00Z", CardID: "stranger:cand_b", CandidateRef: "cand_b", Topic: "topic-b"},
 	}
 	for _, row := range want {
-		if err := AppendStrangerDealtRow(homePath, row); err != nil {
+		if err := appendStrangerDealtRow(homePath, row); err != nil {
 			t.Fatalf("append %+v: %v", row, err)
 		}
 	}
@@ -58,7 +58,7 @@ func TestAppendStrangerDealtRowWritesOnlyTheOneFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := snapshotFiles(t, homePath)
-	if err := AppendStrangerDealtRow(homePath, StrangerDealtRow{Ts: "2026-07-17T10:00:00Z", CardID: "stranger:x", CandidateRef: "cand_x"}); err != nil {
+	if err := appendStrangerDealtRow(homePath, StrangerDealtRow{Ts: "2026-07-17T10:00:00Z", CardID: "stranger:x", CandidateRef: "cand_x"}); err != nil {
 		t.Fatal(err)
 	}
 	after := snapshotFiles(t, homePath)
