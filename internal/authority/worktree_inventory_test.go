@@ -113,6 +113,55 @@ func TestBuildWorktreeInventoryRecentActivityClassifiesLive(t *testing.T) {
 	}
 }
 
+// F2 clean-main-quiet: the primary checkout is still observed through the
+// shared liveness seam, but a clean, unused main row carries no live signal and
+// keeps its leave-alone action.
+func TestBuildWorktreeInventoryF2CleanMainStaysQuiet(t *testing.T) {
+	fix := newWorktreeInventoryFixture(t)
+
+	inv, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: inventoryFakeLiveness{},
+	}, fix.repo, WorktreeInventoryOptions{Now: inventoryFutureNow()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := inventoryMainRow(t, inv)
+	if main.Live || main.ActivityRecent || main.DirtyFiles != 0 {
+		t.Fatalf("clean main must stay quiet: %+v", main)
+	}
+	if main.Liveness.State != WorktreeLivenessUnused {
+		t.Fatalf("main liveness was not observed through the shared seam: %+v", main.Liveness)
+	}
+	if main.NextAction != "leave alone — primary checkout" {
+		t.Fatalf("clean main next_action = %q", main.NextAction)
+	}
+}
+
+// F3 commit-recency-age: a clean linked worktree with an artificially old
+// .git entry still reports its recent HEAD commit as the newest age evidence.
+func TestBuildWorktreeInventoryF3CleanWorktreeAgeUsesHeadCommitTime(t *testing.T) {
+	fix := newWorktreeInventoryFixture(t)
+	now := time.Now().UTC().Truncate(time.Second).Add(2 * time.Second)
+	old := now.Add(-48 * time.Hour)
+	if err := os.Chtimes(filepath.Join(fix.laneLanded, ".git"), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	inv, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: inventoryFakeLiveness{},
+	}, fix.repo, WorktreeInventoryOptions{Now: now, ActivityWindow: 60 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	landed := inventoryRowByBranch(t, inv, "lane-landed")
+	if landed.AgeSeconds == nil || *landed.AgeSeconds >= int64((60*time.Minute).Seconds()) {
+		t.Fatalf("clean worktree age must reflect recent HEAD commit, not old .git entry: %+v", landed)
+	}
+	if !landed.ActivityRecent {
+		t.Fatalf("recent HEAD commit must be activity evidence: %+v", landed)
+	}
+}
+
 // W5: read-only proof. A recording fake wraps real git; the full build may only
 // invoke read verbs, and a `worktree` call may only be `worktree list`.
 func TestBuildWorktreeInventoryIsReadOnly(t *testing.T) {
@@ -426,6 +475,17 @@ func inventoryRowByBranch(t *testing.T, inv WorktreeInventory, branch string) Wo
 		}
 	}
 	t.Fatalf("no row for branch %q", branch)
+	return WorktreeInventoryRow{}
+}
+
+func inventoryMainRow(t *testing.T, inv WorktreeInventory) WorktreeInventoryRow {
+	t.Helper()
+	for _, row := range inv.Rows {
+		if row.IsMain {
+			return row
+		}
+	}
+	t.Fatal("no main row")
 	return WorktreeInventoryRow{}
 }
 

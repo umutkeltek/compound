@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"compound/internal/authority"
+	"compound/internal/envelope"
+	"compound/internal/work"
 )
 
 // Keep every test in this package hermetic: never read the operator's real
@@ -86,6 +88,49 @@ func TestExecutorsWorktreesCLIRendersJSONAndText(t *testing.T) {
 	}
 }
 
+// F1 dirty-main-live: dirty activity in the primary checkout must be visible
+// on its main-class row and in the projection's header counts.
+func TestExecutorsWorktreesF1DirtyMainIsLiveAndCounted(t *testing.T) {
+	repo := newExecutorsWorktreesCLIFixture(t)
+	setExecutorsWorktreesLedger(t, worktreeInventoryLedger{KeepsReadable: true})
+	now := time.Now()
+	dirty := filepath.Join(repo, "main-lane-wip.txt")
+	if err := os.WriteFile(dirty, []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(dirty, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runExecutorsWorktrees(context.Background(), []string{"--json", "--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("json code=%d stderr=%s", code, stderr.String())
+	}
+	var inv authority.WorktreeInventory
+	if err := json.Unmarshal(stdout.Bytes(), &inv); err != nil {
+		t.Fatalf("decode: %v\n%s", err, stdout.String())
+	}
+	main := executorsWorktreesCLIMainRow(t, inv)
+	if main.DirtyFiles != 1 || !main.ActivityRecent || !main.Live {
+		t.Fatalf("dirty main must surface recent live activity: %+v", main)
+	}
+	if !strings.Contains(main.Reason, "active lane") || !strings.Contains(main.Reason, "primary checkout") {
+		t.Fatalf("dirty main reason must name the live primary-checkout lane: %q", main.Reason)
+	}
+	if inv.Counts.Live != 1 {
+		t.Fatalf("counts.live = %d, want dirty main included", inv.Counts.Live)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runExecutorsWorktrees(context.Background(), []string{"--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("text code=%d stderr=%s", code, stderr.String())
+	}
+	if text := stdout.String(); !strings.Contains(text, "live=1") || !strings.Contains(text, "main_dirty=1") {
+		t.Fatalf("text counts must expose dirty main activity:\n%s", text)
+	}
+}
+
 func TestExecutorsWorktreesCLIRejectsUnknownFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := runExecutorsWorktrees(context.Background(), []string{"--bogus"}, &stdout, &stderr, time.Now())
@@ -137,6 +182,81 @@ func executorsWorktreesCLIRow(t *testing.T, inv authority.WorktreeInventory, bra
 	}
 	t.Fatalf("no row for branch %q", branch)
 	return authority.WorktreeInventoryRow{}
+}
+
+func executorsWorktreesCLIMainRow(t *testing.T, inv authority.WorktreeInventory) authority.WorktreeInventoryRow {
+	t.Helper()
+	for _, row := range inv.Rows {
+		if row.IsMain {
+			return row
+		}
+	}
+	t.Fatal("no main row")
+	return authority.WorktreeInventoryRow{}
+}
+
+// F4 envelope-join: a running envelope bound to the canonical repository root
+// joins work identity and its live lease holder onto the main row even without
+// a worktree-branch artifact.
+func TestExecutorsWorktreesF4RunningEnvelopeJoinsMainRoot(t *testing.T) {
+	repo, base, _ := initLandingCLIRepo(t)
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	w, err := store.Create(work.CreateInput{
+		Owner: "executors-observability", Actor: "operator:test", SuccessPredicate: "main lane is visible",
+		GitDelivery: &envelope.GitDeliveryContract{
+			TargetWorktreeRoot: repo, TargetLocalRef: "refs/heads/main", ExpectedBaseSHA: base, PublicationMode: "local_only",
+		},
+	}, now.Add(-3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const holder = "codex:main-lane"
+	if _, err := store.Claim(w.ID, holder, now.Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: holder}, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	prevLive := worktreeInventoryCLILiveness
+	prevLedger := worktreeInventoryCLILedger
+	worktreeInventoryCLILiveness = cliUnusedWorktreeLiveness{}
+	worktreeInventoryCLILedger = defaultWorktreeInventoryLedger
+	t.Cleanup(func() {
+		worktreeInventoryCLILiveness = prevLive
+		worktreeInventoryCLILedger = prevLedger
+	})
+
+	var stdout, stderr bytes.Buffer
+	if code := runExecutorsWorktrees(context.Background(), []string{"--json", "--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("json code=%d stderr=%s", code, stderr.String())
+	}
+	var inv authority.WorktreeInventory
+	if err := json.Unmarshal(stdout.Bytes(), &inv); err != nil {
+		t.Fatalf("decode: %v\n%s", err, stdout.String())
+	}
+	main := executorsWorktreesCLIMainRow(t, inv)
+	if main.WorkID != w.ID || main.WorkState != "running" {
+		t.Fatalf("main row must join running root-bound envelope: %+v", main)
+	}
+	if !strings.Contains(stdout.String(), `"work_holder": "`+holder+`"`) {
+		t.Fatalf("main row JSON must expose holder %q:\n%s", holder, stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runExecutorsWorktrees(context.Background(), []string{"--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("text code=%d stderr=%s", code, stderr.String())
+	}
+	if text := stdout.String(); !strings.Contains(text, w.ID) || !strings.Contains(text, holder) {
+		t.Fatalf("text row must expose work id and holder:\n%s", text)
+	}
 }
 
 // The CLI renders joined envelope identity: JSON carries work_id/work_state and
