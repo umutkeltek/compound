@@ -425,6 +425,10 @@ func cmdOrientOperator(homePath string, args []string) {
 }
 
 func buildOrientOperatorReport(homePath string, recent int, now time.Time, strangerExcludeTopic string) (orientOperatorReport, error) {
+	return buildOrientOperatorReportWithCursorWriter(homePath, recent, now, strangerExcludeTopic, writeOrientOperatorCursor)
+}
+
+func buildOrientOperatorReportWithCursorWriter(homePath string, recent int, now time.Time, strangerExcludeTopic string, cursorWriter func(string, int64, time.Time) error) (orientOperatorReport, error) {
 	if recent <= 0 {
 		recent = 5
 	}
@@ -499,7 +503,7 @@ func buildOrientOperatorReport(homePath string, recent int, now time.Time, stran
 		script := narrateRes.Script
 		report.Narrate = &script
 	}
-	if err := writeOrientOperatorCursor(homePath, currentSeq, now); err != nil {
+	if err := cursorWriter(homePath, currentSeq, now); err != nil {
 		return orientOperatorReport{}, err
 	}
 	return report, nil
