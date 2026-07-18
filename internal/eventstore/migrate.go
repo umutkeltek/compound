@@ -99,6 +99,7 @@ type MigrateOptions struct {
 	beforeManifest        func(id string) error
 	beforeArchive         func(id string) error
 	beforeInitialBaseline func() error
+	afterRetirementCensus func() error
 }
 
 // MigrateRejection names a loose file that could not be folded and why. A
@@ -139,6 +140,9 @@ type CompletionReport struct {
 	ExpectedDigest     string         `json:"expected_digest"`
 	Reasons            []string       `json:"reasons,omitempty"`
 	LegacyWriterActive bool           `json:"legacy_writer_active"`
+	RepairManifests    int            `json:"repair_manifests,omitempty"`
+	RepairedRecords    int            `json:"repaired_records,omitempty"`
+	DivergentArchived  int            `json:"divergent_archived,omitempty"`
 	CompletedAt        string         `json:"completed_at,omitempty"`
 }
 
@@ -1202,6 +1206,22 @@ func (m *migrator) apply() (MigrateReport, error) {
 		return MigrateReport{}, err
 	}
 	defer runLock.release()
+	retired := m.engine.migrationComplete()
+	if retired {
+		loose, err := m.enumerateLoose()
+		if err != nil {
+			return MigrateReport{}, err
+		}
+		if len(loose) > 0 {
+			return MigrateReport{Mode: "apply", Discovered: len(loose), PerFamily: map[string]int{}},
+				fmt.Errorf("%w: %d loose records found; use `compound event-store repair plan`", ErrPostCompletionRepairRequired, len(loose))
+		}
+		if m.opts.afterRetirementCensus != nil {
+			if err := m.opts.afterRetirementCensus(); err != nil {
+				return MigrateReport{}, err
+			}
+		}
+	}
 
 	plan, err := m.loadOrCreatePlan()
 	if err != nil {
@@ -1218,6 +1238,10 @@ func (m *migrator) apply() (MigrateReport, error) {
 	loose, err := m.enumerateLoose()
 	if err != nil {
 		return MigrateReport{}, err
+	}
+	if retired && len(loose) > 0 {
+		return MigrateReport{Mode: "apply", Discovered: len(loose), PerFamily: map[string]int{}},
+			fmt.Errorf("%w: %d loose records found; use `compound event-store repair plan`", ErrPostCompletionRepairRequired, len(loose))
 	}
 
 	report := MigrateReport{Mode: "apply", Discovered: plan.DiscoveredCount, PerFamily: map[string]int{}}
@@ -1726,6 +1750,14 @@ func (m *migrator) evaluateCompletion(plan migratePlan, presence map[string]segm
 			comp.Reasons = append(comp.Reasons, fmt.Sprintf("family %s: %d migrated records absent from plan", family, got))
 		}
 	}
+	repairManifests, repairedRecords, divergentArchived, repairReasons, err := m.store.verifyPostCompletionRepairManifests()
+	if err != nil {
+		return CompletionReport{}, err
+	}
+	comp.RepairManifests = repairManifests
+	comp.RepairedRecords = repairedRecords
+	comp.DivergentArchived = divergentArchived
+	comp.Reasons = append(comp.Reasons, repairReasons...)
 	comp.Complete = len(comp.Reasons) == 0
 	// A legacy writer is active post-gate when a loose record reappeared OR a
 	// frozen compatibility stream (hook-events.ndjson / traces.ndjson) was
@@ -1913,6 +1945,14 @@ func (e *engine) writeInitialStreamBaseline(recordedAt string) error {
 // lock distinct from the per-batch append writer lock, so it never blocks live
 // writers — only a second migrator.
 func (m *migrator) acquireRunLock() (*appendLock, error) {
+	return m.acquireRunLockWithMode(true)
+}
+
+func (m *migrator) acquireRunLockBlocking() (*appendLock, error) {
+	return m.acquireRunLockWithMode(false)
+}
+
+func (m *migrator) acquireRunLockWithMode(nonBlocking bool) (*appendLock, error) {
 	if err := os.MkdirAll(m.engine.migrationRoot(), 0o755); err != nil {
 		return nil, err
 	}
@@ -1920,9 +1960,16 @@ func (m *migrator) acquireRunLock() (*appendLock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	mode := syscall.LOCK_EX
+	if nonBlocking {
+		mode |= syscall.LOCK_NB
+	}
+	if err := syscall.Flock(int(file.Fd()), mode); err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("another event-store migration is already running: %w", err)
+		if nonBlocking {
+			return nil, fmt.Errorf("another event-store migration is already running: %w", err)
+		}
+		return nil, fmt.Errorf("lock event-store migration owner: %w", err)
 	}
 	return &appendLock{file: file}, nil
 }

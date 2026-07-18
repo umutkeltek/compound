@@ -16,19 +16,20 @@ import (
 const eventStoreMigrateUsage = "usage: compound event-store migrate (--dry-run | --apply | --verify) [--batch N] [--json] [--home P]"
 
 // cmdEventStore hosts the physical-layout operations of the event store seam.
-// Today it exposes the legacy loose-record migration (write-shape slice 4); the
-// verb name is deliberately distinct from the read-only `event` trace surface.
+// It exposes the legacy loose-record migration, governed post-completion repair,
+// and frozen-stream rebaseline; the verb name is deliberately distinct from
+// the read-only `event` trace surface.
 func cmdEventStore(args []string) {
 	os.Exit(runEventStore(args, os.Stdout, os.Stderr))
 }
 
 func runEventStore(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: compound event-store migrate ... | rebaseline ...")
+		fmt.Fprintln(stderr, "usage: compound event-store migrate ... | rebaseline ... | repair ...")
 		return 2
 	}
 	if hasUsageFlag(args) {
-		fmt.Fprintln(stdout, "usage: compound event-store migrate ... | rebaseline ...")
+		fmt.Fprintln(stdout, "usage: compound event-store migrate ... | rebaseline ... | repair ...")
 		return 0
 	}
 	switch args[0] {
@@ -36,9 +37,11 @@ func runEventStore(args []string, stdout, stderr io.Writer) int {
 		return runEventStoreMigrate(args[1:], stdout, stderr)
 	case "rebaseline":
 		return runEventStoreRebaseline(args[1:], stdout, stderr)
+	case "repair":
+		return runEventStoreRepair(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "event-store: unknown subcommand", args[0])
-		fmt.Fprintln(stderr, "usage: compound event-store migrate ... | rebaseline ...")
+		fmt.Fprintln(stderr, "usage: compound event-store migrate ... | rebaseline ... | repair ...")
 		return 2
 	}
 }
@@ -180,6 +183,9 @@ func printMigrateReport(w io.Writer, report eventstore.MigrateReport) {
 		fmt.Fprintf(w, "- legacy_discovered: %d\n", comp.DiscoveredExpected)
 		fmt.Fprintf(w, "- remaining_loose: %d\n", comp.RemainingLoose)
 		fmt.Fprintf(w, "- rollup_digest_matches_plan: %t\n", comp.RollupDigest == comp.ExpectedDigest)
+		fmt.Fprintf(w, "- repair_manifests: %d\n", comp.RepairManifests)
+		fmt.Fprintf(w, "- repaired_records: %d\n", comp.RepairedRecords)
+		fmt.Fprintf(w, "- divergent_archived: %d\n", comp.DivergentArchived)
 		if comp.LegacyWriterActive {
 			fmt.Fprintf(w, "- status: degraded:legacy_writer_active\n")
 		}

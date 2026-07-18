@@ -17,7 +17,8 @@ import (
 	"compound/internal/envelope"
 )
 
-const receiptedActionReservationSchemaVersion = "compound.receipted_action_reservation.v0.1"
+const receiptedActionReservationSchemaVersion = "compound.receipted_action_reservation.v0.2"
+const receiptedActionReservationLegacySchemaVersion = "compound.receipted_action_reservation.v0.1"
 const receiptedActionCompletionSchemaVersion = "compound.receipted_action_completion.v0.1"
 
 // receiptedActionReservation closes the gap between governed admission and an
@@ -32,6 +33,13 @@ type receiptedActionReservation struct {
 	TransitionID      string `json:"transition_id"`
 	AuthorizedAt      string `json:"authorized_at"`
 	TransactionDigest string `json:"transaction_digest"`
+	// ReauthorizationDigest excludes only the current policy decision and its
+	// policy-authority proof ref. It lets a retry replace an unpublished
+	// intermediate authority while proving the action and outcome stayed exact.
+	ReauthorizationDigest string `json:"reauthorization_digest,omitempty"`
+	// Input is additive recovery evidence for an unpublished intermediate
+	// authority. Its transaction digest is verified before any caller can use it.
+	Input *ReceiptedActionInput `json:"input,omitempty"`
 }
 
 // receiptedActionCompletion is the immutable replay identity written only
@@ -85,7 +93,7 @@ func (s *Store) ReserveReceiptedAction(workID string, in ReceiptedActionInput, a
 			return err
 		}
 		if present {
-			if !reflect.DeepEqual(actual, expected) {
+			if !receiptedActionReservationEqual(actual, expected) {
 				return fmt.Errorf("work %s receipted action reservation %s conflicts with requested transaction", workID, actual.ActionID)
 			}
 			return nil
@@ -98,6 +106,106 @@ func (s *Store) ReserveReceiptedAction(workID string, in ReceiptedActionInput, a
 		}
 		return s.writeReceiptedActionBoundary("reservation", path, &expected)
 	})
+}
+
+// ReauthorizeReceiptedActionReservation atomically replaces an unpublished
+// reservation for the same action after current policy authority changes. The
+// lifecycle blocker is never removed between revisions, so partial external
+// progress cannot become detached from its work transaction.
+func (s *Store) ReauthorizeReceiptedActionReservation(workID string, previous ReceiptedActionInput, previousAt time.Time, next ReceiptedActionInput, nextAt time.Time, authorize func() error) error {
+	if authorize == nil {
+		return fmt.Errorf("receipted action reauthorization is required")
+	}
+	if nextAt.Before(previousAt) {
+		return fmt.Errorf("receipted action reauthorization time must be monotonic")
+	}
+	previousStable, err := receiptedActionReauthorizationDigest(workID, previous)
+	if err != nil {
+		return err
+	}
+	nextStable, err := receiptedActionReauthorizationDigest(workID, next)
+	if err != nil {
+		return err
+	}
+	if previousStable != nextStable {
+		return fmt.Errorf("receipted action reauthorization must preserve the exact action and non-authority outcome")
+	}
+	return s.withLifecycleMutation(func() error {
+		w, err := s.recoverPendingClaimBeforeMutation(workID)
+		if err != nil {
+			return err
+		}
+		if previous.Action.ID != next.Action.ID || previous.Action.IDs.WorkID != workID || next.Action.IDs.WorkID != workID {
+			return fmt.Errorf("receipted action reauthorization must preserve the same work and action")
+		}
+		if err := validateReceiptedActionReservationAdmission(s, w, workID, next, nextAt); err != nil {
+			return err
+		}
+		if pending, present, _, err := s.preflightReceiptedActionPending(workID); err != nil {
+			return err
+		} else if present {
+			return fmt.Errorf("cannot reauthorize receipted action reservation %s after receipt publication began", pending.ActionID)
+		}
+		if _, present, err := s.preflightReceiptedAction(next.Action); err != nil {
+			return err
+		} else if present {
+			return fmt.Errorf("cannot reauthorize receipted action reservation %s after receipt publication began", next.Action.ID)
+		}
+		priorReservation, err := newReceiptedActionReservation(workID, previous, previousAt)
+		if err != nil {
+			return err
+		}
+		nextReservation, err := newReceiptedActionReservation(workID, next, nextAt)
+		if err != nil {
+			return err
+		}
+		actual, present, path, err := s.preflightReceiptedActionReservation(workID)
+		if err != nil {
+			return err
+		}
+		if !present {
+			return fmt.Errorf("work %s has no receipted action reservation for %s", workID, next.Action.ID)
+		}
+		if actualAt, parseErr := time.Parse(time.RFC3339Nano, actual.AuthorizedAt); parseErr != nil {
+			return parseErr
+		} else if nextAt.Before(actualAt) {
+			return fmt.Errorf("receipted action reauthorization time must be monotonic with installed reservation")
+		}
+		if !receiptedActionReservationEqual(actual, priorReservation) && !receiptedActionReservationEqual(actual, nextReservation) &&
+			(actual.ReauthorizationDigest == "" || actual.ReauthorizationDigest != nextReservation.ReauthorizationDigest) {
+			return fmt.Errorf("work %s receipted action reservation %s conflicts with reauthorization", workID, actual.ActionID)
+		}
+		if err := authorize(); err != nil {
+			return err
+		}
+		if receiptedActionReservationEqual(actual, nextReservation) {
+			return nil
+		}
+		return s.writeReceiptedActionBoundary("reservation_reauthorization", path, &nextReservation)
+	})
+}
+
+// ReadReceiptedActionReservationInput returns the exact validated unpublished
+// transaction input so an adapter can finish an interrupted authority journal
+// before advancing to a newer current policy. Reservations written before the
+// additive recovery body existed remain valid but are not recoverable here.
+func (s *Store) ReadReceiptedActionReservationInput(workID, actionID string) (ReceiptedActionInput, time.Time, bool, error) {
+	var zero ReceiptedActionInput
+	reservation, present, _, err := s.preflightReceiptedActionReservation(workID)
+	if err != nil || !present {
+		return zero, time.Time{}, false, err
+	}
+	if reservation.ActionID != actionID {
+		return zero, time.Time{}, false, fmt.Errorf("work %s receipted action reservation belongs to %s, not %s", workID, reservation.ActionID, actionID)
+	}
+	if reservation.Input == nil {
+		return zero, time.Time{}, false, nil
+	}
+	authorizedAt, err := time.Parse(time.RFC3339Nano, reservation.AuthorizedAt)
+	if err != nil {
+		return zero, time.Time{}, false, err
+	}
+	return *reservation.Input, authorizedAt, true, nil
 }
 
 // RecordReservedReceiptedAction finalizes only the exact admitted transaction.
@@ -123,16 +231,23 @@ func (s *Store) RecordReservedReceiptedAction(workID string, in ReceiptedActionI
 			if !completed {
 				return fmt.Errorf("work %s has no receipted action reservation for %s", workID, in.Action.ID)
 			}
-			if !reflect.DeepEqual(completion.reservation(), expected) {
+			if !receiptedActionReservationEqual(completion.reservation(), expected) {
 				return fmt.Errorf("work %s completed receipted action %s conflicts with requested transaction", workID, completion.ActionID)
 			}
 			out, recordErr = s.replayCompletedReceiptedAction(workID, in, completion)
 			return recordErr
 		}
-		if !reflect.DeepEqual(actual, expected) {
+		if !receiptedActionReservationEqual(actual, expected) {
 			return fmt.Errorf("work %s receipted action reservation %s conflicts with requested transaction", workID, actual.ActionID)
 		}
-		out, recordErr = s.recordReceiptedActionLocked(workID, in, authorizedAt)
+		// Authorization identifies and admits the reservation. Completion is a
+		// separate causal moment after the exact reservation match and immediately
+		// before receipted-action publication begins.
+		completedAt := time.Now()
+		if completedAt.Before(authorizedAt) {
+			completedAt = authorizedAt
+		}
+		out, recordErr = s.recordReceiptedActionLocked(workID, in, authorizedAt, completedAt, false)
 		if recordErr != nil {
 			return recordErr
 		}
@@ -229,6 +344,10 @@ func newReceiptedActionReservation(workID string, in ReceiptedActionInput, autho
 		return receiptedActionReservation{}, fmt.Errorf("marshal receipted action reservation digest: %w", err)
 	}
 	digest := sha256.Sum256(body)
+	reauthorizationDigest, err := receiptedActionReauthorizationDigest(workID, in)
+	if err != nil {
+		return receiptedActionReservation{}, err
+	}
 	outcome := strings.TrimSpace(in.Outcome)
 	if outcome == "" {
 		outcome = "completed"
@@ -239,11 +358,57 @@ func newReceiptedActionReservation(workID string, in ReceiptedActionInput, autho
 		ReceiptID:    idFor("rec_", "receipted-action", workID, in.Action.ID, decisionID, outcome),
 		TransitionID: idFor("tr_", "receipted-action", workID, in.Action.ID, decisionID, outcome),
 		AuthorizedAt: payload.AuthorizedAt, TransactionDigest: hex.EncodeToString(digest[:]),
+		ReauthorizationDigest: reauthorizationDigest,
+		Input:                 &in,
 	}
 	if err := reservation.validate(); err != nil {
 		return receiptedActionReservation{}, err
 	}
 	return reservation, nil
+}
+
+func receiptedActionReauthorizationDigest(workID string, in ReceiptedActionInput) (string, error) {
+	stable := in
+	stable.PreEvaluatedDecision = nil
+	stable.ProofRefs = make([]string, 0, len(in.ProofRefs))
+	policyRefs := 0
+	for _, ref := range in.ProofRefs {
+		if strings.HasPrefix(ref, "policy-authority:") {
+			policyRefs++
+			continue
+		}
+		stable.ProofRefs = append(stable.ProofRefs, ref)
+	}
+	if policyRefs > 1 {
+		return "", fmt.Errorf("receipted action reauthorization accepts at most one policy-authority proof ref")
+	}
+	body, err := json.Marshal(struct {
+		WorkID string               `json:"work_id"`
+		Input  ReceiptedActionInput `json:"input"`
+	}{WorkID: workID, Input: stable})
+	if err != nil {
+		return "", fmt.Errorf("marshal receipted action reauthorization digest: %w", err)
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// receiptedActionReservationEqual keeps ReauthorizationDigest additive. The
+// digest is a retry/convergence aid rather than transaction authority, so a
+// reservation or completion written before the field existed remains exact
+// when every original transaction field matches. When both sides carry the
+// digest, it must also match.
+func receiptedActionReservationEqual(left, right receiptedActionReservation) bool {
+	if left.ReauthorizationDigest != "" && right.ReauthorizationDigest != "" && left.ReauthorizationDigest != right.ReauthorizationDigest {
+		return false
+	}
+	left.ReauthorizationDigest = ""
+	right.ReauthorizationDigest = ""
+	left.Input = nil
+	right.Input = nil
+	left.SchemaVersion = receiptedActionReservationLegacySchemaVersion
+	right.SchemaVersion = receiptedActionReservationLegacySchemaVersion
+	return reflect.DeepEqual(left, right)
 }
 
 func (s *Store) preflightReceiptedActionReservation(workID string) (receiptedActionReservation, bool, string, error) {
@@ -281,8 +446,17 @@ func (s *Store) preflightReceiptedActionReservation(workID string) (receiptedAct
 }
 
 func (r receiptedActionReservation) validate() error {
-	if r.SchemaVersion != receiptedActionReservationSchemaVersion {
-		return fmt.Errorf("schema_version must be %q", receiptedActionReservationSchemaVersion)
+	switch r.SchemaVersion {
+	case receiptedActionReservationSchemaVersion:
+		if r.ReauthorizationDigest == "" || r.Input == nil {
+			return fmt.Errorf("v0.2 reservation requires reauthorization_digest and input recovery evidence")
+		}
+	case receiptedActionReservationLegacySchemaVersion:
+		if r.ReauthorizationDigest != "" || r.Input != nil {
+			return fmt.Errorf("v0.1 reservation cannot carry v0.2-only recovery fields")
+		}
+	default:
+		return fmt.Errorf("schema_version must be %q or %q", receiptedActionReservationSchemaVersion, receiptedActionReservationLegacySchemaVersion)
 	}
 	for _, item := range []struct {
 		name, value, prefix string
@@ -304,6 +478,41 @@ func (r receiptedActionReservation) validate() error {
 	if err != nil || len(digest) != sha256.Size {
 		return fmt.Errorf("transaction_digest must be a SHA-256 hex digest")
 	}
+	if r.ReauthorizationDigest != "" {
+		digest, err = hex.DecodeString(r.ReauthorizationDigest)
+		if err != nil || len(digest) != sha256.Size {
+			return fmt.Errorf("reauthorization_digest must be a SHA-256 hex digest")
+		}
+	}
+	if r.Input != nil {
+		if r.Input.PreEvaluatedDecision == nil || r.Input.Action.ID != r.ActionID || r.Input.Action.IDs.WorkID != r.WorkID || r.Input.PreEvaluatedDecision.ID != r.PolicyDecisionID {
+			return fmt.Errorf("input does not bind reservation work/action/policy")
+		}
+		payload := struct {
+			WorkID       string               `json:"work_id"`
+			AuthorizedAt string               `json:"authorized_at"`
+			Input        ReceiptedActionInput `json:"input"`
+		}{WorkID: r.WorkID, AuthorizedAt: r.AuthorizedAt, Input: *r.Input}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		inputDigest := sha256.Sum256(body)
+		if hex.EncodeToString(inputDigest[:]) != r.TransactionDigest {
+			return fmt.Errorf("input transaction digest mismatch")
+		}
+		stableDigest, err := receiptedActionReauthorizationDigest(r.WorkID, *r.Input)
+		if err != nil || stableDigest != r.ReauthorizationDigest {
+			return errors.Join(fmt.Errorf("input reauthorization digest mismatch"), err)
+		}
+		outcome := strings.TrimSpace(r.Input.Outcome)
+		if outcome == "" {
+			outcome = "completed"
+		}
+		if r.ReceiptID != idFor("rec_", "receipted-action", r.WorkID, r.ActionID, r.PolicyDecisionID, outcome) || r.TransitionID != idFor("tr_", "receipted-action", r.WorkID, r.ActionID, r.PolicyDecisionID, outcome) {
+			return fmt.Errorf("input does not bind reservation receipt/transition")
+		}
+	}
 	return nil
 }
 
@@ -312,7 +521,7 @@ func (s *Store) clearReceiptedActionReservation(path string, expected receiptedA
 	if err != nil {
 		return err
 	}
-	if !present || actualPath != path || !reflect.DeepEqual(actual, expected) {
+	if !present || actualPath != path || !receiptedActionReservationEqual(actual, expected) {
 		return fmt.Errorf("work %s receipted action reservation %s changed before cleanup", expected.WorkID, expected.ActionID)
 	}
 	if err := os.Remove(path); err != nil {
@@ -417,7 +626,7 @@ func newReceiptedActionCompletion(reservation receiptedActionReservation, receip
 
 func (c receiptedActionCompletion) reservation() receiptedActionReservation {
 	return receiptedActionReservation{
-		SchemaVersion: receiptedActionReservationSchemaVersion,
+		SchemaVersion: receiptedActionReservationLegacySchemaVersion,
 		WorkID:        c.WorkID, ActionID: c.ActionID, PolicyDecisionID: c.PolicyDecisionID,
 		ReceiptID: c.ReceiptID, TransitionID: c.TransitionID,
 		AuthorizedAt: c.AuthorizedAt, TransactionDigest: c.TransactionDigest,

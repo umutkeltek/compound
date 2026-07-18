@@ -54,7 +54,8 @@ type ReceiptedActionResult struct {
 	Replayed   bool                    `json:"replayed"`
 }
 
-const receiptedActionPendingSchemaVersion = "compound.receipted_action_pending.v0.1"
+const receiptedActionPendingSchemaVersion = "compound.receipted_action_pending.v0.2"
+const receiptedActionPendingLegacySchemaVersion = "compound.receipted_action_pending.v0.1"
 
 var receiptedActionEligibleStates = map[string]bool{"claimed": true, "running": true, "verifying": true}
 
@@ -68,6 +69,7 @@ type receiptedActionPending struct {
 	ReceiptID         string `json:"receipt_id"`
 	TransitionID      string `json:"transition_id"`
 	CreatedAt         string `json:"created_at"`
+	CompletedAt       string `json:"completed_at"`
 	TransactionDigest string `json:"transaction_digest"`
 }
 
@@ -82,16 +84,24 @@ func (s *Store) RecordReceiptedAction(workID string, in ReceiptedActionInput, no
 	var out ReceiptedActionResult
 	var recordErr error
 	err := homepkg.WithAutonomyAdmissionLock(s.home, func() error {
-		out, recordErr = s.recordReceiptedActionLocked(workID, in, now)
+		out, recordErr = s.recordReceiptedActionLocked(workID, in, now, now, true)
 		return recordErr
 	})
 	return out, err
 }
 
-func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInput, now time.Time) (ReceiptedActionResult, error) {
+func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInput, authorityAt, completedAt time.Time, pendingReplaysAuthority bool) (ReceiptedActionResult, error) {
 	var out ReceiptedActionResult
-	if now.IsZero() {
-		now = time.Now()
+	if authorityAt.IsZero() && completedAt.IsZero() {
+		authorityAt = time.Now()
+		completedAt = authorityAt
+	} else {
+		if authorityAt.IsZero() {
+			authorityAt = completedAt
+		}
+		if completedAt.IsZero() {
+			completedAt = authorityAt
+		}
 	}
 	w, err := s.recoverPendingClaimBeforeMutation(workID)
 	if err != nil {
@@ -145,23 +155,41 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if err != nil {
 		return out, err
 	}
-	transactionNow, err := time.Parse(time.RFC3339, action.CreatedAt)
+	transactionNow, err := time.Parse(time.RFC3339Nano, action.CreatedAt)
 	if err != nil {
 		return out, fmt.Errorf("receipted action %s created_at invalid: %w", action.ID, err)
 	}
 	var currentDecision envelope.PolicyDecision
 	if explicitDecision {
 		currentDecision = *in.PreEvaluatedDecision
-		if err := validatePreEvaluatedReceiptedAction(s, w, action, currentDecision, now); err != nil {
+		if err := validatePreEvaluatedReceiptedActionStatic(s, w, action, currentDecision); err != nil {
 			return out, err
+		}
+		decisionAt, err := time.Parse(time.RFC3339Nano, currentDecision.CreatedAt)
+		if err != nil {
+			return out, fmt.Errorf("pre-evaluated policy decision created_at invalid: %w", err)
+		}
+		if decisionAt.After(transactionNow) {
+			transactionNow = decisionAt
+		}
+		if completedAt.After(transactionNow) {
+			transactionNow = completedAt
 		}
 	} else {
 		if reason := policy.AutonomyOperatorOnlyReason(action, cfg); reason != "" {
 			return out, fmt.Errorf("cannot record autonomous receipted action: %s", reason)
 		}
-		currentDecision = policy.Evaluate(action, cfg, now)
+		currentDecision = policy.Evaluate(action, cfg, authorityAt)
 		if !policy.Allowed(currentDecision) {
 			return out, fmt.Errorf("cannot record receipted action %s: current policy %s (%s)", action.ID, currentDecision.Outcome, strings.Join(currentDecision.Reasons, "; "))
+		}
+	}
+	if pendingPresent {
+		if pending.CompletedAt != "" {
+			transactionNow, err = time.Parse(time.RFC3339Nano, pending.CompletedAt)
+			if err != nil {
+				return out, fmt.Errorf("work %s pending receipted action completion time invalid: %w", workID, err)
+			}
 		}
 	}
 	if action.MutationClass != "read" && strings.TrimSpace(action.RollbackPlan) == "" {
@@ -221,6 +249,9 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
 		ProofRefs: proofRefs, FailureCause: in.FailureCause,
 	}
+	if explicitDecision {
+		receipt.CreatedAt = transactionNow.UTC().Format(time.RFC3339Nano)
+	}
 	receipt.EvidenceRefs = proofRefs
 	if lane := strings.TrimSpace(action.Producer.LaneID); lane != "" {
 		receipt.Producer.LaneID = lane
@@ -244,6 +275,9 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 		},
 		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: changed},
 	}
+	if explicitDecision {
+		transition.CreatedAt = transactionNow.UTC().Format(time.RFC3339Nano)
+	}
 	transition.EvidenceRefs = proofRefs
 	if lane := strings.TrimSpace(action.Producer.LaneID); lane != "" {
 		transition.Producer.LaneID = lane
@@ -255,8 +289,32 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if err != nil {
 		return out, err
 	}
-	if pendingPresent && !reflect.DeepEqual(pending, expectedPending) {
+	legacyReplayAuthorityAt := time.Time{}
+	if pendingPresent && pending.SchemaVersion == receiptedActionPendingLegacySchemaVersion {
+		transactionNow, receipt, transition, expectedPending, err = s.selectLegacyReceiptedActionTransaction(workID, pending, action, decision, receipt, transition)
+		if err != nil {
+			return out, err
+		}
+		legacyReplayAuthorityAt, err = s.sealedReceiptedActionAuthorityAt(workID, action, decision)
+		if err != nil {
+			return out, err
+		}
+	}
+	if pendingPresent && !receiptedActionPendingEqual(pending, expectedPending) {
 		return out, fmt.Errorf("work %s pending receipted action %s conflicts with requested transaction", workID, pending.ActionID)
+	}
+	if explicitDecision {
+		effectiveAuthorityAt := authorityAt
+		if pendingPresent && pendingReplaysAuthority {
+			if pending.SchemaVersion == receiptedActionPendingLegacySchemaVersion {
+				effectiveAuthorityAt = legacyReplayAuthorityAt
+			} else {
+				effectiveAuthorityAt = transactionNow
+			}
+		}
+		if err := validatePreEvaluatedReceiptedActionAt(action, currentDecision, effectiveAuthorityAt); err != nil {
+			return out, err
+		}
 	}
 
 	decisionPresent, err := s.preflightReceiptedEnvelope("decision", decision.ID, &decision, &envelope.PolicyDecision{})
@@ -372,6 +430,13 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 }
 
 func validatePreEvaluatedReceiptedAction(s *Store, w envelope.WorkEnvelope, action envelope.ActionIntent, decision envelope.PolicyDecision, now time.Time) error {
+	if err := validatePreEvaluatedReceiptedActionStatic(s, w, action, decision); err != nil {
+		return err
+	}
+	return validatePreEvaluatedReceiptedActionAt(action, decision, now)
+}
+
+func validatePreEvaluatedReceiptedActionStatic(s *Store, w envelope.WorkEnvelope, action envelope.ActionIntent, decision envelope.PolicyDecision) error {
 	if action.MutationClass == "security" && !policy.HasOperatorProvenance(action.Actor) {
 		return fmt.Errorf("pre-evaluated security action requires operator provenance")
 	}
@@ -393,6 +458,21 @@ func validatePreEvaluatedReceiptedAction(s *Store, w envelope.WorkEnvelope, acti
 	}
 	if action.MutationClass == "security" && strings.TrimSpace(decision.StandingGrantID) == "" {
 		return fmt.Errorf("pre-evaluated security action requires standing-grant authority")
+	}
+	return nil
+}
+
+func validatePreEvaluatedReceiptedActionAt(action envelope.ActionIntent, decision envelope.PolicyDecision, now time.Time) error {
+	actionAt, err := time.Parse(time.RFC3339Nano, action.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("pre-evaluated action created_at invalid: %w", err)
+	}
+	decisionAt, err := time.Parse(time.RFC3339Nano, decision.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("pre-evaluated policy decision created_at invalid: %w", err)
+	}
+	if actionAt.After(now) || decisionAt.After(now) {
+		return fmt.Errorf("pre-evaluated action and policy decision must not postdate authorization")
 	}
 	if expiresAt := strings.TrimSpace(decision.ExpiresAt); expiresAt != "" {
 		expires, err := time.Parse(time.RFC3339, expiresAt)
@@ -519,8 +599,17 @@ func (s *Store) pendingReceiptedActionID(workID string) (string, error) {
 }
 
 func (p receiptedActionPending) validate() error {
-	if p.SchemaVersion != receiptedActionPendingSchemaVersion {
-		return fmt.Errorf("schema_version must be %q", receiptedActionPendingSchemaVersion)
+	switch p.SchemaVersion {
+	case receiptedActionPendingSchemaVersion:
+		if strings.TrimSpace(p.CompletedAt) == "" {
+			return fmt.Errorf("completed_at required")
+		}
+	case receiptedActionPendingLegacySchemaVersion:
+		if strings.TrimSpace(p.CompletedAt) != "" {
+			return fmt.Errorf("completed_at must be absent for legacy schema_version %q", receiptedActionPendingLegacySchemaVersion)
+		}
+	default:
+		return fmt.Errorf("schema_version must be %q or %q", receiptedActionPendingLegacySchemaVersion, receiptedActionPendingSchemaVersion)
 	}
 	for _, field := range []struct {
 		name, value string
@@ -555,11 +644,93 @@ func (p receiptedActionPending) validate() error {
 	if _, err := time.Parse(time.RFC3339, p.CreatedAt); err != nil {
 		return fmt.Errorf("created_at invalid: %w", err)
 	}
+	if p.CompletedAt != "" {
+		if _, err := time.Parse(time.RFC3339Nano, p.CompletedAt); err != nil {
+			return fmt.Errorf("completed_at invalid: %w", err)
+		}
+	}
 	digest, err := hex.DecodeString(p.TransactionDigest)
 	if err != nil || len(digest) != sha256.Size {
 		return fmt.Errorf("transaction_digest must be a SHA-256 hex digest")
 	}
 	return nil
+}
+
+// receiptedActionPendingEqual preserves the exact v0.1 byte contract without
+// weakening v0.2. A legacy marker omitted completed_at; compatibility may fill
+// it only after the full transaction digest selects a sealed historical form.
+func receiptedActionPendingEqual(actual, expected receiptedActionPending) bool {
+	if actual.SchemaVersion == receiptedActionPendingLegacySchemaVersion && actual.CompletedAt == "" {
+		actual.SchemaVersion = expected.SchemaVersion
+		actual.CompletedAt = expected.CompletedAt
+	}
+	return reflect.DeepEqual(actual, expected)
+}
+
+// selectLegacyReceiptedActionTransaction reconstructs only the timestamp form
+// the released v0.1 writer emitted: transactionNow came from
+// ActionIntent.created_at and newHeader formatted it as RFC3339. Reservation
+// and decision timestamps never authenticated a sealed v0.1 transaction, so a
+// pending digest matching only such a form fails closed.
+func (s *Store) selectLegacyReceiptedActionTransaction(
+	workID string,
+	pending receiptedActionPending,
+	action envelope.ActionIntent,
+	decision envelope.PolicyDecision,
+	receipt envelope.Receipt,
+	transition envelope.Transition,
+) (time.Time, envelope.Receipt, envelope.Transition, receiptedActionPending, error) {
+	actionAt, err := time.Parse(time.RFC3339Nano, action.CreatedAt)
+	if err != nil {
+		return time.Time{}, receipt, transition, receiptedActionPending{}, err
+	}
+	// Historical newHeader formatting was RFC3339, even when sealed inputs
+	// carried finer precision.
+	createdAt := actionAt.UTC().Format(time.RFC3339)
+	candidateReceipt := receipt
+	candidateReceipt.CreatedAt = createdAt
+	candidateTransition := transition
+	candidateTransition.CreatedAt = createdAt
+	candidatePending, err := newReceiptedActionPending(workID, action, decision, candidateReceipt, candidateTransition)
+	if err != nil {
+		return time.Time{}, receipt, transition, receiptedActionPending{}, err
+	}
+	if !receiptedActionPendingEqual(pending, candidatePending) {
+		return time.Time{}, receipt, transition, receiptedActionPending{}, fmt.Errorf("work %s legacy pending receipted action %s conflicts with every sealed historical transaction", workID, pending.ActionID)
+	}
+	parsed, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return time.Time{}, receipt, transition, receiptedActionPending{}, err
+	}
+	return parsed, candidateReceipt, candidateTransition, candidatePending, nil
+}
+
+func (s *Store) sealedReceiptedActionAuthorityAt(workID string, action envelope.ActionIntent, decision envelope.PolicyDecision) (time.Time, error) {
+	authorityAt, err := time.Parse(time.RFC3339Nano, action.CreatedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+	decisionAt, err := time.Parse(time.RFC3339Nano, decision.CreatedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if decisionAt.After(authorityAt) {
+		authorityAt = decisionAt
+	}
+	reservation, reserved, _, err := s.preflightReceiptedActionReservation(workID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if reserved && reservation.ActionID == action.ID && reservation.PolicyDecisionID == decision.ID {
+		reservedAt, err := time.Parse(time.RFC3339Nano, reservation.AuthorizedAt)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if reservedAt.After(authorityAt) {
+			authorityAt = reservedAt
+		}
+	}
+	return authorityAt, nil
 }
 
 func newReceiptedActionPending(workID string, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition) (receiptedActionPending, error) {
@@ -577,7 +748,7 @@ func newReceiptedActionPending(workID string, action envelope.ActionIntent, deci
 	return receiptedActionPending{
 		SchemaVersion: receiptedActionPendingSchemaVersion, WorkID: workID, ActionID: action.ID,
 		PolicyDecisionID: decision.ID, ReceiptID: receipt.ID, TransitionID: transition.ID,
-		CreatedAt: action.CreatedAt, TransactionDigest: hex.EncodeToString(digest[:]),
+		CreatedAt: action.CreatedAt, CompletedAt: receipt.CreatedAt, TransactionDigest: hex.EncodeToString(digest[:]),
 	}, nil
 }
 
@@ -596,7 +767,7 @@ func (s *Store) clearReceiptedActionPending(path string, expected receiptedActio
 	if err != nil {
 		return err
 	}
-	if !present || actualPath != path || !reflect.DeepEqual(actual, expected) {
+	if !present || actualPath != path || !receiptedActionPendingEqual(actual, expected) {
 		return fmt.Errorf("work %s pending receipted action %s changed before cleanup", expected.WorkID, expected.ActionID)
 	}
 	if err := os.Remove(path); err != nil {

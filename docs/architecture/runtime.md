@@ -65,7 +65,66 @@ framed, self-validating JSONL segments (per-family, per-UTC-day, flock-serialize
 with sealed-segment sidecar indexes that are rebuildable cache, never authority. Legacy loose records remain
 readable during the migration era; `compound event-store migrate` folds them into segments under a manifest with
 per-family count and digest verification, and a published completion gate retires the loose fallback from the hot
-path (a loose record appearing after completion is a doctor-visible defect). Durable event references
+path (a loose record appearing after completion is a doctor-visible defect). A post-completion loose record is
+resolved only through `compound event-store repair plan|review|supersede|apply`. Idempotent planning seals the complete
+loose-byte and segment-authority snapshot plus a bounded two-snapshot observation of the retired-writer surfaces.
+Review is a separate immutable operator seam: it binds the exact plan digest/revision, reviewer identity, explicit
+decision, writer-stop attestation, and a second stable observation. This is positive bounded evidence and a refusal
+fence, not a permanent proof that an external process cannot restart. The production observer records the interval
+between snapshots; synthetic tests inject a zero-duration observer without sleeping. Apply revalidates that fence and derives
+readiness from the current PolicyDecision for the concrete target before reserving the existing running-work
+`ActionIntent → PolicyDecision` transaction. An allowing private-scope policy outcome never substitutes for the
+exact review. The policy input describes manual recovery, bounded event-store blast radius, verified recovery
+evidence, and continuity of operator control; it does not reduce the operation to a location or generic label.
+
+Apply fails closed if the frozen migration baseline, planned loose bytes, loose set, reviewed writer fence,
+current policy-authority revision, or relevant segment coordinates drift. Content-addressed archive bytes are
+idempotent recovery state; an immutable digest-bound `.pending.json` snapshot plus a bounded, hash-chained,
+append-only `.progress.jsonl` journal persists each record's append reservation, append, exact frame verification,
+removal reservation, and removal phase. The repair root owns the snapshot and journal as distinct identities; it
+binds the immutable journal header once, while every transition is fsynced before its dependent mutation boundary,
+so per-step persistence is one O(1) append rather than a snapshot/root rewrite. Retry strictly replays the header
+and linear transition chain. A missing or torn final append-only suffix is recoverable only when the owned
+reservation, durable physical evidence, and current chain identify exactly one next phase or authorization
+transition; recovery appends only the missing suffix and fsyncs partial progress before returning an interruption.
+Ambiguous candidates, foreign or non-prefix bytes, an interior gap, or truncation of completed history fail closed.
+For an absent id, the segment coordinate is durable before append; after append the repair rereads that exact
+frame and verifies its id, canonical body, and hash before retiring the loose source. A retry finds the reserved
+frame instead of appending a second one. Every original loose body—including an identical or divergent duplicate—
+is copied byte-for-byte into content-addressed recovery storage before hot-state removal. Only ids absent from
+segments are appended; existing segment authority is never overwritten or selected away.
+
+The immutable original migration plan/manifest/completion stay frozen. A CAS-updated repair-root inventory owns
+the identities and digests of every plan, review, zero-progress supersession, pending snapshot, progress journal,
+result, and proof; `migrate --verify` rejects a
+missing indexed artifact, a digest mismatch, or an orphan artifact, so deleting durable repair history cannot make
+the count silently return to zero. Progress remains armed until the same-work ActionIntent, PolicyDecision,
+Receipt, and Transition resolve and a digest-bound repair proof records that chain. If policy authority changes
+after all physical bytes are complete, finalization uses the sealed original tuple and exposes the authority as
+historical. While mutation remains, the old decision cannot authorize another byte: apply must resolve a current
+allowing decision for the same exact action, atomically replace the unpublished work reservation, append an
+authorization transition to the repair progress journal, and advance the repair root's authorization head. The
+work reservation's convergence digest excludes only the replaceable policy decision and its single authority proof
+ref; action, outcome, plan, review, and all other evidence remain exact. This lets a retry converge from a stale
+predecessor without opening the action scope. On the supported CLI crash path, retry may restore the exact
+unpublished reservation already installed for that action, append its missing authorization transition, and then
+append a later current-authority transition only when the revisions differ. If exact reservation, history, or
+identity cannot be proven—or time moves backward, action semantics change, policy is unreadable, or the current
+decision disallows the mutation—the repair fails closed.
+Before progress starts, an exactly reviewed plan may be superseded only by an immutable broader plan over the same
+baseline that preserves every old entry. The first supersession write revalidates current authority immediately
+before publishing its sealed history/successor tuple. If a crash leaves that exact terminal file durable before its
+repair-root update, retry validates the persisted tuple and repairs or verifies root ownership under the migration
+lock before replaying the reserved Receipt/Transition. It does not re-evaluate authority for bytes already made
+immutable, and it cannot use that replay path to mint replacement bytes: a missing or different terminal file, a
+foreign rooted identity, or sealed-tuple drift fails closed. A separate supersession proof then binds the rooted
+terminal to the same work transaction.
+After completion, legacy `migrate --apply` refuses whenever loose records exist, so this governed path is the only
+physical repair owner. Loose-path drift fails closed. The sole tolerated coexistence is a byte-identical same-ID
+regular-file recurrence proven against the sealed archive and result. Old result replay and proof finalization do
+not consume or hide that recurrence: it remains doctor-visible and advances only after the old proof into the
+deterministic next occurrence. Exact terminal replay is a byte-no-op for the old lifecycle artifacts.
+Durable event references
 use `compound://events/<id>`; the resolver also accepts bare IDs and historical `events/<id>.json` references,
 but rejects traversal and physical segment/index paths. The lifecycle and compatibility streams remain distinct:
 `events/work.jsonl`, `events/hook-events.ndjson`, and `events/traces.ndjson` retain their existing contracts while

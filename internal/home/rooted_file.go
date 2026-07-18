@@ -49,6 +49,72 @@ func ReadRootedRegularFile(homePath, path, kind string) ([]byte, error) {
 	return io.ReadAll(file)
 }
 
+// RootedDirectoryExists reports whether an owned directory exists only when
+// every path component beneath home is stable, directory-backed, and contains
+// no symbolic links. A genuinely missing path component reports false.
+func RootedDirectoryExists(homePath, path, kind string) (bool, error) {
+	root, relativePath, displayPath, err := openRootedPath(homePath, path, kind)
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	return rootedDirectoryExists(root, relativePath, displayPath, kind)
+}
+
+// EnsureRootedDirectoryDurable creates and syncs an owned directory hierarchy
+// without traversing symbolic links or accepting an ambiguous EEXIST race.
+func EnsureRootedDirectoryDurable(homePath, path, kind string, perm os.FileMode) error {
+	root, relativePath, displayPath, err := openRootedPath(homePath, path, kind)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if _, err := ensureRootedDirectories(root, relativePath, displayPath, kind, perm); err != nil {
+		return err
+	}
+	exists, err := rootedDirectoryExists(root, relativePath, displayPath, kind)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%s directory was not durably created beneath compound home: %s", kind, displayPath)
+	}
+	return nil
+}
+
+func rootedDirectoryExists(root *os.Root, relativePath, displayPath, kind string) (bool, error) {
+	before, err := lstatRootedDirectoryPath(root, relativePath, displayPath, kind, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	directory, err := root.Open(relativePath)
+	if err != nil {
+		return false, err
+	}
+	opened, err := directory.Stat()
+	if err != nil {
+		_ = directory.Close()
+		return false, err
+	}
+	after, err := lstatRootedDirectoryPath(root, relativePath, displayPath, kind, false)
+	if err != nil {
+		_ = directory.Close()
+		return false, err
+	}
+	closeErr := directory.Close()
+	if closeErr != nil {
+		return false, closeErr
+	}
+	leaf := before[len(before)-1]
+	if !sameRootedPath(before, after) || !opened.IsDir() || !os.SameFile(leaf, opened) {
+		return false, fmt.Errorf("%s directory must be stable beneath compound home: %s", kind, displayPath)
+	}
+	return true, nil
+}
+
 // WriteRootedNewFileDurable creates and syncs a new owned file without
 // traversing symbolic links beneath home.
 func WriteRootedNewFileDurable(homePath, path, kind string, data []byte, perm os.FileMode) error {
@@ -121,8 +187,15 @@ func RemoveRootedRegularFileDurable(homePath, path, kind string) error {
 	return RemoveRootedRegularFileDurableValidated(homePath, path, kind, nil)
 }
 
+// removeRootedBeforeUnlink is a test seam invoked after quarantine validation
+// and immediately before the final unlink, so falsifiers can prove the unlink
+// is bound to the validated inode rather than to a predictable pathname.
+var removeRootedBeforeUnlink func(quarantinePath string) error
+
 // RemoveRootedRegularFileDurableValidated removes an owned regular file only
 // when validator accepts the exact content and inode moved into quarantine.
+// The final unlink re-verifies the quarantined inode identity: a foreign file
+// swapped onto the quarantine pathname after validation is never deleted.
 func RemoveRootedRegularFileDurableValidated(homePath, path, kind string, validator func([]byte) error) error {
 	root, relativePath, displayPath, err := openRootedPath(homePath, path, kind)
 	if err != nil {
@@ -230,6 +303,18 @@ func RemoveRootedRegularFileDurableValidated(homePath, path, kind string, valida
 	}
 	if err := file.Close(); err != nil {
 		return restore(err)
+	}
+	if removeRootedBeforeUnlink != nil {
+		if err := removeRootedBeforeUnlink(displayPath + ".remove-pending"); err != nil {
+			return restore(err)
+		}
+	}
+	final, err := root.Lstat(quarantinePath)
+	if err != nil {
+		return restore(err)
+	}
+	if final.Mode()&os.ModeSymlink != 0 || !final.Mode().IsRegular() || !os.SameFile(quarantined, final) {
+		return restore(fmt.Errorf("%s file changed after validation: %s", kind, displayPath))
 	}
 	if err := root.Remove(quarantinePath); err != nil {
 		return restore(err)

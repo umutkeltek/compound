@@ -444,6 +444,7 @@ compound source observe <source-observation.yaml> | observe-batch <batch.json> (
 compound event import-os <events.ndjson> | event show <trace_id> [--json] | event list [--stream NAME] [--limit N] [--json] | event authority [--json] OS-style append-only events -> TraceEnvelope evidence; forensic reader served from COMPOUND_HOME; optional trace-backed review finding producer
 compound event-store migrate (--dry-run | --apply | --verify) [--batch N] [--json] [--home P] fold legacy loose events/<id>.json records into segments; manifest counts+hashes, originals archived, fail-closed completion gate; --verify reports the gate + degraded:legacy_writer_active
 compound event-store rebaseline [--home P] [--work W] [--confirm] [--json]     governed re-baseline of the frozen-stream doctor's byte-size baseline; dry-run preview by default, --confirm requires an allowing PolicyDecision
+compound event-store repair (plan | review | supersede | apply) ...             governed post-completion loose-record repair; exact operator review + current running-work PolicyDecision, content-addressed recovery, segment truth preserved
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
 retired Gen-1 tombstones:
