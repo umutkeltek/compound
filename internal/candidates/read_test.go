@@ -324,6 +324,97 @@ func TestCreateCandidateIfAbsentPublishesWholeDurableJSON(t *testing.T) {
 	}
 }
 
+func TestCreateCandidateIfAbsentSyncsPublishedLinkWhenTempCleanupFails(t *testing.T) {
+	home := t.TempDir()
+	type rec struct {
+		ID     string `json:"id"`
+		Kind   string `json:"kind"`
+		Marker string `json:"marker"`
+	}
+	payload := rec{ID: "cleanup-failure", Kind: string(Memory), Marker: "winner"}
+	want := canonicalCandidateBody(t, payload)
+	target := filepath.Join(home, InboxDir(Memory), "cleanup-failure.json")
+
+	originalLink := linkCandidateFile
+	originalSync := syncCandidateDirectoryFn
+	t.Cleanup(func() {
+		linkCandidateFile = originalLink
+		syncCandidateDirectoryFn = originalSync
+	})
+	blockedTemp := ""
+	linkCandidateFile = func(tempPath, targetPath string) error {
+		if err := os.Link(tempPath, targetPath); err != nil {
+			return err
+		}
+		// Simulate an external cleanup race after the authoritative hard link
+		// exists: replace the staging name with a non-empty directory so the
+		// writer's remove fails deterministically.
+		if err := os.Remove(tempPath); err != nil {
+			t.Fatalf("remove staged link for cleanup failure injection: %v", err)
+		}
+		if err := os.Mkdir(tempPath, 0o755); err != nil {
+			t.Fatalf("create cleanup blocker: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(tempPath, "block"), []byte("block\n"), 0o644); err != nil {
+			t.Fatalf("populate cleanup blocker: %v", err)
+		}
+		blockedTemp = tempPath
+		return nil
+	}
+	syncCalls := 0
+	syncCandidateDirectoryFn = func(path string) error {
+		syncCalls++
+		return syncCandidateDirectory(path)
+	}
+
+	created, err := CreateCandidateIfAbsent(home, Memory, "cleanup-failure", payload)
+	if blockedTemp != "" {
+		t.Cleanup(func() {
+			_ = os.Remove(filepath.Join(blockedTemp, "block"))
+			_ = os.Remove(blockedTemp)
+		})
+	}
+	if !created {
+		t.Fatal("successful link must report created even when temp cleanup fails")
+	}
+	if err == nil || !strings.Contains(err.Error(), "remove candidate temp") {
+		t.Fatalf("cleanup failure error = %v", err)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("directory sync calls after successful link = %d, want 1 despite cleanup failure", syncCalls)
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("published target changed after cleanup failure: got %q want %q", got, want)
+	}
+
+	if err := os.Remove(filepath.Join(blockedTemp, "block")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(blockedTemp); err != nil {
+		t.Fatal(err)
+	}
+	blockedTemp = ""
+	retryPayload := rec{ID: "cleanup-failure", Kind: string(Memory), Marker: "retry-must-not-replace"}
+	retryCreated, retryErr := CreateCandidateIfAbsent(home, Memory, "cleanup-failure", retryPayload)
+	if retryErr != nil {
+		t.Fatalf("retry after linked cleanup failure: %v", retryErr)
+	}
+	if retryCreated {
+		t.Fatal("retry replaced an already-published candidate")
+	}
+	afterRetry, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(afterRetry, want) {
+		t.Fatalf("retry rewrote published bytes: got %q want %q", afterRetry, want)
+	}
+}
+
 // Guards (C3 hardening): the codec rejects path-shaped ids and payloads that
 // contradict the path they would be filed under.
 func TestCandidateCodecGuards(t *testing.T) {
