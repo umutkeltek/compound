@@ -24,8 +24,8 @@ var worktreeInventoryCLIGit authority.WorktreeRetirementGit = authority.ExecWork
 var worktreeInventoryCLILiveness authority.WorktreeRetirementLiveness = authority.LSOFWorktreeRetirementLiveness{}
 
 // worktreeInventoryLedger carries the OPTIONAL ledger inputs the inventory joins
-// over pure Git ground truth: operator keep annotations and nonterminal
-// work→branch identity artifacts.
+// over pure Git ground truth: operator keep annotations and exact nonterminal
+// work identity evidence.
 type worktreeInventoryLedger struct {
 	Keeps         map[string]authority.WorktreeKeepAnnotation
 	KeepsReadable bool
@@ -58,7 +58,7 @@ func defaultWorktreeInventoryLedger() worktreeInventoryLedger {
 }
 
 // loadWorktreeInventoryEnvelopeArtifacts lists nonterminal work envelopes and
-// extracts their worktree-branch:<ref> artifacts as exact identity evidence. A
+// projects exact branch-artifact and running-main-root identity evidence. A
 // read failure yields no evidence (identity is additive and never blocks the
 // projection).
 func loadWorktreeInventoryEnvelopeArtifacts(homePath string) []authority.WorktreeEnvelopeArtifact {

@@ -89,7 +89,7 @@ type WorktreeInventoryOptions struct {
 	// keeps were not consulted (ground-truth-only callers) and the field is
 	// omitted from the envelope.
 	KeepsReadable *bool
-	// Envelopes carry nonterminal work->branch identity for the join.
+	// Envelopes carry exact nonterminal work identity for branch or main-root joins.
 	Envelopes []WorktreeEnvelopeArtifact
 }
 
@@ -162,13 +162,12 @@ type WorktreeInventory struct {
 // and never mutates a ref, index, or working tree.
 //
 // Classification is pure Git ground truth. Ledger evidence is additive and
-// exact-only: a WorkEnvelope's git_delivery binds the canonical repository root
-// (…/compound), not a lane worktree path, so the ONLY exact envelope↔worktree
-// evidence is a dispatch-time worktree-branch:<ref> artifact that names the
-// row's branch ref (opts.Envelopes). Codex-runtime worktrees are separate clones
-// absent from `git worktree list`, so the identity join only ever covers linked
-// worktrees. Operator keep-decisions (opts.Keeps) annotate a row without
-// changing its class. Both inputs are empty for ground-truth-only callers.
+// exact-only: a dispatch-time worktree-branch:<ref> artifact names a linked
+// row, while a running WorkEnvelope's canonical Git delivery root names the
+// primary checkout. Codex-runtime worktrees are separate clones absent from
+// `git worktree list`, so they do not produce inventory rows. Operator
+// keep-decisions (opts.Keeps) annotate a row without changing its class. Both
+// inputs are empty for ground-truth-only callers.
 func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependencies, repo string, opts WorktreeInventoryOptions) (WorktreeInventory, error) {
 	if deps.Git == nil {
 		deps.Git = ExecWorktreeRetirementGit{}
