@@ -44,9 +44,9 @@ permissions, and request/token/time/cost ceilings. It is a plan, not evidence th
 `compound route execution-profile` resolver proves profile coherence without contacting a provider or changing
 gateway/harness configuration.
 
-Harness and transport are independent selectors: for example, Claude Code may run over native transport or a
-Switchback-compatible transport without becoming a different harness. Selecting Switchback does not let
-Compound claim the provider/model that actually ran; those remain `unknown_until_receipt`.
+Harness and transport are independent selectors: for example, Claude Code may run over native transport or an
+observed gateway transport without becoming a different harness. Selecting a transport does not let Compound
+claim the provider/model that actually ran; those remain `unknown_until_receipt`.
 
 The gateway publishes a revisioned, non-secret conformance view: protocols, route aliases, provider/model
 resolution rules, supported native effort per adapter/protocol, cost/account classes, and catalog/adapter revision.
