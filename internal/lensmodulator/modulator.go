@@ -443,6 +443,14 @@ func Modulate(home string, policyCfg policy.Config, workID string, now time.Time
 // Revert undoes a lane's latest still-open demote by consuming the persisted act.Result: it restores
 // the captured pre-image THROUGH the governed act seam (act.RevertIntent + act.Execute), so a
 // rollback is itself a governed, receipted, re-gated outbound write — never a privileged bypass.
+//
+// It gets the SAME ledger discipline Modulate has: a writability PREFLIGHT before any route-store
+// mutation this call (preflightActionLedger, identical seam Modulate uses), and a STALE-OPEN safety
+// check that verifies the store's CURRENT value still matches what the open demote record expects
+// before mutating — so a second Revert against a ledger record left open by an earlier append failure
+// can never re-mutate from a stale pre-image. If the ledger append for a successful restore fails
+// anyway, Revert does NOT counter-mutate (the restored store IS the safe state — re-demoting would be
+// wrong); it lands a durable recovery finding instead (afterRevertAppendFailure).
 func Revert(home string, policyCfg policy.Config, lane, workID string, now time.Time) (RevertOutcome, error) {
 	records, err := loadActionRecords(home)
 	if err != nil {
@@ -452,12 +460,41 @@ func Revert(home string, policyCfg policy.Config, lane, workID string, now time.
 	if !ok {
 		return RevertOutcome{Lane: lane, Reverted: false, Reason: "no open demote record for lane"}, nil
 	}
+
+	// Ledger writability PREFLIGHT before ANY route-store mutation this call — same probe Modulate
+	// runs, same failure mode it exists to catch (a directory/unwritable wedge at the ledger leaf). A
+	// failure here errors out with the route store untouched and zero new receipts/transitions, never
+	// a restore that then fails to record itself.
+	if err := preflightActionLedger(home); err != nil {
+		return RevertOutcome{}, err
+	}
+
+	storePath := RouteStorePath(home)
+
+	// STALE-OPEN SAFETY: verify the store's CURRENT value still matches what this open demote record
+	// expects BEFORE mutating. A prior Revert (or Modulate's own compensating revert) may have already
+	// restored the store while its OWN ledger row failed to land — leaving this record open despite
+	// the store already being safe. Re-running act.Execute from rec's stale pre-image here would be a
+	// SECOND mutation, not a revert. Instead, do not mutate: report Reverted:false and heal the ledger
+	// with a closing record so a later Revert() stops finding this record open (best-effort — the
+	// store is already at the safe value regardless of whether this append succeeds).
+	if curVal, present, err := currentValue(storePath, rec.Root, lane); err != nil {
+		return RevertOutcome{}, err
+	} else if !present || curVal != rec.DemoteTo {
+		_ = appendActionRecordFn(home, actionRecord{
+			SchemaVersion: ActionRecordSchemaVersion, Kind: "revert", WorkID: workID,
+			Lane: lane, Root: rec.Root, LensID: rec.LensID, Visibility: rec.Visibility,
+			StorePath: storePath, Baseline: rec.Baseline, DemoteTo: rec.DemoteTo, Threshold: rec.Threshold,
+			Capability: CapabilityDemote, CreatedAt: now.UTC().Format(time.RFC3339),
+		})
+		return RevertOutcome{Lane: lane, Reverted: false, Reason: "store already restored; open ledger record is stale"}, nil
+	}
+
 	store, err := act.NewArtifactStore(home)
 	if err != nil {
 		return RevertOutcome{}, err
 	}
 	adapter := act.NewConfigKeyAdapter()
-	storePath := RouteStorePath(home)
 	target := envelope.ActionTarget{Kind: "route_role", ID: rec.Root + "." + lane, Path: storePath}
 
 	// Reconstruct the original intent shape so the revert is governed identically (same capability,
@@ -485,13 +522,46 @@ func Revert(home string, policyCfg policy.Config, lane, workID string, now time.
 		ReceiptID: revRes.Receipt.ID, TransitionID: revRes.Transition.ID,
 		CreatedAt: now.UTC().Format(time.RFC3339),
 	}
-	if err := appendActionRecord(home, revRec); err != nil {
-		return RevertOutcome{}, err
+	if err := appendActionRecordFn(home, revRec); err != nil {
+		// The revert itself SUCCEEDED — route store restored, receipt/transition recorded through
+		// act's own event store — but OUR ledger row never landed. Unlike Modulate's own backstop,
+		// counter-mutating here would be WRONG (re-demoting the lane this call just restored), so land
+		// a durable recovery finding instead and return an error naming it.
+		return afterRevertAppendFailure(home, lane, workID, revRes, string(preBytes), err, now)
 	}
 	return RevertOutcome{
 		Lane: lane, Reverted: true, RestoredValue: string(preBytes),
 		ReceiptID: revRes.Receipt.ID, TransitionID: revRes.Transition.ID,
 	}, nil
+}
+
+// afterRevertAppendFailure handles a ledger-append failure that occurs AFTER a successful revert
+// act.Execute: the route store is already restored to its pre-image (the safe state). Unlike
+// Modulate's afterAppendFailure, there is no compensating counter-mutation to attempt — the restored
+// value IS correct, so re-demoting the lane to "fix" this would be wrong. Instead, land a durable,
+// operator-visible recovery finding naming the lane, receipt/transition ids, and the restored value,
+// and note that the open-demote ledger record this revert intended to close is now STALE (a later
+// Revert() call will still see it as open via latestOpenDemote). The stale-open safety check above is
+// what makes that staleness survivable rather than a landmine: it refuses to re-mutate from it.
+func afterRevertAppendFailure(home, lane, workID string, revRes act.Result, restoredValue string, appendErr error, now time.Time) (RevertOutcome, error) {
+	rec, ferr := finding.Record(home, finding.Finding{
+		Topic: "lensmodulator-recovery/" + lane,
+		Body: fmt.Sprintf(
+			"lensmodulator revert SUCCEEDED (route store restored) but its action-ledger record could not be appended — the open-demote ledger record for this lane is now STALE.\n"+
+				"lane: %s\nrestored_value: %s\nreceipt_id: %s\ntransition_id: %s\nledger_append_error: %v\n",
+			lane, restoredValue, revRes.Receipt.ID, revRes.Transition.ID, appendErr),
+		ProducedBy:   "internal/lensmodulator",
+		WorkID:       workID,
+		EvidenceRefs: []string{revRes.PreImageRef, revRes.PostImageRef},
+	}, now)
+	if ferr != nil {
+		return RevertOutcome{}, fmt.Errorf(
+			"lensmodulator: revert succeeded (route store restored to %q) but ledger append failed (%v) AND recovery finding could not be recorded (%v) — lane %q left with a STALE open ledger record; MANUAL RECOVERY REQUIRED (receipt %s, transition %s)",
+			restoredValue, appendErr, ferr, lane, revRes.Receipt.ID, revRes.Transition.ID)
+	}
+	return RevertOutcome{}, fmt.Errorf(
+		"lensmodulator: revert succeeded (route store restored to %q) but ledger append failed (%v) — recorded recovery finding %s for lane %q; the open-demote ledger record is now STALE (a later Revert will refuse to re-mutate from it)",
+		restoredValue, appendErr, rec.ID, lane)
 }
 
 // CurrentAdjustment reads the current route/role value for a lane under the visibility-appropriate
