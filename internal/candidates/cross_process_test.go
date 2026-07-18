@@ -279,6 +279,93 @@ release:
 	waitForCandidateHelper(t, "create", createDone)
 }
 
+func TestWriteCandidateAndCreateCandidateIfAbsentRaceLeavesWholeBody(t *testing.T) {
+	home := t.TempDir()
+	const (
+		id         = "write-create-race"
+		markerSize = 512 << 10
+	)
+	start := filepath.Join(t.TempDir(), "start")
+	writeReady, writeDone := startCandidateHelper(t, home, "write", id, "W",
+		"COMPOUND_CANDIDATE_HELPER_START="+start,
+		"COMPOUND_CANDIDATE_HELPER_MARKER_BYTES="+strconv.Itoa(markerSize),
+	)
+	createReady, createDone := startCandidateHelper(t, home, "create", id, "C",
+		"COMPOUND_CANDIDATE_HELPER_START="+start,
+		"COMPOUND_CANDIDATE_HELPER_MARKER_BYTES="+strconv.Itoa(markerSize),
+	)
+	waitForCandidateHelperReady(t, writeReady)
+	waitForCandidateHelperReady(t, createReady)
+	if err := os.WriteFile(start, []byte("start\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitForCandidateHelper(t, "write", writeDone)
+	createResult := candidateHelperResultWithin(t, "create", createDone)
+	if output := string(createResult.output); !strings.Contains(output, "CREATED=true") && !strings.Contains(output, "CREATED=false") {
+		t.Fatalf("create helper omitted result:\n%s", output)
+	}
+
+	type rec struct {
+		ID     string `json:"id"`
+		Kind   string `json:"kind"`
+		Marker string `json:"marker"`
+	}
+	want := rec{ID: id, Kind: string(Memory), Marker: strings.Repeat("W", markerSize)}
+	target := filepath.Join(home, InboxDir(Memory), id+".json")
+	body, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical := canonicalCandidateBody(t, want); !bytes.Equal(body, canonical) {
+		t.Fatalf("write/create race left a non-writer or torn body: bytes=%d valid_json=%t", len(body), json.Valid(body))
+	}
+	entries, err := os.ReadDir(filepath.Dir(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".candidate-publish-") {
+			t.Fatalf("candidate temp was mistaken for authority after mixed race: %s", entry.Name())
+		}
+	}
+}
+
+func TestCandidateWriterDoesNotAcquireMemLock(t *testing.T) {
+	home := t.TempDir()
+	lockPath := filepath.Join(home, "lock", "mem.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		_ = lockFile.Close()
+		t.Fatal(err)
+	}
+	locked := true
+	t.Cleanup(func() {
+		if locked {
+			_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		}
+		_ = lockFile.Close()
+	})
+
+	ready, done := startCandidateHelper(t, home, "write", "mem-lock-independent", "candidate")
+	waitForCandidateHelperReady(t, ready)
+	waitForCandidateHelper(t, "write while mem.lock held", done)
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	locked = false
+
+	target := filepath.Join(home, InboxDir(Memory), "mem-lock-independent.json")
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("candidate writer did not publish while mem.lock was held: %v", err)
+	}
+}
+
 func startCandidateHelper(t *testing.T, home, action, id, marker string, extraEnv ...string) (string, <-chan candidateHelperResult) {
 	t.Helper()
 	ready := filepath.Join(t.TempDir(), "ready")
