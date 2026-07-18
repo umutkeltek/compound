@@ -382,7 +382,17 @@ func TestLandCheckPublishedContainmentReportsForeignDirt(t *testing.T) {
 	}
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
 
-	writeLandingFile(t, filepath.Join(repo, "foreign-lane-wip.txt"), "neighbor lane WIP\n")
+	foreignPaths := []string{
+		"foreign-lane-wip-1.txt",
+		"foreign-lane-wip-2.txt",
+		"foreign-lane-wip-3.txt",
+		"foreign-lane-wip-4.txt",
+		"foreign-lane-wip-5.txt",
+		"foreign-lane-wip-6.txt",
+	}
+	for _, path := range foreignPaths {
+		writeLandingFile(t, filepath.Join(repo, path), "neighbor lane WIP\n")
+	}
 	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -393,8 +403,13 @@ func TestLandCheckPublishedContainmentReportsForeignDirt(t *testing.T) {
 	if report.CleanTarget {
 		t.Fatalf("whole-tree foreign dirt must remain visible: %+v", report)
 	}
-	if !strings.Contains(report.NextAction, "foreign-lane-wip.txt") || !strings.Contains(report.NextAction, "preserve") {
-		t.Fatalf("foreign dirt must produce a path-specific preservation warning: %+v", report)
+	for _, path := range foreignPaths {
+		if !strings.Contains(report.NextAction, path) {
+			t.Fatalf("preservation warning omitted dirty path %s: %+v", path, report)
+		}
+	}
+	if !strings.Contains(report.NextAction, "preserve") {
+		t.Fatalf("foreign dirt must produce a preservation warning: %+v", report)
 	}
 }
 
@@ -436,6 +451,79 @@ func TestLandCheckTargetContainmentStillAwaitsPublicationUnderForeignDirt(t *tes
 	}
 	if !strings.Contains(report.NextAction, "refs/remotes/origin/main") || strings.Contains(report.NextAction, "already contained in the authoritative target and publication refs") {
 		t.Fatalf("next action must remain publication, never a landed preservation warning: %+v", report)
+	}
+}
+
+func TestLandCheckMissingRequiredPublicationRefAwaitsPublication(t *testing.T) {
+	now := time.Date(2026, 7, 18, 11, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	landingGit(t, repo, "remote", "add", "origin", remote)
+	landingGit(t, repo, "push", "-u", "origin", "main")
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+	landingGit(t, repo, "push", "origin", "main")
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "a deleted required publication ref remains actionable",
+		GitDelivery:      publishedGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+	landingGit(t, repo, "update-ref", "-d", "refs/remotes/origin/main")
+
+	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("missing valid publication ref must be an actionable classification, not an evaluator error: %v", err)
+	}
+	if report.Status != "awaiting_publication" || !report.CandidateContainedInTarget || report.CandidateContainedInPublication || report.PublicationSHA != "" {
+		t.Fatalf("missing publication ref classification = %+v", report)
+	}
+	if !strings.Contains(report.NextAction, "publish") || !strings.Contains(report.NextAction, "refs/remotes/origin/main") {
+		t.Fatalf("missing publication ref needs an exact publish action: %+v", report)
+	}
+}
+
+func TestLandCheckLocalOnlyPreservationNamesOnlyTargetAuthority(t *testing.T) {
+	now := time.Date(2026, 7, 18, 11, 30, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "local-only preservation names only its target authority",
+		GitDelivery:      localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+	writeLandingFile(t, filepath.Join(repo, "local-only-wip.txt"), "later local WIP\n")
+
+	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "landed" || report.CleanTarget {
+		t.Fatalf("local-only contained dirty report = %+v", report)
+	}
+	if !strings.Contains(report.NextAction, "authoritative target ref") || strings.Contains(report.NextAction, "publication") {
+		t.Fatalf("local-only warning must not claim publication authority: %+v", report)
 	}
 }
 
