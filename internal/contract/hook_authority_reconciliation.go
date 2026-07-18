@@ -75,7 +75,7 @@ func hookPlanFromInstalledManifest(manifest InstalledHooksManifest, harnessHome 
 			InvocationRevision: strings.TrimSpace(hook.InvocationRevision),
 			HandlerRevision:    strings.TrimSpace(hook.Revision),
 			Activation:         hookActivation(status),
-			Blocking:           event == "PreToolUse",
+			Blocking:           event == "PreToolUse" && status != "non_blocking",
 		}
 		if status == "preserved_external" {
 			binding.ID = preservedHookBindingID(binding)
@@ -106,7 +106,7 @@ func hookPlanFromInstalledManifest(manifest InstalledHooksManifest, harnessHome 
 
 func desiredHookStatus(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "", "current", "active", "pending", "pending_activation", "activation_required":
+	case "", "current", "active", "non_blocking", "pending", "pending_activation", "activation_required":
 		return true
 	default:
 		return false

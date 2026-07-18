@@ -5747,6 +5747,9 @@ func installedHookRuntimeSupport() []contract.HookRuntimeSupport {
 		hookRuntimeSupport("codex", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
 		hookRuntimeSupport("codex", "PreToolUse", "fixtures/hooks/pre-tool-use.codex.json", true),
 		hookRuntimeSupport("codex", "Stop", "fixtures/hooks/stop.codex.json", true),
+		hookRuntimeSupport("opencode", "SessionStart", "fixtures/hooks/session-start.opencode.json", true),
+		hookRuntimeSupport("opencode", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.opencode.json", true),
+		hookRuntimeSupport("opencode", "PostToolUse", "fixtures/hooks/post-tool-use.opencode.json", true),
 	}
 }
 

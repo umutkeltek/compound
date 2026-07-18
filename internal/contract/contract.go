@@ -2944,6 +2944,15 @@ func installedHookStableIdentity(hook InstalledHook) string {
 	}, "\x00")
 }
 
+func installedHookCurrentStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "", "current", "active", "non_blocking":
+		return true
+	default:
+		return false
+	}
+}
+
 func parseHookRegistrationTS(data []byte) (InstalledHooksManifest, error) {
 	body, err := hookRegistrationArrayBody(string(data))
 	if err != nil {
@@ -3136,6 +3145,8 @@ func hookRefFromHarnessFile(harness, file string) string {
 		return filepath.Join(home, ".claude", "hooks", file)
 	case "codex":
 		return filepath.Join(home, ".codex", "hooks", file)
+	case "opencode":
+		return filepath.Join(home, ".config", "opencode", "plugins", file)
 	default:
 		return ""
 	}
@@ -3441,7 +3452,7 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 		if strings.TrimSpace(hook.Name) == "" {
 			continue
 		}
-		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
+		if !installedHookCurrentStatus(hook.Status) {
 			continue
 		}
 		if hook.Harness != "" && in.Harness != "" && hook.Harness != in.Harness {
@@ -3512,6 +3523,9 @@ func hookRosterEntry(hook InstalledHook, harness, ref, status, reason string) en
 }
 
 func installedHookActiveReason(hook InstalledHook, in Input) string {
+	if strings.TrimSpace(hook.Status) == "non_blocking" {
+		return "installed non-blocking hook selected for harness and task"
+	}
 	if writeScopedHook(hook) && writeMutationTask(in) {
 		return "write-scoped hook selected for mutation task"
 	}
@@ -3524,7 +3538,7 @@ func writeScopedHookHarnesses(manifest InstalledHooksManifest) []string {
 		if strings.TrimSpace(hook.Name) == "" {
 			continue
 		}
-		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
+		if !installedHookCurrentStatus(hook.Status) {
 			continue
 		}
 		if !writeScopedHook(hook) {
@@ -3546,7 +3560,7 @@ func writeScopedHookHarnesses(manifest InstalledHooksManifest) []string {
 func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUseBlock map[string]bool) []HookGateReadiness {
 	harnesses := map[string]bool{}
 	for _, hook := range manifest.Hooks {
-		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
+		if !installedHookCurrentStatus(hook.Status) {
 			continue
 		}
 		harness := strings.TrimSpace(hook.Harness)
@@ -3570,6 +3584,7 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 	for _, harness := range names {
 		installed, unavailable, ref := installedWriteGateForHarness(manifest, harness)
 		nativeBlock := nativePreToolUseBlock[harness]
+		nonBlockingLane := installedHooksExplicitlyNonBlocking(manifest, harness)
 		row := HookGateReadiness{
 			Harness:     harness,
 			Hook:        "PreToolUse",
@@ -3582,6 +3597,9 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 			row.InstalledRef = ref
 		}
 		switch {
+		case nonBlockingLane:
+			row.Status = "non_blocking"
+			row.Reason = "harness is registered for context injection and observation only; no PreToolUse gate is registered"
 		case unavailable:
 			row.Status = "handler_unavailable"
 			row.Reason = "installed write-gate declaration names concrete handler content that is missing, unreadable, or symlinked"
@@ -3606,6 +3624,20 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 		out = append(out, row)
 	}
 	return out
+}
+
+func installedHooksExplicitlyNonBlocking(manifest InstalledHooksManifest, harness string) bool {
+	found := false
+	for _, hook := range manifest.Hooks {
+		if strings.TrimSpace(hook.Harness) != strings.TrimSpace(harness) || !installedHookCurrentStatus(hook.Status) {
+			continue
+		}
+		if strings.TrimSpace(hook.Status) != "non_blocking" {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 func hookGateActions(row HookGateReadiness) []HookGateAction {
@@ -3691,7 +3723,7 @@ func InstalledHookRuntimeReadinessRows(manifest InstalledHooksManifest, supports
 		if harnessName == "" || hookName == "" {
 			continue
 		}
-		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
+		if !installedHookCurrentStatus(hook.Status) {
 			continue
 		}
 		row := InstalledHookRuntimeReadiness{
@@ -3836,7 +3868,7 @@ func installedWriteGateForHarness(manifest InstalledHooksManifest, harness strin
 		if strings.TrimSpace(hook.Name) == "" {
 			continue
 		}
-		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
+		if !installedHookCurrentStatus(hook.Status) {
 			continue
 		}
 		if strings.TrimSpace(hook.Harness) != strings.TrimSpace(harness) {

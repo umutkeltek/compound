@@ -142,12 +142,12 @@ func TestOpenCodeCapabilitiesDoNotOverclaimMutationOrEndEvents(t *testing.T) {
 		t.Fatalf("opencode native capabilities = %+v, want skills + MCP", opencode.Capabilities)
 	}
 	for _, limitation := range []string{
-		"system context transform is experimental",
-		"permission.ask denial covers only calls routed through permission handling; tool.execute.before cannot deny",
-		"full mutation coverage requires proof that every mutating tool is permission-gated or a fail-closed wrapper",
+		"Compound context injection uses stable chat.message message.system; the system context transform remains experimental and unused",
+		"tool.execute.before cannot deny; the Compound integration does not register it",
+		"injection and observation callbacks fail open",
 		"no proven SessionEnd or Stop mapping",
-		"no installed Compound plugin or content attestation",
-		"currently a read-only lane in imported capability authority",
+		"installed state and content revision come from installed-hooks authority, not the static harness registry",
+		"not a mutation-control lane in imported capability authority",
 	} {
 		if !hasString(opencode.Limitations, limitation) {
 			t.Errorf("opencode limitations = %v, missing %q", opencode.Limitations, limitation)

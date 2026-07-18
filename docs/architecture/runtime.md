@@ -231,6 +231,11 @@ them thin.)
 
 Commands: `compound hook {session-start, user-prompt-submit, pre-tool-use, post-tool-use, session-end, stop}`.
 `compound contract hooks-authority` reports `hook_readiness[]` from installed-hook authority, checked fixture coverage, and live-adapter support, plus `pre_tool_use_readiness[]` from installed hooks and harness native-block facts. With `--observe-live`, it exposes desired `hook_plan`, read-only `installation_observation`, and deterministic `reconciliation` separately; observed extras remain evidence and never enter desired authority. `compound hook pre-tool-use --enforce <fixture.json>` returns the same gate exit codes as `policy evaluate` for non-blocking adapter fallbacks.
+The repo-owned opencode adapter registers only SessionStart, UserPromptSubmit, and PostToolUse with
+status non_blocking. It injects through the stable chat.message message.system field, records completed
+tools through tool.execute.after, and fails open on every callback. It does not register
+tool.execute.before because that callback cannot deny a tool call. These installed rows provide context
+and observation only; they never satisfy pre-tool mutation readiness.
 Reconciliation reports an active command match as `registered`; it reports `ready` only when desired and
 observed handler-content revisions also match. Invocation arguments have a separate privacy-safe digest, so
 argument drift remains detectable without treating configuration bytes as handler-content proof.

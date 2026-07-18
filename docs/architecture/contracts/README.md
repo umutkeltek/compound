@@ -88,7 +88,9 @@ imports generated hook rosters into `COMPOUND_HOME/config/installed-hooks.yaml` 
 `EffectiveContract.active_hooks[]` plus runtime `ContextPack.active_hooks[]`, task-conditioned `hook_roster[]`,
 and task-conditioned `hook_readiness[]` come from Compound. `hook_roster[]` is the structured hook-selection read
 model: active hooks and task-excluded hooks carry harness, hook, event, matcher, status, and reason without
-exposing installed file paths. `compound contract
+exposing installed file paths. The additive `non_blocking` status keeps opencode context-injection and
+post-tool observation rows active while making their non-enforcement role explicit; the registration contains
+no PreToolUse row. `compound contract
 hooks-authority` reports `pre_tool_use_readiness[]`: native blocking, not installed, missing gate, or
 wrapper-required status plus the enforced adapter command for fail-open harnesses. With `--observe-live`,
 desired `hook_plan`, read-only `installation_observation`, and deterministic `reconciliation` are separate;
