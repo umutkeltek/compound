@@ -3,6 +3,7 @@ package executorlens
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"compound/internal/behaviorallens"
@@ -200,6 +201,14 @@ func TestCounterMetricFailureCandidateDedupIgnoresClassifierDetailDrift(t *testi
 	if err != nil {
 		t.Fatalf("first mint: %v", err)
 	}
+	var adjudicated failurePatternCandidate
+	if err := candidates.ReadCandidate(home, candidates.FailurePattern, firstID, &adjudicated); err != nil {
+		t.Fatalf("read first candidate: %v", err)
+	}
+	adjudicated.State = candidates.Operationalize
+	if err := candidates.WriteCandidate(home, candidates.FailurePattern, firstID, &adjudicated); err != nil {
+		t.Fatalf("simulate adjudication write: %v", err)
+	}
 	drifted := *original
 	drifted.Value = -0.25
 	drifted.Detail = "classifier wording changed while the logical receipt and lens stayed fixed"
@@ -217,8 +226,21 @@ func TestCounterMetricFailureCandidateDedupIgnoresClassifierDetailDrift(t *testi
 	if err != nil {
 		t.Fatalf("read content-addressed observations: %v", err)
 	}
-	if len(blobs) != 2 {
-		t.Fatalf("changed classifier evidence must remain content-addressed separately, got %d blobs", len(blobs))
+	if len(blobs) != 1 {
+		t.Fatalf("same-day classifier drift must not persist an orphan blob, got %d blobs", len(blobs))
+	}
+	var preserved failurePatternCandidate
+	if err := candidates.ReadCandidate(home, candidates.FailurePattern, firstID, &preserved); err != nil {
+		t.Fatalf("read deduplicated candidate: %v", err)
+	}
+	if preserved.State != candidates.Operationalize {
+		t.Fatalf("classifier drift must preserve adjudicated state, got %q", preserved.State)
+	}
+	for _, blob := range blobs {
+		want := "counter-metric:" + blob.Name()
+		if !slices.Contains(preserved.EvidenceRefs, want) {
+			t.Fatalf("stored classifier evidence is orphaned: candidate refs=%v missing=%s", preserved.EvidenceRefs, want)
+		}
 	}
 }
 
