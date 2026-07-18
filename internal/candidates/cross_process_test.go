@@ -2,10 +2,13 @@ package candidates
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -32,6 +35,16 @@ func TestCandidateSubprocess(t *testing.T) {
 	if err := os.WriteFile(ready, []byte("ready\n"), 0o644); err != nil {
 		t.Fatalf("publish helper readiness: %v", err)
 	}
+	if start := os.Getenv("COMPOUND_CANDIDATE_HELPER_START"); start != "" {
+		waitForCandidateHelperStart(t, start)
+	}
+	markerBytes, err := strconv.Atoi(os.Getenv("COMPOUND_CANDIDATE_HELPER_MARKER_BYTES"))
+	if err != nil && os.Getenv("COMPOUND_CANDIDATE_HELPER_MARKER_BYTES") != "" {
+		t.Fatalf("parse helper marker bytes: %v", err)
+	}
+	if markerBytes > 0 {
+		marker = strings.Repeat(marker, markerBytes)
+	}
 	payload := struct {
 		ID     string `json:"id"`
 		Kind   string `json:"kind"`
@@ -50,8 +63,93 @@ func TestCandidateSubprocess(t *testing.T) {
 			t.Fatalf("create candidate: %v", err)
 		}
 		fmt.Printf("CREATED=%t\n", created)
+	case "write-loop":
+		iterations, err := strconv.Atoi(os.Getenv("COMPOUND_CANDIDATE_HELPER_ITERATIONS"))
+		if err != nil || iterations < 1 {
+			t.Fatalf("parse helper iterations: %q: %v", os.Getenv("COMPOUND_CANDIDATE_HELPER_ITERATIONS"), err)
+		}
+		other := payload
+		other.Marker = strings.Repeat("B", markerBytes)
+		for i := 0; i < iterations; i++ {
+			current := payload
+			if i%2 == 1 {
+				current = other
+			}
+			if err := WriteCandidate(home, Memory, id, current); err != nil {
+				t.Fatalf("write candidate iteration %d: %v", i, err)
+			}
+		}
+		fmt.Printf("WROTE_ITERATIONS=%d\n", iterations)
 	default:
 		t.Fatalf("unknown candidate helper action %q", action)
+	}
+}
+
+func TestWriteCandidateAtomicReplacement(t *testing.T) {
+	home := t.TempDir()
+	const (
+		id         = "atomic-replacement"
+		markerSize = 2 << 20
+	)
+	type rec struct {
+		ID     string `json:"id"`
+		Kind   string `json:"kind"`
+		Marker string `json:"marker"`
+	}
+	oldPayload := rec{ID: id, Kind: string(Memory), Marker: strings.Repeat("A", markerSize)}
+	newPayload := rec{ID: id, Kind: string(Memory), Marker: strings.Repeat("B", markerSize)}
+	if err := WriteCandidate(home, Memory, id, oldPayload); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, InboxDir(Memory), id+".json")
+	before, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOld := canonicalCandidateBody(t, oldPayload)
+	wantNew := canonicalCandidateBody(t, newPayload)
+
+	start := filepath.Join(t.TempDir(), "start")
+	ready, done := startCandidateHelper(t, home, "write-loop", id, "A",
+		"COMPOUND_CANDIDATE_HELPER_START="+start,
+		"COMPOUND_CANDIDATE_HELPER_MARKER_BYTES="+strconv.Itoa(markerSize),
+		"COMPOUND_CANDIDATE_HELPER_ITERATIONS=40",
+	)
+	waitForCandidateHelperReady(t, ready)
+	if err := os.WriteFile(start, []byte("start\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var invalid []byte
+	finished := false
+	for !finished && invalid == nil {
+		select {
+		case result := <-done:
+			requireCandidateHelperResult(t, "write-loop", result)
+			finished = true
+		default:
+			body, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatalf("read candidate during replacement: %v", err)
+			}
+			if !bytes.Equal(body, wantOld) && !bytes.Equal(body, wantNew) {
+				invalid = append([]byte(nil), body...)
+			}
+		}
+	}
+	if !finished {
+		waitForCandidateHelper(t, "write-loop", done)
+	}
+	if invalid != nil {
+		var decoded rec
+		t.Fatalf("reader observed torn replacement: bytes=%d valid_json=%t decode_err=%v", len(invalid), json.Valid(invalid), json.Unmarshal(invalid, &decoded))
+	}
+	after, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("replacement retained the authoritative inode; write was in-place rather than atomic rename publication")
 	}
 }
 
@@ -108,7 +206,7 @@ release:
 	waitForCandidateHelper(t, "create", createDone)
 }
 
-func startCandidateHelper(t *testing.T, home, action, id, marker string) (string, <-chan candidateHelperResult) {
+func startCandidateHelper(t *testing.T, home, action, id, marker string, extraEnv ...string) (string, <-chan candidateHelperResult) {
 	t.Helper()
 	ready := filepath.Join(t.TempDir(), "ready")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCandidateSubprocess$", "-test.count=1")
@@ -119,6 +217,7 @@ func startCandidateHelper(t *testing.T, home, action, id, marker string) (string
 		"COMPOUND_CANDIDATE_HELPER_MARKER="+marker,
 		"COMPOUND_CANDIDATE_HELPER_READY="+ready,
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -131,6 +230,26 @@ func startCandidateHelper(t *testing.T, home, action, id, marker string) (string
 		done <- candidateHelperResult{output: output.Bytes(), err: err}
 	}()
 	return ready, done
+}
+
+func waitForCandidateHelperStart(t *testing.T, path string) {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("inspect helper start signal: %v", err)
+		}
+		select {
+		case <-timer.C:
+			t.Fatalf("timed out waiting for helper start at %s", path)
+		case <-ticker.C:
+		}
+	}
 }
 
 func waitForCandidateHelperReady(t *testing.T, path string) {
@@ -159,10 +278,24 @@ func waitForCandidateHelper(t *testing.T, name string, done <-chan candidateHelp
 	defer timer.Stop()
 	select {
 	case result := <-done:
-		if result.err != nil {
-			t.Fatalf("%s helper failed: %v\n%s", name, result.err, result.output)
-		}
+		requireCandidateHelperResult(t, name, result)
 	case <-timer.C:
 		t.Fatalf("timed out waiting for %s helper", name)
 	}
+}
+
+func requireCandidateHelperResult(t *testing.T, name string, result candidateHelperResult) {
+	t.Helper()
+	if result.err != nil {
+		t.Fatalf("%s helper failed: %v\n%s", name, result.err, result.output)
+	}
+}
+
+func canonicalCandidateBody(t *testing.T, payload any) []byte {
+	t.Helper()
+	body, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(body, '\n')
 }
