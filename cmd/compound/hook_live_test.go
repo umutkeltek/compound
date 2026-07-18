@@ -611,6 +611,137 @@ func TestHookLiveCodexPreToolUseAllowsOnlyExactRecordedDirtyBatch(t *testing.T) 
 	}
 }
 
+func TestHookLiveSessionDirtyOwnership(t *testing.T) {
+	t.Run("same session edits file A then file B without a hold", func(t *testing.T) {
+		homePath, repo := initLiveOwnershipTest(t)
+		sessionID := "sess_own_iterative"
+		fileA := filepath.Join(repo, "README.md")
+		fileB := filepath.Join(repo, "SECOND.md")
+
+		firstInput := liveWriteInput("PreToolUse", sessionID, repo, fileA, "session change\n")
+		if got := runClaudePreToolUse(t, firstInput).HookSpecificOutput.PermissionDecision; got != "" {
+			t.Fatalf("first clean write decision = %q, want allow", got)
+		}
+		if err := os.WriteFile(fileA, []byte("session change\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runClaudePostToolUse(t, liveWriteInput("PostToolUse", sessionID, repo, fileA, "session change\n"))
+
+		second := runClaudePreToolUse(t, liveWriteInput("PreToolUse", sessionID, repo, fileB, "second\n"))
+		if got := second.HookSpecificOutput.PermissionDecision; got != "" {
+			t.Fatalf("second write over own-session dirt decision = %q reason=%q, want allow", got, second.HookSpecificOutput.PermissionDecisionReason)
+		}
+		if !livePolicyReasonExists(t, homePath, "current governed session") {
+			t.Fatal("second write did not consume session ownership in its PolicyDecision")
+		}
+		if entries, err := os.ReadDir(filepath.Join(homePath, "state", "runs", "hook-session-writes")); err != nil || len(entries) == 0 {
+			t.Fatalf("session ownership state missing: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("foreign dirt holds even when the requested target is clean", func(t *testing.T) {
+		_, repo := initLiveOwnershipTest(t)
+		if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("foreign change\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		response := runClaudePreToolUse(t, liveWriteInput("PreToolUse", "sess_foreign_only", repo, filepath.Join(repo, "SECOND.md"), "second\n"))
+		if got := response.HookSpecificOutput.PermissionDecision; got != "ask" {
+			t.Fatalf("foreign dirty repo decision = %q reason=%q, want ask", got, response.HookSpecificOutput.PermissionDecisionReason)
+		}
+	})
+
+	t.Run("mixed own and foreign dirt holds", func(t *testing.T) {
+		_, repo := initLiveOwnershipTest(t)
+		sessionID := "sess_mixed"
+		fileA := filepath.Join(repo, "README.md")
+		firstInput := liveWriteInput("PreToolUse", sessionID, repo, fileA, "session change\n")
+		if got := runClaudePreToolUse(t, firstInput).HookSpecificOutput.PermissionDecision; got != "" {
+			t.Fatalf("first clean write decision = %q, want allow", got)
+		}
+		if err := os.WriteFile(fileA, []byte("session change\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runClaudePostToolUse(t, liveWriteInput("PostToolUse", sessionID, repo, fileA, "session change\n"))
+		if err := os.WriteFile(filepath.Join(repo, "FOREIGN.md"), []byte("foreign\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		response := runClaudePreToolUse(t, liveWriteInput("PreToolUse", sessionID, repo, filepath.Join(repo, "SECOND.md"), "second\n"))
+		if got := response.HookSpecificOutput.PermissionDecision; got != "ask" {
+			t.Fatalf("mixed dirty repo decision = %q reason=%q, want ask", got, response.HookSpecificOutput.PermissionDecisionReason)
+		}
+	})
+}
+
+func initLiveOwnershipTest(t *testing.T) (string, string) {
+	t.Helper()
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	return homePath, initCompoundCommandGitRepo(t)
+}
+
+func liveWriteInput(event, sessionID, cwd, target, content string) string {
+	return `{"hook_event_name":` + quoteJSON(event) +
+		`,"session_id":` + quoteJSON(sessionID) +
+		`,"cwd":` + quoteJSON(cwd) +
+		`,"tool_name":"Write","tool_input":{"file_path":` + quoteJSON(target) +
+		`,"content":` + quoteJSON(content) + `},"tool_response":"ok"}`
+}
+
+func runClaudePreToolUse(t *testing.T, input string) claudeLiveHookResponse {
+	t.Helper()
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "claude-code"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("Claude PreToolUse exit=%d\n%s", code, out)
+	}
+	var response claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("parse Claude PreToolUse response: %v\n%s", err, out)
+	}
+	return response
+}
+
+func runClaudePostToolUse(t *testing.T, input string) {
+	t.Helper()
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"post-tool-use", "--live", "--harness", "claude-code"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("Claude PostToolUse exit=%d\n%s", code, out)
+	}
+}
+
+func livePolicyReasonExists(t *testing.T, homePath, needle string) bool {
+	t.Helper()
+	for _, entry := range testEventEntries(t, homePath, "pol_") {
+		record, err := entry.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decision envelope.PolicyDecision
+		if json.Unmarshal(record.Bytes, &decision) != nil {
+			continue
+		}
+		for _, reason := range decision.Reasons {
+			if strings.Contains(reason, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func codexApplyPatchInput(sessionID, cwd, patch string) string {
 	return `{"hook_event_name":"PreToolUse","session_id":` + quoteJSON(sessionID) + `,"cwd":` +
 		quoteJSON(cwd) + `,"tool_name":"apply_patch","tool_input":{"command":` + quoteJSON(patch) + `}}`

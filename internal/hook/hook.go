@@ -7,12 +7,15 @@
 package hook
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -87,6 +90,9 @@ type Fixture struct {
 	// AdapterSideEffects are governed artifacts prepared by a live harness
 	// adapter before Run persists the HookEvent. Fixture JSON cannot inject them.
 	AdapterSideEffects []string `json:"-"`
+	// MutationInputRef is adapter-derived on successful PostToolUse and can
+	// promote only the exact pending governed mutation for this session.
+	MutationInputRef string `json:"-"`
 }
 
 // Deps are the services a hook orchestrates.
@@ -466,21 +472,35 @@ func orientationInput(fx Fixture, deps Deps, mode string) (contract.Input, error
 }
 
 func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
+	var (
+		res Result
+		err error
+	)
 	if len(fx.Actions) > 0 {
-		return preToolUseBatch(name, fx, deps, now)
+		res, err = preToolUseBatch(name, fx, deps, now)
+	} else {
+		if fx.Action == nil {
+			return Result{}, fmt.Errorf("pre-tool-use fixture needs an action")
+		}
+		prepared, prepareErr := preparePreToolUseAction(fx, deps, *fx.Action, now)
+		if prepareErr != nil {
+			return Result{}, prepareErr
+		}
+		reviewed, reviewErr := reviewedSourceControlMutationForBatch(deps, []preparedPreToolAction{prepared})
+		if reviewErr != nil {
+			return Result{}, reviewErr
+		}
+		res, err = evaluatePreparedPreToolUse(name, fx, deps, prepared, reviewed, now)
 	}
-	if fx.Action == nil {
-		return Result{}, fmt.Errorf("pre-tool-use fixture needs an action")
-	}
-	prepared, err := preparePreToolUseAction(fx, deps, *fx.Action, now)
 	if err != nil {
 		return Result{}, err
 	}
-	reviewed, err := reviewedSourceControlMutationForBatch(deps, []preparedPreToolAction{prepared})
-	if err != nil {
-		return Result{}, err
+	if effect, recordErr := recordPendingSessionMutation(deps.HomePath, fx, res, now); recordErr != nil {
+		return Result{}, recordErr
+	} else if effect != "" {
+		res.Event.SideEffects = append(res.Event.SideEffects, effect)
 	}
-	return evaluatePreparedPreToolUse(name, fx, deps, prepared, reviewed, now)
+	return res, nil
 }
 
 type preparedPreToolAction struct {
@@ -513,7 +533,7 @@ func preparePreToolUseAction(fx Fixture, deps Deps, action envelope.ActionIntent
 		}
 	}
 	if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
-		sourceControl, targetGitRoot, effects, err := sourceControlContextForAction(deps.HomePath, ai.Target.Path, now)
+		sourceControl, targetGitRoot, effects, err := sourceControlContextForAction(deps.HomePath, ai.Target.Path, fx.SessionID, fx.Live, now)
 		if err != nil {
 			return preparedPreToolAction{}, err
 		}
@@ -868,7 +888,7 @@ func writeGateArtifacts(homePath string, ai envelope.ActionIntent, pd envelope.P
 	return []string{action.Reference.String(), decision.Reference.String()}, nil
 }
 
-func sourceControlContextForAction(homePath, targetPath string, now time.Time) (*policy.SourceControlContext, string, []string, error) {
+func sourceControlContextForAction(homePath, targetPath, sessionID string, live bool, now time.Time) (*policy.SourceControlContext, string, []string, error) {
 	memStore, err := mem.Open(homePath)
 	if err != nil {
 		return nil, "", nil, err
@@ -893,25 +913,294 @@ func sourceControlContextForAction(homePath, targetPath string, now time.Time) (
 			return nil, "", nil, err
 		}
 	}
+	ownedChangedPaths, foreignChangedPaths := 0, 0
+	if live && report.Status == "dirty" {
+		changedPaths, changedErr := readSourceControlChangedPaths(report.GitRoot)
+		if changedErr != nil {
+			return nil, "", nil, changedErr
+		}
+		ownedPaths, ownedErr := readSessionWrittenPaths(homePath, sessionID)
+		if ownedErr != nil {
+			return nil, "", nil, ownedErr
+		}
+		owned := make(map[string]struct{}, len(ownedPaths))
+		for _, path := range ownedPaths {
+			owned[filepath.Clean(path)] = struct{}{}
+		}
+		for _, path := range changedPaths {
+			if _, ok := owned[filepath.Clean(path)]; ok {
+				ownedChangedPaths++
+			} else {
+				foreignChangedPaths++
+			}
+		}
+		if len(changedPaths) == 0 && report.ChangedPaths > 0 {
+			foreignChangedPaths = report.ChangedPaths
+		}
+	}
 	return &policy.SourceControlContext{
-			EntityRef:               report.EntityRef,
-			GitRoot:                 report.GitRoot,
-			Remote:                  report.Remote,
-			Head:                    report.Head,
-			Status:                  report.Status,
-			Staged:                  report.Staged,
-			Unstaged:                report.Unstaged,
-			Untracked:               report.Untracked,
-			ChangedPaths:            report.ChangedPaths,
-			TargetPath:              snapshot.TargetPath,
-			TargetStatus:            snapshot.TargetStatus,
-			ChangedStateFingerprint: report.ChangedStateFingerprint,
-			EvidenceRefs:            []string{report.EvidenceRef},
+			EntityRef:                  report.EntityRef,
+			GitRoot:                    report.GitRoot,
+			Remote:                     report.Remote,
+			Head:                       report.Head,
+			Status:                     report.Status,
+			Staged:                     report.Staged,
+			Unstaged:                   report.Unstaged,
+			Untracked:                  report.Untracked,
+			ChangedPaths:               report.ChangedPaths,
+			TargetPath:                 snapshot.TargetPath,
+			TargetStatus:               snapshot.TargetStatus,
+			SessionOwnershipKnown:      live,
+			SessionOwnedChangedPaths:   ownedChangedPaths,
+			SessionForeignChangedPaths: foreignChangedPaths,
+			ChangedStateFingerprint:    report.ChangedStateFingerprint,
+			EvidenceRefs:               []string{report.EvidenceRef},
 		}, report.GitRoot, []string{
 			report.EvidenceRef,
 			filepath.Join("ledger", "entities.jsonl"),
 			filepath.Join("ledger", "claims.jsonl"),
 		}, nil
+}
+
+const sessionMutationStateSchemaVersion = "compound.hook_session_mutation.v0.1"
+
+type sessionMutationState struct {
+	SchemaVersion    string   `json:"schema_version"`
+	SessionKey       string   `json:"session_key"`
+	MutationInputRef string   `json:"mutation_input_ref"`
+	WorkID           string   `json:"work_id,omitempty"`
+	Paths            []string `json:"paths"`
+	CreatedAt        string   `json:"created_at"`
+}
+
+// The live gate keeps an immutable per-session written-path set instead of scanning
+// action-event segments on every PreToolUse. An allowing gate writes only a pending
+// exact-input record; the matching successful PostToolUse promotes it to written.
+// This keeps the hot path bounded and prevents failed or held attempts from claiming
+// ownership. The tradeoff is path-granular attribution: any current dirty path absent
+// from the session set is foreign, so mixed repositories continue to hold.
+func recordPendingSessionMutation(homePath string, fx Fixture, res Result, now time.Time) (string, error) {
+	if strings.TrimSpace(homePath) == "" || !fx.Live || strings.TrimSpace(fx.SessionID) == "" {
+		return "", nil
+	}
+	actions := make([]envelope.ActionIntent, 0)
+	decisions := 0
+	for _, produced := range res.Produced {
+		switch value := produced.(type) {
+		case *envelope.ActionIntent:
+			if value != nil && value.MutationClass != "read" {
+				actions = append(actions, *value)
+			}
+		case *envelope.PolicyDecision:
+			decisions++
+			if value == nil || !policy.Allowed(*value) {
+				return "", nil
+			}
+		}
+	}
+	if len(actions) == 0 {
+		return "", nil
+	}
+	if decisions != len(actions) {
+		return "", fmt.Errorf("record session mutation: action/policy count mismatch %d/%d", len(actions), decisions)
+	}
+	ref := ""
+	workID := ""
+	paths := make([]string, 0, len(actions))
+	for _, action := range actions {
+		actionRef := boundMutationInputRef(action.EvidenceRefs)
+		if actionRef == "" {
+			return "", nil
+		}
+		if ref != "" && actionRef != ref {
+			return "", fmt.Errorf("record session mutation: batch mutation input mismatch")
+		}
+		ref = actionRef
+		if workID == "" {
+			workID = action.IDs.WorkID
+		}
+		paths = append(paths, filepath.Clean(action.Target.Path))
+	}
+	paths = uniqueSortedPaths(paths)
+	record := sessionMutationState{
+		SchemaVersion:    sessionMutationStateSchemaVersion,
+		SessionKey:       hashStr(strings.TrimSpace(fx.SessionID)),
+		MutationInputRef: ref,
+		WorkID:           workID,
+		Paths:            paths,
+		CreatedAt:        now.UTC().Format(time.RFC3339Nano),
+	}
+	relative := sessionMutationRecordPath(fx.SessionID, "pending", ref)
+	if err := writeSessionMutationState(filepath.Join(homePath, relative), record); err != nil {
+		return "", fmt.Errorf("record pending session mutation: %w", err)
+	}
+	return relative, nil
+}
+
+func promotePendingSessionMutation(homePath string, fx Fixture) (string, error) {
+	if strings.TrimSpace(homePath) == "" || !fx.Live || strings.TrimSpace(fx.SessionID) == "" || strings.TrimSpace(fx.MutationInputRef) == "" {
+		return "", nil
+	}
+	pendingRelative := sessionMutationRecordPath(fx.SessionID, "pending", fx.MutationInputRef)
+	pendingPath := filepath.Join(homePath, pendingRelative)
+	body, err := os.ReadFile(pendingPath)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read pending session mutation: %w", err)
+	}
+	var record sessionMutationState
+	if err := json.Unmarshal(body, &record); err != nil {
+		return "", fmt.Errorf("parse pending session mutation: %w", err)
+	}
+	if err := validateSessionMutationState(record, fx.SessionID, fx.MutationInputRef); err != nil {
+		return "", err
+	}
+	writtenRelative := sessionMutationRecordPath(fx.SessionID, "written", fx.MutationInputRef)
+	writtenPath := filepath.Join(homePath, writtenRelative)
+	if err := os.MkdirAll(filepath.Dir(writtenPath), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Rename(pendingPath, writtenPath); err != nil {
+		return "", fmt.Errorf("promote pending session mutation: %w", err)
+	}
+	return writtenRelative, nil
+}
+
+func readSessionWrittenPaths(homePath, sessionID string) ([]string, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, nil
+	}
+	dir := filepath.Join(homePath, "state", "runs", "hook-session-writes", hashStr(strings.TrimSpace(sessionID)), "written")
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		body, readErr := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if readErr != nil {
+			return nil, readErr
+		}
+		var record sessionMutationState
+		if err := json.Unmarshal(body, &record); err != nil {
+			return nil, fmt.Errorf("parse written session mutation %s: %w", entry.Name(), err)
+		}
+		if err := validateSessionMutationState(record, sessionID, record.MutationInputRef); err != nil {
+			return nil, err
+		}
+		paths = append(paths, record.Paths...)
+	}
+	return uniqueSortedPaths(paths), nil
+}
+
+func validateSessionMutationState(record sessionMutationState, sessionID, mutationInputRef string) error {
+	if record.SchemaVersion != sessionMutationStateSchemaVersion {
+		return fmt.Errorf("session mutation state schema = %q", record.SchemaVersion)
+	}
+	if record.SessionKey != hashStr(strings.TrimSpace(sessionID)) || record.MutationInputRef != mutationInputRef {
+		return fmt.Errorf("session mutation state identity mismatch")
+	}
+	if len(record.Paths) == 0 {
+		return fmt.Errorf("session mutation state paths required")
+	}
+	return nil
+}
+
+func sessionMutationRecordPath(sessionID, state, mutationInputRef string) string {
+	return filepath.Join("state", "runs", "hook-session-writes", hashStr(strings.TrimSpace(sessionID)), state, hashStr(mutationInputRef)+".json")
+}
+
+func writeSessionMutationState(path string, record sessionMutationState) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
+	temp, err := os.CreateTemp(filepath.Dir(path), ".hook-session-mutation-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(body); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func boundMutationInputRef(refs []string) string {
+	for _, ref := range refs {
+		if strings.HasPrefix(ref, "mutation-input:sha256:") {
+			return ref
+		}
+	}
+	return ""
+}
+
+func readSourceControlChangedPaths(gitRoot string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	commands := [][]string{
+		{"-C", gitRoot, "diff", "--name-only", "--no-renames", "-z", "--"},
+		{"-C", gitRoot, "diff", "--cached", "--name-only", "--no-renames", "-z", "--"},
+		{"-C", gitRoot, "ls-files", "--others", "--exclude-standard", "-z", "--"},
+	}
+	paths := make([]string, 0)
+	for _, args := range commands {
+		output, err := exec.CommandContext(ctx, "git", args...).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("git changed paths (%s): %w: %s", strings.Join(args[2:], " "), err, strings.TrimSpace(string(output)))
+		}
+		for _, relative := range strings.Split(string(output), "\x00") {
+			if relative == "" {
+				continue
+			}
+			canonical, err := authority.CanonicalSourceControlMutationTarget(gitRoot, filepath.FromSlash(relative))
+			if err != nil {
+				return nil, err
+			}
+			paths = append(paths, canonical)
+		}
+	}
+	return uniqueSortedPaths(paths), nil
+}
+
+func uniqueSortedPaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if path = strings.TrimSpace(path); path != "" {
+			seen[filepath.Clean(path)] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for path := range seen {
+		out = append(out, path)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // shouldMintGateReview scopes and dedups the source-control-dirty held gate-review mint.
@@ -982,6 +1271,11 @@ func openGateReviewExists(store *work.Store, sc policy.SourceControlContext) (bo
 func postToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
 	ev := newEvent(name, fx, "ok", hashStr(fx.Tool), []string{fx.Tool}, now)
 	summary := "recorded tool event: " + orDash(fx.Tool) + " (ToolEvent/ArtifactRef land at P6+)"
+	if effect, err := promotePendingSessionMutation(deps.HomePath, fx); err != nil {
+		return Result{}, err
+	} else if effect != "" {
+		ev.SideEffects = append(ev.SideEffects, effect)
+	}
 	// C3: a tool body at or beyond the whole context budget must never flood the window. Externalize
 	// it to the rebuildable, content-addressed blob store and mint ONE observed-class candidate; only
 	// the compact pointer flows back into the summary — never the body. Below-threshold output and

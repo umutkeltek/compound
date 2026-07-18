@@ -200,6 +200,92 @@ func TestSourceControlDirtyRepoUsesExactTargetStatus(t *testing.T) {
 			}
 		})
 	}
+	denied := mkAction("local_reversible", "easy", ".env", "repo")
+	ownDirty := SourceControlContext{
+		Status:                     "dirty",
+		SessionOwnershipKnown:      true,
+		SessionOwnedChangedPaths:   1,
+		SessionForeignChangedPaths: 0,
+	}
+	if pd := EvaluateWithContext(denied, DefaultConfig(), EvaluationContext{SourceControl: &ownDirty}, fixedNow); pd.Outcome != "deny" {
+		t.Fatalf("own-session attribution lowered deny to %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+}
+
+func TestSourceControlDirtySessionOwnership(t *testing.T) {
+	tests := []struct {
+		name    string
+		class   string
+		context SourceControlContext
+		want    string
+	}{
+		{
+			name:  "same session dirt preserves reversible baseline",
+			class: "local_reversible",
+			context: SourceControlContext{
+				EntityRef:                  "repo:demo",
+				Status:                     "dirty",
+				ChangedPaths:               1,
+				TargetPath:                 "docs/b.md",
+				TargetStatus:               "unknown",
+				SessionOwnershipKnown:      true,
+				SessionOwnedChangedPaths:   1,
+				SessionForeignChangedPaths: 0,
+			},
+			want: "allow_with_obligations",
+		},
+		{
+			name:  "foreign dirt holds even when target is clean",
+			class: "local_reversible",
+			context: SourceControlContext{
+				EntityRef:                  "repo:demo",
+				Status:                     "dirty",
+				ChangedPaths:               1,
+				TargetPath:                 "docs/b.md",
+				TargetStatus:               "clean",
+				SessionOwnershipKnown:      true,
+				SessionForeignChangedPaths: 1,
+			},
+			want: "hold",
+		},
+		{
+			name:  "mixed own and foreign dirt holds",
+			class: "local_reversible",
+			context: SourceControlContext{
+				EntityRef:                  "repo:demo",
+				Status:                     "dirty",
+				ChangedPaths:               2,
+				TargetPath:                 "docs/b.md",
+				TargetStatus:               "clean",
+				SessionOwnershipKnown:      true,
+				SessionOwnedChangedPaths:   1,
+				SessionForeignChangedPaths: 1,
+			},
+			want: "hold",
+		},
+		{
+			name:  "read stays exempt with foreign dirt",
+			class: "read",
+			context: SourceControlContext{
+				EntityRef:                  "repo:demo",
+				Status:                     "dirty",
+				ChangedPaths:               1,
+				TargetPath:                 "docs/b.md",
+				TargetStatus:               "dirty",
+				SessionOwnershipKnown:      true,
+				SessionForeignChangedPaths: 1,
+			},
+			want: "allow",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pd := EvaluateWithContext(mkAction(tt.class, "easy", "docs/b.md", "repo"), DefaultConfig(), EvaluationContext{SourceControl: &tt.context}, fixedNow)
+			if pd.Outcome != tt.want {
+				t.Fatalf("outcome = %q reasons=%v, want %q", pd.Outcome, pd.Reasons, tt.want)
+			}
+		})
+	}
 }
 
 func TestSourceControlCleanOrReadDoesNotEscalate(t *testing.T) {

@@ -73,22 +73,26 @@ type EvaluationContext struct {
 	Authority     *AuthorityContext      `json:"authority,omitempty"`
 }
 
-// SourceControlContext is a read-only git status observation for the action target.
+// SourceControlContext combines a read-only git observation with live-session path
+// attribution supplied by the hook adapter.
 type SourceControlContext struct {
-	EntityRef               string                         `json:"entity_ref,omitempty"`
-	GitRoot                 string                         `json:"git_root,omitempty"`
-	Remote                  string                         `json:"remote,omitempty"`
-	Head                    string                         `json:"head,omitempty"`
-	Status                  string                         `json:"status,omitempty"`
-	Staged                  int                            `json:"staged,omitempty"`
-	Unstaged                int                            `json:"unstaged,omitempty"`
-	Untracked               int                            `json:"untracked,omitempty"`
-	ChangedPaths            int                            `json:"changed_paths,omitempty"`
-	TargetPath              string                         `json:"target_path,omitempty"`
-	TargetStatus            string                         `json:"target_status,omitempty"`
-	ChangedStateFingerprint string                         `json:"changed_state_fingerprint,omitempty"`
-	ReviewedMutation        *ReviewedSourceControlMutation `json:"reviewed_mutation,omitempty"`
-	EvidenceRefs            []string                       `json:"evidence_refs,omitempty"`
+	EntityRef                  string                         `json:"entity_ref,omitempty"`
+	GitRoot                    string                         `json:"git_root,omitempty"`
+	Remote                     string                         `json:"remote,omitempty"`
+	Head                       string                         `json:"head,omitempty"`
+	Status                     string                         `json:"status,omitempty"`
+	Staged                     int                            `json:"staged,omitempty"`
+	Unstaged                   int                            `json:"unstaged,omitempty"`
+	Untracked                  int                            `json:"untracked,omitempty"`
+	ChangedPaths               int                            `json:"changed_paths,omitempty"`
+	TargetPath                 string                         `json:"target_path,omitempty"`
+	TargetStatus               string                         `json:"target_status,omitempty"`
+	SessionOwnershipKnown      bool                           `json:"session_ownership_known,omitempty"`
+	SessionOwnedChangedPaths   int                            `json:"session_owned_changed_paths,omitempty"`
+	SessionForeignChangedPaths int                            `json:"session_foreign_changed_paths,omitempty"`
+	ChangedStateFingerprint    string                         `json:"changed_state_fingerprint,omitempty"`
+	ReviewedMutation           *ReviewedSourceControlMutation `json:"reviewed_mutation,omitempty"`
+	EvidenceRefs               []string                       `json:"evidence_refs,omitempty"`
 }
 
 // ReviewedSourceControlMutation is an exact, recorded capability. The authority
@@ -313,14 +317,23 @@ func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionInt
 		return pd
 	}
 	targetStatus := sourceControlTargetStatus(ai, sc)
-	if targetStatus == "clean" {
+	if sc.SessionOwnershipKnown && sc.SessionOwnedChangedPaths > 0 && sc.SessionForeignChangedPaths == 0 {
+		pd.Reasons = append(pd.Reasons, fmt.Sprintf("all %d dirty source-control path(s) are attributed to the current governed session; dirty escalation not added", sc.SessionOwnedChangedPaths))
+		return pd
+	}
+	if !sc.SessionOwnershipKnown && targetStatus == "clean" {
 		return pd
 	}
 	entity := strings.TrimSpace(sc.EntityRef)
 	if entity == "" {
 		entity = "target repo"
 	}
-	reason := fmt.Sprintf("source_control_status dirty for %s changed_paths=%d; target_status %s for %q; target mutation requires a clean target or explicitly reviewed repo state", entity, sc.ChangedPaths, targetStatus, ai.Target.Path)
+	reason := fmt.Sprintf("source_control_status dirty for %s changed_paths=%d; target_status %s for %q", entity, sc.ChangedPaths, targetStatus, ai.Target.Path)
+	if sc.SessionOwnershipKnown {
+		reason += fmt.Sprintf("; session_owned_changed_paths=%d session_foreign_changed_paths=%d; target mutation requires every dirty path to belong to the current session or explicitly reviewed repo state", sc.SessionOwnedChangedPaths, sc.SessionForeignChangedPaths)
+	} else {
+		reason += "; target mutation requires a clean target or explicitly reviewed repo state"
+	}
 	if sc.ReviewedMutation != nil {
 		reason += "; recorded review did not exactly match the live state and mutation"
 	}

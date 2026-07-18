@@ -151,6 +151,9 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 		if fx.Tool == "" {
 			fx.Tool = "unknown"
 		}
+		if targetPaths := liveToolPaths(fx.Tool, in.ToolInput); len(targetPaths) > 0 {
+			fx.MutationInputRef = liveMutationInputReference(fx.Harness, in, targetPaths)
+		}
 		// C3: carry the tool response body so a large one is externalized at the seam (blob +
 		// observed candidate + pointer) instead of flooding context. work_id grounds the candidate.
 		fx.ToolOutput = liveToolOutput(in.ToolResponse)
