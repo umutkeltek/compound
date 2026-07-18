@@ -6,20 +6,30 @@ Compound owns the permission authority, governed actuator, and drift consumer:
 - renderer: `compound harness generate --harness claude_code`
 - governed actuator: `compound harness generate --harness claude_code --apply --work <work_id> --actor <operator>`
 - doctor: `compound harness drift --harness claude_code`
+- launch projection: `compound harness permission-mode --harness claude_code [--json]`
 - managed-entry provenance: `COMPOUND_HOME/config/harness-artifacts.jsonl`
 
 Apply requires a running WorkEnvelope whose current lease holder exactly matches
 the explicit operator actor. It evaluates a `security`-class
 `harness.permissions.apply` ActionIntent against a matching standing grant, then
 passes the exact approved render and PolicyDecision through the mutation seam.
-The actuator preserves unmanaged settings, serializes all harness writers, and
+The actuator preserves unrelated settings, serializes all harness writers, and
 publishes with a kernel-backed compare-and-swap that refuses a changed pre-image.
+A permission authority may opt into `permissions.ownership: exact`; that makes
+Compound own the complete `allow` / `ask` / `deny` arrays and prune stale
+one-command rules while still preserving hooks, status UI, themes, and every
+other settings key. The default remains additive managed-entry reconciliation.
 A pending transaction makes interrupted activation visible to drift; recovery
 revalidates the authority revision and target before completing or atomically
 restoring the displaced pre-image. Completed, no-op, and failed attempts record
 Receipt + Transition truth with content-addressed pre/post refs. Formatting-only
 JSON differences publish canonical bytes; a second canonical apply is a byte
 no-op.
+
+`permission-mode` is a read-only posture projection with authority revision
+provenance. A composition adapter may pass its value as an opaque launch input
+to an execution transport. The transport never reads this authority or decides
+the mode, and Compound never handles inference traffic.
 
 The reviewed compatibility source revision is
 `sha256:c9f884e2992c654318394116389c66ab4ecb7215ac304ca16589872d1c404731`.

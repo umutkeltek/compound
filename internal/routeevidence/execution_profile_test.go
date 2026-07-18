@@ -318,6 +318,23 @@ func TestResolveExecutionProfileKeepsHarnessTransportAndModelDistinct(t *testing
 	}
 }
 
+func TestResolveExecutionProfileKeepsClaudeHarnessAndSwitchbackTransportDistinct(t *testing.T) {
+	plan, err := ResolveExecutionProfile(ExecutionProfileIntent{
+		ProfileID:       "interactive-default",
+		ClientHarnessID: "claude-code",
+		TransportID:     "switchback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ClientHarnessID != "claude-code" || plan.TransportID != "switchback" {
+		t.Fatalf("Claude harness and Switchback transport collapsed: %+v", plan)
+	}
+	if plan.EffectiveProvider != UnknownUntilReceipt || plan.EffectiveModel != UnknownUntilReceipt {
+		t.Fatalf("transport construction overclaimed observed provider/model identity: %+v", plan)
+	}
+}
+
 func TestResolveExecutionProfileMiningConstructsBoundedCheckpointedPlan(t *testing.T) {
 	plan, err := ResolveExecutionProfile(ExecutionProfileIntent{
 		ProfileID:       "mining-bulk",

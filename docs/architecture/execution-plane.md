@@ -23,6 +23,15 @@ gateway asks:   Given this request shape and policy, which provider/model/accoun
 If compound absorbs provider routing it becomes bloated and fragile. If the gateway absorbs
 memory/product/skill/taste it becomes a generic router pretending to understand the work. Both wrong.
 
+The interactive harness boundary follows the same split:
+
+- **Harness posture** is Compound-owned meaning: permissions, hooks, task intent, work identity, and policy.
+- **Inference transport** is gateway-owned execution: proxy/tap/native path, provider/account routing, capture,
+  retries, and route evidence.
+- A **harness-transport adapter** is the thin composition edge. It resolves posture from Compound, passes only
+  explicit launch inputs to the transport, and can be deleted without moving either authority. The gateway must
+  not read Compound policy files, and Compound must not proxy model traffic.
+
 ## The execution handshake
 
 A harness is not a model; a provider is not a transport; native inference effort is not orchestration; a route
@@ -34,6 +43,10 @@ privacy/risk, semantic effort, optional native-effort constraint, orchestration 
 permissions, and request/token/time/cost ceilings. It is a plan, not evidence that a call occurred. The read-only
 `compound route execution-profile` resolver proves profile coherence without contacting a provider or changing
 gateway/harness configuration.
+
+Harness and transport are independent selectors: for example, Claude Code may run over native transport or a
+Switchback-compatible transport without becoming a different harness. Selecting Switchback does not let
+Compound claim the provider/model that actually ran; those remain `unknown_until_receipt`.
 
 The gateway publishes a revisioned, non-secret conformance view: protocols, route aliases, provider/model
 resolution rules, supported native effort per adapter/protocol, cost/account classes, and catalog/adapter revision.

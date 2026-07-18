@@ -3129,6 +3129,31 @@ func cmdHarness(args []string) {
 	if len(args) > 0 {
 		target = args[0]
 	}
+	if target == "permission-mode" {
+		harnessName := valueFlag(args[1:], "--harness")
+		if harnessName == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound harness permission-mode --harness <name> [--json]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(set COMPOUND_HOME)")
+			os.Exit(1)
+		}
+		policy, revision, err := harness.LoadPermissionAuthority(homePath, harnessName)
+		die(err)
+		if hasFlag(args[1:], "--json") {
+			die(json.NewEncoder(os.Stdout).Encode(map[string]string{
+				"harness":            harnessName,
+				"permission_mode":    policy.Permissions.DefaultMode,
+				"authority_ref":      policy.AuthorityRef,
+				"authority_revision": revision,
+			}))
+			return
+		}
+		fmt.Println(policy.Permissions.DefaultMode)
+		return
+	}
 	if target == "generate" || target == "drift" {
 		if hasFlag(args[1:], "--apply") {
 			if target != "generate" {

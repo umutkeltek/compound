@@ -40,10 +40,15 @@ func TestPermissionAuthorityValidation(t *testing.T) {
 	}
 	badDefaults := permissionFixture([]string{"Read"})
 	badDefaults.AutoMode.Allow = []string{"Read", "$defaults"}
+	badOwnership := permissionFixture([]string{"Read"})
+	badOwnership.Permissions.Ownership = "sometimes"
 	tests = append(tests, struct {
 		name, wantErr string
 		policy        PermissionAuthority
-	}{"requires defaults first", "$defaults", badDefaults})
+	}{"requires defaults first", "$defaults", badDefaults}, struct {
+		name, wantErr string
+		policy        PermissionAuthority
+	}{"rejects ambiguous permission ownership", "ownership", badOwnership})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.policy.Validate()
@@ -54,6 +59,45 @@ func TestPermissionAuthorityValidation(t *testing.T) {
 				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRenderPermissionsExactOwnershipPrunesUnmanagedRulesAndPreservesUnrelatedSettings(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{
+		"theme": "dark",
+		"permissions": map[string]any{
+			"allow":       []string{"Read", "Edit(~/Projects/**)", "Bash"},
+			"deny":        []string{"HandDeny"},
+			"ask":         []string{"HandAsk"},
+			"defaultMode": "acceptEdits",
+		},
+		"hooks": map[string]any{"PreToolUse": []any{map[string]any{"matcher": "Edit"}}},
+	})
+	policy := permissionFixture([]string{"Agent(*)", "Bash"})
+	policy.Permissions.Ownership = "exact"
+	writePermissionFixture(t, homePath, targetPath, policy)
+
+	render, err := RenderPermissions(homePath, "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeTestJSON(t, render.Content)
+	if got["theme"] != "dark" {
+		t.Fatalf("unrelated top-level setting changed: %+v", got)
+	}
+	if _, ok := got["hooks"].(map[string]any)["PreToolUse"]; !ok {
+		t.Fatalf("hooks were not preserved: %+v", got["hooks"])
+	}
+	permissions := got["permissions"].(map[string]any)
+	assertStrings(t, permissions["allow"], []string{"Agent(*)", "Bash"})
+	assertStrings(t, permissions["deny"], []string{"Bash(rm:*)"})
+	assertStrings(t, permissions["ask"], []string{"WebFetch"})
+	if permissions["defaultMode"] != "default" {
+		t.Fatalf("defaultMode = %v, want default", permissions["defaultMode"])
+	}
+	if !render.Changed {
+		t.Fatal("exact ownership render changed = false, want stale rules pruned")
 	}
 }
 

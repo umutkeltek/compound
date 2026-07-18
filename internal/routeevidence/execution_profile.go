@@ -405,8 +405,8 @@ func validateExecutionSelectors(intent ExecutionProfileIntent, definition Execut
 	if !oneOf(intent.TransportID, "native", "switchback", "local") {
 		return compatibilityError("requested_intent.transport_id", "unsupported transport "+quoted(intent.TransportID))
 	}
-	if intent.ClientHarnessID == "claude-code" && intent.TransportID != "native" {
-		return compatibilityError("requested_intent.transport_id", "claude-code supports native transport in this binding")
+	if intent.ClientHarnessID == "claude-code" && intent.TransportID == "local" {
+		return compatibilityError("requested_intent.transport_id", "claude-code supports native or switchback transport in this binding")
 	}
 	if intent.ClientHarnessID == "codex" && intent.TransportID == "local" {
 		return compatibilityError("requested_intent.transport_id", "codex supports native or switchback transport in this binding")

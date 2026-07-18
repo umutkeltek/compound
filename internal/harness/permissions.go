@@ -34,6 +34,10 @@ type PermissionRules struct {
 	Deny        []string `json:"deny" yaml:"deny"`
 	Ask         []string `json:"ask" yaml:"ask"`
 	DefaultMode string   `json:"default_mode" yaml:"default_mode"`
+	// Ownership is empty/"managed" for additive reconciliation or "exact"
+	// when Compound owns the complete permissions arrays. Exact ownership is
+	// opt-in so existing harness authorities retain their hand-owned entries.
+	Ownership string `json:"ownership,omitempty" yaml:"ownership,omitempty"`
 }
 
 type AutoModePolicy struct {
@@ -168,6 +172,9 @@ func (p PermissionAuthority) Validate() error {
 	if strings.TrimSpace(p.AuthorityRef) != PermissionAuthorityRef(p.Harness) {
 		return fmt.Errorf("authority_ref = %q, want %q", p.AuthorityRef, PermissionAuthorityRef(p.Harness))
 	}
+	if ownership := strings.TrimSpace(p.Permissions.Ownership); ownership != "" && ownership != "managed" && ownership != "exact" {
+		return fmt.Errorf("permissions.ownership = %q, want managed or exact", p.Permissions.Ownership)
+	}
 	for name, rules := range map[string][]string{
 		"permissions.allow": p.Permissions.Allow,
 		"permissions.deny":  p.Permissions.Deny,
@@ -272,13 +279,19 @@ func RenderPermissions(homePath, harness string) (PermissionRender, error) {
 		return PermissionRender{}, err
 	}
 	permissions := objectAt(settings, "permissions")
-	currentAllow := stringSlice(permissions["allow"])
-	if policy.Harness == "claude_code" {
-		currentAllow = canonicalizeUnmanagedClaudeFileEditRules(currentAllow, previous.ManagedEntries["permissions.allow"])
+	if policy.Permissions.Ownership == "exact" {
+		permissions["allow"] = append([]string(nil), policy.Permissions.Allow...)
+		permissions["deny"] = append([]string(nil), policy.Permissions.Deny...)
+		permissions["ask"] = append([]string(nil), policy.Permissions.Ask...)
+	} else {
+		currentAllow := stringSlice(permissions["allow"])
+		if policy.Harness == "claude_code" {
+			currentAllow = canonicalizeUnmanagedClaudeFileEditRules(currentAllow, previous.ManagedEntries["permissions.allow"])
+		}
+		permissions["allow"] = reconcileRules(currentAllow, previous.ManagedEntries["permissions.allow"], policy.Permissions.Allow, false)
+		permissions["deny"] = reconcileRules(stringSlice(permissions["deny"]), previous.ManagedEntries["permissions.deny"], policy.Permissions.Deny, false)
+		permissions["ask"] = reconcileRules(stringSlice(permissions["ask"]), previous.ManagedEntries["permissions.ask"], policy.Permissions.Ask, false)
 	}
-	permissions["allow"] = reconcileRules(currentAllow, previous.ManagedEntries["permissions.allow"], policy.Permissions.Allow, false)
-	permissions["deny"] = reconcileRules(stringSlice(permissions["deny"]), previous.ManagedEntries["permissions.deny"], policy.Permissions.Deny, false)
-	permissions["ask"] = reconcileRules(stringSlice(permissions["ask"]), previous.ManagedEntries["permissions.ask"], policy.Permissions.Ask, false)
 	permissions["defaultMode"] = policy.Permissions.DefaultMode
 	settings["permissions"] = permissions
 	autoMode := objectAt(settings, "autoMode")
