@@ -130,6 +130,27 @@ func TestCounterMetricLensComparativePercentagesRemainImprovementClaims(t *testi
 	}
 }
 
+func TestCounterMetricLensUnrelatedHeldAndStayedDoNotPairClaim(t *testing.T) {
+	sig := inferCounterMetric(t, "receipt:unrelated-counter-words",
+		"Cut processing time in half; held a review and stayed to answer questions.")
+	if sig.Value >= 0 {
+		t.Fatalf("unrelated held/stayed prose must not pair an improvement claim, got %.3f", sig.Value)
+	}
+}
+
+func TestCounterMetricLensNonComparativeCutNotApplicable(t *testing.T) {
+	for _, summary := range []string{
+		"Cut the ribbon and held a review before launch.",
+		"Cut the ribbon. The report was filed in half an hour.",
+		"Cut the ribbon and filed the report in half an hour.",
+	} {
+		obs := counterMetricObs(t, "receipt:ceremony", CounterMetricPayload{Summary: summary})
+		if _, err := (CounterMetricLens{}).Infer(context.Background(), obs, fixedNow); err != ErrNotApplicable {
+			t.Fatalf("a non-comparative use of cut must be ErrNotApplicable, got %v (summary=%q)", err, summary)
+		}
+	}
+}
+
 // FALSIFIER 5 — visibility: the signal survives PublicProjection (public_safe) and validates through
 // newSignal / RecordSignal / LoadSignals round-trip.
 func TestCounterMetricLensSignalValidatesRecordsAndReadsBack(t *testing.T) {
@@ -185,14 +206,26 @@ func TestDefaultRegistryIncludesCounterMetricExactlyOnce(t *testing.T) {
 	}
 }
 
-// every operator-named counter-metric marker phrase, paired with a plain improvement marker, scores
-// positive — proves each marker in counterMetricWordMarkers is actually wired, not just "flat"/"held".
+// every unambiguous counter-metric marker phrase, paired with a plain improvement marker, scores
+// positive — proves each marker in counterMetricWordMarkers is actually wired.
 func TestCounterMetricLensAllCounterMarkersWired(t *testing.T) {
 	for _, marker := range counterMetricWordMarkers {
 		summary := "This is faster now; " + marker + "."
 		sig := inferCounterMetric(t, "receipt:marker", summary)
 		if sig.Value <= 0 {
 			t.Fatalf("counter-metric marker %q must pair to a positive pole, got %.3f (summary=%q)", marker, sig.Value, summary)
+		}
+	}
+}
+
+func TestCounterMetricLensContextualHeldAndStayedMarkersWired(t *testing.T) {
+	for _, summary := range []string{
+		"This is faster now; review latency held.",
+		"This is faster now; reversion rate stayed.",
+	} {
+		sig := inferCounterMetric(t, "receipt:contextual-marker", summary)
+		if sig.Value <= 0 {
+			t.Fatalf("contextual counter-metric marker must pair to a positive pole, got %.3f (summary=%q)", sig.Value, summary)
 		}
 	}
 }

@@ -40,7 +40,6 @@ var improvementWordMarkers = []string{
 	"improved",
 	"speedup",
 	"dropped",
-	"cut",
 }
 
 // counterMetricWordMarkers are the word-shaped counter-metric (held-flat) cues: the pairing text an
@@ -50,8 +49,6 @@ var counterMetricWordMarkers = []string{
 	"flat",
 	"unchanged",
 	"no regression",
-	"held",
-	"stayed",
 	"counter-metric",
 	"within band",
 	"did not move",
@@ -61,22 +58,28 @@ var (
 	improvementWordPatterns   = compileMarkers(improvementWordMarkers)
 	counterMetricWordPatterns = compileMarkers(counterMetricWordMarkers)
 
-	// percentDeltaPattern, multiplierPattern, and arrowTransitionPattern are the SYMBOL-shaped
-	// improvement-claim cues named alongside the word markers: a signed or comparative percent delta
-	// ("-38%", "38% smaller"), an
+	// These structured improvement-claim cues keep ambiguous words comparative: a signed or
+	// comparative percent delta ("-38%", "38% smaller"), an
 	// Nx multiplier ("2.9x per-engineer", "5.8x LOC"), or a numeric before/after transition joined
-	// by "→" ("attention 13-26s → 3-5s").
+	// by "→" ("attention 13-26s → 3-5s"). "Cut" counts only with an explicit delta such as
+	// "in half" or "by 20%"; ordinary uses such as "cut the ribbon" are not improvement claims.
 	percentDeltaPattern    = regexp.MustCompile(`(?:[+-]\s*\d+(?:\.\d+)?\s*%|\b\d+(?:\.\d+)?\s*%\s+(?:faster|smaller|lower|less|higher|more)\b)`)
 	multiplierPattern      = regexp.MustCompile(`\b\d+(?:\.\d+)?x\b`)
 	arrowTransitionPattern = regexp.MustCompile(`\d[^\s→]*\s*→\s*\d`)
+	comparativeCutPattern  = regexp.MustCompile(`\bcut\b[^,.;:!?\n]{0,80}(?:\bin\s+half\b|\bby\s+[+-]?\d+(?:\.\d+)?\s*%)(?:\s*[,.;:!?]|\s*$)`)
+
+	// "Held" and "stayed" are ordinary verbs unless a metric noun directly owns them and the
+	// phrase closes or names a stable state. Keeping them out of the global word list prevents
+	// prose such as "held a review and stayed to answer" from manufacturing a pairing.
+	contextualHoldPattern = regexp.MustCompile(`\b(?:latency|rate|reversions?|regressions?|errors?|failures?|costs?|quality|coverage|throughput|duration|time|count|volume|memory|load)\s+(?:held|stayed)(?:\s+(?:flat|unchanged|steady|constant|within\s+band|the\s+same))?(?:[.;,:!?]|$)`)
 )
 
-// countSymbolMarkers counts the symbol-shaped improvement cues (percent delta, Nx multiplier, arrow
-// numeric transition) in already-lowercased text.
-func countSymbolMarkers(lowerText string) int {
+// countStructuredImprovementMarkers counts comparative improvement cues in already-lowercased text.
+func countStructuredImprovementMarkers(lowerText string) int {
 	return len(percentDeltaPattern.FindAllString(lowerText, -1)) +
 		len(multiplierPattern.FindAllString(lowerText, -1)) +
-		len(arrowTransitionPattern.FindAllString(lowerText, -1))
+		len(arrowTransitionPattern.FindAllString(lowerText, -1)) +
+		len(comparativeCutPattern.FindAllString(lowerText, -1))
 }
 
 // clampSigned bounds v to [-1, 1] — the counter-metric lens's valid signed-value range.
@@ -133,12 +136,12 @@ func (l CounterMetricLens) Infer(ctx context.Context, obs Observation, now time.
 	}
 
 	lower := strings.ToLower(summary)
-	improvementMarkers := countMarkers(lower, improvementWordPatterns) + countSymbolMarkers(lower)
+	improvementMarkers := countMarkers(lower, improvementWordPatterns) + countStructuredImprovementMarkers(lower)
 	if improvementMarkers == 0 {
 		// no improvement claim at all: nothing for this lens to pair-check.
 		return InferredSignal{}, ErrNotApplicable
 	}
-	counterMarkers := countMarkers(lower, counterMetricWordPatterns)
+	counterMarkers := countMarkers(lower, counterMetricWordPatterns) + len(contextualHoldPattern.FindAllString(lower, -1))
 
 	paired := counterMarkers > 0
 	polarity := -1.0
