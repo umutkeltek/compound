@@ -341,6 +341,36 @@ func TestCheckDocLeakScansTrackedRootAndSourceFilesWithNoOperatorOverlay(t *test
 	}
 }
 
+func TestDoctorDocLeakIgnoresRepositoryShapingGitEnvironment(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	realEmail := "real" + "person@gm" + "ail.com"
+	mustWriteArchFixture(t, repo, "README.md", "contact: "+realEmail+"\n")
+	mustWriteArchFixture(t, repo, "decoy.txt", "clean\n")
+	runGit("add", "--", "README.md")
+
+	decoy, runDecoyGit := newDocLeakGitRepo(t)
+	mustWriteArchFixture(t, decoy, "decoy.txt", "clean\n")
+	runDecoyGit("add", "--", "decoy.txt")
+
+	decoyGitDir := filepath.Join(decoy, ".git")
+	t.Setenv("GIT_DIR", decoyGitDir)
+	t.Setenv("GIT_WORK_TREE", decoy)
+	t.Setenv("GIT_COMMON_DIR", decoyGitDir)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(decoyGitDir, "index"))
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(decoyGitDir, "objects"))
+	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", filepath.Join(decoyGitDir, "objects"))
+
+	var docLeakFindings []Finding
+	for _, finding := range Doctor(repo, true).Findings {
+		if finding.Check == "doc-leak" {
+			docLeakFindings = append(docLeakFindings, finding)
+		}
+	}
+	if !hasDocLeakFailContaining(docLeakFindings, "README.md:", realEmail) {
+		t.Fatalf("repository-shaping Git environment redirected tracked enumeration: %+v", docLeakFindings)
+	}
+}
+
 func TestCheckDocLeakScansEveryTrackedTextBlobAndSkipsBinary(t *testing.T) {
 	repo, runGit := newDocLeakGitRepo(t)
 	realEmail := "real" + "person@gm" + "ail.com"

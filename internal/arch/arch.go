@@ -1000,13 +1000,23 @@ func scanPrivateSourceBody(rel string, content []byte) []Finding {
 }
 
 // gitTrackedFiles returns the repo-relative paths of every tracked file (`git
-// ls-files`), the authoritative set of what ships publicly. A non-git repoRoot
-// (or missing git) returns an error so the caller falls back to a filesystem
-// walk. Bounded by a timeout so the doctor can never hang on a wedged git.
+// ls-files`), the authoritative set of what ships publicly. The child receives
+// no GIT_* environment overrides: GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, object
+// directories, and config injection must not redirect the doctor away from the
+// repoRoot checkout it was asked to certify. A non-git repoRoot (or missing git)
+// returns an error so the caller falls back to a filesystem walk. Bounded by a
+// timeout so the doctor can never hang on a wedged git.
 func gitTrackedFiles(repoRoot string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "ls-files", "-z").Output()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "ls-files", "-z")
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !strings.HasPrefix(strings.ToUpper(name), "GIT_") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
