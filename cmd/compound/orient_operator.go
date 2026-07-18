@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -504,17 +505,24 @@ func buildOrientOperatorReportWithCursorWriter(homePath string, recent int, now 
 		script := narrateRes.Script
 		report.Narrate = &script
 	}
-	if err := cursorWriter(homePath, currentSeq, now); err != nil {
-		return orientOperatorReport{}, err
-	}
 	if pendingStranger != nil {
-		finalized, finalizeErr := pendingStranger.store.FinalizeStrangerDeal(pendingStranger.row, now, strangerCardCooldown)
+		finalized, finalizeErr := pendingStranger.store.FinalizeStrangerDeal(pendingStranger.row, now, strangerCardCooldown, func() error {
+			return cursorWriter(homePath, currentSeq, now)
+		})
 		switch {
+		case errors.Is(finalizeErr, mem.ErrStrangerDealPairedCommit):
+			return orientOperatorReport{}, finalizeErr
 		case finalizeErr != nil:
 			report.Warnings = append(report.Warnings, "stranger_card: "+finalizeErr.Error())
 		case finalized:
 			attachOrientStrangerCard(&report, pendingStranger.card)
+		default:
+			if err := cursorWriter(homePath, currentSeq, now); err != nil {
+				return orientOperatorReport{}, err
+			}
 		}
+	} else if err := cursorWriter(homePath, currentSeq, now); err != nil {
+		return orientOperatorReport{}, err
 	}
 	return report, nil
 }

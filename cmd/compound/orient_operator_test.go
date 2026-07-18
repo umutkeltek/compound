@@ -1919,6 +1919,14 @@ func TestOrientStrangerCardFinalizeFailureSuppressesCard(t *testing.T) {
 	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
+	if err := writeOrientOperatorCursor(homePath, 0, now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("seed orient cursor: %v", err)
+	}
+	cursorPath := orientOperatorCursorPath(homePath)
+	cursorBefore, err := os.ReadFile(cursorPath)
+	if err != nil {
+		t.Fatalf("read cursor before failed finalization: %v", err)
+	}
 	s, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -1956,5 +1964,12 @@ func TestOrientStrangerCardFinalizeFailureSuppressesCard(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("failed finalization persisted rows: %+v", rows)
+	}
+	cursorAfter, err := os.ReadFile(cursorPath)
+	if err != nil {
+		t.Fatalf("read cursor after failed finalization: %v", err)
+	}
+	if string(cursorAfter) != string(cursorBefore) {
+		t.Fatalf("failed deal finalization advanced orient cursor:\nbefore=%s\nafter=%s", cursorBefore, cursorAfter)
 	}
 }
