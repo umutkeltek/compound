@@ -470,12 +470,11 @@ func counterMetricFailureCID(body []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// counterMetricFailureCandidateID is the day-salted dedup id (mirrors
-// internal/mem.WorkSurpriseCandidateID's formula, duplicated for the same reason as
-// counterMetricFailureCID): the SAME (cid, day) pair skips re-minting on a same-day re-run; a
-// different day mints a fresh candidate.
-func counterMetricFailureCandidateID(cid string, now time.Time) string {
-	sum := sha256.Sum256([]byte("counter-metric-failure|" + cid + "|" + now.UTC().Format("2006-01-02")))
+// counterMetricFailureCandidateID is the day-salted logical dedup id: one receipt/lens pair resolves
+// to one candidate per UTC day even when a classifier revision changes the signal value or detail.
+// The full signal body remains independently content-addressed by counterMetricFailureCID.
+func counterMetricFailureCandidateID(receiptRef, lensID string, now time.Time) string {
+	sum := sha256.Sum256([]byte("counter-metric-failure|" + strings.TrimSpace(receiptRef) + "|" + strings.TrimSpace(lensID) + "|" + now.UTC().Format("2006-01-02")))
 	return "cand_" + hex.EncodeToString(sum[:])[:12]
 }
 
@@ -504,8 +503,9 @@ type failurePatternCandidate struct {
 // lane; see the packet's file boundary). It writes ONLY through two rebuildable doors -- the blob
 // dir and the candidate inbox (candidates.WriteCandidate) -- and NEVER a ledger append.
 // PromotionBasis is always empty: adjudication owns promotion, never this collector. A day-salted
-// dedup on (cid, day) skips re-minting an identical same-day signal (never resetting an in-flight
-// adjudication verdict); a different day mints a fresh candidate.
+// dedup on (receipt logical ref, lens id, day) skips re-minting the same logical observation even if
+// classifier output changes (never resetting an in-flight adjudication verdict); a different day
+// mints a fresh candidate.
 func mintCounterMetricFailurePattern(homePath string, sig behaviorallens.InferredSignal, now time.Time) (candidateID string, err error) {
 	receiptRef := ""
 	if len(sig.EvidenceRefs) > 0 {
@@ -531,7 +531,7 @@ func mintCounterMetricFailurePattern(homePath string, sig behaviorallens.Inferre
 		return "", err
 	}
 
-	candidateID = counterMetricFailureCandidateID(cid, now)
+	candidateID = counterMetricFailureCandidateID(receiptRef, sig.LensID, now)
 	var existing struct {
 		ID string `json:"id"`
 	}
@@ -560,7 +560,7 @@ func mintCounterMetricFailurePattern(homePath string, sig behaviorallens.Inferre
 		PromotionBasis: "", // no basis -- an observed claim-structure pointer can never auto-promote
 		State:          "proposed",
 		CreatedAt:      now.UTC().Format(time.RFC3339),
-		EvidenceRefs:   []string{receiptRef},
+		EvidenceRefs:   []string{receiptRef, "counter-metric:" + cid},
 	}
 	if err = candidates.WriteCandidate(homePath, candidates.FailurePattern, candidateID, &c); err != nil {
 		return "", err

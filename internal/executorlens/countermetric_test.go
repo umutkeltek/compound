@@ -84,6 +84,14 @@ func TestCounterMetricFalsifier_UnpairedClaimMintsOneFailurePattern(t *testing.T
 	if len(files) != 1 {
 		t.Fatalf("expected exactly 1 file in inbox/failure-patterns, got %d: %v", len(files), files)
 	}
+	blobs, err := os.ReadDir(filepath.Join(home, filepath.FromSlash(counterMetricFailureDir)))
+	if err != nil {
+		t.Fatalf("read content-addressed observations: %v", err)
+	}
+	if len(blobs) != 1 {
+		t.Fatalf("expected exactly 1 content-addressed observation, got %d", len(blobs))
+	}
+	blobRef := "counter-metric:" + blobs[0].Name()
 
 	var c struct {
 		ID             string   `json:"id"`
@@ -108,8 +116,16 @@ func TestCounterMetricFalsifier_UnpairedClaimMintsOneFailurePattern(t *testing.T
 	if c.State != "proposed" {
 		t.Fatalf("candidate state = %q, want proposed", c.State)
 	}
-	if len(c.EvidenceRefs) == 0 {
-		t.Fatal("candidate must carry an evidence ref back to the receipt")
+	hasRef := func(want string) bool {
+		for _, ref := range c.EvidenceRefs {
+			if ref == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasRef("compound://events/rec_unpaired01") || !hasRef(blobRef) {
+		t.Fatalf("candidate must cite receipt and content-addressed observation: refs=%v want_blob=%s", c.EvidenceRefs, blobRef)
 	}
 
 	// Round-trips distiller.BuildFailureRulePlan — the reader requires the distiller.Candidate JSON
@@ -157,6 +173,52 @@ func TestCounterMetricFalsifier_UnpairedClaimMintsOneFailurePattern(t *testing.T
 	}
 	if afterAdjudication.State != "operationalize" {
 		t.Fatalf("a same-day re-run must NOT reset an in-flight adjudication verdict, got state=%q", afterAdjudication.State)
+	}
+}
+
+func TestCounterMetricFailureCandidateDedupIgnoresClassifierDetailDrift(t *testing.T) {
+	home := t.TempDir()
+	writeReceipt(t, home, "rec_classifier_drift", "codex-native", "codex", "work_delta", "completed",
+		unpairedCounterMetricSummary, "2026-07-17T10:00:00Z")
+
+	report, err := Run(home, false, fixedNow)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var original *behaviorallens.InferredSignal
+	for i := range report.PublicSignals {
+		if report.PublicSignals[i].LensID == behaviorallens.CounterMetricLensID {
+			original = &report.PublicSignals[i]
+			break
+		}
+	}
+	if original == nil {
+		t.Fatalf("expected counter-metric signal, got %+v", report.PublicSignals)
+	}
+
+	firstID, err := mintCounterMetricFailurePattern(home, *original, fixedNow)
+	if err != nil {
+		t.Fatalf("first mint: %v", err)
+	}
+	drifted := *original
+	drifted.Value = -0.25
+	drifted.Detail = "classifier wording changed while the logical receipt and lens stayed fixed"
+	secondID, err := mintCounterMetricFailurePattern(home, drifted, fixedNow)
+	if err != nil {
+		t.Fatalf("second mint: %v", err)
+	}
+	if secondID != firstID {
+		t.Fatalf("same receipt/lens/day must keep one candidate id across classifier drift: first=%s second=%s", firstID, secondID)
+	}
+	if files := failurePatternFiles(t, home); len(files) != 1 {
+		t.Fatalf("classifier drift must not mint a second candidate, got %d: %v", len(files), files)
+	}
+	blobs, err := os.ReadDir(filepath.Join(home, filepath.FromSlash(counterMetricFailureDir)))
+	if err != nil {
+		t.Fatalf("read content-addressed observations: %v", err)
+	}
+	if len(blobs) != 2 {
+		t.Fatalf("changed classifier evidence must remain content-addressed separately, got %d blobs", len(blobs))
 	}
 }
 
