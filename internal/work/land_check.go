@@ -283,11 +283,11 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 	}
 
 	// Cleanliness is scoped to the paths THIS envelope owns (its base..candidate
-	// diff), not the whole worktree. Preserved unrelated WIP in an always-dirty
-	// repo, or a neighbor lane's live WIP in a shared checkout, must not gate a
-	// landing whose own files are untouched -- while a real uncommitted change to
-	// one of the envelope's own files still blocks. The safety property is
-	// unchanged: never land/close over a conflicting change to the work's own files.
+	// diff), not the whole worktree. Before containment, owned-path dirt blocks a
+	// landing because the merge would cross mutable local state. After the exact
+	// candidate is already contained in both authoritative refs, later worktree
+	// dirt cannot change that immutable Git proof; keep it visible as a preservation
+	// diagnostic without holding the completed delivery hostage.
 	ownedDirty, ownedDirtyPaths, err := landingOwnedPathsDirty(repoPath, expectedBase, candidate)
 	if err != nil {
 		return report, err
@@ -312,9 +312,7 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 			report.CandidateContainedInPublication = true
 		}
 		if ownedDirty {
-			report.Status = "dirty_target"
-			report.NextAction = landingOwnedDirtyNextAction(targetRef, ownedDirtyPaths)
-			return report, nil
+			report.NextAction = landingContainedDirtyDiagnostic(targetRef, ownedDirtyPaths)
 		}
 		report.Status = "landed"
 		return report, nil
@@ -405,6 +403,14 @@ func landingOwnedDirtyNextAction(targetRef string, ownedDirtyPaths []string) str
 		preview = preview[:5]
 	}
 	return fmt.Sprintf("the %s target worktree has uncommitted changes to files this work owns (%s); commit or set them aside without discarding unrelated work, then rerun land-check", targetRef, strings.Join(preview, ", "))
+}
+
+func landingContainedDirtyDiagnostic(targetRef string, ownedDirtyPaths []string) string {
+	preview := ownedDirtyPaths
+	if len(preview) > 5 {
+		preview = preview[:5]
+	}
+	return fmt.Sprintf("candidate is already contained in the authoritative target and publication refs; preserve later uncommitted changes in the %s worktree (%s)", targetRef, strings.Join(preview, ", "))
 }
 
 func latestCommitArtifact(artifactIDs []string) (ref, sha string, found, valid bool) {
@@ -698,7 +704,10 @@ func runLandingGitOutput(repoPath string, args ...string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
-	return strings.TrimSpace(string(out)), nil
+	// Preserve leading bytes: porcelain-v1 status uses them for the XY columns,
+	// and TrimSpace corrupts the first path in a dirty worktree report. Git's
+	// textual commands terminate with newlines, so strip only line endings.
+	return strings.TrimRight(string(out), "\r\n"), nil
 }
 
 func validLandingObjectID(value string) bool {

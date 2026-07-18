@@ -207,7 +207,7 @@ func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
 	}
 }
 
-func TestCompletedCodeWorkRevalidatesLandingProofAtClose(t *testing.T) {
+func TestCompletedCodeWorkRevalidatesContainedLandingProofAtClose(t *testing.T) {
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
 	candidate := landingFeatureCommit(t, repo)
@@ -233,9 +233,9 @@ func TestCompletedCodeWorkRevalidatesLandingProofAtClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// An uncommitted change to a file the envelope OWNS invalidates the recorded
-	// landing proof live: close must refuse rather than land over a conflicting
-	// local edit to the work's own files.
+	// A later uncommitted change to a path the envelope touched does not change
+	// either authoritative ref. Close revalidates immutable containment and keeps
+	// the later WIP visible without treating it as part of this candidate.
 	writeLandingFile(t, filepath.Join(repo, "feature.txt"), "conflicting local edit after proof\n")
 	plan, err := store.ClosePlan(w.ID, now.Add(4*time.Minute), ClosePlanOptions{
 		Actor:    "codex",
@@ -245,19 +245,23 @@ func TestCompletedCodeWorkRevalidatesLandingProofAtClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != "not_closeable" || len(plan.CloseCommand) != 0 || !strings.Contains(plan.NoAction, "dirty_target") {
-		t.Fatalf("close plan must live-revalidate recorded landing proof: %+v", plan)
+	if plan.Status == "not_closeable" || len(plan.CloseCommand) == 0 || strings.Contains(plan.NoAction, "dirty_target") {
+		t.Fatalf("close plan must accept revalidated immutable containment: %+v", plan)
 	}
-	if _, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "must recheck", ProofRefs: []string{proof.EvidenceRef}}, now.Add(4*time.Minute)); err == nil || !strings.Contains(err.Error(), "dirty_target") {
-		t.Fatalf("close with stale proof err = %v", err)
+	closed, err := store.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "codex", Summary: "contained; later WIP preserved", ProofRefs: []string{proof.EvidenceRef}}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatalf("close with revalidated containment: %v", err)
+	}
+	if closed.Work.State != "completed" {
+		t.Fatalf("close result = %+v", closed)
 	}
 }
 
 // TestLandCheckReportsTruthfulContainmentUnderUnrelatedDirt is the core falsifier
 // for the land-check containment lie: a commit provably on the target branch must
 // report candidate_contained_in_target=true even when the target worktree carries
-// unrelated preserved WIP -- and even when a real owned-path conflict blocks the
-// status, the containment field reports ancestry, never cleanliness.
+// unrelated preserved WIP -- and later owned-path WIP stays visible without
+// overriding the immutable containment result.
 func TestLandCheckReportsTruthfulContainmentUnderUnrelatedDirt(t *testing.T) {
 	now := time.Date(2026, 7, 16, 20, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
@@ -292,17 +296,63 @@ func TestLandCheckReportsTruthfulContainmentUnderUnrelatedDirt(t *testing.T) {
 		t.Fatalf("CleanTarget must honestly report the whole-tree dirt: %+v", landed)
 	}
 
-	// A real owned-path conflict blocks the status, but containment stays truthful.
+	// Later owned-path WIP does not change the already-landed commit. It remains a
+	// preservation diagnostic and CleanTarget remains honest.
 	writeLandingFile(t, filepath.Join(repo, "feature.txt"), "conflicting local edit\n")
-	blocked, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(2*time.Minute))
+	preserved, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(2*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if blocked.Status != "dirty_target" {
-		t.Fatalf("owned-path dirt must fail closed: %+v", blocked)
+	if preserved.Status != "landed" || preserved.CleanTarget {
+		t.Fatalf("contained candidate must preserve later owned-path WIP: %+v", preserved)
 	}
-	if !blocked.CandidateContainedInTarget {
-		t.Fatalf("blocked status still fabricated containment=false: %+v", blocked)
+	if !preserved.CandidateContainedInTarget || !strings.Contains(preserved.NextAction, "feature.txt") {
+		t.Fatalf("contained dirty diagnostic lost proof or path: %+v", preserved)
+	}
+}
+
+func TestLandCheckPublishedContainmentOutranksOwnedPathDirt(t *testing.T) {
+	now := time.Date(2026, 7, 18, 9, 30, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	landingGit(t, repo, "remote", "add", "origin", remote)
+	landingGit(t, repo, "push", "-u", "origin", "main")
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+	landingGit(t, repo, "push", "origin", "main")
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "published containment is immutable close proof",
+		GitDelivery:      publishedGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+
+	// A later lane is editing a path this candidate also changed. The local and
+	// publication refs already contain the exact candidate, so the worktree dirt
+	// is future WIP, not part of the immutable landing proof.
+	writeLandingFile(t, filepath.Join(repo, "feature.txt"), "later lane WIP\n")
+	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "landed" || !report.CandidateContainedInTarget || !report.CandidateContainedInPublication {
+		t.Fatalf("published containment must outrank later owned-path dirt: %+v", report)
+	}
+	if report.CleanTarget {
+		t.Fatalf("whole-tree dirt must remain visible: %+v", report)
+	}
+	if !strings.Contains(report.NextAction, "feature.txt") || !strings.Contains(report.NextAction, "preserve") {
+		t.Fatalf("later WIP must remain visible as a preservation diagnostic: %+v", report)
 	}
 }
 
