@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"compound/internal/candidates"
 	"compound/internal/home"
@@ -665,12 +667,13 @@ func checkDocLeak(repoRoot string, strict bool) []Finding {
 				f = append(f, Finding{"doc-leak", Fail, rel + ": cannot read tracked text: " + err.Error()})
 				continue
 			}
-			if !leakScanBodyIsText(b) {
+			text, isText := decodeLeakScanBody(b)
+			if !isText {
 				continue
 			}
 			inDocRoot := relUnderAnyPrefix(rel, docLeakScanRootPrefixes)
 			inSourceRoot := sourcePresent && relUnderAnyPrefix(rel, sourceLeakScanRootPrefixes)
-			for i, line := range strings.Split(string(b), "\n") {
+			for i, line := range strings.Split(text, "\n") {
 				// GENERIC identity-shape pass: the full tracked universe, no root scoping.
 				if m := findGenericLeak(line); m != "" {
 					f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks " + strconv(m)})
@@ -762,7 +765,7 @@ var leakScanEnumerateSkipDirs = map[string]bool{
 // authoritative and ANY enumeration failure is returned to the caller to fail
 // closed. Only a root with no .git metadata uses the plain-directory fixture
 // fallback. No extension filter belongs here: readLeakScanBody +
-// leakScanBodyIsText classify content, so extensionless and unfamiliar tracked
+// decodeLeakScanBody classify content, so extensionless and unfamiliar tracked
 // text blobs receive the same identity/token floor.
 func leakScanUniverse(repoRoot string) ([]string, error) {
 	_, err := os.Lstat(filepath.Join(repoRoot, ".git"))
@@ -824,11 +827,36 @@ func readLeakScanBody(repoRoot, rel string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// leakScanBodyIsText uses the conventional NUL-byte discriminator: every
-// tracked/fallback body without NUL is treated as text, independent of name or
-// extension. This is deliberately shared by generic and token passes.
-func leakScanBodyIsText(body []byte) bool {
-	return bytes.IndexByte(body, 0) < 0
+// decodeLeakScanBody accepts every valid UTF-8 body, including bodies containing
+// NUL, and BOM-marked UTF-16LE/BE. A NUL byte is valid text and cannot by itself
+// exempt an otherwise textual tracked blob from the leak floor. Invalid bodies
+// remain genuine-binary discriminators. This is shared by generic and token
+// passes.
+func decodeLeakScanBody(body []byte) (string, bool) {
+	if utf8.Valid(body) {
+		return string(body), true
+	}
+	if len(body) < 2 {
+		return "", false
+	}
+	littleEndian := body[0] == 0xff && body[1] == 0xfe
+	bigEndian := body[0] == 0xfe && body[1] == 0xff
+	if !littleEndian && !bigEndian {
+		return "", false
+	}
+	payload := body[2:]
+	if len(payload)%2 != 0 {
+		return "", false
+	}
+	units := make([]uint16, len(payload)/2)
+	for i := 0; i < len(payload); i += 2 {
+		if littleEndian {
+			units[i/2] = uint16(payload[i]) | uint16(payload[i+1])<<8
+		} else {
+			units[i/2] = uint16(payload[i])<<8 | uint16(payload[i+1])
+		}
+	}
+	return string(utf16.Decode(units)), true
 }
 
 // leakScanFile is the deliberately narrower file-kind filter owned by

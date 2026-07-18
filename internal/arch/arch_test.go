@@ -44,6 +44,16 @@ func hasDocLeakFailContaining(findings []Finding, parts ...string) bool {
 	return false
 }
 
+func doctorDocLeakFindings(repo string, strict bool) []Finding {
+	var findings []Finding
+	for _, finding := range Doctor(repo, strict).Findings {
+		if finding.Check == "doc-leak" {
+			findings = append(findings, finding)
+		}
+	}
+	return findings
+}
+
 // The doctor must be GREEN against the real repo: candidate map intact, every internal/ package
 // classified, public docs clean. If someone adds an unclassified package or leaks a private path
 // into a tracked doc, THIS test fails in CI — that is the enforcement.
@@ -360,12 +370,7 @@ func TestDoctorDocLeakIgnoresRepositoryShapingGitEnvironment(t *testing.T) {
 	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(decoyGitDir, "objects"))
 	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", filepath.Join(decoyGitDir, "objects"))
 
-	var docLeakFindings []Finding
-	for _, finding := range Doctor(repo, true).Findings {
-		if finding.Check == "doc-leak" {
-			docLeakFindings = append(docLeakFindings, finding)
-		}
-	}
+	docLeakFindings := doctorDocLeakFindings(repo, true)
 	if !hasDocLeakFailContaining(docLeakFindings, "README.md:", realEmail) {
 		t.Fatalf("repository-shaping Git environment redirected tracked enumeration: %+v", docLeakFindings)
 	}
@@ -391,7 +396,8 @@ func TestCheckDocLeakScansEveryTrackedTextBlobAndSkipsBinary(t *testing.T) {
 		mustWriteArchFixture(t, repo, rel, "contact: "+realEmail+"\n")
 	}
 	binaryRel := "binary-with-text-extension.md"
-	mustWriteArchFixture(t, repo, binaryRel, string(append([]byte{0}, []byte("contact: "+realEmail+"\n")...)))
+	binaryBody := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0}, []byte("contact: "+realEmail+"\n")...)
+	mustWriteArchFixture(t, repo, binaryRel, string(binaryBody))
 	tracked := append(append([]string{}, textFiles...), binaryRel)
 	runGit(append([]string{"add", "--"}, tracked...)...)
 
@@ -406,6 +412,57 @@ func TestCheckDocLeakScansEveryTrackedTextBlobAndSkipsBinary(t *testing.T) {
 	}
 }
 
+func TestDoctorDocLeakScansTrackedUTF8ContainingNUL(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	realEmail := "real" + "person@gm" + "ail.com"
+	rel := "nul-containing.txt"
+	mustWriteArchFixture(t, repo, rel, "metadata\x00contact: "+realEmail+"\n")
+	runGit("add", "--", rel)
+
+	findings := doctorDocLeakFindings(repo, true)
+	if !hasDocLeakFailContaining(findings, rel+":", realEmail) {
+		t.Fatalf("valid UTF-8 containing NUL escaped the tracked-text scan: %+v", findings)
+	}
+}
+
+func TestDoctorDocLeakScansTrackedUTF16LEWithBOM(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	realEmail := "real" + "person@gm" + "ail.com"
+	rel := "utf16le.txt"
+	body := []byte{0xff, 0xfe}
+	for _, r := range "contact: " + realEmail + "\n" {
+		body = append(body, byte(r), byte(r>>8))
+	}
+	if err := os.WriteFile(filepath.Join(repo, rel), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "--", rel)
+
+	findings := doctorDocLeakFindings(repo, true)
+	if !hasDocLeakFailContaining(findings, rel+":", realEmail) {
+		t.Fatalf("BOM-marked UTF-16LE escaped the tracked-text scan: %+v", findings)
+	}
+}
+
+func TestDoctorDocLeakScansTrackedUTF16BEWithBOM(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	realEmail := "real" + "person@gm" + "ail.com"
+	rel := "utf16be.txt"
+	body := []byte{0xfe, 0xff}
+	for _, r := range "contact: " + realEmail + "\n" {
+		body = append(body, byte(r>>8), byte(r))
+	}
+	if err := os.WriteFile(filepath.Join(repo, rel), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "--", rel)
+
+	findings := doctorDocLeakFindings(repo, true)
+	if !hasDocLeakFailContaining(findings, rel+":", realEmail) {
+		t.Fatalf("BOM-marked UTF-16BE escaped the tracked-text scan: %+v", findings)
+	}
+}
+
 func TestCheckDocLeakTokenPassesUseTrackedTextBlobs(t *testing.T) {
 	repo, runGit := newDocLeakGitRepo(t)
 	mustWriteArchFixture(t, repo, filepath.Join("docs_private", "leak-tokens.txt"), "docs-only-token\n")
@@ -415,7 +472,8 @@ func TestCheckDocLeakTokenPassesUseTrackedTextBlobs(t *testing.T) {
 	binaryRel := filepath.Join("docs", "binary.rst")
 	mustWriteArchFixture(t, repo, docRel, "docs-only-token\n")
 	mustWriteArchFixture(t, repo, sourceRel, "source-only-token\n")
-	mustWriteArchFixture(t, repo, binaryRel, "\x00docs-only-token\n")
+	binaryBody := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0}, []byte("docs-only-token\n")...)
+	mustWriteArchFixture(t, repo, binaryRel, string(binaryBody))
 	runGit("add", "--", docRel, sourceRel, binaryRel)
 
 	findings := checkDocLeak(repo, true)
