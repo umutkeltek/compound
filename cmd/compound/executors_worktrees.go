@@ -136,8 +136,8 @@ func worktreeInventoryTerminalState(state string) bool {
 const executorsWorktreesUsage = "usage: compound executors worktrees [--json] [--repo PATH] [--activity-window-min N]"
 
 func cmdExecutorsWorktrees(args []string) {
-	// A per-worktree liveness probe shells out once per worktree; bound the
-	// whole read so the command can never hang on a slow probe.
+	// Inventory liveness owns a short bound around its one open-file snapshot;
+	// retain a wider bound around the complete Git + ledger projection.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if code := runExecutorsWorktrees(ctx, args, os.Stdout, os.Stderr, time.Now()); code != 0 {

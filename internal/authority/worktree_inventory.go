@@ -22,7 +22,7 @@ const WorktreeInventorySchemaVersion = "compound.worktree_inventory.v0.1"
 const WorktreeInventoryAuthorityRef = "compound://executors/worktree-inventory"
 
 // Worktree inventory classes. Precedence when a worktree could fit several:
-// main > live > probe > unknown(unreadable) > landed_clean > stalled_unlanded.
+// main > live > unknown(unreadable) > probe > landed_clean > stalled_unlanded.
 // A live lane must NEVER read as landed_clean or stalled_unlanded, and unlanded
 // work (unique commits or a dirty tree) must NEVER read as landed_clean — those
 // two invariants are the entire point of the feature (cleanup-sweep safety).
@@ -36,8 +36,9 @@ const (
 )
 
 const (
-	defaultWorktreeActivityWindow = 60 * time.Minute
-	defaultWorktreeAuthorityRef   = "refs/heads/main"
+	defaultWorktreeActivityWindow           = 60 * time.Minute
+	defaultWorktreeAuthorityRef             = "refs/heads/main"
+	defaultWorktreeInventoryLivenessTimeout = 5 * time.Second
 )
 
 // WorktreeInventoryDependencies reuses the retirement Git seam but has its own
@@ -60,39 +61,98 @@ type WorktreeInventoryLiveness interface {
 // LSOFWorktreeInventoryLiveness is the production inventory-wide open-file
 // snapshot. Unlike the retirement probe it never recursively scans each root.
 type LSOFWorktreeInventoryLiveness struct {
-	Runner WorktreeRetirementProcessRunner
+	Runner  WorktreeRetirementProcessRunner
+	Timeout time.Duration
 }
 
 func (probe LSOFWorktreeInventoryLiveness) Snapshot(ctx context.Context, worktreeRoots []string) map[string]WorktreeLivenessObservation {
+	observations := make(map[string]WorktreeLivenessObservation, len(worktreeRoots))
+	if len(worktreeRoots) == 0 {
+		return observations
+	}
 	runner := probe.Runner
 	if runner == nil {
 		runner = ExecWorktreeRetirementProcessRunner{}
 	}
-	result, err := runner.Run(ctx, "lsof", "-n", "-P", "-Fn")
-	observations := make(map[string]WorktreeLivenessObservation, len(worktreeRoots))
-	if err != nil || result.ExitCode != 0 {
-		evidence := "inventory lsof snapshot failed"
-		if err != nil {
-			evidence += ": " + err.Error()
-		} else {
-			evidence += fmt.Sprintf(": exit %d", result.ExitCode)
-		}
-		for _, root := range worktreeRoots {
-			observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: evidence}
-		}
-		return observations
+	timeout := probe.Timeout
+	if timeout <= 0 {
+		timeout = defaultWorktreeInventoryLivenessTimeout
 	}
-	for _, root := range worktreeRoots {
-		observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: "inventory lsof snapshot found no open path"}
-	}
+	snapshotCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result, err := runner.Run(snapshotCtx, "lsof", "-n", "-P", "-Fn")
+
+	activePaths := make(map[string]string)
 	for _, openPath := range parseWorktreeInventoryLSOFPaths(result.Stdout) {
-		for _, root := range worktreeRoots {
-			if strings.HasPrefix(openPath, root) {
-				observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessActive, Evidence: "open path: " + openPath}
-			}
+		if root, ok := longestWorktreeInventoryRoot(openPath, worktreeRoots); ok {
+			activePaths[root] = openPath
+		}
+	}
+	complete := err == nil && snapshotCtx.Err() == nil && result.ExitCode == 0
+	failureEvidence := worktreeInventorySnapshotFailureEvidence(snapshotCtx.Err(), err, result)
+	for _, root := range worktreeRoots {
+		if openPath, active := activePaths[root]; active {
+			observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessActive, Evidence: "open path: " + openPath}
+		} else if complete {
+			observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: "inventory lsof snapshot found no open path"}
+		} else {
+			observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: failureEvidence}
 		}
 	}
 	return observations
+}
+
+func worktreeInventorySnapshotFailureEvidence(ctxErr, runErr error, result WorktreeRetirementProcessResult) string {
+	switch {
+	case ctxErr != nil:
+		return "inventory lsof snapshot incomplete: " + ctxErr.Error()
+	case runErr != nil:
+		return "inventory lsof snapshot incomplete: " + runErr.Error()
+	default:
+		return fmt.Sprintf("inventory lsof snapshot incomplete: exit %d stderr=%q", result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+}
+
+func longestWorktreeInventoryRoot(openPath string, worktreeRoots []string) (string, bool) {
+	bestRoot := ""
+	bestLength := -1
+	for _, root := range worktreeRoots {
+		matchLength, matches := worktreeInventoryRootMatchLength(root, openPath)
+		if !matches {
+			continue
+		}
+		if matchLength > bestLength {
+			bestRoot = root
+			bestLength = matchLength
+		}
+	}
+	return bestRoot, bestLength >= 0
+}
+
+func worktreeInventoryRootMatchLength(root, candidate string) (int, bool) {
+	cleanRoot := filepath.Clean(root)
+	cleanCandidate := filepath.Clean(candidate)
+	if worktreeInventoryPathWithinRoot(cleanRoot, cleanCandidate) {
+		return len(cleanRoot), true
+	}
+	canonicalRoot, rootErr := filepath.EvalSymlinks(cleanRoot)
+	canonicalCandidate, candidateErr := filepath.EvalSymlinks(cleanCandidate)
+	if rootErr == nil && candidateErr == nil && worktreeInventoryPathWithinRoot(canonicalRoot, canonicalCandidate) {
+		return len(canonicalRoot), true
+	}
+	return -1, false
+}
+
+func worktreeInventoryPathWithinRoot(root, candidate string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	if relative == "." {
+		return true
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	return len(parts) > 0 && parts[0] != ".."
 }
 
 func parseWorktreeInventoryLSOFPaths(stdout string) []string {
@@ -101,7 +161,7 @@ func parseWorktreeInventoryLSOFPaths(stdout string) []string {
 		if len(line) < 2 || line[0] != 'n' {
 			continue
 		}
-		path := strings.TrimSpace(line[1:])
+		path := strings.TrimSuffix(line[1:], "\r")
 		if filepath.IsAbs(path) {
 			paths = append(paths, filepath.Clean(path))
 		}

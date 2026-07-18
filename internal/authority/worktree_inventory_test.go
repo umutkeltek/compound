@@ -117,6 +117,72 @@ func TestBuildWorktreeInventoryTakesExactlyOneLivenessSnapshot(t *testing.T) {
 	}
 }
 
+func TestLSOFWorktreeInventoryLivenessAttributesNestedOpenPathToLongestRoot(t *testing.T) {
+	mainRoot := filepath.Join(t.TempDir(), "repo")
+	childRoot := filepath.Join(mainRoot, ".claude", "worktrees", "child")
+	if err := os.MkdirAll(childRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{
+		Stdout: "p123\nfcwd\nn" + filepath.Join(childRoot, "nested", "file.go") + "\n",
+	}}
+
+	observations := (LSOFWorktreeInventoryLiveness{Runner: runner}).Snapshot(
+		context.Background(), []string{mainRoot, childRoot},
+	)
+	if runner.calls != 1 {
+		t.Fatalf("lsof process calls = %d, want exactly 1", runner.calls)
+	}
+	if got := observations[childRoot].State; got != WorktreeLivenessActive {
+		t.Fatalf("nested child liveness = %q, want active; observations=%+v", got, observations)
+	}
+	if got := observations[mainRoot].State; got != WorktreeLivenessUnused {
+		t.Fatalf("parent MAIN inherited child handle: state=%q, want unused; observations=%+v", got, observations)
+	}
+}
+
+func TestLSOFWorktreeInventoryLivenessRejectsStringPrefixWithoutPathBoundary(t *testing.T) {
+	mainRoot := filepath.Join(t.TempDir(), "repo")
+	prefixSibling := mainRoot + "-archive"
+	if err := os.MkdirAll(prefixSibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{
+		Stdout: "p456\nfcwd\nn" + filepath.Join(prefixSibling, "file.go") + "\n",
+	}}
+
+	observations := (LSOFWorktreeInventoryLiveness{Runner: runner}).Snapshot(
+		context.Background(), []string{mainRoot},
+	)
+	if got := observations[mainRoot].State; got != WorktreeLivenessUnused {
+		t.Fatalf("prefix sibling matched MAIN without a path boundary: state=%q, want unused; observations=%+v", got, observations)
+	}
+}
+
+func TestLSOFWorktreeInventoryLivenessTimeoutPreservesPartialActiveEvidence(t *testing.T) {
+	mainRoot := filepath.Join(t.TempDir(), "repo")
+	childRoot := filepath.Join(mainRoot, ".claude", "worktrees", "child")
+	otherRoot := filepath.Join(t.TempDir(), "other-worktree")
+	runner := &inventoryDeadlineProcessRunner{partial: WorktreeRetirementProcessResult{
+		Stdout: "p789\nfcwd\nn" + filepath.Join(childRoot, "file.go") + "\n",
+	}}
+
+	observations := (LSOFWorktreeInventoryLiveness{Runner: runner, Timeout: time.Second}).Snapshot(
+		context.Background(), []string{mainRoot, childRoot, otherRoot},
+	)
+	if runner.calls != 1 || !runner.sawDeadline {
+		t.Fatalf("snapshot runner calls=%d saw_deadline=%t, want one bounded call", runner.calls, runner.sawDeadline)
+	}
+	if got := observations[childRoot].State; got != WorktreeLivenessActive {
+		t.Fatalf("partial active evidence was discarded on timeout: state=%q observations=%+v", got, observations)
+	}
+	for _, unresolved := range []string{mainRoot, otherRoot} {
+		if got := observations[unresolved].State; got != WorktreeLivenessUnknown {
+			t.Fatalf("unresolved root %q state=%q, want unknown; observations=%+v", unresolved, got, observations)
+		}
+	}
+}
+
 // The activity path (not lsof) must also promote a worktree to live: a clean,
 // contained worktree whose files were just touched reads live within the window.
 func TestBuildWorktreeInventoryRecentActivityClassifiesLive(t *testing.T) {
@@ -587,6 +653,29 @@ type inventoryRecordingSnapshotLiveness struct {
 	calls  int
 	roots  []string
 	active map[string]bool
+}
+
+type inventoryRecordingProcessRunner struct {
+	result WorktreeRetirementProcessResult
+	err    error
+	calls  int
+}
+
+func (r *inventoryRecordingProcessRunner) Run(context.Context, string, ...string) (WorktreeRetirementProcessResult, error) {
+	r.calls++
+	return r.result, r.err
+}
+
+type inventoryDeadlineProcessRunner struct {
+	partial     WorktreeRetirementProcessResult
+	calls       int
+	sawDeadline bool
+}
+
+func (r *inventoryDeadlineProcessRunner) Run(ctx context.Context, _ string, _ ...string) (WorktreeRetirementProcessResult, error) {
+	r.calls++
+	_, r.sawDeadline = ctx.Deadline()
+	return r.partial, context.DeadlineExceeded
 }
 
 func (f *inventoryRecordingSnapshotLiveness) Snapshot(_ context.Context, roots []string) map[string]WorktreeLivenessObservation {
