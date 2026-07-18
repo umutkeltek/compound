@@ -246,8 +246,8 @@ func TestFindGenericLeakBoundaryGuardAndAllowlists(t *testing.T) {
 		{"RFC2606 allow: example.org", `"debug_contact": "bob@example.org"`, false, ""},
 		{"RFC2606 allow: example.net", `"debug_contact": "bob@example.net"`, false, ""},
 		{"RFC2606 allow: .test", `"debug_contact": "person@example.test"`, false, ""},
-		{"RFC2606 allow: .example", `"debug_contact": "person@fixture.example"`, false, ""},
-		{"RFC2606 allow: .localhost", `"debug_contact": "person@fixture.localhost"`, false, ""},
+		{"RFC2606 allow: .example", `"debug_contact": "person@` + `fixture.example"`, false, ""},
+		{"RFC2606 allow: .localhost", `"debug_contact": "person@` + `fixture.localhost"`, false, ""},
 		// F4: synthetic /Users|/home user segments are allowed.
 		{"synthetic segment allow: faketester", `body := "/Users/faketester/brain/note.md"`, false, ""},
 		{"synthetic segment allow: tester", `t.Setenv("HOME", "/home/tester")`, false, ""},
