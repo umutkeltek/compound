@@ -80,7 +80,7 @@ func WriteCandidate(homePath string, kind Kind, id string, payload any) error {
 		if err := os.MkdirAll(full, 0o755); err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(full, id+".json"), data, 0o644)
+		return replaceCandidate(full, filepath.Join(full, id+".json"), data)
 	})
 }
 
@@ -147,6 +147,66 @@ func withCandidatePublicationLock(homePath string, fn func() error) (resultErr e
 		}
 	}()
 	return fn()
+}
+
+func replaceCandidate(dir, target string, data []byte) error {
+	tempPath, err := stageCandidate(dir, data)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tempPath)
+	if err := os.Rename(tempPath, target); err != nil {
+		return fmt.Errorf("replace candidate: %w", err)
+	}
+	if err := syncCandidateDirectory(dir); err != nil {
+		return fmt.Errorf("sync candidate directory: %w", err)
+	}
+	return nil
+}
+
+func stageCandidate(dir string, data []byte) (_ string, resultErr error) {
+	file, err := os.CreateTemp(dir, ".candidate-publish-*")
+	if err != nil {
+		return "", fmt.Errorf("create candidate temp: %w", err)
+	}
+	tempPath := file.Name()
+	closed := false
+	keep := false
+	defer func() {
+		if !closed {
+			if err := file.Close(); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("close candidate temp: %w", err))
+			}
+		}
+		if !keep {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := file.Chmod(0o644); err != nil {
+		return "", fmt.Errorf("set candidate temp mode: %w", err)
+	}
+	if _, err := file.Write(data); err != nil {
+		return "", fmt.Errorf("write candidate temp: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return "", fmt.Errorf("sync candidate temp: %w", err)
+	}
+	closeErr := file.Close()
+	closed = true
+	if closeErr != nil {
+		return "", fmt.Errorf("close candidate temp: %w", closeErr)
+	}
+	keep = true
+	return tempPath, nil
+}
+
+func syncCandidateDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func candidatePayload(kind Kind, id string, payload any) (string, []byte, error) {
