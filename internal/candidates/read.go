@@ -169,6 +169,9 @@ func withCandidatePublicationLock(homePath string, fn func() error) (resultErr e
 }
 
 func replaceCandidate(dir, target string, data []byte) error {
+	if err := candidateReplacementPreflight(target); err != nil {
+		return err
+	}
 	tempPath, err := stageCandidate(dir, data)
 	if err != nil {
 		return err
@@ -179,6 +182,33 @@ func replaceCandidate(dir, target string, data []byte) error {
 	}
 	if err := syncCandidateDirectoryFn(dir); err != nil {
 		return fmt.Errorf("sync candidate directory: %w", err)
+	}
+	return nil
+}
+
+// candidateReplacementPreflight preserves WriteCandidate's existing
+// authorization boundary: atomic rename must not make a read-only regular
+// target replaceable when the former in-place writer could not open it.
+func candidateReplacementPreflight(target string) error {
+	info, err := os.Lstat(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect candidate replacement target: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	file, err := os.OpenFile(target, os.O_WRONLY, 0)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("authorize candidate replacement: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close candidate replacement preflight: %w", err)
 	}
 	return nil
 }
