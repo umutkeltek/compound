@@ -17,7 +17,7 @@
  * COMPOUND_BIN to a fresh build, or this smoke builds one to a temp path.
  */
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, appendFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -40,13 +40,18 @@ function resolveBinary() {
   return out;
 }
 
-// ---- count live `compound stream --follow` children (pgrep; null if absent) ----
-function countFollowChildren() {
-  const res = spawnSync("pgrep", ["-f", "stream --follow --cursor"], { encoding: "utf8" });
-  if (res.error) return null; // pgrep unavailable on this host: skip the child-exit assertion
-  if (res.status === 1) return 0; // pgrep: no matches
+// ---- inspect live `compound stream --follow` PIDs for a binary ----
+// The operator may run legitimate followers — even with THIS exact binary
+// (COMPOUND_BIN override mode). Process proofs therefore never assert on
+// counts: they capture the PID set before the route opens and assert only on
+// the delta this run spawned. Baseline followers must survive untouched.
+function followPids(binaryPath) {
+  const escapedBinary = binaryPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const res = spawnSync("pgrep", ["-f", `${escapedBinary} stream --follow --cursor`], { encoding: "utf8" });
+  if (res.error) return null; // inspection unavailable
+  if (res.status === 1) return new Set(); // pgrep: no matches
   if (res.status !== 0) return null;
-  return res.stdout.split("\n").filter((l) => l.trim()).length;
+  return new Set(res.stdout.split("\n").map((l) => l.trim()).filter(Boolean));
 }
 
 // ---- read an SSE ReadableStream until predicate(text) or timeout ----
@@ -86,6 +91,28 @@ process.env.COMPOUND_HOME = home;
 process.env.COMPOUND_BIN = binary;
 delete process.env.COMPOUND_CONSOLE_PRIVATE_FALLBACKS; // THE falsifier condition
 
+// FALSIFIER (override mode): a legitimate follower already runs with the SAME
+// binary this smoke uses. A count-based or binary-scoped-count proof counts it
+// as an orphan and fails; the PID-delta proof must leave it alive.
+let decoy = null;
+let baseline = followPids(binary);
+if (baseline !== null) {
+  decoy = spawn(binary, ["stream", "--follow", "--cursor", "1"], {
+    env: { ...process.env, COMPOUND_HOME: home },
+    stdio: "ignore",
+  });
+  for (let i = 0; i < 20; i++) {
+    baseline = followPids(binary);
+    if (baseline !== null && baseline.has(String(decoy.pid))) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(
+    baseline !== null && baseline.has(String(decoy.pid)),
+    "baseline follower never became visible to process inspection",
+  );
+  log(`baseline follower live (pid ${decoy.pid}) before the route opens`);
+}
+
 const { GET } = await import("../src/app/api/stream/route.ts");
 
 const NEW_WORK_ID = "work_streamed42";
@@ -93,7 +120,7 @@ const controller = new AbortController();
 let failure = null;
 
 try {
-  const request = new Request("http://localhost:3000/api/stream", { signal: controller.signal });
+  const request = new Request("https://compound.invalid/api/stream", { signal: controller.signal });
   const response = await GET(request);
   assert.equal(response.headers.get("Content-Type"), "text/event-stream", "must be an SSE response");
   const reader = response.body.getReader();
@@ -120,27 +147,43 @@ try {
   );
   log(`transition frame delivered the appended event ${NEW_WORK_ID}`);
 
-  // (3) the follow child is alive now, and dies on disconnect.
-  const before = countFollowChildren();
-  if (before === null) {
+  // (3) the follow children this run spawned die on disconnect, while the
+  // legitimate baseline follower (same binary — override mode) survives.
+  const during = followPids(binary);
+  if (baseline === null || during === null) {
+    if (baseline !== null) {
+      // Inspection worked at baseline capture: a later failure is a broken
+      // proof, not a skip — fail closed instead of reporting a false green.
+      assert.ok(during !== null, "process inspection failed after initial success");
+    }
     log("pgrep unavailable — skipping child-exit assertion");
   } else {
-    assert.ok(before >= 1, "expected a live `compound stream --follow` child while streaming");
+    const delta = [...during].filter((pid) => !baseline.has(pid));
+    assert.ok(delta.length >= 1, "expected this run to spawn a `compound stream --follow` child while streaming");
     controller.abort();
     // give the route's abort handler + SIGTERM time to land
-    let after = before;
-    for (let i = 0; i < 40 && after > 0; i++) {
+    let survivors = delta;
+    for (let i = 0; i < 40 && survivors.length > 0; i++) {
       await new Promise((r) => setTimeout(r, 100));
-      after = countFollowChildren() ?? 0;
+      const now = followPids(binary);
+      assert.ok(now !== null, "process inspection failed after initial success");
+      survivors = delta.filter((pid) => now.has(pid));
     }
-    assert.equal(after, 0, "follow child survived client disconnect (orphaned tail process)");
-    log("follow child exited on client disconnect");
+    assert.equal(survivors.length, 0, "follow child survived client disconnect (orphaned tail process)");
+    if (decoy) {
+      assert.equal(decoy.exitCode, null, "legitimate baseline follower was killed by the smoke's disconnect proof");
+      const finalPids = followPids(binary);
+      assert.ok(finalPids !== null, "process inspection failed after initial success");
+      assert.ok(finalPids.has(String(decoy.pid)), "legitimate baseline follower vanished from process inspection");
+    }
+    log("run-spawned follow child exited on client disconnect; baseline follower survived");
   }
 } catch (error) {
   failure = error;
 } finally {
   controller.abort(); // ensure no orphan even if an assertion threw
   await new Promise((r) => setTimeout(r, 200));
+  if (decoy) decoy.kill("SIGTERM"); // the smoke owns its decoy; never leaves it behind
 }
 
 if (failure) {
