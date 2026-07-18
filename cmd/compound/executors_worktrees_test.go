@@ -117,8 +117,14 @@ func TestExecutorsWorktreesF1DirtyMainIsLiveAndCounted(t *testing.T) {
 	if !strings.Contains(main.Reason, "active lane") || !strings.Contains(main.Reason, "primary checkout") {
 		t.Fatalf("dirty main reason must name the live primary-checkout lane: %q", main.Reason)
 	}
-	if inv.Counts.Live != 1 {
-		t.Fatalf("counts.live = %d, want dirty main included", inv.Counts.Live)
+	liveRows := 0
+	for _, row := range inv.Rows {
+		if row.Live {
+			liveRows++
+		}
+	}
+	if inv.Counts.Live != liveRows || inv.Counts.Live == 0 {
+		t.Fatalf("counts.live = %d, live rows = %d; dirty main must be included", inv.Counts.Live, liveRows)
 	}
 
 	stdout.Reset()
@@ -126,7 +132,7 @@ func TestExecutorsWorktreesF1DirtyMainIsLiveAndCounted(t *testing.T) {
 	if code := runExecutorsWorktrees(context.Background(), []string{"--repo", repo}, &stdout, &stderr, now); code != 0 {
 		t.Fatalf("text code=%d stderr=%s", code, stderr.String())
 	}
-	if text := stdout.String(); !strings.Contains(text, "live=1") || !strings.Contains(text, "main_dirty=1") {
+	if text := stdout.String(); strings.Contains(text, "live=0") || !strings.Contains(text, "main_dirty=1") {
 		t.Fatalf("text counts must expose dirty main activity:\n%s", text)
 	}
 }

@@ -118,10 +118,11 @@ func TestBuildWorktreeInventoryRecentActivityClassifiesLive(t *testing.T) {
 // keeps its leave-alone action.
 func TestBuildWorktreeInventoryF2CleanMainStaysQuiet(t *testing.T) {
 	fix := newWorktreeInventoryFixture(t)
+	now := time.Now().UTC().Truncate(time.Second).Add(2 * time.Second)
 
 	inv, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
 		Git: ExecWorktreeRetirementGit{}, Liveness: inventoryFakeLiveness{},
-	}, fix.repo, WorktreeInventoryOptions{Now: inventoryFutureNow()})
+	}, fix.repo, WorktreeInventoryOptions{Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
