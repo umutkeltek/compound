@@ -126,7 +126,7 @@ func TestLSOFWorktreeInventoryLivenessAttributesNestedOpenPathToLongestRoot(t *t
 		t.Fatal(err)
 	}
 	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{
-		Stdout: "p123\nf12\nn" + filepath.Join(childRoot, "nested", "file.go") + "\n",
+		Stdout: "p123\nfcwd\nn" + filepath.Join(childRoot, "nested") + "\n",
 	}}
 
 	observations := (LSOFWorktreeInventoryLiveness{Runner: runner}).Snapshot(
@@ -135,8 +135,15 @@ func TestLSOFWorktreeInventoryLivenessAttributesNestedOpenPathToLongestRoot(t *t
 	if runner.calls != 1 {
 		t.Fatalf("lsof process calls = %d, want exactly 1", runner.calls)
 	}
+	wantArgs := []string{"-w", "-n", "-P", "-a", "-d", "cwd", "-Fn"}
+	if runner.command != "lsof" || !reflect.DeepEqual(runner.args, wantArgs) {
+		t.Fatalf("lsof invocation = %q %v, want %q %v", runner.command, runner.args, "lsof", wantArgs)
+	}
 	if got := observations[childRoot].State; got != WorktreeLivenessActive {
 		t.Fatalf("nested child liveness = %q, want active; observations=%+v", got, observations)
+	}
+	if got := observations[childRoot].Evidence; !strings.Contains(got, "advisory CWD snapshot") || !strings.Contains(got, "governed retirement") {
+		t.Fatalf("active evidence must name the advisory CWD scope and stronger retirement proof: %q", got)
 	}
 	if got := observations[mainRoot].State; got != WorktreeLivenessUnused {
 		t.Fatalf("parent MAIN inherited child handle: state=%q, want unused; observations=%+v", got, observations)
@@ -150,7 +157,7 @@ func TestLSOFWorktreeInventoryLivenessRejectsStringPrefixWithoutPathBoundary(t *
 		t.Fatal(err)
 	}
 	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{
-		Stdout: "p456\nf12\nn" + filepath.Join(prefixSibling, "file.go") + "\n",
+		Stdout: "p456\nfcwd\nn" + prefixSibling + "\n",
 	}}
 
 	observations := (LSOFWorktreeInventoryLiveness{Runner: runner}).Snapshot(
@@ -166,7 +173,7 @@ func TestLSOFWorktreeInventoryLivenessTimeoutPreservesPartialActiveEvidence(t *t
 	childRoot := filepath.Join(mainRoot, ".claude", "worktrees", "child")
 	otherRoot := filepath.Join(t.TempDir(), "other-worktree")
 	runner := &inventoryDeadlineProcessRunner{partial: WorktreeRetirementProcessResult{
-		Stdout: "p789\nf12\nn" + filepath.Join(childRoot, "file.go") + "\n",
+		Stdout: "p789\nfcwd\nn" + childRoot + "\n",
 	}}
 
 	observations := (LSOFWorktreeInventoryLiveness{Runner: runner, Timeout: time.Second}).Snapshot(
@@ -196,9 +203,9 @@ func TestLSOFWorktreeInventoryLivenessHighCardinalityAttributionHonorsContextBud
 	}
 	activePath := filepath.Join(roots[len(roots)-1], "active.go")
 	var stdout strings.Builder
-	stdout.WriteString("p1\nf12\nn" + activePath + "\n")
+	stdout.WriteString("p1\nfcwd\nn" + activePath + "\n")
 	for i := 0; i < 50_000; i++ {
-		stdout.WriteString("p2\nf13\nn/synthetic/outside/file-")
+		stdout.WriteString("p2\nfcwd\nn/synthetic/outside/file-")
 		stdout.WriteString(strconv.Itoa(i))
 		stdout.WriteByte('\n')
 	}
@@ -220,7 +227,7 @@ func TestLSOFWorktreeInventoryLivenessHighCardinalityAttributionHonorsContextBud
 	}
 }
 
-func TestLSOFWorktreeInventoryLivenessIgnoresCWDRecordsButCountsOpenFiles(t *testing.T) {
+func TestLSOFWorktreeInventoryLivenessCountsOnlyCWDRecords(t *testing.T) {
 	mainRoot := filepath.Join(t.TempDir(), "repo")
 	childRoot := filepath.Join(mainRoot, ".claude", "worktrees", "child")
 	if err := os.MkdirAll(childRoot, 0o755); err != nil {
@@ -235,11 +242,11 @@ func TestLSOFWorktreeInventoryLivenessIgnoresCWDRecordsButCountsOpenFiles(t *tes
 	observations := (LSOFWorktreeInventoryLiveness{Runner: runner}).Snapshot(
 		context.Background(), []string{mainRoot, childRoot},
 	)
-	if got := observations[mainRoot].State; got != WorktreeLivenessUnused {
-		t.Fatalf("cwd-only MAIN record created false activity: state=%q observations=%+v", got, observations)
+	if got := observations[mainRoot].State; got != WorktreeLivenessActive {
+		t.Fatalf("cwd MAIN record was not counted: state=%q observations=%+v", got, observations)
 	}
-	if got := observations[childRoot].State; got != WorktreeLivenessActive {
-		t.Fatalf("ordinary open file was not retained: state=%q observations=%+v", got, observations)
+	if got := observations[childRoot].State; got != WorktreeLivenessUnused {
+		t.Fatalf("ordinary open file must not count in a CWD-only snapshot: state=%q observations=%+v", got, observations)
 	}
 }
 
@@ -247,7 +254,7 @@ func TestLSOFWorktreeInventoryLivenessExitZeroIncompleteWarningFailsClosed(t *te
 	activeRoot := filepath.Join(t.TempDir(), "active")
 	unresolvedRoot := filepath.Join(t.TempDir(), "unresolved")
 	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{
-		Stdout:   "p123\nf12\nn" + filepath.Join(activeRoot, "open.go") + "\n",
+		Stdout:   "p123\nfcwd\nn" + activeRoot + "\n",
 		Stderr:   "lsof: WARNING: cannot inspect a synthetic mount; Output information may be incomplete.\n",
 		ExitCode: 0,
 	}}
@@ -272,7 +279,7 @@ func TestLSOFWorktreeInventoryLivenessEvidenceDeterministicAcrossInputOrder(t *t
 		for i, path := range paths {
 			stdout.WriteString("p")
 			stdout.WriteString(strconv.Itoa(i + 1))
-			stdout.WriteString("\nf12\nn")
+			stdout.WriteString("\nfcwd\nn")
 			stdout.WriteString(path)
 			stdout.WriteByte('\n')
 		}
@@ -296,7 +303,7 @@ func TestLSOFWorktreeInventoryLivenessContextCancellationKillsProcessGroupAndPre
 	script := `#!/bin/sh
 sleep 30 >/dev/null 2>&1 &
 child=$!
-printf 'p%s\nf12\nn%s\n' "$$" "$COMPOUND_TEST_LSOF_OPEN_PATH"
+printf 'p%s\nfcwd\nn%s\n' "$$" "$COMPOUND_TEST_LSOF_CWD_PATH"
 printf '%s\n' "$child" > "$COMPOUND_TEST_LSOF_PID_FILE"
 wait "$child"
 `
@@ -305,7 +312,7 @@ wait "$child"
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("COMPOUND_TEST_LSOF_PID_FILE", pidFile)
-	t.Setenv("COMPOUND_TEST_LSOF_OPEN_PATH", filepath.Join(activeRoot, "open.go"))
+	t.Setenv("COMPOUND_TEST_LSOF_CWD_PATH", activeRoot)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	observationsReady := make(chan map[string]WorktreeLivenessObservation, 1)
@@ -412,6 +419,34 @@ func TestBuildWorktreeInventoryF2CleanMainStaysQuiet(t *testing.T) {
 	}
 	if main.NextAction != "leave alone — primary checkout" {
 		t.Fatalf("clean main next_action = %q", main.NextAction)
+	}
+}
+
+func TestBuildWorktreeInventoryMainStatusFailureFailsClosed(t *testing.T) {
+	fix := newWorktreeInventoryFixture(t)
+	rec := &inventoryRecordingGit{
+		delegate:      ExecWorktreeRetirementGit{},
+		failStatusFor: fix.repo,
+	}
+
+	inv, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
+		Git: rec, Liveness: inventoryFakeLiveness{},
+	}, fix.repo, WorktreeInventoryOptions{Now: inventoryFutureNow()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := inventoryMainRow(t, inv)
+	if !main.IsMain || main.Class != WorktreeClassUnknown {
+		t.Fatalf("MAIN with unreadable status must fail closed as unknown: %+v", main)
+	}
+	if !strings.Contains(main.Reason, "primary checkout") || !strings.Contains(main.Reason, "git status") {
+		t.Fatalf("MAIN unknown reason must name the checkout and failed fact: %q", main.Reason)
+	}
+	if !strings.Contains(main.NextAction, "inspect") || !strings.Contains(main.NextAction, "lane visibility") {
+		t.Fatalf("MAIN unknown next action must require inspection before trusting visibility: %q", main.NextAction)
+	}
+	if inv.Counts.Unknown == 0 {
+		t.Fatalf("MAIN status failure must increment unknown count: %+v", inv.Counts)
 	}
 }
 
@@ -591,6 +626,34 @@ func TestJoinWorktreeEnvelopeIdentityMainRootAmbiguityDoesNotInferEditor(t *test
 	}
 	if !strings.Contains(rows[0].Reason, "active editor was not inferred") {
 		t.Fatalf("reason must state that the active editor was not inferred: %q", rows[0].Reason)
+	}
+}
+
+// Exact branch identity outranks delivery-root fallback. A branch-attached
+// envelope may carry MAIN's canonical delivery root as delivery metadata, but
+// it belongs only to the linked branch row; a genuinely root-only running
+// envelope remains eligible to identify MAIN.
+func TestJoinWorktreeEnvelopeIdentityBranchArtifactDoesNotFallBackToMainRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	rows := []WorktreeInventoryRow{
+		{Path: root, BranchRef: "refs/heads/main", IsMain: true, Reason: "primary checkout"},
+		{Path: filepath.Join(root, ".claude", "worktrees", "lane"), BranchRef: "refs/heads/lane", Branch: "lane", Reason: "linked lane"},
+	}
+	joinWorktreeEnvelopeIdentity(rows, []WorktreeEnvelopeArtifact{
+		{
+			WorkID: "work_branch", State: "running", Holder: "codex:branch",
+			BranchRef: "refs/heads/lane", TargetWorktreeRoot: root, CreatedAt: "2026-07-18T08:00:00Z",
+		},
+		{
+			WorkID: "work_main", State: "running", Holder: "codex:main",
+			TargetWorktreeRoot: root, CreatedAt: "2026-07-18T09:00:00Z",
+		},
+	})
+	if rows[0].WorkID != "work_main" || rows[0].WorkHolder != "codex:main" || len(rows[0].WorkCandidates) != 0 {
+		t.Fatalf("MAIN must join only genuinely root-only evidence: %+v", rows[0])
+	}
+	if rows[1].WorkID != "work_branch" || rows[1].WorkHolder != "codex:branch" {
+		t.Fatalf("linked row must retain its exact branch-attached identity: %+v", rows[1])
 	}
 }
 
@@ -843,13 +906,17 @@ type inventoryRecordingSnapshotLiveness struct {
 }
 
 type inventoryRecordingProcessRunner struct {
-	result WorktreeRetirementProcessResult
-	err    error
-	calls  int
+	result  WorktreeRetirementProcessResult
+	err     error
+	calls   int
+	command string
+	args    []string
 }
 
-func (r *inventoryRecordingProcessRunner) Run(context.Context, string, ...string) (WorktreeRetirementProcessResult, error) {
+func (r *inventoryRecordingProcessRunner) Run(_ context.Context, command string, args ...string) (WorktreeRetirementProcessResult, error) {
 	r.calls++
+	r.command = command
+	r.args = append([]string(nil), args...)
 	return r.result, r.err
 }
 
@@ -891,12 +958,18 @@ type inventoryRecordingGit struct {
 	mu             sync.Mutex
 	calls          [][]string
 	failRevListFor string
+	failStatusFor  string
 }
 
 func (g *inventoryRecordingGit) Run(ctx context.Context, repo string, args ...string) (string, error) {
 	g.mu.Lock()
 	g.calls = append(g.calls, append([]string{}, args...))
 	g.mu.Unlock()
+	if g.failStatusFor != "" && filepath.Clean(repo) == filepath.Clean(g.failStatusFor) && inventoryGitVerb(args) == "status" {
+		return "", &WorktreeRetirementCommandError{
+			Argv: append([]string{"git"}, args...), ExitCode: 128, Output: "fatal: status unavailable (injected)",
+		}
+	}
 	if g.failRevListFor != "" && len(args) > 0 && args[0] == "rev-list" {
 		for _, a := range args {
 			if strings.Contains(a, g.failRevListFor) {
