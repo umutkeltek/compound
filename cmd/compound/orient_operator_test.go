@@ -4,9 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1647,6 +1650,10 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 		if !strings.HasPrefix(card.ID, "stranger:") || !strings.Contains(card.Summary, "stranger") {
 			t.Fatalf("card must honestly label itself stranger: %+v", card)
 		}
+		wantCommand := []string{"compound", "memory", "adjudicate", got[1].ID, "--verdict", "park"}
+		if !slices.Equal(card.Command, wantCommand) {
+			t.Fatalf("card command = %q, want actionable argv %q", card.Command, wantCommand)
+		}
 	})
 
 	t.Run("f6 terminal-state candidates are never dealt", func(t *testing.T) {
@@ -1780,5 +1787,117 @@ func TestOrientOperatorReportIncludesDealtStrangerCard(t *testing.T) {
 	card := report.NeedsMe.TensionCards.Items[0]
 	if !strings.HasPrefix(card.ID, "stranger:") || len(card.Refs) != 1 || card.Refs[0] != got[0].ID {
 		t.Fatalf("card = %+v, want a stranger card naming %s", card, got[0].ID)
+	}
+}
+
+func TestOrientStrangerCardConcurrentReportsFinalizeOneDeal(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	s, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:concurrent-deal", "")}, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 2
+	arrived := make(chan struct{}, callers)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseAll)
+	previousObserver := orientStrangerDealPreparedObserver
+	orientStrangerDealPreparedObserver = func() {
+		arrived <- struct{}{}
+		<-release
+	}
+	t.Cleanup(func() { orientStrangerDealPreparedObserver = previousObserver })
+
+	var cursorMu sync.Mutex
+	cursorWriter := func(path string, seq int64, at time.Time) error {
+		cursorMu.Lock()
+		defer cursorMu.Unlock()
+		return writeOrientOperatorCursor(path, seq, at)
+	}
+	type result struct {
+		report orientOperatorReport
+		err    error
+	}
+	results := make(chan result, callers)
+	start := make(chan struct{})
+	for range callers {
+		go func() {
+			<-start
+			report, err := buildOrientOperatorReportWithCursorWriter(homePath, 5, now, "", cursorWriter)
+			results <- result{report: report, err: err}
+		}()
+	}
+	close(start)
+	for range callers {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent orient calls did not both prepare the same deal")
+		}
+	}
+	releaseAll()
+
+	visibleCards := 0
+	for range callers {
+		res := <-results
+		if res.err != nil {
+			t.Fatalf("concurrent orient: %v", res.err)
+		}
+		if cards := res.report.NeedsMe.TensionCards; cards != nil {
+			for _, card := range cards.Items {
+				if card.ID == "stranger:"+got[0].ID {
+					visibleCards++
+				}
+			}
+		}
+	}
+	rows, err := mem.ReadStrangerDealtLog(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].CandidateRef != got[0].ID || visibleCards != 1 {
+		t.Fatalf("concurrent deal rows=%+v visible_cards=%d, want one atomic winner", rows, visibleCards)
+	}
+}
+
+func TestOrientStrangerCardCursorFailureLeavesNoDealOrCard(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	s, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:cursor-failure", "")}, now.Add(-30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := buildOrientOperatorReportWithCursorWriter(homePath, 5, now, "", func(string, int64, time.Time) error {
+		return errors.New("fixture cursor failure")
+	})
+	if err == nil {
+		t.Fatal("cursor failure must fail the operator report")
+	}
+	if cards := report.NeedsMe.TensionCards; cards != nil && len(cards.Items) != 0 {
+		t.Fatalf("failed report must not expose a stranger card: %+v", cards)
+	}
+	rows, readErr := mem.ReadStrangerDealtLog(homePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("cursor failure persisted a deal before report success: %+v", rows)
 	}
 }

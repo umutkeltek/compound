@@ -199,8 +199,8 @@ func TestBuildCauseConsumptionReportBucketsAndRatio(t *testing.T) {
 	if rep.ThesisRatio != 0.5 {
 		t.Fatalf("thesis ratio = %v, want 0.5", rep.ThesisRatio)
 	}
-	if strings.TrimSpace(rep.ThesisNote) == "" {
-		t.Fatal("thesis note must be printed")
+	if strings.Contains(rep.ThesisNote, "at the time") || !strings.Contains(rep.ThesisNote, "currently resolve") {
+		t.Fatalf("thesis note must describe present-state resolution honestly: %q", rep.ThesisNote)
 	}
 	if strings.TrimSpace(rep.CoverageNote) == "" {
 		t.Fatal("D6 coverage honesty note must be printed")
