@@ -69,15 +69,22 @@ var loadCauseConsumptionClaims = func(s *Store) ([]Claim, error) {
 	return s.loadClaimsRaw()
 }
 
-type causeConsumptionRefResolver struct {
-	store      *Store
-	claimsByID map[string]bool
+// loadCauseConsumptionCandidates is the report's test seam for proving candidate-file I/O
+// shape. Production uses the owned direct-by-id loader; tests may wrap it to count loads.
+var loadCauseConsumptionCandidates = func(s *Store, ids []string) (map[string]Candidate, error) {
+	return s.CandidatesByID(ids)
 }
 
-// newCauseConsumptionRefResolver loads and indexes every persisted claim version once for one
-// report. A claim:// ref may legitimately cite a superseded version, so the current fold alone
-// is insufficient; the index stays private because it is a report implementation detail.
-func newCauseConsumptionRefResolver(s *Store) (*causeConsumptionRefResolver, error) {
+type causeConsumptionRefResolver struct {
+	claimsByID     map[string]bool
+	candidatesByID map[string]Candidate
+}
+
+// newCauseConsumptionRefResolver loads and indexes every persisted claim version plus every
+// unique candidate-shaped ref once for one resolution pass. A claim:// ref may legitimately cite
+// a superseded version, so the current fold alone is insufficient. Candidate misses are part of
+// the batch snapshot: tierOfRef never retries a missing id per occurrence.
+func newCauseConsumptionRefResolver(s *Store, refs []string) (*causeConsumptionRefResolver, error) {
 	claims, err := loadCauseConsumptionClaims(s)
 	if err != nil {
 		return nil, err
@@ -88,7 +95,38 @@ func newCauseConsumptionRefResolver(s *Store) (*causeConsumptionRefResolver, err
 			claimsByID[id] = true
 		}
 	}
-	return &causeConsumptionRefResolver{store: s, claimsByID: claimsByID}, nil
+
+	candidateIDs := make([]string, 0, len(refs))
+	seen := map[string]bool{}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if !causeConsumptionCandidateLookupRef(ref) || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		candidateIDs = append(candidateIDs, ref)
+	}
+	sort.Strings(candidateIDs)
+	candidatesByID := map[string]Candidate{}
+	if len(candidateIDs) > 0 {
+		candidatesByID, err = loadCauseConsumptionCandidates(s, candidateIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &causeConsumptionRefResolver{claimsByID: claimsByID, candidatesByID: candidatesByID}, nil
+}
+
+func causeConsumptionCandidateLookupRef(ref string) bool {
+	if ref == "" || strings.HasPrefix(ref, claimRefPrefix) {
+		return false
+	}
+	for _, prefix := range causeConsumptionNonMemoryPrefixes {
+		if strings.HasPrefix(ref, prefix) {
+			return false
+		}
+	}
+	return true
 }
 
 // TierOfRef buckets one Transition.Cause.CausedByRefs entry into a D1 tier (F1). Ref forms:
@@ -100,7 +138,7 @@ func newCauseConsumptionRefResolver(s *Store) (*causeConsumptionRefResolver, err
 //     exact ref first (covers the common cand_* shape), then a bare Claim-id lookup (a ref that
 //     names a Claim.ID directly, no claim:// scheme) => observed_raw if neither resolves.
 func (s *Store) TierOfRef(ref string) (string, error) {
-	resolver, err := newCauseConsumptionRefResolver(s)
+	resolver, err := newCauseConsumptionRefResolver(s, []string{ref})
 	if err != nil {
 		return "", err
 	}
@@ -127,11 +165,7 @@ func (r *causeConsumptionRefResolver) tierOfRef(ref string) (string, error) {
 		}
 		return CauseConsumptionTierObservedRaw, nil
 	}
-	cands, err := r.store.CandidatesByID([]string{ref})
-	if err != nil {
-		return "", err
-	}
-	if c, ok := cands[ref]; ok {
+	if c, ok := r.candidatesByID[ref]; ok {
 		return tierForCandidateState(c.State), nil
 	}
 	if r.claimsByID[ref] {
@@ -245,11 +279,8 @@ func BuildCauseConsumptionReport(homePath string, now time.Time) (CauseConsumpti
 		}
 		return rep, err
 	}
-	resolver, err := newCauseConsumptionRefResolver(store)
-	if err != nil {
-		return rep, err
-	}
-
+	causeTransitions := make([]envelope.Transition, 0)
+	var causedByRefs []string
 	for _, entry := range entries {
 		record, err := entry.Read()
 		if err != nil {
@@ -276,7 +307,16 @@ func BuildCauseConsumptionReport(homePath string, now time.Time) (CauseConsumpti
 			continue
 		}
 		rep.TransitionsWithCause++
+		causeTransitions = append(causeTransitions, tr)
+		causedByRefs = append(causedByRefs, tr.Cause.CausedByRefs...)
+	}
 
+	resolver, err := newCauseConsumptionRefResolver(store, causedByRefs)
+	if err != nil {
+		return rep, err
+	}
+
+	for _, tr := range causeTransitions {
 		row := CauseConsumptionTransitionRow{
 			TransitionID: tr.ID,
 			WorkID:       tr.IDs.WorkID,

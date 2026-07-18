@@ -277,6 +277,55 @@ func TestBuildCauseConsumptionReportLoadsClaimsOncePerReport(t *testing.T) {
 	}
 }
 
+func TestBuildCauseConsumptionReportLoadsCandidatesOncePerReportIncludingMisses(t *testing.T) {
+	homePath := t.TempDir()
+	s, err := Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := s.Capture([]Candidate{cand("entity:candidate-load-shape", "status", "live", "")}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	knownRef := captured[0].ID
+	missingRef := "cand_missing_candidate_load_shape"
+	mustWriteCauseTransition(t, s, "tr_candidate_load_shape_one", "work_candidate_load_shape_one", "repair", []string{
+		knownRef,
+		missingRef,
+	}, t0.Add(time.Minute))
+	mustWriteCauseTransition(t, s, "tr_candidate_load_shape_two", "work_candidate_load_shape_two", "repair", []string{
+		knownRef,
+		missingRef,
+	}, t0.Add(2*time.Minute))
+
+	previousLoader := loadCauseConsumptionCandidates
+	loads := 0
+	var requested []string
+	loadCauseConsumptionCandidates = func(store *Store, ids []string) (map[string]Candidate, error) {
+		loads++
+		requested = append(requested, ids...)
+		return previousLoader(store, ids)
+	}
+	t.Cleanup(func() { loadCauseConsumptionCandidates = previousLoader })
+
+	if _, err := BuildCauseConsumptionReport(homePath, t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if loads != 1 {
+		t.Fatalf("candidate files loaded in %d batches, want exactly one per report including repeated misses; requested=%v", loads, requested)
+	}
+	if len(requested) != 2 {
+		t.Fatalf("candidate batch requested %d refs, want the two unique refs (hit + miss): %v", len(requested), requested)
+	}
+	seen := map[string]int{}
+	for _, id := range requested {
+		seen[id]++
+	}
+	if seen[knownRef] != 1 || seen[missingRef] != 1 {
+		t.Fatalf("candidate batch = %v, want one lookup each for hit %s and miss %s", requested, knownRef, missingRef)
+	}
+}
+
 // TestWriteCauseConsumptionRunWritesOnlyUnderStateRuns is F3: --record's artifact lands only
 // under state/runs/cause-consumption/, never ledger/, projections/, candidates/, or claims/.
 func TestWriteCauseConsumptionRunWritesOnlyUnderStateRuns(t *testing.T) {
