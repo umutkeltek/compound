@@ -372,15 +372,15 @@ func TestBeliefVocabularyRefusals(t *testing.T) {
 // belief ref shape (an opaque prefixed id); all four must be refused for ID, SourceTraceRef, and
 // every EvidenceRefs element (packet 2026-07-17-critique-d-belief-ref-tightening, falsifier 1).
 var pathShapedRefs = []string{
-	"source:/Users/x",
-	"source:/home/x",
+	"source:/Users/example",
+	"source:/home/example",
 	"file:/tmp/x",
 	"/etc/passwd",
 	"../secret",
 }
 
 // F-path: path-shaped refs are refused on ID, SourceTraceRef, and EvidenceRefs. Before the fix,
-// beliefRefRe only rejected a LEADING "/", so "source:/Users/x" and "file:/tmp/x" were ACCEPTED
+// beliefRefRe only rejected a LEADING "/", so "source:/Users/example" and "file:/tmp/x" were ACCEPTED
 // (the actual regression); "/etc/passwd" and "../secret" were already refused at base (leading
 // "/" and leading "." both fail the old regex's required alnum first char) and stay refused here
 // too — this test pins all four as refused post-fix regardless of which were already green.
