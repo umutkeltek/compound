@@ -153,6 +153,79 @@ func TestWriteCandidateAtomicReplacement(t *testing.T) {
 	}
 }
 
+func TestCreateCandidateIfAbsentCrossProcessExactlyOne(t *testing.T) {
+	home := t.TempDir()
+	const contenders = 12
+	start := filepath.Join(t.TempDir(), "start")
+	readyPaths := make([]string, 0, contenders)
+	done := make([]<-chan candidateHelperResult, 0, contenders)
+	wantMarkers := make(map[string]struct{}, contenders)
+	for i := 0; i < contenders; i++ {
+		marker := fmt.Sprintf("contender-%02d", i)
+		wantMarkers[marker] = struct{}{}
+		ready, result := startCandidateHelper(t, home, "create", "one-winner", marker,
+			"COMPOUND_CANDIDATE_HELPER_START="+start,
+		)
+		readyPaths = append(readyPaths, ready)
+		done = append(done, result)
+	}
+	for _, ready := range readyPaths {
+		waitForCandidateHelperReady(t, ready)
+	}
+	if err := os.WriteFile(start, []byte("start\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	created := 0
+	for i, resultCh := range done {
+		result := candidateHelperResultWithin(t, fmt.Sprintf("create-%02d", i), resultCh)
+		output := string(result.output)
+		switch {
+		case strings.Contains(output, "CREATED=true"):
+			created++
+		case strings.Contains(output, "CREATED=false"):
+		default:
+			t.Fatalf("create-%02d helper omitted created result:\n%s", i, output)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("created winners = %d, want exactly 1", created)
+	}
+
+	type rec struct {
+		ID     string `json:"id"`
+		Kind   string `json:"kind"`
+		Marker string `json:"marker"`
+	}
+	var got rec
+	if err := ReadCandidate(home, Memory, "one-winner", &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "one-winner" || got.Kind != string(Memory) {
+		t.Fatalf("winner identity = %+v", got)
+	}
+	if _, ok := wantMarkers[got.Marker]; !ok {
+		t.Fatalf("winner marker = %q, want one of the contenders", got.Marker)
+	}
+	target := filepath.Join(home, InboxDir(Memory), "one-winner.json")
+	body, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := canonicalCandidateBody(t, got); !bytes.Equal(body, want) {
+		t.Fatalf("winner body is not one complete canonical contender: got %q want %q", body, want)
+	}
+	entries, err := os.ReadDir(filepath.Dir(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".candidate-publish-") {
+			t.Fatalf("candidate temp leaked after race: %s", entry.Name())
+		}
+	}
+}
+
 func TestWriteCandidateAndCreateCandidateIfAbsentShareLock(t *testing.T) {
 	home := t.TempDir()
 	lockPath := filepath.Join(home, "lock", "candidates.lock")
@@ -274,14 +347,21 @@ func waitForCandidateHelperReady(t *testing.T, path string) {
 
 func waitForCandidateHelper(t *testing.T, name string, done <-chan candidateHelperResult) {
 	t.Helper()
+	_ = candidateHelperResultWithin(t, name, done)
+}
+
+func candidateHelperResultWithin(t *testing.T, name string, done <-chan candidateHelperResult) candidateHelperResult {
+	t.Helper()
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	select {
 	case result := <-done:
 		requireCandidateHelperResult(t, name, result)
+		return result
 	case <-timer.C:
 		t.Fatalf("timed out waiting for %s helper", name)
 	}
+	return candidateHelperResult{}
 }
 
 func requireCandidateHelperResult(t *testing.T, name string, result candidateHelperResult) {
