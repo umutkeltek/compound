@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestReadStrangerDealtLogMissingFileIsEmptyNotError(t *testing.T) {
@@ -70,5 +71,41 @@ func TestAppendStrangerDealtRowWritesOnlyTheOneFile(t *testing.T) {
 	wantPath := filepath.Join(homePath, filepath.FromSlash(StrangerDealtLogRelPath))
 	if len(added) != 1 || added[0] != wantPath {
 		t.Fatalf("unexpected new files: %v (want exactly [%s])", added, wantPath)
+	}
+}
+
+func TestFinalizeStrangerDealRevalidatesCandidateState(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	store, err := Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := store.Capture([]Candidate{cand("entity:finalize-state", "status", "pending", "2026-07-17")}, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Adjudicate(captured[0].ID, "reject", "", now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	row := StrangerDealtRow{
+		Ts:           now.UTC().Format(time.RFC3339),
+		CardID:       "stranger:" + captured[0].ID,
+		CandidateRef: captured[0].ID,
+		Topic:        captured[0].Topic(),
+	}
+	finalized, err := store.FinalizeStrangerDeal(row, now, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalized {
+		t.Fatal("a candidate rejected after preparation must not finalize a deal")
+	}
+	rows, err := ReadStrangerDealtLog(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("rejected candidate produced dealt-log rows: %+v", rows)
 	}
 }
