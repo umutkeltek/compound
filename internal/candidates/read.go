@@ -125,14 +125,17 @@ func CreateCandidateIfAbsent(homePath string, kind Kind, id string, payload any)
 			return fmt.Errorf("publish candidate: %w", err)
 		}
 		created = true
+		var cleanupErr error
 		if err := os.Remove(tempPath); err != nil {
-			return fmt.Errorf("remove candidate temp: %w", err)
+			cleanupErr = fmt.Errorf("remove candidate temp: %w", err)
+		} else {
+			keepTemp = false
 		}
-		keepTemp = false
+		var syncErr error
 		if err := syncCandidateDirectoryFn(full); err != nil {
-			return fmt.Errorf("sync candidate directory: %w", err)
+			syncErr = fmt.Errorf("sync candidate directory: %w", err)
 		}
-		return nil
+		return errors.Join(cleanupErr, syncErr)
 	})
 	return created, err
 }
