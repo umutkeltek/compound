@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 )
@@ -72,7 +73,25 @@ var loadCauseConsumptionClaims = func(s *Store) ([]Claim, error) {
 // loadCauseConsumptionCandidates is the report's test seam for proving candidate-file I/O
 // shape. Production uses the owned direct-by-id loader; tests may wrap it to count loads.
 var loadCauseConsumptionCandidates = func(s *Store, ids []string) (map[string]Candidate, error) {
-	return s.CandidatesByID(ids)
+	out := make(map[string]Candidate, len(ids))
+	for _, id := range ids {
+		var candidate Candidate
+		err := candidates.ReadCandidate(s.home, candidates.Memory, id, &candidate)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read cause candidate %q: %w", id, err)
+		}
+		if candidate.ID == "" {
+			candidate.ID = id
+		}
+		if _, err := tierForCandidateState(candidate.State); err != nil {
+			return nil, fmt.Errorf("read cause candidate %q: %w", id, err)
+		}
+		out[id] = candidate
+	}
+	return out, nil
 }
 
 type causeConsumptionRefResolver struct {
@@ -126,6 +145,9 @@ func causeConsumptionCandidateLookupRef(ref string) bool {
 			return false
 		}
 	}
+	if ref == "." || ref == ".." || ref != filepath.Base(ref) || strings.ContainsAny(ref, `/\`) {
+		return false
+	}
 	return true
 }
 
@@ -166,7 +188,7 @@ func (r *causeConsumptionRefResolver) tierOfRef(ref string) (string, error) {
 		return CauseConsumptionTierObservedRaw, nil
 	}
 	if c, ok := r.candidatesByID[ref]; ok {
-		return tierForCandidateState(c.State), nil
+		return tierForCandidateState(c.State)
 	}
 	if r.claimsByID[ref] {
 		return CauseConsumptionTierPromoted, nil
@@ -174,14 +196,16 @@ func (r *causeConsumptionRefResolver) tierOfRef(ref string) (string, error) {
 	return CauseConsumptionTierObservedRaw, nil
 }
 
-func tierForCandidateState(state string) string {
+func tierForCandidateState(state string) (string, error) {
 	switch state {
 	case "promoted":
-		return CauseConsumptionTierPromoted
+		return CauseConsumptionTierPromoted, nil
 	case "rejected", "no_promote":
-		return CauseConsumptionTierClosed
-	default: // "proposed", "parked", or any future/unknown state: still moving, not yet closed
-		return CauseConsumptionTierPreAdjudication
+		return CauseConsumptionTierClosed, nil
+	case "proposed", "parked":
+		return CauseConsumptionTierPreAdjudication, nil
+	default:
+		return "", fmt.Errorf("candidate state %q is not a consumption tier", state)
 	}
 }
 
@@ -265,7 +289,7 @@ func BuildCauseConsumptionReport(homePath string, now time.Time) (CauseConsumpti
 		rep.RefTierCounts[tier] = 0
 	}
 
-	store, err := Open(homePath)
+	store, err := OpenReadOnly(homePath)
 	if err != nil {
 		return rep, err
 	}

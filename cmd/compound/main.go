@@ -1696,12 +1696,15 @@ func cmdMemory(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	store, err := mem.Open(homePath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
 	sub, rest := args[0], args[1:]
+	var store *mem.Store
+	if sub != "consumption" {
+		store, err = mem.Open(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	}
 	flag := func(name string) string {
 		for i := 0; i < len(rest); i++ {
 			if rest[i] == name && i+1 < len(rest) {

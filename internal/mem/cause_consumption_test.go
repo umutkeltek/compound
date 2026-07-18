@@ -1,15 +1,18 @@
 package mem
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"compound/internal/eventstore"
-
+	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
+	"compound/internal/home"
 )
 
 // mustWriteCauseTransition hand-rolls a valid Cause-carrying Transition straight into the
@@ -149,6 +152,95 @@ func TestTierOfRefBucketsFiveWays(t *testing.T) {
 				t.Fatalf("TierOfRef(%q) = %q, want %q", tc.ref, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildCauseConsumptionReportNeverLooksUpPathShapedCandidateRefs(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outsideDir := filepath.Join(homePath, "outside")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := Candidate{
+		ID:        "cand_external",
+		Entity:    "entity:external",
+		Predicate: "status",
+		Object:    "must-not-resolve",
+		State:     "parked",
+	}
+	data, err := json.Marshal(&external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideDir, "cand_external.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pathRef := filepath.Join("..", "..", "outside", "cand_external")
+	mustWriteCauseTransition(t, store, "tr_path_ref", "work_path_ref", "repair", []string{pathRef}, t0)
+	rep, err := BuildCauseConsumptionReport(homePath, t0.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rep.RefTierCounts[CauseConsumptionTierObservedRaw]; got != 1 {
+		t.Fatalf("path-shaped ref observed_raw = %d, want 1; external candidate must never be read: %+v", got, rep.RefTierCounts)
+	}
+	if got := rep.RefTierCounts[CauseConsumptionTierPreAdjudication]; got != 0 {
+		t.Fatalf("path-shaped ref resolved through candidate filesystem: pre_adjudication=%d", got)
+	}
+}
+
+func TestBuildCauseConsumptionReportRejectsDamagedCandidateAuthority(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{name: "malformed json", body: []byte("{not-json")},
+		{name: "invalid state", body: []byte(`{"id":"cand_damaged","entity":"entity:damaged","predicate":"status","object":"bad","state":"future_state"}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			store, err := Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidatePath := filepath.Join(homePath, candidates.InboxDir(candidates.Memory), "cand_damaged.json")
+			if err := os.WriteFile(candidatePath, tt.body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			mustWriteCauseTransition(t, store, "tr_damaged_candidate", "work_damaged_candidate", "repair", []string{"cand_damaged"}, t0)
+
+			if rep, err := BuildCauseConsumptionReport(homePath, t0.Add(time.Minute)); err == nil {
+				t.Fatalf("damaged candidate authority must not become observed_raw: %+v", rep.RefTierCounts)
+			}
+		})
+	}
+}
+
+func TestBuildCauseConsumptionReportWithoutRecordIsPathAndByteReadOnly(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", t0); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"events", candidates.InboxDir(candidates.Memory)} {
+		if err := os.RemoveAll(filepath.Join(homePath, rel)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := snapshotCauseConsumptionTree(t, homePath)
+
+	if _, err := BuildCauseConsumptionReport(homePath, t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	after := snapshotCauseConsumptionTree(t, homePath)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("read-only report mutated home\nbefore=%v\nafter=%v", before, after)
 	}
 }
 
@@ -379,6 +471,34 @@ func snapshotFiles(t *testing.T, root string) map[string]bool {
 		out[path] = true
 		return nil
 	})
+	return out
+}
+
+func snapshotCauseConsumptionTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			out[rel] = "dir"
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out[rel] = "file:" + string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return out
 }
 

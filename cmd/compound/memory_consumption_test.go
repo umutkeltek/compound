@@ -3,10 +3,12 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/home"
 	"compound/internal/mem"
@@ -106,6 +108,30 @@ func TestCmdMemoryConsumptionJSONZeroIsHonestAndExitsZero(t *testing.T) {
 	}
 }
 
+func TestCmdMemoryConsumptionWithoutRecordBypassesMutableStoreOpen(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	for _, rel := range []string{"events", candidates.InboxDir(candidates.Memory)} {
+		if err := os.RemoveAll(filepath.Join(homePath, rel)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("COMPOUND_HOME", homePath)
+	before := snapshotMemoryConsumptionTree(t, homePath)
+
+	out := captureStdout(t, func() { cmdMemory([]string{"consumption", "--json"}) })
+	if !strings.Contains(out, `"transitions_scanned": 0`) {
+		t.Fatalf("json output missing zero report:\n%s", out)
+	}
+	after := snapshotMemoryConsumptionTree(t, homePath)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("non-record CLI mutated home\nbefore=%v\nafter=%v", before, after)
+	}
+}
+
 func snapshotDirFiles(t *testing.T, root string) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
@@ -116,5 +142,33 @@ func snapshotDirFiles(t *testing.T, root string) map[string]bool {
 		out[path] = true
 		return nil
 	})
+	return out
+}
+
+func snapshotMemoryConsumptionTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			out[rel] = "dir"
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out[rel] = "file:" + string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return out
 }
