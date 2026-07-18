@@ -146,7 +146,8 @@ type Report struct {
 	OK       bool // false if any Fail
 }
 
-// genericLeak matches GENERIC operator-private IDENTITY shapes (absolute /Users|/home
+// genericPathLeak and genericEmailLeak match GENERIC operator-private IDENTITY
+// shapes (absolute /Users|/home
 // paths, email addresses) that must never appear, unresolved, in a public tracked file.
 // It now runs over the FULL tracked-file universe (see checkDocLeak / leakScanUniverse) —
 // root files, docs, skills, and every source root get the same floor, not just docs/skills.
@@ -165,12 +166,17 @@ type Report struct {
 // file-path STRING (e.g. a Go package name embedded as a fixture literal) — neither is
 // an operator's actual home directory.
 //
-// The regex has no allowlist concept of its own (Go's RE2 engine has no lookaround to
-// express one) — every candidate match is post-filtered by findGenericLeak against the
-// RFC2606/synthetic allowlists below. Capture groups: 1 = boundary char (path form only;
-// participates as an empty string when `^` fires), 2 = path family (Users|home), 3 = user
-// segment (letter-first), 4 = full email, 5 = email domain.
-var genericLeak = regexp.MustCompile(`(?i)(?:(^|[^/\w])/(Users|home)/([a-z][a-z0-9_.\-]*))|([a-z0-9._%+\-]+@([a-z0-9.\-]+\.[a-z]{2,}))`)
+// The regexes have no allowlist concept of their own (Go's RE2 engine has no
+// lookaround to express one) — every candidate match is post-filtered by
+// findGenericLeak against the RFC2606/synthetic allowlists below. Keeping email
+// and path matching independent is load-bearing: an allowlisted path prefix must
+// never consume and hide an overlapping real email. Path captures: 1 = boundary,
+// 2 = family, 3 = the whole lexical user segment. Email captures: 1 = full
+// email, 2 = domain. The path component stops only at a slash or a source/prose
+// delimiter; punctuation such as + and @ remains part of the segment so the
+// exact-four synthetic allowlist can never accept only a prefix.
+var genericPathLeak = regexp.MustCompile("(?i)(^|[^/\\w])/(Users|home)/([a-z][^/\\s\"'`,;:()\\[\\]{}<>]*)")
+var genericEmailLeak = regexp.MustCompile(`(?i)([a-z0-9._%+\-]+@([a-z0-9.\-]+\.[a-z]{2,}))`)
 
 // genericLeakAllowedPathSegments are the synthetic /Users|/home user segments already in
 // legitimate use across the tree's own test fixtures (measured 2026-07-17 against the
@@ -213,24 +219,22 @@ func isAllowedGenericLeakPathSegment(segment string) bool {
 	return genericLeakAllowedPathSegments[strings.ToLower(segment)]
 }
 
-// findGenericLeak returns the first NON-allowlisted genericLeak match on line, or "" when
+// findGenericLeak returns the first NON-allowlisted generic match on line, or "" when
 // the line has no match at all, or every match on it is allowlisted (an RFC2606 email
 // domain, or a synthetic /Users|/home user segment). A line can carry more than one
 // candidate match; only an unallowlisted one is reported.
 func findGenericLeak(line string) string {
-	for _, m := range genericLeak.FindAllStringSubmatch(line, -1) {
-		if m[2] != "" { // path form: /Users/<segment> or /home/<segment>
-			if isAllowedGenericLeakPathSegment(m[3]) {
-				continue
-			}
-			return "/" + m[2] + "/" + m[3]
+	for _, m := range genericEmailLeak.FindAllStringSubmatch(line, -1) {
+		if isAllowedGenericLeakEmailDomain(m[2]) {
+			continue
 		}
-		if m[4] != "" { // email form
-			if isAllowedGenericLeakEmailDomain(m[5]) {
-				continue
-			}
-			return m[4]
+		return m[1]
+	}
+	for _, m := range genericPathLeak.FindAllStringSubmatch(line, -1) {
+		if isAllowedGenericLeakPathSegment(m[3]) {
+			continue
 		}
+		return "/" + m[2] + "/" + m[3]
 	}
 	return ""
 }

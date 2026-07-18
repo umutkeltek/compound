@@ -376,6 +376,33 @@ func TestDoctorDocLeakIgnoresRepositoryShapingGitEnvironment(t *testing.T) {
 	}
 }
 
+func TestDoctorDocLeakMatchesEmailIndependentlyFromHomePath(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	realEmail := "example@gm" + "ail.com"
+	rel := "overlapping-shapes.txt"
+	mustWriteArchFixture(t, repo, rel, "home: /Users/"+realEmail+"/notes\n")
+	runGit("add", "--", rel)
+
+	findings := doctorDocLeakFindings(repo, true)
+	if !hasDocLeakFailContaining(findings, rel+":", "leaks "+strconv(realEmail)) {
+		t.Fatalf("home-path match suppressed the overlapping email: %+v", findings)
+	}
+}
+
+func TestDoctorDocLeakRequiresWholeHomeSegmentBeforeAllowlist(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	segment := "example+" + "actual"
+	realPath := "/Users/" + segment
+	rel := "whole-home-segment.txt"
+	mustWriteArchFixture(t, repo, rel, "home: "+realPath+"/notes\n")
+	runGit("add", "--", rel)
+
+	findings := doctorDocLeakFindings(repo, true)
+	if !hasDocLeakFailContaining(findings, rel+":", "leaks "+strconv(realPath)) {
+		t.Fatalf("synthetic allowlist accepted only a prefix of the home segment: %+v", findings)
+	}
+}
+
 func TestCheckDocLeakScansEveryTrackedTextBlobAndSkipsBinary(t *testing.T) {
 	repo, runGit := newDocLeakGitRepo(t)
 	realEmail := "real" + "person@gm" + "ail.com"
