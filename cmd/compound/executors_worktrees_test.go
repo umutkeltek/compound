@@ -24,6 +24,16 @@ func init() {
 	}
 }
 
+// The retirement CLI's unused fake also serves inventory tests, but inventory
+// asks for one root-set snapshot instead of one Observe call per row.
+func (cliUnusedWorktreeLiveness) Snapshot(_ context.Context, roots []string) map[string]authority.WorktreeLivenessObservation {
+	observations := make(map[string]authority.WorktreeLivenessObservation, len(roots))
+	for _, root := range roots {
+		observations[root] = authority.WorktreeLivenessObservation{State: authority.WorktreeLivenessUnused, Evidence: "synthetic CLI fixture"}
+	}
+	return observations
+}
+
 // W6: the CLI renders a versioned JSON envelope whose rows all carry
 // class/reason/next_action, and text mode surfaces the plain-language
 // next-action strings. Runs the real Git seam over a fixture with one

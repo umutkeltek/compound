@@ -40,13 +40,73 @@ const (
 	defaultWorktreeAuthorityRef   = "refs/heads/main"
 )
 
-// WorktreeInventoryDependencies reuses the retirement Git + Liveness seams so
-// the inventory reads ground truth through the SAME argv-vector Git adapter and
-// the SAME liveness probe as worktree retirement. There is deliberately no
-// direct shelling and no second liveness mechanism here.
+// WorktreeInventoryDependencies reuses the retirement Git seam but has its own
+// inventory-wide liveness seam. Retirement proves one requested worktree with
+// a recursive probe; inventory must observe every root in one snapshot so its
+// latency does not grow by one external process per row.
 type WorktreeInventoryDependencies struct {
 	Git      WorktreeRetirementGit
-	Liveness WorktreeRetirementLiveness
+	Liveness WorktreeInventoryLiveness
+}
+
+// WorktreeInventoryLiveness takes one open-file snapshot for the complete set
+// of registered roots. The returned map is keyed by the exact input roots;
+// omitted roots are unresolved and BuildWorktreeInventory treats them as
+// unknown, never unused.
+type WorktreeInventoryLiveness interface {
+	Snapshot(ctx context.Context, worktreeRoots []string) map[string]WorktreeLivenessObservation
+}
+
+// LSOFWorktreeInventoryLiveness is the production inventory-wide open-file
+// snapshot. Unlike the retirement probe it never recursively scans each root.
+type LSOFWorktreeInventoryLiveness struct {
+	Runner WorktreeRetirementProcessRunner
+}
+
+func (probe LSOFWorktreeInventoryLiveness) Snapshot(ctx context.Context, worktreeRoots []string) map[string]WorktreeLivenessObservation {
+	runner := probe.Runner
+	if runner == nil {
+		runner = ExecWorktreeRetirementProcessRunner{}
+	}
+	result, err := runner.Run(ctx, "lsof", "-n", "-P", "-Fn")
+	observations := make(map[string]WorktreeLivenessObservation, len(worktreeRoots))
+	if err != nil || result.ExitCode != 0 {
+		evidence := "inventory lsof snapshot failed"
+		if err != nil {
+			evidence += ": " + err.Error()
+		} else {
+			evidence += fmt.Sprintf(": exit %d", result.ExitCode)
+		}
+		for _, root := range worktreeRoots {
+			observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: evidence}
+		}
+		return observations
+	}
+	for _, root := range worktreeRoots {
+		observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: "inventory lsof snapshot found no open path"}
+	}
+	for _, openPath := range parseWorktreeInventoryLSOFPaths(result.Stdout) {
+		for _, root := range worktreeRoots {
+			if strings.HasPrefix(openPath, root) {
+				observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessActive, Evidence: "open path: " + openPath}
+			}
+		}
+	}
+	return observations
+}
+
+func parseWorktreeInventoryLSOFPaths(stdout string) []string {
+	var paths []string
+	for _, line := range strings.Split(stdout, "\n") {
+		if len(line) < 2 || line[0] != 'n' {
+			continue
+		}
+		path := strings.TrimSpace(line[1:])
+		if filepath.IsAbs(path) {
+			paths = append(paths, filepath.Clean(path))
+		}
+	}
+	return paths
 }
 
 // WorktreeKeepAnnotation is the caller-composed projection of an active operator
@@ -187,7 +247,7 @@ func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependenc
 		deps.Git = ExecWorktreeRetirementGit{}
 	}
 	if deps.Liveness == nil {
-		deps.Liveness = LSOFWorktreeRetirementLiveness{}
+		deps.Liveness = LSOFWorktreeInventoryLiveness{}
 	}
 	now := opts.Now
 	if now.IsZero() {
@@ -227,6 +287,11 @@ func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependenc
 	if err != nil {
 		return WorktreeInventory{}, fmt.Errorf("parse worktrees: %w", err)
 	}
+	worktreeRoots := make([]string, len(records))
+	for i := range records {
+		worktreeRoots[i] = records[i].Path
+	}
+	liveness := deps.Liveness.Snapshot(ctx, worktreeRoots)
 
 	inv := WorktreeInventory{
 		SchemaVersion:  WorktreeInventorySchemaVersion,
@@ -242,7 +307,7 @@ func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependenc
 	// records[0] is therefore the primary checkout even when this command is
 	// invoked from a linked worktree.
 	for i := range records {
-		row := classifyWorktreeInventoryRow(ctx, deps, root, mainTip, records[i], i == 0, now, window)
+		row := classifyWorktreeInventoryRow(ctx, deps, root, mainTip, records[i], inventoryLivenessObservation(liveness, records[i].Path), i == 0, now, window)
 		inv.Rows = append(inv.Rows, row)
 		inv.Counts.Total++
 		if row.Live {
@@ -280,6 +345,19 @@ func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependenc
 		}
 	}
 	return inv, nil
+}
+
+func inventoryLivenessObservation(snapshot map[string]WorktreeLivenessObservation, worktreePath string) WorktreeLivenessObservation {
+	obs, ok := snapshot[worktreePath]
+	if !ok {
+		return WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: "inventory liveness snapshot did not resolve this worktree"}
+	}
+	switch obs.State {
+	case WorktreeLivenessUnused, WorktreeLivenessActive, WorktreeLivenessUnknown:
+		return obs
+	default:
+		return WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: "inventory liveness snapshot returned an invalid state"}
+	}
 }
 
 // joinWorktreeEnvelopeIdentity annotates each row with exact nonterminal work
@@ -404,7 +482,7 @@ func annotateWorktreeKeeps(rows []WorktreeInventoryRow, keeps map[string]Worktre
 	return kept
 }
 
-func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDependencies, root, mainTip string, rec retirementWorktreeRecord, isMain bool, now time.Time, window time.Duration) WorktreeInventoryRow {
+func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDependencies, root, mainTip string, rec retirementWorktreeRecord, liveness WorktreeLivenessObservation, isMain bool, now time.Time, window time.Duration) WorktreeInventoryRow {
 	branchRef := strings.TrimSpace(rec.BranchRef)
 	row := WorktreeInventoryRow{
 		Path:      rec.Path,
@@ -415,7 +493,7 @@ func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDep
 	}
 	// Liveness + activity are observed first: a live lane must never fall
 	// through to a retire-eligible class no matter what the Git facts say.
-	row.Liveness = deps.Liveness.Observe(ctx, rec.Path)
+	row.Liveness = liveness
 	statusOut, statusErr := deps.Git.Run(ctx, rec.Path, "--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all")
 	var statusPaths []string
 	if statusErr == nil {

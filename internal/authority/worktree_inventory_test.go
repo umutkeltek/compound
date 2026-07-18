@@ -94,6 +94,29 @@ func TestBuildWorktreeInventoryClassifiesGroundTruth(t *testing.T) {
 	}
 }
 
+// Inventory liveness is one snapshot over the complete root set. Its cost must
+// not grow by launching one external probe per worktree row.
+func TestBuildWorktreeInventoryTakesExactlyOneLivenessSnapshot(t *testing.T) {
+	fix := newWorktreeInventoryFixture(t)
+	live := &inventoryRecordingSnapshotLiveness{active: map[string]bool{fix.laneLive: true}}
+
+	inv, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: live,
+	}, fix.repo, WorktreeInventoryOptions{Now: inventoryFutureNow()})
+	if err != nil {
+		t.Fatalf("build inventory: %v", err)
+	}
+	if live.calls != 1 {
+		t.Fatalf("liveness snapshot calls = %d, want exactly 1", live.calls)
+	}
+	if len(live.roots) != len(inv.Rows) {
+		t.Fatalf("snapshot roots = %d, inventory rows = %d", len(live.roots), len(inv.Rows))
+	}
+	if row := inventoryRowByBranch(t, inv, "lane-live"); row.Class != WorktreeClassLive {
+		t.Fatalf("snapshot active evidence was not classified live: %+v", row)
+	}
+}
+
 // The activity path (not lsof) must also promote a worktree to live: a clean,
 // contained worktree whose files were just touched reads live within the window.
 func TestBuildWorktreeInventoryRecentActivityClassifiesLive(t *testing.T) {
@@ -538,21 +561,53 @@ type inventoryFakeLiveness struct {
 	active map[string]bool
 }
 
-func (f inventoryFakeLiveness) Observe(_ context.Context, path string) WorktreeLivenessObservation {
-	key := path
-	if c, err := filepath.EvalSymlinks(path); err == nil {
-		key = c
+func (f inventoryFakeLiveness) Snapshot(_ context.Context, roots []string) map[string]WorktreeLivenessObservation {
+	observations := make(map[string]WorktreeLivenessObservation, len(roots))
+	for _, root := range roots {
+		if f.active[evalInventoryFakePath(root)] {
+			observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessActive, Evidence: "fake: open handles"}
+		} else {
+			observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: "fake: no handles"}
+		}
 	}
-	if f.active[key] {
-		return WorktreeLivenessObservation{State: WorktreeLivenessActive, Evidence: "fake: open handles"}
-	}
-	return WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: "fake: no handles"}
+	return observations
 }
 
 type inventoryUnknownLiveness struct{}
 
-func (inventoryUnknownLiveness) Observe(context.Context, string) WorktreeLivenessObservation {
-	return WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: "fake: snapshot unresolved"}
+func (inventoryUnknownLiveness) Snapshot(_ context.Context, roots []string) map[string]WorktreeLivenessObservation {
+	observations := make(map[string]WorktreeLivenessObservation, len(roots))
+	for _, root := range roots {
+		observations[root] = WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: "fake: snapshot unresolved"}
+	}
+	return observations
+}
+
+type inventoryRecordingSnapshotLiveness struct {
+	calls  int
+	roots  []string
+	active map[string]bool
+}
+
+func (f *inventoryRecordingSnapshotLiveness) Snapshot(_ context.Context, roots []string) map[string]WorktreeLivenessObservation {
+	f.calls++
+	f.roots = append([]string(nil), roots...)
+	observations := make(map[string]WorktreeLivenessObservation, len(roots))
+	for _, root := range roots {
+		state := WorktreeLivenessUnused
+		if f.active[evalInventoryFakePath(root)] {
+			state = WorktreeLivenessActive
+		}
+		observations[root] = WorktreeLivenessObservation{State: state, Evidence: "fake: inventory snapshot"}
+	}
+	return observations
+}
+
+func evalInventoryFakePath(path string) string {
+	if canonical, err := filepath.EvalSymlinks(path); err == nil {
+		return canonical
+	}
+	return path
 }
 
 type inventoryRecordingGit struct {

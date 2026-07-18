@@ -18,10 +18,10 @@ import (
 	"compound/internal/work"
 )
 
-// Injected seams (package vars) so tests can substitute a fake Git + fake
-// Liveness, mirroring worktree_retirement_cli.go's DI convention.
+// Injected seams (package vars) so tests can substitute fake Git plus one
+// inventory-wide liveness snapshot.
 var worktreeInventoryCLIGit authority.WorktreeRetirementGit = authority.ExecWorktreeRetirementGit{}
-var worktreeInventoryCLILiveness authority.WorktreeRetirementLiveness = authority.LSOFWorktreeRetirementLiveness{}
+var worktreeInventoryCLILiveness authority.WorktreeInventoryLiveness = authority.LSOFWorktreeInventoryLiveness{}
 
 // worktreeInventoryLedger carries the OPTIONAL ledger inputs the inventory joins
 // over pure Git ground truth: operator keep annotations and exact nonterminal
