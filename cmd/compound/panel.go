@@ -18,7 +18,7 @@ import (
 
 func cmdPanel(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--domain D] [--task T] [--json]|plan [--work-id work_...] --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record (--review <panel_verdict.json>|--group <group_key>) --rationale <text> --reviewed-by <actor> [--json]|feedback-plan --verdict <panel_verdict.json> [--json]|feedback-review <review.yaml> [--json]|show <run_id> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--domain D] [--task T] [--json]|plan [--work-id work_...] --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record (--review <panel_verdict.json>|--group <group_key>) --rationale <text> --reviewed-by <actor> [--json]|feedback-plan --verdict <panel_verdict.json> [--json]|feedback-review <review.yaml> [--json]|second-read --base <run_id> --reader <run_id> [--confidence-gap F] [--json]|show <run_id> [--json]>")
 		os.Exit(2)
 	}
 
@@ -220,6 +220,17 @@ func cmdPanel(args []string) {
 		fmt.Printf("- status: %s\n", report.Status)
 		fmt.Printf("- verdict: %s\n", report.VerdictID)
 		fmt.Printf("- applied_edges: %d\n", report.AppliedEdges)
+	case "second-read":
+		input, jsonOut := parsePanelSecondReadArgs(args[1:])
+		homePath, err := home.Resolve("")
+		die(err)
+		report, err := panel.SecondRead(homePath, input)
+		die(err)
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		printPanelSecondRead(report)
 	case "show":
 		if len(args) != 2 && !(len(args) == 3 && args[2] == "--json") {
 			fmt.Fprintln(os.Stderr, "usage: compound panel show <run_id> [--json]")
@@ -696,4 +707,60 @@ func shortPanelHash(value string) string {
 		return value
 	}
 	return value[:12]
+}
+
+func parsePanelSecondReadArgs(args []string) (panel.SecondReadInput, bool) {
+	var input panel.SecondReadInput
+	jsonOut := false
+	usage := func() {
+		fmt.Fprintln(os.Stderr, "usage: compound panel second-read --base <run_id> --reader <run_id> [--confidence-gap F] [--json]")
+		os.Exit(2)
+	}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--base":
+			input.BaseRunID = requirePanelValue(args, &i, "panel second-read")
+		case "--reader":
+			input.ReaderRunID = requirePanelValue(args, &i, "panel second-read")
+		case "--confidence-gap":
+			raw := requirePanelValue(args, &i, "panel second-read")
+			gap, err := strconv.ParseFloat(raw, 64)
+			if err != nil || gap <= 0 || gap >= 1 {
+				fmt.Fprintf(os.Stderr, "--confidence-gap must be a float in (0,1), got %q\n", raw)
+				os.Exit(2)
+			}
+			input.ConfidenceGapAbove = gap
+		case "--json":
+			jsonOut = true
+		default:
+			usage()
+		}
+	}
+	if strings.TrimSpace(input.BaseRunID) == "" || strings.TrimSpace(input.ReaderRunID) == "" {
+		usage()
+	}
+	return input, jsonOut
+}
+
+func printPanelSecondRead(report panel.SecondReadReport) {
+	fmt.Printf("# panel second-read %s vs %s\n", report.BaseRunID, report.ReaderRunID)
+	fmt.Printf("- base_model: %s\n", report.BaseModel)
+	fmt.Printf("- reader_model: %s\n", report.ReaderModel)
+	fmt.Printf("- target_kind: %s\n", report.TargetKind)
+	fmt.Printf("- shared_targets: %d\n", report.SharedTargets)
+	fmt.Printf("- agreement: %t\n", report.Agreement)
+	for _, div := range report.Divergences {
+		lens := div.LensRef
+		if lens == "" {
+			lens = "synthesis"
+		}
+		fmt.Printf("- divergence: %s %s %s base=%s reader=%s\n", div.Class, div.TargetRef, lens, div.BaseValue, div.ReaderValue)
+	}
+	for _, emitted := range report.Emitted {
+		state := "emitted"
+		if emitted.Skipped {
+			state = "already-emitted"
+		}
+		fmt.Printf("- observation: %s %s (%s)\n", emitted.ID, emitted.Class, state)
+	}
 }

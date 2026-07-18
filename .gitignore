@@ -10,6 +10,7 @@ node_modules/
 *.private.md
 .compound-private/
 /.claude/
+/.codex/
 /.agents/
 /Plans/
 
