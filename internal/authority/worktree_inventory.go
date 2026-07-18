@@ -58,16 +58,17 @@ type WorktreeKeepAnnotation struct {
 	Revisit    string
 }
 
-// WorktreeEnvelopeArtifact is one nonterminal work envelope's claim on a branch
-// via a worktree-branch:<ref> artifact. The CLI lists envelopes from the work
-// store and passes exact-evidence tuples in; the join is a pure function over
-// rows + these tuples so it is unit-testable without a real store. CreatedAt
+// WorktreeEnvelopeArtifact carries one nonterminal work envelope's exact
+// identity evidence. A branch artifact can name a linked lane; a running
+// envelope's Git delivery root can name the primary checkout. CreatedAt
 // (RFC3339) breaks ambiguity: newest nonterminal wins.
 type WorktreeEnvelopeArtifact struct {
-	WorkID    string
-	State     string
-	BranchRef string
-	CreatedAt string
+	WorkID             string
+	State              string
+	Holder             string
+	BranchRef          string
+	TargetWorktreeRoot string
+	CreatedAt          string
 }
 
 // WorktreeInventoryOptions carries the injected clock (tests) and the activity
@@ -113,11 +114,11 @@ type WorktreeInventoryRow struct {
 	Reason         string                      `json:"reason"`
 	NextAction     string                      `json:"next_action"`
 	IsMain         bool                        `json:"is_main"`
-	// WorkID/WorkState join an exact nonterminal envelope that names this row's
-	// branch ref via a worktree-branch: artifact (identity, slice 2). Absent when
-	// no envelope carries exact evidence — the row is then honestly bare.
-	WorkID    string `json:"work_id,omitempty"`
-	WorkState string `json:"work_state,omitempty"`
+	// Work identity joins through an exact branch artifact, or through a running
+	// envelope whose canonical Git delivery root names the primary checkout.
+	WorkID     string `json:"work_id,omitempty"`
+	WorkState  string `json:"work_state,omitempty"`
+	WorkHolder string `json:"work_holder,omitempty"`
 	// Kept + KeepDecisionID + KeepRevisit annotate an operator keep-decision. A
 	// kept row KEEPS its ground-truth class (annotation, never a reclassification)
 	// but its next_action defers to the operator decision.
@@ -129,6 +130,7 @@ type WorktreeInventoryRow struct {
 type WorktreeInventoryCounts struct {
 	Total           int `json:"total"`
 	Main            int `json:"main"`
+	MainDirty       int `json:"main_dirty"`
 	Live            int `json:"live"`
 	StalledUnlanded int `json:"stalled_unlanded"`
 	LandedClean     int `json:"landed_clean"`
@@ -230,11 +232,16 @@ func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependenc
 		row := classifyWorktreeInventoryRow(ctx, deps, root, mainTip, records[i], i == 0, now, window)
 		inv.Rows = append(inv.Rows, row)
 		inv.Counts.Total++
+		if row.Live {
+			inv.Counts.Live++
+		}
 		switch row.Class {
 		case WorktreeClassMain:
 			inv.Counts.Main++
+			inv.Counts.MainDirty += row.DirtyFiles
 		case WorktreeClassLive:
-			inv.Counts.Live++
+			// Counted from row.Live above so main-class precedence does not hide
+			// an active primary checkout.
 		case WorktreeClassStalledUnlanded:
 			inv.Counts.StalledUnlanded++
 		case WorktreeClassLandedClean:
@@ -262,45 +269,54 @@ func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependenc
 	return inv, nil
 }
 
-// joinWorktreeEnvelopeIdentity annotates each row with the exact nonterminal
-// work envelope that names its branch ref via a worktree-branch: artifact. Only
-// exact BranchRef matches join — a dangling ref that matches no row is silently
-// ignored (no error, no annotation). When several nonterminal envelopes name one
-// branch, the newest (CreatedAt, then WorkID) wins and the row's reason notes
-// the ambiguity. Pure over rows + tuples so it is testable without a store.
+// joinWorktreeEnvelopeIdentity annotates each row with exact nonterminal work
+// identity. A branch artifact names a linked row; a running envelope's canonical
+// target root names the main row. Dangling evidence is silently ignored. When
+// several envelopes name one row, the newest (CreatedAt, then WorkID) wins.
 func joinWorktreeEnvelopeIdentity(rows []WorktreeInventoryRow, envelopes []WorktreeEnvelopeArtifact) {
 	if len(envelopes) == 0 {
 		return
 	}
-	byBranch := map[string][]WorktreeEnvelopeArtifact{}
-	for _, e := range envelopes {
-		ref := strings.TrimSpace(e.BranchRef)
-		if ref == "" || strings.TrimSpace(e.WorkID) == "" {
-			continue
-		}
-		byBranch[ref] = append(byBranch[ref], e)
-	}
 	for i := range rows {
-		ref := strings.TrimSpace(rows[i].BranchRef)
-		if ref == "" {
-			continue
+		matches := map[string]WorktreeEnvelopeArtifact{}
+		for _, e := range envelopes {
+			workID := strings.TrimSpace(e.WorkID)
+			if workID == "" || !worktreeEnvelopeMatchesRow(rows[i], e) {
+				continue
+			}
+			if prior, ok := matches[workID]; !ok || newerWorktreeEnvelope(e, prior) {
+				matches[workID] = e
+			}
 		}
-		matches := byBranch[ref]
 		if len(matches) == 0 {
 			continue
 		}
-		best := matches[0]
-		for _, m := range matches[1:] {
-			if m.CreatedAt > best.CreatedAt || (m.CreatedAt == best.CreatedAt && m.WorkID > best.WorkID) {
+		var best WorktreeEnvelopeArtifact
+		haveBest := false
+		for _, m := range matches {
+			if !haveBest || newerWorktreeEnvelope(m, best) {
 				best = m
+				haveBest = true
 			}
 		}
 		rows[i].WorkID = best.WorkID
 		rows[i].WorkState = best.State
+		rows[i].WorkHolder = best.Holder
 		if len(matches) > 1 {
-			rows[i].Reason += fmt.Sprintf(" (ambiguous identity: %d nonterminal envelopes name this branch; newest %s shown)", len(matches), best.WorkID)
+			rows[i].Reason += fmt.Sprintf(" (ambiguous identity: %d nonterminal envelopes name this row; newest %s shown)", len(matches), best.WorkID)
 		}
 	}
+}
+
+func worktreeEnvelopeMatchesRow(row WorktreeInventoryRow, candidate WorktreeEnvelopeArtifact) bool {
+	branchMatch := strings.TrimSpace(row.BranchRef) != "" && strings.TrimSpace(candidate.BranchRef) == strings.TrimSpace(row.BranchRef)
+	rootMatch := row.IsMain && strings.TrimSpace(candidate.State) == "running" && strings.TrimSpace(candidate.TargetWorktreeRoot) != "" &&
+		filepath.Clean(strings.TrimSpace(candidate.TargetWorktreeRoot)) == filepath.Clean(row.Path)
+	return branchMatch || rootMatch
+}
+
+func newerWorktreeEnvelope(candidate, current WorktreeEnvelopeArtifact) bool {
+	return candidate.CreatedAt > current.CreatedAt || (candidate.CreatedAt == current.CreatedAt && candidate.WorkID > current.WorkID)
 }
 
 // annotateWorktreeKeeps annotates rows whose branch ref carries an active
@@ -339,14 +355,6 @@ func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDep
 		Branch:    shortWorktreeBranch(branchRef),
 		Detached:  branchRef == "",
 	}
-	if isMain {
-		row.IsMain = true
-		row.Class = WorktreeClassMain
-		row.Reason = "primary checkout — the repository's main working tree and authority root"
-		row.NextAction = "leave alone — primary checkout"
-		return row
-	}
-
 	// Liveness + activity are observed first: a live lane must never fall
 	// through to a retire-eligible class no matter what the Git facts say.
 	row.Liveness = deps.Liveness.Observe(ctx, rec.Path)
@@ -357,7 +365,14 @@ func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDep
 		row.DirtyFiles = len(lines)
 		statusPaths = parseWorktreeStatusPaths(lines)
 	}
-	recent, newest, known := observeWorktreeActivity(rec.Path, statusPaths, now, window)
+	var recent, known bool
+	var newest time.Time
+	if isMain {
+		recent, newest, known = observeDirtyWorktreeActivity(rec.Path, statusPaths, now, window)
+	} else {
+		headCommitTime, _ := worktreeHeadCommitTime(ctx, deps.Git, rec.Path, rec.Head)
+		recent, newest, known = observeWorktreeActivity(rec.Path, statusPaths, headCommitTime, now, window)
+	}
 	row.ActivityRecent = recent
 	if known {
 		age := int64(now.Sub(newest).Seconds())
@@ -367,6 +382,17 @@ func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDep
 		row.AgeSeconds = &age
 	}
 	row.Live = row.Liveness.State == WorktreeLivenessActive || recent
+	if isMain {
+		row.IsMain = true
+		row.Class = WorktreeClassMain
+		if row.Live {
+			row.Reason = "active lane editing the primary checkout — " + livenessReason(row.Liveness, recent, row.AgeSeconds)
+		} else {
+			row.Reason = "primary checkout — the repository's main working tree and authority root"
+		}
+		row.NextAction = "leave alone — primary checkout"
+		return row
+	}
 
 	// Containment and unique-commit count are best-effort here: they are only
 	// load-bearing for the non-live, non-probe classes decided below.
@@ -425,10 +451,32 @@ func worktreeAheadCount(ctx context.Context, git WorktreeRetirementGit, root, ma
 	return n, nil
 }
 
-// observeWorktreeActivity reads cheap, honest activity evidence: the mtime of
-// the worktree's .git entry plus the newest mtime among the paths git status
-// already reported dirty. It never walks the whole tree.
-func observeWorktreeActivity(worktreePath string, relPaths []string, now time.Time, window time.Duration) (recent bool, newest time.Time, known bool) {
+func worktreeHeadCommitTime(ctx context.Context, git WorktreeRetirementGit, worktreePath, head string) (time.Time, bool) {
+	out, err := git.Run(ctx, worktreePath, "show", "-s", "--format=%ct", head)
+	if err != nil {
+		return time.Time{}, false
+	}
+	seconds, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(seconds, 0), true
+}
+
+// observeWorktreeActivity reads cheap, honest activity evidence: the .git
+// entry mtime, newest dirty-path mtime, and HEAD commit time. It never walks the
+// whole tree.
+func observeWorktreeActivity(worktreePath string, relPaths []string, headCommitTime, now time.Time, window time.Duration) (recent bool, newest time.Time, known bool) {
+	return observeWorktreeActivitySources(worktreePath, relPaths, true, headCommitTime, now, window)
+}
+
+// Main activity intentionally excludes .git and HEAD: a clean primary checkout
+// stays quiet, while a dirty one reports the newest path Git status named.
+func observeDirtyWorktreeActivity(worktreePath string, relPaths []string, now time.Time, window time.Duration) (recent bool, newest time.Time, known bool) {
+	return observeWorktreeActivitySources(worktreePath, relPaths, false, time.Time{}, now, window)
+}
+
+func observeWorktreeActivitySources(worktreePath string, relPaths []string, includeGitEntry bool, headCommitTime, now time.Time, window time.Duration) (recent bool, newest time.Time, known bool) {
 	consider := func(path string) {
 		info, err := os.Lstat(path)
 		if err != nil {
@@ -440,9 +488,15 @@ func observeWorktreeActivity(worktreePath string, relPaths []string, now time.Ti
 			known = true
 		}
 	}
-	consider(filepath.Join(worktreePath, ".git"))
+	if includeGitEntry {
+		consider(filepath.Join(worktreePath, ".git"))
+	}
 	for _, rel := range relPaths {
 		consider(filepath.Join(worktreePath, rel))
+	}
+	if !headCommitTime.IsZero() && (!known || headCommitTime.After(newest)) {
+		newest = headCommitTime
+		known = true
 	}
 	if !known {
 		return false, time.Time{}, false

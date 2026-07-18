@@ -70,17 +70,36 @@ func loadWorktreeInventoryEnvelopeArtifacts(homePath string) []authority.Worktre
 	if err != nil {
 		return nil
 	}
+	holders := map[string]string{}
+	if leases, leaseErr := store.ListLeases(); leaseErr == nil {
+		for _, lease := range leases {
+			holders[lease.WorkID] = lease.By
+		}
+	}
 	var out []authority.WorktreeEnvelopeArtifact
 	for _, w := range envs {
 		if worktreeInventoryTerminalState(w.State) {
 			continue
 		}
+		targetRoot := ""
+		if w.GitDelivery != nil {
+			targetRoot = w.GitDelivery.TargetWorktreeRoot
+		}
+		matchedBranch := false
 		for _, art := range w.ArtifactIDs {
 			if ref, ok := parseWorktreeBranchArtifact(art); ok {
+				matchedBranch = true
 				out = append(out, authority.WorktreeEnvelopeArtifact{
-					WorkID: w.ID, State: w.State, BranchRef: ref, CreatedAt: w.CreatedAt,
+					WorkID: w.ID, State: w.State, Holder: holders[w.ID], BranchRef: ref,
+					TargetWorktreeRoot: targetRoot, CreatedAt: w.CreatedAt,
 				})
 			}
+		}
+		if targetRoot != "" && !matchedBranch {
+			out = append(out, authority.WorktreeEnvelopeArtifact{
+				WorkID: w.ID, State: w.State, Holder: holders[w.ID],
+				TargetWorktreeRoot: targetRoot, CreatedAt: w.CreatedAt,
+			})
 		}
 	}
 	return out
@@ -203,8 +222,8 @@ func printWorktreeInventory(w io.Writer, inv authority.WorktreeInventory) {
 	fmt.Fprintf(w, "- repo: %s\n", inv.Repo)
 	fmt.Fprintf(w, "- generated_at: %s\n", inv.GeneratedAt)
 	fmt.Fprintf(w, "- authority: %s @ %s (%s)\n", inv.MainRef, shortWorktreeSHA(inv.MainTip), inv.AuthorityRef)
-	fmt.Fprintf(w, "- counts: total=%d live=%d stalled_unlanded=%d landed_clean=%d probe=%d unknown=%d kept=%d\n",
-		inv.Counts.Total, inv.Counts.Live, inv.Counts.StalledUnlanded, inv.Counts.LandedClean, inv.Counts.Probe, inv.Counts.Unknown, inv.Counts.Kept)
+	fmt.Fprintf(w, "- counts: total=%d live=%d main_dirty=%d stalled_unlanded=%d landed_clean=%d probe=%d unknown=%d kept=%d\n",
+		inv.Counts.Total, inv.Counts.Live, inv.Counts.MainDirty, inv.Counts.StalledUnlanded, inv.Counts.LandedClean, inv.Counts.Probe, inv.Counts.Unknown, inv.Counts.Kept)
 	if inv.KeepsReadable != nil && !*inv.KeepsReadable {
 		fmt.Fprintln(w, "- keep records unreadable — kept status not shown; retirement stays blocked until keeps can be read")
 	}
@@ -247,10 +266,17 @@ func worktreeWorkLabel(row authority.WorktreeInventoryRow) string {
 	if row.WorkID == "" {
 		return "-"
 	}
+	var details []string
 	if row.WorkState != "" {
-		return row.WorkID + " (" + row.WorkState + ")"
+		details = append(details, row.WorkState)
 	}
-	return row.WorkID
+	if row.WorkHolder != "" {
+		details = append(details, "holder="+row.WorkHolder)
+	}
+	if len(details) == 0 {
+		return row.WorkID
+	}
+	return row.WorkID + " (" + strings.Join(details, "; ") + ")"
 }
 
 func worktreeRowLabel(row authority.WorktreeInventoryRow) string {
