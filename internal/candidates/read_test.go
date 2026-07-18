@@ -1,6 +1,7 @@
 package candidates
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,6 +81,169 @@ func TestWriteCandidate(t *testing.T) {
 	if err := WriteCandidate(home, Kind("bogus-kind"), "x", rec{}); err == nil {
 		t.Fatal("unknown kind must error before write")
 	}
+}
+
+func TestCreateCandidateIfAbsentPreservesExistingBytes(t *testing.T) {
+	type rec struct {
+		ID     string `json:"id"`
+		Kind   string `json:"kind"`
+		Marker string `json:"marker"`
+	}
+	payload := rec{ID: "c1", Kind: string(Memory), Marker: "contender"}
+
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{name: "same candidate", body: []byte("{\n  \"id\": \"c1\",\n  \"kind\": \"memory\",\n  \"marker\": \"contender\"\n}\n")},
+		{name: "different candidate", body: []byte("{\"id\":\"c1\",\"kind\":\"memory\",\"marker\":\"existing\"}\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			target := filepath.Join(home, InboxDir(Memory), "c1.json")
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, tc.body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			created, err := CreateCandidateIfAbsent(home, Memory, "c1", payload)
+			if err != nil {
+				t.Fatalf("existing classifiable candidate: %v", err)
+			}
+			if created {
+				t.Fatal("existing candidate reported created")
+			}
+			got, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, tc.body) {
+				t.Fatalf("existing candidate changed:\n got: %q\nwant: %q", got, tc.body)
+			}
+		})
+	}
+
+	t.Run("malformed candidate", func(t *testing.T) {
+		home := t.TempDir()
+		target := filepath.Join(home, InboxDir(Memory), "c1.json")
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		want := []byte("{not-json\n")
+		if err := os.WriteFile(target, want, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		created, err := CreateCandidateIfAbsent(home, Memory, "c1", payload)
+		if err == nil {
+			t.Fatal("malformed existing candidate must return an error")
+		}
+		if created {
+			t.Fatal("malformed existing candidate reported created")
+		}
+		got, readErr := os.ReadFile(target)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("malformed candidate changed: got %q want %q", got, want)
+		}
+	})
+
+	t.Run("unreadable candidate", func(t *testing.T) {
+		home := t.TempDir()
+		target := filepath.Join(home, InboxDir(Memory), "c1.json")
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		want := []byte("{\"id\":\"c1\",\"kind\":\"memory\"}\n")
+		if err := os.WriteFile(target, want, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(target, 0o644) })
+
+		created, err := CreateCandidateIfAbsent(home, Memory, "c1", payload)
+		if err == nil {
+			t.Fatal("unreadable existing candidate must return an error")
+		}
+		if created {
+			t.Fatal("unreadable existing candidate reported created")
+		}
+		if err := os.Chmod(target, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, readErr := os.ReadFile(target)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("unreadable candidate changed: got %q want %q", got, want)
+		}
+	})
+
+	t.Run("non-regular candidate", func(t *testing.T) {
+		home := t.TempDir()
+		target := filepath.Join(home, InboxDir(Memory), "c1.json")
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		created, err := CreateCandidateIfAbsent(home, Memory, "c1", payload)
+		if err == nil {
+			t.Fatal("non-regular existing candidate must return an error")
+		}
+		if created {
+			t.Fatal("non-regular existing candidate reported created")
+		}
+		info, statErr := os.Lstat(target)
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if !info.IsDir() {
+			t.Fatalf("non-regular target changed type: %v", info.Mode())
+		}
+	})
+
+	t.Run("symlink candidate", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, InboxDir(Memory))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		sentinel := filepath.Join(home, "sentinel.json")
+		want := []byte("sentinel bytes\n")
+		if err := os.WriteFile(sentinel, want, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(dir, "c1.json")
+		if err := os.Symlink(sentinel, target); err != nil {
+			t.Fatal(err)
+		}
+
+		created, err := CreateCandidateIfAbsent(home, Memory, "c1", payload)
+		if err == nil {
+			t.Fatal("symlink existing candidate must return an error")
+		}
+		if created {
+			t.Fatal("symlink existing candidate reported created")
+		}
+		info, statErr := os.Lstat(target)
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("candidate symlink was replaced: %v", info.Mode())
+		}
+		got, readErr := os.ReadFile(sentinel)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("symlink referent changed: got %q want %q", got, want)
+		}
+	})
 }
 
 // Guards (C3 hardening): the codec rejects path-shaped ids and payloads that
