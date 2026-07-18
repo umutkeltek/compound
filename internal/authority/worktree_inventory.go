@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -71,6 +72,16 @@ type WorktreeEnvelopeArtifact struct {
 	CreatedAt          string
 }
 
+// WorktreeIdentityCandidate is one possible editor when several running work
+// envelopes share the primary checkout's canonical delivery root. Candidates
+// are evidence, not a ranking: the projection emits them in WorkID order and
+// deliberately leaves the row's singular work identity empty.
+type WorktreeIdentityCandidate struct {
+	WorkID     string `json:"work_id"`
+	WorkState  string `json:"work_state,omitempty"`
+	WorkHolder string `json:"work_holder,omitempty"`
+}
+
 // WorktreeInventoryOptions carries the injected clock (tests) and the activity
 // window. AuthorityRef defaults to refs/heads/main; classification is measured
 // against that tip's containment. Keeps/Envelopes are OPTIONAL ledger inputs the
@@ -115,10 +126,13 @@ type WorktreeInventoryRow struct {
 	NextAction     string                      `json:"next_action"`
 	IsMain         bool                        `json:"is_main"`
 	// Work identity joins through an exact branch artifact, or through a running
-	// envelope whose canonical Git delivery root names the primary checkout.
-	WorkID     string `json:"work_id,omitempty"`
-	WorkState  string `json:"work_state,omitempty"`
-	WorkHolder string `json:"work_holder,omitempty"`
+	// envelope whose canonical Git delivery root names the primary checkout. If
+	// several running envelopes name that root, singular identity stays empty and
+	// WorkCandidates exposes the ambiguity without inferring the active editor.
+	WorkID         string                      `json:"work_id,omitempty"`
+	WorkState      string                      `json:"work_state,omitempty"`
+	WorkHolder     string                      `json:"work_holder,omitempty"`
+	WorkCandidates []WorktreeIdentityCandidate `json:"work_candidates,omitempty"`
 	// Kept + KeepDecisionID + KeepRevisit annotate an operator keep-decision. A
 	// kept row KEEPS its ground-truth class (annotation, never a reclassification)
 	// but its next_action defers to the operator decision.
@@ -270,24 +284,63 @@ func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependenc
 
 // joinWorktreeEnvelopeIdentity annotates each row with exact nonterminal work
 // identity. A branch artifact names a linked row; a running envelope's canonical
-// target root names the main row. Dangling evidence is silently ignored. When
-// several envelopes name one row, the newest (CreatedAt, then WorkID) wins.
+// target root names the main row. Dangling evidence is silently ignored. Branch
+// ambiguity keeps its established newest-wins behavior. Main-root ambiguity is
+// different: a shared delivery root does not identify the active editor, so the
+// row exposes deterministic candidates and no singular work identity.
 func joinWorktreeEnvelopeIdentity(rows []WorktreeInventoryRow, envelopes []WorktreeEnvelopeArtifact) {
 	if len(envelopes) == 0 {
 		return
 	}
 	for i := range rows {
 		matches := map[string]WorktreeEnvelopeArtifact{}
+		rootMatches := map[string]WorktreeEnvelopeArtifact{}
 		for _, e := range envelopes {
 			workID := strings.TrimSpace(e.WorkID)
-			if workID == "" || !worktreeEnvelopeMatchesRow(rows[i], e) {
+			if workID == "" {
+				continue
+			}
+			rootMatch := worktreeEnvelopeMatchesRoot(rows[i], e)
+			if !worktreeEnvelopeMatchesRow(rows[i], e) {
 				continue
 			}
 			if prior, ok := matches[workID]; !ok || newerWorktreeEnvelope(e, prior) {
 				matches[workID] = e
 			}
+			if rootMatch {
+				if prior, ok := rootMatches[workID]; !ok || newerWorktreeEnvelope(e, prior) {
+					rootMatches[workID] = e
+				}
+			}
 		}
 		if len(matches) == 0 {
+			continue
+		}
+		if len(rootMatches) > 1 {
+			candidates := make([]WorktreeIdentityCandidate, 0, len(rootMatches))
+			for _, match := range rootMatches {
+				candidates = append(candidates, WorktreeIdentityCandidate{
+					WorkID:     strings.TrimSpace(match.WorkID),
+					WorkState:  strings.TrimSpace(match.State),
+					WorkHolder: strings.TrimSpace(match.Holder),
+				})
+			}
+			sort.Slice(candidates, func(a, b int) bool {
+				return candidates[a].WorkID < candidates[b].WorkID
+			})
+			rows[i].WorkID = ""
+			rows[i].WorkState = ""
+			rows[i].WorkHolder = ""
+			rows[i].WorkCandidates = candidates
+			rows[i].Reason += fmt.Sprintf(" (ambiguous main-root identity: %d running envelopes bind this primary checkout; active editor was not inferred)", len(candidates))
+			continue
+		}
+		if len(rootMatches) == 1 {
+			for _, match := range rootMatches {
+				rows[i].WorkID = match.WorkID
+				rows[i].WorkState = match.State
+				rows[i].WorkHolder = match.Holder
+			}
 			continue
 		}
 		var best WorktreeEnvelopeArtifact
@@ -308,10 +361,16 @@ func joinWorktreeEnvelopeIdentity(rows []WorktreeInventoryRow, envelopes []Workt
 }
 
 func worktreeEnvelopeMatchesRow(row WorktreeInventoryRow, candidate WorktreeEnvelopeArtifact) bool {
-	branchMatch := strings.TrimSpace(row.BranchRef) != "" && strings.TrimSpace(candidate.BranchRef) == strings.TrimSpace(row.BranchRef)
-	rootMatch := row.IsMain && strings.TrimSpace(candidate.State) == "running" && strings.TrimSpace(candidate.TargetWorktreeRoot) != "" &&
+	return worktreeEnvelopeMatchesBranch(row, candidate) || worktreeEnvelopeMatchesRoot(row, candidate)
+}
+
+func worktreeEnvelopeMatchesBranch(row WorktreeInventoryRow, candidate WorktreeEnvelopeArtifact) bool {
+	return strings.TrimSpace(row.BranchRef) != "" && strings.TrimSpace(candidate.BranchRef) == strings.TrimSpace(row.BranchRef)
+}
+
+func worktreeEnvelopeMatchesRoot(row WorktreeInventoryRow, candidate WorktreeEnvelopeArtifact) bool {
+	return row.IsMain && strings.TrimSpace(candidate.State) == "running" && strings.TrimSpace(candidate.TargetWorktreeRoot) != "" &&
 		filepath.Clean(strings.TrimSpace(candidate.TargetWorktreeRoot)) == filepath.Clean(row.Path)
-	return branchMatch || rootMatch
 }
 
 func newerWorktreeEnvelope(candidate, current WorktreeEnvelopeArtifact) bool {

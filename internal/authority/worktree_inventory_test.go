@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -269,12 +270,33 @@ func TestJoinWorktreeEnvelopeIdentityIgnoresDanglingRefs(t *testing.T) {
 		{WorkID: "work_dangling", State: "running", BranchRef: "refs/heads/(pending-dispatch)", CreatedAt: "2026-07-17T10:00:00Z"},
 		{WorkID: "work_other", State: "running", BranchRef: "refs/heads/lane-z", CreatedAt: "2026-07-17T10:00:00Z"},
 	})
-	if rows[0] != before {
+	if !reflect.DeepEqual(rows[0], before) {
 		t.Fatalf("non-matching refs (incl. the known dangling pending-dispatch) must not touch any row: %+v", rows[0])
 	}
 }
 
-// I3 (ambiguity): when two nonterminal envelopes name one branch, the newest
+// I3a (main-root ambiguity): a shared canonical delivery root is exact routing
+// evidence, but it is not enough to infer which of several running envelopes is
+// actively editing the primary checkout. Singular identity therefore stays
+// empty and the reason says that no active editor was inferred.
+func TestJoinWorktreeEnvelopeIdentityMainRootAmbiguityDoesNotInferEditor(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	rows := []WorktreeInventoryRow{{
+		Path: root, BranchRef: "refs/heads/main", IsMain: true, Reason: "primary checkout",
+	}}
+	joinWorktreeEnvelopeIdentity(rows, []WorktreeEnvelopeArtifact{
+		{WorkID: "work_old", State: "running", Holder: "codex:old", TargetWorktreeRoot: root, CreatedAt: "2026-07-17T09:00:00Z"},
+		{WorkID: "work_new", State: "running", Holder: "codex:new", TargetWorktreeRoot: root, CreatedAt: "2026-07-17T11:00:00Z"},
+	})
+	if rows[0].WorkID != "" || rows[0].WorkState != "" || rows[0].WorkHolder != "" {
+		t.Fatalf("ambiguous main-root evidence must not infer singular work identity: %+v", rows[0])
+	}
+	if !strings.Contains(rows[0].Reason, "active editor was not inferred") {
+		t.Fatalf("reason must state that the active editor was not inferred: %q", rows[0].Reason)
+	}
+}
+
+// I3b (branch-artifact ambiguity): when two nonterminal envelopes name one branch, the newest
 // (CreatedAt, then WorkID) wins and the row's reason notes the ambiguity naming
 // the winner.
 func TestJoinWorktreeEnvelopeIdentityNewestWinsOnAmbiguity(t *testing.T) {

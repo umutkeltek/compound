@@ -265,6 +265,75 @@ func TestExecutorsWorktreesF4RunningEnvelopeJoinsMainRoot(t *testing.T) {
 	}
 }
 
+// F5 ambiguity honesty: several running envelopes can share MAIN's canonical
+// delivery root. The projection must expose deterministic candidates without
+// guessing that the newest envelope is the active editor, in JSON or text.
+func TestExecutorsWorktreesF5AmbiguousMainRootDoesNotInferEditor(t *testing.T) {
+	repo := newExecutorsWorktreesCLIFixture(t)
+	canonicalRepo := landingCLIOutput(t, repo, "rev-parse", "--show-toplevel")
+	setExecutorsWorktreesLedger(t, worktreeInventoryLedger{
+		KeepsReadable: true,
+		Envelopes: []authority.WorktreeEnvelopeArtifact{
+			{WorkID: "work_zeta", State: "running", Holder: "codex:zeta", TargetWorktreeRoot: canonicalRepo, CreatedAt: "2026-07-17T11:00:00Z"},
+			{WorkID: "work_alpha", State: "running", Holder: "codex:alpha", TargetWorktreeRoot: canonicalRepo, CreatedAt: "2026-07-17T09:00:00Z"},
+		},
+	})
+	now := time.Now().Add(48 * time.Hour)
+
+	var stdout, stderr bytes.Buffer
+	if code := runExecutorsWorktrees(context.Background(), []string{"--json", "--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("json code=%d stderr=%s", code, stderr.String())
+	}
+	var payload struct {
+		Rows []struct {
+			IsMain         bool   `json:"is_main"`
+			WorkID         string `json:"work_id"`
+			WorkState      string `json:"work_state"`
+			WorkHolder     string `json:"work_holder"`
+			Reason         string `json:"reason"`
+			WorkCandidates []struct {
+				WorkID     string `json:"work_id"`
+				WorkHolder string `json:"work_holder"`
+			} `json:"work_candidates"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v\n%s", err, stdout.String())
+	}
+	mainIndex := -1
+	for i := range payload.Rows {
+		if payload.Rows[i].IsMain {
+			mainIndex = i
+			break
+		}
+	}
+	if mainIndex < 0 {
+		t.Fatal("no main row")
+	}
+	main := payload.Rows[mainIndex]
+	if main.WorkID != "" || main.WorkState != "" || main.WorkHolder != "" {
+		t.Fatalf("ambiguous main-root evidence must not expose singular identity: %+v", main)
+	}
+	if len(main.WorkCandidates) != 2 ||
+		main.WorkCandidates[0].WorkID != "work_alpha" || main.WorkCandidates[0].WorkHolder != "codex:alpha" ||
+		main.WorkCandidates[1].WorkID != "work_zeta" || main.WorkCandidates[1].WorkHolder != "codex:zeta" {
+		t.Fatalf("JSON candidates must be deterministic and retain holders: %+v", main.WorkCandidates)
+	}
+	if !strings.Contains(main.Reason, "active editor was not inferred") {
+		t.Fatalf("reason must state that the active editor was not inferred: %q", main.Reason)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runExecutorsWorktrees(context.Background(), []string{"--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("text code=%d stderr=%s", code, stderr.String())
+	}
+	if text := stdout.String(); !strings.Contains(text, "WORK") || !strings.Contains(text, "ambiguous (2 candidates)") ||
+		!strings.Contains(text, "active editor was not inferred") {
+		t.Fatalf("text mode must label main-root ambiguity honestly:\n%s", text)
+	}
+}
+
 // The CLI renders joined envelope identity: JSON carries work_id/work_state and
 // text mode surfaces a WORK column only when a row joined an exact envelope. The
 // known dangling refs/heads/(pending-dispatch) artifact is ignored.

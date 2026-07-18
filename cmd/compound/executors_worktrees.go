@@ -229,11 +229,12 @@ func printWorktreeInventory(w io.Writer, inv authority.WorktreeInventory) {
 	}
 	fmt.Fprintln(w)
 
-	// The WORK column appears only when at least one row joined an exact
-	// nonterminal envelope, so a ground-truth-only listing stays uncluttered.
+	// The WORK column appears only when at least one row joined exact singular
+	// identity or exposed ambiguous candidates, so a ground-truth-only listing
+	// stays uncluttered.
 	showWork := false
 	for _, row := range inv.Rows {
-		if row.WorkID != "" {
+		if row.WorkID != "" || len(row.WorkCandidates) > 0 {
 			showWork = true
 			break
 		}
@@ -263,6 +264,9 @@ func printWorktreeInventory(w io.Writer, inv authority.WorktreeInventory) {
 
 // worktreeWorkLabel renders a row's joined work identity for the text table.
 func worktreeWorkLabel(row authority.WorktreeInventoryRow) string {
+	if len(row.WorkCandidates) > 0 {
+		return fmt.Sprintf("ambiguous (%d candidates)", len(row.WorkCandidates))
+	}
 	if row.WorkID == "" {
 		return "-"
 	}
