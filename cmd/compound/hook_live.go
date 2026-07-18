@@ -18,7 +18,7 @@ import (
 	"compound/internal/policy"
 )
 
-const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude-code|codex|opencode> [--parity-log <dir>]"
+const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude-code|claude-zai|codex|opencode> [--parity-log <dir>]"
 
 type hookCommandArgs struct {
 	HookName     string

@@ -262,6 +262,38 @@ func TestDoctorSurfacing_LaneRowsFromCapgraph(t *testing.T) {
 	}
 }
 
+func TestDoctorSurfacingClaudeZaiLaneJoinsItsOwnGuardAndOrient(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	binary := "/opt/compound/compound"
+	profileDir := hookplan.ClaudeZaiProfileDir(base)
+	if _, err := hookplan.InstallHooksWithConfigDir(base, binary, "global", []string{"claude-zai"}, profileDir, false); err != nil {
+		t.Fatalf("install claude-zai hooks: %v", err)
+	}
+	store, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Add(capgraph.Node{
+		ID: "agent-lane:claude-zai--zai-direct--inherit--balanced", Kind: "agent-lane",
+		Name: "claude-zai / zai-direct / inherit / balanced", Weight: 0.25, EvidenceOnly: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeSyntheticOrient(t, home, "claude_zai", time.Now().Add(-time.Hour))
+	rep := runDoctorReport(t, home, base, binary)
+	zai, ok := surfacingRowByHarness(rep.Surfacing, "claude-zai")
+	if !ok {
+		t.Fatalf("claude-zai row missing from doctor: %+v", rep.Surfacing)
+	}
+	if zai.Guard != "wired" || zai.Orient != "wired" || len(zai.BelowExpectation) != 0 {
+		t.Fatalf("claude-zai surfacing = %+v, want independently wired guard+orient", zai)
+	}
+	if _, native := surfacingRowByHarness(rep.Surfacing, "claude"); native {
+		t.Fatalf("claude-zai lane collapsed into native Claude row: %+v", rep.Surfacing)
+	}
+}
+
 // runDoctorReport runs doctor with --json and returns the parsed report.
 func runDoctorReport(t *testing.T, home, base, binary string) doctorReport {
 	t.Helper()

@@ -410,6 +410,7 @@ func buildSurfacingCoverage(homePath string, hooks []doctorHook, now time.Time) 
 // (lowercase, trailing "-code" stripped) so "claude" and "claude-code" resolve to one row.
 func surfacingHarnessAlias(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
+	v = strings.ReplaceAll(v, "_", "-")
 	return strings.TrimSuffix(v, "-code")
 }
 

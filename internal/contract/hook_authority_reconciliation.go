@@ -169,6 +169,7 @@ func observeHarnessHookInstallation(harnessHome string) (hookplan.InstallationSn
 	}
 	sources := []hookInstallationSource{
 		{Harness: "claude_code", Ref: "harness://claude_code/settings", Path: filepath.Join(harnessHome, ".claude", "settings.json")},
+		{Harness: "claude_zai", Ref: "harness://claude_zai/settings", Path: filepath.Join(harnessHome, ".config", "switchback", "claude", "zai-direct", "settings.json")},
 		{Harness: "codex", Ref: "harness://codex/hooks", Path: filepath.Join(harnessHome, ".codex", "hooks.json")},
 	}
 	var sourceRevisions []string

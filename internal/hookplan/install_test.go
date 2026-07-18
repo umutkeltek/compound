@@ -63,14 +63,14 @@ func TestHookCommandQuotesSpacedPath(t *testing.T) {
 	}
 }
 
-func TestInstallHooksBothHarnesses(t *testing.T) {
+func TestInstallHooksAllHarnesses(t *testing.T) {
 	base := t.TempDir()
 	rep, err := InstallHooks(base, "/usr/local/bin/compound", "global", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Entries) != 2 {
-		t.Fatalf("expected both harnesses, got %d entries", len(rep.Entries))
+	if len(rep.Entries) != 3 {
+		t.Fatalf("expected all managed harnesses, got %d entries", len(rep.Entries))
 	}
 	for _, e := range rep.Entries {
 		if e.Action != "installed" {
@@ -81,6 +81,10 @@ func TestInstallHooksBothHarnesses(t *testing.T) {
 	claude := readJSON(t, filepath.Join(base, ".claude", "settings.json"))
 	if got := firstMatcher(t, claude); got != "Write|Edit|MultiEdit" {
 		t.Fatalf("claude matcher = %q", got)
+	}
+	zai := readJSON(t, filepath.Join(ClaudeZaiProfileDir(base), "settings.json"))
+	if got := firstMatcher(t, zai); got != "Write|Edit|MultiEdit" {
+		t.Fatalf("claude-zai matcher = %q", got)
 	}
 	codex := readJSON(t, filepath.Join(base, ".codex", "hooks.json"))
 	if got := firstMatcher(t, codex); got != "Write|Edit" {
@@ -181,6 +185,100 @@ func TestInstallHooksProjectScope(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(base, ".claude", "settings.local.json")); err != nil {
 		t.Fatalf("project scope must write settings.local.json: %v", err)
 	}
+}
+
+func TestInstallClaudeZaiProfileFullRosterNoClobberAndIdempotent(t *testing.T) {
+	base := t.TempDir()
+	profileDir := filepath.Join(base, "zai-profile")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(profileDir, "settings.json")
+	existing := `{
+  "permissions": {"defaultMode": "bypassPermissions"},
+  "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "my-own-hook"}]}]}
+}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := InstallHooksWithConfigDir(base, "/opt/Compound Apps/compound", "global", []string{"claude-zai"}, profileDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Entries) != 1 || first.Entries[0].Harness != "claude-zai" || first.Entries[0].Action != "installed" {
+		t.Fatalf("first claude-zai install = %+v", first)
+	}
+	cfg := readJSON(t, settingsPath)
+	if _, ok := cfg["permissions"]; !ok {
+		t.Fatal("claude-zai install clobbered permissions")
+	}
+	hooks, ok := cfg["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings hooks = %#v", cfg["hooks"])
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+		groups, ok := hooks[event].([]any)
+		if !ok || len(groups) == 0 {
+			t.Fatalf("claude-zai settings missing %s: %#v", event, hooks[event])
+		}
+		wantCommand := HookCommandForEvent("/opt/Compound Apps/compound", "claude-zai", event)
+		found := false
+		for _, group := range groups {
+			if firstCommand(group) == wantCommand {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("claude-zai %s missing command %q: %#v", event, wantCommand, groups)
+		}
+	}
+	if got := matcherForEvent(t, hooks, "PreToolUse"); got != "Write|Edit|MultiEdit" {
+		t.Fatalf("claude-zai PreToolUse matcher = %q", got)
+	}
+	if got := matcherForEvent(t, hooks, "PostToolUse"); got != "Write|Edit|MultiEdit" {
+		t.Fatalf("claude-zai PostToolUse matcher = %q", got)
+	}
+
+	second, err := InstallHooksWithConfigDir(base, "/opt/Compound Apps/compound", "global", []string{"claude-zai"}, profileDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Entries[0].Action != "ok" {
+		t.Fatalf("idempotent claude-zai install action = %q, want ok", second.Entries[0].Action)
+	}
+	if got := len(hooksForEvent(t, readJSON(t, settingsPath), "SessionStart")); got != 2 {
+		t.Fatalf("idempotent install duplicated SessionStart hooks: got %d groups, want user + Compound", got)
+	}
+}
+
+func matcherForEvent(t *testing.T, hooks map[string]any, event string) string {
+	t.Helper()
+	groups, ok := hooks[event].([]any)
+	if !ok {
+		t.Fatalf("%s groups = %#v", event, hooks[event])
+	}
+	for _, group := range groups {
+		entry, _ := group.(map[string]any)
+		if strings.Contains(firstCommand(group), "--harness claude-zai") {
+			matcher, _ := entry["matcher"].(string)
+			return matcher
+		}
+	}
+	return ""
+}
+
+func hooksForEvent(t *testing.T, cfg map[string]any, event string) []any {
+	t.Helper()
+	hooks, ok := cfg["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings hooks = %#v", cfg["hooks"])
+	}
+	groups, ok := hooks[event].([]any)
+	if !ok {
+		t.Fatalf("%s groups = %#v", event, hooks[event])
+	}
+	return groups
 }
 
 func firstMatcher(t *testing.T, cfg map[string]any) string {

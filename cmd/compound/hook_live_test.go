@@ -52,6 +52,42 @@ func TestHookLiveSessionStartEmitsAdditionalContext(t *testing.T) {
 	}
 }
 
+func TestHookLiveClaudeZaiSessionStartKeepsDistinctGovernedHarness(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	input := `{"hook_event_name":"SessionStart","session_id":"sess_zai","cwd":"/repo/product","source":"startup"}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"session-start", "--live", "--harness", "claude-zai"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("claude-zai live session-start exit = %d\n%s", code, out)
+	}
+	stream, err := os.ReadFile(filepath.Join(homePath, "events", "hook-events.ndjson"))
+	if err != nil {
+		t.Fatalf("read hook event stream: %v", err)
+	}
+	if !strings.Contains(string(stream), `"harness":"claude_zai"`) || !strings.Contains(string(stream), `"status":"ok"`) {
+		t.Fatalf("claude-zai event was aliased away or left fail-open:\n%s", stream)
+	}
+	contracts, err := filepath.Glob(filepath.Join(homePath, "contracts", "effective", "*", "*.json"))
+	if err != nil || len(contracts) != 1 {
+		t.Fatalf("claude-zai effective contracts = %v err=%v", contracts, err)
+	}
+	contractBody, err := os.ReadFile(contracts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contractBody), `"harness": "claude_zai"`) {
+		t.Fatalf("claude-zai EffectiveContract lost lane identity:\n%s", contractBody)
+	}
+}
+
 func TestHookLiveSessionStartOrientErrorTripsBreaker(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

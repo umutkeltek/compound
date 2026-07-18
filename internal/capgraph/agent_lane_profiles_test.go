@@ -138,6 +138,44 @@ func TestAgentLaneTupleSlugFaithfulIdentity(t *testing.T) {
 	}
 }
 
+func TestClaudeVariantLaneUsesClaudeRolesWithoutCollapsingHarnessIdentity(t *testing.T) {
+	dir := t.TempDir()
+	registryPath := filepath.Join(dir, "registry.ts")
+	overlayPath := filepath.Join(dir, "overlay.json")
+	writeFile(t, registryPath, `export const LANES = [];`)
+	writeFile(t, overlayPath, `{
+  "roles": [{
+    "id": "executor",
+    "family": "lane",
+    "description": "synthetic Claude implementation lane",
+    "capability_class": "build-implement",
+    "quality_tier": "balanced",
+    "emit": ["claude"],
+    "models": {"claude": "sonnet"}
+  }],
+  "lanes": [{
+    "id": "claude-zai",
+    "harness": "claude-zai",
+    "route": "sb run claude --with zai-direct",
+    "cost_class": "api-marginal"
+  }]
+}`)
+	home, store := newStore(t)
+	if _, err := ImportAgentLaneProfiles(home, registryPath, overlayPath, t0); err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := store.AgentLaneNodes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("claude variant import nodes = %+v, want one lane from the shared Claude role", nodes)
+	}
+	if nodes[0].Harness != "claude-zai" || !strings.HasPrefix(nodes[0].ID, "agent-lane:claude-zai--") {
+		t.Fatalf("claude variant identity collapsed into native Claude: %+v", nodes[0])
+	}
+}
+
 func TestImportAgentLaneProfilesAbsentSeedNoop(t *testing.T) {
 	home, _ := newStore(t)
 	report, err := ImportAgentLaneProfiles(home, filepath.Join(t.TempDir(), "registry.ts"), filepath.Join(t.TempDir(), "overlay.json"), t0)

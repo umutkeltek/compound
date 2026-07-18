@@ -127,6 +127,22 @@ func DefaultRegistry() Registry {
 			Limitations:    []string{"long-session instruction drift", "instruction/context budget cap"},
 			InjectBudgetMS: 1500,
 		},
+		"claude_zai": {
+			Name:                 "claude_zai",
+			InstructionMechanism: "isolated Claude profile settings + hooks + repo CLAUDE.md + linked global CLAUDE.md",
+			Capabilities: Capabilities{
+				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
+				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+			},
+			InjectBudgetMS: 1500,
+		},
 		"codex": {
 			Name:                 "codex",
 			InstructionMechanism: "AGENTS.md + hooks + skills (progressive disclosure)",
@@ -403,7 +419,7 @@ func Generic() Harness {
 
 func defaultInjectBudgetMS(name string) int {
 	switch canonicalHarnessName(name) {
-	case "claude_code", "codex":
+	case "claude_code", "claude_zai", "codex":
 		return 1500
 	default:
 		return 1000

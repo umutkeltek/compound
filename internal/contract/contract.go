@@ -3017,11 +3017,12 @@ func parseHookRegistrationTS(data []byte) (InstalledHooksManifest, error) {
 }
 
 func normalizeInstalledHookHarness(harness string) string {
-	switch strings.TrimSpace(harness) {
+	normalized := strings.ReplaceAll(strings.TrimSpace(harness), "-", "_")
+	switch normalized {
 	case "claude":
 		return "claude_code"
 	default:
-		return strings.TrimSpace(harness)
+		return normalized
 	}
 }
 
@@ -3697,7 +3698,7 @@ func codexPreToolUseLiveWrapperProofCommand() string {
 
 func preToolUseFixtureForHarness(harnessName string) string {
 	switch strings.TrimSpace(harnessName) {
-	case "claude_code":
+	case "claude_code", "claude_zai":
 		return "fixtures/hooks/pre-tool-use.claude.json"
 	case "codex":
 		return "fixtures/hooks/pre-tool-use.codex.json"

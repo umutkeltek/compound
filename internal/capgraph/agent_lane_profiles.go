@@ -280,14 +280,26 @@ func agentLaneRoleModel(role agentLaneProfileRole, emit string) string {
 }
 
 func agentLaneEmitMatches(lane agentLaneProfileLane, emit string) bool {
-	emit = agentLaneHarnessAlias(emit)
+	emit = agentLaneEmitFamily(emit)
 	candidates := []string{lane.ID, lane.Harness, agentLaneHarnessAlias(lane.ID), agentLaneHarnessAlias(lane.Harness)}
 	for _, candidate := range candidates {
-		if agentLaneHarnessAlias(candidate) == emit {
+		if agentLaneEmitFamily(candidate) == emit {
 			return true
 		}
 	}
 	return false
+}
+
+// agentLaneEmitFamily lets a provider/profile variant consume the base harness's authored roles
+// without collapsing the lane tuple itself. For example, a role emitted for "claude" can bind to
+// a "claude-zai" lane, while the resulting node still carries Harness="claude-zai" for receipts
+// and doctor attribution.
+func agentLaneEmitFamily(value string) string {
+	value = agentLaneHarnessAlias(value)
+	if strings.HasPrefix(value, "claude-") {
+		return "claude"
+	}
+	return value
 }
 
 func agentLaneHarnessAlias(value string) string {

@@ -16,6 +16,9 @@ func TestSupportsByHarness(t *testing.T) {
 	if !r.Supports("codex", "PreToolUse") {
 		t.Error("codex should support the stable native PreToolUse block")
 	}
+	if !r.Supports("claude_zai", "PreToolUse") {
+		t.Error("claude_zai should support the Claude Code native PreToolUse block")
+	}
 	// claude_code has a real SessionEnd event; codex has none (Stop is its only
 	// end-of-turn hook) — conflating them would silently overclaim a receipt codex
 	// never delivers.
@@ -81,7 +84,7 @@ func TestGenericFallback(t *testing.T) {
 
 func TestNamesSorted(t *testing.T) {
 	got := DefaultRegistry().Names()
-	want := []string{"claude_code", "codex", "hermes", "opencode"}
+	want := []string{"claude_code", "claude_zai", "codex", "hermes", "opencode"}
 	if len(got) != len(want) {
 		t.Fatalf("Names() = %v, want %v", got, want)
 	}
@@ -89,6 +92,22 @@ func TestNamesSorted(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("Names() = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestClaudeZaiCapabilitiesAreExplicitAndKeepDistinctIdentity(t *testing.T) {
+	r := DefaultRegistry()
+	zai, found := r.Get("claude_zai")
+	if !found || zai.Fallback || zai.Name != "claude_zai" {
+		t.Fatalf("claude_zai registry row = %+v found=%v, want explicit distinct non-fallback", zai, found)
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"} {
+		if !r.Supports("claude_zai", event) {
+			t.Errorf("claude_zai should support %s through its isolated Claude Code profile", event)
+		}
+	}
+	if zai.InstructionMechanism == DefaultRegistry().Harnesses["claude_code"].InstructionMechanism {
+		t.Fatal("claude_zai must document its profile-isolated steering mechanism, not copy the native row verbatim")
 	}
 }
 

@@ -8,16 +8,23 @@ import (
 	"strings"
 )
 
-// install.go is the missing WRITER half of the hook lifecycle. hookplan already models desired vs
-// observed bindings and reconciles them; InstallHooks materializes the canonical compound PreToolUse
-// binding into the harness-owned config the reconciler reads — same shape, same paths. It is
-// dual-harness by construction (Claude Code AND Codex) so Codex gets parity, not a Claude-first
-// afterthought, and it is NO-CLOBBER: it preserves every other key and every non-compound hook,
-// replacing only the one PreToolUse entry whose command is compound's own.
+// install.go is the WRITER half of the hook lifecycle. hookplan already models desired vs observed
+// bindings and reconciles them; InstallHooks materializes canonical Compound bindings into the
+// harness-owned configs the reconciler reads — same shape, same paths. It is NO-CLOBBER: it
+// preserves every other key and every non-Compound hook, replacing only entries whose command is
+// Compound's own for the same event.
 
 // hookCommandMarker identifies compound's own PreToolUse binding so an update never clobbers a user's
 // other hooks (the JSON analog of profiles' gen-marker).
 const hookCommandMarker = "hook pre-tool-use --live"
+
+const claudeZaiHarness = "claude-zai"
+
+type desiredHookBinding struct {
+	Event   string
+	Matcher string
+	Command string
+}
 
 // HarnessMatcher is the tool matcher for each harness — Claude has MultiEdit; Codex does not.
 func HarnessMatcher(harness string) string {
@@ -34,6 +41,8 @@ func ConfigRel(harness, scope string) string {
 	switch harness {
 	case "codex":
 		return filepath.Join(".codex", "hooks.json")
+	case claudeZaiHarness:
+		return filepath.Join(".config", "switchback", "claude", "zai-direct", "settings.json")
 	default: // claude-code
 		if scope == "project" {
 			return filepath.Join(".claude", "settings.local.json")
@@ -42,9 +51,25 @@ func ConfigRel(harness, scope string) string {
 	}
 }
 
+// ClaudeZaiProfileDir is the default isolated Claude profile home under a user's base directory.
+func ClaudeZaiProfileDir(baseDir string) string {
+	return filepath.Join(baseDir, ".config", "switchback", "claude", "zai-direct")
+}
+
 // HookCommand is the exact command a harness runs for the compound PreToolUse gate.
 func HookCommand(binaryPath, harness string) string {
-	return fmt.Sprintf("%s hook pre-tool-use --live --harness %s", shellQuote(binaryPath), harness)
+	return HookCommandForEvent(binaryPath, harness, "PreToolUse")
+}
+
+// HookCommandForEvent is the exact command a harness runs for one Compound live-hook event.
+func HookCommandForEvent(binaryPath, harness, event string) string {
+	verb := map[string]string{
+		"SessionStart":     "session-start",
+		"UserPromptSubmit": "user-prompt-submit",
+		"PreToolUse":       "pre-tool-use",
+		"PostToolUse":      "post-tool-use",
+	}[event]
+	return fmt.Sprintf("%s hook %s --live --harness %s", shellQuote(binaryPath), verb, harness)
 }
 
 // shellQuote wraps s in POSIX single quotes so a shell (or any shell-word splitter, including the
@@ -74,11 +99,16 @@ type HookInstallReport struct {
 	Entries []HookInstallEntry `json:"entries"`
 }
 
-// InstallHooks writes (or, with check=true, only reports) the compound PreToolUse binding into each
-// requested harness config under baseDir. binaryPath is the absolute path to the compound binary the
-// hook invokes; harnesses filters which targets to touch (empty = both). scope selects the Claude
-// config file (global settings.json vs project settings.local.json).
+// InstallHooks writes (or, with check=true, only reports) Compound bindings into each requested
+// harness config under baseDir. An empty harness list means every managed harness.
 func InstallHooks(baseDir, binaryPath, scope string, harnesses []string, check bool) (HookInstallReport, error) {
+	return InstallHooksWithConfigDir(baseDir, binaryPath, scope, harnesses, "", check)
+}
+
+// InstallHooksWithConfigDir supports an explicit isolated profile directory for claude-zai. The
+// override is intentionally narrow: mixing it with another harness would make one path flag carry
+// two incompatible meanings.
+func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []string, configDir string, check bool) (HookInstallReport, error) {
 	if strings.TrimSpace(baseDir) == "" {
 		return HookInstallReport{}, fmt.Errorf("base dir required")
 	}
@@ -90,14 +120,24 @@ func InstallHooks(baseDir, binaryPath, scope string, harnesses []string, check b
 	for _, h := range harnesses {
 		want[strings.TrimSpace(h)] = true
 	}
-	for _, harness := range []string{"claude-code", "codex"} {
+	if strings.TrimSpace(configDir) != "" && (len(want) != 1 || !want[claudeZaiHarness]) {
+		return report, fmt.Errorf("config dir is supported only with harness %s", claudeZaiHarness)
+	}
+	for _, harness := range []string{"claude-code", claudeZaiHarness, "codex"} {
 		if len(want) > 0 && !want[harness] {
 			continue
 		}
 		configPath := filepath.Join(baseDir, ConfigRel(harness, scope))
+		if harness == claudeZaiHarness && strings.TrimSpace(configDir) != "" {
+			configPath = filepath.Join(configDir, "settings.json")
+		}
 		matcher := HarnessMatcher(harness)
 		command := HookCommand(binaryPath, harness)
-		action, err := mergePreToolUseBinding(configPath, matcher, command, check)
+		bindings := []desiredHookBinding{{Event: "PreToolUse", Matcher: matcher, Command: command}}
+		if harness == claudeZaiHarness {
+			bindings = claudeZaiHookBindings(binaryPath)
+		}
+		action, err := mergeHookBindings(configPath, bindings, check)
 		if err != nil {
 			return report, fmt.Errorf("%s: %w", harness, err)
 		}
@@ -108,10 +148,25 @@ func InstallHooks(baseDir, binaryPath, scope string, harnesses []string, check b
 	return report, nil
 }
 
+func claudeZaiHookBindings(binaryPath string) []desiredHookBinding {
+	return []desiredHookBinding{
+		{Event: "SessionStart", Command: HookCommandForEvent(binaryPath, claudeZaiHarness, "SessionStart")},
+		{Event: "UserPromptSubmit", Command: HookCommandForEvent(binaryPath, claudeZaiHarness, "UserPromptSubmit")},
+		{Event: "PreToolUse", Matcher: HarnessMatcher(claudeZaiHarness), Command: HookCommandForEvent(binaryPath, claudeZaiHarness, "PreToolUse")},
+		{Event: "PostToolUse", Matcher: HarnessMatcher(claudeZaiHarness), Command: HookCommandForEvent(binaryPath, claudeZaiHarness, "PostToolUse")},
+	}
+}
+
 // mergePreToolUseBinding merges compound's PreToolUse binding into an existing harness config without
 // disturbing any other content. It identifies compound's own entry by command marker so re-installs
 // update in place and a user's other PreToolUse hooks are never touched.
 func mergePreToolUseBinding(configPath, matcher, command string, check bool) (string, error) {
+	return mergeHookBindings(configPath, []desiredHookBinding{{Event: "PreToolUse", Matcher: matcher, Command: command}}, check)
+}
+
+// mergeHookBindings performs one read and at most one write for a complete desired roster. This
+// keeps the isolated profile from observing a partially-installed four-event set.
+func mergeHookBindings(configPath string, bindings []desiredHookBinding, check bool) (string, error) {
 	root := map[string]any{}
 	if data, err := os.ReadFile(configPath); err == nil {
 		if len(strings.TrimSpace(string(data))) > 0 {
@@ -123,43 +178,51 @@ func mergePreToolUseBinding(configPath, matcher, command string, check bool) (st
 		return "", err
 	}
 
-	ourEntry := map[string]any{
-		"matcher": matcher,
-		"hooks":   []any{map[string]any{"type": "command", "command": command}},
-	}
-
 	hooks, _ := root["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	pre, _ := hooks["PreToolUse"].([]any)
-
-	idx := -1
-	for i, e := range pre {
-		if em, ok := e.(map[string]any); ok && bindingIsCompound(em) {
-			idx = i
-			break
+	action := "ok"
+	for _, binding := range bindings {
+		if strings.TrimSpace(binding.Event) == "" || strings.TrimSpace(binding.Command) == "" {
+			return "", fmt.Errorf("hook binding needs event and command")
 		}
+		ourEntry := map[string]any{
+			"hooks": []any{map[string]any{"type": "command", "command": binding.Command}},
+		}
+		if strings.TrimSpace(binding.Matcher) != "" {
+			ourEntry["matcher"] = binding.Matcher
+		}
+		groups, _ := hooks[binding.Event].([]any)
+		idx := -1
+		for i, entry := range groups {
+			if em, ok := entry.(map[string]any); ok && bindingIsCompoundEvent(em, binding.Event) {
+				idx = i
+				break
+			}
+		}
+		switch {
+		case idx >= 0 && sameEntry(groups[idx], ourEntry):
+		case idx >= 0:
+			if check {
+				action = combineHookInstallAction(action, "drift", true)
+				continue
+			}
+			groups[idx] = ourEntry
+			action = combineHookInstallAction(action, "updated", false)
+		default:
+			if check {
+				action = combineHookInstallAction(action, "absent", true)
+				continue
+			}
+			groups = append(groups, ourEntry)
+			action = combineHookInstallAction(action, "installed", false)
+		}
+		hooks[binding.Event] = groups
 	}
-
-	action := "installed"
-	switch {
-	case idx >= 0 && sameEntry(pre[idx], ourEntry):
-		return "ok", nil
-	case idx >= 0:
-		if check {
-			return "drift", nil
-		}
-		pre[idx] = ourEntry
-		action = "updated"
-	default:
-		if check {
-			return "absent", nil
-		}
-		pre = append(pre, ourEntry)
+	if check || action == "ok" {
+		return action, nil
 	}
-
-	hooks["PreToolUse"] = pre
 	root["hooks"] = hooks
 	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
@@ -174,12 +237,42 @@ func mergePreToolUseBinding(configPath, matcher, command string, check bool) (st
 	return action, nil
 }
 
+func combineHookInstallAction(current, next string, check bool) string {
+	if check {
+		if current == "drift" || next == "drift" {
+			return "drift"
+		}
+		if current == "absent" || next == "absent" {
+			return "absent"
+		}
+		return "ok"
+	}
+	if current == "updated" || next == "updated" {
+		return "updated"
+	}
+	if current == "installed" || next == "installed" {
+		return "installed"
+	}
+	return "ok"
+}
+
 // bindingIsCompound reports whether a PreToolUse entry is compound's own (matched by command marker).
 func bindingIsCompound(entry map[string]any) bool {
+	return bindingIsCompoundEvent(entry, "PreToolUse")
+}
+
+func bindingIsCompoundEvent(entry map[string]any, event string) bool {
+	verb := map[string]string{
+		"SessionStart":     "session-start",
+		"UserPromptSubmit": "user-prompt-submit",
+		"PreToolUse":       "pre-tool-use",
+		"PostToolUse":      "post-tool-use",
+	}[event]
+	marker := "hook " + verb + " --live"
 	inner, _ := entry["hooks"].([]any)
 	for _, h := range inner {
 		if hm, ok := h.(map[string]any); ok {
-			if cmd, _ := hm["command"].(string); strings.Contains(cmd, hookCommandMarker) {
+			if cmd, _ := hm["command"].(string); strings.Contains(cmd, marker) {
 				return true
 			}
 		}
