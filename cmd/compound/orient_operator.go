@@ -1050,8 +1050,21 @@ func prepareOrientStrangerDeal(store *mem.Store, homePath, excludeTopic string, 
 		if cooled[c.ID] {
 			continue
 		}
-		if excludeSet != nil && excludeSet[c.Topic()] {
-			continue
+		if excludeSet != nil {
+			memberships, err := store.CandidateTopicMembership(c.ID)
+			if err != nil {
+				return nil
+			}
+			excluded := false
+			for _, membership := range memberships {
+				if excludeSet[membership] {
+					excluded = true
+					break
+				}
+			}
+			if excluded {
+				continue
+			}
 		}
 		chosen = c
 		break // pool is sorted oldest-first, so the first eligible candidate wins
@@ -1061,7 +1074,11 @@ func prepareOrientStrangerDeal(store *mem.Store, homePath, excludeTopic string, 
 	}
 	topic := chosen.Topic()
 	cardID := "stranger:" + chosen.ID
-	summary := fmt.Sprintf("stranger: %s.%s = %s (topic: %s, state: %s) — cross-topic, un-adjudicated", chosen.Entity, chosen.Predicate, chosen.Object, topic, chosen.State)
+	relationship := "un-adjudicated weak tie"
+	if strings.TrimSpace(excludeTopic) != "" {
+		relationship = "outside the excluded topic subtree, un-adjudicated"
+	}
+	summary := fmt.Sprintf("stranger: %s.%s = %s (topic: %s, state: %s) — %s", chosen.Entity, chosen.Predicate, chosen.Object, topic, chosen.State, relationship)
 	row := mem.StrangerDealtRow{Ts: now.UTC().Format(time.RFC3339), CardID: cardID, CandidateRef: chosen.ID, Topic: topic}
 	if orientStrangerDealPreparedObserver != nil {
 		orientStrangerDealPreparedObserver()

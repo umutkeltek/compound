@@ -12,3 +12,14 @@ package mem
 func (item CandidateListItem) Topic() string {
 	return topicFromQualifiers(item.Predicate, item.Qualifiers)
 }
+
+// CandidateTopicMembership returns every topic axis that can place an admitted candidate in a
+// taxonomy subtree: its domain/predicate fallback plus its explicit concept TopicRefs. The
+// caller receives a normalized copy and cannot mutate candidate authority.
+func (s *Store) CandidateTopicMembership(candidateID string) ([]string, error) {
+	candidate, err := s.getCandidate(candidateID)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeStringRefs(append([]string{candidate.Topic()}, candidate.TopicRefs...)), nil
+}

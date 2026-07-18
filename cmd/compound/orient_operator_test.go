@@ -1673,6 +1673,65 @@ func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
 		}
 	})
 
+	t.Run("f5 topic-ref descendant of excluded subtree is not dealt", func(t *testing.T) {
+		homePath := t.TempDir()
+		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+		if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		s, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		topics := []byte(`{"topics":[{"slug":"topic-root"},{"slug":"topic-child","parent":"topic-root"},{"slug":"topic-outside"}]}`)
+		if _, err := s.ImportTopics(topics, now.Add(-45*time.Minute)); err != nil {
+			t.Fatalf("import topic subtree: %v", err)
+		}
+		excluded := strangerFixtureCandidate("entity:f5-topic-ref-excluded", "fallback-unrelated")
+		excluded.TopicRefs = []string{"topic-child"}
+		outside := strangerFixtureCandidate("entity:f5-topic-ref-outside", "fallback-outside")
+		outside.TopicRefs = []string{"topic-outside"}
+		excludedRows, err := s.Capture([]mem.Candidate{excluded}, now.Add(-31*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		outsideRows, err := s.Capture([]mem.Candidate{outside}, now.Add(-30*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		card := finalizeOrientStrangerForTest(t, s, homePath, "topic-root", now)
+		if card == nil {
+			t.Fatal("expected the candidate outside the excluded topic subtree")
+		}
+		if len(card.Refs) != 1 || card.Refs[0] != outsideRows[0].ID {
+			t.Fatalf("dealt card = %+v, want outside candidate %s; older descendant candidate %s must be excluded via topic_refs", card, outsideRows[0].ID, excludedRows[0].ID)
+		}
+	})
+
+	t.Run("f5 no topic context does not claim cross-topic", func(t *testing.T) {
+		homePath := t.TempDir()
+		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+		if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+			t.Fatalf("init home: %v", err)
+		}
+		s, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Capture([]mem.Candidate{strangerFixtureCandidate("entity:f5-no-topic-context", "")}, now.Add(-30*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+
+		card := finalizeOrientStrangerForTest(t, s, homePath, "", now)
+		if card == nil {
+			t.Fatal("expected a stranger card without an exclusion topic")
+		}
+		if strings.Contains(card.Summary, "cross-topic") {
+			t.Fatalf("summary claims an unproven cross-topic relationship without exclusion or current-topic context: %q", card.Summary)
+		}
+	})
+
 	t.Run("f6 terminal-state candidates are never dealt", func(t *testing.T) {
 		homePath := t.TempDir()
 		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
