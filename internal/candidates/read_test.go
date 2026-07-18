@@ -246,6 +246,84 @@ func TestCreateCandidateIfAbsentPreservesExistingBytes(t *testing.T) {
 	})
 }
 
+func TestCreateCandidateIfAbsentPublishesWholeDurableJSON(t *testing.T) {
+	home := t.TempDir()
+	type rec struct {
+		ID     string `json:"id"`
+		Kind   string `json:"kind"`
+		Marker string `json:"marker"`
+	}
+	payload := rec{ID: "durable", Kind: string(Memory), Marker: "whole"}
+	want := canonicalCandidateBody(t, payload)
+	target := filepath.Join(home, InboxDir(Memory), "durable.json")
+
+	originalLink := linkCandidateFile
+	originalSync := syncCandidateDirectoryFn
+	t.Cleanup(func() {
+		linkCandidateFile = originalLink
+		syncCandidateDirectoryFn = originalSync
+	})
+	events := make([]string, 0, 2)
+	linkCandidateFile = func(tempPath, targetPath string) error {
+		events = append(events, "link")
+		if targetPath != target {
+			t.Fatalf("link target = %s, want %s", targetPath, target)
+		}
+		if _, err := os.Lstat(targetPath); !os.IsNotExist(err) {
+			t.Fatalf("authoritative target existed before link: %v", err)
+		}
+		staged, err := os.ReadFile(tempPath)
+		if err != nil {
+			t.Fatalf("read staged candidate: %v", err)
+		}
+		if !bytes.Equal(staged, want) {
+			t.Fatalf("staged candidate was partial/noncanonical: got %q want %q", staged, want)
+		}
+		info, err := os.Stat(tempPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o644 {
+			t.Fatalf("staged candidate mode = %o, want 644", info.Mode().Perm())
+		}
+		return os.Link(tempPath, targetPath)
+	}
+	syncCandidateDirectoryFn = func(path string) error {
+		events = append(events, "sync")
+		if path != filepath.Dir(target) {
+			t.Fatalf("synced directory = %s, want %s", path, filepath.Dir(target))
+		}
+		return syncCandidateDirectory(path)
+	}
+
+	created, err := CreateCandidateIfAbsent(home, Memory, "durable", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("new candidate reported not-created")
+	}
+	if strings.Join(events, ",") != "link,sync" {
+		t.Fatalf("publication events = %v, want [link sync]", events)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("published candidate = %q, want %q", got, want)
+	}
+	entries, err := os.ReadDir(filepath.Dir(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".candidate-publish-") {
+			t.Fatalf("candidate temp leaked after publication: %s", entry.Name())
+		}
+	}
+}
+
 // Guards (C3 hardening): the codec rejects path-shaped ids and payloads that
 // contradict the path they would be filed under.
 func TestCandidateCodecGuards(t *testing.T) {
