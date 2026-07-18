@@ -44,8 +44,17 @@ var transitions = map[string][]string{
 // terminalStates may not advance further; close lands a work in one of them.
 var terminalStates = map[string]bool{"completed": true, "failed": true, "cancelled": true}
 
+const crossStateClaimedAdvanceRefusal = "claimed is reached only via 'compound work claim' (claim-before-you-touch); bare advance cannot bind authority owner+lease"
+
 func terminalStateRequiresClose(action, state string) error {
 	return fmt.Errorf("%s cannot enter terminal state %q; use Close so Receipt and Transition proof are emitted", action, state)
+}
+
+func crossStateClaimedAdvanceError(from, to string) error {
+	if to == "claimed" && from != "claimed" {
+		return errors.New(crossStateClaimedAdvanceRefusal)
+	}
+	return nil
 }
 
 func canTransition(from, to string) bool {
@@ -912,6 +921,9 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	}
 	if terminalStates[in.To] {
 		return w, terminalStateRequiresClose("advance", in.To)
+	}
+	if err := crossStateClaimedAdvanceError(w.State, in.To); err != nil {
+		return w, err
 	}
 	if in.To != w.State && !canTransition(w.State, in.To) {
 		return w, fmt.Errorf("illegal transition %s -> %s (allowed: %s)", w.State, in.To, strings.Join(transitions[w.State], ", "))

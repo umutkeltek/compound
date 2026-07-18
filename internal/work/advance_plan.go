@@ -83,6 +83,9 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 	if err != nil {
 		return AdvancePlan{}, err
 	}
+	if err := crossStateClaimedAdvanceError(w.State, to); err != nil {
+		return AdvancePlan{}, err
+	}
 	actor := strings.TrimSpace(opts.Actor)
 	if actor == "" {
 		actor = "codex"
