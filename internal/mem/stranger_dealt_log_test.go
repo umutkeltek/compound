@@ -109,3 +109,39 @@ func TestFinalizeStrangerDealRevalidatesCandidateState(t *testing.T) {
 		t.Fatalf("rejected candidate produced dealt-log rows: %+v", rows)
 	}
 }
+
+func TestFinalizeStrangerDealRevalidatesCandidateExpiry(t *testing.T) {
+	homePath := t.TempDir()
+	preparedAt := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	store, err := Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := cand("entity:finalize-expiry", "status", "pending", "2026-07-17")
+	candidate.ExpiresAt = preparedAt.Add(time.Hour).UTC().Format(time.RFC3339)
+	captured, err := store.Capture([]Candidate{candidate}, preparedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalizeAt := preparedAt.Add(2 * time.Hour)
+	row := StrangerDealtRow{
+		Ts:           finalizeAt.UTC().Format(time.RFC3339),
+		CardID:       "stranger:" + captured[0].ID,
+		CandidateRef: captured[0].ID,
+		Topic:        captured[0].Topic(),
+	}
+	finalized, err := store.FinalizeStrangerDeal(row, finalizeAt, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalized {
+		t.Fatal("a candidate that expired after preparation must not finalize a deal")
+	}
+	rows, err := ReadStrangerDealtLog(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expired candidate produced dealt-log rows: %+v", rows)
+	}
+}

@@ -167,6 +167,9 @@ func (s *Store) FinalizeStrangerDeal(row StrangerDealtRow, now time.Time, cooldo
 		if candidate.State != "proposed" && candidate.State != "parked" {
 			return nil
 		}
+		if candidateExpired(candidate, now) {
+			return nil
+		}
 		if topic := strings.TrimSpace(row.Topic); topic != "" && candidate.Topic() != topic {
 			return nil
 		}
