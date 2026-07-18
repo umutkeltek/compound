@@ -282,17 +282,6 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		return report, err
 	}
 
-	// Cleanliness is scoped to the paths THIS envelope owns (its base..candidate
-	// diff), not the whole worktree. Before containment, owned-path dirt blocks a
-	// landing because the merge would cross mutable local state. After the exact
-	// candidate is already contained in both authoritative refs, later worktree
-	// dirt cannot change that immutable Git proof; keep it visible as a preservation
-	// diagnostic without holding the completed delivery hostage.
-	ownedDirty, ownedDirtyPaths, err := landingOwnedPathsDirty(repoPath, expectedBase, candidate)
-	if err != nil {
-		return report, err
-	}
-
 	if report.CandidateContainedInTarget {
 		if contract.PublicationMode == "required" {
 			report.PublicationSHA, err = runLandingGitOutput(repoPath, "rev-parse", "--verify", contract.PublicationRef+"^{commit}")
@@ -311,11 +300,22 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		} else {
 			report.CandidateContainedInPublication = true
 		}
-		if ownedDirty {
-			report.NextAction = landingContainedDirtyDiagnostic(targetRef, ownedDirtyPaths)
+		// Immutable target/publication containment settles delivery, but does not
+		// make later worktree state disappear. Surface every dirty path as a
+		// preservation warning so default text clients do not hide foreign WIP.
+		if !report.CleanTarget {
+			report.NextAction = landingContainedDirtyDiagnostic(targetRef, dirtyStatusPaths(statusOutput))
 		}
 		report.Status = "landed"
 		return report, nil
+	}
+
+	// While landing is still necessary, scope the blocking cleanliness gate to
+	// paths this envelope owns (its base..candidate diff). Unrelated dirt remains
+	// diagnostic state through CleanTarget, but cannot hold the landing hostage.
+	ownedDirty, ownedDirtyPaths, err := landingOwnedPathsDirty(repoPath, expectedBase, candidate)
+	if err != nil {
+		return report, err
 	}
 	if ownedDirty {
 		report.Status = "dirty_target"
@@ -405,8 +405,8 @@ func landingOwnedDirtyNextAction(targetRef string, ownedDirtyPaths []string) str
 	return fmt.Sprintf("the %s target worktree has uncommitted changes to files this work owns (%s); commit or set them aside without discarding unrelated work, then rerun land-check", targetRef, strings.Join(preview, ", "))
 }
 
-func landingContainedDirtyDiagnostic(targetRef string, ownedDirtyPaths []string) string {
-	preview := ownedDirtyPaths
+func landingContainedDirtyDiagnostic(targetRef string, dirtyPaths []string) string {
+	preview := dirtyPaths
 	if len(preview) > 5 {
 		preview = preview[:5]
 	}
