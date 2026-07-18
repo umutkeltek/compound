@@ -63,27 +63,32 @@ var causeConsumptionTiers = []string{
 // they get their own tier and are excluded from the thesis ratio's denominator.
 var causeConsumptionNonMemoryPrefixes = []string{"commit:", "work_", "source:", "decision:"}
 
-// ClaimByID returns the claim with the given id among all persisted claim versions (not just
-// the currently-live fold) — a claim:// ref may legitimately cite a since-superseded version.
-// This is the "new exported indexed lookup" the packet calls out as net-new: no Claim-by-ID
-// accessor existed before this file (loadClaimsRaw was private and unindexed). It stays O(n)
-// over the claims log deliberately — there is no id index yet, and this resolver is called at
-// most once per distinct ref per report build, never in a hot per-request loop.
-func (s *Store) ClaimByID(id string) (Claim, bool, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return Claim{}, false, nil
-	}
-	claims, err := s.loadClaimsRaw()
+// loadCauseConsumptionClaims is the report's test seam for proving claim-log I/O shape.
+// Production uses the owned raw claim loader; tests may wrap it to count loads.
+var loadCauseConsumptionClaims = func(s *Store) ([]Claim, error) {
+	return s.loadClaimsRaw()
+}
+
+type causeConsumptionRefResolver struct {
+	store      *Store
+	claimsByID map[string]bool
+}
+
+// newCauseConsumptionRefResolver loads and indexes every persisted claim version once for one
+// report. A claim:// ref may legitimately cite a superseded version, so the current fold alone
+// is insufficient; the index stays private because it is a report implementation detail.
+func newCauseConsumptionRefResolver(s *Store) (*causeConsumptionRefResolver, error) {
+	claims, err := loadCauseConsumptionClaims(s)
 	if err != nil {
-		return Claim{}, false, err
+		return nil, err
 	}
-	for _, c := range claims {
-		if c.ID == id {
-			return c, true, nil
+	claimsByID := make(map[string]bool, len(claims))
+	for _, claim := range claims {
+		if id := strings.TrimSpace(claim.ID); id != "" {
+			claimsByID[id] = true
 		}
 	}
-	return Claim{}, false, nil
+	return &causeConsumptionRefResolver{store: s, claimsByID: claimsByID}, nil
 }
 
 // TierOfRef buckets one Transition.Cause.CausedByRefs entry into a D1 tier (F1). Ref forms:
@@ -95,6 +100,14 @@ func (s *Store) ClaimByID(id string) (Claim, bool, error) {
 //     exact ref first (covers the common cand_* shape), then a bare Claim-id lookup (a ref that
 //     names a Claim.ID directly, no claim:// scheme) => observed_raw if neither resolves.
 func (s *Store) TierOfRef(ref string) (string, error) {
+	resolver, err := newCauseConsumptionRefResolver(s)
+	if err != nil {
+		return "", err
+	}
+	return resolver.tierOfRef(ref)
+}
+
+func (r *causeConsumptionRefResolver) tierOfRef(ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return CauseConsumptionTierNonMemory, nil
@@ -109,23 +122,19 @@ func (s *Store) TierOfRef(ref string) (string, error) {
 		if id == "" {
 			return CauseConsumptionTierObservedRaw, nil
 		}
-		if _, ok, err := s.ClaimByID(id); err != nil {
-			return "", err
-		} else if ok {
+		if r.claimsByID[id] {
 			return CauseConsumptionTierPromoted, nil
 		}
 		return CauseConsumptionTierObservedRaw, nil
 	}
-	cands, err := s.CandidatesByID([]string{ref})
+	cands, err := r.store.CandidatesByID([]string{ref})
 	if err != nil {
 		return "", err
 	}
 	if c, ok := cands[ref]; ok {
 		return tierForCandidateState(c.State), nil
 	}
-	if _, ok, err := s.ClaimByID(ref); err != nil {
-		return "", err
-	} else if ok {
+	if r.claimsByID[ref] {
 		return CauseConsumptionTierPromoted, nil
 	}
 	return CauseConsumptionTierObservedRaw, nil
@@ -232,6 +241,10 @@ func BuildCauseConsumptionReport(homePath string, now time.Time) (CauseConsumpti
 		}
 		return rep, err
 	}
+	resolver, err := newCauseConsumptionRefResolver(store)
+	if err != nil {
+		return rep, err
+	}
 
 	for _, entry := range entries {
 		record, err := entry.Read()
@@ -274,7 +287,7 @@ func BuildCauseConsumptionReport(homePath string, now time.Time) (CauseConsumpti
 			if ref == "" {
 				continue
 			}
-			tier, err := store.TierOfRef(ref)
+			tier, err := resolver.tierOfRef(ref)
 			if err != nil {
 				return rep, err
 			}

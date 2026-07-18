@@ -241,6 +241,42 @@ func TestBuildCauseConsumptionReportZeroTransitionsIsHonestZero(t *testing.T) {
 	}
 }
 
+func TestBuildCauseConsumptionReportLoadsClaimsOncePerReport(t *testing.T) {
+	homePath := t.TempDir()
+	s, err := Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := s.Capture([]Candidate{cand("entity:claim-load-shape", "status", "live", "")}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := promoteForTest(t, s, captured[0].ID, "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteCauseTransition(t, s, "tr_claim_load_shape", "work_claim_load_shape", "repair", []string{
+		"claim://" + promoted.Claim.ID,
+		"claim://claim_missing_one",
+		"claim://claim_missing_two",
+	}, t0.Add(time.Minute))
+
+	previousLoader := loadCauseConsumptionClaims
+	loads := 0
+	loadCauseConsumptionClaims = func(store *Store) ([]Claim, error) {
+		loads++
+		return previousLoader(store)
+	}
+	t.Cleanup(func() { loadCauseConsumptionClaims = previousLoader })
+
+	if _, err := BuildCauseConsumptionReport(homePath, t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if loads != 1 {
+		t.Fatalf("claim log loaded %d times, want exactly once per report regardless of ref count", loads)
+	}
+}
+
 // TestWriteCauseConsumptionRunWritesOnlyUnderStateRuns is F3: --record's artifact lands only
 // under state/runs/cause-consumption/, never ledger/, projections/, candidates/, or claims/.
 func TestWriteCauseConsumptionRunWritesOnlyUnderStateRuns(t *testing.T) {
