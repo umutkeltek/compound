@@ -186,6 +186,7 @@ func printMigrateReport(w io.Writer, report eventstore.MigrateReport) {
 		fmt.Fprintf(w, "- repair_manifests: %d\n", comp.RepairManifests)
 		fmt.Fprintf(w, "- repaired_records: %d\n", comp.RepairedRecords)
 		fmt.Fprintf(w, "- divergent_archived: %d\n", comp.DivergentArchived)
+		fmt.Fprintf(w, "- post_plan_rows: %d\n", comp.PostPlanRows)
 		if comp.LegacyWriterActive {
 			fmt.Fprintf(w, "- status: degraded:legacy_writer_active\n")
 		}

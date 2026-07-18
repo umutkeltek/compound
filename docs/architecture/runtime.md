@@ -119,6 +119,10 @@ lock before replaying the reserved Receipt/Transition. It does not re-evaluate a
 immutable, and it cannot use that replay path to mint replacement bytes: a missing or different terminal file, a
 foreign rooted identity, or sealed-tuple drift fails closed. A separate supersession proof then binds the rooted
 terminal to the same work transaction.
+The frozen census ends at the published completion instant: a manifest row recorded after it is runtime growth a
+pre-refusal binary folded in, never legacy census. `migrate --verify` excludes such rows from the frozen plan
+comparison, reports them separately, and accepts each only while its segment authority and archived original both
+survive byte-exactly — a missing or divergent archive fails closed.
 After completion, legacy `migrate --apply` refuses whenever loose records exist, so this governed path is the only
 physical repair owner. Loose-path drift fails closed. The sole tolerated coexistence is a byte-identical same-ID
 regular-file recurrence proven against the sealed archive and result. Old result replay and proof finalization do

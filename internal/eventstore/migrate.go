@@ -143,6 +143,7 @@ type CompletionReport struct {
 	RepairManifests    int            `json:"repair_manifests,omitempty"`
 	RepairedRecords    int            `json:"repaired_records,omitempty"`
 	DivergentArchived  int            `json:"divergent_archived,omitempty"`
+	PostPlanRows       int            `json:"post_plan_rows,omitempty"`
 	CompletedAt        string         `json:"completed_at,omitempty"`
 }
 
@@ -1693,8 +1694,51 @@ func (m *migrator) evaluateCompletion(plan migratePlan, presence map[string]segm
 		DiscoveredExpected: plan.DiscoveredCount,
 		ExpectedDigest:     plan.ExpectedDigest,
 	}
+	// The frozen census ends at the published completion instant. A manifest
+	// row recorded after it is runtime growth a pre-refusal binary folded in
+	// (find_b642a87db247's class): it never joins the plan comparison, and it
+	// verifies only while segment authority AND its archived original survive.
+	var completedAt time.Time
+	if data, readErr := os.ReadFile(m.engine.completionPath()); readErr == nil {
+		var published CompletionReport
+		if json.Unmarshal(data, &published) == nil && published.CompletedAt != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339Nano, published.CompletedAt); parseErr == nil {
+				completedAt = parsed
+			}
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return CompletionReport{}, readErr
+	}
 	var pairs []string
 	for id, row := range manifest {
+		if !completedAt.IsZero() && row.RecordedAt != "" {
+			if recordedAt, parseErr := time.Parse(time.RFC3339Nano, row.RecordedAt); parseErr == nil && recordedAt.After(completedAt) {
+				comp.PostPlanRows++
+				if row.Status != statusMigrated && row.Status != statusAlreadyPresent {
+					comp.Reasons = append(comp.Reasons, fmt.Sprintf("post-plan manifest row %s has unresolved status %q", id, row.Status))
+					continue
+				}
+				loc, ok := presence[id]
+				if !ok {
+					comp.Reasons = append(comp.Reasons, fmt.Sprintf("post-plan record %s is not present in any segment", id))
+					continue
+				}
+				if loc.sha256 != row.CanonicalSHA256 {
+					comp.Reasons = append(comp.Reasons, fmt.Sprintf("post-plan segment record %s canonical hash %s differs from manifest %s", id, loc.sha256, row.CanonicalSHA256))
+					continue
+				}
+				shard := recordHash([]byte(id))[:2]
+				original, archiveErr := os.ReadFile(filepath.Join(m.engine.archiveRoot(), shard, id+".json"))
+				if archiveErr != nil {
+					comp.Reasons = append(comp.Reasons, fmt.Sprintf("post-plan record %s has no readable archived original", id))
+					continue
+				}
+				if recordHash(original) != row.SourceSHA256 {
+					comp.Reasons = append(comp.Reasons, fmt.Sprintf("archived original for post-plan record %s does not match its source hash", id))
+				}
+				continue
+			}
+		}
 		switch row.Status {
 		case statusRejected:
 			comp.Rejected++

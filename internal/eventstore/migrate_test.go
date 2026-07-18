@@ -2,6 +2,7 @@ package eventstore
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -584,5 +585,107 @@ func TestMigrateDryRunClassifiesAndRejectionBlocksCompletion(t *testing.T) {
 	}
 	if !reasonsContain(apply.Completion.Reasons, "rejected") {
 		t.Fatalf("no rejected-record reason surfaced: %v", apply.Completion.Reasons)
+	}
+}
+
+// FALSIFIER (post-plan manifest attribution): a manifest row recorded after the
+// published completion instant is runtime growth, never legacy census. The
+// frozen plan comparison must exclude it; verify stays green only while the row
+// keeps segment authority AND its archived original with exact source bytes,
+// and reports it separately. Real-home shape: find_b642a87db247's 294 rows
+// folded by a pre-refusal binary on 2026-07-17.
+func TestMigrateVerifyAttributesPostPlanManifestRowsSeparately(t *testing.T) {
+	store := openMigrateStore(t)
+	for _, id := range []string{"rec_pa", "tr_pb"} {
+		seedLoose(t, store, id, "body-"+id)
+	}
+	report, err := store.Migrate(MigrateOptions{Mode: ModeApply})
+	if err != nil || !report.Completion.Complete {
+		t.Fatalf("apply: err=%v reasons=%v", err, report.Completion.Reasons)
+	}
+
+	// Reproduce the incident fold exactly: segment append + legacy manifest row
+	// + archived original, all recorded after the completion instant.
+	const id = "act_postplan1"
+	putRecord(t, store, id, schemaForID(id), migrateNow.Add(time.Hour), "post-plan-body")
+	var canonical string
+	for _, frame := range strictSegmentFrames(t, store.engine.segRoot) {
+		if frame.ID == id {
+			canonical = frame.SHA256
+		}
+	}
+	if canonical == "" {
+		t.Fatal("post-plan record missing from segments")
+	}
+	originalBytes := []byte(`{"id":"` + id + `","incident":"loose original"}` + "\n")
+	manifestData, err := os.ReadFile(store.engine.manifestPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstRow manifestRow
+	if err := json.Unmarshal([]byte(strings.SplitN(string(manifestData), "\n", 2)[0]), &firstRow); err != nil {
+		t.Fatal(err)
+	}
+	row := manifestRow{
+		Schema: firstRow.Schema, ID: id,
+		SourceSHA256: recordHash(originalBytes), CanonicalSHA256: canonical,
+		Family: "action", Status: statusMigrated,
+		RecordedAt: migrateNow.Add(2 * time.Hour).UTC().Format(time.RFC3339Nano),
+	}
+	line, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(store.engine.manifestPath(), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := archivePath(store, id)
+	if err := os.MkdirAll(filepath.Dir(archive), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archive, originalBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	verify, err := store.Migrate(MigrateOptions{Mode: ModeVerify})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !verify.Completion.Complete || verify.Completion.PostPlanRows != 1 {
+		t.Fatalf("post-plan row with archive+segment authority did not verify green: post_plan_rows=%d reasons=%v", verify.Completion.PostPlanRows, verify.Completion.Reasons)
+	}
+	if verify.Completion.DiscoveredExpected != 2 || verify.Completion.Migrated != 2 {
+		t.Fatalf("post-plan row leaked into the frozen census: %+v", verify.Completion)
+	}
+
+	// A post-plan row whose archived original diverges is unrecoverable growth.
+	if err := os.WriteFile(archive, []byte(`{"tampered":true}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	verify, err = store.Migrate(MigrateOptions{Mode: ModeVerify})
+	if err != nil {
+		t.Fatalf("verify tampered archive: %v", err)
+	}
+	if verify.Completion.Complete || !reasonsContain(verify.Completion.Reasons, "archived original") {
+		t.Fatalf("divergent post-plan archive was not refused: %+v", verify.Completion.Reasons)
+	}
+
+	// A post-plan row with no archived original at all fails closed.
+	if err := os.Remove(archive); err != nil {
+		t.Fatal(err)
+	}
+	verify, err = store.Migrate(MigrateOptions{Mode: ModeVerify})
+	if err != nil {
+		t.Fatalf("verify missing archive: %v", err)
+	}
+	if verify.Completion.Complete || !reasonsContain(verify.Completion.Reasons, "archived original") {
+		t.Fatalf("archive-less post-plan row was not refused: %+v", verify.Completion.Reasons)
 	}
 }
