@@ -238,6 +238,28 @@ func TestBuildWorktreeInventoryUnreadableFactIsolatedAsUnknown(t *testing.T) {
 	}
 }
 
+// A clean, contained worktree is retireable only when liveness is positively
+// resolved as unused. Unknown liveness must fail closed instead of falling
+// through to landed_clean and its retirement action.
+func TestBuildWorktreeInventoryUnknownLivenessNeverRetireable(t *testing.T) {
+	fix := newWorktreeInventoryFixture(t)
+
+	inv, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: inventoryUnknownLiveness{},
+	}, fix.repo, WorktreeInventoryOptions{Now: inventoryFutureNow()})
+	if err != nil {
+		t.Fatalf("build inventory: %v", err)
+	}
+
+	row := inventoryRowByBranch(t, inv, "lane-landed")
+	if row.Class != WorktreeClassUnknown {
+		t.Fatalf("unknown liveness class = %q, want unknown; row=%+v", row.Class, row)
+	}
+	if strings.Contains(row.NextAction, "retire") {
+		t.Fatalf("unknown liveness must never offer retirement: %+v", row)
+	}
+}
+
 // I1 (identity exact-evidence): a row whose branch ref matches a nonterminal
 // envelope's worktree-branch: artifact gains work_id+state; a row with no
 // artifact stays honestly bare, and a single match notes no ambiguity.
@@ -525,6 +547,12 @@ func (f inventoryFakeLiveness) Observe(_ context.Context, path string) WorktreeL
 		return WorktreeLivenessObservation{State: WorktreeLivenessActive, Evidence: "fake: open handles"}
 	}
 	return WorktreeLivenessObservation{State: WorktreeLivenessUnused, Evidence: "fake: no handles"}
+}
+
+type inventoryUnknownLiveness struct{}
+
+func (inventoryUnknownLiveness) Observe(context.Context, string) WorktreeLivenessObservation {
+	return WorktreeLivenessObservation{State: WorktreeLivenessUnknown, Evidence: "fake: snapshot unresolved"}
 }
 
 type inventoryRecordingGit struct {

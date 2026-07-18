@@ -464,6 +464,10 @@ func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDep
 		row.Class = WorktreeClassLive
 		row.Reason = "active lane — " + livenessReason(row.Liveness, recent, row.AgeSeconds)
 		row.NextAction = "leave alone — active lane"
+	case row.Liveness.State == WorktreeLivenessUnknown:
+		row.Class = WorktreeClassUnknown
+		row.Reason = "could not resolve open-file liveness: " + row.Liveness.Evidence
+		row.NextAction = "liveness unresolved — inspect this worktree manually before any cleanup"
 	case row.Detached:
 		row.Class = WorktreeClassProbe
 		row.Reason = "detached HEAD — a throwaway probe checkout with no branch to lose"
