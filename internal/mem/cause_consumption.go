@@ -188,7 +188,8 @@ type CauseConsumptionReport struct {
 	Transitions []CauseConsumptionTransitionRow `json:"transitions"`
 
 	// DealtCards is the S3b join (D2/F8): every row ever appended to the stranger dealt-log,
-	// each marked whether a LATER Cause-transition cited its candidate_ref.
+	// each marked whether a causally eligible (not earlier at persisted timestamp precision)
+	// Cause-transition cited its candidate_ref.
 	DealtCards       []CauseConsumptionDealtRow `json:"dealt_cards"`
 	DealtCount       int                        `json:"dealt_count"`
 	DealtCausedCount int                        `json:"dealt_caused_count"`
@@ -327,7 +328,7 @@ func joinDealtCauses(dealt []StrangerDealtRow, transitions []CauseConsumptionTra
 		if perr == nil {
 			for _, tr := range transitions {
 				trAt, terr := time.Parse(time.RFC3339, strings.TrimSpace(tr.CreatedAt))
-				if terr != nil || !trAt.After(dealtAt) {
+				if terr != nil || trAt.Before(dealtAt) {
 					continue
 				}
 				matched := false
@@ -363,7 +364,7 @@ func causeConsumptionDealtNote(dealtCount, causedCount int) string {
 	if dealtCount == 0 {
 		return "no stranger cards dealt yet; dealt->caused join not yet evaluable"
 	}
-	return fmt.Sprintf("%d/%d dealt stranger cards were later cited in a Cause-transition's caused_by_refs", causedCount, dealtCount)
+	return fmt.Sprintf("%d/%d dealt stranger cards were cited by a causally eligible Cause-transition's caused_by_refs", causedCount, dealtCount)
 }
 
 // WriteCauseConsumptionRun persists the report as a plain timestamped artifact under

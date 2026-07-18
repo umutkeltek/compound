@@ -298,9 +298,9 @@ func snapshotFiles(t *testing.T, root string) map[string]bool {
 }
 
 // TestBuildCauseConsumptionReportJoinsDealtToCaused is F8: the report's dealt->caused join
-// (S3b's kill-condition meter). A dealt candidate cited in a LATER Cause-transition joins;
-// a dealt candidate cited only in an EARLIER transition, or never cited at all, is an honest
-// zero — never a false positive.
+// (S3b's kill-condition meter). A dealt candidate cited in a later or same-persisted-second
+// Cause-transition joins; a candidate cited only in an EARLIER transition, or never cited at
+// all, is an honest zero — never a false positive.
 func TestBuildCauseConsumptionReportJoinsDealtToCaused(t *testing.T) {
 	homePath := t.TempDir()
 	s, err := Open(homePath)
@@ -311,6 +311,7 @@ func TestBuildCauseConsumptionReportJoinsDealtToCaused(t *testing.T) {
 	dealtAt := t0
 	for _, row := range []StrangerDealtRow{
 		{Ts: dealtAt.UTC().Format(time.RFC3339), CardID: "stranger:cand_hit", CandidateRef: "cand_hit", Topic: "topic-hit"},
+		{Ts: dealtAt.UTC().Format(time.RFC3339), CardID: "stranger:cand_same_second", CandidateRef: "cand_same_second", Topic: "topic-same-second"},
 		{Ts: dealtAt.UTC().Format(time.RFC3339), CardID: "stranger:cand_before", CandidateRef: "cand_before", Topic: "topic-before"},
 		{Ts: dealtAt.UTC().Format(time.RFC3339), CardID: "stranger:cand_miss", CandidateRef: "cand_miss", Topic: "topic-miss"},
 	} {
@@ -321,6 +322,9 @@ func TestBuildCauseConsumptionReportJoinsDealtToCaused(t *testing.T) {
 
 	// cand_hit is cited by a Cause-transition AFTER the deal -> must join.
 	mustWriteCauseTransition(t, s, "tr_f8_hit", "work_f8_hit", "accept", []string{"cand_hit"}, dealtAt.Add(time.Hour))
+	// Persisted timestamps have only second precision; equality is causally eligible because
+	// a genuinely later transition in the same second cannot be ordered more finely here.
+	mustWriteCauseTransition(t, s, "tr_f8_same_second", "work_f8_same_second", "accept", []string{"cand_same_second"}, dealtAt)
 	// cand_before is cited only BEFORE the deal -> not "later", must not join.
 	mustWriteCauseTransition(t, s, "tr_f8_before", "work_f8_before", "accept", []string{"cand_before"}, dealtAt.Add(-time.Hour))
 	// cand_miss is never cited anywhere -> honest zero.
@@ -330,11 +334,11 @@ func TestBuildCauseConsumptionReportJoinsDealtToCaused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if rep.DealtCount != 3 {
-		t.Fatalf("dealt_count = %d, want 3", rep.DealtCount)
+	if rep.DealtCount != 4 {
+		t.Fatalf("dealt_count = %d, want 4", rep.DealtCount)
 	}
-	if rep.DealtCausedCount != 1 {
-		t.Fatalf("dealt_caused_count = %d, want 1: %+v", rep.DealtCausedCount, rep.DealtCards)
+	if rep.DealtCausedCount != 2 {
+		t.Fatalf("dealt_caused_count = %d, want 2: %+v", rep.DealtCausedCount, rep.DealtCards)
 	}
 	byRef := map[string]CauseConsumptionDealtRow{}
 	for _, row := range rep.DealtCards {
@@ -342,6 +346,9 @@ func TestBuildCauseConsumptionReportJoinsDealtToCaused(t *testing.T) {
 	}
 	if hit := byRef["cand_hit"]; !hit.Caused || hit.CausedByTransitionID != "tr_f8_hit" {
 		t.Fatalf("cand_hit row = %+v, want caused=true transition=tr_f8_hit", hit)
+	}
+	if sameSecond := byRef["cand_same_second"]; !sameSecond.Caused || sameSecond.CausedByTransitionID != "tr_f8_same_second" {
+		t.Fatalf("cand_same_second row = %+v, want caused=true transition=tr_f8_same_second", sameSecond)
 	}
 	if before := byRef["cand_before"]; before.Caused {
 		t.Fatalf("cand_before row = %+v, want caused=false (earlier transition does not count)", before)
