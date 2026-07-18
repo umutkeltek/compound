@@ -11,6 +11,39 @@ import (
 // repoRoot relative to internal/arch/ (where the test runs).
 const repoRoot = "../.."
 
+func newDocLeakGitRepo(t *testing.T) (string, func(...string)) {
+	t.Helper()
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init")
+	return repo, runGit
+}
+
+func hasDocLeakFailContaining(findings []Finding, parts ...string) bool {
+	for _, finding := range findings {
+		if finding.Check != "doc-leak" || finding.Severity != Fail {
+			continue
+		}
+		matched := true
+		for _, part := range parts {
+			if !strings.Contains(finding.Message, part) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 // The doctor must be GREEN against the real repo: candidate map intact, every internal/ package
 // classified, public docs clean. If someone adds an unclassified package or leaks a private path
 // into a tracked doc, THIS test fails in CI — that is the enforcement.
@@ -181,6 +214,10 @@ func TestDocLeakBaselineCatchesSecretShapeWithoutOverlay(t *testing.T) {
 func TestFindGenericLeakBoundaryGuardAndAllowlists(t *testing.T) {
 	realEmail := "real" + "person@gm" + "ail.com"
 	realPath := "/Us" + "ers/real" + "person"
+	notExampleEmail := "person@not" + "example.com"
+	exampleSuffixEmail := "person@example.com." + "evil"
+	subdomainExampleEmail := "person@sub." + "example.com"
+	examplePrefixPath := "/Us" + "ers/example2"
 	cases := []struct {
 		name       string
 		line       string
@@ -197,18 +234,26 @@ func TestFindGenericLeakBoundaryGuardAndAllowlists(t *testing.T) {
 		{"RFC2606 allow: .invalid", `"debug_contact": "person@example.invalid"`, false, ""},
 		{"RFC2606 allow: example.com", `"debug_contact": "alice@example.com"`, false, ""},
 		{"RFC2606 allow: example.org", `"debug_contact": "bob@example.org"`, false, ""},
+		{"RFC2606 allow: example.net", `"debug_contact": "bob@example.net"`, false, ""},
 		{"RFC2606 allow: .test", `"debug_contact": "person@example.test"`, false, ""},
+		{"RFC2606 allow: .example", `"debug_contact": "person@fixture.example"`, false, ""},
+		{"RFC2606 allow: .localhost", `"debug_contact": "person@fixture.localhost"`, false, ""},
 		// F4: synthetic /Users|/home user segments are allowed.
 		{"synthetic segment allow: faketester", `body := "/Users/faketester/brain/note.md"`, false, ""},
 		{"synthetic segment allow: tester", `t.Setenv("HOME", "/home/tester")`, false, ""},
 		{"synthetic segment allow: testoperator", `"/Users/testoperator/private-notes"`, false, ""},
 		{"synthetic segment allow: example", `"/Users/example/.claude/projects/x.jsonl"`, false, ""},
-		// compound's own public product-home literal (deviation from the packet's
-		// four-segment premise; see genericLeakAllowedPathSegments doc comment).
-		{"compound-home allow: .compound", `"/home/.compound/reviews/area/item.json"`, false, ""},
+		// Hidden directories directly under /home are not user-home shapes: the user
+		// segment must begin with a letter before exact synthetic-segment filtering.
+		{"hidden product home is not a user segment", `"/home/.compound/reviews/area/item.json"`, false, ""},
+		{"hidden cache is not a user segment", `"/home/.cache/item.json"`, false, ""},
 		// Real-shaped, disallowed cases MUST fail.
 		{"disallowed email", "contact " + realEmail + " directly", true, realEmail},
+		{"example-name prefix is not allowlisted", "contact " + notExampleEmail, true, notExampleEmail},
+		{"example domain with real suffix is not allowlisted", "contact " + exampleSuffixEmail, true, exampleSuffixEmail},
+		{"example subdomain is not allowlisted", "contact " + subdomainExampleEmail, true, subdomainExampleEmail},
 		{"disallowed path segment", realPath + "/secret.txt leaked", true, realPath},
+		{"synthetic segment prefix is not allowlisted", examplePrefixPath + "/secret.txt", true, examplePrefixPath},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -236,15 +281,7 @@ func TestFindGenericLeakBoundaryGuardAndAllowlists(t *testing.T) {
 // fresh public clone was blind on both counts. Real-shaped leaks are built by string
 // concatenation so this test's own source stays clean under the gate it is testing.
 func TestCheckDocLeakScansTrackedRootAndSourceFilesWithNoOperatorOverlay(t *testing.T) {
-	repo := t.TempDir()
-	runGit := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	runGit("init")
+	repo, runGit := newDocLeakGitRepo(t)
 	runGit("config", "user.email", "test@example.invalid")
 	runGit("config", "user.name", "test")
 
@@ -302,6 +339,135 @@ func TestCheckDocLeakScansTrackedRootAndSourceFilesWithNoOperatorOverlay(t *test
 	if !sawSource {
 		t.Fatalf("F2: source file leak not caught with no operator overlay present: %+v", fails)
 	}
+}
+
+func TestCheckDocLeakScansEveryTrackedTextBlobAndSkipsBinary(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	realEmail := "real" + "person@gm" + "ail.com"
+	textFiles := []string{
+		"go.mod",
+		"go.sum",
+		"Makefile",
+		"LICENSE",
+		".gitignore",
+		"install.sh",
+		filepath.Join("src", "main.swift"),
+		filepath.Join("src", "site.css"),
+		filepath.Join("fixtures", "events.ndjson"),
+		filepath.Join("ops", "job.plist"),
+		filepath.Join("console", "bun.lock"),
+	}
+	for _, rel := range textFiles {
+		mustWriteArchFixture(t, repo, rel, "contact: "+realEmail+"\n")
+	}
+	binaryRel := "binary-with-text-extension.md"
+	mustWriteArchFixture(t, repo, binaryRel, string(append([]byte{0}, []byte("contact: "+realEmail+"\n")...)))
+	tracked := append(append([]string{}, textFiles...), binaryRel)
+	runGit(append([]string{"add", "--"}, tracked...)...)
+
+	findings := checkDocLeak(repo, true)
+	for _, rel := range textFiles {
+		if !hasDocLeakFailContaining(findings, filepath.ToSlash(rel)+":") {
+			t.Errorf("tracked text blob %s escaped the generic identity scan: %+v", rel, findings)
+		}
+	}
+	if hasDocLeakFailContaining(findings, binaryRel+":") {
+		t.Fatalf("binary blob must not be treated as text: %+v", findings)
+	}
+}
+
+func TestCheckDocLeakTokenPassesUseTrackedTextBlobs(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	mustWriteArchFixture(t, repo, filepath.Join("docs_private", "leak-tokens.txt"), "docs-only-token\n")
+	mustWriteArchFixture(t, repo, filepath.Join("docs_private", "source-leak-tokens.txt"), "source-only-token\n")
+	docRel := filepath.Join("docs", "guide.rst")
+	sourceRel := filepath.Join("internal", "x", "schema.proto")
+	binaryRel := filepath.Join("docs", "binary.rst")
+	mustWriteArchFixture(t, repo, docRel, "docs-only-token\n")
+	mustWriteArchFixture(t, repo, sourceRel, "source-only-token\n")
+	mustWriteArchFixture(t, repo, binaryRel, "\x00docs-only-token\n")
+	runGit("add", "--", docRel, sourceRel, binaryRel)
+
+	findings := checkDocLeak(repo, true)
+	if !hasDocLeakFailContaining(findings, filepath.ToSlash(docRel)+":", "docs-only-token") {
+		t.Fatalf("docs token pass skipped an extension-independent text blob: %+v", findings)
+	}
+	if !hasDocLeakFailContaining(findings, filepath.ToSlash(sourceRel)+":", "source-only-token") {
+		t.Fatalf("source token pass skipped an extension-independent text blob: %+v", findings)
+	}
+	if hasDocLeakFailContaining(findings, filepath.ToSlash(binaryRel)+":") {
+		t.Fatalf("token pass must skip binary blobs: %+v", findings)
+	}
+}
+
+func TestCheckDocLeakPlainDirectoryFallbackScansTextContent(t *testing.T) {
+	repo := t.TempDir()
+	realEmail := "real" + "person@gm" + "ail.com"
+	mustWriteArchFixture(t, repo, "NOTICE", "contact: "+realEmail+"\n")
+
+	findings := checkDocLeak(repo, true)
+	if !hasDocLeakFailContaining(findings, "NOTICE:") {
+		t.Fatalf("plain-directory fallback skipped extensionless text: %+v", findings)
+	}
+}
+
+func TestCheckDocLeakFailsClosedWhenGitEnumerationFails(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	mustWriteArchFixture(t, repo, "README.md", "clean\n")
+	runGit("add", "README.md")
+	if err := os.WriteFile(filepath.Join(repo, ".git", "index"), []byte("corrupt-index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkDocLeak(repo, true)
+	if !hasDocLeakFailContaining(findings, "tracked-file enumeration") {
+		t.Fatalf("git enumeration failure must fail closed: %+v", findings)
+	}
+}
+
+func TestCheckDocLeakFailsClosedWhenTrackedPathIsMissing(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	mustWriteArchFixture(t, repo, "README.md", "clean\n")
+	runGit("add", "README.md")
+	if err := os.Remove(filepath.Join(repo, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkDocLeak(repo, true)
+	if !hasDocLeakFailContaining(findings, "README.md", "cannot read tracked text") {
+		t.Fatalf("missing tracked path must fail closed: %+v", findings)
+	}
+}
+
+func TestCheckDocLeakScansTrackedSymlinkTargetWithoutFollowing(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	linkRel := "private-path.md"
+	realTarget := "/Us" + "ers/real" + "person/private.md"
+	if err := os.Symlink(realTarget, filepath.Join(repo, linkRel)); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", linkRel)
+
+	findings := checkDocLeak(repo, true)
+	if !hasDocLeakFailContaining(findings, linkRel+":", "/Users/realperson") {
+		t.Fatalf("tracked symlink target string escaped the scan: %+v", findings)
+	}
+}
+
+func TestCheckDocLeakCleanNoOverlayReportsWidenedCoverage(t *testing.T) {
+	repo, runGit := newDocLeakGitRepo(t)
+	mustWriteArchFixture(t, repo, "README.md", "clean\n")
+	runGit("add", "README.md")
+
+	findings := checkDocLeak(repo, true)
+	for _, finding := range findings {
+		if finding.Check == "doc-leak" && finding.Severity == Info &&
+			strings.Contains(finding.Message, "all tracked text blobs") &&
+			strings.Contains(finding.Message, "root + docs + skills + source") {
+			return
+		}
+	}
+	t.Fatalf("clean fresh clone did not report widened tracked-text coverage: %+v", findings)
 }
 
 // TestPrivateSourceBodyContractCatchesPlantedBodyAndClearsWhenRemoved is J16's
