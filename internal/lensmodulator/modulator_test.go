@@ -593,3 +593,227 @@ func TestPlanIsDryRunAndWritesNothing(t *testing.T) {
 		t.Fatal("Plan must not create the route store (dry-run writes nothing)")
 	}
 }
+
+// --- Revert ledger discipline (packet B2: the same discipline Modulate got in lane B) ---
+
+// demoteLaneA arms sycophancy, records a crossing signal for lane-a, and applies the demote through
+// Modulate — the real machinery, not a hand-rolled ledger row, so the resulting PreImageRef/
+// PostImageRef point at real artifacts a subsequent Revert can consume.
+func demoteLaneA(t *testing.T, home string, now time.Time, workID string) Modulation {
+	t.Helper()
+	recordSignal(t, home, mkSignal(t, "sycophancy", "lane-a", 0.9, behaviorallens.VisibilityPublicSafe, now))
+	armSycophancy(t, home, now)
+	res, err := Modulate(home, grantConfig(home), workID, now)
+	if err != nil {
+		t.Fatalf("modulate: %v", err)
+	}
+	if len(res.Modulations) != 1 || !res.Modulations[0].Applied {
+		t.Fatalf("want exactly one applied demote, got %+v", res.Modulations)
+	}
+	return res.Modulations[0]
+}
+
+func countEventFiles(t *testing.T, home string) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(home, "events"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatalf("read events dir: %v", err)
+	}
+	return len(entries)
+}
+
+// FALSIFIER B2-1 (ledger preflight aborts BEFORE any route-store mutation): an unwritable action
+// ledger at Revert entry must abort BEFORE act.Execute — route store left exactly as Revert found it,
+// zero new receipts/transitions. Revert must first READ the ledger to find what to revert (unlike
+// Modulate, which never reads the action ledger before writing it), so Modulate's own falsifier
+// mechanism — a directory sitting at the leaf path — breaks loadActionRecords itself before Revert
+// can even find an open record to act on (verified: os.ReadFile on a directory always errors), so it
+// cannot reproduce "mutates then fails on append" for Revert specifically. A read-only leaf (chmod
+// 0o444) is the faithful equivalent for Revert's read-then-mutate-then-append shape: reads still
+// succeed (an open record is found) but writes fail, so the SAME preflight probe Modulate uses
+// (open-for-append) catches it up front, before act.Execute.
+func TestRevertLedgerPreflightAbortsBeforeAnyRouteStoreMutation(t *testing.T) {
+	home := t.TempDir()
+	now := fixedNow()
+	demoteLaneA(t, home, now, "work_wedge_setup")
+
+	ledgerPath := actionLedgerPath(home)
+	if err := os.Chmod(ledgerPath, 0o444); err != nil {
+		t.Fatalf("wedge ledger read-only: %v", err)
+	}
+	defer os.Chmod(ledgerPath, 0o644)
+
+	before, err := os.ReadFile(RouteStorePath(home))
+	if err != nil {
+		t.Fatalf("read route store before revert: %v", err)
+	}
+	beforeEvents := countEventFiles(t, home)
+
+	rev, err := Revert(home, grantConfig(home), "lane-a", "work_wedge_revert", now.Add(time.Second))
+	if err == nil {
+		t.Fatalf("expected Revert to error when the ledger is unwritable, got %+v", rev)
+	}
+
+	after, rerr := os.ReadFile(RouteStorePath(home))
+	if rerr != nil {
+		t.Fatalf("read route store after revert: %v", rerr)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("route store must stay byte-identical when the ledger preflight aborts:\n before=%q\n after =%q", before, after)
+	}
+	afterEvents := countEventFiles(t, home)
+	if afterEvents != beforeEvents {
+		t.Fatalf("want ZERO new receipts/transitions when the ledger preflight aborts, got %d -> %d event files", beforeEvents, afterEvents)
+	}
+}
+
+// FALSIFIER B2-2 (post-restore ledger-append backstop, recovery finding): a ledger-append failure
+// AFTER a successful revert act.Execute must NOT counter-mutate (re-demoting the just-restored lane
+// would be wrong) — it must land a durable recovery finding naming the lane, receipt/transition ids,
+// and the restored value, and return an error naming it. Forces the append to fail via the SAME
+// package-private seam Modulate's own backstop tests use (appendActionRecordFn) — no second seam.
+func TestRevertRecordsRecoveryFindingWhenLedgerAppendFails(t *testing.T) {
+	home := t.TempDir()
+	now := fixedNow()
+	demoteLaneA(t, home, now, "work_backstop_setup")
+
+	orig := appendActionRecordFn
+	appendActionRecordFn = func(string, actionRecord) error {
+		return fmt.Errorf("injected ledger append failure")
+	}
+	defer func() { appendActionRecordFn = orig }()
+
+	rev, err := Revert(home, grantConfig(home), "lane-a", "work_backstop_revert", now.Add(time.Second))
+	if err == nil {
+		t.Fatalf("expected Revert to surface the ledger-append failure, got %+v", rev)
+	}
+	if !strings.Contains(err.Error(), "recorded recovery finding") {
+		t.Fatalf("error must name the recovery-finding recovery path, got: %v", err)
+	}
+
+	// act.Execute already succeeded (BEFORE the injected append failure), so the store IS restored.
+	if v, ok, _ := CurrentAdjustment(home, behaviorallens.VisibilityPublicSafe, "lane-a"); !ok || v != "active" {
+		t.Fatalf("route store must be restored to baseline despite the ledger-append failure, got value=%q ok=%v", v, ok)
+	}
+
+	findings, ferr := finding.List(home, "lensmodulator-recovery")
+	if ferr != nil {
+		t.Fatalf("list findings: %v", ferr)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want exactly one recovery finding, got %d: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.ProducedBy != "internal/lensmodulator" {
+		t.Fatalf("recovery finding ProducedBy = %q, want internal/lensmodulator", f.ProducedBy)
+	}
+	if !strings.HasPrefix(f.Topic, "lensmodulator-recovery/lane-a") {
+		t.Fatalf("recovery finding topic must name the lane, got %q", f.Topic)
+	}
+	if len(f.EvidenceRefs) != 2 {
+		t.Fatalf("recovery finding must carry pre+post image refs, got %v", f.EvidenceRefs)
+	}
+	if !strings.Contains(err.Error(), f.ID) {
+		t.Fatalf("error must name the recovery finding id %q, got: %v", f.ID, err)
+	}
+
+	// The open-demote ledger row for lane-a is now STALE (this call's own append never landed) —
+	// exactly the disagreement the next falsifier proves a second Revert refuses to re-mutate from.
+	records, lerr := loadActionRecords(home)
+	if lerr != nil {
+		t.Fatalf("load action records: %v", lerr)
+	}
+	if _, ok := latestOpenDemote(records, "lane-a"); !ok {
+		t.Fatal("the ledger row for lane-a must still read as an open demote (that staleness is exactly what the next falsifier's safety check must catch)")
+	}
+}
+
+// FALSIFIER B2-3 (stale-open double-revert): the store is already restored (e.g. left behind by
+// falsifier 2's end-state, or seeded directly here) while the ledger still shows an open demote. A
+// SECOND Revert() must NOT call act/mutate — it must detect the store no longer holds the demoted
+// value and return Reverted:false naming the stale reason. Before the fix this re-mutates from the
+// stale pre-image (rec.PreImageRef == "active"), producing a spurious no-op-valued write with its own
+// new receipt/transition — exactly the double-revert-from-stale-pre-image class the packet describes.
+func TestRevertRefusesStaleOpenDoubleRevert(t *testing.T) {
+	home := t.TempDir()
+	now := fixedNow()
+	demoteLaneA(t, home, now, "work_stale_setup")
+
+	// Seed the disagreement directly: the open "demote" ledger record stays as-is, but the route store
+	// is restored to baseline OUTSIDE of Revert — mirroring exactly what falsifier 2 leaves behind
+	// (act.Execute succeeded, its own ledger append failed).
+	if err := saveStore(RouteStorePath(home), map[string]any{publicLaneRoot: map[string]any{"lane-a": "active"}}); err != nil {
+		t.Fatalf("seed restored store: %v", err)
+	}
+
+	beforeEvents := countEventFiles(t, home)
+
+	rev, err := Revert(home, grantConfig(home), "lane-a", "work_stale_revert", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if rev.Reverted {
+		t.Fatalf("a stale-open double-revert must NOT report Reverted:true, got %+v", rev)
+	}
+	if !strings.Contains(rev.Reason, "stale") {
+		t.Fatalf("reason must name the stale-record condition, got %q", rev.Reason)
+	}
+
+	afterEvents := countEventFiles(t, home)
+	if afterEvents != beforeEvents {
+		t.Fatalf("stale-open Revert must not call act (zero new receipts/transitions), got %d -> %d event files", beforeEvents, afterEvents)
+	}
+	if v, ok, _ := CurrentAdjustment(home, behaviorallens.VisibilityPublicSafe, "lane-a"); !ok || v != "active" {
+		t.Fatalf("store must stay at its already-restored value, got value=%q ok=%v", v, ok)
+	}
+
+	// The ledger heals: a subsequent load finds nothing open for the lane.
+	records, lerr := loadActionRecords(home)
+	if lerr != nil {
+		t.Fatalf("load action records: %v", lerr)
+	}
+	if _, ok := latestOpenDemote(records, "lane-a"); ok {
+		t.Fatal("the stale-open Revert must heal the ledger — a later load must find nothing open for the lane")
+	}
+}
+
+// FALSIFIER B2-4 (happy path unaffected): demote -> Revert -> store restored, ledger record appended,
+// latestOpenDemote finds nothing open. Must keep working exactly as before the ledger-discipline
+// changes above (this is what "all existing modulator tests stay green" is proving package-wide).
+func TestRevertHappyPathClosesLedger(t *testing.T) {
+	home := t.TempDir()
+	now := fixedNow()
+	demoteLaneA(t, home, now, "work_happy_setup")
+
+	if v, ok, _ := CurrentAdjustment(home, behaviorallens.VisibilityPublicSafe, "lane-a"); !ok || v != "demoted" {
+		t.Fatalf("setup: lane-a must be demoted before revert, got value=%q ok=%v", v, ok)
+	}
+
+	rev, err := Revert(home, grantConfig(home), "lane-a", "work_happy_revert", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if !rev.Reverted {
+		t.Fatalf("happy-path revert must report Reverted:true, got %+v", rev)
+	}
+	if rev.RestoredValue != "active" || rev.ReceiptID == "" || rev.TransitionID == "" {
+		t.Fatalf("happy-path revert must carry restored value + receipt/transition ids: %+v", rev)
+	}
+	if v, ok, _ := CurrentAdjustment(home, behaviorallens.VisibilityPublicSafe, "lane-a"); !ok || v != "active" {
+		t.Fatalf("route store must be restored to baseline, got value=%q ok=%v", v, ok)
+	}
+
+	records, lerr := loadActionRecords(home)
+	if lerr != nil {
+		t.Fatalf("load action records: %v", lerr)
+	}
+	if len(records) != 2 {
+		t.Fatalf("want exactly demote+revert rows in the ledger, got %d: %+v", len(records), records)
+	}
+	if _, ok := latestOpenDemote(records, "lane-a"); ok {
+		t.Fatal("after a successful revert, latestOpenDemote must find nothing open for the lane")
+	}
+}
