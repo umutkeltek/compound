@@ -356,6 +356,89 @@ func TestLandCheckPublishedContainmentOutranksOwnedPathDirt(t *testing.T) {
 	}
 }
 
+func TestLandCheckPublishedContainmentReportsForeignDirt(t *testing.T) {
+	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	landingGit(t, repo, "remote", "add", "origin", remote)
+	landingGit(t, repo, "push", "-u", "origin", "main")
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+	landingGit(t, repo, "push", "origin", "main")
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "published containment preserves foreign WIP visibility",
+		GitDelivery:      publishedGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+
+	writeLandingFile(t, filepath.Join(repo, "foreign-lane-wip.txt"), "neighbor lane WIP\n")
+	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "landed" || !report.CandidateContainedInTarget || !report.CandidateContainedInPublication {
+		t.Fatalf("published containment must remain landed under foreign dirt: %+v", report)
+	}
+	if report.CleanTarget {
+		t.Fatalf("whole-tree foreign dirt must remain visible: %+v", report)
+	}
+	if !strings.Contains(report.NextAction, "foreign-lane-wip.txt") || !strings.Contains(report.NextAction, "preserve") {
+		t.Fatalf("foreign dirt must produce a path-specific preservation warning: %+v", report)
+	}
+}
+
+func TestLandCheckTargetContainmentStillAwaitsPublicationUnderForeignDirt(t *testing.T) {
+	now := time.Date(2026, 7, 18, 10, 30, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	landingGit(t, repo, "remote", "add", "origin", remote)
+	landingGit(t, repo, "push", "-u", "origin", "main")
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "local containment cannot outrank stale publication",
+		GitDelivery:      publishedGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+
+	writeLandingFile(t, filepath.Join(repo, "foreign-lane-wip.txt"), "neighbor lane WIP\n")
+	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "awaiting_publication" || !report.CandidateContainedInTarget || report.CandidateContainedInPublication {
+		t.Fatalf("stale publication must block landed classification under dirt: %+v", report)
+	}
+	if report.CleanTarget {
+		t.Fatalf("whole-tree foreign dirt must remain visible while awaiting publication: %+v", report)
+	}
+	if !strings.Contains(report.NextAction, "refs/remotes/origin/main") || strings.Contains(report.NextAction, "already contained in the authoritative target and publication refs") {
+		t.Fatalf("next action must remain publication, never a landed preservation warning: %+v", report)
+	}
+}
+
 // TestCompletedCodeWorkClosesOverPreservedUnrelatedDirt is the falsifier for the
 // shared-checkout hostage class: a published, landed envelope must close even when
 // a neighbor lane's live unrelated WIP dirties the shared checkout after the proof
