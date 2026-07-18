@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -124,7 +126,7 @@ func TestLSOFWorktreeInventoryLivenessAttributesNestedOpenPathToLongestRoot(t *t
 		t.Fatal(err)
 	}
 	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{
-		Stdout: "p123\nfcwd\nn" + filepath.Join(childRoot, "nested", "file.go") + "\n",
+		Stdout: "p123\nf12\nn" + filepath.Join(childRoot, "nested", "file.go") + "\n",
 	}}
 
 	observations := (LSOFWorktreeInventoryLiveness{Runner: runner}).Snapshot(
@@ -148,7 +150,7 @@ func TestLSOFWorktreeInventoryLivenessRejectsStringPrefixWithoutPathBoundary(t *
 		t.Fatal(err)
 	}
 	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{
-		Stdout: "p456\nfcwd\nn" + filepath.Join(prefixSibling, "file.go") + "\n",
+		Stdout: "p456\nf12\nn" + filepath.Join(prefixSibling, "file.go") + "\n",
 	}}
 
 	observations := (LSOFWorktreeInventoryLiveness{Runner: runner}).Snapshot(
@@ -164,7 +166,7 @@ func TestLSOFWorktreeInventoryLivenessTimeoutPreservesPartialActiveEvidence(t *t
 	childRoot := filepath.Join(mainRoot, ".claude", "worktrees", "child")
 	otherRoot := filepath.Join(t.TempDir(), "other-worktree")
 	runner := &inventoryDeadlineProcessRunner{partial: WorktreeRetirementProcessResult{
-		Stdout: "p789\nfcwd\nn" + filepath.Join(childRoot, "file.go") + "\n",
+		Stdout: "p789\nf12\nn" + filepath.Join(childRoot, "file.go") + "\n",
 	}}
 
 	observations := (LSOFWorktreeInventoryLiveness{Runner: runner, Timeout: time.Second}).Snapshot(
@@ -181,6 +183,191 @@ func TestLSOFWorktreeInventoryLivenessTimeoutPreservesPartialActiveEvidence(t *t
 			t.Fatalf("unresolved root %q state=%q, want unknown; observations=%+v", unresolved, got, observations)
 		}
 	}
+}
+
+func TestLSOFWorktreeInventoryLivenessHighCardinalityAttributionHonorsContextBudget(t *testing.T) {
+	rootParent := t.TempDir()
+	roots := make([]string, 44)
+	for i := range roots {
+		roots[i] = filepath.Join(rootParent, "worktree-"+strconv.Itoa(i))
+		if err := os.MkdirAll(roots[i], 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	activePath := filepath.Join(roots[len(roots)-1], "active.go")
+	var stdout strings.Builder
+	stdout.WriteString("p1\nf12\nn" + activePath + "\n")
+	for i := 0; i < 50_000; i++ {
+		stdout.WriteString("p2\nf13\nn/synthetic/outside/file-")
+		stdout.WriteString(strconv.Itoa(i))
+		stdout.WriteByte('\n')
+	}
+	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{Stdout: stdout.String()}}
+
+	started := time.Now()
+	observations := (LSOFWorktreeInventoryLiveness{Runner: runner, Timeout: time.Nanosecond}).Snapshot(
+		context.Background(), roots,
+	)
+	elapsed := time.Since(started)
+	if elapsed > 750*time.Millisecond {
+		t.Fatalf("expired high-cardinality snapshot took %s, want attribution to honor the context budget", elapsed)
+	}
+	if got := observations[roots[len(roots)-1]].State; got != WorktreeLivenessActive {
+		t.Fatalf("partial active evidence was lost while bounding attribution: state=%q observations=%+v", got, observations)
+	}
+	if got := observations[roots[0]].State; got != WorktreeLivenessUnknown {
+		t.Fatalf("unresolved root state=%q, want unknown after attribution budget expires", got)
+	}
+}
+
+func TestLSOFWorktreeInventoryLivenessIgnoresCWDRecordsButCountsOpenFiles(t *testing.T) {
+	mainRoot := filepath.Join(t.TempDir(), "repo")
+	childRoot := filepath.Join(mainRoot, ".claude", "worktrees", "child")
+	if err := os.MkdirAll(childRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{Stdout: strings.Join([]string{
+		"p100", "fcwd", "n" + mainRoot,
+		"p101", "f12", "n" + filepath.Join(childRoot, "open.go"),
+		"",
+	}, "\n")}}
+
+	observations := (LSOFWorktreeInventoryLiveness{Runner: runner}).Snapshot(
+		context.Background(), []string{mainRoot, childRoot},
+	)
+	if got := observations[mainRoot].State; got != WorktreeLivenessUnused {
+		t.Fatalf("cwd-only MAIN record created false activity: state=%q observations=%+v", got, observations)
+	}
+	if got := observations[childRoot].State; got != WorktreeLivenessActive {
+		t.Fatalf("ordinary open file was not retained: state=%q observations=%+v", got, observations)
+	}
+}
+
+func TestLSOFWorktreeInventoryLivenessExitZeroIncompleteWarningFailsClosed(t *testing.T) {
+	activeRoot := filepath.Join(t.TempDir(), "active")
+	unresolvedRoot := filepath.Join(t.TempDir(), "unresolved")
+	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{
+		Stdout:   "p123\nf12\nn" + filepath.Join(activeRoot, "open.go") + "\n",
+		Stderr:   "lsof: WARNING: cannot inspect a synthetic mount; Output information may be incomplete.\n",
+		ExitCode: 0,
+	}}
+
+	observations := (LSOFWorktreeInventoryLiveness{Runner: runner}).Snapshot(
+		context.Background(), []string{activeRoot, unresolvedRoot},
+	)
+	if got := observations[activeRoot].State; got != WorktreeLivenessActive {
+		t.Fatalf("active evidence from incomplete snapshot was discarded: state=%q observations=%+v", got, observations)
+	}
+	if got := observations[unresolvedRoot].State; got != WorktreeLivenessUnknown {
+		t.Fatalf("exit-zero incomplete snapshot marked unresolved root %q, want unknown; observations=%+v", got, observations)
+	}
+}
+
+func TestLSOFWorktreeInventoryLivenessEvidenceDeterministicAcrossInputOrder(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	pathA := filepath.Join(root, "a.go")
+	pathB := filepath.Join(root, "b.go")
+	snapshot := func(paths ...string) WorktreeLivenessObservation {
+		var stdout strings.Builder
+		for i, path := range paths {
+			stdout.WriteString("p")
+			stdout.WriteString(strconv.Itoa(i + 1))
+			stdout.WriteString("\nf12\nn")
+			stdout.WriteString(path)
+			stdout.WriteByte('\n')
+		}
+		runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{Stdout: stdout.String()}}
+		return (LSOFWorktreeInventoryLiveness{Runner: runner}).Snapshot(context.Background(), []string{root})[root]
+	}
+
+	forward := snapshot(pathA, pathB)
+	reverse := snapshot(pathB, pathA)
+	if !reflect.DeepEqual(forward, reverse) {
+		t.Fatalf("liveness evidence depends on lsof record order: forward=%+v reverse=%+v", forward, reverse)
+	}
+}
+
+func TestLSOFWorktreeInventoryLivenessContextCancellationKillsProcessGroupAndPreservesPartial(t *testing.T) {
+	binDir := t.TempDir()
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	activeRoot := filepath.Join(t.TempDir(), "active")
+	unresolvedRoot := filepath.Join(t.TempDir(), "unresolved")
+	fakeLSOF := filepath.Join(binDir, "lsof")
+	script := `#!/bin/sh
+sleep 30 >/dev/null 2>&1 &
+child=$!
+printf 'p%s\nf12\nn%s\n' "$$" "$COMPOUND_TEST_LSOF_OPEN_PATH"
+printf '%s\n' "$child" > "$COMPOUND_TEST_LSOF_PID_FILE"
+wait "$child"
+`
+	if err := os.WriteFile(fakeLSOF, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMPOUND_TEST_LSOF_PID_FILE", pidFile)
+	t.Setenv("COMPOUND_TEST_LSOF_OPEN_PATH", filepath.Join(activeRoot, "open.go"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	observationsReady := make(chan map[string]WorktreeLivenessObservation, 1)
+	go func() {
+		observationsReady <- (LSOFWorktreeInventoryLiveness{Timeout: 5 * time.Second}).Snapshot(
+			ctx, []string{activeRoot, unresolvedRoot},
+		)
+	}()
+
+	readyDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(pidFile); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			cancel()
+			t.Fatalf("inspect fake lsof readiness: %v", err)
+		}
+		if time.Now().After(readyDeadline) {
+			cancel()
+			t.Fatal("fake lsof did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelStarted := time.Now()
+	cancel()
+	var observations map[string]WorktreeLivenessObservation
+	select {
+	case observations = <-observationsReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking lsof exceeded cancellation budget")
+	}
+	if elapsed := time.Since(cancelStarted); elapsed > 2*time.Second {
+		t.Fatalf("blocking lsof cancellation took %s", elapsed)
+	}
+	if got := observations[activeRoot].State; got != WorktreeLivenessActive {
+		t.Fatalf("partial active evidence was lost on real process cancellation: state=%q observations=%+v", got, observations)
+	}
+	if got := observations[unresolvedRoot].State; got != WorktreeLivenessUnknown {
+		t.Fatalf("unresolved root state=%q, want unknown after real process cancellation", got)
+	}
+
+	rawPID, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("fake lsof did not publish child pid: %v", err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+	if err != nil {
+		t.Fatalf("parse child pid: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
+	deadline := time.Now().Add(time.Second)
+	for inventoryTestProcessExists(childPID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if inventoryTestProcessExists(childPID) {
+		t.Fatalf("lsof child process %d survived snapshot cancellation", childPID)
+	}
+}
+
+func inventoryTestProcessExists(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
 }
 
 // The activity path (not lsof) must also promote a worktree to live: a clean,

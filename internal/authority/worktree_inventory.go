@@ -1,13 +1,16 @@
 package authority
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -70,25 +73,28 @@ func (probe LSOFWorktreeInventoryLiveness) Snapshot(ctx context.Context, worktre
 	if len(worktreeRoots) == 0 {
 		return observations
 	}
-	runner := probe.Runner
-	if runner == nil {
-		runner = ExecWorktreeRetirementProcessRunner{}
-	}
 	timeout := probe.Timeout
 	if timeout <= 0 {
 		timeout = defaultWorktreeInventoryLivenessTimeout
 	}
 	snapshotCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	result, err := runner.Run(snapshotCtx, "lsof", "-n", "-P", "-Fn")
-
-	activePaths := make(map[string]string)
-	for _, openPath := range parseWorktreeInventoryLSOFPaths(result.Stdout) {
-		if root, ok := longestWorktreeInventoryRoot(openPath, worktreeRoots); ok {
-			activePaths[root] = openPath
-		}
+	var (
+		result WorktreeRetirementProcessResult
+		err    error
+	)
+	if probe.Runner != nil {
+		result, err = probe.Runner.Run(snapshotCtx, "lsof", "-n", "-P", "-Fn")
+	} else {
+		result, err = runWorktreeInventoryLSOFSnapshot(snapshotCtx)
 	}
-	complete := err == nil && snapshotCtx.Err() == nil && result.ExitCode == 0
+
+	activePaths, attributionComplete := attributeWorktreeInventoryLSOFPaths(snapshotCtx, result.Stdout, worktreeRoots)
+	complete := err == nil &&
+		snapshotCtx.Err() == nil &&
+		result.ExitCode == 0 &&
+		attributionComplete &&
+		!worktreeInventoryLSOFOutputIncomplete(result.Stderr)
 	failureEvidence := worktreeInventorySnapshotFailureEvidence(snapshotCtx.Err(), err, result)
 	for _, root := range worktreeRoots {
 		if openPath, active := activePaths[root]; active {
@@ -102,6 +108,56 @@ func (probe LSOFWorktreeInventoryLiveness) Snapshot(ctx context.Context, worktre
 	return observations
 }
 
+func runWorktreeInventoryLSOFSnapshot(ctx context.Context) (WorktreeRetirementProcessResult, error) {
+	if err := ctx.Err(); err != nil {
+		return WorktreeRetirementProcessResult{}, err
+	}
+
+	cmd := exec.Command("lsof", "-n", "-P", "-Fn")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return WorktreeRetirementProcessResult{}, err
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		return worktreeInventoryProcessResult(stdout.String(), stderr.String(), err)
+	case <-ctx.Done():
+		// CommandContext only kills the direct process. lsof may be wrapped (and
+		// tests deliberately wrap it), so terminate the whole process group to
+		// keep the inventory's deadline real and prevent orphaned descendants.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = cmd.Process.Kill()
+		waitErr := <-done
+		result, _ := worktreeInventoryProcessResult(stdout.String(), stderr.String(), waitErr)
+		return result, ctx.Err()
+	}
+}
+
+func worktreeInventoryProcessResult(stdout, stderr string, err error) (WorktreeRetirementProcessResult, error) {
+	result := WorktreeRetirementProcessResult{Stdout: stdout, Stderr: stderr, ExitCode: 0}
+	if err == nil {
+		return result, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		result.ExitCode = exitErr.ExitCode()
+		return result, nil
+	}
+	return result, err
+}
+
+func worktreeInventoryLSOFOutputIncomplete(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "incomplete")
+}
+
 func worktreeInventorySnapshotFailureEvidence(ctxErr, runErr error, result WorktreeRetirementProcessResult) string {
 	switch {
 	case ctxErr != nil:
@@ -111,6 +167,41 @@ func worktreeInventorySnapshotFailureEvidence(ctxErr, runErr error, result Workt
 	default:
 		return fmt.Sprintf("inventory lsof snapshot incomplete: exit %d stderr=%q", result.ExitCode, strings.TrimSpace(result.Stderr))
 	}
+}
+
+func attributeWorktreeInventoryLSOFPaths(
+	ctx context.Context,
+	stdout string,
+	worktreeRoots []string,
+) (map[string]string, bool) {
+	activePaths := make(map[string]string)
+	fileDescriptor := ""
+	for _, line := range strings.Split(stdout, "\n") {
+		if len(line) < 2 {
+			continue
+		}
+		switch line[0] {
+		case 'f':
+			fileDescriptor = strings.TrimSpace(line[1:])
+		case 'n':
+			openPath := strings.TrimSuffix(line[1:], "\r")
+			if !strings.EqualFold(fileDescriptor, "cwd") && filepath.IsAbs(openPath) {
+				openPath = filepath.Clean(openPath)
+				if root, ok := longestWorktreeInventoryRoot(openPath, worktreeRoots); ok {
+					if prior := activePaths[root]; prior == "" || openPath < prior {
+						activePaths[root] = openPath
+					}
+				}
+			}
+			fileDescriptor = ""
+			// Preserve the first completed record even when the process consumed
+			// the final budget tick. Anything not yet attributed stays unknown.
+			if ctx.Err() != nil {
+				return activePaths, false
+			}
+		}
+	}
+	return activePaths, true
 }
 
 func longestWorktreeInventoryRoot(openPath string, worktreeRoots []string) (string, bool) {
@@ -153,20 +244,6 @@ func worktreeInventoryPathWithinRoot(root, candidate string) bool {
 	}
 	parts := strings.Split(relative, string(filepath.Separator))
 	return len(parts) > 0 && parts[0] != ".."
-}
-
-func parseWorktreeInventoryLSOFPaths(stdout string) []string {
-	var paths []string
-	for _, line := range strings.Split(stdout, "\n") {
-		if len(line) < 2 || line[0] != 'n' {
-			continue
-		}
-		path := strings.TrimSuffix(line[1:], "\r")
-		if filepath.IsAbs(path) {
-			paths = append(paths, filepath.Clean(path))
-		}
-	}
-	return paths
 }
 
 // WorktreeKeepAnnotation is the caller-composed projection of an active operator
