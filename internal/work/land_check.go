@@ -711,6 +711,9 @@ func landingCurrentBranchRef(repoPath string) (string, error) {
 }
 
 func landingRefExists(repoPath, ref string) (bool, error) {
+	if _, err := runLandingGitOutput(repoPath, "check-ref-format", ref); err != nil {
+		return false, fmt.Errorf("git_delivery.publication_ref %q is not a valid Git ref: %w", ref, err)
+	}
 	cmd := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "--quiet", ref)
 	out, err := cmd.CombinedOutput()
 	if err == nil {

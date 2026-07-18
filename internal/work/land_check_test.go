@@ -356,6 +356,86 @@ func TestLandCheckPublishedContainmentOutranksOwnedPathDirt(t *testing.T) {
 	}
 }
 
+func TestCompletedRequiredPublicationWorkClosesOverLaterOwnedPathDirt(t *testing.T) {
+	now := time.Date(2026, 7, 18, 9, 45, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	landingGit(t, repo, "remote", "add", "origin", remote)
+	landingGit(t, repo, "push", "-u", "origin", "main")
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+	landingGit(t, repo, "push", "origin", "main")
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "exact target and publication containment stays closeable over later owned-path WIP",
+		GitDelivery:      publishedGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, w.ID, now)
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(150*time.Second))
+	proof, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate, Record: true}, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.Status != "landed" || proof.TargetSHA != candidate || proof.PublicationSHA != candidate ||
+		!proof.CandidateContainedInTarget || !proof.CandidateContainedInPublication {
+		t.Fatalf("fixture needs exact target and publication containment: %+v", proof)
+	}
+
+	const laterWIP = "later lane owns this uncommitted edit\n"
+	featurePath := filepath.Join(repo, "feature.txt")
+	writeLandingFile(t, featurePath, laterWIP)
+	live, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Status != "landed" || live.CleanTarget || live.TargetSHA != candidate || live.PublicationSHA != candidate ||
+		!strings.Contains(live.NextAction, "feature.txt") || !strings.Contains(live.NextAction, "preserve") {
+		t.Fatalf("live revalidation must preserve exact containment and surface later dirt: %+v", live)
+	}
+
+	plan, err := store.ClosePlan(w.ID, now.Add(5*time.Minute), ClosePlanOptions{
+		Actor:    "codex",
+		Outcome:  "completed",
+		MoveType: "outward_delta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status == "not_closeable" || len(plan.CloseCommand) == 0 || strings.Contains(plan.NoAction, "dirty_target") {
+		t.Fatalf("close plan must accept exact required-publication containment: %+v", plan)
+	}
+	if got, err := os.ReadFile(featurePath); err != nil || string(got) != laterWIP {
+		t.Fatalf("close plan changed later WIP: got=%q err=%v", got, err)
+	}
+
+	closed, err := store.Close(w.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Actor:     "codex",
+		Summary:   "published candidate contained; later WIP preserved",
+		ProofRefs: []string{proof.EvidenceRef},
+	}, now.Add(6*time.Minute))
+	if err != nil {
+		t.Fatalf("close over later owned-path WIP: %v", err)
+	}
+	if closed.Work.State != "completed" {
+		t.Fatalf("close result = %+v", closed)
+	}
+	if got, err := os.ReadFile(featurePath); err != nil || string(got) != laterWIP {
+		t.Fatalf("close changed later WIP: got=%q err=%v", got, err)
+	}
+}
+
 func TestLandCheckPublishedContainmentReportsForeignDirt(t *testing.T) {
 	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
@@ -490,6 +570,51 @@ func TestLandCheckMissingRequiredPublicationRefAwaitsPublication(t *testing.T) {
 	}
 	if !strings.Contains(report.NextAction, "publish") || !strings.Contains(report.NextAction, "refs/remotes/origin/main") {
 		t.Fatalf("missing publication ref needs an exact publish action: %+v", report)
+	}
+}
+
+func TestLandCheckRejectsGitInvalidPublicationRefThatLooksMissing(t *testing.T) {
+	now := time.Date(2026, 7, 18, 11, 15, 0, 0, time.UTC)
+	repo, base := initLandingRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
+	landingGit(t, repo, "remote", "add", "origin", remote)
+	landingGit(t, repo, "push", "-u", "origin", "main")
+	candidate := landingFeatureCommit(t, repo)
+	landingGit(t, repo, "switch", "main")
+	landingGit(t, repo, "merge", "--ff-only", candidate)
+	landingGit(t, repo, "push", "origin", "main")
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "malformed publication authority is never mistaken for missing publication",
+		GitDelivery:      publishedGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+
+	const invalidPublicationRef = "refs/remotes/.origin/main"
+	w, err = store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.GitDelivery.PublicationRef = invalidPublicationRef
+	if err := w.Validate(); err != nil {
+		t.Fatalf("fixture ref must pass envelope lexical validation to exercise the Git seam: %v", err)
+	}
+	if err := store.writeJSON(store.workPath(w.ID), &w); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "publication_ref") || !strings.Contains(err.Error(), "valid Git ref") {
+		t.Fatalf("Git-invalid publication ref must fail authority validation, got report=%+v err=%v", report, err)
 	}
 }
 
