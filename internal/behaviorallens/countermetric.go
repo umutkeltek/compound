@@ -62,10 +62,11 @@ var (
 	counterMetricWordPatterns = compileMarkers(counterMetricWordMarkers)
 
 	// percentDeltaPattern, multiplierPattern, and arrowTransitionPattern are the SYMBOL-shaped
-	// improvement-claim cues named alongside the word markers: a percent delta ("38% smaller"), an
+	// improvement-claim cues named alongside the word markers: a signed or comparative percent delta
+	// ("-38%", "38% smaller"), an
 	// Nx multiplier ("2.9x per-engineer", "5.8x LOC"), or a numeric before/after transition joined
 	// by "→" ("attention 13-26s → 3-5s").
-	percentDeltaPattern    = regexp.MustCompile(`\d+(?:\.\d+)?\s*%`)
+	percentDeltaPattern    = regexp.MustCompile(`(?:[+-]\s*\d+(?:\.\d+)?\s*%|\b\d+(?:\.\d+)?\s*%\s+(?:faster|smaller|lower|less|higher|more)\b)`)
 	multiplierPattern      = regexp.MustCompile(`\b\d+(?:\.\d+)?x\b`)
 	arrowTransitionPattern = regexp.MustCompile(`\d[^\s→]*\s*→\s*\d`)
 )

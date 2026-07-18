@@ -106,6 +106,30 @@ func TestCounterMetricLensNoClaimNotApplicable(t *testing.T) {
 	}
 }
 
+// A percentage is not automatically an improvement delta. Completion summaries routinely report
+// coverage/pass rates; treating those as improvement claims would manufacture an unpaired-claim
+// failure where the receipt made no comparative claim at all.
+func TestCounterMetricLensNonComparativePercentageNotApplicable(t *testing.T) {
+	obs := counterMetricObs(t, "receipt:pass-rate", CounterMetricPayload{
+		Summary: "Verification completed with 100% of tests passing.",
+	})
+	if _, err := (CounterMetricLens{}).Infer(context.Background(), obs, fixedNow); err != ErrNotApplicable {
+		t.Fatalf("a non-comparative pass rate must be ErrNotApplicable, got %v", err)
+	}
+}
+
+func TestCounterMetricLensComparativePercentagesRemainImprovementClaims(t *testing.T) {
+	for _, summary := range []string{
+		"Latency is 38% smaller.",
+		"Throughput changed by +20%.",
+	} {
+		sig := inferCounterMetric(t, "receipt:percent-delta", summary)
+		if sig.Value >= 0 {
+			t.Fatalf("comparative percentage %q must remain an unpaired improvement claim, got %.3f", summary, sig.Value)
+		}
+	}
+}
+
 // FALSIFIER 5 — visibility: the signal survives PublicProjection (public_safe) and validates through
 // newSignal / RecordSignal / LoadSignals round-trip.
 func TestCounterMetricLensSignalValidatesRecordsAndReadsBack(t *testing.T) {

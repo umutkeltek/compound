@@ -223,6 +223,31 @@ func TestCounterMetricFalsifier_NoClaimProducesNoSignal(t *testing.T) {
 	}
 }
 
+// A non-comparative percentage is ordinary verification evidence, not an improvement claim. The
+// public collector seam must therefore skip the counter-metric lens and leave the failure-pattern
+// inbox untouched even when recording is enabled.
+func TestCounterMetricFalsifier_NonComparativePercentageMintsNothing(t *testing.T) {
+	home := t.TempDir()
+	writeReceipt(t, home, "rec_passrate01", "codex-native", "codex", "work_delta", "completed",
+		"Verification completed with 100% of tests passing.", "2026-07-17T10:00:00Z")
+
+	report, err := Run(home, true, fixedNow)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var counterMetricSignals int
+	for _, signal := range report.PublicSignals {
+		if signal.LensID == behaviorallens.CounterMetricLensID {
+			counterMetricSignals++
+		}
+	}
+	files := failurePatternFiles(t, home)
+	if counterMetricSignals != 0 || len(report.FailurePatternCandidates) != 0 || len(files) != 0 {
+		t.Fatalf("non-comparative pass rate produced signals=%d candidates=%v files=%v",
+			counterMetricSignals, report.FailurePatternCandidates, files)
+	}
+}
+
 // The counter-metric Observation the collector builds carries the receipt's canonical logical event
 // reference (mirrors TestExecutorObservationsUseLogicalEventReferences for hedging).
 func TestCounterMetricObservationsUseLogicalEventReferences(t *testing.T) {
