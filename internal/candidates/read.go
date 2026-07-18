@@ -69,33 +69,109 @@ func ReadCandidate(homePath string, kind Kind, id string, target any) error {
 // "kind" disagrees with the requested id / kind are all rejected before any disk
 // write.
 func WriteCandidate(homePath string, kind Kind, id string, payload any) error {
+	dir, data, err := candidatePayload(kind, id, payload)
+	if err != nil {
+		return err
+	}
+	full := filepath.Join(homePath, dir)
+	if err := os.MkdirAll(full, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(full, id+".json"), data, 0o644)
+}
+
+// CreateCandidateIfAbsent persists a candidate only when its canonical inbox
+// path does not already exist. Any existing candidate remains byte-identical;
+// unsafe existing objects are reported rather than followed or replaced.
+func CreateCandidateIfAbsent(homePath string, kind Kind, id string, payload any) (bool, error) {
+	dir, data, err := candidatePayload(kind, id, payload)
+	if err != nil {
+		return false, err
+	}
+	full := filepath.Join(homePath, dir)
+	if err := os.MkdirAll(full, 0o755); err != nil {
+		return false, err
+	}
+	target := filepath.Join(full, id+".json")
+	file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			return false, classifyExistingCandidate(target, kind, id)
+		}
+		return false, err
+	}
+	created := true
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(target)
+		return created, err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(target)
+		return created, err
+	}
+	return created, nil
+}
+
+func candidatePayload(kind Kind, id string, payload any) (string, []byte, error) {
 	dir := InboxDir(kind)
 	if dir == "" {
-		return fmt.Errorf("unknown candidate kind %q", kind)
+		return "", nil, fmt.Errorf("unknown candidate kind %q", kind)
 	}
 	if err := candidateID(id); err != nil {
-		return err
+		return "", nil, err
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	var meta struct {
 		ID   string `json:"id"`
 		Kind string `json:"kind"`
 	}
 	if err := json.Unmarshal(data, &meta); err != nil {
-		return err
+		return "", nil, err
 	}
 	if meta.ID != "" && meta.ID != id {
-		return fmt.Errorf("candidate payload id %q does not match requested %q", meta.ID, id)
+		return "", nil, fmt.Errorf("candidate payload id %q does not match requested %q", meta.ID, id)
 	}
 	if meta.Kind != "" && meta.Kind != string(kind) {
-		return fmt.Errorf("candidate payload kind %q does not match requested kind %q", meta.Kind, kind)
+		return "", nil, fmt.Errorf("candidate payload kind %q does not match requested kind %q", meta.Kind, kind)
 	}
-	full := filepath.Join(homePath, dir)
-	if err := os.MkdirAll(full, 0o755); err != nil {
-		return err
+	return dir, append(data, '\n'), nil
+}
+
+func classifyExistingCandidate(path string, kind Kind, id string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect existing candidate: %w", err)
 	}
-	return os.WriteFile(filepath.Join(full, id+".json"), append(data, '\n'), 0o644)
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("existing candidate %s is not a regular file (%s)", path, info.Mode())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read existing candidate: %w", err)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("decode existing candidate: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("decode existing candidate: expected JSON object")
+	}
+	var meta struct {
+		ID   string `json:"id"`
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return fmt.Errorf("decode existing candidate identity: %w", err)
+	}
+	if meta.ID != "" && meta.ID != id {
+		return fmt.Errorf("existing candidate id %q does not match requested %q", meta.ID, id)
+	}
+	if meta.Kind != "" && meta.Kind != string(kind) {
+		return fmt.Errorf("existing candidate kind %q does not match requested kind %q", meta.Kind, kind)
+	}
+	return nil
 }
