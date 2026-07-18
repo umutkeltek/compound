@@ -983,6 +983,10 @@ func buildOrientTensionCards(homePath string, reviews reviewartifact.QueueReport
 // session's one weak-tie slot.
 const strangerCardCooldown = 7 * 24 * time.Hour
 
+// orientStrangerDealPreparedObserver is a test seam invoked after a candidate passes the
+// pool/cooldown filters but before the deal is committed. Production leaves it nil.
+var orientStrangerDealPreparedObserver func()
+
 // dealOrientStrangerCard is the S3b weak-tie dealer (packet D4/D5/D7): at most ONE cross-topic,
 // un-promoted (proposed|parked) memory candidate is dealt per orient as a `stranger` tension
 // card, honoring the 7-day cooldown and an optional --stranger-exclude-topic subtree exclusion.
@@ -1041,6 +1045,9 @@ func dealOrientStrangerCard(store *mem.Store, homePath, excludeTopic string, now
 	cardID := "stranger:" + chosen.ID
 	summary := fmt.Sprintf("stranger: %s.%s = %s (topic: %s, state: %s) — cross-topic, un-adjudicated", chosen.Entity, chosen.Predicate, chosen.Object, topic, chosen.State)
 	row := mem.StrangerDealtRow{Ts: now.UTC().Format(time.RFC3339), CardID: cardID, CandidateRef: chosen.ID, Topic: topic}
+	if orientStrangerDealPreparedObserver != nil {
+		orientStrangerDealPreparedObserver()
+	}
 	if err := mem.AppendStrangerDealtRow(homePath, row); err != nil {
 		// A card is only "dealt" once its log row lands (D5): a write failure means it
 		// was never dealt this session (F7's no-crash contract), not a silently
