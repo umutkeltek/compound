@@ -102,7 +102,7 @@ func cmdMemoryCorpusSearch(homePath string, args []string) {
 	laneName := valueFlag(args, "--lane")
 	query := firstPositional(args, map[string]bool{"--lane": true, "--k": true})
 	if laneName == "" || query == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound memory search --lane L <query> [--k N] [--include-text] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound memory search --lane L <query> [--k N] [--include-private-text] [--json]")
 		os.Exit(2)
 	}
 	_, lane := mustCorpusLaneFromHome(homePath, laneName)
@@ -120,7 +120,7 @@ func cmdMemoryCorpusSearch(homePath string, args []string) {
 		}
 		k = n
 	}
-	includeText := boolFlag(args, "--include-text")
+	includeText := corpusIncludePrivateText(args)
 	retrievalStarted := time.Now()
 	report, err := corpus.QueryWithOptions(context.Background(), homePath, lane, embedder, query, k, corpus.QueryOptions{IncludeText: includeText})
 	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerSearch, query, parityCorpusRefs(report), time.Since(retrievalStarted), err == nil, time.Now()))
@@ -139,12 +139,20 @@ func cmdMemoryCorpusSearch(homePath string, args []string) {
 	}
 }
 
+// corpusIncludePrivateText reports whether the caller opted into private item text.
+// The gate in corpus.ResolveChunkText only suppresses privacy=private items — public
+// snippets are returned by default — so the accurate name is --include-private-text.
+// --include-text is kept as a back-compat alias for the original spelling.
+func corpusIncludePrivateText(args []string) bool {
+	return boolFlag(args, "--include-private-text") || boolFlag(args, "--include-text")
+}
+
 // corpusHitTextLine renders a bounded, human-readable line for a hit's text: an explicit
 // reason when the text was withheld (never a silent blank), else a rune-safe snippet.
 func corpusHitTextLine(hit corpus.QueryHit) string {
 	switch hit.TextStatus {
 	case "suppressed_private":
-		return "(suppressed — pass --include-text to reveal)"
+		return "(private source — public snippets are shown by default; pass --include-private-text to reveal this one)"
 	case "stale_source":
 		return "(source changed since indexing — re-run `compound corpus index` to refresh)"
 	case "source_unavailable":
