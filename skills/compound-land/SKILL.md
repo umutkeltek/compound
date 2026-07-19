@@ -127,6 +127,10 @@ go run ./cmd/compound proof-check --json     # tests, vet, build, diff-check, co
   whose doc lands "later" fails the arch doctor's contract guards now or rots.
 - Never `git add -A` / "commit all". Stage explicitly; check `git status --short` for strays
   (`.DS_Store`, scratch files, `home/` runtime state) before staging.
+- `git commit <pathspec>` commits that file's **working tree**, not what you staged — on a shared
+  file carrying another lane's uncommitted hunk it silently sweeps their WIP into your commit
+  (live case 2026-07-19: packets README). On any shared-checkout file, stage YOUR hunk with
+  `git add -p`, verify with `git diff --cached`, then commit with NO pathspec.
 - Generated runtime state never enters the repo: anything under `COMPOUND_HOME`, `home/`,
   `bin/`, root `./compound` binary is untracked by design — if `git status` shows it, stop.
 
