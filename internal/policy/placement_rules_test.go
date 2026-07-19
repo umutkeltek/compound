@@ -46,6 +46,54 @@ func TestPlacementRulesContext(t *testing.T) {
 	}
 }
 
+// TestPlacementRulesDecisionOwnerRedirectsToCompoundDoor is the Wave-2 write-surface falsifier: a
+// DEC-shaped write intercepted for the `decisions` placement owner must redirect to compound's OWN
+// governed door (inbox/decision-candidates, consumed by `compound decisions candidate-plan`), never
+// to the bridge canonical_write_glob an imported OS source still carries
+// (~/Projects/operating-system/decisions). Doors-by-attraction: the guard names compound's intake
+// regardless of the imported glob, and the bridge glob stays in the registry (keep-all-data), so
+// legacy brain/OS homes remain valid canon. RED before the governed-door override (redirect deglobs
+// to the OS path); GREEN after.
+func TestPlacementRulesDecisionOwnerRedirectsToCompoundDoor(t *testing.T) {
+	homeRoot := t.TempDir()
+	t.Setenv("HOME", homeRoot)
+	rules := PlacementRules{
+		Owners: []PlacementOwnerRule{{
+			ID:                  "decisions",
+			Owner:               "decisions",
+			Status:              "active",
+			CanonicalWriteGlobs: []string{"~/Projects/operating-system/decisions/**", "~/brain/decisions/**"},
+			DenyGlobs:           []string{"~/Desktop/decisions/**"},
+			CanonFilenameGlobs:  []string{"DEC-*.md"},
+			Confidence:          "block",
+		}},
+	}
+
+	// canon-filename-outside-owner-home: a synthetic DEC write in an unclaimed location.
+	ctx := rules.PlacementContext(filepath.Join(homeRoot, "Documents", "DEC-9999.md"))
+	if ctx == nil || ctx.Reason != "canon-filename-outside-owner-home" {
+		t.Fatalf("synthetic DEC write should trigger canon-filename context, got %+v", ctx)
+	}
+	if !strings.Contains(ctx.RedirectTarget, "inbox/decision-candidates") {
+		t.Fatalf("redirect must name the compound governed door inbox/decision-candidates, got %q", ctx.RedirectTarget)
+	}
+	if !strings.Contains(ctx.RedirectTarget, "compound decisions candidate-plan") {
+		t.Fatalf("redirect must name the door consumer `compound decisions candidate-plan`, got %q", ctx.RedirectTarget)
+	}
+	if strings.Contains(ctx.RedirectTarget, "operating-system") {
+		t.Fatalf("redirect must NOT name the bridge OS decisions path, got %q", ctx.RedirectTarget)
+	}
+
+	// A deny-zone DEC write for the same owner also names the compound door.
+	deny := rules.PlacementContext(filepath.Join(homeRoot, "Desktop", "decisions", "DEC-1.md"))
+	if deny == nil || deny.Reason != "deny-zone" {
+		t.Fatalf("deny-zone DEC write should trigger deny-zone context, got %+v", deny)
+	}
+	if strings.Contains(deny.RedirectTarget, "operating-system") || !strings.Contains(deny.RedirectTarget, "inbox/decision-candidates") {
+		t.Fatalf("deny-zone redirect must name the compound door, got %q", deny.RedirectTarget)
+	}
+}
+
 // TestPlacementRulesGovernedRoot proves the open-world fix: a novel filename in an unclaimed
 // location under a governed root is flagged. This FAILS on pre-fix code (no GovernedRoots ->
 // PlacementContext returns nil -> the ad-hoc write sails through, exactly the itch).

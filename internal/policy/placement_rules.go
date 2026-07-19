@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	homepkg "compound/internal/home"
 )
 
@@ -319,14 +320,48 @@ func (owner PlacementOwnerRule) placementContext(targetPath, rule string) *Place
 		confidence = "warn"
 	}
 	ownerID := strings.TrimSpace(owner.ID)
+	redirect := deglobTarget(owner.CanonicalWriteGlobs)
+	if door, ok := governedDoorRedirect(ownerID); ok {
+		// Doors-by-attraction (Wave-2): when this owner's intake is a compound governed door,
+		// the guard names THAT door — not the canonical_write_glob a bridge/imported OS source
+		// still carries. The bridge glob stays in the registry (keep-all-data) so legacy
+		// brain/OS homes remain valid canon; only the redirect an agent acts on is repointed.
+		redirect = door
+	}
 	return &PlacementGuardContext{
 		Confidence:     confidence,
 		OwnerRef:       "placement-owner:" + ownerID,
 		TargetRef:      targetPath,
 		Reason:         rule,
-		RedirectTarget: deglobTarget(owner.CanonicalWriteGlobs),
+		RedirectTarget: redirect,
 		EvidenceRefs:   []string{PlacementRulesAuthorityRef, "placement-owner:" + ownerID},
 	}
+}
+
+// governedDoorOwners maps a placement-owner id to the governed-door candidate kind whose intake
+// compound OWNS. When an owner's writes belong to a compound governed door, the placement guard's
+// redirect must name THAT door rather than the owner's canonical_write_glob — an imported OS/brain
+// source still points that glob at a legacy bridge home outside compound. This
+// is the Wave-2 write-surface cutover: compound attracts new writes to its own intake while the
+// bridge glob stays authored in the registry (keep-all-data), never a prohibition.
+var governedDoorOwners = map[string]candidates.Kind{
+	"decisions": candidates.Decision,
+}
+
+// governedDoorRedirect returns "<inbox-dir> (via <consumer>)" for a placement owner whose intake is
+// a compound governed door, and whether such a door exists. The string names both the door an agent
+// should write to and the verb that consumes it (`compound placement target --kind <kind>` resolves
+// the same door positively from candidates.Spec, so guard and resolver agree by construction).
+func governedDoorRedirect(ownerID string) (string, bool) {
+	kind, ok := governedDoorOwners[strings.TrimSpace(ownerID)]
+	if !ok {
+		return "", false
+	}
+	spec, ok := candidates.SpecFor(kind)
+	if !ok {
+		return "", false
+	}
+	return spec.InboxDir + " (via " + spec.Consumer + ")", true
 }
 
 func (gr GovernedRoot) placementContext(targetPath string) *PlacementGuardContext {
