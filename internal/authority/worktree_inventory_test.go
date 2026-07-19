@@ -2,7 +2,6 @@ package authority
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -323,17 +322,29 @@ wait "$child"
 		)
 	}()
 
+	// Readiness must mean "the child pid is PUBLISHED", not merely "the pid file
+	// exists". The fake lsof writes it with `> "$PID_FILE"`, which CREATES the
+	// file before the contents land, so an os.Stat-only check can return ready
+	// while the file is still empty. Cancelling there kills the process group
+	// before the shell finishes the write, so the pid is never published at all
+	// and no later read can recover it. Gating readiness on a parseable pid
+	// closes the window at its source.
+	var childPID int
 	readyDeadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, err := os.Stat(pidFile); err == nil {
-			break
+		raw, err := os.ReadFile(pidFile)
+		if err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw))); convErr == nil {
+				childPID = pid
+				break
+			}
 		} else if !os.IsNotExist(err) {
 			cancel()
 			t.Fatalf("inspect fake lsof readiness: %v", err)
 		}
 		if time.Now().After(readyDeadline) {
 			cancel()
-			t.Fatal("fake lsof did not become ready")
+			t.Fatal("fake lsof did not publish a parseable child pid")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -356,32 +367,8 @@ wait "$child"
 		t.Fatalf("unresolved root state=%q, want unknown after real process cancellation", got)
 	}
 
-	// The fake lsof creates the pid file and writes to it as two separate steps,
-	// so a single read can observe a created-but-still-empty file and fail
-	// Atoi(""). That window widens under full-suite load, which is the only place
-	// it ever tripped. Wait for a PARSEABLE pid rather than reading once: the
-	// assertion (a child pid must be published) is unchanged, only the read is
-	// made race-free.
-	var (
-		childPID int
-		lastErr  error
-	)
-	pidDeadline := time.Now().Add(2 * time.Second)
-	for {
-		rawPID, err := os.ReadFile(pidFile)
-		if err != nil {
-			lastErr = fmt.Errorf("fake lsof did not publish child pid: %w", err)
-		} else if pid, convErr := strconv.Atoi(strings.TrimSpace(string(rawPID))); convErr != nil {
-			lastErr = fmt.Errorf("parse child pid from %q: %w", string(rawPID), convErr)
-		} else {
-			childPID = pid
-			break
-		}
-		if time.Now().After(pidDeadline) {
-			t.Fatalf("fake lsof never published a parseable child pid: %v", lastErr)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// childPID was captured by the readiness gate above, which cannot pass until
+	// the fake lsof published a parseable pid.
 	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
 	deadline := time.Now().Add(time.Second)
 	for inventoryTestProcessExists(childPID) && time.Now().Before(deadline) {
