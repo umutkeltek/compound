@@ -2,6 +2,7 @@ package authority
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -355,13 +356,31 @@ wait "$child"
 		t.Fatalf("unresolved root state=%q, want unknown after real process cancellation", got)
 	}
 
-	rawPID, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("fake lsof did not publish child pid: %v", err)
-	}
-	childPID, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
-	if err != nil {
-		t.Fatalf("parse child pid: %v", err)
+	// The fake lsof creates the pid file and writes to it as two separate steps,
+	// so a single read can observe a created-but-still-empty file and fail
+	// Atoi(""). That window widens under full-suite load, which is the only place
+	// it ever tripped. Wait for a PARSEABLE pid rather than reading once: the
+	// assertion (a child pid must be published) is unchanged, only the read is
+	// made race-free.
+	var (
+		childPID int
+		lastErr  error
+	)
+	pidDeadline := time.Now().Add(2 * time.Second)
+	for {
+		rawPID, err := os.ReadFile(pidFile)
+		if err != nil {
+			lastErr = fmt.Errorf("fake lsof did not publish child pid: %w", err)
+		} else if pid, convErr := strconv.Atoi(strings.TrimSpace(string(rawPID))); convErr != nil {
+			lastErr = fmt.Errorf("parse child pid from %q: %w", string(rawPID), convErr)
+		} else {
+			childPID = pid
+			break
+		}
+		if time.Now().After(pidDeadline) {
+			t.Fatalf("fake lsof never published a parseable child pid: %v", lastErr)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
 	deadline := time.Now().Add(time.Second)
