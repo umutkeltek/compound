@@ -54,8 +54,8 @@ type InventoryRepo struct {
 }
 
 // InventoryContentSHA is the exported content address of an inventory intake's rows — the stable
-// hash the door uses for the observation id and every candidate id. Callers outside the package
-// (the CLI door body) use it so the idempotency contract lives in one place.
+// hash the door uses for the observation id. Callers outside the package (the CLI door body) use it
+// so the idempotency contract lives in one place.
 func InventoryContentSHA(intake InventoryIntake) string {
 	return inventoryStableSHA(intake.Projects)
 }
@@ -63,8 +63,8 @@ func InventoryContentSHA(intake InventoryIntake) string {
 // inventoryStableSHA is the content address of one inventory census. It canonicalizes the rows
 // (sorted by relative_path, marker lists sorted) and hashes the meaningful content only — NOT the
 // intake's generated_at nor any per-row discovery timestamp. Identical workspace state therefore
-// yields an identical hash across runs, so the observation id and every candidate id are stable and
-// an idempotent re-run overwrites the same records instead of spraying duplicates.
+// yields an identical hash across runs, so the observation id is stable and an idempotent re-run
+// overwrites the same record instead of spraying duplicates.
 func inventoryStableSHA(projects []InventoryRepo) string {
 	norm := make([]InventoryRepo, len(projects))
 	copy(norm, projects)
@@ -82,6 +82,17 @@ func inventoryStableSHA(projects []InventoryRepo) string {
 	// json.Marshal of a slice of structs is deterministic (fixed field order, no maps), so the
 	// canonical bytes are stable for stable content.
 	b, _ := json.Marshal(norm)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// inventoryRowSHA is the content address of one inventory row. It applies the same marker-list
+// canonicalization as inventoryStableSHA and excludes intake timestamps by operating on the row.
+func inventoryRowSHA(r InventoryRepo) string {
+	markers := append([]string(nil), r.MarkerFiles...)
+	sort.Strings(markers)
+	r.MarkerFiles = markers
+	b, _ := json.Marshal(r)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])[:12]
 }
@@ -116,8 +127,8 @@ func inventoryEntityHint(r InventoryRepo) string {
 }
 
 // FromInventory builds the SourceObservation for one project-miner inventory census. contentSHA is
-// the stable content address of the rows (see inventoryStableSHA), so the observation id and every
-// candidate id are content-addressed. bodyRef is the content-addressed artifact-store ref of the
+// the stable content address of the rows (see inventoryStableSHA), while each candidate uses its
+// row's content address. bodyRef is the content-addressed artifact-store ref of the
 // preserved raw inventory.json (the keep-all-data original layer). Every row maps to a no-promote
 // product_hypothesis candidate: the inventory is portfolio evidence awaiting operator adjudication
 // (its promotion path is `compound product hypothesis-plan`), never promoted truth. The door OWNS
@@ -139,10 +150,11 @@ func FromInventory(intake InventoryIntake, contentSHA, bodyRef string, now time.
 			return SourceObservation{}, fmt.Errorf("inventory project %d: needs a relative_path, slug, or path", i)
 		}
 		maps = append(maps, MapTarget{
-			ObjectFamily:   "product",
-			CandidateKind:  string(candidates.ProductHypothesis),
-			EntityHint:     inventoryEntityHint(r),
-			PromoteAllowed: false,
+			ObjectFamily:      "product",
+			CandidateKind:     string(candidates.ProductHypothesis),
+			EntityHint:        inventoryEntityHint(r),
+			CandidateRevision: inventoryRowSHA(r),
+			PromoteAllowed:    false,
 		})
 	}
 	evidence := []string{"project_inventory_capture:" + contentSHA}

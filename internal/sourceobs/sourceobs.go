@@ -59,10 +59,13 @@ type GeneratedView struct {
 }
 
 type MapTarget struct {
-	ObjectFamily   string `json:"object_family" yaml:"object_family"`
-	CandidateKind  string `json:"candidate_kind" yaml:"candidate_kind"`
-	EntityHint     string `json:"entity_hint" yaml:"entity_hint"`
-	PromoteAllowed bool   `json:"promote_allowed" yaml:"promote_allowed"`
+	ObjectFamily  string `json:"object_family" yaml:"object_family"`
+	CandidateKind string `json:"candidate_kind" yaml:"candidate_kind"`
+	EntityHint    string `json:"entity_hint" yaml:"entity_hint"`
+	// CandidateRevision, when set, replaces capture-level identity components for ID derivation so
+	// capture-wide changes do not re-key unchanged rows.
+	CandidateRevision string `json:"candidate_revision,omitempty" yaml:"candidate_revision,omitempty"`
+	PromoteAllowed    bool   `json:"promote_allowed" yaml:"promote_allowed"`
 }
 
 type CandidateRecord struct {
@@ -730,9 +733,13 @@ func CandidateFromMap(obs SourceObservation, m MapTarget, now time.Time) Candida
 	if detail == "" {
 		detail = obs.SourceRef.SourceClass
 	}
+	candidateID := idFor("src_cand_", obs.ID, m.CandidateKind, m.EntityHint, obs.SourceRef.Revision)
+	if m.CandidateRevision != "" {
+		candidateID = idFor("src_cand_", obs.AdapterID, obs.SourceRef.Path, m.CandidateKind, m.EntityHint, m.CandidateRevision)
+	}
 	return CandidateRecord{
 		SchemaVersion:       CandidateSchemaVersion,
-		ID:                  idFor("src_cand_", obs.ID, m.CandidateKind, m.EntityHint, obs.SourceRef.Revision),
+		ID:                  candidateID,
 		Kind:                m.CandidateKind,
 		Subject:             subject,
 		Statement:           statement,

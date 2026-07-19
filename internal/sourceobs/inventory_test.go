@@ -13,8 +13,8 @@ func boolp(b bool) *bool { return &b }
 
 func sampleRepos() []InventoryRepo {
 	return []InventoryRepo{
-		{Slug: "products-notekeep", Name: "notekeep", Domain: "products", RelativePath: "products/notekeep", Git: false, MarkerFiles: []string{"CLAUDE.md", "AGENTS.md"}, ProjectStrength: "weak"},
-		{Slug: "notekeep-android", Name: "android_app", Domain: "products", RelativePath: "products/notekeep/android_app", Git: true, Branch: "main", Dirty: boolp(false), RecentCommit: "d62f43f prepare release", MarkerFiles: []string{"AGENTS.md"}, ProjectStrength: "strong"},
+		{Slug: "demo-health", Name: "demo-health", Domain: "products", RelativePath: "products/demo-health", Git: false, MarkerFiles: []string{"CLAUDE.md", "AGENTS.md"}, ProjectStrength: "weak"},
+		{Slug: "sample-app", Name: "sample-app", Domain: "products", RelativePath: "products/sample-app", Git: true, Branch: "main", Dirty: boolp(false), RecentCommit: "d62f43f prepare release", MarkerFiles: []string{"AGENTS.md"}, ProjectStrength: "strong"},
 	}
 }
 
@@ -75,10 +75,50 @@ func TestInventoryStableSHAIgnoresTimestamps(t *testing.T) {
 	if obsA.ID != obsB.ID {
 		t.Fatalf("observation id changed on generated_at alone: %s vs %s", obsA.ID, obsB.ID)
 	}
+	for i := range obsA.MapsTo {
+		candidateA := CandidateFromMap(obsA, obsA.MapsTo[i], invNow)
+		candidateB := CandidateFromMap(obsB, obsB.MapsTo[i], invNow)
+		if candidateA.ID != candidateB.ID {
+			t.Fatalf("candidate %d id changed on generated_at alone: %s vs %s", i, candidateA.ID, candidateB.ID)
+		}
+	}
 	// Row order must not matter either: the canonicalizer sorts by relative_path.
 	reordered := InventoryIntake{SourceCapture: "/tmp/inventory.json", Projects: []InventoryRepo{sampleRepos()[1], sampleRepos()[0]}}
 	if InventoryContentSHA(reordered) != InventoryContentSHA(a) {
 		t.Fatalf("content sha changed on row order alone")
+	}
+}
+
+// A census-level change must re-key the observation but only the changed row's candidate. RED if
+// CandidateFromMap still includes the census observation id or revision in inventory candidate ids.
+func TestInventoryCandidateIDsTrackOnlyChangedRow(t *testing.T) {
+	run1 := sampleRepos()
+	run2 := sampleRepos()
+	run2[1].Dirty = boolp(true)
+
+	intake1 := InventoryIntake{SourceCapture: "/tmp/inventory.json", Projects: run1}
+	intake2 := InventoryIntake{SourceCapture: "/tmp/inventory.json", Projects: run2}
+	obs1, err := FromInventory(intake1, InventoryContentSHA(intake1), "sha256:run1", invNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs2, err := FromInventory(intake2, InventoryContentSHA(intake2), "sha256:run2", invNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if obs1.ID == obs2.ID {
+		t.Fatalf("observation id did not change with the census: %s", obs1.ID)
+	}
+	unchanged1 := CandidateFromMap(obs1, obs1.MapsTo[0], invNow)
+	unchanged2 := CandidateFromMap(obs2, obs2.MapsTo[0], invNow)
+	if unchanged1.ID != unchanged2.ID {
+		t.Fatalf("unchanged repo candidate id changed across censuses: %s vs %s", unchanged1.ID, unchanged2.ID)
+	}
+	changed1 := CandidateFromMap(obs1, obs1.MapsTo[1], invNow)
+	changed2 := CandidateFromMap(obs2, obs2.MapsTo[1], invNow)
+	if changed1.ID == changed2.ID {
+		t.Fatalf("changed repo candidate id did not change: %s", changed1.ID)
 	}
 }
 
