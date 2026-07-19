@@ -117,6 +117,33 @@ func TestCorpusChunkTextIndexOutOfRange(t *testing.T) {
 	}
 }
 
+// TestCorpusChunkTextStaleIndexIsRefused covers the drift the file_hash gate cannot
+// see: the source is byte-identical, but the index was written by a different chunk
+// schema. Re-chunking with today's chunker would then hand back text for an ordinal
+// that was never embedded under that ordinal — a plausible-looking wrong answer.
+func TestCorpusChunkTextStaleIndexIsRefused(t *testing.T) {
+	fixture := seedCorpusTextFixture(t, "public", "User: synthetic stable source text.")
+	dir := IndexDir(fixture.homePath, fixture.lane)
+	manifest, err := readManifest(dir)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	manifest.PrefixSchemaVersion = "v0"
+	writeJSON(t, filepath.Join(dir, "manifest.json"), manifest)
+
+	report, err := Query(context.Background(), fixture.homePath, fixture.lane, fixture.embedder, "stable", 1)
+	if err != nil {
+		t.Fatalf("stale chunk schema aborted the whole query: %v", err)
+	}
+	text, status, hasText := corpusHitTextFields(t, onlyCorpusTextHit(t, report))
+	if status != string(ChunkTextStaleIndex) {
+		t.Fatalf("text status = %q, want %q", status, ChunkTextStaleIndex)
+	}
+	if hasText || text != "" {
+		t.Fatalf("stale-index hit exposed text %q", text)
+	}
+}
+
 type corpusTextFixture struct {
 	homePath   string
 	sourcePath string
@@ -125,10 +152,34 @@ type corpusTextFixture struct {
 	chunks     []Chunk
 }
 
+// corpusFixtureOpts carries the manifest fields a fixture wants to vary. Title
+// resolution reads page_slug/source_ref/privacy, so those must be settable per test.
+type corpusFixtureOpts struct {
+	privacy  string
+	pageSlug string
+	fileName string
+	body     string
+}
+
 func seedCorpusTextFixture(t *testing.T, itemPrivacy, body string) corpusTextFixture {
 	t.Helper()
+	return seedCorpusTextFixtureWith(t, corpusFixtureOpts{
+		privacy:  itemPrivacy,
+		pageSlug: "Synthetic Corpus Fixture",
+		fileName: "synthetic-corpus-source.md",
+		body:     body,
+	})
+}
+
+func seedCorpusTextFixtureWith(t *testing.T, opts corpusFixtureOpts) corpusTextFixture {
+	t.Helper()
+	itemPrivacy, body := opts.privacy, opts.body
+	fileName := opts.fileName
+	if fileName == "" {
+		fileName = "synthetic-corpus-source.md"
+	}
 	homePath := t.TempDir()
-	sourcePath := filepath.Join(t.TempDir(), "synthetic-corpus-source.md")
+	sourcePath := filepath.Join(t.TempDir(), fileName)
 	writeRaw(t, sourcePath, body)
 
 	const family = "synthetic_corpus_text"
@@ -138,7 +189,7 @@ func seedCorpusTextFixture(t *testing.T, itemPrivacy, body string) corpusTextFix
 	}
 	manifest.Items[0].ID = "item_fixture"
 	manifest.Items[0].SourceKind = "synthetic_dialogue"
-	manifest.Items[0].PageSlug = "Synthetic Corpus Fixture"
+	manifest.Items[0].PageSlug = opts.pageSlug
 	manifest.Items[0].Privacy = itemPrivacy
 	manifest.Items[0].CorpusGeneration = "generation-fixture"
 	if _, err := sourceobs.RecordSourceManifest(homePath, manifest); err != nil {

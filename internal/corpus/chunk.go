@@ -296,6 +296,12 @@ const (
 	// world, not a query failure — one unreadable body must degrade its own hit, never
 	// abort the whole search.
 	ChunkTextSourceUnavailable ChunkTextStatus = "source_unavailable"
+	// ChunkTextStaleIndex means the index was written under a different chunk schema
+	// than this binary produces. The file_hash gate cannot see this drift: the source
+	// can be byte-identical while the chunker that split it has changed, so ordinal N
+	// today need not be the ordinal N that was embedded. Re-derived text would then be
+	// text that was never indexed — a wrong answer that looks right.
+	ChunkTextStaleIndex ChunkTextStatus = "stale_index"
 )
 
 // ResolvedChunkText is the outcome of resolving a chunk_id back to its source text.
@@ -311,11 +317,14 @@ type ResolvedChunkText struct {
 //
 // chunkID is "<item_id>#<ordinal>" as produced by ChunkItem/Query. Resolution:
 //  1. Split chunkID into item_id + ordinal.
-//  2. Find the manifest item by item_id and read the file at its source_ref.
-//  3. Drift gate: sha256 the live file and compare to item.file_hash. On mismatch,
+//  2. Find the manifest item by item_id.
+//  3. Schema gate: if the manifest's prefix_schema_version is not this binary's, the
+//     chunker has changed under the index — return ChunkTextStaleIndex with no text.
+//  4. Read the file at the item's source_ref.
+//  5. Drift gate: sha256 the live file and compare to item.file_hash. On mismatch,
 //     return ChunkTextStaleSource with no text.
-//  4. Re-chunk with the manifest's chunk config; bounds-check ordinal against the result.
-//  5. Privacy gate: the item's own privacy (not just the lane's) decides suppression —
+//  6. Re-chunk with the manifest's chunk config; bounds-check ordinal against the result.
+//  7. Privacy gate: the item's own privacy (not just the lane's) decides suppression —
 //     if privacy=="private" and includeText is false, return ChunkTextSuppressedPrivate
 //     with no text.
 func ResolveChunkText(manifest Manifest, chunkID string, includeText bool) (ResolvedChunkText, error) {
@@ -326,6 +335,12 @@ func ResolveChunkText(manifest Manifest, chunkID string, includeText bool) (Reso
 	item, ok := findManifestItem(manifest, itemID)
 	if !ok {
 		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: item %q not found in manifest", itemID)
+	}
+	// Checked before any source read: chunk-schema drift is a property of the manifest
+	// alone and invalidates every re-derivation below, so reporting a per-file state
+	// (unreadable, changed) first would send the operator after the wrong repair.
+	if strings.TrimSpace(manifest.PrefixSchemaVersion) != PrefixSchemaVersion {
+		return ResolvedChunkText{Status: ChunkTextStaleIndex}, nil
 	}
 	raw, err := os.ReadFile(item.SourceRef)
 	if err != nil {

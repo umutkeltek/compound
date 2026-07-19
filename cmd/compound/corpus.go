@@ -155,6 +155,8 @@ func corpusHitTextLine(hit corpus.QueryHit) string {
 		return "(private source — public snippets are shown by default; pass --include-private-text to reveal this one)"
 	case "stale_source":
 		return "(source changed since indexing — re-run `compound corpus index` to refresh)"
+	case "stale_index":
+		return "(source was indexed with an older chunk schema — re-run `compound corpus index`)"
 	case "source_unavailable":
 		return "(source file no longer readable at its indexed path)"
 	default:
