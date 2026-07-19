@@ -36,7 +36,18 @@ function resolveBinary() {
   if (fromEnv && existsSync(fromEnv)) return fromEnv;
   const out = path.join(mkdtempSync(path.join(tmpdir(), "stream-door-bin-")), "compound");
   log(`building compound -> ${out}`);
-  execFileSync("go", ["build", "-o", out, "./cmd/compound"], { cwd: REPO_ROOT, stdio: "inherit" });
+  try {
+    execFileSync("go", ["build", "-o", out, "./cmd/compound"], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, GOTOOLCHAIN: "local" },
+      stdio: "inherit",
+    });
+  } catch (error) {
+    throw new Error(
+      "stream-door-smoke: local-only Go build failed; install the Go version required by go.mod or set COMPOUND_BIN to a fresh compatible binary",
+      { cause: error },
+    );
+  }
   return out;
 }
 
