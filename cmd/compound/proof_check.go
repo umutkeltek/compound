@@ -147,25 +147,30 @@ func proofCheckWriteReportFile(path string, report proofCheckReport) error {
 }
 
 // proofCheckVerdictLine renders the single final stdout line printed when --out is
-// present: "battery: ok gates=N/N out=PATH" or, on the first failed gate,
-// "battery: FAILED gates=N/M first_failed=NAME out=PATH".
+// present, with passed, skipped, and failed gates counted separately.
 func proofCheckVerdictLine(report proofCheckReport, path string) string {
 	total := len(report.Steps)
+	passed := 0
+	skipped := 0
 	failed := 0
 	firstFailed := ""
 	for _, step := range report.Steps {
-		if step.Status == "failed" {
+		switch step.Status {
+		case "ok":
+			passed++
+		case "skipped":
+			skipped++
+		case "failed":
 			failed++
 			if firstFailed == "" {
 				firstFailed = step.Name
 			}
 		}
 	}
-	passed := total - failed
 	if report.Status == "ok" {
-		return fmt.Sprintf("battery: ok gates=%d/%d out=%s", passed, total, path)
+		return fmt.Sprintf("battery: ok passed=%d skipped=%d failed=%d total=%d out=%s", passed, skipped, failed, total, path)
 	}
-	return fmt.Sprintf("battery: FAILED gates=%d/%d first_failed=%s out=%s", passed, total, firstFailed, path)
+	return fmt.Sprintf("battery: FAILED passed=%d skipped=%d failed=%d total=%d first_failed=%s out=%s", passed, skipped, failed, total, firstFailed, path)
 }
 
 func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, ciConsole bool, now time.Time) (proofCheckReport, error) {

@@ -23,7 +23,7 @@ import (
 const proofCheckOutCLISubEnv = "COMPOUND_PROOFCHECK_OUT_SUB"
 
 // F1: a failed-report verdict line names the FIRST failed gate and says FAILED with
-// correct passed/total counts.
+// honest passed, skipped, failed, and total counts.
 func TestProofCheckVerdictLineFailedNamesFirstFailedGate(t *testing.T) {
 	report := proofCheckReport{
 		Status: "failed",
@@ -35,7 +35,7 @@ func TestProofCheckVerdictLineFailedNamesFirstFailedGate(t *testing.T) {
 		},
 	}
 	got := proofCheckVerdictLine(report, "/tmp/out.json")
-	want := "battery: FAILED gates=2/4 first_failed=go-vet out=/tmp/out.json"
+	want := "battery: FAILED passed=2 skipped=0 failed=2 total=4 first_failed=go-vet out=/tmp/out.json"
 	if got != want {
 		t.Fatalf("verdict = %q, want %q", got, want)
 	}
@@ -52,7 +52,24 @@ func TestProofCheckVerdictLineOkReportsCorrectCounts(t *testing.T) {
 		},
 	}
 	got := proofCheckVerdictLine(report, "/tmp/out.json")
-	want := "battery: ok gates=3/3 out=/tmp/out.json"
+	want := "battery: ok passed=2 skipped=1 failed=0 total=3 out=/tmp/out.json"
+	if got != want {
+		t.Fatalf("verdict = %q, want %q", got, want)
+	}
+}
+
+func TestProofCheckVerdictLineFailedCountsSkippedSeparately(t *testing.T) {
+	report := proofCheckReport{
+		Status: "failed",
+		Steps: []proofCheckStep{
+			{Name: "go-test", Status: "ok"},
+			{Name: "console-smoke", Status: "skipped"},
+			{Name: "go-vet", Status: "failed"},
+			{Name: "console-build", Status: "skipped"},
+		},
+	}
+	got := proofCheckVerdictLine(report, "/tmp/out.json")
+	want := "battery: FAILED passed=1 skipped=2 failed=1 total=4 first_failed=go-vet out=/tmp/out.json"
 	if got != want {
 		t.Fatalf("verdict = %q, want %q", got, want)
 	}
@@ -169,7 +186,7 @@ func TestProofCheckOutDryRunExitsZeroWithOkVerdict(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimRight(string(output), "\n"), "\n")
 	last := lines[len(lines)-1]
-	if !strings.HasPrefix(last, "battery: ok gates=") || !strings.HasSuffix(last, "out="+outPath) {
+	if !strings.HasPrefix(last, "battery: ok passed=") || !strings.HasSuffix(last, "out="+outPath) {
 		t.Fatalf("last stdout line should be the ok verdict, got %q\nfull output:\n%s", last, output)
 	}
 }
@@ -264,7 +281,7 @@ func TestProofCheckOutTruthfulExitOneOnRedBattery(t *testing.T) {
 
 	lines := strings.Split(strings.TrimRight(string(output), "\n"), "\n")
 	last := lines[len(lines)-1]
-	if !strings.HasPrefix(last, "battery: FAILED gates=") || !strings.Contains(last, "first_failed=go-test") || !strings.HasSuffix(last, "out="+outPath) {
+	if !strings.HasPrefix(last, "battery: FAILED passed=") || !strings.Contains(last, "first_failed=go-test") || !strings.HasSuffix(last, "out="+outPath) {
 		t.Fatalf("last stdout line should be the FAILED verdict naming go-test, got %q\nfull output:\n%s", last, output)
 	}
 }
