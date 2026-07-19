@@ -73,6 +73,16 @@ go run ./cmd/compound proof-check --json --out <file>   # tests, vet, build, dif
   2026-07-07 (piped through `tail`), 2026-07-15 and 2026-07-18 (backgrounded: the wrapper's trailing
   `echo` exit, always `0`, was trusted as the battery's exit) — which is why the battery, not a shell
   wrapper, now owns the output contract.
+- **A pre-commit battery CANNOT clear the doc-leak gate for NEW files** (lived 2026-07-19, inventory
+  door). The gate enumerates TRACKED text files only, so files still untracked (`??`) at battery
+  time are invisible to it — the battery goes green, the commit makes them tracked, and the NEXT
+  battery fails on a leak that is already landed and pushed. Landing new files therefore has an
+  ordering hazard the standard battery does not cover. Before committing any NEW text file, run the
+  leak gate against the staged-as-tracked state — `git add` the files FIRST, then run
+  `go test ./internal/arch/ -run TestDoctorGreenAgainstRealRepo` (seconds, not the full battery) —
+  or grep the new files against `docs_private/leak-tokens.txt` directly. Test FIXTURES are the
+  usual offender: a realistic-looking fixture is exactly where a real private product name gets
+  typed. Use synthetic names in fixtures always.
 - **Worktree caveat (real failure):** fresh worktrees do not contain the gitignored
   `docs_private/leak-tokens.txt`. The doctor's leak gate **fails closed** under `--strict` when
   the token list is missing. Copy the file into the worktree before running the battery there.
