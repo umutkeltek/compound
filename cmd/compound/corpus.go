@@ -147,6 +147,8 @@ func corpusHitTextLine(hit corpus.QueryHit) string {
 		return "(suppressed — pass --include-text to reveal)"
 	case "stale_source":
 		return "(source changed since indexing — re-run `compound corpus index` to refresh)"
+	case "source_unavailable":
+		return "(source file no longer readable at its indexed path)"
 	default:
 		return snippetRunes(hit.Text, 240)
 	}

@@ -290,6 +290,12 @@ const (
 	// caller did not opt in (includeText=false). Text flows into an agent's context and
 	// onward to a model provider; a path does not — that is why suppression is the default.
 	ChunkTextSuppressedPrivate ChunkTextStatus = "suppressed_private"
+	// ChunkTextSourceUnavailable means the source file could not be read. Items are
+	// body_policy=source_in_place: the body lives OUTSIDE COMPOUND_HOME and can be moved
+	// or deleted at any time without the index knowing. That is an expected state of the
+	// world, not a query failure — one unreadable body must degrade its own hit, never
+	// abort the whole search.
+	ChunkTextSourceUnavailable ChunkTextStatus = "source_unavailable"
 )
 
 // ResolvedChunkText is the outcome of resolving a chunk_id back to its source text.
@@ -323,7 +329,8 @@ func ResolveChunkText(manifest Manifest, chunkID string, includeText bool) (Reso
 	}
 	raw, err := os.ReadFile(item.SourceRef)
 	if err != nil {
-		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: read source for item %q: %w", itemID, err)
+		// Degrade this hit, do not fail the query — see ChunkTextSourceUnavailable.
+		return ResolvedChunkText{Status: ChunkTextSourceUnavailable}, nil
 	}
 	sum := sha256.Sum256(raw)
 	liveHash := "sha256:" + hex.EncodeToString(sum[:])

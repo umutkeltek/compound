@@ -3,6 +3,7 @@ package corpus
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -195,4 +196,29 @@ func corpusHitTextFields(t *testing.T, hit QueryHit) (text, status string, hasTe
 	text, hasText = fields["text"].(string)
 	status, _ = fields["text_status"].(string)
 	return text, status, hasText
+}
+
+// TestCorpusMissingSourceDegradesOneHit guards a regression this feature could reintroduce.
+// Items are body_policy=source_in_place: the body lives OUTSIDE COMPOUND_HOME and can be
+// moved or deleted without the index knowing. Resolving text must therefore degrade the
+// single affected hit, never abort the search — before this guard, one deleted file made
+// the whole query return an error and the lane became unsearchable.
+func TestCorpusMissingSourceDegradesOneHit(t *testing.T) {
+	fixture := seedCorpusTextFixture(t, "public", "User: synthetic matched source text.")
+	if err := os.Remove(fixture.sourcePath); err != nil {
+		t.Fatalf("remove source: %v", err)
+	}
+
+	report, err := Query(context.Background(), fixture.homePath, fixture.lane, fixture.embedder, "matched", 1)
+	if err != nil {
+		t.Fatalf("one missing source aborted the whole query: %v", err)
+	}
+	hit := onlyCorpusTextHit(t, report)
+	_, status, hasText := corpusHitTextFields(t, hit)
+	if status != string(ChunkTextSourceUnavailable) {
+		t.Fatalf("text status = %q, want %q", status, ChunkTextSourceUnavailable)
+	}
+	if hasText {
+		t.Fatal("unreadable source must not yield text")
+	}
 }
