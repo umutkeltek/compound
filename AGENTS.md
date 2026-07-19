@@ -111,6 +111,7 @@ loop compound provides:
   files: the console-tsc gate cannot resolve `bun:test` types, and an unwired test file is a check
   that never runs. (Lived: decision-brief falsifiers, 2026-07.)
 - Generated runtime state goes under `COMPOUND_HOME`, never the repo source tree. No `cwd` as authority.
+- Fresh-worktree `proof-check` needs FOUR gitignored inputs copied with `cp -Rc` (NOT `ln -s`): `docs_private/leak-tokens.txt`, `docs_private/plan/`, `docs_private/profiles/`, `console/node_modules`. Three of four leaves console-tsc + bun smokes red on `EISDIR ... bun/install/cache/...` — the failure looks like Bun cache corruption but is actually a missing local `node_modules`. (Lived: 2026-07-19, cmdMemory extraction — first battery passed 38/44, the 6 console failures cleared after `cp -Rc console/node_modules`, full battery then 44/44.)
 
 ## Public / private boundary (this repo is destined to be public)
 - `docs_private/`, `*.private.md`, `.compound-private/` are gitignored — **never tracked, never shipped.** Never
