@@ -64,7 +64,8 @@ func TestSalvagePlanCLIReportsTeethAndSuccessorSequenceInJSONAndHuman(t *testing
 	// HTML-escapes < and > in string values by default (printJSON uses
 	// json.MarshalIndent), so the placeholder's literal angle brackets do
 	// not survive raw-text search even though the decoded value is exact.
-	if len(plan.SuccessorCommands) == 0 || !strings.Contains(plan.SuccessorCommands[0], "git worktree add <fresh-worktree-path>") {
+	wantWorktreeAdd := "git worktree add -b land/" + w.ID + " <fresh-worktree-path> " + base
+	if len(plan.SuccessorCommands) == 0 || plan.SuccessorCommands[0] != wantWorktreeAdd {
 		t.Fatalf("--json output missing the sanctioned worktree-add step: %+v", plan.SuccessorCommands)
 	}
 
@@ -74,7 +75,7 @@ func TestSalvagePlanCLIReportsTeethAndSuccessorSequenceInJSONAndHuman(t *testing
 	if !strings.Contains(humanOut, "teeth_reproof:") {
 		t.Fatalf("human output missing teeth_reproof line:\n%s", humanOut)
 	}
-	if !strings.Contains(humanOut, "successor_command: git worktree add <fresh-worktree-path>") {
+	if !strings.Contains(humanOut, "successor_command: "+wantWorktreeAdd) {
 		t.Fatalf("human output missing successor_command worktree-add line:\n%s", humanOut)
 	}
 	if !strings.Contains(humanOut, "successor_command: git cherry-pick") {

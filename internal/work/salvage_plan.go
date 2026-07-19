@@ -196,7 +196,7 @@ func (s *Store) SalvagePlan(workID string, opts SalvagePlanOptions, now time.Tim
 		TrueDeletions:           trueDeletions,
 		FabricatedDeletionLabel: fabricatedLabel,
 		TeethReproofNote:        salvageTeethReproofNote,
-		SuccessorCommands:       salvageSuccessorCommands(targetSHA, trueCommits),
+		SuccessorCommands:       salvageSuccessorCommands(w.ID, targetSHA, trueCommits),
 	}
 	return plan, nil
 }
@@ -222,14 +222,18 @@ func salvageTrueCommits(repoPath, mergeBase, branch string) ([]SalvagePlanCommit
 }
 
 // salvageSuccessorCommands is the sanctioned successor sequence: a fresh
-// worktree off the target tip, then cherry-pick the true commits in order.
-// <fresh-worktree-path> is left as an explicit placeholder -- the plan
-// cannot pick a path on the operator's behalf -- while every value it does
-// know (the target tip SHA, the true commit SHAs) is filled in literally so
-// the sequence is copy-pasteable.
-func salvageSuccessorCommands(targetSHA string, trueCommits []SalvagePlanCommit) []string {
+// named worktree branch off the target tip, then cherry-pick the true commits
+// in order. The bare `git worktree add <path> <sha>` form produces a DETACHED
+// worktree, so a salvaging agent's commits land on no branch and are easy to
+// lose a second time -- the -b form is what makes the recovery durable.
+// `land/<work_id>` is derived from the WorkEnvelope id purely so the name is
+// deterministic across replays and cannot collide across envelopes; it is NOT
+// a git_delivery ref (that contract carries an operator-supplied
+// TargetLocalRef). The plan never creates the branch; it only renders the
+// command.
+func salvageSuccessorCommands(workID, targetSHA string, trueCommits []SalvagePlanCommit) []string {
 	commands := []string{
-		fmt.Sprintf("git worktree add <fresh-worktree-path> %s", targetSHA),
+		fmt.Sprintf("git worktree add -b land/%s <fresh-worktree-path> %s", workID, targetSHA),
 	}
 	if len(trueCommits) == 0 {
 		commands = append(commands, "# no true commits to cherry-pick: the branch contributes nothing beyond merge_base")

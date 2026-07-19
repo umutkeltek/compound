@@ -305,9 +305,17 @@ func TestSalvagePlanAlwaysCarriesTeethNoteAndSuccessorSequence(t *testing.T) {
 	if len(plan.SuccessorCommands) != 2 {
 		t.Fatalf("successor_commands = %v, want exactly 2 commands (worktree add, cherry-pick)", plan.SuccessorCommands)
 	}
-	wantWorktreeAdd := "git worktree add <fresh-worktree-path> " + targetTip
+	wantSuccessorBranch := "land/" + w.ID
+	wantWorktreeAdd := "git worktree add -b " + wantSuccessorBranch + " <fresh-worktree-path> " + targetTip
 	if plan.SuccessorCommands[0] != wantWorktreeAdd {
 		t.Fatalf("successor_commands[0] = %q, want %q", plan.SuccessorCommands[0], wantWorktreeAdd)
+	}
+	replayed, err := store.SalvagePlan(w.ID, SalvagePlanOptions{Branch: "refs/heads/stale-branch"}, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("SalvagePlan replay: %v", err)
+	}
+	if replayed.SuccessorCommands[0] != wantWorktreeAdd {
+		t.Fatalf("successor branch is not deterministic: first=%q replay=%q", plan.SuccessorCommands[0], replayed.SuccessorCommands[0])
 	}
 	wantCherryPick := "git cherry-pick " + branchTip
 	if plan.SuccessorCommands[1] != wantCherryPick {
@@ -361,6 +369,10 @@ func TestSalvagePlanEmptyTrueDeltaStillNamesSuccessorStep(t *testing.T) {
 	}
 	if len(plan.SuccessorCommands) != 2 || !strings.Contains(plan.SuccessorCommands[1], "no true commits") {
 		t.Fatalf("successor_commands = %v, want a worktree-add plus an explicit nothing-to-cherry-pick note", plan.SuccessorCommands)
+	}
+	wantWorktreeAdd := "git worktree add -b land/" + w.ID + " <fresh-worktree-path> " + plan.TargetSHA
+	if plan.SuccessorCommands[0] != wantWorktreeAdd {
+		t.Fatalf("successor_commands[0] = %q, want named-branch command %q", plan.SuccessorCommands[0], wantWorktreeAdd)
 	}
 }
 
