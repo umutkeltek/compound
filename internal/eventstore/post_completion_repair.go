@@ -2257,6 +2257,45 @@ func (s *Store) PostCompletionRepairPlanForApply(planPath string) (PostCompletio
 	return s.loadPostCompletionRepairPlan(planPath)
 }
 
+// ReadPostCompletionRepairPlans discovers immutable repair plans without
+// creating the repair directory or consulting directory entries as authority.
+// Status needs this narrow read because every existing lifecycle accessor is
+// plan-addressed, while a caller may intentionally omit --plan. Each returned
+// plan still passes the same rooted regular-file and canonical-path validation
+// as PostCompletionRepairPlanForApply.
+func (s *Store) ReadPostCompletionRepairPlans() ([]PostCompletionRepairPlanRecord, error) {
+	if s == nil || s.engine == nil {
+		return nil, fmt.Errorf("event store requires a home")
+	}
+	root := s.engine.postCompletionRepairRoot()
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return []PostCompletionRepairPlanRecord{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	plans := make([]PostCompletionRepairPlanRecord, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".plan.json") {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		plan, err := s.PostCompletionRepairPlanForApply(path)
+		if err != nil {
+			return nil, fmt.Errorf("read post-completion repair plan %s: %w", entry.Name(), err)
+		}
+		plans = append(plans, PostCompletionRepairPlanRecord{Plan: plan, PlanPath: path})
+	}
+	sort.Slice(plans, func(i, j int) bool {
+		if plans[i].Plan.CreatedAt != plans[j].Plan.CreatedAt {
+			return plans[i].Plan.CreatedAt < plans[j].Plan.CreatedAt
+		}
+		return plans[i].Plan.ID < plans[j].Plan.ID
+	})
+	return plans, nil
+}
+
 // SupersedePostCompletionRepair terminalizes a reviewed plan only while it is
 // still at zero progress. The successor must be an immutable broader plan that
 // preserves every old entry exactly; current policy authority is validated

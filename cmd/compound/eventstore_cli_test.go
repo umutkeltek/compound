@@ -136,6 +136,160 @@ func TestEventStoreMigrateUsageLineIsRegisteredAtTopLevel(t *testing.T) {
 	}
 }
 
+type eventStoreRepairStatusTestReport struct {
+	Needed                    bool     `json:"needed"`
+	LooseAfterCompletion      int      `json:"loose_after_completion"`
+	PlanID                    string   `json:"plan_id"`
+	PlanStatus                string   `json:"plan_status"`
+	ReviewStatus              string   `json:"review_status"`
+	ApplyStatus               string   `json:"apply_status"`
+	ProofStatus               string   `json:"proof_status"`
+	RootAnchorConsistent      bool     `json:"root_anchor_consistent"`
+	SupersessionStatus        string   `json:"supersession_status"`
+	SupersessionSuccessorPlan string   `json:"supersession_successor_plan_id"`
+	ActivePlanIDs             []string `json:"active_plan_ids"`
+	NextAction                string   `json:"next_action"`
+	NextCommand               string   `json:"next_command"`
+	NextCommandArgv           []string `json:"next_command_argv"`
+	NextCommandRequirements   []string `json:"next_command_requirements"`
+}
+
+// FALSIFIER: status is a projection, never an event-store operation. The
+// helper snapshots the recursive file list and a SHA-256 of every file before
+// and after each invocation; any created, removed, or byte-changed file fails.
+func TestEventStoreRepairStatusNeverMutatesHomeAcrossStages(t *testing.T) {
+	healthyHome := setupEventStoreRepairHealthyCLI(t)
+	assertEventStoreRepairStatusNoMutation(t, healthyHome)
+
+	homePath, workID, actor := setupEventStoreRepairCLI(t)
+	assertEventStoreRepairStatusNoMutation(t, homePath)
+
+	planned := planEventStoreRepairCLI(t, homePath)
+	assertEventStoreRepairStatusNoMutation(t, homePath, "--plan", planned.Plan.ID)
+
+	_, reviewPath := planAndReviewExistingEventStoreRepairCLI(t, homePath, planned)
+	assertEventStoreRepairStatusNoMutation(t, homePath, "--plan", planned.Plan.ID)
+
+	if out, stderr, code := runEventStoreCLI(t, "repair", "apply", planned.PlanPath,
+		"--review", reviewPath, "--work", workID, "--actor", actor, "--home", homePath, "--json"); code != 0 {
+		t.Fatalf("apply code=%d stderr=%s stdout=%s", code, stderr, out)
+	}
+	assertEventStoreRepairStatusNoMutation(t, homePath, "--plan", planned.Plan.ID)
+}
+
+// FALSIFIER: the projection follows the real artifact progression: no loose
+// source, immutable ready plan, authorize review, pending/result apply, then
+// proof-backed finalization. A repair-needed or in-flight status still exits 0.
+func TestEventStoreRepairStatusStageProgression(t *testing.T) {
+	healthy := assertEventStoreRepairStatusNoMutation(t, setupEventStoreRepairHealthyCLI(t))
+	if healthy.Needed || healthy.LooseAfterCompletion != 0 || healthy.PlanStatus != "not_created" || healthy.NextAction != "none" || healthy.NextCommand != "" {
+		t.Fatalf("healthy status = %+v", healthy)
+	}
+
+	homePath, workID, actor := setupEventStoreRepairCLI(t)
+	unplanned := assertEventStoreRepairStatusNoMutation(t, homePath)
+	if !unplanned.Needed || unplanned.LooseAfterCompletion != 1 || unplanned.NextAction != "plan" || !strings.Contains(unplanned.NextCommand, "event-store repair plan") {
+		t.Fatalf("unplanned status = %+v", unplanned)
+	}
+
+	planned := planEventStoreRepairCLI(t, homePath)
+	ready := assertEventStoreRepairStatusNoMutation(t, homePath, "--plan", planned.Plan.ID)
+	if !ready.Needed || ready.PlanID != planned.Plan.ID || ready.PlanStatus != "ready" || ready.ReviewStatus != "not_recorded" || ready.ApplyStatus != "not_started" || ready.ProofStatus != "not_recorded" || !ready.RootAnchorConsistent || ready.SupersessionStatus != "not_recorded" || ready.NextAction != "review" || !strings.Contains(ready.NextCommand, "--attest-writer-stopped") {
+		t.Fatalf("planned status = %+v", ready)
+	}
+
+	_, reviewPath := planAndReviewExistingEventStoreRepairCLI(t, homePath, planned)
+	reviewed := assertEventStoreRepairStatusNoMutation(t, homePath, "--plan", planned.Plan.ID)
+	if !reviewed.Needed || reviewed.ReviewStatus != "authorize" || reviewed.ApplyStatus != "not_started" || reviewed.NextAction != "apply" || !strings.Contains(reviewed.NextCommand, "--work") || !strings.Contains(reviewed.NextCommand, "--actor") {
+		t.Fatalf("reviewed status = %+v", reviewed)
+	}
+
+	if out, stderr, code := runEventStoreCLI(t, "repair", "apply", planned.PlanPath,
+		"--review", reviewPath, "--work", workID, "--actor", actor, "--home", homePath, "--json"); code != 0 {
+		t.Fatalf("apply code=%d stderr=%s stdout=%s", code, stderr, out)
+	}
+	finalized := assertEventStoreRepairStatusNoMutation(t, homePath, "--plan", planned.Plan.ID)
+	if finalized.Needed || finalized.LooseAfterCompletion != 0 || finalized.PlanStatus != "ready" || finalized.ReviewStatus != "authorize" || finalized.ApplyStatus != "finalized" || finalized.ProofStatus != "recorded" || !finalized.RootAnchorConsistent || finalized.NextAction != "complete" || finalized.NextCommand != "" {
+		t.Fatalf("finalized status = %+v", finalized)
+	}
+}
+
+func TestEventStoreRepairStatusReportsEveryActivePlanInsteadOfPickingOne(t *testing.T) {
+	homePath, _, _ := setupEventStoreRepairCLI(t)
+	first := planEventStoreRepairCLI(t, homePath)
+	seedLooseCLIRecord(t, homePath, "rec_cli_post_cutover_second", "later")
+	second := planEventStoreRepairCLI(t, homePath)
+	if first.Plan.ID == second.Plan.ID {
+		t.Fatal("fixture did not create two distinct active plans")
+	}
+
+	report := assertEventStoreRepairStatusNoMutation(t, homePath)
+	if report.PlanID != "" || report.NextAction != "inspect_active_repairs" || len(report.ActivePlanIDs) != 2 {
+		t.Fatalf("multiple-active status = %+v", report)
+	}
+	for _, planID := range []string{first.Plan.ID, second.Plan.ID} {
+		if !containsString(report.ActivePlanIDs, planID) || !strings.Contains(report.NextCommand, "--plan "+planID) {
+			t.Fatalf("multiple-active status omitted %s: %+v", planID, report)
+		}
+	}
+}
+
+// FALSIFIER: each emitted argv is checked against the corresponding verb's
+// actual parser shape. This prevents status from advertising a confident but
+// nonexistent flag while keeping the test independent of shell quoting.
+func TestEventStoreRepairStatusNextCommandFlagsMatchVerbParsers(t *testing.T) {
+	homePath, _, _ := setupEventStoreRepairCLI(t)
+	unplanned := assertEventStoreRepairStatusNoMutation(t, homePath)
+	planned := planEventStoreRepairCLI(t, homePath)
+	ready := assertEventStoreRepairStatusNoMutation(t, homePath, "--plan", planned.Plan.ID)
+	planAndReviewExistingEventStoreRepairCLI(t, homePath, planned)
+	reviewed := assertEventStoreRepairStatusNoMutation(t, homePath, "--plan", planned.Plan.ID)
+
+	for _, tc := range []struct {
+		name   string
+		verb   string
+		report eventStoreRepairStatusTestReport
+	}{
+		{name: "plan", verb: "plan", report: unplanned},
+		{name: "review", verb: "review", report: ready},
+		{name: "apply", verb: "apply", report: reviewed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertEventStoreRepairNextCommandParses(t, tc.report, tc.verb)
+		})
+	}
+
+	supHome, workID, actor, oldPlan, reviewPath, broaderPlan := setupEventStoreRepairSupersessionCLI(t)
+	injected := errors.New("interrupt after terminal supersession for status")
+	previous := eventStoreRepairSupersessionAfterStage
+	eventStoreRepairSupersessionAfterStage = func(stage string) error {
+		if stage == "terminal" {
+			return injected
+		}
+		return nil
+	}
+	t.Cleanup(func() { eventStoreRepairSupersessionAfterStage = previous })
+	if _, stderr, code := runEventStoreCLI(t, "repair", "supersede", oldPlan.PlanPath,
+		"--successor", broaderPlan.PlanPath, "--review", reviewPath,
+		"--work", workID, "--actor", actor, "--home", supHome, "--json"); code == 0 || !strings.Contains(stderr, injected.Error()) {
+		t.Fatalf("supersession interruption code=%d stderr=%s", code, stderr)
+	}
+	superseded := assertEventStoreRepairStatusNoMutation(t, supHome, "--plan", oldPlan.Plan.ID)
+	if superseded.SupersessionStatus != "recorded" || superseded.SupersessionSuccessorPlan != broaderPlan.Plan.ID || superseded.NextAction != "finalize_supersession" {
+		t.Fatalf("supersession status = %+v", superseded)
+	}
+	assertEventStoreRepairNextCommandParses(t, superseded, "supersede")
+}
+
+func TestEventStoreRepairStatusRejectsBadPlanID(t *testing.T) {
+	homePath := setupEventStoreRepairHealthyCLI(t)
+	for _, planID := range []string{"not-a-plan", "esrp_aaaaaaaaaaaa"} {
+		if out, stderr, code := runEventStoreCLI(t, "repair", "status", "--home", homePath, "--plan", planID, "--json"); code == 0 {
+			t.Fatalf("bad plan %q exited 0: stdout=%s stderr=%s", planID, out, stderr)
+		}
+	}
+}
+
 func TestEventStoreRepairCLIPlanPolicyApplyThroughRunningWorkAndReplay(t *testing.T) {
 	homePath, workID, actor := setupEventStoreRepairCLI(t)
 
@@ -1841,6 +1995,94 @@ func assertEventStoreRepairCLIReauthorizationConverged(t *testing.T, fixture eve
 	}
 }
 
+func assertEventStoreRepairStatusNoMutation(t *testing.T, homePath string, args ...string) eventStoreRepairStatusTestReport {
+	t.Helper()
+	before := snapshotHomeFileHashes(t, homePath)
+	cliArgs := append([]string{"repair", "status", "--home", homePath, "--json"}, args...)
+	out, stderr, code := runEventStoreCLI(t, cliArgs...)
+	after := snapshotHomeFileHashes(t, homePath)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("repair status mutated COMPOUND_HOME:\nbefore=%v\nafter=%v", before, after)
+	}
+	if code != 0 {
+		t.Fatalf("repair status code=%d stderr=%s stdout=%s", code, stderr, out)
+	}
+	var report eventStoreRepairStatusTestReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode repair status: %v\n%s", err, out)
+	}
+	return report
+}
+
+func snapshotHomeFileHashes(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(body)
+		files[rel] = "sha256:" + hex.EncodeToString(sum[:])
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func assertEventStoreRepairNextCommandParses(t *testing.T, report eventStoreRepairStatusTestReport, wantVerb string) {
+	t.Helper()
+	type verbSpec struct {
+		positionals int
+		flags       map[string]bool
+	}
+	specs := map[string]verbSpec{
+		"plan":      {flags: map[string]bool{"--home": true}},
+		"review":    {positionals: 1, flags: map[string]bool{"--home": true, "--reviewer": true, "--decision": true, "--attest-writer-stopped": false}},
+		"apply":     {positionals: 1, flags: map[string]bool{"--home": true, "--review": true, "--work": true, "--actor": true}},
+		"supersede": {positionals: 1, flags: map[string]bool{"--home": true, "--successor": true, "--review": true, "--work": true, "--actor": true}},
+	}
+	spec, ok := specs[wantVerb]
+	if !ok {
+		t.Fatalf("test has no parser spec for %s", wantVerb)
+	}
+	argv := report.NextCommandArgv
+	if len(argv) < 4+spec.positionals || !reflect.DeepEqual(argv[:3], []string{"compound", "event-store", "repair"}) || argv[3] != wantVerb {
+		t.Fatalf("next_command_argv = %v, want repair %s prefix", argv, wantVerb)
+	}
+	parserArgs := argv[4+spec.positionals:]
+	if _, _, err := parseEventStoreRepairFlags(parserArgs, spec.flags); err != nil {
+		t.Fatalf("next command for %s does not parse with the verb's real flags: argv=%v err=%v", wantVerb, argv, err)
+	}
+	if report.NextCommand == "" {
+		t.Fatalf("next command for %s is empty despite argv=%v", wantVerb, argv)
+	}
+}
+
+func setupEventStoreRepairHealthyCLI(t *testing.T) string {
+	t.Helper()
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	seedLooseCLIRecord(t, homePath, "rec_cli_initial_healthy", "initial")
+	if out, stderr, code := runEventStoreCLI(t, "migrate", "--apply", "--home", homePath); code != 0 {
+		t.Fatalf("complete healthy migration code=%d stderr=%s stdout=%s", code, stderr, out)
+	}
+	return homePath
+}
+
 func planEventStoreRepairCLI(t *testing.T, homePath string) eventstore.PostCompletionRepairPlanRecord {
 	t.Helper()
 	out, stderr, code := runEventStoreCLI(t, "repair", "plan", "--home", homePath, "--json")
@@ -1854,15 +2096,20 @@ func planEventStoreRepairCLI(t *testing.T, homePath string) eventstore.PostCompl
 	return planned
 }
 
-func planAndReviewEventStoreRepairCLI(t *testing.T, homePath string) (eventstore.PostCompletionRepairPlanRecord, string) {
+func planAndReviewExistingEventStoreRepairCLI(t *testing.T, homePath string, planned eventstore.PostCompletionRepairPlanRecord) (eventstore.PostCompletionRepairPlanRecord, string) {
 	t.Helper()
-	planned := planEventStoreRepairCLI(t, homePath)
 	_, stderr, code := runEventStoreCLI(t, "repair", "review", planned.PlanPath,
 		"--reviewer", "operator:test", "--decision", "authorize", "--attest-writer-stopped", "--home", homePath, "--json")
 	if code != 0 {
 		t.Fatalf("review code=%d stderr=%s", code, stderr)
 	}
 	return planned, filepath.Join(filepath.Dir(planned.PlanPath), planned.Plan.ID+".review.json")
+}
+
+func planAndReviewEventStoreRepairCLI(t *testing.T, homePath string) (eventstore.PostCompletionRepairPlanRecord, string) {
+	t.Helper()
+	planned := planEventStoreRepairCLI(t, homePath)
+	return planAndReviewExistingEventStoreRepairCLI(t, homePath, planned)
 }
 
 func assertRepairCLILoosePresent(t *testing.T, homePath string) {

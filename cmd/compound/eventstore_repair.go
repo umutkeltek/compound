@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"compound/internal/act"
 	"compound/internal/envelope"
@@ -25,6 +28,7 @@ var eventStoreRepairObservationInterval = 250 * time.Millisecond
 var eventStoreRepairSupersessionAfterStage = func(string) error { return nil }
 
 const eventStoreRepairUsage = "usage:\n" +
+	"  compound event-store repair status [--home P] [--plan PLAN_ID] [--json]\n" +
 	"  compound event-store repair plan [--home P] [--json]\n" +
 	"  compound event-store repair review PLAN.json --reviewer operator:ID --decision authorize --attest-writer-stopped [--home P] [--json]\n" +
 	"  compound event-store repair supersede PLAN.json --successor PLAN.json --review REVIEW.json --work W --actor LEASE_HOLDER [--home P] [--json]\n" +
@@ -34,7 +38,8 @@ const eventStoreRepairUsage = "usage:\n" +
 	"    Supersede terminalizes only a zero-progress reviewed plan in favor of one exact broader immutable plan through the same work/policy/receipt seam.\n" +
 	"    Apply revalidates that review and derives readiness from the current PolicyDecision for any remaining mutation,\n" +
 	"    reserves ActionIntent -> PolicyDecision on the supplied running work, archives every original byte content-addressably,\n" +
-	"    imports only ids absent from segments, and records Receipt + Transition proof. Segment authority is never overwritten."
+	"    imports only ids absent from segments, and records Receipt + Transition proof. Segment authority is never overwritten.\n" +
+	"    Status composes the existing immutable plan and lifecycle readers without taking a lease or writing any state."
 
 type eventStoreRepairApplyReport struct {
 	SchemaVersion     string                                `json:"schema_version"`
@@ -69,12 +74,75 @@ type eventStoreRepairSupersessionReport struct {
 	PolicyAuthority         policy.AuthorityFace `json:"policy_authority"`
 }
 
+type eventStoreRepairStatusReport struct {
+	SchemaVersion string `json:"schema_version"`
+	Needed        bool   `json:"needed"`
+
+	LooseAfterCompletion int `json:"loose_after_completion"`
+
+	PlanID     string `json:"plan_id,omitempty"`
+	PlanPath   string `json:"plan_path,omitempty"`
+	PlanStatus string `json:"plan_status"`
+
+	ReviewID     string `json:"review_id,omitempty"`
+	ReviewPath   string `json:"review_path,omitempty"`
+	ReviewStatus string `json:"review_status"`
+
+	ApplyStatus    string         `json:"apply_status"`
+	ProgressPhases map[string]int `json:"progress_phases,omitempty"`
+	ResultID       string         `json:"result_id,omitempty"`
+	ProofStatus    string         `json:"proof_status"`
+	ProofDigest    string         `json:"proof_digest,omitempty"`
+
+	RootAnchorConsistent bool   `json:"root_anchor_consistent"`
+	RootAnchorIssue      string `json:"root_anchor_issue,omitempty"`
+
+	SupersessionStatus          string `json:"supersession_status"`
+	SupersessionID              string `json:"supersession_id,omitempty"`
+	SupersessionSuccessorPlanID string `json:"supersession_successor_plan_id,omitempty"`
+
+	ActivePlanIDs []string `json:"active_plan_ids"`
+
+	NextAction              string   `json:"next_action"`
+	NextCommand             string   `json:"next_command"`
+	NextCommandArgv         []string `json:"next_command_argv,omitempty"`
+	NextCommandRequirements []string `json:"next_command_requirements,omitempty"`
+}
+
+type eventStoreRepairPlanProjection struct {
+	report   eventStoreRepairStatusReport
+	terminal bool
+}
+
 func runEventStoreRepair(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || hasUsageFlag(args) {
 		fmt.Fprintln(stdout, eventStoreRepairUsage)
 		return 0
 	}
 	switch args[0] {
+	case "status":
+		values, jsonOut, err := parseEventStoreRepairFlags(args[1:], map[string]bool{"--home": true, "--plan": true})
+		if err != nil {
+			fmt.Fprintln(stderr, "event-store repair status:", err)
+			return 2
+		}
+		homePath, err := home.Resolve(values["--home"])
+		if err != nil {
+			fmt.Fprintln(stderr, "event-store repair status:", err)
+			return 1
+		}
+		report, err := readEventStoreRepairStatus(homePath, strings.TrimSpace(values["--plan"]))
+		if err != nil {
+			fmt.Fprintln(stderr, "event-store repair status:", err)
+			return 1
+		}
+		if jsonOut {
+			writeEventStoreRepairJSON(stdout, report)
+		} else {
+			writeEventStoreRepairStatus(stdout, report)
+		}
+		return 0
+
 	case "plan":
 		values, jsonOut, err := parseEventStoreRepairFlags(args[1:], map[string]bool{"--home": true})
 		if err != nil {
@@ -174,6 +242,320 @@ func runEventStoreRepair(args []string, stdout, stderr io.Writer) int {
 	default:
 		fmt.Fprintln(stderr, eventStoreRepairUsage)
 		return 2
+	}
+}
+
+func readEventStoreRepairStatus(homePath, requestedPlanID string) (eventStoreRepairStatusReport, error) {
+	if _, err := home.LoadManifest(homePath); err != nil {
+		return eventStoreRepairStatusReport{}, fmt.Errorf("read home manifest: %w", err)
+	}
+	if requestedPlanID != "" && (filepath.Base(requestedPlanID) != requestedPlanID || !strings.HasPrefix(requestedPlanID, "esrp_")) {
+		return eventStoreRepairStatusReport{}, fmt.Errorf("post-completion repair plan id invalid")
+	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return eventStoreRepairStatusReport{}, err
+	}
+	verification, err := events.Migrate(eventstore.MigrateOptions{Mode: eventstore.ModeVerify})
+	if err != nil {
+		return eventStoreRepairStatusReport{}, fmt.Errorf("read migration verification: %w", err)
+	}
+	plans, err := events.ReadPostCompletionRepairPlans()
+	if err != nil {
+		return eventStoreRepairStatusReport{}, err
+	}
+	planByID := make(map[string]eventstore.PostCompletionRepairPlanRecord, len(plans))
+	for _, record := range plans {
+		planByID[record.Plan.ID] = record
+	}
+
+	projections := make(map[string]eventStoreRepairPlanProjection, len(plans))
+	activePlanIDs := make([]string, 0, len(plans))
+	for _, record := range plans {
+		projection, err := projectEventStoreRepairPlanStatus(events, homePath, record, planByID)
+		if err != nil {
+			return eventStoreRepairStatusReport{}, fmt.Errorf("read plan %s status: %w", record.Plan.ID, err)
+		}
+		projections[record.Plan.ID] = projection
+		if !projection.terminal {
+			activePlanIDs = append(activePlanIDs, record.Plan.ID)
+		}
+	}
+
+	looseAfterCompletion := 0
+	if events.MigrationComplete() {
+		looseAfterCompletion = verification.Completion.RemainingLoose
+	}
+	rootAnchorConsistent, rootAnchorIssue := eventStoreRepairRootAnchorStatus(verification.Completion.Reasons)
+	needed := looseAfterCompletion > 0 || len(activePlanIDs) > 0
+	applyCommon := func(report eventStoreRepairStatusReport) eventStoreRepairStatusReport {
+		report.SchemaVersion = "compound.eventstore.post_completion_repair_status.v0.1"
+		report.Needed = needed
+		report.LooseAfterCompletion = looseAfterCompletion
+		report.RootAnchorConsistent = rootAnchorConsistent
+		report.RootAnchorIssue = rootAnchorIssue
+		report.ActivePlanIDs = append([]string(nil), activePlanIDs...)
+		return report
+	}
+
+	if requestedPlanID != "" {
+		projection, ok := projections[requestedPlanID]
+		if !ok {
+			return eventStoreRepairStatusReport{}, fmt.Errorf("post-completion repair plan %s not found", requestedPlanID)
+		}
+		return applyCommon(projection.report), nil
+	}
+
+	if len(activePlanIDs) > 1 {
+		report := newEventStoreRepairStatusReport()
+		report.PlanStatus = "multiple_active"
+		report.NextAction = "inspect_active_repairs"
+		commands := make([]string, 0, len(activePlanIDs))
+		for _, planID := range activePlanIDs {
+			commands = append(commands, eventStoreRepairCommand([]string{
+				"compound", "event-store", "repair", "status", "--home", homePath, "--plan", planID,
+			}))
+		}
+		report.NextCommand = strings.Join(commands, "\n")
+		return applyCommon(report), nil
+	}
+	if len(activePlanIDs) == 1 {
+		return applyCommon(projections[activePlanIDs[0]].report), nil
+	}
+	if looseAfterCompletion > 0 {
+		report := newEventStoreRepairStatusReport()
+		setEventStoreRepairNextCommand(&report, "plan", []string{
+			"compound", "event-store", "repair", "plan", "--home", homePath,
+		})
+		return applyCommon(report), nil
+	}
+	if len(plans) > 0 {
+		latest := plans[len(plans)-1]
+		return applyCommon(projections[latest.Plan.ID].report), nil
+	}
+	report := newEventStoreRepairStatusReport()
+	report.NextAction = "none"
+	return applyCommon(report), nil
+}
+
+func newEventStoreRepairStatusReport() eventStoreRepairStatusReport {
+	return eventStoreRepairStatusReport{
+		PlanStatus:         "not_created",
+		ReviewStatus:       "not_recorded",
+		ApplyStatus:        "not_started",
+		ProofStatus:        "not_recorded",
+		SupersessionStatus: "not_recorded",
+		ActivePlanIDs:      []string{},
+	}
+}
+
+func projectEventStoreRepairPlanStatus(events *eventstore.Store, homePath string, record eventstore.PostCompletionRepairPlanRecord, plans map[string]eventstore.PostCompletionRepairPlanRecord) (eventStoreRepairPlanProjection, error) {
+	report := newEventStoreRepairStatusReport()
+	report.PlanID = record.Plan.ID
+	report.PlanPath = record.PlanPath
+	report.PlanStatus = record.Plan.Status
+	report.ReviewPath = filepath.Join(filepath.Dir(record.PlanPath), record.Plan.ID+".review.json")
+
+	review, reviewErr := events.PostCompletionRepairReviewForFinalization(report.ReviewPath, record.Plan)
+	reviewExists := reviewErr == nil
+	if reviewErr != nil && !errors.Is(reviewErr, os.ErrNotExist) {
+		return eventStoreRepairPlanProjection{}, reviewErr
+	}
+	if reviewExists {
+		report.ReviewID = review.ID
+		report.ReviewStatus = review.Decision
+	} else {
+		report.ReviewPath = ""
+	}
+
+	pending, pendingExists, err := events.ReadPostCompletionRepairPending(record.Plan.ID)
+	if err != nil {
+		return eventStoreRepairPlanProjection{}, err
+	}
+	result, resultExists, err := events.ReadPostCompletionRepairResult(record.Plan.ID)
+	if err != nil {
+		return eventStoreRepairPlanProjection{}, err
+	}
+	supersession, supersessionExists, err := events.ReadPostCompletionRepairSupersession(record.Plan.ID)
+	if err != nil {
+		return eventStoreRepairPlanProjection{}, err
+	}
+	if resultExists && supersessionExists {
+		return eventStoreRepairPlanProjection{}, fmt.Errorf("conflicting result and supersession terminal owners")
+	}
+
+	if pendingExists {
+		report.ProgressPhases = map[string]int{}
+		for _, entry := range pending.Entries {
+			report.ProgressPhases[entry.Phase]++
+		}
+	}
+	if resultExists {
+		report.ResultID = result.ID
+	}
+
+	var proofExists bool
+	if resultExists {
+		proof, exists, err := events.ReadPostCompletionRepairProof(record.Plan.ID)
+		if err != nil {
+			return eventStoreRepairPlanProjection{}, err
+		}
+		proofExists = exists
+		if exists {
+			report.ProofStatus = "recorded"
+			report.ProofDigest = proof.ProofDigest
+		}
+	}
+	var supersessionProofExists bool
+	if supersessionExists {
+		proof, exists, err := events.ReadPostCompletionRepairSupersessionProof(record.Plan.ID)
+		if err != nil {
+			return eventStoreRepairPlanProjection{}, err
+		}
+		supersessionProofExists = exists
+		if exists {
+			report.ProofStatus = "recorded"
+			report.ProofDigest = proof.ProofDigest
+		}
+	}
+
+	projection := eventStoreRepairPlanProjection{report: report}
+	switch {
+	case supersessionExists:
+		projection.report.ApplyStatus = "not_applicable"
+		projection.report.SupersessionStatus = "recorded"
+		projection.report.SupersessionID = supersession.ID
+		projection.report.SupersessionSuccessorPlanID = supersession.SuccessorPlanID
+		if supersessionProofExists {
+			projection.report.SupersessionStatus = "finalized"
+			projection.report.NextAction = "complete"
+			projection.terminal = true
+			break
+		}
+		successor, ok := plans[supersession.SuccessorPlanID]
+		if !ok {
+			return eventStoreRepairPlanProjection{}, fmt.Errorf("successor plan %s not found", supersession.SuccessorPlanID)
+		}
+		setEventStoreRepairNextCommand(&projection.report, "finalize_supersession", []string{
+			"compound", "event-store", "repair", "supersede", record.PlanPath,
+			"--successor", successor.PlanPath,
+			"--review", filepath.Join(filepath.Dir(record.PlanPath), record.Plan.ID+".review.json"),
+			"--work", supersession.Authorization.WorkID,
+			"--actor", supersession.Authorization.Actor,
+			"--home", homePath,
+		})
+	case resultExists:
+		switch {
+		case proofExists && !pendingExists:
+			projection.report.ApplyStatus = "finalized"
+			projection.report.NextAction = "complete"
+			projection.terminal = true
+			return projection, nil
+		case proofExists:
+			projection.report.ApplyStatus = "finalization_pending"
+		default:
+			projection.report.ApplyStatus = "result_recorded"
+		}
+		setEventStoreRepairApplyCommand(&projection.report, homePath, record.PlanPath, filepath.Join(filepath.Dir(record.PlanPath), record.Plan.ID+".review.json"), result.Authorization, nil)
+	case pendingExists:
+		projection.report.ApplyStatus = "pending"
+		setEventStoreRepairApplyCommand(&projection.report, homePath, record.PlanPath, filepath.Join(filepath.Dir(record.PlanPath), record.Plan.ID+".review.json"), pending.Authorization, nil)
+	case reviewExists:
+		setEventStoreRepairApplyCommand(&projection.report, homePath, record.PlanPath, filepath.Join(filepath.Dir(record.PlanPath), record.Plan.ID+".review.json"), eventstore.PostCompletionRepairAuthorization{}, []string{"WORK_ID", "LEASE_HOLDER"})
+	default:
+		setEventStoreRepairNextCommand(&projection.report, "review", []string{
+			"compound", "event-store", "repair", "review", record.PlanPath,
+			"--reviewer", "operator:${OPERATOR_ID}",
+			"--decision", "authorize",
+			"--attest-writer-stopped",
+			"--home", homePath,
+		}, "OPERATOR_ID")
+	}
+	return projection, nil
+}
+
+func setEventStoreRepairApplyCommand(report *eventStoreRepairStatusReport, homePath, planPath, reviewPath string, authorization eventstore.PostCompletionRepairAuthorization, requirements []string) {
+	workID := authorization.WorkID
+	actor := authorization.Actor
+	if workID == "" {
+		workID = "${WORK_ID}"
+	}
+	if actor == "" {
+		actor = "${LEASE_HOLDER}"
+	}
+	setEventStoreRepairNextCommand(report, "apply", []string{
+		"compound", "event-store", "repair", "apply", planPath,
+		"--review", reviewPath,
+		"--work", workID,
+		"--actor", actor,
+		"--home", homePath,
+	}, requirements...)
+}
+
+func setEventStoreRepairNextCommand(report *eventStoreRepairStatusReport, action string, argv []string, requirements ...string) {
+	report.NextAction = action
+	report.NextCommandArgv = append([]string(nil), argv...)
+	report.NextCommand = eventStoreRepairCommand(argv)
+	report.NextCommandRequirements = append([]string(nil), requirements...)
+}
+
+func eventStoreRepairCommand(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, arg := range argv {
+		quoted[i] = eventStoreRepairShellArg(arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func eventStoreRepairShellArg(arg string) string {
+	switch arg {
+	case "${WORK_ID}", "${LEASE_HOLDER}", "operator:${OPERATOR_ID}":
+		return `"` + arg + `"`
+	}
+	if arg != "" && strings.IndexFunc(arg, func(r rune) bool {
+		return !(unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("_-./:", r))
+	}) == -1 {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+}
+
+func eventStoreRepairRootAnchorStatus(reasons []string) (bool, string) {
+	issues := make([]string, 0)
+	for _, reason := range reasons {
+		if strings.Contains(reason, "post-completion repair root") || strings.Contains(reason, "post-completion repair authority anchor") {
+			issues = append(issues, reason)
+		}
+	}
+	return len(issues) == 0, strings.Join(issues, "; ")
+}
+
+func writeEventStoreRepairStatus(w io.Writer, report eventStoreRepairStatusReport) {
+	fmt.Fprintln(w, "event-store repair status")
+	fmt.Fprintf(w, "needed: %t\n", report.Needed)
+	fmt.Fprintf(w, "loose_after_completion: %d\n", report.LooseAfterCompletion)
+	if report.PlanID == "" {
+		fmt.Fprintf(w, "plan: %s\n", report.PlanStatus)
+	} else {
+		fmt.Fprintf(w, "plan: %s (%s)\n", report.PlanID, report.PlanStatus)
+	}
+	fmt.Fprintf(w, "review: %s\n", report.ReviewStatus)
+	fmt.Fprintf(w, "apply: %s\n", report.ApplyStatus)
+	fmt.Fprintf(w, "proof: %s\n", report.ProofStatus)
+	fmt.Fprintf(w, "root_anchor_consistent: %t\n", report.RootAnchorConsistent)
+	if report.RootAnchorIssue != "" {
+		fmt.Fprintf(w, "root_anchor_issue: %s\n", report.RootAnchorIssue)
+	}
+	fmt.Fprintf(w, "supersession: %s\n", report.SupersessionStatus)
+	if len(report.ActivePlanIDs) > 1 {
+		fmt.Fprintf(w, "active_plans: %s\n", strings.Join(report.ActivePlanIDs, ", "))
+	}
+	fmt.Fprintf(w, "next_action: %s\n", report.NextAction)
+	if len(report.NextCommandRequirements) > 0 {
+		fmt.Fprintf(w, "next_command_requires: %s\n", strings.Join(report.NextCommandRequirements, ", "))
+	}
+	if report.NextCommand != "" {
+		fmt.Fprintf(w, "next_command: %s\n", report.NextCommand)
 	}
 }
 
