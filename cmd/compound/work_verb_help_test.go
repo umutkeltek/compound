@@ -11,7 +11,7 @@ func TestEveryWorkVerbHelpIncludesUsageAndExecutableExample(t *testing.T) {
 		"show", "list", "leases", "active-packet-proof", "proof-chain-doctor", "continue",
 		"dispatch-plan", "dispatch-claim", "dispatch-advance", "dispatch-close-plan",
 		"dispatch-close", "dispatch-step", "claim-plan", "claim", "advance-plan", "advance",
-		"observe-run", "land-check", "action-plan", "act", "close-plan", "close",
+		"observe-run", "land-check", "salvage-plan", "action-plan", "act", "close-plan", "close",
 	}
 	for _, verb := range verbs {
 		t.Run(verb, func(t *testing.T) {
