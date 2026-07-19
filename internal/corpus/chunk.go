@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -272,4 +274,92 @@ func trimToRuneBoundary(value string) string {
 		return value
 	}
 	return string([]rune(value))
+}
+
+// ChunkTextStatus reports why (or whether) ResolveChunkText returned chunk text.
+type ChunkTextStatus string
+
+const (
+	// ChunkTextOK means the chunk text was resolved and (per includeText) returned.
+	ChunkTextOK ChunkTextStatus = "ok"
+	// ChunkTextStaleSource means the live source file no longer matches the file_hash
+	// recorded at index time. Returning text derived from a re-chunk in this state
+	// would silently diverge from what was actually embedded, so no text is returned.
+	ChunkTextStaleSource ChunkTextStatus = "stale_source"
+	// ChunkTextSuppressedPrivate means the manifest item is privacy=private and the
+	// caller did not opt in (includeText=false). Text flows into an agent's context and
+	// onward to a model provider; a path does not — that is why suppression is the default.
+	ChunkTextSuppressedPrivate ChunkTextStatus = "suppressed_private"
+)
+
+// ResolvedChunkText is the outcome of resolving a chunk_id back to its source text.
+type ResolvedChunkText struct {
+	Status ChunkTextStatus
+	Text   string
+}
+
+// ResolveChunkText re-derives a chunk's text from its source. The corpus index never
+// persists chunk text (vectors.json is chunk_id -> floats only), so recovering it means
+// re-reading the file named in the manifest and re-chunking it with the manifest's
+// deterministic chunk config — the same config that produced the indexed chunk.
+//
+// chunkID is "<item_id>#<ordinal>" as produced by ChunkItem/Query. Resolution:
+//  1. Split chunkID into item_id + ordinal.
+//  2. Find the manifest item by item_id and read the file at its source_ref.
+//  3. Drift gate: sha256 the live file and compare to item.file_hash. On mismatch,
+//     return ChunkTextStaleSource with no text.
+//  4. Re-chunk with the manifest's chunk config; bounds-check ordinal against the result.
+//  5. Privacy gate: the item's own privacy (not just the lane's) decides suppression —
+//     if privacy=="private" and includeText is false, return ChunkTextSuppressedPrivate
+//     with no text.
+func ResolveChunkText(manifest Manifest, chunkID string, includeText bool) (ResolvedChunkText, error) {
+	itemID, ordinal, err := splitChunkID(chunkID)
+	if err != nil {
+		return ResolvedChunkText{}, err
+	}
+	item, ok := findManifestItem(manifest, itemID)
+	if !ok {
+		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: item %q not found in manifest", itemID)
+	}
+	raw, err := os.ReadFile(item.SourceRef)
+	if err != nil {
+		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: read source for item %q: %w", itemID, err)
+	}
+	sum := sha256.Sum256(raw)
+	liveHash := "sha256:" + hex.EncodeToString(sum[:])
+	if expected := strings.TrimSpace(item.FileHash); liveHash != expected {
+		return ResolvedChunkText{Status: ChunkTextStaleSource}, nil
+	}
+	chunks, err := ChunkItem(item, string(raw), manifest.Chunk)
+	if err != nil {
+		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: rechunk item %q: %w", itemID, err)
+	}
+	if ordinal < 0 || ordinal >= len(chunks) {
+		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: ordinal %d out of range for item %q (chunks=%d)", ordinal, itemID, len(chunks))
+	}
+	if strings.EqualFold(strings.TrimSpace(item.Privacy), "private") && !includeText {
+		return ResolvedChunkText{Status: ChunkTextSuppressedPrivate}, nil
+	}
+	return ResolvedChunkText{Status: ChunkTextOK, Text: chunks[ordinal].Text}, nil
+}
+
+func splitChunkID(chunkID string) (string, int, error) {
+	idx := strings.LastIndex(chunkID, "#")
+	if idx <= 0 || idx == len(chunkID)-1 {
+		return "", 0, fmt.Errorf("corpus chunk text: malformed chunk id %q", chunkID)
+	}
+	ordinal, err := strconv.Atoi(chunkID[idx+1:])
+	if err != nil || ordinal < 0 {
+		return "", 0, fmt.Errorf("corpus chunk text: malformed chunk ordinal in %q", chunkID)
+	}
+	return chunkID[:idx], ordinal, nil
+}
+
+func findManifestItem(manifest Manifest, itemID string) (sourceobs.SourceManifestItem, bool) {
+	for _, item := range manifest.Items {
+		if item.ID == itemID {
+			return item, true
+		}
+	}
+	return sourceobs.SourceManifestItem{}, false
 }

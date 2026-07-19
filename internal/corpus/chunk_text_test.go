@@ -1,0 +1,198 @@
+package corpus
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"compound/internal/sourceobs"
+)
+
+func TestCorpusHitCarriesChunkText(t *testing.T) {
+	fixture := seedCorpusTextFixture(t, "public", "User: synthetic matched source text.")
+
+	report, err := Query(context.Background(), fixture.homePath, fixture.lane, fixture.embedder, "matched", 1)
+	if err != nil {
+		t.Fatalf("query corpus: %v", err)
+	}
+	hit := onlyCorpusTextHit(t, report)
+	text, status, hasText := corpusHitTextFields(t, hit)
+	if status != "ok" {
+		t.Fatalf("text status = %q, want ok", status)
+	}
+	if !hasText {
+		t.Fatal("query hit has no text field")
+	}
+	if text != fixture.chunks[0].Text {
+		t.Fatalf("hit text = %q, want source chunk %q", text, fixture.chunks[0].Text)
+	}
+}
+
+func TestCorpusChunkTextIsNotEmbedText(t *testing.T) {
+	fixture := seedCorpusTextFixture(t, "public", "Assistant: synthetic body excludes its metadata prefix.")
+
+	report, err := Query(context.Background(), fixture.homePath, fixture.lane, fixture.embedder, "body", 1)
+	if err != nil {
+		t.Fatalf("query corpus: %v", err)
+	}
+	text, status, hasText := corpusHitTextFields(t, onlyCorpusTextHit(t, report))
+	if status != "ok" || !hasText {
+		t.Fatalf("text status = %q has_text=%t, want ok text", status, hasText)
+	}
+	if strings.Contains(text, fixture.chunks[0].Prefix) {
+		t.Fatalf("hit text contains embedding prefix %q: %q", fixture.chunks[0].Prefix, text)
+	}
+	if text == fixture.chunks[0].EmbedText {
+		t.Fatalf("hit text returned EmbedText: %q", text)
+	}
+}
+
+func TestCorpusChunkTextStaleSourceIsRefused(t *testing.T) {
+	fixture := seedCorpusTextFixture(t, "public", "User: synthetic indexed source text.")
+	writeRaw(t, fixture.sourcePath, "User: synthetic source changed after indexing.")
+
+	report, err := Query(context.Background(), fixture.homePath, fixture.lane, fixture.embedder, "source", 1)
+	if err != nil {
+		t.Fatalf("query stale corpus: %v", err)
+	}
+	text, status, hasText := corpusHitTextFields(t, onlyCorpusTextHit(t, report))
+	if status != "stale_source" {
+		t.Fatalf("text status = %q, want stale_source", status)
+	}
+	if hasText || text != "" {
+		t.Fatalf("stale hit exposed text %q", text)
+	}
+}
+
+func TestCorpusPrivateItemTextSuppressedByDefault(t *testing.T) {
+	fixture := seedCorpusTextFixture(t, "private", "User: synthetic private source text.")
+
+	report, err := Query(context.Background(), fixture.homePath, fixture.lane, fixture.embedder, "private", 1)
+	if err != nil {
+		t.Fatalf("query private corpus: %v", err)
+	}
+	text, status, hasText := corpusHitTextFields(t, onlyCorpusTextHit(t, report))
+	if status != "suppressed_private" {
+		t.Fatalf("text status = %q, want suppressed_private", status)
+	}
+	if hasText || text != "" {
+		t.Fatalf("private hit exposed text by default: %q", text)
+	}
+
+	included, err := QueryWithOptions(context.Background(), fixture.homePath, fixture.lane, fixture.embedder, "private", 1, QueryOptions{IncludeText: true})
+	if err != nil {
+		t.Fatalf("query private corpus with text opt-in: %v", err)
+	}
+	text, status, hasText = corpusHitTextFields(t, onlyCorpusTextHit(t, included))
+	if status != "ok" || !hasText {
+		t.Fatalf("opted-in text status = %q has_text=%t, want ok text", status, hasText)
+	}
+	if text != fixture.chunks[0].Text {
+		t.Fatalf("opted-in text = %q, want source chunk %q", text, fixture.chunks[0].Text)
+	}
+}
+
+func TestCorpusChunkTextIndexOutOfRange(t *testing.T) {
+	fixture := seedCorpusTextFixture(t, "public", "User: synthetic bounded source text.")
+	dir := IndexDir(fixture.homePath, fixture.lane)
+	manifest, err := readManifest(dir)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	manifest.Items[0].Chunks = append(manifest.Items[0].Chunks, sourceobs.SourceManifestChunk{
+		Ordinal:   99,
+		ChunkHash: "sha256:synthetic-out-of-range",
+	})
+	writeJSON(t, filepath.Join(dir, "manifest.json"), manifest)
+	vectors := readVectorFile(t, filepath.Join(dir, "vectors.json"))
+	vectors.Vectors[manifest.Items[0].ID+"#99"] = []float32{1, 0, 0}
+	writeJSON(t, filepath.Join(dir, "vectors.json"), vectors)
+
+	if _, err := Query(context.Background(), fixture.homePath, fixture.lane, fixture.embedder, "bounded", 10); err == nil {
+		t.Fatal("query with out-of-range chunk ordinal succeeded, want error")
+	}
+}
+
+type corpusTextFixture struct {
+	homePath   string
+	sourcePath string
+	lane       LaneConfig
+	embedder   *fakeEmbedder
+	chunks     []Chunk
+}
+
+func seedCorpusTextFixture(t *testing.T, itemPrivacy, body string) corpusTextFixture {
+	t.Helper()
+	homePath := t.TempDir()
+	sourcePath := filepath.Join(t.TempDir(), "synthetic-corpus-source.md")
+	writeRaw(t, sourcePath, body)
+
+	const family = "synthetic_corpus_text"
+	manifest, err := sourceobs.BuildSourceManifest(family, []string{sourcePath}, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("build source manifest: %v", err)
+	}
+	manifest.Items[0].ID = "item_fixture"
+	manifest.Items[0].SourceKind = "synthetic_dialogue"
+	manifest.Items[0].PageSlug = "Synthetic Corpus Fixture"
+	manifest.Items[0].Privacy = itemPrivacy
+	manifest.Items[0].CorpusGeneration = "generation-fixture"
+	if _, err := sourceobs.RecordSourceManifest(homePath, manifest); err != nil {
+		t.Fatalf("record source manifest: %v", err)
+	}
+
+	lane := LaneConfig{
+		Lane:         "corpus-synthetic",
+		SourceFamily: family,
+		Generation:   "generation-fixture",
+		Privacy:      "public",
+		Embedder: EmbedderConfig{
+			Provider: "local",
+			Model:    "synthetic-embedder",
+			Dims:     3,
+			Bits:     "f32",
+		},
+		Chunk: ChunkConfig{Unit: "runes", Size: 256, Overlap: 16, Boundary: "structure"},
+	}
+	chunks, err := ChunkItem(manifest.Items[0], body, lane.Chunk)
+	if err != nil {
+		t.Fatalf("chunk fixture: %v", err)
+	}
+	embedder := &fakeEmbedder{identity: lane.Embedder.Identity(), dim: lane.Embedder.Dims}
+	if _, err := Index(context.Background(), homePath, lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("index fixture: %v", err)
+	}
+	return corpusTextFixture{
+		homePath:   homePath,
+		sourcePath: sourcePath,
+		lane:       lane,
+		embedder:   embedder,
+		chunks:     chunks,
+	}
+}
+
+func onlyCorpusTextHit(t *testing.T, report QueryReport) QueryHit {
+	t.Helper()
+	if len(report.Hits) != 1 {
+		t.Fatalf("query hits = %d, want 1", len(report.Hits))
+	}
+	return report.Hits[0]
+}
+
+func corpusHitTextFields(t *testing.T, hit QueryHit) (text, status string, hasText bool) {
+	t.Helper()
+	raw, err := json.Marshal(hit)
+	if err != nil {
+		t.Fatalf("marshal query hit: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("parse query hit: %v", err)
+	}
+	text, hasText = fields["text"].(string)
+	status, _ = fields["text_status"].(string)
+	return text, status, hasText
+}

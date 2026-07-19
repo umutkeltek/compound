@@ -24,9 +24,19 @@ type QueryHit struct {
 	SourceKind string  `json:"source_kind,omitempty"`
 	Title      string  `json:"title,omitempty"`
 	Score      float64 `json:"score"`
+	Text       string  `json:"text,omitempty"`
+	TextStatus string  `json:"text_status"`
+}
+
+type QueryOptions struct {
+	IncludeText bool
 }
 
 func Query(ctx context.Context, homePath string, lane LaneConfig, embedder Embedder, text string, k int) (QueryReport, error) {
+	return QueryWithOptions(ctx, homePath, lane, embedder, text, k, QueryOptions{})
+}
+
+func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, embedder Embedder, text string, k int, opts QueryOptions) (QueryReport, error) {
 	lane, err := ValidateLaneConfig(lane)
 	if err != nil {
 		return QueryReport{}, err
@@ -41,7 +51,12 @@ func Query(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 	if err != nil {
 		return QueryReport{}, err
 	}
-	meta, err := loadChunkMeta(IndexDir(homePath, lane))
+	dir := IndexDir(homePath, lane)
+	meta, err := loadChunkMeta(dir)
+	if err != nil {
+		return QueryReport{}, err
+	}
+	manifest, err := readManifest(dir)
 	if err != nil {
 		return QueryReport{}, err
 	}
@@ -54,12 +69,18 @@ func Query(ctx context.Context, homePath string, lane LaneConfig, embedder Embed
 	}
 	for _, hit := range hits {
 		info := meta[hit.ClaimID]
+		resolved, err := ResolveChunkText(manifest, hit.ClaimID, opts.IncludeText)
+		if err != nil {
+			return QueryReport{}, fmt.Errorf("resolve chunk text for %s: %w", hit.ClaimID, err)
+		}
 		report.Hits = append(report.Hits, QueryHit{
 			ItemID:     info.itemID,
 			ChunkID:    hit.ClaimID,
 			SourceKind: info.sourceKind,
 			Title:      info.title,
 			Score:      hit.Score,
+			Text:       resolved.Text,
+			TextStatus: string(resolved.Status),
 		})
 	}
 	return report, nil
