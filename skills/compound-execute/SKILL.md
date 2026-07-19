@@ -171,6 +171,25 @@ completed home folded post-plan runtime records into the frozen migration manife
 the plan digest — find_b642a87db247). Prefer read-only faces (preview/status) as live proof when
 the mutating path is grant-gated anyway.
 
+**Bridge envelopes close on `live:`/`evidence:` ONLY — never a `commit:` artifact** (law minted
+2026-07-19 from a permanent wedge). A *bridge envelope* lands wholly or partly in a repo that is
+not compound: a control-plane host repo, a product repo, or an untracked runtime. `git_delivery`
+binds an envelope to
+exactly ONE canonical worktree + local ref + publication ref — compound's — and a `commit:` artifact
+is resolved against THAT lineage. A foreign-repo SHA can never be found there, so `land-check`
+cannot certify and `close` cannot pass; re-running never fixes it because the proof SHAPE is wrong.
+The lived case (write-surface slice 5, `work_4632e9ec8315`) attached a foreign host-repo commit and
+wedged permanently — recovery was cancellation under the steal path, not repair. The SHA is NAMED
+IN THE EVIDENCE BODY; it is provenance, not a delivery artifact.
+
+*Split slices are the common case*, not the exception — a door lands in compound while its cutover
+lands in a product repo (slice 4's `inventory-observe` door + the project-miner dual-write is
+exactly this). Then ONE envelope carries TWO proof shapes: `commit:` for the compound-side delivery
+only, plus `live:` (a real run landing a real record under `COMPOUND_HOME`) and `evidence:` naming
+the foreign repo + SHA for the cutover. Reaching for `commit:` on the foreign half is a category
+error the gate correctly refuses — `commit:` asserts *compound's own delivery lineage contains
+this*, which for a foreign repo is unverifiable by construction.
+
 ## 8 · Route the learnings (the operator's law: "change the system based on the information")
 
 A solution without its learnings routed is unfinished work. In the SAME round, write each learning
