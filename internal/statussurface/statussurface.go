@@ -195,9 +195,17 @@ type claudeStatusInput struct {
 		DisplayName string `json:"display_name"`
 	} `json:"model"`
 	ContextWindow *struct {
-		WindowTokens int64   `json:"context_window_size"`
-		UsedPercent  float64 `json:"used_percentage"`
-		UsedTokens   int64   `json:"total_input_tokens"`
+		WindowTokens int64 `json:"context_window_size"`
+		// UsedPercent is a *float64 (not float64) so an absent
+		// `used_percentage` field does not silently render as 0%.
+		// finitePercent(0) is true (0 is not NaN, not Inf), so a plain
+		// float64 here would let a payload without `used_percentage`
+		// (only `total_input_tokens` + `context_window_size`) be
+		// reported as StatusLive, UsedPercent=0 -- a false 'plenty of
+		// context' signal. Pinned by
+		// TestBuildClaudeSnapshotLeavesContextUnknownWhenNoUsageEvidence.
+		UsedPercent *float64 `json:"used_percentage"`
+		UsedTokens  int64    `json:"total_input_tokens"`
 	} `json:"context_window"`
 	RateLimits *struct {
 		FiveHour       *nativeLimit `json:"five_hour"`
@@ -230,14 +238,36 @@ func BuildClaudeSnapshot(body []byte, now time.Time, previous Snapshot) (Snapsho
 		Limits:         []LimitWindow{},
 		InputRetention: "derived_metadata_only;raw_discarded",
 	}
-	if input.ContextWindow != nil && finitePercent(input.ContextWindow.UsedPercent) {
-		used := clampPercent(input.ContextWindow.UsedPercent)
+	// Context window resolution: prefer the native `used_percentage` when it is
+	// present and finite; otherwise derive from `total_input_tokens` and
+	// `context_window_size`; otherwise leave the context metric Unknown. The
+	// previous code path fell into the first branch with UsedPercent=0 because
+	// finitePercent(0) is true (0 is neither NaN nor Inf) -- a payload that
+	// only carried total_input_tokens + context_window_size rendered as
+	// StatusLive, UsedPercent=0, RemainingPercent=100, which is a false
+	// 'plenty of context' signal. UsedPercent is now *float64 precisely so
+	// the absent case can be detected and fall through to derivation.
+	//
+	// The outer nil check on input.ContextWindow is required because the JSON
+	// unmarshaler leaves the pointer nil when context_window is entirely
+	// absent from the payload; deriveClaudeContextUsage handles the
+	// partial-evidence case (one field present, one absent) and the
+	// no-evidence case (both absent) but cannot dereference a nil parent.
+	var cwWindowTokens int64
+	var cwUsedPercent *float64
+	var cwUsedTokens int64
+	if input.ContextWindow != nil {
+		cwWindowTokens = input.ContextWindow.WindowTokens
+		cwUsedPercent = input.ContextWindow.UsedPercent
+		cwUsedTokens = input.ContextWindow.UsedTokens
+	}
+	if used, ok := deriveClaudeContextUsage(cwWindowTokens, cwUsedPercent, cwUsedTokens); ok {
 		snapshot.Context = Metric{
 			Status:           StatusLive,
 			UsedPercent:      used,
 			RemainingPercent: 100 - used,
-			WindowTokens:     input.ContextWindow.WindowTokens,
-			UsedTokens:       input.ContextWindow.UsedTokens,
+			WindowTokens:     cwWindowTokens,
+			UsedTokens:       cwUsedTokens,
 			Source:           "claude/statusline.context_window",
 		}
 	}
@@ -393,6 +423,37 @@ func parseNativeReset(raw json.RawMessage) time.Time {
 
 func finitePercent(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+// deriveClaudeContextUsage decides what (if any) UsedPercent to report for the
+// Claude context window. Three outcomes:
+//
+//  1. used_percentage present and finite: native percent wins. The status
+//     payload is the canonical source, and any token-derived math could
+//     disagree with whatever compaction policy Claude applied to compute
+//     the reported percentage.
+//  2. used_percentage absent, but both context_window_size and
+//     total_input_tokens present: derive clampPercent(100 * used / window).
+//     This is the common codexbar / proxy case where the upstream payload
+//     only carries raw token counts. Capped at 100 (UsedTokens > Window
+//     after compression artifacts is observable in practice).
+//  3. no usage evidence at all: ok=false. The caller leaves the context
+//     metric Unknown instead of falsely reporting 0% / 100% remaining.
+//
+// Pinned by:
+//
+//	TestBuildClaudeSnapshotNativeUsedPercentWinsOverTokenCounts
+//	TestBuildClaudeSnapshotDerivesContextFromTokenCounts
+//	TestBuildClaudeSnapshotLeavesContextUnknownWhenNoUsageEvidence
+//	TestBuildClaudeSnapshotClampsTokenDerivedUsage
+func deriveClaudeContextUsage(windowTokens int64, usedPercent *float64, usedTokens int64) (used float64, ok bool) {
+	if usedPercent != nil && finitePercent(*usedPercent) {
+		return clampPercent(*usedPercent), true
+	}
+	if windowTokens > 0 && usedTokens > 0 {
+		return clampPercent(100 * float64(usedTokens) / float64(windowTokens)), true
+	}
+	return 0, false
 }
 
 func clampPercent(value float64) float64 {

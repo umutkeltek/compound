@@ -68,6 +68,111 @@ func TestBuildClaudeSnapshotReducesNativeContextAndLimitsWithoutBody(t *testing.
 	}
 }
 
+// TestBuildClaudeSnapshotDerivesContextFromTokenCounts pins the derivation
+// branch of deriveClaudeContextUsage: a payload that only carries
+// context_window_size and total_input_tokens (no used_percentage) must
+// produce a StatusLive Context metric whose UsedPercent is the token-derived
+// ratio, not the false 0% the pre-fix code path emitted.
+//
+// This is the common codexbar / proxy case where the upstream Claude
+// status payload does not include the percentage Claude itself computes.
+// Operators reading this metric need the derived value, not '0% used,
+// 100% remaining'.
+func TestBuildClaudeSnapshotDerivesContextFromTokenCounts(t *testing.T) {
+	input := []byte(`{"context_window":{"context_window_size":200000,"total_input_tokens":83000}}`)
+	snapshot, err := BuildClaudeSnapshot(input, testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Context.Status != StatusLive {
+		t.Fatalf("Context.Status = %q, want %q (tokens were present, must derive)", snapshot.Context.Status, StatusLive)
+	}
+	// 83000 / 200000 = 0.415 = 41.5%; remaining = 58.5%.
+	if !floatNear(snapshot.Context.UsedPercent, 41.5) {
+		t.Fatalf("Context.UsedPercent = %v, want 41.5 (derived 83000/200000)", snapshot.Context.UsedPercent)
+	}
+	if !floatNear(snapshot.Context.RemainingPercent, 58.5) {
+		t.Fatalf("Context.RemainingPercent = %v, want 58.5", snapshot.Context.RemainingPercent)
+	}
+	if snapshot.Context.WindowTokens != 200000 || snapshot.Context.UsedTokens != 83000 {
+		t.Fatalf("Context.WindowTokens/UsedTokens = %d/%d, want 200000/83000", snapshot.Context.WindowTokens, snapshot.Context.UsedTokens)
+	}
+}
+
+// TestBuildClaudeSnapshotLeavesContextUnknownWhenNoUsageEvidence pins the
+// third branch of deriveClaudeContextUsage: when neither used_percentage
+// nor token counts are present, the Context metric must be StatusUnknown.
+// The pre-fix code path emitted StatusLive/0/100, which is a false
+// 'plenty of context' signal. TestBuildClaudeSnapshotReducesNativeContext
+// already pins the happy path with both fields.
+func TestBuildClaudeSnapshotLeavesContextUnknownWhenNoUsageEvidence(t *testing.T) {
+	input := []byte(`{"context_window":{"context_window_size":200000}}`)
+	snapshot, err := BuildClaudeSnapshot(input, testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Context.Status != StatusUnknown {
+		t.Fatalf("Context.Status = %q, want %q (no usage evidence; must not invent 0/100)", snapshot.Context.Status, StatusUnknown)
+	}
+	if snapshot.Context.UsedPercent != 0 || snapshot.Context.RemainingPercent != 0 {
+		t.Fatalf("Context.UsedPercent/RemainingPercent = %v/%v, want 0/0", snapshot.Context.UsedPercent, snapshot.Context.RemainingPercent)
+	}
+
+	// Same expectation when context_window is entirely absent.
+	noCtx, err := BuildClaudeSnapshot([]byte(`{}`), testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noCtx.Context.Status != StatusUnknown {
+		t.Fatalf("Context.Status (no context_window) = %q, want %q", noCtx.Context.Status, StatusUnknown)
+	}
+}
+
+// TestBuildClaudeSnapshotNativeUsedPercentWinsOverTokenCounts pins the
+// priority order: native used_percentage wins over any token-derived value.
+// The status payload is the canonical source; token-derived math could
+// disagree with whatever compaction policy Claude applied to compute the
+// reported percentage.
+func TestBuildClaudeSnapshotNativeUsedPercentWinsOverTokenCounts(t *testing.T) {
+	// 50% native; tokens (if the broken path were used) would yield 41.5%.
+	// Native must win.
+	input := []byte(`{"context_window":{"context_window_size":200000,"used_percentage":50,"total_input_tokens":83000}}`)
+	snapshot, err := BuildClaudeSnapshot(input, testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !floatNear(snapshot.Context.UsedPercent, 50) {
+		t.Fatalf("Context.UsedPercent = %v, want 50 (native wins over token-derived 41.5)", snapshot.Context.UsedPercent)
+	}
+}
+
+// TestBuildClaudeSnapshotClampsTokenDerivedUsage pins the clamp boundary:
+// token-derived usage that exceeds 100 (compression artifacts, scheduled
+// compaction windows, etc.) must clamp at 100, not overflow the metric.
+func TestBuildClaudeSnapshotClampsTokenDerivedUsage(t *testing.T) {
+	// 250_000 / 200_000 = 1.25 = 125% before clamp; clamp to 100.
+	input := []byte(`{"context_window":{"context_window_size":200000,"total_input_tokens":250000}}`)
+	snapshot, err := BuildClaudeSnapshot(input, testNow, Snapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !floatNear(snapshot.Context.UsedPercent, 100) {
+		t.Fatalf("Context.UsedPercent = %v, want 100 (clamped from 125%%)", snapshot.Context.UsedPercent)
+	}
+	if !floatNear(snapshot.Context.RemainingPercent, 0) {
+		t.Fatalf("Context.RemainingPercent = %v, want 0", snapshot.Context.RemainingPercent)
+	}
+}
+
+// floatNear is a small epsilon-aware equality helper for the percent tests.
+func floatNear(a, b float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d < 0.0001
+}
+
 func TestAdaptiveModeUsesHysteresis(t *testing.T) {
 	metric := Metric{Status: StatusLive, UsedPercent: 70, RemainingPercent: 30}
 	if got := SelectMode(metric, nil, ModeFlow); got != ModeWatch {
