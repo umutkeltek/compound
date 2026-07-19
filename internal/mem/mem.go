@@ -540,35 +540,24 @@ func (s *Store) AdjudicateOperationalDecision(candID, verdict, workID string, no
 
 func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operationalDecision bool, explicitConfirmationRef string, actor string) (AdjudicateResult, error) {
 	var res AdjudicateResult
-	if !oneOf(verdict, Verdicts) {
-		return res, fmt.Errorf("verdict must be one of %v, got %q", Verdicts, verdict)
-	}
 	c, err := s.getCandidate(candID)
 	if err != nil {
 		return res, err
 	}
 	res.Candidate = c
 	res.Verdict = verdict
-	if c.State == "promoted" {
-		return res, fmt.Errorf("candidate %s already promoted", candID)
-	}
-	if c.Qualifiers != nil && strings.TrimSpace(c.Qualifiers[OperationalDecisionAuthorityQualifier]) != "" && !operationalDecision {
-		return res, fmt.Errorf("candidate %s uses reserved operational decision authority qualifier; import it through the policy decisions authority", candID)
-	}
-	if !operationalDecision && verdict == "promote" && isOperationalDecisionKind(c.Qualifiers["kind"]) {
-		return res, fmt.Errorf("candidate %s uses reserved operational decision kind %q; import it through the policy decisions authority", candID, c.Qualifiers["kind"])
-	}
-	if operationalDecision && verdict == "promote" {
-		if c.ClaimType != "decision" {
-			return res, fmt.Errorf("candidate %s cannot receive operational decision authority: claim_type must be decision", candID)
-		}
-	}
-	if explicitConfirmationRef != "" {
-		if verdict != "promote" || operationalDecision {
-			return res, fmt.Errorf("explicit confirmation is only valid for ordinary memory promotion")
-		}
-	} else if verdict == "promote" && c.PromotionBasis == candidates.BasisExplicitConfirmation {
-		return res, fmt.Errorf("candidate %s explicit confirmation requires governed confirmation evidence", candID)
+	// Pre-lock rule set is now in a pure function (see adjudicate_intent.go).
+	// The in-lock re-check below stays as defense-in-depth per the legacy
+	// function's own comment (mem.go:594-596); it carries a side effect
+	// (stamping the operational-decision qualifier) that keeps it non-pure.
+	if err := validateAdjudicationIntent(c, AdjudicationIntent{
+		Verdict:                 verdict,
+		WorkID:                  workID,
+		OperationalDecision:     operationalDecision,
+		ExplicitConfirmationRef: explicitConfirmationRef,
+		Actor:                   actor,
+	}); err != nil {
+		return res, err
 	}
 
 	if verdict != "promote" {

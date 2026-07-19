@@ -1614,3 +1614,144 @@ func TestAdjudicateAsOperatorStampsProvenance(t *testing.T) {
 		t.Fatalf("candidates-list projection stamped adjudicated_by on an automated park: %+v", got)
 	}
 }
+
+// TestValidateAdjudicationIntentEnforcesEachRuleInIsolation is the falsifier
+// for the adjudicate() refactor that extracts the pre-lock rule set into a
+// pure validateAdjudicationIntent(c, intent) function. The function must be
+// pure: no I/O, no Store, no time.Now, no candidate mutation. Each rule
+// listed below maps to a corresponding check inside the original god
+// function (internal/mem/mem.go adjudicate, lines 543-572). A test failure
+// here means a rule was dropped, softened, or silently started mutating
+// state.
+func TestValidateAdjudicationIntentEnforcesEachRuleInIsolation(t *testing.T) {
+	// The candidate fixture is reused across all subtests. The
+	// validateAdjudicationIntent function must not mutate it; each
+	// subtest takes a fresh copy so a mutation regression in one rule
+	// cannot leak into another.
+	cleanCandidate := func() Candidate {
+		c := cand("e", "p", "v", "")
+		c.PromotionBasis = candidates.BasisRuntimeProof // not BasisExplicitConfirmation
+		c.State = "proposed"
+		return c
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func(*Candidate)          // adjust candidate before validation
+		intent  func() AdjudicationIntent // build the intent under test
+		wantErr string                    // substring expected in the error
+	}{
+		{
+			name:    "rejects unknown verdict",
+			mutate:  func(c *Candidate) {},
+			intent:  func() AdjudicationIntent { return AdjudicationIntent{Verdict: "admit"} },
+			wantErr: "verdict must be one of",
+		},
+		{
+			name:    "rejects already-promoted candidate",
+			mutate:  func(c *Candidate) { c.State = "promoted" },
+			intent:  func() AdjudicationIntent { return AdjudicationIntent{Verdict: "promote"} },
+			wantErr: "already promoted",
+		},
+		{
+			name: "rejects reserved operational decision authority qualifier on ordinary promote",
+			mutate: func(c *Candidate) {
+				c.Qualifiers = map[string]string{OperationalDecisionAuthorityQualifier: OperationalDecisionAuthorityValue}
+			},
+			intent:  func() AdjudicationIntent { return AdjudicationIntent{Verdict: "promote"} },
+			wantErr: "reserved operational decision authority qualifier",
+		},
+		{
+			name:    "rejects reserved operational decision kind on ordinary promote",
+			mutate:  func(c *Candidate) { c.Qualifiers = map[string]string{"kind": "grant"} },
+			intent:  func() AdjudicationIntent { return AdjudicationIntent{Verdict: "promote"} },
+			wantErr: "reserved operational decision kind",
+		},
+		{
+			name:    "rejects operational decision promote against non-decision claim_type",
+			mutate:  func(c *Candidate) { c.ClaimType = "preference" },
+			intent:  func() AdjudicationIntent { return AdjudicationIntent{Verdict: "promote", OperationalDecision: true} },
+			wantErr: "claim_type must be decision",
+		},
+		{
+			name:    "rejects explicit confirmation paired with non-promote verdict",
+			mutate:  func(c *Candidate) {},
+			intent:  func() AdjudicationIntent { return AdjudicationIntent{Verdict: "park", ExplicitConfirmationRef: "ev_x"} },
+			wantErr: "explicit confirmation is only valid for ordinary memory promotion",
+		},
+		{
+			name:   "rejects explicit confirmation paired with operational decision",
+			mutate: func(c *Candidate) { c.ClaimType = "decision" },
+			intent: func() AdjudicationIntent {
+				return AdjudicationIntent{Verdict: "promote", OperationalDecision: true, ExplicitConfirmationRef: "ev_x"}
+			},
+			wantErr: "explicit confirmation is only valid for ordinary memory promotion",
+		},
+		{
+			name:    "rejects promotion with explicit-confirmation basis but no confirmation ref",
+			mutate:  func(c *Candidate) { c.PromotionBasis = candidates.BasisExplicitConfirmation },
+			intent:  func() AdjudicationIntent { return AdjudicationIntent{Verdict: "promote"} },
+			wantErr: "explicit confirmation requires governed confirmation evidence",
+		},
+		{
+			name:   "accepts clean ordinary promote",
+			mutate: func(c *Candidate) {},
+			intent: func() AdjudicationIntent {
+				return AdjudicationIntent{Verdict: "promote"}
+			},
+			wantErr: "",
+		},
+		{
+			name:   "accepts clean non-promote (park)",
+			mutate: func(c *Candidate) {},
+			intent: func() AdjudicationIntent {
+				return AdjudicationIntent{Verdict: "park"}
+			},
+			wantErr: "",
+		},
+		{
+			name:   "accepts operational-decision promote on a decision-claim_type candidate",
+			mutate: func(c *Candidate) { c.ClaimType = "decision" },
+			intent: func() AdjudicationIntent {
+				return AdjudicationIntent{Verdict: "promote", OperationalDecision: true}
+			},
+			wantErr: "",
+		},
+		{
+			name:   "accepts explicit-confirmation promote on a parked candidate",
+			mutate: func(c *Candidate) { c.PromotionBasis = candidates.BasisExplicitConfirmation; c.State = "parked" },
+			intent: func() AdjudicationIntent {
+				return AdjudicationIntent{Verdict: "promote", ExplicitConfirmationRef: "ev_x"}
+			},
+			wantErr: "",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			c := cleanCandidate()
+			tc.mutate(&c)
+			// Snapshot the candidate before validation; if the function
+			// mutates it the snapshot will diverge and the test fails.
+			beforeJSON, _ := json.Marshal(c)
+			err := validateAdjudicationIntent(c, tc.intent())
+			afterJSON, _ := json.Marshal(c)
+			if string(beforeJSON) != string(afterJSON) {
+				t.Fatalf("validateAdjudicationIntent mutated its candidate: before=%s after=%s", beforeJSON, afterJSON)
+			}
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
