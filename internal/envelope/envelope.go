@@ -528,6 +528,19 @@ type WorkEnvelope struct {
 	// `action_intent_ids` only at the compound.work.v0.2 schema bump, where new envelopes carry the
 	// new shape and v0.1 envelopes keep theirs, so continuity is preserved per-version rather than
 	// rewritten. Do not "fix" this tag in isolation.
+	//
+	// v0.1 SEMANTIC MIX: despite the field name, WorkStore.Advance still appends AdvanceInput.RunID
+	// into this slice (internal/work/work.go Advance), so a v0.1 envelope can carry `act_*` ids
+	// AND legacy run refs (today: only panel apply's `prun_*` ids from internal/panel/apply.go).
+	// The wire-name legacy above silently covers the mix because the field is `[]string` with no
+	// prefix validation, but the Go name "ActionIntentIDs" overstates the purity. S1 RunAttempt
+	// retires AdvanceInput.RunID as a lifecycle action-chain ref and stops appending it here, at
+	// which point ActionIntentIDs becomes act_*-only. The current mix is pinned by
+	// TestAdvanceRecordsPolicyAction (asserts `run_real` lands in ActionIntentIDs) and
+	// TestActivePacketProofReportsClosedPacketChain / TestActivePacketProofReportsArchivedClosedPacketChain
+	// in internal/work (which advance with `run_packet`). Do not "fix" the mix in isolation
+	// either -- a premature split breaks stored work_sha256 the same way a premature wire-key
+	// rename does.
 	ActionIntentIDs []string `json:"run_ids"`
 	// RunAttemptIDs is RESERVED and intentionally unpopulated in this slice: nothing mints
 	// RunAttempts yet. Slice S1 introduces the RunAttempt type and becomes its only writer, which
