@@ -600,17 +600,28 @@ func (e *WorkEnvelope) Validate() error {
 	return v.result(e.Kind())
 }
 
-// validateRunAttemptIDs holds the reserved run slot to non-emptiness ONLY. A prefix rule is
-// deliberately absent: S1 has not settled what a RunAttempt id looks like, and the existing "run"
-// id space is heterogeneous (run observations are wro_*, panel runs carry their own scheme), so
-// guessing a prefix here would either reject S1's real ids or harden the wrong convention. It is
-// also why no prefix rule is applied to ActionIntentIDs: real data violates one already --
-// fixtures/envelopes/work.distill.json carries "run_ids":["hook_distill_fixture"]. When S1 fixes
-// the RunAttempt id shape, tighten this to that prefix and nothing else.
+// validateRunAttemptIDs enforces two rules on the reserved run slot:
+//
+//  1. non-emptiness (the floor that has applied since the slot was reserved, so legacy
+//     envelopes with `run_attempt_ids` never serialize a blank);
+//  2. ratt_<UTC>_<8 hex> prefix (settled by S1; see internal/runattempt.Prefix / Valid).
+//
+// The prefix rule is the load-bearing one: it is what stops the slot from silently
+// re-accumulating the heterogeneous run-shaped evidence (prun_*, run_*, free strings) that
+// the v0.1 ActionIntentIDs mix allowed. Pinned by TestRunAttemptIDsRequireRattPrefix and
+// TestRunAttemptIDsRejectEmptyEntries.
+//
+// No prefix rule is applied to ActionIntentIDs: real v0.1 data already violates one (the
+// `prun_*` legacy run ids appended by panel.Apply land there), and the v0.1 SEMANTIC MIX
+// comment on the field names the path that retires them.
 func validateRunAttemptIDs(v *verr, ids []string) {
 	for i, id := range ids {
 		if strings.TrimSpace(id) == "" {
 			v.addf("run_attempt_ids[%d] must not be empty", i)
+			continue
+		}
+		if !strings.HasPrefix(id, "ratt_") {
+			v.addf("run_attempt_ids[%d] %q must start with %q (settled in S1; see internal/runattempt.Prefix)", i, id, "ratt_")
 		}
 	}
 }

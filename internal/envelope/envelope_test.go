@@ -575,3 +575,42 @@ func TestRunAttemptIDsRejectEmptyEntries(t *testing.T) {
 		t.Fatalf("empty run attempt id must be rejected, got: %v", err)
 	}
 }
+
+// TestRunAttemptIDsRequireRattPrefix pins the RunAttempt id shape settled in S1.
+// RunAttempt ids minted by internal/runattempt follow `ratt_<UTC>_<8 hex>`. Any other value
+// (legacy `prun_*` panel ids, `run_*` observation ids, free strings) must be rejected at the
+// envelope boundary so the slot cannot quietly accumulate non-RunAttempt evidence again --
+// that is exactly the bug the v0.1 ActionIntentIDs mix allowed.
+//
+// Falsifier: removing the prefix check from validateRunAttemptIDs turns this RED with
+// "must be rejected" -- verified 2026-07-20.
+func TestRunAttemptIDsRequireRattPrefix(t *testing.T) {
+	mk := func(ids []string) *WorkEnvelope {
+		return &WorkEnvelope{
+			Header:           Header{SchemaVersion: SVWork, Producer: Producer{Kind: "cli", Name: "compound", Version: ""}, ID: "work_ratt_prefix_test", CreatedAt: "2026-07-20T00:00:00Z", Authority: Authority{SourceClass: "runtime", Status: "current"}, Privacy: "private", Risk: "tier1"},
+			Owner:            "codex",
+			SuccessPredicate: "RunAttempt id shape is enforced",
+			State:            "ready",
+			RunAttemptIDs:    ids,
+		}
+	}
+	for _, badID := range []string{
+		"prun_20260718T100000Z_aaaaaaaaaaaa", // legacy panel run id
+		"run_packet",                         // legacy observation id
+		"run_real",                           // legacy writeback id
+		"free_string",                        // arbitrary
+		"RATT_uppercase_is_wrong",            // prefix is lowercase
+	} {
+		err := mk([]string{badID}).Validate()
+		if err == nil {
+			t.Fatalf("RunAttemptIDs=[%q] must be rejected: validator accepted a non-ratt_ id", badID)
+		}
+		if !strings.Contains(err.Error(), "run_attempt_ids[0]") {
+			t.Fatalf("RunAttemptIDs=[%q] rejection must name run_attempt_ids[0], got: %v", badID, err)
+		}
+	}
+	// Happy path: a real ratt_ id round-trips.
+	if err := mk([]string{"ratt_20260720T000000Z_aabbccdd"}).Validate(); err != nil {
+		t.Fatalf("well-formed ratt_ id was rejected: %v", err)
+	}
+}
