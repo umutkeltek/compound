@@ -47,8 +47,9 @@ This skill replaces re-deriving the "standing session rules" from
 Run the `compound-verify` skill. Minimum bar before any commit to main:
 
 ```bash
-go run ./cmd/compound proof-check --json     # tests, vet, build, diff-check, console smokes,
-                                             # doctor --strict, workbench, memory doctor, redact
+go run ./cmd/compound proof-check --json --out <file>   # tests, vet, build, diff-check, console
+                                                         # smokes, doctor --strict, workbench,
+                                                         # memory doctor, redact
 ```
 
 - Exit contract: `0` ok · `1` a gate FAILED · `2` usage. Never "fix" a red gate by weakening
@@ -59,14 +60,19 @@ go run ./cmd/compound proof-check --json     # tests, vet, build, diff-check, co
 - **Never pipe the battery through `| tail`/`| head`** (near-miss 2026-07-07). zsh has no `pipefail`,
   so the pipeline's exit status is `tail`'s (always `0`) — a real gate failure reads as green. The
   truncation also drops the top-of-output verdict and the `go-test`/`go-vet`/`go-build` gates. Run it
-  unpiped: `go run ./cmd/compound proof-check --json > out.json 2>&1; echo "EXIT=$?"` and read the file.
-- **Background-battery variant of the same trap (real incident 2026-07-15):** a backgrounded battery
-  command's completion notification reports the WRAPPER's exit (the trailing `echo` — always `0`), not
-  proof-check's. A red battery landed because the lander trusted "completed (exit code 0)" and never
-  opened the output file (sole red gate was cosmetic — a comment tripping the private-runtime string
-  guard — repaired on main as `5fa4c784`). Rule: a background battery is not green until you have READ
-  the `EXIT=` line (and on failure, the failed gate's `output_tail`) from the file itself. Acquiring
-  the land-lease before reading that line is the tell you're about to repeat this.
+  unpiped, foreground or backgrounded.
+- **`--out <file>` is the sanctioned invocation now; the `> out.json 2>&1; echo "EXIT=$?"` wrapper
+  is RETIRED.** `proof-check` owns its own output contract: `--out FILE` writes the FULL report to
+  FILE itself (a write/close failure is its own exit-2, even if every gate passed), and prints one
+  `battery: ok gates=N/M out=FILE` or `battery: FAILED gates=N/M first_failed=NAME out=FILE` line as
+  the LAST stdout line — with a truthful process exit code (`0`/`1`/`2`) throughout. There is no
+  wrapper shell exit left to lie. Foreground: read the verdict line (or just check `$?`). Backgrounded:
+  the completion notification tail now carries proof-check's OWN last line, not a wrapper's `echo`'s —
+  on a FAILED verdict still open FILE and read the named gate's `output_tail` before landing.
+  History (compressed): the old `echo "EXIT=$?"` wrapper's masked exit lied green three times —
+  2026-07-07 (piped through `tail`), 2026-07-15 and 2026-07-18 (backgrounded: the wrapper's trailing
+  `echo` exit, always `0`, was trusted as the battery's exit) — which is why the battery, not a shell
+  wrapper, now owns the output contract.
 - **Worktree caveat (real failure):** fresh worktrees do not contain the gitignored
   `docs_private/leak-tokens.txt`. The doctor's leak gate **fails closed** under `--strict` when
   the token list is missing. Copy the file into the worktree before running the battery there.
