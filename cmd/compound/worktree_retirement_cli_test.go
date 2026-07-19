@@ -100,8 +100,8 @@ func TestAuthorityWorktreeRetireCLIPlansReviewsAppliesAndRecordsWorkChain(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stringSliceContains(owner.RunIDs, result.ActionIntentID) || owner.PolicyDecisionID != result.PolicyDecisionID {
-		t.Fatalf("owner work action chain runs=%v policy=%s", owner.RunIDs, owner.PolicyDecisionID)
+	if !stringSliceContains(owner.ActionIntentIDs, result.ActionIntentID) || owner.PolicyDecisionID != result.PolicyDecisionID {
+		t.Fatalf("owner work action chain runs=%v policy=%s", owner.ActionIntentIDs, owner.PolicyDecisionID)
 	}
 	for _, id := range []string{result.ActionIntentID, result.PolicyDecisionID, result.ReceiptID, result.TransitionID} {
 		if !testEventExists(t, homePath, id) {
@@ -189,8 +189,8 @@ func TestAuthorityWorktreeRetireCLIPartialRetryRecordsDistinctHonestActions(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stringSliceContains(owner.RunIDs, partial.ActionIntentID) || !stringSliceContains(owner.RunIDs, completed.ActionIntentID) {
-		t.Fatalf("partial/success actions not both linked: %v", owner.RunIDs)
+	if !stringSliceContains(owner.ActionIntentIDs, partial.ActionIntentID) || !stringSliceContains(owner.ActionIntentIDs, completed.ActionIntentID) {
+		t.Fatalf("partial/success actions not both linked: %v", owner.ActionIntentIDs)
 	}
 }
 

@@ -339,7 +339,7 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	}
 	expectedWork := w
 	if !historicalReplay {
-		expectedWork.RunIDs = mergeUnique(expectedWork.RunIDs, []string{action.ID})
+		expectedWork.ActionIntentIDs = mergeUnique(expectedWork.ActionIntentIDs, []string{action.ID})
 		expectedWork.PolicyDecisionID = decision.ID
 	}
 	if err := expectedWork.Validate(); err != nil {
@@ -782,7 +782,7 @@ func (s *Store) clearReceiptedActionPending(path string, expected receiptedActio
 func (s *Store) preflightReceiptedActionWorkLink(w envelope.WorkEnvelope, actionID, decisionID string) (bool, bool, error) {
 	actionIndex := -1
 	latestActionIndex := -1
-	for i, ref := range w.RunIDs {
+	for i, ref := range w.ActionIntentIDs {
 		if strings.HasPrefix(ref, "act_") {
 			latestActionIndex = i
 		}
@@ -812,7 +812,7 @@ func (s *Store) preflightReceiptedActionWorkLink(w envelope.WorkEnvelope, action
 		return false, false, fmt.Errorf("receipted action %s conflicts with persisted work links: historical action owns the current policy link", actionID)
 	}
 
-	latestActionID := w.RunIDs[latestActionIndex]
+	latestActionID := w.ActionIntentIDs[latestActionIndex]
 	if err := s.validateReceiptedActionNewerWorkLink(w, latestActionID); err != nil {
 		return false, false, fmt.Errorf("receipted action %s conflicts with persisted work links: %w", actionID, err)
 	}

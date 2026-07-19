@@ -228,7 +228,7 @@ func (s *Store) admitAutoLocked(workID string, in AutoAdmitInput, now time.Time)
 }
 
 func (s *Store) autonomyAdmissionAction(w envelope.WorkEnvelope) (envelope.ActionIntent, error) {
-	for _, ref := range w.RunIDs {
+	for _, ref := range w.ActionIntentIDs {
 		if !strings.HasPrefix(ref, "act_") {
 			continue
 		}

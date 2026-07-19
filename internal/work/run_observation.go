@@ -105,8 +105,8 @@ func (s *Store) ObserveRun(workID string, in ObserveRunInput, now time.Time) (Ru
 		result.ActionContext = actionContext
 		result.Warnings = append(result.Warnings, warnings...)
 	}
-	if len(advanced.RunIDs) > 0 {
-		result.ActionIntentID = advanced.RunIDs[len(advanced.RunIDs)-1]
+	if len(advanced.ActionIntentIDs) > 0 {
+		result.ActionIntentID = advanced.ActionIntentIDs[len(advanced.ActionIntentIDs)-1]
 	}
 	path, err := s.RecordRunObservation(result)
 	if err != nil {

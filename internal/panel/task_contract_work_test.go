@@ -152,7 +152,7 @@ func TestBoundPanelRunKeepsOneWorkAndApplyFailsWithoutOperationLease(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parentAfter.State != parent.State || !reflect.DeepEqual(parentAfter.RunIDs, parent.RunIDs) || parentAfter.PolicyDecisionID != parent.PolicyDecisionID {
+	if parentAfter.State != parent.State || !reflect.DeepEqual(parentAfter.ActionIntentIDs, parent.ActionIntentIDs) || parentAfter.PolicyDecisionID != parent.PolicyDecisionID {
 		t.Fatalf("rejected bound apply mutated parent: before=%+v after=%+v", parent, parentAfter)
 	}
 	for _, finding := range notApplied.Findings {

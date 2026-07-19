@@ -175,10 +175,10 @@ func TestCloseRecordsPolicyAction(t *testing.T) {
 	if closed.Work.State != "completed" || closed.Work.PolicyDecisionID == "" {
 		t.Fatalf("close did not record policy: %+v", closed.Work)
 	}
-	if len(closed.Work.RunIDs) != len(before.RunIDs)+1 {
-		t.Fatalf("close run chain = %v, before=%v", closed.Work.RunIDs, before.RunIDs)
+	if len(closed.Work.ActionIntentIDs) != len(before.ActionIntentIDs)+1 {
+		t.Fatalf("close run chain = %v, before=%v", closed.Work.ActionIntentIDs, before.ActionIntentIDs)
 	}
-	closeActionID := closed.Work.RunIDs[len(before.RunIDs)]
+	closeActionID := closed.Work.ActionIntentIDs[len(before.ActionIntentIDs)]
 	if exists, err := s.eventExists(closeActionID); err != nil || !exists {
 		t.Fatalf("close action envelope missing: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestCloseBlockedByPolicyDoesNotMutate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "running" || len(after.RunIDs) != len(before.RunIDs) || after.PolicyDecisionID != before.PolicyDecisionID || after.IDs.TransitionID != "" {
+	if after.State != "running" || len(after.ActionIntentIDs) != len(before.ActionIntentIDs) || after.PolicyDecisionID != before.PolicyDecisionID || after.IDs.TransitionID != "" {
 		t.Fatalf("blocked close mutated work: before=%+v after=%+v", before, after)
 	}
 }

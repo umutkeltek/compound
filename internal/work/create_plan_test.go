@@ -286,8 +286,8 @@ func TestAdmitCreatePlanCreatesWorkAndRetiresPreview(t *testing.T) {
 	if w.ID != plan.WorkID ||
 		w.State != "proposed" ||
 		w.PolicyDecisionID != plan.Decision.ID ||
-		len(w.RunIDs) != 1 ||
-		w.RunIDs[0] != plan.ActionIntent.ID {
+		len(w.ActionIntentIDs) != 1 ||
+		w.ActionIntentIDs[0] != plan.ActionIntent.ID {
 		t.Fatalf("admitted work not threaded through create-plan: %+v", w)
 	}
 	if len(events) != 1 ||
@@ -396,11 +396,11 @@ func TestCreateRecordsAdmissionPolicyBeforeWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.PolicyDecisionID == "" || len(w.RunIDs) != 1 {
+	if w.PolicyDecisionID == "" || len(w.ActionIntentIDs) != 1 {
 		t.Fatalf("created work missing admission policy/action: %+v", w)
 	}
 	var ai envelope.ActionIntent
-	if err := s.readJSON(s.envPath(w.RunIDs[0]), &ai); err != nil {
+	if err := s.readJSON(s.envPath(w.ActionIntentIDs[0]), &ai); err != nil {
 		t.Fatalf("admission action missing: %v", err)
 	}
 	if ai.Capability != "work.create" || ai.IDs.WorkID != w.ID {

@@ -1545,7 +1545,7 @@ func TestSourceIntakeWorkPlanCLICarriesActionCardThroughActionAndClosePlan(t *te
 		t.Fatal(err)
 	}
 	if afterAct.State != "running" ||
-		!stringSliceContains(afterAct.RunIDs, actionPlan.ActionIntent.ID) ||
+		!stringSliceContains(afterAct.ActionIntentIDs, actionPlan.ActionIntent.ID) ||
 		afterAct.PolicyDecisionID != actionPlan.Decision.ID {
 		t.Fatalf("act --plan did not thread source-intake action intent/decision: %+v", afterAct)
 	}
@@ -4765,7 +4765,7 @@ func TestWorkAdvancePlanAndAdvanceCommandRecordPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after advance: %v", err)
 	}
-	if afterAdvance.State != "running" || afterAdvance.PolicyDecisionID == "" || !stringSliceContains(afterAdvance.RunIDs, "run_cli") {
+	if afterAdvance.State != "running" || afterAdvance.PolicyDecisionID == "" || !stringSliceContains(afterAdvance.ActionIntentIDs, "run_cli") {
 		t.Fatalf("advance command did not record policy/run chain: %+v", afterAdvance)
 	}
 }
@@ -5856,8 +5856,8 @@ grants:
 	if err != nil {
 		t.Fatalf("show work: %v", err)
 	}
-	if !stringSliceContains(got.RunIDs, report.ActionIntentID) || got.PolicyDecisionID != report.PolicyDecisionID {
-		t.Fatalf("work action chain not recorded: runs=%v policy=%q report=%+v", got.RunIDs, got.PolicyDecisionID, report)
+	if !stringSliceContains(got.ActionIntentIDs, report.ActionIntentID) || got.PolicyDecisionID != report.PolicyDecisionID {
+		t.Fatalf("work action chain not recorded: runs=%v policy=%q report=%+v", got.ActionIntentIDs, got.PolicyDecisionID, report)
 	}
 	if !testEventExists(t, homePath, report.ActionIntentID) {
 		t.Fatal("action intent envelope not persisted")
@@ -5950,7 +5950,7 @@ grants:
 	if err != nil {
 		t.Fatalf("show auto work: %v", err)
 	}
-	if got.State != "completed" || got.IDs.TransitionID == "" || !stringSliceContains(got.RunIDs, report.ActionIntentID) {
+	if got.State != "completed" || got.IDs.TransitionID == "" || !stringSliceContains(got.ActionIntentIDs, report.ActionIntentID) {
 		t.Fatalf("auto work not closed through action chain: work=%+v report=%+v", got, report)
 	}
 	if !testEventExists(t, homePath, got.IDs.TransitionID) {
@@ -9662,7 +9662,7 @@ grants:
 			}
 		}
 	}
-	if got.State != "completed" || got.IDs.TransitionID == "" || !receiptSeen || !stringSliceContains(got.RunIDs, report.ActionIntentID) {
+	if got.State != "completed" || got.IDs.TransitionID == "" || !receiptSeen || !stringSliceContains(got.ActionIntentIDs, report.ActionIntentID) {
 		t.Fatalf("auto review work not closed: work=%+v report=%+v", got, report)
 	}
 }
@@ -13302,8 +13302,8 @@ func TestProductActionPlanAndReviewCLIExposeActionCardsThroughReviewQueue(t *tes
 	}
 	if admitted.State != "proposed" ||
 		admitted.PolicyDecisionID != workPlanReport.WorkPlan.Decision.ID ||
-		len(admitted.RunIDs) != 1 ||
-		admitted.RunIDs[0] != workPlanReport.WorkPlan.ActionIntent.ID ||
+		len(admitted.ActionIntentIDs) != 1 ||
+		admitted.ActionIntentIDs[0] != workPlanReport.WorkPlan.ActionIntent.ID ||
 		len(events) != 1 ||
 		events[0].Note != "admitted_from_create_plan" {
 		t.Fatalf("admitted work not threaded through create-plan: work=%+v events=%+v", admitted, events)
@@ -13443,7 +13443,7 @@ func TestProductActionPlanAndReviewCLIExposeActionCardsThroughReviewQueue(t *tes
 		t.Fatal(err)
 	}
 	if afterAct.State != "running" ||
-		!stringSliceContains(afterAct.RunIDs, actionPlan.ActionIntent.ID) ||
+		!stringSliceContains(afterAct.ActionIntentIDs, actionPlan.ActionIntent.ID) ||
 		afterAct.PolicyDecisionID != actionPlan.Decision.ID {
 		t.Fatalf("act --plan did not thread action intent/decision: %+v", afterAct)
 	}

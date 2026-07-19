@@ -700,8 +700,8 @@ func (s *Store) DispatchClaim(now time.Time, opts DispatchPlanOptions) (Dispatch
 	result.ClaimedState = claimed.State
 	result.ClaimedBy = claimed.Authority.Owner
 	result.PolicyDecisionID = claimed.PolicyDecisionID
-	if len(claimed.RunIDs) > 0 {
-		result.ActionIntentID = claimed.RunIDs[len(claimed.RunIDs)-1]
+	if len(claimed.ActionIntentIDs) > 0 {
+		result.ActionIntentID = claimed.ActionIntentIDs[len(claimed.ActionIntentIDs)-1]
 	}
 	prompt, err := s.attachDispatchPrompt(claimed.ID, plan.Actor, now)
 	if err != nil {
@@ -847,8 +847,8 @@ func (s *Store) DispatchAdvance(now time.Time, opts DispatchPlanOptions) (Dispat
 	result.FromState = "claimed"
 	result.AdvancedState = advanced.State
 	result.PolicyDecisionID = advanced.PolicyDecisionID
-	if len(advanced.RunIDs) > 0 {
-		result.ActionIntentID = advanced.RunIDs[len(advanced.RunIDs)-1]
+	if len(advanced.ActionIntentIDs) > 0 {
+		result.ActionIntentID = advanced.ActionIntentIDs[len(advanced.ActionIntentIDs)-1]
 	}
 	path, err := s.RecordDispatchAdvance(result)
 	if err != nil {

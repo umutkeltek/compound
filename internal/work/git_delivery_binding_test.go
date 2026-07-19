@@ -71,7 +71,7 @@ func TestPreFingerprintGitDeliveryBackfillsOnlyThroughExactOperatorSameStateAdva
 	if bound.State != legacy.State || bound.GitDelivery == nil || bound.GitDelivery.RepositoryFingerprint == "" || !sameGitDeliveryIgnoringFingerprint(before, *bound.GitDelivery) {
 		t.Fatalf("backfilled work = %+v", bound)
 	}
-	if bound.ExpectedBaseSHA != "" || len(bound.RunIDs) != len(legacy.RunIDs)+1 || bound.PolicyDecisionID == legacy.PolicyDecisionID {
+	if bound.ExpectedBaseSHA != "" || len(bound.ActionIntentIDs) != len(legacy.ActionIntentIDs)+1 || bound.PolicyDecisionID == legacy.PolicyDecisionID {
 		t.Fatalf("backfill did not use the governed advance journal: %+v", bound)
 	}
 	_, afterEvents, err := store.Show(bound.ID)
@@ -193,7 +193,7 @@ func TestLegacyNonterminalWorkBindsGitDeliveryThroughAdvance(t *testing.T) {
 		t.Fatalf("bound legacy work = %+v", bound)
 	}
 	var action envelope.ActionIntent
-	if err := store.readJSON(store.envPath(bound.RunIDs[len(bound.RunIDs)-1]), &action); err != nil {
+	if err := store.readJSON(store.envPath(bound.ActionIntentIDs[len(bound.ActionIntentIDs)-1]), &action); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(action.Preview, "bind Git delivery") || !strings.Contains(action.Preview, canonicalRepo) || !strings.Contains(action.Preview, base) || !strings.Contains(action.Preview, plan.GitDelivery.RepositoryFingerprint) || action.Reversibility != "manual" {

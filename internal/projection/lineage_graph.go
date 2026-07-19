@@ -341,7 +341,7 @@ func BuildLineage(homePath, queryID string) (LineageProjection, error) {
 		})
 		refs := []string{}
 		labels := []string{}
-		if receiptID := firstWithPrefix(w.RunIDs, "rec_"); receiptID != "" {
+		if receiptID := firstWithPrefix(w.ActionIntentIDs, "rec_"); receiptID != "" {
 			refs = append(refs, receiptID)
 			labels = append(labels, "receipt "+receiptID)
 		}

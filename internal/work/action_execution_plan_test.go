@@ -78,7 +78,7 @@ func TestActionExecutionPlanConsumesActionContextWithoutExecuting(t *testing.T) 
 		t.Fatal(err)
 	}
 	if after.State != before.State ||
-		len(after.RunIDs) != len(before.RunIDs) ||
+		len(after.ActionIntentIDs) != len(before.ActionIntentIDs) ||
 		after.PolicyDecisionID != before.PolicyDecisionID ||
 		len(afterEvents) != len(beforeEvents) {
 		t.Fatalf("action execution planning mutated work: before=%+v after=%+v events_before=%d events_after=%d", before, after, len(beforeEvents), len(afterEvents))
@@ -90,7 +90,7 @@ func TestActionExecutionPlanConsumesActionContextWithoutExecuting(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contains(recorded.RunIDs, plan.ActionIntent.ID) || recorded.PolicyDecisionID != plan.Decision.ID {
+	if !contains(recorded.ActionIntentIDs, plan.ActionIntent.ID) || recorded.PolicyDecisionID != plan.Decision.ID {
 		t.Fatalf("record action did not thread plan intent/decision: %+v", recorded)
 	}
 }
@@ -200,7 +200,7 @@ func TestReviewCardActionExecutionPlanPreservesGateLifecycleWithoutExecuting(t *
 		t.Fatal(err)
 	}
 	if afterPlan.State != before.State ||
-		len(afterPlan.RunIDs) != len(before.RunIDs) ||
+		len(afterPlan.ActionIntentIDs) != len(before.ActionIntentIDs) ||
 		afterPlan.PolicyDecisionID != before.PolicyDecisionID ||
 		len(afterPlanEvents) != len(beforeEvents) {
 		t.Fatalf("review-card planning mutated work before action proof: before=%+v after=%+v events_before=%d events_after=%d", before, afterPlan, len(beforeEvents), len(afterPlanEvents))
@@ -227,7 +227,7 @@ func TestReviewCardActionExecutionPlanPreservesGateLifecycleWithoutExecuting(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contains(recorded.RunIDs, plan.ActionIntent.ID) || recorded.PolicyDecisionID != plan.Decision.ID {
+	if !contains(recorded.ActionIntentIDs, plan.ActionIntent.ID) || recorded.PolicyDecisionID != plan.Decision.ID {
 		t.Fatalf("record action did not thread review-card intent/decision: %+v", recorded)
 	}
 	closePlan, err := s.ClosePlan(workID, fixedNow.Add(9*time.Minute), ClosePlanOptions{Actor: "codex", ActionPlanPath: plan.PlanPath, Record: true})

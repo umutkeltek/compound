@@ -205,7 +205,7 @@ func (s *Store) findCapabilityLifecycleCreatePlan(snapshot capgraph.CapabilityLi
 	}
 	if existing, getErr := s.Get(wantWorkID); getErr == nil {
 		for _, candidate := range candidates {
-			if existing.PolicyDecisionID == candidate.Decision.ID && capabilityLifecycleContains(existing.RunIDs, candidate.ActionIntent.ID) {
+			if existing.PolicyDecisionID == candidate.Decision.ID && capabilityLifecycleContains(existing.ActionIntentIDs, candidate.ActionIntent.ID) {
 				return candidate, true, nil
 			}
 		}
@@ -267,7 +267,7 @@ func (s *Store) recoverCapabilityLifecycleAdmission(
 		return report, err
 	}
 	expectedWork := plan.Work
-	expectedWork.RunIDs = append(expectedWork.RunIDs, plan.ActionIntent.ID)
+	expectedWork.ActionIntentIDs = append(expectedWork.ActionIntentIDs, plan.ActionIntent.ID)
 	expectedWork.PolicyDecisionID = plan.Decision.ID
 	if !reflect.DeepEqual(existing, expectedWork) {
 		return report, fmt.Errorf("work %s exists without a lifecycle event but does not match create-plan %s", plan.WorkID, plan.ID)

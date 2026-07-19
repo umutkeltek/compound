@@ -317,7 +317,7 @@ func TestAttachDispatchPromptDoesNotOverwriteConcurrentLifecycleMutation(t *test
 			if final.State != expected.State ||
 				final.PolicyDecisionID != expected.PolicyDecisionID ||
 				final.IDs.TransitionID != expected.IDs.TransitionID ||
-				!reflect.DeepEqual(final.RunIDs, expected.RunIDs) {
+				!reflect.DeepEqual(final.ActionIntentIDs, expected.ActionIntentIDs) {
 				t.Fatalf("stale prompt attachment overwrote concurrent %s: final=%+v expected=%+v", tt.name, final, expected)
 			}
 			if final.IDs.ContextPackID == "" || final.IDs.ContextPackID != result.prompt.ContextPackID {
@@ -374,7 +374,7 @@ func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baselineRuns := append([]string{}, ready.RunIDs...)
+	baselineRuns := append([]string{}, ready.ActionIntentIDs...)
 	baselinePolicy := ready.PolicyDecisionID
 	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -400,7 +400,7 @@ func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "ready" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy {
+	if after.State != "ready" || len(after.ActionIntentIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy {
 		t.Fatalf("blocked dispatch claim mutated work: %+v", after)
 	}
 	if _, err := s.readLease(ready.ID); err == nil {
@@ -538,7 +538,7 @@ func TestDispatchAdvanceAdvancesOwnClaimedWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "running" || after.PolicyDecisionID != result.PolicyDecisionID || len(after.RunIDs) != len(claimed.RunIDs)+1 {
+	if after.State != "running" || after.PolicyDecisionID != result.PolicyDecisionID || len(after.ActionIntentIDs) != len(claimed.ActionIntentIDs)+1 {
 		t.Fatalf("work not advanced through policy path: before=%+v after=%+v result=%+v", claimed, after, result)
 	}
 	if after.IDs.TransitionID != "" {
@@ -567,7 +567,7 @@ func TestDispatchAdvanceIgnoresOtherActorClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "claimed" || len(after.RunIDs) != len(claimed.RunIDs) || after.PolicyDecisionID != claimed.PolicyDecisionID {
+	if after.State != "claimed" || len(after.ActionIntentIDs) != len(claimed.ActionIntentIDs) || after.PolicyDecisionID != claimed.PolicyDecisionID {
 		t.Fatalf("other-actor dispatch advance mutated work: %+v", after)
 	}
 }
@@ -582,7 +582,7 @@ func TestDispatchAdvanceBlockedByPolicyDoesNotAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baselineRuns := append([]string{}, claimed.RunIDs...)
+	baselineRuns := append([]string{}, claimed.ActionIntentIDs...)
 	baselinePolicy := claimed.PolicyDecisionID
 	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -608,7 +608,7 @@ func TestDispatchAdvanceBlockedByPolicyDoesNotAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "claimed" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy {
+	if after.State != "claimed" || len(after.ActionIntentIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy {
 		t.Fatalf("blocked dispatch advance mutated work: %+v", after)
 	}
 }
@@ -677,7 +677,7 @@ func TestDispatchClosePlanRequiresProofEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "verifying" || len(after.RunIDs) != len(verifying.RunIDs) || after.IDs.TransitionID != "" {
+	if after.State != "verifying" || len(after.ActionIntentIDs) != len(verifying.ActionIntentIDs) || after.IDs.TransitionID != "" {
 		t.Fatalf("awaiting-proof dispatch close-plan mutated work: %+v", after)
 	}
 }
@@ -690,7 +690,7 @@ func TestDispatchClosePlanBlockedByPolicyRecordsPlanWithoutClosing(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	baselineRuns := append([]string{}, observed.Work.RunIDs...)
+	baselineRuns := append([]string{}, observed.Work.ActionIntentIDs...)
 	baselinePolicy := observed.Work.PolicyDecisionID
 	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -716,7 +716,7 @@ func TestDispatchClosePlanBlockedByPolicyRecordsPlanWithoutClosing(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "verifying" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy || after.IDs.TransitionID != "" {
+	if after.State != "verifying" || len(after.ActionIntentIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy || after.IDs.TransitionID != "" {
 		t.Fatalf("blocked dispatch close-plan mutated work: %+v", after)
 	}
 }
@@ -749,7 +749,7 @@ func TestDispatchCloseClosesProofReadyWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "completed" || after.IDs.TransitionID != result.TransitionID || len(after.RunIDs) != len(observed.Work.RunIDs)+1 {
+	if after.State != "completed" || after.IDs.TransitionID != result.TransitionID || len(after.ActionIntentIDs) != len(observed.Work.ActionIntentIDs)+1 {
 		t.Fatalf("dispatch close did not terminalize through work close: %+v", after)
 	}
 }
@@ -775,7 +775,7 @@ func TestDispatchCloseRequiresProofEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "verifying" || len(after.RunIDs) != len(verifying.RunIDs) || after.IDs.TransitionID != "" {
+	if after.State != "verifying" || len(after.ActionIntentIDs) != len(verifying.ActionIntentIDs) || after.IDs.TransitionID != "" {
 		t.Fatalf("awaiting-proof dispatch close mutated work: %+v", after)
 	}
 }
@@ -788,7 +788,7 @@ func TestDispatchCloseBlockedByPolicyDoesNotClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baselineRuns := append([]string{}, observed.Work.RunIDs...)
+	baselineRuns := append([]string{}, observed.Work.ActionIntentIDs...)
 	baselinePolicy := observed.Work.PolicyDecisionID
 	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -814,7 +814,7 @@ func TestDispatchCloseBlockedByPolicyDoesNotClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "verifying" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy || after.IDs.TransitionID != "" {
+	if after.State != "verifying" || len(after.ActionIntentIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy || after.IDs.TransitionID != "" {
 		t.Fatalf("blocked dispatch close mutated work: %+v", after)
 	}
 }

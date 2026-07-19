@@ -243,7 +243,7 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 		DesiredOutcome:   "extract useful candidates from a bounded run",
 		SuccessPredicate: "LLM request packet contains context, work, receipt, and prior coverage",
 		NonGoals:         []string{"call a live model", "promote memory"},
-		RunIDs:           []string{"act_distill"},
+		ActionIntentIDs:  []string{"act_distill"},
 	}
 	receipt := &envelope.Receipt{
 		Header:   llmTestHeader(envelope.SVReceipt, "rec_distill", "work_distill", "ctx_distill"),

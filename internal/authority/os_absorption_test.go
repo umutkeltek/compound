@@ -772,7 +772,7 @@ func TestOSAbsorptionWorkPacketAuthorityProofRequiresCanonicalGovernedChain(t *t
 	listedPacket := writePacketAuthorityFixture(t, t.TempDir(), "listed-packet.md", "Listed packet")
 	listedClosed := closePacketAuthorityWork(t, homePath, listedPacket, false, now.Add(time.Minute))
 	mutatePacketAuthorityWork(t, homePath, listedClosed.Work.ID, func(w *envelope.WorkEnvelope) {
-		w.RunIDs = nil
+		w.ActionIntentIDs = nil
 		w.PolicyDecisionID = ""
 	})
 

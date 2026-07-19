@@ -118,7 +118,7 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 	if req.RawTrace != "" {
 		t.Fatalf("runtime loader should not invent raw trace: %q", req.RawTrace)
 	}
-	if req.Work == nil || req.Work.State != "completed" || !hasString(req.Work.RunIDs, "run_pricing_distill") {
+	if req.Work == nil || req.Work.State != "completed" || !hasString(req.Work.ActionIntentIDs, "run_pricing_distill") {
 		t.Fatalf("request work summary incomplete: %+v", req.Work)
 	}
 	if req.Context == nil || !strings.Contains(req.Context.SummaryMD, "product") {

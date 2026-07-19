@@ -232,7 +232,7 @@ func TestAutoAdmitOperatorOnlyRiskFrontierAlwaysWins(t *testing.T) {
 				t.Fatal(err)
 			}
 			var action envelope.ActionIntent
-			if err := s.readJSON(s.envPath(w.RunIDs[0]), &action); err != nil {
+			if err := s.readJSON(s.envPath(w.ActionIntentIDs[0]), &action); err != nil {
 				t.Fatal(err)
 			}
 			action.MutationClass = tc.mutationClass

@@ -12,7 +12,7 @@ func TestObserveRunAttachesTraceAndMovesToVerifying(t *testing.T) {
 	s := newStore(t)
 	w := runningWork(t, s, "observe run attaches trace")
 	trace := writeTrace(t, s, "trace_observe_good", w.ID)
-	beforeRuns := append([]string{}, w.RunIDs...)
+	beforeRuns := append([]string{}, w.ActionIntentIDs...)
 	result, err := s.ObserveRun(w.ID, ObserveRunInput{Actor: "codex", TraceID: trace.ID}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
@@ -33,8 +33,8 @@ func TestObserveRunAttachesTraceAndMovesToVerifying(t *testing.T) {
 	if after.State != "verifying" || !contains(after.VerificationIDs, trace.ID) {
 		t.Fatalf("work not moved to verifying with trace evidence: %+v", after)
 	}
-	if len(after.RunIDs) != len(beforeRuns)+1 {
-		t.Fatalf("observe-run should add only advance action to run ids: before=%v after=%v", beforeRuns, after.RunIDs)
+	if len(after.ActionIntentIDs) != len(beforeRuns)+1 {
+		t.Fatalf("observe-run should add only advance action to run ids: before=%v after=%v", beforeRuns, after.ActionIntentIDs)
 	}
 	if after.IDs.TransitionID != "" {
 		t.Fatalf("observe-run must not close work: %+v", after.IDs)
@@ -61,7 +61,7 @@ func TestObserveRunBlockedByPolicyDoesNotMutate(t *testing.T) {
 	s := newStore(t)
 	w := runningWork(t, s, "policy hold blocks observe run")
 	trace := writeTrace(t, s, "trace_observe_blocked", w.ID)
-	baselineRuns := append([]string{}, w.RunIDs...)
+	baselineRuns := append([]string{}, w.ActionIntentIDs...)
 	baselinePolicy := w.PolicyDecisionID
 	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestObserveRunBlockedByPolicyDoesNotMutate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "running" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy || contains(after.VerificationIDs, trace.ID) {
+	if after.State != "running" || len(after.ActionIntentIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy || contains(after.VerificationIDs, trace.ID) {
 		t.Fatalf("blocked observe-run mutated work: %+v", after)
 	}
 }

@@ -140,8 +140,8 @@ func TestRecordReceiptedActionReplaysHistoricalTransactionWithoutRewindingWork(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(beforeWork.RunIDs) < 2 || beforeWork.RunIDs[len(beforeWork.RunIDs)-2] != a.Action.ID || beforeWork.RunIDs[len(beforeWork.RunIDs)-1] != b.Action.ID {
-		t.Fatalf("receipted action order = %v, want suffix [%s %s]", beforeWork.RunIDs, a.Action.ID, b.Action.ID)
+	if len(beforeWork.ActionIntentIDs) < 2 || beforeWork.ActionIntentIDs[len(beforeWork.ActionIntentIDs)-2] != a.Action.ID || beforeWork.ActionIntentIDs[len(beforeWork.ActionIntentIDs)-1] != b.Action.ID {
+		t.Fatalf("receipted action order = %v, want suffix [%s %s]", beforeWork.ActionIntentIDs, a.Action.ID, b.Action.ID)
 	}
 	beforeWorkBytes, err := os.ReadFile(s.workPath(w.ID))
 	if err != nil {
@@ -165,7 +165,7 @@ func TestRecordReceiptedActionReplaysHistoricalTransactionWithoutRewindingWork(t
 	if !replay.Replayed || replay.Action.ID != a.Action.ID || replay.Decision.ID != a.Decision.ID || replay.Receipt.ID != a.Receipt.ID || replay.Transition.ID != a.Transition.ID {
 		t.Fatalf("historical replay did not return transaction A: %+v", replay)
 	}
-	if replay.Work.PolicyDecisionID != b.Decision.ID || !slices.Equal(replay.Work.RunIDs, beforeWork.RunIDs) {
+	if replay.Work.PolicyDecisionID != b.Decision.ID || !slices.Equal(replay.Work.ActionIntentIDs, beforeWork.ActionIntentIDs) {
 		t.Fatalf("historical replay returned rewound work: %+v", replay.Work)
 	}
 	afterWorkBytes, err := os.ReadFile(s.workPath(w.ID))
@@ -179,7 +179,7 @@ func TestRecordReceiptedActionReplaysHistoricalTransactionWithoutRewindingWork(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterWork.PolicyDecisionID != b.Decision.ID || !slices.Equal(afterWork.RunIDs, beforeWork.RunIDs) {
+	if afterWork.PolicyDecisionID != b.Decision.ID || !slices.Equal(afterWork.ActionIntentIDs, beforeWork.ActionIntentIDs) {
 		t.Fatalf("historical replay rewound persisted work: %+v", afterWork)
 	}
 	afterEventBytes, err := os.ReadFile(s.eventsLog())
@@ -289,8 +289,8 @@ func TestRecordReceiptedActionBlocksNewActionUntilIncompletePrefixRecovers(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(afterB.RunIDs) < 2 || afterB.RunIDs[len(afterB.RunIDs)-2] != recoveredA.Action.ID || afterB.RunIDs[len(afterB.RunIDs)-1] != recordedB.Action.ID || afterB.PolicyDecisionID != recordedB.Decision.ID {
-				t.Fatalf("recovered action order = %v policy=%s, want suffix [%s %s] and policy %s", afterB.RunIDs, afterB.PolicyDecisionID, recoveredA.Action.ID, recordedB.Action.ID, recordedB.Decision.ID)
+			if len(afterB.ActionIntentIDs) < 2 || afterB.ActionIntentIDs[len(afterB.ActionIntentIDs)-2] != recoveredA.Action.ID || afterB.ActionIntentIDs[len(afterB.ActionIntentIDs)-1] != recordedB.Action.ID || afterB.PolicyDecisionID != recordedB.Decision.ID {
+				t.Fatalf("recovered action order = %v policy=%s, want suffix [%s %s] and policy %s", afterB.ActionIntentIDs, afterB.PolicyDecisionID, recoveredA.Action.ID, recordedB.Action.ID, recordedB.Decision.ID)
 			}
 			events, err := s.admissionEventsFor(w.ID)
 			if err != nil {
@@ -408,7 +408,7 @@ func TestPendingReceiptedActionExcludesCanonicalLifecycleWriters(t *testing.T) {
 			}
 			assertReceiptedActionConverged(t, s, w.ID, recoveredA)
 			recorded, err := s.RecordAction(w.ID, genericAction, genericDecision, fixedNow.Add(4*time.Minute))
-			if err != nil || !contains(recorded.RunIDs, genericAction.ID) || recorded.PolicyDecisionID != genericDecision.ID {
+			if err != nil || !contains(recorded.ActionIntentIDs, genericAction.ID) || recorded.PolicyDecisionID != genericDecision.ID {
 				t.Fatalf("record action did not resume after action A converged: err=%v work=%+v", err, recorded)
 			}
 			advanced, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "codex"}, fixedNow.Add(5*time.Minute))
@@ -1251,7 +1251,7 @@ func assertReceiptedActionConverged(t *testing.T, s *Store, workID string, resul
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.State != "running" || w.IDs.TransitionID != "" || !contains(w.RunIDs, result.Action.ID) || w.PolicyDecisionID != result.Decision.ID {
+	if w.State != "running" || w.IDs.TransitionID != "" || !contains(w.ActionIntentIDs, result.Action.ID) || w.PolicyDecisionID != result.Decision.ID {
 		t.Fatalf("recovered parent link is inconsistent: %+v", w)
 	}
 	events, err := s.admissionEventsFor(workID)

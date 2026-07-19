@@ -352,7 +352,7 @@ func writeLifecycleEvidenceFixture(t *testing.T, homePath string, in lifecycleEv
 		State:              state,
 		SuccessPredicate:   "prove source lifecycle gates",
 		NonGoals:           []string{},
-		RunIDs:             []string{actionID},
+		ActionIntentIDs:    []string{actionID},
 		ArtifactIDs:        []string{},
 		VerificationIDs:    []string{},
 		MemoryCandidateIDs: []string{},

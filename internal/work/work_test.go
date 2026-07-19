@@ -220,15 +220,15 @@ func TestIllegalTransitionRejected(t *testing.T) {
 func TestClaimConflict(t *testing.T) {
 	s := newStore(t)
 	w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
-	beforeRuns := len(w.RunIDs)
+	beforeRuns := len(w.ActionIntentIDs)
 	claimed, err := s.Claim(w.ID, "agent_a", fixedNow)
 	if err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
-	if claimed.PolicyDecisionID == "" || len(claimed.RunIDs) != beforeRuns+1 {
-		t.Fatalf("claim must record policy/action chain: runs=%v policy=%q", claimed.RunIDs, claimed.PolicyDecisionID)
+	if claimed.PolicyDecisionID == "" || len(claimed.ActionIntentIDs) != beforeRuns+1 {
+		t.Fatalf("claim must record policy/action chain: runs=%v policy=%q", claimed.ActionIntentIDs, claimed.PolicyDecisionID)
 	}
-	if exists, err := s.eventExists(claimed.RunIDs[beforeRuns]); err != nil || !exists {
+	if exists, err := s.eventExists(claimed.ActionIntentIDs[beforeRuns]); err != nil || !exists {
 		t.Fatalf("claim action envelope missing: %v", err)
 	}
 	if exists, err := s.eventExists(claimed.PolicyDecisionID); err != nil || !exists {
@@ -242,7 +242,7 @@ func TestClaimConflict(t *testing.T) {
 	if err != nil {
 		t.Errorf("idempotent re-claim by same actor should succeed: %v", err)
 	}
-	if len(reclaimed.RunIDs) != len(claimed.RunIDs) || reclaimed.PolicyDecisionID != claimed.PolicyDecisionID {
+	if len(reclaimed.ActionIntentIDs) != len(claimed.ActionIntentIDs) || reclaimed.PolicyDecisionID != claimed.PolicyDecisionID {
 		t.Errorf("idempotent re-claim should not append policy/action records: before=%+v after=%+v", claimed, reclaimed)
 	}
 }
@@ -274,7 +274,7 @@ func TestClaimBlockedByPolicyDoesNotMutate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baselineRuns := append([]string{}, w.RunIDs...)
+	baselineRuns := append([]string{}, w.ActionIntentIDs...)
 	baselinePolicy := w.PolicyDecisionID
 	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -293,7 +293,7 @@ func TestClaimBlockedByPolicyDoesNotMutate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "ready" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy {
+	if after.State != "ready" || len(after.ActionIntentIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy {
 		t.Fatalf("blocked claim mutated work: %+v", after)
 	}
 	if _, err := s.readLease(w.ID); err == nil {
@@ -512,7 +512,7 @@ func TestRecordActionGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baselineRuns := append([]string{}, baseline.RunIDs...)
+	baselineRuns := append([]string{}, baseline.ActionIntentIDs...)
 	baselinePolicy := baseline.PolicyDecisionID
 
 	mkAI := func(id string) envelope.ActionIntent {
@@ -546,8 +546,8 @@ func TestRecordActionGate(t *testing.T) {
 		t.Error("denied action should be refused")
 	}
 	w2, _ := s.Get(w.ID)
-	if len(w2.RunIDs) != len(baselineRuns) || w2.PolicyDecisionID != baselinePolicy || contains(w2.RunIDs, "act_deny") {
-		t.Errorf("denied action must not be recorded; runs=%v policy=%q", w2.RunIDs, w2.PolicyDecisionID)
+	if len(w2.ActionIntentIDs) != len(baselineRuns) || w2.PolicyDecisionID != baselinePolicy || contains(w2.ActionIntentIDs, "act_deny") {
+		t.Errorf("denied action must not be recorded; runs=%v policy=%q", w2.ActionIntentIDs, w2.PolicyDecisionID)
 	}
 	// Held action is also refused.
 	if _, err := s.RecordAction(w.ID, denyAI, mkPD("pol_hold", "act_deny", "hold", nil), fixedNow); err == nil {
@@ -559,8 +559,8 @@ func TestRecordActionGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allowed action should record: %v", err)
 	}
-	if !contains(wOK.RunIDs, "act_ok") || wOK.PolicyDecisionID != "pol_ok" {
-		t.Errorf("allowed action should be linked; runs=%v policy=%q", wOK.RunIDs, wOK.PolicyDecisionID)
+	if !contains(wOK.ActionIntentIDs, "act_ok") || wOK.PolicyDecisionID != "pol_ok" {
+		t.Errorf("allowed action should be linked; runs=%v policy=%q", wOK.ActionIntentIDs, wOK.PolicyDecisionID)
 	}
 	// Mismatched action/decision is rejected.
 	if _, err := s.RecordAction(w.ID, okAI, mkPD("pol_x", "act_other", "allow", nil), fixedNow); err == nil {

@@ -127,7 +127,7 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, events []Event, report *
 	// per-item events_unreadable path.
 	item.ReceiptID = lastAttachedWithPrefix(events, "rec_")
 	item.TransitionID = firstNonEmpty(w.IDs.TransitionID, lastAttachedWithPrefix(events, "tr_"))
-	item.ActionIntentIDs = compactPrefix(w.RunIDs, "act_")
+	item.ActionIntentIDs = compactPrefix(w.ActionIntentIDs, "act_")
 	item.PolicyDecisionID = strings.TrimSpace(w.PolicyDecisionID)
 	if len(item.ActionIntentIDs) == 0 {
 		report.Counts.MissingActionIntent++
@@ -195,7 +195,7 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, events []Event, report *
 			}
 			if !actionIDs[pd.ActionIntentID] {
 				report.Counts.MismatchedActionPolicy++
-				addProofChainProblem(report, &item, "policy_action_mismatch", "policy decision "+item.PolicyDecisionID+" references action "+pd.ActionIntentID+" not present in work run_ids")
+				addProofChainProblem(report, &item, "policy_action_mismatch", "policy decision "+item.PolicyDecisionID+" references action "+pd.ActionIntentID+" not present in work action intent ids")
 			}
 		}
 	}
@@ -235,7 +235,7 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, events []Event, report *
 func (s *Store) addOrphanEnvelopeFindings(works []envelope.WorkEnvelope, eventsByWork map[string][]Event, report *ProofChainDoctorReport) {
 	referenced := map[string]bool{}
 	for _, w := range works {
-		for _, ref := range w.RunIDs {
+		for _, ref := range w.ActionIntentIDs {
 			addProofChainRef(referenced, ref)
 		}
 		addProofChainRef(referenced, w.PolicyDecisionID)
@@ -260,7 +260,7 @@ func (s *Store) addOrphanEnvelopeFindings(works []envelope.WorkEnvelope, eventsB
 		switch {
 		case strings.HasPrefix(id, "act_"):
 			report.Counts.OrphanActionIntent++
-			report.Findings = append(report.Findings, ProofChainDoctorFinding{WorkID: s.envelopeWorkID(id), Code: "orphan_action_intent", Message: "action intent " + id + " is not referenced by any work run_ids or lifecycle event"})
+			report.Findings = append(report.Findings, ProofChainDoctorFinding{WorkID: s.envelopeWorkID(id), Code: "orphan_action_intent", Message: "action intent " + id + " is not referenced by any work action intent ids or lifecycle event"})
 		case strings.HasPrefix(id, "pol_"):
 			report.Counts.OrphanPolicyDecision++
 			report.Findings = append(report.Findings, ProofChainDoctorFinding{WorkID: s.envelopeWorkID(id), Code: "orphan_policy_decision", Message: "policy decision " + id + " is not referenced by any work policy_decision_id or lifecycle event"})

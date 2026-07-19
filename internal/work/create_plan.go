@@ -511,7 +511,7 @@ func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, ext
 		extraAttached = append(extraAttached, actionContextRef)
 	}
 	state := w.State
-	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
+	w.ActionIntentIDs = append(w.ActionIntentIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
 	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
 		return w, err

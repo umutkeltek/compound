@@ -209,7 +209,7 @@ func TestProofChainDoctorFindsOrphanRuntimeEnvelopes(t *testing.T) {
 	}
 
 	var ai envelope.ActionIntent
-	if err := s.readJSON(s.envPath(closed.Work.RunIDs[len(closed.Work.RunIDs)-1]), &ai); err != nil {
+	if err := s.readJSON(s.envPath(closed.Work.ActionIntentIDs[len(closed.Work.ActionIntentIDs)-1]), &ai); err != nil {
 		t.Fatalf("read action intent: %v", err)
 	}
 	ai.ID = "act_orphan_extra"

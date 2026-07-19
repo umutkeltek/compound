@@ -49,7 +49,7 @@ func (s *Store) gitDeliveryRequirementSignal(w envelope.WorkEnvelope, moveType s
 	if signal, err := gitScopedPathSignal("work target_surface", w.TargetSurface); signal != "" || err != nil {
 		return signal, err
 	}
-	for _, runID := range w.RunIDs {
+	for _, runID := range w.ActionIntentIDs {
 		if !strings.HasPrefix(runID, "act_") {
 			continue
 		}

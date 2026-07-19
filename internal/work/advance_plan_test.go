@@ -58,10 +58,10 @@ func TestAdvanceRecordsPolicyAction(t *testing.T) {
 	if advanced.State != "running" || advanced.PolicyDecisionID == "" {
 		t.Fatalf("advance did not record policy: %+v", advanced)
 	}
-	if len(advanced.RunIDs) != len(claimed.RunIDs)+2 || !contains(advanced.RunIDs, "run_real") {
-		t.Fatalf("advance run chain = %v, claimed=%v", advanced.RunIDs, claimed.RunIDs)
+	if len(advanced.ActionIntentIDs) != len(claimed.ActionIntentIDs)+2 || !contains(advanced.ActionIntentIDs, "run_real") {
+		t.Fatalf("advance run chain = %v, claimed=%v", advanced.ActionIntentIDs, claimed.ActionIntentIDs)
 	}
-	advanceActionID := advanced.RunIDs[len(claimed.RunIDs)]
+	advanceActionID := advanced.ActionIntentIDs[len(claimed.ActionIntentIDs)]
 	if exists, err := s.eventExists(advanceActionID); err != nil || !exists {
 		t.Fatalf("advance action envelope missing: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestAdvancePlanAndAdvanceRejectTerminalTargetsWithoutProoflessTerminal(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			if after.State != before.State || len(after.RunIDs) != len(before.RunIDs) || after.PolicyDecisionID != before.PolicyDecisionID || after.IDs.TransitionID != "" {
+			if after.State != before.State || len(after.ActionIntentIDs) != len(before.ActionIntentIDs) || after.PolicyDecisionID != before.PolicyDecisionID || after.IDs.TransitionID != "" {
 				t.Errorf("rejected terminal advance mutated work: before=%+v after=%+v", before, after)
 			}
 			if len(eventsAfter) != len(eventsBefore) {
@@ -192,7 +192,7 @@ func TestAdvancePlanReportsLeaseHolderDenialWithoutMutating(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != before.State || len(after.RunIDs) != len(before.RunIDs) {
+	if after.State != before.State || len(after.ActionIntentIDs) != len(before.ActionIntentIDs) {
 		t.Fatalf("advance-plan must not mutate work: before=%+v after=%+v", before, after)
 	}
 
@@ -247,7 +247,7 @@ func TestAdvanceBlockedByPolicyDoesNotMutate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "claimed" || len(after.RunIDs) != len(claimed.RunIDs) || after.PolicyDecisionID != claimed.PolicyDecisionID {
+	if after.State != "claimed" || len(after.ActionIntentIDs) != len(claimed.ActionIntentIDs) || after.PolicyDecisionID != claimed.PolicyDecisionID {
 		t.Fatalf("blocked advance mutated work: before=%+v after=%+v", claimed, after)
 	}
 }

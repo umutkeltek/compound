@@ -221,7 +221,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		ExpectedBaseSHA:    strings.TrimSpace(in.ExpectedBaseSHA),
 		GitDelivery:        gitDelivery,
 		RouteDecisionID:    strings.TrimSpace(in.RouteDecisionID),
-		RunIDs:             []string{},
+		ActionIntentIDs:    []string{},
 		ArtifactIDs:        []string{},
 		VerificationIDs:    []string{},
 		MemoryCandidateIDs: []string{},
@@ -526,7 +526,7 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	}
 	w.State = "claimed"
 	w.Authority.Owner = plan.Actor
-	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
+	w.ActionIntentIDs = append(w.ActionIntentIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
 	if err := s.writeEventJSON(plan.ActionIntent.ID, &plan.ActionIntent); err != nil {
 		return w, err
@@ -816,8 +816,8 @@ func (s *Store) validatePendingClaim(pending claimPending) error {
 	if pending.RepairOwnerless != strings.HasPrefix(event.Note, "ownerless-claim repair (policy ") {
 		return fmt.Errorf("pending ownerless-claim repair marker does not match lifecycle event")
 	}
-	if len(pending.ClaimedWork.RunIDs) == 0 ||
-		pending.ClaimedWork.RunIDs[len(pending.ClaimedWork.RunIDs)-1] != pending.ActionIntentID ||
+	if len(pending.ClaimedWork.ActionIntentIDs) == 0 ||
+		pending.ClaimedWork.ActionIntentIDs[len(pending.ClaimedWork.ActionIntentIDs)-1] != pending.ActionIntentID ||
 		pending.ClaimedWork.PolicyDecisionID != pending.PolicyDecisionID {
 		return fmt.Errorf("pending claimed Work does not bind exact action and policy")
 	}
@@ -907,7 +907,7 @@ func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEn
 		(decision.Outcome != "allow" && decision.Outcome != "allow_with_obligations") {
 		return fmt.Errorf("claim policy %s conflicts with Work/event identity", policyID)
 	}
-	if !oneOf(actionID, claimed.RunIDs) {
+	if !oneOf(actionID, claimed.ActionIntentIDs) {
 		return fmt.Errorf("claimed Work does not retain its claim action")
 	}
 	normalNote := "claimed (policy " + decision.Outcome + ")"
@@ -1082,7 +1082,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		w.GitDelivery = &contract
 		w.ExpectedBaseSHA = ""
 	}
-	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
+	w.ActionIntentIDs = append(w.ActionIntentIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
 	attached := []string{plan.ActionIntent.ID, plan.Decision.ID}
 	if len(in.EvidenceRefs) > 0 {
@@ -1090,7 +1090,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		attached = append(attached, in.EvidenceRefs...)
 	}
 	if in.RunID != "" {
-		w.RunIDs = append(w.RunIDs, in.RunID)
+		w.ActionIntentIDs = append(w.ActionIntentIDs, in.RunID)
 		attached = append(attached, in.RunID)
 	}
 	if in.ArtifactID != "" {
@@ -1295,7 +1295,7 @@ func (s *Store) validatePendingAdvance(event Event, pending envelope.WorkEnvelop
 	if decision.Outcome != "allow" && decision.Outcome != "allow_with_obligations" {
 		return fmt.Errorf("pending advance policy %s does not allow publication", policyID)
 	}
-	if !oneOf(actionID, pending.RunIDs) {
+	if !oneOf(actionID, pending.ActionIntentIDs) {
 		return fmt.Errorf("pending WorkEnvelope %s does not attach action %s", pending.ID, actionID)
 	}
 	return nil
@@ -1355,7 +1355,7 @@ func (s *Store) recordActionLocked(workID string, ai envelope.ActionIntent, pd e
 	if err := s.writeEventJSON(pd.ID, &pd); err != nil {
 		return w, err
 	}
-	w.RunIDs = append(w.RunIDs, ai.ID) // the performed action is an action ref in the chain
+	w.ActionIntentIDs = append(w.ActionIntentIDs, ai.ID) // the performed action is an action ref in the chain
 	w.PolicyDecisionID = pd.ID
 	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
 		return w, err
@@ -1476,13 +1476,13 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if !plan.Policy.Allowed {
 		return res, fmt.Errorf("cannot close work %s: policy %s (decision %s)", workID, plan.Policy.Outcome, plan.Policy.PolicyDecisionID)
 	}
-	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
+	w.ActionIntentIDs = append(w.ActionIntentIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
 	capabilityRefs, err := s.capabilityRefsForContextPack(w.IDs.ContextPackID)
 	if err != nil {
 		return res, err
 	}
-	usedCapabilitiesForRuns, err := s.usedCapabilitiesForRuns(w.RunIDs, capabilityRefs)
+	usedCapabilitiesForRuns, err := s.usedCapabilitiesForRuns(w.ActionIntentIDs, capabilityRefs)
 	if err != nil {
 		return res, err
 	}
@@ -1554,7 +1554,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	tr := envelope.Transition{
 		Header:     newHeaderWithLane(envelope.SVTransition, idFor("tr_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk, producerLaneID),
 		BeforeRefs: before,
-		ActionRefs: orEmpty(w.RunIDs),
+		ActionRefs: orEmpty(w.ActionIntentIDs),
 		AfterRefs:  after,
 		StateDelta: in.Summary,
 		Projections: envelope.Projections{

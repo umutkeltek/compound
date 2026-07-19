@@ -88,8 +88,8 @@ func TestSameStateAdvanceOnClaimedStillAllowed(t *testing.T) {
 	if advanced.State != "claimed" || advanced.Authority.Owner != "actor-a" || !contains(advanced.ArtifactIDs, "artifact_delivery") {
 		t.Fatalf("same-state claimed advance = %+v", advanced)
 	}
-	if len(advanced.RunIDs) != len(claimed.RunIDs)+1 {
-		t.Fatalf("same-state advance action chain = %v, claimed=%v", advanced.RunIDs, claimed.RunIDs)
+	if len(advanced.ActionIntentIDs) != len(claimed.ActionIntentIDs)+1 {
+		t.Fatalf("same-state advance action chain = %v, claimed=%v", advanced.ActionIntentIDs, claimed.ActionIntentIDs)
 	}
 	lease, err := s.readLease(w.ID)
 	if err != nil {
@@ -103,7 +103,7 @@ func TestSameStateAdvanceOnClaimedStillAllowed(t *testing.T) {
 func TestClaimRepairsOwnerlessClaimedEnvelope(t *testing.T) {
 	s := newStore(t)
 	w := writeOwnerlessClaimWedge(t, s, fixedNow.Add(time.Minute))
-	beforeRuns := len(w.RunIDs)
+	beforeRuns := len(w.ActionIntentIDs)
 
 	repaired, err := s.Claim(w.ID, "repair-actor", fixedNow.Add(2*time.Minute))
 	if err != nil {
@@ -112,10 +112,10 @@ func TestClaimRepairsOwnerlessClaimedEnvelope(t *testing.T) {
 	if repaired.State != "claimed" || repaired.Authority.Owner != "repair-actor" {
 		t.Fatalf("repaired work = %+v", repaired)
 	}
-	if repaired.PolicyDecisionID == "" || len(repaired.RunIDs) != beforeRuns+1 {
-		t.Fatalf("repair must record policy/action chain: runs=%v policy=%q", repaired.RunIDs, repaired.PolicyDecisionID)
+	if repaired.PolicyDecisionID == "" || len(repaired.ActionIntentIDs) != beforeRuns+1 {
+		t.Fatalf("repair must record policy/action chain: runs=%v policy=%q", repaired.ActionIntentIDs, repaired.PolicyDecisionID)
 	}
-	if exists, err := s.eventExists(repaired.RunIDs[beforeRuns]); err != nil || !exists {
+	if exists, err := s.eventExists(repaired.ActionIntentIDs[beforeRuns]); err != nil || !exists {
 		t.Fatalf("repair claim action envelope missing: %v", err)
 	}
 	if exists, err := s.eventExists(repaired.PolicyDecisionID); err != nil || !exists {

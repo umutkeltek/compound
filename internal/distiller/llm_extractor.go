@@ -71,7 +71,7 @@ type LLMWork struct {
 	NonGoals           []string `json:"non_goals,omitempty"`
 	Risk               string   `json:"risk"`
 	Privacy            string   `json:"privacy"`
-	RunIDs             []string `json:"run_ids,omitempty"`
+	ActionIntentIDs    []string `json:"run_ids,omitempty"`
 	ArtifactIDs        []string `json:"artifact_ids,omitempty"`
 	VerificationIDs    []string `json:"verification_ids,omitempty"`
 	MemoryCandidateIDs []string `json:"memory_candidate_ids,omitempty"`
@@ -167,7 +167,7 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 			NonGoals:           append([]string(nil), src.Work.NonGoals...),
 			Risk:               src.Work.Risk,
 			Privacy:            src.Work.Privacy,
-			RunIDs:             append([]string(nil), src.Work.RunIDs...),
+			ActionIntentIDs:    append([]string(nil), src.Work.ActionIntentIDs...),
 			ArtifactIDs:        append([]string(nil), src.Work.ArtifactIDs...),
 			VerificationIDs:    append([]string(nil), src.Work.VerificationIDs...),
 			MemoryCandidateIDs: append([]string(nil), src.Work.MemoryCandidateIDs...),

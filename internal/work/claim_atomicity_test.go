@@ -523,8 +523,8 @@ func assertExactClaimProof(t *testing.T, s *Store, before, claimed envelope.Work
 		t.Fatalf("claim event attached = %v, want exact action/policy pair", event.Attached)
 	}
 	actionID, policyID := event.Attached[0], event.Attached[1]
-	if len(claimed.RunIDs) == 0 || claimed.RunIDs[len(claimed.RunIDs)-1] != actionID || claimed.PolicyDecisionID != policyID {
-		t.Fatalf("claim event attachments disagree with Work: event=%v runs=%v policy=%q", event.Attached, claimed.RunIDs, claimed.PolicyDecisionID)
+	if len(claimed.ActionIntentIDs) == 0 || claimed.ActionIntentIDs[len(claimed.ActionIntentIDs)-1] != actionID || claimed.PolicyDecisionID != policyID {
+		t.Fatalf("claim event attachments disagree with Work: event=%v runs=%v policy=%q", event.Attached, claimed.ActionIntentIDs, claimed.PolicyDecisionID)
 	}
 	var action envelope.ActionIntent
 	if err := s.readJSON(s.envPath(actionID), &action); err != nil {

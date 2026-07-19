@@ -125,7 +125,7 @@ func TestCapabilityLifecycleCreatePlanAdmissionRepairsTornLifecycleEvent(t *test
 		t.Fatal(err)
 	}
 	tornWork := plan.Work
-	tornWork.RunIDs = append(tornWork.RunIDs, plan.ActionIntent.ID)
+	tornWork.ActionIntentIDs = append(tornWork.ActionIntentIDs, plan.ActionIntent.ID)
 	tornWork.PolicyDecisionID = plan.Decision.ID
 	if err := store.writeJSON(store.workPath(tornWork.ID), &tornWork); err != nil {
 		t.Fatal(err)
@@ -240,7 +240,7 @@ func TestCapabilityLifecycleCreatePlanPreparationRefusesReplacementForExistingWo
 		t.Fatal(err)
 	}
 	existing := plan.Work
-	existing.RunIDs = append(existing.RunIDs, plan.ActionIntent.ID)
+	existing.ActionIntentIDs = append(existing.ActionIntentIDs, plan.ActionIntent.ID)
 	existing.PolicyDecisionID = plan.Decision.ID
 	if err := store.writeJSON(store.workPath(existing.ID), &existing); err != nil {
 		t.Fatal(err)
@@ -321,7 +321,7 @@ func writeTornCapabilityLifecycleAdmission(store *Store, plan CreatePlan) error 
 		return err
 	}
 	tornWork := plan.Work
-	tornWork.RunIDs = append(tornWork.RunIDs, plan.ActionIntent.ID)
+	tornWork.ActionIntentIDs = append(tornWork.ActionIntentIDs, plan.ActionIntent.ID)
 	tornWork.PolicyDecisionID = plan.Decision.ID
 	return store.writeJSON(store.workPath(tornWork.ID), &tornWork)
 }

@@ -98,8 +98,8 @@ func TestHarnessGenerateApplyRequiresWorkAndRecordsGovernedAction(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsString(recorded.RunIDs, report.ActionIntentID) || recorded.PolicyDecisionID != report.PolicyDecisionID {
-		t.Fatalf("work action binding = runs=%v policy=%s", recorded.RunIDs, recorded.PolicyDecisionID)
+	if !containsString(recorded.ActionIntentIDs, report.ActionIntentID) || recorded.PolicyDecisionID != report.PolicyDecisionID {
+		t.Fatalf("work action binding = runs=%v policy=%s", recorded.ActionIntentIDs, recorded.PolicyDecisionID)
 	}
 	var action envelope.ActionIntent
 	readHarnessApplyJSON(t, filepath.Join(homePath, "events", report.ActionIntentID+".json"), &action)
@@ -251,7 +251,7 @@ func TestHarnessGenerateApplyHeldPolicyIsNonMutating(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(recorded.RunIDs, workBefore.RunIDs) || recorded.PolicyDecisionID != workBefore.PolicyDecisionID {
+	if !reflect.DeepEqual(recorded.ActionIntentIDs, workBefore.ActionIntentIDs) || recorded.PolicyDecisionID != workBefore.PolicyDecisionID {
 		t.Fatalf("held policy recorded performed action: %+v", recorded)
 	}
 }
@@ -321,7 +321,7 @@ func TestHarnessGenerateApplyFailureRecordsFailedReceiptWithoutFalseSuccess(t *t
 	}
 	store, _ := work.Open(homePath)
 	recorded, _ := store.Get(w.ID)
-	if len(recorded.RunIDs) == 0 || recorded.PolicyDecisionID == "" {
+	if len(recorded.ActionIntentIDs) == 0 || recorded.PolicyDecisionID == "" {
 		t.Fatalf("failed action work links = %+v", recorded)
 	}
 	var failedReceipt envelope.Receipt

@@ -219,7 +219,7 @@ func TestClosePlanReportsLeaseHolderDenialWithoutMutating(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != before.State || len(after.RunIDs) != len(before.RunIDs) {
+	if after.State != before.State || len(after.ActionIntentIDs) != len(before.ActionIntentIDs) {
 		t.Fatalf("close-plan must not mutate work: before=%+v after=%+v", before, after)
 	}
 

@@ -252,8 +252,8 @@ func capabilityLifecycleAdmissionLinks(store *work.Store, plan work.CreatePlan, 
 	if err != nil {
 		return links
 	}
-	if len(w.RunIDs) > 0 {
-		links.ActionIntentID = w.RunIDs[0]
+	if len(w.ActionIntentIDs) > 0 {
+		links.ActionIntentID = w.ActionIntentIDs[0]
 	}
 	links.PolicyDecisionID = w.PolicyDecisionID
 	for _, event := range events {

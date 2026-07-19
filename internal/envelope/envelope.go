@@ -509,19 +509,35 @@ type WorkEnvelope struct {
 	// ExpectedBaseSHA is the legacy, incomplete pre-contract field. It remains
 	// readable so existing envelopes do not become corrupt, but new admissions
 	// must use GitDelivery and completed commit-bearing work fails closed without it.
-	ExpectedBaseSHA    string               `json:"expected_base_sha,omitempty"`
-	GitDelivery        *GitDeliveryContract `json:"git_delivery,omitempty"`
-	State              string               `json:"state"`
-	DesiredOutcome     string               `json:"desired_outcome,omitempty"`
-	SuccessPredicate   string               `json:"success_predicate"`
-	NonGoals           []string             `json:"non_goals"`
-	ProofMedium        string               `json:"proof_medium,omitempty"`
-	RouteDecisionID    string               `json:"route_decision_id,omitempty"`
-	PolicyDecisionID   string               `json:"policy_decision_id,omitempty"`
-	RunIDs             []string             `json:"run_ids"`
-	ArtifactIDs        []string             `json:"artifact_ids"`
-	VerificationIDs    []string             `json:"verification_ids"`
-	MemoryCandidateIDs []string             `json:"memory_candidate_ids"`
+	ExpectedBaseSHA  string               `json:"expected_base_sha,omitempty"`
+	GitDelivery      *GitDeliveryContract `json:"git_delivery,omitempty"`
+	State            string               `json:"state"`
+	DesiredOutcome   string               `json:"desired_outcome,omitempty"`
+	SuccessPredicate string               `json:"success_predicate"`
+	NonGoals         []string             `json:"non_goals"`
+	ProofMedium      string               `json:"proof_medium,omitempty"`
+	RouteDecisionID  string               `json:"route_decision_id,omitempty"`
+	PolicyDecisionID string               `json:"policy_decision_id,omitempty"`
+	// ActionIntentIDs holds ActionIntent ids (act_*), NOT run identifiers. The wire name
+	// `run_ids` is a LEGACY MISNOMER retained deliberately: the canonical work hash is
+	// sha256(json.Marshal(WorkEnvelope)) (see internal/work.workEnvelopeSHA256), and that hash is
+	// persisted in lifecycle events, leases, and terminal proof evidence. Renaming the wire key
+	// changes the marshaled bytes and therefore invalidates every stored work_sha256 -- measured:
+	// 120/121 real envelopes match their stored event hash today, 0/121 under a renamed key, and
+	// internal/routeevidence/autonomy/proof.go hard-fails on the mismatch. The key moves to
+	// `action_intent_ids` only at the compound.work.v0.2 schema bump, where new envelopes carry the
+	// new shape and v0.1 envelopes keep theirs, so continuity is preserved per-version rather than
+	// rewritten. Do not "fix" this tag in isolation.
+	ActionIntentIDs []string `json:"run_ids"`
+	// RunAttemptIDs is RESERVED and intentionally unpopulated in this slice: nothing mints
+	// RunAttempts yet. Slice S1 introduces the RunAttempt type and becomes its only writer, which
+	// is what finally frees the run slot that ActionIntentIDs has been occupying. `omitempty`
+	// keeps an empty value off the wire, so declaring it now is hash-neutral for every existing
+	// envelope (proved by TestEmptyRunAttemptIDsIsHashNeutral).
+	RunAttemptIDs      []string `json:"run_attempt_ids,omitempty"`
+	ArtifactIDs        []string `json:"artifact_ids"`
+	VerificationIDs    []string `json:"verification_ids"`
+	MemoryCandidateIDs []string `json:"memory_candidate_ids"`
 	// Prediction is an OPTIONAL, additive stake of how this work is expected to CLOSE, set at
 	// CREATE time only (v1: no restaking at Claim/Advance -- Claim carries no payload to widen).
 	// A work without it is ordinary work; close-time mechanically diffs it against the actual
@@ -567,7 +583,23 @@ func (e *WorkEnvelope) Validate() error {
 	if e.Prediction != nil {
 		validateWorkPrediction(v, *e.Prediction)
 	}
+	validateRunAttemptIDs(v, e.RunAttemptIDs)
 	return v.result(e.Kind())
+}
+
+// validateRunAttemptIDs holds the reserved run slot to non-emptiness ONLY. A prefix rule is
+// deliberately absent: S1 has not settled what a RunAttempt id looks like, and the existing "run"
+// id space is heterogeneous (run observations are wro_*, panel runs carry their own scheme), so
+// guessing a prefix here would either reject S1's real ids or harden the wrong convention. It is
+// also why no prefix rule is applied to ActionIntentIDs: real data violates one already --
+// fixtures/envelopes/work.distill.json carries "run_ids":["hook_distill_fixture"]. When S1 fixes
+// the RunAttempt id shape, tighten this to that prefix and nothing else.
+func validateRunAttemptIDs(v *verr, ids []string) {
+	for i, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			v.addf("run_attempt_ids[%d] must not be empty", i)
+		}
+	}
 }
 
 // validateWorkPrediction holds a hand-written work envelope's staked prediction to the same rule

@@ -199,7 +199,7 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		switch {
 		case strings.TrimSpace(actionPlan.ActionIntent.ID) == "":
 			plan.NoAction = "action execution plan missing action_intent.id"
-		case !stringIn(w.RunIDs, actionPlan.ActionIntent.ID):
+		case !stringIn(w.ActionIntentIDs, actionPlan.ActionIntent.ID):
 			plan.NoAction = fmt.Sprintf("action execution plan %s not recorded on work; run: compound work act %s --plan %s", actionPlan.ID, w.ID, actionPlanPath)
 		case actionPlan.Status != "action_execution_policy_allowed":
 			plan.NoAction = fmt.Sprintf("action execution plan status %q is not closeable", actionPlan.Status)

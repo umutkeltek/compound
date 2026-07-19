@@ -399,7 +399,7 @@ func TestSourceManifestLifecycleCLIIsDryRunByDefaultAndRecordsGovernedTransition
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterWork.PolicyDecisionID != transition.PolicyDecisionID || !stringSliceContains(afterWork.RunIDs, transition.ActionIntentID) {
+	if afterWork.PolicyDecisionID != transition.PolicyDecisionID || !stringSliceContains(afterWork.ActionIntentIDs, transition.ActionIntentID) {
 		t.Fatalf("work did not retain governed action: %+v", afterWork)
 	}
 

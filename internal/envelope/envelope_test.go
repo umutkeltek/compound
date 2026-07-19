@@ -1,6 +1,8 @@
 package envelope
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -475,5 +477,101 @@ func TestValidateBytesDetectsAndRejects(t *testing.T) {
 		if _, err := ValidateBytes([]byte(js)); err == nil {
 			t.Errorf("%s: expected rejection, got none", name)
 		}
+	}
+}
+
+// canonicalWorkSHA256 mirrors internal/work.workEnvelopeSHA256: the canonical work hash is taken
+// over the MARSHALED struct, not the on-disk file bytes. Duplicated here (rather than imported)
+// because internal/work depends on this package, not the reverse.
+func canonicalWorkSHA256(t *testing.T, w WorkEnvelope) string {
+	t.Helper()
+	data, err := json.Marshal(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// legacyPreRunAttemptWorkJSON is a WorkEnvelope written BEFORE RunAttemptIDs existed. It is the
+// exact shape whose canonical hash is already persisted in lifecycle events, leases, and terminal
+// proof evidence across COMPOUND_HOME.
+const legacyPreRunAttemptWorkJSON = `{"schema_version":"compound.work.v0.1","id":"work_pre_run_attempt","created_at":"2026-07-13T22:00:00Z","producer":{"kind":"cli","name":"compound","version":""},"ids":{},"scope":{},"authority":{"source_class":"runtime","status":"current"},"privacy":"private","risk":"tier1","evidence_refs":[],"uncertainty":{"level":"known"},"owner":"codex","state":"running","success_predicate":"adding a reserved field must not move the canonical work hash","non_goals":[],"run_ids":["act_9f2c1d4e"],"artifact_ids":[],"verification_ids":[],"memory_candidate_ids":[]}`
+
+// TestEmptyRunAttemptIDsIsHashNeutral is the migration guard for the RESERVED run slot. Declaring
+// RunAttemptIDs must not move the canonical work hash of any envelope written before it existed,
+// or every stored work_sha256 is invalidated at once. It proves neutrality by hashing the same
+// envelope through the new struct and requiring a byte-exact match against the pre-field JSON --
+// and then proves the guard is real by showing a POPULATED value does move the hash, so the test
+// fails if `omitempty` is ever dropped from the tag.
+func TestEmptyRunAttemptIDsIsHashNeutral(t *testing.T) {
+	var w WorkEnvelope
+	if err := json.Unmarshal([]byte(legacyPreRunAttemptWorkJSON), &w); err != nil {
+		t.Fatalf("decode pre-RunAttempt work: %v", err)
+	}
+	if len(w.RunAttemptIDs) != 0 {
+		t.Fatalf("pre-RunAttempt envelope must decode with an empty run slot, got %v", w.RunAttemptIDs)
+	}
+	if got, want := strings.Join(w.ActionIntentIDs, ","), "act_9f2c1d4e"; got != want {
+		t.Fatalf("ActionIntentIDs = %q, want %q (legacy run_ids wire name must still bind)", got, want)
+	}
+
+	remarshaled, err := json.Marshal(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(remarshaled) != legacyPreRunAttemptWorkJSON {
+		t.Fatalf("declaring RunAttemptIDs moved the marshaled shape:\n got: %s\nwant: %s", remarshaled, legacyPreRunAttemptWorkJSON)
+	}
+	if strings.Contains(string(remarshaled), "run_attempt_ids") {
+		t.Fatalf("empty RunAttemptIDs must stay off the wire, got: %s", remarshaled)
+	}
+
+	legacySum := sha256.Sum256([]byte(legacyPreRunAttemptWorkJSON))
+	want := "sha256:" + hex.EncodeToString(legacySum[:])
+	if got := canonicalWorkSHA256(t, w); got != want {
+		t.Fatalf("canonical work hash moved: got %s want %s", got, want)
+	}
+
+	// The guard must be able to FAIL: a populated run slot is expected to change the hash. If this
+	// does not diverge, `omitempty` is gone or the field is not marshaled at all, and the
+	// neutrality assertion above proves nothing.
+	populated := w
+	populated.RunAttemptIDs = []string{"run_attempt_0001"}
+	if got := canonicalWorkSHA256(t, populated); got == want {
+		t.Fatal("populated RunAttemptIDs did not change the canonical hash; neutrality check is vacuous")
+	}
+}
+
+// TestActionIntentIDsKeepsLegacyRunIDsWireName pins the deliberate misnomer. The Go field is
+// ActionIntentIDs because it holds act_* ids, but the wire key stays `run_ids` until the
+// compound.work.v0.2 bump: renaming it changes sha256(json.Marshal(WorkEnvelope)) and invalidates
+// every work_sha256 already persisted in events, leases, and terminal proof evidence (measured:
+// 120/121 real envelopes match today, 0/121 under a renamed key). This test fails on a premature
+// rename.
+func TestActionIntentIDsKeepsLegacyRunIDsWireName(t *testing.T) {
+	data, err := json.Marshal(WorkEnvelope{ActionIntentIDs: []string{"act_abc123"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"run_ids":["act_abc123"]`) {
+		t.Fatalf("ActionIntentIDs must marshal under the legacy run_ids key, got: %s", data)
+	}
+	if strings.Contains(string(data), "action_intent_ids") {
+		t.Fatalf("wire key renamed ahead of the v0.2 schema bump; this breaks stored work_sha256: %s", data)
+	}
+}
+
+// TestRunAttemptIDsRejectEmptyEntries covers the only rule the reserved slot carries today.
+// S1 settles the id prefix; until then non-emptiness is the honest floor.
+func TestRunAttemptIDsRejectEmptyEntries(t *testing.T) {
+	var w WorkEnvelope
+	if err := json.Unmarshal([]byte(legacyPreRunAttemptWorkJSON), &w); err != nil {
+		t.Fatal(err)
+	}
+	w.RunAttemptIDs = []string{"run_attempt_0001", "   "}
+	err := w.Validate()
+	if err == nil || !strings.Contains(err.Error(), "run_attempt_ids[1]") {
+		t.Fatalf("empty run attempt id must be rejected, got: %v", err)
 	}
 }

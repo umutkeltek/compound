@@ -111,10 +111,10 @@ func TestHookLiveCodexStopCoveredAskPersistsCanonicalResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "running" || len(after.RunIDs) != len(before.RunIDs)+1 || after.PolicyDecisionID == before.PolicyDecisionID {
+	if after.State != "running" || len(after.ActionIntentIDs) != len(before.ActionIntentIDs)+1 || after.PolicyDecisionID == before.PolicyDecisionID {
 		t.Fatalf("parent work did not gain exactly one interim chain: before=%+v after=%+v", before, after)
 	}
-	actionID := after.RunIDs[len(after.RunIDs)-1]
+	actionID := after.ActionIntentIDs[len(after.ActionIntentIDs)-1]
 	var action envelope.ActionIntent
 	readJSONFile(t, filepath.Join(homePath, "events", actionID+".json"), &action)
 	if action.IDs.WorkID != w.ID || action.IDs.SessionID != threadID || action.Action != "resume_lane" ||
@@ -157,7 +157,7 @@ func TestHookLiveCodexStopCoveredAskPersistsCanonicalResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(replayed.RunIDs) != len(after.RunIDs) || replayed.PolicyDecisionID != after.PolicyDecisionID {
+	if len(replayed.ActionIntentIDs) != len(after.ActionIntentIDs) || replayed.PolicyDecisionID != after.PolicyDecisionID {
 		t.Fatalf("active Stop replay duplicated the parent chain: after=%+v replay=%+v", after, replayed)
 	}
 	replayKinds := askEventKindCounts(t, homePath)
@@ -193,7 +193,7 @@ func TestHookLiveCodexStopNovelOrRiskAskQueuesExistingDecisionBrief(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			if after.State != before.State || len(after.RunIDs) != len(before.RunIDs) || after.PolicyDecisionID != before.PolicyDecisionID {
+			if after.State != before.State || len(after.ActionIntentIDs) != len(before.ActionIntentIDs) || after.PolicyDecisionID != before.PolicyDecisionID {
 				t.Fatalf("%s ask mutated parent work: before=%+v after=%+v", tc.disposition, before, after)
 			}
 			assertAskTriageBrief(t, homePath, tc.ask, tc.disposition)
@@ -229,7 +229,7 @@ func TestHookLiveCodexStopWithoutExactLaneBindingNeverPretendsResume(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != before.State || len(after.RunIDs) != len(before.RunIDs) || after.PolicyDecisionID != before.PolicyDecisionID {
+	if after.State != before.State || len(after.ActionIntentIDs) != len(before.ActionIntentIDs) || after.PolicyDecisionID != before.PolicyDecisionID {
 		t.Fatalf("unbound Stop mutated parent work: before=%+v after=%+v", before, after)
 	}
 	assertAskTriageBrief(t, homePath, ask, "delivery_unavailable")

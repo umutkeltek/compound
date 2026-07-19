@@ -146,8 +146,8 @@ func (s *Store) Continue(now time.Time, opts ContinueOptions) (ContinueResult, e
 		result.WorkID = advanced.ID
 		result.AdvancePlan = &recordedPlan
 		result.PolicyDecisionID = advanced.PolicyDecisionID
-		if len(advanced.RunIDs) > 0 {
-			result.ActionIntentID = advanced.RunIDs[len(advanced.RunIDs)-1]
+		if len(advanced.ActionIntentIDs) > 0 {
+			result.ActionIntentID = advanced.ActionIntentIDs[len(advanced.ActionIntentIDs)-1]
 		}
 		if plan != nil {
 			result.Integrity = mergeUnique(result.Integrity, plan.Warnings)
