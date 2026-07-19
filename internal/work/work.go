@@ -926,8 +926,8 @@ type AdvanceInput struct {
 	// LaneRef optionally declares or corrects the work's lane mid-lifecycle. When set it must
 	// resolve via capgraph.ResolveLaneRef (fail-closed) and is recorded as the canonical node
 	// id on the holder's lease, under the same holder-scoped rules as any advance mutation.
-	LaneRef        string
-	GitDelivery    *envelope.GitDeliveryContract
+	LaneRef     string
+	GitDelivery *envelope.GitDeliveryContract
 	// RunAttemptIDs attaches one or more RunAttempt ids (ratt_*) to the work envelope. S1
 	// retires the pre-S1 `RunID` field, which silently appended non-`act_*` ids into
 	// ActionIntentIDs. RunAttempt ids land on the dedicated slot so the validator can reject

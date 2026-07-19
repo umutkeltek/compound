@@ -529,24 +529,27 @@ type WorkEnvelope struct {
 	// new shape and v0.1 envelopes keep theirs, so continuity is preserved per-version rather than
 	// rewritten. Do not "fix" this tag in isolation.
 	//
-	// v0.1 SEMANTIC MIX: despite the field name, WorkStore.Advance still appends AdvanceInput.RunID
-	// into this slice (internal/work/work.go Advance), so a v0.1 envelope can carry `act_*` ids
-	// AND legacy run refs (today: only panel apply's `prun_*` ids from internal/panel/apply.go).
-	// The wire-name legacy above silently covers the mix because the field is `[]string` with no
-	// prefix validation, but the Go name "ActionIntentIDs" overstates the purity. S1 RunAttempt
-	// retires AdvanceInput.RunID as a lifecycle action-chain ref and stops appending it here, at
-	// which point ActionIntentIDs becomes act_*-only. The current mix is pinned by
-	// TestAdvanceRecordsPolicyAction (asserts `run_real` lands in ActionIntentIDs) and
-	// TestActivePacketProofReportsClosedPacketChain / TestActivePacketProofReportsArchivedClosedPacketChain
-	// in internal/work (which advance with `run_packet`). Do not "fix" the mix in isolation
-	// either -- a premature split breaks stored work_sha256 the same way a premature wire-key
-	// rename does.
+	// v0.1 SEMANTIC MIX (RETIRED by S1 -- historical only): before S1, WorkStore.Advance appended
+	// AdvanceInput.RunID into this slice, so a v0.1 envelope could carry `act_*` ids AND legacy
+	// run refs (today the only contributor was panel apply's `prun_*` ids from
+	// internal/panel/apply.go). The wire-name legacy above silently covered the mix because the
+	// field is `[]string` with no prefix validation. S1 retired AdvanceInput.RunID entirely; the
+	// panel apply path now mints a RunAttempt via internal/runattempt and attaches the `ratt_*`
+	// id on RunAttemptIDs, never on this slot. ActionIntentIDs is act_*-only post-S1. The retired
+	// v0.1 mix is no longer pinned by any test -- the surviving pins below all assert the new
+	// shape (ActionIntentIDs holds only the Advance's internal act_* id; RunAttemptIDs holds the
+	// minted ratt_* id):
+	//   - TestAdvanceRecordsPolicyAction
+	//   - TestActivePacketProofReportsClosedPacketChain
+	//   - TestActivePacketProofReportsArchivedClosedPacketChain
+	// Do not reintroduce AdvanceInput.RunID. The dedicated slot exists for a reason -- a single
+	// field holding two identity classes is the exact bug that produced the v0.1 mix.
 	ActionIntentIDs []string `json:"run_ids"`
-	// RunAttemptIDs is RESERVED and intentionally unpopulated in this slice: nothing mints
-	// RunAttempts yet. Slice S1 introduces the RunAttempt type and becomes its only writer, which
-	// is what finally frees the run slot that ActionIntentIDs has been occupying. `omitempty`
-	// keeps an empty value off the wire, so declaring it now is hash-neutral for every existing
-	// envelope (proved by TestEmptyRunAttemptIDsIsHashNeutral).
+	// RunAttemptIDs carries RunAttempt ids (ratt_*). S1 introduces internal/runattempt as the
+	// sole writer; WorkStore.Advance attaches RunAttempt ids via AdvanceInput.RunAttemptIDs,
+	// and envelope.validateRunAttemptIDs enforces the ratt_* prefix so legacy prun_*/run_*
+	// ids cannot leak back into the slot. Hash-neutral when empty (`omitempty`), so introducing
+	// the populated form here does not invalidate stored work_sha256.
 	RunAttemptIDs      []string `json:"run_attempt_ids,omitempty"`
 	ArtifactIDs        []string `json:"artifact_ids"`
 	VerificationIDs    []string `json:"verification_ids"`

@@ -41,7 +41,7 @@ func TestIDRejectsLegacyShapes(t *testing.T) {
 		"run_packet",
 		"act_9f2c1d4e",
 		"work_abcdef",
-		"ratt_2026-07-20_aabbccdd",       // wrong timestamp layout
+		"ratt_2026-07-20_aabbccdd",        // wrong timestamp layout
 		"ratt_20260720T000000Z_aabbccd",   // 7-char suffix
 		"ratt_20260720T000000Z_AABBCCDD",  // uppercase
 		" ratt_20260720T000000Z_aabbccdd", // leading space
@@ -95,11 +95,11 @@ func TestStoreMintRejectsMissingFields(t *testing.T) {
 	s := Open(home)
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
-		name     string
-		workID   string
-		actor    string
-		harness  string
-		wantSub  string
+		name    string
+		workID  string
+		actor   string
+		harness string
+		wantSub string
 	}{
 		{"no work_id", "", "compound", "fake", "work_id is required"},
 		{"no actor", "work_abc", "", "fake", "actor is required"},
