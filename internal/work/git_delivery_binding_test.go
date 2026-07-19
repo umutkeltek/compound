@@ -467,6 +467,18 @@ func TestRepoTargetActionRequiresDeclaredDeliveryForEveryNonAuditMove(t *testing
 	if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{gitDeliveryRunAttempt}}, now.Add(4*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	// S1: ActionIntentIDs is now act_*-only and the legacy RunID seam is gone.
+	// The pre-written action envelope above is what the close gate needs to
+	// find to detect a git-scoped target; wire it onto the work envelope by
+	// hand so the gate sees it the same way the pre-S1 RunID side-effect did.
+	var attributed envelope.WorkEnvelope
+	if err := store.readJSON(store.workPath(w.ID), &attributed); err != nil {
+		t.Fatal(err)
+	}
+	attributed.ActionIntentIDs = append(attributed.ActionIntentIDs, action.ID)
+	if err := store.writeJSON(store.workPath(w.ID), &attributed); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.Close(w.ID, CloseInput{
 		Outcome:          "completed",
 		MoveType:         "memory_delta",
@@ -496,6 +508,19 @@ func TestRepoTargetActionRequiresDeclaredDeliveryForEveryNonAuditMove(t *testing
 		t.Fatal(err)
 	}
 	if _, err := store.Advance(audit.ID, AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{auditRunAttempt}}, now.Add(9*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// S1: same attribution note as above -- attach the pre-written audit
+	// ActionIntent to the audit work envelope so the gate sees it. The
+	// audit case expects this NOT to require git_delivery (moveType is
+	// audit_only), so the gate must iterate the action and hit the
+	// audit_only short-circuit, not bail before reading the action.
+	var attributedAudit envelope.WorkEnvelope
+	if err := store.readJSON(store.workPath(audit.ID), &attributedAudit); err != nil {
+		t.Fatal(err)
+	}
+	attributedAudit.ActionIntentIDs = append(attributedAudit.ActionIntentIDs, auditAction.ID)
+	if err := store.writeJSON(store.workPath(audit.ID), &attributedAudit); err != nil {
 		t.Fatal(err)
 	}
 	closed, err := store.Close(audit.ID, CloseInput{
