@@ -50,10 +50,12 @@ type proofCheckStep struct {
 
 func cmdProofCheck(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--ci|--ci-console] [--repo P] [--base REF]")
+		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--ci|--ci-console] [--repo P] [--base REF] [--out FILE]")
 		fmt.Println("  --ci          run only the fresh-clone-portable gate subset (bare Go gates; what CI runs on push/PR)")
 		fmt.Println("  --ci-console  run only the console/TypeScript gate subset (needs bun + console/node_modules;")
 		fmt.Println("                run by the CI console job, not the bare-clone --ci job)")
+		fmt.Println("  --out FILE    write the full JSON report to FILE and print a final 'battery: ok|FAILED' verdict")
+		fmt.Println("                line as the last stdout line; the process exit code stays truthful (0/1/2)")
 		return
 	}
 	jsonOut := hasFlag(args, "--json")
@@ -66,6 +68,15 @@ func cmdProofCheck(args []string) {
 	}
 	repoPath := flagValue(args, "--repo")
 	baseRef := flagValue(args, "--base")
+	outPath := strings.TrimSpace(flagValue(args, "--out"))
+	if outPath != "" {
+		// Fail-closed BEFORE the (potentially 5-minute) battery runs: an --out path that
+		// cannot be opened for writing must not waste the run.
+		if err := proofCheckValidateOutPath(outPath); err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check: --out path not writable:", err)
+			os.Exit(2)
+		}
+	}
 	report, err := runProofCheck(repoPath, dryRun, baseRef, ciOnly, ciConsole, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
@@ -83,14 +94,78 @@ func cmdProofCheck(args []string) {
 			}
 		}
 	}
+	if outPath != "" {
+		// A battery whose evidence file failed to write is not green, even if every gate
+		// passed: this exit-2 must win over the normal ok/failed (0/1) exit below.
+		if err := proofCheckWriteReportFile(outPath, report); err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check: writing --out file:", err)
+			os.Exit(2)
+		}
+	}
 	if jsonOut {
 		printJSON(report)
 	} else {
 		printProofCheck(report)
 	}
+	if outPath != "" {
+		// Last stdout line, always — a background notification tail carries this verdict.
+		fmt.Println(proofCheckVerdictLine(report, outPath))
+	}
 	if report.Status != "ok" && !dryRun {
 		os.Exit(1)
 	}
+}
+
+// proofCheckValidateOutPath proves --out's path is writable (create/truncate) before the
+// battery runs, so an unwritable path fails fast instead of after a multi-minute run.
+func proofCheckValidateOutPath(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// proofCheckWriteReportFile writes the full report as indented JSON to path — the same
+// shape as --json stdout, regardless of whether --json was passed. Any open/write/close
+// error is returned so the caller can fail closed (exit 2).
+func proofCheckWriteReportFile(path string, report proofCheckReport) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, writeErr := f.Write(data); writeErr != nil {
+		f.Close()
+		return writeErr
+	}
+	return f.Close()
+}
+
+// proofCheckVerdictLine renders the single final stdout line printed when --out is
+// present: "battery: ok gates=N/N out=PATH" or, on the first failed gate,
+// "battery: FAILED gates=N/M first_failed=NAME out=PATH".
+func proofCheckVerdictLine(report proofCheckReport, path string) string {
+	total := len(report.Steps)
+	failed := 0
+	firstFailed := ""
+	for _, step := range report.Steps {
+		if step.Status == "failed" {
+			failed++
+			if firstFailed == "" {
+				firstFailed = step.Name
+			}
+		}
+	}
+	passed := total - failed
+	if report.Status == "ok" {
+		return fmt.Sprintf("battery: ok gates=%d/%d out=%s", passed, total, path)
+	}
+	return fmt.Sprintf("battery: FAILED gates=%d/%d first_failed=%s out=%s", passed, total, firstFailed, path)
 }
 
 func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, ciConsole bool, now time.Time) (proofCheckReport, error) {

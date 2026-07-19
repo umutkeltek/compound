@@ -1,0 +1,270 @@
+package main
+
+// Falsifiers for `proof-check --out FILE`: the battery owns its output contract — it
+// writes the full report to FILE itself, prints a final one-line verdict to stdout, and
+// keeps a truthful exit code — retiring the `> out.json 2>&1; echo "EXIT=$?"` shell
+// wrapper whose masked exit has lied green three times (2026-07-07, 2026-07-15,
+// 2026-07-18; see .claude/skills/compound-land/SKILL.md §1). Packet:
+// docs_private/plan/packets/2026-07-19-proofcheck-out-verdict.md (work_ad791a800a0c).
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+const proofCheckOutCLISubEnv = "COMPOUND_PROOFCHECK_OUT_SUB"
+
+// F1: a failed-report verdict line names the FIRST failed gate and says FAILED with
+// correct passed/total counts.
+func TestProofCheckVerdictLineFailedNamesFirstFailedGate(t *testing.T) {
+	report := proofCheckReport{
+		Status: "failed",
+		Steps: []proofCheckStep{
+			{Name: "go-test", Status: "ok"},
+			{Name: "go-vet", Status: "failed"},
+			{Name: "go-build", Status: "failed"},
+			{Name: "gofmt", Status: "ok"},
+		},
+	}
+	got := proofCheckVerdictLine(report, "/tmp/out.json")
+	want := "battery: FAILED gates=2/4 first_failed=go-vet out=/tmp/out.json"
+	if got != want {
+		t.Fatalf("verdict = %q, want %q", got, want)
+	}
+}
+
+// F2: an ok-report verdict line reports the ok status with correct counts and path.
+func TestProofCheckVerdictLineOkReportsCorrectCounts(t *testing.T) {
+	report := proofCheckReport{
+		Status: "ok",
+		Steps: []proofCheckStep{
+			{Name: "go-test", Status: "ok"},
+			{Name: "go-vet", Status: "ok"},
+			{Name: "gofmt", Status: "skipped"},
+		},
+	}
+	got := proofCheckVerdictLine(report, "/tmp/out.json")
+	want := "battery: ok gates=3/3 out=/tmp/out.json"
+	if got != want {
+		t.Fatalf("verdict = %q, want %q", got, want)
+	}
+}
+
+// F3: the --out file contains parseable JSON equal in content to the report (a
+// marshal round-trip), matching the same shape --json prints to stdout.
+func TestProofCheckWriteReportFileRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	report := proofCheckReport{
+		SchemaVersion: proofCheckSchemaVersion,
+		Status:        "ok",
+		GeneratedAt:   cliTestNow.UTC().Format(time.RFC3339),
+		Repo:          "/repo",
+		DryRun:        false,
+		ProofRefs:     []string{"go-test-count-1-all"},
+		Steps: []proofCheckStep{
+			{Name: "go-test", Command: []string{"go", "test", "./..."}, ProofRef: "go-test-count-1-all", Status: "ok", DurationMS: 42},
+		},
+	}
+	if err := proofCheckWriteReportFile(path, report); err != nil {
+		t.Fatalf("write report file: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got proofCheckReport
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("parse written report: %v\n%s", err, raw)
+	}
+	if !reflect.DeepEqual(got, report) {
+		t.Fatalf("round-tripped report = %+v, want %+v", got, report)
+	}
+	wantJSON, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(raw)) != string(wantJSON) {
+		t.Fatalf("file content != MarshalIndent(report):\nfile: %s\nwant: %s", raw, wantJSON)
+	}
+}
+
+// F4: an unwritable --out path (parent directory does not exist) is refused fail-closed
+// with exit 2 BEFORE any gate runs. Observed via the real re-exec child-arm pattern (see
+// director_cli_boundary_test.go / product_review_provenance_test.go): the parent spawns
+// the test binary itself with an env toggle that runs cmdProofCheck directly, so the
+// parent can assert on the REAL observed os.Exit code without killing the test runner.
+// This re-exec target is the light form (no compound binary build needed) because the
+// refusal must happen before runProofCheck is ever called — no gate subprocess, hence no
+// self-exec-recursion risk (see TestProofCheckOutTruthfulExitOneOnRedBattery for why the
+// heavy (built-binary) form is required once real gates execute).
+func TestProofCheckOutUnwritablePathFailsClosedBeforeGates(t *testing.T) {
+	if os.Getenv(proofCheckOutCLISubEnv) == "unwritable-path" {
+		cmdProofCheck([]string{"--dry-run", "--out", os.Getenv("COMPOUND_PROOFCHECK_OUT_PATH")})
+		return // if cmdProofCheck returns, exit 0 fails the parent's exit-2 assertion below
+	}
+	badPath := filepath.Join(t.TempDir(), "nonexistent-parent-dir", "out.json")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProofCheckOutUnwritablePathFailsClosedBeforeGates$")
+	cmd.Env = append(os.Environ(),
+		proofCheckOutCLISubEnv+"=unwritable-path",
+		"COMPOUND_PROOFCHECK_OUT_PATH="+badPath,
+	)
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("--out under a nonexistent dir should exit non-zero, got err=%v output=%s", err, output)
+	}
+	if exitErr.ExitCode() != 2 {
+		t.Fatalf("--out under a nonexistent dir should exit 2 (fail-closed setup error), got %d output=%s", exitErr.ExitCode(), output)
+	}
+	if !strings.Contains(string(output), "--out path not writable") {
+		t.Fatalf("stderr should name the --out failure, got %s", output)
+	}
+	if _, statErr := os.Stat(badPath); !os.IsNotExist(statErr) {
+		t.Fatalf("refused --out path should not exist afterward, stat err=%v", statErr)
+	}
+}
+
+// F6: --dry-run --out exits 0, writes the (all-"planned") report to FILE, and prints an
+// "ok" verdict line. Light re-exec (dry-run never executes a gate subprocess, so no
+// self-exec-recursion risk).
+func TestProofCheckOutDryRunExitsZeroWithOkVerdict(t *testing.T) {
+	if os.Getenv(proofCheckOutCLISubEnv) == "dry-run" {
+		cmdProofCheck([]string{"--dry-run", "--repo", os.Getenv("COMPOUND_PROOFCHECK_OUT_REPO"), "--out", os.Getenv("COMPOUND_PROOFCHECK_OUT_PATH")})
+		// cmdProofCheck does not call os.Exit on the ok path (a real top-level main()
+		// would simply return, exiting 0) — exit explicitly here so the parent observes
+		// ONLY proof-check's own stdout, not the go-test child binary's own PASS trailer,
+		// which would otherwise become the (misleading) "last line".
+		os.Exit(0)
+	}
+	repo := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "dryrun-report.json")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProofCheckOutDryRunExitsZeroWithOkVerdict$")
+	cmd.Env = append(os.Environ(),
+		proofCheckOutCLISubEnv+"=dry-run",
+		"COMPOUND_PROOFCHECK_OUT_REPO="+repo,
+		"COMPOUND_PROOFCHECK_OUT_PATH="+outPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dry-run --out should exit 0, got err=%v output=%s", err, output)
+	}
+	raw, readErr := os.ReadFile(outPath)
+	if readErr != nil {
+		t.Fatalf("--out file should exist on dry-run: %v", readErr)
+	}
+	var report proofCheckReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("parse --out file: %v\n%s", err, raw)
+	}
+	if report.Status != "ok" || !report.DryRun {
+		t.Fatalf("dry-run --out report = %+v, want status ok dry_run true", report)
+	}
+	lines := strings.Split(strings.TrimRight(string(output), "\n"), "\n")
+	last := lines[len(lines)-1]
+	if !strings.HasPrefix(last, "battery: ok gates=") || !strings.HasSuffix(last, "out="+outPath) {
+		t.Fatalf("last stdout line should be the ok verdict, got %q\nfull output:\n%s", last, output)
+	}
+}
+
+// F5: on a genuinely red battery, the observed process exit is 1 AND FILE is written AND
+// the verdict line is present (and correct) as the last stdout line.
+//
+// Mechanism note (deviation from the packet's first-choice suggestion): this builds the
+// REAL compound binary (same pattern as TestProofCheckNativeGateDeniesUnownedWrite) and
+// runs it as a subprocess, rather than re-executing the go-test binary in-process the way
+// F4/F6 do above. That is load-bearing, not a style choice: two of --ci's seven portable
+// gates (architecture-doctor, memory-doctor) invoke `exe <verb>` where exe is
+// os.Executable() resolved INSIDE the running proof-check process. If that process is the
+// compiled `go test` binary (the light re-exec form), those gates would re-exec the TEST
+// BINARY itself with args like ["architecture","doctor","--strict"] — the Go testing flag
+// parser treats "architecture"/"doctor" as trailing positional args and "--strict" as an
+// unparsed flag, so the child re-enters as a bare `go test` run with no -test.run filter,
+// i.e. it fans out into the ENTIRE cmd/compound test suite recursively. That is exactly
+// the unbounded-cost trap the packet's escape hatch anticipates. The real compound binary
+// does not have this problem: inside it, os.Executable() resolves to itself, so
+// `architecture doctor --strict` and `memory doctor` run as the real, fast, bounded CLI
+// subcommands they are.
+//
+// The battery's own go-test gate is pointed at a tiny, throwaway, deliberately-red
+// fixture module (not the compound module itself) so the falsifier proves the --out/exit
+// wiring in seconds, not the ~10-minute real compound test suite.
+func TestProofCheckOutTruthfulExitOneOnRedBattery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the compound binary and runs a real go-test gate subprocess")
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoRoot := filepath.Clean(filepath.Join(wd, "..", ".."))
+	exe := filepath.Join(t.TempDir(), "compound-proofcheck-out-exe")
+	build := exec.Command("go", "build", "-o", exe, "./cmd/compound")
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build compound: %v\n%s", err, out)
+	}
+
+	fixture := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fixture, "go.mod"), []byte("module proofcheck-red-fixture\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	redTest := "package fixture\n\nimport \"testing\"\n\n" +
+		"func TestAlwaysFails(t *testing.T) {\n\tt.Fatal(\"deliberate red for proof-check --out falsifier\")\n}\n"
+	if err := os.WriteFile(filepath.Join(fixture, "red_test.go"), []byte(redTest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCommandGit(t, fixture, "init")
+	runCommandGit(t, fixture, "add", "-A")
+
+	outPath := filepath.Join(t.TempDir(), "report.json")
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "proof-check", "--ci", "--out", outPath, "--repo", fixture)
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+t.TempDir(), "GOTOOLCHAIN=local")
+	output, err := cmd.CombinedOutput()
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("red battery with --out should exit non-zero, got err=%v output=%s", err, output)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("red battery with --out should exit 1 (gate FAILED), got %d output=%s", exitErr.ExitCode(), output)
+	}
+
+	raw, readErr := os.ReadFile(outPath)
+	if readErr != nil {
+		t.Fatalf("--out file should exist on a red battery: %v", readErr)
+	}
+	var report proofCheckReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("parse --out file: %v\n%s", err, raw)
+	}
+	if report.Status != "failed" {
+		t.Fatalf("written report status = %q, want failed: %+v", report.Status, report)
+	}
+	firstFailed := ""
+	for _, step := range report.Steps {
+		if step.Status == "failed" {
+			firstFailed = step.Name
+			break
+		}
+	}
+	if firstFailed != "go-test" {
+		t.Fatalf("expected go-test to be the first failed gate, got %q; steps=%+v", firstFailed, report.Steps)
+	}
+
+	lines := strings.Split(strings.TrimRight(string(output), "\n"), "\n")
+	last := lines[len(lines)-1]
+	if !strings.HasPrefix(last, "battery: FAILED gates=") || !strings.Contains(last, "first_failed=go-test") || !strings.HasSuffix(last, "out="+outPath) {
+		t.Fatalf("last stdout line should be the FAILED verdict naming go-test, got %q\nfull output:\n%s", last, output)
+	}
+}

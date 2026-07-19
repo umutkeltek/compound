@@ -384,7 +384,7 @@ compound finding <record|list|show|doctor> direct-write home for durable operati
 compound capture --source S [--text T] [--work W] | capture show <cid> gesture-fired capture front door: content-addressed body under observed/capture/ (never ledger), mints ONE observed-class proposed candidate (never auto-promotable); day-salted dedup
 compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
 compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hook install/drift, land-lease state, pending findings, placement guard mode; writes nothing
-compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/gofmt/diff/doctors/redact
+compound proof-check [--json] [--dry-run] [--repo P] [--out FILE] deterministic local gate bundle: tests/vet/build/gofmt/diff/doctors/redact; --out writes the full report to FILE and prints a final truthful-exit verdict line
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
   compound reviews [--json] [--area A] [--include-archived] read-only owner-review artifact queue; no apply
