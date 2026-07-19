@@ -20,6 +20,7 @@ import (
 	"compound/internal/harness"
 	"compound/internal/mem"
 	"compound/internal/policy"
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -1003,7 +1004,11 @@ func TestPromptWorkClosesWithContextTransition(t *testing.T) {
 	if _, err := store.Claim(w.ID, "codex", fixedNow); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", RunID: "run_pricing_test"}, fixedNow); err != nil {
+	runPricingTestRunAttemptID, err := runattempt.Mint(fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{runPricingTestRunAttemptID}}, fixedNow); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying", ArtifactID: "artifact_pricing_plan", VerificationID: "ver_pricing_plan"}, fixedNow); err != nil {
@@ -1046,8 +1051,8 @@ func TestPromptWorkClosesWithContextTransition(t *testing.T) {
 	if len(tr.BeforeRefs) != 1 || tr.BeforeRefs[0] != pack.Header.ID {
 		t.Fatalf("transition before_refs = %v, want [%s]", tr.BeforeRefs, pack.Header.ID)
 	}
-	if !containsString(tr.ActionRefs, "run_pricing_test") {
-		t.Fatalf("transition action_refs = %v, want run_pricing_test", tr.ActionRefs)
+	if containsString(tr.ActionRefs, "run_pricing_test") {
+		t.Fatalf("transition action_refs must not contain legacy run id after S1; got %v", tr.ActionRefs)
 	}
 	if !containsString(tr.AfterRefs, "artifact_pricing_plan") || !containsString(tr.AfterRefs, rec.ID) {
 		t.Fatalf("transition after_refs = %v, want artifact and receipt", tr.AfterRefs)

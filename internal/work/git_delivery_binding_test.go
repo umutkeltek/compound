@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/runattempt"
 )
 
 func TestPreFingerprintGitDeliveryPreservesCanonicalWorkHash(t *testing.T) {
@@ -459,7 +460,11 @@ func TestRepoTargetActionRequiresDeclaredDeliveryForEveryNonAuditMove(t *testing
 	if err := store.writeJSON(store.envPath(action.ID), &action); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunID: action.ID}, now.Add(4*time.Minute)); err != nil {
+	gitDeliveryRunAttempt, err := runattempt.Mint(now.Add(4 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{gitDeliveryRunAttempt}}, now.Add(4*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Close(w.ID, CloseInput{
@@ -486,7 +491,11 @@ func TestRepoTargetActionRequiresDeclaredDeliveryForEveryNonAuditMove(t *testing
 	if err := store.writeJSON(store.envPath(auditAction.ID), &auditAction); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Advance(audit.ID, AdvanceInput{To: "running", Actor: "codex", RunID: auditAction.ID}, now.Add(9*time.Minute)); err != nil {
+	auditRunAttempt, err := runattempt.Mint(now.Add(9 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(audit.ID, AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{auditRunAttempt}}, now.Add(9*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	closed, err := store.Close(audit.ID, CloseInput{
@@ -533,16 +542,24 @@ func TestRepoTargetActionEvidenceCannotDisappearBeforeClose(t *testing.T) {
 			if err := action.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunID: action.ID}, now.Add(4*time.Minute)); err != nil {
+			// S1: the post-RunAttempt mechanism for attaching an ActionIntent to a work is
+			// RecordAction (not the pre-S1 AdvanceInput.RunID hack that pre-wrote the action
+			// to disk and then referenced it via RunID). RecordAction validates the action +
+			// policy decision, persists both events, and appends action.ID to ActionIntentIDs.
+			policyDecision := envelope.PolicyDecision{
+				Header:         newHeader(envelope.SVPolicyDecision, "pol_repo_evidence_"+mutate, now.Add(3*time.Minute), w.ID, "", "private", "tier1"),
+				ActionIntentID: action.ID,
+				Outcome:        "allow",
+			}
+			if err := policyDecision.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			// Advance records the durable reference before the synthetic target is
-			// published so this target remains the latest action-family frame. The
-			// test can then exercise the event-store seam's rollback operation
-			// without rewriting older append-only history.
-			if err := store.writeJSON(store.envPath(action.ID), &action); err != nil {
-				t.Fatal(err)
+			if _, err := store.RecordAction(w.ID, action, policyDecision, now.Add(3*time.Minute)); err != nil {
+				t.Fatalf("RecordAction: %v", err)
 			}
+			// The action is now in ActionIntentIDs and the action event is on disk. Mutate
+			// the event without rewriting older append-only history, and Close must catch
+			// the corruption.
 			switch mutate {
 			case "missing":
 				if err := store.removeEvent(action.ID); err != nil {

@@ -23,6 +23,7 @@ import (
 	panelpkg "compound/internal/panel"
 	"compound/internal/product"
 	"compound/internal/reviewartifact"
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -1134,7 +1135,11 @@ func seedOrientOperatorHome(t *testing.T, homePath string, now time.Time) {
 	if _, err := workStore.Claim(running.ID, "codex", now.Add(-45*time.Minute)); err != nil {
 		t.Fatalf("claim running work: %v", err)
 	}
-	if _, err := workStore.Advance(running.ID, work.AdvanceInput{To: "running", RunID: "run_orient_operator"}, now.Add(-40*time.Minute)); err != nil {
+	orientRunningRunAttemptID, err := runattempt.Mint(now.Add(-40 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workStore.Advance(running.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{orientRunningRunAttemptID}}, now.Add(-40*time.Minute)); err != nil {
 		t.Fatalf("advance running work: %v", err)
 	}
 	done, err := workStore.Create(work.CreateInput{Owner: "codex", SuccessPredicate: "operator orient closed proof"}, now.Add(-35*time.Minute))
@@ -1144,7 +1149,11 @@ func seedOrientOperatorHome(t *testing.T, homePath string, now time.Time) {
 	if _, err := workStore.Claim(done.ID, "codex", now.Add(-34*time.Minute)); err != nil {
 		t.Fatalf("claim done work: %v", err)
 	}
-	if _, err := workStore.Advance(done.ID, work.AdvanceInput{To: "running", RunID: "run_orient_done"}, now.Add(-33*time.Minute)); err != nil {
+	orientDoneRunAttemptID, err := runattempt.Mint(now.Add(-33 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workStore.Advance(done.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{orientDoneRunAttemptID}}, now.Add(-33*time.Minute)); err != nil {
 		t.Fatalf("advance done running: %v", err)
 	}
 	if _, err := workStore.Advance(done.ID, work.AdvanceInput{To: "verifying", VerificationID: "ver_orient_done"}, now.Add(-32*time.Minute)); err != nil {

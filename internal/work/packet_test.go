@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/runattempt"
 )
 
 func TestParsePacketMarkdownExtractsWorkFields(t *testing.T) {
@@ -175,7 +177,11 @@ func TestImportedPacketCanDriveReceiptTransition(t *testing.T) {
 	if _, err := store.Claim(workID, "codex", fixedNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet work: %v", err)
 	}
-	if _, err := store.Advance(workID, AdvanceInput{To: "running", RunID: "run_packet", Note: "executing packet work"}, fixedNow.Add(2*time.Second)); err != nil {
+	packetRunAttemptID, err := runattempt.Mint(fixedNow.Add(2 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(workID, AdvanceInput{To: "running", RunAttemptIDs: []string{packetRunAttemptID}, Note: "executing packet work"}, fixedNow.Add(2*time.Second)); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := store.Advance(workID, AdvanceInput{To: "verifying", ArtifactID: "artifact_packet_delta", VerificationID: "ver_packet"}, fixedNow.Add(3*time.Second)); err != nil {
@@ -199,10 +205,15 @@ func TestImportedPacketCanDriveReceiptTransition(t *testing.T) {
 	if got := closed.Transition.BeforeRefs; len(got) != 1 || got[0] != "ctx_packet" {
 		t.Fatalf("transition before refs = %v, want ctx_packet", got)
 	}
-	if !contains(closed.Transition.ActionRefs, "run_packet") ||
-		!contains(closed.Transition.AfterRefs, "artifact_packet_delta") ||
+	if !contains(closed.Work.RunAttemptIDs, packetRunAttemptID) {
+		t.Fatalf("work RunAttemptIDs missing %q, got %v", packetRunAttemptID, closed.Work.RunAttemptIDs)
+	}
+	if contains(closed.Work.ActionIntentIDs, "run_packet") {
+		t.Fatalf("ActionIntentIDs must not contain legacy run id after S1; got %v", closed.Work.ActionIntentIDs)
+	}
+	if !contains(closed.Transition.AfterRefs, "artifact_packet_delta") ||
 		!contains(closed.Transition.AfterRefs, closed.Receipt.ID) {
-		t.Fatalf("transition refs incomplete: action=%v after=%v receipt=%s", closed.Transition.ActionRefs, closed.Transition.AfterRefs, closed.Receipt.ID)
+		t.Fatalf("transition refs incomplete: after=%v receipt=%s", closed.Transition.AfterRefs, closed.Receipt.ID)
 	}
 	if closed.Receipt.StateDelta.Summary == "" || !closed.Receipt.StateDelta.Changed {
 		t.Fatalf("receipt state delta missing: %+v", closed.Receipt.StateDelta)

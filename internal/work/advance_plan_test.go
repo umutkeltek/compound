@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compound/internal/runattempt"
 )
 
 func TestAdvancePlanEvaluatesPolicyWithoutAdvancing(t *testing.T) {
@@ -51,15 +53,28 @@ func TestAdvanceRecordsPolicyAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	advanced, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunID: "run_real"}, fixedNow)
+	// S1: RunAttempt ids are minted externally and attached via RunAttemptIDs. The
+	// pre-S1 field `RunID` (which stuffed `run_real` into ActionIntentIDs) was retired
+	// when ActionIntentIDs went act_*-only.
+	runAttemptID, err := runattempt.Mint(fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanced, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{runAttemptID}}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if advanced.State != "running" || advanced.PolicyDecisionID == "" {
 		t.Fatalf("advance did not record policy: %+v", advanced)
 	}
-	if len(advanced.ActionIntentIDs) != len(claimed.ActionIntentIDs)+2 || !contains(advanced.ActionIntentIDs, "run_real") {
-		t.Fatalf("advance run chain = %v, claimed=%v", advanced.ActionIntentIDs, claimed.ActionIntentIDs)
+	if len(advanced.ActionIntentIDs) != len(claimed.ActionIntentIDs)+1 {
+		t.Fatalf("advance action chain count = %d (claimed=%d, want +1)", len(advanced.ActionIntentIDs), len(claimed.ActionIntentIDs))
+	}
+	if contains(advanced.ActionIntentIDs, "run_real") {
+		t.Fatalf("ActionIntentIDs must not contain legacy run id \"run_real\" after S1; got %v", advanced.ActionIntentIDs)
+	}
+	if !contains(advanced.RunAttemptIDs, runAttemptID) {
+		t.Fatalf("RunAttemptIDs missing %q, got %v", runAttemptID, advanced.RunAttemptIDs)
 	}
 	advanceActionID := advanced.ActionIntentIDs[len(claimed.ActionIntentIDs)]
 	if exists, err := s.eventExists(advanceActionID); err != nil || !exists {

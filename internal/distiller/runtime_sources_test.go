@@ -13,6 +13,7 @@ import (
 	"compound/internal/harness"
 	"compound/internal/hook"
 	"compound/internal/policy"
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -55,7 +56,11 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 	if _, err := workStore.Claim(w.ID, "codex", t0); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "running", RunID: "run_pricing_distill"}, t0); err != nil {
+	runPricingDistillAttemptID, err := runattempt.Mint(t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{runPricingDistillAttemptID}}, t0); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "verifying", ArtifactID: "artifact_pricing_summary", VerificationID: "ver_pricing_summary"}, t0); err != nil {
@@ -118,8 +123,14 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 	if req.RawTrace != "" {
 		t.Fatalf("runtime loader should not invent raw trace: %q", req.RawTrace)
 	}
-	if req.Work == nil || req.Work.State != "completed" || !hasString(req.Work.ActionIntentIDs, "run_pricing_distill") {
-		t.Fatalf("request work summary incomplete: %+v", req.Work)
+	if req.Work == nil || req.Work.State != "completed" {
+		t.Fatalf("request work summary missing completed work: %+v", req.Work)
+	}
+	if hasString(req.Work.ActionIntentIDs, "run_pricing_distill") {
+		t.Fatalf("ActionIntentIDs must not contain legacy run id after S1; got %v", req.Work.ActionIntentIDs)
+	}
+	if !hasString(req.Work.RunAttemptIDs, runPricingDistillAttemptID) {
+		t.Fatalf("RunAttemptIDs missing %q, got %v", runPricingDistillAttemptID, req.Work.RunAttemptIDs)
 	}
 	if req.Context == nil || !strings.Contains(req.Context.SummaryMD, "product") {
 		t.Fatalf("request context summary incomplete: %+v", req.Context)

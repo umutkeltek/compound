@@ -30,6 +30,7 @@ import (
 	"compound/internal/observation"
 	"compound/internal/panel"
 	"compound/internal/policy"
+	"compound/internal/runattempt"
 	"compound/internal/product"
 	"compound/internal/projection"
 	"compound/internal/reviewartifact"
@@ -2955,7 +2956,7 @@ func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
 		cmdWork([]string{"claim", workID, "--by", "codex"})
 	})
 	captureStdout(t, func() {
-		cmdWork([]string{"advance", workID, "--to", "running", "--run", "run_packet_cli"})
+		cmdWork([]string{"advance", workID, "--to", "running", "--run-attempt", "ratt_20260720T000000Z_aabbccdd"})
 	})
 	captureStdout(t, func() {
 		cmdWork([]string{"advance", workID, "--to", "verifying", "--artifact", "artifact_packet_cli", "--verification", "ver_packet_cli"})
@@ -2977,10 +2978,15 @@ func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
 	if closed.Work.IDs.TransitionID != closed.Transition.ID {
 		t.Fatalf("work transition id = %q, want %q", closed.Work.IDs.TransitionID, closed.Transition.ID)
 	}
-	if !stringSliceContains(closed.Transition.ActionRefs, "run_packet_cli") ||
-		!stringSliceContains(closed.Transition.AfterRefs, "artifact_packet_cli") ||
+	if stringSliceContains(closed.Transition.ActionRefs, "run_packet_cli") {
+		t.Fatalf("transition action_refs must not contain legacy run id after S1; got %v", closed.Transition.ActionRefs)
+	}
+	if !stringSliceContains(closed.Work.RunAttemptIDs, "ratt_20260720T000000Z_aabbccdd") {
+		t.Fatalf("work RunAttemptIDs missing the ratt_ id attached via --run-attempt; got %v", closed.Work.RunAttemptIDs)
+	}
+	if !stringSliceContains(closed.Transition.AfterRefs, "artifact_packet_cli") ||
 		!stringSliceContains(closed.Transition.AfterRefs, closed.Receipt.ID) {
-		t.Fatalf("transition refs incomplete: action=%v after=%v receipt=%s", closed.Transition.ActionRefs, closed.Transition.AfterRefs, closed.Receipt.ID)
+		t.Fatalf("transition refs incomplete: after=%v receipt=%s", closed.Transition.AfterRefs, closed.Receipt.ID)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("packet CLI loop must not create claims ledger, stat err=%v", err)
@@ -3876,7 +3882,11 @@ func TestWorkActivePacketProofCommand(t *testing.T) {
 	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet: %v", err)
 	}
-	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunID: "run_packet"}, cliTestNow.Add(2*time.Second)); err != nil {
+	mainPacketRunAttemptID, err := runattempt.Mint(cliTestNow.Add(2 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{mainPacketRunAttemptID}}, cliTestNow.Add(2*time.Second)); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:active-packet-lifecycle"}, cliTestNow.Add(3*time.Second)); err != nil {
@@ -3959,7 +3969,11 @@ func TestWorkActivePacketProofDetectsChangedSourcePacket(t *testing.T) {
 	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet: %v", err)
 	}
-	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunID: "run_packet"}, cliTestNow.Add(2*time.Second)); err != nil {
+	mainPacketRunAttemptID, err := runattempt.Mint(cliTestNow.Add(2 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{mainPacketRunAttemptID}}, cliTestNow.Add(2*time.Second)); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:active-packet-lifecycle"}, cliTestNow.Add(3*time.Second)); err != nil {
@@ -4542,7 +4556,11 @@ func TestWorkDispatchStepCommandReportsTerminalSourcePacket(t *testing.T) {
 	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet: %v", err)
 	}
-	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunID: "run_terminal_packet"}, cliTestNow.Add(2*time.Second)); err != nil {
+	mainTerminalRunAttemptID, err := runattempt.Mint(cliTestNow.Add(2 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunAttemptIDs: []string{mainTerminalRunAttemptID}}, cliTestNow.Add(2*time.Second)); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:terminal-source"}, cliTestNow.Add(3*time.Second)); err != nil {
@@ -4756,7 +4774,7 @@ func TestWorkAdvancePlanAndAdvanceCommandRecordPolicy(t *testing.T) {
 		t.Fatalf("advance plan must not mutate work: %+v", afterPlan)
 	}
 	out = captureStdout(t, func() {
-		cmdWork([]string{"advance", ready.ID, "--to", "running", "--by", "codex", "--run", "run_cli"})
+		cmdWork([]string{"advance", ready.ID, "--to", "running", "--by", "codex", "--run-attempt", "ratt_20260720T000000Z_eeff0011"})
 	})
 	if !strings.Contains(out, "policy=") {
 		t.Fatalf("advance output missing policy id:\n%s", out)
@@ -4765,8 +4783,14 @@ func TestWorkAdvancePlanAndAdvanceCommandRecordPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after advance: %v", err)
 	}
-	if afterAdvance.State != "running" || afterAdvance.PolicyDecisionID == "" || !stringSliceContains(afterAdvance.ActionIntentIDs, "run_cli") {
-		t.Fatalf("advance command did not record policy/run chain: %+v", afterAdvance)
+	if afterAdvance.State != "running" || afterAdvance.PolicyDecisionID == "" {
+		t.Fatalf("advance command did not record policy: %+v", afterAdvance)
+	}
+	if stringSliceContains(afterAdvance.ActionIntentIDs, "run_cli") {
+		t.Fatalf("ActionIntentIDs must not contain legacy run id after S1; got %v", afterAdvance.ActionIntentIDs)
+	}
+	if !stringSliceContains(afterAdvance.RunAttemptIDs, "ratt_20260720T000000Z_eeff0011") {
+		t.Fatalf("RunAttemptIDs missing the ratt_ id attached via --run-attempt; got %v", afterAdvance.RunAttemptIDs)
 	}
 }
 

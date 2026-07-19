@@ -72,6 +72,7 @@ type LLMWork struct {
 	Risk               string   `json:"risk"`
 	Privacy            string   `json:"privacy"`
 	ActionIntentIDs    []string `json:"run_ids,omitempty"`
+	RunAttemptIDs      []string `json:"run_attempt_ids,omitempty"`
 	ArtifactIDs        []string `json:"artifact_ids,omitempty"`
 	VerificationIDs    []string `json:"verification_ids,omitempty"`
 	MemoryCandidateIDs []string `json:"memory_candidate_ids,omitempty"`
@@ -168,6 +169,7 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 			Risk:               src.Work.Risk,
 			Privacy:            src.Work.Privacy,
 			ActionIntentIDs:    append([]string(nil), src.Work.ActionIntentIDs...),
+			RunAttemptIDs:      append([]string(nil), src.Work.RunAttemptIDs...),
 			ArtifactIDs:        append([]string(nil), src.Work.ArtifactIDs...),
 			VerificationIDs:    append([]string(nil), src.Work.VerificationIDs...),
 			MemoryCandidateIDs: append([]string(nil), src.Work.MemoryCandidateIDs...),
