@@ -13,6 +13,7 @@ import (
 	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/reviewartifact"
+	"compound/internal/runattempt"
 	"compound/internal/work"
 	"compound/internal/writeback"
 
@@ -99,9 +100,23 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	if _, err := workStore.Claim(run.WorkID, panelApplyActor, now().UTC()); err != nil {
 		return run, err
 	}
-	if _, err := workStore.Advance(run.WorkID, work.AdvanceInput{To: "running", Actor: panelApplyActor, RunID: run.ID, Note: "panel apply started"}, now().UTC()); err != nil {
+	// S1: the panel apply records itself as a RunAttempt instead of stuffing the prun_*
+	// panel run id into WorkEnvelope.ActionIntentIDs. The RunAttempt id lands on the
+	// dedicated slot so envelope.validateRunAttemptIDs can enforce the ratt_* shape and
+	// ActionIntentIDs stays act_*-only. Mint-before-Advance keeps the audit trail intact
+	// (the RunAttempt id is on the envelope before any artifact is written).
+	runAttemptStore := runattempt.Open(homePath)
+	ra, err := runAttemptStore.Mint(run.WorkID, panelApplyActor, "fake", now().UTC())
+	if err != nil {
 		return run, err
 	}
+	if _, err := workStore.Advance(run.WorkID, work.AdvanceInput{To: "running", Actor: panelApplyActor, RunAttemptIDs: []string{ra.ID}, Note: "panel apply started"}, now().UTC()); err != nil {
+		return run, err
+	}
+	// Terminal state for the RunAttempt is decided after the apply loop: succeeded when
+	// every target applied, failed when at least one failed (the work envelope still
+	// terminalizes successfully because the apply loop is fail-soft by design).
+	runAttemptStatus := runattempt.StatusSucceeded
 
 	closeState := panelApplyCloseState{proofRefs: proofRefs}
 	applyFailures := 0
@@ -159,6 +174,12 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	run.ReceiptID = closeResult.Receipt.ID
 	run.TransitionID = closeResult.Transition.ID
 	if err := store.SaveRun(run); err != nil {
+		return run, err
+	}
+	if applyFailures > 0 {
+		runAttemptStatus = runattempt.StatusFailed
+	}
+	if _, err := runAttemptStore.Complete(ra.ID, runAttemptStatus, now().UTC()); err != nil {
 		return run, err
 	}
 	if applyFailures > 0 {
