@@ -15,7 +15,7 @@ func TestFromChangeStreamKindMapping(t *testing.T) {
 	intake := ChangeStreamIntake{
 		SourceCapture: "/tmp/capture.json",
 		Candidates: []ChangeStreamCandidate{
-			{Type: "repo-signal", EntityHint: "exampleapp", Surface: "ASO"},
+			{Type: "repo-signal", EntityHint: "notekeep", Surface: "ASO"},
 			{Type: "agent-history-row", EntityHint: "samplepost", Surface: "runtime"},
 			{Type: "canon-file-signal", EntityHint: "~/.codex/config.toml", Surface: "harness-governance"},
 		},
@@ -65,8 +65,8 @@ func TestFromChangeStreamKindMapping(t *testing.T) {
 // hints so their candidate ids do not collide onto one record (silent data loss). RED if the hint
 // ignored the summary discriminator.
 func TestChangeStreamEntityHintDistinctPerCandidate(t *testing.T) {
-	a := ChangeStreamCandidate{Type: "repo-signal", EntityHint: "exampleapp", Surface: "ASO", Summary: "dirty tree"}
-	b := ChangeStreamCandidate{Type: "repo-signal", EntityHint: "exampleapp", Surface: "ASO", Summary: "recent commit"}
+	a := ChangeStreamCandidate{Type: "repo-signal", EntityHint: "notekeep", Surface: "ASO", Summary: "dirty tree"}
+	b := ChangeStreamCandidate{Type: "repo-signal", EntityHint: "notekeep", Surface: "ASO", Summary: "recent commit"}
 	ha, hb := changeStreamEntityHint(a), changeStreamEntityHint(b)
 	if ha == hb {
 		t.Fatalf("distinct candidates collided on hint %q", ha)

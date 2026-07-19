@@ -66,8 +66,8 @@ func csCountFiles(t *testing.T, dir string) int {
 func TestChangeStreamObserveRepoSignalParksProductHypothesisNoPromote(t *testing.T) {
 	home := t.TempDir()
 	dir := t.TempDir()
-	intake := writeIntake(t, dir, `{"hot_repos":[{"name":"exampleapp"}]}`, []sourceobs.ChangeStreamCandidate{
-		{Type: "repo-signal", EntityHint: "exampleapp", Surface: "App Store metadata/ASO", Summary: "exampleapp on main: dirty 5", Score: 6, EvidenceRefs: []string{"repo:exampleapp"}},
+	intake := writeIntake(t, dir, `{"hot_repos":[{"name":"notekeep"}]}`, []sourceobs.ChangeStreamCandidate{
+		{Type: "repo-signal", EntityHint: "notekeep", Surface: "App Store metadata/ASO", Summary: "notekeep on main: dirty 5", Score: 6, EvidenceRefs: []string{"repo:notekeep"}},
 	})
 	code, stdout, stderr := csObserve(t, home, "--intake", intake, "--json")
 	if code != 0 {
