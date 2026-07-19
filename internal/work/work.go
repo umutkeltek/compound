@@ -928,7 +928,12 @@ type AdvanceInput struct {
 	// id on the holder's lease, under the same holder-scoped rules as any advance mutation.
 	LaneRef        string
 	GitDelivery    *envelope.GitDeliveryContract
-	RunID          string
+	// RunAttemptIDs attaches one or more RunAttempt ids (ratt_*) to the work envelope. S1
+	// retires the pre-S1 `RunID` field, which silently appended non-`act_*` ids into
+	// ActionIntentIDs. RunAttempt ids land on the dedicated slot so the validator can reject
+	// non-ratt_ entries (envelope.validateRunAttemptIDs, pinned by
+	// TestRunAttemptIDsRequireRattPrefix). Empty slice is a no-op.
+	RunAttemptIDs  []string
 	ArtifactID     string
 	VerificationID string
 	ContextPackID  string
@@ -1089,9 +1094,18 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		w.EvidenceRefs = mergeUnique(w.EvidenceRefs, in.EvidenceRefs)
 		attached = append(attached, in.EvidenceRefs...)
 	}
-	if in.RunID != "" {
-		w.ActionIntentIDs = append(w.ActionIntentIDs, in.RunID)
-		attached = append(attached, in.RunID)
+	if len(in.RunAttemptIDs) > 0 {
+		for _, rid := range in.RunAttemptIDs {
+			rid = strings.TrimSpace(rid)
+			if rid == "" {
+				continue
+			}
+			if !strings.HasPrefix(rid, "ratt_") {
+				return envelope.WorkEnvelope{}, fmt.Errorf("advance RunAttemptIDs contains non-ratt_ id %q (settled in S1; see internal/runattempt.Prefix)", rid)
+			}
+			w.RunAttemptIDs = append(w.RunAttemptIDs, rid)
+			attached = append(attached, rid)
+		}
 	}
 	if in.ArtifactID != "" {
 		w.ArtifactIDs = append(w.ArtifactIDs, in.ArtifactID)

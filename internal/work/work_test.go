@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/runattempt"
 )
 
 var fixedNow = time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
@@ -40,7 +41,11 @@ func TestWorkLifecycleThreadsOneID(t *testing.T) {
 	if _, err := s.Claim(id, "claude_code", fixedNow); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if _, err := s.Advance(id, AdvanceInput{To: "running", Actor: "claude_code", RunID: "run_001", Note: "executing"}, fixedNow); err != nil {
+	workRunAttemptID, err := runattempt.Mint(fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(id, AdvanceInput{To: "running", Actor: "claude_code", RunAttemptIDs: []string{workRunAttemptID}, Note: "executing"}, fixedNow); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := s.Advance(id, AdvanceInput{To: "verifying", Actor: "claude_code", ArtifactID: "artifact_timeline", VerificationID: "ver_001"}, fixedNow); err != nil {
@@ -79,8 +84,11 @@ func TestWorkLifecycleThreadsOneID(t *testing.T) {
 	if got := res.Transition.BeforeRefs; len(got) != 1 || got[0] != "ctx_abc123" {
 		t.Errorf("transition before_refs = %v, want [ctx_abc123]", got)
 	}
-	if !contains(res.Transition.ActionRefs, "run_001") {
-		t.Errorf("transition action_refs = %v, want it to include run_001", res.Transition.ActionRefs)
+	if !contains(res.Work.RunAttemptIDs, workRunAttemptID) {
+		t.Errorf("work RunAttemptIDs = %v, want it to include %q", res.Work.RunAttemptIDs, workRunAttemptID)
+	}
+	if contains(res.Work.ActionIntentIDs, "run_001") {
+		t.Errorf("ActionIntentIDs must not contain legacy run id after S1; got %v", res.Work.ActionIntentIDs)
 	}
 	if !contains(res.Transition.AfterRefs, "artifact_timeline") || !contains(res.Transition.AfterRefs, res.Receipt.ID) {
 		t.Errorf("transition after_refs = %v, want artifact_timeline + receipt id", res.Transition.AfterRefs)
