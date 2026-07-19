@@ -15,12 +15,13 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 )
 
 const (
 	SchemaVersion = "compound.status_surface.v0.1"
 	defaultTTL    = 2 * time.Minute
+
+	ansiReset = "\x1b[0m"
 
 	ThemePAINexus = "pai-nexus"
 	ThemePAIFocus = "pai-focus"
@@ -89,8 +90,16 @@ type Metric struct {
 	UsedPercent      float64      `json:"used_percent,omitempty"`
 	RemainingPercent float64      `json:"remaining_percent,omitempty"`
 	WindowTokens     int64        `json:"window_tokens,omitempty"`
+	UsedTokens       int64        `json:"used_tokens,omitempty"`
 	Source           string       `json:"source,omitempty"`
 }
+
+// compactionUsableFraction is the share of the advertised context window that is
+// actually usable before Claude Code compacts; it reserves the remainder as
+// compaction overhead. Reporting raw used_percentage reads optimistically -- a
+// raw 83% means roughly nothing usable is left -- so the displayed context
+// pressure is scaled against this fraction instead.
+const compactionUsableFraction = 0.835
 
 type LimitWindow struct {
 	Kind             LimitKind    `json:"kind"`
@@ -188,6 +197,7 @@ type claudeStatusInput struct {
 	ContextWindow *struct {
 		WindowTokens int64   `json:"context_window_size"`
 		UsedPercent  float64 `json:"used_percentage"`
+		UsedTokens   int64   `json:"total_input_tokens"`
 	} `json:"context_window"`
 	RateLimits *struct {
 		FiveHour       *nativeLimit `json:"five_hour"`
@@ -227,6 +237,7 @@ func BuildClaudeSnapshot(body []byte, now time.Time, previous Snapshot) (Snapsho
 			UsedPercent:      used,
 			RemainingPercent: 100 - used,
 			WindowTokens:     input.ContextWindow.WindowTokens,
+			UsedTokens:       input.ContextWindow.UsedTokens,
 			Source:           "claude/statusline.context_window",
 		}
 	}
@@ -545,17 +556,22 @@ func Render(snapshot Snapshot, options RenderOptions) (string, error) {
 	}
 	var line string
 	if snapshot.Harness == HarnessClaude {
-		bar := remainingBar(snapshot.Context)
-		switch options.Theme {
-		case ThemePAINexus:
-			line = fmt.Sprintf("< CLAUDE:%s > left: ctx %s %s | 5h %s | wk %s", mode, bar, ctx, five, week)
-		case ThemePAIFocus:
-			line = fmt.Sprintf("// CLAUDE:%s // left: ctx %s %s | wk %s", mode, bar, ctx, week)
-		case ThemePAIOps:
-			line = fmt.Sprintf("!! CLAUDE:%s !! left: ctx %s %s | 5h %s | wk %s", mode, bar, ctx, five, week)
-		case ThemePAIMono:
-			line = fmt.Sprintf(".. CLAUDE:%s .. left: ctx %s %s | 5h %s | wk %s", mode, bar, ctx, five, week)
+		if options.Theme != ThemePAIMono {
+			return renderClaudeInfographic(snapshot, options, mode), nil
 		}
+		// pai-mono stays a single plain-ASCII, uncoloured line: it is the
+		// fallback for terminals without truecolor or wide-glyph support.
+		bar := remainingBar(snapshot.Context)
+		ctxField := ctx
+		if tokens := tokenText(snapshot.Context); tokens != "" {
+			ctxField = ctx + " " + tokens
+		}
+		line = fmt.Sprintf(".. CLAUDE:%s .. left: ctx %s %s | 5h %s | wk %s",
+			mode, bar, ctxField, five, week)
+		if options.Width > 0 {
+			line = truncateDisplay(line, options.Width)
+		}
+		return line, nil
 	} else {
 		switch options.Theme {
 		case ThemePAINexus:
@@ -575,6 +591,197 @@ func Render(snapshot Snapshot, options RenderOptions) (string, error) {
 		line = colorForMode(snapshot.Mode) + line + "\x1b[0m"
 	}
 	return line, nil
+}
+
+// ---------------------------------------------------------------------------
+// Infographic rendering
+//
+// Three themes render a two-row instrument panel: an identity row (model, mode,
+// inference class) and a meter row (context pressure with absolute token counts,
+// then the capacity windows). pai-mono is deliberately excluded and stays a
+// single plain-ASCII line as the no-truecolor fallback.
+// ---------------------------------------------------------------------------
+
+type themeGlyphs struct {
+	full    string
+	empty   string
+	edge    string // leading identity marker
+	sep     string
+	barCols int
+}
+
+func glyphsForTheme(theme string) themeGlyphs {
+	switch theme {
+	case ThemePAINexus:
+		return themeGlyphs{full: "▰", empty: "▱", edge: "◆", sep: "▏", barCols: 14}
+	case ThemePAIFocus:
+		return themeGlyphs{full: "━", empty: "─", edge: "◇", sep: "·", barCols: 16}
+	default: // ThemePAIOps -- densest, dashboard styling
+		return themeGlyphs{full: "█", empty: "░", edge: "▮", sep: "│", barCols: 18}
+	}
+}
+
+func rgb(r, g, b int) string { return fmt.Sprintf("\x1b[38;2;%d;%d;%dm", r, g, b) }
+
+// heatColor maps 0..100 pressure onto green -> amber -> orange -> red.
+func heatColor(pct float64) string {
+	switch {
+	case pct >= 90:
+		return rgb(239, 68, 68)
+	case pct >= 75:
+		return rgb(251, 146, 60)
+	case pct >= 50:
+		return rgb(250, 204, 21)
+	case pct >= 25:
+		return rgb(163, 230, 53)
+	default:
+		return rgb(74, 222, 128)
+	}
+}
+
+// effectiveUsed resolves consumed percentage from whichever side a producer
+// populated. Supplemented capacity evidence carries only RemainingPercent, so
+// reading UsedPercent alone would silently render those windows as 0%.
+func effectiveUsed(used, remaining float64) float64 {
+	if used > 0 {
+		return clampPercent(used)
+	}
+	if remaining > 0 {
+		return clampPercent(100 - remaining)
+	}
+	return 0
+}
+
+// contextPressure scales consumed context against the fraction of the window
+// that is usable before compaction, so a full bar means "compacting now" rather
+// than "plenty left". Returns 0..100.
+func contextPressure(metric Metric) float64 {
+	if metric.Status != StatusLive {
+		return 0
+	}
+	used := effectiveUsed(metric.UsedPercent, metric.RemainingPercent)
+	return clampPercent(used / compactionUsableFraction)
+}
+
+func formatTokenCount(n int64) string {
+	switch {
+	case n <= 0:
+		return "0"
+	case n < 1000:
+		return fmt.Sprintf("%d", n)
+	case n < 100_000:
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1000), ".0") + "k"
+	case n < 1_000_000:
+		return fmt.Sprintf("%.0fk", float64(n)/1000)
+	default:
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1_000_000), ".0") + "M"
+	}
+}
+
+// tokenText renders absolute context consumption, e.g. "142k/480k". Empty when
+// the harness did not report token counts.
+func tokenText(metric Metric) string {
+	if metric.Status != StatusLive || metric.WindowTokens <= 0 || metric.UsedTokens <= 0 {
+		return ""
+	}
+	return formatTokenCount(metric.UsedTokens) + "/" + formatTokenCount(metric.WindowTokens)
+}
+
+func meterBar(pct float64, g themeGlyphs, color bool) string {
+	filled := int(math.Round(pct / 100 * float64(g.barCols)))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > g.barCols {
+		filled = g.barCols
+	}
+	var b strings.Builder
+	if color {
+		b.WriteString(heatColor(pct))
+	}
+	b.WriteString(strings.Repeat(g.full, filled))
+	if color {
+		b.WriteString(rgb(71, 85, 105))
+	}
+	b.WriteString(strings.Repeat(g.empty, g.barCols-filled))
+	if color {
+		b.WriteString(ansiReset)
+	}
+	return b.String()
+}
+
+func renderClaudeInfographic(snapshot Snapshot, options RenderOptions, mode string) string {
+	g := glyphsForTheme(options.Theme)
+	color := options.Color
+
+	paint := func(code, text string) string {
+		if !color {
+			return text
+		}
+		return code + text + ansiReset
+	}
+	label := func(text string) string { return paint(rgb(148, 163, 184), text) }
+	value := func(text string) string { return paint(rgb(203, 213, 225), text) }
+	sep := paint(rgb(71, 85, 105), " "+g.sep+" ")
+
+	model := snapshot.Model
+	if model == "" {
+		model = "unknown model"
+	}
+
+	// Identity row.
+	head := []string{
+		paint(colorForMode(snapshot.Mode), g.edge+" "+strings.ToUpper(mode)),
+		value(safeLabel(model, 34)),
+	}
+	if snapshot.InferenceClass != "" {
+		head = append(head, label(string(snapshot.InferenceClass)))
+	}
+	// Route guidance is only worth a slot when it is actually steering.
+	if snapshot.RouteGuidance != "" && snapshot.RouteGuidance != GuidanceNormal {
+		head = append(head, label(strings.ReplaceAll(string(snapshot.RouteGuidance), "_", " ")))
+	}
+
+	// Meter row.
+	meters := []string{}
+	if snapshot.Context.Status == StatusLive {
+		p := contextPressure(snapshot.Context)
+		seg := label("ctx ") + meterBar(p, g, color) + " " +
+			paint(heatColor(p), fmt.Sprintf("%d%%", int(math.Round(p))))
+		if tokens := tokenText(snapshot.Context); tokens != "" {
+			seg += " " + value(tokens)
+		}
+		meters = append(meters, seg)
+	} else {
+		meters = append(meters, label("ctx ")+meterBar(0, g, color)+" "+label("--"))
+	}
+	for _, kind := range []LimitKind{LimitFiveHour, LimitSevenDay} {
+		name := "5h"
+		if kind == LimitSevenDay {
+			name = "wk"
+		}
+		for _, limit := range snapshot.Limits {
+			if limit.Kind != kind {
+				continue
+			}
+			if limit.Status != StatusLive {
+				meters = append(meters, label(name+" --"))
+				break
+			}
+			used := effectiveUsed(limit.UsedPercent, limit.RemainingPercent)
+			meters = append(meters, label(name+" ")+
+				paint(heatColor(used), fmt.Sprintf("%d%%", int(math.Round(used)))))
+			break
+		}
+	}
+
+	lines := []string{strings.Join(head, "  "), strings.Join(meters, sep)}
+	if options.Width > 0 {
+		for i := range lines {
+			lines[i] = truncateDisplay(lines[i], options.Width)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func validTheme(theme string) bool {
@@ -628,15 +835,43 @@ func colorForMode(mode Mode) string {
 	}
 }
 
+// truncateDisplay clips to a visible-column budget. It is ANSI-aware: escape
+// sequences are copied through without consuming width, and a reset is appended
+// when the input carried any styling, so truncating a coloured line can never
+// leak colour into the rest of the terminal.
 func truncateDisplay(value string, width int) string {
-	if width <= 0 || utf8.RuneCountInString(value) <= width {
+	if width <= 0 || displayWidth(value) <= width {
 		return value
 	}
 	if width == 1 {
 		return "~"
 	}
 	runes := []rune(value)
-	return string(runes[:width-1]) + "~"
+	var b strings.Builder
+	visible, styled := 0, false
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
+			styled = true
+			b.WriteRune(runes[i])
+			i++
+			b.WriteRune(runes[i])
+			for i+1 < len(runes) && runes[i] != 'm' {
+				i++
+				b.WriteRune(runes[i])
+			}
+			continue
+		}
+		if visible == width-1 {
+			break
+		}
+		b.WriteRune(runes[i])
+		visible++
+	}
+	b.WriteString("~")
+	if styled {
+		b.WriteString(ansiReset)
+	}
+	return b.String()
 }
 
 func displayWidth(value string) int {

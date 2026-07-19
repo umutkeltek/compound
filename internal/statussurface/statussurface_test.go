@@ -210,31 +210,37 @@ func TestRenderThemesAndCodexThemeAreDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct {
-		theme  string
-		prefix string
-	}{
-		{ThemePAINexus, "< CLAUDE:CONSERVE >"},
-		{ThemePAIFocus, "// CLAUDE:CONSERVE //"},
-		{ThemePAIOps, "!! CLAUDE:CONSERVE !!"},
-		{ThemePAIMono, ".. CLAUDE:CONSERVE .."},
-	} {
-		line, err := Render(snapshot, RenderOptions{Theme: tc.theme, Width: 120, Color: false})
+	// The three rich themes render a two-row instrument panel and are allowed
+	// wide glyphs. They must still be deterministic and carry the context meter
+	// with absolute token counts.
+	for _, theme := range []string{ThemePAINexus, ThemePAIFocus, ThemePAIOps} {
+		line, err := Render(snapshot, RenderOptions{Theme: theme, Width: 120, Color: false})
 		if err != nil {
-			t.Fatalf("render %s: %v", tc.theme, err)
+			t.Fatalf("render %s: %v", theme, err)
 		}
-		if !strings.HasPrefix(line, tc.prefix) || !strings.Contains(line, "ctx [######----] 59%") {
-			t.Fatalf("render %s = %q", tc.theme, line)
+		again, err := Render(snapshot, RenderOptions{Theme: theme, Width: 120, Color: false})
+		if err != nil || again != line {
+			t.Fatalf("render %s not deterministic: %q vs %q (err=%v)", theme, line, again, err)
 		}
-		if strings.ContainsAny(line, "\n\r") {
-			t.Fatalf("render %s is not one line: %q", tc.theme, line)
+		rows := strings.Split(line, "\n")
+		if len(rows) != 2 {
+			t.Fatalf("render %s wanted 2 rows, got %d: %q", theme, len(rows), line)
 		}
-		for _, r := range line {
-			if r > unicode.MaxASCII {
-				t.Fatalf("render %s contains non-ASCII rune %q: %q", tc.theme, r, line)
-			}
+		if !strings.Contains(line, "CONSERVE") {
+			t.Fatalf("render %s missing mode: %q", theme, line)
+		}
+		// ~41.75% raw used -> 41.75/0.835 = 50% compaction-aware pressure,
+		// versus the 59%-remaining figure pai-mono reports.
+		if !strings.Contains(line, "50%") {
+			t.Fatalf("render %s missing compaction-aware context pressure: %q", theme, line)
+		}
+		if !strings.Contains(line, "83k/200k") {
+			t.Fatalf("render %s missing absolute token counts: %q", theme, line)
 		}
 	}
+
+	// pai-mono is the fallback contract: one row, pure ASCII, never coloured.
+	// Terminals without truecolor or wide-glyph support depend on this holding.
 	mono, err := Render(snapshot, RenderOptions{Theme: ThemePAIMono, Width: 120, Color: true})
 	if err != nil {
 		t.Fatal(err)
@@ -242,24 +248,53 @@ func TestRenderThemesAndCodexThemeAreDeterministic(t *testing.T) {
 	if strings.Contains(mono, "\x1b[") {
 		t.Fatalf("mono theme contains ANSI: %q", mono)
 	}
+	if strings.ContainsAny(mono, "\n\r") {
+		t.Fatalf("mono theme is not one line: %q", mono)
+	}
+	if !strings.HasPrefix(mono, ".. CLAUDE:CONSERVE ..") || !strings.Contains(mono, "ctx [######----] 59%") {
+		t.Fatalf("mono render = %q", mono)
+	}
+	for _, r := range mono {
+		if r > unicode.MaxASCII {
+			t.Fatalf("mono render contains non-ASCII rune %q: %q", r, mono)
+		}
+	}
+
+	// Truncation must respect the visible-column budget on every row.
 	short, err := Render(snapshot, RenderOptions{Theme: ThemePAINexus, Width: 34, Color: false})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if displayWidth(short) > 34 {
-		t.Fatalf("render width = %d: %q", displayWidth(short), short)
+	for _, row := range strings.Split(short, "\n") {
+		if displayWidth(row) > 34 {
+			t.Fatalf("render width = %d: %q", displayWidth(row), row)
+		}
 	}
-	for _, r := range short {
-		if r > unicode.MaxASCII {
-			t.Fatalf("truncated render contains non-ASCII rune %q: %q", r, short)
+	// Coloured truncation must not leak styling past the cut.
+	shortColor, err := Render(snapshot, RenderOptions{Theme: ThemePAINexus, Width: 30, Color: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range strings.Split(shortColor, "\n") {
+		if displayWidth(row) > 30 {
+			t.Fatalf("coloured render width = %d: %q", displayWidth(row), row)
+		}
+		if strings.Contains(row, "\x1b[") && !strings.HasSuffix(row, ansiReset) {
+			t.Fatalf("coloured row does not reset styling: %q", row)
 		}
 	}
 	auto, err := Render(snapshot, RenderOptions{Theme: ThemeAuto, Width: 120, Color: false})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(auto, "!! CLAUDE:CONSERVE !! left:") {
-		t.Fatalf("auto theme did not select capacity information profile: %q", auto)
+	// CONSERVE maps to the capacity information profile, so auto must resolve to
+	// exactly what pai-ops renders.
+	ops, err := Render(snapshot, RenderOptions{Theme: ThemePAIOps, Width: 120, Color: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auto != ops {
+		t.Fatalf("auto theme did not select capacity information profile: %q, want %q", auto, ops)
 	}
 
 	first, err := RenderCodexTheme(ThemePAINexus)
@@ -280,19 +315,10 @@ func TestClaudeRenderHasNoPAIBranding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := map[string]string{
-		ThemePAINexus: "< CLAUDE:CONSERVE > left: ctx [######----] 59% | 5h 66% | wk 18%",
-		ThemePAIFocus: "// CLAUDE:CONSERVE // left: ctx [######----] 59% | wk 18%",
-		ThemePAIOps:   "!! CLAUDE:CONSERVE !! left: ctx [######----] 59% | 5h 66% | wk 18%",
-		ThemePAIMono:  ".. CLAUDE:CONSERVE .. left: ctx [######----] 59% | 5h 66% | wk 18%",
-	}
 	for _, theme := range ThemeIDs() {
 		line, err := Render(snapshot, RenderOptions{Theme: theme, Width: 120, Color: false})
 		if err != nil {
 			t.Fatal(err)
-		}
-		if line != expected[theme] {
-			t.Fatalf("render %s = %q, want %q", theme, line, expected[theme])
 		}
 		if strings.Contains(strings.ToUpper(line), "PAI") {
 			t.Fatalf("Claude render leaked retired branding: %q", line)
@@ -300,7 +326,11 @@ func TestClaudeRenderHasNoPAIBranding(t *testing.T) {
 	}
 }
 
-func TestClaudeRenderShowsRemainingContextAsTenSegmentCapacity(t *testing.T) {
+// Capacity supplemented from route evidence populates only RemainingPercent.
+// Reading UsedPercent alone renders those windows as 0% -- a silent "plenty of
+// headroom" lie exactly when capacity is scarce -- so consumed percentage must
+// be derived from whichever side the producer filled in.
+func TestClaudeRenderDerivesConsumedPercentFromRemainingOnlySnapshots(t *testing.T) {
 	watch := Snapshot{
 		Harness: HarnessClaude,
 		Context: Metric{Status: StatusLive, RemainingPercent: 72},
@@ -314,8 +344,15 @@ func TestClaudeRenderShowsRemainingContextAsTenSegmentCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "< CLAUDE:WATCH > left: ctx [#######---] 72% | 5h 81% | wk 43%"; line != want {
-		t.Fatalf("watch render = %q, want %q", line, want)
+	// 72% remaining -> 28% used -> 28/0.835 ~= 34% compaction-aware pressure.
+	// 5h: 81% remaining -> 19% used. wk: 43% remaining -> 57% used.
+	for _, want := range []string{"34%", "5h ", "19%", "wk ", "57%"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("watch render = %q, missing %q", line, want)
+		}
+	}
+	if strings.Contains(line, " 0%") {
+		t.Fatalf("remaining-only snapshot rendered a 0%% window: %q", line)
 	}
 
 	unknown := Snapshot{Harness: HarnessClaude, Context: Metric{Status: StatusUnknown}, Mode: ModeUnknown}

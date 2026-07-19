@@ -61,7 +61,12 @@ func TestSystemStatusSurfaceClaudeSnapshotAndRender(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(line, "!! CLAUDE:CONSERVE !! left: ctx [#####-----] 52%") || !strings.Contains(line, "5h 39%") || !strings.Contains(line, "wk 24%") {
+	// The rich themes report CONSUMED percentage (paired with a heat gradient),
+	// where the retired single-line format reported "left:". 52% context
+	// remaining -> 48% used -> 48/0.835 ~= 57% compaction-aware pressure;
+	// 39% five-hour remaining -> 61% used; 24% weekly remaining -> 76% used.
+	if !strings.Contains(line, "CONSERVE") || !strings.Contains(line, "57%") ||
+		!strings.Contains(line, "5h 61%") || !strings.Contains(line, "wk 76%") {
 		t.Fatalf("render = %q", line)
 	}
 }
@@ -117,7 +122,8 @@ func TestBuildLiveClaudeStatusSnapshotSupplementsMissingWeeklyCapacity(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(strings.ToUpper(line), "PAI") || !strings.Contains(line, "wk 22%") {
+	// 22% weekly remaining -> 78% consumed in the rich themes.
+	if strings.Contains(strings.ToUpper(line), "PAI") || !strings.Contains(line, "wk 78%") {
 		t.Fatalf("live fallback render = %q", line)
 	}
 }
@@ -152,7 +158,9 @@ func TestSupplementLiveClaudeCapacityProbesOnlyWhenOwnedSourcesAreEmpty(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(line, "5h 63%") || !strings.Contains(line, "wk 24%") {
+	// Rich themes report consumed percentage: 63% five-hour remaining -> 37% used,
+	// 24% weekly remaining -> 76% used.
+	if !strings.Contains(line, "5h 37%") || !strings.Contains(line, "wk 76%") {
 		t.Fatalf("live probe did not reach render: %q", line)
 	}
 
@@ -173,8 +181,10 @@ func TestSupplementLiveClaudeCapacityProbesOnlyWhenOwnedSourcesAreEmpty(t *testi
 	if probeCalls != 0 {
 		t.Fatalf("fresh reduced projection still triggered %d live probe(s)", probeCalls)
 	}
+	// Same consumed-percentage semantics as above: the reused projection must
+	// still report 37% five-hour and 76% weekly.
 	line, err = statussurface.Render(fromCache, statussurface.RenderOptions{Theme: statussurface.ThemeAuto, Width: 120})
-	if err != nil || !strings.Contains(line, "5h 63%") || !strings.Contains(line, "wk 24%") {
+	if err != nil || !strings.Contains(line, "5h 37%") || !strings.Contains(line, "wk 76%") {
 		t.Fatalf("fresh capacity projection was not reused: line=%q err=%v", line, err)
 	}
 }
