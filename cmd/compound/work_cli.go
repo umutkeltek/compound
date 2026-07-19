@@ -163,7 +163,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run R] [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)]",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)]",
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"observe-run": {
@@ -1241,7 +1241,7 @@ func cmdWork(args []string) {
 	case "advance":
 		usage := workUsage("advance")
 		advanceValueFlags := map[string]bool{
-			"--to": true, "--by": true, "--actor": true, "--lane": true, "--run": true, "--artifact": true, "--verification": true,
+			"--to": true, "--by": true, "--actor": true, "--lane": true, "--run-attempt": true, "--artifact": true, "--verification": true,
 			"--context-pack": true, "--note": true, "--reason": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 		}
@@ -1254,13 +1254,29 @@ func cmdWork(args []string) {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
+		// S1: --run-attempt replaces the pre-S1 --run flag. Each value must be a ratt_* id
+		// minted by internal/runattempt. The validator in work.Advance rejects non-ratt_
+		// ids, but pre-checking here gives the user a clearer error path than a later
+		// internal envelope-validation failure.
+		var runAttempts []string
+		for _, rid := range valuesFlag(rest, "--run-attempt") {
+			rid = strings.TrimSpace(rid)
+			if rid == "" {
+				continue
+			}
+			if !strings.HasPrefix(rid, "ratt_") {
+				fmt.Fprintf(os.Stderr, "error: --run-attempt value %q must start with %q (minted via internal/runattempt.Mint)\n", rid, "ratt_")
+				os.Exit(2)
+			}
+			runAttempts = append(runAttempts, rid)
+		}
 		gitDelivery := parseGitDelivery(usage)
 		w, err := store.Advance(pos(advanceValueFlags), work.AdvanceInput{
 			To:             flag("--to"),
 			Actor:          firstNonEmpty(flag("--by"), flag("--actor")),
 			LaneRef:        flag("--lane"),
 			GitDelivery:    gitDelivery,
-			RunID:          flag("--run"),
+			RunAttemptIDs:  runAttempts,
 			ArtifactID:     flag("--artifact"),
 			VerificationID: flag("--verification"),
 			ContextPackID:  flag("--context-pack"),
