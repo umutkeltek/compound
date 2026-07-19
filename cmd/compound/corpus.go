@@ -102,7 +102,7 @@ func cmdMemoryCorpusSearch(homePath string, args []string) {
 	laneName := valueFlag(args, "--lane")
 	query := firstPositional(args, map[string]bool{"--lane": true, "--k": true})
 	if laneName == "" || query == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound memory search --lane L <query> [--k N] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound memory search --lane L <query> [--k N] [--include-text] [--json]")
 		os.Exit(2)
 	}
 	_, lane := mustCorpusLaneFromHome(homePath, laneName)
@@ -120,8 +120,9 @@ func cmdMemoryCorpusSearch(homePath string, args []string) {
 		}
 		k = n
 	}
+	includeText := boolFlag(args, "--include-text")
 	retrievalStarted := time.Now()
-	report, err := corpus.Query(context.Background(), homePath, lane, embedder, query, k)
+	report, err := corpus.QueryWithOptions(context.Background(), homePath, lane, embedder, query, k, corpus.QueryOptions{IncludeText: includeText})
 	retrievalparity.Record(homePath, retrievalparity.NewRow(retrievalparity.ConsumerSearch, query, parityCorpusRefs(report), time.Since(retrievalStarted), err == nil, time.Now()))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "memory search:", err)
@@ -134,7 +135,36 @@ func cmdMemoryCorpusSearch(homePath string, args []string) {
 	fmt.Printf("# %d corpus hit(s) for %q lane=%s\n", len(report.Hits), report.Query, report.Lane)
 	for _, hit := range report.Hits {
 		fmt.Printf("%s item=%s score=%.4f %s\n", hit.ChunkID, hit.ItemID, hit.Score, hit.Title)
+		fmt.Printf("  text[%s]: %s\n", hit.TextStatus, corpusHitTextLine(hit))
 	}
+}
+
+// corpusHitTextLine renders a bounded, human-readable line for a hit's text: an explicit
+// reason when the text was withheld (never a silent blank), else a rune-safe snippet.
+func corpusHitTextLine(hit corpus.QueryHit) string {
+	switch hit.TextStatus {
+	case "suppressed_private":
+		return "(suppressed — pass --include-text to reveal)"
+	case "stale_source":
+		return "(source changed since indexing — re-run `compound corpus index` to refresh)"
+	default:
+		return snippetRunes(hit.Text, 240)
+	}
+}
+
+func snippetRunes(text string, limit int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	if limit == 1 {
+		return "…"
+	}
+	return string(runes[:limit-1]) + "…"
 }
 
 func mustCorpusLane(laneName string) (string, corpus.LaneConfig) {
