@@ -13,8 +13,8 @@ func boolp(b bool) *bool { return &b }
 
 func sampleRepos() []InventoryRepo {
 	return []InventoryRepo{
-		{Slug: "products-exampleapp", Name: "exampleapp", Domain: "products", RelativePath: "products/exampleapp", Git: false, MarkerFiles: []string{"CLAUDE.md", "AGENTS.md"}, ProjectStrength: "weak"},
-		{Slug: "exampleapp-android", Name: "android_app", Domain: "products", RelativePath: "products/exampleapp/android_app", Git: true, Branch: "main", Dirty: boolp(false), RecentCommit: "d62f43f prepare release", MarkerFiles: []string{"AGENTS.md"}, ProjectStrength: "strong"},
+		{Slug: "products-notekeep", Name: "notekeep", Domain: "products", RelativePath: "products/notekeep", Git: false, MarkerFiles: []string{"CLAUDE.md", "AGENTS.md"}, ProjectStrength: "weak"},
+		{Slug: "notekeep-android", Name: "android_app", Domain: "products", RelativePath: "products/notekeep/android_app", Git: true, Branch: "main", Dirty: boolp(false), RecentCommit: "d62f43f prepare release", MarkerFiles: []string{"AGENTS.md"}, ProjectStrength: "strong"},
 	}
 }
 

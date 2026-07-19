@@ -87,8 +87,8 @@ func boolp(b bool) *bool { return &b }
 
 func twoRepos() []sourceobs.InventoryRepo {
 	return []sourceobs.InventoryRepo{
-		{Slug: "products-exampleapp", Name: "exampleapp", Domain: "products", RelativePath: "products/exampleapp", Git: false, MarkerFiles: []string{"CLAUDE.md", "AGENTS.md"}, ProjectStrength: "weak"},
-		{Slug: "exampleapp-android", Name: "android_app", Domain: "products", RelativePath: "products/exampleapp/android_app", Git: true, Branch: "main", Dirty: boolp(false), RecentCommit: "d62f43f prepare release", MarkerFiles: []string{"AGENTS.md"}, ProjectStrength: "strong"},
+		{Slug: "products-notekeep", Name: "notekeep", Domain: "products", RelativePath: "products/notekeep", Git: false, MarkerFiles: []string{"CLAUDE.md", "AGENTS.md"}, ProjectStrength: "weak"},
+		{Slug: "notekeep-android", Name: "android_app", Domain: "products", RelativePath: "products/notekeep/android_app", Git: true, Branch: "main", Dirty: boolp(false), RecentCommit: "d62f43f prepare release", MarkerFiles: []string{"AGENTS.md"}, ProjectStrength: "strong"},
 	}
 }
 
@@ -98,7 +98,7 @@ func twoRepos() []sourceobs.InventoryRepo {
 func TestInventoryObserveRowsParkProductHypothesisNoPromote(t *testing.T) {
 	home := t.TempDir()
 	dir := t.TempDir()
-	intake := writeInvIntake(t, dir, `{"generated_at":"2026-07-19T09:00:00+03:00","projects":[{"slug":"products-exampleapp"}]}`, "2026-07-19T09:00:00+03:00", twoRepos())
+	intake := writeInvIntake(t, dir, `{"generated_at":"2026-07-19T09:00:00+03:00","projects":[{"slug":"products-notekeep"}]}`, "2026-07-19T09:00:00+03:00", twoRepos())
 	code, stdout, stderr := invObserve(t, home, "--intake", intake, "--json")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
