@@ -3,6 +3,7 @@ package corpus
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -223,6 +224,36 @@ type chunkInfo struct {
 	itemID     string
 	sourceKind string
 	title      string
+	privacy    string
+}
+
+const (
+	// privateChunkTitle stands in for a private item that has no page_slug. Even the
+	// basename of a private file can name a client, product, or person, so the label
+	// is opaque; the hit still carries item_id for identification.
+	privateChunkTitle = "(private source)"
+	// untitledChunkTitle covers a source_ref with no usable base ("", ".", "/").
+	untitledChunkTitle = "(untitled source)"
+)
+
+// chunkTitle picks the title a hit carries out through `memory search --json`, the
+// console, and ContextPack materialization. Chunk text is privacy-gated in
+// ResolveChunkText; the title travels the same surfaces and must be gated too — it
+// previously fell back to the raw source_ref, publishing a full local path even while
+// the text beside it was correctly suppressed. The decision reads the manifest's
+// privacy field rather than inspecting the shape of the path string.
+func chunkTitle(pageSlug, sourceRef, privacy string) string {
+	if title := strings.TrimSpace(pageSlug); title != "" {
+		return title
+	}
+	if strings.EqualFold(strings.TrimSpace(privacy), "private") {
+		return privateChunkTitle
+	}
+	base := filepath.Base(strings.TrimSpace(sourceRef))
+	if base == "." || base == string(filepath.Separator) || strings.TrimSpace(base) == "" {
+		return untitledChunkTitle
+	}
+	return base
 }
 
 func loadChunkMeta(dir string) (map[string]chunkInfo, error) {
@@ -232,16 +263,14 @@ func loadChunkMeta(dir string) (map[string]chunkInfo, error) {
 	}
 	out := map[string]chunkInfo{}
 	for _, item := range manifest.Items {
-		title := strings.TrimSpace(item.PageSlug)
-		if title == "" {
-			title = strings.TrimSpace(item.SourceRef)
+		info := chunkInfo{
+			itemID:     item.ID,
+			sourceKind: item.SourceKind,
+			privacy:    strings.ToLower(strings.TrimSpace(item.Privacy)),
 		}
+		info.title = chunkTitle(item.PageSlug, item.SourceRef, info.privacy)
 		for _, chunk := range item.Chunks {
-			out[fmt.Sprintf("%s#%d", item.ID, chunk.Ordinal)] = chunkInfo{
-				itemID:     item.ID,
-				sourceKind: item.SourceKind,
-				title:      title,
-			}
+			out[fmt.Sprintf("%s#%d", item.ID, chunk.Ordinal)] = info
 		}
 	}
 	return out, nil
