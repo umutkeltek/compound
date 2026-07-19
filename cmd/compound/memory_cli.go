@@ -82,7 +82,12 @@ func cmdMemory(args []string) {
 	}
 	sub, rest := args[0], args[1:]
 	var store *mem.Store
-	if sub != "consumption" {
+	// memory search is a corpus query (cmdMemoryCorpusSearch) and must NOT
+	// open the mutable memory store: mem.Open() creates ledger/, inbox/, and
+	// events/ under COMPOUND_HOME, so a read-only subcommand would scatter
+	// partial state into a fresh home before the operator ever admits
+	// anything. Pinned by TestMemorySearchDoesNotMutateCompoundHome.
+	if sub != "consumption" && sub != "search" {
 		store, err = mem.Open(homePath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
