@@ -79,7 +79,7 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|land-check|action-plan|act|close-plan|close> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
@@ -173,6 +173,10 @@ var workVerbHelpByName = map[string]workVerbHelp{
 	"land-check": {
 		Usage:   "usage: compound work land-check <work_id> --tip <full-sha> [--repo /bound/repo] [--target-ref refs/heads/main] [--actor A] [--steal --reason R] [--dry-run] [--json]",
 		Example: "compound work land-check work_abc123 --tip 0123456789012345678901234567890123456789 --json",
+	},
+	"salvage-plan": {
+		Usage:   "usage: compound work salvage-plan <work_id> --branch refs/heads/<branch> [--json]",
+		Example: "compound work salvage-plan work_abc123 --branch refs/heads/stale-executor-branch --json",
 	},
 	"action-plan": {
 		Usage:   "usage: compound work action-plan <work_id> [--actor A] [--move-type type] [--receipt-outcome completed|failed|blocked|no_op] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]",
@@ -1343,6 +1347,35 @@ func cmdWork(args []string) {
 		}
 		if report.NextAction != "" {
 			fmt.Printf("next_action: %s\n", report.NextAction)
+		}
+	case "salvage-plan":
+		usage := workUsage("salvage-plan")
+		salvagePlanValueFlags := map[string]bool{"--branch": true}
+		if err := validateWorkArguments(rest, salvagePlanValueFlags, map[string]bool{"--json": true}, 1); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if strings.TrimSpace(flag("--branch")) == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		plan, err := store.SalvagePlan(pos(salvagePlanValueFlags), work.SalvagePlanOptions{
+			Branch: flag("--branch"),
+		}, time.Now())
+		die(err)
+		if has("--json") {
+			printJSON(plan)
+			return
+		}
+		fmt.Printf("salvage-plan %s target=%s branch=%s merge_base=%s stale_base=%v\n", plan.WorkID, plan.TargetBranchRef, plan.Branch, plan.MergeBase, plan.StaleBase)
+		fmt.Printf("true_commits=%d true_files=%d naive_deletions=%d true_deletions=%d\n", len(plan.TrueCommits), len(plan.TrueFiles), plan.NaiveDeletions, plan.TrueDeletions)
+		if plan.FabricatedDeletionLabel != "" {
+			fmt.Printf("fabricated_deletion_label: %s\n", plan.FabricatedDeletionLabel)
+		}
+		fmt.Printf("teeth_reproof: %s\n", plan.TeethReproofNote)
+		for _, command := range plan.SuccessorCommands {
+			fmt.Printf("successor_command: %s\n", command)
 		}
 	case "action-plan":
 		usage := "usage: compound work action-plan <work_id> [--actor A] [--move-type type] [--receipt-outcome completed|failed|blocked|no_op] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
