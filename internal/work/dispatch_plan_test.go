@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
-	"compound/internal/runattempt"
 	"compound/internal/envelope"
+	"compound/internal/runattempt"
 )
 
 func TestMain(m *testing.M) {
