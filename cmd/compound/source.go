@@ -55,6 +55,8 @@ func cmdSource(args []string) {
 		cmdSourceCanonObserve(args[1:])
 	case "change-stream-observe":
 		cmdSourceChangeStreamObserve(args[1:])
+	case "inventory-observe":
+		cmdSourceInventoryObserve(args[1:])
 	case "observation-verdict-plan":
 		cmdSourceObservationVerdictPlan(args[1:])
 	case "observation-verdict-review":
@@ -66,7 +68,7 @@ func cmdSource(args []string) {
 }
 
 func sourceUsage() string {
-	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-advance <family> --to <state> --work <id> --by <actor> --proof <gate>=<ref>... [--confirm] [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | manifest-materialize-dump <family> --target <path> [--json] | canon-observe --family <id> [--file <path>=<node-id> ...] [--cause-class repair|retire|accept|invalidate] [--caused-by <ref> ...] [--next-consumer <who>] [--json] | change-stream-observe --intake <intake.json> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... [--source-in-place] | --from-export <export.json> [--dump <dump>]) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-advance <family> --to <state> --work <id> --by <actor> --proof <gate>=<ref>... [--confirm] [--json] | manifest-drilldown <family> --item <id> [--json] | manifest-materialize <family> --item <id> --target <path> [--json] | manifest-materialize-dump <family> --target <path> [--json] | canon-observe --family <id> [--file <path>=<node-id> ...] [--cause-class repair|retire|accept|invalidate] [--caused-by <ref> ...] [--next-consumer <who>] [--json] | change-stream-observe --intake <intake.json> [--json] | inventory-observe --intake <intake.json> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
 func cmdSourceObserve(args []string) {
