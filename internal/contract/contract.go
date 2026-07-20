@@ -3977,6 +3977,75 @@ func resolveSourceRevisions(revs []envelope.SourceRev, cwd string) []envelope.So
 	return out
 }
 
+// SourceRefPaths returns the absolute file paths backing a source ref in the context
+// of `cwd`, reusing the existing ref→path mapping (revisionForSource /
+// revisionForControlPlaneSource) WITHOUT reading file contents. Used by the body
+// materializer's source-ref file resolver (cmd/compound) so it can read body text
+// for public repo files only; the existing per-ref revisioner still produces the
+// sha256 provenance independently.
+//
+// Returns nil for:
+//   - refs with no path mapping (memory://…, capability://…, private-plan://…);
+//   - directory-backed refs (repo://docs — its body would blow any token budget,
+//     and the directory hash is the authoritative revision, not the contents);
+//   - paths that do not exist on disk (the resolver surfaces source_unavailable).
+//
+// Slice 1 boundary: this helper exposes path resolution only. Body reads stay the
+// caller's job; private-overlay refs (SourceClass == "private_overlay") never reach
+// here — the materializer-side law (contract.go:1262) is the load-bearing gate.
+func SourceRefPaths(ref, cwd string) []string {
+	switch {
+	case ref == "AGENTS.md" || ref == "CLAUDE.md" || ref == "CONTEXT.md":
+		if p := findUp(cwd, ref); p != "" {
+			return []string{p}
+		}
+	case ref == universalPrinciplesRef:
+		if p := findUp(cwd, universalPrinciplesPath); p != "" {
+			return []string{p}
+		}
+	case strings.HasPrefix(ref, "control-plane://"):
+		return controlPlaneSourcePaths(ref, cwd)
+	case ref == "skills/README.md":
+		if p := findUp(cwd, filepath.Join("skills", "README.md")); p != "" {
+			return []string{p}
+		}
+	case ref == "repo://docs":
+		// Directory-backed; no single body to include. The directory hash remains
+		// the authoritative revision; bodies for docs/* are out of slice 1.
+		return nil
+	case filepath.IsAbs(ref) || strings.HasPrefix(ref, "~/"):
+		return []string{expandPath(ref)}
+	}
+	return nil
+}
+
+// controlPlaneSourcePaths mirrors revisionForControlPlaneSource's ref→paths mapping,
+// returning the concrete file paths instead of a composite hash. Empty when the docs
+// root cannot be located or the ref has no mapping.
+func controlPlaneSourcePaths(source, cwd string) []string {
+	docsDir := findUp(cwd, "docs")
+	if docsDir == "" {
+		return nil
+	}
+	root := filepath.Dir(docsDir)
+	var rels []string
+	switch source {
+	case "control-plane://orientation-map":
+		rels = []string{"docs/ARCHITECTURE.md", "docs/LAYERS.md"}
+	case "control-plane://workflow-contract":
+		rels = []string{"docs/architecture/contracts/README.md"}
+	case "control-plane://sop-packets":
+		rels = []string{"docs/architecture/runtime.md", "docs/roadmap/phases.md"}
+	default:
+		return nil
+	}
+	out := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		out = append(out, filepath.Join(root, filepath.FromSlash(rel)))
+	}
+	return out
+}
+
 func revisionForSource(source, cwd string) string {
 	switch {
 	case source == "AGENTS.md" || source == "CLAUDE.md" || source == "CONTEXT.md":

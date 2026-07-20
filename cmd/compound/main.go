@@ -1870,6 +1870,27 @@ func intFlag(args []string, name string) (int, error) {
 	return n, nil
 }
 
+// parseBodyBudget parses `--body-budget <n>` for `compound orient`. Absent or 0 →
+// feature OFF (the materializer returns a nil section and the pack stays
+// byte-identical to today). Negative or non-integer → usage error (exit 2, the
+// repo's parse-error convention). The flag controls whether `compound orient`
+// materializes a body_pack section into the ContextPack; it is CLI-transient and
+// does not enter contract.Input (it is not part of the task's meaning).
+func parseBodyBudget(args []string) (int, error) {
+	raw := valueFlag(args, "--body-budget")
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("--body-budget must be a non-negative integer")
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("--body-budget must be a non-negative integer")
+	}
+	return n, nil
+}
+
 func splitCSV(s string) []string {
 	if strings.TrimSpace(s) == "" {
 		return nil
@@ -3343,7 +3364,12 @@ func cmdOrient(args []string) {
 	in, err := parseOrientArgsWithHome(args, homePath)
 	die(err)
 	if in.Harness == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>] [--topic <topic-slug>]")
+		fmt.Fprintln(os.Stderr, "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>] [--topic <topic-slug>] [--body-budget <estimated-tokens>]")
+		os.Exit(2)
+	}
+	bodyBudget, err := parseBodyBudget(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
 	}
 	now := time.Now()
@@ -3357,6 +3383,18 @@ func cmdOrient(args []string) {
 	die(err)
 	if pack.IDs.ContractID != ec.ID {
 		die(fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID))
+	}
+	// Body materialization (slice 1): with --body-budget > 0, attach a body_pack
+	// section carrying task-ranked full content under the budget. The materializer
+	// runs AFTER PackWithCapabilities (it consumes the pack's Included/Excluded) and
+	// BEFORE RecordContextPack (the section rides inside the same pack JSON body).
+	// Absent or 0 → MaterializeBodyPack returns nil → ApplyBodyPack leaves the pack
+	// untouched → no body_pack key on the wire (F4 CLI half).
+	if bodyBudget > 0 {
+		resolver := newOrientBodyResolver(homePath, pack, in.Cwd)
+		candidates, candErr := resolver.Resolve(in.Task)
+		die(candErr)
+		pack = contract.ApplyBodyPack(pack, contract.MaterializeBodyPack(candidates, pack, bodyBudget))
 	}
 	_, err = contract.RecordContextPack(homePath, pack)
 	die(err)
