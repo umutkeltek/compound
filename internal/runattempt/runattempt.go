@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -97,6 +98,11 @@ type RunAttempt struct {
 	// verifications) that corroborate the attempt's outcome. Empty slice clears (intentional,
 	// see TestRunAttemptSetProofRefsClearsOnEmpty).
 	ProofRefs []string `json:"proof_refs,omitempty"`
+
+	// SweepReason records WHY a sweep terminalized this attempt (C3). Set only by
+	// SweepStale / CompleteWithReason; empty on normally-completed attempts.
+	// omitempty so pre-C3 records re-marshal byte-identical.
+	SweepReason string `json:"sweep_reason,omitempty"`
 }
 
 // Store persists RunAttempts under <home>/run_attempts/<id>.json with atomic rename and a
@@ -243,6 +249,32 @@ func (s *Store) Complete(id string, status string, now time.Time) (RunAttempt, e
 	}
 	ra.Status = status
 	ra.CompletedAt = now.UTC()
+	if err := s.write(ra); err != nil {
+		return RunAttempt{}, err
+	}
+	return ra, nil
+}
+
+// CompleteWithReason transitions a RunAttempt to terminal status and records
+// WHY. Used by SweepStale (C3) to leave an audit trail: a swept attempt
+// carries sweep_reason="stale: no heartbeat for 30m" (or similar) so an
+// operator reading the JSON can distinguish a normally-completed attempt from
+// one the sweeper collected. The reason is recorded in SweepReason (omitempty,
+// hash-neutral). Refuses if already terminal, same as Complete.
+func (s *Store) CompleteWithReason(id, status, reason string, now time.Time) (RunAttempt, error) {
+	if !IsTerminal(status) {
+		return RunAttempt{}, fmt.Errorf("runattempt complete %s: status %q is not terminal", id, status)
+	}
+	ra, err := s.Get(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	if IsTerminal(ra.Status) {
+		return RunAttempt{}, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
+	}
+	ra.Status = status
+	ra.CompletedAt = now.UTC()
+	ra.SweepReason = strings.TrimSpace(reason)
 	if err := s.write(ra); err != nil {
 		return RunAttempt{}, err
 	}
@@ -429,6 +461,129 @@ func (s *Store) SetProofRefs(id string, refs []string) (RunAttempt, error) {
 	return ra, s.write(ra)
 }
 
+// ---------------------------------------------------------------------------
+// C3: crash terminality — List, ListNonTerminal, SweepStale
+//
+// A RunAttempt whose producer is gone (PID dead, no heartbeat, job file
+// terminal) must not stay pending/running forever. SweepStale walks the
+// store, finds non-terminal attempts whose last activity (heartbeat or
+// created_at) is older than the threshold, and terminalizes them to
+// abandoned with a recorded sweep_reason. Doctor surfaces the stuck count
+// until swept. RunAttempt is evidence, not enforcement: sweeping an attempt
+// has NO effect on the work state machine.
+// ---------------------------------------------------------------------------
+
+// SweepReport is the outcome of one SweepStale pass. Pinned by C3 tests.
+type SweepReport struct {
+	Scanned    int      `json:"scanned"` // total non-terminal attempts examined
+	Swept      int      `json:"swept"`   // terminalized this pass
+	Skipped    int      `json:"skipped"` // fresh enough to keep
+	SweptIDs   []string `json:"swept_ids,omitempty"`
+	SkippedIDs []string `json:"skipped_ids,omitempty"`
+}
+
+// DefaultSweepThreshold is the staleness cutoff used when no explicit
+// threshold is supplied. A pending/running attempt with no activity for this
+// long is considered orphaned. 30 minutes matches the codex job heartbeat
+// cadence (the plugin pings every ~5 minutes; six missed pings = dead).
+const DefaultSweepThreshold = 30 * time.Minute
+
+// List returns every RunAttempt on disk, sorted by CreatedAt ascending.
+// A missing run_attempts/ directory is not an error (fresh home). Torn or
+// foreign files are skipped, never fatal — matching the read-only tolerance
+// of doctor's contract walks.
+func (s *Store) List() ([]RunAttempt, error) {
+	dir := filepath.Join(s.home, "run_attempts")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("runattempt list: %w", err)
+	}
+	var out []RunAttempt
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".json")
+		ra, gerr := s.Get(id)
+		if gerr != nil {
+			continue // torn or foreign — skip, never fatal
+		}
+		out = append(out, ra)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+// ListNonTerminal returns only pending/running RunAttempts — the set a
+// sweep would examine. Sorted by CreatedAt ascending (List order).
+func (s *Store) ListNonTerminal() ([]RunAttempt, error) {
+	all, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	var out []RunAttempt
+	for _, ra := range all {
+		if !IsTerminal(ra.Status) {
+			out = append(out, ra)
+		}
+	}
+	return out, nil
+}
+
+// SweepStale terminalizes every non-terminal RunAttempt whose last activity
+// is older than threshold. "Last activity" is LastHeartbeatAt when present,
+// otherwise CreatedAt (an attempt that never received a heartbeat is judged
+// from its birth). Swept attempts transition to abandoned with a
+// sweep_reason recording the staleness. Terminal attempts are untouched.
+//
+// threshold <= 0 uses DefaultSweepThreshold.
+//
+// The sweep is best-effort per attempt: a write failure on one attempt does
+// not abort the pass (the next sweep retries it). RunAttempt is evidence,
+// not enforcement — sweeping has NO effect on the work state machine.
+func (s *Store) SweepStale(threshold time.Duration, now time.Time) (SweepReport, error) {
+	if threshold <= 0 {
+		threshold = DefaultSweepThreshold
+	}
+	stuck, err := s.ListNonTerminal()
+	if err != nil {
+		return SweepReport{}, err
+	}
+	var rep SweepReport
+	rep.Scanned = len(stuck)
+	for _, ra := range stuck {
+		lastActivity := ra.CreatedAt
+		if ra.LastHeartbeatAt != nil {
+			lastActivity = *ra.LastHeartbeatAt
+		}
+		age := now.Sub(lastActivity)
+		if age < threshold {
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
+		reason := fmt.Sprintf("stale: no activity for %s (threshold %s)", age.Round(time.Second), threshold)
+		if _, cerr := s.CompleteWithReason(ra.ID, StatusAbandoned, reason, now); cerr != nil {
+			// Best-effort: a write failure on one attempt does not abort the
+			// pass. The next sweep retries it.
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
+		rep.Swept++
+		rep.SweptIDs = append(rep.SweptIDs, ra.ID)
+	}
+	return rep, nil
+}
+
 func (s *Store) path(id string) string {
 	return filepath.Join(s.home, "run_attempts", id+".json")
 }
@@ -436,6 +591,8 @@ func (s *Store) path(id string) string {
 // write persists ra atomically (write to .tmp, fsync, rename) so a partial write cannot
 // leave a half-decoded file in place. Same shape as internal/work.eventLogWrites and
 // internal/landlease.writeAtomic so a crash mid-write loses at most one RunAttempt.
+// C5: the fsync is real now (previously the comment claimed it but the code did not).
+// The store is an evidence organ — durability matters.
 func (s *Store) write(ra RunAttempt) error {
 	dir := filepath.Join(s.home, "run_attempts")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -446,8 +603,20 @@ func (s *Store) write(ra RunAttempt) error {
 		return fmt.Errorf("runattempt write: encode %s: %w", ra.ID, err)
 	}
 	tmp := s.path(ra.ID) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	f, err := os.Create(tmp)
+	if err != nil {
+		return fmt.Errorf("runattempt write: create %s: %w", tmp, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
 		return fmt.Errorf("runattempt write: write %s: %w", tmp, err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("runattempt write: fsync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("runattempt write: close %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, s.path(ra.ID)); err != nil {
 		return fmt.Errorf("runattempt write: rename %s: %w", tmp, err)

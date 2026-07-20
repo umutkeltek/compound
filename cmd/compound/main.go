@@ -174,6 +174,8 @@ func main() {
 		cmdProofCheck(os.Args[2:])
 	case "doctor":
 		cmdDoctor(os.Args[2:])
+	case "run-attempt":
+		cmdRunAttempt(os.Args[2:])
 	case "experiential-smoke":
 		cmdExperientialSmoke(os.Args[2:])
 	case "release":

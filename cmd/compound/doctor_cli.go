@@ -21,6 +21,7 @@ import (
 	"compound/internal/hookplan"
 	"compound/internal/landlease"
 	"compound/internal/policy"
+	"compound/internal/runattempt"
 )
 
 // cmdDoctor is the single legible operator health surface. The newest organs each expose real state,
@@ -72,6 +73,12 @@ type doctorReport struct {
 	// Permission posture: one row per configured harness-permission authority
 	// (config/harness-permissions/*.yaml), read-only via harness.PermissionDrift.
 	PermissionPosture []doctorPermissionPosture `json:"permission_posture,omitempty"`
+
+	// C3: RunAttempt crash terminality — how many attempts are stuck
+	// (pending/running) and how old the oldest is. Doctor surfaces them as
+	// a finding until swept (`compound run-attempt sweep`).
+	RunAttemptsStuck       int    `json:"run_attempts_stuck"`
+	RunAttemptsStuckOldest string `json:"run_attempts_stuck_oldest,omitempty"`
 
 	// Surfacing coverage: rows = agent lanes/harnesses, columns = communication surfaces
 	// (guard hook · orient · memory injection · peer visibility). Read-only, derived from
@@ -182,6 +189,20 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// 3b) C3: RunAttempt crash terminality — count stuck (pending/running)
+	// attempts and report the oldest. Read-only; sweeping lives on the
+	// `compound run-attempt sweep` verb, never here.
+	if stuck, serr := runattempt.Open(homePath).ListNonTerminal(); serr == nil && len(stuck) > 0 {
+		rep.RunAttemptsStuck = len(stuck)
+		oldest := stuck[0].CreatedAt // List sorts by CreatedAt ascending
+		for _, ra := range stuck {
+			if ra.CreatedAt.Before(oldest) {
+				oldest = ra.CreatedAt
+			}
+		}
+		rep.RunAttemptsStuckOldest = surfacingAge(time.Since(oldest))
+	}
+
 	// 4) Placement guard mode — observe is fail-open (record-only).
 	if cfg, _, cerr := policy.LoadConfig(homePath); cerr == nil {
 		rep.PlacementMode = cfg.PlacementGuardMode
@@ -239,6 +260,14 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	fmt.Fprintf(stdout, "- %d total (%d live, %d superseded)\n", rep.FindingsTotal, rep.FindingsLive, rep.FindingsSuperseded)
 	if rep.FindingsTotal > 0 {
 		fmt.Fprintln(stdout, "  -> `compound finding list` to review, `compound finding doctor` for stale/superseded")
+	}
+
+	fmt.Fprintln(stdout, "\n## run attempts (crash terminality)")
+	if rep.RunAttemptsStuck == 0 {
+		fmt.Fprintln(stdout, "- no stuck attempts (all terminal)")
+	} else {
+		fmt.Fprintf(stdout, "- %d stuck (pending/running), oldest %s ago\n", rep.RunAttemptsStuck, rep.RunAttemptsStuckOldest)
+		fmt.Fprintln(stdout, "  -> `compound run-attempt sweep` to terminalize stale attempts")
 	}
 
 	fmt.Fprintln(stdout, "\n## placement guard")
