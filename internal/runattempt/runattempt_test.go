@@ -328,3 +328,70 @@ func TestIsTerminal(t *testing.T) {
 		}
 	}
 }
+
+// --- C2: deterministic mint ---
+
+func TestMintDeterministicSameSeedSameID(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	a := MintDeterministic("codex-job-abc123", now)
+	b := MintDeterministic("codex-job-abc123", now)
+	if a != b {
+		t.Fatalf("same seed produced different ids: %q vs %q", a, b)
+	}
+	if !Valid(a) {
+		t.Fatalf("deterministic id %q did not pass Valid()", a)
+	}
+}
+
+func TestMintDeterministicDifferentSeedDifferentID(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	a := MintDeterministic("codex-job-abc123", now)
+	b := MintDeterministic("codex-job-def456", now)
+	if a == b {
+		t.Fatalf("different seeds produced same id: %q", a)
+	}
+}
+
+func TestMintWithIDIdempotent(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	id := MintDeterministic("job-xyz", now)
+	first, err := s.MintWithID(id, "work_abc", "codex", "codex", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != id {
+		t.Fatalf("first mint id = %q, want %q", first.ID, id)
+	}
+	// Second call with same id returns the existing record.
+	second, err := s.MintWithID(id, "work_abc", "codex", "codex", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID || second.WorkID != first.WorkID || second.Status != first.Status {
+		t.Fatalf("idempotent mint returned different record: %+v vs %+v", second, first)
+	}
+	// Only one file on disk.
+	entries, err := os.ReadDir(filepath.Join(home, "run_attempts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("run_attempts has %d files, want 1", count)
+	}
+}
+
+func TestMintWithIDRejectsInvalidID(t *testing.T) {
+	s := Open(t.TempDir())
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	if _, err := s.MintWithID("bad-id", "work_abc", "codex", "codex", now); err == nil {
+		t.Fatal("MintWithID with invalid id must fail")
+	}
+}
