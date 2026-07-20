@@ -31,7 +31,12 @@ FAKE_BIN="$TMPDIR/fake-bin"
 mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/compound" <<'STUB'
 #!/usr/bin/env sh
-# Minimal stand-in for `compound hook install` — accepts any args, exits 0.
+# Minimal stand-in for `compound`. Records `hook install` invocations to
+# $HOOK_INSTALL_LOG (when set) so tests can assert the harness arg, then
+# exits 0.
+if [ "${1:-}" = "hook" ] && [ "${2:-}" = "install" ] && [ -n "${HOOK_INSTALL_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$HOOK_INSTALL_LOG"
+fi
 exit 0
 STUB
 chmod +x "$FAKE_BIN/compound"
@@ -162,6 +167,13 @@ mkdir -p "$PROFILE2"
 # would normally add. We don't actually run real compound — we just check our
 # command sequences.
 echo '{"hooks":{}}' > "$PROFILE2/settings.json"
+# Capture the hook install invocation so we can assert the harness arg.
+# install-lane.sh must pass --harness claude-zai (the hook roster for any
+# claude_code-family isolated profile), NOT the raw lane id -- the real
+# cmdHookInstall allowlist is claude-code|claude-zai|codex|all and
+# --config-dir is gated to claude-zai.
+HOOK_INSTALL_LOG="$TMPDIR/hook-install.log"; export HOOK_INSTALL_LOG
+: > "$HOOK_INSTALL_LOG"
 LANES_SH_FILE="$LIB_DIR/lanes.sh" \
 LANE_STATUSLINE_FILE="$LIB_DIR/lane-statusline.sh" \
   sh "$LIB_DIR/install-lane.sh" \
@@ -169,6 +181,19 @@ LANE_STATUSLINE_FILE="$LIB_DIR/lane-statusline.sh" \
     --profile-dir "$PROFILE2" \
     --compound "$FAKE_BIN/compound" \
     --steering-source "$LIB_DIR/README.md" 2>&1 | sed 's/\o033/<ESC>/g' >/dev/null
+
+# The hook install call must target the claude-zai roster with the lane's
+# own profile dir. Pinning the raw-lane-id regression (qwen/minimax/...
+# used to be rejected by the real compound binary).
+_hook_line=$(cat "$HOOK_INSTALL_LOG")
+case "$_hook_line" in
+  *"--harness claude-zai"*) printf "ok: hook install targets claude-zai roster\n" ;;
+  *) echo "FAIL: hook install harness arg wrong: $_hook_line"; exit 1 ;;
+esac
+case "$_hook_line" in
+  *"--config-dir $PROFILE2"*) printf "ok: hook install uses the lane profile dir\n" ;;
+  *) echo "FAIL: hook install config-dir arg wrong: $_hook_line"; exit 1 ;;
+esac
 
 # Statusline entry installed.
 assert_jq "$PROFILE2/settings.json" '(.statusLine.command)' \

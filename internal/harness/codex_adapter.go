@@ -60,11 +60,7 @@ func (a *CodexAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error) 
 // the prompt if Prompt is empty (caller convenience); the explicit
 // Prompt field wins.
 func (a *CodexAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
-	if in.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, in.Timeout)
-		_ = cancel
-	}
+	// Timeout is owned by runWithSubprocess; see OSEntrypointsAdapter.buildCmd.
 	prompt := in.Prompt
 	if prompt == "" && len(in.Args) > 0 {
 		prompt = in.Args[0]

@@ -57,9 +57,10 @@ func withPATH(t *testing.T, dir string) {
 }
 
 // TestClaudeAdapterHappyPath: a fake `claude` script on PATH is invoked
-// with --print --dangerously-skip-permissions <prompt>. The RunAttempt
-// is succeeded, harness="claude", command="claude", and the argv log
-// contains the expected flags.
+// with --print --permission-mode plan <prompt> -- the safe default posture
+// (bypass is opt-in via --permission-mode bypass). The RunAttempt is
+// succeeded, harness="claude", command="claude", and the argv log contains
+// the expected flags.
 func TestClaudeAdapterHappyPath(t *testing.T) {
 	argvLog := filepath.Join(t.TempDir(), "argv.log")
 	binDir := fakeBinaryPath(t, "claude", argvLog, 0)
@@ -100,8 +101,11 @@ func TestClaudeAdapterHappyPath(t *testing.T) {
 	if !strings.Contains(argv, "--print") {
 		t.Fatalf("argv log missing --print: %q", argv)
 	}
-	if !strings.Contains(argv, "--dangerously-skip-permissions") {
-		t.Fatalf("argv log missing --dangerously-skip-permissions: %q", argv)
+	if !strings.Contains(argv, "--permission-mode plan") {
+		t.Fatalf("argv log missing --permission-mode plan (safe default): %q", argv)
+	}
+	if strings.Contains(argv, "--dangerously-skip-permissions") {
+		t.Fatalf("default run must NOT bypass permissions (bypass is opt-in): %q", argv)
 	}
 	if !strings.Contains(argv, "hello from claude") {
 		t.Fatalf("argv log missing prompt: %q", argv)
@@ -134,6 +138,59 @@ func TestClaudeAdapterFailedExit(t *testing.T) {
 	}
 	if out.ExitCode != 1 {
 		t.Fatalf("exit code = %d, want 1", out.ExitCode)
+	}
+}
+
+// TestClaudeAdapterPermissionMode: the argv reflects RunInput.PermissionMode.
+// Default ("") is the safe "plan" posture (read-only, does not hang a
+// non-interactive --print run); an explicit named mode swaps in
+// --permission-mode <mode>; "bypass" is the explicit opt-in for
+// --dangerously-skip-permissions. Pinned: the posture must be explicit and
+// auditable, and a typo must never produce an unguarded run.
+func TestClaudeAdapterPermissionMode(t *testing.T) {
+	cases := []struct {
+		name string
+		mode string
+		want string
+		ban  string // substring that must NOT appear
+	}{
+		{"empty_defaults_to_plan", "", "--permission-mode plan", "--dangerously-skip-permissions"},
+		{"explicit_plan", "plan", "--permission-mode plan", "--dangerously-skip-permissions"},
+		{"explicit_default", "default", "--permission-mode default", "--dangerously-skip-permissions"},
+		{"explicit_acceptEdits", "acceptEdits", "--permission-mode acceptEdits", "--dangerously-skip-permissions"},
+		{"explicit_bypass_opt_in", "bypass", "--dangerously-skip-permissions", "--permission-mode"},
+		{"unknown_falls_back_to_plan", "bogus-mode", "--permission-mode plan", "--dangerously-skip-permissions"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			argvLog := filepath.Join(t.TempDir(), "argv.log")
+			binDir := fakeBinaryPath(t, "claude", argvLog, 0)
+			withPATH(t, binDir)
+
+			home := t.TempDir()
+			store := runattempt.Open(home)
+			a := NewClaudeAdapter(store)
+
+			_, err := a.Run(context.Background(), RunInput{
+				WorkID:         "work_permode",
+				Harness:        "claude",
+				Workspace:      home,
+				Prompt:         "hi",
+				PermissionMode: tc.mode,
+				Now:            time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC),
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			argvBytes, _ := os.ReadFile(argvLog)
+			argv := string(argvBytes)
+			if !strings.Contains(argv, tc.want) {
+				t.Fatalf("mode %q: argv missing %q; got: %s", tc.mode, tc.want, argv)
+			}
+			if tc.ban != "" && strings.Contains(argv, tc.ban) {
+				t.Fatalf("mode %q: argv must not contain %q; got: %s", tc.mode, tc.ban, argv)
+			}
+		})
 	}
 }
 

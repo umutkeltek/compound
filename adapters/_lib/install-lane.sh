@@ -95,7 +95,16 @@ fi
 
 mkdir -p "$profile_dir"
 
-"$compound_bin" hook install --harness "$lane" --config-dir "$profile_dir" --binary "$compound_bin"
+# Every lane that reaches install-lane.sh is a claude_code-family isolated
+# profile (its own --config-dir). The hook ROSTER for any such profile is
+# claude-zai's full context/guard/ownership set -- that is what the
+# hand-written adapters/claude-zai/install.sh installs, and what
+# `compound hook install` accepts with --config-dir. Passing the raw lane
+# id (qwen/minimax/...) here used to fail: cmdHookInstall's allowlist is
+# claude-code|claude-zai|codex|all, and --config-dir is gated to
+# claude-zai. The lane id still identifies the profile (via --config-dir
+# and the statusline); claude-zai identifies the hook authority source.
+"$compound_bin" hook install --harness claude-zai --config-dir "$profile_dir" --binary "$compound_bin"
 
 LANES_SH_FILE="$_lib_dir/lanes.sh" \
 LANE_STATUSLINE_FILE="$_lib_dir/lane-statusline.sh" \

@@ -70,6 +70,16 @@ type RunInput struct {
 	// argument). OSEntrypointsAdapter ignores it. Callers that already have
 	// Args can use Args[0] instead; Prompt is a convenience field.
 	Prompt string
+	// PermissionMode selects the harness's permission posture for adapters
+	// that have one (today: Claude). Recognized values for Claude: "" (safe
+	// "plan" default -- read-only; the only governed mode that does not hang
+	// a non-interactive `claude --print` run), "default", "plan",
+	// "acceptEdits", and "bypass" (--dangerously-skip-permissions, explicit
+	// opt-in for fully-autonomous runs). The chosen mode is reflected in the
+	// subprocess argv. Surfaced on the CLI as --permission-mode so the
+	// posture is explicit and auditable rather than hard-coded.
+	// OSEntrypointsAdapter and CodexAdapter ignore it.
+	PermissionMode string
 	// Args is the argv (after the program path). May be empty.
 	Args []string
 	// Env is the additional env vars to set on the subprocess. Optional.

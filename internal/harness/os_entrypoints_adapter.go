@@ -61,11 +61,12 @@ func (a *OSEntrypointsAdapter) Run(ctx context.Context, in RunInput) (RunOutput,
 }
 
 func (a *OSEntrypointsAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
-	if in.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, in.Timeout)
-		_ = cancel
-	}
+	// Timeout is owned by runWithSubprocess (a kill timer enforces
+	// RunInput.Timeout regardless of how the command is built); buildCmd
+	// only wires the caller's ctx so an externally-cancelled context still
+	// propagates. Deliberately NOT adding a second context.WithTimeout
+	// here -- two independent deadlines race and the loser masks the
+	// TimedOut signal.
 	cmd := exec.CommandContext(ctx, in.Command, in.Args...)
 	cmd.Dir = in.Workspace
 	cmd.Env = append(os.Environ(), in.Env...)

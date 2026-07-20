@@ -138,6 +138,12 @@ func TestWorkAdvanceExecuteFailedExit(t *testing.T) {
 	if final.State != "failed" {
 		t.Fatalf("expected state=failed on non-zero exit, got: %s", final.State)
 	}
+	// The failed close must forward-link the (terminal) RunAttempt onto
+	// the envelope via CloseInput.RunAttemptIDs -- the audit chain reaches
+	// the failed run from the work, not only from run_attempts/<id>.json.
+	if len(final.RunAttemptIDs) != 1 {
+		t.Fatalf("expected failed-close to forward-link 1 RunAttemptID on the work, got %d (%v)", len(final.RunAttemptIDs), final.RunAttemptIDs)
+	}
 	// The failed-path closes via CloseInput (failed is a terminal
 	// state; Advance can't go there). The RunAttempt itself is
 	// still persisted to <home>/run_attempts/ -- the S2 spine records
@@ -155,5 +161,54 @@ func TestWorkAdvanceExecuteFailedExit(t *testing.T) {
 	ra, _ := store.Get(id)
 	if ra.Status != runattempt.StatusFailed {
 		t.Fatalf("expected RunAttempt failed, got: %s", ra.Status)
+	}
+}
+
+// TestWorkAdvanceExecuteUnknownHarnessNoStateChange: an unknown --harness
+// name fails CLOSED -- the work never advances to "running". Pinned: the
+// old flow advanced to running first and looked the adapter up second, so
+// a typo in --harness left the work stuck in "running" with no RunAttempt
+// and no recovery. Spawned as a subprocess because the CLI os.Exit on the
+// unknown-harness path.
+func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := work.Open(homePath)
+	w, _ := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "unknown-harness must not move the work",
+	}, cliTestNow)
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command("go", "run", "./cmd/compound", "work", "advance", w.ID,
+		"--to", "running", "--execute", "--harness", "no-such-harness",
+		"--", "echo", "hi")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit on unknown harness, got 0. output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "unknown harness") {
+		t.Fatalf("expected 'unknown harness' in stderr, got:\n%s", out)
+	}
+
+	// The work must NOT have advanced -- still "claimed", no RunAttempt.
+	ws2, _ := work.Open(homePath)
+	final, getErr := ws2.Get(w.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if final.State != "claimed" {
+		t.Fatalf("unknown harness must fail before any state change; state = %q, want claimed (the old flow left it stuck in running)", final.State)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 0 {
+		t.Fatalf("unknown harness must mint no RunAttempt; got %d file(s)", len(runAttemptFiles))
 	}
 }

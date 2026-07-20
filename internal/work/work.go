@@ -1414,6 +1414,14 @@ type CloseInput struct {
 	// join can score them CONSUMED. Unlike UsedCapabilities they are NOT capability-normalized
 	// (a claim ref is not a capability node); they are kept out of the skill typed projections.
 	ConsumedRefs []string
+	// RunAttemptIDs attaches one or more RunAttempt ids (ratt_*) to the work
+	// envelope at close -- the failed-harness-run forward link. Close is the
+	// terminal transition for failed/cancelled work whose RunAttempt would
+	// otherwise be orphaned (Advance already carries RunAttemptIDs for the
+	// running->verifying path; this mirrors it for the close path so a failed
+	// run is reachable from the envelope, not only from the run_attempts dir).
+	// Same ratt_ prefix rule as AdvanceInput.RunAttemptIDs (enforced below).
+	RunAttemptIDs []string
 }
 
 // CloseResult is the connected chain proof: the final work plus the Receipt and the
@@ -1649,6 +1657,19 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		return res, abortReferenceTransaction(err)
 	}
 	from := w.State
+	// Attach close-time RunAttempt ids (the failed-harness-run forward link)
+	// before the envelope is written. Same ratt_ prefix rule as Advance; a
+	// non-ratt_ id is a caller bug, not a retry, so it aborts the close.
+	for _, rid := range in.RunAttemptIDs {
+		rid = strings.TrimSpace(rid)
+		if rid == "" {
+			continue
+		}
+		if !strings.HasPrefix(rid, "ratt_") {
+			return res, fmt.Errorf("close RunAttemptIDs contains non-ratt_ id %q (settled in S1; see internal/runattempt.Prefix)", rid)
+		}
+		w.RunAttemptIDs = append(w.RunAttemptIDs, rid)
+	}
 	w.State = in.Outcome
 	w.IDs.TransitionID = tr.ID
 	if err := s.writeJSON(s.workPath(workID), &w); err != nil {

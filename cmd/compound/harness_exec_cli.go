@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/runattempt"
@@ -75,10 +77,12 @@ func cmdHarnessRun(args []string) {
 
 	// Validate work envelope exists. Read-only check -- the CLI does not
 	// advance the work; that's the adapter's responsibility via the
-	// action_intent_id the caller can pass.
+	// action_intent_id the caller can pass. The returned envelope feeds
+	// workspace resolution below.
 	ws, err := work.Open(homePath)
 	die(err)
-	if _, err := ws.Get(workID); err != nil {
+	wenv, err := ws.Get(workID)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "work envelope %q: %v\n", workID, err)
 		os.Exit(1)
 	}
@@ -115,14 +119,24 @@ func cmdHarnessRun(args []string) {
 		os.Exit(1)
 	}
 
+	// Resolve the execution workspace. Never default to COMPOUND_HOME --
+	// running a real code-editing harness (codex/claude) inside the
+	// state/config dir edits the wrong tree. See resolveExecuteWorkspace.
+	workspace := resolveExecuteWorkspace(args, wenv.GitDelivery)
+	if workspace == "" {
+		fmt.Fprintln(os.Stderr, "error: cannot determine execution workspace; pass --workspace <path>")
+		os.Exit(2)
+	}
+
 	in := harness.RunInput{
-		WorkID:    workID,
-		Harness:   harnessName,
-		Workspace: homePath,
-		Command:   command,
-		Args:      commandArgs,
-		Prompt:    prompt,
-		Now:       time.Now().UTC(),
+		WorkID:         workID,
+		Harness:        harnessName,
+		Workspace:      workspace,
+		Command:        command,
+		Args:           commandArgs,
+		Prompt:         prompt,
+		PermissionMode: valueFlag(args, "--permission-mode"),
+		Now:            time.Now().UTC(),
 	}
 
 	out, err := a.Run(context.Background(), in)
@@ -175,4 +189,32 @@ func indexOf(haystack []string, needle string) int {
 		}
 	}
 	return -1
+}
+
+// resolveExecuteWorkspace picks the filesystem root a harness subprocess
+// runs inside, for `harness run` and `work advance --execute`. Order:
+//
+//  1. explicit --workspace flag
+//  2. the work envelope's git_delivery.target_worktree_root (where the
+//     work's git delivery actually lands)
+//  3. the current working directory
+//
+// It deliberately does NOT fall back to COMPOUND_HOME: running a real
+// code-editing harness (codex/claude) inside the state/config dir edits
+// the wrong tree and pollutes COMPOUND_HOME. Returns "" only when none of
+// the three resolve (essentially: --workspace unset, no git delivery, and
+// os.Getwd fails) -- the caller then refuses rather than defaulting home.
+func resolveExecuteWorkspace(args []string, gd *envelope.GitDeliveryContract) string {
+	if ws := strings.TrimSpace(valueFlag(args, "--workspace")); ws != "" {
+		return ws
+	}
+	if gd != nil {
+		if root := strings.TrimSpace(gd.TargetWorktreeRoot); root != "" {
+			return root
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return ""
 }

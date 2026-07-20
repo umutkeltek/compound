@@ -66,20 +66,50 @@ func (a *ClaudeAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error)
 	return runWithSubprocess(ctx, a.store, a.Name(), in, a.buildCmd, a.heartbeatInterval)
 }
 
-// buildCmd assembles `claude --print --dangerously-skip-permissions <prompt>`.
-// Args[0] is used as the prompt if Prompt is empty (caller convenience);
-// the explicit Prompt field wins.
-func (a *ClaudeAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
-	if in.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, in.Timeout)
-		_ = cancel
+// claudeDefaultPermissionMode is the posture used when RunInput.PermissionMode
+// is empty. It is "plan" on purpose: this adapter drives Claude as a
+// NON-INTERACTIVE subprocess (`claude --print`), where a permission prompt
+// cannot be answered and would hang the run until the kill timer fires.
+// "plan" is the only governed mode that does not hang a headless run --
+// planning mode researches and proposes but takes no state-changing action,
+// so it never prompts. To let Claude actually edit/execute autonomously,
+// pass --permission-mode explicitly: "acceptEdits" (auto-accept file edits,
+// still prompts on bash) or "bypass" (--dangerously-skip-permissions, no
+// prompts at all). Pinned by TestClaudeAdapterHappyPath (default is plan,
+// not bypass) and TestClaudeAdapterPermissionMode.
+const claudeDefaultPermissionMode = "plan"
+
+// claudePermissionArgs translates a PermissionMode into the argv fragment
+// the Claude CLI understands. "" -> the safe plan default; "bypass" ->
+// --dangerously-skip-permissions (explicit opt-in for fully-autonomous
+// runs); "default" / "plan" / "acceptEdits" pass through verbatim. An
+// unrecognized mode falls back to the safe plan default -- a typo must
+// never produce an unguarded run.
+func claudePermissionArgs(mode string) []string {
+	if mode == "" {
+		mode = claudeDefaultPermissionMode
 	}
+	switch mode {
+	case "bypass":
+		return []string{"--dangerously-skip-permissions"}
+	case "default", "plan", "acceptEdits":
+		return []string{"--permission-mode", mode}
+	default:
+		return []string{"--permission-mode", claudeDefaultPermissionMode}
+	}
+}
+
+// buildCmd assembles the claude argv from the RunInput. The permission
+// posture comes from RunInput.PermissionMode (default bypass -- see
+// claudeDefaultPermissionMode). Args[0] is used as the prompt if Prompt is
+// empty (caller convenience); the explicit Prompt field wins.
+func (a *ClaudeAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
+	// Timeout is owned by runWithSubprocess; see OSEntrypointsAdapter.buildCmd.
 	prompt := in.Prompt
 	if prompt == "" && len(in.Args) > 0 {
 		prompt = in.Args[0]
 	}
-	args := []string{"--print", "--dangerously-skip-permissions"}
+	args := append([]string{"--print"}, claudePermissionArgs(in.PermissionMode)...)
 	if prompt != "" {
 		args = append(args, prompt)
 	}

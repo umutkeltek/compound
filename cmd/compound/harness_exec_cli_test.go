@@ -97,7 +97,7 @@ func TestHarnessRunOSEntrypoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := captureStdout(t, func() {
-		cmdHarness([]string{"run", "--harness", "os-harness-entrypoints", "--work", w.ID, "--", "echo", "harness-run-smoke"})
+		cmdHarness([]string{"run", "--harness", "os-harness-entrypoints", "--work", w.ID, "--workspace", homePath, "--", "echo", "harness-run-smoke"})
 	})
 	if !strings.Contains(out, "status: succeeded") {
 		t.Fatalf("expected succeeded status, got:\n%s", out)
