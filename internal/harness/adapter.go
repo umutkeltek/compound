@@ -65,6 +65,11 @@ type RunInput struct {
 	Workspace string
 	// Command is the program path. Pinned onto RunAttempt.Command.
 	Command string
+	// Prompt is the harness-specific prompt text. Optional: today only the
+	// Claude and Codex adapters read it (it goes into argv as the prompt
+	// argument). OSEntrypointsAdapter ignores it. Callers that already have
+	// Args can use Args[0] instead; Prompt is a convenience field.
+	Prompt string
 	// Args is the argv (after the program path). May be empty.
 	Args []string
 	// Env is the additional env vars to set on the subprocess. Optional.
