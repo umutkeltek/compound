@@ -46,3 +46,19 @@ func Mint(now time.Time) (string, error) {
 	suffix := hex.EncodeToString(sum[:])[:8]
 	return fmt.Sprintf("ratt_%s_%s", now.UTC().Format("20060102T150405Z"), suffix), nil
 }
+
+// MintDeterministic returns a RunAttempt id derived deterministically from a
+// seed string (e.g. a codex job id). The same seed always produces the same
+// id, giving callers idempotency without a separate dedup index: observing
+// the same job twice produces the same ratt_ id, and the store's write is a
+// byte-identical overwrite. The timestamp component comes from now (UTC),
+// matching Mint's layout; the hex suffix is sha256(seed)[:8] instead of
+// sha256(rand)[:8].
+//
+// Pinned by TestMintDeterministicSameSeedSameID and
+// TestMintDeterministicDifferentSeedDifferentID.
+func MintDeterministic(seed string, now time.Time) string {
+	sum := sha256.Sum256([]byte(seed))
+	suffix := hex.EncodeToString(sum[:])[:8]
+	return fmt.Sprintf("ratt_%s_%s", now.UTC().Format("20060102T150405Z"), suffix)
+}

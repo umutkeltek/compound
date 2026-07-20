@@ -152,6 +152,43 @@ func (s *Store) Mint(workID, actor, harness string, now time.Time) (RunAttempt, 
 	return ra, nil
 }
 
+// MintWithID creates a RunAttempt with a caller-supplied id (must pass
+// Valid). If a record with that id already exists on disk, it is returned
+// unchanged (idempotent create-or-retrieve). This is the deterministic
+// counterpart to Mint: callers that derive an id from a stable seed (e.g.
+// MintDeterministic(jobID, now)) get idempotency without a dedup index.
+func (s *Store) MintWithID(id, workID, actor, harness string, now time.Time) (RunAttempt, error) {
+	if !Valid(id) {
+		return RunAttempt{}, fmt.Errorf("runattempt mint: id %q does not match %s pattern", id, Prefix)
+	}
+	if strings.TrimSpace(workID) == "" {
+		return RunAttempt{}, fmt.Errorf("runattempt mint: work_id is required")
+	}
+	if strings.TrimSpace(actor) == "" {
+		return RunAttempt{}, fmt.Errorf("runattempt mint: actor is required")
+	}
+	if strings.TrimSpace(harness) == "" {
+		return RunAttempt{}, fmt.Errorf("runattempt mint: harness is required")
+	}
+	// Idempotent: if the record already exists, return it.
+	if existing, err := s.Get(id); err == nil {
+		return existing, nil
+	}
+	ra := RunAttempt{
+		SchemaVersion: SchemaVersion,
+		ID:            id,
+		WorkID:        workID,
+		Actor:         actor,
+		Harness:       harness,
+		Status:        StatusPending,
+		CreatedAt:     now.UTC(),
+	}
+	if err := s.write(ra); err != nil {
+		return RunAttempt{}, err
+	}
+	return ra, nil
+}
+
 // Get returns the RunAttempt with the given id, loading from disk if not yet cached.
 func (s *Store) Get(id string) (RunAttempt, error) {
 	if !Valid(id) {

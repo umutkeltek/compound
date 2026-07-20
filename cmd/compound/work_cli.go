@@ -167,8 +167,8 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"observe-run": {
-		Usage:   "usage: compound work observe-run <work_id> --trace <trace_id> [--actor A] [--note N] [--json]",
-		Example: "compound work observe-run work_abc123 --trace trace_xyz --json",
+		Usage:   "usage: compound work observe-run <work_id> --trace <trace_id> [--job-file <path>] [--actor A] [--note N] [--json]",
+		Example: "compound work observe-run work_abc123 --trace trace_xyz --job-file <codex-job.json> --json",
 	},
 	"land-check": {
 		Usage:   "usage: compound work land-check <work_id> --tip <full-sha> [--repo /bound/repo] [--target-ref refs/heads/main] [--actor A] [--steal --reason R] [--dry-run] [--json]",
@@ -1306,8 +1306,8 @@ func cmdWork(args []string) {
 		die(err)
 		fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)
 	case "observe-run":
-		observeRunUsage := "usage: compound work observe-run <work_id> --trace <trace_id> [--actor A] [--note N] [--json]"
-		observeRunFlags := map[string]bool{"--trace": true, "--by": true, "--actor": true, "--note": true}
+		observeRunUsage := "usage: compound work observe-run <work_id> --trace <trace_id> [--job-file <path>] [--actor A] [--note N] [--json]"
+		observeRunFlags := map[string]bool{"--trace": true, "--by": true, "--actor": true, "--note": true, "--job-file": true}
 		if err := validateKnownFlags(rest, observeRunFlags, map[string]bool{"--json": true}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, observeRunUsage)
@@ -1319,9 +1319,10 @@ func cmdWork(args []string) {
 			os.Exit(2)
 		}
 		result, err := store.ObserveRun(workID, work.ObserveRunInput{
-			Actor:   firstNonEmpty(flag("--by"), flag("--actor")),
-			TraceID: flag("--trace"),
-			Note:    flag("--note"),
+			Actor:       firstNonEmpty(flag("--by"), flag("--actor")),
+			TraceID:     flag("--trace"),
+			Note:        flag("--note"),
+			JobFilePath: flag("--job-file"),
 		}, time.Now())
 		die(err)
 		if has("--json") {
@@ -1329,6 +1330,9 @@ func cmdWork(args []string) {
 			return
 		}
 		fmt.Printf("%s observed trace=%s state=%s policy=%s\n", result.WorkID, result.TraceID, result.State, result.PolicyDecisionID)
+		if result.RunAttemptID != "" {
+			fmt.Printf("run_attempt: %s\n", result.RunAttemptID)
+		}
 		if result.ActionContext != nil && len(result.ActionContext.Command) > 0 {
 			fmt.Printf("action_context: %s proof=%s\n", strings.Join(result.ActionContext.Command, " "), emptyDash(result.ActionContext.Proof))
 		}
