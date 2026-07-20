@@ -106,12 +106,20 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	// ActionIntentIDs stays act_*-only. Mint-before-Advance keeps the audit trail intact
 	// (the RunAttempt id is on the envelope before any artifact is written).
 	runAttemptStore := runattempt.Open(homePath)
-	ra, err := runAttemptStore.Mint(run.WorkID, panelApplyActor, "fake", now().UTC())
+	ra, err := runAttemptStore.Mint(run.WorkID, panelApplyActor, runattempt.HarnessPlaceholder, now().UTC())
 	if err != nil {
 		return run, err
 	}
-	if _, err := workStore.Advance(run.WorkID, work.AdvanceInput{To: "running", Actor: panelApplyActor, RunAttemptIDs: []string{ra.ID}, Note: "panel apply started"}, now().UTC()); err != nil {
+	advancedEnv, err := workStore.Advance(run.WorkID, work.AdvanceInput{To: "running", Actor: panelApplyActor, RunAttemptIDs: []string{ra.ID}, Note: "panel apply started"}, now().UTC())
+	if err != nil {
 		return run, err
+	}
+	// Bind the RunAttempt to the ActionIntent Advance just created (the last act_ id on the
+	// advanced envelope), closing the attempt→intent→decision audit chain.
+	if n := len(advancedEnv.ActionIntentIDs); n > 0 {
+		if err := runAttemptStore.AttachActionIntent(ra.ID, advancedEnv.ActionIntentIDs[n-1]); err != nil {
+			return run, err
+		}
 	}
 	// Terminal state for the RunAttempt is decided after the apply loop: succeeded when
 	// every target applied, failed when at least one failed (the work envelope still

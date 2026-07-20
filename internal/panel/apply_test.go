@@ -14,6 +14,7 @@ import (
 	"compound/internal/eventstore"
 	"compound/internal/mem"
 	"compound/internal/reviewartifact"
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -366,6 +367,69 @@ func TestApplyRetriesFailedComparisonApplications(t *testing.T) {
 	}
 	if !again.Findings[0].Application.Applied || again.Findings[0].Application.Note != "already applied; skipped" {
 		t.Fatalf("second re-apply not idempotent: %+v", again.Findings[0].Application)
+	}
+}
+
+// TestApplyRecordsRunAttemptChain proves panel.Apply mints exactly one RunAttempt per apply,
+// routes it through Advance{RunAttemptIDs}, binds it to the authorizing ActionIntent, and
+// terminalizes it succeeded on a clean apply. The Mint→Advance→AttachActionIntent→Complete
+// chain is otherwise covered only indirectly (work.advance tests + runattempt package tests).
+// Failed-status semantics are unit-covered by runattempt.TestStoreAttachActionIntentRejects and
+// TestStoreComplete; this test pins the happy path end-to-end on disk.
+func TestApplyRecordsRunAttemptChain(t *testing.T) {
+	home := t.TempDir()
+	candID := "mcand_runattempt_chain"
+	writeMemoryCandidateRecord(t, home, candID, map[string]any{
+		"id":               candID,
+		"entity":           "service:panel-apply",
+		"predicate":        "has_runattempt_chain",
+		"object":           "true",
+		"claim_type":       "status",
+		"confidence":       0.91,
+		"promotion_basis":  candidates.BasisDecisionRecord,
+		"state":            "parked",
+		"visibility":       "contextual",
+		"derivation":       "deterministic",
+		"source_trace_ref": "trace://" + candID,
+		"snippet_hash":     "sha256:" + candID,
+		"observation_date": "2026-07-01T00:00:00Z",
+		"created_at":       "2026-07-01T10:00:00Z",
+	})
+	run := newMemoryPanelApplyRunForTest("runattempt_chain", candID)
+	run.Findings = []TargetFinding{writeMemoryPanelFindingForTest(t, home, run, candID, "promote")}
+
+	got, err := Apply(home, run, incrementingPanelNowForTest())
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got.WorkID == "" {
+		t.Fatalf("apply did not bind a work envelope")
+	}
+
+	// Exactly one RunAttempt record landed, bound to the work and to the authorizing
+	// ActionIntent, terminalized succeeded.
+	entries, err := os.ReadDir(filepath.Join(home, "run_attempts"))
+	if err != nil {
+		t.Fatalf("read run_attempts: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("run_attempts entries = %d, want 1", len(entries))
+	}
+	ra, err := runattempt.Open(home).Get(strings.TrimSuffix(entries[0].Name(), ".json"))
+	if err != nil {
+		t.Fatalf("Get runattempt: %v", err)
+	}
+	if ra.WorkID != got.WorkID {
+		t.Fatalf("runattempt work_id = %q, want %q", ra.WorkID, got.WorkID)
+	}
+	if ra.Status != runattempt.StatusSucceeded {
+		t.Fatalf("runattempt status = %q, want succeeded", ra.Status)
+	}
+	if ra.Harness != runattempt.HarnessPlaceholder {
+		t.Fatalf("runattempt harness = %q, want %q", ra.Harness, runattempt.HarnessPlaceholder)
+	}
+	if !strings.HasPrefix(ra.ActionIntentID, "act_") {
+		t.Fatalf("runattempt action_intent_id = %q, want a non-empty act_ id (audit chain unbound)", ra.ActionIntentID)
 	}
 }
 
