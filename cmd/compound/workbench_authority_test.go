@@ -15,6 +15,7 @@ import (
 	"compound/internal/policy"
 	"compound/internal/reviewartifact"
 	"compound/internal/work"
+	"compound/internal/reviewqueue"
 )
 
 const dirtyReviewDigestDriftSubEnv = "COMPOUND_DIRTY_REVIEW_DIGEST_DRIFT_SUB"
@@ -182,7 +183,7 @@ func TestStampReviewActionAuthorityFailsClosedForIncompleteSeeds(t *testing.T) {
 			action.PolicyAuthority = &policy.AuthorityFace{SchemaVersion: policy.AuthorityFaceSchema, Current: true, Revision: "stale"}
 			tc.mutate(&action)
 			report := reviewartifact.QueueReport{Items: []reviewartifact.QueueItem{{Actions: []reviewartifact.Action{action}}}}
-			if err := stampReviewActionAuthority(homePath, &report, cliTestNow.Add(3*time.Minute)); err != nil {
+			if err := reviewqueue.StampReviewActionAuthority(homePath, &report, cliTestNow.Add(3*time.Minute)); err != nil {
 				t.Fatal(err)
 			}
 			got := report.Items[0].Actions[0]
@@ -215,7 +216,7 @@ func TestStampReviewActionAuthorityRejectsSyntheticOwnerRecord(t *testing.T) {
 	}
 	action.ActionIntent.IDs.WorkID = syntheticWorkID
 	report.Items[0].Actions = []reviewartifact.Action{action}
-	if err := stampReviewActionAuthority(homePath, &report, cliTestNow.Add(3*time.Minute)); err != nil {
+	if err := reviewqueue.StampReviewActionAuthority(homePath, &report, cliTestNow.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	got := report.Items[0].Actions[0]

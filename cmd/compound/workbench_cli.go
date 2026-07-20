@@ -11,23 +11,12 @@ import (
 	"time"
 
 	"compound/internal/attention"
-	"compound/internal/authority"
 	"compound/internal/capgraph"
-	"compound/internal/decisions"
-	"compound/internal/director"
-	"compound/internal/distiller"
 	"compound/internal/home"
-	"compound/internal/mem"
-	"compound/internal/observation"
-	"compound/internal/panel"
-	"compound/internal/policy"
-	"compound/internal/product"
-	"compound/internal/projection"
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
-	"compound/internal/runtimebinding"
-	"compound/internal/sourceobs"
 	"compound/internal/work"
+	"compound/internal/reviewqueue"
 )
 
 const workbenchCapabilityOfferLimit = 12
@@ -1184,108 +1173,34 @@ func operatorList(values []string) string {
 	return strings.Join(cleaned, ",")
 }
 
+// buildReviewQueueReport is the cmd/compound-side wrapper that gives callers
+// the same "fully annotated" report the previous shape produced, but
+// splits the assembly between internal/reviewqueue (the canonical
+// 24-Annotate assembly) and synthesis (the synthesis-specific
+// operator-card pass). All 8 callers (workbench, narrate, attention,
+// reviews-resolve, experiential-smoke, the two main.go workbench
+// commands, and the orient report) keep this signature unchanged.
 func buildReviewQueueReport(homePath, area string, includeArchived bool) (reviewartifact.QueueReport, error) {
-	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: area, IncludeArchived: includeArchived}, time.Now())
+	report, err := reviewqueue.Build(homePath, reviewqueue.Options{
+		Area:            area,
+		IncludeArchived: includeArchived,
+	})
 	if err != nil {
 		return reviewartifact.QueueReport{}, err
 	}
-	decisions.AnnotateLifecycleRepairQueue(&report)
-	decisions.AnnotateDecisionCandidateQueue(&report)
-	decisions.AnnotateAutonomyGrantMintQueue(&report, homePath)
-	product.AnnotateReviewQueue(&report)
-	product.AnnotateOutboundDryRunEvidenceQueue(&report)
-	authority.AnnotateJobHealthQueue(&report)
-	authority.AnnotateSourceControlCleanupQueue(&report)
-	director.AnnotateHarnessEditProposalQueue(&report)
-	runtimebinding.AnnotateRepairQueue(&report)
-	capgraph.AnnotateCapabilityEvaluationQueue(&report)
-	capgraph.AnnotateExternalRepoIntakeQueue(&report)
-	capgraph.AnnotateOutboundDistributionVerdictQueue(&report)
-	capgraph.AnnotateOutboundDistributionDryRunQueue(&report)
-	capgraph.AnnotateSkillCandidateQueue(&report)
-	capgraph.AnnotateCapabilityLifecycleProposalQueue(&report)
-	capgraph.AnnotateSkillSurfacingQueue(&report)
-	distiller.AnnotateImprovementQueue(&report)
-	distiller.AnnotateRequestQueue(&report)
-	mem.AnnotateBakeoffQueue(&report)
-	observation.AnnotateReviewQueue(&report)
-	panel.AnnotateVerdictQueue(&report)
-	panel.AnnotateCapabilityFeedbackQueue(&report)
-	projection.AnnotateProjectionRegenerationQueue(&report)
-	routeevidence.AnnotatePromotionReviewQueue(&report)
-	routeevidence.AnnotateRouteOutcomeQueue(&report)
-	sourceobs.AnnotateObservationVerdictQueue(&report)
+	// Synthesis annotator: lives in synthesis.go (a cmd/compound
+	// concern, not a queue-assembly concern). The canonical builder
+	// does not run it; this wrapper preserves the legacy
+	// "synthesis for free" behavior by chaining it on top of Build.
 	annotateSynthesisReviewQueue(&report)
-	if err := stampReviewActionAuthority(homePath, &report, time.Now()); err != nil {
-		return reviewartifact.QueueReport{}, err
-	}
+	// Re-run the count rollup after the synthesis annotator. The
+	// prior shape called Recount once, after both the 24-Annotate
+	// pass and the synthesis annotator; the canonical builder
+	// (internal/reviewqueue) only sees the 24-Annotate shape, so the
+	// wrapper re-rolls counts here to capture the synthesis-driven
+	// status changes.
 	reviewartifact.Recount(&report)
 	return report, nil
-}
-
-func stampReviewActionAuthority(homePath string, report *reviewartifact.QueueReport, now time.Time) error {
-	if report == nil {
-		return fmt.Errorf("review authority report required")
-	}
-	for itemIndex := range report.Items {
-		for actionIndex := range report.Items[itemIndex].Actions {
-			action := &report.Items[itemIndex].Actions[actionIndex]
-			action.PolicyDecision = nil
-			action.PolicyAuthority = nil
-		}
-	}
-
-	cfg, policySource, err := policy.LoadConfig(homePath)
-	if err != nil {
-		return fmt.Errorf("load current policy for review authority: %w", err)
-	}
-	workStore, err := work.Open(homePath)
-	if err != nil {
-		return fmt.Errorf("open work store for review authority: %w", err)
-	}
-
-	for itemIndex := range report.Items {
-		for actionIndex := range report.Items[itemIndex].Actions {
-			action := &report.Items[itemIndex].Actions[actionIndex]
-			if action.ActionIntent == nil || action.AuthorityContext == nil {
-				continue
-			}
-			if err := action.ActionIntent.Validate(); err != nil {
-				continue
-			}
-			workID := strings.TrimSpace(action.ActionIntent.IDs.WorkID)
-			if !strings.HasPrefix(workID, "work_") || strings.HasPrefix(workID, "work_live_") || filepath.Base(workID) != workID {
-				continue
-			}
-			owner, err := workStore.Get(workID)
-			if err != nil || owner.ID != workID || owner.Validate() != nil || reviewAuthorityTerminalWorkState(owner.State) {
-				continue
-			}
-
-			evaluation := policy.EvaluateAuthority(
-				*action.ActionIntent,
-				cfg,
-				policy.EvaluationContext{Authority: action.AuthorityContext},
-				policySource,
-				now,
-			)
-			if err := policy.ValidateAuthorityBundle(*action.ActionIntent, evaluation.Decision, evaluation.Authority); err != nil {
-				continue
-			}
-			action.PolicyDecision = &evaluation.Decision
-			action.PolicyAuthority = &evaluation.Authority
-		}
-	}
-	return nil
-}
-
-func reviewAuthorityTerminalWorkState(state string) bool {
-	switch strings.TrimSpace(state) {
-	case "completed", "failed", "cancelled":
-		return true
-	default:
-		return false
-	}
 }
 
 func buildWorkbenchReviewQueue(report reviewartifact.QueueReport) workbenchReviewQueue {
