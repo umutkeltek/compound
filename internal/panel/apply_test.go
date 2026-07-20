@@ -431,6 +431,19 @@ func TestApplyRecordsRunAttemptChain(t *testing.T) {
 	if !strings.HasPrefix(ra.ActionIntentID, "act_") {
 		t.Fatalf("runattempt action_intent_id = %q, want a non-empty act_ id (audit chain unbound)", ra.ActionIntentID)
 	}
+	// S2 fields populated by panel.Apply as honest values from the apply context.
+	if ra.Workspace != home {
+		t.Fatalf("runattempt workspace = %q, want %q (home path)", ra.Workspace, home)
+	}
+	if ra.Command != "compound panel apply" {
+		t.Fatalf("runattempt command = %q, want %q", ra.Command, "compound panel apply")
+	}
+	if ra.TranscriptRef == "" {
+		t.Fatalf("runattempt transcript_ref must be set after a clean apply (the panel run record is the transcript)")
+	}
+	if len(ra.ProofRefs) == 0 {
+		t.Fatalf("runattempt proof_refs must include at least the panel run record and the receipt/transition ids")
+	}
 }
 
 // TestApplyRecordsRunAttemptChainFailed is the failed-path companion to

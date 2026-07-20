@@ -121,6 +121,17 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 			return run, err
 		}
 	}
+	// S2: wire the RunAttempt's full shape with honest values from the apply context.
+	// Workspace and Command are stable across the attempt and can be set immediately.
+	// Transcript and ProofRefs depend on artifacts produced by the apply loop, so they
+	// land later (after SaveRun/Close) and before Complete. All setters refuse on a
+	// terminal RunAttempt, which is why these land between Mint and Complete.
+	if _, err := runAttemptStore.SetWorkspace(ra.ID, homePath); err != nil {
+		return run, err
+	}
+	if _, err := runAttemptStore.SetCommand(ra.ID, "compound panel apply"); err != nil {
+		return run, err
+	}
 	// Terminal state for the RunAttempt is decided after the apply loop: succeeded when
 	// every target applied, failed when at least one failed (the work envelope still
 	// terminalizes successfully because the apply loop is fail-soft by design).
@@ -157,6 +168,11 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	if err := store.SaveRun(run); err != nil {
 		return run, err
 	}
+	// S2: bind the panel run record as the RunAttempt's transcript. Lands before
+	// Complete so the terminal status reflects the full audit trail.
+	if _, err := runAttemptStore.SetTranscript(ra.ID, runRecordPath); err != nil {
+		return run, err
+	}
 	if _, err := workStore.Advance(run.WorkID, work.AdvanceInput{To: "verifying", Actor: panelApplyActor, VerificationID: runRecordPath, Note: "panel apply run record written"}, now().UTC()); err != nil {
 		return run, err
 	}
@@ -182,6 +198,15 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	run.ReceiptID = closeResult.Receipt.ID
 	run.TransitionID = closeResult.Transition.ID
 	if err := store.SaveRun(run); err != nil {
+		return run, err
+	}
+	// S2: bind the work proof chain (the panel run record plus every verdict / route /
+	// receipt / transition id) to the RunAttempt. The audit can now trace from the
+	// RunAttempt through ProofRefs to the work receipt/transition. Refs land before
+	// Complete (terminal setters refuse).
+	fullProofRefs := append([]string(nil), proofRefs...)
+	fullProofRefs = append(fullProofRefs, closeResult.Receipt.ID, closeResult.Transition.ID)
+	if _, err := runAttemptStore.SetProofRefs(ra.ID, fullProofRefs); err != nil {
 		return run, err
 	}
 	if applyFailures > 0 {
