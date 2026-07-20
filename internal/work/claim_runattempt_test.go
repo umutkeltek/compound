@@ -293,3 +293,59 @@ func TestAbandonedRunAttemptRefusesSetters(t *testing.T) {
 		t.Fatal("AttachActionIntent on abandoned attempt must fail")
 	}
 }
+
+// --- C4: retry lineage through claim/release/re-claim ---
+
+func TestClaimRetryChainsPredecessor(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "c4-test", SuccessPredicate: "retry lineage chains"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First claim mints attempt #1.
+	claim1, err := s.Claim(w.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if len(claim1.RunAttemptIDs) != 1 {
+		t.Fatalf("first claim RunAttemptIDs = %v, want 1", claim1.RunAttemptIDs)
+	}
+	firstID := claim1.RunAttemptIDs[0]
+
+	// Release (claimed→ready) abandons attempt #1.
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "ready", Actor: "codex"}, fixedNow.Add(time.Minute)); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	ra1, _ := runattempt.Open(s.home).Get(firstID)
+	if ra1.Status != runattempt.StatusAbandoned {
+		t.Fatalf("first attempt status = %q, want abandoned", ra1.Status)
+	}
+
+	// Second claim mints attempt #2, chained to #1.
+	claim2, err := s.Claim(w.ID, "codex", fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if len(claim2.RunAttemptIDs) != 2 {
+		t.Fatalf("second claim RunAttemptIDs = %v, want 2", claim2.RunAttemptIDs)
+	}
+	secondID := claim2.RunAttemptIDs[1]
+	if secondID == firstID {
+		t.Fatal("second claim must mint a new attempt, not reuse the first")
+	}
+
+	// The second attempt's PredecessorID points to the first.
+	ra2, err := runattempt.Open(s.home).Get(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra2.PredecessorID != firstID {
+		t.Fatalf("second attempt predecessor = %q, want %q", ra2.PredecessorID, firstID)
+	}
+
+	// The first attempt has no predecessor (it was the first).
+	if ra1.PredecessorID != "" {
+		t.Fatalf("first attempt predecessor = %q, want empty", ra1.PredecessorID)
+	}
+}

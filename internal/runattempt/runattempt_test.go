@@ -395,3 +395,121 @@ func TestMintWithIDRejectsInvalidID(t *testing.T) {
 		t.Fatal("MintWithID with invalid id must fail")
 	}
 }
+
+// --- C4: retry lineage (PredecessorID) ---
+
+func TestSetPredecessorChains(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+
+	// First attempt: no predecessor.
+	first, err := s.Mint("work_abc", "actor", "fake", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.PredecessorID != "" {
+		t.Fatalf("first attempt predecessor = %q, want empty", first.PredecessorID)
+	}
+
+	// Second attempt chains to first.
+	second, err := s.Mint("work_abc", "actor", "fake", now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked, err := s.SetPredecessor(second.ID, first.ID)
+	if err != nil {
+		t.Fatalf("SetPredecessor: %v", err)
+	}
+	if linked.PredecessorID != first.ID {
+		t.Fatalf("predecessor = %q, want %q", linked.PredecessorID, first.ID)
+	}
+
+	// Persisted on disk.
+	got, err := Open(home).Get(second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PredecessorID != first.ID {
+		t.Fatalf("on-disk predecessor = %q, want %q", got.PredecessorID, first.ID)
+	}
+
+	// Idempotent: same predecessor again is a no-op.
+	again, err := s.SetPredecessor(second.ID, first.ID)
+	if err != nil {
+		t.Fatalf("idempotent SetPredecessor: %v", err)
+	}
+	if again.PredecessorID != first.ID {
+		t.Fatalf("idempotent predecessor = %q, want %q", again.PredecessorID, first.ID)
+	}
+
+	// Third attempt chains to second (three-link chain).
+	third, err := s.Mint("work_abc", "actor", "fake", now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked3, err := s.SetPredecessor(third.ID, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linked3.PredecessorID != second.ID {
+		t.Fatalf("third predecessor = %q, want %q", linked3.PredecessorID, second.ID)
+	}
+}
+
+func TestSetPredecessorRefuses(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+
+	first, _ := s.Mint("work_abc", "actor", "fake", now)
+	second, _ := s.Mint("work_abc", "actor", "fake", now.Add(time.Minute))
+	third, _ := s.Mint("work_abc", "actor", "fake", now.Add(2*time.Minute))
+
+	// Link second → first.
+	if _, err := s.SetPredecessor(second.ID, first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Changing to a different predecessor is refused (append-only).
+	if _, err := s.SetPredecessor(second.ID, third.ID); err == nil {
+		t.Fatal("changing predecessor must be refused (append-only chain)")
+	}
+
+	// Non-ratt_ predecessor is refused.
+	if _, err := s.SetPredecessor(third.ID, "prun_deadbeef"); err == nil {
+		t.Fatal("non-ratt_ predecessor must be refused")
+	}
+
+	// Phantom predecessor (valid format but not on disk) is refused.
+	if _, err := s.SetPredecessor(third.ID, "ratt_20260720T000000Z_deadbeef"); err == nil {
+		t.Fatal("phantom predecessor must be refused")
+	}
+
+	// Empty predecessor is refused.
+	if _, err := s.SetPredecessor(third.ID, ""); err == nil {
+		t.Fatal("empty predecessor must be refused")
+	}
+
+	// Terminal attempt cannot be linked.
+	s.Complete(third.ID, StatusFailed, now.Add(3*time.Minute))
+	if _, err := s.SetPredecessor(third.ID, first.ID); err == nil {
+		t.Fatal("SetPredecessor on terminal attempt must fail")
+	}
+}
+
+func TestPredecessorIDOmitempty(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+
+	ra, _ := s.Mint("work_abc", "actor", "fake", now)
+	// No predecessor set → omitempty → not in JSON.
+	data, err := os.ReadFile(filepath.Join(home, "run_attempts", ra.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "predecessor_id") {
+		t.Fatal("predecessor_id must be absent from JSON when empty (omitempty)")
+	}
+}
