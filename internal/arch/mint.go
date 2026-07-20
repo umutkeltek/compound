@@ -220,6 +220,15 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "read-only byte-cursor tail over events/work.jsonl + ledger/seq that emits JSONL frames (a finite --once snapshot with an end-of-log cursor + generated_at, or a --follow live tail) without ever taking the work-event write lock",
 		Consumer: "the console live stream route (console/src/app/api/stream/route.ts) spawns `compound stream --follow` per SSE client and seeds backlog through the stream-snapshot door (`compound stream --once --json`, console/src/lib/doors.ts); frames translate into the existing ready/transition/memory-pulse SSE vocabulary",
 	},
+	// runattempt is the concrete harness-execution-attempt store: one RunAttempt per harness run
+	// against one work_id, persisted under COMPOUND_HOME/run_attempts. It records who/what ran and
+	// when, but performs no gating, no promotion, and no terminal effect — the work package consumes
+	// RunAttemptIDs to build proof chains. It is evidence, not enforcement.
+	"organ:runattempt": {
+		Class:    MintEvidence,
+		Purpose:  "concrete record of one harness execution attempt against a work_id (who/what/when), persisted under COMPOUND_HOME/run_attempts for proof-chain linkage",
+		Consumer: "internal/work WorkEnvelope RunAttemptIDs slot, work proof-chain doctor, and orient execution history",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law

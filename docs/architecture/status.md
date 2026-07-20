@@ -117,6 +117,7 @@ This table is SINGLE-SOURCED from `arch.Classification` (`internal/arch/arch.go`
 | `profiles` | object-family | renders harness agent profiles from public-safe role definitions plus an optional private overlay |
 | `projection` | object-family | checks GeneratedViewObservation / ProjectionFreshness; a generated view can prove freshness or drift, it cannot promote truth |
 | `release` | leaf | public source export gate over `git archive HEAD`; validates tracked archive entries do not include private/runtime surfaces |
+| `runattempt` | leaf | concrete harness-execution-attempt store under COMPOUND_HOME/run_attempts; one RunAttempt per harness run against one work_id (who/what/when), consumed by work's RunAttemptIDs slot for proof-chain linkage; persistence primitive, not meaning authority or envelope spine |
 | `retrievalparity` | leaf | owns retrieval-traffic evidence and parity artifact schemas; a data-layer leaf — production retrieval stays in its existing consumers, this package records and compares their result references |
 | `reviewartifact` | leaf | the one deep module behind every owner-review artifact compound writes under COMPOUND_HOME/reviews/<area>/ |
 | `routeevidence` | object-family | ExecutionRouteEvidence import/record/join path, provider-call ledger adapter, route cost-coverage doctor, RouteOutcomeReview + RoutePolicyPlan review artifacts; metadata-only route decisions become Transition routing/cost projections, never task success or direct config mutation |
@@ -221,7 +222,6 @@ Reconcile digest and contested-card status note: `compound synthesis digest [--s
 | Gen-1 tombstones | `distill`, `scope`, `promote`, `build`, `reconcile`, top-level `timeline`, top-level `recall`, `pack`, `ledger` | retired; exit `2` replacement hint |
 
 Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recreate fragmentation.
-
 ## Architecture Doctor Checks
 
 - candidate-map integrity: every candidate kind has exactly one created inbox dir and consumer;

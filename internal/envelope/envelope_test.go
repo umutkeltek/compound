@@ -562,14 +562,15 @@ func TestActionIntentIDsKeepsLegacyRunIDsWireName(t *testing.T) {
 	}
 }
 
-// TestRunAttemptIDsRejectEmptyEntries covers the only rule the reserved slot carries today.
-// S1 settles the id prefix; until then non-emptiness is the honest floor.
+// TestRunAttemptIDsRejectEmptyEntries isolates the non-emptiness rule from the prefix rule
+// (pinned separately by TestRunAttemptIDsRequireRattPrefix): the first entry is a valid ratt_
+// id, so only the empty second entry fails.
 func TestRunAttemptIDsRejectEmptyEntries(t *testing.T) {
 	var w WorkEnvelope
 	if err := json.Unmarshal([]byte(legacyPreRunAttemptWorkJSON), &w); err != nil {
 		t.Fatal(err)
 	}
-	w.RunAttemptIDs = []string{"run_attempt_0001", "   "}
+	w.RunAttemptIDs = []string{"ratt_20260720T000000Z_aabbccdd", "   "}
 	err := w.Validate()
 	if err == nil || !strings.Contains(err.Error(), "run_attempt_ids[1]") {
 		t.Fatalf("empty run attempt id must be rejected, got: %v", err)

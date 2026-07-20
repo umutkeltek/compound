@@ -88,6 +88,7 @@ var Classification = map[string]Class{
 	"narrate":         Leaf, // composed read-only correspondent script over attention/orient-changed/receipts; owns no authority objects
 	"negatives":       Leaf, // rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient (Weng item 6)
 	"release":         Leaf,
+	"runattempt":      Leaf, // concrete harness-execution-attempt store under COMPOUND_HOME/run_attempts; persistence primitive consumed by work's RunAttemptIDs slot, not meaning authority or envelope spine
 	"reviewartifact":  Leaf,
 	"retrievalparity": Leaf, // evaluator organ: read-only traffic recorder/replayer over real retrieval paths; produces evidence reports, owns no object family
 	"statussurface":   Leaf, // body-free, TTL-bound adaptive projection over harness-native context/rate-limit metadata; Claude/Codex remain live authority, route guidance is evidence only
