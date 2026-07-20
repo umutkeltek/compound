@@ -107,6 +107,11 @@ type Store struct {
 // Open returns a Store rooted at home. It does NOT create directories -- Get / Complete
 // lazily mkdir on first write, matching the pattern used by internal/landlease and
 // internal/work so a fresh home stays clean until something is actually persisted.
+
+// Home returns the home path the Store was opened with. Useful for callers
+// that need to colocate side artifacts (e.g. a transcript) with the run
+// JSON files. Pinned by S3 (harness adapter) consumers.
+func (s *Store) Home() string { return s.home }
 func Open(home string) *Store {
 	return &Store{home: home, cache: map[string]RunAttempt{}}
 }
