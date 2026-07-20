@@ -1415,32 +1415,6 @@ func orientOpenWorkNextAction(item work.WorkbenchItem, adjacent *orientAdjacentP
 	return "held on operator valve; inspect running.adjacent_progress"
 }
 
-func orientAdjacentActionIDsForOpenWork(item work.WorkbenchItem, actionIDs []string) []string {
-	haystack := strings.ToLower(strings.Join([]string{
-		item.SuccessPredicate,
-		item.CanonicalSurface,
-		strings.Join(item.ObservatoryTags, " "),
-	}, " "))
-	var selected []string
-	addIfPresent := func(id string) {
-		if slices.Contains(actionIDs, id) {
-			selected = append(selected, id)
-		}
-	}
-	if strings.Contains(haystack, "asc") || strings.Contains(haystack, "app-store") || strings.Contains(haystack, "app store") {
-		addIfPresent("asc-preflight-private-config")
-		addIfPresent("asc-sales-series-bridge-proof")
-	}
-	if strings.Contains(haystack, "conversation") || strings.Contains(haystack, "chatgpt") {
-		addIfPresent("conversation-preflight-private-export")
-		addIfPresent("conversation-memory-review-gate")
-	}
-	if strings.Contains(haystack, "second-opinion") || strings.Contains(haystack, "oracle") {
-		addIfPresent("second-opinion-evidence-recovery")
-	}
-	return selected
-}
-
 func buildOrientAdjacentProgress(adjacent *work.WorkbenchAdjacentProgress) *orientAdjacentProgress {
 	if adjacent == nil {
 		return nil
