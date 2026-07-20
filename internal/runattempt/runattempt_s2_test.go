@@ -1,18 +1,51 @@
-//go:build ignore
-
-// S2 RunAttempt tests — these test fields and methods (ContextPackRef,
-// Workspace, Command, Heartbeat, TranscriptRef, DiffRef, TestRef, ProofRefs)
-// that S1 deliberately omits. Remove the //go:build ignore tag above when S2
-// lands the corresponding setters on Store and fields on RunAttempt.
-// See id.go package doc: "S1 deliberately omits context_pack_ref / workspace /
-// command / heartbeat / transcript_ref / diff_ref / test_ref / proof_refs".
+// S2 RunAttempt tests -- the eight references the reviewer's full shape
+// called for (ContextPackRef, Workspace, Command, Heartbeat, TranscriptRef,
+// DiffRef, TestRef, ProofRefs) plus the hash-neutrality guard that pins
+// pre-S2 records marshal byte-identical after the field additions.
+// Kept in a separate file from S1 tests so the S1 file stays unchanged
+// after the S2 fields land (S1 was deliberately minimal).
 
 package runattempt
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
+
+// TestRunAttemptHashNeutralityForPreS2Records pins the contract that adding
+// the S2 fields does not invalidate pre-existing ratt_* records on disk. A
+// record written by S1 (no S2 fields) re-decoded and re-marshaled must
+// produce byte-identical bytes. Pinned alongside the work-side
+// TestEmptyRunAttemptIDsIsHashNeutral so future field additions face the
+// same discipline.
+func TestRunAttemptHashNeutralityForPreS2Records(t *testing.T) {
+	// Pre-S2 record: a S1-style JSON without any S2 field. last_heartbeat_at
+	// is *time.Time (omitempty) so nil is omitted entirely -- the byte order
+	// matches the struct field order in runattempt.go.
+	preS2JSON := []byte(`{
+  "schema_version": "compound.runattempt.v0.1",
+  "id": "ratt_20260720T000000Z_deadbeef",
+  "work_id": "work_abc",
+  "action_intent_id": "act_11112222",
+  "actor": "codex",
+  "harness": "fake",
+  "status": "succeeded",
+  "created_at": "2026-07-20T00:00:00Z",
+  "completed_at": "2026-07-20T00:01:00Z"
+}`)
+	var ra RunAttempt
+	if err := json.Unmarshal(preS2JSON, &ra); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.MarshalIndent(ra, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != string(preS2JSON) {
+		t.Fatalf("pre-S2 record re-marshal drifted:\n got: %s\nwant: %s", out, preS2JSON)
+	}
+}
 
 // Mint -> setter -> Get without loss. Empty defaults on a fresh Mint; set
 // the field; re-Get; assert.
@@ -36,7 +69,9 @@ func TestRunAttemptRoundTripsNewFields(t *testing.T) {
 		{"command", func() error { _, e := s.SetCommand(ra.ID, "compound panel apply"); return e },
 			func(got RunAttempt) bool { return got.Command == "compound panel apply" }},
 		{"heartbeat", func() error { _, e := s.Heartbeat(ra.ID, now.Add(30*time.Second)); return e },
-			func(got RunAttempt) bool { return got.LastHeartbeatAt.Equal(now.Add(30 * time.Second)) }},
+			func(got RunAttempt) bool {
+				return got.LastHeartbeatAt != nil && got.LastHeartbeatAt.Equal(now.Add(30*time.Second))
+			}},
 		{"transcript", func() error { _, e := s.SetTranscript(ra.ID, "panel-runs/prun_abc/run_record.json"); return e },
 			func(got RunAttempt) bool { return got.TranscriptRef == "panel-runs/prun_abc/run_record.json" }},
 		{"diff", func() error { _, e := s.SetDiff(ra.ID, "diff/run_abc.patch"); return e },
@@ -151,7 +186,7 @@ func TestRunAttemptHeartbeatAdvancesOnlyForward(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.LastHeartbeatAt.Equal(t0.Add(time.Minute)) {
+	if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t0.Add(time.Minute)) {
 		t.Fatalf("stale heartbeat regressed timestamp: got %v, want %v", got.LastHeartbeatAt, t0.Add(time.Minute))
 	}
 	// Forward heartbeat: must advance.
@@ -159,7 +194,7 @@ func TestRunAttemptHeartbeatAdvancesOnlyForward(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ = s.Get(ra.ID)
-	if !got.LastHeartbeatAt.Equal(t0.Add(2 * time.Minute)) {
+	if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t0.Add(2*time.Minute)) {
 		t.Fatalf("forward heartbeat did not advance: got %v, want %v", got.LastHeartbeatAt, t0.Add(2*time.Minute))
 	}
 }
