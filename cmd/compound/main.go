@@ -1218,11 +1218,22 @@ func cmdRoute(args []string) {
 // cmdHarness prints the HarnessRegistry — the spine's record of what each harness
 // verifiably supports and where it is weak (docs/architecture/runtime.md §3).
 func cmdHarness(args []string) {
-	reg := harness.DefaultRegistry()
 	target := "list"
 	if len(args) > 0 {
 		target = args[0]
 	}
+	// Slice C.4: the AdapterRegistry-backed subcommands (run, executors)
+	// live in harness_exec_cli.go and dispatch before the capabilities
+	// registry is loaded -- they don't need it.
+	if target == "run" {
+		cmdHarnessRun(args[1:])
+		return
+	}
+	if target == "executors" {
+		cmdHarnessExecutors(args[1:])
+		return
+	}
+	reg := harness.DefaultRegistry()
 	if target == "permission-mode" {
 		harnessName := valueFlag(args[1:], "--harness")
 		if harnessName == "" {
