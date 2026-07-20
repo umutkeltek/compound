@@ -433,6 +433,64 @@ func TestApplyRecordsRunAttemptChain(t *testing.T) {
 	}
 }
 
+// TestApplyRecordsRunAttemptChainFailed is the failed-path companion to
+// TestApplyRecordsRunAttemptChain: when a target fails soft, the RunAttempt is still minted (Mint
+// runs before the apply loop) but terminalizes failed, and Apply returns the target-failure error.
+// Together the two tests pin the Mint→Advance→AttachActionIntent→Complete chain for both outcomes.
+func TestApplyRecordsRunAttemptChainFailed(t *testing.T) {
+	home := t.TempDir()
+	candID := "mcand_runattempt_fail"
+	writeMemoryCandidateRecord(t, home, candID, map[string]any{
+		"id":               candID,
+		"entity":           "service:panel-apply",
+		"predicate":        "has_runattempt_fail",
+		"object":           "true",
+		"claim_type":       "status",
+		"confidence":       0.91,
+		"promotion_basis":  candidates.BasisDecisionRecord,
+		"state":            "parked",
+		"visibility":       "contextual",
+		"derivation":       "deterministic",
+		"source_trace_ref": "trace://" + candID,
+		"snippet_hash":     "sha256:" + candID,
+		"observation_date": "2026-07-01T00:00:00Z",
+		"created_at":       "2026-07-01T10:00:00Z",
+	})
+	run := newMemoryPanelApplyRunForTest("runattempt_fail", candID)
+	run.Findings = []TargetFinding{writeMemoryPanelFindingForTest(t, home, run, candID, "promote")}
+	// Remove the candidate after the finding is built so apply fails soft at readMemoryCandidate.
+	if err := os.Remove(filepath.Join(home, "inbox", "memory-candidates", candID+".json")); err != nil {
+		t.Fatalf("remove candidate: %v", err)
+	}
+
+	got, err := Apply(home, run, incrementingPanelNowForTest())
+	if err == nil || !strings.Contains(err.Error(), "target failure") {
+		t.Fatalf("want completed-with-failures error, got %v", err)
+	}
+	if got.WorkID == "" {
+		t.Fatalf("apply did not bind a work envelope even on failure")
+	}
+
+	// The RunAttempt was still minted (before the loop) and terminalized failed.
+	entries, err := os.ReadDir(filepath.Join(home, "run_attempts"))
+	if err != nil {
+		t.Fatalf("read run_attempts: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("run_attempts entries = %d, want 1", len(entries))
+	}
+	ra, err := runattempt.Open(home).Get(strings.TrimSuffix(entries[0].Name(), ".json"))
+	if err != nil {
+		t.Fatalf("Get runattempt: %v", err)
+	}
+	if ra.WorkID != got.WorkID {
+		t.Fatalf("runattempt work_id = %q, want %q", ra.WorkID, got.WorkID)
+	}
+	if ra.Status != runattempt.StatusFailed {
+		t.Fatalf("runattempt status = %q, want failed", ra.Status)
+	}
+}
+
 func TestApplyKnowledgeClassNeedsHumanAnnotatesCandidateAndClosesQueue(t *testing.T) {
 	home := t.TempDir()
 	candID := "mcand_knowledge_needs_human"
