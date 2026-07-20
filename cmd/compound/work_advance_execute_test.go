@@ -15,14 +15,14 @@ import (
 // TestWorkAdvanceExecute: --execute runs the harness adapter inline as
 // part of the work advance. The full chain exercised:
 //
-//   1. operator claims the work
-//   2. advance --to running --execute --harness <name> -- <cmd>
-//      - CLI mints a RunAttempt via the adapter
-//      - CLI calls work.Advance(To: "running", RunAttemptIDs: [ratt_])
-//      - CLI calls adapter.Run() synchronously
-//      - CLI calls work.Advance(To: "verifying"|"failed") based on
-//        the adapter's terminal status
-//   3. work ends in "verifying" (or "failed" on non-zero exit)
+//  1. operator claims the work
+//  2. advance --to running --execute --harness <name> -- <cmd>
+//     - CLI mints a RunAttempt via the adapter
+//     - CLI calls work.Advance(To: "running", RunAttemptIDs: [ratt_])
+//     - CLI calls adapter.Run() synchronously
+//     - CLI calls work.Advance(To: "verifying"|"failed") based on
+//     the adapter's terminal status
+//  3. work ends in "verifying" (or "failed" on non-zero exit)
 //
 // Falsifier: removing the inline adapter.Run call turns this RED with
 // "expected state=verifying, got: claimed" (the work never moved past
