@@ -182,23 +182,16 @@ func TestCmdOrientBodyBudgetIsAdditive(t *testing.T) {
 }
 
 // CLI — the orient usage string now enumerates --body-budget. Pinned so a future
-// flag-loop refactor that forgets to surface it reds immediately (a usage inventory
-// test in the spirit of the existing main_test.go usage-string tests).
+// flag-loop refactor that forgets to surface it reds immediately. Reads the source
+// directly because the no---harness path calls os.Exit(2) (hard to capture inside
+// the test process); the existing cmdHome usage tests use the same source-grep
+// strategy where exec isn't appropriate.
 func TestCmdOrientUsageEnumeratesBodyBudget(t *testing.T) {
-	oldArgs := os.Args
-	defer func() { os.Args = oldArgs }()
-	// Capture stderr + exit code by running cmdOrient with no --harness: it prints
-	// the usage line and exits 2. We can't os.Exit inside a test, so simulate by
-	// recovering from a panic injected via a wrapper.
-	usage := orientUsageBodyBudget()
-	if !strings.Contains(usage, "--body-budget") {
-		t.Fatalf("orient usage line must enumerate --body-budget: %q", usage)
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
 	}
-}
-
-// orientUsageBodyBudget returns the canonical orient usage line, kept here as a
-// single source of truth the test asserts on. Mirrors the line printed in cmdOrient
-// when --harness is missing.
-func orientUsageBodyBudget() string {
-	return "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>] [--topic <topic-slug>] [--body-budget <estimated-tokens>]"
+	if !strings.Contains(string(src), "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>] [--topic <topic-slug>] [--body-budget <estimated-tokens>]") {
+		t.Fatalf("orient usage line in main.go must enumerate --body-budget")
+	}
 }
