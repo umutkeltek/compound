@@ -384,6 +384,59 @@ type NegativeCard struct {
 	Confidence   float64 `json:"confidence,omitempty"`
 }
 
+// BodyPackSection is the additive, OPTIONAL body-delivery section of a ContextPack
+// (compound.context_pack.v0.1): task-ranked full content for candidates a body
+// resolver could materialize, packed greedily by rank under a token budget, with
+// per-item provenance and an explicit omitted ledger. Mirrors the Peers *PeersSection
+// precedent: pointer-typed with omitempty, so a pack WITHOUT a body_pack key is
+// byte-identical to today (feature off when --body-budget is absent or 0).
+//
+// LAWS the section carries (load-bearing, pinned by internal/contract materialize
+// falsifiers + internal/hook injection-blindness test):
+//
+//   - A ref in the pack's Excluded list NEVER materializes a body.
+//   - A private-overlay IncludedRef (SourceClass == "private_overlay") NEVER
+//     materializes a body, regardless of budget — the existing private-overlay law
+//     stands verbatim ("refs only, no private body injection").
+//   - Whole-item-or-omit: no truncation; an item larger than remaining budget lands
+//     in omitted with reason budget_exhausted. Admission is strict greedy-by-rank:
+//     each item is independently admitted if it fits the REMAINING budget.
+//   - Hook injection NEVER carries bodies. renderInjection
+//     (internal/hook/hook.go) ignores this section entirely; bodies are for direct
+//     pack consumers (pack JSON under $COMPOUND_HOME/context/packs/, orient stdout,
+//     dispatch prompts).
+//
+// Schema shape: { budget_tokens, estimated_used_tokens, bodies: [{ref, source, rank,
+// estimated_tokens, sha256, status, text}], omitted: [{ref, rank, estimated_tokens,
+// reason}] }. Validation does NOT require the section (F4).
+type BodyPackSection struct {
+	BudgetTokens        int                `json:"budget_tokens"`
+	EstimatedUsedTokens int                `json:"estimated_used_tokens"`
+	Bodies              []BodyPackItem     `json:"bodies"`
+	Omitted             []BodyPackOmission `json:"omitted"`
+}
+
+// BodyPackItem is one whole candidate body admitted under the budget.
+type BodyPackItem struct {
+	Ref             string  `json:"ref"`
+	Source          string  `json:"source"`
+	Rank            float64 `json:"rank"`
+	EstimatedTokens int     `json:"estimated_tokens"`
+	SHA256          string  `json:"sha256"`
+	Status          string  `json:"status"`
+	Text            string  `json:"text"`
+}
+
+// BodyPackOmission records one candidate NOT packed and why. The reason set is an
+// open enum; v1 values emitted by the materializer: budget_exhausted,
+// suppressed_private, unresolvable, excluded.
+type BodyPackOmission struct {
+	Ref             string  `json:"ref"`
+	Rank            float64 `json:"rank"`
+	EstimatedTokens int     `json:"estimated_tokens"`
+	Reason          string  `json:"reason"`
+}
+
 // PeersSection is the CONTEXTUAL team-of-lanes view attached to a ContextPack at
 // orient time: the active leases (who is holding which work, with deterministic
 // staleness) and capped agent-lane cards read from the capability graph. It is
@@ -438,6 +491,7 @@ type ContextPack struct {
 	SourceRevisions    []SourceRev       `json:"source_revisions,omitempty"`
 	RequiredChecks     []string          `json:"required_checks"`
 	Avoid              []string          `json:"avoid"`
+	BodyPack           *BodyPackSection  `json:"body_pack,omitempty"`
 }
 
 func (e *ContextPack) Kind() string { return "context_pack" }
