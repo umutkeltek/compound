@@ -96,6 +96,7 @@ func buildHabitatEntries() []HabitatEntry {
 		child("work.leases", "work/leases", HabitatClassOperational, true, true, false),
 		child("work.checkpoints", "work/checkpoints", HabitatClassOperational, true, true, false),
 		child("work.transactions", "work/transactions", HabitatClassOperational, true, true, false),
+		active("run-attempts", "run_attempts", HabitatClassEvidence, true, true, false),
 		active("context", "context", HabitatClassOperational, true, true, false),
 		child("context.requests", "context/requests", HabitatClassOperational, true, true, false),
 		child("context.packs", "context/packs", HabitatClassOperational, true, true, false),

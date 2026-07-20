@@ -14,12 +14,16 @@ import (
 
 // Status enumerates the lifecycle of a RunAttempt. S1 only ever produces "pending" /
 // "running" / "succeeded" / "failed"; later slices add heartbeat-driven transitions and
-// terminal proof attachment.
+// terminal proof attachment. C1 adds "abandoned" for claim-release (claimed→ready):
+// the attempt was minted at claim but the work was released without execution.
+// Abandoned is terminal (same as succeeded/failed) — a released attempt cannot be
+// re-entered; a fresh claim mints a fresh RunAttempt.
 const (
 	StatusPending   = "pending"
 	StatusRunning   = "running"
 	StatusSucceeded = "succeeded"
 	StatusFailed    = "failed"
+	StatusAbandoned = "abandoned"
 )
 
 // HarnessPlaceholder is the stand-in harness identifier used by writers that do not yet have a
@@ -177,18 +181,27 @@ func (s *Store) Get(id string) (RunAttempt, error) {
 	return ra, nil
 }
 
-// Complete transitions a RunAttempt to terminal status (succeeded or failed) and records
-// the completion timestamp. Status must be one of StatusSucceeded or StatusFailed; pending
-// and running are not terminal and Complete refuses them.
+// IsTerminal reports whether status is a terminal RunAttempt status
+// (succeeded, failed, or abandoned). Terminal attempts cannot be mutated,
+// re-completed, or re-entered.
+func IsTerminal(status string) bool {
+	return status == StatusSucceeded || status == StatusFailed || status == StatusAbandoned
+}
+
+// Complete transitions a RunAttempt to terminal status (succeeded, failed, or
+// abandoned) and records the completion timestamp. Pending and running are not
+// terminal and Complete refuses them. C1 adds abandoned for claim-release
+// (claimed→ready): the attempt was minted at claim but the work was released
+// without execution.
 func (s *Store) Complete(id string, status string, now time.Time) (RunAttempt, error) {
-	if status != StatusSucceeded && status != StatusFailed {
+	if !IsTerminal(status) {
 		return RunAttempt{}, fmt.Errorf("runattempt complete %s: status %q is not terminal", id, status)
 	}
 	ra, err := s.Get(id)
 	if err != nil {
 		return RunAttempt{}, err
 	}
-	if ra.Status == StatusSucceeded || ra.Status == StatusFailed {
+	if IsTerminal(ra.Status) {
 		return RunAttempt{}, fmt.Errorf("runattempt complete %s: already terminal (%s)", id, ra.Status)
 	}
 	ra.Status = status
@@ -230,7 +243,7 @@ func (s *Store) AttachActionIntent(id, actionIntentID string) error {
 	if err != nil {
 		return err
 	}
-	if ra.Status == StatusSucceeded || ra.Status == StatusFailed {
+	if IsTerminal(ra.Status) {
 		return fmt.Errorf("runattempt attach %s: already terminal (%s); binding after terminalization is a bug", id, ra.Status)
 	}
 	if ra.ActionIntentID == actionIntentID {
@@ -254,8 +267,9 @@ func (s *Store) AttachActionIntent(id, actionIntentID string) error {
 // ---------------------------------------------------------------------------
 
 // terminalRefusal is the error returned by every S2 setter when the target
-// RunAttempt is already succeeded or failed. A terminal attempt cannot be
-// retroactively rewritten -- that is the audit invariant the refusal pins.
+// RunAttempt is already terminal (succeeded, failed, or abandoned). A terminal
+// attempt cannot be retroactively rewritten -- that is the audit invariant the
+// refusal pins.
 var terminalRefusal = errors.New("runattempt is terminal; cannot mutate")
 
 func (s *Store) requireMutable(id string) (RunAttempt, error) {
@@ -266,7 +280,7 @@ func (s *Store) requireMutable(id string) (RunAttempt, error) {
 	if err != nil {
 		return RunAttempt{}, err
 	}
-	if ra.Status == StatusSucceeded || ra.Status == StatusFailed {
+	if IsTerminal(ra.Status) {
 		return RunAttempt{}, fmt.Errorf("runattempt %s: %w (status=%s)", id, terminalRefusal, ra.Status)
 	}
 	return ra, nil

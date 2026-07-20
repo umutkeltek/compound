@@ -26,6 +26,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/home"
+	"compound/internal/runattempt"
 )
 
 // transitions is the work-state machine. Terminal states (completed/failed/cancelled)
@@ -76,6 +77,14 @@ type Store struct {
 
 func (s *Store) eventLogReadCount() int64 {
 	return s.eventLogReads.Load()
+}
+
+// runAttempts returns the RunAttempt evidence store rooted at the same
+// COMPOUND_HOME. C1 mints a RunAttempt on every claim so the execution
+// organ fires in production, not just in panel.Apply tests. The store is
+// cheap to construct (path only, no I/O); no caching needed.
+func (s *Store) runAttempts() *runattempt.Store {
+	return runattempt.Open(s.home)
 }
 
 func (s *Store) holdEvidenceFileReadCount() int64 {
@@ -161,8 +170,12 @@ type claimPending struct {
 	Lease              Lease                 `json:"lease"`
 	ActionIntentID     string                `json:"action_intent_id"`
 	PolicyDecisionID   string                `json:"policy_decision_id"`
-	RepairOwnerless    bool                  `json:"repair_ownerless,omitempty"`
-	Event              Event                 `json:"event"`
+	// RunAttemptID is the ratt_* id minted at claim time (C1). Carried in the
+	// pending so crash recovery can verify the attempt exists and matches the
+	// envelope's RunAttemptIDs. Empty for pre-C1 pending files (backcompat).
+	RunAttemptID    string `json:"run_attempt_id,omitempty"`
+	RepairOwnerless bool   `json:"repair_ownerless,omitempty"`
+	Event           Event  `json:"event"`
 }
 
 // --- create ---
@@ -534,6 +547,19 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	if err := s.writeEventJSON(plan.Decision.ID, &plan.Decision); err != nil {
 		return w, err
 	}
+	// C1: mint a RunAttempt on every claim so the execution organ fires in
+	// production. The attempt is minted BEFORE the claimed-work hash is
+	// computed so the ratt_ id is part of the canonical envelope bytes.
+	// Harness is the resolved lane id when declared, else the placeholder.
+	raHarness := laneID
+	if raHarness == "" {
+		raHarness = runattempt.HarnessPlaceholder
+	}
+	ra, raErr := s.runAttempts().Mint(workID, plan.Actor, raHarness, now)
+	if raErr != nil {
+		return w, fmt.Errorf("claim %s: mint run attempt: %w", workID, raErr)
+	}
+	w.RunAttemptIDs = append(w.RunAttemptIDs, ra.ID)
 	claimedWorkSHA256, err := workEnvelopeSHA256(w)
 	if err != nil {
 		return w, err
@@ -550,7 +576,7 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 		To:                 "claimed",
 		By:                 plan.Actor,
 		Note:               note,
-		Attached:           []string{plan.ActionIntent.ID, plan.Decision.ID},
+		Attached:           []string{plan.ActionIntent.ID, plan.Decision.ID, ra.ID},
 		PreviousWorkSHA256: previousWorkSHA256,
 		WorkSHA256:         claimedWorkSHA256,
 	}
@@ -564,6 +590,7 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 		Lease:              lease,
 		ActionIntentID:     plan.ActionIntent.ID,
 		PolicyDecisionID:   plan.Decision.ID,
+		RunAttemptID:       ra.ID,
 		RepairOwnerless:    repairOwnerless,
 		Event:              event,
 	}
@@ -808,9 +835,16 @@ func (s *Store) validatePendingClaim(pending claimPending) error {
 		return fmt.Errorf("pending claim must bind action and policy ids")
 	}
 	event := pending.Event
+	// C1: the Attached list carries [action, policy] for pre-C1 pending
+	// files and [action, policy, ratt_*] for C1+ files. Validate both
+	// shapes so crash recovery works across the boundary.
+	wantAttached := []string{pending.ActionIntentID, pending.PolicyDecisionID}
+	if pending.RunAttemptID != "" {
+		wantAttached = append(wantAttached, pending.RunAttemptID)
+	}
 	if event.WorkID != pending.WorkID || !canTransition(event.From, "claimed") || event.To != "claimed" || event.By != pending.Actor ||
 		event.TS != pending.Lease.ClaimAt || event.PreviousWorkSHA256 != pending.PreviousWorkSHA256 || event.WorkSHA256 != pending.ClaimedWorkSHA256 ||
-		!reflect.DeepEqual(event.Attached, []string{pending.ActionIntentID, pending.PolicyDecisionID}) {
+		!reflect.DeepEqual(event.Attached, wantAttached) {
 		return fmt.Errorf("pending lifecycle event does not bind exact claim transaction")
 	}
 	if pending.RepairOwnerless != strings.HasPrefix(event.Note, "ownerless-claim repair (policy ") {
@@ -879,8 +913,14 @@ func (s *Store) validateClaimAuthority(claimed envelope.WorkEnvelope, allowLegac
 }
 
 func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEnvelope) error {
-	if len(event.Attached) != 2 {
+	// C1: claim events carry [action, policy] (pre-C1) or [action, policy,
+	// ratt_*] (C1+). The first two are validated as artifacts; the third is
+	// a RunAttempt id (evidence, not an envelope artifact — no readEventJSON).
+	if len(event.Attached) < 2 || len(event.Attached) > 3 {
 		return fmt.Errorf("claim event must bind exactly one action and policy")
+	}
+	if len(event.Attached) == 3 && !strings.HasPrefix(event.Attached[2], "ratt_") {
+		return fmt.Errorf("claim event third attached id %q is not a ratt_ RunAttempt", event.Attached[2])
 	}
 	actionID, policyID := event.Attached[0], event.Attached[1]
 	var action envelope.ActionIntent
@@ -1043,6 +1083,15 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	if err != nil {
 		return advanced, err
 	}
+	// C1: abandon terminality. When a claimed work is released back to ready
+	// (the only path that produces claimed→ready), every RunAttempt minted at
+	// claim time is terminalized as "abandoned". The advance is already
+	// durable at this point; terminalization is best-effort evidence — a
+	// failure here is a doctor-visible gap, not a rollback (C3 sweeps stuck
+	// attempts).
+	if w.State == "claimed" && in.To == "ready" {
+		s.abandonRunAttempts(advanced.RunAttemptIDs, now)
+	}
 	// The advance passed the holder-scoped gate; record the declared lane on the holder's lease.
 	if strings.TrimSpace(in.LaneRef) != "" {
 		if err := s.recordDeclaredLaneOnLease(w.ID, declaredLane); err != nil {
@@ -1050,6 +1099,24 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 		}
 	}
 	return advanced, nil
+}
+
+// abandonRunAttempts terminalizes every non-terminal RunAttempt in ids as
+// "abandoned". Best-effort: errors are silently dropped because the advance
+// is already durable and the RunAttempt is evidence, not enforcement. C3
+// (crash terminality) sweeps any attempts this path misses.
+func (s *Store) abandonRunAttempts(ids []string, now time.Time) {
+	store := s.runAttempts()
+	for _, id := range ids {
+		ra, err := store.Get(id)
+		if err != nil {
+			continue // not found or invalid — nothing to abandon
+		}
+		if runattempt.IsTerminal(ra.Status) {
+			continue // already terminal (succeeded/failed/abandoned)
+		}
+		_, _ = store.Complete(id, runattempt.StatusAbandoned, now)
+	}
 }
 
 // applyAdvance performs the state write for a legal, gate-cleared advance. It is shared
