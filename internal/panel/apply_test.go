@@ -406,18 +406,30 @@ func TestApplyRecordsRunAttemptChain(t *testing.T) {
 		t.Fatalf("apply did not bind a work envelope")
 	}
 
-	// Exactly one RunAttempt record landed, bound to the work and to the authorizing
-	// ActionIntent, terminalized succeeded.
+	// C1: claim mints one RunAttempt (pending); panel.Apply mints its own
+	// execution RunAttempt (succeeded). Two entries total. Find the
+	// execution one by status.
 	entries, err := os.ReadDir(filepath.Join(home, "run_attempts"))
 	if err != nil {
 		t.Fatalf("read run_attempts: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("run_attempts entries = %d, want 1", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("run_attempts entries = %d, want 2 (claim + execution)", len(entries))
 	}
-	ra, err := runattempt.Open(home).Get(strings.TrimSuffix(entries[0].Name(), ".json"))
-	if err != nil {
-		t.Fatalf("Get runattempt: %v", err)
+	raStore := runattempt.Open(home)
+	var ra runattempt.RunAttempt
+	for _, e := range entries {
+		candidate, err := raStore.Get(strings.TrimSuffix(e.Name(), ".json"))
+		if err != nil {
+			t.Fatalf("Get runattempt %s: %v", e.Name(), err)
+		}
+		if candidate.Status == runattempt.StatusSucceeded {
+			ra = candidate
+			break
+		}
+	}
+	if ra.ID == "" {
+		t.Fatal("no succeeded RunAttempt found among entries")
 	}
 	if ra.WorkID != got.WorkID {
 		t.Fatalf("runattempt work_id = %q, want %q", ra.WorkID, got.WorkID)
@@ -484,17 +496,30 @@ func TestApplyRecordsRunAttemptChainFailed(t *testing.T) {
 		t.Fatalf("apply did not bind a work envelope even on failure")
 	}
 
-	// The RunAttempt was still minted (before the loop) and terminalized failed.
+	// C1: claim mints one RunAttempt (pending); panel.Apply mints its own
+	// execution RunAttempt (failed). Two entries total. Find the execution
+	// one by status.
 	entries, err := os.ReadDir(filepath.Join(home, "run_attempts"))
 	if err != nil {
 		t.Fatalf("read run_attempts: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("run_attempts entries = %d, want 1", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("run_attempts entries = %d, want 2 (claim + execution)", len(entries))
 	}
-	ra, err := runattempt.Open(home).Get(strings.TrimSuffix(entries[0].Name(), ".json"))
-	if err != nil {
-		t.Fatalf("Get runattempt: %v", err)
+	raStore := runattempt.Open(home)
+	var ra runattempt.RunAttempt
+	for _, e := range entries {
+		candidate, err := raStore.Get(strings.TrimSuffix(e.Name(), ".json"))
+		if err != nil {
+			t.Fatalf("Get runattempt %s: %v", e.Name(), err)
+		}
+		if candidate.Status == runattempt.StatusFailed {
+			ra = candidate
+			break
+		}
+	}
+	if ra.ID == "" {
+		t.Fatal("no failed RunAttempt found among entries")
 	}
 	if ra.WorkID != got.WorkID {
 		t.Fatalf("runattempt work_id = %q, want %q", ra.WorkID, got.WorkID)

@@ -519,8 +519,12 @@ func assertExactClaimProof(t *testing.T, s *Store, before, claimed envelope.Work
 		event.PreviousWorkSHA256 != previousHash || event.WorkSHA256 != workHash {
 		t.Fatalf("claim event does not bind exact Work versions and actor: %+v", event)
 	}
-	if len(event.Attached) != 2 {
-		t.Fatalf("claim event attached = %v, want exact action/policy pair", event.Attached)
+	// C1: claim events carry [action, policy] or [action, policy, ratt_*].
+	if len(event.Attached) < 2 || len(event.Attached) > 3 {
+		t.Fatalf("claim event attached = %v, want action/policy[/ratt_*]", event.Attached)
+	}
+	if len(event.Attached) == 3 && !strings.HasPrefix(event.Attached[2], "ratt_") {
+		t.Fatalf("claim event third attached %q is not a ratt_ id", event.Attached[2])
 	}
 	actionID, policyID := event.Attached[0], event.Attached[1]
 	if len(claimed.ActionIntentIDs) == 0 || claimed.ActionIntentIDs[len(claimed.ActionIntentIDs)-1] != actionID || claimed.PolicyDecisionID != policyID {

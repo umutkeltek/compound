@@ -241,3 +241,90 @@ func TestStoreAttachActionIntentRejects(t *testing.T) {
 		t.Fatalf("attach with malformed id must fail")
 	}
 }
+
+// --- C1: abandoned terminal status ---
+
+func TestCompleteAcceptsAbandoned(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_abc", "compound", "fake", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := s.Complete(ra.ID, StatusAbandoned, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Complete(abandoned): %v", err)
+	}
+	if completed.Status != StatusAbandoned {
+		t.Fatalf("status = %q, want abandoned", completed.Status)
+	}
+	if !completed.CompletedAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("completed_at = %v, want %v", completed.CompletedAt, now.Add(time.Minute))
+	}
+	// Re-complete is rejected.
+	if _, err := s.Complete(ra.ID, StatusFailed, now.Add(2*time.Minute)); err == nil {
+		t.Fatalf("re-Complete of abandoned RunAttempt must fail")
+	}
+	// Disk shows the terminal status.
+	got, err := Open(home).Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusAbandoned {
+		t.Fatalf("on-disk status = %q, want abandoned", got.Status)
+	}
+}
+
+func TestSettersRefuseOnAbandoned(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_abc", "compound", "fake", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Complete(ra.ID, StatusAbandoned, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	setters := []struct {
+		name string
+		fn   func() error
+	}{
+		{"context_pack", func() error { _, e := s.SetContextPack(ra.ID, "x"); return e }},
+		{"workspace", func() error { _, e := s.SetWorkspace(ra.ID, "/x"); return e }},
+		{"command", func() error { _, e := s.SetCommand(ra.ID, "x"); return e }},
+		{"heartbeat", func() error { _, e := s.Heartbeat(ra.ID, now.Add(2*time.Minute)); return e }},
+		{"transcript", func() error { _, e := s.SetTranscript(ra.ID, "x"); return e }},
+		{"diff", func() error { _, e := s.SetDiff(ra.ID, "x"); return e }},
+		{"test", func() error { _, e := s.SetTest(ra.ID, "x"); return e }},
+		{"proof_refs", func() error { _, e := s.SetProofRefs(ra.ID, []string{"x"}); return e }},
+		{"attach_action_intent", func() error { return s.AttachActionIntent(ra.ID, "act_12345678") }},
+	}
+	for _, tc := range setters {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.fn(); err == nil {
+				t.Fatalf("setter on abandoned RunAttempt must fail")
+			}
+		})
+	}
+}
+
+func TestIsTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		want   bool
+	}{
+		{StatusPending, false},
+		{StatusRunning, false},
+		{StatusSucceeded, true},
+		{StatusFailed, true},
+		{StatusAbandoned, true},
+		{"garbage", false},
+		{"", false},
+	} {
+		if got := IsTerminal(tc.status); got != tc.want {
+			t.Errorf("IsTerminal(%q) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}

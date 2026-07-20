@@ -1,0 +1,295 @@
+// C1 tests: every claim mints a RunAttempt; abandon (claimed→ready)
+// terminalizes it. These are the falsifiers the continuation plan requires:
+//
+//   (a) state after claim+abandon DIFFERS from never-claimed (the attempt
+//       file exists, terminal=abandoned)
+//   (b) a claim mints exactly one attempt, idempotent on retry
+//   (c) envelope hash continuity — the two guard tests stay green (pinned
+//       in their own files; this file does not re-test them)
+
+package work
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"compound/internal/runattempt"
+)
+
+// TestClaimMintsRunAttempt proves that Claim mints exactly one RunAttempt,
+// the ratt_ id lands on the envelope's RunAttemptIDs, and the attempt file
+// exists on disk with status=pending.
+func TestClaimMintsRunAttempt(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "c1-test", SuccessPredicate: "claim mints attempt"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(w.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exactly one RunAttemptID on the envelope.
+	if len(claimed.RunAttemptIDs) != 1 {
+		t.Fatalf("claimed RunAttemptIDs = %v, want exactly 1", claimed.RunAttemptIDs)
+	}
+	rattID := claimed.RunAttemptIDs[0]
+	if !runattempt.Valid(rattID) {
+		t.Fatalf("RunAttemptID %q is not a valid ratt_ id", rattID)
+	}
+	// The attempt file exists on disk.
+	raPath := filepath.Join(s.home, "run_attempts", rattID+".json")
+	if _, err := os.Stat(raPath); err != nil {
+		t.Fatalf("RunAttempt file missing: %v", err)
+	}
+	// The attempt has status=pending and the right work_id.
+	ra, err := runattempt.Open(s.home).Get(rattID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.Status != runattempt.StatusPending {
+		t.Fatalf("RunAttempt status = %q, want pending", ra.Status)
+	}
+	if ra.WorkID != w.ID {
+		t.Fatalf("RunAttempt work_id = %q, want %q", ra.WorkID, w.ID)
+	}
+	if ra.Actor != "codex" {
+		t.Fatalf("RunAttempt actor = %q, want codex", ra.Actor)
+	}
+	// The lifecycle event's Attached includes the ratt_ id.
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claimEvent *Event
+	for i := range events {
+		if events[i].To == "claimed" {
+			claimEvent = &events[i]
+			break
+		}
+	}
+	if claimEvent == nil {
+		t.Fatal("no claim event found")
+	}
+	found := false
+	for _, a := range claimEvent.Attached {
+		if a == rattID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("claim event Attached %v does not include %q", claimEvent.Attached, rattID)
+	}
+}
+
+// TestClaimIdempotentRetryDoesNotMintSecondAttempt proves that re-claiming
+// an already-claimed work (same actor) returns the same envelope without
+// minting a second RunAttempt.
+func TestClaimIdempotentRetryDoesNotMintSecondAttempt(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "c1-test", SuccessPredicate: "idempotent claim"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Claim(w.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.RunAttemptIDs) != 1 {
+		t.Fatalf("first claim RunAttemptIDs = %v, want 1", first.RunAttemptIDs)
+	}
+	// Retry: same actor, same work.
+	second, err := s.Claim(w.ID, "codex", fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.RunAttemptIDs) != 1 {
+		t.Fatalf("retry claim RunAttemptIDs = %v, want still 1", second.RunAttemptIDs)
+	}
+	if second.RunAttemptIDs[0] != first.RunAttemptIDs[0] {
+		t.Fatalf("retry minted a different attempt: %q vs %q", second.RunAttemptIDs[0], first.RunAttemptIDs[0])
+	}
+	// Only one ratt_ file on disk.
+	entries, err := os.ReadDir(filepath.Join(s.home, "run_attempts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rattCount := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") && strings.HasPrefix(e.Name(), "ratt_") {
+			rattCount++
+		}
+	}
+	if rattCount != 1 {
+		t.Fatalf("run_attempts dir has %d ratt_ files, want 1", rattCount)
+	}
+}
+
+// TestClaimAbandonTerminalizesRunAttempt proves that advancing claimed→ready
+// (abandon) terminalizes the claim-minted RunAttempt as "abandoned".
+func TestClaimAbandonTerminalizesRunAttempt(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "c1-test", SuccessPredicate: "abandon terminalizes"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(w.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rattID := claimed.RunAttemptIDs[0]
+	// Abandon: advance claimed→ready.
+	released, err := s.Advance(w.ID, AdvanceInput{To: "ready", Actor: "codex", Steal: true, StealReason: "c1 test abandon"}, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released.State != "ready" {
+		t.Fatalf("state = %q, want ready", released.State)
+	}
+	// The RunAttempt is now terminal=abandoned.
+	ra, err := runattempt.Open(s.home).Get(rattID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.Status != runattempt.StatusAbandoned {
+		t.Fatalf("RunAttempt status = %q, want abandoned", ra.Status)
+	}
+	if ra.CompletedAt.IsZero() {
+		t.Fatal("abandoned RunAttempt has zero CompletedAt")
+	}
+}
+
+// TestAbandonedStateDiffersFromNeverClaimed is falsifier (a): state after
+// claim+abandon DIFFERS from never-claimed. The attempt file exists and is
+// terminal=abandoned; a never-claimed work has no run_attempts at all.
+func TestAbandonedStateDiffersFromNeverClaimed(t *testing.T) {
+	s := newStore(t)
+	// Work A: claimed then abandoned.
+	wA, err := s.Create(CreateInput{Owner: "c1-test", SuccessPredicate: "A"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedA, err := s.Claim(wA.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rattA := claimedA.RunAttemptIDs[0]
+	if _, err := s.Advance(wA.ID, AdvanceInput{To: "ready", Actor: "codex", Steal: true, StealReason: "abandon A"}, fixedNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// Work B: never claimed.
+	wB, err := s.Create(CreateInput{Owner: "c1-test", SuccessPredicate: "B"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A has an attempt file; B does not.
+	raPathA := filepath.Join(s.home, "run_attempts", rattA+".json")
+	if _, err := os.Stat(raPathA); err != nil {
+		t.Fatalf("abandoned work A: attempt file missing: %v", err)
+	}
+	ra, err := runattempt.Open(s.home).Get(rattA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.Status != runattempt.StatusAbandoned {
+		t.Fatalf("A attempt status = %q, want abandoned", ra.Status)
+	}
+	// B has no RunAttemptIDs.
+	gotB, err := s.Get(wB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotB.RunAttemptIDs) != 0 {
+		t.Fatalf("never-claimed B has RunAttemptIDs = %v, want empty", gotB.RunAttemptIDs)
+	}
+}
+
+// TestDispatchClaimMintsRunAttempt proves that dispatch-claim also mints a
+// RunAttempt (it calls Claim internally).
+func TestDispatchClaimMintsRunAttempt(t *testing.T) {
+	s := newStore(t)
+	_, err := s.Create(CreateInput{Owner: "c1-test", SuccessPredicate: "dispatch mints"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClaim(fixedNow, DispatchPlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "claimed" {
+		t.Fatalf("dispatch-claim status = %q, want claimed", result.Status)
+	}
+	claimed, err := s.Get(result.ClaimedWorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.RunAttemptIDs) != 1 {
+		t.Fatalf("dispatch-claimed RunAttemptIDs = %v, want 1", claimed.RunAttemptIDs)
+	}
+	if !runattempt.Valid(claimed.RunAttemptIDs[0]) {
+		t.Fatalf("dispatch-claimed RunAttemptID %q is not valid", claimed.RunAttemptIDs[0])
+	}
+	// The attempt file exists.
+	raPath := filepath.Join(s.home, "run_attempts", claimed.RunAttemptIDs[0]+".json")
+	if _, err := os.Stat(raPath); err != nil {
+		t.Fatalf("dispatch-claimed attempt file missing: %v", err)
+	}
+}
+
+// TestClaimWithLaneMintsRunAttemptWithLaneHarness proves that ClaimWithLane
+// records the resolved lane id as the RunAttempt's harness.
+func TestClaimWithLaneMintsRunAttemptWithLaneHarness(t *testing.T) {
+	s := newStore(t)
+	// Seed a lane node into the CapabilityGraph so ResolveLaneRef succeeds.
+	_, nodeID := seedLane(t, s, "codex/gpt-5.6")
+	w, err := s.Create(CreateInput{Owner: "c1-test", SuccessPredicate: "lane harness"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimWithLane(w.ID, "codex", "codex/gpt-5.6", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.RunAttemptIDs) != 1 {
+		t.Fatalf("RunAttemptIDs = %v, want 1", claimed.RunAttemptIDs)
+	}
+	ra, err := runattempt.Open(s.home).Get(claimed.RunAttemptIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.Harness != nodeID {
+		t.Fatalf("RunAttempt harness = %q, want %q", ra.Harness, nodeID)
+	}
+}
+
+// TestAbandonedRunAttemptRefusesSetters proves that after abandon, the S2
+// setters refuse mutation (the audit invariant extends to abandoned).
+func TestAbandonedRunAttemptRefusesSetters(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "c1-test", SuccessPredicate: "setter refusal"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(w.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rattID := claimed.RunAttemptIDs[0]
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "ready", Actor: "codex", Steal: true, StealReason: "abandon"}, fixedNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	store := runattempt.Open(s.home)
+	if _, err := store.SetCommand(rattID, "should-fail"); err == nil {
+		t.Fatal("SetCommand on abandoned attempt must fail")
+	}
+	if _, err := store.SetWorkspace(rattID, "/should-fail"); err == nil {
+		t.Fatal("SetWorkspace on abandoned attempt must fail")
+	}
+	if err := store.AttachActionIntent(rattID, "act_12345678"); err == nil {
+		t.Fatal("AttachActionIntent on abandoned attempt must fail")
+	}
+}
