@@ -65,6 +65,11 @@ func TestProposeApplyWritesConfinedToProposalSurfaces(t *testing.T) {
 		// nothing; the surface is exercised by
 		// TestHarnessEditProposeApplyWritesCardConfined.
 		"reviews/harness-edit-proposals/",
+		// DELIBERATE allowlist extension: C1 (mint a RunAttempt on every claim)
+		// adds run_attempts/ as a legitimate operational write surface. The
+		// enclosing director run claims its WorkEnvelope, so a run-attempt is
+		// minted; it is an execution-record artifact, not an owner-state escape.
+		"run_attempts/",
 	}
 
 	var escaped []string

@@ -76,13 +76,16 @@ func TestWorkAdvanceExecute(t *testing.T) {
 	if final.State != "verifying" {
 		t.Fatalf("expected state=verifying, got: %s (advance --execute must move the work through running -> verifying)", final.State)
 	}
-	if len(final.RunAttemptIDs) != 1 {
-		t.Fatalf("expected exactly 1 RunAttemptID on the work, got %d (list: %v)", len(final.RunAttemptIDs), final.RunAttemptIDs)
+	// C1: Claim mints a RunAttempt, and advance --execute mints a second
+	// (the one that actually ran). So the work carries exactly 2: the
+	// claim-mint first, the executed-mint last.
+	if len(final.RunAttemptIDs) != 2 {
+		t.Fatalf("expected 2 RunAttemptIDs on the work (claim-mint + execute-mint), got %d (list: %v)", len(final.RunAttemptIDs), final.RunAttemptIDs)
 	}
-	// The RunAttempt itself should be succeeded with the transcript
-	// ref attached.
+	// The EXECUTED RunAttempt (the last one — the claim-mint is first) is
+	// the one that ran: succeeded with the transcript ref attached.
 	store := runattempt.Open(homePath)
-	ra, err := store.Get(final.RunAttemptIDs[0])
+	ra, err := store.Get(final.RunAttemptIDs[len(final.RunAttemptIDs)-1])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +144,10 @@ func TestWorkAdvanceExecuteFailedExit(t *testing.T) {
 	// The failed close must forward-link the (terminal) RunAttempt onto
 	// the envelope via CloseInput.RunAttemptIDs -- the audit chain reaches
 	// the failed run from the work, not only from run_attempts/<id>.json.
-	if len(final.RunAttemptIDs) != 1 {
-		t.Fatalf("expected failed-close to forward-link 1 RunAttemptID on the work, got %d (%v)", len(final.RunAttemptIDs), final.RunAttemptIDs)
+	// C1: Claim mints a RunAttempt too, so the work carries 2 (claim-mint
+	// + the failed execute-mint forward-linked by the close).
+	if len(final.RunAttemptIDs) != 2 {
+		t.Fatalf("expected failed-close to leave 2 RunAttemptIDs on the work (claim-mint + failed execute-mint), got %d (%v)", len(final.RunAttemptIDs), final.RunAttemptIDs)
 	}
 	// The failed-path closes via CloseInput (failed is a terminal
 	// state; Advance can't go there). The RunAttempt itself is
@@ -152,15 +157,19 @@ func TestWorkAdvanceExecuteFailedExit(t *testing.T) {
 	// transcript path. The audit check below verifies the RunAttempt
 	// itself; the work's proof chain is covered by the receipt/transition
 	// contract that runs in closeLocked.
+	// Two RunAttempt files: the claim-mint (C1) and the failed execute-mint.
 	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
-	if len(runAttemptFiles) != 1 {
-		t.Fatalf("expected exactly 1 RunAttempt file, got %d (close path should still have minted one)", len(runAttemptFiles))
+	if len(runAttemptFiles) != 2 {
+		t.Fatalf("expected 2 RunAttempt files (claim-mint + failed execute-mint), got %d", len(runAttemptFiles))
 	}
+	// The FAILED run-attempt is the execute-mint; files sort by timestamped
+	// id, so the claim-mint (earlier cliTestNow) is first and the later
+	// execute-mint is last.
 	store := runattempt.Open(homePath)
-	id := strings.TrimSuffix(filepath.Base(runAttemptFiles[0]), ".json")
+	id := strings.TrimSuffix(filepath.Base(runAttemptFiles[len(runAttemptFiles)-1]), ".json")
 	ra, _ := store.Get(id)
 	if ra.Status != runattempt.StatusFailed {
-		t.Fatalf("expected RunAttempt failed, got: %s", ra.Status)
+		t.Fatalf("expected the executed RunAttempt to be failed, got: %s", ra.Status)
 	}
 }
 
@@ -198,7 +207,10 @@ func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
 		t.Fatalf("expected 'unknown harness' in stderr, got:\n%s", out)
 	}
 
-	// The work must NOT have advanced -- still "claimed", no RunAttempt.
+	// The work must NOT have advanced -- still "claimed". C1: Claim itself
+	// mints a RunAttempt, so exactly ONE run-attempt file (the claim's)
+	// exists; the unknown-harness advance must mint none ADDITIONAL (teeth:
+	// if the advance minted, there would be 2).
 	ws2, _ := work.Open(homePath)
 	final, getErr := ws2.Get(w.ID)
 	if getErr != nil {
@@ -208,7 +220,7 @@ func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
 		t.Fatalf("unknown harness must fail before any state change; state = %q, want claimed (the old flow left it stuck in running)", final.State)
 	}
 	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
-	if len(runAttemptFiles) != 0 {
-		t.Fatalf("unknown harness must mint no RunAttempt; got %d file(s)", len(runAttemptFiles))
+	if len(runAttemptFiles) != 1 {
+		t.Fatalf("unknown harness must mint no RunAttempt beyond the claim's; expected exactly 1 file (the claim-mint), got %d", len(runAttemptFiles))
 	}
 }

@@ -400,6 +400,7 @@ func TestJobHealthEvidenceAutonomyWritesOnlyAdmissionSurfaces(t *testing.T) {
 		"work/action-contexts/",
 		"work/leases/", // enclosing Director run only; job lease absence is asserted above
 		"work/work/",
+		"run_attempts/", // C1: every claim mints a RunAttempt; the enclosing Director run claims, so a run-attempt write is legitimate, not an escape
 	}
 	var escaped []string
 	for _, rel := range writeSet {
