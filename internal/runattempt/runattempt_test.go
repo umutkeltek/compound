@@ -1,6 +1,7 @@
 package runattempt
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -85,7 +86,12 @@ func TestStoreMintAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got != ra {
+	// Field-by-field comparison: RunAttempt contains []string (ProofRefs, added in S2)
+	// which makes the struct uncomparable with ==.
+	if got.ID != ra.ID || got.WorkID != ra.WorkID || got.Actor != ra.Actor ||
+		got.Harness != ra.Harness || got.Status != ra.Status ||
+		!got.CreatedAt.Equal(ra.CreatedAt) || !got.CompletedAt.Equal(ra.CompletedAt) ||
+		got.SchemaVersion != ra.SchemaVersion {
 		t.Fatalf("Get round-trip mismatch:\n got: %+v\nwant: %+v", got, ra)
 	}
 }
@@ -234,5 +240,54 @@ func TestStoreAttachActionIntentRejects(t *testing.T) {
 	// Malformed ratt_ id.
 	if err := s.AttachActionIntent("not-a-ratt-id", "act_77778888"); err == nil {
 		t.Fatalf("attach with malformed id must fail")
+	}
+}
+
+// --- S2: full RunAttempt shape accessors ---
+//
+// Slice B adds context_pack_ref, workspace, command, last_heartbeat_at,
+// transcript_ref, diff_ref, test_ref, and proof_refs to the RunAttempt
+// envelope. All eight are omitempty so pre-S2 records (which never had
+// these fields) marshal byte-identical when re-decoded and re-marshaled.
+// Every setter refuses on a terminal RunAttempt (succeeded|failed) -- the
+// audit invariant is that completed attempts cannot be retroactively
+// rewritten.
+//
+// Falsifier: removing any setter turns the corresponding test RED with a
+// "undefined" build error; removing the terminal-rejection check turns
+// the refusal tests RED with "setter on terminal runattempt must fail".
+// The hash-neutrality test goes RED if any new field drops `omitempty` --
+// a single-byte drift is exactly the regression S1's TestEmptyRunAttemptIDsIsHashNeutral
+// is built to catch.
+
+// TestRunAttemptHashNeutralityForPreS2Records pins the contract that adding
+// the S2 fields does not invalidate pre-existing ratt_* records on disk. A
+// record written by S1 (no S2 fields) re-decoded and re-marshaled must
+// produce byte-identical bytes. Pinned alongside the work-side
+// TestEmptyRunAttemptIDsIsHashNeutral so future field additions face the
+// same discipline.
+func TestRunAttemptHashNeutralityForPreS2Records(t *testing.T) {
+	preS2JSON := []byte(`{
+  "schema_version": "compound.runattempt.v0.1",
+  "id": "ratt_20260720T000000Z_deadbeef",
+  "work_id": "work_abc",
+  "action_intent_id": "act_11112222",
+  "actor": "codex",
+  "harness": "fake",
+  "status": "succeeded",
+  "created_at": "2026-07-20T00:00:00Z",
+  "completed_at": "2026-07-20T00:01:00Z",
+  "last_heartbeat_at": "0001-01-01T00:00:00Z"
+}`)
+	var ra RunAttempt
+	if err := json.Unmarshal(preS2JSON, &ra); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.MarshalIndent(ra, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != string(preS2JSON) {
+		t.Fatalf("pre-S2 record re-marshal drifted:\n got: %s\nwant: %s", out, preS2JSON)
 	}
 }

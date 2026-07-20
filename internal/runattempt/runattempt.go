@@ -40,6 +40,14 @@ var ErrAlreadyBound = errors.New("runattempt already bound to a different action
 // RunAttempt is the S1 type. Fields are deliberately minimal: enough to bind a RunAttempt to
 // a work_id and to record who/what ran and when. Transcript, diff, test, proof refs are not
 // part of S1 -- they land when a real harness adapter actually produces them.
+//
+// S2 (Slice B) adds the eight references the reviewer's full RunAttempt shape called for:
+// context_pack_ref / workspace / command / last_heartbeat_at / transcript_ref / diff_ref /
+// test_ref / proof_refs. Every new field is omitempty so pre-S2 records marshal byte-identical
+// when re-decoded and re-marshaled (pinned by TestRunAttemptHashNeutralityForPreS2Records).
+// The setters refuse on a terminal RunAttempt (succeeded|failed) -- completed attempts cannot
+// be retroactively rewritten. Today panel.Apply wires three of these (workspace, command,
+// proof_refs); the rest wait for a real harness adapter to populate them.
 type RunAttempt struct {
 	SchemaVersion string `json:"schema_version"`
 	ID            string `json:"id"`
@@ -54,6 +62,37 @@ type RunAttempt struct {
 	Status         string    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
 	CompletedAt    time.Time `json:"completed_at,omitempty"`
+
+	// --- S2 fields (every one omitempty; setters refuse on terminal status) ---
+
+	// ContextPackRef is the id of the ContextRequest envelope the harness loaded for this
+	// attempt. Set before the first side effect so the audit can trace which context pack
+	// produced which decision.
+	ContextPackRef string `json:"context_pack_ref,omitempty"`
+	// Workspace is the filesystem root the harness ran inside (repo path, scratch dir, etc.).
+	Workspace string `json:"workspace,omitempty"`
+	// Command is the actual command or function call the harness executed. Free-text by design;
+	// the audit reads it as opaque context, not as a re-runnable spec.
+	Command string `json:"command,omitempty"`
+	// LastHeartbeatAt is the latest in-progress activity timestamp. Set by Heartbeat, which
+	// advances only forward (a stale heartbeat is a no-op). Combined with Status it tells an
+	// operator whether a still-"running" RunAttempt is genuinely progressing or has stalled.
+	// Pointer so `omitempty` actually works -- encoding/json treats `time.Time{}` (zero value)
+	// as non-empty because it is a struct. Caught by TestRunAttemptHashNeutralityForPreS2Records
+	// when this was a value field.
+	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
+	// TranscriptRef is the path (relative to COMPOUND_HOME) of the harness's run transcript.
+	// For panel.Apply this is the panel run record; for a real adapter it is the model's
+	// output stream.
+	TranscriptRef string `json:"transcript_ref,omitempty"`
+	// DiffRef is the path of the diff artifact (if any) the attempt produced.
+	DiffRef string `json:"diff_ref,omitempty"`
+	// TestRef is the path of the test-result artifact (if any) the attempt produced.
+	TestRef string `json:"test_ref,omitempty"`
+	// ProofRefs are the paths or ids of proof artifacts (receipts, transitions, external
+	// verifications) that corroborate the attempt's outcome. Empty slice clears (intentional,
+	// see TestRunAttemptSetProofRefsClearsOnEmpty).
+	ProofRefs []string `json:"proof_refs,omitempty"`
 }
 
 // Store persists RunAttempts under <home>/run_attempts/<id>.json with atomic rename and a
@@ -197,6 +236,141 @@ func (s *Store) AttachActionIntent(id, actionIntentID string) error {
 	}
 	ra.ActionIntentID = actionIntentID
 	return s.write(ra)
+}
+
+// ---------------------------------------------------------------------------
+// S2: RunAttempt full-shape accessors
+//
+// Every setter follows the same pattern: Get the record (which validates the
+// id shape and returns ErrNotFound on miss), refuse if the RunAttempt is
+// terminal (StatusSucceeded | StatusFailed), update the field, atomic write.
+// A helper updateField carries the refusal logic so each setter stays a
+// single line of intent.
+// ---------------------------------------------------------------------------
+
+// terminalRefusal is the error returned by every S2 setter when the target
+// RunAttempt is already succeeded or failed. A terminal attempt cannot be
+// retroactively rewritten -- that is the audit invariant the refusal pins.
+var terminalRefusal = errors.New("runattempt is terminal; cannot mutate")
+
+func (s *Store) requireMutable(id string) (RunAttempt, error) {
+	if !Valid(id) {
+		return RunAttempt{}, fmt.Errorf("runattempt set %s: id does not match %s pattern", id, Prefix)
+	}
+	ra, err := s.Get(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	if ra.Status == StatusSucceeded || ra.Status == StatusFailed {
+		return RunAttempt{}, fmt.Errorf("runattempt %s: %w (status=%s)", id, terminalRefusal, ra.Status)
+	}
+	return ra, nil
+}
+
+// SetContextPack records which ContextRequest envelope this attempt loaded.
+// Pinned by TestRunAttemptRoundTripsNewFields/context_pack and refused on
+// terminal attempts by TestRunAttemptSettersRefuseOnTerminal.
+func (s *Store) SetContextPack(id, ref string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.ContextPackRef = strings.TrimSpace(ref)
+	return ra, s.write(ra)
+}
+
+// SetWorkspace records the filesystem root the attempt ran inside. Free-text
+// by design; the audit reads it as opaque context.
+func (s *Store) SetWorkspace(id, workspace string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.Workspace = strings.TrimSpace(workspace)
+	return ra, s.write(ra)
+}
+
+// SetCommand records the actual command or function call the harness
+// executed. Treated as opaque context, not a re-runnable spec.
+func (s *Store) SetCommand(id, command string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.Command = strings.TrimSpace(command)
+	return ra, s.write(ra)
+}
+
+// Heartbeat advances LastHeartbeatAt to now, but ONLY if now is strictly
+// later than the current value. Stale heartbeats are no-ops. The monotonic
+// rule is pinned by TestRunAttemptHeartbeatAdvancesOnlyForward. Heartbeat
+// also refuses on terminal attempts -- a heartbeat on a "succeeded" run
+// would imply the attempt is still running, contradicting the terminal status.
+func (s *Store) Heartbeat(id string, now time.Time) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	t := now.UTC()
+	if ra.LastHeartbeatAt != nil && !t.After(*ra.LastHeartbeatAt) {
+		return ra, nil
+	}
+	ra.LastHeartbeatAt = &t
+	return ra, s.write(ra)
+}
+
+// SetTranscript records the run transcript path. Single string by design --
+// a harness has one transcript.
+func (s *Store) SetTranscript(id, ref string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.TranscriptRef = strings.TrimSpace(ref)
+	return ra, s.write(ra)
+}
+
+// SetDiff records the diff artifact path (if any).
+func (s *Store) SetDiff(id, ref string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.DiffRef = strings.TrimSpace(ref)
+	return ra, s.write(ra)
+}
+
+// SetTest records the test-result artifact path (if any).
+func (s *Store) SetTest(id, ref string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.TestRef = strings.TrimSpace(ref)
+	return ra, s.write(ra)
+}
+
+// SetProofRefs replaces the proof-refs slice. Pass nil to clear (pinned by
+// TestRunAttemptSetProofRefsClearsOnEmpty). Pass a non-empty slice to
+// overwrite. Order is preserved as-given; the audit does not sort.
+func (s *Store) SetProofRefs(id string, refs []string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	if len(refs) == 0 {
+		ra.ProofRefs = nil
+	} else {
+		out := make([]string, 0, len(refs))
+		for _, r := range refs {
+			r = strings.TrimSpace(r)
+			if r != "" {
+				out = append(out, r)
+			}
+		}
+		ra.ProofRefs = out
+	}
+	return ra, s.write(ra)
 }
 
 func (s *Store) path(id string) string {

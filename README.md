@@ -116,14 +116,26 @@ should differ.
 
 ## Quickstart
 
+**New here?** Start with the [Getting Started guide](docs/getting-started.md) —
+Compound + your repo + your agent in 15 minutes.
+
 ```bash
 make install
+compound orient --harness claude-code --cwd /path/to/your/project --task "describe this project"
+compound work create --owner "my-first-task" --predicate "the thing works" --state ready --by "operator:me"
 compound workbench
-compound proof-check --json
-compound orient --harness codex --cwd . --task "inspect compound"
-cd console && bun install
-compound console --operator # optional local console on port 3777
 ```
+
+Wire your agent harness: see [Harness Wiring](docs/harness-wiring.md).
+
+Optional local console on port 3777:
+
+```bash
+cd console && bun install
+compound console --operator
+```
+
+See the [Console guide](docs/console.md) for what you'll see.
 
 For contract consumers:
 
@@ -132,6 +144,9 @@ go run ./cmd/compound schema list
 go run ./cmd/compound schema export context_pack
 go run ./cmd/compound envelope validate fixtures/envelopes/*.json
 ```
+
+For semantic memory (search over your docs): see the
+[Memory Quickstart](docs/memory-quickstart.md).
 
 ## Where State Lives
 
@@ -249,6 +264,16 @@ Adaptive systems:
   issues, reviews, and product timelines.
 - `compound projection ...` checks generated-view freshness and records scoped
   projection context.
+
+## Guides
+
+| Guide | For |
+|---|---|
+| [Getting Started](docs/getting-started.md) | First-time users: install, orient, create work, wire your agent |
+| [Harness Wiring](docs/harness-wiring.md) | Connect Compound to Claude Code, Codex, OpenCode, or any CLI harness |
+| [Memory Quickstart](docs/memory-quickstart.md) | Semantic search over your docs in 10 minutes |
+| [Console](docs/console.md) | The visual operator dashboard |
+| [Contributing](CONTRIBUTING.md) | Build, test, architecture rules, and PR expectations |
 
 ## Architecture Map
 
