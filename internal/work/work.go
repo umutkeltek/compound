@@ -559,6 +559,16 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	if raErr != nil {
 		return w, fmt.Errorf("claim %s: mint run attempt: %w", workID, raErr)
 	}
+	// C4: retry lineage — if this work already has attempts, the new one
+	// chains to the most recent. Best-effort: a link failure does not abort
+	// the claim (the attempt exists, lineage is evidence, not enforcement).
+	if len(w.RunAttemptIDs) > 0 {
+		prev := w.RunAttemptIDs[len(w.RunAttemptIDs)-1]
+		if _, linkErr := s.runAttempts().SetPredecessor(ra.ID, prev); linkErr != nil {
+			// Best-effort: log nothing, the claim proceeds.
+			_ = linkErr
+		}
+	}
 	w.RunAttemptIDs = append(w.RunAttemptIDs, ra.ID)
 	claimedWorkSHA256, err := workEnvelopeSHA256(w)
 	if err != nil {

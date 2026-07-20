@@ -103,6 +103,14 @@ type RunAttempt struct {
 	// SweepStale / CompleteWithReason; empty on normally-completed attempts.
 	// omitempty so pre-C3 records re-marshal byte-identical.
 	SweepReason string `json:"sweep_reason,omitempty"`
+
+	// PredecessorID links this attempt to the one it retries (C4: retry
+	// lineage). When a work is re-claimed after a failed/abandoned attempt,
+	// the new attempt's PredecessorID points to the previous one, forming a
+	// chain. Empty on the first attempt. omitempty so pre-C4 records
+	// re-marshal byte-identical. The work state machine is untouched —
+	// this is evidence, not enforcement.
+	PredecessorID string `json:"predecessor_id,omitempty"`
 }
 
 // Store persists RunAttempts under <home>/run_attempts/<id>.json with atomic rename and a
@@ -458,6 +466,49 @@ func (s *Store) SetProofRefs(id string, refs []string) (RunAttempt, error) {
 		}
 		ra.ProofRefs = out
 	}
+	return ra, s.write(ra)
+}
+
+// ---------------------------------------------------------------------------
+// C4: retry lineage — PredecessorID
+//
+// When a work is re-claimed after a failed/abandoned attempt, the new
+// attempt's PredecessorID points to the previous one, forming a chain.
+// The work state machine is untouched — this is evidence, not enforcement.
+// NO new edges, NO move_type on Transition (that lives on Receipt).
+// ---------------------------------------------------------------------------
+
+// SetPredecessor links this attempt to the one it retries. The predecessor
+// must be a valid ratt_ id that exists on disk (you cannot link to a phantom).
+// Setting the same predecessor twice is idempotent (retry-safe). Changing to
+// a DIFFERENT predecessor is refused (a retry chain is append-only). Refuses
+// on terminal attempts (a swept/completed attempt cannot be retroactively
+// linked). Pinned by TestSetPredecessorChains and TestSetPredecessorRefuses.
+func (s *Store) SetPredecessor(id, predecessorID string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	predecessorID = strings.TrimSpace(predecessorID)
+	if predecessorID == "" {
+		return RunAttempt{}, fmt.Errorf("runattempt set-predecessor %s: predecessor_id is required", id)
+	}
+	if !Valid(predecessorID) {
+		return RunAttempt{}, fmt.Errorf("runattempt set-predecessor %s: predecessor %q does not match %s pattern", id, predecessorID, Prefix)
+	}
+	// The predecessor must exist on disk — no phantom links.
+	if _, err := s.Get(predecessorID); err != nil {
+		return RunAttempt{}, fmt.Errorf("runattempt set-predecessor %s: predecessor %s: %w", id, predecessorID, err)
+	}
+	// Idempotent: same predecessor again is a no-op.
+	if ra.PredecessorID == predecessorID {
+		return ra, nil
+	}
+	// Append-only: changing to a different predecessor is a bug.
+	if ra.PredecessorID != "" {
+		return RunAttempt{}, fmt.Errorf("runattempt set-predecessor %s: already linked to %s (append-only chain)", id, ra.PredecessorID)
+	}
+	ra.PredecessorID = predecessorID
 	return ra, s.write(ra)
 }
 
