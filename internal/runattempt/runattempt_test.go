@@ -170,55 +170,69 @@ func TestStoreGetNotFound(t *testing.T) {
 	}
 }
 
-func TestStoreListByWork(t *testing.T) {
+// TestStoreAttachActionIntentHappy binds a freshly minted RunAttempt to an act_ id and proves
+// the binding is persisted (a fresh Store reads it back) and retry-idempotent.
+func TestStoreAttachActionIntentHappy(t *testing.T) {
 	home := t.TempDir()
 	s := Open(home)
-	t0 := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	a, _ := s.Mint("work_a", "compound", "fake", t0)
-	b, _ := s.Mint("work_b", "compound", "fake", t0.Add(time.Second))
-	c, _ := s.Mint("work_a", "compound", "fake", t0.Add(2*time.Second))
-
-	forA, err := s.ListByWork("work_a")
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_abc", "compound-panel", HarnessPlaceholder, now)
 	if err != nil {
-		t.Fatalf("ListByWork: %v", err)
+		t.Fatal(err)
 	}
-	if len(forA) != 2 {
-		t.Fatalf("work_a count = %d, want 2", len(forA))
+	actID := "act_9f2c1d4e"
+	if err := s.AttachActionIntent(ra.ID, actID); err != nil {
+		t.Fatalf("attach: %v", err)
 	}
-	// Sorted ascending by CreatedAt.
-	if forA[0].ID != a.ID || forA[1].ID != c.ID {
-		t.Fatalf("work_a order = [%s %s], want [%s %s]", forA[0].ID, forA[1].ID, a.ID, c.ID)
+	got, err := Open(home).Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	forB, err := s.ListByWork("work_b")
-	if err != nil || len(forB) != 1 || forB[0].ID != b.ID {
-		t.Fatalf("work_b = %+v err=%v", forB, err)
+	if got.ActionIntentID != actID {
+		t.Fatalf("persisted action_intent_id = %q, want %q", got.ActionIntentID, actID)
 	}
-	forMissing, err := s.ListByWork("work_nonexistent")
-	if err != nil || len(forMissing) != 0 {
-		t.Fatalf("work_nonexistent must be empty, got %+v err=%v", forMissing, err)
+	// Idempotent retry: attaching the SAME intent again is a no-op success.
+	if err := s.AttachActionIntent(ra.ID, actID); err != nil {
+		t.Fatalf("idempotent re-attach must succeed, got: %v", err)
 	}
 }
 
-func TestStoreListSkipsForeignFiles(t *testing.T) {
+// TestStoreAttachActionIntentRejects covers the three refusal paths: a non-act_ intent, a
+// mismatched rebind (ErrAlreadyBound), and binding after terminalization.
+func TestStoreAttachActionIntentRejects(t *testing.T) {
 	home := t.TempDir()
-	dir := filepath.Join(home, "run_attempts")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// A non-ratt_ file lands in the directory. List must skip it, not error.
-	if err := os.WriteFile(filepath.Join(dir, "garbage.json"), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	s := Open(home)
-	ra, err := s.Mint("work_a", "compound", "fake", time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC))
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_abc", "compound-panel", HarnessPlaceholder, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, err := s.ListByWork("work_a")
-	if err != nil {
-		t.Fatalf("ListByWork: %v", err)
+	// Non-act_ intent id.
+	if err := s.AttachActionIntent(ra.ID, "prun_deadbeef"); err == nil {
+		t.Fatalf("attach with non-act_ intent must fail")
 	}
-	if len(list) != 1 || list[0].ID != ra.ID {
-		t.Fatalf("list = %+v, want exactly %q", list, ra.ID)
+	// Bind once, then attempt a mismatched rebind.
+	first := "act_11112222"
+	if err := s.AttachActionIntent(ra.ID, first); err != nil {
+		t.Fatal(err)
+	}
+	err = s.AttachActionIntent(ra.ID, "act_33334444")
+	if !errors.Is(err, ErrAlreadyBound) {
+		t.Fatalf("mismatched rebind must return ErrAlreadyBound, got: %v", err)
+	}
+	// Binding after terminalization is a bug.
+	ra2, err := s.Mint("work_def", "compound-panel", HarnessPlaceholder, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Complete(ra2.ID, StatusFailed, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AttachActionIntent(ra2.ID, "act_55556666"); err == nil {
+		t.Fatalf("attach after terminal must fail")
+	}
+	// Malformed ratt_ id.
+	if err := s.AttachActionIntent("not-a-ratt-id", "act_77778888"); err == nil {
+		t.Fatalf("attach with malformed id must fail")
 	}
 }

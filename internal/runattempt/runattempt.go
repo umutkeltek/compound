@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,21 +22,38 @@ const (
 	StatusFailed    = "failed"
 )
 
-// ErrNotFound is returned when a Get / List lookup cannot resolve the requested id.
+// HarnessPlaceholder is the stand-in harness identifier used by writers that do not yet have a
+// real harness adapter (today: panel.Apply). It is a named constant rather than an open string so
+// the future harness-adapter slice has a single replacement site; the deferred context_pack_ref /
+// workspace / command / heartbeat / transcript_ref / diff_ref / test_ref / proof_refs fields
+// (see the package doc in id.go) land with that adapter, not before.
+const HarnessPlaceholder = "fake"
+
+// ErrNotFound is returned when a Get lookup cannot resolve the requested id.
 var ErrNotFound = errors.New("runattempt not found")
+
+// ErrAlreadyBound is returned by AttachActionIntent when the RunAttempt is already bound to a
+// DIFFERENT ActionIntent. Attaching the same intent twice is a no-op success (retry-safe); a
+// mismatched rebind is a bug, not a refresh.
+var ErrAlreadyBound = errors.New("runattempt already bound to a different action_intent_id")
 
 // RunAttempt is the S1 type. Fields are deliberately minimal: enough to bind a RunAttempt to
 // a work_id and to record who/what ran and when. Transcript, diff, test, proof refs are not
 // part of S1 -- they land when a real harness adapter actually produces them.
 type RunAttempt struct {
-	SchemaVersion string    `json:"schema_version"`
-	ID            string    `json:"id"`
-	WorkID        string    `json:"work_id"`
-	Actor         string    `json:"actor"`
-	Harness       string    `json:"harness"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	CompletedAt   time.Time `json:"completed_at,omitempty"`
+	SchemaVersion string `json:"schema_version"`
+	ID            string `json:"id"`
+	WorkID        string `json:"work_id"`
+	// ActionIntentID binds this RunAttempt to the ActionIntent that authorized and represents it,
+	// closing the attempt→intent→policy-decision audit chain. Empty on Mint (Mint runs before the
+	// Advance that creates the ActionIntent — see panel.Apply); attached post-Advance via
+	// AttachActionIntent. omitempty so pre-existing ratt_ records re-marshal byte-identical.
+	ActionIntentID string    `json:"action_intent_id,omitempty"`
+	Actor          string    `json:"actor"`
+	Harness        string    `json:"harness"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	CompletedAt    time.Time `json:"completed_at,omitempty"`
 }
 
 // Store persists RunAttempts under <home>/run_attempts/<id>.json with atomic rename and a
@@ -139,38 +155,48 @@ func (s *Store) Complete(id string, status string, now time.Time) (RunAttempt, e
 	return ra, nil
 }
 
-// ListByWork returns all RunAttempts bound to workID, sorted by CreatedAt ascending.
-// Reads are independent of the cache -- a List after a Mint that happened in another
-// process still sees the new record, matching internal/landlease's contract.
-func (s *Store) ListByWork(workID string) ([]RunAttempt, error) {
-	dir := filepath.Join(s.home, "run_attempts")
-	entries, err := os.ReadDir(dir)
+// AttachActionIntent binds a RunAttempt to the ActionIntent that authorized it, closing the
+// attempt→intent→policy-decision audit chain (the RunAttempt otherwise binds to WorkID only).
+//
+// It is separate from Complete on purpose: binding is retry-idempotent and may run more than once
+// (panel.Apply recovers the intent id from the advanced envelope's last ActionIntentIDs element),
+// whereas Complete is a one-shot terminal transition. Mint stays before Advance (panel/apply.go),
+// preserving the intentional ordering that puts the run id on the envelope before any artifact is
+// written; AttachActionIntent is the post-Advance step that adds the binding.
+//
+// Behavior:
+//   - id must be a Valid ratt_ id (else a wrapped error).
+//   - actionIntentID must have the act_ prefix (mirrors the ratt_ rule philosophy).
+//   - If the RunAttempt is already bound to the SAME actionIntentID, this is a no-op success.
+//   - If it is bound to a DIFFERENT actionIntentID, returns ErrAlreadyBound.
+//   - If the RunAttempt is already terminal (succeeded/failed), returns an error — binding after
+//     terminalization is a bug.
+//
+// Known limitation: a single Advance carrying multiple RunAttemptIDs would bind all of them to
+// the same act_ id. Today only panel.Apply writes RunAttempts and it mints one per Advance, so
+// this is a non-issue; revisit when a real multi-attempt harness adapter lands.
+func (s *Store) AttachActionIntent(id, actionIntentID string) error {
+	if !Valid(id) {
+		return fmt.Errorf("runattempt attach %s: id does not match %s pattern", id, Prefix)
+	}
+	if !strings.HasPrefix(actionIntentID, "act_") {
+		return fmt.Errorf("runattempt attach %s: action_intent_id %q must start with act_", id, actionIntentID)
+	}
+	ra, err := s.Get(id)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("runattempt list: read %s: %w", dir, err)
+		return err
 	}
-	var out []RunAttempt
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), ".json")
-		if !Valid(id) {
-			// A foreign file landed in the directory; skip it rather than failing the list.
-			continue
-		}
-		ra, err := s.Get(id)
-		if err != nil {
-			return nil, err
-		}
-		if ra.WorkID == workID {
-			out = append(out, ra)
-		}
+	if ra.Status == StatusSucceeded || ra.Status == StatusFailed {
+		return fmt.Errorf("runattempt attach %s: already terminal (%s); binding after terminalization is a bug", id, ra.Status)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return out, nil
+	if ra.ActionIntentID == actionIntentID {
+		return nil // idempotent retry
+	}
+	if ra.ActionIntentID != "" {
+		return fmt.Errorf("runattempt attach %s: %w (have %q, want %q)", id, ErrAlreadyBound, ra.ActionIntentID, actionIntentID)
+	}
+	ra.ActionIntentID = actionIntentID
+	return s.write(ra)
 }
 
 func (s *Store) path(id string) string {
