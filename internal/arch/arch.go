@@ -1716,7 +1716,7 @@ func checkASCDailySignalsPublicBoundaryContract(repoRoot string) []Finding {
 			"bun test tools/asc_sales_series_bridge.test.ts",
 			"apply_results shows signal_count and transition_count",
 		},
-		"cmd/compound/orient_operator.go": {
+		"cmd/compound/orient_adjacent_catalog.go": {
 			"asc-sales-series-bridge-proof",
 		},
 		"cmd/compound/orient_operator_test.go": {
@@ -3064,7 +3064,7 @@ func checkProductLoopOpenHypothesisContract(repoRoot string) []Finding {
 			"ReceiptDraft",
 			"ExpectedValidation",
 		},
-		"cmd/compound/main.go": {
+		"cmd/compound/product_cli.go": {
 			"action-work-plan",
 			"product.BuildActionWorkDraft",
 			"workStore.CreatePlan",
@@ -3511,9 +3511,11 @@ func checkProductObservationVerdictContract(repoRoot string) []Finding {
 		},
 		"cmd/compound/main.go": {
 			"observation-verdict-plan",
+			"observation-verdict-review",
+		},
+		"cmd/compound/product_cli.go": {
 			"BuildObservationVerdictPlan",
 			"RecordObservationVerdictPlan",
-			"observation-verdict-review",
 			"ApplyObservationVerdictReview",
 		},
 		"cmd/compound/main_test.go": {
@@ -3912,6 +3914,8 @@ func checkExternalRepoContextEvaluationContract(repoRoot string) []Finding {
 		},
 		"cmd/compound/main.go": {
 			"ExternalRepoMatchedEvidenceForTask",
+		},
+		"cmd/compound/product_cli.go": {
 			"outbound-dry-run-plan",
 			"outbound-dry-run-review",
 		},
