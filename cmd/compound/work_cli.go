@@ -163,7 +163,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work advance-plan work_abc123 --to running --actor codex --dry-run",
 	},
 	"advance": {
-		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)]",
+		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--execute --harness <name> [--prompt <text> | -- <command> [args...]]]",
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
 	},
 	"observe-run": {
@@ -1244,8 +1244,17 @@ func cmdWork(args []string) {
 			"--to": true, "--by": true, "--actor": true, "--lane": true, "--run-attempt": true, "--artifact": true, "--verification": true,
 			"--context-pack": true, "--note": true, "--reason": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
+			"--harness": true, "--prompt": true,
 		}
-		if err := validateWorkArguments(rest, advanceValueFlags, map[string]bool{"--steal": true, "--local-only": true}, 1); err != nil {
+		// Validate only the pre-`--` portion of the args. The `--` is the
+		// standard POSIX positional separator; everything after is the
+		// subprocess argv and is not subject to flag validation. This is
+		// the same convention `compound harness run` uses.
+		validateSlice := rest
+		if idx := indexOf(rest, "--"); idx >= 0 {
+			validateSlice = rest[:idx]
+		}
+		if err := validateWorkArguments(validateSlice, advanceValueFlags, map[string]bool{"--steal": true, "--local-only": true, "--execute": true}, 1); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
@@ -1271,6 +1280,16 @@ func cmdWork(args []string) {
 			runAttempts = append(runAttempts, rid)
 		}
 		gitDelivery := parseGitDelivery(usage)
+		// Slice D: --execute runs a registered harness adapter inline as
+		// part of the advance. The work advances running -> verifying
+		// (or failed) in a single CLI invocation. The adapter mints a
+		// RunAttempt; the verifying/failed advance carries the ratt_ id
+		// on WorkEnvelope.RunAttemptIDs. Implementation lives in
+		// work_advance_execute.go to keep this dispatch handler readable.
+		if hasFlag(rest, "--execute") {
+			runWorkAdvanceExecute(homePath, store, pos(advanceValueFlags), rest, runAttempts, time.Now())
+			return
+		}
 		w, err := store.Advance(pos(advanceValueFlags), work.AdvanceInput{
 			To:             flag("--to"),
 			Actor:          firstNonEmpty(flag("--by"), flag("--actor")),
@@ -1711,6 +1730,14 @@ func validateWorkArguments(args []string, valueFlags, boolFlags map[string]bool,
 	positions := 0
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		// `--` is the standard POSIX positional separator: everything
+		// after is treated as positional arguments, no flag parsing.
+		// This lets callers do `compound ... -- echo hello` where the
+		// echo argv shouldn't be touched by flag validation.
+		if arg == "--" {
+			positions += len(args) - i - 1
+			break
+		}
 		switch {
 		case boolFlags[arg]:
 		case valueFlags[arg]:
