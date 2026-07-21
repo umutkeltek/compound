@@ -253,8 +253,15 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   `commit:` artifact.
 - Close the WorkEnvelope through the governed path (`work close-plan` → `work close`) with
   proof refs, so Receipt + Transition exist for the landed change.
-- **Retire the landed worktree/ref only through Compound authority, never with hand-run
-  `git worktree remove`, `git update-ref -d`, or `branch -D`.** A separate running cleanup
+- **Retire YOUR OWN scratch/rehearsal worktrees at close — do not defer them.** This ceremony's
+  rehearsal tree, probe trees, and any detached scratch tree this lane created are yours to remove
+  in post-land with the self-guarding pair: verify containment
+  (`git merge-base --is-ancestor <tip> origin/main`), then non-force `git worktree remove <path>`
+  (refuses a dirty tree) and `git branch -d <branch>` (refuses an unmerged branch). Deferring this
+  is how 44 scratch trees accumulated by 2026-07-21 (cleared only by an operator-authorized batch
+  sweep, `find_4b487836d8b2`): per-land self-cleanup is the rule, batch sweeps are the exception.
+- **Retire an envelope-bound, ref-carrying LANDED asset only through Compound authority, never with
+  hand-run `git worktree remove`, `git update-ref -d`, or `branch -D`.** A separate running cleanup
   WorkEnvelope owns the mutation; the landed source WorkEnvelope must already be terminal with a
   current `land-check`, and at least one content-addressed recovery proof must still resolve. Run
   `compound authority worktree-retire plan ...`, have the operator record the exact generated YAML
