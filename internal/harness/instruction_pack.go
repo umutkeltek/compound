@@ -40,7 +40,7 @@ type InstructionPackRosterRef struct {
 // absent) plus the optional installed-hooks manifest and the effective
 // contract latest.json.
 type InstructionPackRoster struct {
-	RegistryRevision  string                 `json:"registry_revision"`
+	RegistryRevision  string                   `json:"registry_revision"`
 	InstalledHooks    InstructionPackRosterRef `json:"installed_hooks"`
 	EffectiveContract InstructionPackRosterRef `json:"effective_contract"`
 }
@@ -195,7 +195,7 @@ func instructionPackBody(p InstructionPack) []byte {
 
 func layerToMap(l InstructionPackLayer) map[string]any {
 	m := map[string]any{
-		"authority_ref":    l.AuthorityRef,
+		"authority_ref":   l.AuthorityRef,
 		"source_revision": l.SourceRevision,
 		"content_sha256":  l.ContentSHA256,
 		"absent":          l.Absent,
