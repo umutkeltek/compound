@@ -17,16 +17,21 @@ import (
 // a single CLI invocation.
 //
 // The flow:
-//  1. Validate the work envelope + resolve the adapter + resolve the
-//     workspace BEFORE any state change. An unknown harness, a missing
-//     adapter, or an unresolvable workspace fails closed here -- the work
-//     never moves, so it can never be left stuck in "running".
-//  2. Advance to the user-specified --to state (typically "running").
-//     RunAttemptIDs are empty here because the adapter has not yet
-//     minted -- the validating envelope rule (ratt_ prefix) forbids
-//     stale ids on the running state.
+//  1. Reject any --to value other than "running" (or empty, which
+//     defaults to "running"), then validate the work envelope + resolve
+//     the adapter + resolve the workspace BEFORE any state change. An
+//     unknown harness, a missing adapter, or an unresolvable workspace
+//     fails closed here -- the work never moves, so it can never be left
+//     stuck in "running".
+//  2. Advance to "running". RunAttemptIDs are empty here because the
+//     adapter has not yet minted -- the validating envelope rule (ratt_
+//     prefix) forbids stale ids on the running state. The advance mints
+//     an ActionIntent whose id is bound onto the adapter run below.
 //  3. Mint a RunAttempt via the adapter, run the subprocess, capture
-//     transcript. The adapter drives its own lifecycle (C.1).
+//     transcript. The adapter drives its own lifecycle (C.1). The
+//     RunAttempt is bound to the ActionIntent from step 2
+//     (RunInput.ActionIntentID), closing the attempt->intent->
+//     policy-decision audit chain.
 //  4. Advance to "verifying" (succeeded) or close as "failed" (non-zero
 //     exit, timeout, or infrastructure failure). The ratt_ id lands on
 //     RunAttemptIDs on BOTH paths -- the failed-path forward-link is the
@@ -47,6 +52,22 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	}
 	prompt := valueFlag(rest, "--prompt")
 	actor := firstNonEmpty(valueFlag(rest, "--by"), valueFlag(rest, "--actor"))
+
+	// --execute only ever advances the work through "running" -- the
+	// adapter mint below, and the verifying/failed advance that follows
+	// it, both assume the work is IN running when the harness drives.
+	// Reject any other --to value up front, before store.Get, adapter
+	// resolution, workspace resolution, or store.Advance -- none of
+	// those side effects should happen for a request this flow cannot
+	// honor. Empty --to keeps defaulting to "running".
+	target := valueFlag(rest, "--to")
+	if target != "" && target != "running" {
+		fmt.Fprintf(os.Stderr, "error: --execute requires --to running (got %q)\n", target)
+		os.Exit(2)
+	}
+	if target == "" {
+		target = "running"
+	}
 
 	// Parse post-`--` for command + args. Everything before the `--` is
 	// flag parsing; everything after is the subprocess argv. The first
@@ -95,12 +116,8 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		os.Exit(2)
 	}
 
-	// Advance 1: to the user-specified state (default "running" if --to
-	// was not passed).
-	target := valueFlag(rest, "--to")
-	if target == "" {
-		target = "running"
-	}
+	// Advance 1: to "running" (validated above -- target is always
+	// "running" by the time we get here).
 	note := valueFlag(rest, "--note")
 	if note == "" {
 		note = "harness execute: " + harnessName
@@ -112,6 +129,18 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	}, now)
 	die(err)
 	fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)
+
+	// The running-advance above mints an ActionIntent and appends it as
+	// the LAST element of w.ActionIntentIDs (see work.applyAdvance). Bind
+	// that id onto the RunInput so the RunAttempt records the intent that
+	// authorized it -- closes the attempt->intent->policy-decision audit
+	// chain (mirrors internal/actuator/actuator.go's ActionIntentID
+	// stamp). Guard len==0 defensively; leave it empty rather than error
+	// if the advance somehow returned no intent.
+	var actionIntentID string
+	if n := len(w.ActionIntentIDs); n > 0 {
+		actionIntentID = w.ActionIntentIDs[n-1]
+	}
 
 	// Run the adapter. On infrastructure failure (runErr != nil) the
 	// adapter has already terminalized the RunAttempt failed
@@ -127,6 +156,7 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		Prompt:         prompt,
 		PermissionMode: valueFlag(rest, "--permission-mode"),
 		LaneID:         actor,
+		ActionIntentID: actionIntentID,
 		Now:            time.Now().UTC(),
 	})
 
