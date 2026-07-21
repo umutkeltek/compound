@@ -1244,7 +1244,7 @@ func cmdWork(args []string) {
 			"--to": true, "--by": true, "--actor": true, "--lane": true, "--run-attempt": true, "--artifact": true, "--verification": true,
 			"--context-pack": true, "--note": true, "--reason": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
-			"--harness": true, "--prompt": true,
+			"--harness": true, "--prompt": true, "--workspace": true, "--permission-mode": true,
 		}
 		// Validate only the pre-`--` portion of the args. The `--` is the
 		// standard POSIX positional separator; everything after is the

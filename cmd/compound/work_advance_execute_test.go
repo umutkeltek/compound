@@ -224,3 +224,55 @@ func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
 		t.Fatalf("unknown harness must mint no RunAttempt beyond the claim's; expected exactly 1 file (the claim-mint), got %d", len(runAttemptFiles))
 	}
 }
+
+// TestWorkAdvanceExecuteAcceptsWorkspaceAndPermissionMode: the two flags
+// the execute branch reads (resolveExecuteWorkspace, RunInput.PermissionMode)
+// must be accepted by the advance flag validator. Falsifier: dropping either
+// from advanceValueFlags turns this RED with `unknown flag --workspace`
+// (exit 2) before the execute branch ever runs — the live defect this pins
+// was found by an end-to-end rail verification on 2026-07-21.
+func TestWorkAdvanceExecuteAcceptsWorkspaceAndPermissionMode(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := work.Open(homePath)
+	w, _ := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "--workspace and --permission-mode reach the execute branch",
+	}, cliTestNow)
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command("go", "run", "./cmd/compound", "work", "advance", w.ID,
+		"--to", "running", "--execute", "--harness", "os-harness-entrypoints",
+		"--workspace", workspace, "--permission-mode", "plan",
+		"--", "echo", "workspace-flag-smoke")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("advance --execute with --workspace/--permission-mode must succeed, got err=%v output:\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "status: succeeded") {
+		t.Fatalf("expected 'status: succeeded' in output, got:\n%s", out)
+	}
+
+	// The flag must REACH RunInput, not merely be tolerated: the executed
+	// RunAttempt (last id; the claim-mint is first) records the workspace.
+	final, err := ws.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := runattempt.Open(homePath)
+	ra, err := store.Get(final.RunAttemptIDs[len(final.RunAttemptIDs)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.Workspace != workspace {
+		t.Fatalf("RunAttempt.Workspace = %q, want the --workspace value %q", ra.Workspace, workspace)
+	}
+}
