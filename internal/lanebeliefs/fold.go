@@ -50,11 +50,33 @@ const foldProvenanceTag = "lanebeliefs-fold"
 const (
 	beliefKindTendency   = "tendency"
 	beliefKindCapability = "capability"
+	// beliefKindCompletion is the completion-posterior observation kind: one Beta trial per
+	// terminal work attempt (completed vs failed/cancelled), conditioned on (lane, capability_class).
+	// Unlike the two belief kinds it is NOT a promotable belief shape — it proposes no memory
+	// candidate and never touches the B1 valve — it is an observation-derived read surface
+	// (CompletionPosterior) the EV-card composer consumes. Its records live in their OWN store
+	// (completions.jsonl), never commingled with the belief observations the promotion/cooling
+	// passes read, so a completion trial can never leak into candidate promotion.
+	beliefKindCompletion = "completion"
 
 	tendencyReceiptFaithful = "receipt-faithful" // completed WITH proof — standing-raising
 	tendencyCeremonySkipper = "ceremony-skipper" // completed WITHOUT proof — standing-lowering
 	tendencyObjectObserved  = "observed"
 	tendencyObjectCooled    = "cooled" // the decayed stance a zero-reinforcement belief supersedes to (B4)
+
+	// completionObjectAttempt is the CONSTANT object every completion trial carries. The attempt's
+	// outcome is NOT encoded here (that would make a record depend on which of a work's receipts was
+	// discovered first) — it lives in Hits (1 completed, 0 failed/cancelled), AND-reduced so a record
+	// is byte-identical under any receipt-discovery order.
+	completionObjectAttempt = "attempt"
+	// completionOutcomeCompleted is the single terminal work state that scores a completion hit; the
+	// denominator (failed/cancelled) is every other terminal state (see laneBeliefTerminalState).
+	completionOutcomeCompleted = "completed"
+	// capabilityClassUnknown is the explicit sentinel class a completion trial buckets into when no
+	// capability class is resolvable for the work. It is its OWN bucket: a KNOWN class is NEVER pooled
+	// with another and NEVER merged into unknown, so a 2/2 prior over one class can never be mistaken
+	// for evidence about another (see completionCapabilityClass for why this is unknown today).
+	capabilityClassUnknown = "unknown"
 )
 
 type FoldOptions struct {
@@ -73,6 +95,11 @@ type FoldReport struct {
 	IgnoredReceiptCount       int    `json:"ignored_receipt_count"`
 	NewObservationCount       int    `json:"new_observation_count"`
 	DuplicateObservationCount int    `json:"duplicate_observation_count"`
+	// NewCompletionObservationCount / DuplicateCompletionObservationCount mirror the belief-observation
+	// counters for the completion kind, kept SEPARATE so the belief-observation counts (and every test
+	// pinned to them) stay byte-unchanged when a completed receipt also mints a completion trial.
+	NewCompletionObservationCount       int `json:"new_completion_observation_count"`
+	DuplicateCompletionObservationCount int `json:"duplicate_completion_observation_count"`
 	CandidateCount            int    `json:"candidate_count"`
 	ReinforcementCount        int    `json:"reinforcement_count"`
 	// RunCount is the persisted fold-RUN counter after this run (B4 cooling bookkeeping): every
@@ -176,12 +203,17 @@ type receiptGroup struct {
 }
 
 // beliefSignal is a single (kind, domain, object) belief the extractor reads off ONE receipt's
-// closed structured fields. A receipt may yield several (a capability + a tendency); each becomes
-// its own observation trial.
+// closed structured fields. A receipt may yield several (a capability + a tendency + a completion
+// trial); each becomes its own observation trial. Hits/Opportunities carry the Beta-trial numerator
+// and denominator: the belief kinds are always a hit-of-one (1/1 — a completed work observed once),
+// while a completion trial is 1/1 for a completed work and 0/1 for a failed/cancelled one, so the
+// same aggregation yields P(completed).
 type beliefSignal struct {
-	Kind   string
-	Domain string
-	Object string
+	Kind          string
+	Domain        string
+	Object        string
+	Hits          int
+	Opportunities int
 }
 
 func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
@@ -217,6 +249,16 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 	for _, obs := range existing {
 		existingGroups[obs.GroupKey] = true
 	}
+	// Completion trials live in their own store and dedup against their own group set (rule 5/6
+	// applied per kind): a re-fold over unchanged events adds no completion observation either.
+	existingCompletions, err := loadCompletionObservations(homePath)
+	if err != nil {
+		return report, err
+	}
+	existingCompletionGroups := map[string]bool{}
+	for _, obs := range existingCompletions {
+		existingCompletionGroups[obs.GroupKey] = true
+	}
 
 	groups := map[string]*receiptGroup{}
 	for _, ev := range events {
@@ -249,11 +291,13 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 				report.IgnoredReceiptCount++
 				continue
 			}
+			// Belief signals (capability + tendency) are minted ONLY for a completed receipt; the
+			// completion trial is minted for EVERY terminal work attempt (completed/failed/cancelled)
+			// keyed on the WORK's terminal state (ev.Event.To), so a non-completion is a first-class
+			// miss (Hits=0), not an ignored receipt. audit_only and work-id-less receipts were already
+			// dropped above, so every receipt reaching here is one legitimate attempt.
 			signals := beliefSignalsFromReceipt(rec)
-			if len(signals) == 0 {
-				report.IgnoredReceiptCount++
-				continue
-			}
+			signals = append(signals, completionSignal(ev.Event.To, completionCapabilityClass(rec)))
 			for _, sig := range signals {
 				groupKey := hashParts(resolution.NodeID, sig.Kind, sig.Domain, workID)
 				group := groups[groupKey]
@@ -267,51 +311,55 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 						EvidenceEventID:   rec.ID,
 						MoveType:          strings.TrimSpace(rec.MoveType),
 						Outcome:           strings.TrimSpace(rec.Outcome),
-						// rule 6: one work is one Beta trial (a hit that was observed). Receipt spam
-						// inside the work bumps ReceiptCount (volume) but NEVER n (Hits/Opportunities).
-						Hits:          1,
-						Opportunities: 1,
+						// rule 6: one work is one Beta trial. Receipt spam inside the work bumps
+						// ReceiptCount (volume) but NEVER n (Opportunities). Hits/Opportunities come
+						// from the signal: 1/1 for a belief, {0,1}/1 for a completion trial.
+						Hits:          sig.Hits,
+						Opportunities: sig.Opportunities,
 					}
 					groups[groupKey] = group
 				}
 				group.ReceiptCount++
 				group.TransitionCount += transitionCount
 				group.FileChangeCount += len(rec.StateDelta.FilesChanged)
+				if group.Kind == beliefKindCompletion {
+					// Order-independent reducers so a work's completion record is byte-identical under
+					// any receipt-discovery order: AND the hit (any non-completed terminal for this
+					// attempt makes it a miss) and pin the evidence ref to the smallest receipt id.
+					if sig.Hits < group.Hits {
+						group.Hits = sig.Hits
+					}
+					if rec.ID < group.EvidenceEventID {
+						group.EvidenceEventID = rec.ID
+					}
+				}
 			}
 		}
 	}
 
 	newObservations := make([]observationRecord, 0, len(groups))
+	newCompletions := make([]observationRecord, 0, len(groups))
 	for _, key := range sortedReceiptGroupKeys(groups) {
 		group := groups[key]
+		obs := newObservationRecord(group, key, now)
+		if group.Kind == beliefKindCompletion {
+			if existingCompletionGroups[key] {
+				report.DuplicateCompletionObservationCount++
+				continue
+			}
+			newCompletions = append(newCompletions, obs)
+			continue
+		}
 		if existingGroups[key] {
 			report.DuplicateObservationCount++
 			continue
 		}
-		obs := observationRecord{
-			// rule 5: the per-observation dedup key hash(subject_lane, domain, work_id,
-			// evidence_event_id); GroupKey (lane, kind, domain, work) is the rule-6 identity the
-			// dedup check runs on, so a re-fold over unchanged events adds no observation.
-			DedupKey:          hashParts(group.SubjectLaneNodeID, group.Domain, group.WorkID, group.EvidenceEventID),
-			GroupKey:          key,
-			SubjectLaneNodeID: group.SubjectLaneNodeID,
-			Domain:            group.Domain,
-			Kind:              group.Kind,
-			Object:            group.Object,
-			WorkID:            group.WorkID,
-			EvidenceEventID:   group.EvidenceEventID,
-			MoveType:          group.MoveType,
-			Outcome:           group.Outcome,
-			ReceiptCount:      group.ReceiptCount,
-			Hits:              group.Hits,
-			Opportunities:     group.Opportunities,
-			TransitionCount:   group.TransitionCount,
-			FileChangeCount:   group.FileChangeCount,
-			CreatedAt:         now.UTC().Format(time.RFC3339),
-		}
 		newObservations = append(newObservations, obs)
 	}
 	report.NewObservationCount = len(newObservations)
+	report.NewCompletionObservationCount = len(newCompletions)
+	// Aggregates + candidate emission stay belief-only: completion trials are never folded into the
+	// belief observations the promotion/cooling passes read, and they mint no candidate.
 	allObservations := append(append([]observationRecord{}, existing...), newObservations...)
 	report.Aggregates = aggregateObservations(allObservations)
 
@@ -363,6 +411,11 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 		if err := appendObservations(homePath, newObservations); err != nil {
 			return report, err
 		}
+		// Completion trials are persisted to their own store regardless of whether any belief
+		// observation formed this run (a run of only failed/cancelled attempts still records misses).
+		if err := appendCompletionObservations(homePath, newCompletions); err != nil {
+			return report, err
+		}
 		if maxSeq > cursor.MaxEventSeq {
 			if err := saveCursor(homePath, foldCursor{MaxEventSeq: maxSeq, UpdatedAt: now.UTC().Format(time.RFC3339)}); err != nil {
 				return report, err
@@ -400,8 +453,40 @@ func beliefSignalsFromReceipt(rec envelope.Receipt) []beliefSignal {
 		tendency = tendencyReceiptFaithful
 	}
 	return []beliefSignal{
-		{Kind: beliefKindCapability, Domain: taskClassDomain(rec), Object: mem.CapabilityObject},
-		{Kind: beliefKindTendency, Domain: tendency, Object: tendencyObjectObserved},
+		{Kind: beliefKindCapability, Domain: taskClassDomain(rec), Object: mem.CapabilityObject, Hits: 1, Opportunities: 1},
+		{Kind: beliefKindTendency, Domain: tendency, Object: tendencyObjectObserved, Hits: 1, Opportunities: 1},
+	}
+}
+
+// newObservationRecord flattens one grouped Beta trial into its persisted record. Completion trials
+// drop the per-receipt move_type/outcome (an attempt's outcome lives in Hits, AND-reduced and
+// order-independent); carrying the raw fields would make the record depend on receipt-discovery
+// order and break the fold's byte-identical determinism guarantee.
+func newObservationRecord(group *receiptGroup, key string, now time.Time) observationRecord {
+	moveType, outcome := group.MoveType, group.Outcome
+	if group.Kind == beliefKindCompletion {
+		moveType, outcome = "", ""
+	}
+	return observationRecord{
+		// rule 5: the per-observation dedup key hash(subject_lane, domain, work_id,
+		// evidence_event_id); GroupKey (lane, kind, domain, work) is the rule-6 identity the
+		// dedup check runs on, so a re-fold over unchanged events adds no observation.
+		DedupKey:          hashParts(group.SubjectLaneNodeID, group.Domain, group.WorkID, group.EvidenceEventID),
+		GroupKey:          key,
+		SubjectLaneNodeID: group.SubjectLaneNodeID,
+		Domain:            group.Domain,
+		Kind:              group.Kind,
+		Object:            group.Object,
+		WorkID:            group.WorkID,
+		EvidenceEventID:   group.EvidenceEventID,
+		MoveType:          moveType,
+		Outcome:           outcome,
+		ReceiptCount:      group.ReceiptCount,
+		Hits:              group.Hits,
+		Opportunities:     group.Opportunities,
+		TransitionCount:   group.TransitionCount,
+		FileChangeCount:   group.FileChangeCount,
+		CreatedAt:         now.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -793,7 +878,17 @@ func saveCursor(homePath string, cursor foldCursor) error {
 }
 
 func loadObservations(homePath string) ([]observationRecord, error) {
-	path := observationsPath(homePath)
+	return loadObservationRecords(observationsPath(homePath), "observation")
+}
+
+// loadCompletionObservations reads the completion-trial store — a store SEPARATE from the belief
+// observations, so the promotion/cooling passes (which read loadObservations) never see a
+// completion trial.
+func loadCompletionObservations(homePath string) ([]observationRecord, error) {
+	return loadObservationRecords(completionsPath(homePath), "completion observation")
+}
+
+func loadObservationRecords(path, label string) ([]observationRecord, error) {
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -813,7 +908,7 @@ func loadObservations(homePath string) ([]observationRecord, error) {
 		}
 		var obs observationRecord
 		if err := json.Unmarshal([]byte(line), &obs); err != nil {
-			return nil, fmt.Errorf("parse lane belief observation %d: %w", lineNo, err)
+			return nil, fmt.Errorf("parse lane belief %s %d: %w", label, lineNo, err)
 		}
 		out = append(out, obs)
 	}
@@ -824,13 +919,21 @@ func loadObservations(homePath string) ([]observationRecord, error) {
 }
 
 func appendObservations(homePath string, observations []observationRecord) error {
+	return appendObservationRecords(observationsPath(homePath), observations)
+}
+
+func appendCompletionObservations(homePath string, observations []observationRecord) error {
+	return appendObservationRecords(completionsPath(homePath), observations)
+}
+
+func appendObservationRecords(path string, observations []observationRecord) error {
 	if len(observations) == 0 {
 		return nil
 	}
-	if err := os.MkdirAll(laneBeliefsDir(homePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(observationsPath(homePath), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -914,4 +1017,7 @@ func cursorPath(homePath string) string {
 }
 func observationsPath(homePath string) string {
 	return filepath.Join(laneBeliefsDir(homePath), "observations.jsonl")
+}
+func completionsPath(homePath string) string {
+	return filepath.Join(laneBeliefsDir(homePath), "completions.jsonl")
 }

@@ -208,11 +208,13 @@ func TestFoldIgnoresNonterminalActionReceipt(t *testing.T) {
 	}
 }
 
-// A cancelled/no_op terminal receipt is counted raw but yields no belief signal: the fold does
-// not infer a capability or a raising tendency from a non-completion.
-func TestFoldCancelledTerminalReceiptYieldsNoBelief(t *testing.T) {
+// A cancelled/no_op terminal receipt yields no BELIEF signal (the fold does not infer a capability
+// or a raising tendency from a non-completion), but it IS one completion attempt — a first-class
+// miss, not an ignored receipt: a lane's completion rate must see its cancellations, or the
+// denominator lies. This reds against silently dropping non-completions from the completion kind.
+func TestFoldCancelledTerminalReceiptIsCompletionMissNotBelief(t *testing.T) {
 	homePath := t.TempDir()
-	seedLaneNode(t, homePath, "fixture/judge")
+	nodeID := seedLaneNode(t, homePath, "fixture/judge")
 	writeLaneReceiptEvent(t, homePath, laneReceiptFixture{
 		ReceiptID: "rec_cancelled_terminal",
 		WorkID:    "work_cancelled_terminal",
@@ -227,8 +229,19 @@ func TestFoldCancelledTerminalReceiptYieldsNoBelief(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.RawReceiptCount != 1 || report.IgnoredReceiptCount != 1 || report.NewObservationCount != 0 || report.CandidateCount != 0 {
-		t.Fatalf("cancelled terminal receipt formed a belief: %+v", report)
+	// No belief, and NOT ignored — it is one recorded completion miss.
+	if report.RawReceiptCount != 1 || report.IgnoredReceiptCount != 0 || report.NewObservationCount != 0 || report.CandidateCount != 0 {
+		t.Fatalf("cancelled terminal receipt formed a belief or was ignored: %+v", report)
+	}
+	if report.NewCompletionObservationCount != 1 {
+		t.Fatalf("cancelled terminal receipt did not record a completion attempt: %+v", report)
+	}
+	post, err := CompletionPosterior(homePath, nodeID, capabilityClassUnknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if post.Attempts != 1 || post.Completions != 0 || post.Failures != 1 {
+		t.Fatalf("completion posterior did not record the cancellation as a miss: %+v", post)
 	}
 }
 
