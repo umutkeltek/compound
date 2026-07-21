@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -158,5 +159,145 @@ func TestHarnessInstructionPackCLI_F3_UsageFailsOnEmptyHarness(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "usage:") {
 		t.Fatalf("missing usage stderr: %s", out)
+	}
+}
+
+// TestHarnessInstructionPackCLI_F4_DriftClean exercises the wired verb:
+// `compound harness instruction-pack --harness <h> --drift --json` on a
+// clean fixture must read back as Drifted=false, write nothing under
+// $COMPOUND_HOME beyond what the initial render already produced, and exit
+// 0. This is the no-op half of the F4 falsifier.
+func TestHarnessInstructionPackCLI_F4_DriftClean(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	policy := harness.PermissionAuthority{
+		SchemaVersion: harness.PermissionAuthoritySchemaVersion,
+		Harness:       "claude_code",
+		AuthorityRef:  harness.PermissionAuthorityRef("claude_code"),
+		TargetPath:    filepath.Join(t.TempDir(), "settings.json"),
+		Permissions: harness.PermissionRules{
+			Allow:       []string{"Read"},
+			Deny:        []string{"Bash(rm:*)"},
+			Ask:         []string{"WebFetch"},
+			DefaultMode: "default",
+		},
+		AutoMode: harness.AutoModePolicy{Allow: []string{"$defaults", "Read"}},
+	}
+	authPath := harness.PermissionAuthorityPath(homePath, "claude_code")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(policy)
+	if err := os.WriteFile(authPath, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.RenderInstructionPack(homePath, "claude_code", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	filesBefore := countFiles(t, homePath)
+
+	out := captureStdout(t, func() {
+		cmdHarness([]string{"instruction-pack", "--harness", "claude_code", "--drift", "--json"})
+	})
+	var report harness.InstructionPackDriftReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse drift json: %v\n%s", err, out)
+	}
+	if report.Drifted {
+		t.Fatalf("clean fixture must not drift: %+v", report)
+	}
+	if report.Harness != "claude_code" {
+		t.Fatalf("harness = %q, want claude_code", report.Harness)
+	}
+	if got := countFiles(t, homePath); got != filesBefore {
+		t.Fatalf("--drift without --emit-divergence must write nothing: files before=%d after=%d",
+			filesBefore, got)
+	}
+}
+
+// TestHarnessInstructionPackCLI_F5_DriftNoEmitNoWrite verifies the F5
+// falsifier: --drift WITHOUT --emit-divergence on a drifted fixture must
+// exit 1 (the verb's exit contract mirrors `compound harness drift`) and
+// must NOT write any observation batch under
+// state/instruction-pack-drift-observations/ — the emission code path must
+// never run without the flag.
+func TestHarnessInstructionPackCLI_F5_DriftNoEmitNoWrite(t *testing.T) {
+	if os.Getenv("COMPOUND_TEST_INSTRUCTION_PACK_DRIFT_NO_EMIT_CHILD") == "1" {
+		// Reuse the parent's pre-built drift via the COMPOUND_HOME it set
+		// (writing a fresh fixture here would diverge from the drift the
+		// parent asserted). cmdHarness exits 1 in-process via os.Exit and
+		// terminates the subprocess.
+		cmdHarness([]string{"instruction-pack", "--harness", "claude_code", "--drift", "--json"})
+		return
+	}
+	homePath, targetPath, render := writeInstructionPackDriftObserveFixture(t)
+	driftInstructionPackFixture(t, homePath, targetPath, render)
+	filesBefore := countFiles(t, homePath)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHarnessInstructionPackCLI_F5_DriftNoEmitNoWrite$")
+	cmd.Env = append(os.Environ(), "COMPOUND_TEST_INSTRUCTION_PACK_DRIFT_NO_EMIT_CHILD=1", "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("--drift on drifted fixture without --emit-divergence must exit 1, got %v; output:\n%s",
+			err, out)
+	}
+	var report harness.InstructionPackDriftReport
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("parse drift json: %v\n%s", err, out)
+	}
+	if !report.Drifted {
+		t.Fatalf("fixture should still drift: %+v", report)
+	}
+	if got := countFiles(t, homePath); got != filesBefore {
+		t.Fatalf("--drift without --emit-divergence must write nothing: files before=%d after=%d",
+			filesBefore, got)
+	}
+}
+
+// TestHarnessInstructionPackCLI_F6_DriftEmitWritesObservation verifies the
+// wired --drift --emit-divergence path end-to-end: a drifted fixture must
+// (a) exit 1, (b) write an observation batch under
+// state/instruction-pack-drift-observations/, and (c) carry the
+// observation_applied side-channel in the JSON output so downstream tools
+// can confirm the emission.
+func TestHarnessInstructionPackCLI_F6_DriftEmitWritesObservation(t *testing.T) {
+	if os.Getenv("COMPOUND_TEST_INSTRUCTION_PACK_DRIFT_EMIT_CHILD") == "1" {
+		// Reuse the parent's pre-built drift via the COMPOUND_HOME it set.
+		cmdHarness([]string{"instruction-pack", "--harness", "claude_code", "--drift", "--emit-divergence", "--json"})
+		return
+	}
+	homePath, targetPath, render := writeInstructionPackDriftObserveFixture(t)
+	driftInstructionPackFixture(t, homePath, targetPath, render)
+	filesBefore := countFiles(t, homePath)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHarnessInstructionPackCLI_F6_DriftEmitWritesObservation$")
+	cmd.Env = append(os.Environ(), "COMPOUND_TEST_INSTRUCTION_PACK_DRIFT_EMIT_CHILD=1", "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("--drift --emit-divergence on drifted fixture must exit 1, got %v; output:\n%s",
+			err, out)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(out, &raw); err != nil {
+		t.Fatalf("parse emitted JSON: %v\n%s", err, out)
+	}
+	if applied, ok := raw["observation_applied"].(bool); !ok || !applied {
+		t.Fatalf("JSON output must carry observation_applied=true, got %s", out)
+	}
+	if id, _ := raw["observation_id"].(string); id == "" {
+		t.Fatalf("JSON output must carry observation_id, got %s", out)
+	}
+	if got := countFiles(t, homePath); got <= filesBefore {
+		t.Fatalf("--drift --emit-divergence must write at least one new file: files before=%d after=%d",
+			filesBefore, got)
+	}
+	entries, err := os.ReadDir(filepath.Join(homePath, "state", "instruction-pack-drift-observations"))
+	if err != nil {
+		t.Fatalf("state/instruction-pack-drift-observations/ not created: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("emission directory must contain at least one batch file")
 	}
 }

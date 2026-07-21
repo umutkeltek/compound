@@ -1350,11 +1350,54 @@ func cmdHarness(args []string) {
 	if target == "instruction-pack" {
 		harnessName := valueFlag(args[1:], "--harness")
 		if harnessName == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound harness instruction-pack --harness <name> [--json]")
+			fmt.Fprintln(os.Stderr, "usage: compound harness instruction-pack --harness <name> [--json] [--drift [--emit-divergence]]")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
 		die(err)
+		// --drift compares on-disk latest.json against a fresh render
+		// (READ-ONLY: never writes latest.json, never mutates inputs).
+		// --emit-divergence bridges a drifted report into the generic
+		// observation intake as ONE tool_health observation — silence on
+		// match, exactly as `compound harness drift --emit-divergence`
+		// does for the permission-posture seam. The packet calls this
+		// out as the S5b extension that closes the cold-start loop from
+		// the S5 deviation (work_e9a494d5cf58).
+		if hasFlag(args[1:], "--drift") {
+			report, err := harness.InstructionPackDrift(homePath, harnessName, time.Now().UTC())
+			die(err)
+			var emission instructionPackDivergenceEmission
+			if hasFlag(args[1:], "--emit-divergence") {
+				emission, err = emitInstructionPackDivergence(homePath, report, time.Now())
+				die(err)
+			}
+			if hasFlag(args[1:], "--json") {
+				if emission.Applied {
+					die(json.NewEncoder(os.Stdout).Encode(struct {
+						harness.InstructionPackDriftReport
+						instructionPackDivergenceEmission
+					}{report, emission}))
+				} else {
+					die(json.NewEncoder(os.Stdout).Encode(report))
+				}
+			} else {
+				fmt.Println("# harness instruction-pack drift")
+				fmt.Printf("- harness: %s\n", report.Harness)
+				fmt.Printf("- path: %s\n", report.Path)
+				fmt.Printf("- status: %s\n", map[bool]string{true: "drift", false: "clean"}[report.Drifted])
+				for _, detail := range report.Details {
+					fmt.Printf("- detail: %s\n", detail)
+				}
+				if emission.Applied {
+					fmt.Printf("- observation_id: %s\n", emission.ObservationID)
+					fmt.Printf("- observation_path: %s\n", emission.SourcePath)
+				}
+			}
+			if report.Drifted {
+				os.Exit(1)
+			}
+			return
+		}
 		pack, err := harness.RenderInstructionPack(homePath, harnessName, time.Now().UTC())
 		die(err)
 		if hasFlag(args[1:], "--json") {
