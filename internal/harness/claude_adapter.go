@@ -100,7 +100,7 @@ func claudePermissionArgs(mode string) []string {
 }
 
 // buildCmd assembles the claude argv from the RunInput. The permission
-// posture comes from RunInput.PermissionMode (default bypass -- see
+// posture comes from RunInput.PermissionMode (default plan -- see
 // claudeDefaultPermissionMode). Args[0] is used as the prompt if Prompt is
 // empty (caller convenience); the explicit Prompt field wins.
 func (a *ClaudeAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {

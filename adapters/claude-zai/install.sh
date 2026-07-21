@@ -72,4 +72,3 @@ echo "- settings: $profile_dir/settings.json"
 echo "- steering: $steering_target -> $steering_source"
 echo "- authority source: $adapter_dir/hook-registration.ts"
 echo "- statusline: $lib_dir/lane-statusline.sh --lane $lane"
-
