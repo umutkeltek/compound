@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"time"
@@ -55,6 +56,15 @@ func (a *ClaudeAdapter) Name() string { return "claude" }
 // overridden to "claude" so the caller doesn't have to know the binary
 // path; Args[0] (or Prompt) is appended as the prompt text.
 func (a *ClaudeAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error) {
+	// Validate the permission mode BEFORE runWithSubprocess mints the
+	// RunAttempt (mint-before-side-effect is the S1+S2 contract, but an
+	// invalid posture must not even reach that point). A typo must never
+	// silently downgrade to a safe-looking default and still run -- it
+	// must fail closed with zero ratt_ files. claudePermissionArgs can
+	// then assume mode is one of the recognized values.
+	if err := validateClaudePermissionMode(in.PermissionMode); err != nil {
+		return RunOutput{}, err
+	}
 	// Override the harness name + command so the caller doesn't need to
 	// know the binary path. The harnessName arg of runWithSubprocess
 	// controls RunAttempt.Harness and the error-message prefix; the
@@ -64,6 +74,20 @@ func (a *ClaudeAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error)
 	in.Harness = a.Name()
 	in.Command = a.Name()
 	return runWithSubprocess(ctx, a.store, a.Name(), in, a.buildCmd, a.heartbeatInterval)
+}
+
+// validateClaudePermissionMode rejects any RunInput.PermissionMode that is
+// not one of the modes the Claude CLI actually understands. Called at the
+// top of Run, before runWithSubprocess mints a RunAttempt -- an unknown
+// mode (e.g. a typo) must fail closed with zero ratt_ files, not silently
+// fall back to a safe-looking default and still run unguarded config.
+func validateClaudePermissionMode(mode string) error {
+	switch mode {
+	case "", "default", "plan", "acceptEdits", "bypass":
+		return nil
+	default:
+		return fmt.Errorf("claude adapter: unknown --permission-mode %q; allowed: \"\" (default), \"default\", \"plan\", \"acceptEdits\", \"bypass\"", mode)
+	}
 }
 
 // claudeDefaultPermissionMode is the posture used when RunInput.PermissionMode
@@ -82,9 +106,11 @@ const claudeDefaultPermissionMode = "plan"
 // claudePermissionArgs translates a PermissionMode into the argv fragment
 // the Claude CLI understands. "" -> the safe plan default; "bypass" ->
 // --dangerously-skip-permissions (explicit opt-in for fully-autonomous
-// runs); "default" / "plan" / "acceptEdits" pass through verbatim. An
-// unrecognized mode falls back to the safe plan default -- a typo must
-// never produce an unguarded run.
+// runs); "default" / "plan" / "acceptEdits" pass through verbatim. Callers
+// go through Run(), which calls validateClaudePermissionMode first, so
+// mode is always one of the recognized values here; the default case is a
+// defensive fallback for any future direct caller, never for a typo (a
+// typo is now rejected before this function runs).
 func claudePermissionArgs(mode string) []string {
 	if mode == "" {
 		mode = claudeDefaultPermissionMode
