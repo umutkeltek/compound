@@ -221,18 +221,20 @@ func readCodexBarCapacity(path, lane string, now time.Time, expectedMinutes int)
 		return LaneCapacity{
 			State:           CapacityUnknown,
 			SourceInstalled: true,
-			DataRef:         "no usage rows for lane",
+			DataRef:         fmt.Sprintf("no usage rows for family: %s", lane),
 		}, false, nil
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].sampled.After(rows[j].sampled) })
 	newest := rows[0].sampled
 	if age := now.Sub(newest); age < 0 || age > capacityFreshness(lane) {
+		freshness := capacityFreshness(lane)
 		return LaneCapacity{
 			State:           CapacityUnknown,
 			SourceInstalled: true,
 			LastProven:      newest.UTC(),
 			Source:          "codexbar/usage-history",
-			DataRef:         fmt.Sprintf("codexbar/usage-history:no_fresh_rows,newest=%s", newest.UTC().Format(time.RFC3339)),
+			DataRef: fmt.Sprintf("codexbar/usage-history:no_fresh_rows,family=%s,newest=%s,age=%dm,freshness=%dm",
+				lane, newest.UTC().Format(time.RFC3339), int(age.Minutes()), int(freshness.Minutes())),
 		}, false, nil
 	}
 

@@ -630,8 +630,8 @@ func TestReadLaneCapacityDataRefTruthThreeWaySplit(t *testing.T) {
 		if capacity.State != CapacityUnknown {
 			t.Fatalf("empty-file lane should stay unknown: %+v", capacity)
 		}
-		if capacity.DataRef != "no usage rows for lane" {
-			t.Fatalf("empty-file lane DataRef = %q, want %q", capacity.DataRef, "no usage rows for lane")
+		if capacity.DataRef != "no usage rows for family: codex" {
+			t.Fatalf("empty-file lane DataRef = %q, want %q", capacity.DataRef, "no usage rows for family: codex")
 		}
 		if !capacity.LastProven.IsZero() {
 			t.Fatalf("empty-file lane must not invent LastProven: %+v", capacity)
@@ -661,6 +661,11 @@ func TestReadLaneCapacityDataRefTruthThreeWaySplit(t *testing.T) {
 		expected := capacityNow.Add(-16 * time.Minute).UTC().Format(time.RFC3339)
 		if !strings.Contains(capacity.DataRef, expected) {
 			t.Fatalf("stale-only DataRef must cite newest sample RFC3339 %q: %q", expected, capacity.DataRef)
+		}
+		for _, part := range []string{"family=claude", "age=16m", "freshness=15m"} {
+			if !strings.Contains(capacity.DataRef, part) {
+				t.Fatalf("stale-only DataRef must carry %q (predicate: family, age, freshness window named): %q", part, capacity.DataRef)
+			}
 		}
 		if capacity.Source != "codexbar/usage-history" {
 			t.Fatalf("stale-only lane Source = %q, want %q", capacity.Source, "codexbar/usage-history")
