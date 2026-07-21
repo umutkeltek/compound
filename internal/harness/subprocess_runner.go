@@ -65,6 +65,15 @@ func runWithSubprocess(
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("%s: mint: %w", harnessName, err)
 	}
+	// F2: every subprocess-adapter mint is a real harness execution, never a
+	// claim-time placeholder or a post-hoc observation. Stamp immediately
+	// after Mint, before any other side effect, so F2 (supersede-at-attach,
+	// internal/work) can recognize it when it attaches to a work envelope.
+	if stamped, oErr := store.SetOrigin(ra.ID, runattempt.OriginHarnessExecution); oErr != nil {
+		return RunOutput{}, fmt.Errorf("%s: stamp origin: %w", harnessName, oErr)
+	} else {
+		ra = stamped
+	}
 
 	// transcriptPath is "" until the transcript file is created below; the
 	// failTerm closure reads it at call time so the reason is recorded

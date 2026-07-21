@@ -114,6 +114,40 @@ func TestRunnerStampsLaneIDPreTerminal(t *testing.T) {
 	}
 }
 
+// TestRunnerStampsHarnessExecutionOrigin (F2): every subprocess-adapter mint
+// is a real harness execution, never a claim-time placeholder or a post-hoc
+// observation -- the runner must stamp Origin=harness_execution right after
+// Mint, before any other side effect, so F2's supersede-at-attach (in
+// internal/work) can identify it when it attaches to a work envelope that
+// already carries a claim_reservation attempt.
+func TestRunnerStampsHarnessExecutionOrigin(t *testing.T) {
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	a := NewOSEntrypointsAdapter(store)
+
+	out, err := a.Run(context.Background(), RunInput{
+		WorkID:    "work_origin",
+		Harness:   "os-harness-entrypoints",
+		Workspace: home,
+		Command:   "echo",
+		Args:      []string{"ok"},
+		Now:       time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.RunAttempt.Origin != runattempt.OriginHarnessExecution {
+		t.Fatalf("terminal RunAttempt origin = %q, want %q", out.RunAttempt.Origin, runattempt.OriginHarnessExecution)
+	}
+	got, gerr := store.Get(out.RunAttempt.ID)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if got.Origin != runattempt.OriginHarnessExecution {
+		t.Fatalf("persisted origin = %q, want %q", got.Origin, runattempt.OriginHarnessExecution)
+	}
+}
+
 // TestRunnerEmptyLaneIDOmitsStamp: an empty LaneID stamps NOTHING -- the
 // runner skips SetAttribution entirely, so the persisted RunAttempt JSON
 // has NO lane_id key (omitempty at the rail level). Falsifier: if the
