@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"compound/internal/candidates"
@@ -2025,6 +2026,27 @@ func loadSignals(homePath string) ([]Signal, error) {
 	return out, err
 }
 
+// LoadProductSignals reads ONLY the product-signal ledger, filtered to one product
+// (or all products when productID is empty). It is the lightweight path for
+// consumers that need signals but not the full Timeline — the full timeline also
+// scans the entire event store and source-issue log, which is expensive on a large
+// home. The actuator loop-closer uses this so "did my move land?" answers in
+// milliseconds instead of hanging on a full-home scan.
+func LoadProductSignals(homePath, productID string) ([]Signal, error) {
+	var out []Signal
+	err := readJSONL(signalsLog(homePath), func(line []byte) error {
+		var s Signal
+		if err := json.Unmarshal(line, &s); err != nil || s.ID == "" {
+			return nil
+		}
+		if productID == "" || s.ProductID == productID {
+			out = append(out, s)
+		}
+		return nil
+	})
+	return out, err
+}
+
 func loadHypotheses(homePath string) ([]HypothesisCandidate, error) {
 	dir := filepath.Join(homePath, candidates.InboxDir(candidates.ProductHypothesis))
 	entries, err := os.ReadDir(dir)
@@ -2077,19 +2099,91 @@ func loadSourceIssueReviews(homePath string) ([]SourceIssueReview, error) {
 	return out, err
 }
 
+// productTransitionsMemo memoizes ONE scan of the transition family, grouped by
+// product, for the lifetime of a single process. Authority/BuildLoopModel call
+// LoadTimeline once per product; without this each call re-scanned the entire
+// (large) transition family — an N-products × full-scan amplification that is what
+// made `product loops`/`authority` hang on a big home. The scan now runs once per
+// (home, transition-segment fingerprint). The event store stays the sole authority:
+// this is a process-local read cache, never persisted, and any segment change
+// (append/seal/rotate) shifts the fingerprint and converges back to a real scan.
+var productTransitionsMemo struct {
+	sync.Mutex
+	home        string
+	fingerprint string
+	byProduct   map[string][]TimelineTransition
+}
+
+// transitionFamilyFingerprint asks the event store for an opaque token over exactly
+// the content a transition Scan reads — the transition family's segments plus the
+// loose layer while the migration gate is open — so the memo invalidates the instant
+// any of it changes. The store is the sole physical owner of the events layout, so
+// product never touches it directly: it compares tokens only. Segments are
+// append-only and immutable once sealed, so an identical token means identical
+// content; any append/seal/rotate shifts it and converges the memo back to a real
+// scan. A store we cannot open fingerprints with the error so the memo can never
+// serve a stale hit (the subsequent scan surfaces the real error).
+func transitionFamilyFingerprint(homePath string) string {
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return "open-err|" + err.Error()
+	}
+	return store.ScanFingerprint(eventstore.ScanOptions{Prefixes: []string{"tr_"}})
+}
+
 func loadProductTransitions(homePath, productID string) ([]TimelineTransition, error) {
+	grouped, err := loadProductTransitionsGrouped(homePath)
+	if err != nil {
+		return nil, err
+	}
+	// Read-only: callers (LoadTimeline/Authority) never mutate the returned slice.
+	return grouped[productID], nil
+}
+
+// loadProductTransitionsGrouped returns all transitions grouped by the products
+// they reference, scanning the transition family once and memoizing per process.
+func loadProductTransitionsGrouped(homePath string) (map[string][]TimelineTransition, error) {
+	fingerprint := transitionFamilyFingerprint(homePath)
+	productTransitionsMemo.Lock()
+	if productTransitionsMemo.byProduct != nil && productTransitionsMemo.home == homePath && productTransitionsMemo.fingerprint == fingerprint {
+		grouped := productTransitionsMemo.byProduct
+		productTransitionsMemo.Unlock()
+		return grouped, nil
+	}
+	productTransitionsMemo.Unlock()
+
+	grouped, err := scanProductTransitions(homePath)
+	if err != nil {
+		return nil, err
+	}
+
+	productTransitionsMemo.Lock()
+	productTransitionsMemo.home = homePath
+	productTransitionsMemo.fingerprint = fingerprint
+	productTransitionsMemo.byProduct = grouped
+	productTransitionsMemo.Unlock()
+	return grouped, nil
+}
+
+// scanProductTransitions scans the transition family ("tr_" prefix — a pure I/O
+// restriction: scanFamilyRestriction skips other families without even a readdir,
+// while the in-scan matchesPrefix post-filter keeps results byte-for-byte identical
+// to an unrestricted scan) and groups each transition by every product it
+// references (Scope.ProductID and each Projections.Product), preserving the exact
+// filter and CreatedAt/ID ordering the per-product scan produced.
+func scanProductTransitions(homePath string) (map[string][]TimelineTransition, error) {
 	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := store.Scan(eventstore.ScanOptions{})
+	entries, err := store.Scan(eventstore.ScanOptions{Prefixes: []string{"tr_"}})
 	if os.IsNotExist(err) {
-		return nil, nil
+		return map[string][]TimelineTransition{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var out []TimelineTransition
+	grouped := map[string][]TimelineTransition{}
 	for _, entry := range entries {
 		record, err := entry.Read()
 		if err != nil {
@@ -2109,11 +2203,8 @@ func loadProductTransitions(homePath, productID string) ([]TimelineTransition, e
 		if err := tr.Validate(); err != nil {
 			return nil, fmt.Errorf("product transition %s: %w", entry.Name, err)
 		}
-		if tr.Scope.ProductID != productID && !containsValue(tr.Projections.Product, productID) {
-			continue
-		}
 		kind, objectRef := productProjectionObject(tr.Projections.Product)
-		out = append(out, TimelineTransition{
+		tt := TimelineTransition{
 			ID:                    tr.ID,
 			CreatedAt:             tr.CreatedAt,
 			Kind:                  kind,
@@ -2121,15 +2212,84 @@ func loadProductTransitions(homePath, productID string) ([]TimelineTransition, e
 			StateDelta:            tr.StateDelta,
 			EvidenceRefs:          tr.EvidenceRefs,
 			FutureBehaviorChanged: tr.SecondOrder.FutureBehaviorChanged,
+		}
+		prods := map[string]bool{}
+		if tr.Scope.ProductID != "" {
+			prods[tr.Scope.ProductID] = true
+		}
+		for _, p := range tr.Projections.Product {
+			if p != "" {
+				prods[p] = true
+			}
+		}
+		for p := range prods {
+			grouped[p] = append(grouped[p], tt)
+		}
+	}
+	for _, list := range grouped {
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].CreatedAt == list[j].CreatedAt {
+				return list[i].ID < list[j].ID
+			}
+			return list[i].CreatedAt < list[j].CreatedAt
 		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].CreatedAt == out[j].CreatedAt {
-			return out[i].ID < out[j].ID
+	return grouped, nil
+}
+
+// noPromoteMemo memoizes ONE parse of the shared no-promote decision ledger per
+// process. The loop/doctor path reads this ledger once per product (to find that
+// product's source issues), so without the memo a large home re-reads the same
+// multi-MB file N times. Like productTransitionsMemo it is a pure read-side cache:
+// the fingerprint covers the ledger file (size+mtime), a miss re-reads, and a hit
+// returns the parsed slice read-only. Malformed/empty lines are skipped exactly as
+// the old per-call readJSONL did, so output is byte-identical.
+var noPromoteMemo struct {
+	sync.Mutex
+	home        string
+	fingerprint string
+	decisions   []writeback.NoPromoteDecision
+}
+
+// noPromoteFingerprint fingerprints the single no-promote ledger file so the memo
+// invalidates if it changes. An absent file fingerprints distinctly, never "".
+func noPromoteFingerprint(homePath string) string {
+	info, err := os.Stat(noPromoteLog(homePath))
+	if err != nil {
+		return "nopromote|<absent>"
+	}
+	return fmt.Sprintf("nopromote|%d:%d", info.Size(), info.ModTime().UnixNano())
+}
+
+// loadNoPromoteDecisions parses the shared no-promote ledger once per process,
+// memoized by file fingerprint. Callers filter the returned slice (read-only) by
+// product instead of each re-reading the file.
+func loadNoPromoteDecisions(homePath string) []writeback.NoPromoteDecision {
+	fingerprint := noPromoteFingerprint(homePath)
+	noPromoteMemo.Lock()
+	if noPromoteMemo.decisions != nil && noPromoteMemo.home == homePath && noPromoteMemo.fingerprint == fingerprint {
+		decisions := noPromoteMemo.decisions
+		noPromoteMemo.Unlock()
+		return decisions
+	}
+	noPromoteMemo.Unlock()
+
+	var decisions []writeback.NoPromoteDecision
+	_ = readJSONL(noPromoteLog(homePath), func(line []byte) error {
+		var d writeback.NoPromoteDecision
+		if err := json.Unmarshal(line, &d); err != nil || d.ID == "" {
+			return nil
 		}
-		return out[i].CreatedAt < out[j].CreatedAt
+		decisions = append(decisions, d)
+		return nil
 	})
-	return out, nil
+
+	noPromoteMemo.Lock()
+	noPromoteMemo.home = homePath
+	noPromoteMemo.fingerprint = fingerprint
+	noPromoteMemo.decisions = decisions
+	noPromoteMemo.Unlock()
+	return decisions
 }
 
 func loadProductSourceIssues(homePath, productID string) ([]ProductSourceIssue, error) {
@@ -2144,16 +2304,12 @@ func loadProductSourceIssues(homePath, productID string) ([]ProductSourceIssue, 
 		}
 	}
 	var out []ProductSourceIssue
-	err = readJSONL(noPromoteLog(homePath), func(line []byte) error {
-		var d writeback.NoPromoteDecision
-		if err := json.Unmarshal(line, &d); err != nil || d.ID == "" {
-			return nil
-		}
+	for _, d := range loadNoPromoteDecisions(homePath) {
 		if d.OwnerTarget.Kind != "product_signal_source" && d.OwnerTarget.Kind != ProductChangeStreamOwner {
-			return nil
+			continue
 		}
 		if !containsValue(d.EvidenceRefs, productRef(productID)) {
-			return nil
+			continue
 		}
 		sourceRef := d.OwnerTarget.Ref
 		if sourceRef == "" {
@@ -2173,10 +2329,6 @@ func loadProductSourceIssues(homePath, productID string) ([]ProductSourceIssue, 
 			issue.ReviewResult = review.Result
 		}
 		out = append(out, issue)
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt == out[j].CreatedAt {

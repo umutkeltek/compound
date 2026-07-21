@@ -234,6 +234,73 @@ func (e *engine) scanAll(regularOnly bool, restrictFamilies map[string]bool) (ma
 	return records, invalid, nil
 }
 
+// scanFingerprint computes a cheap identity token over exactly the content scanAll
+// would read under the same options: the restricted families' segment files plus —
+// only while the migration completion gate is open — the loose record layer. It
+// stats files (path:size:mtime) instead of parsing them, so a caller can invalidate
+// a read-side cache without re-scanning. Segments are append-only and immutable once
+// sealed, so an identical token means Scan would return identical entries, while any
+// append/seal/rotate or loose-record change shifts it. It never reads record bytes,
+// keeping the events physical layout owned solely by this package. The token format
+// is opaque: callers compare tokens, never parse them.
+func (e *engine) scanFingerprint(regularOnly bool, restrictFamilies map[string]bool) string {
+	var b strings.Builder
+	if familyEntries, err := os.ReadDir(e.segRoot); err == nil {
+		families := make([]string, 0, len(familyEntries))
+		for _, entry := range familyEntries {
+			if !entry.IsDir() {
+				continue
+			}
+			if restrictFamilies != nil && !restrictFamilies[entry.Name()] {
+				continue
+			}
+			families = append(families, entry.Name())
+		}
+		sort.Strings(families)
+		for _, family := range families {
+			segments, err := e.familySegments(family)
+			if err != nil {
+				fmt.Fprintf(&b, "seg|%s|<err>;", family)
+				continue
+			}
+			for _, segment := range segments {
+				info, statErr := os.Stat(segment.path)
+				if statErr != nil {
+					fmt.Fprintf(&b, "seg|%s|<absent>;", filepath.Base(segment.path))
+					continue
+				}
+				fmt.Fprintf(&b, "seg|%s:%d:%d;", segment.path, info.Size(), info.ModTime().UnixNano())
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(&b, "segroot|<err>;%v;", err)
+	}
+	if e.legacyFallbackEnabled() {
+		if dirEntries, err := os.ReadDir(e.eventsDir); err == nil {
+			for _, entry := range dirEntries {
+				name := entry.Name()
+				if entry.IsDir() || !strings.HasSuffix(name, ".json") {
+					continue
+				}
+				if regularOnly && !entry.Type().IsRegular() {
+					continue
+				}
+				info, infoErr := entry.Info()
+				if infoErr != nil {
+					continue
+				}
+				fmt.Fprintf(&b, "loose|%s:%d:%d;", name, info.Size(), info.ModTime().UnixNano())
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(&b, "loose|<err>;%v;", err)
+		}
+	}
+	if b.Len() == 0 {
+		return "empty"
+	}
+	return b.String()
+}
+
 func regularKindForScan(regularOnly bool) string {
 	if regularOnly {
 		return "event record"

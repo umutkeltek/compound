@@ -396,6 +396,18 @@ func (s *Store) Count(opts ScanOptions) (int, error) {
 	return len(entries), nil
 }
 
+// ScanFingerprint returns an opaque token identifying the physical state of the
+// records Scan(opts) would read. A caller may use it to cheaply invalidate a
+// read-side cache: while the token is unchanged, Scan(opts) returns identical
+// entries; any append/seal/rotate or loose-record change yields a new token. It
+// stats files rather than parsing them, so it is far cheaper than Scan, and —
+// because it lives here, in the sole physical-layout owner — lets other packages
+// build scan caches without ever learning the events layout. The token's format is
+// opaque and must be compared, never parsed or persisted.
+func (s *Store) ScanFingerprint(opts ScanOptions) string {
+	return s.engine.scanFingerprint(opts.RegularOnly, scanFamilyRestriction(opts.Prefixes))
+}
+
 // Named compatibility streams remain physically separate from event records.
 // Their paths stay private so callers cannot accidentally become a second
 // physical owner while the work lifecycle retains its distinct semantics.
