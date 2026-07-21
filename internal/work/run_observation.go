@@ -193,9 +193,26 @@ func (s *Store) observeRunFromJobFile(in ObserveRunInput, workID, actor string, 
 	if err != nil {
 		return runattempt.RunAttempt{}, fmt.Errorf("mint from job %s: %w", jobID, err)
 	}
-	// If the RunAttempt already existed (idempotent retrieve), return it
-	// without re-populating fields — the first observer's data stands.
-	if ra.Status != runattempt.StatusPending {
+	// F2: stamp provenance once, at genuine creation. Any record reaching
+	// this path with an empty Origin was, by construction, minted through
+	// this exact observe-run codepath (MintWithID with this deterministic
+	// scheme has no other caller) -- so backfilling a pre-F2 legacy record's
+	// Origin here is correct, not a guess. Skipped once Origin is set, and
+	// never attempted on a terminal record (SetOrigin refuses on terminal,
+	// same as every other setter).
+	if ra.Origin == "" && !runattempt.IsTerminal(ra.Status) {
+		if updated, oerr := store.SetOrigin(ra.ID, runattempt.OriginObservedExternal); oerr == nil {
+			ra = updated
+		}
+	}
+	// If the RunAttempt already existed as a TERMINAL record (idempotent
+	// retrieve), return it without re-populating fields — the first
+	// observer's data stands. A non-terminal existing record (pending or,
+	// since F5, running) still needs to flow through the populate logic
+	// below so a LATER terminal job file can still terminalize it (F5/T6) —
+	// checking only "!= pending" would wrongly treat "running" as an
+	// already-finished retrieve and never terminalize it.
+	if runattempt.IsTerminal(ra.Status) {
 		return ra, nil
 	}
 	// Populate S2 fields from the job data. Best-effort: a failure here
@@ -244,9 +261,14 @@ func (s *Store) observeRunFromJobFile(in ObserveRunInput, workID, actor string, 
 			ra = updated
 		}
 	case "running", "in_progress":
-		// Leave as pending — the job is still running. C3 sweeps stuck
-		// attempts; a later observe-run with a terminal job file
-		// terminalizes it.
+		// F5: mark genuinely running (was left as pending, contradicting
+		// this function's own doc comment). C3 sweeps stuck attempts; a
+		// later observe-run with a terminal job file still terminalizes it
+		// (see the early-return guard above, which only skips a truly
+		// terminal existing record).
+		if updated, err := store.MarkRunning(ra.ID, now); err == nil {
+			ra = updated
+		}
 	default:
 		// Unknown status: leave as pending. Doctor surfaces it.
 	}

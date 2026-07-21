@@ -1,8 +1,10 @@
 // C2 tests: observe-run --job-file mints a deterministic RunAttempt from a
 // codex plugin job file. Falsifiers:
 //
-//   - a completed job observed twice produces one attempt (idempotent)
-//   - a running job maps to status=running, never terminal
+//   - a completed job observed twice under the SAME work produces one
+//     attempt (idempotent); under a DIFFERENT work it errors (F4)
+//   - a running job maps to status=running (F5), and a later terminal
+//     observe of the same job still terminalizes it normally
 
 package work
 
@@ -10,6 +12,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,10 +114,15 @@ func TestObserveRunWithJobFileMintsRunAttempt(t *testing.T) {
 	}
 }
 
-func TestObserveRunWithJobFileIdempotent(t *testing.T) {
+// TestObserveRunWithJobFileCrossWorkErrors rewrites the pre-F4
+// TestObserveRunWithJobFileIdempotent, which pinned the WRONG behavior: the
+// same job file observed under two different works silently reused the
+// first work's ratt_ id. F4 (T3): a codex job id is globally meaningful, so
+// that reuse is now a fail-closed error naming both work ids; only one
+// ratt_ file lands on disk and the first work's record is untouched.
+func TestObserveRunWithJobFileCrossWorkErrors(t *testing.T) {
 	s := newStore(t)
-	// Two separate running works, same job file → same deterministic ratt_ id.
-	workID1 := runningWorkForObserve(t, s, "idempotent job observe 1")
+	workID1 := runningWorkForObserve(t, s, "cross-work job observe 1")
 	trace1 := seedTraceEnvelope(t, s, workID1)
 	jobDir := t.TempDir()
 	jobPath := writeCodexJobFile(t, jobDir, "job-idem", "completed", "/tmp/idem.log", "idempotent job")
@@ -126,19 +134,66 @@ func TestObserveRunWithJobFileIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Second work, same job file → same ratt_ id (deterministic).
-	workID2 := runningWorkForObserve(t, s, "idempotent job observe 2")
+	// Second work, same job file → deterministic ratt_ id collides → must error.
+	workID2 := runningWorkForObserve(t, s, "cross-work job observe 2")
 	trace2 := seedTraceEnvelope(t, s, workID2)
-	result2, err := s.ObserveRun(workID2, ObserveRunInput{
+	_, err = s.ObserveRun(workID2, ObserveRunInput{
 		Actor: "codex", TraceID: trace2.ID, JobFilePath: jobPath,
 	}, fixedNow.Add(3*time.Minute))
+	if err == nil {
+		t.Fatal("observing the same job file under a different work must error (F4 identity check)")
+	}
+	if !strings.Contains(err.Error(), workID1) || !strings.Contains(err.Error(), workID2) {
+		t.Fatalf("error must name both work ids, got: %v", err)
+	}
+	// Only one ratt_ file on disk for this job -- the second work's mint never landed.
+	entries, err := os.ReadDir(filepath.Join(s.home, "run_attempts"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result1.RunAttemptID != result2.RunAttemptID {
-		t.Fatalf("same job file produced different RunAttempt ids: %q vs %q", result1.RunAttemptID, result2.RunAttemptID)
+	rattCount := 0
+	for _, e := range entries {
+		if e.Name() == result1.RunAttemptID+".json" {
+			rattCount++
+		}
 	}
-	// Only one ratt_ file on disk for this job.
+	if rattCount != 1 {
+		t.Fatalf("expected exactly 1 file for the deterministic id, got %d", rattCount)
+	}
+	// First work's record is intact.
+	got, gerr := runattempt.Open(s.home).Get(result1.RunAttemptID)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if got.WorkID != workID1 {
+		t.Fatalf("existing record mutated: work_id = %q, want %q", got.WorkID, workID1)
+	}
+}
+
+// TestObserveRunWithJobFileSameWorkIdempotent (T4): the idempotency half of
+// the pre-F4 pinned test -- re-observing the SAME job file under the SAME
+// work must still succeed with no error and the same ratt_ id.
+func TestObserveRunWithJobFileSameWorkIdempotent(t *testing.T) {
+	s := newStore(t)
+	workID := runningWorkForObserve(t, s, "same-work idempotent job observe")
+	trace := seedTraceEnvelope(t, s, workID)
+	jobPath := writeCodexJobFile(t, t.TempDir(), "job-idem-same", "completed", "/tmp/idem-same.log", "idempotent job")
+
+	result1, err := s.ObserveRun(workID, ObserveRunInput{
+		Actor: "codex", TraceID: trace.ID, JobFilePath: jobPath,
+	}, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result2, err := s.ObserveRun(workID, ObserveRunInput{
+		Actor: "codex", TraceID: trace.ID, JobFilePath: jobPath,
+	}, fixedNow.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("same-work re-observe must stay idempotent: %v", err)
+	}
+	if result1.RunAttemptID != result2.RunAttemptID {
+		t.Fatalf("same job file under same work produced different RunAttempt ids: %q vs %q", result1.RunAttemptID, result2.RunAttemptID)
+	}
 	entries, err := os.ReadDir(filepath.Join(s.home, "run_attempts"))
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +209,10 @@ func TestObserveRunWithJobFileIdempotent(t *testing.T) {
 	}
 }
 
+// TestObserveRunWithRunningJobStaysNonTerminal rewrites the pre-F5 version,
+// which only asserted non-terminal (satisfied by the bug: status silently
+// stuck at "pending" forever). F5 (T5): a running job must produce the
+// explicit StatusRunning, not merely "not yet terminal".
 func TestObserveRunWithRunningJobStaysNonTerminal(t *testing.T) {
 	s := newStore(t)
 	workID := runningWorkForObserve(t, s, "running job stays non-terminal")
@@ -170,9 +229,55 @@ func TestObserveRunWithRunningJobStaysNonTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Running job → NOT terminal.
-	if runattempt.IsTerminal(ra.Status) {
-		t.Fatalf("running job produced terminal status %q; must stay non-terminal", ra.Status)
+	if ra.Status != runattempt.StatusRunning {
+		t.Fatalf("status = %q, want %q", ra.Status, runattempt.StatusRunning)
+	}
+}
+
+// TestObserveRunAfterRunningTerminalizesNormally (T6): once a job's
+// RunAttempt has been marked genuinely running (F5), a LATER observe
+// reporting the job as completed must still terminalize it normally. Guards
+// against the F5 wiring reintroducing the "already exists, skip
+// re-populate" early return for a non-terminal (running) status -- that
+// early return must trigger only on a truly terminal existing record.
+func TestObserveRunAfterRunningTerminalizesNormally(t *testing.T) {
+	s := newStore(t)
+	workID := runningWorkForObserve(t, s, "running then terminal job observe")
+	trace := seedTraceEnvelope(t, s, workID)
+	jobDir := t.TempDir()
+	jobPath := writeCodexJobFile(t, jobDir, "job-then-terminal", "running", "/tmp/then-terminal.log", "still going")
+
+	first, err := s.ObserveRun(workID, ObserveRunInput{
+		Actor: "codex", TraceID: trace.ID, JobFilePath: jobPath,
+	}, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra, err := runattempt.Open(s.home).Get(first.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.Status != runattempt.StatusRunning {
+		t.Fatalf("status after first observe = %q, want running", ra.Status)
+	}
+
+	// Same job file (same path), now reporting completed -- must terminalize.
+	writeCodexJobFile(t, jobDir, "job-then-terminal", "completed", "/tmp/then-terminal.log", "done now")
+	second, err := s.ObserveRun(workID, ObserveRunInput{
+		Actor: "codex", TraceID: trace.ID, JobFilePath: jobPath,
+	}, fixedNow.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.RunAttemptID != first.RunAttemptID {
+		t.Fatalf("second observe minted a different RunAttempt: %q vs %q", second.RunAttemptID, first.RunAttemptID)
+	}
+	ra2, err := runattempt.Open(s.home).Get(second.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra2.Status != runattempt.StatusSucceeded {
+		t.Fatalf("status after terminal re-observe = %q, want succeeded", ra2.Status)
 	}
 }
 
