@@ -90,6 +90,9 @@ compound **observes** executions; it does not become one. The rail is proven by 
   unresolvable workspace stops the work before it moves, so it can never be left stuck in `running`. The `running`
   advance carries no `run_attempt_ids` (the adapter has not minted yet; the `ratt_` validator forbids stale ids).
   On success → advance to `verifying`; on failure (non-zero exit, timeout, or infra) → close `failed`/`audit_only`.
+  Only `work advance --execute` is governed execution (ActionIntent + PolicyDecision + envelope advance);
+  `compound harness run` is a manual, ungoverned run record — it mints the RunAttempt, prints a warning, and
+  reports `governed: false` in JSON output.
   The `ratt_` id **forward-links on BOTH paths** so the failed attempt is reachable from the envelope, not only
   from `run_attempts/<id>.json`.
 - **Workspace resolution order:** `--workspace` → `git_delivery.target_worktree_root` → `cwd` → **refuse**. **NEVER

@@ -21,6 +21,7 @@ It applies to Claude Code identically. This file only adds Claude-specific notes
   side effect, terminalize on every path (never leave pending/running), sweep is audit-only. `work advance
   --execute` / `harness run` resolve adapter + workspace BEFORE any state change (fail closed); workspace is
   `--workspace` → `git_delivery` → `cwd`, **never `COMPOUND_HOME`**; the Claude adapter defaults to `plan` (`bypass` is explicit opt-in).
+  Governed execution is `work advance --execute` only; `harness run` is an ungoverned manual record (warns, `governed: false`).
 - **Coordination organs:** `compound coordination` is the read-only me/others/waiting-on view; landing goes
   through the land-lease ceremony (`compound-land`); claim a lane before building (`proposed ≠ held`); the MAIN
   checkout stays on `main` and clean.
