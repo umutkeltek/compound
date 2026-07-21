@@ -33,6 +33,11 @@ const (
 	capacityEvidenceProtocol = "capacity-snapshot"
 	capacityEvidenceProfile  = "compound.capacity-veto"
 	capacityRefusalStatus    = "capacity_refused"
+
+	// laneAliasesRelPath is the home-relative path to the operator-owned lane-alias override file.
+	laneAliasesRelPath = "projections/lane-aliases.json"
+	// laneAliasesSchema versions the lane-alias override projection body.
+	laneAliasesSchema = "compound.lane_aliases.v0.1"
 )
 
 type LaneCapacity struct {
@@ -52,6 +57,11 @@ type LaneCapacityPaths struct {
 	UsageHistoryPath      string
 	QuotaCachePath        string
 	AccountProjectionPath string
+	// AliasesPath is the operator-owned lane-alias override projection
+	// (`<COMPOUND_HOME>/projections/lane-aliases.json`). It is NOT a capacity source — it only
+	// renames a lane to a family before the structural rules run — so it is deliberately excluded
+	// from capacitySourceInstalled.
+	AliasesPath string
 }
 
 type LaneCapacityConfig struct {
@@ -70,8 +80,15 @@ func DefaultLaneCapacityConfig(homePath string) LaneCapacityConfig {
 	}
 	if strings.TrimSpace(homePath) != "" {
 		paths.AccountProjectionPath = AccountProjectionPath(homePath)
+		paths.AliasesPath = LaneAliasesPath(homePath)
 	}
 	return LaneCapacityConfig{Paths: paths, ExpectedMinutes: defaultExpectedMinutes}
+}
+
+// LaneAliasesPath is the absolute path the operator-owned lane-alias override projection is read
+// from (mirrors AccountProjectionPath's home-relative convention).
+func LaneAliasesPath(homePath string) string {
+	return filepath.Join(homePath, filepath.FromSlash(laneAliasesRelPath))
 }
 
 // ReadLaneCapacity is the production front door. COMPOUND_HOME is used only to locate Compound's
@@ -82,13 +99,16 @@ func ReadLaneCapacity(lane string, now time.Time) (LaneCapacity, error) {
 
 func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConfig) (LaneCapacity, error) {
 	cfg = normalizeLaneCapacityConfig(cfg, "")
-	key := normalizeLaneCapacityKey(lane)
+	key, aliasNote := resolveLaneCapacityKey(lane, cfg)
 	installed := capacitySourceInstalled(cfg.Paths)
 	capacity := LaneCapacity{State: CapacityUnknown, DataRef: "no matching capacity row", SourceInstalled: installed}
 	if !installed {
 		capacity.DataRef = "no capacity source installed"
 	}
 	if key == "" {
+		if aliasNote != "" {
+			capacity.DataRef = capacity.DataRef + "; " + aliasNote
+		}
 		return capacity, nil
 	}
 
@@ -426,14 +446,20 @@ func normalizeLaneCapacityConfig(cfg LaneCapacityConfig, homePath string) LaneCa
 	if strings.TrimSpace(cfg.Paths.AccountProjectionPath) == "" {
 		cfg.Paths.AccountProjectionPath = defaults.Paths.AccountProjectionPath
 	}
+	if strings.TrimSpace(cfg.Paths.AliasesPath) == "" {
+		cfg.Paths.AliasesPath = defaults.Paths.AliasesPath
+	}
 	if cfg.ExpectedMinutes <= 0 {
 		cfg.ExpectedMinutes = defaultExpectedMinutes
 	}
 	return cfg
 }
 
-func normalizeLaneCapacityKey(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
+// exactLaneCapacityFamily maps a literal, already-lowercased/trimmed lane name to its capacity
+// family. It returns "" for anything not one of the known exact names — the caller decides what
+// to do next (retry on a stripped base, infer, or give up).
+func exactLaneCapacityFamily(value string) string {
+	switch value {
 	case "codex":
 		return "codex"
 	case "claude", "claude-code", "anthropic":
@@ -443,6 +469,123 @@ func normalizeLaneCapacityKey(value string) string {
 	default:
 		return ""
 	}
+}
+
+// inferLaneCapacityFamily applies structural family inference to an already sub-lane-stripped,
+// lowercased base name. Precedence: zai/glm beats codex/claude prefixes so "claude-zai" resolves
+// to zai, not claude.
+func inferLaneCapacityFamily(base string) string {
+	switch {
+	case strings.Contains(base, "zai") || strings.Contains(base, "glm"):
+		return "zai"
+	case strings.HasPrefix(base, "codex"):
+		return "codex"
+	case strings.HasPrefix(base, "claude"), strings.HasPrefix(base, "anthropic"):
+		return "claude"
+	default:
+		return ""
+	}
+}
+
+// normalizeLaneCapacityKey is a PURE function: structural rules only, no config/IO. Order:
+//  1. exact switch on the full (lowercased, trimmed) value — unchanged legacy semantics;
+//  2. strip everything from the first ':' (sub-lane suffix) and retry the exact switch on the base;
+//  3. family inference (prefix/contains) on that stripped base.
+//
+// Real dispatch lane names carry sub-lane suffixes (`claude-main:sub-lane`) or operator-chosen
+// prefixes (`claude-opus-x`) that the legacy 3-entry switch never recognized — this is the
+// structural half of lane-capacity-alias resolution; resolveLaneCapacityKey layers the
+// operator-owned alias override on top of it.
+func normalizeLaneCapacityKey(value string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if key := exactLaneCapacityFamily(trimmed); key != "" {
+		return key
+	}
+	base := trimmed
+	if idx := strings.Index(base, ":"); idx >= 0 {
+		base = base[:idx]
+	}
+	if key := exactLaneCapacityFamily(base); key != "" {
+		return key
+	}
+	return inferLaneCapacityFamily(base)
+}
+
+// laneAliasesFile is the on-disk shape of the operator-owned lane-alias override projection
+// (`<COMPOUND_HOME>/projections/lane-aliases.json`). It is config, not a governed registry: a
+// missing file is a no-op (fail open); nothing here is append-only evidence.
+type laneAliasesFile struct {
+	SchemaVersion string            `json:"schema_version"`
+	Aliases       map[string]string `json:"aliases"`
+}
+
+// loadLaneCapacityAliases reads and normalizes the lane-alias override file. A missing file
+// returns (nil, nil) — fail open, no overrides. A malformed file returns a non-nil error; the
+// caller decides whether to surface that (only when the lane would otherwise resolve unknown) —
+// this function itself never swallows the distinction between "no file" and "bad file".
+func loadLaneCapacityAliases(path string) (map[string]string, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read lane aliases: %w", err)
+	}
+	var file laneAliasesFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return nil, fmt.Errorf("parse lane aliases: %w", err)
+	}
+	aliases := make(map[string]string, len(file.Aliases))
+	for lane, family := range file.Aliases {
+		lane = strings.ToLower(strings.TrimSpace(lane))
+		family = strings.ToLower(strings.TrimSpace(family))
+		if lane == "" || family == "" {
+			continue
+		}
+		aliases[lane] = family
+	}
+	return aliases, nil
+}
+
+// resolveLaneCapacityKey layers the operator-owned alias override on top of the pure structural
+// normalizeLaneCapacityKey rules. Precedence: an exact built-in switch hit (the literal family
+// name, or its sub-lane-stripped base) is never overridden by an alias; short of that, an alias
+// match (checked on the full lowercased/trimmed name, then the ':'-stripped base) beats family
+// inference; a missing alias file is a no-op; a malformed alias file behaves like "no aliases"
+// but is reported via the returned note so ReadLaneCapacityWithConfig can surface it — but ONLY
+// when the lane would otherwise resolve unknown, per the packet's "no silent swallow, no
+// fleet-wide error either" rule.
+func resolveLaneCapacityKey(lane string, cfg LaneCapacityConfig) (key string, unreadableAliasNote string) {
+	trimmed := strings.ToLower(strings.TrimSpace(lane))
+	if key := exactLaneCapacityFamily(trimmed); key != "" {
+		return key, ""
+	}
+	base := trimmed
+	if idx := strings.Index(base, ":"); idx >= 0 {
+		base = base[:idx]
+	}
+	if key := exactLaneCapacityFamily(base); key != "" {
+		return key, ""
+	}
+
+	aliases, err := loadLaneCapacityAliases(cfg.Paths.AliasesPath)
+	if err == nil {
+		if family, ok := aliases[trimmed]; ok {
+			return family, ""
+		}
+		if family, ok := aliases[base]; ok {
+			return family, ""
+		}
+	}
+
+	inferred := inferLaneCapacityFamily(base)
+	if inferred == "" && err != nil {
+		return "", "lane-aliases.json unreadable"
+	}
+	return inferred, ""
 }
 
 func capacityFreshness(lane string) time.Duration {

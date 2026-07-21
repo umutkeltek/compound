@@ -21,8 +21,52 @@ func capacityFixtureConfig(t *testing.T) LaneCapacityConfig {
 			UsageHistoryPath:      filepath.Join(dir, "usage-history.jsonl"),
 			QuotaCachePath:        filepath.Join(dir, "quota-cache.json"),
 			AccountProjectionPath: filepath.Join(dir, "account-projection.json"),
+			AliasesPath:           filepath.Join(dir, "lane-aliases.json"),
 		},
 		ExpectedMinutes: 60,
+	}
+}
+
+// writeLaneAliasesFile writes the operator-owned lane-alias override projection
+// (`{"schema_version":"compound.lane_aliases.v0.1","aliases":{...}}`) to the fixture config's
+// AliasesPath.
+func writeLaneAliasesFile(t *testing.T, cfg LaneCapacityConfig, aliases map[string]string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"schema_version": "compound.lane_aliases.v0.1",
+		"aliases":        aliases,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.Paths.AliasesPath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// appendCapacityUsageRow appends a second (or later) CodexBar usage row to an existing fixture
+// file, used when a test needs rows for two different provider families in one file.
+func appendCapacityUsageRow(t *testing.T, cfg LaneCapacityConfig, provider string, used float64, resetsAt, sampledAt time.Time) {
+	t.Helper()
+	row := map[string]any{
+		"provider":      provider,
+		"windowKind":    "5h",
+		"windowMinutes": 300,
+		"usedPercent":   used,
+		"resetsAt":      resetsAt.UTC().Format(time.RFC3339),
+		"sampledAt":     sampledAt.UTC().Format(time.RFC3339),
+	}
+	body, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(cfg.Paths.UsageHistoryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(body, '\n')); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -403,5 +447,145 @@ func TestPlanCapabilityRouteUnknownLaneRequiresAndHonorsConfirm(t *testing.T) {
 	}
 	if _, err := os.Stat(ExecutionRouteEvidenceLedgerPath(home)); !os.IsNotExist(err) {
 		t.Fatalf("unknown confirmation wrote hard-refusal route evidence: %v", err)
+	}
+}
+
+// --- lane-capacity-alias resolution (packet-s1-lane-capacity-alias, work_416bb6b78bb6) ---
+
+// Structural: real dispatch lane names (sub-lane suffixes, operator-chosen prefixes) must resolve
+// to their capacity family, with zai/glm taking precedence over a claude prefix, and truly unknown
+// names staying unknown. Existing exact names are a regression guard.
+func TestNormalizeLaneCapacityKeyStructuralInferenceAndPrecedence(t *testing.T) {
+	cases := []struct {
+		name string
+		lane string
+		want string
+	}{
+		{"prefix-claude", "claude-main", "claude"},
+		{"prefix-claude-sub-lane", "claude-main:sub-lane", "claude"},
+		{"prefix-claude-opus", "claude-opus-x", "claude"},
+		{"sub-lane-codex", "codex:root-1:candidate-x", "codex"},
+		{"zai-beats-claude-prefix", "claude-zai", "zai"},
+		{"zai-beats-claude-prefix-sub-lane", "claude-zai:worker-2", "zai"},
+		{"unknown-stays-unknown", "synthesis", ""},
+		{"exact-codex", "codex", "codex"},
+		{"exact-claude", "claude", "claude"},
+		{"exact-claude-code", "claude-code", "claude"},
+		{"exact-anthropic", "anthropic", "claude"},
+		{"exact-zai", "zai", "zai"},
+		{"exact-z-dot-ai", "z.ai", "zai"},
+		{"exact-glm", "glm", "zai"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeLaneCapacityKey(tc.lane); got != tc.want {
+				t.Fatalf("normalizeLaneCapacityKey(%q) = %q, want %q", tc.lane, got, tc.want)
+			}
+		})
+	}
+}
+
+// Alias override: an unresolvable lane name pointed at a family via the operator-owned alias
+// file resolves to that family's live capacity row.
+func TestReadLaneCapacityAliasOverrideResolvesUnknownLane(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	writeLaneAliasesFile(t, cfg, map[string]string{"special-lane": "zai"})
+	writeCapacityUsage(t, cfg, "zai", 20, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+
+	capacity, err := ReadLaneCapacityWithConfig("special-lane", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if capacity.State == CapacityUnknown {
+		t.Fatalf("alias override did not resolve special-lane to the zai row: %+v", capacity)
+	}
+	if !strings.Contains(capacity.DataRef, "provider=zai") {
+		t.Fatalf("resolved capacity is not the zai fixture row: %+v", capacity)
+	}
+}
+
+// Alias override beats prefix inference: an alias pinning "claude-main" to codex must win over
+// the structural claude-prefix rule, given fresh rows for both families.
+func TestReadLaneCapacityAliasOverrideBeatsPrefixInference(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	writeLaneAliasesFile(t, cfg, map[string]string{"claude-main": "codex"})
+	writeCapacityUsage(t, cfg, "claude", 5, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+	appendCapacityUsageRow(t, cfg, "codex", 40, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+
+	capacity, err := ReadLaneCapacityWithConfig("claude-main", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if !strings.Contains(capacity.DataRef, "provider=codex") {
+		t.Fatalf("alias override did not beat prefix inference (want the codex row): %+v", capacity)
+	}
+}
+
+// A missing alias file is a no-op: structural prefix inference still resolves the lane.
+func TestReadLaneCapacityMissingAliasFileLeavesStructuralBehaviorUnchanged(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	// cfg.Paths.AliasesPath is a path capacityFixtureConfig built but never wrote to.
+	writeCapacityUsage(t, cfg, "claude", 5, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+
+	capacity, err := ReadLaneCapacityWithConfig("claude-main", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if !strings.Contains(capacity.DataRef, "provider=claude") {
+		t.Fatalf("structural inference broke with no alias file present: %+v", capacity)
+	}
+}
+
+// A malformed alias file must not be silently swallowed, but the note only surfaces on a lane
+// that would otherwise be unknown — a lane the structural rules already resolve stays clean.
+func TestReadLaneCapacityMalformedAliasFileSurfacesNoteOnlyWhenUnknown(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	if err := os.WriteFile(cfg.Paths.AliasesPath, []byte("{not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	unknown, err := ReadLaneCapacityWithConfig("synthesis", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if unknown.State != CapacityUnknown {
+		t.Fatalf("unknown lane with a malformed alias file should stay unknown: %+v", unknown)
+	}
+	if !strings.Contains(unknown.DataRef, "lane-aliases.json unreadable") {
+		t.Fatalf("malformed alias file was silently swallowed: %+v", unknown)
+	}
+
+	writeCapacityUsage(t, cfg, "claude", 5, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+	known, err := ReadLaneCapacityWithConfig("claude-main", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if strings.Contains(known.DataRef, "lane-aliases.json unreadable") {
+		t.Fatalf("alias-unreadable note leaked onto a structurally-resolved lane: %+v", known)
+	}
+}
+
+// Integration: a real dispatch sub-lane name resolves to its family's live CodexBar row, and the
+// family's freshness window is still enforced after resolution (untouched by this change).
+func TestReadLaneCapacitySubLaneIntegrationFreshnessEnforced(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	writeCapacityUsage(t, cfg, "claude", 10, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+
+	capacity, err := ReadLaneCapacityWithConfig("claude-main:sub-lane", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if capacity.State != CapacityAlive {
+		t.Fatalf("sub-lane name did not resolve to the live claude row: %+v", capacity)
+	}
+
+	stale := capacityFixtureConfig(t)
+	writeCapacityUsage(t, stale, "claude", 10, capacityNow.Add(2*time.Hour), capacityNow.Add(-16*time.Minute))
+	staleCapacity, err := ReadLaneCapacityWithConfig("claude-main:sub-lane", capacityNow, stale)
+	if err != nil {
+		t.Fatalf("read stale lane capacity: %v", err)
+	}
+	if staleCapacity.State != CapacityUnknown {
+		t.Fatalf("claude's 15m freshness window was not enforced after sub-lane resolution: %+v", staleCapacity)
 	}
 }
