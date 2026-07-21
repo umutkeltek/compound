@@ -201,10 +201,45 @@ var _ Adapter = FileArtifactAdapter{}
 // its write directly, because write is unexported (package-scoped).
 func NewFileArtifactAdapter() Adapter { return FileArtifactAdapter{} }
 
-// ReadCurrent returns the file's current bytes as the pre-image. A missing file
-// is an EMPTY pre-image (not an error): staging a brand-new artifact is the
-// normal case, and Execute records the empty pre-image so a revert can restore
-// "no file" semantics by rewriting the captured bytes.
+// filePreImageSchema tags the encoded pre-image so a rollback can tell a file that
+// DID NOT EXIST apart from an empty file. Any bytes without this exact marker are a
+// legacy byte-only pre-image and are read back as exists=true (old receipts remain
+// readable).
+const filePreImageSchema = "compound.file_preimage.v0.1"
+
+// filePreImage is the FileArtifactAdapter's first-class pre-image: a captured file
+// state carrying whether the target existed plus its content bytes. It travels
+// through the content-addressed artifact store as JSON so the exists-bit survives a
+// round-trip (afterWriteFailure rollback AND cross-process RevertIntent both restore
+// from these bytes). Content marshals as base64, so arbitrary binary round-trips.
+type filePreImage struct {
+	Schema  string `json:"schema"`
+	Exists  bool   `json:"exists"`
+	Content []byte `json:"content,omitempty"`
+}
+
+func encodeFilePreImage(exists bool, content []byte) []byte {
+	b, _ := json.Marshal(filePreImage{Schema: filePreImageSchema, Exists: exists, Content: content})
+	return b
+}
+
+// decodeFilePreImage interprets bytes as a file pre-image. A marker-tagged value
+// yields its exists-bit + content; anything else (a legacy byte-only pre-image, or a
+// raw forward-write body) is treated as exists=true with the bytes as content, so
+// old receipts and plain content writes both keep working.
+func decodeFilePreImage(b []byte) (exists bool, content []byte) {
+	var p filePreImage
+	if err := json.Unmarshal(b, &p); err == nil && p.Schema == filePreImageSchema {
+		return p.Exists, p.Content
+	}
+	return true, b
+}
+
+// ReadCurrent returns the file's pre-image with a first-class "did not exist" bit. A
+// missing file is a real absent pre-image (exists=false), not empty bytes — so a
+// rollback of a creation can DELETE the target rather than leave an empty file. An
+// existing file is captured as exists=true plus its bytes. It is never an error for
+// the target to be missing: staging a brand-new artifact is the normal case.
 func (FileArtifactAdapter) ReadCurrent(target envelope.ActionTarget) ([]byte, error) {
 	if strings.TrimSpace(target.Path) == "" {
 		return nil, fmt.Errorf("file-artifact adapter requires target.path")
@@ -212,24 +247,36 @@ func (FileArtifactAdapter) ReadCurrent(target envelope.ActionTarget) ([]byte, er
 	data, err := os.ReadFile(target.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []byte{}, nil
+			return encodeFilePreImage(false, nil), nil
 		}
 		return nil, err
 	}
-	return data, nil
+	return encodeFilePreImage(true, data), nil
 }
 
-// write replaces the file at Target.Path with newValue, creating parent
-// directories as needed. UNEXPORTED: Execute is the only caller, and only after
-// an allowing PolicyDecision.
+// write materializes newValue at Target.Path. newValue is decoded as a file
+// pre-image: restoring an ABSENT pre-image (exists=false) DELETES the target so a
+// rolled-back creation leaves no file (not an empty one); every other value
+// (exists=true, a legacy byte-only pre-image, or a raw forward-write body) writes its
+// content, creating parent directories as needed. UNEXPORTED: Execute is the only
+// caller, and only after an allowing PolicyDecision.
 func (FileArtifactAdapter) write(target envelope.ActionTarget, newValue []byte) error {
 	if strings.TrimSpace(target.Path) == "" {
 		return fmt.Errorf("file-artifact adapter requires target.path")
+	}
+	exists, content := decodeFilePreImage(newValue)
+	if !exists {
+		// Restoring an absent pre-image: remove the target. A missing target is
+		// already the desired state, so a not-exist removal is not an error.
+		if err := os.Remove(target.Path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
 	}
 	if dir := filepath.Dir(target.Path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	return os.WriteFile(target.Path, newValue, 0o644)
+	return os.WriteFile(target.Path, content, 0o644)
 }
