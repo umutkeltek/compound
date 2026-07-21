@@ -343,6 +343,10 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		// selftests (traffic / useLiveFleet / run-attempts). It imports extensionless @/ TS, so it
 		// runs under bun like the other selftest-runner smokes.
 		{Name: "console-traffic-board-smoke", Command: consoleBunSmokeCommand("scripts/traffic-board-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-traffic-board-smoke"},
+		// coordination-smoke executes the Me / Others / Waiting-on data-plane selftests
+		// (the pure builder over `compound coordination --json`). Same bun gate as the
+		// other extensionless @/ selftest-runner smokes.
+		{Name: "console-coordination-smoke", Command: consoleBunSmokeCommand("scripts/coordination-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-coordination-smoke"},
 		{Name: "bun-tools-test", Command: []string{"bun", "test", "<tools/*.test.ts>"}, SkipIfMissing: "bun", ProofRef: "bun-tools-test"},
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict", CIPortable: true},
 		{Name: "profiles-check", Command: []string{exe, "profiles", "check", "--installed-only"}, ProofRef: "profiles-check-installed-only"},

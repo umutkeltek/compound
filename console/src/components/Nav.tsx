@@ -39,7 +39,10 @@ function groupsFor(decideCount: number | null | undefined, workCount: number | n
           badge: workCount != null ? { count: workCount, tone: "quiet" } : undefined,
         },
         { label: "Agents", href: "/executors" },
-        { label: "Traffic", href: "/traffic" },
+        // Reframed from the fleet monitor to the Me / Others / Waiting-on
+        // coordination view (compound coordination verb); route renames in a
+        // later phase, same pattern as Decide's /reviews.
+        { label: "Coordination", href: "/traffic" },
         { label: "Loops", href: "/loops" },
       ],
     },

@@ -1,3 +1,3 @@
 export default function Loading() {
-  return <div className="p-6 text-sm text-faint">Loading traffic…</div>;
+  return <div className="p-6 text-sm text-faint">Loading coordination…</div>;
 }
