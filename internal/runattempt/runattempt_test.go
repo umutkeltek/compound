@@ -300,6 +300,8 @@ func TestSettersRefuseOnAbandoned(t *testing.T) {
 		{"test", func() error { _, e := s.SetTest(ra.ID, "x"); return e }},
 		{"proof_refs", func() error { _, e := s.SetProofRefs(ra.ID, []string{"x"}); return e }},
 		{"attach_action_intent", func() error { return s.AttachActionIntent(ra.ID, "act_12345678") }},
+		{"origin", func() error { _, e := s.SetOrigin(ra.ID, OriginClaimReservation); return e }},
+		{"mark_running", func() error { _, e := s.MarkRunning(ra.ID, now.Add(2*time.Minute)); return e }},
 	}
 	for _, tc := range setters {
 		t.Run(tc.name, func(t *testing.T) {
@@ -393,6 +395,67 @@ func TestMintWithIDRejectsInvalidID(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	if _, err := s.MintWithID("bad-id", "work_abc", "codex", "codex", now); err == nil {
 		t.Fatal("MintWithID with invalid id must fail")
+	}
+}
+
+// F4: MintWithID must fail closed on identity mismatch -- codex job ids are
+// globally meaningful, so a second work reusing the same deterministic id is
+// a split-truth bug, not a legitimate idempotent retrieve.
+
+func TestMintWithIDRejectsCrossWorkReuse(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	id := MintDeterministic("job-cross-work", now)
+	if _, err := s.MintWithID(id, "work_abc", "codex", "codex", now); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.MintWithID(id, "work_def", "codex", "codex", now.Add(time.Minute))
+	if err == nil {
+		t.Fatal("cross-work reuse of an observed job's RunAttempt must be rejected")
+	}
+	if !strings.Contains(err.Error(), "work_abc") || !strings.Contains(err.Error(), "work_def") {
+		t.Fatalf("error must name both work ids, got: %v", err)
+	}
+	// The first work's record is intact -- not overwritten by the failed second mint.
+	got, gerr := Open(home).Get(id)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if got.WorkID != "work_abc" {
+		t.Fatalf("existing record mutated: work_id = %q, want work_abc", got.WorkID)
+	}
+	// Only one ratt_ file landed on disk for this id.
+	entries, err := os.ReadDir(filepath.Join(home, "run_attempts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("run_attempts has %d files, want 1", count)
+	}
+}
+
+func TestMintWithIDSameWorkActorHarnessStaysIdempotent(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	id := MintDeterministic("job-same-work", now)
+	first, err := s.MintWithID(id, "work_abc", "codex", "codex", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.MintWithID(id, "work_abc", "codex", "codex", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("same work/actor/harness re-observe must stay idempotent: %v", err)
+	}
+	if second.ID != first.ID || second.WorkID != first.WorkID {
+		t.Fatalf("idempotent mint returned different record: %+v vs %+v", second, first)
 	}
 }
 
@@ -511,5 +574,93 @@ func TestPredecessorIDOmitempty(t *testing.T) {
 	}
 	if strings.Contains(string(data), "predecessor_id") {
 		t.Fatal("predecessor_id must be absent from JSON when empty (omitempty)")
+	}
+}
+
+// --- F2: Origin provenance ---
+
+func TestSetOriginStampsAndPersists(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_abc", "compound", "fake", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.Origin != "" {
+		t.Fatalf("fresh mint origin = %q, want empty", ra.Origin)
+	}
+	updated, err := s.SetOrigin(ra.ID, OriginClaimReservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Origin != OriginClaimReservation {
+		t.Fatalf("origin = %q, want %q", updated.Origin, OriginClaimReservation)
+	}
+	got, err := Open(home).Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Origin != OriginClaimReservation {
+		t.Fatalf("on-disk origin = %q, want %q", got.Origin, OriginClaimReservation)
+	}
+}
+
+func TestSetOriginRefusesOnTerminal(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_abc", "compound", "fake", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Complete(ra.ID, StatusSucceeded, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetOrigin(ra.ID, OriginHarnessExecution); err == nil {
+		t.Fatal("SetOrigin on terminal RunAttempt must fail")
+	}
+}
+
+// --- F5: MarkRunning ---
+
+func TestMarkRunningTransitionsAndIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_abc", "compound", "fake", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.MarkRunning(ra.ID, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != StatusRunning {
+		t.Fatalf("status = %q, want running", updated.Status)
+	}
+	// Idempotent: marking running again is a no-op success, not an error.
+	again, err := s.MarkRunning(ra.ID, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("re-MarkRunning must be a no-op, not an error: %v", err)
+	}
+	if again.Status != StatusRunning {
+		t.Fatalf("status after re-mark = %q, want running", again.Status)
+	}
+}
+
+func TestMarkRunningRefusesOnTerminal(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_abc", "compound", "fake", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Complete(ra.ID, StatusSucceeded, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkRunning(ra.ID, now.Add(2*time.Minute)); err == nil {
+		t.Fatal("MarkRunning on terminal RunAttempt must fail")
 	}
 }

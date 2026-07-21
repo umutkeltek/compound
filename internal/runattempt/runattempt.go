@@ -27,6 +27,20 @@ const (
 	StatusAbandoned = "abandoned"
 )
 
+// Origin records which of the three RunAttempt producers created this record:
+// a claim-time placeholder reservation, a harness that actually executed, or
+// a post-hoc observation of external evidence (e.g. a codex job file). Empty
+// on pre-F2 records -- additive field, no migration (omitempty keeps old
+// records marshaling byte-identical). F2 (supersede-at-attach) reads Origin
+// to terminalize a stale claim_reservation attempt when a harness_execution
+// attempt attaches to the same work envelope; attempts with empty Origin
+// (legacy) are never touched by that logic.
+const (
+	OriginClaimReservation = "claim_reservation"
+	OriginHarnessExecution = "harness_execution"
+	OriginObservedExternal = "observed_external"
+)
+
 // HarnessPlaceholder is the stand-in harness identifier used by writers that do not yet have a
 // real harness adapter (today: panel.Apply). It is a named constant rather than an open string so
 // the future harness-adapter slice has a single replacement site; the deferred context_pack_ref /
@@ -61,12 +75,16 @@ type RunAttempt struct {
 	// closing the attempt→intent→policy-decision audit chain. Empty on Mint (Mint runs before the
 	// Advance that creates the ActionIntent — see panel.Apply); attached post-Advance via
 	// AttachActionIntent. omitempty so pre-existing ratt_ records re-marshal byte-identical.
-	ActionIntentID string    `json:"action_intent_id,omitempty"`
-	Actor          string    `json:"actor"`
-	Harness        string    `json:"harness"`
-	Status         string    `json:"status"`
-	CreatedAt      time.Time `json:"created_at"`
-	CompletedAt    time.Time `json:"completed_at,omitempty"`
+	ActionIntentID string `json:"action_intent_id,omitempty"`
+	Actor          string `json:"actor"`
+	Harness        string `json:"harness"`
+	// Origin is the provenance of this attempt's mint: OriginClaimReservation,
+	// OriginHarnessExecution, or OriginObservedExternal. Empty on pre-F2
+	// records (backward compat; omitempty so they re-marshal byte-identical).
+	Origin      string    `json:"origin,omitempty"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
 
 	// --- S2 fields (every one omitempty; setters refuse on terminal status) ---
 
@@ -208,8 +226,21 @@ func (s *Store) MintWithID(id, workID, actor, harness string, now time.Time) (Ru
 	if strings.TrimSpace(harness) == "" {
 		return RunAttempt{}, fmt.Errorf("runattempt mint: harness is required")
 	}
-	// Idempotent: if the record already exists, return it.
+	// Idempotent: if the record already exists AND matches the caller's
+	// identity, return it. A mismatch is fail-closed (F4): the deterministic
+	// id (e.g. from a codex job id) is globally meaningful, so a different
+	// work/actor/harness reusing the same id is a split-truth bug, not a
+	// legitimate idempotent retrieve.
 	if existing, err := s.Get(id); err == nil {
+		if existing.WorkID != workID {
+			return RunAttempt{}, fmt.Errorf("run attempt %s already belongs to work %s (caller: %s)", id, existing.WorkID, workID)
+		}
+		if existing.Actor != actor {
+			return RunAttempt{}, fmt.Errorf("run attempt %s already belongs to actor %s (caller: %s)", id, existing.Actor, actor)
+		}
+		if existing.Harness != harness {
+			return RunAttempt{}, fmt.Errorf("run attempt %s already belongs to harness %s (caller: %s)", id, existing.Harness, harness)
+		}
 		return existing, nil
 	}
 	ra := RunAttempt{
@@ -313,6 +344,25 @@ func (s *Store) CompleteWithReason(id, status, reason string, now time.Time) (Ru
 	return ra, nil
 }
 
+// MarkRunning transitions a RunAttempt from pending to running (F5). This is
+// the setter observe-run's "running"/"in_progress" job-status branch was
+// missing -- without it a running job's RunAttempt silently stayed pending
+// forever, contradicting the Status doc comment. Terminal-guarded like every
+// other setter (refuses if already succeeded/failed/abandoned); idempotent
+// no-op if already running -- repeated "still running" observations of the
+// same job must not error or reset CreatedAt/heartbeat state.
+func (s *Store) MarkRunning(id string, now time.Time) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	if ra.Status == StatusRunning {
+		return ra, nil
+	}
+	ra.Status = StatusRunning
+	return ra, s.write(ra)
+}
+
 // AttachActionIntent binds a RunAttempt to the ActionIntent that authorized it, closing the
 // attempt→intent→policy-decision audit chain (the RunAttempt otherwise binds to WorkID only).
 //
@@ -385,6 +435,20 @@ func (s *Store) requireMutable(id string) (RunAttempt, error) {
 		return RunAttempt{}, fmt.Errorf("runattempt %s: %w (status=%s)", id, terminalRefusal, ra.Status)
 	}
 	return ra, nil
+}
+
+// SetOrigin stamps the provenance of an attempt's mint (F2 groundwork). Called
+// once, immediately after Mint/MintWithID at each of the three producer call
+// sites (claim, harness execution, observe-run), before any other state
+// change. Refuses on terminal exactly like every other S2/S3 setter, via
+// requireMutable, so provenance can never be rewritten after the fact.
+func (s *Store) SetOrigin(id, origin string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.Origin = strings.TrimSpace(origin)
+	return ra, s.write(ra)
 }
 
 // SetContextPack records which ContextRequest envelope this attempt loaded.
