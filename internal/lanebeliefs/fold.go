@@ -100,8 +100,8 @@ type FoldReport struct {
 	// pinned to them) stay byte-unchanged when a completed receipt also mints a completion trial.
 	NewCompletionObservationCount       int `json:"new_completion_observation_count"`
 	DuplicateCompletionObservationCount int `json:"duplicate_completion_observation_count"`
-	CandidateCount            int    `json:"candidate_count"`
-	ReinforcementCount        int    `json:"reinforcement_count"`
+	CandidateCount                      int `json:"candidate_count"`
+	ReinforcementCount                  int `json:"reinforcement_count"`
 	// RunCount is the persisted fold-RUN counter after this run (B4 cooling bookkeeping): every
 	// non-dry-run Fold increments it. The cool pass reads current_run − last_reinforced_run against
 	// COOL_AFTER_FOLDS. Zero on a dry-run (nothing persisted).
