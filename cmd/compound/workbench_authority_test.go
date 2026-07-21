@@ -14,8 +14,8 @@ import (
 	"compound/internal/home"
 	"compound/internal/policy"
 	"compound/internal/reviewartifact"
-	"compound/internal/work"
 	"compound/internal/reviewqueue"
+	"compound/internal/work"
 )
 
 const dirtyReviewDigestDriftSubEnv = "COMPOUND_DIRTY_REVIEW_DIGEST_DRIFT_SUB"

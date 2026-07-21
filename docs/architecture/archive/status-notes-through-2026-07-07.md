@@ -55,3 +55,6 @@ Private plan-draft hygiene note: root `Plans/` is ignored like `docs_private/`; 
 Route outcome status note: `compound route outcome-review` resolves existing joins by `--route-id`/`--route-evidence` plus `--receipt`/`--receipt-id`, or by `--work-id` when the work event log points to a receipt and the route ledger links that receipt/work. Supported joins record as route evidence, not review debt; remorse/failed joins remain the only path to route observations/no-promote.
 
 Workbench route outcome note: `compound workbench --json` attaches compact `route_outcomes[]` summaries from `reviews/route-remorse` to matching work/receipt items and adds `route:outcome` observatory tags, so route evidence joins are visible without opening review artifacts.
+
+<!-- archived 2026-07-21 from status.md (status-hot-path cap) -->
+Capability semantic surfacing note: orientation can opt into breadth-resolved node embeddings; failures degrade to literal surfacing and record `semantic_lane=degraded` rather than blocking capability offers.

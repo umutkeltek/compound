@@ -14,9 +14,9 @@ import (
 	"compound/internal/capgraph"
 	"compound/internal/home"
 	"compound/internal/reviewartifact"
+	"compound/internal/reviewqueue"
 	"compound/internal/routeevidence"
 	"compound/internal/work"
-	"compound/internal/reviewqueue"
 )
 
 const workbenchCapabilityOfferLimit = 12

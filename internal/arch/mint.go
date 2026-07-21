@@ -104,6 +104,14 @@ var mintHomes = map[string]MintHome{
 	// panel-verdict review bridges had copy-pasted. It writes review artifacts through reviewartifact
 	// and reads them back, but touches no ledger/store/writeback surface and performs no terminal
 	// effect (those stay in the domain callbacks), so it is evidence, not enforcement.
+	// reviewqueue is the canonical workbench review-queue builder: pure
+	// projection scaffolding (merge + annotate), no gate, no ledger, no
+	// terminal effect — evidence, not enforcement.
+	"organ:reviewqueue": {
+		Class:    MintEvidence,
+		Purpose:  "canonical workbench review-queue builder (merge + annotate rows); presentation-side only, no authority object, no terminal effect",
+		Consumer: "cmd/compound workbench CLI (canonical queue rendering + outbound verdict/dry-run annotation rows)",
+	},
 	"organ:verdictflow": {
 		Class:    MintEvidence,
 		Purpose:  "shared verdict plan->review->apply->annotate scaffolding for panel-verdict bridges (record/load/annotate/reviewed-extras mechanics only; no ledger, store, writeback, or terminal effect)",

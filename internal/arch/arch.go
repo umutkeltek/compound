@@ -94,6 +94,7 @@ var Classification = map[string]Class{
 	"retrievalparity": Leaf, // evaluator organ: read-only traffic recorder/replayer over real retrieval paths; produces evidence reports, owns no object family
 	"statussurface":   Leaf, // body-free, TTL-bound adaptive projection over harness-native context/rate-limit metadata; Claude/Codex remain live authority, route guidance is evidence only
 	"stream":          Leaf, // read-only tail organ over events/work.jsonl (byte cursor) + ledger/seq; opens the log read-only and NEVER takes the work-event write lock; emits evidence frames the console SSE route translates, owns no authority object and promotes nothing
+	"reviewqueue":     Leaf, // canonical workbench review-queue builder (merge + annotate rows); presentation-side only, no authority object, no terminal effect
 	"verdictflow":     Leaf, // shared plan->record->render->load->annotate scaffolding behind the three panel-verdict review bridges (product/sourceobs/capgraph); writes review artifacts through reviewartifact and reads them back, owns no authority object and performs no terminal effect (ledger/store/writeback stay in the domain callbacks)
 	// memory object family — canonical after Gen-1 package retirement
 	"mem": MemTarget,
@@ -3298,6 +3299,8 @@ func checkObservationBatchContract(repoRoot string) []Finding {
 			"--review-candidates",
 			"LoadSourceIntakeProjection",
 			"BuildSourceIntakeWorkPlan",
+		},
+		"internal/reviewqueue/reviewqueue.go": {
 			"observation.AnnotateReviewQueue",
 		},
 		"cmd/compound/orient_operator.go": {
@@ -3583,6 +3586,8 @@ func checkSourceObservationVerdictContract(repoRoot string) []Finding {
 			"RecordSourceObservationVerdictPlan",
 			"source observation-verdict-review",
 			"ApplySourceObservationVerdictReview",
+		},
+		"internal/reviewqueue/reviewqueue.go": {
 			"sourceobs.AnnotateObservationVerdictQueue",
 		},
 		"cmd/compound/main_test.go": {
@@ -3665,7 +3670,7 @@ func checkPanelCapabilityFeedbackContract(repoRoot string) []Finding {
 			"BuildPanelCapabilityFeedbackPlan",
 			"RecordPanelCapabilityFeedbackReview",
 		},
-		"cmd/compound/workbench_cli.go": {
+		"internal/reviewqueue/reviewqueue.go": {
 			"panel.AnnotateCapabilityFeedbackQueue",
 		},
 		"cmd/compound/panel_test.go": {
@@ -3931,7 +3936,7 @@ func checkExternalRepoContextEvaluationContract(repoRoot string) []Finding {
 			"BuildOutboundDistributionVerdictPlan",
 			"report.RequiredGates",
 		},
-		"cmd/compound/workbench_cli.go": {
+		"internal/reviewqueue/reviewqueue.go": {
 			"AnnotateOutboundDistributionVerdictQueue",
 			"AnnotateOutboundDistributionDryRunQueue",
 			"AnnotateOutboundDryRunEvidenceQueue",
