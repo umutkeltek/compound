@@ -84,7 +84,7 @@ func TestGenericFallback(t *testing.T) {
 
 func TestNamesSorted(t *testing.T) {
 	got := DefaultRegistry().Names()
-	want := []string{"claude_code", "claude_zai", "codex", "hermes", "opencode"}
+	want := []string{"claude_code", "claude_minimax", "claude_qwen", "claude_zai", "claude_zai_full", "codex", "hermes", "opencode"}
 	if len(got) != len(want) {
 		t.Fatalf("Names() = %v, want %v", got, want)
 	}
@@ -304,4 +304,77 @@ func hasString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestNewClaudeLaneHarnessesEnrolledWithExpectedLimitations verifies the three
+// working switchback Claude lanes (minimax, qwen, zai-full) are enrolled with
+// the claude_zai capability set and per-lane extra limitation strings. Falsifier
+// for the harness-enrollment contract (switchback Claude-profile lanes).
+func TestNewClaudeLaneHarnessesEnrolledWithExpectedLimitations(t *testing.T) {
+	r := DefaultRegistry()
+	cases := []struct {
+		name            string
+		extraLimitation string
+	}{
+		{"claude_minimax", "token-plan provider lane (prepaid); context price cliff near 512k tokens"},
+		{"claude_qwen", "fast scoped lane; prefer review/second-opinion scoped runs"},
+		{"claude_zai_full", "subscription window lane; busy-hour token weighting applies"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, ok := r.Get(tc.name)
+			if !ok {
+				t.Fatalf("harness %q not enrolled", tc.name)
+			}
+			if h.Name != tc.name {
+				t.Fatalf("harness Name = %q, want %q", h.Name, tc.name)
+			}
+			if h.Fallback {
+				t.Fatalf("harness %q should be explicit non-fallback", tc.name)
+			}
+			if h.InjectBudgetMS < 1500 {
+				t.Fatalf("harness %q InjectBudgetMS = %d, want >= 1500", tc.name, h.InjectBudgetMS)
+			}
+			if r.InjectionBudgetMS(tc.name) < 1500 {
+				t.Fatalf("Registry.InjectionBudgetMS(%q) = %d, want >= 1500", tc.name, r.InjectionBudgetMS(tc.name))
+			}
+			wantCaps := Capabilities{
+				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
+				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
+				NativeSkills: true, MCP: true,
+			}
+			if h.Capabilities != wantCaps {
+				t.Fatalf("harness %q Capabilities = %+v, want %+v", tc.name, h.Capabilities, wantCaps)
+			}
+			if !hasString(h.Limitations, tc.extraLimitation) {
+				t.Fatalf("harness %q Limitations = %v, missing %q", tc.name, h.Limitations, tc.extraLimitation)
+			}
+			// Carry the same Claude-profile base limitations as claude_zai.
+			zai, _ := r.Get("claude_zai")
+			for _, want := range zai.Limitations {
+				if !hasString(h.Limitations, want) {
+					t.Fatalf("harness %q missing base limitation %q (from claude_zai)", tc.name, want)
+				}
+			}
+		})
+	}
+}
+
+// TestNewClaudeLaneHarnessesListedInDefaultRegistrySorted verifies the three
+// enrolled harnesses appear in DefaultRegistry().Names() so the registry list
+// surface (compound harness list backing) reflects enrollment.
+func TestNewClaudeLaneHarnessesListedInDefaultRegistrySorted(t *testing.T) {
+	got := DefaultRegistry().Names()
+	for _, name := range []string{"claude_minimax", "claude_qwen", "claude_zai_full"} {
+		var found bool
+		for _, candidate := range got {
+			if candidate == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("DefaultRegistry().Names() = %v, missing %q", got, name)
+		}
+	}
 }

@@ -143,6 +143,57 @@ func DefaultRegistry() Registry {
 			},
 			InjectBudgetMS: 1500,
 		},
+		"claude_minimax": {
+			Name:                 "claude_minimax",
+			InstructionMechanism: "isolated Claude profile settings + hooks + repo CLAUDE.md + linked global CLAUDE.md",
+			Capabilities: Capabilities{
+				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
+				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"token-plan provider lane (prepaid); context price cliff near 512k tokens",
+			},
+			InjectBudgetMS: 1500,
+		},
+		"claude_qwen": {
+			Name:                 "claude_qwen",
+			InstructionMechanism: "isolated Claude profile settings + hooks + repo CLAUDE.md + linked global CLAUDE.md",
+			Capabilities: Capabilities{
+				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
+				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"fast scoped lane; prefer review/second-opinion scoped runs",
+			},
+			InjectBudgetMS: 1500,
+		},
+		"claude_zai_full": {
+			Name:                 "claude_zai_full",
+			InstructionMechanism: "isolated Claude profile settings + hooks + repo CLAUDE.md + linked global CLAUDE.md",
+			Capabilities: Capabilities{
+				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
+				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
+				NativeSkills: true, MCP: true,
+			},
+			Limitations: []string{
+				"profile-local settings and history require separate hook installation",
+				"global steering requires the managed profile link; repository CLAUDE.md discovery remains shared",
+				"long-session instruction drift",
+				"instruction/context budget cap",
+				"subscription window lane; busy-hour token weighting applies",
+			},
+			InjectBudgetMS: 1500,
+		},
 		"codex": {
 			Name:                 "codex",
 			InstructionMechanism: "AGENTS.md + hooks + skills (progressive disclosure)",
@@ -419,7 +470,7 @@ func Generic() Harness {
 
 func defaultInjectBudgetMS(name string) int {
 	switch canonicalHarnessName(name) {
-	case "claude_code", "claude_zai", "codex":
+	case "claude_code", "claude_zai", "claude_minimax", "claude_qwen", "claude_zai_full", "codex":
 		return 1500
 	default:
 		return 1000
