@@ -110,6 +110,20 @@ func runWithSubprocess(
 		}
 	}
 
+	// Stamp the resolved lane identity onto the attempt pre-terminalization.
+	// SetAttribution refuses a terminal attempt, so this MUST run before
+	// Complete (a post-Complete stamp is a guaranteed silent no-op -- the
+	// same reason AttachActionIntent binds above, not after Complete). A
+	// stamp failure is NON-FATAL: lane_id is audit metadata, not a run
+	// precondition, so an attribution error is annotated best-effort (same
+	// proof_ref idiom as a transcript-flush failure) and the run proceeds
+	// and terminalizes regardless. An empty LaneID stamps nothing.
+	if in.LaneID != "" {
+		if _, err := store.SetAttribution(ra.ID, in.LaneID, "", ""); err != nil {
+			_, _ = store.SetProofRefs(ra.ID, []string{"lane_id_stamp_error:" + err.Error()})
+		}
+	}
+
 	transcriptPath = filepath.Join(filepath.Dir(storePath(store, ra)), ra.ID+".transcript")
 	tf, err := os.Create(transcriptPath)
 	if err != nil {

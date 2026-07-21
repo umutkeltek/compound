@@ -96,6 +96,15 @@ type RunInput struct {
 	// ActionIntent (closes the attempt->intent->policy-decision audit
 	// chain). Optional today; future slice requires it.
 	ActionIntentID string
+	// LaneID is the resolved actor / adapter lane that dispatched this run
+	// (e.g. the --by actor on `work advance --execute`). Pinned onto
+	// RunAttempt.LaneID via SetAttribution, pre-terminalization, inside
+	// runWithSubprocess. Empty = unattributed run: an empty LaneID stamps
+	// NOTHING (the runner skips SetAttribution entirely, so the JSON omits
+	// lane_id via omitempty). Model and provider are not stampable from
+	// RunInput today -- no adapter config exposes them -- so they are
+	// passed empty and remain out of scope.
+	LaneID string
 }
 
 // RunOutput is the per-Run return contract. Always non-nil RunAttempt;

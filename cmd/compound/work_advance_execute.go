@@ -126,23 +126,17 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		Args:           commandArgs,
 		Prompt:         prompt,
 		PermissionMode: valueFlag(rest, "--permission-mode"),
+		LaneID:         actor,
 		Now:            time.Now().UTC(),
 	})
 
-	// S3 attribution gap (documented deviation): `actor` (the resolved lane
-	// from --by/--actor) is known HERE, but it cannot be stamped onto this
-	// run's RunAttempt. The adapter (internal/harness, owned by the concurrent
-	// S2 lane) mints AND terminalizes the RunAttempt atomically inside Run --
-	// out.RunAttempt is already succeeded/failed by this point, so
-	// runattempt.SetAttribution's terminal-refusal guard rejects a post-run
-	// stamp. harness.RunInput carries no lane/model/provider identity today,
-	// and NewAdapterRegistry takes a concrete *runattempt.Store (no wrapper
-	// seam). Additive fix (owned by the harness lane): accept a lane identity
-	// on RunInput and stamp it pre-terminalization in subprocess_runner.go, at
-	// which point the lane_id==actor assertion pinned in
-	// work_advance_execute_test.go (currently t.Skip) goes green. Model/provider
-	// are not exposed by any adapter config either, so they are not stampable
-	// on this path regardless.
+	// LaneID: the resolved --by/--actor lane, stamped onto the RunAttempt
+	// pre-terminalization inside runWithSubprocess (SetAttribution). This
+	// closes the S3 attribution gap: `actor` is known here and now reaches
+	// the adapter through RunInput.LaneID, so the exec-mint RunAttempt
+	// carries lane_id = the resolved actor (the assertion pinned in
+	// work_advance_execute_test.go). Model/provider are not exposed by any
+	// adapter config on this path, so they are not stamped here.
 
 	allRunAttempts := append([]string(nil), existingRunAttempts...)
 	if out.RunAttempt.ID != "" {
