@@ -179,3 +179,57 @@ func marshalScalar(v any) ([]byte, error) {
 	}
 	return []byte(strings.TrimRight(string(out), "\n")), nil
 }
+
+// FileArtifactAdapter reads and writes a whole file (Target.Path) as opaque
+// bytes. It is the staging seam for outbound content that is local-first and
+// reversible — e.g. a distribution post written to an outbox, or any artifact
+// a later step ships externally. It is NOT specific to any channel: a post
+// outbox file and an exported report differ only by Target.Path. Like
+// ConfigKeyAdapter it is reversible by nature — the pre-image is the file's
+// prior bytes (empty for a brand-new file), and a rollback is another write of
+// those captured bytes.
+//
+// The mutating method is UNEXPORTED on purpose: only package act can call it,
+// so Execute's PolicyDecision gate is the sole reachable path to a write — no
+// external package can stage an artifact without an allowing PolicyDecision.
+type FileArtifactAdapter struct{}
+
+var _ Adapter = FileArtifactAdapter{}
+
+// NewFileArtifactAdapter returns a FileArtifactAdapter as an Adapter. External
+// callers use this to OBTAIN an adapter to hand to Execute; they cannot invoke
+// its write directly, because write is unexported (package-scoped).
+func NewFileArtifactAdapter() Adapter { return FileArtifactAdapter{} }
+
+// ReadCurrent returns the file's current bytes as the pre-image. A missing file
+// is an EMPTY pre-image (not an error): staging a brand-new artifact is the
+// normal case, and Execute records the empty pre-image so a revert can restore
+// "no file" semantics by rewriting the captured bytes.
+func (FileArtifactAdapter) ReadCurrent(target envelope.ActionTarget) ([]byte, error) {
+	if strings.TrimSpace(target.Path) == "" {
+		return nil, fmt.Errorf("file-artifact adapter requires target.path")
+	}
+	data, err := os.ReadFile(target.Path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []byte{}, nil
+		}
+		return nil, err
+	}
+	return data, nil
+}
+
+// write replaces the file at Target.Path with newValue, creating parent
+// directories as needed. UNEXPORTED: Execute is the only caller, and only after
+// an allowing PolicyDecision.
+func (FileArtifactAdapter) write(target envelope.ActionTarget, newValue []byte) error {
+	if strings.TrimSpace(target.Path) == "" {
+		return fmt.Errorf("file-artifact adapter requires target.path")
+	}
+	if dir := filepath.Dir(target.Path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(target.Path, newValue, 0o644)
+}

@@ -92,6 +92,14 @@ var mintHomes = map[string]MintHome{
 	// Its teeth ARE the policy gate — it is the compilation of the "no mutation without a valid
 	// PolicyDecision" ruling — so it is enforcement, not evidence.
 	"organ:act": {Class: MintEnforcement},
+	// actuator is the execution router that turns KNOWN work into governed executions within
+	// declared limits. Its teeth ARE two gates: a BudgetEnvelope/ledger that REFUSES dispatch once a
+	// per-channel spend/rate cap is exhausted, and a Route() classifier that HOLDS every
+	// external/public/financial/irreversible or non-easy move for a human (only local_reversible+easy
+	// + policy-allowed + under-budget work auto-executes, through the existing harness.Adapter.Run /
+	// act.Execute seams). It blocks and passes, so it is enforcement, not evidence — the consumption
+	// ledger it records is the audit of that enforcement, the same posture as act's receipts.
+	"organ:actuator": {Class: MintEnforcement},
 	// verdictflow is the shared plan->record->render->load->annotate scaffolding the three
 	// panel-verdict review bridges had copy-pasted. It writes review artifacts through reviewartifact
 	// and reads them back, but touches no ledger/store/writeback surface and performs no terminal
