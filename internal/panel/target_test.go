@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/mem"
 )
 
 func TestLoadMemoryCandidateTargetsFiltersStateAndMapsVisibility(t *testing.T) {
@@ -164,6 +166,114 @@ func TestLoadMemoryCandidateTargetAddsKnowledgeExtractionProvenance(t *testing.T
 	if got := prov["candidate_count"]; got != float64(2) {
 		t.Fatalf("candidate_count = %v, want 2; full=%+v", got, prov)
 	}
+}
+
+// TestLoadTargetInputInlinesCaptureExhaustTranscript proves a `compound capture`-minted
+// memory_candidate is already targetable by panel plan (same kind/state as any other memory
+// candidate) AND that the actual transcript body — otherwise only a content-addressed cid
+// pointer on the candidate record — reaches the lens payload as readable, quotable text. Table-
+// driven: a real capture-minted candidate gets the transcript inlined; a non-capture candidate
+// is left untouched; a capture-shaped candidate whose blob is missing degrades to the
+// unmodified record instead of failing the load.
+func TestLoadTargetInputInlinesCaptureExhaustTranscript(t *testing.T) {
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+
+	t.Run("capture-minted candidate inlines transcript text", func(t *testing.T) {
+		homePath := t.TempDir()
+		store, err := mem.Open(homePath)
+		if err != nil {
+			t.Fatalf("open mem store: %v", err)
+		}
+		body := "Alex: hey, quick check-in\nSam: sure, go ahead"
+		cid, _, err := store.CaptureExhaust("relational-proof", "", body, now)
+		if err != nil {
+			t.Fatalf("capture exhaust: %v", err)
+		}
+		candID := mem.CaptureCandidateID(cid, now)
+
+		targets, err := LoadMemoryCandidateTargets(homePath, []string{"proposed"}, 0)
+		if err != nil {
+			t.Fatalf("load memory candidate targets: %v", err)
+		}
+		found := false
+		for _, target := range targets {
+			if target.Ref == candID {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("capture-minted candidate %s not present in proposed targets: %+v", candID, targets)
+		}
+
+		target, err := LoadTargetInput(homePath, "memory_candidate", candID)
+		if err != nil {
+			t.Fatalf("load target input: %v", err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(target.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if got := payload["transcript_text"]; got != body {
+			t.Fatalf("transcript_text = %v, want %q; payload=%+v", got, body, payload)
+		}
+	})
+
+	t.Run("non-capture candidate is left untouched", func(t *testing.T) {
+		homePath := t.TempDir()
+		writeMemoryCandidateRecord(t, homePath, "mcand_plain", map[string]any{
+			"id":               "mcand_plain",
+			"entity":           "service:example-api",
+			"predicate":        "uses_runtime",
+			"object":           "go-http",
+			"confidence":       0.7,
+			"state":            "proposed",
+			"visibility":       "candidate",
+			"derivation":       "deterministic",
+			"source_trace_ref": "trace://plain",
+			"snippet_hash":     "sha256:plain",
+		})
+		target, err := LoadTargetInput(homePath, "memory_candidate", "mcand_plain")
+		if err != nil {
+			t.Fatalf("load target input: %v", err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(target.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if _, exists := payload["transcript_text"]; exists {
+			t.Fatalf("transcript_text should not be added to a non-capture candidate: %+v", payload)
+		}
+	})
+
+	t.Run("capture-shaped candidate with missing blob degrades to unmodified payload", func(t *testing.T) {
+		homePath := t.TempDir()
+		writeMemoryCandidateRecord(t, homePath, "mcand_orphan_capture", map[string]any{
+			"id":               "mcand_orphan_capture",
+			"entity":           "relational-proof",
+			"predicate":        "captured_exhaust",
+			"object":           "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+			"confidence":       0,
+			"state":            "proposed",
+			"visibility":       "candidate",
+			"derivation":       "observed",
+			"source_trace_ref": "capture:sha256:0000000000000000000000000000000000000000000000000000000000000000",
+			"snippet_hash":     "sha256:orphan",
+		})
+		target, err := LoadTargetInput(homePath, "memory_candidate", "mcand_orphan_capture")
+		if err != nil {
+			t.Fatalf("load target input: %v", err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(target.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if _, exists := payload["transcript_text"]; exists {
+			t.Fatalf("transcript_text should not appear when the capture blob is missing: %+v", payload)
+		}
+		if payload["object"] != "sha256:0000000000000000000000000000000000000000000000000000000000000000" {
+			t.Fatalf("payload should degrade to the unmodified candidate record: %+v", payload)
+		}
+	})
 }
 
 func writeMemoryCandidateRecord(t *testing.T, homePath, id string, payload map[string]any) {

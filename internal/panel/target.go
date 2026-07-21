@@ -334,6 +334,9 @@ func decisionCandidateAwaitingPlan(target decisionCandidateTarget) bool {
 
 func memoryCandidatePanelPayload(homePath string, cand mem.Candidate, raw []byte) json.RawMessage {
 	payload := append([]byte(nil), raw...)
+	if enriched, ok := captureExhaustTranscriptPayload(homePath, cand, payload); ok {
+		return enriched
+	}
 	provenance, ok := knowledgeExtractionSourceProvenance(homePath, cand)
 	if !ok {
 		return json.RawMessage(payload)
@@ -351,6 +354,46 @@ func memoryCandidatePanelPayload(homePath string, cand mem.Candidate, raw []byte
 		return json.RawMessage(payload)
 	}
 	return json.RawMessage(data)
+}
+
+// captureExhaustTranscriptPayload inlines the actual captured body into the memory-candidate
+// payload sent to panel lenses for a `compound capture`-minted candidate. CaptureExhaust
+// (internal/mem/capture.go) mints a candidate whose Object is only a content-addressed cid
+// pointer ("sha256:<hex>"); the transcript text itself lives in the rebuildable
+// observed/capture blob dir, never in the candidate record. Without this, a lens targeting a
+// capture-minted candidate (e.g. the relational-dynamics lens set) would see the bare cid and
+// have no transcript text to quote in evidence_refs. Mirrors the knowledge-extraction
+// provenance enrichment above: additive, best-effort, never fails the target load — a missing
+// or unreadable capture blob just leaves the payload as the candidate record alone.
+func captureExhaustTranscriptPayload(homePath string, cand mem.Candidate, payload []byte) (json.RawMessage, bool) {
+	if strings.TrimSpace(cand.Predicate) != "captured_exhaust" {
+		return nil, false
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil, false
+	}
+	if _, exists := body["transcript_text"]; exists {
+		return json.RawMessage(payload), true
+	}
+	cid := strings.TrimSpace(cand.Object)
+	if cid == "" {
+		return nil, false
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return nil, false
+	}
+	text, err := store.ReadCapture(cid)
+	if err != nil {
+		return nil, false
+	}
+	body["transcript_text"] = string(text)
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(data), true
 }
 
 func knowledgeExtractionSourceProvenance(homePath string, cand mem.Candidate) (map[string]any, bool) {
