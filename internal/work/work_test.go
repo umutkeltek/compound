@@ -255,6 +255,120 @@ func TestClaimConflict(t *testing.T) {
 	}
 }
 
+// F2 (T1): claim mints a claim_reservation RunAttempt. When a
+// harness_execution attempt attaches via a later Advance, the still-pending
+// claim-mint attempt must be superseded (terminalized abandoned, reason
+// naming the exec attempt); the exec attempt itself is untouched. Red at
+// base (claim-mint attempt stays pending forever), green after
+// supersede-at-attach lands.
+func TestAdvanceSupersedesClaimReservationOnHarnessExecutionAttach(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(w.ID, "agent_a", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.RunAttemptIDs) != 1 {
+		t.Fatalf("claim must mint exactly one RunAttempt, got %v", claimed.RunAttemptIDs)
+	}
+	claimAttemptID := claimed.RunAttemptIDs[0]
+
+	// Simulate a real harness-execution mint (subprocess_runner's shape):
+	// mint + stamp origin=harness_execution.
+	store := runattempt.Open(s.home)
+	execAttempt, err := store.Mint(w.ID, "agent_a", "claude-code", fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetOrigin(execAttempt.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "agent_a", RunAttemptIDs: []string{execAttempt.ID}, Note: "executing"}, fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	claimRA, err := store.Get(claimAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimRA.Status != runattempt.StatusAbandoned {
+		t.Fatalf("claim-mint attempt status = %q, want abandoned", claimRA.Status)
+	}
+	if !strings.Contains(claimRA.SweepReason, execAttempt.ID) {
+		t.Fatalf("supersede reason must name the exec attempt %q, got %q", execAttempt.ID, claimRA.SweepReason)
+	}
+	execRA, err := store.Get(execAttempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execRA.Status != runattempt.StatusPending {
+		t.Fatalf("exec attempt must be untouched by supersede, status = %q, want pending", execRA.Status)
+	}
+}
+
+// F2 (T2): a legacy RunAttempt with empty Origin already on the envelope
+// must NOT be touched by supersede-at-attach -- only claim_reservation
+// origin attempts are superseded. Preservation falsifier (green throughout;
+// proves the "legacy attempts are never touched" half of decision 2).
+func TestAdvanceDoesNotSupersedeLegacyOriginlessAttempt(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(w.ID, "agent_a", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimAttemptID := claimed.RunAttemptIDs[0]
+
+	// Simulate a pre-F2 legacy record by stripping "origin" from the raw
+	// on-disk JSON (there is deliberately no setter to clear Origin back to
+	// empty -- provenance is stamped once, not rewritten).
+	legacyPath := filepath.Join(s.home, "run_attempts", claimAttemptID+".json")
+	data, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	delete(raw, "origin")
+	rewritten, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, rewritten, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := runattempt.Open(s.home)
+	execAttempt, err := store.Mint(w.ID, "agent_a", "claude-code", fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetOrigin(execAttempt.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "agent_a", RunAttemptIDs: []string{execAttempt.ID}, Note: "executing"}, fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyRA, err := runattempt.Open(s.home).Get(claimAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyRA.Status != runattempt.StatusPending {
+		t.Fatalf("legacy origin-less attempt must NOT be superseded, status = %q, want pending", legacyRA.Status)
+	}
+}
+
 func TestListLeasesProjectsClaimedWork(t *testing.T) {
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "project lease"}, fixedNow)

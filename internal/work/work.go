@@ -571,6 +571,14 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	if raErr != nil {
 		return w, fmt.Errorf("claim %s: mint run attempt: %w", workID, raErr)
 	}
+	// F2: stamp provenance -- this is a claim-time placeholder reservation,
+	// not a real execution. supersede-at-attach (in Advance) reads this to
+	// terminalize the reservation once a harness_execution attempt attaches.
+	if stamped, oErr := s.runAttempts().SetOrigin(ra.ID, runattempt.OriginClaimReservation); oErr != nil {
+		return w, fmt.Errorf("claim %s: stamp run attempt origin: %w", workID, oErr)
+	} else {
+		ra = stamped
+	}
 	// C4: retry lineage — if this work already has attempts, the new one
 	// chains to the most recent. Best-effort: a link failure does not abort
 	// the claim (the attempt exists, lineage is evidence, not enforcement).
@@ -1114,6 +1122,15 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	if w.State == "claimed" && in.To == "ready" {
 		s.abandonRunAttempts(advanced.RunAttemptIDs, now)
 	}
+	// F2: supersede-at-attach. When an incoming harness_execution attempt
+	// attaches to the envelope, any still-pending claim_reservation attempt
+	// already on the envelope (w.RunAttemptIDs, captured before this
+	// advance) is now stale -- a real execution superseded the claim-time
+	// placeholder -- and is terminalized abandoned. Same best-effort
+	// durability posture as abandonRunAttempts above.
+	if len(in.RunAttemptIDs) > 0 {
+		s.supersedeClaimReservations(w.RunAttemptIDs, in.RunAttemptIDs, now)
+	}
 	// The advance passed the holder-scoped gate; record the declared lane on the holder's lease.
 	if strings.TrimSpace(in.LaneRef) != "" {
 		if err := s.recordDeclaredLaneOnLease(w.ID, declaredLane); err != nil {
@@ -1138,6 +1155,50 @@ func (s *Store) abandonRunAttempts(ids []string, now time.Time) {
 			continue // already terminal (succeeded/failed/abandoned)
 		}
 		_, _ = store.Complete(id, runattempt.StatusAbandoned, now)
+	}
+}
+
+// supersedeClaimReservations terminalizes every still-pending
+// claim_reservation-origin attempt in existingIDs as "abandoned" once
+// incomingIDs attaches at least one harness_execution-origin attempt (F2,
+// settled design decision 2). Attempts with empty Origin (legacy, pre-F2)
+// or any origin other than claim_reservation are never touched -- only a
+// claim-time placeholder can be superseded, and only a real execution can
+// supersede it. Best-effort: errors are silently dropped, same posture as
+// abandonRunAttempts (the advance is already durable; terminalization here
+// is evidence, not enforcement).
+func (s *Store) supersedeClaimReservations(existingIDs, incomingIDs []string, now time.Time) {
+	store := s.runAttempts()
+	var execIDs []string
+	for _, id := range incomingIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		ra, err := store.Get(id)
+		if err != nil {
+			continue
+		}
+		if ra.Origin == runattempt.OriginHarnessExecution {
+			execIDs = append(execIDs, id)
+		}
+	}
+	if len(execIDs) == 0 {
+		return
+	}
+	reason := "superseded by " + strings.Join(execIDs, ",")
+	for _, id := range existingIDs {
+		ra, err := store.Get(id)
+		if err != nil {
+			continue
+		}
+		if ra.Origin != runattempt.OriginClaimReservation {
+			continue // legacy (empty origin) or non-claim origin — not touched
+		}
+		if runattempt.IsTerminal(ra.Status) {
+			continue // already terminal
+		}
+		_, _ = store.CompleteWithReason(id, runattempt.StatusAbandoned, reason, now)
 	}
 }
 
