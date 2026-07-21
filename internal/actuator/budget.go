@@ -282,17 +282,17 @@ func (l *Ledger) Used(productID, channel string, since time.Time) (Usage, error)
 		}
 		return usage, err
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for i, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		var c Consumption
 		if err := json.Unmarshal([]byte(line), &c); err != nil {
-			// A malformed row is skipped rather than fatal: one corrupt line
-			// must not blind the whole budget. It is conservative to under-count
-			// here because Route's class gate independently holds unsafe work.
-			continue
+			// A malformed row fails CLOSED: skipping it would under-count usage and
+			// silently loosen the budget. Naming the line lets the operator repair
+			// the ledger; the caller (Check) turns this into a hold, not zero usage.
+			return Usage{}, fmt.Errorf("actuator consumption ledger %s: corrupt row at line %d: %w", l.consumptionPath(), i+1, err)
 		}
 		at, err := time.Parse(time.RFC3339, c.At)
 		if err != nil || at.Before(since) {
@@ -328,7 +328,15 @@ func (l *Ledger) Check(budget BudgetEnvelope, productID, channel string, now tim
 	window := time.Duration(limits.WindowHours) * time.Hour
 	usage, err := l.Used(productID, channel, now.Add(-window))
 	if err != nil {
-		return Headroom{}, err
+		// Fail closed: an unreadable/corrupt ledger means we cannot prove the run is
+		// under budget, so we HOLD (blocking) rather than treat missing data as zero
+		// usage. The error is surfaced as the hold reason, not swallowed.
+		return Headroom{
+			Allowed:     false,
+			Channel:     channel,
+			WindowHours: limits.WindowHours,
+			Reasons:     []string{fmt.Sprintf("budget ledger unreadable — holding fail-closed: %v", err)},
+		}, nil
 	}
 	h := Headroom{
 		Allowed:          true,

@@ -3,6 +3,7 @@ package actuator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,5 +151,53 @@ func TestRunIntentClaudeNonPlanHolds(t *testing.T) {
 		if d.Mode != ModeHold {
 			t.Fatalf("claude+%q must HOLD, got %s", mode, d.Mode)
 		}
+	}
+}
+
+// T4 (F9.2): a corrupt row in the consumption ledger must make Used ERROR naming the
+// line, and the budget gate must treat that as BLOCKING (hold) — never silently skip
+// the row and under-count, and never hard-error out of the plan.
+func TestCorruptLedgerErrorsAndHoldsBudget(t *testing.T) {
+	home := t.TempDir()
+	l := OpenLedger(home)
+	// Row 1: a valid consumption row (so the file + dir exist).
+	if err := l.Record(Consumption{Channel: "*", At: testNow.Format(time.RFC3339), Actions: 1}); err != nil {
+		t.Fatalf("record valid row: %v", err)
+	}
+	// Row 2: a corrupt, non-JSON row appended directly.
+	f, err := os.OpenFile(filepath.Join(home, "actuator", "budget", "consumption.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{ this is not valid json\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// Used errors, naming the corrupt line.
+	if _, uerr := l.Used("", "*", testNow.Add(-time.Hour)); uerr == nil {
+		t.Fatal("Used must error on a corrupt ledger row, not silently skip it")
+	} else if !strings.Contains(uerr.Error(), "line 2") {
+		t.Fatalf("Used error must name the corrupt line number, got: %v", uerr)
+	}
+
+	// The budget gate converts the unreadable ledger into a HOLD, not zero usage,
+	// and not a hard error that aborts the plan.
+	h, cerr := l.Check(DefaultBudget(testNow), "", "*", testNow)
+	if cerr != nil {
+		t.Fatalf("Check must convert the ledger error into a hold, not propagate a hard error: %v", cerr)
+	}
+	if h.Allowed {
+		t.Fatal("a corrupt budget ledger must HOLD (not allowed), never be treated as zero usage")
+	}
+
+	// End-to-end: an otherwise-auto move is HELD on the corrupt ledger.
+	intent := runIntent(RunInput{WorkID: "w", Harness: "claude", PermissionMode: "plan"}, testNow)
+	plan, perr := EvaluatePlan(home, intent, "", "", policy.DefaultConfig(), testNow)
+	if perr != nil {
+		t.Fatalf("EvaluatePlan must not hard-error on a corrupt ledger: %v", perr)
+	}
+	if plan.Decision.Mode != ModeHold {
+		t.Fatalf("an otherwise-auto move on a corrupt ledger must be HELD, got %s (reasons=%v)", plan.Decision.Mode, plan.Decision.Reasons)
 	}
 }
