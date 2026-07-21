@@ -59,6 +59,20 @@ var (
 	// cancelled->no_op) and from DesiredOutcome (free text staked at `create --outcome`). A staked
 	// WorkPrediction.Outcome predicts THIS enum, never the other two.
 	CloseOutcomes = []string{"completed", "failed", "cancelled"}
+	// RouteDeviationRiskGrades enumerates the three admission tiers a RouteDeviation may declare
+	// (see the RouteDeviation type). The values mirror attention.RiskGrade{Gate,Judge,Tidy};
+	// envelope keeps its OWN copy because internal/attention imports internal/envelope, so
+	// envelope importing attention back would cycle.
+	RouteDeviationRiskGrades = []string{RouteDeviationGate, RouteDeviationJudge, RouteDeviationTidy}
+)
+
+// Route-deviation admission grades mirror attention.RiskGrade{Gate,Judge,Tidy}. envelope carries a
+// local copy of the string values instead of importing internal/attention because attention already
+// imports envelope; importing back would create an import cycle.
+const (
+	RouteDeviationGate  = "gate"
+	RouteDeviationJudge = "judge"
+	RouteDeviationTidy  = "tidy"
 )
 
 // nextConsumerRe: a Transition cause's next_consumer is a consumer slug/ref
@@ -617,6 +631,14 @@ type WorkEnvelope struct {
 	// transition model (the ledger) -- staking + diffing a prediction is what lets prediction
 	// error accumulate as adjudicable evidence.
 	Prediction *WorkPrediction `json:"prediction,omitempty"`
+	// RouteDeviation, when set, marks this work as an explicit deviation from the served policy
+	// line (compound route plan) for a capability class. It is OPTIONAL and additive: work WITHOUT
+	// it is ordinary work whose admission is unchanged, and every existing envelope/fixture
+	// re-marshals byte-identically because the field is nil + `omitempty`. When present it is the
+	// MECHANICAL deviation signal admission binds on -- see the RouteDeviation type and
+	// validateRouteDeviation for the fail-closed rule (a judge-grade deviation stakes a Prediction
+	// or is refused). Declared LAST so the additive field never reorders existing marshaled bytes.
+	RouteDeviation *RouteDeviation `json:"route_deviation,omitempty"`
 }
 
 // WorkPrediction is staked at create time and predicts the CLOSE outcome enum
@@ -636,6 +658,36 @@ type WorkPrediction struct {
 	Note string `json:"note,omitempty"`
 }
 
+// RouteDeviation marks a WorkEnvelope as an explicit deviation from the served policy line
+// (compound route plan) for a capability class -- the executor is choosing a lane the served
+// routing did NOT pick, on receipt-fed belief that the deviation lane is better here.
+//
+// It is deliberately INDEPENDENT of the EV card (compound.route.evcard.v0.1). The card is advisory
+// evidence a renderer may show a human; admission MUST NOT depend on it. If the refusal keyed on
+// the card's presence, then simply omitting the card would become the bypass -- so CardRef is a
+// free-standing pointer here that validateRouteDeviation never reads. The fail-closed admission
+// rule binds on deviation-ness (this marker present) + RiskGrade ALONE.
+type RouteDeviation struct {
+	// Lane is REQUIRED: the deviation lane id chosen instead of the served policy line.
+	Lane string `json:"lane"`
+	// CapabilityClass is OPTIONAL: the class the deviation is priced under (echoes the EV card's
+	// capability_class). Carried for legibility; it never gates admission.
+	CapabilityClass string `json:"capability_class,omitempty"`
+	// CardRef is OPTIONAL: a pointer to the advisory EV card that priced this deviation. Evidence
+	// ONLY -- admission never consults it, so a missing card is never a bypass.
+	CardRef string `json:"card_ref,omitempty"`
+	// RiskGrade is OPTIONAL on the wire but load-bearing for admission: gate|judge|tidy, mirroring
+	// attention.RiskGrade* (internal/attention owns the canonical three-tier). An envelope-level
+	// grade is NOT derivable from the envelope alone at create time -- attention.Class derives from
+	// a Group's BlastRadius/Reversibility/Kind, which a bare WorkEnvelope does not carry -- so the
+	// grade is stated explicitly here. An EMPTY grade resolves to `judge`, never `tidy`
+	// (effectiveRouteDeviationGrade): an ungraded deviation is the fail-closed case, and defaulting
+	// it to the strong rule (stake a prediction or be refused) is the safe choice when the caller
+	// did not declare how much downside the deviation carries. Defaulting an unstated grade to the
+	// ungated `tidy` tier would let an omitted flag silently bypass the stake.
+	RiskGrade string `json:"risk_grade,omitempty"`
+}
+
 func (e *WorkEnvelope) Kind() string { return "work" }
 func (e *WorkEnvelope) Validate() error {
 	v := &verr{}
@@ -652,6 +704,9 @@ func (e *WorkEnvelope) Validate() error {
 	}
 	if e.Prediction != nil {
 		validateWorkPrediction(v, *e.Prediction)
+	}
+	if e.RouteDeviation != nil {
+		validateRouteDeviation(v, *e.RouteDeviation, e.Prediction)
 	}
 	validateRunAttemptIDs(v, e.RunAttemptIDs)
 	return v.result(e.Kind())
@@ -689,6 +744,38 @@ func validateRunAttemptIDs(v *verr, ids []string) {
 func validateWorkPrediction(v *verr, p WorkPrediction) {
 	v.enum("prediction.outcome", p.Outcome, CloseOutcomes, true)
 	v.enum("prediction.move_type", p.MoveType, MoveTypes, false)
+}
+
+// effectiveRouteDeviationGrade resolves the admission grade a RouteDeviation binds on. An empty or
+// unrecognized grade resolves to `judge` -- fail-closed: an ungraded deviation gets the strong rule
+// (stake a prediction or be refused), never the ungated `tidy` path. An out-of-enum value is
+// separately reported by validateRouteDeviation so the caller sees the typo, but for the admission
+// decision it still binds at judge rather than silently going ungated.
+func effectiveRouteDeviationGrade(grade string) string {
+	switch strings.TrimSpace(grade) {
+	case RouteDeviationTidy:
+		return RouteDeviationTidy
+	case RouteDeviationGate:
+		return RouteDeviationGate
+	default:
+		return RouteDeviationJudge
+	}
+}
+
+// validateRouteDeviation enforces the S3 admission binding for an explicit route deviation: a
+// deviation graded `judge` (or ungraded -- see effectiveRouteDeviationGrade) MUST carry a staked
+// WorkPrediction or admission REFUSES the envelope. The refusal binds on deviation-ness (this marker
+// present) + risk grade ALONE; the advisory CardRef is never read, so omitting the EV card can never
+// become the bypass. `gate` rides along to a human via the existing attention.Class -> ActionIntent
+// -> PolicyDecision machinery (this validator adds no gate for it); `tidy` flows ungated
+// (decisions-down: a reversible in-envelope act needs no per-item stake). Holds a hand-written
+// envelope to the same rule as the CLI create path, since both funnel through WorkEnvelope.Validate.
+func validateRouteDeviation(v *verr, dev RouteDeviation, prediction *WorkPrediction) {
+	v.req("route_deviation.lane", dev.Lane)
+	v.enum("route_deviation.risk_grade", dev.RiskGrade, RouteDeviationRiskGrades, false)
+	if effectiveRouteDeviationGrade(dev.RiskGrade) == RouteDeviationJudge && prediction == nil {
+		v.addf("route_deviation graded %q requires a staked prediction (stake with work create --predicted-outcome …): a judge-grade deviation stakes or is refused, and the advisory EV card's absence is never a bypass", effectiveRouteDeviationGrade(dev.RiskGrade))
+	}
 }
 
 func validateGitDeliveryContract(v *verr, contract GitDeliveryContract) {

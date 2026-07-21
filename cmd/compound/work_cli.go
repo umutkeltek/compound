@@ -83,7 +83,7 @@ const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-ca
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
-		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--json] [--dry-run]",
+		Usage:   "usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--json] [--dry-run]",
 		Example: "compound work create-plan --owner codex --predicate \"tests pass\" --dry-run",
 	},
 	"admit-plan": {
@@ -95,7 +95,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work review-card-plan --card wrc_abc123 --json",
 	},
 	"create": {
-		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N]",
+		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]]",
 		Example: "compound work create --owner codex --predicate \"tests pass\"",
 	},
 	"import-packet": {
@@ -434,6 +434,29 @@ func cmdWork(args []string) {
 		return &envelope.WorkPrediction{Outcome: outcome, MoveType: moveType, Note: note}
 	}
 
+	// parseRouteDeviation mirrors parsePrediction: any of the deviation flags declares intent to
+	// mark this work as an explicit route deviation, and --deviation-lane is then required (it is
+	// the priced object). --deviation-card is advisory and never gates admission (a missing card is
+	// not a bypass). --deviation-risk is left as stated (empty allowed): the fail-closed default of
+	// judge for an unstated grade lives in ONE place, envelope.effectiveRouteDeviationGrade, so a
+	// hand-written envelope and this CLI path get the identical rule. The judge-grade + no-prediction
+	// refusal is enforced downstream by envelope.WorkEnvelope.Validate.
+	parseRouteDeviation := func(usage string) *envelope.RouteDeviation {
+		lane := strings.TrimSpace(flag("--deviation-lane"))
+		card := strings.TrimSpace(flag("--deviation-card"))
+		class := strings.TrimSpace(flag("--deviation-class"))
+		risk := strings.TrimSpace(flag("--deviation-risk"))
+		if lane == "" && card == "" && class == "" && risk == "" {
+			return nil
+		}
+		if lane == "" {
+			fmt.Fprintln(os.Stderr, "error: declaring a route deviation requires --deviation-lane")
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		return &envelope.RouteDeviation{Lane: lane, CapabilityClass: class, CardRef: card, RiskGrade: risk}
+	}
+
 	switch sub {
 	case "delegate", "steer", "attach":
 		code := runWorkDelegateCLI(sub, rest, store, work.NewTmuxRunner(), productionDelegateAttach, time.Now(), os.Stdout, os.Stderr)
@@ -450,6 +473,7 @@ func cmdWork(args []string) {
 			"--target-kind": true, "--target-id": true, "--target-path": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 			"--predicted-outcome": true, "--predicted-move-type": true, "--prediction-note": true,
+			"--deviation-lane": true, "--deviation-card": true, "--deviation-class": true, "--deviation-risk": true,
 		}, map[string]bool{"--json": true, "--dry-run": true, "--local-only": true}, 0); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
@@ -458,6 +482,7 @@ func cmdWork(args []string) {
 		validateCreateState(usage, false)
 		gitDelivery := parseGitDelivery(usage)
 		prediction := parsePrediction(usage)
+		routeDeviation := parseRouteDeviation(usage)
 		plan, err := store.CreatePlan(work.CreateInput{
 			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
@@ -474,6 +499,7 @@ func cmdWork(args []string) {
 			Risk:             flag("--risk"),
 			Privacy:          flag("--privacy"),
 			Prediction:       prediction,
+			RouteDeviation:   routeDeviation,
 		}, time.Now(), work.CreatePlanOptions{
 			Actor:         firstNonEmpty(flag("--by"), flag("--actor")),
 			Capability:    flag("--capability"),
@@ -573,6 +599,7 @@ func cmdWork(args []string) {
 			"--non-goal": true, "--non-goals": true, "--evidence-ref": true, "--evidence": true,
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 			"--predicted-outcome": true, "--predicted-move-type": true, "--prediction-note": true,
+			"--deviation-lane": true, "--deviation-card": true, "--deviation-class": true, "--deviation-risk": true,
 		}, map[string]bool{"--local-only": true}, 0); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
@@ -581,6 +608,7 @@ func cmdWork(args []string) {
 		validateCreateState(usage, true)
 		gitDelivery := parseGitDelivery(usage)
 		prediction := parsePrediction(usage)
+		routeDeviation := parseRouteDeviation(usage)
 		requestedState := flag("--state")
 		createState := requestedState
 		actor := firstNonEmpty(flag("--by"), flag("--actor"))
@@ -605,6 +633,7 @@ func cmdWork(args []string) {
 			Risk:             flag("--risk"),
 			Privacy:          flag("--privacy"),
 			Prediction:       prediction,
+			RouteDeviation:   routeDeviation,
 		}, now)
 		die(err)
 		if requestedState == "running" {

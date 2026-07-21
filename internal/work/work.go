@@ -203,6 +203,12 @@ type CreateInput struct {
 	// envelope.WorkPrediction). Staked at create time only -- there is no restaking at
 	// Claim/Advance in v1.
 	Prediction *envelope.WorkPrediction
+	// RouteDeviation, when set, marks this work as an explicit deviation from the served policy
+	// line and carries the risk grade admission binds on (see envelope.RouteDeviation). A
+	// judge-grade (or ungraded) deviation is REFUSED at admission unless Prediction is also staked;
+	// the refusal is fail-closed in envelope.WorkEnvelope.Validate, which every create/admission
+	// path funnels through.
+	RouteDeviation *envelope.RouteDeviation
 }
 
 // BuildWork constructs a WorkEnvelope WITHOUT persisting it — used both by Create (which
@@ -222,6 +228,11 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		copy := *in.Prediction
 		prediction = &copy
 	}
+	var routeDeviation *envelope.RouteDeviation
+	if in.RouteDeviation != nil {
+		copy := *in.RouteDeviation
+		routeDeviation = &copy
+	}
 	w := envelope.WorkEnvelope{
 		Header:             newHeader(envelope.SVWork, workID, now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
 		Owner:              in.Owner,
@@ -239,6 +250,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		VerificationIDs:    []string{},
 		MemoryCandidateIDs: []string{},
 		Prediction:         prediction,
+		RouteDeviation:     routeDeviation,
 	}
 	w.EvidenceRefs = orEmpty(in.EvidenceRefs)
 	return w
