@@ -92,6 +92,7 @@ func Build(homePath string, opts Options) (reviewartifact.QueueReport, error) {
 	decisions.AnnotateAutonomyGrantMintQueue(&report, homePath)
 	product.AnnotateReviewQueue(&report)
 	product.AnnotateOutboundDryRunEvidenceQueue(&report)
+	product.AnnotateContentQueue(&report)
 	authority.AnnotateJobHealthQueue(&report)
 	authority.AnnotateSourceControlCleanupQueue(&report)
 	director.AnnotateHarnessEditProposalQueue(&report)

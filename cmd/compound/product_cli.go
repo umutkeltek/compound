@@ -55,7 +55,7 @@ import (
 )
 
 func productUsage() string {
-	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -335,6 +335,8 @@ func cmdProduct(args []string) {
 		}
 	case "content-draft":
 		cmdProductContentDraft(homePath, args[1:])
+	case "content-queue":
+		cmdProductContentQueue(homePath, args[1:])
 	case "hypothesis-plan":
 		candidateID := valueFlag(args[1:], "--candidate")
 		targetPath := valueFlag(args[1:], "--target")
@@ -1029,5 +1031,89 @@ func printContentDraft(action string, d product.ContentDraft) {
 	}
 	if len(d.EvidenceRefs) > 0 {
 		fmt.Printf("- evidence_refs: %s\n", strings.Join(d.EvidenceRefs, ", "))
+	}
+}
+
+const contentQueueUsage = "usage: compound product content-queue plan [--json] | content-queue apply --review <review.yaml> [--json]"
+
+// cmdProductContentQueue is the distribution-loop batch adjudication door: plan
+// renders every reviewable draft into one review YAML skeleton; apply executes
+// the per-draft verdicts (approve mints a governed post ActionIntent+PolicyDecision
+// and operationalizes; reject retains; hold leaves unchanged). The owner logic
+// (internal/product) enforces and tests the invariants.
+func cmdProductContentQueue(homePath string, args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, contentQueueUsage)
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "plan":
+		rest := args[1:]
+		plan, err := product.BuildContentQueuePlan(homePath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product content-queue plan:", err)
+			os.Exit(1)
+		}
+		paths, err := product.RecordContentQueuePlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product content-queue plan:", err)
+			os.Exit(1)
+		}
+		if hasFlag(rest, "--json") {
+			printJSON(struct {
+				Plan  product.ContentQueuePlan      `json:"plan"`
+				Paths product.ContentQueuePlanPaths `json:"paths"`
+			}{plan, paths})
+			return
+		}
+		fmt.Printf("# product content-queue plan %s\n\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- reviewable: %d\n", plan.ReviewableCount)
+		fmt.Printf("- expired: %d\n", plan.ExpiredCount)
+		fmt.Printf("- review_id: %s\n", plan.ReviewDraft.ReviewID)
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+	case "apply":
+		rest := args[1:]
+		reviewPath := strings.TrimSpace(valueFlag(rest, "--review"))
+		if reviewPath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound product content-queue apply --review <review.yaml> [--json]")
+			os.Exit(2)
+		}
+		review, err := product.LoadContentQueueReview(reviewPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product content-queue apply:", err)
+			os.Exit(1)
+		}
+		report, err := product.ApplyContentQueueReview(homePath, review, reviewPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product content-queue apply:", err)
+			os.Exit(1)
+		}
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# product content-queue apply %s\n\n", report.ID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- approved: %d\n", report.Counts.Approved)
+		fmt.Printf("- rejected: %d\n", report.Counts.Rejected)
+		fmt.Printf("- held: %d\n", report.Counts.Held)
+		fmt.Printf("- refused: %d\n", report.Counts.Refused)
+		fmt.Printf("- errors: %d\n", report.Counts.Errors)
+		for _, row := range report.Rows {
+			line := fmt.Sprintf("- %s verdict=%s outcome=%s", row.DraftID, row.Verdict, row.Outcome)
+			if row.ActionIntentID != "" {
+				line += fmt.Sprintf(" action_intent=%s policy_decision=%s policy=%s", row.ActionIntentID, row.PolicyDecisionID, row.PolicyOutcome)
+			}
+			if row.Error != "" {
+				line += " error=" + row.Error
+			}
+			fmt.Println(line)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, contentQueueUsage)
+		os.Exit(2)
 	}
 }
