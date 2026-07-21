@@ -13,6 +13,7 @@ import (
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/policy"
+	"compound/internal/routeev"
 	"compound/internal/work"
 )
 
@@ -1738,6 +1739,7 @@ func cmdWork(args []string) {
 			res.Work.ID, res.Work.State, res.Receipt.MoveType, res.Work.PolicyDecisionID, res.Receipt.ID, res.Transition.ID)
 		printJSON(res)
 		observeWorkSurpriseOnDivergedClose(homePath, res)
+		observeEVCardCalibrationOnClose(homePath, res)
 		offerStandingProofGraduationOnClose(homePath, res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
@@ -1773,6 +1775,48 @@ func observeWorkSurpriseOnDivergedClose(homePath string, res work.CloseResult) {
 	}
 	if _, _, err := memStore.ObserveWorkSurprise(res.Work.ID, res.Receipt.ID, payload, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: work-surprise exhaust failed:", err)
+	}
+}
+
+// observeEVCardCalibrationOnClose is the cmd-layer wiring for the EV-card calibration exhaust
+// door (see internal/routeev/calibrate.go, Calibrate; internal/mem/evcard_calibration.go,
+// ObserveEVCardCalibration -- spec docs_private/plan/ev-card-spec.md §5, §7 S4). It mirrors
+// observeWorkSurpriseOnDivergedClose immediately above: lives here, at cmd layer, rather than
+// inside internal/work's closeLocked, on purpose -- same reason CaptureExhaust is invoked from
+// main.go rather than the spine -- so internal/work never imports internal/mem or
+// internal/routeev (Spine must not import MemTarget).
+//
+// A close whose WorkEnvelope carries no RouteDeviation, or a RouteDeviation with an empty
+// CardRef, has nothing to calibrate -- no-op. A missing or corrupt card blob must NEVER fail an
+// already-successful close (calibration is exhaust, never a gate): it prints a warning line to
+// stderr instead. Deliberate difference from observeWorkSurpriseOnDivergedClose: that helper
+// pre-filters on SurpriseSignal.Diverged before calling its door, but ObserveEVCardCalibration
+// checks CalibrationResult.Diverged ITSELF and mints nothing for a vindicated/unpriceable verdict
+// (see its own doc comment), so this wiring hands it every computed result unfiltered and lets
+// the door be the one place that guarantee is enforced.
+func observeEVCardCalibrationOnClose(homePath string, res work.CloseResult) {
+	dev := res.Work.RouteDeviation
+	if dev == nil || strings.TrimSpace(dev.CardRef) == "" {
+		return // nothing to calibrate
+	}
+	card, err := routeev.Read(homePath, dev.CardRef)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: evcard calibration skipped (read ev card):", err)
+		return
+	}
+	result := routeev.Calibrate(card, res.Work.State)
+	payload, err := json.Marshal(result)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: evcard calibration skipped (marshal calibration):", err)
+		return
+	}
+	memStore, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: evcard calibration skipped (open mem store):", err)
+		return
+	}
+	if _, _, err := memStore.ObserveEVCardCalibration(res.Work.ID, res.Receipt.ID, dev.CardRef, payload, time.Now()); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: evcard calibration failed:", err)
 	}
 }
 
