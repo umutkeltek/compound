@@ -44,7 +44,10 @@ import (
 	"time"
 )
 
-const delegateEventSchemaVersion = "compound.work_delegate_event.v0.1"
+const (
+	delegateEventSchemaVersion = "compound.work_delegate_event.v0.1"
+	delegateSpawnFailureNote   = "session runner could not create the governed session"
+)
 
 // SessionRunner is the seam between the orchestrator and any backing
 // supervised-execution backend (tmux in production; a fake in tests).
@@ -74,6 +77,7 @@ type DelegateOptions struct {
 type DelegateResult struct {
 	SchemaVersion string                   `json:"schema_version"`
 	WorkID        string                   `json:"work_id"`
+	Lane          string                   `json:"lane,omitempty"`
 	Status        string                   `json:"status"` // spawned|refused|preview
 	Binding       *DelegateBinding         `json:"binding,omitempty"`
 	Refusal       *DelegateRefusal         `json:"refusal,omitempty"`
@@ -205,8 +209,8 @@ func (s *Store) recoverBoundSession(workID string) (*DelegateBinding, bool, erro
 			if rerr := s.readEventJSON(att, &dev); rerr != nil {
 				return nil, false, fmt.Errorf("recover delegate binding %s: %w", att, rerr)
 			}
-			if dev.SchemaVersion != delegateEventSchemaVersion || dev.ID != att || dev.WorkID != workID {
-				return nil, false, fmt.Errorf("recover delegate binding %s: invalid delegate event identity", att)
+			if verr := validateAttachedDelegateEvent(att, workID, dev); verr != nil {
+				return nil, false, fmt.Errorf("recover delegate binding %s: %w", att, verr)
 			}
 			switch dev.Kind {
 			case "work.delegate.spawned":
@@ -224,8 +228,6 @@ func (s *Store) recoverBoundSession(workID string) (*DelegateBinding, bool, erro
 				binding = nil // any active binding dies
 			case "work.delegate.refused", "work.delegate.steered":
 				// These are binding-neutral but still valid delegate events.
-			default:
-				return nil, false, fmt.Errorf("recover delegate binding %s: unknown kind %q", att, dev.Kind)
 			}
 		}
 	}
@@ -233,6 +235,29 @@ func (s *Store) recoverBoundSession(workID string) (*DelegateBinding, bool, erro
 		return nil, false, nil
 	}
 	return binding, true, nil
+}
+
+func validateAttachedDelegateEvent(eventID, workID string, event delegateEvent) error {
+	if event.SchemaVersion != delegateEventSchemaVersion || event.ID != eventID || event.WorkID != workID {
+		return errors.New("invalid delegate event identity")
+	}
+	switch event.Kind {
+	case "work.delegate.spawned":
+		if strings.TrimSpace(event.Session) == "" || strings.TrimSpace(event.Harness) == "" {
+			return errors.New("spawned delegate event requires session and harness")
+		}
+	case "work.delegate.exited", "work.delegate.steered":
+		if strings.TrimSpace(event.Session) == "" {
+			return fmt.Errorf("%s delegate event requires session", event.Kind)
+		}
+	case "work.delegate.refused":
+		if strings.TrimSpace(event.Reason) == "" {
+			return errors.New("refused delegate event requires reason")
+		}
+	default:
+		return fmt.Errorf("unknown kind %q", event.Kind)
+	}
+	return nil
 }
 
 // runLaneCapacityGuard is the nil-safe wrapper. A nil guard returns a
@@ -289,6 +314,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		}
 		return out, nil
 	}
+	out.Lane = resolvedHarness
 
 	w, err := s.Get(out.WorkID)
 	if err != nil {
@@ -466,7 +492,10 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		return out, shaErr
 	}
 	if err := runner.Create(sessionName, workspace, opts.Command, opts.Args); err != nil {
-		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "spawn_failed", err.Error(), opts.Now)
+		// SessionRunner is an adapter seam; do not trust its error text to be
+		// metadata-only. Some process libraries echo argv, which may contain
+		// the operator's complete prompt. Keep the durable refusal opaque.
+		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "spawn_failed", delegateSpawnFailureNote, opts.Now)
 		if eerr != nil {
 			return out, eerr
 		}
@@ -474,7 +503,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			return out, err
 		}
 		out.EventID = evID
-		out.Refusal = &DelegateRefusal{Reason: "spawn_failed", Message: err.Error()}
+		out.Refusal = &DelegateRefusal{Reason: "spawn_failed", Message: delegateSpawnFailureNote}
 		return out, nil
 	}
 

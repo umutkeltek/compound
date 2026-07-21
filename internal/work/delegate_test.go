@@ -791,6 +791,34 @@ func TestDelegateDoesNotPersistPromptArguments(t *testing.T) {
 	}
 }
 
+func TestDelegateDoesNotPersistPromptFromSpawnFailure(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	const privatePrompt = "THE-RUNNER-ECHOED-MY-CERULEAN-PROMPT"
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	runner.createErr = errors.New("failed to spawn args: " + privatePrompt)
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Args: []string{privatePrompt}, Workspace: t.TempDir(), Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "spawn_failed" {
+		t.Fatalf("result = %+v, want spawn_failed refusal", result)
+	}
+	for _, event := range capturedDelegateEvents(t, s) {
+		canonical, _ := json.Marshal(event)
+		if strings.Contains(string(canonical), privatePrompt) {
+			t.Fatalf("spawn failure event leaked prompt argument: %s", canonical)
+		}
+	}
+}
+
 func TestDelegateCorruptAttachedBindingFailsClosed(t *testing.T) {
 	s := newStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
@@ -808,6 +836,38 @@ func TestDelegateCorruptAttachedBindingFailsClosed(t *testing.T) {
 	_, err = s.Attach(AttachOptions{WorkID: wID}, newFakeRunner())
 	if err == nil || !strings.Contains(err.Error(), "wde_missing_binding") {
 		t.Fatalf("corrupt attached binding must fail closed with its id, got %v", err)
+	}
+}
+
+func TestDelegateMalformedAttachedBindingFailsClosed(t *testing.T) {
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	w, err := s.Get(wID)
+	if err != nil {
+		t.Fatalf("get work: %v", err)
+	}
+	const eventID = "wde_malformed_binding"
+	if err := s.writeEventJSON(eventID, delegateEvent{
+		SchemaVersion: delegateEventSchemaVersion,
+		ID:            eventID,
+		Kind:          "work.delegate.spawned",
+		TS:            ts(fixedNow),
+		WorkID:        wID,
+		Harness:       "claude-zai",
+		// Session is deliberately absent: this record cannot recover a binding.
+	}); err != nil {
+		t.Fatalf("write malformed binding: %v", err)
+	}
+	if err := s.appendEvent(Event{
+		TS: ts(fixedNow.Add(1)), WorkID: wID, From: w.State, To: w.State,
+		By: "orchestrator:test", Attached: []string{eventID},
+	}); err != nil {
+		t.Fatalf("append malformed binding reference: %v", err)
+	}
+
+	_, err = s.Attach(AttachOptions{WorkID: wID}, newFakeRunner())
+	if err == nil || !strings.Contains(err.Error(), eventID) {
+		t.Fatalf("malformed attached binding must fail closed with its id, got %v", err)
 	}
 }
 

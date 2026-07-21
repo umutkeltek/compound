@@ -148,7 +148,7 @@ func TestWorkDelegateCLIDryRunPrintsGuardDecisionAndDoesNotSpawn(t *testing.T) {
 	if code != 0 || errOut != "" {
 		t.Fatalf("code=%d stderr=%q", code, errOut)
 	}
-	if !strings.Contains(out, "status=preview") || !strings.Contains(out, "capacity=ok") || !strings.Contains(out, "confirmation_required=true") {
+	if !strings.Contains(out, "status=preview") || !strings.Contains(out, "lane=claude-minimax") || !strings.Contains(out, "capacity=ok") || !strings.Contains(out, "confirmation_required=true") {
 		t.Fatalf("dry-run hid guard decision: %q", out)
 	}
 	if len(runner.creates) != 0 {

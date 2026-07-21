@@ -273,7 +273,7 @@ func encodeDelegateCLIJSON(stdout io.Writer, value any) error {
 func renderDelegateResult(stdout io.Writer, result work.DelegateResult) {
 	switch result.Status {
 	case "preview":
-		fmt.Fprintf(stdout, "delegate: status=preview work=%s", result.WorkID)
+		fmt.Fprintf(stdout, "delegate: status=preview work=%s lane=%s", result.WorkID, result.Lane)
 		if result.Decision != nil {
 			fmt.Fprintf(stdout, " capacity=%s refused=%t confirmation_required=%t", result.Decision.Capacity.State, result.Decision.Refused, result.Decision.ConfirmationRequired)
 		}
