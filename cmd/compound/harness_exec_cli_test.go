@@ -345,4 +345,90 @@ func TestHarnessRunNoActorOmitsLaneID(t *testing.T) {
 	}
 }
 
+// TestHarnessRunTextWarnsUngoverned: `harness run` (human/text output) prints
+// a single warning line after the result block making clear this verb mints
+// a RunAttempt WITHOUT advancing or policy-binding the WorkEnvelope, and
+// points the operator at `work advance --execute` for governed execution.
+// This is the zip27/F12 surface-honesty falsifier (T1).
+//
+// Falsifier (RED at base): cmdHarnessRun's text branch has no such line, so
+// the output does not contain the exact warning text.
+func TestHarnessRunTextWarnsUngoverned(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "harness run text warns ungoverned",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdHarness([]string{
+			"run", "--harness", "os-harness-entrypoints",
+			"--work", w.ID,
+			"--workspace", homePath,
+			"--", "echo", "warn-smoke",
+		})
+	})
+	want := "warning: harness run records a RunAttempt but does not advance or policy-bind the WorkEnvelope; use work advance --execute for governed execution."
+	if !strings.Contains(out, want) {
+		t.Fatalf("expected warning line %q in text output, got:\n%s", want, out)
+	}
+}
+
+// TestHarnessRunJSONGovernedFalse: `harness run --json` output carries an
+// additive boolean field `governed: false`, marking that this verb does not
+// advance or policy-bind the WorkEnvelope. This is the zip27/F12
+// surface-honesty falsifier (T2).
+//
+// Falsifier (RED at base): the JSON object has no `governed` key, so
+// unmarshalling into a struct with a required-by-test bool field leaves it
+// at the zero value regardless of presence -- assert on the raw bytes so
+// presence itself is pinned, not just the (indistinguishable) false value.
+func TestHarnessRunJSONGovernedFalse(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := work.Open(homePath)
+	w, _ := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "harness run json governed false",
+	}, cliTestNow)
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command("go", "run", "./cmd/compound", "harness", "run",
+		"--harness", "os-harness-entrypoints", "--work", w.ID, "--json",
+		"--", "echo", "governed-smoke")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("json run: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), `"governed":false`) {
+		t.Fatalf("expected \"governed\":false in JSON output, got:\n%s", out)
+	}
+	var got struct {
+		Governed *bool `json:"governed"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v\nraw: %s", err, out)
+	}
+	if got.Governed == nil {
+		t.Fatalf("governed key missing from JSON output:\n%s", out)
+	}
+	if *got.Governed != false {
+		t.Fatalf("governed = %v, want false", *got.Governed)
+	}
+}
+
 var _ = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
