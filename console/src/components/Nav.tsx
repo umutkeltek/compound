@@ -39,6 +39,7 @@ function groupsFor(decideCount: number | null | undefined, workCount: number | n
           badge: workCount != null ? { count: workCount, tone: "quiet" } : undefined,
         },
         { label: "Agents", href: "/executors" },
+        { label: "Traffic", href: "/traffic" },
         { label: "Loops", href: "/loops" },
       ],
     },

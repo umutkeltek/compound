@@ -339,6 +339,10 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		// the `stream` verb) and its own throwaway COMPOUND_HOME, so no home/binary setup is needed
 		// here beyond the bun runtime gate.
 		{Name: "console-stream-door-smoke", Command: consoleBunSmokeCommand("scripts/stream-door-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-stream-door-smoke"},
+		// traffic-board-smoke executes the real-time board's pure-TS data-plane + live-fold
+		// selftests (traffic / useLiveFleet / run-attempts). It imports extensionless @/ TS, so it
+		// runs under bun like the other selftest-runner smokes.
+		{Name: "console-traffic-board-smoke", Command: consoleBunSmokeCommand("scripts/traffic-board-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-traffic-board-smoke"},
 		{Name: "bun-tools-test", Command: []string{"bun", "test", "<tools/*.test.ts>"}, SkipIfMissing: "bun", ProofRef: "bun-tools-test"},
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict", CIPortable: true},
 		{Name: "profiles-check", Command: []string{exe, "profiles", "check", "--installed-only"}, ProofRef: "profiles-check-installed-only"},
