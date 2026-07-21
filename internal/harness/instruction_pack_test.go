@@ -359,6 +359,132 @@ func TestRenderInstructionPack_F7_IdempotentWrite(t *testing.T) {
 	}
 }
 
+// F8 — InstructionPackDrift silence-on-match: a fresh render written to
+// disk + an immediate InstructionPackDrift probe over the same home must
+// report Drifted=false. Mirrors the permission-posture
+// TestPermissionDriftRedGreenAndIgnoresUnrelatedKeys contract at the
+// pack seam. The teeth is the negation — without InstructionPackDrift
+// returning cleanly, every drift invocation would mint a card and the
+// intake would drown in noise.
+func TestInstructionPackDrift_F8_SilenceOnMatch(t *testing.T) {
+	homePath, _, _ := buildInstructionPackFullFixture(t)
+	if _, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow); err != nil {
+		t.Fatal(err)
+	}
+	report, err := InstructionPackDrift(homePath, "claude_code", instructionPackTestNow)
+	if err != nil {
+		t.Fatalf("InstructionPackDrift: %v", err)
+	}
+	if report.Drifted {
+		t.Fatalf("fresh render over the same inputs must not drift: %+v", report)
+	}
+	if report.Harness != "claude_code" {
+		t.Fatalf("report harness = %q, want claude_code", report.Harness)
+	}
+	if report.ExpectedDigest == "" || report.ObservedDigest == "" {
+		t.Fatalf("expected/observed digests must be populated on clean: %+v", report)
+	}
+	if report.ExpectedDigest != report.ObservedDigest {
+		t.Fatalf("clean digests must match: expected=%q observed=%q",
+			report.ExpectedDigest, report.ObservedDigest)
+	}
+}
+
+// F9 — InstructionPackDrift drift on stale on-disk pack. Bump the
+// authority yaml (new source_revision) but DO NOT re-render latest.json;
+// on-disk pack now disagrees with the fresh render → drift, with
+// ExpectedDigest != ObservedDigest. The drift comparator must NOT itself
+// mutate the on-disk pack — that's the next falsifier.
+func TestInstructionPackDrift_F9_DriftOnStaleOnDisk(t *testing.T) {
+	homePath, _, _ := buildInstructionPackFullFixture(t)
+	if _, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow); err != nil {
+		t.Fatal(err)
+	}
+	// Bump the authority (new source_revision) but leave latest.json stale.
+	policyBumped := permissionFixture([]string{"Read", "mcp__gbrain__*", "WebFetch"})
+	targetPath := filepath.Join(homePath, "config", "harness-permissions", "claude_code.yaml")
+	writePermissionFixture(t, homePath, targetPath, policyBumped)
+
+	report, err := InstructionPackDrift(homePath, "claude_code", instructionPackTestNow)
+	if err != nil {
+		t.Fatalf("InstructionPackDrift: %v", err)
+	}
+	if !report.Drifted {
+		t.Fatalf("stale latest.json after authority bump must drift: %+v", report)
+	}
+	if report.ExpectedDigest == report.ObservedDigest {
+		t.Fatalf("drifted report digests must differ: expected=%q observed=%q",
+			report.ExpectedDigest, report.ObservedDigest)
+	}
+	if len(report.Details) == 0 {
+		t.Fatalf("drifted report must carry at least one detail: %+v", report)
+	}
+}
+
+// F10 — InstructionPackDrift must be READ-ONLY: invoking it must NOT
+// rewrite the on-disk pack. The packet says the comparator "compares
+// on-disk ... against fresh render" — without the read-only invariant a
+// re-run would always observe a self-cancelled drift (write → re-read
+// → match). The teeth is the schema_version timestamp / GeneratedAt
+// variance captured pre/post.
+func TestInstructionPackDrift_F10_DoesNotMutateOnDisk(t *testing.T) {
+	homePath, _, _ := buildInstructionPackFullFixture(t)
+	if _, err := RenderInstructionPack(homePath, "claude_code", instructionPackTestNow); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(InstructionPackPath(homePath, "claude_code"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstructionPackDrift(homePath, "claude_code", instructionPackTestNow); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(InstructionPackPath(homePath, "claude_code"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("InstructionPackDrift must not rewrite on-disk latest.json:\nbefore:\n%s\nafter:\n%s",
+			before, after)
+	}
+}
+
+// F11 — Missing on-disk pack = drift (expected: rendered, observed:
+// absent). The cold-start case from the S5 deviation becomes VISIBLE
+// here: a fresh harness that's never been rendered must surface a drift
+// so the intake seam sees a card.
+func TestInstructionPackDrift_F11_MissingOnDiskIsDrift(t *testing.T) {
+	homePath, _, _ := buildInstructionPackFullFixture(t)
+	// Deliberately DO NOT call RenderInstructionPack — no latest.json on
+	// disk; the comparator should still report drifted with the missing
+	// detail and an empty ObservedDigest.
+	report, err := InstructionPackDrift(homePath, "claude_code", instructionPackTestNow)
+	if err != nil {
+		t.Fatalf("InstructionPackDrift: %v", err)
+	}
+	if !report.Drifted {
+		t.Fatalf("missing latest.json must drift: %+v", report)
+	}
+	if report.ObservedDigest != "" {
+		t.Fatalf("missing-on-disk drift must carry an empty ObservedDigest, got %q",
+			report.ObservedDigest)
+	}
+	if report.ExpectedDigest == "" {
+		t.Fatalf("missing-on-disk drift must still compute an ExpectedDigest: %+v", report)
+	}
+	foundMissing := false
+	for _, d := range report.Details {
+		if d == "on-disk latest.json is missing" {
+			foundMissing = true
+			break
+		}
+	}
+	if !foundMissing {
+		t.Fatalf("missing-on-disk drift must carry the missing-detail sentinel, got %+v",
+			report.Details)
+	}
+}
+
 // buildInstructionPackFullFixture writes an authority + target file +
 // HarnessArtifact manifest, returning the (homePath, targetPath, render) so
 // per-test extensions (installed-hooks, contract-latest) can layer on top.
