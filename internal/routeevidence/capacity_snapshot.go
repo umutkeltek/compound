@@ -118,6 +118,18 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 	}
 	if ok {
 		capacity = usage
+	} else if usage.DataRef != "" {
+		// Annotated unknown: readCodexBarCapacity returns a non-empty LaneCapacity even when
+		// no fresh row was found, so callers can tell WHY the lane is unknown — zero rows vs
+		// only-stale rows. Carry the annotation forward; wall/dead checks below may still
+		// override if their own fresh evidence arrives.
+		capacity.DataRef = usage.DataRef
+		if !usage.LastProven.IsZero() {
+			capacity.LastProven = usage.LastProven
+		}
+		if usage.Source != "" {
+			capacity.Source = usage.Source
+		}
 	}
 
 	wall, ok, err := readFreshQuotaWall(cfg.Paths.QuotaCachePath, key, now)
@@ -140,6 +152,12 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 		capacity = dead
 	}
 	capacity.SourceInstalled = installed
+	// Compose malformed-alias note onto any final-unknown state. Earlier branches already
+	// appended the note when key==""; this covers the resolved-but-stale branch where the
+	// lane resolves to a family but only stale rows are available.
+	if capacity.State == CapacityUnknown && aliasNote != "" && !strings.Contains(capacity.DataRef, aliasNote) {
+		capacity.DataRef = capacity.DataRef + "; " + aliasNote
+	}
 	return capacity, nil
 }
 
@@ -200,12 +218,22 @@ func readCodexBarCapacity(path, lane string, now time.Time, expectedMinutes int)
 		return LaneCapacity{}, false, fmt.Errorf("scan capacity usage history: %w", err)
 	}
 	if len(rows) == 0 {
-		return LaneCapacity{}, false, nil
+		return LaneCapacity{
+			State:           CapacityUnknown,
+			SourceInstalled: true,
+			DataRef:         "no usage rows for lane",
+		}, false, nil
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].sampled.After(rows[j].sampled) })
 	newest := rows[0].sampled
 	if age := now.Sub(newest); age < 0 || age > capacityFreshness(lane) {
-		return LaneCapacity{}, false, nil
+		return LaneCapacity{
+			State:           CapacityUnknown,
+			SourceInstalled: true,
+			LastProven:      newest.UTC(),
+			Source:          "codexbar/usage-history",
+			DataRef:         fmt.Sprintf("codexbar/usage-history:no_fresh_rows,newest=%s", newest.UTC().Format(time.RFC3339)),
+		}, false, nil
 	}
 
 	recentCutoff := newest.Add(-capacityRecentCluster)
@@ -555,20 +583,22 @@ func loadLaneCapacityAliases(path string) (map[string]string, error) {
 // name, or its sub-lane-stripped base) is never overridden by an alias; short of that, an alias
 // match (checked on the full lowercased/trimmed name, then the ':'-stripped base) beats family
 // inference; a missing alias file is a no-op; a malformed alias file behaves like "no aliases"
-// but is reported via the returned note so ReadLaneCapacityWithConfig can surface it — but ONLY
-// when the lane would otherwise resolve unknown, per the packet's "no silent swallow, no
-// fleet-wide error either" rule.
+// but is reported via the returned note so ReadLaneCapacityWithConfig can surface it — composed
+// onto the DataRef only when the final state is unknown, per the packet's "no silent swallow,
+// no fleet-wide error either" rule. The alias file is loaded eagerly (even when a structural
+// match is found) so a malformed file can still surface on structurally-resolved lanes when
+// downstream evidence leaves the state unknown.
 func resolveLaneCapacityKey(lane string, cfg LaneCapacityConfig) (key string, unreadableAliasNote string) {
 	trimmed := strings.ToLower(strings.TrimSpace(lane))
 	if key := exactLaneCapacityFamily(trimmed); key != "" {
-		return key, ""
+		return aliasObservation(key, "", cfg)
 	}
 	base := trimmed
 	if idx := strings.Index(base, ":"); idx >= 0 {
 		base = base[:idx]
 	}
 	if key := exactLaneCapacityFamily(base); key != "" {
-		return key, ""
+		return aliasObservation(key, "", cfg)
 	}
 
 	aliases, err := loadLaneCapacityAliases(cfg.Paths.AliasesPath)
@@ -585,7 +615,23 @@ func resolveLaneCapacityKey(lane string, cfg LaneCapacityConfig) (key string, un
 	if inferred == "" && err != nil {
 		return "", "lane-aliases.json unreadable"
 	}
+	if err != nil {
+		return inferred, "lane-aliases.json unreadable"
+	}
 	return inferred, ""
+}
+
+// aliasObservation loads the alias file (if any) for a structurally-resolved key purely to
+// observe whether it is malformed, so the unreadable-note can compose onto a final-unknown
+// DataRef downstream. The note is returned only when the file exists but fails to parse;
+// a missing file (IsNotExist) or a successfully-parsed file produces no note.
+func aliasObservation(key string, _ string, cfg LaneCapacityConfig) (string, string) {
+	aliases, err := loadLaneCapacityAliases(cfg.Paths.AliasesPath)
+	if err != nil {
+		return key, "lane-aliases.json unreadable"
+	}
+	_ = aliases
+	return key, ""
 }
 
 func capacityFreshness(lane string) time.Duration {
