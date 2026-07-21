@@ -274,8 +274,10 @@ func routeUsage(sub string) string {
 		return "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]"
 	case "execution-profile":
 		return "usage: compound route execution-profile (--list|--profile ID [--role R] [--capability-class C] [--harness claude-code|codex|worker] [--transport native|switchback|local] [--route-alias A] [--model provider/model] [--semantic-effort economy|balanced|deep|max] [--effort E] [--orchestration direct|standard|ultracode]) [--json]"
+	case "ev":
+		return routeEvUsage
 	default:
-		return "usage: compound route <execution-profile (--list|--profile ID) [--json]|evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight])>"
+		return "usage: compound route <execution-profile (--list|--profile ID) [--json]|evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight])|ev --capability-class C --deviation-lane L [--risk-grade gate|judge|tidy] [--class-bucket unknown] [--json]>"
 	}
 }
 
@@ -364,6 +366,7 @@ compound proof-check [--json] [--dry-run] [--repo P] [--out FILE] deterministic 
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound route plan --capability-class C [--privacy-sensitive] planned lane chain from Compound route authority
+  compound route ev --capability-class C --deviation-lane L [--risk-grade gate|judge|tidy] [--class-bucket unknown] [--json] price a deviation against the served policy line (compound.route.evcard.v0.1); advisory, never auto-blocks
 	compound memory <candidate|candidates|import-page|import-topics|adjudicate|recall|timeline|fold|position|query|search --lane L|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor>
 	              spine memory: candidates, claims, positions, patterns, evidence
   compound corpus <index --lane L [--rebuild]|doctor --lane L [--json]> rebuildable corpus vector indexes
@@ -876,6 +879,9 @@ func cmdRoute(args []string) {
 		return
 	}
 	if tryRouteSpeedCommand(args, homePath) {
+		return
+	}
+	if tryRouteEvCommand(args, homePath) {
 		return
 	}
 	if args[0] == "evidence-authority" {
