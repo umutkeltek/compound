@@ -977,6 +977,33 @@ func TestDelegateSessionNameDeterministic(t *testing.T) {
 	}
 }
 
+func TestTmuxRunnerAttachArgv(t *testing.T) {
+	runner := NewTmuxRunner()
+	want := []string{"tmux", "attach-session", "-t", "compound-work_TEST"}
+	got := runner.AttachArgv("compound-work_TEST")
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("attach argv = %q, want %q", got, want)
+	}
+}
+
+func TestTmuxRunnerRejectsIncompleteSpawnWithoutTouchingTmux(t *testing.T) {
+	runner := NewTmuxRunner()
+	cases := []struct {
+		name, session, dir, command string
+	}{
+		{name: "session", dir: t.TempDir(), command: "claude-zai"},
+		{name: "workspace", session: "compound-work_TEST", command: "claude-zai"},
+		{name: "command", session: "compound-work_TEST", dir: t.TempDir()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := runner.Create(tc.session, tc.dir, tc.command, nil); err == nil || !strings.Contains(err.Error(), tc.name) {
+				t.Fatalf("Create error = %v, want missing %s", err, tc.name)
+			}
+		})
+	}
+}
+
 // work not claimed refuses (we mirror land-lease: the holder must already
 // exist before delegate can spawn on their behalf).
 func TestDelegateWorkNotClaimedRefuses(t *testing.T) {

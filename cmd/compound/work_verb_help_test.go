@@ -11,7 +11,8 @@ func TestEveryWorkVerbHelpIncludesUsageAndExecutableExample(t *testing.T) {
 		"show", "list", "leases", "active-packet-proof", "proof-chain-doctor", "continue",
 		"dispatch-plan", "dispatch-claim", "dispatch-advance", "dispatch-close-plan",
 		"dispatch-close", "dispatch-step", "claim-plan", "claim", "advance-plan", "advance",
-		"observe-run", "land-check", "salvage-plan", "action-plan", "act", "close-plan", "close",
+		"delegate", "steer", "attach", "observe-run", "land-check", "salvage-plan",
+		"action-plan", "act", "close-plan", "close",
 	}
 	for _, verb := range verbs {
 		t.Run(verb, func(t *testing.T) {
@@ -35,6 +36,8 @@ func TestEveryWorkVerbHelpIncludesUsageAndExecutableExample(t *testing.T) {
 func TestWorkVerbHelpShowsOwnFlags(t *testing.T) {
 	tests := map[string][]string{
 		"dispatch-claim": {"--confirm", "without --confirm previews"},
+		"delegate":       {"--harness", "--prompt", "--dry-run"},
+		"steer":          {"--text", "--enter"},
 		"show":           {"--json"},
 		"close":          {"--outcome", "--move-type"},
 	}

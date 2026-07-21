@@ -79,7 +79,7 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
@@ -165,6 +165,18 @@ var workVerbHelpByName = map[string]workVerbHelp{
 	"advance": {
 		Usage:   "usage: compound work advance <work_id> --to <state> [--by A|--actor A] [--lane <agent-lane node id | short lane id>] [--run-attempt RATT_ID] (repeatable) [--artifact A] [--verification V] [--context-pack ctx] [--note N] [--steal --reason R] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--execute --harness <name> [--prompt <text> | -- <command> [args...]]]",
 		Example: "compound work advance work_abc123 --to running --by codex --lane auto/judge",
+	},
+	"delegate": {
+		Usage:   "usage: compound work delegate <work_id> --harness <claude-zai|claude-qwen|claude-minimax|claude|codex> [--actor A] [--prompt <text> | -- <command> [args...]] [--workspace DIR] [--session NAME] [--expected-minutes N] [--confirm] [--dry-run] [--json]",
+		Example: "compound work delegate work_abc123 --harness claude-zai --prompt \"follow the surprising thread\"",
+	},
+	"steer": {
+		Usage:   "usage: compound work steer <work_id> --text <instruction> [--actor A] [--enter] [--json]",
+		Example: "compound work steer work_abc123 --text \"look again at the boundary\" --enter",
+	},
+	"attach": {
+		Usage:   "usage: compound work attach <work_id>",
+		Example: "compound work attach work_abc123",
 	},
 	"observe-run": {
 		Usage:   "usage: compound work observe-run <work_id> --trace <trace_id> [--job-file <path>] [--actor A] [--note N] [--json]",
@@ -423,6 +435,11 @@ func cmdWork(args []string) {
 	}
 
 	switch sub {
+	case "delegate", "steer", "attach":
+		code := runWorkDelegateCLI(sub, rest, store, work.NewTmuxRunner(), productionDelegateAttach, time.Now(), os.Stdout, os.Stderr)
+		if code != 0 {
+			os.Exit(code)
+		}
 	case "create-plan":
 		usage := workUsage("create-plan")
 		if err := validateWorkArguments(rest, map[string]bool{

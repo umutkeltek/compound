@@ -128,6 +128,16 @@ func resolveHarnessWrapper(name string) (string, bool) {
 	return "", false
 }
 
+// ResolveDelegateHarness maps a user-facing lane alias to the executable
+// wrapper Compound is allowed to launch. It is the cmd layer's only alias
+// surface, keeping the function table owned here instead of duplicating it.
+func ResolveDelegateHarness(name string) (string, error) {
+	if command, ok := resolveHarnessWrapper(name); ok {
+		return command, nil
+	}
+	return "", fmt.Errorf("harness %q does not resolve to a registered wrapper (allowed: %s)", name, knownHarnessNames())
+}
+
 func knownHarnessNames() string {
 	out := make([]string, 0, len(harnessWrapperAliases))
 	for k := range harnessWrapperAliases {
