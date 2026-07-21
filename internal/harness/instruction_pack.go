@@ -98,7 +98,28 @@ func InstructionPackPath(homePath, harness string) string {
 // (empty refs, no error), the pack still renders. PolicyCore for slice 1 = the
 // permission authority ref + revision when present (the hand-written yaml IS
 // today's policy-core instance); a fuller policy-core source is a later slice.
+//
+// RenderInstructionPack is the WRITE side of the seam. InstructionPackDrift
+// calls renderInstructionPack (the in-memory twin below) so drift probes
+// never mutate the on-disk projection — a re-run against an unchanged home
+// would otherwise always see self-cancelled drift (F10 invariant).
 func RenderInstructionPack(homePath, harness string, now time.Time) (InstructionPack, error) {
+	pack, err := renderInstructionPack(homePath, harness, now)
+	if err != nil {
+		return InstructionPack{}, err
+	}
+	if err := writeInstructionPackAtomic(InstructionPackPath(homePath, harness), pack); err != nil {
+		return InstructionPack{}, fmt.Errorf("write pack latest.json: %w", err)
+	}
+	return pack, nil
+}
+
+// renderInstructionPack assembles the harness-scoped pack IN MEMORY ONLY.
+// RenderInstructionPack persists the result; InstructionPackDrift compares
+// the result to the on-disk latest.json. Splitting render from write keeps
+// the drift comparator read-only (F10) — without the split, every drift
+// invocation would self-cancel by writing its own fresh pack first.
+func renderInstructionPack(homePath, harness string, now time.Time) (InstructionPack, error) {
 	harness = strings.TrimSpace(harness)
 	if harness == "" {
 		return InstructionPack{}, fmt.Errorf("harness required")
@@ -163,11 +184,159 @@ func RenderInstructionPack(homePath, harness string, now time.Time) (Instruction
 		GeneratedAt: now,
 	}
 	pack.ContentSHA256 = "sha256:" + digest(instructionPackBody(pack))
-
-	if err := writeInstructionPackAtomic(InstructionPackPath(homePath, harness), pack); err != nil {
-		return InstructionPack{}, fmt.Errorf("write pack latest.json: %w", err)
-	}
 	return pack, nil
+}
+
+// InstructionPackDriftReport mirrors PermissionDriftReport's shape so the
+// observation loop downstream can switch on Drifted without caring which
+// harness seam produced it. ExpectedDigest / ObservedDigest are stable
+// managed-surface digests (ContentSHA256 + per-layer refs/revisions only —
+// GeneratedAt excluded) so two renders over identical inputs compare equal
+// regardless of clock variance (F5).
+type InstructionPackDriftReport struct {
+	Harness        string   `json:"harness"`
+	Path           string   `json:"path"`
+	Drifted        bool     `json:"drifted"`
+	Details        []string `json:"details,omitempty"`
+	ExpectedDigest string   `json:"expected_digest,omitempty"`
+	ObservedDigest string   `json:"observed_digest,omitempty"`
+}
+
+// InstructionPackDrift compares the on-disk $COMPOUND_HOME/context/instruction-packs/<h>/latest.json
+// against a fresh in-memory render and reports whether they agree. It is
+// READ-ONLY (F10): it never writes the fresh pack, never mutates the
+// authority, never moves the on-disk projection. A missing on-disk file is
+// treated as drift with ObservedDigest="" (F11) so the cold-start case
+// surfaces to the intake seam instead of staying invisible.
+func InstructionPackDrift(homePath, harness string, now time.Time) (InstructionPackDriftReport, error) {
+	harness = strings.TrimSpace(harness)
+	if harness == "" {
+		return InstructionPackDriftReport{}, fmt.Errorf("harness required")
+	}
+	now = now.UTC()
+	path := InstructionPackPath(homePath, harness)
+	fresh, err := renderInstructionPack(homePath, harness, now)
+	if err != nil {
+		return InstructionPackDriftReport{}, err
+	}
+	expected := instructionPackDriftDigest(fresh)
+	report := InstructionPackDriftReport{
+		Harness:        harness,
+		Path:           path,
+		ExpectedDigest: expected,
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			report.Drifted = true
+			report.Details = []string{"on-disk latest.json is missing"}
+			return report, nil
+		}
+		return InstructionPackDriftReport{}, fmt.Errorf("read latest.json: %w", err)
+	}
+
+	var observed InstructionPack
+	if err := json.Unmarshal(body, &observed); err != nil {
+		return InstructionPackDriftReport{}, fmt.Errorf("decode latest.json: %w", err)
+	}
+	observedDigest := instructionPackDriftDigest(observed)
+	report.ObservedDigest = observedDigest
+	if observedDigest == expected {
+		return report, nil
+	}
+	report.Drifted = true
+	report.Details = instructionPackDeltaDetails(fresh, observed)
+	return report, nil
+}
+
+// instructionPackDriftDigest hashes the MANAGED surface of a pack:
+// ContentSHA256 + every per-layer ref/revision/sha/absent flag. GeneratedAt
+// is deliberately EXCLUDED — a re-render over identical inputs would
+// otherwise report self-cancelled drift (F5).
+func instructionPackDriftDigest(p InstructionPack) string {
+	parts := []string{
+		"content_sha256=" + p.ContentSHA256,
+		"policy_core.authority_ref=" + p.PolicyCore.AuthorityRef,
+		"policy_core.source_revision=" + p.PolicyCore.SourceRevision,
+		"policy_core.content_sha256=" + p.PolicyCore.ContentSHA256,
+		"policy_core.absent=" + boolStr(p.PolicyCore.Absent),
+		"posture.authority_ref=" + p.Posture.AuthorityRef,
+		"posture.source_revision=" + p.Posture.SourceRevision,
+		"posture.content_sha256=" + p.Posture.ContentSHA256,
+		"posture.absent=" + boolStr(p.Posture.Absent),
+		"roster.registry_revision=" + p.Roster.RegistryRevision,
+		"roster.installed_hooks.ref=" + p.Roster.InstalledHooks.Ref,
+		"roster.installed_hooks.revision=" + p.Roster.InstalledHooks.Revision,
+		"roster.installed_hooks.absent=" + boolStr(p.Roster.InstalledHooks.Absent),
+		"roster.effective_contract.ref=" + p.Roster.EffectiveContract.Ref,
+		"roster.effective_contract.revision=" + p.Roster.EffectiveContract.Revision,
+		"roster.effective_contract.absent=" + boolStr(p.Roster.EffectiveContract.Absent),
+	}
+	return digest([]byte(strings.Join(parts, "\x00")))
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// instructionPackDeltaDetails describes which surface drives the digest
+// mismatch between a fresh render and the on-disk pack. Layer-by-layer so
+// an operator reading the report can pinpoint the input that drifted
+// (policy-core revision bump, manifest body change, contract latest
+// rotated, …).
+func instructionPackDeltaDetails(fresh, observed InstructionPack) []string {
+	var details []string
+	if fresh.PolicyCore.SourceRevision != observed.PolicyCore.SourceRevision ||
+		fresh.PolicyCore.ContentSHA256 != observed.PolicyCore.ContentSHA256 ||
+		fresh.PolicyCore.AuthorityRef != observed.PolicyCore.AuthorityRef {
+		details = append(details, fmt.Sprintf(
+			"policy_core drifted (fresh_rev=%s observed_rev=%s)",
+			fresh.PolicyCore.SourceRevision, observed.PolicyCore.SourceRevision))
+	}
+	if fresh.PolicyCore.Absent != observed.PolicyCore.Absent {
+		details = append(details, fmt.Sprintf(
+			"policy_core absent flag changed (fresh=%t observed=%t)",
+			fresh.PolicyCore.Absent, observed.PolicyCore.Absent))
+	}
+	if fresh.Posture.SourceRevision != observed.Posture.SourceRevision ||
+		fresh.Posture.ContentSHA256 != observed.Posture.ContentSHA256 ||
+		fresh.Posture.AuthorityRef != observed.Posture.AuthorityRef {
+		details = append(details, fmt.Sprintf(
+			"posture drifted (fresh_rev=%s observed_rev=%s)",
+			fresh.Posture.SourceRevision, observed.Posture.SourceRevision))
+	}
+	if fresh.Posture.Absent != observed.Posture.Absent {
+		details = append(details, fmt.Sprintf(
+			"posture absent flag changed (fresh=%t observed=%t)",
+			fresh.Posture.Absent, observed.Posture.Absent))
+	}
+	if fresh.Roster.RegistryRevision != observed.Roster.RegistryRevision {
+		details = append(details, fmt.Sprintf(
+			"registry_revision drifted (fresh=%s observed=%s)",
+			fresh.Roster.RegistryRevision, observed.Roster.RegistryRevision))
+	}
+	if fresh.Roster.InstalledHooks.Revision != observed.Roster.InstalledHooks.Revision ||
+		fresh.Roster.InstalledHooks.Ref != observed.Roster.InstalledHooks.Ref ||
+		fresh.Roster.InstalledHooks.Absent != observed.Roster.InstalledHooks.Absent {
+		details = append(details, fmt.Sprintf(
+			"installed_hooks layer drifted (fresh_rev=%s observed_rev=%s)",
+			fresh.Roster.InstalledHooks.Revision, observed.Roster.InstalledHooks.Revision))
+	}
+	if fresh.Roster.EffectiveContract.Revision != observed.Roster.EffectiveContract.Revision ||
+		fresh.Roster.EffectiveContract.Ref != observed.Roster.EffectiveContract.Ref ||
+		fresh.Roster.EffectiveContract.Absent != observed.Roster.EffectiveContract.Absent {
+		details = append(details, fmt.Sprintf(
+			"effective_contract layer drifted (fresh_rev=%s observed_rev=%s)",
+			fresh.Roster.EffectiveContract.Revision, observed.Roster.EffectiveContract.Revision))
+	}
+	if fresh.ContentSHA256 != observed.ContentSHA256 {
+		details = append(details, "managed pack body content_sha256 differs")
+	}
+	return details
 }
 
 // instructionPackBody marshals the pack EXCLUDING GeneratedAt for the
