@@ -3,44 +3,41 @@
 compound is an owned, agent-agnostic **unified meaning + execution substrate**: one meaning owner that turns
 real traces into evidence, evidence into adjudicated memory/registries/skills/decisions, those into routed
 action, action into receipts, and receipts into learning and hardened infrastructure — while agents, models,
-tools, and indexes stay rented and replaceable. You are a **rented executor**. compound owns the spine; you
-do not become the source of truth.
+tools, and indexes stay rented. You are a **rented executor**. compound owns the spine; you are not the truth.
 
 > This file is the **build guide** for agents *building* compound. A *running* compound instance serves OTHER
 > repos a tiny client-contract instead (see `docs/architecture/runtime.md` §4) — do not confuse the two.
 
 ## Operating ceremonies
-`compound orient --harness <you> --task "<task>"` serves the binding ceremonies for
-landing/executing/verifying work here as an `operating-ceremonies` context source. The ceremony bodies are
-**tracked in-repo** under [`skills/`](./skills/README.md) (`compound-execute`, `compound-land`,
-`compound-verify`, `extract-approach`) — plain markdown any harness reads directly, reachable in a fresh
-public clone with no private overlay. A harness may also mirror them as local auto-loading skills (e.g. under
-`.claude/skills/`), but that overlay is a convenience, not the source of truth.
-`scripts/sync-ceremony-overlays.sh` generates the `.agents/skills/` and `.claude/skills/` adapters as relative
-symlinks to these tracked bodies; `./install.sh` runs it. No hook injection available? Read `skills/README.md`
-(or run orient manually) before orchestrating or landing — never improvise the ceremony.
+`compound orient --harness <you> --task "<task>"` serves the binding ceremonies for landing/executing/verifying
+work here as an `operating-ceremonies` context source. The ceremony bodies are **tracked in-repo** under
+[`skills/`](./skills/README.md) — plain markdown any harness reads directly, reachable in a fresh public clone
+with no private overlay:
+- `compound-execute` — take a job → dispatch a lane → land → close with proofs.
+- `compound-land` — scope claim → verify battery → rehearsed `--ff-only` land under a fresh main-SHA guard.
+- `compound-verify` — prove a change is ALIVE (wired/fed/cut-over/provable), not merely merged.
+- `extract-approach` — route each learning to the owner that consumes it, in the same change.
+
+This file POINTS at those bodies; it never restates them. A harness may mirror them as local auto-loading
+skills (`.claude/skills/`), but that overlay is a convenience, not the source of truth. No hook injection?
+Read `skills/README.md` (or run orient manually) before orchestrating or landing — never improvise a ceremony.
 
 ## Read first
-- `docs/ARCHITECTURE.md`, `docs/LAYERS.md` — the information kernel (monolith, deep modules, cwd-independent).
-- `docs/architecture/substrate.md` — target topology; **one meaning owner**; two planes; the three places.
+- `docs/ARCHITECTURE.md` + `docs/LAYERS.md` — information kernel (monolith, deep modules); `substrate.md` — target topology, **one meaning owner**, two planes.
 - `docs/architecture/runtime.md` — the `.compound` home, the **envelope spine** (schemas), hooks-as-clients.
-- `docs/architecture/information-custody.md` — physical bodies vs meaning/projections/indexes; edit, restore,
-  multi-device, execution-gateway boundary, and retirement topology.
-- `docs/architecture/transition.md` — the `Transition` apex object, the 9-field invariant, second-order tests.
-- `docs/architecture/execution-plane.md` — the model-traffic gateway (route evidence ≠ task success).
-- `docs/architecture/epistemics.md` — machine-checked doctrine table: principles → implementing objects → proof commands.
-- `docs/architecture/contracts/README.md` — the contracts (lego seams) + `move_type` + entity precedence.
-- `docs/memory-architecture.md` — the memory slice detail (built at P6; memory is one slice; ledger is authority).
-- `docs/roadmap/phases.md` — envelope-first construction order.
+- `docs/architecture/information-custody.md` — physical bodies vs meaning/projections/indexes; edit/restore.
+- `docs/architecture/transition.md` — the `Transition` apex object, the 9-field invariant, acceptance tests.
+- `docs/architecture/execution-plane.md` — model-traffic gateway (route evidence ≠ task success); `epistemics.md` — principles → objects → proof commands.
+- `docs/architecture/contracts/README.md` — contracts (lego seams) + `move_type` + entity precedence.
+- `docs/architecture/status.md` — package/command map; `docs/roadmap/phases.md` — envelope-first construction order.
 - Operator-specific sequencing is in `docs_private/` (gitignored, absent in clones). If absent, use the roadmap.
 
 ## Doctrine (non-negotiable)
-1. **One meaning owner.** Many sources, many indexes, many harnesses, many projections — **one** meaning
-   owner: compound. A private corpus is compound's meaning layer *inside* a running instance (not an external
-   overlay). A legacy vector/fact store is a **bridge/index, never authority**: `compound → objects → index`,
-   never `index → truth → compound reads`.
-   A running instance also physically custodies every durable body it needs under `COMPOUND_HOME`;
-   `source_in_place` is migration-only, not a completed ownership state.
+1. **One meaning owner.** Many sources, indexes, harnesses, projections — **one** meaning owner: compound. A
+   private corpus is compound's meaning layer *inside* a running instance. A legacy vector/fact store is a
+   **bridge/index, never authority**: `compound → objects → index`, never `index → truth → compound reads`.
+   A running instance physically custodies every durable body under `COMPOUND_HOME`; `source_in_place` is
+   migration-only, not a completed ownership state.
 2. **Own the meaning, rent the index.** The ledger owns visibility, promotion, supersession, identity, truth.
    Engines/models/tools/harnesses are disposable. A gateway `RouteDecision` is route evidence, not task success.
 3. **The runtime grammar is the envelope spine, hung off one `work_id`.** Intent → EffectiveContract →
@@ -50,83 +47,134 @@ symlinks to these tracked bodies; `./install.sh` runs it. No hook injection avai
    → superseded → retired`), never written straight to authority. Only `promoted` enters ambient recall;
    unknown/low-confidence → `parked`. Resolve identity by the precedence order; uncertain → parked only.
 5. **Second-order before first-order.** No field is neutral; every affordance is an attractor. Ask what a
-   skill/registry-entry/route/memory makes more likely tomorrow and what it can fossilize. Ensemble-aware, not lookup.
+   skill/registry-entry/route/memory makes likelier tomorrow and what it can fossilize. Ensemble-aware, not lookup.
 
 ## Build envelope-first (not memory-first)
-Build the runtime spine **before** memory ingestion: `.compound` home → envelope schemas → EffectiveContract
-+ ContextPack → WorkEnvelope lifecycle → policy → hook fixtures → *then* memory candidates → dogfood overlay.
-**Memory is one slice, not the substrate.** Extract the control-spine repo's *load-bearing contracts*
-(EffectiveContract, ContextPack, WorkEnvelope, ActionIntent→PolicyDecision, hook-as-client) — never its mass.
-Every migrated surface gets a **retirement condition**, or compound becomes one more layer.
+Build the runtime spine **before** memory ingestion: `.compound` home → envelope schemas → EffectiveContract +
+ContextPack → WorkEnvelope lifecycle → policy → hook fixtures → *then* memory candidates → dogfood overlay.
+**Memory is one slice, not the substrate.** Extract the control-spine repo's *load-bearing contracts*, never its
+mass. Every migrated surface gets a **retirement condition**, or compound becomes one more layer.
 
 ## Execution is a feedback loop (the path generates the architecture)
 The architecture docs are a **starting hypothesis, not a frozen spec.** Building compound *is* the self-healing
 loop compound provides:
-- **Execute a slice → write tests that probe the system's depth (not happy paths) → let tests surface flaws →
-  fix and harden → feed what you learned back into the docs, contracts, tests, AND these instruction files, in
-  the same change.** Updating AGENTS.md/CLAUDE.md/a contract locally as you learn is expected, not a violation.
-- Tests are how the system understands its own depth. A slice is done when tests prove it survives the relevant
-  acceptance tests (`transition.md`) and the failure modes it will actually hit. Write tests that would *fail*
-  if the depth were wrong. "It is about the path, not the direction." This loop is generic for all agents.
-- **Compounding-knowledge:** when a move teaches something about compound's future architecture, write it as a
-  transition-oriented, evidence-linked observation kept packet-local until it **earns promotion** — to a
-  contract, script, check, decision, or recalled context — *only when a real executor will consume it.* A move
-  that produces "another document" failed unless the document changes a future branch for a real executor.
-- **Agents are tunnels too:** a durable mid-work observation about an *external* surface (a product, source
-  system, or upstream repo — not compound's own architecture) does not belong in prose or a packet note; emit
-  it through the intake door as a `SourceObservation` (`compound source observe <obs.yaml>`, or
-  `observation_batch` JSON via `compound source observe-batch` for multiple) so it enters adjudication like any
-  other tunnel's evidence. Adapters observe, agents observe — nobody promotes from the field.
-- **Where an agent-authored finding lands (placement grammar):** never invent a path under
-  `COMPOUND_HOME` — the PreToolUse guard denies an unowned write and hands back a redirect. For a
-  durable *operational* note (a runbook fact, an ops observation) that is neither a compound-architecture
-  fact (→ a contract/doc) nor a reusable procedure (→ a skill), and isn't worth adjudication latency,
-  use the direct-write finding home: `compound finding record --topic T --body B` (recall via
-  `compound finding list|show`; it is `source_class=evidence`, never a ledger byte, never a promoted
-  Claim — promotion to canon stays the governed memory-candidate door). Unsure where *any* write goes?
-  Ask the resolver: `compound placement target --kind <operational-finding|memory|…>`, or
-  `compound placement resolve <path>` to check a path. These are plain `compound` CLI verbs — identical
-  for every harness; the guard + resolver + finding home all live in the binary, not in one harness.
+- **Execute a slice → write tests that probe depth (not happy paths) → let tests surface flaws → fix and harden →
+  feed what you learned back into the docs, contracts, tests, AND these instruction files, in the same change.**
+  Updating AGENTS.md/CLAUDE.md/a contract as you learn is expected, not a violation.
+- A slice is done when tests prove it survives the `transition.md` acceptance tests and the failure modes it will
+  actually hit. Write tests that would *fail* if the depth were wrong — "it is about the path, not the direction."
+- **Compounding-knowledge:** keep a durable lesson packet-local until it **earns promotion** — to a
+  contract/script/check/decision/recalled-context — *only when a real executor will consume it.* A move that only
+  produces "another document" failed unless it changes a future branch for a real executor.
+- **Agents observe, never promote from the field.** A durable mid-work observation about an *external* surface (a
+  product/source-system/upstream-repo, not compound's own architecture) enters through the intake door as a
+  `SourceObservation` (`compound source observe`), adjudicated like any other tunnel's evidence.
+- **Placement grammar:** never invent a path under `COMPOUND_HOME` — the PreToolUse guard denies an unowned write
+  and returns a redirect. A durable *operational* note (neither a compound-architecture fact → contract/doc, nor a
+  reusable procedure → skill) goes to the direct-write finding home (`compound finding record`;
+  `source_class=evidence`, never a ledger byte or promoted Claim). Unsure? Ask `compound placement target --kind
+  <…>` / `placement resolve <path>`.
+
+## Harness execution rail (RunAttempt is the audit primitive)
+compound **observes** executions; it does not become one. The rail is proven by a single `ratt_*` id per run.
+- **RunAttempt lifecycle** (`internal/runattempt`): **mint the attempt BEFORE any side effect**; **terminalize on
+  EVERY return path** (`succeeded|failed|abandoned`) — never leave `pending`/`running` (a stuck attempt is a
+  crash, not a state). `Heartbeat` marks liveness for long runs. `run-attempt sweep [--threshold 30m]`
+  terminalizes stale attempts with a `SweepReason` — sweeping is audit-only, it **never touches the work state
+  machine**. Retry lineage is `PredecessorID` (append-only: idempotent re-link, refuses a different predecessor).
+  One RunAttempt per harness run against one `work_id` — a persistence primitive, not meaning authority; it fills
+  the WorkEnvelope `run_attempt_ids[]` (`ratt_`-only) slot, and subprocess exit codes are **not** infra errors
+  (they map to `Status`).
+- **`compound work advance --execute` / `compound harness run` fail closed BEFORE any state change.** Validate the
+  envelope, resolve the adapter, and resolve the workspace *first* — an unknown harness, missing adapter, or
+  unresolvable workspace stops the work before it moves, so it can never be left stuck in `running`. The `running`
+  advance carries no `run_attempt_ids` (the adapter has not minted yet; the `ratt_` validator forbids stale ids).
+  On success → advance to `verifying`; on failure (non-zero exit, timeout, or infra) → close `failed`/`audit_only`.
+  The `ratt_` id **forward-links on BOTH paths** so the failed attempt is reachable from the envelope, not only
+  from `run_attempts/<id>.json`.
+- **Workspace resolution order:** `--workspace` → `git_delivery.target_worktree_root` → `cwd` → **refuse**. **NEVER
+  default to `COMPOUND_HOME`** — running a code-editing harness there edits the state/config dir, not the project.
+- **Claude adapter permission default is `plan`** (read-only; the only governed mode that does not hang a
+  non-interactive `claude --print` run). `bypass` (`--dangerously-skip-permissions`) is an **explicit opt-in
+  only**, surfaced as `--permission-mode` so the posture is auditable, never hard-coded.
+
+## Adapter lanes
+- A lane lives under `adapters/<lane>/` and installs into an **isolated Claude-family profile** (its own
+  `--config-dir`) through the shared `adapters/_lib` install system (`install-lane.sh`): `compound hook install`
+  writes the harness-authority hooks, then a lane-themed statusline and a symlinked global steering file. Install
+  is idempotent — same lane is a no-op; a different lane rewires the statusline.
+- **Lane identity vs harness type are distinct.** The lane id (the profile: config-dir + statusline) is NOT the
+  harness type that names the hook-authority source. Claude-flavored lanes install hooks via `--harness
+  claude-zai --config-dir <profile>` — `hook install`'s allowlist is harness *types*
+  (`claude-code|claude-zai|codex|all`) and `--config-dir` is gated to `claude-zai`, so a raw lane id there fails.
+
+## Multi-session coordination (several lanes work this repo at once)
+- **`compound coordination [--actor A]` is the read-only me / others / waiting-on projection** (the console's
+  Me/Others/Waiting-on view). It projects the planning half every lane runs — workbench + candidate prep +
+  wait/lane-capacity gate — for every actor **without executing any of it** (no claim/advance/admit/dispatch).
+- **Claim a lane before building.** `proposed ≠ held`: dispatch consumes proposed work, so unclaimed work gets
+  double-executed by a concurrent lane. Claim the item (`work claim`) and a NARROW scope (packages/files you will
+  touch) before touching anything; do not parallel-edit the same `internal/` package as a live lane.
+- **Landing goes through the land-lease ceremony.** `compound land-lease` is a single-holder, TTL-bounded,
+  steal-with-reason advisory mutex over the ACT of landing to main; the full ceremony (rehearse → battery →
+  `--ff-only` under a fresh main-SHA guard → `land-check` → close) is owned by `compound-land`. The SHA guard is
+  the correctness check; the lease only serializes the window.
+- **Main-checkout hygiene:** the MAIN checkout stays on `main` and clean; WIP lives in worktrees/branches — uncommitted
+  work in the shared tree is a lane mid-ceremony that blocks every other lane. Never `git checkout <branch>` in the MAIN
+  worktree — a later `git merge` compares against THEIR HEAD, not main, and `land-check` fails `wrong_target_worktree`.
+
+## Audit-reconcile law (an audit is a snapshot that LAGS the lanes)
+External audits (ChatGPT zip rounds, critique lists, prior review docs) are point-in-time snapshots; the lanes
+move faster than they do. **Before executing any audit's fix-list, verify each finding against current source and
+landed commits.** A finding already fixed gets CITED (with the commit), not re-implemented. Reconcile the audit
+against the live lane backlog and ratified records first — re-doing landed work is the predictable failure here.
 
 ## Build discipline
 - The topology is the **target**, not a license to build all of it. One vertical slice, proven with a command +
   fixtures, then retire the parallel handling. Never create a kernel service ahead of a slice that needs it.
-- Every move ends in one canonical `move_type`; `audit_only` (docs/dashboards) does not count.
-- Tests never compare wall-clock time against fixed fixture dates (a fixture that ages past a
-  staleness window becomes a time bomb that reds main days after a green landing). Inject the
-  clock, or freshen fixture timestamps at runtime.
-- A timeout-guarded lane needs a falsifier for the timeout path at realistic scale, and must
-  persist partial progress. Instant stubs cannot catch a cold start that can never finish inside
-  the deadline — without partial persistence the lane re-fails identically forever and reads as
-  "degraded" while every test is green. (Lived: semantic capgraph cold start, 574 nodes vs 3s.)
+- Every move ends in one canonical `move_type`; `audit_only` (docs/dashboards) does not count as compounding.
+- **A new `internal/` organ needs THREE coupled gates**, or the arch doctor reds the battery: the
+  `arch.Classification` row (spine/object-family/leaf/mem-target/importer), the two-class `MintHome` entry in
+  `internal/arch/mint.go` (`organ:<name>`, purpose + named consumer), AND a `docs/architecture/status.md`
+  package-table parity row (the doctor enforces Classification↔status.md parity).
 - Integration has levels: **orientation < pointer < merge < proof.** Only merge and runtime proof count.
-- **A capability with no live production consumer is bench-only.** A great bakeoff/test number is not proof the
-  feature reaches its real caller — `grep` for the production consumer of the code you landed. (Lived example:
-  the 0.955 semantic recall was consumed only by `memory query`; the agent-facing orient/hook path used a naive
-  ranker and never called it, so live sessions got worse recall than the bench claimed.) And a fix can land
-  *correct but dormant* if its env/config gate never engages on the operator's live config — verify the gate is
-  live where the consumer actually runs, not just where your test shell exports it.
-- Console tests are `.selftest.ts` files (exporting `run…SelfTest(): {ok, details}`) executed by a
-  `console/scripts/<name>-smoke.mjs` runner wired into `proof-check`'s gate list — never `bun:test`
-  files: the console-tsc gate cannot resolve `bun:test` types, and an unwired test file is a check
-  that never runs. (Lived: decision-brief falsifiers, 2026-07.)
+- **A capability with no live production consumer is bench-only.** A great bakeoff number is not proof the feature
+  reaches its real caller — `grep` for the production consumer of the code you landed, and verify the env/config
+  gate engages where that consumer runs, not just where your test shell exports it.
+- Tests never compare wall-clock against fixed fixture dates (a fixture that ages past a staleness window reds main
+  days after a green land) — inject the clock or freshen fixture timestamps at runtime.
+- A timeout-guarded lane needs a falsifier for the timeout path at realistic scale and must persist partial
+  progress; an instant stub cannot catch a cold start that never finishes inside the deadline.
 - Generated runtime state goes under `COMPOUND_HOME`, never the repo source tree. No `cwd` as authority.
-- Fresh-worktree `proof-check` needs FOUR gitignored inputs copied with `cp -Rc` (NOT `ln -s`): `docs_private/leak-tokens.txt`, `docs_private/plan/`, `docs_private/profiles/`, `console/node_modules`. Three of four leaves console-tsc + bun smokes red on `EISDIR ... bun/install/cache/...` — the failure looks like Bun cache corruption but is actually a missing local `node_modules`. (Lived: 2026-07-19, cmdMemory extraction — first battery passed 38/44, the 6 console failures cleared after `cp -Rc console/node_modules`, full battery then 44/44.)
+- Fresh-worktree batteries need gitignored inputs copied in first (`cp -Rc`, never symlink); the exact set is owned by `compound-land` §1.
+
+## Proof discipline
+- **`proof-check` owns its own output contract.** `--out FILE` writes the FULL report to FILE and prints one
+  truthful last line (`battery: ok|FAILED gates=N/M …`) with a truthful process exit (`0` ok / `1` a gate FAILED
+  / `2` usage). **Never pipe the battery or `redact` through `| tail`/`| head`** — zsh has no `pipefail`, so the
+  pipeline's exit becomes `tail`'s (always `0`) and a red gate reads green. Run unpiped; read the verdict.
+- **Never "fix" a red gate by weakening it** — deleting the test, raising a budget, disabling the check. That is
+  the one unforgivable move here. Write tests that would *fail* if the system's depth were wrong.
+- **"landed ≠ working."** A merged commit is not a live change. Prove wiring / data / cutover / proof: name the
+  live consumer and watch it consume in ITS output (grep-in-source is not consumption); no consumer ⇒ `audit_only`
+  ⇒ not done. The full battery + verdict format live in `compound-verify` — run it before any close.
 
 ## Public / private boundary (this repo is destined to be public)
 - `docs_private/`, `*.private.md`, `.compound-private/` are gitignored — **never tracked, never shipped.** Never
   put a personal path, credential, account, or private body into any tracked file, including comments/examples.
-- Public core = contracts, lifecycle, CLI, generic adapters, synthetic fixtures. Private overlay = personal
-  data, real paths, credentials, account-specific connectors — the dogfood dataset, not a private fork of core.
-- Test fixtures use `.invalid`/`.example` hosts, never `localhost`/private URLs: the public redact gate scans the
-  FULL content of any changed file, so a pre-existing private-URL fixture fails the gate the first time the file
-  is touched — long after the fixture was written.
+- Public core = contracts, lifecycle, CLI, generic adapters, synthetic fixtures. Private overlay = personal data,
+  real paths, credentials, account-specific connectors — the dogfood dataset, not a private fork of core.
+- Test fixtures use `.invalid`/`.example` hosts and synthetic names, never `localhost`/private URLs or real
+  product names: the redact gate scans the FULL content of any changed file, so a pre-existing private fixture
+  fails the gate the first time the file is touched. A pre-commit battery is blind to still-untracked NEW files;
+  `git add` them before the leak gate can see them (`compound-land` §1).
 
 ## Commit & safety
-- Scoped commits, clear boundaries (source/contracts; tests/fixtures; docs). Do not "commit all."
-- **Push is pre-authorized** (standing operator grant 2026-07-12): a normal `git push` of committed work to the
-  project's existing remote — public included — needs no per-push confirmation. Two floors remain: a clean
-  `redact` scan as a separate required gate before any public push; force-push, history rewrite, or a new remote
-  still requires explicit confirmation.
+- Scoped, single-concern commits (source/contracts; tests/fixtures; docs). Never `git add -A` / "commit all";
+  stage explicitly and check `git status --short` for strays first. The docs/contract/instruction updates a
+  change implies land in the SAME commit as the code (same-change doctrine) — a doc that lands "later" rots.
+- **Push is pre-authorized** (standing operator grant): a normal `git push` of committed work to the
+  existing remote — public included — needs no per-push confirmation. Two floors remain: a clean `redact` scan as a
+  separate required gate before any public push; force-push, history rewrite, or a new remote still confirms.
 - Stop and ask before deleting/archiving major surfaces, changing approval boundaries, spending, publishing, or
   any irreversible/external action. Prove the change by a state delta, not a report.
