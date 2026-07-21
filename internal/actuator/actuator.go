@@ -358,16 +358,42 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 	}, runErr
 }
 
-// runIntent builds the local_reversible / easy / local ActionIntent for a harness
-// run of known work. A harness run inside a scoped workspace with a captured
-// transcript is locally reversible (the diff can be reverted), so it qualifies
-// for auto-execution under the default policy — while the budget gate still caps
-// how many runs happen per window.
+// runPlanSafe reports whether a harness run is read-only BY CONTRACT and therefore
+// safe to route AUTO: the claude adapter in plan mode (its documented read-only
+// posture; an empty permission mode defaults to plan). Every other run — an arbitrary
+// os-harness command, claude in acceptEdits/bypass/default, codex, or an unknown
+// harness — can produce effects outside a cheaply-reversible local workspace diff.
+func runPlanSafe(in RunInput) bool {
+	if strings.TrimSpace(strings.ToLower(in.Harness)) != "claude" {
+		return false
+	}
+	switch strings.TrimSpace(strings.ToLower(in.PermissionMode)) {
+	case "", "plan":
+		return true
+	default:
+		return false
+	}
+}
+
+// runIntent builds the ActionIntent for a harness run of known work, classifying it
+// from what is ACTUALLY being run (F8) rather than a constant. A read-only plan-mode
+// claude run stays local_reversible/easy/local, so it qualifies for auto-execution
+// under the default policy (the budget gate still caps how many runs happen per
+// window). Everything else is external_side_effect — whose default policy outcome is
+// hold and which Route never auto-executes — so an arbitrary harness command is held
+// for a human by construction, never labeled safe. The escape hatch stays the
+// existing policy standing-grant override; there is no new bypass flag here.
 func runIntent(in RunInput, now time.Time) envelope.ActionIntent {
 	target := envelope.ActionTarget{Kind: "harness_run", ID: in.Harness, Path: in.Workspace}
 	preview := in.Prompt
 	if preview == "" {
 		preview = strings.TrimSpace(in.Command + " " + strings.Join(in.Args, " "))
+	}
+	mutationClass, reversibility := "external_side_effect", "manual"
+	rollbackPlan := "hold for operator review — an arbitrary harness run has no captured, cheaply-reversible pre-image"
+	if runPlanSafe(in) {
+		mutationClass, reversibility = "local_reversible", "easy"
+		rollbackPlan = "revert the workspace diff captured in the run transcript"
 	}
 	return envelope.ActionIntent{
 		Header: envelope.Header{
@@ -387,11 +413,11 @@ func runIntent(in RunInput, now time.Time) envelope.ActionIntent {
 		Capability:    "harness_run",
 		Action:        "run",
 		Target:        target,
-		MutationClass: "local_reversible",
-		Reversibility: "easy",
+		MutationClass: mutationClass,
+		Reversibility: reversibility,
 		BlastRadius:   "local",
 		Preview:       truncate(preview, 200),
-		RollbackPlan:  "revert the workspace diff captured in the run transcript",
+		RollbackPlan:  rollbackPlan,
 	}
 }
 
