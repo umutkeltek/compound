@@ -163,6 +163,7 @@ func cmdHarnessRun(args []string) {
 			"exit_code":       out.ExitCode,
 			"timed_out":       out.TimedOut,
 			"duration_ms":     out.Duration.Milliseconds(),
+			"governed":        false,
 		}))
 	} else {
 		fmt.Printf("run_attempt_id: %s\n", out.RunAttempt.ID)
@@ -177,6 +178,7 @@ func cmdHarnessRun(args []string) {
 			fmt.Printf("timed_out: true\n")
 		}
 		fmt.Printf("duration_ms: %d\n", out.Duration.Milliseconds())
+		fmt.Println("warning: harness run records a RunAttempt but does not advance or policy-bind the WorkEnvelope; use work advance --execute for governed execution.")
 	}
 
 	// Exit code matches the RunAttempt status: 0 on succeeded, 1 on
