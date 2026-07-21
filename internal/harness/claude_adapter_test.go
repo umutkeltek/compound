@@ -146,7 +146,10 @@ func TestClaudeAdapterFailedExit(t *testing.T) {
 // non-interactive --print run); an explicit named mode swaps in
 // --permission-mode <mode>; "bypass" is the explicit opt-in for
 // --dangerously-skip-permissions. Pinned: the posture must be explicit and
-// auditable, and a typo must never produce an unguarded run.
+// auditable. Unknown modes are covered separately by
+// TestClaudeAdapterPermissionModeUnknownFailsClosed (F7: reject before
+// mint, don't silently fall back) -- the old "unknown_falls_back_to_plan"
+// case pinned the wrong behavior and was removed here (zip27 audit F7).
 func TestClaudeAdapterPermissionMode(t *testing.T) {
 	cases := []struct {
 		name string
@@ -159,7 +162,6 @@ func TestClaudeAdapterPermissionMode(t *testing.T) {
 		{"explicit_default", "default", "--permission-mode default", "--dangerously-skip-permissions"},
 		{"explicit_acceptEdits", "acceptEdits", "--permission-mode acceptEdits", "--dangerously-skip-permissions"},
 		{"explicit_bypass_opt_in", "bypass", "--dangerously-skip-permissions", "--permission-mode"},
-		{"unknown_falls_back_to_plan", "bogus-mode", "--permission-mode plan", "--dangerously-skip-permissions"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -191,6 +193,42 @@ func TestClaudeAdapterPermissionMode(t *testing.T) {
 				t.Fatalf("mode %q: argv must not contain %q; got: %s", tc.mode, tc.ban, argv)
 			}
 		})
+	}
+}
+
+// TestClaudeAdapterPermissionModeUnknownFailsClosed: F7 -- an unrecognized
+// permission mode must be rejected BEFORE the RunAttempt is minted, not
+// silently downgraded to "plan". Falsifier: the prior behavior (see the
+// removed "unknown_falls_back_to_plan" case above) silently fell back to
+// plan and still minted+ran the RunAttempt; this pins that a typo produces
+// an error naming the bad value and mints ZERO ratt_ files (zip27 audit
+// round F7).
+func TestClaudeAdapterPermissionModeUnknownFailsClosed(t *testing.T) {
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	binDir := fakeBinaryPath(t, "claude", argvLog, 0)
+	withPATH(t, binDir)
+
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	a := NewClaudeAdapter(store)
+
+	_, err := a.Run(context.Background(), RunInput{
+		WorkID:         "work_permode_bad",
+		Harness:        "claude",
+		Workspace:      home,
+		Prompt:         "hi",
+		PermissionMode: "bogus-mode",
+		Now:            time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatalf("expected an error for unknown permission mode %q, got nil", "bogus-mode")
+	}
+	if !strings.Contains(err.Error(), "bogus-mode") {
+		t.Fatalf("error must name the bad value %q, got: %v", "bogus-mode", err)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(home, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 0 {
+		t.Fatalf("unknown permission mode must mint ZERO RunAttempts, got %d", len(runAttemptFiles))
 	}
 }
 
