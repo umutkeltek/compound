@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -274,6 +275,117 @@ func TestWorkAdvanceExecuteAcceptsWorkspaceAndPermissionMode(t *testing.T) {
 	}
 	if ra.Workspace != workspace {
 		t.Fatalf("RunAttempt.Workspace = %q, want the --workspace value %q", ra.Workspace, workspace)
+	}
+}
+
+// TestWorkAdvanceExecuteBindsActionIntentID: F3 -- the executed RunAttempt
+// (the exec-mint) is bound to the ActionIntent that authorized the
+// running-advance, closing the attempt->intent->policy-decision audit
+// chain. Falsifier: without RunInput.ActionIntentID wired, the minted
+// RunAttempt's action_intent_id is empty; this pins that it is an
+// act_-prefixed id AND that id is present in the work envelope's
+// action_intent_ids (zip27 audit round F3).
+func TestWorkAdvanceExecuteBindsActionIntentID(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "advance --execute binds action_intent_id",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = captureStdout(t, func() {
+		cmdWork([]string{
+			"advance", w.ID,
+			"--to", "running",
+			"--execute",
+			"--harness", "os-harness-entrypoints",
+			"--", "echo", "action-intent-bind-smoke",
+		})
+	})
+
+	final, err := ws.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(final.ActionIntentIDs) == 0 {
+		t.Fatalf("expected at least one ActionIntentID on the work envelope")
+	}
+
+	store := runattempt.Open(homePath)
+	ra, err := store.Get(final.RunAttemptIDs[len(final.RunAttemptIDs)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(ra.ActionIntentID, "act_") {
+		t.Fatalf("exec-mint RunAttempt action_intent_id = %q, want an act_-prefixed id", ra.ActionIntentID)
+	}
+	if !slices.Contains(final.ActionIntentIDs, ra.ActionIntentID) {
+		t.Fatalf("exec-mint RunAttempt action_intent_id %q not present in work envelope action_intent_ids %v", ra.ActionIntentID, final.ActionIntentIDs)
+	}
+}
+
+// TestWorkAdvanceExecuteRejectsNonRunningTo: F6 -- --execute only ever
+// advances through "running" (the adapter mint + verifying/failed advance
+// below assumes it). A --to value other than "running" must be rejected
+// BEFORE any state change, adapter resolution, or RunAttempt mint.
+// Falsifier: prior behavior accepted any --to value and drove the adapter
+// against a state the exec flow never expects (zip27 audit round F6).
+func TestWorkAdvanceExecuteRejectsNonRunningTo(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := work.Open(homePath)
+	w, _ := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "--execute --to verifying must be rejected before any state change",
+	}, cliTestNow)
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	cmd := exec.Command("go", "run", "./cmd/compound", "work", "advance", w.ID,
+		"--to", "verifying", "--execute", "--harness", "os-harness-entrypoints",
+		"--", "echo", "hi")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit for --execute --to verifying, got 0. output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "--execute requires --to running") {
+		t.Fatalf("expected '--execute requires --to running' in stderr, got:\n%s", out)
+	}
+
+	// The work must NOT have advanced -- still "claimed". Only the
+	// claim-mint RunAttempt exists; the rejected --to must mint no
+	// RunAttempt (F6 fires before any adapter resolution / advance side
+	// effect).
+	ws2, _ := work.Open(homePath)
+	final, getErr := ws2.Get(w.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if final.State != "claimed" {
+		t.Fatalf("--execute --to verifying must fail before any state change; state = %q, want claimed", final.State)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 1 {
+		t.Fatalf("rejected --to must mint no RunAttempt beyond the claim's; expected exactly 1 file (the claim-mint), got %d", len(runAttemptFiles))
 	}
 }
 
