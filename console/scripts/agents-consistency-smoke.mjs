@@ -38,16 +38,24 @@ import {
  *      DISTINCT bar heights (no saturation), and a lease well under threshold
  *      must not read as red.
  *
- * Manual / orchestrator run (needs a built binary); NOT wired into proof-check
- * (its proof_check.go registration is owned by a live concurrent lane — see the
- * pending-registration note this smoke is allowlisted under):
+ * Wired into proof-check (registration landed with the coordination-view
+ * land). Manual run (needs a built binary):
  *   COMPOUND_BIN=../compound bun scripts/agents-consistency-smoke.mjs
  */
 
 const BIN = process.env.COMPOUND_BIN || "compound";
 
 function runJson(args) {
-  const out = execFileSync(BIN, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  let out;
+  try {
+    out = execFileSync(BIN, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  } catch (err) {
+    // `home doctor` exits non-zero when live hygiene/habitat is red but still
+    // emits its full JSON report. This smoke pins door CONSISTENCY, not
+    // hygiene health, so a parseable report on a red verdict is valid input;
+    // anything without parseable stdout is a real failure (assert below).
+    out = typeof err?.stdout === "string" ? err.stdout : "";
+  }
   const start = out.indexOf("{");
   assert.ok(start >= 0, `no JSON object in \`${BIN} ${args.join(" ")}\` output`);
   return JSON.parse(out.slice(start));

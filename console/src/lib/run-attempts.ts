@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { COMPOUND_BIN, COMPOUND_HOME, str, type Json } from "@/lib/compound";
+import { COMPOUND_BIN, COMPOUND_HOME, privateFallbacksEnabled, str, type Json } from "@/lib/compound";
 
 /*
  * Run-attempt door — the "how was this work executed" evidence layer
@@ -58,6 +58,10 @@ export function normalizeRunAttempts(raw: unknown): RunAttempt[] {
 }
 
 export async function getRunAttempts(): Promise<RunAttempt[] | null> {
+  // Transcript-bearing execution evidence is a private runtime read; the door
+  // stays closed (same "detail unavailable" render as an absent verb) unless
+  // the operator opts in via privateFallbacksEnabled().
+  if (!privateFallbacksEnabled()) return null;
   try {
     const { stdout } = await exec(COMPOUND_BIN, ["run-attempt", "list", "--json"], {
       env: { ...process.env, COMPOUND_HOME },
