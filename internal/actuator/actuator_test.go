@@ -1,6 +1,7 @@
 package actuator
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,8 +9,25 @@ import (
 	"time"
 
 	"compound/internal/eventstore"
+	"compound/internal/harness"
 	"compound/internal/policy"
+	"compound/internal/runattempt"
 )
+
+// stubClaudeAdapter is a hermetic stand-in for the real subprocess-spawning claude
+// adapter, so a Run test can reach the post-dispatch consumption record without
+// spawning `claude`. It is injected through the buildAdapterRegistry seam.
+type stubClaudeAdapter struct{ ran bool }
+
+func (a *stubClaudeAdapter) Name() string { return "claude" }
+
+func (a *stubClaudeAdapter) Run(_ context.Context, in harness.RunInput) (harness.RunOutput, error) {
+	a.ran = true
+	return harness.RunOutput{
+		RunAttempt: runattempt.RunAttempt{ID: "ratt_stub", WorkID: in.WorkID, Harness: in.Harness, Status: "succeeded"},
+		ExitCode:   0,
+	}, nil
+}
 
 // T5 (F10): the switchback instruction write is GOVERNED, not a raw os.WriteFile.
 // Under the default policy a workspace instruction file is local_reversible/easy, so
@@ -199,5 +217,56 @@ func TestCorruptLedgerErrorsAndHoldsBudget(t *testing.T) {
 	}
 	if plan.Decision.Mode != ModeHold {
 		t.Fatalf("an otherwise-auto move on a corrupt ledger must be HELD, got %s (reasons=%v)", plan.Decision.Mode, plan.Decision.Reasons)
+	}
+}
+
+// T3 (F9.1): when a run executed but recording its budget consumption fails, Run must
+// return an error naming the consumption failure — and still report the run happened
+// (Executed=true) so the operator knows it did NOT get rolled back. The budget dir is
+// made read-only so LoadBudget/Used (reads) succeed but Record (a write) fails,
+// isolating the record failure.
+func TestRunSurfacesConsumptionRecordFailure(t *testing.T) {
+	home := t.TempDir()
+	budgetDir := filepath.Join(home, "actuator", "budget")
+	if err := os.MkdirAll(budgetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(budgetDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(budgetDir, 0o755) })
+
+	stub := &stubClaudeAdapter{}
+	orig := buildAdapterRegistry
+	buildAdapterRegistry = func(h string) *harness.AdapterRegistry {
+		reg := harness.NewAdapterRegistry(runattempt.Open(h))
+		if err := reg.RegisterAdapter(stub); err != nil {
+			t.Fatalf("register stub adapter: %v", err)
+		}
+		return reg
+	}
+	defer func() { buildAdapterRegistry = orig }()
+
+	res, err := Run(home, RunInput{
+		WorkID:         "work_rec",
+		Harness:        "claude",
+		PermissionMode: "plan",
+		Prompt:         "hello",
+	}, policy.DefaultConfig(), testNow)
+
+	if !stub.ran {
+		t.Fatal("precondition: the auto run must have dispatched the stub adapter")
+	}
+	if !res.Executed {
+		t.Fatalf("the run DID execute; result must report Executed=true: %+v", res)
+	}
+	if err == nil {
+		t.Fatal("a failed consumption record must surface as an error, not be silently discarded")
+	}
+	if !strings.Contains(err.Error(), "consumption") {
+		t.Fatalf("error must name the consumption-record failure, got: %v", err)
+	}
+	if res.RunAttemptID == "" || !strings.Contains(err.Error(), res.RunAttemptID) {
+		t.Fatalf("error must report the run happened (run_attempt id %q), got: %v", res.RunAttemptID, err)
 	}
 }

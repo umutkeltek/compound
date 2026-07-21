@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,6 +15,14 @@ import (
 	"compound/internal/policy"
 	"compound/internal/runattempt"
 )
+
+// buildAdapterRegistry constructs the harness adapter registry Run dispatches
+// through. It is a package var so a test can substitute a hermetic stub for the
+// subprocess-spawning built-ins; production always builds the real registry over the
+// home's runattempt store. Mirrors the recordEnvelopeFn seam in internal/act.
+var buildAdapterRegistry = func(homePath string) *harness.AdapterRegistry {
+	return harness.NewAdapterRegistry(runattempt.Open(homePath))
+}
 
 // Plan is the actuator's full routing verdict for one move: the policy decision,
 // the budget headroom, and the auto/hold/deny routing — computed but NOT yet
@@ -243,8 +252,11 @@ func applyRoutingStep(homePath string, p ProjectProfile, step SwitchbackStep, bu
 		res.Reasons = []string{fmt.Sprintf("governed routing repoint refused/rolled back: %v", err)}
 		return res
 	}
-	// Record the routing repoint against the switchback channel budget.
-	_ = ledger.Record(Consumption{
+	// Record the routing repoint against the switchback channel budget. The repoint
+	// DID land and is receipted; if the consumption record fails, surface it on the
+	// step (F9.1) rather than dropping it silently — budget accounting must not be
+	// quietly wrong. The applied write is not rolled back.
+	if recErr := ledger.Record(Consumption{
 		SchemaVersion: ConsumptionSchemaVersion,
 		At:            now.UTC().Format(time.RFC3339),
 		ProductID:     p.ProductID,
@@ -252,7 +264,9 @@ func applyRoutingStep(homePath string, p ProjectProfile, step SwitchbackStep, bu
 		Actions:       1,
 		WorkID:        step.Intent.IDs.WorkID,
 		ReceiptRef:    out.Receipt.ID,
-	})
+	}); recErr != nil {
+		res.Reasons = append(res.Reasons, fmt.Sprintf("routing repoint receipted %s but budget consumption NOT recorded: %v", out.Receipt.ID, recErr))
+	}
 	res.Applied = true
 	res.ReceiptRef = out.Receipt.ID
 	res.TransitionRef = out.Transition.ID
@@ -317,7 +331,7 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 		return RunResult{Plan: plan, Held: true, HeldMoveID: card.ID, HeldMovePath: path}, nil
 	}
 
-	registry := harness.NewAdapterRegistry(runattempt.Open(homePath))
+	registry := buildAdapterRegistry(homePath)
 	adapter, ok := registry.AdapterByName(in.Harness)
 	if !ok {
 		return RunResult{}, fmt.Errorf("actuator run: unknown harness %q; available: %v", in.Harness, registry.Names())
@@ -335,10 +349,22 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 		ActionIntentID: intent.ID,
 	})
 
+	result := RunResult{
+		Plan:           plan,
+		Executed:       true,
+		RunAttemptID:   out.RunAttempt.ID,
+		TranscriptPath: out.TranscriptPath,
+		ExitCode:       out.ExitCode,
+		TimedOut:       out.TimedOut,
+	}
+
 	// Record consumption for the run regardless of subprocess exit — a run that
 	// happened consumed budget even if the task failed. Infrastructure failure
-	// (runErr != nil) still produced a terminalized RunAttempt we record.
-	_ = OpenLedger(homePath).Record(Consumption{
+	// (runErr != nil) still produced a terminalized RunAttempt we record. If the
+	// recording itself fails, surface it (F9.1): the run DID happen (result reports
+	// Executed=true) so budget accounting must not be silently wrong. Do NOT roll
+	// back the run — it already executed.
+	if recErr := OpenLedger(homePath).Record(Consumption{
 		SchemaVersion: ConsumptionSchemaVersion,
 		At:            now.UTC().Format(time.RFC3339),
 		ProductID:     in.ProductID,
@@ -346,16 +372,15 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 		Actions:       1,
 		WorkID:        in.WorkID,
 		ReceiptRef:    out.RunAttempt.ID,
-	})
+	}); recErr != nil {
+		wrapped := fmt.Errorf("actuator run: run executed (run_attempt=%s exit=%d) but recording budget consumption failed: %w", out.RunAttempt.ID, out.ExitCode, recErr)
+		if runErr != nil {
+			return result, errors.Join(runErr, wrapped)
+		}
+		return result, wrapped
+	}
 
-	return RunResult{
-		Plan:           plan,
-		Executed:       true,
-		RunAttemptID:   out.RunAttempt.ID,
-		TranscriptPath: out.TranscriptPath,
-		ExitCode:       out.ExitCode,
-		TimedOut:       out.TimedOut,
-	}, runErr
+	return result, runErr
 }
 
 // runPlanSafe reports whether a harness run is read-only BY CONTRACT and therefore
