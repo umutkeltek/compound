@@ -274,6 +274,27 @@ func TestHabitatPathMakesLegacyWriterDebtExplicitAndRejectsTraversal(t *testing.
 // the InspectHabitat check RED with unknown_roots=["actuator"] — the live
 // drift this pins was created when the actuator landed without its
 // same-change catalog registration (2026-07-21).
+// TestHabitatCatalogOwnsContentPostAuthorizations: S3 content-queue approve
+// writes ContentPostAuthorization records under content-post-authorizations/;
+// an unowned root reds home doctor and blocks archive-history repairs.
+// Falsifier: removing the catalog entry makes InspectHabitat report the root
+// as unknown (the same-change law the actuator violated on 2026-07-21).
+func TestHabitatCatalogOwnsContentPostAuthorizations(t *testing.T) {
+	entry, ok := HabitatForPath("content-post-authorizations/cdraft_0000.json")
+	if !ok || entry.Prefix != "content-post-authorizations" || entry.Status != HabitatStatusActive || entry.Class != HabitatClassOperational || !entry.Backup || entry.Compact {
+		t.Fatalf("content-post-authorizations habitat is not owned operational state: %+v ok=%t", entry, ok)
+	}
+	homePath := t.TempDir()
+	writeHomeFile(t, homePath, "content-post-authorizations/cdraft_0000.json", `{}`)
+	inventory, err := InspectHabitat(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.UnknownRoots) != 0 {
+		t.Fatalf("content-post-authorizations must be a known root; unknown_roots=%v", inventory.UnknownRoots)
+	}
+}
+
 func TestHabitatCatalogOwnsActuatorRoot(t *testing.T) {
 	entry, ok := HabitatForPath("actuator/budget/2026-07-21.json")
 	if !ok || entry.Prefix != "actuator/budget" || entry.Status != HabitatStatusActive || entry.Class != HabitatClassOperational || !entry.Backup || entry.Compact || !entry.PlacementAllowed {

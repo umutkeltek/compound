@@ -97,6 +97,10 @@ func buildHabitatEntries() []HabitatEntry {
 		child("work.checkpoints", "work/checkpoints", HabitatClassOperational, true, true, false),
 		child("work.transactions", "work/transactions", HabitatClassOperational, true, true, false),
 		active("run-attempts", "run_attempts", HabitatClassEvidence, true, true, false),
+		// content-post-authorizations/<draft_id>.json embeds the approved
+		// draft's ActionIntent + PolicyDecision + body ref for the S4 act-post
+		// consumer; modeled on action-execution-plans, owned from birth.
+		active("content-post-authorizations", "content-post-authorizations", HabitatClassOperational, false, true, false),
 		active("actuator", "actuator", HabitatClassOperational, true, true, false),
 		child("actuator.budget", "actuator/budget", HabitatClassOperational, true, true, false),
 		child("actuator.outbox", "actuator/outbox", HabitatClassOperational, true, true, false),
