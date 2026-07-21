@@ -278,25 +278,16 @@ func TestWorkAdvanceExecuteAcceptsWorkspaceAndPermissionMode(t *testing.T) {
 }
 
 // TestWorkAdvanceExecuteStampsLaneIDOnExecAttempt: the exec-rail's minted
-// RunAttempt (the execute-mint, not the claim-mint) should carry
-// lane_id = the resolved --by actor. This is the S3 harness-exec stamping
-// falsifier the packet specifies.
+// RunAttempt (the execute-mint, not the claim-mint) carries lane_id = the
+// resolved --by actor. This is the S3b harness-exec stamping falsifier.
 //
-// STATUS: BLOCKED by the slice fence (documented deviation, see the
-// attribution-gap comment in runWorkAdvanceExecute). The adapter
-// (internal/harness, owned by the concurrent S2 lane) mints AND terminalizes
-// the RunAttempt atomically inside adapter.Run; out.RunAttempt is already
-// succeeded/failed when the cmd layer sees it, so runattempt.SetAttribution's
-// terminal-refusal guard rejects a post-run stamp. harness.RunInput carries
-// no lane identity, and NewAdapterRegistry takes a concrete *runattempt.Store
-// (no wrapper seam), so the cmd layer has no mutable window. The additive fix
-// is owned by the harness lane: accept a lane identity on RunInput and stamp
-// it pre-terminalization in subprocess_runner.go. This test is intentionally
-// skipped so the suite stays green; remove the skip (and the stamping lands
-// green) once the harness lane closes the seam. The RED this guards against
-// was confirmed by running it without the skip: lane_id = "" (no stamp).
+// Falsifier (RED→GREEN, confirmed): with RunInput carrying no lane
+// identity, the exec-mint lane_id = "" (no stamp). The additive fix --
+// RunInput.LaneID populated from --by/--actor here and stamped via
+// SetAttribution pre-terminalization in runWithSubprocess -- turns it
+// GREEN. The claim-mint (work.Claim) is not lane-stamped on this path; the
+// execute-mint is the LAST id, so the assertion targets it.
 func TestWorkAdvanceExecuteStampsLaneIDOnExecAttempt(t *testing.T) {
-	t.Skip("S3 deviation: harness-exec lane_id stamping blocked by the fence (adapter owns mint->terminalize atomically in internal/harness; RunInput carries no lane id; SetAttribution refuses on terminal). RED confirmed without skip: exec-mint lane_id = \"\". Additive fix owned by the harness lane (RunInput.LaneID + pre-terminalize stamp).")
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {

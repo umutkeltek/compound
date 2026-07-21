@@ -78,6 +78,74 @@ func TestRunnerActionIntentBindsBeforeTerminal(t *testing.T) {
 	}
 }
 
+// TestRunnerStampsLaneIDPreTerminal: when RunInput.LaneID is set, the
+// terminal RunAttempt carries lane_id = that value, stamped via
+// SetAttribution BEFORE Complete (a post-Complete stamp is refused by the
+// terminal guard, so it would be a silent no-op). Re-Get from disk proves
+// the stamp persisted through the terminal transition. Complements the
+// CLI-level TestWorkAdvanceExecuteStampsLaneIDOnExecAttempt at the rail
+// level -- no CLI or work-advance machinery in the path.
+func TestRunnerStampsLaneIDPreTerminal(t *testing.T) {
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	a := NewOSEntrypointsAdapter(store)
+
+	out, err := a.Run(context.Background(), RunInput{
+		WorkID:    "work_lane",
+		Harness:   "os-harness-entrypoints",
+		Workspace: home,
+		Command:   "echo",
+		Args:      []string{"ok"},
+		LaneID:    "lane-a:worker",
+		Now:       time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.RunAttempt.LaneID != "lane-a:worker" {
+		t.Fatalf("terminal RunAttempt lane_id = %q, want lane-a:worker (must stamp before Complete)", out.RunAttempt.LaneID)
+	}
+	got, gerr := store.Get(out.RunAttempt.ID)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if got.LaneID != "lane-a:worker" {
+		t.Fatalf("persisted lane_id = %q, want lane-a:worker", got.LaneID)
+	}
+}
+
+// TestRunnerEmptyLaneIDOmitsStamp: an empty LaneID stamps NOTHING -- the
+// runner skips SetAttribution entirely, so the persisted RunAttempt JSON
+// has NO lane_id key (omitempty at the rail level). Falsifier: if the
+// runner called SetAttribution unconditionally, the field would still
+// round-trip; asserting on the raw JSON bytes (not just the struct) pins
+// that an unattributed run leaves no lane_id trace.
+func TestRunnerEmptyLaneIDOmitsStamp(t *testing.T) {
+	home := t.TempDir()
+	store := runattempt.Open(home)
+	a := NewOSEntrypointsAdapter(store)
+
+	out, err := a.Run(context.Background(), RunInput{
+		WorkID:    "work_no_lane",
+		Harness:   "os-harness-entrypoints",
+		Workspace: home,
+		Command:   "echo",
+		Args:      []string{"ok"},
+		// LaneID intentionally empty: unattributed run.
+		Now: time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	body, rerr := os.ReadFile(storePath(store, out.RunAttempt))
+	if rerr != nil {
+		t.Fatalf("read RunAttempt JSON: %v", rerr)
+	}
+	if strings.Contains(string(body), "lane_id") {
+		t.Fatalf("unattributed RunAttempt JSON must omit lane_id (empty LaneID stamps nothing); got:\n%s", body)
+	}
+}
+
 // TestRunnerInfraFailureTerminalizes: a Start failure (bad command path)
 // terminalizes the RunAttempt failed and returns BOTH the RunAttempt and
 // an error. Pinned: the old runner returned RunOutput{} + err on every
