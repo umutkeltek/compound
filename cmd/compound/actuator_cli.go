@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -113,6 +114,14 @@ func planIntent(args []string, now time.Time) envelope.ActionIntent {
 }
 
 func runActuatorPlan(args []string, stdout, stderr io.Writer) int {
+	if err := validateKnownFlags(args, map[string]bool{
+		"--work": true, "--class": true, "--reversibility": true, "--channel": true,
+		"--product": true, "--capability": true, "--home": true,
+	}, map[string]bool{"--json": true}); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		fmt.Fprintln(stderr, actuatorUsage())
+		return 2
+	}
 	homePath, ok := actuatorHome(args, stderr)
 	if !ok {
 		return 1
@@ -178,6 +187,13 @@ func printHeldMoveCard(stdout io.Writer, card actuator.HeldMoveCard) {
 }
 
 func runActuatorBudget(args []string, stdout, stderr io.Writer) int {
+	if err := validateKnownFlags(args, map[string]bool{
+		"--product": true, "--home": true,
+	}, map[string]bool{"--json": true}); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		fmt.Fprintln(stderr, actuatorUsage())
+		return 2
+	}
 	homePath, ok := actuatorHome(args, stderr)
 	if !ok {
 		return 1
@@ -213,10 +229,38 @@ func runActuatorBudget(args []string, stdout, stderr io.Writer) int {
 }
 
 func runActuatorBudgetSet(args []string, stdout, stderr io.Writer) int {
+	usage := "usage: compound actuator budget-set --channel ch --window-hours H [--max-actions N] [--max-spend-usd X] [--max-tokens T] [--product p] [--home P]"
+	if err := validateKnownFlags(args, map[string]bool{
+		"--channel": true, "--window-hours": true, "--max-actions": true,
+		"--max-spend-usd": true, "--max-tokens": true, "--product": true, "--home": true,
+	}, nil); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
 	channel := strings.TrimSpace(flagValue(args, "--channel"))
-	window := actuatorInt(args, "--window-hours", 24)
+	window, err := actuatorInt(args, "--window-hours", 24)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 2
+	}
 	if channel == "" || window <= 0 {
-		fmt.Fprintln(stderr, "usage: compound actuator budget-set --channel ch --window-hours H [--max-actions N] [--max-spend-usd X] [--max-tokens T] [--product p]")
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	maxActions, err := actuatorInt(args, "--max-actions", 0)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 2
+	}
+	maxSpendUSD, err := actuatorFloat(args, "--max-spend-usd", 0)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 2
+	}
+	maxTokens, err := actuatorInt(args, "--max-tokens", 0)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
 		return 2
 	}
 	homePath, ok := actuatorHome(args, stderr)
@@ -239,9 +283,9 @@ func runActuatorBudgetSet(args []string, stdout, stderr io.Writer) int {
 	lim := actuator.ChannelLimits{
 		Channel:     channel,
 		WindowHours: window,
-		MaxActions:  actuatorInt(args, "--max-actions", 0),
-		MaxSpendUSD: actuatorFloat(args, "--max-spend-usd", 0),
-		MaxTokens:   actuatorInt(args, "--max-tokens", 0),
+		MaxActions:  maxActions,
+		MaxSpendUSD: maxSpendUSD,
+		MaxTokens:   maxTokens,
 	}
 	replaced := false
 	for i, ch := range budget.Channels {
@@ -265,10 +309,18 @@ func runActuatorBudgetSet(args []string, stdout, stderr io.Writer) int {
 }
 
 func runActuatorSwitchback(args []string, stdout, stderr io.Writer) int {
+	usage := "usage: compound actuator switchback --profile FILE --work W [--home P] [--json]"
+	if err := validateKnownFlags(args, map[string]bool{
+		"--profile": true, "--work": true, "--home": true,
+	}, map[string]bool{"--json": true}); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
 	profilePath := strings.TrimSpace(flagValue(args, "--profile"))
 	work := strings.TrimSpace(flagValue(args, "--work"))
 	if profilePath == "" || work == "" {
-		fmt.Fprintln(stderr, "usage: compound actuator switchback --profile FILE --work W [--home P] [--json]")
+		fmt.Fprintln(stderr, usage)
 		return 2
 	}
 	homePath, ok := actuatorHome(args, stderr)
@@ -323,10 +375,25 @@ func runActuatorSwitchback(args []string, stdout, stderr io.Writer) int {
 }
 
 func runActuatorRun(args []string, stdout, stderr io.Writer) int {
+	usage := "usage: compound actuator run --work W --harness H [--channel ch] [--product p] [--workspace path] [--prompt P | -- cmd args...] [--permission-mode m] [--home P] [--json]"
+	// Everything from `--` onward is the subprocess argv, not our flags — validate
+	// only the slice before the separator so passthrough args aren't misread as ours.
+	validateArgs := args
+	if idx := indexOf(args, "--"); idx >= 0 {
+		validateArgs = args[:idx]
+	}
+	if err := validateKnownFlags(validateArgs, map[string]bool{
+		"--work": true, "--harness": true, "--channel": true, "--product": true,
+		"--workspace": true, "--prompt": true, "--permission-mode": true, "--home": true,
+	}, map[string]bool{"--json": true}); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
 	work := strings.TrimSpace(flagValue(args, "--work"))
 	harnessName := strings.TrimSpace(flagValue(args, "--harness"))
 	if work == "" || harnessName == "" {
-		fmt.Fprintln(stderr, "usage: compound actuator run --work W --harness H [--channel ch] [--product p] [--workspace path] [--prompt P | -- cmd args...] [--permission-mode m]")
+		fmt.Fprintln(stderr, usage)
 		return 2
 	}
 	homePath, ok := actuatorHome(args, stderr)
@@ -437,35 +504,50 @@ func spendNum(x float64, unlimited bool) string {
 	return fmt.Sprintf("$%.2f", x)
 }
 
-func actuatorInt(args []string, name string, def int) int {
+// actuatorInt parses an integer flag. An absent/empty value keeps def; a
+// present-but-unparseable value is an error naming the flag and the bad
+// value (never silently falls back to def — that silently disabled limits
+// like --max-actions ten -> 0 == unlimited).
+func actuatorInt(args []string, name string, def int) (int, error) {
 	v := strings.TrimSpace(flagValue(args, name))
 	if v == "" {
-		return def
+		return def, nil
 	}
-	var n int
-	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
-		return def
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid integer value %q", name, v)
 	}
-	return n
+	return n, nil
 }
 
-func actuatorFloat(args []string, name string, def float64) float64 {
+// actuatorFloat is actuatorInt's float64 counterpart; same empty-stays-default,
+// non-empty-non-parseable-is-error contract.
+func actuatorFloat(args []string, name string, def float64) (float64, error) {
 	v := strings.TrimSpace(flagValue(args, name))
 	if v == "" {
-		return def
+		return def, nil
 	}
-	var x float64
-	if _, err := fmt.Sscanf(v, "%f", &x); err != nil {
-		return def
+	x, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid numeric value %q", name, v)
 	}
-	return x
+	return x, nil
 }
 
 func runActuatorPost(args []string, stdout, stderr io.Writer) int {
+	usage := "usage: compound actuator post --work W --content \"...\" [--product p] [--channel distribution] [--surface x] [--metric M] [--window 7d] [--home P] [--json]"
+	if err := validateKnownFlags(args, map[string]bool{
+		"--work": true, "--content": true, "--product": true, "--channel": true,
+		"--surface": true, "--metric": true, "--expected-effect": true, "--window": true, "--home": true,
+	}, map[string]bool{"--json": true}); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
 	work := strings.TrimSpace(flagValue(args, "--work"))
 	content := flagValue(args, "--content")
 	if work == "" || strings.TrimSpace(content) == "" {
-		fmt.Fprintln(stderr, "usage: compound actuator post --work W --content \"...\" [--product p] [--channel distribution] [--surface x] [--metric M] [--window 7d] [--home P] [--json]")
+		fmt.Fprintln(stderr, usage)
 		return 2
 	}
 	homePath, ok := actuatorHome(args, stderr)
@@ -534,6 +616,13 @@ func actuatorDefaultMetric(channel string) string {
 }
 
 func runActuatorObserve(args []string, stdout, stderr io.Writer) int {
+	if err := validateKnownFlags(args, map[string]bool{
+		"--product": true, "--home": true,
+	}, map[string]bool{"--full": true, "--json": true}); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		fmt.Fprintln(stderr, actuatorUsage())
+		return 2
+	}
 	homePath, ok := actuatorHome(args, stderr)
 	if !ok {
 		return 1
@@ -634,6 +723,13 @@ func productSuffix(productID string) string {
 }
 
 func runActuatorHeld(args []string, stdout, stderr io.Writer) int {
+	if err := validateKnownFlags(args, map[string]bool{
+		"--product": true, "--home": true,
+	}, nil); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		fmt.Fprintln(stderr, actuatorUsage())
+		return 2
+	}
 	productID := flagValue(args, "--product")
 	homePath, ok := actuatorHome(args, stderr)
 	if !ok {
