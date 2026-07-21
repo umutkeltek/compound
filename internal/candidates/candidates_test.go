@@ -33,6 +33,33 @@ func TestCapabilityDirIsSingleSourced(t *testing.T) {
 	}
 }
 
+// ContentDraft is the distribution-loop observed candidate. Pin its home and the
+// verdicts its door may apply. RED if someone renames the inbox (breaking the
+// product content-draft door + the auto-registered habitat entry) or opens the
+// verdict set to Promote (a draft must be operationalized/parked/rejected, never
+// promoted to canon truth).
+func TestContentDraftDirIsSingleSourced(t *testing.T) {
+	spec, ok := SpecFor(ContentDraft)
+	if !ok {
+		t.Fatal("content_draft spec missing")
+	}
+	if spec.InboxDir != "inbox/content-drafts" {
+		t.Fatalf("content_draft dir = %q, want inbox/content-drafts", spec.InboxDir)
+	}
+	if spec.Consumer != "compound product content-draft" {
+		t.Fatalf("content_draft consumer = %q, want the product content-draft door", spec.Consumer)
+	}
+	want := map[string]bool{Park: true, Operationalize: true, Reject: true}
+	if len(spec.Verdicts) != len(want) {
+		t.Fatalf("content_draft verdicts = %v, want park/operationalize/reject", spec.Verdicts)
+	}
+	for _, v := range spec.Verdicts {
+		if !want[v] {
+			t.Fatalf("content_draft verdict %q not allowed (must be park/operationalize/reject)", v)
+		}
+	}
+}
+
 func TestEvalCaseConsumerIsReviewedPlan(t *testing.T) {
 	spec, ok := SpecFor(EvalCase)
 	if !ok {

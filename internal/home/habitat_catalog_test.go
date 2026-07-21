@@ -188,6 +188,26 @@ func TestHabitatCatalogOwnsPermissionActuatorCanonicalAndLegacyPaths(t *testing.
 	}
 }
 
+// The content-drafts inbox is auto-registered from the candidates leaf (one home
+// per kind). Pin it as a durable operational inbox: RED if the kind is renamed or
+// the auto-loop breaks (HabitatForPath misses), or if it is ever misclassified as
+// compactable / non-backed-up — either would silently lose durable marketing drafts.
+func TestHabitatCatalogOwnsContentDraftInbox(t *testing.T) {
+	entry, ok := HabitatForPath("inbox/content-drafts/cdraft_synth.json")
+	if !ok {
+		t.Fatal("inbox/content-drafts is not owned by the habitat catalog")
+	}
+	if entry.Prefix != "inbox/content-drafts" {
+		t.Fatalf("content-drafts habitat prefix = %q, want inbox/content-drafts", entry.Prefix)
+	}
+	if entry.Status != HabitatStatusActive || entry.Class != HabitatClassOperational {
+		t.Fatalf("content-drafts inbox is not active operational: %+v", entry)
+	}
+	if !entry.Scaffold || !entry.Backup || !entry.PlacementAllowed || entry.Compact {
+		t.Fatalf("content-drafts inbox must scaffold + back up + allow placement like sibling inbox children and never compact: %+v", entry)
+	}
+}
+
 func TestHabitatCatalogOwnsCanonicalSourceManifestsAndNamesLegacyRetirement(t *testing.T) {
 	canonical, ok := HabitatForPath("sources/manifests/family.json")
 	if !ok || canonical.Prefix != "sources/manifests" || canonical.Status != HabitatStatusActive || canonical.Class != HabitatClassEvidence || !canonical.Backup || canonical.Compact || !canonical.PlacementAllowed {
