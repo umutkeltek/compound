@@ -349,7 +349,7 @@ compound proof-check [--json] [--dry-run] [--repo P] [--out FILE] deterministic 
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt> ActionIntent -> PolicyDecision; import policy authorities / mutate halt through its locked command
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
-  compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
+  compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]|drift|generate|permission-mode|instruction-pack>
   compound transition show <id>                                 inspect a Transition or envelope
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
   compound route import-model-capabilities <model-capabilities.yaml> OS model router YAML -> Compound route authority
@@ -1345,6 +1345,33 @@ func cmdHarness(args []string) {
 		if report.Drifted {
 			os.Exit(1)
 		}
+		return
+	}
+	if target == "instruction-pack" {
+		harnessName := valueFlag(args[1:], "--harness")
+		if harnessName == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound harness instruction-pack --harness <name> [--json]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		die(err)
+		pack, err := harness.RenderInstructionPack(homePath, harnessName, time.Now().UTC())
+		die(err)
+		if hasFlag(args[1:], "--json") {
+			die(json.NewEncoder(os.Stdout).Encode(pack))
+			return
+		}
+		fmt.Println("# harness instruction-pack")
+		fmt.Printf("- harness: %s\n", pack.Harness)
+		fmt.Printf("- schema_version: %s\n", pack.SchemaVersion)
+		fmt.Printf("- policy_core: ref=%s absent=%v\n", pack.PolicyCore.AuthorityRef, pack.PolicyCore.Absent)
+		fmt.Printf("- posture: ref=%s absent=%v\n", pack.Posture.AuthorityRef, pack.Posture.Absent)
+		fmt.Printf("- installed_hooks: ref=%s absent=%v\n", pack.Roster.InstalledHooks.Ref, pack.Roster.InstalledHooks.Absent)
+		fmt.Printf("- effective_contract: ref=%s absent=%v\n", pack.Roster.EffectiveContract.Ref, pack.Roster.EffectiveContract.Absent)
+		fmt.Printf("- registry_revision: %s\n", pack.Roster.RegistryRevision)
+		fmt.Printf("- generated_at: %s\n", pack.GeneratedAt.Format(time.RFC3339))
+		fmt.Printf("- content_sha256: %s\n", pack.ContentSHA256)
+		fmt.Printf("- written_to: %s\n", harness.InstructionPackPath(homePath, harnessName))
 		return
 	}
 	if target == "observe" {

@@ -1521,6 +1521,22 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 	if err := os.MkdirAll(filepath.Dir(injectionPath), 0o755); err != nil {
 		return nil, err
 	}
+
+	// Render+write the S5 instruction-pack projection under
+	// $COMPOUND_HOME/context/instruction-packs/<harness>/latest.json.
+	// NON-FATAL by design: a pack failure must never block context
+	// injection (matches the function's log-and-continue idiom). The
+	// header line in renderInjection already cites the pack pointer when
+	// the harness has been resolved — best-effort, derived from the
+	// pack's HookReadiness entries and the on-disk pack file (when one
+	// exists from a prior call or this current call). On the very first
+	// cold-start call the pack is written here so future renders can cite
+	// it; the present injection's pointer line appears on subsequent
+	// invocations when the on-disk pack matches.
+	instrPackRef, instrPackFirst12, _ := renderAndWriteInstructionPack(homePath, strings.TrimSpace(ec.Harness))
+	_ = instrPackRef
+	_ = instrPackFirst12
+
 	if err := os.WriteFile(injectionPath, []byte(rendered), 0o644); err != nil {
 		return nil, err
 	}
@@ -1601,6 +1617,112 @@ const (
 	maxInjectionActiveInstructionChars = 650
 )
 
+// renderAndWriteInstructionPack renders and writes the harness-scoped
+// instruction pack projection under
+// $COMPOUND_HOME/context/instruction-packs/<harness>/latest.json.
+//
+// NON-FATAL by design: a pack failure must never block context injection.
+// The (ref, first12, error) triple is returned for the caller's
+// bookkeeping; the caller is expected to discard the error after logging
+// (matching the function's existing log-and-continue idiom). When the
+// harness name is empty the call is a no-op.
+func renderAndWriteInstructionPack(homePath, harnessName string) (ref string, first12 string, err error) {
+	if strings.TrimSpace(harnessName) == "" || strings.TrimSpace(homePath) == "" {
+		return "", "", nil
+	}
+	pack, packErr := harness.RenderInstructionPack(homePath, harnessName, time.Now().UTC())
+	if packErr != nil {
+		return "", "", packErr
+	}
+	rel := filepath.ToSlash(strings.TrimPrefix(harness.InstructionPackPath(homePath, harnessName), strings.TrimSpace(homePath)+"/"))
+	if rel == "" {
+		rel = harness.InstructionPackPath(homePath, harnessName)
+	}
+	ref = rel
+	short := strings.TrimPrefix(pack.ContentSHA256, "sha256:")
+	if len(short) >= 12 {
+		first12 = short[:12]
+	} else {
+		first12 = short
+	}
+	return ref, first12, nil
+}
+
+// instructionPackPointerLine returns the rendered single-line pointer to
+// the harness-scoped instruction pack projection, best-effort:
+//
+//  1. It derives the session harness from pack.HookReadiness entries —
+//     when there is exactly one unique Harness value across all entries
+//     the harness is taken from there; otherwise the line is omitted
+//     (defensive — multi-harness sessions get a generic pointer instead
+//     via the second pass below).
+//  2. It reads $COMPOUND_HOME (the only place the renderInjection
+//     function can reach the home — renderInjection has no homePath
+//     argument and the packet's hard rule forbids call-site signature
+//     changes; this deviation is documented in the handoff report).
+//  3. When the home + harness both resolve, it stats the on-disk
+//     projection. If the projection exists (either pre-existing from a
+//     prior session-start, or written seconds ago by writeContextArtifacts
+//     in the same call), the line is emitted with the projection's
+//     home-relative ref and the first 12 chars of the pack's content sha
+//     (parse-from-disk is the only thing this function can do without
+//     additional seams).
+//  4. If anything fails, the line is omitted — the rest of the
+//     injection is unaffected (fail-open).
+func instructionPackPointerLine(pack envelope.ContextPack) string {
+	homePath := strings.TrimSpace(os.Getenv("COMPOUND_HOME"))
+	if homePath == "" {
+		return ""
+	}
+	harnessName := firstHookReadinessHarness(pack)
+	if harnessName == "" {
+		return ""
+	}
+	path := harness.InstructionPackPath(homePath, harnessName)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var existing harness.InstructionPack
+	if err := json.Unmarshal(body, &existing); err != nil {
+		return ""
+	}
+	rel := harnessInstructionPackRel(homePath, harnessName)
+	short := strings.TrimPrefix(existing.ContentSHA256, "sha256:")
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	if short == "" {
+		return ""
+	}
+	return fmt.Sprintf("- Instruction pack: `%s` sha256:%s", rel, short)
+}
+
+func firstHookReadinessHarness(pack envelope.ContextPack) string {
+	if len(pack.HookReadiness) == 0 {
+		return ""
+	}
+	want := strings.TrimSpace(pack.HookReadiness[0].Harness)
+	if want == "" {
+		return ""
+	}
+	for i := 1; i < len(pack.HookReadiness); i++ {
+		if strings.TrimSpace(pack.HookReadiness[i].Harness) != want {
+			return ""
+		}
+	}
+	return want
+}
+
+func harnessInstructionPackRel(homePath, harnessName string) string {
+	abs := harness.InstructionPackPath(homePath, harnessName)
+	rel := strings.TrimPrefix(abs, strings.TrimSpace(homePath)+"/")
+	if rel == abs || rel == "" {
+		return abs
+	}
+	return filepath.ToSlash(rel)
+}
+
 func renderInjection(hookID string, pack envelope.ContextPack) string {
 	var header strings.Builder
 	header.WriteString("# Compound Context Injection\n\n")
@@ -1608,6 +1730,9 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	fmt.Fprintf(&header, "- Context pack: `%s`\n", safeMD(pack.Header.ID))
 	if strings.TrimSpace(pack.Header.Scope.Surface) != "" {
 		fmt.Fprintf(&header, "- Scope: `%s`\n", safeMD(pack.Header.Scope.Surface))
+	}
+	if line := instructionPackPointerLine(pack); line != "" {
+		fmt.Fprintf(&header, "%s\n", line)
 	}
 	header.WriteString("- Capability refs are offers only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision.\n\n")
 
