@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -104,7 +103,7 @@ func Switchback(homePath string, p ProjectProfile, workID string, cfg policy.Con
 	for _, step := range steps {
 		switch step.Kind {
 		case StepInstructions:
-			result.Steps = append(result.Steps, applyInstructionStep(step))
+			result.Steps = append(result.Steps, applyInstructionStep(homePath, p, workID, step, cfg, ledger, now))
 		case StepRouting:
 			result.Steps = append(result.Steps, applyRoutingStep(homePath, p, step, budget, cfg, ledger, now))
 		default:
@@ -121,18 +120,90 @@ func Switchback(homePath string, p ProjectProfile, workID string, cfg policy.Con
 	return result, nil
 }
 
-// applyInstructionStep writes one instruction file into the workspace. It is a
-// local_reversible projection write (overwrite/restore), so it is applied
-// directly; a failure holds the step rather than aborting the whole switchback.
-func applyInstructionStep(step SwitchbackStep) StepResult {
+// applyInstructionStep materializes one instruction file into the workspace THROUGH
+// the governed act seam: EvaluatePlan (policy + budget + Route), then
+// act.Execute(FileArtifactAdapter) when auto — so the write captures a pre-image and
+// emits a receipt + transition, with F11's honest rollback (a rolled-back creation
+// deletes the file). When policy/budget holds it, the step is Held with the exact
+// target path in reasons; there is no raw os.WriteFile on any path.
+func applyInstructionStep(homePath string, p ProjectProfile, workID string, step SwitchbackStep, cfg policy.Config, ledger *Ledger, now time.Time) StepResult {
 	res := StepResult{Kind: step.Kind, Description: step.Description}
-	if err := os.WriteFile(step.FilePath, []byte(step.Body), 0o644); err != nil {
+	intent := instructionIntent(p, workID, step.FilePath, now)
+	plan, err := EvaluatePlan(homePath, intent, "switchback", p.ProductID, cfg, now)
+	if err != nil {
 		res.Held = true
-		res.Reasons = []string{fmt.Sprintf("could not write instruction file: %v", err)}
+		res.Reasons = []string{fmt.Sprintf("could not evaluate instruction write for %s: %v", step.FilePath, err)}
 		return res
 	}
+	if plan.Decision.Mode != ModeAuto {
+		res.Held = true
+		res.Reasons = append([]string{fmt.Sprintf("instruction write held for %s", step.FilePath)}, plan.Decision.Reasons...)
+		return res
+	}
+	store, err := act.NewArtifactStore(homePath)
+	if err != nil {
+		res.Held = true
+		res.Reasons = []string{fmt.Sprintf("artifact store: %v", err)}
+		return res
+	}
+	out, err := act.Execute(store, act.NewFileArtifactAdapter(), intent, plan.PolicyDecision, []byte(step.Body), now)
+	if err != nil {
+		// No allowing decision OR write failure: act rolled back, target unchanged.
+		res.Held = true
+		res.Reasons = []string{fmt.Sprintf("governed instruction write for %s refused/rolled back: %v", step.FilePath, err)}
+		return res
+	}
+	if recErr := ledger.Record(Consumption{
+		SchemaVersion: ConsumptionSchemaVersion,
+		At:            now.UTC().Format(time.RFC3339),
+		ProductID:     p.ProductID,
+		Channel:       "switchback",
+		Actions:       1,
+		WorkID:        workID,
+		ReceiptRef:    out.Receipt.ID,
+	}); recErr != nil {
+		// The instruction write DID land and is receipted; surface the budget
+		// accounting failure rather than dropping it silently (F9.1).
+		res.Reasons = append(res.Reasons, fmt.Sprintf("instruction write receipted %s but budget consumption NOT recorded: %v", out.Receipt.ID, recErr))
+	}
 	res.Applied = true
+	res.ReceiptRef = out.Receipt.ID
+	res.TransitionRef = out.Transition.ID
 	return res
+}
+
+// instructionIntent builds the local_reversible/easy/local ActionIntent for
+// materializing one instruction file. local_reversible is honest: act.Execute
+// captures the pre-image (with F11's absent-file bit) and rollback deletes or
+// restores. Under the default policy this is allow_with_obligations so the write
+// flows and is receipted — while an operator who tightens local_reversible (a lower
+// autonomy level) holds it instead. Smooth within limits, never smooth past them.
+func instructionIntent(p ProjectProfile, workID, filePath string, now time.Time) envelope.ActionIntent {
+	target := envelope.ActionTarget{Kind: "file_artifact", Path: filePath}
+	return envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID:            intentIDFor(workID, "switchback_instructions", filePath),
+			CreatedAt:     now.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "actuator", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: workID},
+			Scope:         envelope.Scope{ProjectID: p.Slug, ProductID: p.ProductID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Actor:         "actuator",
+		Capability:    "switchback_instructions",
+		Action:        "materialize_instruction_file",
+		Target:        target,
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       "materialize instruction file " + filePath,
+		RollbackPlan:  "restore the captured pre-image of " + filePath + " (delete if it did not exist)",
+	}
 }
 
 // applyRoutingStep runs the routing repoint through the actuator's own gate:
