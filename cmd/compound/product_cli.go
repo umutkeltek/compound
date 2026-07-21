@@ -44,6 +44,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,7 +55,7 @@ import (
 )
 
 func productUsage() string {
-	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -332,6 +333,8 @@ func cmdProduct(args []string) {
 		for _, issueID := range report.IssueIDs {
 			fmt.Printf("- issue: %s\n", issueID)
 		}
+	case "content-draft":
+		cmdProductContentDraft(homePath, args[1:])
 	case "hypothesis-plan":
 		candidateID := valueFlag(args[1:], "--candidate")
 		targetPath := valueFlag(args[1:], "--target")
@@ -875,5 +878,156 @@ func cmdProduct(args []string) {
 	default:
 		fmt.Fprintln(os.Stderr, productUsage())
 		os.Exit(2)
+	}
+}
+
+const contentDraftUsage = "usage: compound product content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id>"
+
+// cmdProductContentDraft is the distribution-loop draft door: record / list /
+// park / operationalize / reject. Error and refusal paths exit non-zero; the
+// owner logic (internal/product) is where the invariants are enforced and tested.
+func cmdProductContentDraft(homePath string, args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, contentDraftUsage)
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "record":
+		rest := args[1:]
+		productID := valueFlag(rest, "--product")
+		platform := valueFlag(rest, "--platform")
+		if strings.TrimSpace(productID) == "" || strings.TrimSpace(platform) == "" {
+			fmt.Fprintln(os.Stderr, contentDraftUsage)
+			os.Exit(2)
+		}
+		body := valueFlag(rest, "--text")
+		if strings.TrimSpace(body) == "" {
+			piped, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "product content-draft record:", err)
+				os.Exit(1)
+			}
+			body = string(piped)
+		}
+		now := time.Now()
+		expiresAt, err := resolveContentDraftExpiry(valueFlag(rest, "--ttl"), valueFlag(rest, "--expires"), now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product content-draft record:", err)
+			os.Exit(2)
+		}
+		draft, err := product.RecordContentDraft(homePath, product.ContentDraftInput{
+			ProductID:    productID,
+			Platform:     platform,
+			Body:         body,
+			VoicePackRef: valueFlag(rest, "--voice-pack"),
+			EvidenceRefs: splitContentDraftEvidence(valueFlag(rest, "--evidence")),
+			ExpiresAt:    expiresAt,
+		}, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product content-draft record:", err)
+			os.Exit(1)
+		}
+		printContentDraft("recorded", draft)
+	case "list":
+		rest := args[1:]
+		drafts, err := product.ListContentDrafts(homePath, valueFlag(rest, "--product"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product content-draft list:", err)
+			os.Exit(1)
+		}
+		if hasFlag(rest, "--json") {
+			blob, err := json.MarshalIndent(drafts, "", "  ")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "product content-draft list:", err)
+				os.Exit(1)
+			}
+			fmt.Println(string(blob))
+			return
+		}
+		fmt.Printf("# product content-drafts: %d\n", len(drafts))
+		for _, d := range drafts {
+			fmt.Printf("- %s product=%s platform=%s state=%s expires=%s body=%s\n",
+				d.ID, d.ProductID, d.Platform, d.State, d.ExpiresAt, d.BodyRef)
+		}
+	case "park", "operationalize", "reject":
+		rest := args[1:]
+		if len(rest) != 1 || strings.HasPrefix(rest[0], "-") {
+			fmt.Fprintf(os.Stderr, "usage: compound product content-draft %s <draft_id>\n", args[0])
+			os.Exit(2)
+		}
+		now := time.Now()
+		var (
+			draft product.ContentDraft
+			err   error
+		)
+		switch args[0] {
+		case "park":
+			draft, err = product.ParkContentDraft(homePath, rest[0], now)
+		case "operationalize":
+			draft, err = product.OperationalizeContentDraft(homePath, rest[0], now)
+		case "reject":
+			draft, err = product.RejectContentDraft(homePath, rest[0], now)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "product content-draft %s: %v\n", args[0], err)
+			os.Exit(1)
+		}
+		printContentDraft(draft.State, draft)
+	default:
+		fmt.Fprintln(os.Stderr, contentDraftUsage)
+		os.Exit(2)
+	}
+}
+
+func resolveContentDraftExpiry(ttl, expires string, now time.Time) (time.Time, error) {
+	ttl = strings.TrimSpace(ttl)
+	expires = strings.TrimSpace(expires)
+	if expires != "" {
+		t, err := time.Parse(time.RFC3339, expires)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("--expires must be RFC3339: %w", err)
+		}
+		return t, nil
+	}
+	if ttl != "" {
+		d, err := time.ParseDuration(ttl)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("--ttl must be a Go duration: %w", err)
+		}
+		if d <= 0 {
+			return time.Time{}, fmt.Errorf("--ttl must be positive")
+		}
+		return now.Add(d), nil
+	}
+	return time.Time{}, fmt.Errorf("expiry required: pass --ttl <dur> or --expires <rfc3339>")
+}
+
+func splitContentDraftEvidence(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func printContentDraft(action string, d product.ContentDraft) {
+	fmt.Printf("# content-draft %s\n", action)
+	fmt.Printf("- id: %s\n", d.ID)
+	fmt.Printf("- product: %s\n", d.ProductID)
+	fmt.Printf("- platform: %s\n", d.Platform)
+	fmt.Printf("- state: %s\n", d.State)
+	fmt.Printf("- body_ref: %s\n", d.BodyRef)
+	fmt.Printf("- expires_at: %s\n", d.ExpiresAt)
+	if d.VoicePackRef != "" {
+		fmt.Printf("- voice_pack_ref: %s\n", d.VoicePackRef)
+	}
+	if len(d.EvidenceRefs) > 0 {
+		fmt.Printf("- evidence_refs: %s\n", strings.Join(d.EvidenceRefs, ", "))
 	}
 }

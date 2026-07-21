@@ -26,6 +26,7 @@ const (
 	MethodUpgrade     Kind = "method_upgrade"
 	EvalCase          Kind = "eval_case"
 	PolicyPatch       Kind = "policy_patch"
+	ContentDraft      Kind = "content_draft"
 )
 
 // Adjudication verdicts — the shared vocabulary a candidate can receive. `no_promote` is the
@@ -89,6 +90,7 @@ var specs = map[Kind]Spec{
 	MethodUpgrade:     {MethodUpgrade, "inbox/method-upgrades", []string{Park, Operationalize}, "compound distiller improvement-plan"},
 	EvalCase:          {EvalCase, "inbox/eval-cases", []string{Operationalize, Park}, "compound distiller eval-plan"},
 	PolicyPatch:       {PolicyPatch, "inbox/policy-patches", []string{Park, Operationalize}, "compound distiller improvement-plan"},
+	ContentDraft:      {ContentDraft, "inbox/content-drafts", []string{Park, Operationalize, Reject}, "compound product content-draft"},
 }
 
 // InboxDir returns the canonical directory for a kind, or "" if the kind is unknown (callers
