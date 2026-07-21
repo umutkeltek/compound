@@ -324,3 +324,200 @@ func writeRouteCandidateFixture(t *testing.T, home string, candidate routeCandid
 		t.Fatal(err)
 	}
 }
+
+// TestImportModelCapabilitiesLaneTupleRoundTripSurfacesSubscriptionFacts verifies
+// the additive LaneTuple fields (context_window, max_output, cost_detail,
+// relative_cost_hint, capacity_source, aliases) decode through YAML, surface in
+// the projection, and survive a re-imported re-marshal. Falsifier for the
+// additive optional-fields contract.
+func TestImportModelCapabilitiesLaneTupleRoundTripSurfacesSubscriptionFacts(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities-tuple.yaml")
+
+	report, err := ImportModelCapabilitiesYAML(home, source, t0)
+	if err != nil {
+		t.Fatalf("import tuple fixture: %v", err)
+	}
+	if report.AuthorityRef != ModelCapabilitiesAuthorityRef ||
+		report.ModelCount != 2 ||
+		report.CapabilityClassCount != 2 ||
+		report.RoutingDefaultCount != 2 ||
+		report.SourceAuthorityID == "" {
+		t.Fatalf("bad tuple import report: %+v", report)
+	}
+
+	projection, err := ProjectModelCapabilities(home, t0)
+	if err != nil {
+		t.Fatalf("project tuple authorities: %v", err)
+	}
+	if projection.ModelCount != 2 || len(projection.Lanes) != 2 {
+		t.Fatalf("projection lane count = %d, want 2", len(projection.Lanes))
+	}
+
+	var sub *ModelCapabilityProjectionLane
+	var api *ModelCapabilityProjectionLane
+	for i := range projection.Lanes {
+		lane := &projection.Lanes[i]
+		switch lane.ModelID {
+		case "tuple/sub-lane-a":
+			sub = lane
+		case "tuple/api-lane-b":
+			api = lane
+		}
+	}
+	if sub == nil || api == nil {
+		t.Fatalf("missing projected lanes: %+v", projection.Lanes)
+	}
+
+	// Subscription lane — tuple facts preserved through round-trip.
+	if sub.ContextWindow != 200000 {
+		t.Fatalf("sub.ContextWindow = %d, want 200000", sub.ContextWindow)
+	}
+	if sub.MaxOutput != 16000 {
+		t.Fatalf("sub.MaxOutput = %d, want 16000", sub.MaxOutput)
+	}
+	if sub.CostDetail == nil {
+		t.Fatalf("sub.CostDetail = nil, want subscription detail")
+	}
+	if sub.CostDetail.Subscription == nil {
+		t.Fatalf("sub.CostDetail.Subscription = nil, want subscription block")
+	}
+	if sub.CostDetail.Subscription.WindowMinutes != 300 {
+		t.Fatalf("subscription.window_minutes = %d, want 300", sub.CostDetail.Subscription.WindowMinutes)
+	}
+	if sub.CostDetail.Subscription.BusyMultiplier != 2.0 {
+		t.Fatalf("subscription.busy_multiplier = %v, want 2.0", sub.CostDetail.Subscription.BusyMultiplier)
+	}
+	if sub.CostDetail.Subscription.PlanRef != "fixture-tier-creator" {
+		t.Fatalf("subscription.plan_ref = %q, want fixture-tier-creator", sub.CostDetail.Subscription.PlanRef)
+	}
+	if got, want := sub.RelativeCostHint["fable_vs_opus"], 2.0; got != want {
+		t.Fatalf("relative_cost_hint[fable_vs_opus] = %v, want %v", got, want)
+	}
+	if got, want := sub.RelativeCostHint["sub_vs_api"], 0.4; got != want {
+		t.Fatalf("relative_cost_hint[sub_vs_api] = %v, want %v", got, want)
+	}
+	if sub.CapacitySource == nil {
+		t.Fatalf("sub.CapacitySource = nil, want codexbar source ref")
+	}
+	if sub.CapacitySource.Kind != "codexbar" {
+		t.Fatalf("capacity_source.kind = %q, want codexbar", sub.CapacitySource.Kind)
+	}
+	if sub.CapacitySource.FreshnessMinutes != 30 {
+		t.Fatalf("capacity_source.freshness_minutes = %d, want 30", sub.CapacitySource.FreshnessMinutes)
+	}
+	if sub.CapacitySource.Ref != "fixture://codexbar/sub-lane-a" {
+		t.Fatalf("capacity_source.ref = %q, want fixture://codexbar/sub-lane-a", sub.CapacitySource.Ref)
+	}
+	if len(sub.Aliases) != 2 || sub.Aliases[0] != "sub-lane-a" || sub.Aliases[1] != "sub-lane-a:worker" {
+		t.Fatalf("sub.Aliases = %v, want [sub-lane-a sub-lane-a:worker]", sub.Aliases)
+	}
+
+	// API lane — per-token costs preserved.
+	if api.ContextWindow != 500000 {
+		t.Fatalf("api.ContextWindow = %d, want 500000", api.ContextWindow)
+	}
+	if api.MaxOutput != 32000 {
+		t.Fatalf("api.MaxOutput = %d, want 32000", api.MaxOutput)
+	}
+	if api.CostDetail == nil {
+		t.Fatalf("api.CostDetail = nil, want per-token detail")
+	}
+	if api.CostDetail.APIUSDPerMtokIn != 3.0 {
+		t.Fatalf("api.cost_detail.api_usd_per_mtok_in = %v, want 3.0", api.CostDetail.APIUSDPerMtokIn)
+	}
+	if api.CostDetail.APIUSDPerMtokOut != 15.0 {
+		t.Fatalf("api.cost_detail.api_usd_per_mtok_out = %v, want 15.0", api.CostDetail.APIUSDPerMtokOut)
+	}
+	if api.CostDetail.Subscription != nil {
+		t.Fatalf("api.cost_detail.subscription = %+v, want nil (per-token lane)", api.CostDetail.Subscription)
+	}
+	if got, want := api.RelativeCostHint["api_vs_subscription"], 1.5; got != want {
+		t.Fatalf("api.relative_cost_hint[api_vs_subscription] = %v, want %v", got, want)
+	}
+	if api.CapacitySource != nil {
+		t.Fatalf("api.CapacitySource = %+v, want nil", api.CapacitySource)
+	}
+	if len(api.Aliases) != 0 {
+		t.Fatalf("api.Aliases = %v, want empty", api.Aliases)
+	}
+
+	// Projection JSON must serialize the tuple facts so downstream readers see them.
+	data, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatalf("marshal projection: %v", err)
+	}
+	wire := string(data)
+	wantSubstrings := []string{
+		`"context_window":200000`,
+		`"max_output":16000`,
+		`"busy_multiplier":2`,
+		`"window_minutes":300`,
+		`"fable_vs_opus":2`,
+		`"codexbar"`,
+		`"sub-lane-a:worker"`,
+		`"api_usd_per_mtok_in":3`,
+		`"api_usd_per_mtok_out":15`,
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(wire, want) {
+			t.Fatalf("projection JSON missing %q: %s", want, wire)
+		}
+	}
+}
+
+// TestModelCapabilitiesLegacyFixtureOmitsLaneTupleFields verifies zero-value
+// hygiene — the existing OS-shaped fixture has no LaneTuple facts, so projection
+// JSON must NOT emit empty tuple keys (omitempty proof; ensures additive fields
+// do not leak `null`/`{}`/`0` for lanes that did not opt in).
+func TestModelCapabilitiesLegacyFixtureOmitsLaneTupleFields(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
+		t.Fatalf("import legacy fixture: %v", err)
+	}
+	projection, err := ProjectModelCapabilities(home, t0)
+	if err != nil {
+		t.Fatalf("project legacy authorities: %v", err)
+	}
+	data, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatalf("marshal legacy projection: %v", err)
+	}
+	wire := string(data)
+	// No lane ever opts into tuple facts — none of these keys may appear.
+	for _, banned := range []string{
+		`"context_window":`,
+		`"max_output":`,
+		`"cost_detail":`,
+		`"relative_cost_hint":`,
+		`"capacity_source":`,
+		`"aliases":`,
+	} {
+		if strings.Contains(wire, banned) {
+			t.Fatalf("legacy projection leaks %q in JSON: %s", banned, wire)
+		}
+	}
+
+	// Direct struct round-trip on a single legacy lane: JSON must not emit
+	// empty tuple keys either (defends the tags themselves).
+	for i := range projection.Lanes {
+		lane := projection.Lanes[i]
+		solo, err := json.Marshal(lane)
+		if err != nil {
+			t.Fatalf("marshal legacy lane %s: %v", lane.ModelID, err)
+		}
+		for _, banned := range []string{
+			`"context_window":`,
+			`"max_output":`,
+			`"cost_detail":`,
+			`"relative_cost_hint":`,
+			`"capacity_source":`,
+			`"aliases":`,
+		} {
+			if strings.Contains(string(solo), banned) {
+				t.Fatalf("legacy lane %s JSON leaks %q: %s", lane.ModelID, banned, solo)
+			}
+		}
+	}
+}

@@ -45,6 +45,24 @@ type LaneResolution struct {
 	Targets []ResolvedTarget `json:"targets,omitempty" yaml:"targets,omitempty"`
 }
 
+type LaneCostDetail struct {
+	APIUSDPerMtokIn  float64               `json:"api_usd_per_mtok_in,omitempty" yaml:"api_usd_per_mtok_in,omitempty"`
+	APIUSDPerMtokOut float64               `json:"api_usd_per_mtok_out,omitempty" yaml:"api_usd_per_mtok_out,omitempty"`
+	Subscription     *LaneSubscriptionCost `json:"subscription,omitempty" yaml:"subscription,omitempty"`
+}
+
+type LaneSubscriptionCost struct {
+	WindowMinutes  int     `json:"window_minutes,omitempty" yaml:"window_minutes,omitempty"`
+	BusyMultiplier float64 `json:"busy_multiplier,omitempty" yaml:"busy_multiplier,omitempty"`
+	PlanRef        string  `json:"plan_ref,omitempty" yaml:"plan_ref,omitempty"`
+}
+
+type LaneCapacitySourceRef struct {
+	Kind             string `json:"kind,omitempty" yaml:"kind,omitempty"`
+	FreshnessMinutes int    `json:"freshness_minutes,omitempty" yaml:"freshness_minutes,omitempty"`
+	Ref              string `json:"ref,omitempty" yaml:"ref,omitempty"`
+}
+
 type ModelCapabilityEntry struct {
 	Lane          string                     `json:"lane" yaml:"lane"`
 	Harness       string                     `json:"harness,omitempty" yaml:"harness,omitempty"`
@@ -56,6 +74,14 @@ type ModelCapabilityEntry struct {
 	PacketCeiling string                     `json:"packet_ceiling" yaml:"packet_ceiling"`
 	Capabilities  map[string]CapabilityClaim `json:"capabilities" yaml:"capabilities"`
 	Notes         string                     `json:"notes,omitempty" yaml:"notes,omitempty"`
+	// OPTIONAL LaneTuple facts (compound://registries/model-router additive extension).
+	// All fields are optional; legacy YAML without these keys continues to import cleanly.
+	ContextWindow    int                    `json:"context_window,omitempty" yaml:"context_window,omitempty"`
+	MaxOutput        int                    `json:"max_output,omitempty" yaml:"max_output,omitempty"`
+	CostDetail       *LaneCostDetail        `json:"cost_detail,omitempty" yaml:"cost_detail,omitempty"`
+	RelativeCostHint map[string]float64     `json:"relative_cost_hint,omitempty" yaml:"relative_cost_hint,omitempty"`
+	CapacitySource   *LaneCapacitySourceRef `json:"capacity_source,omitempty" yaml:"capacity_source,omitempty"`
+	Aliases          []string               `json:"aliases,omitempty" yaml:"aliases,omitempty"`
 }
 
 type ModelCapabilitiesManifest struct {
@@ -94,6 +120,13 @@ type ModelCapabilityProjectionLane struct {
 	Capabilities    []ModelCapabilityProjectionClaim `json:"capabilities,omitempty"`
 	RoutingDefaults []string                         `json:"routing_defaults,omitempty"`
 	Notes           string                           `json:"notes,omitempty"`
+	// OPTIONAL LaneTuple facts — mirror of ModelCapabilityEntry.
+	ContextWindow    int                    `json:"context_window,omitempty"`
+	MaxOutput        int                    `json:"max_output,omitempty"`
+	CostDetail       *LaneCostDetail        `json:"cost_detail,omitempty"`
+	RelativeCostHint map[string]float64     `json:"relative_cost_hint,omitempty"`
+	CapacitySource   *LaneCapacitySourceRef `json:"capacity_source,omitempty"`
+	Aliases          []string               `json:"aliases,omitempty"`
 }
 
 type ModelCapabilityProjectionClaim struct {
@@ -382,18 +415,24 @@ func ProjectModelCapabilities(homePath string, now time.Time) (ModelCapabilities
 			label = modelID
 		}
 		lane := ModelCapabilityProjectionLane{
-			ModelID:         modelID,
-			Label:           label,
-			Lane:            strings.TrimSpace(model.Lane),
-			Harness:         strings.TrimSpace(model.Harness),
-			ProviderRoute:   strings.TrimSpace(model.ProviderRoute),
-			Resolution:      model.Resolution,
-			EffortDefault:   strings.TrimSpace(model.EffortDefault),
-			CostClass:       strings.TrimSpace(model.CostClass),
-			Tier:            strings.TrimSpace(model.Tier),
-			PacketCeiling:   strings.TrimSpace(model.PacketCeiling),
-			RoutingDefaults: routingDefaultsForModel(manifest.RoutingDefaults, modelID),
-			Notes:           strings.TrimSpace(model.Notes),
+			ModelID:          modelID,
+			Label:            label,
+			Lane:             strings.TrimSpace(model.Lane),
+			Harness:          strings.TrimSpace(model.Harness),
+			ProviderRoute:    strings.TrimSpace(model.ProviderRoute),
+			Resolution:       model.Resolution,
+			EffortDefault:    strings.TrimSpace(model.EffortDefault),
+			CostClass:        strings.TrimSpace(model.CostClass),
+			Tier:             strings.TrimSpace(model.Tier),
+			PacketCeiling:    strings.TrimSpace(model.PacketCeiling),
+			RoutingDefaults:  routingDefaultsForModel(manifest.RoutingDefaults, modelID),
+			Notes:            strings.TrimSpace(model.Notes),
+			ContextWindow:    model.ContextWindow,
+			MaxOutput:        model.MaxOutput,
+			CostDetail:       model.CostDetail,
+			RelativeCostHint: model.RelativeCostHint,
+			CapacitySource:   model.CapacitySource,
+			Aliases:          model.Aliases,
 		}
 		for _, class := range sortedCapabilityClaimClasses(model.Capabilities) {
 			claim := model.Capabilities[class]
