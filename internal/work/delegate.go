@@ -38,6 +38,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -62,6 +64,7 @@ type DelegateOptions struct {
 	Actor           string
 	Command         string
 	Args            []string
+	Workspace       string
 	ExpectedMinutes int
 	Confirm         bool
 	DryRun          bool
@@ -84,16 +87,14 @@ type DelegateResult struct {
 // from a sidecar file). The orchestrator returns it to the verb layer so
 // the operator can print a single "session: <name>" hint.
 type DelegateBinding struct {
-	WorkID        string   `json:"work_id"`
-	Session       string   `json:"session"`
-	Harness       string   `json:"harness"`
-	Lane          string   `json:"lane,omitempty"`
-	Holder        string   `json:"holder,omitempty"`
-	CapacityState string   `json:"capacity_state,omitempty"`
-	RecordedAt    string   `json:"recorded_at,omitempty"`
-	Command       string   `json:"command,omitempty"`
-	Args          []string `json:"args,omitempty"`
-	WorkSHA256    string   `json:"work_sha256,omitempty"`
+	WorkID        string `json:"work_id"`
+	Session       string `json:"session"`
+	Harness       string `json:"harness"`
+	Lane          string `json:"lane,omitempty"`
+	Holder        string `json:"holder,omitempty"`
+	CapacityState string `json:"capacity_state,omitempty"`
+	RecordedAt    string `json:"recorded_at,omitempty"`
+	WorkSHA256    string `json:"work_sha256,omitempty"`
 }
 
 type DelegateRefusal struct {
@@ -107,8 +108,11 @@ type DelegateRefusal struct {
 // COMPOUND_HOME -- this is the "no second durable registry" invariant.
 var harnessWrapperAliases = map[string]string{
 	"claude-zai":     "claude-zai",
+	"claude_zai":     "claude-zai",
 	"claude-qwen":    "claude-qwen",
+	"claude_qwen":    "claude-qwen",
 	"claude-minimax": "claude-minimax",
+	"claude_minimax": "claude-minimax",
 	"claude":         "claude",
 	"codex":          "codex",
 }
@@ -129,6 +133,7 @@ func knownHarnessNames() string {
 	for k := range harnessWrapperAliases {
 		out = append(out, k)
 	}
+	sort.Strings(out)
 	return strings.Join(out, ", ")
 }
 
@@ -145,22 +150,20 @@ func resolveDelegateSessionName(workID, override string) string {
 // under compound.work_delegate_event.v0.1. It is the slice-1 single
 // meaning owner for the binding (work ↔ tmux session).
 type delegateEvent struct {
-	SchemaVersion string   `json:"schema_version"`
-	ID            string   `json:"id"`
-	Kind          string   `json:"kind"`
-	TS            string   `json:"ts"`
-	WorkID        string   `json:"work_id"`
-	Harness       string   `json:"harness"`
-	Lane          string   `json:"lane,omitempty"`
-	Holder        string   `json:"holder,omitempty"`
-	CapacityState string   `json:"capacity_state,omitempty"`
-	Reason        string   `json:"reason,omitempty"`
-	Message       string   `json:"message,omitempty"`
-	Confirm       bool     `json:"confirm,omitempty"`
-	Session       string   `json:"session,omitempty"`
-	WorkSHA256    string   `json:"work_sha256,omitempty"`
-	Command       string   `json:"command,omitempty"`
-	Args          []string `json:"args,omitempty"`
+	SchemaVersion string `json:"schema_version"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	TS            string `json:"ts"`
+	WorkID        string `json:"work_id"`
+	Harness       string `json:"harness"`
+	Lane          string `json:"lane,omitempty"`
+	Holder        string `json:"holder,omitempty"`
+	CapacityState string `json:"capacity_state,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	Message       string `json:"message,omitempty"`
+	Confirm       bool   `json:"confirm,omitempty"`
+	Session       string `json:"session,omitempty"`
+	WorkSHA256    string `json:"work_sha256,omitempty"`
 }
 
 func delegateEventID(kind, workID string, now time.Time) string {
@@ -190,7 +193,10 @@ func (s *Store) recoverBoundSession(workID string) (*DelegateBinding, bool, erro
 			}
 			var dev delegateEvent
 			if rerr := s.readEventJSON(att, &dev); rerr != nil {
-				continue
+				return nil, false, fmt.Errorf("recover delegate binding %s: %w", att, rerr)
+			}
+			if dev.SchemaVersion != delegateEventSchemaVersion || dev.ID != att || dev.WorkID != workID {
+				return nil, false, fmt.Errorf("recover delegate binding %s: invalid delegate event identity", att)
 			}
 			switch dev.Kind {
 			case "work.delegate.spawned":
@@ -202,12 +208,14 @@ func (s *Store) recoverBoundSession(workID string) (*DelegateBinding, bool, erro
 					Holder:        dev.Holder,
 					CapacityState: dev.CapacityState,
 					RecordedAt:    dev.TS,
-					Command:       dev.Command,
-					Args:          dev.Args,
 					WorkSHA256:    dev.WorkSHA256,
 				}
 			case "work.delegate.exited":
 				binding = nil // any active binding dies
+			case "work.delegate.refused", "work.delegate.steered":
+				// These are binding-neutral but still valid delegate events.
+			default:
+				return nil, false, fmt.Errorf("recover delegate binding %s: unknown kind %q", att, dev.Kind)
 			}
 		}
 	}
@@ -263,7 +271,8 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	if runner == nil {
 		return out, errors.New("delegate: SessionRunner is nil")
 	}
-	if _, ok := resolveHarnessWrapper(opts.Harness); !ok {
+	resolvedHarness, ok := resolveHarnessWrapper(opts.Harness)
+	if !ok {
 		out.Refusal = &DelegateRefusal{
 			Reason:  "harness_unknown",
 			Message: fmt.Sprintf("harness %q does not resolve to a registered wrapper (allowed: %s)", opts.Harness, knownHarnessNames()),
@@ -287,23 +296,35 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		out.Refusal = &DelegateRefusal{Reason: "not_claimed", Message: err.Error()}
 		return out, nil
 	}
+	leaseHolder := strings.TrimSpace(lease.By)
 	holder := strings.TrimSpace(opts.Actor)
 	if holder == "" {
-		holder = lease.By
+		holder = leaseHolder
 	}
-	if holder == "" {
-		holder = "codex"
-	}
-	laneForGuard := strings.TrimSpace(lease.LaneID)
-	if laneForGuard == "" {
-		laneForGuard = lease.By
+	laneForGuard := resolvedHarness
+	if holder != leaseHolder {
+		message := fmt.Sprintf("work lease is held by %q; actor %q cannot delegate it", leaseHolder, holder)
+		if opts.DryRun {
+			out.Refusal = &DelegateRefusal{Reason: "lease_held", Message: message}
+			return out, nil
+		}
+		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "lease_held", message, opts.Now)
+		if eerr != nil {
+			return out, eerr
+		}
+		if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason=lease_held", opts.Now); err != nil {
+			return out, err
+		}
+		out.EventID = evID
+		out.Refusal = &DelegateRefusal{Reason: "lease_held", Message: message}
+		return out, nil
 	}
 
 	decision, err := runLaneCapacityGuard(LaneCapacityGuard, LaneCapacityGuardRequest{
 		HomePath:        s.home,
 		Lane:            laneForGuard,
 		WorkID:          out.WorkID,
-		ExpectedMinutes: opts.ExpectedMinutes,
+		ExpectedMinutes: dispatchExpectedMinutes(opts.ExpectedMinutes),
 		Confirm:         opts.Confirm,
 		ReadOnly:        opts.DryRun,
 		Now:             opts.Now,
@@ -325,7 +346,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	// gate_absent verdict (Refused=true). Treat that as the documented
 	// gate_absent refusal so the audit trail carries the canonical reason.
 	if decision.Refused && strings.TrimSpace(decision.Capacity.State) == "absent" {
-		evID, eerr := s.recordDelegateRefused(out.WorkID, opts.Harness, laneForGuard, holder, "gate_absent", decision.Message, opts.Now)
+		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "gate_absent", decision.Message, opts.Now)
 		if eerr != nil {
 			return out, eerr
 		}
@@ -341,7 +362,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		if reason == "" {
 			reason = "walled"
 		}
-		evID, eerr := s.recordDelegateRefused(out.WorkID, opts.Harness, laneForGuard, holder, reason, decision.Message, opts.Now)
+		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, reason, decision.Message, opts.Now)
 		if eerr != nil {
 			return out, eerr
 		}
@@ -353,7 +374,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		return out, nil
 	}
 	if decision.ConfirmationRequired && !opts.Confirm {
-		evID, eerr := s.recordDelegateRefused(out.WorkID, opts.Harness, laneForGuard, holder, "expiring_unconfirmed", decision.Message, opts.Now)
+		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "expiring_unconfirmed", decision.Message, opts.Now)
 		if eerr != nil {
 			return out, eerr
 		}
@@ -379,6 +400,14 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			return out, fmt.Errorf("delegate: probe session %s: %w", existing.Session, hasErr)
 		}
 		if live {
+			evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "session_live", "a live bound session already exists for this work", opts.Now)
+			if eerr != nil {
+				return out, eerr
+			}
+			if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason=session_live", opts.Now); err != nil {
+				return out, err
+			}
+			out.EventID = evID
 			out.Refusal = &DelegateRefusal{
 				Reason:  "session_live",
 				Message: "a live bound session already exists for this work",
@@ -386,13 +415,13 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			}
 			return out, nil
 		}
-		if _, err := s.recordDelegateExited(out.WorkID, existing, opts.Now); err != nil {
+		if _, err := s.recordAndAttachDelegateExited(out.WorkID, w.State, existing, holder, opts.Now); err != nil {
 			return out, err
 		}
 	}
 
 	if availErr := runner.Available(); availErr != nil {
-		evID, eerr := s.recordDelegateRefused(out.WorkID, opts.Harness, laneForGuard, holder, "tmux_absent", availErr.Error(), opts.Now)
+		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "tmux_absent", availErr.Error(), opts.Now)
 		if eerr != nil {
 			return out, eerr
 		}
@@ -408,8 +437,26 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		out.Status = "preview"
 		return out, nil
 	}
-	if err := runner.Create(sessionName, out.WorkID, opts.Command, opts.Args); err != nil {
-		evID, eerr := s.recordDelegateRefused(out.WorkID, opts.Harness, laneForGuard, holder, "spawn_failed", err.Error(), opts.Now)
+	workspace := strings.TrimSpace(opts.Workspace)
+	if workspace == "" && w.GitDelivery != nil {
+		workspace = strings.TrimSpace(w.GitDelivery.TargetWorktreeRoot)
+	}
+	if workspace == "" {
+		workspace, err = os.Getwd()
+		if err != nil {
+			return out, fmt.Errorf("delegate: resolve workspace: %w", err)
+		}
+	}
+	if strings.TrimSpace(workspace) == "" {
+		return out, errors.New("delegate: no workspace resolved from --workspace, git_delivery.target_worktree_root, or cwd")
+	}
+
+	workSHA, shaErr := workEnvelopeSHA256(w)
+	if shaErr != nil {
+		return out, shaErr
+	}
+	if err := runner.Create(sessionName, workspace, opts.Command, opts.Args); err != nil {
+		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "spawn_failed", err.Error(), opts.Now)
 		if eerr != nil {
 			return out, eerr
 		}
@@ -421,25 +468,19 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		return out, nil
 	}
 
-	workSHA, shaErr := workEnvelopeSHA256(w)
-	if shaErr != nil {
-		return out, shaErr
-	}
 	binding := &DelegateBinding{
 		WorkID:        out.WorkID,
 		Session:       sessionName,
-		Harness:       opts.Harness,
+		Harness:       resolvedHarness,
 		Lane:          laneForGuard,
 		Holder:        holder,
 		CapacityState: decision.Capacity.State,
 		RecordedAt:    ts(opts.Now),
-		Command:       opts.Command,
-		Args:          opts.Args,
 		WorkSHA256:    workSHA,
 	}
 	evID, evErr := s.recordDelegateSpawned(out.WorkID, binding, opts.Confirm, opts.Now)
 	if evErr != nil {
-		return out, evErr
+		return out, killSpawnedSession(runner, sessionName, evErr)
 	}
 	if err := s.appendEvent(Event{
 		TS:       ts(opts.Now),
@@ -450,7 +491,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		Note:     fmt.Sprintf("delegate spawned session %s harness=%s lane=%s", binding.Session, binding.Harness, binding.Lane),
 		Attached: []string{evID},
 	}); err != nil {
-		return out, err
+		return out, killSpawnedSession(runner, sessionName, err)
 	}
 	out.Status = "spawned"
 	out.Binding = binding
@@ -475,8 +516,6 @@ func (s *Store) recordDelegateSpawned(workID string, b *DelegateBinding, confirm
 		Confirm:       confirm,
 		Session:       b.Session,
 		WorkSHA256:    b.WorkSHA256,
-		Command:       b.Command,
-		Args:          b.Args,
 	}); err != nil {
 		return "", err
 	}
@@ -543,6 +582,24 @@ func (s *Store) recordDelegateExited(workID string, b *DelegateBinding, now time
 	return id, nil
 }
 
+func (s *Store) recordAndAttachDelegateExited(workID, state string, b *DelegateBinding, observer string, now time.Time) (string, error) {
+	id, err := s.recordDelegateExited(workID, b, now)
+	if err != nil {
+		return "", err
+	}
+	if err := s.appendDelegateLifecycleEvent(workID, state, observer, id, fmt.Sprintf("delegate exited session %s", b.Session), now); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func killSpawnedSession(runner SessionRunner, session string, cause error) error {
+	if killErr := runner.Kill(session); killErr != nil {
+		return errors.Join(cause, fmt.Errorf("delegate: kill unrecorded session %s: %w", session, killErr))
+	}
+	return cause
+}
+
 // --- steer ---
 
 type SteerOptions struct {
@@ -596,6 +653,13 @@ func (s *Store) Steer(opts SteerOptions, runner SessionRunner) (SteerResult, err
 		return out, fmt.Errorf("steer: probe session %s: %w", binding.Session, hasErr)
 	}
 	if !live {
+		w, werr := s.Get(out.WorkID)
+		if werr != nil {
+			return out, werr
+		}
+		if _, exitErr := s.recordAndAttachDelegateExited(out.WorkID, w.State, binding, holder, opts.Now); exitErr != nil {
+			return out, exitErr
+		}
 		return out, fmt.Errorf("steer: session %s for work %s is no longer live; spawn a new delegate", binding.Session, out.WorkID)
 	}
 	if err := runner.SendKeys(binding.Session, opts.Text, opts.Enter); err != nil {
@@ -666,6 +730,9 @@ func (s *Store) Attach(opts AttachOptions, runner SessionRunner) (AttachResult, 
 		return out, fmt.Errorf("attach: probe session %s: %w", binding.Session, hasErr)
 	}
 	out.Live = live
+	if !live {
+		return out, fmt.Errorf("attach: session %s for work %s is no longer live; spawn a new delegate", binding.Session, out.WorkID)
+	}
 	return out, nil
 }
 

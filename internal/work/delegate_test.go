@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -681,8 +682,11 @@ func TestDelegateNamedLaneAliasesResolveWithoutSecondRegistry(t *testing.T) {
 		wantCmd string
 	}{
 		{"claude-zai", "claude-zai"},
+		{"claude_zai", "claude-zai"},
 		{"claude-qwen", "claude-qwen"},
+		{"claude_qwen", "claude-qwen"},
 		{"claude-minimax", "claude-minimax"},
+		{"claude_minimax", "claude-minimax"},
 		{"claude", "claude"},
 		{"codex", "codex"},
 	}
@@ -698,6 +702,269 @@ func TestDelegateNamedLaneAliasesResolveWithoutSecondRegistry(t *testing.T) {
 	// And no extra file under COMPOUND_HOME/projections or similar.
 	if _, err := exec.LookPath("definitely-not-a-real-command"); err == nil {
 		t.Fatal("test invariant broken: looked-up command unexpectedly exists")
+	}
+}
+
+func TestDelegateKnownHarnessNamesAreDeterministic(t *testing.T) {
+	want := "claude, claude-minimax, claude-qwen, claude-zai, claude_minimax, claude_qwen, claude_zai, codex"
+	if got := knownHarnessNames(); got != want {
+		t.Fatalf("known harnesses = %q, want %q", got, want)
+	}
+}
+
+func TestDelegateCapacityGuardTargetsRequestedLaneAndDefaultsMinutes(t *testing.T) {
+	orig := LaneCapacityGuard
+	defer func() { LaneCapacityGuard = orig }()
+
+	var got LaneCapacityGuardRequest
+	LaneCapacityGuard = func(req LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+		got = req
+		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ok"}}, nil
+	}
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	res, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), DryRun: true, Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate dry-run: %v", err)
+	}
+	if res.Status != "preview" {
+		t.Fatalf("status = %q, want preview", res.Status)
+	}
+	if got.Lane != "claude-zai" {
+		t.Fatalf("capacity guard lane = %q, want requested executor lane claude-zai", got.Lane)
+	}
+	if got.ExpectedMinutes != 60 {
+		t.Fatalf("capacity guard expected_minutes = %d, want default 60", got.ExpectedMinutes)
+	}
+}
+
+func TestDelegateUsesResolvedWorkspace(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	workspace := t.TempDir()
+	runner := newFakeRunner()
+	res, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: workspace, Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if res.Status != "spawned" || len(runner.creates) != 1 {
+		t.Fatalf("spawn result=%+v creates=%+v", res, runner.creates)
+	}
+	if runner.creates[0].Dir != workspace {
+		t.Fatalf("runner workspace = %q, want %q", runner.creates[0].Dir, workspace)
+	}
+}
+
+func TestDelegateDoesNotPersistPromptArguments(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	const privatePrompt = "PAINT-THE-THREAD-IN-CERULEAN"
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	_, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Args: []string{"--print", privatePrompt}, Workspace: t.TempDir(), Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	for _, event := range capturedDelegateEvents(t, s) {
+		canonical, _ := json.Marshal(event)
+		if strings.Contains(string(canonical), privatePrompt) {
+			t.Fatalf("delegate event leaked prompt argument: %s", canonical)
+		}
+	}
+}
+
+func TestDelegateCorruptAttachedBindingFailsClosed(t *testing.T) {
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	w, err := s.Get(wID)
+	if err != nil {
+		t.Fatalf("get work: %v", err)
+	}
+	if err := s.appendEvent(Event{
+		TS: ts(fixedNow.Add(1)), WorkID: wID, From: w.State, To: w.State,
+		By: "orchestrator:test", Attached: []string{"wde_missing_binding"},
+	}); err != nil {
+		t.Fatalf("append corrupt binding reference: %v", err)
+	}
+
+	_, err = s.Attach(AttachOptions{WorkID: wID}, newFakeRunner())
+	if err == nil || !strings.Contains(err.Error(), "wde_missing_binding") {
+		t.Fatalf("corrupt attached binding must fail closed with its id, got %v", err)
+	}
+}
+
+func TestDelegateObservedExitIsAttachedToLifecycle(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	first, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("first delegate: %v", err)
+	}
+	if err := runner.Kill(first.Binding.Session); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if _, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(1),
+	}, runner); err != nil {
+		t.Fatalf("delegate after exit: %v", err)
+	}
+	events := capturedDelegateEvents(t, s)
+	exitedID := firstEventID(events, "work.delegate.exited")
+	life, err := s.eventsFor(wID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if exitedID == "" || !lifeHasAttached(life, exitedID) {
+		t.Fatalf("observed exit %q is not attached to lifecycle: %+v", exitedID, life)
+	}
+}
+
+func TestSteerDeadSessionRecordsExitAndAttachRefuses(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	spawned, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if err := runner.Kill(spawned.Binding.Session); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if _, err := s.Steer(SteerOptions{
+		WorkID: wID, Text: "new direction", Now: fixedNow.Add(1),
+	}, runner); err == nil {
+		t.Fatal("steer on dead session must refuse")
+	}
+	events := capturedDelegateEvents(t, s)
+	exitedID := firstEventID(events, "work.delegate.exited")
+	life, err := s.eventsFor(wID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if exitedID == "" || !lifeHasAttached(life, exitedID) {
+		t.Fatalf("dead steer exit %q is not attached to lifecycle: %+v", exitedID, life)
+	}
+	if _, err := s.Attach(AttachOptions{WorkID: wID}, runner); err == nil {
+		t.Fatal("attach must refuse a dead session")
+	}
+}
+
+func TestDelegateRejectsActorDifferentFromLeaseHolder(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:owner", "", "")
+	runner := newFakeRunner()
+	res, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Actor: "executor:other",
+		Command: "claude-zai", Workspace: t.TempDir(), Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if res.Refusal == nil || res.Refusal.Reason != "lease_held" {
+		t.Fatalf("actor outside lease must be refused{lease_held}, got %+v", res)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("actor outside lease spawned: %+v", runner.creates)
+	}
+}
+
+func TestDelegateLiveDuplicateRefusalIsAttached(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	if _, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow,
+	}, runner); err != nil {
+		t.Fatalf("first delegate: %v", err)
+	}
+	second, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(1),
+	}, runner)
+	if err != nil {
+		t.Fatalf("second delegate: %v", err)
+	}
+	if second.Refusal == nil || second.Refusal.Reason != "session_live" || second.EventID == "" {
+		t.Fatalf("live duplicate = %+v, want attached session_live refusal", second)
+	}
+	life, err := s.eventsFor(wID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if !lifeHasAttached(life, second.EventID) {
+		t.Fatalf("session_live refusal %s is not attached: %+v", second.EventID, life)
+	}
+}
+
+func TestDelegateKillsSpawnWhenLifecycleAttachmentFails(t *testing.T) {
+	origGuard := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = origGuard }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	origWrite := writeWorkEvent
+	writeWorkEvent = func(_ *os.File, _ []byte) (int, error) {
+		return 0, errors.New("injected lifecycle append failure")
+	}
+	defer func() { writeWorkEvent = origWrite }()
+
+	_, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow,
+	}, runner)
+	if err == nil || !strings.Contains(err.Error(), "injected lifecycle append failure") {
+		t.Fatalf("delegate error = %v, want injected append failure", err)
+	}
+	if len(runner.creates) != 1 || len(runner.kills) != 1 || runner.kills[0] != delegateSessionName(wID) {
+		t.Fatalf("unrecorded spawn was not killed: creates=%+v kills=%+v", runner.creates, runner.kills)
+	}
+	if live, _ := runner.Has(delegateSessionName(wID)); live {
+		t.Fatalf("unrecorded session %s remains live", delegateSessionName(wID))
 	}
 }
 
