@@ -111,6 +111,30 @@ type RunAttempt struct {
 	// re-marshal byte-identical. The work state machine is untouched —
 	// this is evidence, not enforcement.
 	PredecessorID string `json:"predecessor_id,omitempty"`
+
+	// --- S3 fields (every one omitempty; setters refuse on terminal status) ---
+
+	// LaneID is the adapter lane / actor identity that drove this run (e.g.
+	// "codex", "claude-zai"). Stamped by the dispatching context only where it
+	// actually knows the lane (observe-run flags today). omitempty so pre-S3
+	// records re-marshal byte-identical (pinned by the pre-S3 case of
+	// TestRunAttemptHashNeutralityForPreS2Records).
+	LaneID string `json:"lane_id,omitempty"`
+	// ModelID is the concrete model the run consumed (e.g. "model-x"). Empty
+	// when the dispatching context does not know the model -- never guessed.
+	ModelID string `json:"model_id,omitempty"`
+	// ProviderRoute is the provider route / endpoint family the run used (e.g.
+	// "provider-y"). Empty when unknown. omitempty so pre-S3 records re-marshal
+	// byte-identical.
+	ProviderRoute string `json:"provider_route,omitempty"`
+	// TokensIn is the prompt token usage. Zero ≡ unknown (the dispatching
+	// context did not report it). Plain int64 (not pointer) is sufficient:
+	// encoding/json omits the zero value for numbers, so omitempty works
+	// without the *time.Time workaround LastHeartbeatAt needs.
+	TokensIn int64 `json:"tokens_in,omitempty"`
+	// TokensOut is the completion token usage. Zero ≡ unknown; see TokensIn.
+	// omitempty so pre-S3 records re-marshal byte-identical.
+	TokensOut int64 `json:"tokens_out,omitempty"`
 }
 
 // Store persists RunAttempts under <home>/run_attempts/<id>.json with atomic rename and a
@@ -466,6 +490,46 @@ func (s *Store) SetProofRefs(id string, refs []string) (RunAttempt, error) {
 		}
 		ra.ProofRefs = out
 	}
+	return ra, s.write(ra)
+}
+
+// ---------------------------------------------------------------------------
+// S3: model / provider / lane / token attribution
+//
+// SetAttribution and SetTokenUsage follow the exact pattern of every S2
+// setter above: Get (which validates the id), refuse on terminal via the
+// shared requireMutable helper (same terminalRefusal error wording as
+// SetContextPack), update, atomic write. A terminal attempt cannot be
+// retroactively re-attributed -- that is the same audit invariant the S2
+// setters pin.
+// ---------------------------------------------------------------------------
+
+// SetAttribution records which lane / model / provider route drove this run.
+// Empty strings are valid (the dispatching context did not know that
+// dimension); the omitempty tags drop them from the JSON, so passing all-empty
+// changes nothing on a fresh mint. Stamped by the dispatching context only
+// where it actually knows the values -- never guessed.
+func (s *Store) SetAttribution(id, laneID, modelID, providerRoute string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.LaneID = strings.TrimSpace(laneID)
+	ra.ModelID = strings.TrimSpace(modelID)
+	ra.ProviderRoute = strings.TrimSpace(providerRoute)
+	return ra, s.write(ra)
+}
+
+// SetTokenUsage records the prompt / completion token counts. Zero ≡ unknown
+// (see the TokensIn field comment); pass the counts the dispatching context
+// actually observed. Refuses on terminal, same as every S2/S3 setter.
+func (s *Store) SetTokenUsage(id string, in, out int64) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.TokensIn = in
+	ra.TokensOut = out
 	return ra, s.write(ra)
 }
 

@@ -9,6 +9,7 @@ package runattempt
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -20,6 +21,33 @@ import (
 // TestEmptyRunAttemptIDsIsHashNeutral so future field additions face the
 // same discipline.
 func TestRunAttemptHashNeutralityForPreS2Records(t *testing.T) {
+	// attributionKeys are the S3 fields added in the runattempt-attribution
+	// slice. None may emit when unset -- that is the hash-neutrality contract
+	// for every field addition (pinned alongside TestEmptyRunAttemptIDsIsHashNeutral).
+	// The sweep below fails RED if any new field loses its omitempty tag, which
+	// is the teeth proof the byte-identical compare alone cannot give.
+	attributionKeys := []string{`"lane_id"`, `"model_id"`, `"provider_route"`, `"tokens_in"`, `"tokens_out"`}
+
+	assertNeutral := func(t *testing.T, label string, fixture []byte) {
+		t.Helper()
+		var ra RunAttempt
+		if err := json.Unmarshal(fixture, &ra); err != nil {
+			t.Fatal(err)
+		}
+		out, err := json.MarshalIndent(ra, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != string(fixture) {
+			t.Fatalf("%s re-marshal drifted:\n got: %s\nwant: %s", label, out, fixture)
+		}
+		for _, key := range attributionKeys {
+			if strings.Contains(string(out), key) {
+				t.Fatalf("%s emitted unset attribution field %s (omitempty broken):\n%s", label, key, out)
+			}
+		}
+	}
+
 	// Pre-S2 record: a S1-style JSON without any S2 field. last_heartbeat_at
 	// is *time.Time (omitempty) so nil is omitted entirely -- the byte order
 	// matches the struct field order in runattempt.go.
@@ -34,17 +62,26 @@ func TestRunAttemptHashNeutralityForPreS2Records(t *testing.T) {
   "created_at": "2026-07-20T00:00:00Z",
   "completed_at": "2026-07-20T00:01:00Z"
 }`)
-	var ra RunAttempt
-	if err := json.Unmarshal(preS2JSON, &ra); err != nil {
-		t.Fatal(err)
-	}
-	out, err := json.MarshalIndent(ra, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(out) != string(preS2JSON) {
-		t.Fatalf("pre-S2 record re-marshal drifted:\n got: %s\nwant: %s", out, preS2JSON)
-	}
+	// Pre-S3 record: S2 references present, NO S3 attribution fields. Extends
+	// the neutrality guard to the attribution additions -- this MUST re-marshal
+	// byte-identical AND must not emit any attribution key when those fields
+	// are unset. The key-order matches the struct field order in runattempt.go.
+	preS3JSON := []byte(`{
+  "schema_version": "compound.runattempt.v0.1",
+  "id": "ratt_20260720T000000Z_deadbeef",
+  "work_id": "work_abc",
+  "action_intent_id": "act_11112222",
+  "actor": "codex",
+  "harness": "fake",
+  "status": "succeeded",
+  "created_at": "2026-07-20T00:00:00Z",
+  "completed_at": "2026-07-20T00:01:00Z",
+  "context_pack_ref": "ctx_pack_42",
+  "workspace": "/repos/compound",
+  "command": "compound panel apply"
+}`)
+	assertNeutral(t, "pre-S2", preS2JSON)
+	assertNeutral(t, "pre-S3", preS3JSON)
 }
 
 // Mint -> setter -> Get without loss. Empty defaults on a fresh Mint; set
@@ -82,6 +119,12 @@ func TestRunAttemptRoundTripsNewFields(t *testing.T) {
 			func(got RunAttempt) bool {
 				return len(got.ProofRefs) == 2 && got.ProofRefs[0] == "receipt_abc" && got.ProofRefs[1] == "transition_abc"
 			}},
+		{"attribution", func() error { _, e := s.SetAttribution(ra.ID, "lane-a:worker", "model-x", "provider-y"); return e },
+			func(got RunAttempt) bool {
+				return got.LaneID == "lane-a:worker" && got.ModelID == "model-x" && got.ProviderRoute == "provider-y"
+			}},
+		{"token_usage", func() error { _, e := s.SetTokenUsage(ra.ID, 100, 250); return e },
+			func(got RunAttempt) bool { return got.TokensIn == 100 && got.TokensOut == 250 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.do(); err != nil {
@@ -127,6 +170,8 @@ func TestRunAttemptSettersRefuseOnTerminal(t *testing.T) {
 		{"diff", func() error { _, e := s.SetDiff(ra.ID, "x"); return e }},
 		{"test", func() error { _, e := s.SetTest(ra.ID, "x"); return e }},
 		{"proof_refs", func() error { _, e := s.SetProofRefs(ra.ID, []string{"x"}); return e }},
+		{"attribution", func() error { _, e := s.SetAttribution(ra.ID, "lane-x", "model-y", "provider-z"); return e }},
+		{"token_usage", func() error { _, e := s.SetTokenUsage(ra.ID, 100, 250); return e }},
 	}
 	for _, tc := range setters {
 		t.Run(tc.name, func(t *testing.T) {
