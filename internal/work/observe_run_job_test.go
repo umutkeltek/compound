@@ -212,3 +212,40 @@ func TestObserveRunWithoutJobFileProducesNoRunAttempt(t *testing.T) {
 		t.Fatalf("observe-run without job file must not produce RunAttemptID, got %q", result.RunAttemptID)
 	}
 }
+
+// TestObserveRunStampsAttributionFromInput: the S3 attribution fields on
+// ObserveRunInput land on the job-file-minted RunAttempt while it is still
+// pending (before the status-map Complete), so the terminal-refusing setters
+// accept them. This is the work-layer round-trip proof of the observe-run
+// stamping policy; the CLI tests (work_cli_test.go) prove the flag plumbing
+// and the no-keys omitempty case end-to-end.
+func TestObserveRunStampsAttributionFromInput(t *testing.T) {
+	s := newStore(t)
+	workID := runningWorkForObserve(t, s, "attribution stamps from input")
+	trace := seedTraceEnvelope(t, s, workID)
+	jobPath := writeCodexJobFile(t, t.TempDir(), "job-attr", "completed", "/tmp/job-attr.log", "attribution job")
+
+	result, err := s.ObserveRun(workID, ObserveRunInput{
+		Actor:         "codex",
+		TraceID:       trace.ID,
+		JobFilePath:   jobPath,
+		LaneID:        "lane-a:worker",
+		ModelID:       "model-x",
+		ProviderRoute: "provider-y",
+		TokensIn:      100,
+		TokensOut:     250,
+	}, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra, err := runattempt.Open(s.home).Get(result.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.LaneID != "lane-a:worker" || ra.ModelID != "model-x" || ra.ProviderRoute != "provider-y" {
+		t.Fatalf("attribution not stamped on the minted RunAttempt: lane=%q model=%q provider=%q", ra.LaneID, ra.ModelID, ra.ProviderRoute)
+	}
+	if ra.TokensIn != 100 || ra.TokensOut != 250 {
+		t.Fatalf("token usage not stamped: in=%d out=%d", ra.TokensIn, ra.TokensOut)
+	}
+}

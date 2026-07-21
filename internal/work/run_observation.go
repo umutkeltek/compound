@@ -24,6 +24,17 @@ type ObserveRunInput struct {
 	// attaches the ratt_ id to the advance. C2: this is the producer that
 	// gives observe-run a first-class execution record.
 	JobFilePath string
+	// S3 attribution (optional; observer-supplied). Present-flag stamps: a
+	// non-empty value stamps the matching RunAttempt field; an absent flag
+	// leaves the field at its zero value, which the omitempty tags drop from
+	// the JSON. Stamped onto the job-file-minted RunAttempt while it is still
+	// pending (before the status-map Complete), so the terminal-refusing
+	// setters accept it.
+	LaneID        string
+	ModelID       string
+	ProviderRoute string
+	TokensIn      int64
+	TokensOut     int64
 }
 
 type RunObservationResult struct {
@@ -88,7 +99,7 @@ func (s *Store) ObserveRun(workID string, in ObserveRunInput, now time.Time) (Ru
 	var runAttemptID string
 	var runAttemptIDs []string
 	if strings.TrimSpace(in.JobFilePath) != "" {
-		ra, raErr := s.observeRunFromJobFile(in.JobFilePath, workID, actor, now)
+		ra, raErr := s.observeRunFromJobFile(in, workID, actor, now)
 		if raErr != nil {
 			return RunObservationResult{}, fmt.Errorf("observe-run job file: %w", raErr)
 		}
@@ -153,8 +164,8 @@ func (s *Store) ObserveRun(workID string, in ObserveRunInput, now time.Time) (Ru
 // "completed"/"succeeded" → StatusSucceeded; job "failed" → StatusFailed.
 // A running job's RunAttempt stays running until C3 sweeps it or a later
 // observe-run with a completed job file terminalizes it.
-func (s *Store) observeRunFromJobFile(path, workID, actor string, now time.Time) (runattempt.RunAttempt, error) {
-	data, err := os.ReadFile(path)
+func (s *Store) observeRunFromJobFile(in ObserveRunInput, workID, actor string, now time.Time) (runattempt.RunAttempt, error) {
+	data, err := os.ReadFile(in.JobFilePath)
 	if err != nil {
 		return runattempt.RunAttempt{}, fmt.Errorf("read job file: %w", err)
 	}
@@ -164,7 +175,7 @@ func (s *Store) observeRunFromJobFile(path, workID, actor string, now time.Time)
 	}
 	jobID := strings.TrimSpace(job.ID)
 	if jobID == "" {
-		jobID = strings.TrimSuffix(filepath.Base(path), ".json")
+		jobID = strings.TrimSuffix(filepath.Base(in.JobFilePath), ".json")
 	}
 	// Deterministic id: same job → same ratt_ id → idempotent. The
 	// timestamp component comes from the job's StartedAt (not the
@@ -201,6 +212,22 @@ func (s *Store) observeRunFromJobFile(path, workID, actor string, now time.Time)
 		}
 	} else {
 		if updated, err := store.SetCommand(ra.ID, "codex-job:"+jobID); err == nil {
+			ra = updated
+		}
+	}
+	// S3 attribution from the observer's flags (present-flag stamps). Empty
+	// values are omitempty-dropped, so absent flags change nothing. Stamped
+	// while the attempt is still pending (before the status-map Complete) so
+	// the terminal-refusing setters accept it. Best-effort: attribution is
+	// evidence, not enforcement -- the first observer's data stands (the
+	// idempotent early-return above guards a re-observation).
+	if strings.TrimSpace(in.LaneID) != "" || strings.TrimSpace(in.ModelID) != "" || strings.TrimSpace(in.ProviderRoute) != "" {
+		if updated, err := store.SetAttribution(ra.ID, in.LaneID, in.ModelID, in.ProviderRoute); err == nil {
+			ra = updated
+		}
+	}
+	if in.TokensIn != 0 || in.TokensOut != 0 {
+		if updated, err := store.SetTokenUsage(ra.ID, in.TokensIn, in.TokensOut); err == nil {
 			ra = updated
 		}
 	}

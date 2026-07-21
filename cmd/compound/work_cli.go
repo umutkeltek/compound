@@ -1306,8 +1306,12 @@ func cmdWork(args []string) {
 		die(err)
 		fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)
 	case "observe-run":
-		observeRunUsage := "usage: compound work observe-run <work_id> --trace <trace_id> [--job-file <path>] [--actor A] [--note N] [--json]"
-		observeRunFlags := map[string]bool{"--trace": true, "--by": true, "--actor": true, "--note": true, "--job-file": true}
+		observeRunUsage := "usage: compound work observe-run <work_id> --trace <trace_id> [--job-file <path>] [--actor A] [--note N] [--lane L] [--model M] [--provider-route P] [--tokens-in N] [--tokens-out N] [--json]"
+		observeRunFlags := map[string]bool{
+			"--trace": true, "--by": true, "--actor": true, "--note": true, "--job-file": true,
+			"--lane": true, "--model": true, "--provider-route": true,
+			"--tokens-in": true, "--tokens-out": true,
+		}
 		if err := validateKnownFlags(rest, observeRunFlags, map[string]bool{"--json": true}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, observeRunUsage)
@@ -1318,11 +1322,37 @@ func cmdWork(args []string) {
 			fmt.Fprintln(os.Stderr, observeRunUsage)
 			os.Exit(2)
 		}
+		// S3 attribution flags are optional. Token flags parse to int64
+		// (zero ≡ unknown / absent); a non-integer value is a usage error.
+		tokensIn, tokensOut := int64(0), int64(0)
+		if v := flag("--tokens-in"); v != "" {
+			n, perr := strconv.ParseInt(v, 10, 64)
+			if perr != nil {
+				fmt.Fprintf(os.Stderr, "error: --tokens-in must be an integer, got %q\n", v)
+				fmt.Fprintln(os.Stderr, observeRunUsage)
+				os.Exit(2)
+			}
+			tokensIn = n
+		}
+		if v := flag("--tokens-out"); v != "" {
+			n, perr := strconv.ParseInt(v, 10, 64)
+			if perr != nil {
+				fmt.Fprintf(os.Stderr, "error: --tokens-out must be an integer, got %q\n", v)
+				fmt.Fprintln(os.Stderr, observeRunUsage)
+				os.Exit(2)
+			}
+			tokensOut = n
+		}
 		result, err := store.ObserveRun(workID, work.ObserveRunInput{
-			Actor:       firstNonEmpty(flag("--by"), flag("--actor")),
-			TraceID:     flag("--trace"),
-			Note:        flag("--note"),
-			JobFilePath: flag("--job-file"),
+			Actor:         firstNonEmpty(flag("--by"), flag("--actor")),
+			TraceID:       flag("--trace"),
+			Note:          flag("--note"),
+			JobFilePath:   flag("--job-file"),
+			LaneID:        flag("--lane"),
+			ModelID:       flag("--model"),
+			ProviderRoute: flag("--provider-route"),
+			TokensIn:      tokensIn,
+			TokensOut:     tokensOut,
 		}, time.Now())
 		die(err)
 		if has("--json") {
