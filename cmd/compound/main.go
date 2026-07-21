@@ -160,6 +160,8 @@ func main() {
 		cmdPackets(os.Args[2:])
 	case "workbench":
 		cmdWorkbench(os.Args[2:])
+	case "coordination":
+		cmdCoordination(os.Args[2:])
 	case "attention":
 		cmdAttention(os.Args[2:])
 	case "activity":

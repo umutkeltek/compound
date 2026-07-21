@@ -1,0 +1,509 @@
+package work
+
+import (
+	"sort"
+	"strings"
+	"time"
+)
+
+// Coordination is the read-only coordination projection: "I am working on this,
+// that actor is working on that, and I am waiting on it to start the next job."
+// The load-bearing part is the waiting-on / blocked-on / handoff relationship,
+// not an inventory of agents.
+//
+// It runs exactly the PLANNING half `work continue` runs — workbench +
+// candidate prep (dry-run AdvancePlan, never recorded) + continueWait +
+// continueCanContinue + the dispatch-plan lane-capacity gate — and never the
+// executing half: no DispatchStep, no Advance, no Admit, no Record*. Calling
+// Coordination twice over an unchanged home is byte-identical (see
+// coordination_test.go falsifiers).
+//
+// Actors are generic: enumerated from the executor fleet rows, lease holders
+// (lease.By), and live claimers — nothing hardcoded. `codex`/`claude` are just
+// executors that happen to be bound in; the projection never names them.
+
+const CoordinationSchemaVersion = "compound.coordination.v0.1"
+
+// CoordinationOptions controls the read-only coordination projection.
+type CoordinationOptions struct {
+	// Actor selects who "me" is. Empty picks the most-present actor
+	// deterministically (presence then lexicographic); ActorExplicit reports
+	// whether the caller chose.
+	Actor string
+}
+
+// CoordinationLane is the lane-capacity gate for an actor at projection time:
+// the dispatch-plan capacity annotation plus the guard's refuse/hold verdict.
+// Nil on ActorCoordination means no gate applied (the actor is not at a
+// dispatch point, or no capacity adapter is installed).
+type CoordinationLane struct {
+	State                string  `json:"state,omitempty"`
+	Remaining            float64 `json:"remaining"`
+	ResetsAt             string  `json:"resets_at,omitempty"`
+	Refused              bool    `json:"refused,omitempty"`
+	ConfirmationRequired bool    `json:"confirmation_required,omitempty"`
+	Message              string  `json:"message,omitempty"`
+}
+
+// CoordinationDoing is the work an actor is currently on, when any.
+type CoordinationDoing struct {
+	WorkID     string `json:"work_id,omitempty"`
+	Title      string `json:"title,omitempty"`
+	State      string `json:"state,omitempty"`
+	NextAction string `json:"next_action,omitempty"`
+	ClaimedBy  string `json:"claimed_by,omitempty"`
+	Owner      string `json:"owner,omitempty"`
+}
+
+// ActorCoordination is one actor's coordination face — the same shape for
+// "me" and for every other actor (nothing is special-cased per identity).
+type ActorCoordination struct {
+	Actor       string             `json:"actor"`
+	Doing       *CoordinationDoing `json:"doing,omitempty"`
+	NextAction  string             `json:"next_action,omitempty"`
+	CanContinue bool               `json:"can_continue"`
+	WaitReason  string             `json:"wait_reason,omitempty"`
+	BlockedOn   []string           `json:"blocked_on,omitempty"`
+	Lane        *CoordinationLane  `json:"lane,omitempty"`
+	Open        int                `json:"open"`
+	InProgress  int                `json:"in_progress"`
+	NeedsReview int                `json:"needs_review"`
+}
+
+// WaitEdge is one global dependency edge: who is waiting on what to start.
+// Work-scoped edges carry the work; actor-scoped edges (lane gates, empty
+// workbench) leave Work empty.
+type WaitEdge struct {
+	Work      string            `json:"work,omitempty"`
+	Actor     string            `json:"actor"`
+	Reason    string            `json:"reason"`
+	BlockedOn []string          `json:"blocked_on,omitempty"`
+	Lane      *CoordinationLane `json:"lane,omitempty"`
+}
+
+// CoordinationReport is compound.coordination.v0.1: me, every other actor
+// (generic), and the global wait graph — consumed by the console, the
+// terminal, or another agent.
+type CoordinationReport struct {
+	SchemaVersion string              `json:"schema_version"`
+	GeneratedAt   string              `json:"generated_at"`
+	Actor         string              `json:"actor"`
+	ActorExplicit bool                `json:"actor_explicit"`
+	Me            ActorCoordination   `json:"me"`
+	Others        []ActorCoordination `json:"others"`
+	Waits         []WaitEdge          `json:"waits"`
+	Integrity     []string            `json:"integrity,omitempty"`
+}
+
+// Coordination projects the read-only coordination view. It is a pure observer:
+// workbench reads, dry-run candidate prep, and a ReadOnly lane-capacity probe —
+// it never dispatches, claims, advances, admits, or records.
+func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (CoordinationReport, error) {
+	report := CoordinationReport{
+		SchemaVersion: CoordinationSchemaVersion,
+		GeneratedAt:   now.UTC().Format(time.RFC3339),
+		Others:        []ActorCoordination{},
+		Waits:         []WaitEdge{},
+	}
+	actors, involved, err := s.coordinationActors(now)
+	if err != nil {
+		return CoordinationReport{}, err
+	}
+	explicit := strings.TrimSpace(opts.Actor) != ""
+	me := strings.TrimSpace(opts.Actor)
+
+	faces := make([]ActorCoordination, 0, len(actors))
+	presence := make(map[string]int, len(actors))
+	edgeKeys := make(map[string]struct{})
+	gateNeeded := false
+	for _, actor := range actors {
+		_, isInvolved := involved[actor]
+		face, waits, needsGate, err := s.coordinationActor(now, actor, isInvolved, edgeKeys)
+		if err != nil {
+			return CoordinationReport{}, err
+		}
+		gateNeeded = gateNeeded || needsGate
+		presence[actor] = coordinationPresence(face)
+		faces = append(faces, face)
+		report.Waits = append(report.Waits, waits...)
+	}
+	if !explicit {
+		me = coordinationDefaultActor(actors, presence)
+	}
+	report.Actor = me
+	report.ActorExplicit = explicit
+
+	meSet := false
+	for _, face := range faces {
+		report.Integrity = mergeUnique(report.Integrity, face.integrityNotes())
+		if !meSet && face.Actor == me {
+			report.Me = face
+			meSet = true
+			continue
+		}
+		report.Others = append(report.Others, face)
+	}
+	if !meSet {
+		// Explicit actor with no live presence (no fleet row, lease, claim,
+		// or admission preview): still honor the choice AND project its real
+		// workbench perspective, so a console "view as actor X" never silently
+		// re-targets or flattens X to an empty face. The explicit me is treated
+		// as involved — its waits are first-class edges in the graph.
+		if explicit && strings.TrimSpace(me) != "" {
+			face, waits, needsGate, aerr := s.coordinationActor(now, me, true, edgeKeys)
+			if aerr != nil {
+				return CoordinationReport{}, aerr
+			}
+			report.Me = face
+			report.Waits = append(report.Waits, waits...)
+			report.Integrity = mergeUnique(report.Integrity, face.integrityNotes())
+			if needsGate && LaneCapacityGuard == nil {
+				report.Integrity = mergeUnique(report.Integrity, []string{"lane_capacity_guard_not_installed"})
+			}
+		} else {
+			report.Me = ActorCoordination{Actor: me}
+		}
+	}
+	sort.SliceStable(report.Others, func(i, j int) bool {
+		pi, pj := presence[report.Others[i].Actor], presence[report.Others[j].Actor]
+		if pi != pj {
+			return pi > pj
+		}
+		return report.Others[i].Actor < report.Others[j].Actor
+	})
+	if gateNeeded && LaneCapacityGuard == nil {
+		report.Integrity = mergeUnique(report.Integrity, []string{"lane_capacity_guard_not_installed"})
+	}
+	return report, nil
+}
+
+// coordinationActor projects one actor's face plus its wait edges. needsGate
+// reports whether the actor stood at a dispatch point where a lane-capacity
+// gate would decide (used only for the integrity note about a missing guard).
+// involved marks actors with a live lease or claim — only involved actors (or
+// an explicitly chosen me) contribute wait edges to the global graph.
+func (s *Store) coordinationActor(now time.Time, actor string, involved bool, edgeKeys map[string]struct{}) (ActorCoordination, []WaitEdge, bool, error) {
+	face := ActorCoordination{Actor: actor}
+	wb, err := s.Workbench(now, WorkbenchOptions{Actor: actor})
+	if err != nil {
+		return face, nil, false, err
+	}
+	face.Open = wb.Counts.Open
+	face.InProgress = wb.Counts.InProgress
+	face.NeedsReview = wb.Counts.NeedsReview
+	face.Doing = coordinationDoing(wb, actor)
+
+	atDispatchPoint := wb.DispatchNext.CanRun
+	face.Lane = s.coordinationLane(now, actor, wb)
+	gated := coordinationLaneGated(face.Lane)
+
+	canContinue, _ := continueCanContinue(wb, actor, "")
+	if canContinue && !wb.DispatchNext.CanRun && continueAdmissionPreview(wb.AdmissionPreviews, "") == nil {
+		// Continuation would be a candidate prepare: run the exact dry-run
+		// advance plan `continue` runs (AdvancePlan without Record) so
+		// can_continue is true only when policy admits the prepare.
+		if item, _, _ := s.continuePrepareCandidate(now, wb, actor, ""); item == nil {
+			canContinue = false
+		}
+	}
+	if gated {
+		canContinue = false
+	}
+	face.CanContinue = canContinue
+
+	if canContinue {
+		face.NextAction = coordinationNextAction(wb, actor)
+	} else {
+		// Run the SAME wait synthesis `work continue` runs when its step made
+		// no progress — with the capacity verdict carried as the synthetic
+		// step status so dispatchStepWait emits the lane.* edges.
+		synth := ContinueResult{Actor: actor}
+		switch {
+		case face.Lane != nil && face.Lane.Refused:
+			synth.Status = "capacity_refused"
+		case face.Lane != nil && face.Lane.ConfirmationRequired:
+			synth.Status = "capacity_confirmation_required"
+		}
+		face.WaitReason, face.BlockedOn = continueWait(synth, wb)
+		face.NextAction = continueNoAction(wb, "")
+	}
+	if !wb.DispatchNext.CanRun {
+		face.BlockedOn = mergeUnique(face.BlockedOn, wb.DispatchNext.BlockedOn)
+		if strings.TrimSpace(face.WaitReason) == "" && strings.TrimSpace(wb.DispatchNext.WaitReason) != "" {
+			face.WaitReason = wb.DispatchNext.WaitReason
+		}
+	}
+
+	var waits []WaitEdge
+	addEdge := func(edge WaitEdge) {
+		key := edge.Work + "\x00" + edge.Actor + "\x00" + edge.Reason
+		if _, dup := edgeKeys[key]; dup {
+			return
+		}
+		edgeKeys[key] = struct{}{}
+		waits = append(waits, edge)
+	}
+	// Edges land in the global graph only for a blocked actor with live skin
+	// in the game (lease/claim) — an idle fleet row is idle, not "waiting,"
+	// and an actor that can continue waits on nothing.
+	if involved && !face.CanContinue {
+		// Work-scoped edges: classify each open work the same way
+		// dispatchStepWait classifies it, so the global edge list speaks the
+		// same work.* language the continue loop's blocked_on does.
+		for _, item := range wb.Open {
+			reason, token := coordinationItemWait(item, actor)
+			if reason == "" {
+				continue
+			}
+			addEdge(WaitEdge{
+				Work:      item.WorkID,
+				Actor:     actor,
+				Reason:    reason,
+				BlockedOn: []string{token},
+			})
+		}
+		// Actor-scoped edge: the continue-style wait (incl. lane.* edges).
+		if strings.TrimSpace(face.WaitReason) != "" || len(face.BlockedOn) > 0 {
+			addEdge(WaitEdge{
+				Actor:     actor,
+				Reason:    face.WaitReason,
+				BlockedOn: append([]string{}, face.BlockedOn...),
+				Lane:      face.Lane,
+			})
+		}
+	}
+	return face, waits, atDispatchPoint, nil
+}
+
+// coordinationLane probes the lane-capacity gate for an actor exactly where a
+// dispatch would meet it: when the workbench says a run is dispatchable. The
+// probe is ReadOnly, the same seam DispatchPlan calls with ReadOnly:true.
+func (s *Store) coordinationLane(now time.Time, actor string, wb WorkbenchReport) *CoordinationLane {
+	if LaneCapacityGuard == nil || !wb.DispatchNext.CanRun {
+		return nil
+	}
+	result, err := LaneCapacityGuard(LaneCapacityGuardRequest{
+		HomePath: s.home,
+		Lane:     actor,
+		WorkID:   strings.TrimSpace(wb.DispatchNext.WorkID),
+		ReadOnly: true,
+		Now:      now,
+	})
+	if err != nil {
+		return nil
+	}
+	lane := CoordinationLane{
+		State:                result.Capacity.State,
+		Remaining:            result.Capacity.Remaining,
+		ResetsAt:             result.Capacity.ResetsAt,
+		Refused:              result.Refused,
+		ConfirmationRequired: result.ConfirmationRequired,
+		Message:              result.Message,
+	}
+	if lane.State == "" && lane.Remaining == 0 && lane.ResetsAt == "" && !lane.Refused && !lane.ConfirmationRequired && lane.Message == "" {
+		return nil
+	}
+	return &lane
+}
+
+func coordinationLaneGated(lane *CoordinationLane) bool {
+	if lane == nil {
+		return false
+	}
+	if lane.Refused || lane.ConfirmationRequired {
+		return true
+	}
+	switch lane.State {
+	case "walled", "dead", "refused":
+		return true
+	default:
+		return false
+	}
+}
+
+// coordinationItemWait classifies one open work as a wait exactly the way
+// dispatchStepWait classifies open items (same reasons, same work.* tokens).
+// Empty reason means the item is not a wait for this actor (ready/dispatchable
+// work, or the actor's own claim).
+func coordinationItemWait(item WorkbenchItem, actor string) (reason, token string) {
+	switch item.State {
+	case "held", "blocked":
+		return "needs_review", "work.review:" + item.WorkID
+	case "running":
+		return "run_evidence", "work.run_evidence:" + item.WorkID
+	case "verifying":
+		if !hasCloseProofEvidence(item) {
+			return "close_proof", "work.close_proof:" + item.WorkID
+		}
+		return "", ""
+	case "claimed":
+		if strings.TrimSpace(item.ClaimedBy) != "" && item.ClaimedBy != actor {
+			return "claimed_by_other_actor", "work.claimed_by_other_actor:" + item.WorkID
+		}
+		return "", ""
+	case "proposed", "admitted":
+		return "not_ready", "work.ready_state:" + item.WorkID
+	default:
+		return "", ""
+	}
+}
+
+// coordinationDoing picks the work that best represents what the actor is on.
+// Doing is strictly actor-scoped: only work the actor holds (claim, or owner
+// of a still-running work with no live claim). Another actor's running work is
+// a WAIT for this actor, never its doing. Nil means the actor is idle —
+// itself coordination truth.
+func coordinationDoing(wb WorkbenchReport, actor string) *CoordinationDoing {
+	if strings.TrimSpace(actor) == "" {
+		return nil
+	}
+	inMotion := func(state string) bool {
+		switch state {
+		case "claimed", "running", "verifying", "held", "blocked":
+			return true
+		default:
+			return false
+		}
+	}
+	pick := -1
+	rank := func(i int) int {
+		item := wb.Open[i]
+		mine := item.ClaimedBy == actor
+		switch {
+		case item.State == "running" && mine:
+			return 6
+		case item.State == "verifying" && mine:
+			return 5
+		case item.State == "claimed" && mine:
+			return 4
+		case inMotion(item.State) && mine:
+			return 3
+		case item.State == "running" && item.Owner == actor && strings.TrimSpace(item.ClaimedBy) == "":
+			return 1
+		default:
+			return 0
+		}
+	}
+	best := 0
+	for i := range wb.Open {
+		if r := rank(i); r > best {
+			best, pick = r, i
+		}
+	}
+	if pick < 0 {
+		return nil
+	}
+	item := wb.Open[pick]
+	return &CoordinationDoing{
+		WorkID:     item.WorkID,
+		Title:      firstNonEmpty(item.DesiredOutcome, item.WorkID),
+		State:      item.State,
+		NextAction: item.NextAction,
+		ClaimedBy:  item.ClaimedBy,
+		Owner:      item.Owner,
+	}
+}
+
+// coordinationNextAction mirrors the can-continue branches of
+// continueNextAction without having executed a step.
+func coordinationNextAction(wb WorkbenchReport, actor string) string {
+	if wb.DispatchNext.CanRun {
+		for _, item := range wb.Open {
+			if item.WorkID == wb.DispatchNext.WorkID && strings.TrimSpace(item.NextAction) != "" {
+				return item.NextAction
+			}
+		}
+		return "continue next safe lifecycle step"
+	}
+	for _, item := range wb.Open {
+		if (item.State == "proposed" || item.State == "admitted") && !workActionContextRequiresOperator(item.ActionContext) {
+			return "prepare candidate to ready"
+		}
+	}
+	if continueAdmissionPreview(wb.AdmissionPreviews, "") != nil {
+		return "add suggested task to work"
+	}
+	return "continue next safe lifecycle step"
+}
+
+// coordinationActors enumerates the generic actor set: executor fleet rows,
+// live lease holders, live claimers, and actors with an admission preview
+// (a suggested task awaiting their admit — continue's first step). Sorted for
+// deterministic output. The involved set (lease holders ∪ claimers) marks
+// actors with live skin in the game — only involved actors emit wait edges;
+// an idle fleet row is idle, not "waiting."
+func (s *Store) coordinationActors(now time.Time) (actors []string, involved map[string]struct{}, err error) {
+	seen := make(map[string]struct{})
+	involved = make(map[string]struct{})
+	add := func(a string, isInvolvement bool) {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			return
+		}
+		if isInvolvement {
+			involved[a] = struct{}{}
+		}
+		if _, dup := seen[a]; dup {
+			return
+		}
+		seen[a] = struct{}{}
+		actors = append(actors, a)
+	}
+	projection, perr := s.ExecutorsProjection(now, ExecutorsProjectionOptions{})
+	if perr != nil {
+		return nil, nil, perr
+	}
+	for _, row := range projection.Executors {
+		add(row.ID, false)
+		for _, lease := range row.Leases {
+			add(lease.By, true)
+		}
+	}
+	wb, werr := s.Workbench(now, WorkbenchOptions{})
+	if werr != nil {
+		return nil, nil, werr
+	}
+	for _, item := range wb.Open {
+		add(item.ClaimedBy, true)
+	}
+	for _, preview := range wb.AdmissionPreviews {
+		add(preview.Actor, false)
+	}
+	sort.Strings(actors)
+	return actors, involved, nil
+}
+
+func coordinationPresence(face ActorCoordination) int {
+	p := face.NeedsReview * 2
+	if face.Doing != nil {
+		switch face.Doing.State {
+		case "running":
+			p += 6
+		case "verifying":
+			p += 5
+		case "claimed":
+			p += 4
+		default:
+			p += 2
+		}
+	}
+	if face.Open > 0 {
+		p++
+	}
+	return p
+}
+
+func coordinationDefaultActor(actors []string, presence map[string]int) string {
+	best := ""
+	bestScore := -1
+	for _, actor := range actors { // actors sorted: ties resolve lexicographic
+		if score := presence[actor]; score > bestScore {
+			best, bestScore = actor, score
+		}
+	}
+	return best
+}
+
+// integrityNotes lets ActorCoordination carry per-actor degradation facts
+// without exporting them onto the wire (kept off the JSON face).
+func (face ActorCoordination) integrityNotes() []string { return nil }
