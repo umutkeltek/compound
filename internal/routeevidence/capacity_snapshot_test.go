@@ -2,6 +2,7 @@ package routeevidence
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -587,5 +588,128 @@ func TestReadLaneCapacitySubLaneIntegrationFreshnessEnforced(t *testing.T) {
 	}
 	if staleCapacity.State != CapacityUnknown {
 		t.Fatalf("claude's 15m freshness window was not enforced after sub-lane resolution: %+v", staleCapacity)
+	}
+}
+
+// --- S4 capacity DataRef truth split (work_54c4de85a3c7) ---
+//
+// Three-way split: unresolvable lane, resolved family + empty usage file, and resolved family
+// + only-stale rows must surface three DISTINCT DataRefs so callers can tell WHY the lane is
+// unknown. Fresh-row behavior is byte-identical to today.
+
+func TestReadLaneCapacityDataRefTruthThreeWaySplit(t *testing.T) {
+	t.Run("unresolvable lane", func(t *testing.T) {
+		cfg := capacityFixtureConfig(t)
+		// Create at least one source file so installed=true (we want the unresolvable-lane
+		// branch of ReadLaneCapacityWithConfig, not the !installed fail-open path).
+		if err := os.WriteFile(cfg.Paths.UsageHistoryPath, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		capacity, err := ReadLaneCapacityWithConfig("synthesis", capacityNow, cfg)
+		if err != nil {
+			t.Fatalf("read lane capacity: %v", err)
+		}
+		if capacity.State != CapacityUnknown {
+			t.Fatalf("unresolvable lane should stay unknown: %+v", capacity)
+		}
+		if capacity.DataRef != "no matching capacity row" {
+			t.Fatalf("unresolvable lane DataRef = %q, want %q", capacity.DataRef, "no matching capacity row")
+		}
+	})
+
+	t.Run("resolved family with empty usage file", func(t *testing.T) {
+		cfg := capacityFixtureConfig(t)
+		// File exists but contains zero rows for the resolved family.
+		if err := os.WriteFile(cfg.Paths.UsageHistoryPath, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		capacity, err := ReadLaneCapacityWithConfig("codex", capacityNow, cfg)
+		if err != nil {
+			t.Fatalf("read lane capacity: %v", err)
+		}
+		if capacity.State != CapacityUnknown {
+			t.Fatalf("empty-file lane should stay unknown: %+v", capacity)
+		}
+		if capacity.DataRef != "no usage rows for lane" {
+			t.Fatalf("empty-file lane DataRef = %q, want %q", capacity.DataRef, "no usage rows for lane")
+		}
+		if !capacity.LastProven.IsZero() {
+			t.Fatalf("empty-file lane must not invent LastProven: %+v", capacity)
+		}
+		if capacity.Source != "" {
+			t.Fatalf("empty-file lane must not carry source: %q", capacity.Source)
+		}
+	})
+
+	t.Run("resolved family with only stale rows", func(t *testing.T) {
+		cfg := capacityFixtureConfig(t)
+		// Resolves structurally, file contains rows but all are stale (claude 15m window).
+		writeCapacityUsage(t, cfg, "claude", 10, capacityNow.Add(2*time.Hour), capacityNow.Add(-16*time.Minute))
+		capacity, err := ReadLaneCapacityWithConfig("claude-main", capacityNow, cfg)
+		if err != nil {
+			t.Fatalf("read lane capacity: %v", err)
+		}
+		if capacity.State != CapacityUnknown {
+			t.Fatalf("stale-only lane should stay unknown: %+v", capacity)
+		}
+		if !strings.HasPrefix(capacity.DataRef, "codexbar/usage-history:") {
+			t.Fatalf("stale-only DataRef must carry codexbar/usage-history prefix: %q", capacity.DataRef)
+		}
+		if !strings.Contains(capacity.DataRef, "newest=") {
+			t.Fatalf("stale-only DataRef must carry newest= timestamp: %q", capacity.DataRef)
+		}
+		expected := capacityNow.Add(-16 * time.Minute).UTC().Format(time.RFC3339)
+		if !strings.Contains(capacity.DataRef, expected) {
+			t.Fatalf("stale-only DataRef must cite newest sample RFC3339 %q: %q", expected, capacity.DataRef)
+		}
+		if capacity.Source != "codexbar/usage-history" {
+			t.Fatalf("stale-only lane Source = %q, want %q", capacity.Source, "codexbar/usage-history")
+		}
+		if !capacity.LastProven.Equal(capacityNow.Add(-16 * time.Minute)) {
+			t.Fatalf("stale-only lane LastProven = %v, want %v", capacity.LastProven, capacityNow.Add(-16*time.Minute))
+		}
+	})
+}
+
+// Fresh-row behavior is byte-identical to today: a fresh row produces exactly today's DataRef
+// (already covered implicitly by the live-allow tests, but made explicit here so the contract
+// is self-evident at the change seam).
+func TestReadLaneCapacityFreshRowDataRefUnchanged(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	writeCapacityUsage(t, cfg, "codex", 25, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+	capacity, err := ReadLaneCapacityWithConfig("codex", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if capacity.State != CapacityAlive {
+		t.Fatalf("fresh row should be alive: %+v", capacity)
+	}
+	want := fmt.Sprintf("codexbar:provider=codex,window=5h/300m,sampled_at=%s", capacityNow.Add(-5*time.Minute).UTC().Format(time.RFC3339))
+	if capacity.DataRef != want {
+		t.Fatalf("fresh row DataRef = %q, want %q", capacity.DataRef, want)
+	}
+}
+
+// Malformed alias file + resolved-but-stale lane: DataRef must carry BOTH the stale annotation
+// AND the lane-aliases.json unreadable note (extends S1's TestReadLaneCapacityMalformedAliasFileSurfacesNoteOnlyWhenUnknown
+// pattern to the resolved-but-stale branch).
+func TestReadLaneCapacityMalformedAliasPlusStaleRowsAnnotatesBoth(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	if err := os.WriteFile(cfg.Paths.AliasesPath, []byte("{not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeCapacityUsage(t, cfg, "claude", 10, capacityNow.Add(2*time.Hour), capacityNow.Add(-16*time.Minute))
+	capacity, err := ReadLaneCapacityWithConfig("claude-main", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if capacity.State != CapacityUnknown {
+		t.Fatalf("stale-only lane with malformed alias should stay unknown: %+v", capacity)
+	}
+	if !strings.Contains(capacity.DataRef, "codexbar/usage-history:") {
+		t.Fatalf("stale annotation missing from DataRef: %q", capacity.DataRef)
+	}
+	if !strings.Contains(capacity.DataRef, "lane-aliases.json unreadable") {
+		t.Fatalf("malformed-alias note did not compose with stale annotation: %q", capacity.DataRef)
 	}
 }
