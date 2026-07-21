@@ -212,4 +212,137 @@ func TestHarnessRunJSON(t *testing.T) {
 	}
 }
 
+// readSingleRunAttemptJSON reads the one persisted RunAttempt JSON a fresh
+// `harness run` leaves under <home>/run_attempts. Asserts exactly one file
+// exists so a silent second mint (or a lost one) is surfaced. Returns the
+// raw bytes so callers can assert on JSON keys byte-level (omitempty is a
+// serialization concern, not a struct-field concern).
+func readSingleRunAttemptJSON(t *testing.T, homePath string) []byte {
+	t.Helper()
+	files, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(files) != 1 {
+		t.Fatalf("expected exactly 1 RunAttempt file, got %d: %v", len(files), files)
+	}
+	body, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatalf("read RunAttempt JSON: %v", err)
+	}
+	return body
+}
+
+// TestHarnessRunByStampsLaneID: `harness run ... --by <lane>` flows the
+// resolved actor into RunInput.LaneID, so the minted RunAttempt's persisted
+// JSON carries lane_id = <lane>. This is the S6 lane-attribution falsifier,
+// mirroring the rail-level TestRunnerStampsLaneIDPreTerminal but exercising
+// the full CLI flag path: valueFlag(--by) -> RunInput.LaneID ->
+// SetAttribution pre-terminalization -> persisted JSON.
+//
+// Falsifier (RED at base): cmdHarnessRun does not parse --by and never sets
+// RunInput.LaneID, so lane_id is absent from the JSON even with --by passed.
+// Asserting on the raw persisted bytes (not just the struct) pins that the
+// lane identity actually round-trips to disk.
+func TestHarnessRunByStampsLaneID(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "harness run --by lane stamp",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = captureStdout(t, func() {
+		cmdHarness([]string{
+			"run", "--harness", "os-harness-entrypoints",
+			"--work", w.ID,
+			"--workspace", homePath,
+			"--by", "lane-a:worker",
+			"--", "echo", "by-stamp-smoke",
+		})
+	})
+	body := readSingleRunAttemptJSON(t, homePath)
+	if !strings.Contains(string(body), `"lane_id": "lane-a:worker"`) {
+		t.Fatalf("harness run --by must stamp lane_id=lane-a:worker; RunAttempt JSON:\n%s", body)
+	}
+}
+
+// TestHarnessRunActorAliasIdenticalToBy: --actor is the documented alias of
+// --by and must stamp lane_id identically. Falsifier: if the alias were wired
+// to a different lane resolution (or unwired), lane_id would be absent or
+// disagree with the --by path.
+func TestHarnessRunActorAliasIdenticalToBy(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "harness run --actor alias",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = captureStdout(t, func() {
+		cmdHarness([]string{
+			"run", "--harness", "os-harness-entrypoints",
+			"--work", w.ID,
+			"--workspace", homePath,
+			"--actor", "lane-a:worker",
+			"--", "echo", "actor-alias-smoke",
+		})
+	})
+	body := readSingleRunAttemptJSON(t, homePath)
+	if !strings.Contains(string(body), `"lane_id": "lane-a:worker"`) {
+		t.Fatalf("harness run --actor must stamp lane_id=lane-a:worker (identical to --by); RunAttempt JSON:\n%s", body)
+	}
+}
+
+// TestHarnessRunNoActorOmitsLaneID: absent --by/--actor leaves RunInput.LaneID
+// empty, which stamps NOTHING (the runner skips SetAttribution entirely), so
+// the persisted RunAttempt JSON has NO lane_id key (omitempty at the rail
+// level). Mirrors TestRunnerEmptyLaneIDOmitsStamp. Byte-level assert: an
+// unattributed `harness run` is byte-identical to today's behavior.
+func TestHarnessRunNoActorOmitsLaneID(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "harness run no-actor omits lane_id",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = captureStdout(t, func() {
+		cmdHarness([]string{
+			"run", "--harness", "os-harness-entrypoints",
+			"--work", w.ID,
+			"--workspace", homePath,
+			"--", "echo", "no-actor-smoke",
+		})
+	})
+	body := readSingleRunAttemptJSON(t, homePath)
+	if strings.Contains(string(body), "lane_id") {
+		t.Fatalf("unattributed harness run must omit lane_id (empty LaneID stamps nothing); RunAttempt JSON:\n%s", body)
+	}
+}
+
 var _ = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)

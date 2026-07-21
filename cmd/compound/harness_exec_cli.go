@@ -51,7 +51,7 @@ func cmdHarnessExecutors(args []string) {
 //
 // Usage:
 //
-//	compound harness run --harness <name> --work <work_id> [-- <command> [args...]]
+//	compound harness run --harness <name> --work <work_id> [--by <lane> | --actor <lane>] [-- <command> [args...]]
 //	compound harness run --harness claude --work <work_id> --prompt "fix the bug"
 //
 // The work envelope must exist (read via work.Get). The adapter
@@ -65,13 +65,19 @@ func cmdHarnessRun(args []string) {
 	harnessName := valueFlag(args, "--harness")
 	prompt := valueFlag(args, "--prompt")
 	jsonOut := hasFlag(args, "--json")
+	// actor is the resolved lane that dispatched this run (--by, alias --actor).
+	// Mirrors the work-advance --execute idiom. Optional and has no default/env
+	// fallback: empty = unattributed run, RunInput.LaneID stays "" and the rail
+	// stamps nothing (byte-identical to today's behavior). When set, it flows
+	// into RunInput.LaneID and the rail stamps lane_id pre-terminalization.
+	actor := firstNonEmpty(valueFlag(args, "--by"), valueFlag(args, "--actor"))
 
 	if workID == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound harness run --harness <name> --work <work_id> [--prompt <text> | -- <command> [args...]] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound harness run --harness <name> --work <work_id> [--by <lane> | --actor <lane>] [--prompt <text> | -- <command> [args...]] [--json]")
 		os.Exit(2)
 	}
 	if harnessName == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound harness run --harness <name> --work <work_id> [--prompt <text> | -- <command> [args...]] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound harness run --harness <name> --work <work_id> [--by <lane> | --actor <lane>] [--prompt <text> | -- <command> [args...]] [--json]")
 		os.Exit(2)
 	}
 
@@ -136,6 +142,7 @@ func cmdHarnessRun(args []string) {
 		Args:           commandArgs,
 		Prompt:         prompt,
 		PermissionMode: valueFlag(args, "--permission-mode"),
+		LaneID:         actor,
 		Now:            time.Now().UTC(),
 	}
 
