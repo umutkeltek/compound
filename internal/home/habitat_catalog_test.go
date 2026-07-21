@@ -245,3 +245,65 @@ func TestHabitatPathMakesLegacyWriterDebtExplicitAndRejectsTraversal(t *testing.
 		t.Fatal("habitat path accepted traversal")
 	}
 }
+
+// TestHabitatCatalogOwnsActuatorRoot: the governed outbound actuator writes
+// durable operational state under actuator/ (budget ledger, outbox,
+// signal-checks). The habitat catalog must own the root, or every home
+// doctor run reports it as an unknown root and the habitat verdict goes
+// red. Falsifier: removing the actuator entries from habitatEntries turns
+// the InspectHabitat check RED with unknown_roots=["actuator"] — the live
+// drift this pins was created when the actuator landed without its
+// same-change catalog registration (2026-07-21).
+func TestHabitatCatalogOwnsActuatorRoot(t *testing.T) {
+	entry, ok := HabitatForPath("actuator/budget/2026-07-21.json")
+	if !ok || entry.Prefix != "actuator/budget" || entry.Status != HabitatStatusActive || entry.Class != HabitatClassOperational || !entry.Backup || entry.Compact || !entry.PlacementAllowed {
+		t.Fatalf("actuator budget habitat is not owned operational state: %+v ok=%t", entry, ok)
+	}
+
+	homePath := t.TempDir()
+	writeHomeFile(t, homePath, "actuator/budget/2026-07-21.json", `{}`)
+	writeHomeFile(t, homePath, "actuator/outbox/post_0001.json", `{}`)
+	writeHomeFile(t, homePath, "actuator/signal-checks/check_0001.json", `{}`)
+	writeHomeFile(t, homePath, "profiles/overlay.json", `{}`)
+	writeHomeFile(t, homePath, "recovery/land_work_0000_deadbeef.tar", "")
+	inventory, err := InspectHabitat(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.UnknownRoots) != 0 {
+		t.Fatalf("actuator/, profiles/, recovery/ must be known roots; unknown_roots=%v", inventory.UnknownRoots)
+	}
+}
+
+// TestDoctorRecognizesOwnedFeatureRoots: profiles (operator overlay), recovery
+// (land/claim recovery archives), and the actuator outbox family are owned
+// habitat roots, not foreign dirs. Falsifier: dropping any of their
+// habitatCatalog entries turns this RED — InspectHabitat reports the root in
+// UnknownRoots and the doctor fails, which is exactly the regression that broke
+// `home doctor` (and every agent's hygiene gate) on a real home carrying a
+// profiles overlay dir and recovery archives.
+func TestDoctorRecognizesOwnedFeatureRoots(t *testing.T) {
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "local", archiveTestNow); err != nil {
+		t.Fatal(err)
+	}
+	// Real content in each owned root, as the live features write it.
+	writeHomeFile(t, h, "profiles/overlay.json", `{"agents":{}}`)
+	writeHomeFile(t, h, "recovery/land_work_deadbeef.tar", "recovery-archive")
+	writeHomeFile(t, h, "actuator/outbox/pending/move.json", `{"id":"mv_1"}`)
+
+	report := Doctor(h)
+	for _, root := range []string{"profiles", "recovery", "actuator"} {
+		for _, unknown := range report.Habitat.UnknownRoots {
+			if unknown == root {
+				t.Fatalf("owned feature root %q reported unknown: %+v", root, report.Habitat)
+			}
+		}
+	}
+	if !report.HabitatOK {
+		t.Fatalf("habitat not ok with owned feature roots present: %+v", report.Habitat)
+	}
+	if !report.OK {
+		t.Fatalf("doctor not ok with owned feature roots present: %+v", report)
+	}
+}

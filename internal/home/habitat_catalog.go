@@ -97,6 +97,17 @@ func buildHabitatEntries() []HabitatEntry {
 		child("work.checkpoints", "work/checkpoints", HabitatClassOperational, true, true, false),
 		child("work.transactions", "work/transactions", HabitatClassOperational, true, true, false),
 		active("run-attempts", "run_attempts", HabitatClassEvidence, true, true, false),
+		active("actuator", "actuator", HabitatClassOperational, true, true, false),
+		child("actuator.budget", "actuator/budget", HabitatClassOperational, true, true, false),
+		child("actuator.outbox", "actuator/outbox", HabitatClassOperational, true, true, false),
+		child("actuator.signal-checks", "actuator/signal-checks", HabitatClassOperational, true, true, false),
+		// profiles/overlay.json is the home-side operator overlay candidate
+		// internal/profiles resolves before the repo-side private overlay.
+		active("profiles", "profiles", HabitatClassConfig, false, true, false),
+		// recovery/ holds the content-addressed worktree-retirement recovery
+		// tars (internal/authority records their absolute paths + digests);
+		// retirement proofs must stay resolvable, so the root is evidence.
+		active("recovery", "recovery", HabitatClassEvidence, false, true, false),
 		active("context", "context", HabitatClassOperational, true, true, false),
 		child("context.requests", "context/requests", HabitatClassOperational, true, true, false),
 		child("context.packs", "context/packs", HabitatClassOperational, true, true, false),
