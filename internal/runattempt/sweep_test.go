@@ -143,6 +143,43 @@ func TestSweepStaleTerminalizesOldPending(t *testing.T) {
 	}
 }
 
+// TestSweepStaleTerminalizesOldRunning: F5 makes StatusRunning genuinely
+// reachable (previously observe-run's "running" job status silently left
+// the attempt at StatusPending forever, so this path was never exercised
+// with a real running attempt). SweepStale must treat a stale RUNNING
+// attempt exactly like a stale pending one -- IsTerminal excludes only
+// succeeded/failed/abandoned, so ListNonTerminal (and therefore
+// SweepStale) already includes running by construction; this pins that
+// guarantee now that running is reachable in practice.
+func TestSweepStaleTerminalizesOldRunning(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+
+	ra, err := s.Mint("work_running", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkRunning(ra.ID, t0); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := s.SweepStale(30*time.Minute, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Swept != 1 || rep.SweptIDs[0] != ra.ID {
+		t.Fatalf("sweep report = %+v, want the running attempt swept", rep)
+	}
+	got, err := Open(home).Get(ra.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusAbandoned {
+		t.Fatalf("status = %q, want abandoned", got.Status)
+	}
+}
+
 func TestSweepStaleSkipsFreshHeartbeat(t *testing.T) {
 	home := t.TempDir()
 	s := Open(home)
