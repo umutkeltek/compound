@@ -19,9 +19,11 @@ import (
 
 func TestMain(m *testing.M) {
 	// External-package work tests import routeevidence through contract composition, which installs
-	// the production capacity adapter during init. Pure work tests own no capacity fixtures; the
-	// routeevidence package exercises the real adapter against injected temp paths.
+	// the production capacity and delegated-harness adapters during init. Pure work tests own no
+	// model-router or capacity fixtures; routeevidence exercises both real adapters against
+	// injected temp paths.
 	LaneCapacityGuard = nil
+	DelegateHarnessResolver = nil
 	os.Exit(m.Run())
 }
 

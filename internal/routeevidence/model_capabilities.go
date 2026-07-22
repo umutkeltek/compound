@@ -152,6 +152,7 @@ type ModelCapabilitiesSourceAuthority struct {
 	CreatedAt           string   `json:"created_at"`
 	SourcePath          string   `json:"source_path"`
 	SourceRevision      string   `json:"source_revision"`
+	InputRevision       string   `json:"input_revision,omitempty"`
 	ImportedVia         string   `json:"imported_via"`
 	AuthorityRef        string   `json:"authority_ref"`
 	AuthorityStatus     string   `json:"authority_status"`
@@ -285,28 +286,44 @@ func ImportModelCapabilitiesYAML(homePath, sourcePath string, now time.Time) (Mo
 	}
 	var report ModelCapabilitiesImportReport
 	err = homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		installedData := data
+		installedManifest := manifest
+		if existing, _, _, loadErr := loadModelCapabilitiesSnapshot(homePath); loadErr == nil {
+			installedManifest = mergeModelCapabilities(existing, manifest)
+			if err := validateModelCapabilities(installedManifest); err != nil {
+				return err
+			}
+			installedData, err = yaml.Marshal(installedManifest)
+			if err != nil {
+				return fmt.Errorf("marshal merged model capabilities: %w", err)
+			}
+		} else if !os.IsNotExist(loadErr) {
+			return fmt.Errorf("load existing model capabilities authority: %w", loadErr)
+		}
 		var installErr error
-		report, installErr = installModelCapabilities(homePath, sourcePath, data, manifest, now)
+		report, installErr = installModelCapabilities(homePath, sourcePath, data, installedData, installedManifest, now)
 		return installErr
 	})
 	return report, err
 }
 
-func installModelCapabilities(homePath, sourcePath string, data []byte, manifest ModelCapabilitiesManifest, now time.Time) (ModelCapabilitiesImportReport, error) {
+func installModelCapabilities(homePath, sourcePath string, inputData, installedData []byte, manifest ModelCapabilitiesManifest, now time.Time) (ModelCapabilitiesImportReport, error) {
 	if err := os.MkdirAll(filepath.Join(homePath, "registries"), 0o755); err != nil {
 		return ModelCapabilitiesImportReport{}, err
 	}
 	authorityPath := ModelCapabilitiesPath(homePath)
-	if err := os.WriteFile(authorityPath, data, 0o644); err != nil {
+	if err := os.WriteFile(authorityPath, installedData, 0o644); err != nil {
 		return ModelCapabilitiesImportReport{}, err
 	}
-	revision := "sha256:" + digestHex(data)
+	revision := "sha256:" + digestHex(installedData)
+	inputRevision := "sha256:" + digestHex(inputData)
 	rec := ModelCapabilitiesSourceAuthority{
 		SchemaVersion:       ModelCapabilitiesSourceAuthoritySchema,
 		ID:                  modelCapabilitiesSourceAuthorityID(sourcePath, revision),
 		CreatedAt:           rfc3339(now),
 		SourcePath:          sourcePath,
 		SourceRevision:      revision,
+		InputRevision:       inputRevision,
 		ImportedVia:         modelCapabilitiesImportCommandName,
 		AuthorityRef:        ModelCapabilitiesAuthorityRef,
 		AuthorityStatus:     "compound_primary",
@@ -317,7 +334,7 @@ func installModelCapabilities(homePath, sourcePath string, data []byte, manifest
 		ModelIDs:            modelCapabilityIDs(manifest),
 		CapabilityClasses:   sortedStrings(manifest.CapabilityClasses),
 		RoutingDefaultCount: len(manifest.RoutingDefaults),
-		EvidenceRefs:        []string{revision, ModelCapabilitiesAuthorityRef},
+		EvidenceRefs:        sortedStrings([]string{revision, inputRevision, ModelCapabilitiesAuthorityRef}),
 	}
 	if err := appendModelCapabilitiesSourceAuthority(homePath, rec); err != nil {
 		return ModelCapabilitiesImportReport{}, err
@@ -331,6 +348,110 @@ func installModelCapabilities(homePath, sourcePath string, data []byte, manifest
 		CapabilityClassCount: len(manifest.CapabilityClasses),
 		RoutingDefaultCount:  len(manifest.RoutingDefaults),
 	}, nil
+}
+
+// mergeModelCapabilities applies bridge imports additively. Incoming facts
+// update matching ids while omitted tuple facts, rows, and route positions
+// survive. Deletion requires a future explicit retirement operation; import
+// is never an implicit destructive command.
+func mergeModelCapabilities(existing, incoming ModelCapabilitiesManifest) ModelCapabilitiesManifest {
+	merged := incoming
+	merged.Models = make(map[string]ModelCapabilityEntry, len(existing.Models)+len(incoming.Models))
+	for id, entry := range existing.Models {
+		merged.Models[id] = entry
+	}
+	for id, entry := range incoming.Models {
+		if previous, ok := existing.Models[id]; ok {
+			entry = mergeModelCapabilityEntry(previous, entry)
+		}
+		merged.Models[id] = entry
+	}
+	merged.Rules = mergeOrderedStrings(existing.Rules, incoming.Rules)
+	merged.CapabilityClasses = mergeOrderedStrings(existing.CapabilityClasses, incoming.CapabilityClasses)
+	merged.RoutingDefaults = make(map[string][]string, len(existing.RoutingDefaults)+len(incoming.RoutingDefaults))
+	for class, lanes := range existing.RoutingDefaults {
+		merged.RoutingDefaults[class] = append([]string(nil), lanes...)
+	}
+	for class, lanes := range incoming.RoutingDefaults {
+		merged.RoutingDefaults[class] = mergeOrderedStrings(existing.RoutingDefaults[class], lanes)
+	}
+	return merged
+}
+
+// mergeModelCapabilityEntry lets an older bridge refresh the facts it still
+// owns without clearing newer Compound-owned optional tuple facts merely
+// because the bridge has no fields for them. Explicit retirement remains the
+// only deletion path.
+func mergeModelCapabilityEntry(existing, incoming ModelCapabilityEntry) ModelCapabilityEntry {
+	merged := existing
+	if strings.TrimSpace(incoming.Lane) != "" {
+		merged.Lane = incoming.Lane
+	}
+	if strings.TrimSpace(incoming.Harness) != "" {
+		merged.Harness = incoming.Harness
+	}
+	if strings.TrimSpace(incoming.ProviderRoute) != "" {
+		merged.ProviderRoute = incoming.ProviderRoute
+	}
+	if strings.TrimSpace(incoming.Resolution.Mode) != "" || len(incoming.Resolution.Targets) > 0 {
+		merged.Resolution = incoming.Resolution
+	}
+	if strings.TrimSpace(incoming.EffortDefault) != "" {
+		merged.EffortDefault = incoming.EffortDefault
+	}
+	if strings.TrimSpace(incoming.CostClass) != "" {
+		merged.CostClass = incoming.CostClass
+	}
+	if strings.TrimSpace(incoming.Tier) != "" {
+		merged.Tier = incoming.Tier
+	}
+	if strings.TrimSpace(incoming.PacketCeiling) != "" {
+		merged.PacketCeiling = incoming.PacketCeiling
+	}
+	if strings.TrimSpace(incoming.Notes) != "" {
+		merged.Notes = incoming.Notes
+	}
+	if incoming.ContextWindow > 0 {
+		merged.ContextWindow = incoming.ContextWindow
+	}
+	if incoming.MaxOutput > 0 {
+		merged.MaxOutput = incoming.MaxOutput
+	}
+	if incoming.CostDetail != nil {
+		merged.CostDetail = incoming.CostDetail
+	}
+	if len(incoming.RelativeCostHint) > 0 {
+		merged.RelativeCostHint = incoming.RelativeCostHint
+	}
+	if incoming.CapacitySource != nil {
+		merged.CapacitySource = incoming.CapacitySource
+	}
+	if len(incoming.Aliases) > 0 {
+		merged.Aliases = append([]string(nil), incoming.Aliases...)
+	}
+	merged.Capabilities = make(map[string]CapabilityClaim, len(existing.Capabilities)+len(incoming.Capabilities))
+	for class, claim := range existing.Capabilities {
+		merged.Capabilities[class] = claim
+	}
+	for class, claim := range incoming.Capabilities {
+		merged.Capabilities[class] = claim
+	}
+	return merged
+}
+
+func mergeOrderedStrings(primary, preserved []string) []string {
+	out := make([]string, 0, len(primary)+len(preserved))
+	seen := make(map[string]struct{}, len(primary)+len(preserved))
+	for _, values := range [][]string{primary, preserved} {
+		for _, value := range values {
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func DecodeModelCapabilitiesYAML(data []byte) (ModelCapabilitiesManifest, error) {
@@ -557,35 +678,48 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 				lane.AccountAdmission = AccountAdmissionUngated
 			}
 		}
-		if accountMapped {
-			decision, err := GuardLaneCapacity(
+		var capacityDecision *LaneCapacityDecision
+		if model.CapacitySource != nil {
+			decision, err := GuardDeclaredLaneCapacityWithConfig(
 				homePath,
-				accountKey,
+				model.ProviderRoute,
 				capabilityClass,
+				*model.CapacitySource,
 				now,
+				capacityConfig.ExpectedMinutes,
 				opts.Confirm,
 				defaults,
+				false,
 				capacityConfig,
 			)
 			if err != nil {
+				return CapabilityRoutePlan{}, fmt.Errorf("guard lane %s declared capacity: %w", modelID, err)
+			}
+			capacityDecision = &decision
+		} else if accountMapped {
+			decision, err := GuardLaneCapacity(homePath, accountKey, capabilityClass, now, opts.Confirm, defaults, capacityConfig)
+			if err != nil {
 				return CapabilityRoutePlan{}, fmt.Errorf("guard lane %s capacity: %w", modelID, err)
 			}
-			capacity := decision.Capacity
+			capacityDecision = &decision
+		}
+		if capacityDecision != nil {
+			capacity := capacityDecision.Capacity
 			lane.Capacity = &capacity
 			switch {
-			case decision.Refused:
-				lane.OmitReason = decision.Message
+			case capacityDecision.Refused:
+				lane.OmitReason = capacityDecision.Message
 				plan.Omitted = append(plan.Omitted, lane)
-				plan.Warnings = append(plan.Warnings, decision.Message)
+				plan.Warnings = append(plan.Warnings, capacityDecision.Message)
 				continue
-			case decision.ConfirmationRequired:
-				lane.OmitReason = decision.Message
+			case capacityDecision.ConfirmationRequired:
+				lane.OmitReason = capacityDecision.Message
 				plan.Omitted = append(plan.Omitted, lane)
 				plan.CapacityConfirmationRequired = true
-				plan.Warnings = append(plan.Warnings, decision.Message)
+				plan.Warnings = append(plan.Warnings, capacityDecision.Message)
 				continue
-			case strings.TrimSpace(decision.Message) != "":
-				plan.Warnings = append(plan.Warnings, decision.Message)
+			case strings.TrimSpace(capacityDecision.Message) != "":
+				plan.Warnings = append(plan.Warnings, capacityDecision.Message)
 			}
 		}
 		if lane.AccountAdmission == AccountAdmissionOmitted {
@@ -670,6 +804,21 @@ func validateModelCapabilities(manifest ModelCapabilitiesManifest) error {
 		}
 		if strings.TrimSpace(model.Resolution.Mode) != "" || len(model.Resolution.Targets) > 0 {
 			errs = append(errs, validateLaneResolution(id, model.Resolution)...)
+		}
+		if source := model.CapacitySource; source != nil {
+			if strings.TrimSpace(source.Kind) != "codexbar" {
+				errs = append(errs, "model "+id+" has unknown capacity source kind "+source.Kind)
+			}
+			if source.FreshnessMinutes <= 0 {
+				errs = append(errs, "model "+id+" capacity source freshness_minutes must be positive")
+			}
+			if strings.TrimSpace(source.Ref) == "" {
+				errs = append(errs, "model "+id+" capacity source ref required")
+			} else if strings.TrimSpace(source.Kind) == "codexbar" {
+				if _, err := codexBarProviderFromRef(source.Ref); err != nil {
+					errs = append(errs, "model "+id+" "+err.Error())
+				}
+			}
 		}
 		for class, claim := range model.Capabilities {
 			if strings.TrimSpace(claim.Level) == "" {

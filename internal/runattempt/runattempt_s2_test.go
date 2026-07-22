@@ -26,7 +26,7 @@ func TestRunAttemptHashNeutralityForPreS2Records(t *testing.T) {
 	// for every field addition (pinned alongside TestEmptyRunAttemptIDsIsHashNeutral).
 	// The sweep below fails RED if any new field loses its omitempty tag, which
 	// is the teeth proof the byte-identical compare alone cannot give.
-	attributionKeys := []string{`"lane_id"`, `"model_id"`, `"provider_route"`, `"tokens_in"`, `"tokens_out"`}
+	attributionKeys := []string{`"lane_id"`, `"requested_model_id"`, `"requested_provider_route"`, `"model_id"`, `"provider_route"`, `"tokens_in"`, `"tokens_out"`}
 
 	assertNeutral := func(t *testing.T, label string, fixture []byte) {
 		t.Helper()
@@ -123,6 +123,13 @@ func TestRunAttemptRoundTripsNewFields(t *testing.T) {
 			func(got RunAttempt) bool {
 				return got.LaneID == "lane-a:worker" && got.ModelID == "model-x" && got.ProviderRoute == "provider-y"
 			}},
+		{"dispatch_intent", func() error {
+			_, e := s.SetDispatchIntent(ra.ID, "lane-a:worker", "tuple-x", "provider-requested")
+			return e
+		},
+			func(got RunAttempt) bool {
+				return got.LaneID == "lane-a:worker" && got.RequestedModelID == "tuple-x" && got.RequestedProviderRoute == "provider-requested"
+			}},
 		{"token_usage", func() error { _, e := s.SetTokenUsage(ra.ID, 100, 250); return e },
 			func(got RunAttempt) bool { return got.TokensIn == 100 && got.TokensOut == 250 }},
 	} {
@@ -171,6 +178,7 @@ func TestRunAttemptSettersRefuseOnTerminal(t *testing.T) {
 		{"test", func() error { _, e := s.SetTest(ra.ID, "x"); return e }},
 		{"proof_refs", func() error { _, e := s.SetProofRefs(ra.ID, []string{"x"}); return e }},
 		{"attribution", func() error { _, e := s.SetAttribution(ra.ID, "lane-x", "model-y", "provider-z"); return e }},
+		{"dispatch_intent", func() error { _, e := s.SetDispatchIntent(ra.ID, "lane-x", "tuple-y", "provider-z"); return e }},
 		{"token_usage", func() error { _, e := s.SetTokenUsage(ra.ID, 100, 250); return e }},
 	}
 	for _, tc := range setters {
@@ -241,5 +249,53 @@ func TestRunAttemptHeartbeatAdvancesOnlyForward(t *testing.T) {
 	got, _ = s.Get(ra.ID)
 	if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(t0.Add(2*time.Minute)) {
 		t.Fatalf("forward heartbeat did not advance: got %v, want %v", got.LastHeartbeatAt, t0.Add(2*time.Minute))
+	}
+}
+
+// TestRunAttemptProgressRejectsRegressionWithoutMutation pins the dashboard
+// contract for out-of-order workers: completed buckets never move backward,
+// remaining never moves upward, and a rejected update cannot partially move
+// either the progress snapshot or its heartbeat.
+func TestRunAttemptProgressRejectsRegressionWithoutMutation(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_progress", "worker", "claude-minimax", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkRunning(ra.ID, t0); err != nil {
+		t.Fatal(err)
+	}
+	want := RunProgress{Done: 4, Empty: 1, Failed: 1, Remaining: 4}
+	acceptedAt := t0.Add(time.Minute)
+	if _, err := s.HeartbeatProgress(ra.ID, acceptedAt, want); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		next RunProgress
+	}{
+		{name: "done-decreases", next: RunProgress{Done: 3, Empty: 1, Failed: 1, Remaining: 4}},
+		{name: "empty-decreases", next: RunProgress{Done: 4, Empty: 0, Failed: 1, Remaining: 4}},
+		{name: "failed-decreases", next: RunProgress{Done: 4, Empty: 1, Failed: 0, Remaining: 4}},
+		{name: "remaining-increases", next: RunProgress{Done: 4, Empty: 1, Failed: 1, Remaining: 5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.HeartbeatProgress(ra.ID, acceptedAt.Add(time.Minute), tc.next); err == nil {
+				t.Fatal("regressing progress was accepted")
+			}
+			got, err := Open(home).Get(ra.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Progress == nil || *got.Progress != want {
+				t.Fatalf("rejected update mutated progress: got=%+v want=%+v", got.Progress, want)
+			}
+			if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(acceptedAt) {
+				t.Fatalf("rejected update mutated heartbeat: got=%v want=%v", got.LastHeartbeatAt, acceptedAt)
+			}
+		})
 	}
 }

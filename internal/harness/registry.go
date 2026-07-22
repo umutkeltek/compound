@@ -31,6 +31,15 @@ func NewAdapterRegistry(store *runattempt.Store) *AdapterRegistry {
 	r := &AdapterRegistry{adapters: make(map[string]Adapter)}
 	r.RegisterAdapter(NewOSEntrypointsAdapter(store))
 	r.RegisterAdapter(NewClaudeAdapter(store))
+	for _, name := range []string{
+		"claude_code",
+		"claude_minimax",
+		"claude_qwen",
+		"claude_zai",
+		"claude_zai_full",
+	} {
+		r.RegisterAdapter(newClaudeLaneAdapter(store, name, defaultHeartbeatInterval))
+	}
 	r.RegisterAdapter(NewCodexAdapter(store))
 	return r
 }

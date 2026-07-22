@@ -42,7 +42,8 @@ type DelegatedSessionRow struct {
 	RunAttemptID string `json:"run_attempt_id,omitempty"`
 	// RunAttemptStatus is that attempt's authoritative status (from the
 	// runattempt store), or empty for a legacy binding with no ratt.
-	RunAttemptStatus string `json:"run_attempt_status,omitempty"`
+	RunAttemptStatus string                  `json:"run_attempt_status,omitempty"`
+	Progress         *runattempt.RunProgress `json:"progress,omitempty"`
 	// RefusedReason is the enum reason (walled|gate_absent|session_live|...)
 	// for a refused row. NEVER the free-text guard message.
 	RefusedReason string `json:"refused_reason,omitempty"`
@@ -189,9 +190,14 @@ func (s *Store) reduceDelegatedLaneRow(workID string, state *delegatedLaneState,
 	raStatus := ""
 	raCompletedAt := ""
 	raMissing := false
+	var progress *runattempt.RunProgress
 	if hasRatt {
 		if ra, gerr := raStore.Get(binding.RunAttemptID); gerr == nil {
 			raStatus = ra.Status
+			if ra.Progress != nil {
+				copy := *ra.Progress
+				progress = &copy
+			}
 			if !ra.CompletedAt.IsZero() {
 				raCompletedAt = ra.CompletedAt.UTC().Format(time.RFC3339Nano)
 			}
@@ -239,6 +245,7 @@ func (s *Store) reduceDelegatedLaneRow(workID string, state *delegatedLaneState,
 		row.Holder = binding.Holder
 		row.RunAttemptID = binding.RunAttemptID
 		row.RunAttemptStatus = raStatus
+		row.Progress = progress
 		row.SpawnedAt = delegatedRFC3339(binding.TS)
 		if state.lastSteerAt != "" {
 			row.LastSteerAt = delegatedRFC3339(state.lastSteerAt)

@@ -47,6 +47,14 @@ type Adapter interface {
 	Run(ctx context.Context, in RunInput) (RunOutput, error)
 }
 
+// PreflightAdapter resolves every prerequisite that can fail before governed
+// work enters running. Tuple-backed adapters use it for authority lookup,
+// executable discovery, permission validation, and capacity admission. The
+// returned RunInput is the exact resolved input the caller may execute.
+type PreflightAdapter interface {
+	Preflight(ctx context.Context, in RunInput) (RunInput, error)
+}
+
 // RunInput is the per-Run caller contract. All fields are required unless
 // marked optional. A future slice (harness-adapter-feature) adds
 // PermissionDecision and CapabilityRef once the policy seam is in place.
@@ -105,6 +113,16 @@ type RunInput struct {
 	// RunInput today -- no adapter config exposes them -- so they are
 	// passed empty and remain out of scope.
 	LaneID string
+	// RequestedModelID and RequestedProviderRoute are resolved from Compound's
+	// model-router LaneTuple before a tuple-backed adapter mints its RunAttempt.
+	// They describe dispatch intent, not observed execution identity; observed
+	// model/provider fields remain empty until route evidence attests them.
+	RequestedModelID       string
+	RequestedProviderRoute string
+	// preflighted is an adapter-owned handoff marker. Governed callers cannot
+	// forge it outside this package; it prevents Run from repeating a live
+	// capacity check after the caller has already moved work to running.
+	preflighted bool
 }
 
 // RunOutput is the per-Run return contract. Always non-nil RunAttempt;

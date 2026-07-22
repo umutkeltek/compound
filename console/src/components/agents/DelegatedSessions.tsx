@@ -66,6 +66,7 @@ export function DelegatedSessions({
                 <th className="px-3 py-2 font-bold">Work</th>
                 <th className="px-3 py-2 font-bold">Session</th>
                 <th className="px-3 py-2 font-bold">Run attempt</th>
+                <th className="px-3 py-2 font-bold">Progress</th>
                 <th className="px-3 py-2 font-bold">Detail</th>
                 <th className="px-3 py-2 font-bold">Last steer</th>
               </tr>
@@ -87,6 +88,7 @@ export function DelegatedSessions({
                   <td className="mono px-3 py-2 text-2xs text-muted">{v.workId}</td>
                   <td className="mono px-3 py-2 text-2xs text-muted">{v.session || "—"}</td>
                   <td className="mono px-3 py-2 text-2xs text-muted">{v.runAttemptLabel || "—"}</td>
+                  <td className="mono px-3 py-2 text-2xs text-muted">{v.progressLabel || "—"}</td>
                   <td className="px-3 py-2 text-2xs text-muted">{v.detail || "—"}</td>
                   <td className="px-3 py-2 text-2xs text-faint">{v.lastSteerAt ? ago(v.lastSteerAt) : "—"}</td>
                 </tr>

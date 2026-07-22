@@ -1,14 +1,17 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/home"
+	"compound/internal/routeevidence"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -223,6 +226,154 @@ func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
 	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
 	if len(runAttemptFiles) != 1 {
 		t.Fatalf("unknown harness must mint no RunAttempt beyond the claim's; expected exactly 1 file (the claim-mint), got %d", len(runAttemptFiles))
+	}
+}
+
+// TestWorkAdvanceExecuteMissingLaneTupleNoStateChange proves tuple-backed
+// adapters preflight before the governed running advance. Enrollment alone is
+// not availability: if Compound has no tuple for the requested lane, the work
+// stays claimed and no execution RunAttempt is minted.
+func TestWorkAdvanceExecuteMissingLaneTupleNoStateChange(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "missing lane tuple leaves work claimed",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	binary := filepath.Join(t.TempDir(), "compound-test")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/compound")
+	build.Dir = repoRoot
+	if buildOut, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("build compound fixture: %v\n%s", buildErr, buildOut)
+	}
+	cmd := exec.Command(binary, "work", "advance", w.ID,
+		"--to", "running", "--execute", "--harness", "claude_minimax",
+		"--workspace", repoRoot, "--prompt", "execute fixture")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("expected missing tuple to fail, output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "model-router authority") && !strings.Contains(string(out), "no Compound lane tuple") {
+		t.Fatalf("missing tuple error is not actionable:\n%s", out)
+	}
+
+	final, err := ws.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "claimed" {
+		t.Fatalf("missing tuple changed work state to %q, want claimed", final.State)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 1 {
+		t.Fatalf("missing tuple minted an execution RunAttempt; files=%v", runAttemptFiles)
+	}
+}
+
+// TestWorkAdvanceExecuteWalledDeclaredCapacityNoStateChange proves declared
+// quota is enforced before governed execution begins. A fresh, exhausted
+// CodexBar row leaves work claimed and produces no attempt beyond the claim
+// reservation even though the tuple and executable both resolve.
+func TestWorkAdvanceExecuteWalledDeclaredCapacityNoStateChange(t *testing.T) {
+	homePath := t.TempDir()
+	userHome := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	source := filepath.Join(t.TempDir(), "minimax.yaml")
+	manifest := `version: 1
+purpose: fixture
+capability_classes: [build-implement]
+models:
+  fixture-minimax:
+    lane: fixture minimax
+    harness: claude_minimax
+    provider_route: minimax
+    tier: cheap
+    packet_ceiling: multi-file
+    aliases: [sh]
+    capacity_source:
+      kind: codexbar
+      freshness_minutes: 10
+      ref: codexbar://provider/minimax
+    capabilities: {build-implement: {level: capable, evidence: fixture}}
+routing_defaults:
+  build-implement: [fixture-minimax]
+`
+	if err := os.WriteFile(source, []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, source, now); err != nil {
+		t.Fatal(err)
+	}
+	usagePath := filepath.Join(userHome, "Library", "Application Support", "CodexBar", "usage-history.jsonl")
+	if err := os.MkdirAll(filepath.Dir(usagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	row := fmt.Sprintf("{\"provider\":\"minimax\",\"windowKind\":\"weekly\",\"windowMinutes\":10080,\"usedPercent\":100,\"resetsAt\":%q,\"sampledAt\":%q}\n",
+		now.Add(24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339))
+	if err := os.WriteFile(usagePath, []byte(row), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := ws.Create(work.CreateInput{Owner: "codex", SuccessPredicate: "exhausted declared capacity leaves work claimed"}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	binary := filepath.Join(t.TempDir(), "compound-test")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/compound")
+	build.Dir = repoRoot
+	if buildOut, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("build compound fixture: %v\n%s", buildErr, buildOut)
+	}
+	cmd := exec.Command(binary, "work", "advance", w.ID,
+		"--to", "running", "--execute", "--harness", "claude_minimax",
+		"--workspace", repoRoot, "--prompt", "execute fixture")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "HOME="+userHome, "COMPOUND_HOME="+homePath)
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Fatalf("expected walled declared capacity to fail, output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "capacity walled") {
+		t.Fatalf("walled capacity error is not actionable:\n%s", out)
+	}
+	final, err := ws.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != "claimed" {
+		t.Fatalf("walled capacity changed work state to %q, want claimed", final.State)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(homePath, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 1 {
+		t.Fatalf("walled capacity minted an execution RunAttempt; files=%v", runAttemptFiles)
 	}
 }
 

@@ -104,6 +104,10 @@ type RunAttempt struct {
 	// as non-empty because it is a struct. Caught by TestRunAttemptHashNeutralityForPreS2Records
 	// when this was a value field.
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
+	// Progress is cumulative supervised-work progress. Completed buckets only
+	// move upward and Remaining only moves downward, so out-of-order workers
+	// cannot make an operator dashboard regress.
+	Progress *RunProgress `json:"progress,omitempty"`
 	// TranscriptRef is the path (relative to COMPOUND_HOME) of the harness's run transcript.
 	// For panel.Apply this is the panel run record; for a real adapter it is the model's
 	// output stream.
@@ -138,6 +142,11 @@ type RunAttempt struct {
 	// records re-marshal byte-identical (pinned by the pre-S3 case of
 	// TestRunAttemptHashNeutralityForPreS2Records).
 	LaneID string `json:"lane_id,omitempty"`
+	// RequestedModelID and RequestedProviderRoute capture the Compound lane
+	// tuple selected before launch. They are dispatch intent, not evidence that
+	// a concrete provider/model consumed the run.
+	RequestedModelID       string `json:"requested_model_id,omitempty"`
+	RequestedProviderRoute string `json:"requested_provider_route,omitempty"`
 	// ModelID is the concrete model the run consumed (e.g. "model-x"). Empty
 	// when the dispatching context does not know the model -- never guessed.
 	ModelID string `json:"model_id,omitempty"`
@@ -153,6 +162,16 @@ type RunAttempt struct {
 	// TokensOut is the completion token usage. Zero ≡ unknown; see TokensIn.
 	// omitempty so pre-S3 records re-marshal byte-identical.
 	TokensOut int64 `json:"tokens_out,omitempty"`
+}
+
+// RunProgress is the reduced, content-free progress shape shared by
+// delegated workers, the CLI, and projections. It deliberately carries no
+// prompt, filenames, or model output.
+type RunProgress struct {
+	Done      int `json:"done"`
+	Empty     int `json:"empty"`
+	Failed    int `json:"failed"`
+	Remaining int `json:"remaining"`
 }
 
 // Store persists RunAttempts under <home>/run_attempts/<id>.json with atomic rename and a
@@ -503,6 +522,31 @@ func (s *Store) Heartbeat(id string, now time.Time) (RunAttempt, error) {
 	return ra, s.write(ra)
 }
 
+// HeartbeatProgress advances liveness and cumulative progress atomically.
+// Completed buckets may only increase and Remaining may only decrease.
+func (s *Store) HeartbeatProgress(id string, now time.Time, progress RunProgress) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	if progress.Done < 0 || progress.Empty < 0 || progress.Failed < 0 || progress.Remaining < 0 {
+		return RunAttempt{}, errors.New("runattempt progress counts must be non-negative")
+	}
+	if previous := ra.Progress; previous != nil {
+		if progress.Done < previous.Done || progress.Empty < previous.Empty || progress.Failed < previous.Failed || progress.Remaining > previous.Remaining {
+			return RunAttempt{}, fmt.Errorf("runattempt progress must be monotonic: previous=%+v next=%+v", *previous, progress)
+		}
+	}
+	t := now.UTC()
+	if ra.LastHeartbeatAt != nil && t.Before(*ra.LastHeartbeatAt) {
+		return RunAttempt{}, fmt.Errorf("runattempt progress heartbeat is stale: previous=%s next=%s", ra.LastHeartbeatAt.UTC().Format(time.RFC3339Nano), t.Format(time.RFC3339Nano))
+	}
+	ra.LastHeartbeatAt = &t
+	copy := progress
+	ra.Progress = &copy
+	return ra, s.write(ra)
+}
+
 // SetTranscript records the run transcript path. Single string by design --
 // a harness has one transcript.
 func (s *Store) SetTranscript(id, ref string) (RunAttempt, error) {
@@ -567,6 +611,20 @@ func (s *Store) SetProofRefs(id string, refs []string) (RunAttempt, error) {
 // retroactively re-attributed -- that is the same audit invariant the S2
 // setters pin.
 // ---------------------------------------------------------------------------
+
+// SetDispatchIntent records the known execution lane plus the model-router
+// tuple requested before launch. It deliberately does not populate ModelID or
+// ProviderRoute: only observed route evidence may attest those fields.
+func (s *Store) SetDispatchIntent(id, laneID, requestedModelID, requestedProviderRoute string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.LaneID = strings.TrimSpace(laneID)
+	ra.RequestedModelID = strings.TrimSpace(requestedModelID)
+	ra.RequestedProviderRoute = strings.TrimSpace(requestedProviderRoute)
+	return ra, s.write(ra)
+}
 
 // SetAttribution records which lane / model / provider route drove this run.
 // Empty strings are valid (the dispatching context did not know that

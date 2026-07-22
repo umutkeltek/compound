@@ -17,7 +17,16 @@ func TestAdapterRegistryNewHasBuiltins(t *testing.T) {
 	r := NewAdapterRegistry(runattempt.Open(t.TempDir()))
 	got := r.Names()
 	sort.Strings(got)
-	want := []string{"claude", "codex", "os-harness-entrypoints"}
+	want := []string{
+		"claude",
+		"claude_code",
+		"claude_minimax",
+		"claude_qwen",
+		"claude_zai",
+		"claude_zai_full",
+		"codex",
+		"os-harness-entrypoints",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("NewAdapterRegistry names = %v, want %v", got, want)
 	}
@@ -26,7 +35,16 @@ func TestAdapterRegistryNewHasBuiltins(t *testing.T) {
 // TestAdapterRegistryAdapterByName: every built-in is reachable by Name.
 func TestAdapterRegistryAdapterByName(t *testing.T) {
 	r := NewAdapterRegistry(runattempt.Open(t.TempDir()))
-	for _, name := range []string{"os-harness-entrypoints", "claude", "codex"} {
+	for _, name := range []string{
+		"os-harness-entrypoints",
+		"claude",
+		"claude_code",
+		"claude_minimax",
+		"claude_qwen",
+		"claude_zai",
+		"claude_zai_full",
+		"codex",
+	} {
 		a, ok := r.AdapterByName(name)
 		if !ok {
 			t.Fatalf("AdapterByName(%q) returned !ok", name)

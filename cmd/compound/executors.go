@@ -298,6 +298,9 @@ func printDelegatedSessions(rows []work.DelegatedSessionRow, counts work.Delegat
 		if r.LastSteerAt != "" {
 			fmt.Printf(" last_steer=%s", r.LastSteerAt)
 		}
+		if r.Progress != nil {
+			fmt.Printf(" progress=%d/%d/%d remaining=%d", r.Progress.Done, r.Progress.Empty, r.Progress.Failed, r.Progress.Remaining)
+		}
 		if r.Status == "refused" && r.RefusedReason != "" {
 			fmt.Printf(" reason=%s", r.RefusedReason)
 		}

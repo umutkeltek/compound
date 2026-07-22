@@ -106,6 +106,17 @@ type LaneCapacityGuardRequest struct {
 	ReadOnly        bool
 	Alternatives    []string
 	Now             time.Time
+	// TupleBacked distinguishes a resolved Compound LaneTuple from legacy
+	// actor strings. Declared sources are read exactly; an absent declaration
+	// leaves runtime quota enforcement with the execution gateway.
+	TupleBacked    bool
+	CapacitySource *LaneCapacitySource
+}
+
+type LaneCapacitySource struct {
+	Kind             string
+	FreshnessMinutes int
+	Ref              string
 }
 
 type LaneCapacityGuardResult struct {

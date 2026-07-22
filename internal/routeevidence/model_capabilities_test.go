@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/candidates"
 	"compound/internal/writeback"
@@ -75,6 +76,140 @@ func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
 	}
 }
 
+// TestImportModelCapabilitiesPreservesCompoundOwnedAdditions proves a later,
+// incomplete bridge import cannot delete lane tuples already owned by
+// Compound. Incoming rows update matching ids; omitted rows and their routing
+// positions survive until an explicit retirement path exists.
+func TestImportModelCapabilitiesPreservesCompoundOwnedAdditions(t *testing.T) {
+	home := t.TempDir()
+	writeManifest := func(name, models, defaults string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), name)
+		body := "version: 1\npurpose: fixture\nrules: []\ncapability_classes: [build-implement]\nmodels:\n" + models + "routing_defaults:\n  build-implement: " + defaults + "\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	full := writeManifest("compound-full.yaml", `  shared:
+    lane: shared-v1
+    harness: fixture
+    provider_route: fixture
+    tier: cheap
+    packet_ceiling: multi-file
+    aliases: [fixture-new-wrapper]
+    capacity_source: {kind: codexbar, freshness_minutes: 10, ref: "codexbar://provider/fixture"}
+    capabilities: {build-implement: {level: capable, evidence: fixture}}
+  compound-lane:
+    lane: compound-owned
+    harness: claude_minimax
+    provider_route: minimax
+    tier: cheap
+    packet_ceiling: multi-file
+    aliases: [claude-minimax]
+    capabilities: {build-implement: {level: capable, evidence: fixture}}
+`, "[shared, compound-lane]")
+	bridge := writeManifest("bridge.yaml", `  shared:
+    lane: shared-v2
+    harness: fixture
+    provider_route: fixture
+    tier: cheap
+    packet_ceiling: multi-file
+    capabilities: {build-implement: {level: capable, evidence: updated-fixture}}
+`, "[shared]")
+
+	if _, err := ImportModelCapabilitiesYAML(home, full, t0); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ImportModelCapabilitiesYAML(home, bridge, t0.Add(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, _, err := LoadModelCapabilitiesFromHome(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Models["shared"].Lane != "shared-v2" {
+		t.Fatalf("incoming update did not win: %+v", manifest.Models["shared"])
+	}
+	if shared := manifest.Models["shared"]; shared.CapacitySource == nil || shared.CapacitySource.Ref != "codexbar://provider/fixture" || strings.Join(shared.Aliases, ",") != "fixture-new-wrapper" {
+		t.Fatalf("older matching bridge row erased Compound tuple facts: %+v", shared)
+	}
+	if _, ok := manifest.Models["compound-lane"]; !ok {
+		t.Fatalf("bridge import deleted Compound-owned lane: %+v", manifest.Models)
+	}
+	if got := strings.Join(manifest.RoutingDefaults["build-implement"], ","); got != "shared,compound-lane" {
+		t.Fatalf("bridge import deleted Compound-owned route position: %s", got)
+	}
+	if report.ModelCount != 2 {
+		t.Fatalf("import report model_count=%d, want installed merged count 2", report.ModelCount)
+	}
+}
+
+func TestMergeModelCapabilitiesPreservesInstalledRouteOrder(t *testing.T) {
+	existing := ModelCapabilitiesManifest{
+		Rules:             []string{"installed-rule"},
+		CapabilityClasses: []string{"build-implement"},
+		Models:            map[string]ModelCapabilityEntry{"cheap": {}, "premium": {}},
+		RoutingDefaults:   map[string][]string{"build-implement": {"cheap", "premium"}},
+	}
+	incoming := ModelCapabilitiesManifest{
+		Rules:             []string{"bridge-rule"},
+		CapabilityClasses: []string{"build-implement"},
+		Models:            map[string]ModelCapabilityEntry{"cheap": {}, "premium": {}},
+		RoutingDefaults:   map[string][]string{"build-implement": {"premium", "cheap"}},
+	}
+	merged := mergeModelCapabilities(existing, incoming)
+	if got := strings.Join(merged.RoutingDefaults["build-implement"], ","); got != "cheap,premium" {
+		t.Fatalf("older bridge reordered installed route: %s", got)
+	}
+	if got := strings.Join(merged.Rules, ","); got != "installed-rule,bridge-rule" {
+		t.Fatalf("bridge rule merge order=%s", got)
+	}
+}
+
+func TestPlanCapabilityRouteUsesDeclaredCapacitySource(t *testing.T) {
+	home := t.TempDir()
+	cfg := LaneCapacityConfig{Paths: LaneCapacityPaths{UsageHistoryPath: filepath.Join(t.TempDir(), "usage-history.jsonl")}}
+	if err := os.MkdirAll(filepath.Dir(cfg.Paths.UsageHistoryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCapacityUsage(t, cfg, "qwencloud", 100, t0.Add(2*time.Hour), t0.Add(-time.Minute))
+	source := filepath.Join(t.TempDir(), "qwen.yaml")
+	body := `version: 1
+purpose: fixture
+capability_classes: [build-implement]
+models:
+  fixture-qwen:
+    lane: fixture qwen
+    harness: claude_qwen
+    provider_route: qwen
+    tier: cheap
+    packet_ceiling: multi-file
+    aliases: [claude-qwen]
+    capacity_source:
+      kind: codexbar
+      freshness_minutes: 10
+      ref: codexbar://provider/qwencloud
+    capabilities: {build-implement: {level: capable, evidence: fixture}}
+routing_defaults:
+  build-implement: [fixture-qwen]
+`
+	if err := os.WriteFile(source, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := PlanCapabilityRoute(home, "build-implement", CapabilityRoutePlanOptions{CapacityConfig: &cfg}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Chain) != 0 || len(plan.Omitted) != 1 || plan.Omitted[0].Capacity == nil || plan.Omitted[0].Capacity.State != CapacityWalled {
+		t.Fatalf("route planner ignored declared qwencloud capacity: %+v", plan)
+	}
+}
+
 func TestImportModelCapabilitiesRejectsUnknownGateVocabulary(t *testing.T) {
 	fixture, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"))
 	if err != nil {
@@ -105,6 +240,73 @@ func TestImportModelCapabilitiesRejectsUnknownGateVocabulary(t *testing.T) {
 				t.Fatalf("invalid authority was written: %v", err)
 			}
 		})
+	}
+}
+
+func TestImportModelCapabilitiesRejectsInvalidCapacitySource(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "route", "model-capabilities-tuple.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		old     string
+		bad     string
+		wantErr string
+	}{
+		{name: "kind", old: "kind: codexbar", bad: "kind: invented-quota-feed", wantErr: "unknown capacity source kind"},
+		{name: "freshness", old: "freshness_minutes: 30", bad: "freshness_minutes: 0", wantErr: "freshness_minutes must be positive"},
+		{name: "ref", old: `ref: "codexbar://provider/sub-lane-a"`, bad: `ref: "not-a-codexbar-ref"`, wantErr: "must match codexbar://provider/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(strings.Replace(string(fixture), tc.old, tc.bad, 1))
+			if string(data) == string(fixture) {
+				t.Fatalf("fixture mutation %q was a no-op", tc.old)
+			}
+			home := t.TempDir()
+			path := filepath.Join(home, "source.yaml")
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ImportModelCapabilitiesYAML(home, path, t0); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("invalid capacity source was imported: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveModelCapabilityTupleUsesExactThenAliasThenHarness(t *testing.T) {
+	manifest := ModelCapabilitiesManifest{Models: map[string]ModelCapabilityEntry{
+		"claude-code": {
+			Harness: "claude_code",
+			Aliases: []string{"claude"},
+		},
+		"claude-zai": {
+			Harness: "claude_zai",
+			Aliases: []string{"claude-zai", "claude_zai_full"},
+		},
+	}}
+
+	for _, tc := range []struct {
+		selector string
+		wantID   string
+	}{
+		{selector: "claude_code", wantID: "claude-code"},
+		{selector: "claude-zai", wantID: "claude-zai"},
+		{selector: "claude_zai_full", wantID: "claude-zai"},
+	} {
+		id, _, err := ResolveModelCapabilityTuple(manifest, tc.selector)
+		if err != nil || id != tc.wantID {
+			t.Fatalf("resolve %q = id:%q err:%v, want %q", tc.selector, id, err, tc.wantID)
+		}
+	}
+
+	manifest.Models["claude-zai-copy"] = ModelCapabilityEntry{
+		Harness: "copy",
+		Aliases: []string{"claude_zai_full"},
+	}
+	if _, _, err := ResolveModelCapabilityTuple(manifest, "claude_zai_full"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous alias did not fail closed: %v", err)
 	}
 }
 
@@ -406,8 +608,8 @@ func TestImportModelCapabilitiesLaneTupleRoundTripSurfacesSubscriptionFacts(t *t
 	if sub.CapacitySource.FreshnessMinutes != 30 {
 		t.Fatalf("capacity_source.freshness_minutes = %d, want 30", sub.CapacitySource.FreshnessMinutes)
 	}
-	if sub.CapacitySource.Ref != "fixture://codexbar/sub-lane-a" {
-		t.Fatalf("capacity_source.ref = %q, want fixture://codexbar/sub-lane-a", sub.CapacitySource.Ref)
+	if sub.CapacitySource.Ref != "codexbar://provider/sub-lane-a" {
+		t.Fatalf("capacity_source.ref = %q, want codexbar://provider/sub-lane-a", sub.CapacitySource.Ref)
 	}
 	if len(sub.Aliases) != 2 || sub.Aliases[0] != "sub-lane-a" || sub.Aliases[1] != "sub-lane-a:worker" {
 		t.Fatalf("sub.Aliases = %v, want [sub-lane-a sub-lane-a:worker]", sub.Aliases)

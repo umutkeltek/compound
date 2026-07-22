@@ -127,8 +127,8 @@ func runWithSubprocess(
 	// precondition, so an attribution error is annotated best-effort (same
 	// proof_ref idiom as a transcript-flush failure) and the run proceeds
 	// and terminalizes regardless. An empty LaneID stamps nothing.
-	if in.LaneID != "" {
-		if _, err := store.SetAttribution(ra.ID, in.LaneID, "", ""); err != nil {
+	if in.LaneID != "" || in.RequestedModelID != "" || in.RequestedProviderRoute != "" {
+		if _, err := store.SetDispatchIntent(ra.ID, in.LaneID, in.RequestedModelID, in.RequestedProviderRoute); err != nil {
 			_, _ = store.SetProofRefs(ra.ID, []string{"lane_id_stamp_error:" + err.Error()})
 		}
 	}

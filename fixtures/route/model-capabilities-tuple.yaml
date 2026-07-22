@@ -35,7 +35,7 @@ models:
     capacity_source:
       kind: codexbar
       freshness_minutes: 30
-      ref: "fixture://codexbar/sub-lane-a"
+      ref: "codexbar://provider/sub-lane-a"
     aliases:
       - "sub-lane-a"
       - "sub-lane-a:worker"

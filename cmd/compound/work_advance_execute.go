@@ -116,6 +116,30 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 		os.Exit(2)
 	}
 
+	// Resolve adapter-owned prerequisites before the governed state change.
+	// Tuple-backed lanes use this seam to prove their Compound tuple, wrapper,
+	// permission posture, and declared capacity. A preflight failure leaves the
+	// envelope claimed and mints no execution RunAttempt.
+	runInput := harness.RunInput{
+		WorkID:         workID,
+		Harness:        harnessName,
+		Workspace:      workspace,
+		Command:        command,
+		Args:           commandArgs,
+		Prompt:         prompt,
+		PermissionMode: valueFlag(rest, "--permission-mode"),
+		LaneID:         actor,
+		Now:            time.Now().UTC(),
+	}
+	if preflight, ok := adapter.(harness.PreflightAdapter); ok {
+		resolved, err := preflight.Preflight(context.Background(), runInput)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "harness %s preflight: %v\n", harnessName, err)
+			os.Exit(1)
+		}
+		runInput = resolved
+	}
+
 	// Advance 1: to "running" (validated above -- target is always
 	// "running" by the time we get here).
 	note := valueFlag(rest, "--note")
@@ -147,18 +171,8 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	// (subprocess_runner.failTerm) and out.RunAttempt is populated -- we
 	// carry that ratt_ id onto the close so the failed run is reachable
 	// from the envelope, not only from run_attempts/<id>.json.
-	out, runErr := adapter.Run(context.Background(), harness.RunInput{
-		WorkID:         workID,
-		Harness:        harnessName,
-		Workspace:      workspace,
-		Command:        command,
-		Args:           commandArgs,
-		Prompt:         prompt,
-		PermissionMode: valueFlag(rest, "--permission-mode"),
-		LaneID:         actor,
-		ActionIntentID: actionIntentID,
-		Now:            time.Now().UTC(),
-	})
+	runInput.ActionIntentID = actionIntentID
+	out, runErr := adapter.Run(context.Background(), runInput)
 
 	// LaneID: the resolved --by/--actor lane, stamped onto the RunAttempt
 	// pre-terminalization inside runWithSubprocess (SetAttribution). This

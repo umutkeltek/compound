@@ -1259,7 +1259,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 			if !strings.HasPrefix(rid, "ratt_") {
 				return envelope.WorkEnvelope{}, fmt.Errorf("advance RunAttemptIDs contains non-ratt_ id %q (settled in S1; see internal/runattempt.Prefix)", rid)
 			}
-			w.RunAttemptIDs = append(w.RunAttemptIDs, rid)
+			w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
 			attached = append(attached, rid)
 		}
 	}
@@ -1824,7 +1824,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		if !strings.HasPrefix(rid, "ratt_") {
 			return res, fmt.Errorf("close RunAttemptIDs contains non-ratt_ id %q (settled in S1; see internal/runattempt.Prefix)", rid)
 		}
-		w.RunAttemptIDs = append(w.RunAttemptIDs, rid)
+		w.RunAttemptIDs = mergeUnique(w.RunAttemptIDs, []string{rid})
 	}
 	w.State = in.Outcome
 	w.IDs.TransitionID = tr.ID

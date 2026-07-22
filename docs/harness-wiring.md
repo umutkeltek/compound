@@ -191,6 +191,50 @@ compound harness observe --os-entrypoints   # detect installed harnesses
 This is evidence-only — it observes what's installed, never configures or
 mutates your harness.
 
+## Governed execution and supervised sessions
+
+The registry says what a harness can do; `compound://registries/model-router`
+owns the executable lane tuple used to run it. A tuple binds the harness id,
+wrapper aliases, requested provider route, permission posture, and optional
+capacity source. Compound resolves that tuple before moving work to `running`.
+An unknown or ambiguous tuple, missing wrapper, invalid posture, or stale/
+exhausted declared capacity leaves the work `claimed` and creates no execution
+RunAttempt.
+
+Run a bounded task inline:
+
+```sh
+compound work advance <work_id> --to running --execute \
+  --harness claude_minimax --workspace /path/to/project \
+  --prompt "implement the claimed slice"
+```
+
+Run a supervised task in tmux so an operator or agent can inspect and steer it:
+
+```sh
+compound work delegate <work_id> --harness claude_qwen \
+  --workspace /path/to/project --prompt "process the remaining batch"
+compound work delegate status <work_id>
+compound work delegate progress <work_id> \
+  --done 12 --empty 2 --failed 1 --remaining 5
+compound work steer <work_id> --text "finish the current item, then stop" --enter
+compound work attach <work_id>
+```
+
+A raw command after `--` replaces only the executable. It cannot bypass tuple
+existence, provider attribution, or capacity admission. RunAttempt stores the
+requested tuple separately from observed `model_id`/`provider_route`; those
+observed fields remain empty until route evidence attests what actually ran.
+The console reads the same binding and RunAttempt, including cumulative
+done/empty/failed/remaining progress.
+
+Idle schedulers are clients of this path, not parallel execution owners. They
+may decide *when* a machine is unattended, but select lanes from Compound's
+capability route plan and invoke `work delegate`; provider thresholds, wrapper
+tables, STOP files, local attempt logs, and task receipts do not belong in the
+scheduler. A terminal delegated run closes through the same WorkEnvelope
+Receipt + Transition chain as an interactive run.
+
 ## Agent-agnosticism proof
 
 Compound proves agent-agnosticism by **checkpoint replacement**: Claude starts

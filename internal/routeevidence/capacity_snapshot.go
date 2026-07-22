@@ -3,6 +3,7 @@ package routeevidence
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -112,7 +113,7 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 		return capacity, nil
 	}
 
-	usage, ok, err := readCodexBarCapacity(cfg.Paths.UsageHistoryPath, key, now, cfg.ExpectedMinutes)
+	usage, ok, err := readCodexBarCapacity(cfg.Paths.UsageHistoryPath, key, now, cfg.ExpectedMinutes, capacityFreshness(key))
 	if err != nil {
 		return LaneCapacity{}, err
 	}
@@ -183,7 +184,20 @@ type codexBarCapacityRow struct {
 	sampled       time.Time
 }
 
-func readCodexBarCapacity(path, lane string, now time.Time, expectedMinutes int) (LaneCapacity, bool, error) {
+func readCodexBarCapacity(path, lane string, now time.Time, expectedMinutes int, freshness time.Duration) (LaneCapacity, bool, error) {
+	return readCodexBarCapacityMatching(path, lane, now, expectedMinutes, freshness, func(provider string) bool {
+		return normalizeLaneCapacityKey(provider) == lane
+	})
+}
+
+func readCodexBarCapacityExact(path, provider string, now time.Time, expectedMinutes int, freshness time.Duration) (LaneCapacity, bool, error) {
+	wanted := normalizeCodexBarProvider(provider)
+	return readCodexBarCapacityMatching(path, provider, now, expectedMinutes, freshness, func(candidate string) bool {
+		return normalizeCodexBarProvider(candidate) == wanted
+	})
+}
+
+func readCodexBarCapacityMatching(path, provider string, now time.Time, expectedMinutes int, freshness time.Duration, matches func(string) bool) (LaneCapacity, bool, error) {
 	if strings.TrimSpace(path) == "" {
 		return LaneCapacity{}, false, nil
 	}
@@ -204,7 +218,7 @@ func readCodexBarCapacity(path, lane string, now time.Time, expectedMinutes int)
 		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
 			continue
 		}
-		if normalizeLaneCapacityKey(row.Provider) != lane || math.IsNaN(row.UsedPercent) || math.IsInf(row.UsedPercent, 0) {
+		if !matches(row.Provider) || math.IsNaN(row.UsedPercent) || math.IsInf(row.UsedPercent, 0) {
 			continue
 		}
 		sampled, err := time.Parse(time.RFC3339, strings.TrimSpace(row.SampledAt))
@@ -221,20 +235,22 @@ func readCodexBarCapacity(path, lane string, now time.Time, expectedMinutes int)
 		return LaneCapacity{
 			State:           CapacityUnknown,
 			SourceInstalled: true,
-			DataRef:         fmt.Sprintf("no usage rows for family: %s", lane),
+			DataRef:         fmt.Sprintf("no usage rows for family: %s", provider),
 		}, false, nil
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].sampled.After(rows[j].sampled) })
 	newest := rows[0].sampled
-	if age := now.Sub(newest); age < 0 || age > capacityFreshness(lane) {
-		freshness := capacityFreshness(lane)
+	if freshness <= 0 {
+		freshness = capacityFreshness(provider)
+	}
+	if age := now.Sub(newest); age < 0 || age > freshness {
 		return LaneCapacity{
 			State:           CapacityUnknown,
 			SourceInstalled: true,
 			LastProven:      newest.UTC(),
 			Source:          "codexbar/usage-history",
 			DataRef: fmt.Sprintf("codexbar/usage-history:no_fresh_rows,family=%s,newest=%s,age=%dm,freshness=%dm",
-				lane, newest.UTC().Format(time.RFC3339), int(age.Minutes()), int(freshness.Minutes())),
+				provider, newest.UTC().Format(time.RFC3339), int(age.Minutes()), int(freshness.Minutes())),
 		}, false, nil
 	}
 
@@ -275,7 +291,7 @@ func readCodexBarCapacity(path, lane string, now time.Time, expectedMinutes int)
 		Source:     "codexbar/usage-history",
 		DataRef: fmt.Sprintf(
 			"codexbar:provider=%s,window=%s/%dm,sampled_at=%s",
-			lane,
+			provider,
 			strings.TrimSpace(constraining.WindowKind),
 			constraining.WindowMinutes,
 			constraining.sampled.UTC().Format(time.RFC3339),
@@ -398,6 +414,97 @@ func GuardLaneCapacity(homePath, lane, capabilityClass string, now time.Time, co
 		return LaneCapacityDecision{}, err
 	}
 	alternatives = capacityAlternativeLadder(homePath, capabilityClass, alternatives)
+	return decideLaneCapacity(homePath, lane, now, confirm, alternatives, cfg, capacity)
+}
+
+// GuardDeclaredLaneCapacity reads exactly the source declared on a LaneTuple.
+// It never falls through to another provider family or another capacity feed:
+// an absent/stale declared source stays unknown, and an unknown source kind is
+// rejected. This keeps Compound from manufacturing quota truth by aliasing one
+// provider's evidence onto another lane.
+func GuardDeclaredLaneCapacity(homePath, lane, capabilityClass string, source LaneCapacitySourceRef, now time.Time, expectedMinutes int, confirm bool, alternatives []string, suppressRefusalEvidence bool) (LaneCapacityDecision, error) {
+	return GuardDeclaredLaneCapacityWithConfig(homePath, lane, capabilityClass, source, now, expectedMinutes, confirm, alternatives, suppressRefusalEvidence, LaneCapacityConfig{})
+}
+
+// GuardDeclaredLaneCapacityWithConfig is the injectable variant used by route
+// planning and the work guard. Production callers pass an empty config; tests
+// and embedded consumers can point the same policy at deterministic sources.
+func GuardDeclaredLaneCapacityWithConfig(homePath, lane, capabilityClass string, source LaneCapacitySourceRef, now time.Time, expectedMinutes int, confirm bool, alternatives []string, suppressRefusalEvidence bool, cfg LaneCapacityConfig) (LaneCapacityDecision, error) {
+	return guardDeclaredLaneCapacityWithConfigAndProbe(homePath, lane, capabilityClass, source, now, expectedMinutes, confirm, alternatives, suppressRefusalEvidence, cfg, ProbeCodexBarCapacity)
+}
+
+type codexBarCapacityProbeFunc func(string, time.Time, time.Duration) (CodexBarCapacityEvidence, error)
+
+func guardDeclaredLaneCapacityWithProbe(homePath, lane, capabilityClass string, source LaneCapacitySourceRef, now time.Time, expectedMinutes int, confirm bool, alternatives []string, suppressRefusalEvidence bool, probe codexBarCapacityProbeFunc) (LaneCapacityDecision, error) {
+	return guardDeclaredLaneCapacityWithConfigAndProbe(homePath, lane, capabilityClass, source, now, expectedMinutes, confirm, alternatives, suppressRefusalEvidence, LaneCapacityConfig{}, probe)
+}
+
+func guardDeclaredLaneCapacityWithConfigAndProbe(homePath, lane, capabilityClass string, source LaneCapacitySourceRef, now time.Time, expectedMinutes int, confirm bool, alternatives []string, suppressRefusalEvidence bool, cfg LaneCapacityConfig, probe codexBarCapacityProbeFunc) (LaneCapacityDecision, error) {
+	kind := strings.ToLower(strings.TrimSpace(source.Kind))
+	if kind != "codexbar" {
+		return LaneCapacityDecision{}, fmt.Errorf("unknown capacity source kind %q", source.Kind)
+	}
+	if source.FreshnessMinutes <= 0 {
+		return LaneCapacityDecision{}, errors.New("declared capacity source freshness_minutes must be positive")
+	}
+	provider, err := codexBarProviderFromRef(source.Ref)
+	if err != nil {
+		return LaneCapacityDecision{}, err
+	}
+	cfg = normalizeLaneCapacityConfig(cfg, homePath)
+	if expectedMinutes <= 0 {
+		expectedMinutes = defaultExpectedMinutes
+	}
+	cfg.ExpectedMinutes = expectedMinutes
+	cfg.SuppressRefusalEvidence = suppressRefusalEvidence
+	installed := capacitySourceInstalled(LaneCapacityPaths{UsageHistoryPath: cfg.Paths.UsageHistoryPath})
+	freshness := time.Duration(source.FreshnessMinutes) * time.Minute
+	capacity, ok, err := readCodexBarCapacityExact(
+		cfg.Paths.UsageHistoryPath,
+		provider,
+		now,
+		cfg.ExpectedMinutes,
+		freshness,
+	)
+	if err != nil {
+		return LaneCapacityDecision{}, err
+	}
+	if !ok {
+		history := capacity
+		live, probeErr := probe(provider, now, freshness)
+		if probeErr == nil {
+			capacity = codexBarEvidenceCapacity(live, now, cfg.ExpectedMinutes)
+			installed = true
+		} else {
+			capacity = LaneCapacity{
+				State:           CapacityUnknown,
+				SourceInstalled: true,
+				LastProven:      history.LastProven,
+				Source:          history.Source,
+				DataRef:         strings.TrimSpace(history.DataRef) + "; live_probe=" + probeErr.Error(),
+			}
+		}
+	}
+	capacity.SourceInstalled = installed || capacity.SourceInstalled
+	capacity.DataRef = "source_ref=" + strings.TrimSpace(source.Ref) + "; " + strings.TrimSpace(capacity.DataRef)
+	alternatives = capacityAlternativeLadder(homePath, capabilityClass, alternatives)
+	return decideLaneCapacity(homePath, lane, now, confirm, alternatives, cfg, capacity)
+}
+
+func codexBarProviderFromRef(ref string) (string, error) {
+	const prefix = "codexbar://provider/"
+	ref = strings.TrimSpace(ref)
+	if !strings.HasPrefix(ref, prefix) {
+		return "", fmt.Errorf("capacity source ref %q must match %s<provider>", ref, prefix)
+	}
+	provider := strings.TrimPrefix(ref, prefix)
+	if provider == "" || strings.ContainsAny(provider, "/?#") || normalizeCodexBarProvider(provider) == "" {
+		return "", fmt.Errorf("capacity source ref %q has invalid CodexBar provider", ref)
+	}
+	return normalizeCodexBarProvider(provider), nil
+}
+
+func decideLaneCapacity(homePath, lane string, now time.Time, confirm bool, alternatives []string, cfg LaneCapacityConfig, capacity LaneCapacity) (LaneCapacityDecision, error) {
 	decision := LaneCapacityDecision{
 		Capacity:          capacity,
 		AlternativeLadder: alternatives,
@@ -431,18 +538,34 @@ func GuardLaneCapacity(homePath, lane, capabilityClass string, now time.Time, co
 
 func WorkLaneCapacityGuard(cfg LaneCapacityConfig) work.LaneCapacityGuardFunc {
 	return func(req work.LaneCapacityGuardRequest) (work.LaneCapacityGuardResult, error) {
+		if req.TupleBacked && req.CapacitySource == nil {
+			return work.LaneCapacityGuardResult{
+				Capacity: work.DispatchLaneCapacity{State: "gateway_owned"},
+				Message:  "no Compound capacity source declared; runtime quota remains execution-gateway-owned",
+			}, nil
+		}
 		effective := cfg
 		effective.ExpectedMinutes = req.ExpectedMinutes
 		effective.SuppressRefusalEvidence = req.ReadOnly
-		decision, err := GuardLaneCapacity(
-			req.HomePath,
-			req.Lane,
-			req.CapabilityClass,
-			req.Now,
-			req.Confirm,
-			req.Alternatives,
-			effective,
-		)
+		var decision LaneCapacityDecision
+		var err error
+		if req.CapacitySource != nil {
+			decision, err = GuardDeclaredLaneCapacityWithConfig(req.HomePath, req.Lane, req.CapabilityClass, LaneCapacitySourceRef{
+				Kind:             req.CapacitySource.Kind,
+				FreshnessMinutes: req.CapacitySource.FreshnessMinutes,
+				Ref:              req.CapacitySource.Ref,
+			}, req.Now, req.ExpectedMinutes, req.Confirm, req.Alternatives, req.ReadOnly, effective)
+		} else {
+			decision, err = GuardLaneCapacity(
+				req.HomePath,
+				req.Lane,
+				req.CapabilityClass,
+				req.Now,
+				req.Confirm,
+				req.Alternatives,
+				effective,
+			)
+		}
 		if err != nil {
 			return work.LaneCapacityGuardResult{}, err
 		}

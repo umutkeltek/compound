@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -155,6 +156,66 @@ func runDelegateSweepCLI(args []string, store *work.Store, runner work.SessionRu
 	return 0
 }
 
+func runDelegateProgressCLI(args []string, store *work.Store, now time.Time, stdout, stderr io.Writer) int {
+	var positional []string
+	values := map[string]int{}
+	seen := map[string]bool{}
+	jsonOut := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--json":
+			jsonOut = true
+		case "--done", "--empty", "--failed", "--remaining":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "error:", arg, "requires a value")
+				return 2
+			}
+			i++
+			value, err := strconv.Atoi(args[i])
+			if err != nil || value < 0 {
+				fmt.Fprintln(stderr, "error:", arg, "must be a non-negative integer")
+				return 2
+			}
+			values[arg] = value
+			seen[arg] = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				fmt.Fprintln(stderr, "error: unknown flag", arg)
+				return 2
+			}
+			positional = append(positional, arg)
+		}
+	}
+	if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
+		fmt.Fprintln(stderr, "error: progress requires exactly one work_id")
+		return 2
+	}
+	for _, required := range []string{"--done", "--empty", "--failed", "--remaining"} {
+		if !seen[required] {
+			fmt.Fprintln(stderr, "error: progress requires", required)
+			return 2
+		}
+	}
+	result, err := store.DelegateProgress(positional[0], runattempt.RunProgress{
+		Done: values["--done"], Empty: values["--empty"], Failed: values["--failed"], Remaining: values["--remaining"],
+	}, now)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if jsonOut {
+		if err := encodeDelegateCLIJSON(stdout, result); err != nil {
+			fmt.Fprintln(stderr, "error: encode progress:", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintf(stdout, "delegate progress: work=%s run_attempt=%s done=%d empty=%d failed=%d remaining=%d\n",
+		result.WorkID, result.RunAttemptID, result.Progress.Done, result.Progress.Empty, result.Progress.Failed, result.Progress.Remaining)
+	return 0
+}
+
 // runWorkDelegateCLI is the testable command edge for work
 // delegate|steer|attach|<status>|<sweep>. Parsing and rendering live
 // here; lifecycle meaning remains in internal/work and process
@@ -174,13 +235,15 @@ func runWorkDelegateCLI(sub string, args []string, store *work.Store, runner wor
 	}
 	switch sub {
 	case "delegate":
-		// Sub-dispatch: status/sweep before parseDelegate.
+		// Sub-dispatch: status/sweep/progress before parseDelegate.
 		if len(args) > 0 {
 			switch args[0] {
 			case "status":
 				return runDelegateStatusCLI(args[1:], store, runner, now, stdout, stderr)
 			case "sweep":
 				return runDelegateSweepCLI(args[1:], store, runner, now, stdout, stderr)
+			case "progress":
+				return runDelegateProgressCLI(args[1:], store, now, stdout, stderr)
 			}
 		}
 		opts, err := parseDelegateCLI(args)
@@ -331,11 +394,6 @@ func parseDelegateCLI(args []string) (delegateCLIOptions, error) {
 	if seenPrompt && len(rawCommand) > 0 {
 		return out, errors.New("pass either --prompt or a raw command after --, not both")
 	}
-	wrapper, err := work.ResolveDelegateHarness(out.harness)
-	if err != nil {
-		return out, err
-	}
-	out.command = wrapper
 	if seenPrompt {
 		out.args = []string{out.prompt}
 	}

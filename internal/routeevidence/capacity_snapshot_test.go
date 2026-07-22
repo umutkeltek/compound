@@ -2,6 +2,7 @@ package routeevidence
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -791,6 +792,96 @@ func TestReadLaneCapacityMinimaxRowConsumedByClaudeMinimaxLane(t *testing.T) {
 	}
 	if !strings.Contains(capacity.DataRef, "provider=minimax") {
 		t.Fatalf("claude-minimax DataRef did not cite minimax row: %q", capacity.DataRef)
+	}
+}
+
+func TestGuardDeclaredCapacityUsesRefProviderForLiveFallback(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	called := ""
+	source := LaneCapacitySourceRef{
+		Kind: "codexbar", FreshnessMinutes: 10, Ref: "codexbar://provider/qwencloud",
+	}
+	decision, err := guardDeclaredLaneCapacityWithProbe(
+		t.TempDir(), "qwen", "build-implement", source, capacityNow, 60, false, nil, false,
+		func(provider string, now time.Time, freshness time.Duration) (CodexBarCapacityEvidence, error) {
+			called = provider
+			if !now.Equal(capacityNow) || freshness != 10*time.Minute {
+				t.Fatalf("probe now=%s freshness=%s", now, freshness)
+			}
+			return CodexBarCapacityEvidence{
+				Provider: provider, UpdatedAt: now,
+				All: []CodexBarWindowEvidence{{Present: true, RemainingPercent: 46, WindowMinutes: 10080, ResetsAt: now.Add(4 * 24 * time.Hour)}},
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called != "qwencloud" {
+		t.Fatalf("capacity probe provider=%q, want qwencloud from ref (execution lane was qwen)", called)
+	}
+	if decision.Capacity.State != CapacityAlive || decision.Capacity.Remaining != 46 || !strings.Contains(decision.Capacity.DataRef, source.Ref) {
+		t.Fatalf("declared capacity decision = %+v", decision)
+	}
+}
+
+func TestGuardDeclaredCapacityFreshHistorySuppressesLiveProbe(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	cfg := DefaultLaneCapacityConfig(t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(cfg.Paths.UsageHistoryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCapacityUsage(t, cfg, "minimax", 15, capacityNow.Add(4*24*time.Hour), capacityNow.Add(-9*time.Minute))
+	probeCalls := 0
+	decision, err := guardDeclaredLaneCapacityWithProbe(
+		t.TempDir(), "minimax", "build-implement",
+		LaneCapacitySourceRef{Kind: "codexbar", FreshnessMinutes: 10, Ref: "codexbar://provider/minimax"},
+		capacityNow, 60, false, nil, false,
+		func(string, time.Time, time.Duration) (CodexBarCapacityEvidence, error) {
+			probeCalls++
+			return CodexBarCapacityEvidence{}, errors.New("must not probe")
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probeCalls != 0 || decision.Capacity.State != CapacityAlive || decision.Capacity.Remaining != 85 {
+		t.Fatalf("fresh history decision=%+v probe_calls=%d", decision, probeCalls)
+	}
+}
+
+func TestGuardDeclaredCapacityTupleFreshnessControlsFallback(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	cfg := DefaultLaneCapacityConfig(t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(cfg.Paths.UsageHistoryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCapacityUsage(t, cfg, "minimax", 15, capacityNow.Add(4*24*time.Hour), capacityNow.Add(-11*time.Minute))
+	for _, tc := range []struct {
+		freshness int
+		wantProbe bool
+	}{
+		{freshness: 10, wantProbe: true},
+		{freshness: 20, wantProbe: false},
+	} {
+		calls := 0
+		_, err := guardDeclaredLaneCapacityWithProbe(
+			t.TempDir(), "minimax", "build-implement",
+			LaneCapacitySourceRef{Kind: "codexbar", FreshnessMinutes: tc.freshness, Ref: "codexbar://provider/minimax"},
+			capacityNow, 60, false, nil, false,
+			func(provider string, now time.Time, freshness time.Duration) (CodexBarCapacityEvidence, error) {
+				calls++
+				return CodexBarCapacityEvidence{Provider: provider, UpdatedAt: now, All: []CodexBarWindowEvidence{{Present: true, RemainingPercent: 80, WindowMinutes: 300, ResetsAt: now.Add(2 * time.Hour)}}}, nil
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := calls > 0; got != tc.wantProbe {
+			t.Fatalf("freshness=%d probe=%v, want %v", tc.freshness, got, tc.wantProbe)
+		}
 	}
 }
 

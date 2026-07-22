@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
+	"compound/internal/routeevidence"
 	"compound/internal/runattempt"
 )
 
@@ -32,38 +34,47 @@ import (
 type ClaudeAdapter struct {
 	store             *runattempt.Store
 	heartbeatInterval time.Duration
+	name              string
+	command           string
+	tupleBacked       bool
 }
 
 // NewClaudeAdapter returns the production adapter. Heartbeats every 5s.
 func NewClaudeAdapter(store *runattempt.Store) *ClaudeAdapter {
-	return &ClaudeAdapter{store: store, heartbeatInterval: defaultHeartbeatInterval}
+	return newClaudeAdapter(store, "claude", "claude", defaultHeartbeatInterval, false)
+}
+
+func newClaudeLaneAdapter(store *runattempt.Store, name string, interval time.Duration) *ClaudeAdapter {
+	return newClaudeAdapter(store, name, "", interval, true)
+}
+
+func newClaudeAdapter(store *runattempt.Store, name, command string, interval time.Duration, tupleBacked bool) *ClaudeAdapter {
+	if interval <= 0 {
+		interval = defaultHeartbeatInterval
+	}
+	return &ClaudeAdapter{store: store, heartbeatInterval: interval, name: name, command: command, tupleBacked: tupleBacked}
 }
 
 // NewClaudeAdapterWithInterval returns an adapter with a custom heartbeat
 // cadence. Test-only.
 func NewClaudeAdapterWithInterval(store *runattempt.Store, interval time.Duration) *ClaudeAdapter {
-	if interval <= 0 {
-		interval = defaultHeartbeatInterval
-	}
-	return &ClaudeAdapter{store: store, heartbeatInterval: interval}
+	return newClaudeAdapter(store, "claude", "claude", interval, false)
 }
 
 // Name returns the manifest adapter id for Claude. Future Registry
 // integration (C.3) keys on this.
-func (a *ClaudeAdapter) Name() string { return "claude" }
+func (a *ClaudeAdapter) Name() string { return a.name }
 
 // Run drives the claude subprocess end-to-end. The RunInput.Command is
 // overridden to "claude" so the caller doesn't have to know the binary
 // path; Args[0] (or Prompt) is appended as the prompt text.
 func (a *ClaudeAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error) {
-	// Validate the permission mode BEFORE runWithSubprocess mints the
-	// RunAttempt (mint-before-side-effect is the S1+S2 contract, but an
-	// invalid posture must not even reach that point). A typo must never
-	// silently downgrade to a safe-looking default and still run -- it
-	// must fail closed with zero ratt_ files. claudePermissionArgs can
-	// then assume mode is one of the recognized values.
-	if err := validateClaudePermissionMode(in.PermissionMode); err != nil {
-		return RunOutput{}, err
+	if !in.preflighted {
+		resolved, err := a.Preflight(ctx, in)
+		if err != nil {
+			return RunOutput{}, err
+		}
+		in = resolved
 	}
 	// Override the harness name + command so the caller doesn't need to
 	// know the binary path. The harnessName arg of runWithSubprocess
@@ -72,8 +83,75 @@ func (a *ClaudeAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error)
 	// actual command (we set it to "claude" so the audit says "command:
 	// claude" not "command: <whatever the caller passed>").
 	in.Harness = a.Name()
-	in.Command = a.Name()
+	if in.Command == "" {
+		in.Command = a.command
+	}
 	return runWithSubprocess(ctx, a.store, a.Name(), in, a.buildCmd, a.heartbeatInterval)
+}
+
+// Preflight resolves the lane without minting a RunAttempt or starting a
+// subprocess. Governed callers invoke this before advancing work to running;
+// Run invokes it again so the manual harness command has the same fail-closed
+// boundary.
+func (a *ClaudeAdapter) Preflight(_ context.Context, in RunInput) (RunInput, error) {
+	if err := validateClaudePermissionMode(in.PermissionMode); err != nil {
+		return RunInput{}, err
+	}
+	resolved, err := a.resolveRunInput(in)
+	if err != nil {
+		return RunInput{}, err
+	}
+	resolved.preflighted = true
+	return resolved, nil
+}
+
+func (a *ClaudeAdapter) resolveRunInput(in RunInput) (RunInput, error) {
+	if !a.tupleBacked {
+		in.Command = a.command
+		return in, nil
+	}
+	manifest, _, err := routeevidence.LoadModelCapabilitiesFromHome(a.store.Home())
+	if err != nil {
+		return RunInput{}, fmt.Errorf("%s adapter: load Compound model-router authority: %w", a.Name(), err)
+	}
+	modelID, tuple, err := routeevidence.ResolveModelCapabilityTuple(manifest, a.Name())
+	if err != nil {
+		return RunInput{}, fmt.Errorf("%s adapter: %w", a.Name(), err)
+	}
+	command, err := routeevidence.ResolveModelCapabilityExecutable(tuple.Aliases)
+	if err != nil {
+		return RunInput{}, fmt.Errorf("%s adapter: %w", a.Name(), err)
+	}
+	if tuple.CapacitySource != nil {
+		decision, err := routeevidence.GuardDeclaredLaneCapacity(
+			a.store.Home(),
+			tuple.ProviderRoute,
+			"build-implement",
+			*tuple.CapacitySource,
+			in.Now,
+			60,
+			false,
+			nil,
+			false,
+		)
+		if err != nil {
+			return RunInput{}, fmt.Errorf("%s adapter: capacity preflight: %w", a.Name(), err)
+		}
+		if decision.Capacity.State != routeevidence.CapacityAlive {
+			message := strings.TrimSpace(decision.Message)
+			if message == "" {
+				message = decision.Capacity.DataRef
+			}
+			return RunInput{}, fmt.Errorf("%s adapter: capacity %s: %s", a.Name(), decision.Capacity.State, message)
+		}
+	}
+	in.Command = command
+	in.RequestedModelID = modelID
+	in.RequestedProviderRoute = tuple.ProviderRoute
+	if strings.TrimSpace(in.LaneID) == "" {
+		in.LaneID = a.Name()
+	}
+	return in, nil
 }
 
 // validateClaudePermissionMode rejects any RunInput.PermissionMode that is
@@ -139,7 +217,7 @@ func (a *ClaudeAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
 	if prompt != "" {
 		args = append(args, prompt)
 	}
-	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd := exec.CommandContext(ctx, in.Command, args...)
 	cmd.Dir = in.Workspace
 	cmd.Env = append(os.Environ(), in.Env...)
 	return cmd

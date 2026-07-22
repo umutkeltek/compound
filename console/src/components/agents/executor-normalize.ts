@@ -96,6 +96,18 @@ function delegatedStatus(value: unknown): DelegatedSessionStatus {
   return raw === "running" || raw === "exited" || raw === "refused" ? raw : "unknown";
 }
 
+function delegatedProgress(value: unknown): DelegatedSessionRow["progress"] {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Json;
+  const count = (input: unknown) => Math.max(0, Math.trunc(num(input)));
+  return {
+    done: count(raw.done),
+    empty: count(raw.empty),
+    failed: count(raw.failed),
+    remaining: count(raw.remaining),
+  };
+}
+
 /**
  * Whitelist parser for one delegated-session row. It reads ONLY the safe,
  * reduced fields the projection exposes — never any prompt/argv/message key,
@@ -115,6 +127,7 @@ function delegatedRow(value: unknown): DelegatedSessionRow | null {
     holder: str(raw.holder),
     runAttemptId: str(raw.run_attempt_id),
     runAttemptStatus: str(raw.run_attempt_status),
+    progress: delegatedProgress(raw.progress),
     refusedReason: str(raw.refused_reason),
     spawnedAt: str(raw.spawned_at),
     lastSteerAt: str(raw.last_steer_at),

@@ -88,6 +88,13 @@ export interface ExecutorProjection {
 
 export type DelegatedSessionStatus = "running" | "exited" | "refused" | "unknown";
 
+export interface DelegatedProgress {
+  done: number;
+  empty: number;
+  failed: number;
+  remaining: number;
+}
+
 export interface DelegatedSessionRow {
   workId: string;
   lane: string;
@@ -96,6 +103,7 @@ export interface DelegatedSessionRow {
   holder: string;
   runAttemptId: string;
   runAttemptStatus: string;
+  progress: DelegatedProgress | null;
   refusedReason: string;
   spawnedAt: string;
   lastSteerAt: string;
@@ -126,6 +134,7 @@ export interface DelegatedSessionView {
   runAttemptId: string;
   /** exact "<ratt> · <status>" when both present, else whichever exists. */
   runAttemptLabel: string;
+  progressLabel: string;
   /** the single most-relevant right-hand detail for the row's status. */
   detail: string;
   lastSteerAt: string;
@@ -153,6 +162,9 @@ export function delegatedSessionView(row: DelegatedSessionRow): DelegatedSession
       ? `${row.runAttemptId} · ${row.runAttemptStatus}`
       : row.runAttemptId
     : "";
+  const progressLabel = row.progress
+    ? `${row.progress.done} done · ${row.progress.empty} empty · ${row.progress.failed} failed · ${row.progress.remaining} left`
+    : "";
   let detail = "";
   if (status === "refused") detail = row.refusedReason;
   else if (status === "exited") detail = row.observedExit || row.runAttemptStatus;
@@ -167,6 +179,7 @@ export function delegatedSessionView(row: DelegatedSessionRow): DelegatedSession
     holder: row.holder,
     runAttemptId: row.runAttemptId,
     runAttemptLabel,
+    progressLabel,
     detail,
     lastSteerAt: row.lastSteerAt,
   };

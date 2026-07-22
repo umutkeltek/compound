@@ -39,6 +39,7 @@ function rawProjection() {
         holder: "codex",
         run_attempt_id: "ratt_20260722T120000Z_aaaa",
         run_attempt_status: "running",
+        progress: { done: 3, empty: 1, failed: 0, remaining: 6 },
         last_steer_at: "2026-07-22T12:05:00Z",
         // adversarial leak fields — must never survive the whitelist:
         prompt: "TOP-SECRET-PROMPT",
@@ -87,6 +88,11 @@ export function runDelegatedSessionsSelfTest(): { ok: boolean; details: string[]
     `run=${JSON.stringify(byId.get("work_run"))}`,
   );
   push(
+    "running-progress-whitelist",
+    JSON.stringify(byId.get("work_run")).includes('"progress":{"done":3,"empty":1,"failed":0,"remaining":6}'),
+    `run=${JSON.stringify(byId.get("work_run"))}`,
+  );
+  push(
     "exited-row",
     byId.get("work_exit")?.status === "exited" && byId.get("work_exit")?.observedExit === "succeeded",
     `exit=${JSON.stringify(byId.get("work_exit"))}`,
@@ -126,6 +132,11 @@ export function runDelegatedSessionsSelfTest(): { ok: boolean; details: string[]
   push(
     "render-running-live",
     vById.get("work_run")?.tone === "live" && vById.get("work_run")?.statusLabel === "Running",
+    `view=${JSON.stringify(vById.get("work_run"))}`,
+  );
+  push(
+    "render-running-progress",
+    JSON.stringify(vById.get("work_run")).includes("3 done · 1 empty · 0 failed · 6 left"),
     `view=${JSON.stringify(vById.get("work_run"))}`,
   );
   push(

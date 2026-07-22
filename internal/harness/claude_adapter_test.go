@@ -268,3 +268,182 @@ func TestClaudeAdapterPromptFromArgs(t *testing.T) {
 		t.Fatalf("argv log missing Args[0] prompt: %q", argvBytes)
 	}
 }
+
+// TestClaudeLaneAdapterResolvesTupleAndStampsAttribution proves the enrolled
+// lane behavior through the same registry seam the CLI uses. The executable,
+// model id, and provider route all come from Compound's model-router authority;
+// none are parallel adapter configuration.
+func TestClaudeLaneAdapterResolvesTupleAndStampsAttribution(t *testing.T) {
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	binDir := fakeBinaryPath(t, "claude-minimax", argvLog, 0)
+	withPATH(t, binDir)
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "registries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `version: 1
+purpose: fixture
+capability_classes: [build-implement]
+models:
+  fixture-minimax:
+    lane: fixture minimax lane
+    harness: claude_minimax
+    provider_route: minimax
+    tier: cheap
+    packet_ceiling: multi-file
+    aliases: [claude-minimax]
+    capabilities:
+      build-implement: {level: capable, evidence: fixture}
+routing_defaults:
+  build-implement: [fixture-minimax]
+`
+	if err := os.WriteFile(filepath.Join(home, "registries", "model-capabilities.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewAdapterRegistry(runattempt.Open(home))
+	adapter, ok := registry.AdapterByName("claude_minimax")
+	if !ok {
+		t.Fatal("claude_minimax adapter is not enrolled")
+	}
+	out, err := adapter.Run(context.Background(), RunInput{
+		WorkID:    "work_lane_tuple",
+		Workspace: home,
+		Prompt:    "execute the packet",
+		Now:       time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.RunAttempt.Harness != "claude_minimax" {
+		t.Fatalf("harness = %q, want claude_minimax", out.RunAttempt.Harness)
+	}
+	if filepath.Base(out.RunAttempt.Command) != "claude-minimax" {
+		t.Fatalf("command = %q, want tuple alias claude-minimax", out.RunAttempt.Command)
+	}
+	if out.RunAttempt.LaneID != "claude_minimax" || out.RunAttempt.RequestedModelID != "fixture-minimax" || out.RunAttempt.RequestedProviderRoute != "minimax" {
+		t.Fatalf("dispatch intent = lane:%q model:%q provider:%q", out.RunAttempt.LaneID, out.RunAttempt.RequestedModelID, out.RunAttempt.RequestedProviderRoute)
+	}
+	if out.RunAttempt.ModelID != "" || out.RunAttempt.ProviderRoute != "" {
+		t.Fatalf("adapter guessed observed identity: model=%q provider=%q", out.RunAttempt.ModelID, out.RunAttempt.ProviderRoute)
+	}
+}
+
+func TestClaudeLaneAdapterDoesNotRepeatPreflightAfterGovernedHandoff(t *testing.T) {
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	binDir := fakeBinaryPath(t, "claude-minimax", argvLog, 0)
+	withPATH(t, binDir)
+
+	home := t.TempDir()
+	manifestPath := filepath.Join(home, "registries", "model-capabilities.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `version: 1
+purpose: fixture
+capability_classes: [build-implement]
+models:
+  fixture-minimax:
+    lane: fixture minimax lane
+    harness: claude_minimax
+    provider_route: minimax
+    tier: cheap
+    packet_ceiling: multi-file
+    aliases: [claude-minimax]
+    capabilities: {build-implement: {level: capable, evidence: fixture}}
+routing_defaults:
+  build-implement: [fixture-minimax]
+`
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewAdapterRegistry(runattempt.Open(home))
+	adapter, _ := registry.AdapterByName("claude_minimax")
+	preflight, ok := adapter.(PreflightAdapter)
+	if !ok {
+		t.Fatal("claude_minimax adapter has no preflight seam")
+	}
+	input, err := preflight.Preflight(context.Background(), RunInput{
+		WorkID: "work_preflight_handoff", Workspace: home, Prompt: "execute once", Now: time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	out, err := adapter.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Run repeated tuple/capacity preflight after governed handoff: %v", err)
+	}
+	if out.RunAttempt.Status != runattempt.StatusSucceeded {
+		t.Fatalf("preflighted run status=%q", out.RunAttempt.Status)
+	}
+}
+
+// TestClaudeLaneAdapterExhaustedDeclaredCapacityFailsBeforeMint proves an
+// enrolled wrapper is still unavailable when its declared capacity source is
+// fresh and exhausted. The adapter must refuse before the RunAttempt audit
+// primitive is minted, because no harness run actually began.
+func TestClaudeLaneAdapterExhaustedDeclaredCapacityFailsBeforeMint(t *testing.T) {
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	binDir := fakeBinaryPath(t, "claude-minimax", argvLog, 0)
+	withPATH(t, binDir)
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "registries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `version: 1
+purpose: fixture
+capability_classes: [build-implement]
+models:
+  fixture-minimax:
+    lane: fixture minimax lane
+    harness: claude_minimax
+    provider_route: minimax
+    tier: cheap
+    packet_ceiling: multi-file
+    aliases: [claude-minimax]
+    capacity_source: {kind: codexbar, freshness_minutes: 15, ref: "codexbar://provider/minimax"}
+    capabilities:
+      build-implement: {level: capable, evidence: fixture}
+routing_defaults:
+  build-implement: [fixture-minimax]
+`
+	if err := os.WriteFile(filepath.Join(home, "registries", "model-capabilities.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	usageDir := filepath.Join(userHome, "Library", "Application Support", "CodexBar")
+	if err := os.MkdirAll(usageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	usage := `{"provider":"minimax","windowKind":"5h","windowMinutes":300,"usedPercent":100,"resetsAt":"2026-07-22T14:00:00Z","sampledAt":"2026-07-22T11:55:00Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(usageDir, "usage-history.jsonl"), []byte(usage), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewAdapterRegistry(runattempt.Open(home))
+	adapter, _ := registry.AdapterByName("claude_minimax")
+	_, err := adapter.Run(context.Background(), RunInput{
+		WorkID:    "work_exhausted_lane",
+		Workspace: home,
+		Prompt:    "must not start",
+		Now:       now,
+	})
+	if err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("expected capacity refusal, got %v", err)
+	}
+	runAttemptFiles, _ := filepath.Glob(filepath.Join(home, "run_attempts", "ratt_*.json"))
+	if len(runAttemptFiles) != 0 {
+		t.Fatalf("exhausted capacity minted RunAttempts: %v", runAttemptFiles)
+	}
+	if _, err := os.Stat(argvLog); !os.IsNotExist(err) {
+		t.Fatalf("exhausted capacity invoked the wrapper; argv log err=%v", err)
+	}
+}

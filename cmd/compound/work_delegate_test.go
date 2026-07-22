@@ -118,6 +118,7 @@ func claimedDelegateCLIWorkAt(t *testing.T, holder string) (*work.Store, string,
 func allowDelegateCLIGuard(t *testing.T, confirmationRequired bool) {
 	t.Helper()
 	orig := work.LaneCapacityGuard
+	origResolver := work.DelegateHarnessResolver
 	work.LaneCapacityGuard = func(req work.LaneCapacityGuardRequest) (work.LaneCapacityGuardResult, error) {
 		return work.LaneCapacityGuardResult{
 			Capacity:             work.DispatchLaneCapacity{State: "ok", Remaining: 0.8},
@@ -125,7 +126,21 @@ func allowDelegateCLIGuard(t *testing.T, confirmationRequired bool) {
 			Message:              "lane has headroom",
 		}, nil
 	}
-	t.Cleanup(func() { work.LaneCapacityGuard = orig })
+	work.DelegateHarnessResolver = func(req work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
+		command := strings.ReplaceAll(req.Harness, "_", "-")
+		if req.CommandOverride != "" {
+			command = req.CommandOverride
+		}
+		return work.DelegateHarnessResolution{
+			Harness: req.Harness, Command: command, LaneID: req.Harness,
+			RequestedModelID: "fixture-model", RequestedProviderRoute: strings.TrimPrefix(command, "claude-"),
+			CapacityLane: req.Harness, TupleBacked: true,
+		}, nil
+	}
+	t.Cleanup(func() {
+		work.LaneCapacityGuard = orig
+		work.DelegateHarnessResolver = origResolver
+	})
 }
 
 func runDelegateCLIForTest(t *testing.T, sub string, store *work.Store, runner work.SessionRunner, attach func([]string) error, args ...string) (string, string, int) {
@@ -160,7 +175,7 @@ func TestWorkDelegateCLIPromptUsesNamedWrapperWithoutPersistingSpeech(t *testing
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("decode JSON: %v\n%s", err, out)
 	}
-	if result.Status != "spawned" || result.Binding == nil || result.Binding.Harness != "claude-zai" {
+	if result.Status != "spawned" || result.Binding == nil || result.Binding.Harness != "claude_zai" {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -257,6 +272,61 @@ func TestWorkDelegateStatusIsReachableAndWritesNothing(t *testing.T) {
 	after := snapshotFiles(t, home)
 	if !reflect.DeepEqual(before, after) || len(runner.kills) != 0 {
 		t.Fatalf("status mutated state: files_equal=%v kills=%v", reflect.DeepEqual(before, after), runner.kills)
+	}
+}
+
+// TestWorkDelegateProgressUpdatesBoundRunAttempt proves an operator or worker
+// can report cumulative batch progress against the exact supervised attempt
+// already bound to the work. The command never accepts a caller-supplied
+// ratt id, so progress cannot drift onto a sibling claim reservation.
+func TestWorkDelegateProgressUpdatesBoundRunAttempt(t *testing.T) {
+	allowDelegateCLIGuard(t, false)
+	store, workID, home := claimedDelegateCLIWorkAt(t, "orchestrator:test")
+	runner := newDelegateCLIFakeRunner()
+	spawnOut, errOut, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		workID, "--harness", "claude-minimax", "--json")
+	if code != 0 || errOut != "" {
+		t.Fatalf("spawn code=%d stderr=%q stdout=%q", code, errOut, spawnOut)
+	}
+	var spawned work.DelegateResult
+	if err := json.Unmarshal([]byte(spawnOut), &spawned); err != nil || spawned.Binding == nil {
+		t.Fatalf("decode spawn: %+v %v", spawned, err)
+	}
+
+	out, errOut, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		"progress", workID,
+		"--done", "3", "--empty", "1", "--failed", "0", "--remaining", "6", "--json")
+	if code != 0 || errOut != "" {
+		t.Fatalf("progress code=%d stderr=%q stdout=%q", code, errOut, out)
+	}
+	var result struct {
+		RunAttemptID string `json:"run_attempt_id"`
+		Progress     struct {
+			Done      int `json:"done"`
+			Empty     int `json:"empty"`
+			Failed    int `json:"failed"`
+			Remaining int `json:"remaining"`
+		} `json:"progress"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode progress: %v\n%s", err, out)
+	}
+	if result.RunAttemptID != spawned.RunAttemptID || result.Progress.Done != 3 || result.Progress.Empty != 1 || result.Progress.Failed != 0 || result.Progress.Remaining != 6 {
+		t.Fatalf("progress result = %+v, spawned=%+v", result, spawned)
+	}
+
+	ra, err := runattempt.Open(home).Get(spawned.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(home, "run_attempts", ra.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"done": 3`, `"empty": 1`, `"failed": 0`, `"remaining": 6`} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("persisted RunAttempt missing %s:\n%s", want, body)
+		}
 	}
 }
 

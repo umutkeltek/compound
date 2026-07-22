@@ -34,7 +34,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -236,6 +235,89 @@ func fakeGuard(refused, confirmationRequired bool, msg, state string) LaneCapaci
 			ConfirmationRequired: confirmationRequired,
 			Message:              msg,
 		}, nil
+	}
+}
+
+func TestDelegateUsesInjectedTupleResolutionAndStampsAttribution(t *testing.T) {
+	origGuard := LaneCapacityGuard
+	origResolver := DelegateHarnessResolver
+	LaneCapacityGuard = fakeGuard(false, false, "alive", "alive")
+	DelegateHarnessResolver = func(req DelegateHarnessResolveRequest) (DelegateHarnessResolution, error) {
+		if req.HomePath == "" || req.Harness != "claude_minimax" || req.Now.IsZero() || req.CommandOverride != "" {
+			t.Fatalf("resolver input = %+v", req)
+		}
+		return DelegateHarnessResolution{
+			Harness:                "claude_minimax",
+			Command:                "resolved-claude-minimax",
+			LaneID:                 "claude_minimax",
+			RequestedModelID:       "claude-minimax (token plan)",
+			RequestedProviderRoute: "minimax",
+			CapacityLane:           "minimax",
+			TupleBacked:            true,
+		}, nil
+	}
+	t.Cleanup(func() {
+		LaneCapacityGuard = origGuard
+		DelegateHarnessResolver = origResolver
+	})
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "codex", "", "")
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude_minimax", Actor: "codex", Now: fixedNow,
+	}, runner)
+	if err != nil || result.Status != "spawned" {
+		t.Fatalf("delegate: err=%v result=%+v", err, result)
+	}
+	if len(runner.creates) != 1 || runner.creates[0].Command != "resolved-claude-minimax" {
+		t.Fatalf("delegate did not launch resolved command: %+v", runner.creates)
+	}
+	ra, err := runattempt.Open(s.home).Get(result.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.LaneID != "claude_minimax" || ra.RequestedModelID != "claude-minimax (token plan)" || ra.RequestedProviderRoute != "minimax" {
+		t.Fatalf("delegated dispatch intent = lane:%q model:%q provider:%q", ra.LaneID, ra.RequestedModelID, ra.RequestedProviderRoute)
+	}
+	if ra.ModelID != "" || ra.ProviderRoute != "" {
+		t.Fatalf("delegated run guessed observed identity: model=%q provider=%q", ra.ModelID, ra.ProviderRoute)
+	}
+}
+
+func TestDelegateTupleResolutionFailureCreatesNoSessionOrAttempt(t *testing.T) {
+	origGuard := LaneCapacityGuard
+	origResolver := DelegateHarnessResolver
+	LaneCapacityGuard = fakeGuard(false, false, "alive", "alive")
+	DelegateHarnessResolver = func(DelegateHarnessResolveRequest) (DelegateHarnessResolution, error) {
+		return DelegateHarnessResolution{}, errors.New("no Compound lane tuple")
+	}
+	t.Cleanup(func() {
+		LaneCapacityGuard = origGuard
+		DelegateHarnessResolver = origResolver
+	})
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "codex", "", "")
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude_qwen", Actor: "codex", Command: "raw-worker-tool", Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "refused" || result.Refusal == nil || result.Refusal.Reason != "harness_unknown" {
+		t.Fatalf("resolution failure result = %+v", result)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("resolution failure created session: %+v", runner.creates)
+	}
+	files, err := filepath.Glob(filepath.Join(s.home, "run_attempts", "ratt_*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("resolution failure minted execution attempt; files=%v", files)
 	}
 }
 
@@ -719,46 +801,6 @@ func TestDelegateDryRunNeverSpawnsOrPersists(t *testing.T) {
 	// Persistence invariant: zero delegate events written.
 	if got := capturedDelegateEvents(t, s); len(got) != 0 {
 		t.Fatalf("dry-run must NOT emit events, got %d", len(got))
-	}
-}
-
-// Named lane aliases resolve to the existing wrapper executables without
-// creating a second durable registry. The map is a small function-table
-// inside the orchestrator; no NEW file under COMPOUND_HOME is created for
-// the alias.
-func TestDelegateNamedLaneAliasesResolveWithoutSecondRegistry(t *testing.T) {
-	cases := []struct {
-		alias   string
-		wantCmd string
-	}{
-		{"claude-zai", "claude-zai"},
-		{"claude_zai", "claude-zai"},
-		{"claude-qwen", "claude-qwen"},
-		{"claude_qwen", "claude-qwen"},
-		{"claude-minimax", "claude-minimax"},
-		{"claude_minimax", "claude-minimax"},
-		{"claude", "claude"},
-		{"codex", "codex"},
-	}
-	for _, tc := range cases {
-		got, ok := resolveHarnessWrapper(tc.alias)
-		if !ok {
-			t.Fatalf("alias %q must resolve to a wrapper", tc.alias)
-		}
-		if got != tc.wantCmd {
-			t.Fatalf("alias %q -> %q, want %q", tc.alias, got, tc.wantCmd)
-		}
-	}
-	// And no extra file under COMPOUND_HOME/projections or similar.
-	if _, err := exec.LookPath("definitely-not-a-real-command"); err == nil {
-		t.Fatal("test invariant broken: looked-up command unexpectedly exists")
-	}
-}
-
-func TestDelegateKnownHarnessNamesAreDeterministic(t *testing.T) {
-	want := "claude, claude-minimax, claude-qwen, claude-zai, claude_minimax, claude_qwen, claude_zai, codex"
-	if got := knownHarnessNames(); got != want {
-		t.Fatalf("known harnesses = %q, want %q", got, want)
 	}
 }
 

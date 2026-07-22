@@ -28,9 +28,9 @@
 //     carry prompt text or command stdout (privacy law of the packet).
 //   - Dry-run runs the guard + binding + tmux-available checks, prints the
 //     decision, and writes NO event record (preview-only).
-//   - Named lane aliases (claude-zai, claude-qwen, claude-minimax, claude,
-//     codex) resolve to the same wrapper executable name via a static
-//     function table -- NO durable registry under COMPOUND_HOME.
+//   - Named lane aliases resolve through Compound's injected LaneTuple
+//     resolver. An explicit raw command may override only the executable;
+//     tuple identity and attribution remain mandatory in production.
 package work
 
 import (
@@ -39,7 +39,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -100,6 +99,31 @@ type DelegateOptions struct {
 	Now             time.Time
 }
 
+type DelegateHarnessResolveRequest struct {
+	HomePath        string
+	Harness         string
+	CommandOverride string
+	Now             time.Time
+}
+
+type DelegateHarnessResolution struct {
+	Harness                string
+	Command                string
+	LaneID                 string
+	RequestedModelID       string
+	RequestedProviderRoute string
+	CapacityLane           string
+	TupleBacked            bool
+	CapacitySource         *LaneCapacitySource
+}
+
+type DelegateHarnessResolverFunc func(DelegateHarnessResolveRequest) (DelegateHarnessResolution, error)
+
+// DelegateHarnessResolver is installed by routeevidence, the owner of the
+// Compound model-router authority. Injection avoids a work↔routeevidence
+// import cycle while keeping a single tuple resolver.
+var DelegateHarnessResolver DelegateHarnessResolverFunc
+
 type DelegateResult struct {
 	SchemaVersion string                   `json:"schema_version"`
 	WorkID        string                   `json:"work_id"`
@@ -141,50 +165,6 @@ type DelegateRefusal struct {
 	Reason  string `json:"reason"` // walled|dead|expiring_unconfirmed|not_claimed|session_live|tmux_absent|gate_absent|harness_unknown|spawn_failed
 	Message string `json:"message,omitempty"`
 	Session string `json:"session,omitempty"` // session_live: the existing session name
-}
-
-// Harness wrapper aliases (named-lane aliases). The map is a static
-// function-table inside the orchestrator; it is NEVER persisted under
-// COMPOUND_HOME -- this is the "no second durable registry" invariant.
-var harnessWrapperAliases = map[string]string{
-	"claude-zai":     "claude-zai",
-	"claude_zai":     "claude-zai",
-	"claude-qwen":    "claude-qwen",
-	"claude_qwen":    "claude-qwen",
-	"claude-minimax": "claude-minimax",
-	"claude_minimax": "claude-minimax",
-	"claude":         "claude",
-	"codex":          "codex",
-}
-
-func resolveHarnessWrapper(name string) (string, bool) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", false
-	}
-	if cmd, ok := harnessWrapperAliases[name]; ok {
-		return cmd, true
-	}
-	return "", false
-}
-
-// ResolveDelegateHarness maps a user-facing lane alias to the executable
-// wrapper Compound is allowed to launch. It is the cmd layer's only alias
-// surface, keeping the function table owned here instead of duplicating it.
-func ResolveDelegateHarness(name string) (string, error) {
-	if command, ok := resolveHarnessWrapper(name); ok {
-		return command, nil
-	}
-	return "", fmt.Errorf("harness %q does not resolve to a registered wrapper (allowed: %s)", name, knownHarnessNames())
-}
-
-func knownHarnessNames() string {
-	out := make([]string, 0, len(harnessWrapperAliases))
-	for k := range harnessWrapperAliases {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return strings.Join(out, ", ")
 }
 
 func delegateSessionName(workID string) string { return "compound-" + workID }
@@ -419,21 +399,42 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	if strings.TrimSpace(opts.Harness) == "" {
 		return out, errors.New("delegate: Harness is required")
 	}
-	if strings.TrimSpace(opts.Command) == "" {
-		return out, errors.New("delegate: Command is required")
-	}
 	if runner == nil {
 		return out, errors.New("delegate: SessionRunner is nil")
 	}
-	resolvedHarness, ok := resolveHarnessWrapper(opts.Harness)
-	if !ok {
+	resolution := DelegateHarnessResolution{
+		Harness:      strings.TrimSpace(opts.Harness),
+		Command:      strings.TrimSpace(opts.Command),
+		LaneID:       strings.TrimSpace(opts.Harness),
+		CapacityLane: strings.TrimSpace(opts.Harness),
+	}
+	if DelegateHarnessResolver != nil {
+		resolved, resolveErr := DelegateHarnessResolver(DelegateHarnessResolveRequest{
+			HomePath: s.home, Harness: opts.Harness, CommandOverride: opts.Command, Now: opts.Now,
+		})
+		if resolveErr != nil {
+			out.Refusal = &DelegateRefusal{Reason: "harness_unknown", Message: resolveErr.Error()}
+			return out, nil
+		}
+		resolution = resolved
+	}
+	resolvedHarness := strings.TrimSpace(resolution.Harness)
+	command := strings.TrimSpace(resolution.Command)
+	laneForGuard := strings.TrimSpace(resolution.CapacityLane)
+	if laneForGuard == "" {
+		laneForGuard = strings.TrimSpace(resolution.LaneID)
+	}
+	if resolvedHarness == "" || command == "" || laneForGuard == "" {
 		out.Refusal = &DelegateRefusal{
 			Reason:  "harness_unknown",
-			Message: fmt.Sprintf("harness %q does not resolve to a registered wrapper (allowed: %s)", opts.Harness, knownHarnessNames()),
+			Message: fmt.Sprintf("harness %q did not resolve a complete executable tuple", opts.Harness),
 		}
 		return out, nil
 	}
-	out.Lane = resolvedHarness
+	out.Lane = strings.TrimSpace(resolution.LaneID)
+	if out.Lane == "" {
+		out.Lane = laneForGuard
+	}
 
 	w, err := s.Get(out.WorkID)
 	if err != nil {
@@ -456,7 +457,6 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	if holder == "" {
 		holder = leaseHolder
 	}
-	laneForGuard := resolvedHarness
 	if holder != leaseHolder {
 		message := fmt.Sprintf("work lease is held by %q; actor %q cannot delegate it", leaseHolder, holder)
 		if opts.DryRun {
@@ -483,6 +483,8 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		Confirm:         opts.Confirm,
 		ReadOnly:        opts.DryRun,
 		Now:             opts.Now,
+		TupleBacked:     resolution.TupleBacked,
+		CapacitySource:  resolution.CapacitySource,
 	})
 	if err != nil {
 		return out, fmt.Errorf("delegate: guard lane capacity: %w", err)
@@ -663,14 +665,14 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	if _, settErr := raStore.SetWorkspace(runAttemptID, workspace); settErr != nil {
 		return stamp("workspace", "RunAttempt workspace stamp failed")
 	}
-	if _, settErr := raStore.SetCommand(runAttemptID, opts.Command); settErr != nil {
+	if _, settErr := raStore.SetCommand(runAttemptID, command); settErr != nil {
 		return stamp("command", "RunAttempt command stamp failed")
 	}
-	if _, settErr := raStore.SetAttribution(runAttemptID, laneForGuard, "", ""); settErr != nil {
+	if _, settErr := raStore.SetDispatchIntent(runAttemptID, resolution.LaneID, resolution.RequestedModelID, resolution.RequestedProviderRoute); settErr != nil {
 		return stamp("attribution", "RunAttempt attribution stamp failed")
 	}
 
-	if err := runner.Create(sessionName, workspace, opts.Command, opts.Args); err != nil {
+	if err := runner.Create(sessionName, workspace, command, opts.Args); err != nil {
 		// Create failed. Probe to detect partial / ambiguous: if the
 		// session exists on the server we DO NOT kill it (it may be a
 		// stranger's session) and we DO NOT emit a spawned binding. We
@@ -1297,6 +1299,52 @@ type DelegateStatusObservation struct {
 	RunAttemptStatus string        `json:"run_attempt_status,omitempty"`
 	PaneStatus       SessionStatus `json:"pane_status"`
 	ProbeError       string        `json:"probe_error,omitempty"`
+}
+
+// DelegateProgressResult is the content-free progress receipt returned after
+// resolving a work's active delegated binding to its exact RunAttempt.
+type DelegateProgressResult struct {
+	WorkID           string                 `json:"work_id"`
+	RunAttemptID     string                 `json:"run_attempt_id"`
+	Progress         runattempt.RunProgress `json:"progress"`
+	HeartbeatAt      string                 `json:"heartbeat_at"`
+	RunAttemptStatus string                 `json:"run_attempt_status"`
+}
+
+// DelegateProgress records cumulative progress on the active bound attempt.
+// Callers identify work, never a raw ratt id, so sibling claim reservations
+// cannot receive a delegated worker's heartbeat.
+func (s *Store) DelegateProgress(workID string, progress runattempt.RunProgress, now time.Time) (DelegateProgressResult, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return DelegateProgressResult{}, errors.New("delegate progress: WorkID is required")
+	}
+	binding, alive, err := s.recoverBoundSession(workID)
+	if err != nil {
+		return DelegateProgressResult{}, err
+	}
+	if !alive || binding == nil || strings.TrimSpace(binding.RunAttemptID) == "" {
+		return DelegateProgressResult{}, fmt.Errorf("delegate progress: no active bound RunAttempt for work %s", workID)
+	}
+	raStore := runattempt.Open(s.home)
+	ra, err := raStore.Get(binding.RunAttemptID)
+	if err != nil {
+		return DelegateProgressResult{}, fmt.Errorf("delegate progress: load RunAttempt %s: %w", binding.RunAttemptID, err)
+	}
+	if ra.Status != runattempt.StatusRunning {
+		return DelegateProgressResult{}, fmt.Errorf("delegate progress: RunAttempt %s is %s, want running", ra.ID, ra.Status)
+	}
+	updated, err := raStore.HeartbeatProgress(ra.ID, now, progress)
+	if err != nil {
+		return DelegateProgressResult{}, err
+	}
+	return DelegateProgressResult{
+		WorkID:           workID,
+		RunAttemptID:     updated.ID,
+		Progress:         *updated.Progress,
+		HeartbeatAt:      updated.LastHeartbeatAt.UTC().Format(time.RFC3339Nano),
+		RunAttemptStatus: updated.Status,
+	}, nil
 }
 
 // DelegateSweepOutcome is the per-binding result of DelegateSweep.

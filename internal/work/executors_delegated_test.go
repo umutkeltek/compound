@@ -102,6 +102,38 @@ func TestDelegatedSessionsSpawnedRunning(t *testing.T) {
 	}
 }
 
+// TestDelegatedSessionsExposeRunProgress proves the existing executor
+// projection carries the content-free cumulative progress stored on the exact
+// delegated RunAttempt. The console must not inspect tmux output to learn it.
+func TestDelegatedSessionsExposeRunProgress(t *testing.T) {
+	s := newStore(t)
+	withPermissiveGuard(t)
+	wID := prepareClaimedWork(t, s, "codex", "", "")
+	runner := newFakeRunner()
+	res, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-minimax", Actor: "codex", Command: "claude-minimax", Now: fixedNow,
+	}, runner)
+	if err != nil || res.Status != "spawned" {
+		t.Fatalf("delegate: %v %+v", err, res)
+	}
+	if _, err := s.DelegateProgress(wID, runattempt.RunProgress{Done: 3, Empty: 1, Failed: 0, Remaining: 6}, fixedNow.Add(1)); err != nil {
+		t.Fatalf("progress: %v", err)
+	}
+	row := findDelegatedRow(delegatedRowsFor(t, s), wID)
+	if row == nil {
+		t.Fatalf("no delegated row for %s", wID)
+	}
+	body, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"progress"`, `"done":3`, `"empty":1`, `"failed":0`, `"remaining":6`} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("delegated projection missing %s: %s", want, body)
+		}
+	}
+}
+
 // The delegated board consumes the same event snapshot Workbench already
 // loaded. Reusing that Workbench must preserve the row without a second
 // events/work.jsonl read.

@@ -120,6 +120,42 @@ func TestWorkLifecycleThreadsOneID(t *testing.T) {
 	}
 }
 
+func TestWorkLifecycleKeepsRunAttemptIDsUniqueAcrossAdvanceAndClose(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "codex", SuccessPredicate: "run attempt references stay unique"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(w.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.RunAttemptIDs) != 1 {
+		t.Fatalf("claim attempts=%v", claimed.RunAttemptIDs)
+	}
+	runAttemptID := claimed.RunAttemptIDs[0]
+	running, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex", RunAttemptIDs: []string{runAttemptID}}, fixedNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := running.RunAttemptIDs; len(got) != 1 || got[0] != runAttemptID {
+		t.Fatalf("advance duplicated RunAttempt id: %v", got)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "codex"}, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := s.Close(w.ID, CloseInput{
+		Outcome: "completed", MoveType: "control_plane_repair", Actor: "codex", Summary: "unique run evidence", Changed: true,
+		RunAttemptIDs: []string{runAttemptID}, ProofRefs: []string{"test://unique-run-attempt"},
+	}, fixedNow.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := closed.Work.RunAttemptIDs; len(got) != 1 || got[0] != runAttemptID {
+		t.Fatalf("close duplicated RunAttempt id: %v", got)
+	}
+}
+
 // TestWorkPredictionSurpriseOnClose covers F1: a staked WorkPrediction diffs against the actual
 // close and bakes a Receipt.Surprise -- diverged, confirmed (Diverged=false is signal too), and
 // entirely absent when no prediction was staked (the marshaled JSON must lack "surprise", never

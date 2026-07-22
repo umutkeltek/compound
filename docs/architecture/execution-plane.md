@@ -149,6 +149,15 @@ legacy lane with no resolution block may still be planned and called, but it can
 deciding autonomy sample. This permits an incremental registry migration without inventing local
 model identities or silently disabling existing route consumers.
 
+Harness execution consumes the same authority instead of maintaining a second wrapper map. Exact
+model id, alias, then harness id form the resolution precedence; ambiguity fails closed. A declared
+`capacity_source` binds quota evidence to its own provider ref (for example
+`codexbar://provider/qwencloud`) even when the execution route has another name. Inline governed
+execution and delegated tmux sessions both resolve this tuple before work moves or a RunAttempt is
+minted. A raw command may replace only the executable, never the tuple, capacity gate, or requested
+route attribution. RunAttempt records requested tuple/provider separately from observed
+`model_id`/`provider_route`, which remain unknown until ExecutionRouteEvidence supplies them.
+
 ## Second-order effects (design against these)
 
 - **Cheap-mediocre drift.** If the router optimizes cost/latency without *outcome* feedback, the
