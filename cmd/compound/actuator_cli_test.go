@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,4 +211,110 @@ func TestActuatorSubcommandsAcceptKnownFlagsEndToEnd(t *testing.T) {
 			t.Fatalf("switchback: known flags must not be rejected; stderr=%q", stderr.String())
 		}
 	})
+}
+
+// postRecordFailureHome sets up a temp home whose actuator/budget dir is
+// read-only so EvaluatePlan's budget READS succeed but the post-staging
+// ledger.Record (a write) fails — the F9.1 "post landed but budget accounting
+// failed" scenario. Mirrors internal/actuator's TestPostSurfacesConsumptionRecordFailure.
+func postRecordFailureHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	budgetDir := filepath.Join(home, "actuator", "budget")
+	if err := os.MkdirAll(budgetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(budgetDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(budgetDir, 0o755) })
+	return home
+}
+
+// Since 7c66eec7, actuator.Post can return a POPULATED PostResult (Executed=true,
+// receipt/transition refs) together with a non-nil error — "the post landed but
+// budget accounting failed" (F9.1). runActuatorPost must mirror runActuatorRun and
+// surface that result, not drop it. These three falsifiers pin the CLI contract.
+
+// TestActuatorPostJSONSurfacesResultWithRecordError: --json mode must emit the
+// populated result on stdout (executed:true + non-empty receipt_ref) AND name the
+// consumption failure on stderr with exit 1. RED before the fix (result dropped:
+// stdout empty of the result, only stderr).
+func TestActuatorPostJSONSurfacesResultWithRecordError(t *testing.T) {
+	home := postRecordFailureHome(t)
+	var stdout, stderr bytes.Buffer
+	code := runActuator([]string{
+		"post", "--work", "work_rec", "--product", "product-demo",
+		"--content", "Ship agent work that compounds.", "--home", home, "--json",
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("want exit 1 on a consumption-record failure, got %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var got struct {
+		Executed   bool   `json:"executed"`
+		ReceiptRef string `json:"receipt_ref"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout must be the JSON PostResult even on error; unmarshal failed: %v; stdout=%q", err, stdout.String())
+	}
+	if !got.Executed {
+		t.Fatalf("the post staged + receipted; JSON result must report executed:true; stdout=%q", stdout.String())
+	}
+	if got.ReceiptRef == "" {
+		t.Fatalf("the operator must recover the receipt ref from stdout; got empty; stdout=%q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "consumption") {
+		t.Fatalf("stderr must name the consumption-record failure; got %q", stderr.String())
+	}
+}
+
+// TestActuatorPostHumanSurfacesReceiptWithRecordError: human mode must print the
+// EXECUTED block (the receipt: line) AND name the failure on stderr with exit 1.
+// RED before the fix (block skipped: no receipt: line on stdout).
+func TestActuatorPostHumanSurfacesReceiptWithRecordError(t *testing.T) {
+	home := postRecordFailureHome(t)
+	var stdout, stderr bytes.Buffer
+	code := runActuator([]string{
+		"post", "--work", "work_rec", "--product", "product-demo",
+		"--content", "Ship agent work that compounds.", "--home", home,
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("want exit 1 on a consumption-record failure, got %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "receipt:") {
+		t.Fatalf("the operator must recover the receipt ref from the EXECUTED block; stdout=%q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "consumption") {
+		t.Fatalf("stderr must name the consumption-record failure; got %q", stderr.String())
+	}
+}
+
+// TestActuatorPostPreStagingFailureStaysErrorOnly: when Post fails BEFORE anything
+// lands (Executed=false — here act.NewArtifactStore fails because artifacts/ is a
+// file), human mode must stay error-only: exit 1, NO EXECUTED block on stdout.
+// This guards the mirror against over-printing an EXECUTED block for a zero result.
+func TestActuatorPostPreStagingFailureStaysErrorOnly(t *testing.T) {
+	home := t.TempDir()
+	// Make the artifact-store path a FILE so act.NewArtifactStore's MkdirAll
+	// (home/artifacts/sha256) fails before any post is staged.
+	if err := os.WriteFile(filepath.Join(home, "artifacts"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := runActuator([]string{
+		"post", "--work", "work_pre", "--product", "product-demo",
+		"--content", "Ship agent work that compounds.", "--home", home,
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("want exit 1 on a pre-staging failure, got %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "EXECUTED") {
+		t.Fatalf("nothing landed; the EXECUTED block must NOT print for a zero result; stdout=%q", stdout.String())
+	}
+	if stderr.Len() == 0 {
+		t.Fatalf("a pre-staging failure must name the error on stderr; got empty")
+	}
 }
