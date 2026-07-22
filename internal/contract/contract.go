@@ -463,6 +463,9 @@ type runtimeSnapshot struct {
 	positionRefs         []contextPositionRef
 	excludedPositionRefs []envelope.ExcludedRef
 	memoryRevision       string
+	probePlan            *probeSelectionPlan
+	probeGroups          []probeGroupSelection
+	probeRevision        string
 	capabilityHits       []capgraph.Surfaced
 	capabilityTotal      int
 	capabilityRevision   string
@@ -557,15 +560,27 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 	semantic := semanticTaskRankResultWithEmbedderFromView(homePath, in, trace, taskEmbedder, memoryResult.store, memoryResult.view, &dependencies.RecallCandidate)
 	dependencies.RecallConsumed = semantic.ConsumedRecall
 	semanticRanks := semantic.Ranks
-	snapshot.memoryRefs, snapshot.excludedMemoryRefs, err = loadMemoryRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, &dependencies)
+	snapshot.probePlan, err = buildProbeSelectionPlan(homePath, in, memoryResult.store, memoryResult.view)
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, dependencies.TopicSet)
-	if err != nil {
-		return snapshot, err
+	if snapshot.probePlan == nil {
+		snapshot.memoryRefs, snapshot.excludedMemoryRefs, err = loadMemoryRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, &dependencies)
+		if err != nil {
+			return snapshot, err
+		}
+		snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, dependencies.TopicSet)
+		if err != nil {
+			return snapshot, err
+		}
+	} else {
+		dependencies.ProbeRevision = snapshot.probePlan.Revision
+		snapshot.probeRevision = snapshot.probePlan.Revision
+		snapshot.memoryRefs, snapshot.positionRefs, snapshot.excludedMemoryRefs, snapshot.probeGroups = loadProbeGroupedRefsFromView(
+			in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, &dependencies, snapshot.probePlan,
+		)
 	}
-	if len(snapshot.memoryRefs) > 0 || len(snapshot.excludedMemoryRefs) > 0 || len(snapshot.positionRefs) > 0 || len(snapshot.excludedPositionRefs) > 0 {
+	if len(snapshot.memoryRefs) > 0 || len(snapshot.excludedMemoryRefs) > 0 || len(snapshot.positionRefs) > 0 || len(snapshot.excludedPositionRefs) > 0 || snapshot.probePlan != nil {
 		snapshot.memoryRevision = runtimeMemoryRevision(memoryResult.view, dependencies)
 	}
 	return snapshot, nil
@@ -657,6 +672,7 @@ type runtimeMemoryDependencies struct {
 	TopicSet            map[string]bool
 	RecallCandidate     mem.ExpandedQuery
 	RecallConsumed      *mem.ExpandedQuery
+	ProbeRevision       string
 }
 
 // runtimeMemoryDependenciesCaptured is a test seam immediately after every
@@ -702,7 +718,8 @@ func runtimeMemoryRevision(view *mem.CurrentView, captured runtimeMemoryDependen
 		Temperatures []runtimeTemperatureDependency `json:"temperatures,omitempty"`
 		Topic        *runtimeTopicDependency        `json:"topic,omitempty"`
 		RecallAdded  []string                       `json:"recall_added,omitempty"`
-	}{View: view.Revision(), Topic: captured.Topic}
+		Probe        string                         `json:"probe,omitempty"`
+	}{View: view.Revision(), Topic: captured.Topic, Probe: captured.ProbeRevision}
 
 	for claimID, temperature := range captured.AppliedTemperatures {
 		dependencies.Temperatures = append(dependencies.Temperatures, runtimeTemperatureDependency{ClaimID: claimID, Temperature: temperature})
@@ -754,6 +771,9 @@ func projectRuntimeContract(ec envelope.EffectiveContract, snapshot runtimeSnaps
 	}
 	if snapshot.memoryRevision != "" {
 		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: memoryRelevanceSourceRef, Rev: snapshot.memoryRevision}})
+	}
+	if snapshot.probeRevision != "" {
+		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: probeContractsAuthorityRef, Rev: snapshot.probeRevision}})
 	}
 	return ec
 }
@@ -811,19 +831,35 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 	if snapshot.memoryRevision != "" {
 		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: memoryRelevanceSourceRef, Rev: snapshot.memoryRevision}})
 	}
-	if len(snapshot.memoryRefs) > 0 {
+	if snapshot.probeRevision != "" {
+		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: probeContractsAuthorityRef, Rev: snapshot.probeRevision}})
+	}
+	if snapshot.probePlan == nil && len(snapshot.memoryRefs) > 0 {
 		lines := make([]string, 0, len(snapshot.memoryRefs))
 		for _, ref := range snapshot.memoryRefs {
 			lines = append(lines, ref.Line)
 		}
 		pack.SummaryMD += " Compound memory (owned ledger): " + strings.Join(lines, "; ")
 	}
-	if len(snapshot.positionRefs) > 0 {
+	if snapshot.probePlan == nil && len(snapshot.positionRefs) > 0 {
 		lines := make([]string, 0, len(snapshot.positionRefs))
 		for _, ref := range snapshot.positionRefs {
 			lines = append(lines, ref.Line)
 		}
 		pack.SummaryMD += " Compound positions (folded current view): " + strings.Join(lines, "; ")
+	}
+	if snapshot.probePlan != nil {
+		for _, group := range snapshot.probeGroups {
+			label := group.Class + "/" + group.Group
+			switch {
+			case group.Empty:
+				pack.SummaryMD += " Probe " + label + ": probed-and-empty."
+			case len(group.Lines) > 0:
+				pack.SummaryMD += " Probe " + label + ": " + strings.Join(group.Lines, "; ") + "."
+			case group.Overlap:
+				pack.SummaryMD += " Probe " + label + ": covered by an earlier probe."
+			}
+		}
 	}
 	if topic := strings.TrimSpace(in.Topic); topic != "" {
 		pack.SummaryMD += fmt.Sprintf(" Ambient recall narrowed to topic %q (subtree-scoped); empty topic leaves recall unchanged.", topic)
@@ -2205,8 +2241,9 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 		// recall this round (nil lookup => no temperature term). Extending it to positions is a
 		// named follow-up.
 		relevanceRank := memoryRelevanceRank(activeClaim, entities, taskTokens, sem, nil)
-		if topicSet != nil && !mem.ClaimHasTopicRef(activeClaim, topicSet) {
-			// Same hard topic gate as claim recall, keyed off the position's active claim.
+		if topicSet != nil && !probePositionInTopicSet(activePosition, activeClaim, topicSet) {
+			// A folded position owns its topic axis. Older promoted claims may predate TopicRefs,
+			// so narrowing must also accept Position.Topic or valid subtree positions disappear.
 			if relevanceRank > 0 {
 				excluded = append(excluded, contextPositionRef{
 					Ref:    activePosition.Ref,
@@ -2359,13 +2396,7 @@ func memoryRelevanceRank(claim mem.Claim, entities, taskTokens map[string]bool, 
 	// Gates first — the engine RANKS, the ledger GATES. A claim these zero out stays zeroed no
 	// matter how relevant the breadth engine judged it (decisions go through loadDecisionRefs;
 	// volatile repo-state and non-ambient-visible claims never enter ambient memory).
-	if claim.ClaimType == "decision" {
-		return 0
-	}
-	if volatileOperationalRepoStateClaim(claim) {
-		return 0
-	}
-	if !memoryVisibilityAllowedForOrient(claim) {
+	if !memoryAbsoluteGateAllowsOrient(claim) {
 		return 0
 	}
 	rank := 0.0
@@ -2391,6 +2422,12 @@ func memoryRelevanceRank(claim mem.Claim, entities, taskTokens map[string]bool, 
 		rank += memoryProvenanceLaneTerm(claim.ProvenanceLane)
 	}
 	return rank
+}
+
+func memoryAbsoluteGateAllowsOrient(claim mem.Claim) bool {
+	return claim.ClaimType != "decision" &&
+		!volatileOperationalRepoStateClaim(claim) &&
+		memoryVisibilityAllowedForOrient(claim)
 }
 
 // loadMemoryTemperatures reads the memory-temperature projection into the rank lookup, fail-open:
