@@ -209,6 +209,16 @@ export type DecideGroup = {
   title: string;
   unlock: string;
   body: string;
+  /**
+   * The full text of what's actually being decided (rule/proposal body),
+   * quoted verbatim for the card's primary WHAT — never a generic category
+   * label. `title` doubles as this for most areas (it already carries the
+   * owner's real headline); the two areas that override `title` with a
+   * fixed template (decision-candidates, harness-edit-proposals) get their
+   * real content from `body`/`members` instead. Empty only when the
+   * projection genuinely carries no describable text — never invented.
+   */
+  objectText: string;
   consequences: { approve: string; hold: string } | null;
   chips: DecideChip[];
   count: number;
@@ -954,6 +964,18 @@ export function buildDecideGroups(
       act.mode === "batch-enumerable" && act.members.length === representedMemberIDs.length
         ? act.members
         : readonlyMembers(group, itemByID);
+    // The card's primary WHAT. `title` already IS the real object text for
+    // every area except the two that override it with a fixed category
+    // template below — for those, recover the real content that already
+    // exists elsewhere on the model (never invent it): the candidate's own
+    // rule text, or every member's own real fix description. Mirrors the
+    // harness-edit `body` copy below so the two never drift apart.
+    const harnessEditBody = `${count} proposed fix${count === 1 ? "" : "es"} would help Compound find capabilities it currently misses. Nothing changes until you approve a proposal.`;
+    const objectText = candidateRule
+      ? candidateRule
+      : isHarnessEditGroup
+        ? members.map((m, i) => `${i + 1}. ${m.label}`).join(" ") || harnessEditBody
+        : title;
     const brief = briefTarget?.brief ?? null;
     const freshnessRow = group.freshness && typeof group.freshness === "object" ? group.freshness as Json : {};
     const freshness = {
@@ -1098,8 +1120,9 @@ export function buildDecideGroups(
       body: candidateRule
         ? `Proposed rule: ${candidateRule}`
         : isHarnessEditGroup
-          ? `${count} proposed fix${count === 1 ? "" : "es"} would help Compound find capabilities it currently misses. Nothing changes until you approve a proposal.`
+          ? harnessEditBody
           : pl?.body || "",
+      objectText,
       consequences: pl?.consequences ?? null,
       chips: (pl?.chips ?? []).map((c) => ({ label: c.label, tone: String(c.tone) })),
       count,

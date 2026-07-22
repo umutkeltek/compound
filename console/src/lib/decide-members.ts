@@ -31,6 +31,46 @@ export function enumerableAuthorityFaces<
   }));
 }
 
+export type SystemicBlocker = {
+  /** The shared blocked reason, verbatim from the model — map to plain
+   * language at render time (see `blockedReasonPlain` in `./glossary`). */
+  reason: string;
+  blockedCount: number;
+  totalCount: number;
+};
+
+/**
+ * Detects a "systemic blocker": (near-)every group in the queue is stuck on
+ * the identical owner-unavailable reason. When true, the queue should show
+ * ONE banner ("N of M decidable — <reason>") instead of stamping the same
+ * reason on every card — 21 identical stamps is one fact, not 21.
+ * `minShare` is the near-all threshold (default 0.9): not every blocked
+ * group has to share the reason, only enough that repeating it per-card
+ * would be noise rather than information.
+ *
+ * `projectedReason` feature-detects a queue-level reason the projection may
+ * carry directly (a `systemic_blocker` field landing separately, from
+ * another executor's slice); when absent this falls back to computing the
+ * all-identical-reasons case from the groups actually rendered, so the
+ * banner works correctly before that field exists.
+ */
+export function queueSystemicBlocker<
+  T extends { face: Pick<DecideGroup["face"], "state" | "unavailableReason"> },
+>(groups: T[], projectedReason?: string | null, minShare = 0.9): SystemicBlocker | null {
+  const totalCount = groups.length;
+  if (totalCount === 0) return null;
+  const blocked = groups.filter((g) => g.face.state !== "ready");
+  if (projectedReason && projectedReason.trim()) {
+    return { reason: projectedReason.trim(), blockedCount: blocked.length, totalCount };
+  }
+  const reasoned = blocked.filter((g) => g.face.unavailableReason);
+  if (reasoned.length === 0) return null;
+  const reason = reasoned[0].face.unavailableReason;
+  if (!reasoned.every((g) => g.face.unavailableReason === reason)) return null;
+  if (reasoned.length / totalCount < minShare) return null;
+  return { reason, blockedCount: reasoned.length, totalCount };
+}
+
 export type DecideReadinessSectionKey = "act_now" | "needs_context";
 
 export type DecideReadinessSection<T> = {

@@ -10,14 +10,16 @@ import { Button, FreshnessChip, StateBadge, Tabs, TabsContent, TabsList, TabsTri
 import {
   decideReadinessSections,
   enumerableAuthorityFaces,
+  queueSystemicBlocker,
   remainingDecideMembers,
   type EnumerableAuthorityFace,
+  type SystemicBlocker,
 } from "@/lib/decide-members";
 import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import type { DecisionEffectKind } from "@/lib/decision-registry";
 import { buildEnumerableActionRequest, decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
-import { ownerUnavailableMessage } from "@/lib/glossary";
+import { blockedReasonPlain, ownerUnavailableMessage } from "@/lib/glossary";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
@@ -535,6 +537,7 @@ function DecisionRow({
   onActivate,
   onFocus,
   onKeyDown,
+  demoteBlockedStamp,
 }: {
   group: DecideGroup;
   selected: boolean;
@@ -542,6 +545,10 @@ function DecisionRow({
   onActivate: () => void;
   onFocus: () => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
+  /** True when a queue-level systemic-blocker banner already explains this
+   * exact reason once for the whole queue — the per-row stamp goes quiet
+   * instead of repeating it. */
+  demoteBlockedStamp: boolean;
 }) {
   return (
     <button
@@ -567,16 +574,26 @@ function DecisionRow({
             {group.ageLabel}
           </time>
         </span>
-        <span className="mt-1 line-clamp-2 block text-sm font-semibold leading-snug text-ink">{operatorText(group.title)}</span>
+        {/* Row headline is the real object text, not a category template —
+         * the same WHAT the detail card leads with (decide-model.ts's
+         * objectText). Falls back to the title for the (common) areas where
+         * title already carries the real headline. */}
+        <span className="mt-1 line-clamp-2 block text-sm font-semibold leading-snug text-ink">
+          {operatorText(group.objectText || group.title)}
+        </span>
         <span className="mt-2 flex flex-wrap items-center gap-2">
           <StateBadge state={group.face.state} label={group.face.stateLabel} />
           {group.face.primaryAction ? (
             <span className="min-w-0 truncate text-2xs font-semibold text-muted" title={group.face.primaryAction.label}>
               Next · {group.face.primaryAction.label}
             </span>
+          ) : demoteBlockedStamp ? (
+            <span className="min-w-0 truncate text-2xs text-faint" title={blockedReasonPlain(group.face.unavailableReason)}>
+              Blocked · see banner above
+            </span>
           ) : (
-            <span className="min-w-0 truncate text-2xs text-seam" title={group.face.unavailableReason}>
-              Unblock · {group.face.unavailableReason}
+            <span className="min-w-0 truncate text-2xs text-seam" title={blockedReasonPlain(group.face.unavailableReason)}>
+              Can't act yet · {blockedReasonPlain(group.face.unavailableReason)}
             </span>
           )}
           {group.count > 1 ? <span className="mono text-2xs text-faint">{group.count} items</span> : null}
@@ -605,11 +622,16 @@ function EvidencePanel({ group }: { group: DecideGroup }) {
 
   return (
     <div className="grid gap-3">
+      {/*
+       * One freshness stamp here, not two: the decision's own proposed-at
+       * age already appears once, clearly labeled, in the card header above
+       * ("Proposed … (age)"). Repeating a bare, unlabeled age+"stale" badge
+       * next to the live/stale FreshnessChip read as two contradictory
+       * freshness claims on one row — so only the projection-freshness
+       * chip (what this Evidence tab is actually about) lives here.
+       */}
       <div className="flex flex-wrap items-center gap-3 rounded-md bg-soft px-3 py-2">
         <code className="mono text-2xs text-faint" title={group.sampleId}>{group.sampleId}</code>
-        <span className={`text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>
-          {group.ageLabel}{group.old ? " · stale" : ""}
-        </span>
         <span className="inline-flex items-center gap-1.5">
           <span className="text-faint">Queue refreshed</span>
           <FreshnessChip generatedAt={group.face.freshness.generatedAt} source={group.face.freshness.source} />
@@ -695,13 +717,47 @@ function DecisionDetail({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-3">
             <GlyphTile domain={group.domain} glyph={group.glyph} />
-            <div className="min-w-0">
-              <div className="text-2xs font-bold uppercase text-faint">{group.face.kind}</div>
-              <h3 className="mt-1 text-lg font-semibold leading-snug text-ink">{operatorText(group.face.label)}</h3>
-            </div>
+            <div className="min-w-0 text-2xs font-bold uppercase text-faint">{group.face.kind}</div>
           </div>
           <StateBadge state={group.face.state} label={group.face.stateLabel} />
         </div>
+
+        {/* 1. WHAT is being decided — the full object text, quoted, first and
+         * visually primary. Never gated behind a tab: this must read in the
+         * first three seconds regardless of which tab happens to be open. */}
+        <blockquote className="mt-3 max-w-read border-l-2 border-work-line pl-3 text-lg font-semibold leading-snug text-ink">
+          {group.objectText || "No proposal text is available from the owner projection yet."}
+        </blockquote>
+        {group.title && group.title !== group.objectText ? (
+          <p className="mt-1 max-w-read text-xs font-medium text-muted">{operatorText(group.title)}</p>
+        ) : null}
+
+        {/* 2. WHAT changes if approved — one sentence when derivable; the row
+         * is simply absent (no placeholder filler) when it is not. */}
+        {group.consequences?.approve ? (
+          <p className="mt-2 max-w-read text-sm leading-relaxed text-ink">
+            <span className="font-semibold text-good">If approved</span>
+            <span className="text-faint"> → </span>
+            {group.consequences.approve}
+          </p>
+        ) : null}
+
+        {/* 3. WHAT to do now — the action when the group exposes one,
+         * otherwise ONE plain-language blocked line (never the raw jargon
+         * reason string verbatim). */}
+        <div className="mt-3 rounded-md bg-soft px-3 py-2.5">
+          <div className="text-2xs font-bold uppercase tracking-wide text-faint">What to do now</div>
+          {group.face.primaryAction ? (
+            <p className="mt-1 text-sm leading-relaxed text-ink">
+              <span className="font-semibold text-good">{group.face.primaryAction.label}</span> — open the Action tab below.
+            </p>
+          ) : (
+            <p className="mt-1 text-sm leading-relaxed text-seam">
+              {blockedReasonPlain(group.face.unavailableReason) || "No governed action is available yet."}
+            </p>
+          )}
+        </div>
+
         <div className="mt-3 rounded-md bg-soft px-3 py-2.5">
           <div className="text-2xs font-bold uppercase tracking-wide text-faint">Why now</div>
           <p className="mt-1 max-w-read text-sm leading-relaxed text-ink">{group.face.whyNow}</p>
@@ -770,7 +826,7 @@ function DecisionDetail({
               <div className="grid gap-3 border-l-2 border-seam-line pl-3">
                 <div>
                   <p className="text-sm font-semibold text-seam">
-                    {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : group.face.unavailableReason}
+                    {group.reviewResolutionItemId ? ownerUnavailableMessage(group.area) : blockedReasonPlain(group.face.unavailableReason)}
                   </p>
                   <p className="mt-1 text-xs leading-relaxed text-muted">{group.face.unblockPath}</p>
                 </div>
@@ -858,11 +914,16 @@ export function DecideQueue({
   mutationsEnabled,
   keyboardShortcuts = true,
   initialSelectedKey = "",
+  systemicBlockerReason = null,
 }: {
   groups: DecideGroup[];
   mutationsEnabled: boolean;
   keyboardShortcuts?: boolean;
   initialSelectedKey?: string;
+  /** Feature-detected queue-level reason (a `systemic_blocker` projection
+   * field may land separately); the all-identical-reasons case is always
+   * computed from `groups` too, so the banner works even when this is null. */
+  systemicBlockerReason?: string | null;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -890,6 +951,12 @@ export function DecideQueue({
   }, [groups, filter]);
   const readinessSections = useMemo(() => decideReadinessSections(visible), [visible]);
   const visibleIndexByKey = useMemo(() => new Map(visible.map((group, index) => [group.key, index])), [visible]);
+  // The whole queue's decidability, not just the filtered view — a search
+  // shouldn't change whether the systemic-blocker fact is true.
+  const systemicBlocker: SystemicBlocker | null = useMemo(
+    () => queueSystemicBlocker(groups, systemicBlockerReason),
+    [groups, systemicBlockerReason],
+  );
 
   useEffect(() => {
     const selectedIsCurrent = groups.some((group) => group.key === selectedKey);
@@ -981,6 +1048,14 @@ export function DecideQueue({
   return (
     <div className="grid gap-3">
       <div aria-live="polite" className="sr-only">{liveMessage}</div>
+      {systemicBlocker ? (
+        <div role="status" className="rounded-lg border border-seam-line bg-seam-soft px-4 py-3">
+          <div className="text-sm font-semibold text-seam">
+            {systemicBlocker.totalCount - systemicBlocker.blockedCount} of {systemicBlocker.totalCount} decidable
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-muted">{blockedReasonPlain(systemicBlocker.reason)}</p>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <input
           ref={filterRef}
@@ -1017,6 +1092,7 @@ export function DecideQueue({
                     key={group.key}
                     group={group}
                     selected={selected?.key === group.key}
+                    demoteBlockedStamp={Boolean(systemicBlocker)}
                     rowRef={(element) => { rowRefs.current[index] = element; }}
                     onActivate={() => select(group, index, true)}
                     onFocus={() => select(group, index)}

@@ -92,3 +92,55 @@ export function ownerUnavailableMessage(area: string): string {
 export function movePlain(moveType: string): string {
   return MOVE_TYPE_GLOSSARY[moveType] ?? "A recorded move in the work's lifecycle.";
 }
+
+/**
+ * Known compound-internal jargon reason strings — literally the text
+ * decide-model.ts's authority/act resolution emits as `DecideGroup.face.
+ * unavailableReason` / a copy-mode `DecideAct.reason` — mapped to one
+ * plain operator sentence with a next step. A single `$1` capture carries
+ * a dynamic token (e.g. a projection status word) into the plain sentence.
+ * Anything not listed here (backend-owned AuthorityFace wording, raw
+ * `terminal_reason`, area-specific text) passes through unchanged: it is
+ * either already policy-owned plain language or genuinely can't be mapped
+ * generically without guessing at backend intent.
+ */
+const BLOCKED_REASON_PLAIN: Array<[RegExp, string]> = [
+  [
+    /^No complete current owner authority bundle is available\.$/,
+    "Can't apply yet — the owner hasn't exposed an approve/reject action for this group.",
+  ],
+  [
+    /^The owner authority bundle is not current\.$/,
+    "Can't apply yet — the owner's last-known permission has expired; refresh to check again.",
+  ],
+  [
+    /^Owner authority evidence is (\w+); execution is unavailable\.$/,
+    "Can't apply yet — the live status feed is $1, so actions are paused until it's back.",
+  ],
+  [
+    /^Current owner authority evidence is not live\.$/,
+    "Can't apply yet — the live status feed is down, so actions are paused until it's back.",
+  ],
+  [
+    /^The current owner authority has no executable adapter on this surface\.$/,
+    "Can't apply yet — this kind of decision has no one-click action built for it yet.",
+  ],
+  [
+    /^The owner exposes no effect-compatible workflow for this decision\.$/,
+    "Can't apply yet — this kind of decision has no one-click action built for it yet.",
+  ],
+  [
+    /^Each repository requires its own reviewed owner artifact before it can be decided\.$/,
+    "Review each repository on its own — this group can't be decided all at once.",
+  ],
+];
+
+export function blockedReasonPlain(reason: string): string {
+  const trimmed = reason.trim();
+  if (!trimmed) return "";
+  for (const [pattern, template] of BLOCKED_REASON_PLAIN) {
+    const match = trimmed.match(pattern);
+    if (match) return template.replace(/\$(\d)/g, (_, i) => match[Number(i)] ?? "");
+  }
+  return reason;
+}

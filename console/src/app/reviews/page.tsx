@@ -132,6 +132,11 @@ export default async function Decide({
     (g) => sampleForGroup(g, itemByID),
     attentionRead.status,
   );
+  // Feature-detect a queue-level `systemic_blocker` reason the projection
+  // may start carrying directly; DecideQueue also computes the
+  // all-identical-reasons case itself from decideGroups, so the banner is
+  // correct with or without this field.
+  const systemicBlockerReason = str(reviews?.systemic_blocker) || null;
 
   const watchingEntries = sortByAge(
     [...groupsForBand(reviews, "watching", attention), ...externalWatching.map(asWatchingEntry)],
@@ -177,6 +182,7 @@ export default async function Decide({
             groups={decideGroups}
             mutationsEnabled={mutationsEnabled}
             initialSelectedKey={initialSelectedKey}
+            systemicBlockerReason={systemicBlockerReason}
           />
         )}
       </section>

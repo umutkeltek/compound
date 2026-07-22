@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { fieldValidationMessage, RATIONALE_REQUIRED_MESSAGE } from "./governed-action-client";
-import { ownerUnavailableMessage } from "./glossary";
+import { blockedReasonPlain, ownerUnavailableMessage } from "./glossary";
+import { queueSystemicBlocker } from "./decide-members";
 
 /**
  * Falsifiers for the Decide-page presentation bugs the operator
@@ -362,6 +363,73 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
       fail("the mixed-member scope truth is not rendered before the action");
     } else {
       pass("partial enumerable UI shows exact ready/total scope and keeps unavailable members unchanged");
+    }
+  }
+
+  /* ---------- f8: card grammar — WHAT/consequence/action lead the card, one
+   * systemic-blocker banner instead of N identical stamps, jargon reasons
+   * mapped to plain language (work_58a058a3d028) ---------- */
+
+  // f8a: blockedReasonPlain maps known compound-internal jargon reasons to
+  // one plain sentence with a next step, carries a dynamic token through,
+  // and passes an unknown (e.g. backend-owned) reason through unchanged —
+  // it must never invent a mapping it doesn't actually have.
+  {
+    const known = blockedReasonPlain("No complete current owner authority bundle is available.");
+    const dynamic = blockedReasonPlain("Owner authority evidence is stale; execution is unavailable.");
+    const unknown = blockedReasonPlain("Some future backend-owned sentence nobody mapped yet.");
+    if (!/approve\/reject action/i.test(known)) {
+      fail(`blockedReasonPlain does not map the known "no authority bundle" reason to plain language: ${JSON.stringify(known)}`);
+    } else if (!/live status feed is stale/i.test(dynamic)) {
+      fail(`blockedReasonPlain does not carry the dynamic token into its plain-language template: ${JSON.stringify(dynamic)}`);
+    } else if (unknown !== "Some future backend-owned sentence nobody mapped yet.") {
+      fail(`blockedReasonPlain must pass an unknown reason through unchanged, got ${JSON.stringify(unknown)}`);
+    } else {
+      pass("blockedReasonPlain maps known jargon reasons to plain language and passes unknown reasons through unchanged");
+    }
+  }
+
+  // f8b: queueSystemicBlocker collapses N identical blocked reasons into one
+  // queue-level fact, stays silent on mixed reasons or a healthy queue, and
+  // prefers a feature-detected projection reason when one is supplied.
+  {
+    const face = (state: string, unavailableReason: string) => ({ face: { state: state as never, unavailableReason } });
+    const allBlocked = [face("waiting", "same reason"), face("waiting", "same reason"), face("needs_attention", "same reason")];
+    const banner = queueSystemicBlocker(allBlocked);
+    const mixed = queueSystemicBlocker([face("waiting", "reason A"), face("waiting", "reason B")]);
+    const healthy = queueSystemicBlocker([face("ready", ""), face("ready", "")]);
+    const projected = queueSystemicBlocker([face("ready", ""), face("waiting", "same reason")], "queue-level reason");
+    if (!banner || banner.reason !== "same reason" || banner.blockedCount !== 3 || banner.totalCount !== 3) {
+      fail(`queueSystemicBlocker did not collapse identical reasons into one banner: ${JSON.stringify(banner)}`);
+    } else if (mixed !== null) {
+      fail(`queueSystemicBlocker must stay silent when blocked groups disagree on the reason, got ${JSON.stringify(mixed)}`);
+    } else if (healthy !== null) {
+      fail(`queueSystemicBlocker must stay silent when the queue is decidable, got ${JSON.stringify(healthy)}`);
+    } else if (!projected || projected.reason !== "queue-level reason") {
+      fail(`queueSystemicBlocker must prefer a feature-detected projection reason, got ${JSON.stringify(projected)}`);
+    } else {
+      pass("queueSystemicBlocker collapses identical-reason queues into one banner, stays silent otherwise, and prefers a feature-detected reason");
+    }
+  }
+
+  // f8c: source-wiring — the card actually leads with the quoted object text
+  // outside the tabs, the queue renders the single decidability banner, the
+  // per-row stamp is demoted when it fires, and no render site shows the raw
+  // unavailableReason verbatim (every site routes through blockedReasonPlain).
+  {
+    const src = read("components/decide/DecideQueue.tsx");
+    if (!/<blockquote[^>]*>\s*\{group\.objectText/.test(src)) {
+      fail("the card no longer leads with the quoted objectText outside the tabs");
+    } else if (!/systemicBlocker\.totalCount - systemicBlocker\.blockedCount/.test(src)) {
+      fail("the queue no longer renders a single '<N> of <M> decidable' banner");
+    } else if (!/demoteBlockedStamp/.test(src)) {
+      fail("the per-row stamp is no longer demoted when a systemic-blocker banner covers it");
+    } else if (/\{group\.face\.unavailableReason\}/.test(src)) {
+      fail("a raw unavailableReason is rendered verbatim somewhere instead of through blockedReasonPlain(...)");
+    } else if ((src.match(/blockedReasonPlain\(/g) ?? []).length < 4) {
+      fail("blockedReasonPlain is not wired at every card/row site that used to show the raw reason string");
+    } else {
+      pass("the Decide card leads with the quoted object text, shows one banner for a systemic blocker, demotes the per-row stamp, and never renders a raw reason string verbatim");
     }
   }
 
