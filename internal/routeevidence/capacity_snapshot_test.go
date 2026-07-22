@@ -898,6 +898,77 @@ func TestReadLaneCapacityQwenAndMinimaxStale15mAnnotation(t *testing.T) {
 	}
 }
 
+// claude-qwen and claude-minimax must NOT borrow a generic claude row when
+// only one exists in the file. Symmetric to the generic-claude non-borrowing
+// case: every delegated-lane family reads only its own provider rows. The
+// DataRef for each must cite ZERO rows for the lane's OWN family
+// (qwen / minimax), not the generic claude family the file actually contains.
+func TestReadLaneCapacityClaudeQwenAndMinimaxDoNotBorrowGenericClaudeRow(t *testing.T) {
+	cases := []struct {
+		name   string
+		lane   string
+		family string
+	}{
+		{"claude-qwen-borrows-only-qwen", "claude-qwen", "qwen"},
+		{"claude-minimax-borrows-only-minimax", "claude-minimax", "minimax"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := capacityFixtureConfig(t)
+			// ONLY a fresh generic claude row exists — neither delegated lane may consume it.
+			writeCapacityUsage(t, cfg, "claude", 25, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+
+			capacity, err := ReadLaneCapacityWithConfig(tc.lane, capacityNow, cfg)
+			if err != nil {
+				t.Fatalf("read lane capacity: %v", err)
+			}
+			if capacity.State != CapacityUnknown {
+				t.Fatalf("%s must not borrow generic claude row, got state=%s: %+v", tc.lane, capacity.State, capacity)
+			}
+			want := "no usage rows for family: " + tc.family
+			if !strings.Contains(capacity.DataRef, want) {
+				t.Fatalf("%s DataRef must cite zero rows for own family %q, got %q", tc.lane, tc.family, capacity.DataRef)
+			}
+		})
+	}
+}
+
+// Stale-only DataRefs for qwen and minimax must LITERALLY cite freshness=15m.
+// Both delegated lanes fall under the default codex 15-minute freshness window
+// (neither has its own override), so the readCodexBarCapacity stale annotation
+// must surface the same constant the byte-level format string is built from.
+func TestReadLaneCapacityQwenAndMinimaxStaleFreshnessIs15m(t *testing.T) {
+	cases := []struct {
+		name     string
+		lane     string
+		provider string
+	}{
+		{"qwen-freshness-15m", "claude-qwen", "qwen"},
+		{"minimax-freshness-15m", "claude-minimax", "minimax"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := capacityFixtureConfig(t)
+			// 16m old exceeds the 15m default freshness window.
+			writeCapacityUsage(t, cfg, tc.provider, 10, capacityNow.Add(2*time.Hour), capacityNow.Add(-16*time.Minute))
+
+			capacity, err := ReadLaneCapacityWithConfig(tc.lane, capacityNow, cfg)
+			if err != nil {
+				t.Fatalf("read lane capacity: %v", err)
+			}
+			if capacity.State != CapacityUnknown {
+				t.Fatalf("stale %s row should keep lane unknown: %+v", tc.provider, capacity)
+			}
+			if !strings.HasPrefix(capacity.DataRef, "codexbar/usage-history:") {
+				t.Fatalf("stale %s DataRef must carry codexbar prefix: %q", tc.provider, capacity.DataRef)
+			}
+			if !strings.Contains(capacity.DataRef, "freshness=15m") {
+				t.Fatalf("stale %s DataRef must literally contain freshness=15m: %q", tc.provider, capacity.DataRef)
+			}
+		})
+	}
+}
+
 // Refusal evidence recorded for a claude-qwen lane must carry the structural
 // provider identity (qwen) — not the lane alias (claude-qwen). Both Provider
 // and Model on the refusal row follow the resolved family key.
