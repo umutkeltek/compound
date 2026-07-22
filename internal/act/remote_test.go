@@ -342,7 +342,7 @@ func TestRemoteAdapterRevertRestoresPreImage(t *testing.T) {
 	}
 	runner := newFakeRunner()
 	path := "/etc/dnsmasq.d/compound.conf"
-	runner.files[path] = []byte("address=/existing.internal/198.51.100.1\n")
+	runner.files[path] = []byte("address=/example-existing.internal/198.51.100.1\n")
 	before := append([]byte(nil), runner.files[path]...)
 	adapter := NewDNSRecordAdapter(runner, testEndpoint(), path, "")
 	ai := mkRemoteIntent(t, "work_revert", "outbound.dns_record.write", "dns_record", path, "example-host.internal")
@@ -379,4 +379,3 @@ func indexOf(hay []string, needle string) int {
 	}
 	return -1
 }
-

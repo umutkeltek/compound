@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"compound/internal/act"
 	"compound/internal/envelope"
 	"compound/internal/home"
+	"compound/internal/mem"
 	"compound/internal/policy"
 )
 
@@ -46,7 +48,14 @@ func actUsage() string {
 		"    (a standing grant for --capability, external_side_effect class, easy reversibility, local\n" +
 		"    blast, scoped to --target-path). Without one the act refuses and the target is byte-identical.\n" +
 		"    The adapter REPOINTS an existing key; it never creates one. Pre/post images are captured as\n" +
-		"    content-addressed artifacts and the receipt/transition land in $COMPOUND_HOME/events."
+		"    content-addressed artifacts and the receipt/transition land in $COMPOUND_HOME/events.\n" +
+		"  compound act dns-record --service S --host H --address A --remote-host RH [--remote-user U] [--remote-port N] [--remote-path P] [--reload-cmd C] --work W [--confirm] [--capability CAP] [--home P] [--json]\n" +
+		"    Governed ADDITIVE DNS host->address record on a router, over an injectable ssh transport.\n" +
+		"  compound act vhost --service S --server-name N --upstream U --remote-host RH [--remote-user U] [--remote-port N] [--remote-path P] [--reload-cmd C] --work W [--confirm] [--capability CAP] [--home P] [--json]\n" +
+		"    Governed ADDITIVE vhost block on an apps host, over the same seam.\n" +
+		"    Both are external_side_effect (HELD by default; a standing grant + --confirm executes),\n" +
+		"    additive-only (create a NEW entry; modify/delete is refused), and preflight-resolve the\n" +
+		"    target service:* entity before minting. Pre/post images + receipt land in $COMPOUND_HOME/events."
 }
 
 func runAct(args []string, stdout, stderr io.Writer) int {
@@ -63,10 +72,244 @@ func runActWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) i
 		return runActRepoint(args[1:], stdout, stderr)
 	case "post":
 		return runActPost(args[1:], stdin, stdout, stderr)
+	case "dns-record":
+		return runActDNSRecord(args[1:], stdout, stderr)
+	case "vhost":
+		return runActVhost(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, actUsage())
 		return 2
 	}
+}
+
+// actRemoteRunner indirects the transport the remote-outbound verbs (dns-record, vhost)
+// hand to their adapters. Nil means the real ssh transport (act's package default); tests
+// swap in a fake that records commands and never opens a connection. It is unexported and
+// swapped ONLY in tests, mirroring internal/act's own recordEnvelopeFn seam.
+var actRemoteRunner act.RemoteRunner
+
+// Honest capability strings for the two remote-outbound verbs. An operator's standing grant
+// scopes to exactly this capability + external_side_effect class + remote target path.
+const (
+	dnsRecordDefaultCapability = "outbound.dns_record.write"
+	vhostDefaultCapability     = "outbound.vhost.write"
+)
+
+// remoteActSpec is the per-verb data for the ONE shared remote-outbound orchestrator. The two
+// verbs differ only in these fields; the governance path (preflight -> mint -> gate -> Execute)
+// is identical, so there is no second governance path to drift.
+type remoteActSpec struct {
+	verb         string
+	kind         string // ActionTarget.Kind
+	defaultCap   string
+	action       string // ActionIntent.Action
+	nameFlag     string // record name flag (--host / --server-name)
+	valueFlag    string // record value flag (--address / --upstream)
+	defaultPath  string // default remote file (a generic tool convention, overridable)
+	newAdapter   func(runner act.RemoteRunner, ep act.RemoteEndpoint, path, reload string) act.Adapter
+	forwardValue func(name, value string) []byte
+}
+
+func runActDNSRecord(args []string, stdout, stderr io.Writer) int {
+	return runActRemote(remoteActSpec{
+		verb:         "dns-record",
+		kind:         "dns_record",
+		defaultCap:   dnsRecordDefaultCapability,
+		action:       "create_dns_record",
+		nameFlag:     "--host",
+		valueFlag:    "--address",
+		defaultPath:  "/etc/dnsmasq.d/compound.conf",
+		newAdapter:   act.NewDNSRecordAdapter,
+		forwardValue: act.DNSRecordForwardValue,
+	}, args, stdout, stderr)
+}
+
+func runActVhost(args []string, stdout, stderr io.Writer) int {
+	return runActRemote(remoteActSpec{
+		verb:         "vhost",
+		kind:         "vhost",
+		defaultCap:   vhostDefaultCapability,
+		action:       "create_vhost",
+		nameFlag:     "--server-name",
+		valueFlag:    "--upstream",
+		defaultPath:  "/data/nginx/custom/compound.conf",
+		newAdapter:   act.NewVhostAdapter,
+		forwardValue: act.VhostForwardValue,
+	}, args, stdout, stderr)
+}
+
+// runActRemote is the shared governed-remote-outbound orchestrator. Order is fail-closed:
+// additive-only guard (this slice only CREATES) -> required flags -> preflight service
+// resolution (refuse if unresolved, BEFORE any intent) -> mint -> policy gate inside Execute
+// (held by default without a grant) -> governed write. Dry-run (no --confirm) mints nothing
+// remote: it prints the proposed record + policy outcome and makes ZERO remote calls.
+func runActRemote(spec remoteActSpec, args []string, stdout, stderr io.Writer) int {
+	// Additive-only: modifying or deleting an existing entry is out of scope this slice.
+	for _, f := range []string{"--delete", "--modify", "--replace"} {
+		if hasFlag(args, f) {
+			fmt.Fprintf(stderr, "error: additive-only — `compound act %s` only creates a new entry this slice (%s is out of scope; reconcile an existing entry by hand)\n", spec.verb, f)
+			return 2
+		}
+	}
+
+	service := strings.TrimSpace(flagValue(args, "--service"))
+	name := strings.TrimSpace(flagValue(args, spec.nameFlag))
+	value := strings.TrimSpace(flagValue(args, spec.valueFlag))
+	remoteHost := strings.TrimSpace(flagValue(args, "--remote-host"))
+	if service == "" || name == "" || value == "" || remoteHost == "" {
+		fmt.Fprintf(stderr, "usage: compound act %s --service S %s NAME %s V --remote-host H [--remote-user U] [--remote-port N] [--remote-path P] [--reload-cmd C] --work W [--confirm] [--capability CAP] [--home P] [--json]\n", spec.verb, spec.nameFlag, spec.valueFlag)
+		return 2
+	}
+	remotePath := strings.TrimSpace(flagValue(args, "--remote-path"))
+	if remotePath == "" {
+		remotePath = spec.defaultPath
+	}
+	remoteUser := strings.TrimSpace(flagValue(args, "--remote-user"))
+	if remoteUser == "" {
+		remoteUser = "root"
+	}
+	remotePort := 0
+	if hasFlag(args, "--remote-port") {
+		p, err := strconv.Atoi(strings.TrimSpace(flagValue(args, "--remote-port")))
+		if err != nil {
+			fmt.Fprintln(stderr, "error: --remote-port must be an integer")
+			return 2
+		}
+		remotePort = p
+	}
+	reload := strings.TrimSpace(flagValue(args, "--reload-cmd"))
+	capability := strings.TrimSpace(flagValue(args, "--capability"))
+	if capability == "" {
+		capability = spec.defaultCap
+	}
+
+	homePath, err := home.Resolve(flagValue(args, "--home"))
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+
+	// Preflight fail-closed: the target service must resolve to a known service:* entity
+	// BEFORE any intent is minted (no remote call happens here — it is a local ledger read).
+	slug, err := resolveInfraServiceSlug(homePath, service)
+	if err != nil {
+		fmt.Fprintln(stderr, "refused:", err)
+		return 1
+	}
+
+	endpoint := act.RemoteEndpoint{User: remoteUser, Host: remoteHost, Port: remotePort}
+	target := envelope.ActionTarget{Kind: spec.kind, ID: name, Path: remotePath}
+	adapter := spec.newAdapter(actRemoteRunner, endpoint, remotePath, reload)
+	now := time.Now()
+
+	cfg, _, err := policy.LoadConfig(homePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+
+	if !hasFlag(args, "--confirm") {
+		work := strings.TrimSpace(flagValue(args, "--work"))
+		if work == "" {
+			work = "work_dryrun"
+		}
+		ai := governedRemoteIntent(work, capability, spec.action, target, name, value, now)
+		pd := policy.Evaluate(ai, cfg, now)
+		return printRemoteActPreview(stdout, spec, target, slug, name, value, pd, hasFlag(args, "--json"))
+	}
+
+	work := strings.TrimSpace(flagValue(args, "--work"))
+	if work == "" {
+		fmt.Fprintln(stderr, "error: --work W is required for --confirm (a governed act belongs to a work)")
+		return 2
+	}
+	store, err := act.NewArtifactStore(homePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	ai := governedRemoteIntent(work, capability, spec.action, target, name, value, now)
+	pd := policy.Evaluate(ai, cfg, now)
+	res, execErr := act.Execute(store, adapter, ai, pd, spec.forwardValue(name, value), now)
+	if execErr != nil {
+		// No allowing PolicyDecision (hold/deny), a conflict, or a write failure => refused,
+		// with the target's pre-image restored (or a recovery finding) by the act seam.
+		fmt.Fprintf(stderr, "refused: %v\n", execErr)
+		return 1
+	}
+	return printActResult(stdout, target, res, hasFlag(args, "--json"))
+}
+
+// resolveInfraServiceSlug resolves the operator's --service token to a service:* entity via
+// the mem store (read-only; never shells out). An unresolved or non-service token is a
+// fail-closed refusal — a governed infra write must name a service compound already knows.
+func resolveInfraServiceSlug(homePath, token string) (string, error) {
+	store, err := mem.OpenReadOnly(homePath)
+	if err != nil {
+		return "", fmt.Errorf("service registry unavailable — import infra services first (%v)", err)
+	}
+	res, err := store.ResolveEntity(token)
+	if err != nil {
+		return "", err
+	}
+	if res.Status != "resolved" || !strings.HasPrefix(res.Slug, "service:") {
+		return "", fmt.Errorf("target service %q did not resolve to a known service:* entity (status=%s)", token, res.Status)
+	}
+	return res.Slug, nil
+}
+
+// governedRemoteIntent builds the external_side_effect / easy / local ActionIntent for one
+// additive remote write, carrying the concrete rollback_plan act's gate requires. It mirrors
+// governedRepointIntent so the verb writes through exactly the governed path — no bespoke governance.
+func governedRemoteIntent(workID, capability, action string, target envelope.ActionTarget, name, value string, now time.Time) envelope.ActionIntent {
+	return envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID:            actIDFor("act_", workID, capability, target.Path, target.ID, value),
+			CreatedAt:     now.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: workID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Actor:         "operator",
+		Capability:    capability,
+		Action:        action,
+		Target:        target,
+		MutationClass: "external_side_effect",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       fmt.Sprintf("add %s %s -> %q in %s", target.Kind, name, value, target.Path),
+		RollbackPlan:  fmt.Sprintf("remove the added %s %s from %s (restore the captured pre-image)", target.Kind, name, target.Path),
+	}
+}
+
+func printRemoteActPreview(stdout io.Writer, spec remoteActSpec, target envelope.ActionTarget, serviceSlug, name, value string, pd envelope.PolicyDecision, asJSON bool) int {
+	allowed := policy.Allowed(pd)
+	if asJSON {
+		out := map[string]any{
+			"mode": "dry-run", "verb": spec.verb, "target_kind": target.Kind,
+			"service": serviceSlug, "name": name, "value": value, "remote_path": target.Path,
+			"policy_outcome": pd.Outcome, "allowed": allowed,
+		}
+		if err := encodeJSON(stdout, out); err != nil {
+			fmt.Fprintln(stdout, "error:", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintf(stdout, "# act %s (dry-run — nothing written, no remote call)\n", spec.verb)
+	fmt.Fprintf(stdout, "- service: %s\n", serviceSlug)
+	fmt.Fprintf(stdout, "- proposed: add %s %q -> %q in %s\n", target.Kind, name, value, target.Path)
+	if allowed {
+		fmt.Fprintf(stdout, "- policy: %s (ALLOWED) — run again with --confirm --work W to perform the governed write\n", pd.Outcome)
+	} else {
+		fmt.Fprintf(stdout, "- policy: %s (BLOCKED) — held by default; add a standing grant for this capability/target first\n", pd.Outcome)
+	}
+	return 0
 }
 
 func runActRepoint(args []string, stdout, stderr io.Writer) int {
