@@ -496,18 +496,27 @@ func exactLaneCapacityFamily(value string) string {
 		return "claude"
 	case "zai", "z.ai", "glm":
 		return "zai"
+	case "qwen":
+		return "qwen"
+	case "minimax":
+		return "minimax"
 	default:
 		return ""
 	}
 }
 
 // inferLaneCapacityFamily applies structural family inference to an already sub-lane-stripped,
-// lowercased base name. Precedence: zai/glm beats codex/claude prefixes so "claude-zai" resolves
-// to zai, not claude.
+// lowercased base name. Precedence: zai/glm beats qwen/minimax beats generic codex/claude
+// prefixes — so "claude-zai" resolves to zai, "claude-qwen" resolves to qwen, and
+// "claude-minimax" resolves to minimax, never the generic claude row.
 func inferLaneCapacityFamily(base string) string {
 	switch {
 	case strings.Contains(base, "zai") || strings.Contains(base, "glm"):
 		return "zai"
+	case strings.Contains(base, "minimax"):
+		return "minimax"
+	case strings.Contains(base, "qwen"):
+		return "qwen"
 	case strings.HasPrefix(base, "codex"):
 		return "codex"
 	case strings.HasPrefix(base, "claude"), strings.HasPrefix(base, "anthropic"):
