@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -128,9 +129,12 @@ func Post(homePath string, in PostInput, cfg policy.Config, now time.Time) (Post
 		return PostResult{}, fmt.Errorf("actuator post: governed staging refused/rolled back: %w", err)
 	}
 
-	// Spend the channel budget for this move.
+	// Spend the channel budget for this move. Capture a record failure rather than
+	// discarding it (F9.1, mirror of the run path): the post already staged + was
+	// receipted, so budget accounting must not be silently wrong. Do NOT roll back —
+	// the move happened; the feedback loop below still closes regardless.
 	ledger := OpenLedger(homePath)
-	_ = ledger.Record(Consumption{
+	recErr := ledger.Record(Consumption{
 		SchemaVersion: ConsumptionSchemaVersion,
 		At:            now.UTC().Format(time.RFC3339),
 		ProductID:     in.ProductID,
@@ -141,6 +145,7 @@ func Post(homePath string, in PostInput, cfg policy.Config, now time.Time) (Post
 	})
 
 	// Close the loop: mint the observation hypothesis + schedule the signal check.
+	// This runs regardless of recErr — the post DID land, so the loop must open.
 	obsUntil := now.Add(windowDuration(window))
 	hypID, err := MintObservation(homePath, ObservationInput{
 		ProductID:        in.ProductID,
@@ -153,11 +158,23 @@ func Post(homePath string, in PostInput, cfg policy.Config, now time.Time) (Post
 		ObservationUntil: obsUntil,
 		EvidenceRefs:     []string{"receipt:" + res.Receipt.ID, "transition:" + res.Transition.ID, "post:" + artifact.ID, "work:" + in.WorkID},
 	}, now)
+
+	// The post staged + receipted; a lost budget record must surface (never roll
+	// back the move). Build the F9.1 error once so it composes on either failure path.
+	var recWrapped error
+	if recErr != nil {
+		recWrapped = fmt.Errorf("actuator post: post staged and receipted (%s) but recording budget consumption failed: %w", res.Receipt.ID, recErr)
+	}
+
 	if err != nil {
+		// The loop failed to open. If the budget record ALSO failed, surface both.
+		if recWrapped != nil {
+			return PostResult{}, errors.Join(err, recWrapped)
+		}
 		return PostResult{}, err
 	}
 
-	return PostResult{
+	result := PostResult{
 		Plan:          plan,
 		Executed:      true,
 		PostPath:      postPath,
@@ -165,7 +182,10 @@ func Post(homePath string, in PostInput, cfg policy.Config, now time.Time) (Post
 		TransitionRef: res.Transition.ID,
 		HypothesisID:  hypID,
 		SignalCheckID: "sigcheck_" + hypID,
-	}, nil
+	}
+	// Success path with a lost budget record: return the FULLY populated result
+	// (the move happened, loop closed) together with the consumption-failure error.
+	return result, recWrapped
 }
 
 func postIntent(in PostInput, channel, surface, postPath string, now time.Time) envelope.ActionIntent {
