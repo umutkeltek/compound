@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1146,7 +1147,7 @@ func TestPreToolUseBatchBlocksWhenAnyActionIsHeld(t *testing.T) {
 	}
 }
 
-func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
+func TestPreToolUseReadsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 	// Home is workspace-local to the target repo (COMPOUND_HOME under the repo it governs),
 	// so the dirty edit is INSIDE compound's own governed repo and the held review is minted.
 	repo := initHookGitRepo(t)
@@ -1193,8 +1194,10 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 	if res.Event.Status != "blocked" {
 		t.Fatalf("event status = %q, want blocked", res.Event.Status)
 	}
-	if !containsString(res.Event.SideEffects, filepath.Join("ledger", "claims.jsonl")) {
-		t.Fatalf("side effects = %v, want claims ledger", res.Event.SideEffects)
+	for _, forbidden := range []string{filepath.Join("ledger", "entities.jsonl"), filepath.Join("ledger", "claims.jsonl")} {
+		if containsString(res.Event.SideEffects, forbidden) {
+			t.Fatalf("side effects = %v, PreToolUse must not write memory ledger %s", res.Event.SideEffects, forbidden)
+		}
 	}
 	if !containsString(res.Event.SideEffects, "compound://events/act_dirty_write") {
 		t.Fatalf("side effects = %v, want action intent artifact", res.Event.SideEffects)
@@ -1211,17 +1214,6 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 	}
 	if !reasonHas(pd.Reasons, "source_control_status dirty") {
 		t.Fatalf("policy reasons = %v", pd.Reasons)
-	}
-	memStore, err := mem.Open(homePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	claims, err := memStore.AllCurrent()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasClaim(claims, "source_control_status", "dirty") {
-		t.Fatalf("source control claims = %+v, want dirty status", claims)
 	}
 	works, err := store.List()
 	if err != nil {
@@ -1243,6 +1235,95 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 		if !hookEventRecordExists(t, homePath, id) {
 			t.Fatalf("missing persisted gate artifact %s", id)
 		}
+	}
+}
+
+func TestPreToolUseReadsSourceControlWithoutMutatingMemoryLedgers(t *testing.T) {
+	repo := initHookGitRepo(t)
+	homePath := filepath.Join(repo, ".compound")
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(target, []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	memStore, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memStore.RegisterEntity(mem.Entity{Slug: "repo:seed", Kind: "repo"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := memStore.Capture([]mem.Candidate{{
+		Entity: "repo:seed", Predicate: "purpose", Object: "preserve existing authority",
+		Confidence: 1, Derivation: "deterministic", ClaimType: "status",
+		PromotionBasis: candidates.BasisTrustedDeterministic,
+		SourceTraceRef: "test://pretool-memory-boundary", SnippetHash: "sha256:pretool-memory-boundary",
+		Visibility: "operational",
+	}}, fixedNow)
+	if err != nil || len(seed) != 1 {
+		t.Fatalf("seed capture = %d, err=%v", len(seed), err)
+	}
+	if _, err := memStore.Adjudicate(seed[0].ID, candidates.Promote, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	entityPath := filepath.Join(homePath, "ledger", "entities.jsonl")
+	claimPath := filepath.Join(homePath, "ledger", "claims.jsonl")
+	entitiesBefore, err := os.ReadFile(entityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimsBefore, err := os.ReadFile(claimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := baseDeps()
+	deps.HomePath = homePath
+	deps.Store = store
+	for index := 1; index <= 2; index++ {
+		actionID := fmt.Sprintf("act_readonly_source_control_%d", index)
+		workID := fmt.Sprintf("work_readonly_source_control_%d", index)
+		res, runErr := Run(Fixture{
+			Hook: "pre-tool-use", Harness: "claude_code", WorkID: workID,
+			Action: newDirtyWriteAction(actionID, workID, target),
+		}, deps, fixedNow.Add(time.Duration(index)*time.Second))
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		if res.Event.Status != "blocked" {
+			t.Fatalf("run %d event status = %q, want blocked", index, res.Event.Status)
+		}
+		decision := res.Produced[1].(*envelope.PolicyDecision)
+		if decision.Outcome != "hold" || !reasonHas(decision.Reasons, "source_control_status dirty") {
+			t.Fatalf("run %d policy = %q reasons=%v", index, decision.Outcome, decision.Reasons)
+		}
+		for _, id := range []string{actionID, decision.ID, res.Event.ID} {
+			if !hookEventRecordExists(t, homePath, id) {
+				t.Fatalf("run %d missing persisted gate artifact %s", index, id)
+			}
+		}
+	}
+
+	entitiesAfter, err := os.ReadFile(entityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimsAfter, err := os.ReadFile(claimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(entitiesBefore, entitiesAfter) {
+		t.Fatalf("PreToolUse changed entity authority: before=%d bytes after=%d", len(entitiesBefore), len(entitiesAfter))
+	}
+	if !bytes.Equal(claimsBefore, claimsAfter) {
+		t.Fatalf("PreToolUse changed claim authority: before=%d bytes after=%d", len(claimsBefore), len(claimsAfter))
 	}
 }
 

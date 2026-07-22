@@ -895,33 +895,13 @@ func writeGateArtifacts(homePath string, ai envelope.ActionIntent, pd envelope.P
 }
 
 func sourceControlContextForAction(homePath, targetPath, sessionID string, live bool, now time.Time) (*policy.SourceControlContext, string, []string, error) {
-	memStore, err := mem.Open(homePath)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	existing, err := memStore.Entities()
-	if err != nil {
-		return nil, "", nil, err
-	}
-	snapshot, entity, facts, report, err := authority.ImportGitSnapshot(targetPath, existing)
+	snapshot, err := authority.ReadGitSnapshot(targetPath)
 	if err != nil {
 		return nil, "", nil, nil
 	}
-	if _, err := memStore.RegisterEntity(entity, now); err != nil {
-		return nil, "", nil, err
-	}
-	captured, err := memStore.Capture(facts, now)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	for _, c := range captured {
-		if _, err := memStore.Adjudicate(c.ID, "promote", "source-control-pre-tool-use", now); err != nil {
-			return nil, "", nil, err
-		}
-	}
 	ownedChangedPaths, foreignChangedPaths := 0, 0
-	if live && report.Status == "dirty" {
-		changedPaths, changedErr := readSourceControlChangedPaths(report.GitRoot)
+	if live && snapshot.Status == "dirty" {
+		changedPaths, changedErr := readSourceControlChangedPaths(snapshot.GitRoot)
 		if changedErr != nil {
 			return nil, "", nil, changedErr
 		}
@@ -940,32 +920,28 @@ func sourceControlContextForAction(homePath, targetPath, sessionID string, live 
 				foreignChangedPaths++
 			}
 		}
-		if len(changedPaths) == 0 && report.ChangedPaths > 0 {
-			foreignChangedPaths = report.ChangedPaths
+		if len(changedPaths) == 0 && snapshot.ChangedPaths > 0 {
+			foreignChangedPaths = snapshot.ChangedPaths
 		}
 	}
 	return &policy.SourceControlContext{
-			EntityRef:                  report.EntityRef,
-			GitRoot:                    report.GitRoot,
-			Remote:                     report.Remote,
-			Head:                       report.Head,
-			Status:                     report.Status,
-			Staged:                     report.Staged,
-			Unstaged:                   report.Unstaged,
-			Untracked:                  report.Untracked,
-			ChangedPaths:               report.ChangedPaths,
-			TargetPath:                 snapshot.TargetPath,
-			TargetStatus:               snapshot.TargetStatus,
-			SessionOwnershipKnown:      live,
-			SessionOwnedChangedPaths:   ownedChangedPaths,
-			SessionForeignChangedPaths: foreignChangedPaths,
-			ChangedStateFingerprint:    report.ChangedStateFingerprint,
-			EvidenceRefs:               []string{report.EvidenceRef},
-		}, report.GitRoot, []string{
-			report.EvidenceRef,
-			filepath.Join("ledger", "entities.jsonl"),
-			filepath.Join("ledger", "claims.jsonl"),
-		}, nil
+		EntityRef:                  snapshot.RepoID,
+		GitRoot:                    snapshot.GitRoot,
+		Remote:                     snapshot.Remote,
+		Head:                       snapshot.Head,
+		Status:                     snapshot.Status,
+		Staged:                     snapshot.Staged,
+		Unstaged:                   snapshot.Unstaged,
+		Untracked:                  snapshot.Untracked,
+		ChangedPaths:               snapshot.ChangedPaths,
+		TargetPath:                 snapshot.TargetPath,
+		TargetStatus:               snapshot.TargetStatus,
+		SessionOwnershipKnown:      live,
+		SessionOwnedChangedPaths:   ownedChangedPaths,
+		SessionForeignChangedPaths: foreignChangedPaths,
+		ChangedStateFingerprint:    snapshot.ChangedStateFingerprint,
+		EvidenceRefs:               []string{snapshot.EvidenceReference()},
+	}, snapshot.GitRoot, []string{snapshot.EvidenceReference()}, nil
 }
 
 const sessionMutationStateSchemaVersion = "compound.hook_session_mutation.v0.1"
