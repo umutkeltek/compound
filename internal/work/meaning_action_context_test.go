@@ -1,6 +1,7 @@
 package work_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,9 @@ func TestPromotedMeaningRequiresExactCurrentContextRevision(t *testing.T) {
 	if stalePlan.ActionContext != nil {
 		t.Fatalf("superseded exact claim revision steered new work: %+v", stalePlan.ActionContext)
 	}
+	if stalePlan.MeaningResolution != "none" || len(stalePlan.AmbiguousRefs) != 0 {
+		t.Fatalf("stale exact revision resolution = %q refs=%v", stalePlan.MeaningResolution, stalePlan.AmbiguousRefs)
+	}
 
 	currentPack := recordDirectiveContextPack(t, homePath, causalLoopNow.Add(4*time.Minute))
 	currentPlan, err := s.CreatePlan(work.CreateInput{
@@ -56,6 +60,9 @@ func TestPromotedMeaningRequiresExactCurrentContextRevision(t *testing.T) {
 	}
 	if currentPlan.ActionContext == nil || currentPlan.ActionContext.ActionSummary != "run exact successor" {
 		t.Fatalf("current exact revision missing from action context: %+v", currentPlan.ActionContext)
+	}
+	if currentPlan.MeaningResolution != "resolved" || len(currentPlan.AmbiguousRefs) != 0 {
+		t.Fatalf("current exact revision resolution = %q refs=%v", currentPlan.MeaningResolution, currentPlan.AmbiguousRefs)
 	}
 }
 
@@ -107,6 +114,9 @@ func TestPromotedMeaningIgnoresNonAcceptedAndAmbiguousDirectives(t *testing.T) {
 	if planWithoutAccepted.ActionContext != nil {
 		t.Fatalf("non-accepted directive steered work: %+v", planWithoutAccepted.ActionContext)
 	}
+	if planWithoutAccepted.MeaningResolution != "none" || len(planWithoutAccepted.AmbiguousRefs) != 0 {
+		t.Fatalf("non-accepted resolution = %q refs=%v", planWithoutAccepted.MeaningResolution, planWithoutAccepted.AmbiguousRefs)
+	}
 
 	promoteDirective(t, ms, "AMB-A", "", "run ambiguous A", candidates.BasisDecisionRecord, causalLoopNow.Add(4*time.Minute))
 	promoteDirective(t, ms, "AMB-B", "", "run ambiguous B", candidates.BasisDecisionRecord, causalLoopNow.Add(5*time.Minute))
@@ -124,6 +134,13 @@ func TestPromotedMeaningIgnoresNonAcceptedAndAmbiguousDirectives(t *testing.T) {
 	}
 	if ambiguousPlan.ActionContext != nil {
 		t.Fatalf("ambiguous directives selected an action: %+v", ambiguousPlan.ActionContext)
+	}
+	wantAmbiguousRefs := []string{"decision://AMB-A", "decision://AMB-B"}
+	if ambiguousPlan.MeaningResolution != "ambiguous" || !reflect.DeepEqual(ambiguousPlan.AmbiguousRefs, wantAmbiguousRefs) {
+		t.Fatalf("ambiguous resolution = %q refs=%v, want refs=%v", ambiguousPlan.MeaningResolution, ambiguousPlan.AmbiguousRefs, wantAmbiguousRefs)
+	}
+	if _, err := s.AdmitCreatePlan(ambiguousPlan, "", causalLoopNow.Add(8*time.Minute), work.AdmitCreatePlanOptions{Actor: "codex"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous plan admission error = %v", err)
 	}
 }
 

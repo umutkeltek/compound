@@ -238,6 +238,11 @@ var mintHomes = map[string]MintHome{
 	// CLI (arm/thresholds/modulate --confirm/revert); default off, operator_private modulations stay
 	// operator-local (never a shared route projection).
 	"organ:lensmodulator": {Class: MintEnforcement},
+	"organ:intent": {
+		Class:    MintEvidence,
+		Purpose:  "thin expressive-intent coordinator that preserves exact source capture and presents work-owned meaning resolution as a reviewable create-plan or named ambiguity park without owning a plan, context, policy, or admission format",
+		Consumer: "compound intent plan|review|apply CLI plus the existing work admission and operator-review path that alone may materialize the proposed WorkEnvelope",
+	},
 	"organ:retrievalparity": {
 		Class:    MintEvidence,
 		Purpose:  "privacy-bounded retrieval traffic and replay comparisons over production consumer paths",

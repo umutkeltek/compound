@@ -230,6 +230,8 @@ func main() {
 		cmdActuator(os.Args[2:])
 	case "capture":
 		cmdCapture(os.Args[2:])
+	case "intent":
+		cmdIntent(os.Args[2:])
 	case "land-lease":
 		cmdLandLease(os.Args[2:])
 	case "panel":
@@ -341,6 +343,7 @@ compound act repoint --target-path P --target-id KEY --value V --work W [--confi
 compound land-lease <acquire|release|status|steal> TTL-bounded single-holder landing mutex under $COMPOUND_HOME; steal records a reason + prior holder
 compound finding <record|list|show|doctor> direct-write home for durable operational findings (evidence-class, never ledger); doctor flags superseded/stale
 compound capture --source S [--text T] [--work W] | capture show <cid> gesture-fired capture front door: content-addressed body under observed/capture/ (never ledger), mints ONE observed-class proposed candidate (never auto-promotable); day-salted dedup
+compound intent <plan|review|apply> expressive utterance -> task-scoped ContextPack -> reviewable existing work create-plan; ambiguity parks and apply requires an explicit reviewer
 compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
 compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hook install/drift, land-lease state, pending findings, placement guard mode; writes nothing
 compound proof-check [--json] [--dry-run] [--repo P] [--out FILE] deterministic local gate bundle: tests/vet/build/gofmt/diff/doctors/redact; --out writes the full report to FILE and prints a final truthful-exit verdict line
@@ -3432,14 +3435,12 @@ func nativePreToolUseBlockMap(reg harness.Registry) map[string]bool {
 func cmdOrient(args []string) {
 	homePath, err := home.Resolve("")
 	die(err)
-	// Resolve the configured memory-engine profile (e.g. breadth → COMPOUND_MEM_ENGINE_BIN) so the
-	// ContextPack's ambient recall engages the SAME owned engine the operator's `memory query` uses.
-	// Without this the profile is resolved only in the `memory` dispatch and the agent-facing recall
-	// path silently stays lexical — the "landed but dormant" trap.
-	restoreEngine, err := configureMemoryEngineFromHome(homePath, "")
-	die(err)
-	defer restoreEngine()
 	if hasFlag(args, "--operator") {
+		// Operator orientation also consumes memory-backed projections. Preserve
+		// the same configured engine posture as the task-scoped pack path below.
+		restoreEngine, err := configureMemoryEngineFromHome(homePath, "")
+		die(err)
+		defer restoreEngine()
 		cmdOrientOperator(homePath, args)
 		return
 	}
@@ -3455,30 +3456,7 @@ func cmdOrient(args []string) {
 		os.Exit(2)
 	}
 	now := time.Now()
-	ec, err := contract.CompileWithRuntime(in, orientPolicy(), homePath, now)
-	die(err)
-	_, err = contract.RecordEffectiveContract(homePath, ec)
-	die(err)
-	retrievalStarted := time.Now()
-	pack, err := contract.PackWithCapabilities(in, orientPolicy(), homePath, now)
-	retrievalparity.Record(homePath, retrievalparity.NewOrientRow(in.Task, parityOrientInput(in), pack.ActiveMemory, time.Since(retrievalStarted), err == nil, time.Now()))
-	die(err)
-	if pack.IDs.ContractID != ec.ID {
-		die(fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID))
-	}
-	// Body materialization (slice 1): with --body-budget > 0, attach a body_pack
-	// section carrying task-ranked full content under the budget. The materializer
-	// runs AFTER PackWithCapabilities (it consumes the pack's Included/Excluded) and
-	// BEFORE RecordContextPack (the section rides inside the same pack JSON body).
-	// Absent or 0 → MaterializeBodyPack returns nil → ApplyBodyPack leaves the pack
-	// untouched → no body_pack key on the wire (F4 CLI half).
-	if bodyBudget > 0 {
-		resolver := newOrientBodyResolver(homePath, pack, in.Cwd)
-		candidates, candErr := resolver.Resolve(in.Task)
-		die(candErr)
-		pack = contract.ApplyBodyPack(pack, contract.MaterializeBodyPack(candidates, pack, bodyBudget))
-	}
-	_, err = contract.RecordContextPack(homePath, pack)
+	pack, err := materializeOrientContextPack(homePath, in, bodyBudget, now)
 	die(err)
 	printJSON(pack)
 }

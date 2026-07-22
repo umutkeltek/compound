@@ -3,6 +3,7 @@ package work
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"compound/internal/candidates"
@@ -10,22 +11,49 @@ import (
 	"compound/internal/mem"
 )
 
-// promotedMeaningActionContext turns one unambiguous operational action directive
-// already selected into the recorded ContextPack into immutable work context. The
-// model/extractor may propose meaning, but only an adjudicated current claim with a
-// decision/runtime basis can steer work; execution still goes through work policy.
-func (s *Store) promotedMeaningActionContext(contextPackID string) (*WorkActionContext, error) {
+// meaningResolutionStatus is the private discriminator for promoted meaning.
+// The production resolver remains package-private; only CreatePlan carries it out.
+// resolution. The existing call sites collapse "no eligible directive" and "more
+// than one eligible directive" into the same nil result; the discriminator reports
+// all three outcomes so the intent coordinator can park ambiguity instead of
+// silently picking one.
+type meaningResolutionStatus string
+
+const (
+	meaningNone      meaningResolutionStatus = "none"
+	meaningAmbiguous meaningResolutionStatus = "ambiguous"
+	meaningResolved  meaningResolutionStatus = "resolved"
+)
+
+// meaningResolution is the private typed outcome of promoted meaning resolution.
+// It carries the resolved WorkActionContext only when Status is meaningResolved;
+// AmbiguousRefs lists every recorded decision ref that cleared the same eligibility
+// filter under the same ContextPack, deterministically ordered, so the intent
+// coordinator can park a named question across them.
+type meaningResolution struct {
+	Status        meaningResolutionStatus
+	Context       *WorkActionContext
+	AmbiguousRefs []string
+}
+
+// promotedMeaningActionContext keeps
+// the existing semantics (no eligible directive → nil/none; unresolved revision →
+// none; ambiguous → ambiguous with refs) but returns the full discriminator so the
+// intent coordinator can park ambiguity without re-reading the ContextPack.
+// Existing create-plan callers still consume only the resolved context through
+// createPlanForWork; the discriminator remains private to this package.
+func (s *Store) promotedMeaningActionContext(contextPackID string) (meaningResolution, error) {
 	contextPackID = strings.TrimSpace(contextPackID)
 	if contextPackID == "" {
-		return nil, nil
+		return meaningResolution{Status: meaningNone}, nil
 	}
 
 	var pack envelope.ContextPack
 	if err := s.readJSON(filepath.Join(s.home, "context", "packs", contextPackID+".json"), &pack); err != nil {
-		return nil, fmt.Errorf("read ContextPack %s for promoted meaning: %w", contextPackID, err)
+		return meaningResolution{}, fmt.Errorf("read ContextPack %s for promoted meaning: %w", contextPackID, err)
 	}
 	if err := pack.Validate(); err != nil {
-		return nil, fmt.Errorf("validate ContextPack %s for promoted meaning: %w", contextPackID, err)
+		return meaningResolution{}, fmt.Errorf("validate ContextPack %s for promoted meaning: %w", contextPackID, err)
 	}
 	active := make([]string, 0, len(pack.ActiveDecisions))
 	for _, ref := range pack.ActiveDecisions {
@@ -34,25 +62,28 @@ func (s *Store) promotedMeaningActionContext(contextPackID string) (*WorkActionC
 		}
 	}
 	if len(active) == 0 {
-		return nil, nil
+		return meaningResolution{Status: meaningNone}, nil
 	}
 
 	memory, err := mem.Open(s.home)
 	if err != nil {
-		return nil, fmt.Errorf("open promoted meaning authority: %w", err)
+		return meaningResolution{}, fmt.Errorf("open promoted meaning authority: %w", err)
 	}
 	claims, err := memory.AllCurrent()
 	if err != nil {
-		return nil, fmt.Errorf("read promoted meaning authority: %w", err)
+		return meaningResolution{}, fmt.Errorf("read promoted meaning authority: %w", err)
 	}
 	currentByRef := currentActiveMeaningDecisions(claims)
 
-	var matched *mem.Claim
-	var matchedRef string
+	type candidate struct {
+		ref   string
+		claim mem.Claim
+	}
+	var eligible []candidate
 	for _, ref := range active {
 		claimID, err := recordedDecisionClaimID(pack, ref)
 		if err != nil {
-			return nil, err
+			return meaningResolution{}, err
 		}
 		claim, ok := currentByRef[ref]
 		if !ok || claim.ID != claimID {
@@ -63,41 +94,45 @@ func (s *Store) promotedMeaningActionContext(contextPackID string) (*WorkActionC
 		if actionDirectiveDecisionRef(claim) != ref || !eligibleActionDirective(claim) {
 			continue
 		}
-		// More than one active directive is ambiguity, not permission to pick one.
-		if matched != nil {
-			return nil, nil
+		eligible = append(eligible, candidate{ref: ref, claim: claim})
+	}
+	if len(eligible) == 0 {
+		return meaningResolution{Status: meaningNone}, nil
+	}
+	if len(eligible) > 1 {
+		refs := make([]string, 0, len(eligible))
+		for _, e := range eligible {
+			refs = append(refs, e.ref)
 		}
-		matchedCopy := claim
-		matched = &matchedCopy
-		matchedRef = ref
+		return meaningResolution{Status: meaningAmbiguous, AmbiguousRefs: uniqueMeaningRefs(refs...)}, nil
 	}
-	if matched == nil {
-		return nil, nil
-	}
-
-	decisionID := strings.TrimPrefix(matchedRef, "decision://")
-	evidenceRefs := uniqueMeaningRefs(append([]string{matchedRef, "claim://" + matched.ID}, matched.EvidenceRefs...)...)
-	return &WorkActionContext{
-		Kind:          "promoted_action_directive",
-		SourceRef:     matchedRef,
-		SourceID:      decisionID,
-		Title:         "Promoted action directive",
-		ActionSummary: strings.TrimSpace(matched.Object),
-		RequiredInputs: []string{
-			"recorded ContextPack " + contextPackID,
-			"current promoted decision " + matchedRef,
+	matched := eligible[0]
+	decisionID := strings.TrimPrefix(matched.ref, "decision://")
+	evidenceRefs := uniqueMeaningRefs(append([]string{matched.ref, "claim://" + matched.claim.ID}, matched.claim.EvidenceRefs...)...)
+	return meaningResolution{
+		Status: meaningResolved,
+		Context: &WorkActionContext{
+			Kind:          "promoted_action_directive",
+			SourceRef:     matched.ref,
+			SourceID:      decisionID,
+			Title:         "Promoted action directive",
+			ActionSummary: strings.TrimSpace(matched.claim.Object),
+			RequiredInputs: []string{
+				"recorded ContextPack " + contextPackID,
+				"current promoted decision " + matched.ref,
+			},
+			ExpectedValidation: []string{
+				"a future Receipt and Transition prove the WorkEnvelope state delta",
+			},
+			StopConditions: []string{
+				"the directive is absent from the recorded ContextPack",
+				"the directive is no longer a current promoted claim",
+				"the action would leave the WorkEnvelope policy grant",
+			},
+			Boundary:     "propose-only; promoted meaning selects work context but does not execute, admit work, or bypass PolicyDecision",
+			Proof:        "the recorded create plan preserves decision and claim evidence refs; Receipt and Transition prove execution",
+			EvidenceRefs: evidenceRefs,
 		},
-		ExpectedValidation: []string{
-			"a future Receipt and Transition prove the WorkEnvelope state delta",
-		},
-		StopConditions: []string{
-			"the directive is absent from the recorded ContextPack",
-			"the directive is no longer a current promoted claim",
-			"the action would leave the WorkEnvelope policy grant",
-		},
-		Boundary:     "promoted meaning selects work context; it does not execute, admit work, or bypass PolicyDecision",
-		Proof:        "the recorded create plan preserves decision and claim evidence refs; Receipt and Transition prove execution",
-		EvidenceRefs: evidenceRefs,
 	}, nil
 }
 
@@ -192,5 +227,6 @@ func uniqueMeaningRefs(values ...string) []string {
 		seen[value] = true
 		out = append(out, value)
 	}
+	sort.Strings(out)
 	return out
 }

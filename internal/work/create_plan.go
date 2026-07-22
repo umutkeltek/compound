@@ -79,8 +79,18 @@ type CreatePlan struct {
 	Decision      envelope.PolicyDecision `json:"policy_decision"`
 	Work          envelope.WorkEnvelope   `json:"work"`
 	ActionContext *WorkActionContext      `json:"action_context,omitempty"`
-	NoAction      string                  `json:"no_action,omitempty"`
-	Warnings      []string                `json:"warnings,omitempty"`
+	// MeaningResolution records the work-owned discriminated promoted-meaning status
+	// (none|ambiguous|resolved) the private resolver returned. Empty on plans
+	// produced before this field existed; admissions treat the empty value as
+	// "resolved" because the legacy path could only emit a resolved context.
+	MeaningResolution string `json:"meaning_resolution,omitempty"`
+	// AmbiguousRefs lists the recorded decision refs that cleared the
+	// eligibility filter under the same ContextPack. Non-empty only when
+	// MeaningResolution == "ambiguous"; admissions require it to be sorted
+	// and de-duplicated.
+	AmbiguousRefs []string `json:"ambiguous_refs,omitempty"`
+	NoAction      string   `json:"no_action,omitempty"`
+	Warnings      []string `json:"warnings,omitempty"`
 }
 
 type AdmitCreatePlanOptions struct {
@@ -290,6 +300,24 @@ func validateCreatePlanForAdmission(plan CreatePlan) error {
 	if plan.Status != "create_policy_allowed" {
 		return fmt.Errorf("create-plan %s status must be create_policy_allowed, got %q", plan.ID, plan.Status)
 	}
+	switch plan.MeaningResolution {
+	case "": // legacy v0.2 plans predate the additive discriminator
+	case string(meaningNone):
+		if plan.ActionContext != nil || len(plan.AmbiguousRefs) != 0 {
+			return fmt.Errorf("create-plan %s none meaning resolution is inconsistent", plan.ID)
+		}
+	case string(meaningResolved):
+		if plan.ActionContext == nil || len(plan.AmbiguousRefs) != 0 {
+			return fmt.Errorf("create-plan %s resolved meaning resolution is inconsistent", plan.ID)
+		}
+	case string(meaningAmbiguous):
+		if plan.ActionContext != nil || len(plan.AmbiguousRefs) == 0 || !sameStringSlice(plan.AmbiguousRefs, uniqueMeaningRefs(plan.AmbiguousRefs...)) {
+			return fmt.Errorf("create-plan %s ambiguous meaning resolution is inconsistent", plan.ID)
+		}
+		return fmt.Errorf("create-plan %s has ambiguous promoted meaning; review the named refs before admission", plan.ID)
+	default:
+		return fmt.Errorf("create-plan %s has unknown meaning resolution %q", plan.ID, plan.MeaningResolution)
+	}
 	if !plan.Policy.Allowed {
 		return fmt.Errorf("create-plan %s policy is not allowed: %s", plan.ID, plan.Policy.Outcome)
 	}
@@ -397,11 +425,23 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 		return CreatePlan{}, err
 	}
 	if opts.ActionContext == nil {
-		meaningContext, err := s.promotedMeaningActionContext(w.IDs.ContextPackID)
+		resolution, err := s.promotedMeaningActionContext(w.IDs.ContextPackID)
 		if err != nil {
 			return CreatePlan{}, fmt.Errorf("context_pack_id %q meaning authority: %w", w.IDs.ContextPackID, err)
 		}
-		opts.ActionContext = meaningContext
+		opts.ActionContext = resolution.Context
+		return s.finishCreatePlan(w, now, opts, resolution)
+	}
+	return s.finishCreatePlan(w, now, opts, meaningResolution{Status: meaningResolved, Context: opts.ActionContext})
+}
+
+func (s *Store) finishCreatePlan(w envelope.WorkEnvelope, now time.Time, opts CreatePlanOptions, resolution meaningResolution) (CreatePlan, error) {
+	// The resolved context is work-owned derivation evidence. Preserve its exact
+	// source chain on the proposed WorkEnvelope before policy/admission artifacts
+	// are built so a later admission cannot separate the work from the meaning
+	// revision that selected it.
+	if resolution.Context != nil {
+		w.EvidenceRefs = uniqueMeaningRefs(append(w.EvidenceRefs, resolution.Context.EvidenceRefs...)...)
 	}
 	actor := strings.TrimSpace(opts.Actor)
 	if actor == "" {
@@ -442,6 +482,13 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 			"does not enforce policy; it reports create gate decision",
 		},
 	}
+	// Preserve the pre-discriminator wire shape for context-free create-plans.
+	// Expressive intent always carries a recorded ContextPack, so all three
+	// none|ambiguous|resolved outcomes remain explicit on that boundary.
+	if resolution.Status != meaningNone || strings.TrimSpace(w.IDs.ContextPackID) != "" {
+		plan.MeaningResolution = string(resolution.Status)
+	}
+	plan.AmbiguousRefs = append([]string{}, resolution.AmbiguousRefs...)
 	if policy.Allowed(pd) {
 		plan.Status = "create_policy_allowed"
 		plan.NoAction = ""

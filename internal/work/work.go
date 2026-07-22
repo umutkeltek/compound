@@ -199,6 +199,9 @@ type CreateInput struct {
 	State           string // default "ready"
 	Risk            string // default "tier1"
 	Privacy         string // default "private"
+	// Uncertainty is the bounded derivation uncertainty preserved on a
+	// proposed WorkEnvelope. A zero value keeps the established known default.
+	Uncertainty envelope.Uncertainty
 	// Prediction is an optional stake of how this work is expected to CLOSE (see
 	// envelope.WorkPrediction). Staked at create time only -- there is no restaking at
 	// Claim/Advance in v1.
@@ -251,6 +254,9 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		MemoryCandidateIDs: []string{},
 		Prediction:         prediction,
 		RouteDeviation:     routeDeviation,
+	}
+	if strings.TrimSpace(in.Uncertainty.Level) != "" || strings.TrimSpace(in.Uncertainty.Reason) != "" {
+		w.Uncertainty = in.Uncertainty
 	}
 	w.EvidenceRefs = orEmpty(in.EvidenceRefs)
 	return w
