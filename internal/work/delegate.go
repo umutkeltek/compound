@@ -17,9 +17,9 @@
 //     lifecycle attachments newest-first and reads the attached eventstore
 //     objects through the same eventstore API. A later work.delegate.exited
 //     record kills the binding; steer/attach probe SessionRunner.HasSession
-//     regardless. Slice 1 deliberately does NOT mint a delegate-specific
-//     RunAttempt terminalization -- that is reported as next slice because
-//     current file boundaries exclude it.
+//     regardless. A delegate RunAttempt is minted before the first spawn side
+//     effect, marked running only after the session exists, heartbeated while
+//     live, and terminalized from an observed pane exit or disappearance.
 //   - One live session per work. A second delegate on a live session
 //     REFUSES with reason=session_live and the existing session returned.
 //   - Lifecycle events, not logs. Each verb emits a structured eventstore
