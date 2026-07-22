@@ -328,6 +328,12 @@ func liveUserPrompt(name string, fx Fixture, deps Deps, now time.Time, mode stri
 	built.Contract.Header = sanitizedContract.Header
 	built.Pack.Header = sanitizedPack.Header
 
+	// Delta-triggered per-session injection: suppress memory/position refs already
+	// injected earlier in this session (recording each as an Excluded entry) and inject
+	// only new/re-opened refs. Fail-open — an absent/corrupt/unwritable session state
+	// leaves the pack byte-for-byte identical to the full-injection path.
+	built.Pack = applyInjectionDelta(built.Pack, built.Input, deps.HomePath, fx.SessionID, now)
+
 	persistedFX := fx
 	persistedFX.Prompt = ""
 	persistedFX.Task = intentRef
