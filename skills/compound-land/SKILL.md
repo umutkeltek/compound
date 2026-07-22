@@ -253,6 +253,7 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   `commit:` artifact.
 - Close the WorkEnvelope through the governed path (`work close-plan` → `work close`) with
   proof refs, so Receipt + Transition exist for the landed change.
+- After `work close`, run `compound act post --from-work <work_id> --transport buzz --confirm`; it holds silently unless the operator's standing grant is imported.
 - **Retire YOUR OWN scratch/rehearsal worktrees at close — do not defer them.** This ceremony's
   rehearsal tree, probe trees, and any detached scratch tree this lane created are yours to remove
   in post-land with the self-guarding pair: verify containment
