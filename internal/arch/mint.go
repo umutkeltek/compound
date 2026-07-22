@@ -165,6 +165,11 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "infra-os services/topology registry (services.yaml) installed verbatim under COMPOUND_HOME with source hash + revision recorded",
 		Consumer: "authority os-absorption-doctor's infra_registry_authority proof mode (compound/internal/authority)",
 	},
+	"registry:probe-contracts": {
+		Class:    MintEvidence,
+		Purpose:  "ordered task-class probe contracts that declare topic-subtree groups and per-group ContextPack memory budgets",
+		Consumer: "internal/contract runtime snapshot compiler (buildProbeSelectionPlan and loadProbeGroupedRefsFromView)",
+	},
 	// narrate is the correspondent composer: a pure read-only projection that
 	// informs the operator; it blocks nothing, so it is evidence, not enforcement.
 	"organ:narrate": {
