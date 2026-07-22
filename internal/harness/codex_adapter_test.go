@@ -53,11 +53,14 @@ func TestCodexAdapterHappyPath(t *testing.T) {
 	if !strings.Contains(argv, "exec") {
 		t.Fatalf("argv log missing exec: %q", argv)
 	}
-	if !strings.Contains(argv, "--prompt") {
-		t.Fatalf("argv log missing --prompt: %q", argv)
+	// The prompt is POSITIONAL: current Codex CLI rejects --prompt with
+	// exit 2 (find_d435b414ef9b) — this assertion pins the real
+	// invocation so reintroducing the flag fails here, not at dispatch.
+	if strings.Contains(argv, "--prompt") {
+		t.Fatalf("argv log contains rejected --prompt flag: %q", argv)
 	}
 	if !strings.Contains(argv, "hello from codex") {
-		t.Fatalf("argv log missing prompt: %q", argv)
+		t.Fatalf("argv log missing positional prompt: %q", argv)
 	}
 }
 

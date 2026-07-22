@@ -16,12 +16,14 @@ import (
 //
 // Today Codex's non-interactive invocation is:
 //
-//	codex exec --prompt <prompt>
+//	codex exec [PROMPT]
 //
-// Flags are best-effort matches for the public Codex CLI; they may
-// change as the CLI evolves. A future slice swaps the argv for the
-// real, versioned invocation when a Codex adapter test is wired against
-// the real binary.
+// The prompt is POSITIONAL: current Codex CLI rejects a --prompt flag
+// with exit 2 ("unexpected argument '--prompt'"), which silently failed
+// every governed dispatch until find_d435b414ef9b pinned it live
+// (ratt_20260722T111145Z_f8859f4b). Flags remain best-effort matches
+// for the public Codex CLI; a future slice wires an adapter test
+// against the real binary so CLI drift fails in CI, not at dispatch.
 //
 // The adapter does NOT implement Codex's hook protocol. It is a
 // subprocess wrapper, not a hook consumer. The HarnessRegistry continues
@@ -56,16 +58,17 @@ func (a *CodexAdapter) Run(ctx context.Context, in RunInput) (RunOutput, error) 
 	return runWithSubprocess(ctx, a.store, a.Name(), in, a.buildCmd, a.heartbeatInterval)
 }
 
-// buildCmd assembles `codex exec --prompt <prompt>`. Args[0] is used as
-// the prompt if Prompt is empty (caller convenience); the explicit
-// Prompt field wins.
+// buildCmd assembles `codex exec [PROMPT]` (positional — see the type
+// doc for the --prompt drift this replaces). Args[0] is used as the
+// prompt if Prompt is empty (caller convenience); the explicit Prompt
+// field wins.
 func (a *CodexAdapter) buildCmd(ctx context.Context, in RunInput) *exec.Cmd {
 	// Timeout is owned by runWithSubprocess; see OSEntrypointsAdapter.buildCmd.
 	prompt := in.Prompt
 	if prompt == "" && len(in.Args) > 0 {
 		prompt = in.Args[0]
 	}
-	args := []string{"exec", "--prompt"}
+	args := []string{"exec"}
 	if prompt != "" {
 		args = append(args, prompt)
 	}
