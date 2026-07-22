@@ -6164,6 +6164,152 @@ func TestAuthorityJobRosterImportsAndReportsAuthority(t *testing.T) {
 	}
 }
 
+func writeCLIInfraServicesFixture(t *testing.T, path string) {
+	t.Helper()
+	body := strings.Join([]string{
+		"services:",
+		"  example-svc.internal:",
+		"    role: example_role_a",
+		"    authority: example_authority_a",
+		"    status: active",
+		"  other-svc.internal:",
+		"    role: example_role_b",
+		"    authority: example_authority_b",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readNonEmptyLinesCLI(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatal(err)
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// TestAuthorityImportInfraServicesRegistersEntityAndResolvesWithProvenance
+// covers F1/F2/F3 of work_c8178a5ab583: import-infra-services registers a
+// resolvable service:* entity per row and `authority resolve` prints its
+// import provenance additively, while an unrelated token stays unresolved
+// (no wildcard leakage).
+func TestAuthorityImportInfraServicesRegistersEntityAndResolvesWithProvenance(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	source := filepath.Join(t.TempDir(), "services.yaml")
+	writeCLIInfraServicesFixture(t, source)
+
+	before := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "example-svc.internal"})
+	})
+	if !strings.Contains(before, "status: unresolved") {
+		t.Fatalf("expected unresolved before import, got:\n%s", before)
+	}
+
+	importOut := captureStdout(t, func() {
+		cmdAuthority([]string{"import-infra-services", source})
+	})
+	for _, want := range []string{
+		`"authority_ref": "compound://registries/services"`,
+		`"registered_entity_slugs"`,
+		`"capability_node_ids"`,
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import-infra-services output missing %q:\n%s", want, importOut)
+		}
+	}
+
+	byIdentifier := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "example-svc.internal"})
+	})
+	for _, want := range []string{
+		"status: resolved",
+		"entity: service:example-svc",
+		"via: identifier",
+		"role: example_role_a",
+		"authority: example_authority_a",
+		"status: active",
+		"source_revision: sha256:",
+	} {
+		if !strings.Contains(byIdentifier, want) {
+			t.Fatalf("resolve by identifier missing %q:\n%s", want, byIdentifier)
+		}
+	}
+
+	byAlias := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "example-svc"})
+	})
+	if !strings.Contains(byAlias, "entity: service:example-svc") || !strings.Contains(byAlias, "via: alias") {
+		t.Fatalf("resolve by alias =\n%s", byAlias)
+	}
+
+	unknown := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "nosuch.internal"})
+	})
+	if !strings.Contains(unknown, "status: unresolved") {
+		t.Fatalf("unrelated token should stay unresolved after import, got:\n%s", unknown)
+	}
+}
+
+// TestAuthorityImportInfraServicesReimportIsIdempotent is F4: re-running
+// import-infra-services must not duplicate the entity row or change resolve
+// output.
+func TestAuthorityImportInfraServicesReimportIsIdempotent(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	source := filepath.Join(t.TempDir(), "services.yaml")
+	writeCLIInfraServicesFixture(t, source)
+
+	captureStdout(t, func() { cmdAuthority([]string{"import-infra-services", source}) })
+	resolveOnce := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "example-svc.internal"})
+	})
+
+	captureStdout(t, func() { cmdAuthority([]string{"import-infra-services", source}) })
+	resolveTwice := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "example-svc.internal"})
+	})
+
+	if resolveOnce != resolveTwice {
+		t.Fatalf("resolve output changed after re-import:\nonce=%s\ntwice=%s", resolveOnce, resolveTwice)
+	}
+
+	entityLines := readNonEmptyLinesCLI(t, filepath.Join(homePath, "ledger", "entities.jsonl"))
+	count := 0
+	for _, line := range entityLines {
+		if strings.Contains(line, `"slug":"service:example-svc"`) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("re-import duplicated the entity row: %d matches in %v", count, entityLines)
+	}
+
+	nodeLines := readNonEmptyLinesCLI(t, filepath.Join(homePath, "registries", "capability-nodes.jsonl"))
+	nodeCount := 0
+	for _, line := range nodeLines {
+		if strings.Contains(line, `"id":"service:example-svc"`) {
+			nodeCount++
+		}
+	}
+	if nodeCount != 1 {
+		t.Fatalf("re-import duplicated the capability node row: %d matches in %v", nodeCount, nodeLines)
+	}
+}
+
 func TestAuthorityGitImportsSourceControlState(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
