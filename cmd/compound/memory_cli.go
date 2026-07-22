@@ -62,8 +62,12 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory search --lane L <query> [--k N] [--json]"
 	case "show-output":
 		return "usage: compound memory show-output <cid>  (writes the exact externalized tool-output body for sha256:<hex> to stdout)"
+	case "render-harness-digest":
+		return "usage: compound memory render-harness-digest --harness <name> --out <absolute path> [--json]"
+	case "digest-doctor":
+		return "usage: compound memory digest-doctor --path <file> [--json]"
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|parity-replay --fixture F --consumer orient|query [--resume-from checkpoint.json]|parity-freeze --from-journal --window-days N --control-report report.json|temperature [--rebuild]|observation [--json] [--record]|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|parity-replay --fixture F --consumer orient|query [--resume-from checkpoint.json]|parity-freeze --from-journal --window-days N --control-report report.json|temperature [--rebuild]|observation [--json] [--record]|render-harness-digest --harness H --out FILE|digest-doctor --path FILE|doctor>"
 	}
 }
 func cmdMemory(args []string) {
@@ -87,7 +91,10 @@ func cmdMemory(args []string) {
 	// events/ under COMPOUND_HOME, so a read-only subcommand would scatter
 	// partial state into a fresh home before the operator ever admits
 	// anything. Pinned by TestMemorySearchDoesNotMutateCompoundHome.
-	if sub != "consumption" && sub != "search" {
+	// digest-doctor reads an arbitrary operator-local file (usually OUTSIDE
+	// COMPOUND_HOME entirely) and must stay read-only over the ledger too —
+	// same rationale as the consumption/search exclusion just above.
+	if sub != "consumption" && sub != "search" && sub != "digest-doctor" {
 		store, err = mem.Open(homePath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -614,6 +621,10 @@ func cmdMemory(args []string) {
 		if _, err := os.Stdout.Write(body); err != nil {
 			die(err)
 		}
+	case "render-harness-digest":
+		cmdMemoryRenderHarnessDigest(store, rest)
+	case "digest-doctor":
+		cmdMemoryDigestDoctor(rest)
 	case "doctor":
 		var r mem.Report
 		var eng mem.Engine
