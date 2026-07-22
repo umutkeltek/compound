@@ -62,9 +62,17 @@ type CapabilityUsage struct {
 // InjectedRefUsage is per-ContextPack.included[] ref reinforcement telemetry:
 // injected (loaded into a work's context) vs consumed (echoed in that work's
 // receipt used refs) vs ignored (injected but never used).
+//
+// ProbeGroup is additive (work_8713c4206232, S4): "<class>/<group>" parsed from the
+// ref's IncludedRef.Reason via parseProbeGroupLabel (probe_group.go) when the ref was
+// selected through internal/contract's probe-group path (probe_contracts.go). It is
+// omitempty and left unset for a legacy ref (no probe label at all) or a ref whose label
+// never parses (malformed) — so a pre-probe-group fixture's projection JSON stays
+// byte-identical (pinned by TestBuildCapabilityUsageLegacyPacksOmitProbeGroup).
 type InjectedRefUsage struct {
 	Ref            string   `json:"ref"`
 	SourceClass    string   `json:"source_class,omitempty"`
+	ProbeGroup     string   `json:"probe_group,omitempty"`
 	InjectedCount  int      `json:"injected_count"`
 	ConsumedCount  int      `json:"consumed_count"`
 	IgnoredCount   int      `json:"ignored_count"`
@@ -138,6 +146,7 @@ type capAccum struct {
 
 type injAccum struct {
 	sourceClass  string
+	probeGroup   string
 	injected     int
 	consumed     int
 	ignored      int
@@ -295,6 +304,9 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 			if strings.TrimSpace(inc.SourceClass) != "" {
 				a.sourceClass = inc.SourceClass
 			}
+			if label, ok := parseProbeGroupLabel(inc.Reason); ok {
+				a.probeGroup = label
+			}
 			if usedSet[ref] {
 				a.consumed++
 			} else if rec.Skills.UsedDeclared {
@@ -333,6 +345,7 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 		proj.InjectedRefs = append(proj.InjectedRefs, InjectedRefUsage{
 			Ref:            ref,
 			SourceClass:    a.sourceClass,
+			ProbeGroup:     a.probeGroup,
 			InjectedCount:  a.injected,
 			ConsumedCount:  a.consumed,
 			IgnoredCount:   a.ignored,
