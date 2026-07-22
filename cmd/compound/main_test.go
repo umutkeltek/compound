@@ -6748,8 +6748,10 @@ func TestHookPreToolUseHoldsDirtySourceControlMutation(t *testing.T) {
 	if !testEventExists(t, homePath, "act_dirty_cli") {
 		t.Fatal("missing runtime action act_dirty_cli")
 	}
-	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); err != nil {
-		t.Fatalf("missing runtime claims ledger: %v", err)
+	for _, ledgerName := range []string{"entities.jsonl", "claims.jsonl"} {
+		if _, err := os.Stat(filepath.Join(homePath, "ledger", ledgerName)); !os.IsNotExist(err) {
+			t.Fatalf("pre-tool-use must not create memory ledger %s, stat err=%v", ledgerName, err)
+		}
 	}
 	if len(testEventEntries(t, homePath, "pol_")) == 0 {
 		t.Fatalf("policy decision artifact missing in events dir")
