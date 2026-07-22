@@ -1,8 +1,9 @@
 # src/ai-console — the sandbox
 
-Phase 5 of the console redesign (`Plans/i-am-not-happy-rosy-floyd.md`, Part 6). v1
-ships only `stubAiConsole`, a static fixture — no LLM or gateway client is wired in
-this phase.
+Phase 5 of the console redesign (`Plans/i-am-not-happy-rosy-floyd.md`, Part 6).
+`browserAiConsole` calls the read-only `/api/ask` composition seam; the static
+`stubAiConsole` remains only as a registry falsifier. No LLM or gateway client is
+wired yet.
 
 ## Boundary rules
 

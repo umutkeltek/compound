@@ -6,6 +6,7 @@ import Link from "next/link";
 import { memo, useMemo, useState } from "react";
 
 import { Drawer, StateBadge } from "@/components/kit";
+import { harnessDisplayName } from "@/lib/harness-label";
 
 export type LiveWork = {
   workId: string;
@@ -68,7 +69,7 @@ const WorkNode = memo(function WorkNode({ data }: { data: WorkData }) {
         <StateBadge state={data.work.runStatus || data.work.state} />
       </div>
       <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-2xs text-[var(--canvas-muted)]">
-        <span>{data.work.harness || data.laneLabel}</span>
+        <span title={data.work.harness ? `Recorded harness: ${data.work.harness}` : undefined}>{data.work.harness ? harnessDisplayName(data.work.harness) : data.laneLabel}</span>
         {data.work.actor ? <span>by {data.work.actor}</span> : null}
         {data.work.retryDepth > 0 ? <span className="text-seam">retry {data.work.retryDepth}</span> : null}
       </div>
@@ -135,7 +136,7 @@ function Canvas({ lanes }: { lanes: LiveLane[] }) {
               <div className="rounded-lg border border-hair bg-soft px-3 py-2"><div className="section-label">State</div><div className="mt-1"><StateBadge state={work.state} /></div></div>
               <div className="rounded-lg border border-hair bg-soft px-3 py-2"><div className="section-label">Run</div><div className="mt-1"><StateBadge state={work.runStatus || "unknown"} /></div></div>
             </div>
-            <div><div className="section-label">Harness</div><p className="mt-1 text-sm text-ink">{work.harness || "execution detail unavailable"}</p></div>
+            <div><div className="section-label">Harness</div><p className="mt-1 text-sm text-ink" title={work.harness ? `Recorded harness: ${work.harness}` : undefined}>{harnessDisplayName(work.harness)}</p></div>
             <div><div className="section-label">Actor</div><p className="mono mt-1 text-xs text-muted">{work.actor || "not projected"}</p></div>
             <div><div className="section-label">What moves next</div><p className="mt-1 text-sm leading-relaxed text-muted">{work.nextAction || "No next action projected."}</p></div>
           </div>

@@ -2,6 +2,7 @@ import { ActivityFeed } from "@/components/briefing/ActivityFeed";
 import { AttentionAgeMatrix } from "@/components/briefing/AttentionAgeMatrix";
 import { BriefingHeader } from "@/components/briefing/BriefingHeader";
 import { ContinueCard } from "@/components/briefing/ContinueCard";
+import { CausalFocus } from "@/components/briefing/CausalFocus";
 import { DecideList } from "@/components/briefing/DecideList";
 import { Headline } from "@/components/briefing/Headline";
 import { KnowsStrip } from "@/components/briefing/KnowsStrip";
@@ -131,6 +132,10 @@ export default async function Briefing() {
       </div>
 
       <div data-depth-min="understand"><ContinueCard model={continueModel} mutationsReady={mutationsEnabled} /></div>
+
+      <div data-depth-min="understand">
+        <CausalFocus top={top} openWork={open.length} activeLanes={runningAgents} />
+      </div>
 
       <section data-depth-min="understand">
         <SectionLabel>Decide</SectionLabel>

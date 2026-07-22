@@ -5,25 +5,27 @@ import { useState } from "react";
 
 import { Button, Drawer, StatusChip } from "@/components/kit";
 
-const SUGGESTIONS = ["What needs me?", "Why is work blocked?", "Show the freshest evidence"];
+const SUGGESTIONS = ["What needs me?", "Why is work blocked?", "Compare the top decision", "Show the freshest evidence"];
 
 export function AskCompound() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ReactNode[]>([]);
+  const [error, setError] = useState("");
 
   async function compose(value: string) {
     const trimmed = value.trim();
     if (!trimmed) return;
     setQuery(trimmed);
     setBusy(true);
+    setError("");
     try {
-      const [{ stubAiConsole }, { renderViewInvocation }] = await Promise.all([
+      const [{ browserAiConsole }, { renderViewInvocation }] = await Promise.all([
         import("@/ai-console"),
         import("@/lib/view-registry"),
       ]);
-      const proposal = await stubAiConsole.proposeView(trimmed, {
+      const proposal = await browserAiConsole.proposeView(trimmed, {
         route: window.location.pathname,
         freshness: "current route projections",
       });
@@ -35,6 +37,8 @@ export function AskCompound() {
           </div>
         );
       }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Ask Compound could not compose this view.");
     } finally {
       setBusy(false);
     }
@@ -66,8 +70,8 @@ export function AskCompound() {
         <div className="flex flex-col gap-5">
           <div className="rounded-lg border border-route-line bg-route-soft px-3 py-2.5 text-xs leading-relaxed text-route">
             <div className="mb-1"><StatusChip tone="work" label="View only" /></div>
-            This uses Compound&apos;s deterministic AI sandbox today. A Tambo adapter can replace it later without gaining
-            mutation authority.
+            This composes current Compound projections through a controlled view registry. A Tambo adapter can replace
+            the composition step later without gaining mutation authority.
           </div>
 
           <form onSubmit={submit} className="flex flex-col gap-2">
@@ -95,6 +99,12 @@ export function AskCompound() {
               </button>
             ))}
           </div>
+
+          {error ? (
+            <div role="alert" className="rounded-lg border border-crit-line bg-crit-soft px-3 py-2.5 text-xs leading-relaxed text-crit">
+              {error} Try again, or open the underlying Work and Decide projections directly.
+            </div>
+          ) : null}
 
           {result.length ? (
             <section className="border-t border-hair pt-4">

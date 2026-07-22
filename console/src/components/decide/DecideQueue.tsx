@@ -677,6 +677,60 @@ function HistoryPanel({ group }: { group: DecideGroup }) {
   );
 }
 
+function ComparePanel({ group }: { group: DecideGroup }) {
+  const preparedOptions = group.brief?.options ?? [];
+  const genericPaths = [
+    {
+      key: "act",
+      label: group.face.primaryAction?.label || "Act now",
+      consequence: group.consequences?.approve || "",
+      tone: "good",
+    },
+    {
+      key: "wait",
+      label: "Wait",
+      consequence: group.consequences?.hold || "",
+      tone: "memory",
+    },
+  ];
+  return (
+    <div className="grid gap-4">
+      <div>
+        <div className="text-2xs font-bold uppercase tracking-wide text-faint">Decision comparison</div>
+        <p className="mt-1 text-xs leading-relaxed text-muted">
+          Known owner-projected consequences are shown verbatim. Missing consequences stay unknown.
+        </p>
+      </div>
+      {preparedOptions.length ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          {preparedOptions.map((option) => {
+            const recommended = group.brief?.recommendation.option === option.value;
+            return <div key={option.value} className={`rounded-lg border px-3 py-3 ${recommended ? "border-good-line bg-good-soft/45" : "border-hair bg-soft"}`}>
+              <div className="flex items-center justify-between gap-2"><div className="text-sm font-semibold text-ink">{option.label || option.value}</div>{recommended ? <span className="rounded-pill bg-good-soft px-2 py-0.5 text-2xs font-semibold text-good">prepared recommendation</span> : null}</div>
+              <div className="mt-3"><div className="section-label">If chosen</div><p className="mt-1 text-xs leading-relaxed text-ink">{option.consequenceApprove || "Consequence not projected by the owner."}</p></div>
+              <div className="mt-3"><div className="section-label">If not chosen</div><p className="mt-1 text-xs leading-relaxed text-muted">{option.consequenceHold || "Consequence not projected by the owner."}</p></div>
+            </div>;
+          })}
+        </div>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {genericPaths.map((path) => <div key={path.key} className="rounded-lg border border-hair bg-soft px-3 py-3">
+            <div className={`text-sm font-semibold ${path.tone === "good" ? "text-good" : "text-memory"}`}>{path.label}</div>
+            <div className="mt-3 section-label">Projected consequence</div>
+            <p className="mt-1 text-xs leading-relaxed text-ink">{path.consequence || "Consequence not projected by the owner."}</p>
+          </div>)}
+        </div>
+      )}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">Blast radius</div><div className="mt-1 text-xs font-semibold capitalize text-ink">{group.blastRadius?.replace(/_/g, " ") || "not projected"}</div></div>
+        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">Reversibility</div><div className="mt-1 text-xs font-semibold capitalize text-ink">{group.reversibility || "not projected"}</div></div>
+        <div className="rounded-md border border-hair bg-panel px-3 py-2"><div className="section-label">Evidence</div><div className="mono mt-1 text-xs text-ink">{group.evidence.length} refs</div></div>
+      </div>
+      {group.brief?.recommendation.rationale ? <div className="rounded-md border border-hair bg-page px-3 py-2.5"><div className="section-label">Prepared rationale</div><p className="mt-1 text-xs leading-relaxed text-muted">{group.brief.recommendation.rationale}</p></div> : null}
+    </div>
+  );
+}
+
 function decisionIdentity(group: DecideGroup): string {
   const { act } = group;
   if (act.mode === "bespoke") {
@@ -706,7 +760,7 @@ function DecisionDetail({
   onExecuted: (result: ExecuteResult) => void;
 }) {
   const { act } = group;
-  const [tab, setTab] = useState<"summary" | "action" | "history" | "evidence">(
+  const [tab, setTab] = useState<"summary" | "compare" | "action" | "history" | "evidence">(
     group.face.state === "ready" ? "action" : "summary",
   );
   const effectKind = group.capability.kind === "unavailable" ? "apply" : group.capability.kind;
@@ -786,6 +840,7 @@ function DecisionDetail({
         <div className="overflow-x-auto px-4 py-3">
           <TabsList label="Decision face">
             <TabsTrigger value="summary">Summary</TabsTrigger>
+            <TabsTrigger value="compare" count={group.brief?.options.length}>Compare</TabsTrigger>
             <TabsTrigger value="action">Action</TabsTrigger>
             <TabsTrigger value="history">History</TabsTrigger>
             <TabsTrigger value="evidence" count={group.evidence.length}>Evidence</TabsTrigger>
@@ -808,6 +863,10 @@ function DecisionDetail({
               </details>
             ) : null}
           </section>
+        </TabsContent>
+
+        <TabsContent value="compare">
+          <section className="border-t border-hair px-4 py-4"><ComparePanel group={group} /></section>
         </TabsContent>
 
         <TabsContent value="action">

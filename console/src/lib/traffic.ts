@@ -31,6 +31,8 @@ export type TrafficWork = {
   actor: string;
   transcriptRef: string;
   retryDepth: number;
+  startedAt: string;
+  lastHeartbeatAt: string;
 };
 
 export type TrafficLane = {
@@ -85,6 +87,8 @@ function toTrafficWork(
     actor: rep?.actor ?? "",
     transcriptRef: rep?.transcriptRef ?? "",
     retryDepth: rep ? retryDepth(rep, byId) : 0,
+    startedAt: rep?.createdAt ?? "",
+    lastHeartbeatAt: rep?.lastHeartbeatAt ?? "",
   };
 }
 

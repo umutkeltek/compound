@@ -9,6 +9,7 @@
 import { buildTraffic } from "./traffic";
 import type { ExecutorProjection, ExecutorRow, ExecutorWorkRef } from "@/components/agents/executor-model";
 import type { RunAttempt } from "./run-attempts";
+import { harnessDisplayName } from "./harness-label";
 
 type Check = { name: string; ok: boolean; detail: string };
 
@@ -103,6 +104,7 @@ export function runTrafficSelfTest(): { ok: boolean; details: string[] } {
     transcriptRef: "trace/e1.json",
     predecessorId: "ratt_c1",
     createdAt: "2026-07-20T21:30:00Z",
+    lastHeartbeatAt: "2026-07-20T21:31:00Z",
   });
 
   const report = buildTraffic(proj, [claim, exec1]);
@@ -116,7 +118,17 @@ export function runTrafficSelfTest(): { ok: boolean; details: string[] } {
     !!w1 && w1.harness === "os-harness-entrypoints" && w1.runStatus === "running" && w1.actor === "codex" && w1.transcriptRef === "trace/e1.json",
     `harness=${w1?.harness} status=${w1?.runStatus}`,
   );
+  push(
+    "run-time-evidence-joined",
+    w1?.startedAt === "2026-07-20T21:30:00Z" && w1?.lastHeartbeatAt === "2026-07-20T21:31:00Z",
+    `started=${w1?.startedAt} heartbeat=${w1?.lastHeartbeatAt}`,
+  );
   push("retry-depth-joined", !!w1 && w1.retryDepth === 1, `depth=${w1?.retryDepth}`);
+  push(
+    "fixture-harness-is-not-presented-as-a-real-product-harness",
+    harnessDisplayName("fake") === "Fixture adapter",
+    `label=${harnessDisplayName("fake")}`,
+  );
   push("no-attempt-empty-exec", !!w2 && w2.harness === "" && w2.runStatus === "" && w2.retryDepth === 0, `harness='${w2?.harness}'`);
   push("counts", report.inFlightCount === 2 && report.runAttemptsPresent === true, `inFlight=${report.inFlightCount} present=${report.runAttemptsPresent}`);
 

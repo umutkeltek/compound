@@ -4,6 +4,11 @@ import { z } from "zod";
 
 import { FreshnessChip, StateBadge } from "@/components/kit";
 import { Stat } from "@/components/ui";
+import {
+  AskCausalBrief,
+  AskComparisonBrief,
+  AskWorkList,
+} from "@/components/ask/AskViews";
 
 /**
  * The view registry (Plans/i-am-not-happy-rosy-floyd.md Part 6 / Phase 5):
@@ -89,6 +94,52 @@ function registerBuiltinViews(): void {
       sub: z.string().optional(),
     }),
     component: StatTileView,
+  });
+
+  registerView({
+    name: "causal-brief",
+    description: "Attention-ranked seam with its owner-projected unlock and risk shape.",
+    propsSchema: z.object({
+      title: z.string(),
+      summary: z.string(),
+      unlock: z.string().optional(),
+      count: z.number(),
+      blastRadius: z.string().optional(),
+      reversibility: z.string().optional(),
+      generatedAt: z.string().optional(),
+      source: z.string().optional(),
+    }),
+    component: AskCausalBrief,
+  });
+
+  registerView({
+    name: "comparison-brief",
+    description: "Two-path comparison that leaves missing owner consequences explicitly unknown.",
+    propsSchema: z.object({
+      title: z.string(),
+      actLabel: z.string(),
+      actConsequence: z.string().optional(),
+      waitConsequence: z.string().optional(),
+      evidenceCount: z.number().optional(),
+      generatedAt: z.string().optional(),
+      source: z.string().optional(),
+    }),
+    component: AskComparisonBrief,
+  });
+
+  registerView({
+    name: "work-list",
+    description: "Compact trace-linked list of real WorkEnvelopes.",
+    propsSchema: z.object({
+      label: z.string(),
+      items: z.array(z.object({
+        id: z.string(),
+        title: z.string(),
+        state: z.string(),
+        owner: z.string().optional(),
+      })),
+    }),
+    component: AskWorkList,
   });
 }
 

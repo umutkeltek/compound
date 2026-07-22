@@ -2,6 +2,7 @@
 
 import * as Tabs from "@radix-ui/react-tabs";
 import { usePathname, useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useState } from "react";
 
 import { BoardLens } from "@/components/work/BoardLens";
@@ -10,8 +11,12 @@ import { OfferedLens } from "@/components/work/OfferedLens";
 import { PipelineLens } from "@/components/work/PipelineLens";
 import { TraceDrawer } from "@/components/work/TraceDrawer";
 import { TransitionsTicker } from "@/components/work/TransitionsTicker";
+import { WorkFlowLens } from "@/components/work/WorkFlowLens";
+import { WorkSpaceLens } from "@/components/work/WorkSpaceLens";
+import { WorkTableLens } from "@/components/work/WorkTableLens";
 import type { LaneTrafficReport } from "@/lib/lane-traffic";
 import type { BoardColumnModel, OfferedPacketModel, PipelineStageModel } from "@/lib/work-pipeline";
+import type { WorkLensGroup, WorkLensItem } from "@/lib/work-views";
 
 /**
  * Work screen shell (redesign plan Part 3): three lenses over the same units of
@@ -26,10 +31,10 @@ import type { BoardColumnModel, OfferedPacketModel, PipelineStageModel } from "@
  * ambient organism-is-alive signal, not lens-scoped data.
  */
 
-type TabKey = "pipeline" | "board" | "offered";
+export type WorkLensKey = "pipeline" | "table" | "flow" | "space" | "board" | "offered";
 
 const TAB_CLASS =
-  "rounded-md px-3 py-1.5 text-xs font-semibold text-muted data-[state=active]:bg-panel data-[state=active]:text-ink " +
+  "shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold text-muted data-[state=active]:bg-panel data-[state=active]:text-ink " +
   "data-[state=active]:shadow-sm";
 
 export function WorkLenses({
@@ -39,6 +44,9 @@ export function WorkLenses({
   openCount,
   initialTrace,
   laneTraffic,
+  items,
+  groups,
+  defaultLens,
   mutationsReady,
 }: {
   stages: PipelineStageModel[];
@@ -47,57 +55,99 @@ export function WorkLenses({
   openCount: number;
   initialTrace: string | null;
   laneTraffic: LaneTrafficReport;
+  items: WorkLensItem[];
+  groups: WorkLensGroup[];
+  defaultLens: WorkLensKey;
   mutationsReady: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [trace, setTrace] = useState<string | null>(initialTrace);
+  const [lens, setLens] = useState<WorkLensKey>(defaultLens);
+
+  const replaceParams = useCallback((next: { trace?: string | null; lens?: WorkLensKey }) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next.trace === null) params.delete("trace");
+    else if (next.trace) params.set("trace", next.trace);
+    if (next.lens) {
+      if (next.lens === "pipeline") params.delete("lens");
+      else params.set("lens", next.lens);
+    }
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }, [pathname, router, searchParams]);
 
   const openTrace = useCallback(
     (workId: string) => {
       setTrace(workId);
-      router.replace(`${pathname}?trace=${encodeURIComponent(workId)}`, { scroll: false });
+      replaceParams({ trace: workId });
     },
-    [pathname, router],
+    [replaceParams],
   );
 
   const closeTrace = useCallback(() => {
     setTrace(null);
-    router.replace(pathname, { scroll: false });
-  }, [pathname, router]);
+    replaceParams({ trace: null });
+  }, [replaceParams]);
 
   return (
     <>
-      <div className="grid gap-4 lg:grid-cols-[3fr_2fr]">
-        <TransitionsTicker onOpenTrace={openTrace} />
-        <CapsuleColumns report={laneTraffic} />
-      </div>
-
-      <Tabs.Root defaultValue="pipeline" className="mt-4 flex flex-col gap-4">
-        <Tabs.List className="inline-flex w-fit items-center gap-1 rounded-lg border border-hair bg-soft p-1">
-          <Tabs.Trigger value={"pipeline" satisfies TabKey} className={TAB_CLASS}>
+      <Tabs.Root value={lens} onValueChange={(value) => {
+        const next = value as WorkLensKey;
+        setLens(next);
+        replaceParams({ lens: next });
+      }} className="flex min-w-0 flex-col gap-4">
+        <Tabs.List className="inline-flex w-full max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-hair bg-soft p-1 sm:w-fit">
+          <Tabs.Trigger value="pipeline" className={TAB_CLASS}>
             Pipeline
           </Tabs.Trigger>
-          <Tabs.Trigger value={"board" satisfies TabKey} className={TAB_CLASS}>
+          <Tabs.Trigger value="table" className={TAB_CLASS}>
+            Table
+            <span className="mono ml-1.5 tabular-nums text-faint">{items.length}</span>
+          </Tabs.Trigger>
+          <Tabs.Trigger value="flow" className={TAB_CLASS}>Flow</Tabs.Trigger>
+          <Tabs.Trigger value="space" className={TAB_CLASS}>Space</Tabs.Trigger>
+          <Tabs.Trigger value="board" className={TAB_CLASS}>
             Board
             <span className="mono ml-1.5 tabular-nums text-faint">{openCount}</span>
           </Tabs.Trigger>
-          <Tabs.Trigger value={"offered" satisfies TabKey} className={TAB_CLASS}>
+          <Tabs.Trigger value="offered" className={TAB_CLASS}>
             Offered packets
             <span className="mono ml-1.5 tabular-nums text-faint">{offered.length}</span>
           </Tabs.Trigger>
         </Tabs.List>
 
-        <Tabs.Content value="pipeline" className="focus-visible:outline-none">
+        <Tabs.Content value="pipeline" className="min-w-0 focus-visible:outline-none">
           <PipelineLens stages={stages} onOpenTrace={openTrace} />
         </Tabs.Content>
-        <Tabs.Content value="board" className="focus-visible:outline-none">
+        <Tabs.Content value="table" className="min-w-0 focus-visible:outline-none">
+          <WorkTableLens items={items} onOpenTrace={openTrace} />
+        </Tabs.Content>
+        <Tabs.Content value="flow" className="min-w-0 focus-visible:outline-none">
+          <WorkFlowLens stages={stages} groups={groups} onOpenTrace={openTrace} />
+        </Tabs.Content>
+        <Tabs.Content value="space" className="min-w-0 focus-visible:outline-none">
+          <WorkSpaceLens stages={stages} groups={groups} onOpenTrace={openTrace} />
+        </Tabs.Content>
+        <Tabs.Content value="board" className="min-w-0 focus-visible:outline-none">
           <BoardLens columns={columns} onOpenTrace={openTrace} />
         </Tabs.Content>
-        <Tabs.Content value="offered" className="focus-visible:outline-none">
+        <Tabs.Content value="offered" className="min-w-0 focus-visible:outline-none">
           <OfferedLens packets={offered} />
         </Tabs.Content>
       </Tabs.Root>
+
+      <section data-depth-min="investigate" className="mt-2 flex min-w-0 flex-col gap-3">
+        <div>
+          <div className="section-label">Activity context</div>
+          <p className="mt-1 text-xs text-muted">Recent transitions and route traffic stay available as supporting evidence, below the selected work lens.</p>
+        </div>
+        <div className="grid min-w-0 gap-4 lg:grid-cols-[3fr_2fr]">
+          <TransitionsTicker onOpenTrace={openTrace} />
+          <CapsuleColumns report={laneTraffic} />
+        </div>
+      </section>
 
       <TraceDrawer workId={trace} onClose={closeTrace} mutationsReady={mutationsReady} />
     </>

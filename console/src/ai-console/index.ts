@@ -5,3 +5,4 @@
  */
 export type { AiConsole, ViewContext, ViewProposal } from "./types";
 export { stubAiConsole } from "./stub";
+export { browserAiConsole } from "./client";

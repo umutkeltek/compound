@@ -8,8 +8,8 @@ import type { AiConsole, ViewContext, ViewProposal } from "./types";
  */
 const FIXTURE_PROPOSAL: ViewProposal = {
   components: [
-    { view: "stat-tile", props: { label: "Needs you", value: 3, sub: "reviews" } },
-    { view: "state-badge", props: { state: "needs_review" } },
+    { view: "stat-tile", props: { label: "Projection", value: "Unavailable", sub: "No operational value was invented." } },
+    { view: "state-badge", props: { state: "unknown" } },
   ],
   actionProposals: [],
 };

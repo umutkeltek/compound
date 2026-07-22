@@ -220,6 +220,10 @@ export type DecideGroup = {
    */
   objectText: string;
   consequences: { approve: string; hold: string } | null;
+  /** Attention-owner risk fields, carried through for evidence-backed comparison. */
+  blastRadius?: string;
+  reversibility?: string;
+  leverage?: number;
   chips: DecideChip[];
   count: number;
   createdAt: string;
@@ -1124,6 +1128,9 @@ export function buildDecideGroups(
           : pl?.body || "",
       objectText,
       consequences: pl?.consequences ?? null,
+      blastRadius: str(group.blast_radius),
+      reversibility: str(group.reversibility),
+      leverage: num(group.leverage),
       chips: (pl?.chips ?? []).map((c) => ({ label: c.label, tone: String(c.tone) })),
       count,
       createdAt,

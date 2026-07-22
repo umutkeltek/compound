@@ -4,7 +4,10 @@ import { arr, getSourceConnections, getWorkbench, runJson, str } from "@/lib/com
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildLaneTraffic } from "@/lib/lane-traffic";
+import { getTraffic } from "@/lib/traffic";
 import { buildBoard, buildOffered, buildPipeline } from "@/lib/work-pipeline";
+import { buildWorkLensItems, groupWorkLensItems } from "@/lib/work-views";
+import type { WorkLensKey } from "@/components/work/WorkLenses";
 
 export const dynamic = "force-dynamic";
 
@@ -16,11 +19,11 @@ export const dynamic = "force-dynamic";
 export default async function WorkPage({
   searchParams,
 }: {
-  searchParams: Promise<{ trace?: string }>;
+  searchParams: Promise<{ trace?: string; lens?: string }>;
 }) {
-  const { trace } = await searchParams;
+  const { trace, lens } = await searchParams;
 
-  const [workbench, sources, suggestions, packets, laneTraffic] = await Promise.all([
+  const [workbench, sources, suggestions, packets, laneTraffic, traffic] = await Promise.all([
     getWorkbench(),
     getSourceConnections(),
     // Read-only: `director propose --dry-run` creates nothing (verified); the
@@ -28,6 +31,7 @@ export default async function WorkPage({
     runJson(["director", "propose", "--dry-run", "--json"]),
     runJson(["packets", "list", "--json"]),
     buildLaneTraffic(),
+    getTraffic(),
   ]);
 
   const open = arr(workbench?.open);
@@ -40,6 +44,10 @@ export default async function WorkPage({
 
   const initialTrace = str(trace).match(/^work_[a-z0-9]+$/) ? str(trace) : null;
   const mutationsReady = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
+  const items = buildWorkLensItems(open, traffic);
+  const groups = groupWorkLensItems(items, traffic);
+  const allowedLenses = new Set<WorkLensKey>(["pipeline", "table", "flow", "space", "board", "offered"]);
+  const defaultLens = allowedLenses.has(lens as WorkLensKey) ? lens as WorkLensKey : "pipeline";
 
   return (
     <div className="flex flex-col gap-6">
@@ -65,6 +73,9 @@ export default async function WorkPage({
         openCount={open.length}
         initialTrace={initialTrace}
         laneTraffic={laneTraffic}
+        items={items}
+        groups={groups}
+        defaultLens={defaultLens}
         mutationsReady={mutationsReady}
       />
     </div>

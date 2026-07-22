@@ -1,9 +1,11 @@
 import Link from "next/link";
+import { Suspense } from "react";
 
 import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import { CoordinationBoard, type ExecDetail } from "@/components/coordination/CoordinationBoard";
 import { LiveHarnessCanvas, type LiveLane } from "@/components/live/LiveHarnessCanvas";
+import { LiveOperationsTimeline } from "@/components/live/LiveOperationsTimeline";
 import { FreshnessChip, PageHeader, PulseIcon, SectionHeader, StatusChip } from "@/components/kit";
 import { getExecutors } from "@/lib/compound";
 import { getCoordination } from "@/lib/coordination";
@@ -22,8 +24,24 @@ function Metric({ label, value, note, tone = "ink" }: { label: string; value: nu
   );
 }
 
+async function LiveCoordination({ execDetail, runAttemptsPresent }: { execDetail: Record<string, ExecDetail>; runAttemptsPresent: boolean }) {
+  const coordination = await getCoordination();
+  return (
+    <section data-depth-min="technical" className="flex flex-col gap-3">
+      <SectionHeader tone="route" icon={<PulseIcon />} label="Coordination" sub="me · others · waiting-on" />
+      <CoordinationBoard
+        view={coordination.view}
+        doorStatus={coordination.status}
+        doorError={coordination.error}
+        execDetail={execDetail}
+        runAttemptsPresent={runAttemptsPresent}
+      />
+    </section>
+  );
+}
+
 export default async function LivePage() {
-  const [traffic, coordination, executorRaw] = await Promise.all([getTraffic(), getCoordination(), getExecutors()]);
+  const [traffic, executorRaw] = await Promise.all([getTraffic(), getExecutors()]);
   const projection = normalizeExecutorProjection(executorRaw);
   const lanes: LiveLane[] = traffic.lanes.map((lane) => {
     const ranked = lane.inFlight.slice().sort((a, b) => {
@@ -72,7 +90,7 @@ export default async function LivePage() {
         right={
           <div className="flex items-center gap-2">
             <StatusChip tone={traffic.runningCount > 0 ? "good" : "muted"} label={traffic.runningCount > 0 ? "activity now" : "quiet now"} pulse={traffic.runningCount > 0} />
-            <FreshnessChip generatedAt={traffic.generatedAt} source="compound executors / run-attempts / coordination" />
+            <FreshnessChip generatedAt={traffic.generatedAt} source="compound executors / run-attempts" />
           </div>
         }
       />
@@ -95,6 +113,16 @@ export default async function LivePage() {
         <SectionHeader
           tone="work"
           icon={<PulseIcon />}
+          label="Operations timeline"
+          sub="observed → executing → current seam · RunAttempt-backed when available"
+        />
+        <LiveOperationsTimeline report={traffic} />
+      </section>
+
+      <section data-depth-min="investigate" className="flex flex-col gap-3">
+        <SectionHeader
+          tone="work"
+          icon={<PulseIcon />}
           label="Harness space"
           sub="lane → WorkEnvelope · animated only when the run is live"
           right={<span className="mono text-2xs text-faint">{traffic.runAttemptsPresent ? "RunAttempt joined" : "execution detail unavailable"}</span>}
@@ -102,16 +130,9 @@ export default async function LivePage() {
         <LiveHarnessCanvas lanes={lanes} />
       </section>
 
-      <section data-depth-min="investigate" className="flex flex-col gap-3">
-        <SectionHeader tone="route" icon={<PulseIcon />} label="Coordination" sub="me · others · waiting-on" />
-        <CoordinationBoard
-          view={coordination.view}
-          doorStatus={coordination.status}
-          doorError={coordination.error}
-          execDetail={execDetail}
-          runAttemptsPresent={traffic.runAttemptsPresent}
-        />
-      </section>
+      <Suspense fallback={<section data-depth-min="technical" className="rounded-xl border border-hair bg-panel px-4 py-6 text-sm text-muted">Loading coordination evidence…</section>}>
+        <LiveCoordination execDetail={execDetail} runAttemptsPresent={traffic.runAttemptsPresent} />
+      </Suspense>
 
       {projection ? (
         <div data-depth-min="technical" className="flex flex-col gap-3">
