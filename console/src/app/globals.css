@@ -534,3 +534,66 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .chip-in { animation: none; }
 }
+
+/* ============================================================
+   EXPERIENCE SYSTEM — seven needs-led surfaces + progressive depth
+   ============================================================ */
+:root {
+  --canvas-bg: #0a1018;
+  --canvas-panel: #121b27;
+  --canvas-border: #293548;
+  --canvas-ink: #edf3fb;
+  --canvas-muted: #8f9cad;
+}
+
+/* Glance → Understand → Investigate → Technical changes presentation only.
+   Projection reads and authority never depend on this attribute. */
+:root[data-depth="glance"] [data-depth-min="understand"],
+:root[data-depth="glance"] [data-depth-min="investigate"],
+:root[data-depth="glance"] [data-depth-min="technical"],
+:root[data-depth="understand"] [data-depth-min="investigate"],
+:root[data-depth="understand"] [data-depth-min="technical"],
+:root[data-depth="investigate"] [data-depth-min="technical"] {
+  display: none !important;
+}
+
+.live-canvas {
+  background: var(--canvas-bg);
+  border-color: var(--canvas-border);
+}
+
+.live-node {
+  background: var(--canvas-panel);
+  border-color: var(--canvas-border);
+}
+
+.live-node[data-live="true"] {
+  border-color: color-mix(in srgb, var(--work-fg) 72%, var(--canvas-border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--work-fg) 16%, transparent), var(--shadow-lg);
+}
+
+.live-presence {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+.live-canvas .react-flow__controls,
+.live-canvas .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--canvas-border);
+  border-radius: var(--radius-sm);
+}
+
+.live-canvas .react-flow__controls-button {
+  border-color: var(--canvas-border);
+  background: var(--canvas-panel);
+  color: var(--canvas-muted);
+}
+
+@media (max-width: 639px) {
+  :root { --nav-w: 100%; }
+  .live-canvas { height: 470px; }
+}

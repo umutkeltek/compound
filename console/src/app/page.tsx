@@ -130,9 +130,9 @@ export default async function Briefing() {
         />
       </div>
 
-      <ContinueCard model={continueModel} mutationsReady={mutationsEnabled} />
+      <div data-depth-min="understand"><ContinueCard model={continueModel} mutationsReady={mutationsEnabled} /></div>
 
-      <section>
+      <section data-depth-min="understand">
         <SectionLabel>Decide</SectionLabel>
         <DecideList
           groups={decideGroups}
@@ -141,7 +141,7 @@ export default async function Briefing() {
         />
       </section>
 
-      <KpiStrip
+      <div data-depth-min="understand"><KpiStrip
         world={{
           outward: mix.groups.outward,
           meaning: mix.groups.meaning,
@@ -159,28 +159,28 @@ export default async function Briefing() {
         autonomy={autonomy}
         worldDelta={worldChange.covered ? worldChange.delta : null}
         mindDelta={mindChange.covered ? mindChange.delta : null}
-      />
+      /></div>
 
       {/* ---------- below the fold ---------- */}
 
-      <AttentionAgeMatrix
+      <div data-depth-min="investigate"><AttentionAgeMatrix
         groups={needsYouGroups}
         read={{ status: attentionRead.status, lastGoodAt: attentionRead.lastGoodAt }}
-      />
+      /></div>
 
-      <section>
+      <section data-depth-min="investigate">
         <SectionLabel>Pipeline</SectionLabel>
         <PipelineStrip stages={stages} read={{ status: workbenchRead.status, lastGoodAt: workbenchRead.lastGoodAt }} />
       </section>
 
-      <SelfHealingPanel health={health} />
+      <div data-depth-min="technical"><SelfHealingPanel health={health} /></div>
 
-      <section>
+      <section data-depth-min="investigate">
         <SectionLabel>Live activity</SectionLabel>
         <ActivityFeed recent={recent} read={{ status: workbenchRead.status, lastGoodAt: workbenchRead.lastGoodAt }} />
       </section>
 
-      <section>
+      <section data-depth-min="technical">
         <SectionLabel>Knows</SectionLabel>
         <KnowsStrip
           promoted={memoryCounts.promoted ?? 0}
@@ -190,7 +190,7 @@ export default async function Briefing() {
         />
       </section>
 
-      <footer className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-hair pt-4 text-2xs text-faint">
+      <footer data-depth-min="technical" className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-hair pt-4 text-2xs text-faint">
         <span>Every panel reads a live projection and stamps its own freshness.</span>
         <span className="flex flex-wrap items-center gap-2">
           {stamps.map((stamp) => (

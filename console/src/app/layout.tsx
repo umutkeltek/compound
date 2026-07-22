@@ -5,6 +5,8 @@ import { InstanceBadge } from "@/components/InstanceBadge";
 import { CommandK } from "@/components/CommandK";
 import { RefreshControl } from "@/components/RefreshControl";
 import { SystemBanner } from "@/components/SystemBanner";
+import { AskCompound } from "@/components/AskCompound";
+import { ExperienceBar } from "@/components/ExperienceBar";
 import { Breadcrumb, FreshnessChip, StatusChip, ThemeToggle } from "@/components/kit";
 import { getAttention } from "@/lib/attention";
 import { autonomyPosture } from "@/lib/briefing";
@@ -22,7 +24,7 @@ export const metadata: Metadata = {
  * resolution exactly. `suppressHydrationWarning` on <html> covers the attribute
  * this script stamps that the server didn't render.
  */
-const THEME_SCRIPT = `(function(){try{var k='compound-theme';var p=localStorage.getItem(k)||'auto';var d=(p==='dark')||(p!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');}catch(e){}})();`;
+const THEME_SCRIPT = `(function(){try{var k='compound-theme';var p=localStorage.getItem(k)||'auto';var d=(p==='dark')||(p!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.setAttribute('data-theme',d?'dark':'light');var q=localStorage.getItem('compound-experience-depth')||'understand';document.documentElement.setAttribute('data-depth',q);}catch(e){}})();`;
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   // Both reads are cheap and memoized (getAttention shares the runJson TTL cache
@@ -44,7 +46,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavContainer variant="mobile" />
               <InstanceBadge />
               <div className="hidden min-w-0 sm:block"><Breadcrumb /></div>
-              <div className="hidden min-w-0 xl:block"><SystemBanner /></div>
+              <div className="hidden min-w-0 2xl:block"><SystemBanner /></div>
               <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
                 <div className="hidden xl:block"><FreshnessChip generatedAt={str(attention?.generated_at) || undefined} source="compound attention --json" /></div>
                 {/* Kill-switch / autonomy posture. Read from operator-authority
@@ -59,12 +61,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   />
                 </div>
                 <RefreshControl responsive />
+                <AskCompound />
                 <div className="hidden lg:block"><CommandK /></div>
                 <ThemeToggle responsive />
               </div>
             </header>
-            <div className="xl:hidden"><SystemBanner compact /></div>
-            <main className="mx-auto w-full flex-1 px-3 py-4 sm:px-5 sm:py-5 md:px-6 md:py-6" style={{ maxWidth: "1200px" }}>
+            <div className="2xl:hidden"><SystemBanner compact /></div>
+            <ExperienceBar />
+            <main className="mx-auto w-full flex-1 px-3 py-4 sm:px-5 sm:py-5 md:px-6 md:py-6" style={{ maxWidth: "1440px" }}>
               {children}
             </main>
           </div>

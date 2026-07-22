@@ -5,15 +5,16 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 
+import { BrainIcon, GavelIcon, GridIcon, LoopIcon, PulseIcon, RouteIcon, TableIcon } from "@/components/kit/icons";
+import { EXPERIENCE_SURFACES, routeIsActive, surfaceForPath } from "@/lib/experience";
+
 /**
- * Groups restructured per the redesign plan (Part 2): Briefing stands alone
- * at the top; OPERATE / KNOW hold the working surfaces; CONTROL (Settings,
- * Routing & cost) is intentionally omitted below — no routes exist yet.
+ * The primary rail is needs-led rather than object-led. Existing routes stay
+ * stable beneath one of seven product surfaces; the active surface expands its
+ * secondary navigation without making every advanced route permanently loud.
  */
 type BadgeTone = "seam" | "quiet";
 type NavBadge = { count: number; tone: BadgeTone };
-type NavLink = { label: string; href?: string; soon?: boolean; badge?: NavBadge };
-type Group = { label: string; links: NavLink[] };
 
 export type NavProps = {
   /** Needs-you group count for the Decide queue (interim source: `compound reviews --json` groups — see NavContainer). Amber, the only amber badge. */
@@ -23,61 +24,15 @@ export type NavProps = {
   variant?: "desktop" | "mobile";
 };
 
-function groupsFor(decideCount: number | null | undefined, workCount: number | null | undefined): Group[] {
-  return [
-    {
-      label: "Operate",
-      links: [
-        {
-          label: "Decide",
-          href: "/reviews", // becomes the unified Decide queue in Phase 2; route renames then too
-          badge: decideCount != null ? { count: decideCount, tone: "seam" } : undefined,
-        },
-        {
-          label: "Work",
-          href: "/work",
-          badge: workCount != null ? { count: workCount, tone: "quiet" } : undefined,
-        },
-        { label: "Agents", href: "/executors" },
-        // Reframed from the fleet monitor to the Me / Others / Waiting-on
-        // coordination view (compound coordination verb); route renames in a
-        // later phase, same pattern as Decide's /reviews.
-        { label: "Coordination", href: "/traffic" },
-        { label: "Loops", href: "/loops" },
-      ],
-    },
-    {
-      label: "Know",
-      links: [
-        { label: "Memory", href: "/memory" },
-        { label: "Standing law", href: "/standing-law" },
-        { label: "Capabilities", href: "/map" }, // route renames in Phase 4
-        { label: "Sources", href: "/sources" },
-      ],
-    },
-    {
-      // CONTROL (Part 2 of the redesign plan). Routing & cost lands here in
-      // Phase 4; Settings lands alongside from a parallel lane (route exists at
-      // cutover). Neither carries a nav badge yet — routing's needs-you count
-      // would need a new NavContainer prop (out of this lane's narrow Nav scope).
-      label: "Control",
-      links: [
-        { label: "Routing & cost", href: "/routing" },
-        { label: "Settings", href: "/settings" },
-      ],
-    },
-  ];
-}
-
-function Dot({ active }: { active: boolean }) {
-  return (
-    <span
-      className="h-1.5 w-1.5 rounded-full"
-      style={{ background: active ? "var(--work-fg)" : "var(--hair-2)" }}
-      aria-hidden
-    />
-  );
-}
+const SURFACE_ICONS = {
+  today: GridIcon,
+  live: PulseIcon,
+  work: TableIcon,
+  decide: GavelIcon,
+  knowledge: BrainIcon,
+  system: RouteIcon,
+  outcomes: LoopIcon,
+};
 
 function CountPill({ count, tone }: { count: number; tone: BadgeTone }) {
   if (count <= 0) return null;
@@ -106,58 +61,62 @@ function Brand() {
 }
 
 function NavLinks({
-  groups,
   pathname,
+  decideCount,
+  workCount,
   mobile = false,
   onNavigate,
 }: {
-  groups: Group[];
   pathname: string;
+  decideCount?: number | null;
+  workCount?: number | null;
   mobile?: boolean;
   onNavigate?: () => void;
 }) {
   const linkClass = mobile ? "nav-item py-2.5" : "nav-item";
+  const activeSurface = surfaceForPath(pathname);
   return (
-    <nav className="flex flex-1 flex-col gap-5">
-      <Link href="/" className={linkClass} data-active={pathname === "/"} aria-current={pathname === "/" ? "page" : undefined} onClick={onNavigate}>
-        <Dot active={pathname === "/"} />
-        Briefing
-      </Link>
-
-      {groups.map((group) => (
-        <div key={group.label}>
-          <div className="section-label mb-1.5 px-2">{group.label}</div>
-          <div className="flex flex-col gap-0.5">
-            {group.links.map((link) =>
-              link.href ? (
-                <Link
-                  key={link.label}
-                  href={link.href}
-                  className={linkClass}
-                  data-active={pathname === link.href}
-                  aria-current={pathname === link.href ? "page" : undefined}
-                  onClick={onNavigate}
-                >
-                  <Dot active={pathname === link.href} />
-                  {link.label}
-                  {link.badge ? <CountPill count={link.badge.count} tone={link.badge.tone} /> : null}
-                </Link>
-              ) : (
-                <span
-                  key={link.label}
-                  className={linkClass}
-                  data-soon="true"
-                  title="Appends when its projection lands (base + append)"
-                >
-                  <Dot active={false} />
-                  {link.label}
-                  <span className="ml-auto text-2xs text-faint">soon</span>
-                </span>
-              ),
-            )}
+    <nav className="flex flex-1 flex-col gap-1" aria-label="Primary">
+      {EXPERIENCE_SURFACES.map((surface) => {
+        const active = activeSurface.id === surface.id;
+        const Icon = SURFACE_ICONS[surface.id];
+        const badge: NavBadge | undefined = surface.id === "decide" && decideCount != null
+          ? { count: decideCount, tone: "seam" }
+          : surface.id === "work" && workCount != null
+            ? { count: workCount, tone: "quiet" }
+            : undefined;
+        return (
+          <div key={surface.id}>
+            <Link
+              href={surface.href}
+              className={linkClass}
+              data-active={active}
+              aria-current={pathname === surface.href ? "page" : undefined}
+              onClick={onNavigate}
+              title={surface.description}
+            >
+              <span className={active ? "text-work" : "text-faint"}><Icon size={14} /></span>
+              {surface.label}
+              {badge ? <CountPill count={badge.count} tone={badge.tone} /> : null}
+            </Link>
+            {active && surface.routes.length > 1 ? (
+              <div className="ml-7 mt-0.5 flex flex-col border-l border-hair pl-2">
+                {surface.routes.map((route) => (
+                  <Link
+                    key={route.href}
+                    href={route.href}
+                    onClick={onNavigate}
+                    className="rounded-md px-2 py-1.5 text-xs text-faint transition-colors hover:bg-soft hover:text-ink data-[active=true]:text-work"
+                    data-active={routeIsActive(pathname, route)}
+                  >
+                    {route.label}
+                  </Link>
+                ))}
+              </div>
+            ) : null}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </nav>
   );
 }
@@ -165,16 +124,15 @@ function NavLinks({
 function NavFooter() {
   return (
     <div className="px-1 text-2xs leading-relaxed text-faint">
-      Projection-first.
+      Projection-first · evidence-backed.
       <br />
-      Continue uses governed local commands in operator mode.
+      Depth changes presentation, never truth.
     </div>
   );
 }
 
 export function Nav({ decideCount, workCount, variant = "desktop" }: NavProps) {
   const pathname = usePathname();
-  const groups = groupsFor(decideCount, workCount);
   const [open, setOpen] = useState(false);
 
   if (variant === "mobile") {
@@ -211,7 +169,7 @@ export function Nav({ decideCount, workCount, variant = "desktop" }: NavProps) {
               </Dialog.Close>
             </div>
             <Dialog.Description className="sr-only">Navigate between Compound console workspaces.</Dialog.Description>
-            <NavLinks groups={groups} pathname={pathname} mobile onNavigate={() => setOpen(false)} />
+            <NavLinks pathname={pathname} decideCount={decideCount} workCount={workCount} mobile onNavigate={() => setOpen(false)} />
             <NavFooter />
           </Dialog.Content>
         </Dialog.Portal>
@@ -222,7 +180,7 @@ export function Nav({ decideCount, workCount, variant = "desktop" }: NavProps) {
   return (
     <aside className="sticky top-0 hidden h-screen w-[var(--nav-w)] shrink-0 flex-col gap-6 border-r border-hair bg-panel/70 px-4 py-5 backdrop-blur md:flex">
       <Brand />
-      <NavLinks groups={groups} pathname={pathname} />
+      <NavLinks pathname={pathname} decideCount={decideCount} workCount={workCount} />
       <NavFooter />
     </aside>
   );

@@ -385,3 +385,48 @@ The console's spectacle is the organism visibly living. Representations that car
   work card** (stage position); **TooltipCards everywhere** so hovering rewards curiosity.
 - Every number carries its DeltaPill and its FreshnessChip — a value without delta + provenance
   is undressed.
+
+## 10. Experience architecture — simple first, depth on demand
+
+The console groups its stable routes into seven needs-led surfaces. This is an information-
+architecture layer, not a route migration: existing deep links remain valid and appear as
+contextual secondary navigation inside their owning surface.
+
+| Surface | User question | Routes |
+|---|---|---|
+| **Today** | What deserves my attention now? | Briefing |
+| **Live** | What is genuinely happening, where, and through which harness? | Overview, Harnesses, Coordination |
+| **Work** | What is moving, blocked, or ready to move? | Pipeline and work traces |
+| **Decide** | Which consequential calls need evidence-backed judgment? | Decision queue |
+| **Knowledge** | What does Compound know, trust, or still question? | Memory, Standing law, Sources |
+| **System** | What capabilities, routes, policy, and authority are effective? | Map, Routing, Settings, View grammar |
+| **Outcomes** | What shipped, changed, and fed learning back into the system? | Feedback loops |
+
+### 10.1 Progressive disclosure contract
+
+Today and Live support four presentation depths: **Glance → Understand → Investigate → Technical**.
+Depth is a local view preference persisted in the browser. It may hide or reveal presentation
+regions, but it MUST NOT change projection reads, source truth, ranking, policy, or action
+authority. Other surfaces keep their task-specific density until they have an equally strong
+progressive-disclosure model; a global depth switch that unpredictably hides working UI is worse
+than explicit depth on the two overview surfaces.
+
+### 10.2 Truthful Live visualization law
+
+Live renders a harness → WorkEnvelope graph from the executor, RunAttempt, traffic, and
+coordination projections. Configured harnesses are not activity. A node or edge animates only
+when heartbeat, RunAttempt, or work-state evidence reports a live run. Each harness overview
+shows at most its two highest-signal work items while retaining exact running, in-flight, and
+waiting totals. Selecting a node opens the evidence drawer; deeper coordination and delegated-
+session identity remain available below the canvas.
+
+The canvas is a projection, never an authority surface. It does not infer work ownership from
+layout, invent activity to make the system feel alive, or persist prompt content.
+
+### 10.3 Generative view boundary (Tambo-ready)
+
+Ask Compound may translate natural language into registered view invocations. The model composes
+the view; the registry owns rendering and every act. The current deterministic AI sandbox is a
+replaceable adapter boundary for Tambo or another model runtime. Replacing it MUST NOT grant the
+model mutation authority: registered actions still cross the existing policy, confirmation,
+receipt, and transition seams.

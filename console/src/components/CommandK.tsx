@@ -8,9 +8,13 @@ type Item =
   | { kind: "cmd"; label: string; cmd: string };
 
 const ITEMS: Item[] = [
-  { kind: "nav", label: "Go to Dashboard", href: "/" },
-  { kind: "nav", label: "Go to Work board", href: "/work" },
-  { kind: "nav", label: "Go to Reviews", href: "/reviews" },
+  { kind: "nav", label: "Today", href: "/" },
+  { kind: "nav", label: "Live", href: "/live" },
+  { kind: "nav", label: "Work", href: "/work" },
+  { kind: "nav", label: "Decide", href: "/reviews" },
+  { kind: "nav", label: "Knowledge", href: "/memory" },
+  { kind: "nav", label: "System", href: "/map" },
+  { kind: "nav", label: "Outcomes", href: "/loops" },
   { kind: "cmd", label: "Workbench (terminal)", cmd: "compound workbench" },
   { kind: "cmd", label: "Review queue (terminal)", cmd: "compound reviews" },
   { kind: "cmd", label: "External-repo reviews", cmd: "compound reviews --area external-repo-intake" },
@@ -68,7 +72,7 @@ export function CommandK() {
     return (
       <button
         onClick={() => setOpen(true)}
-        className="rounded-full bg-slate-100 px-2.5 py-1 text-[11.5px] font-medium text-slate-500 hover:bg-slate-200"
+        className="rounded-pill border border-hair bg-panel px-2.5 py-1 text-xs font-medium text-muted hover:bg-soft"
         title="Command palette"
       >
         ⌘K
@@ -79,12 +83,12 @@ export function CommandK() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="rounded-full bg-slate-100 px-2.5 py-1 text-[11.5px] font-medium text-slate-500"
+        className="rounded-pill border border-hair bg-panel px-2.5 py-1 text-xs font-medium text-muted"
       >
         ⌘K
       </button>
       <div
-        className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/20 pt-[18vh] backdrop-blur-[2px]"
+        className="fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-[18vh] backdrop-blur-sm"
         onClick={() => setOpen(false)}
       >
         <div className="card w-[560px] max-w-[92vw] overflow-hidden p-0" onClick={(e) => e.stopPropagation()}>
@@ -100,7 +104,7 @@ export function CommandK() {
               <button
                 key={item.label}
                 onClick={() => pick(item)}
-                className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left hover:bg-slate-50"
+                className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left hover:bg-soft"
               >
                 <span className="text-[13px] font-medium text-ink">{item.label}</span>
                 {item.kind === "cmd" ? (
