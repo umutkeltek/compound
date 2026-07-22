@@ -569,14 +569,18 @@ func runActuatorPost(args []string, stdout, stderr io.Writer) int {
 		ExpectedEffect: flagValue(args, "--expected-effect"),
 		Window:         firstNonEmptyStr(flagValue(args, "--window"), "7d"),
 	}
-	result, err := actuator.Post(homePath, in, cfg, time.Now())
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 1
-	}
+	// Post can return a POPULATED result (Executed=true, receipt/transition refs)
+	// TOGETHER with a non-nil error — F9.1: "the post landed but budget accounting
+	// failed". Mirror runActuatorRun: surface the result, then fail loudly. Dropping
+	// the result on error would lose the receipt refs the operator needs.
+	result, postErr := actuator.Post(homePath, in, cfg, time.Now())
 	if hasFlag(args, "--json") {
 		if err := encodeJSON(stdout, result); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		if postErr != nil {
+			fmt.Fprintln(stderr, "error:", postErr)
 			return 1
 		}
 		return 0
@@ -592,6 +596,12 @@ func runActuatorPost(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	if postErr != nil && !result.Executed {
+		// Pre-staging failure: nothing landed, so there is no EXECUTED block to
+		// print — just the loud error and a non-zero exit (today's behavior).
+		fmt.Fprintln(stderr, "error:", postErr)
+		return 1
+	}
 	fmt.Fprintf(stdout, "# actuator post — EXECUTED (staged within limits, loop opened)\n")
 	fmt.Fprintf(stdout, "- channel:    %s  surface: %s\n", in.Channel, in.Surface)
 	fmt.Fprintf(stdout, "- post:       %s\n", result.PostPath)
@@ -601,6 +611,12 @@ func runActuatorPost(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "\nnext: ingest the world's response, then watch the loop close:\n")
 	fmt.Fprintf(stdout, "  compound product signal <signal-export.yaml>\n")
 	fmt.Fprintf(stdout, "  compound actuator observe --product %s\n", firstNonEmptyStr(in.ProductID, "(default)"))
+	if postErr != nil {
+		// The post staged + was receipted (refs printed above), but budget accounting
+		// failed (F9.1). The operator gets the refs AND the loud failure + exit 1.
+		fmt.Fprintln(stderr, "error:", postErr)
+		return 1
+	}
 	return 0
 }
 
