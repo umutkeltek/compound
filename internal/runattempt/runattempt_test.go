@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -662,5 +663,262 @@ func TestMarkRunningRefusesOnTerminal(t *testing.T) {
 	}
 	if _, err := s.MarkRunning(ra.ID, now.Add(2*time.Minute)); err == nil {
 		t.Fatal("MarkRunning on terminal RunAttempt must fail")
+	}
+}
+
+// nilProbeMatchesSweepStale is the store-level compatibility test:
+// SweepStaleWithProbe with probe == nil produces the same on-disk
+// effect for the same inputs as SweepStale -- same counters, same
+// terminal-status distribution. The CLI surface always passes the
+// work-owned probe; this assertion guarantees the pre-probe API path
+// remains a literal fall-through that anyone wired before
+// `compound run-attempt sweep` switched defaults can rely on. Both
+// passes start from byte-identical cloned homes so both the report and
+// every resulting RunAttempt JSON body can be compared exactly.
+func TestNilProbeMatchesSweepStaleByteForByte(t *testing.T) {
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	now := t0.Add(60 * time.Minute)
+	home1 := t.TempDir()
+	home2 := t.TempDir()
+	s := Open(home1)
+	a, _ := s.Mint("work_stale", "actor", "fake", t0)
+	f, _ := s.Mint("work_fresh", "actor", "fake", t0.Add(50*time.Minute))
+	r, _ := s.Mint("work_running", "actor", "fake", t0)
+	if _, err := s.MarkRunning(r.ID, t0); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{a.ID, f.ID, r.ID}
+	cloneRunAttemptDir(t, home1, home2)
+	repA, err := Open(home1).SweepStale(30*time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repB, err := Open(home2).SweepStaleWithProbe(30*time.Minute, now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(repA, repB) {
+		t.Fatalf("reports diverged: sweep=%+v probe=%+v", repA, repB)
+	}
+	// Each home's two "stale" attempts (pending+running) must end up
+	// abandoned on disk with the same terminal_status. The fresh
+	// attempt must stay pending on both homes.
+	for _, home := range []string{home1, home2} {
+		s := Open(home)
+		// fresh (idx 1) -> still pending
+		raFresh, err := s.Get(ids[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if raFresh.Status != StatusPending {
+			t.Fatalf("fresh must stay pending, got %s", raFresh.Status)
+		}
+		// stale (idx 0) and running-stale (idx 2) -> abandoned
+		for _, j := range []int{0, 2} {
+			ra, err := s.Get(ids[j])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ra.Status != StatusAbandoned {
+				t.Fatalf("id %s status %s, want abandoned", ids[j], ra.Status)
+			}
+		}
+	}
+	if got, want := snapshotRunAttemptDir(t, home1), snapshotRunAttemptDir(t, home2); !reflect.DeepEqual(got, want) {
+		t.Fatalf("nil-probe on-disk bytes diverged\nsweep=%v\nprobe=%v", got, want)
+	}
+}
+
+func cloneRunAttemptDir(t *testing.T, fromHome, toHome string) {
+	t.Helper()
+	from := filepath.Join(fromHome, "run_attempts")
+	to := filepath.Join(toHome, "run_attempts")
+	if err := os.MkdirAll(to, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		body, err := os.ReadFile(filepath.Join(from, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(to, entry.Name()), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func snapshotRunAttemptDir(t *testing.T, home string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	entries, err := os.ReadDir(filepath.Join(home, "run_attempts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		body, err := os.ReadFile(filepath.Join(home, "run_attempts", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[entry.Name()] = string(body)
+	}
+	return out
+}
+
+func sameIDSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := map[string]int{}
+	for _, x := range a {
+		m[x]++
+	}
+	for _, x := range b {
+		m[x]--
+	}
+	for _, v := range m {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// liveProbeHeartbeatsAndProtects covers the probe=lived case end-to-end:
+// the candidate's binding is probed live (live=true), heartbeat refresh,
+// no terminalization, no kill observable.
+func TestLiveProbeHeartbeatsAndProtects(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_live", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := t0.Add(2 * time.Hour)
+	probeCalls := 0
+	rep, err := s.SweepStaleWithProbe(30*time.Minute, now, func(r RunAttempt) (bool, error) {
+		probeCalls++
+		if r.ID != ra.ID {
+			t.Fatalf("probe received wrong ratt: %s", r.ID)
+		}
+		return true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probeCalls != 1 {
+		t.Fatalf("probe should have been called exactly once, got %d", probeCalls)
+	}
+	if rep.Swept != 0 || rep.Protected != 1 {
+		t.Fatalf("expected 1 protected, 0 swept: %+v", rep)
+	}
+	if rep.Skipped != 1 || rep.SkippedIDs[0] != ra.ID {
+		t.Fatalf("expected the live candidate in SkippedIDs: %+v", rep)
+	}
+	after, _ := s.Get(ra.ID)
+	if after.LastHeartbeatAt == nil || !after.LastHeartbeatAt.Equal(now) {
+		t.Fatalf("live probe did not heartbeat exact ratt: %+v", after)
+	}
+	if after.Status != StatusRunning && after.Status != StatusPending {
+		t.Fatalf("live probe terminalized the attempt: %s", after.Status)
+	}
+}
+
+func TestProbeRunsOnlyForStaleCandidates(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	stale, _ := s.Mint("work_stale", "actor", "fake", t0)
+	fresh, _ := s.Mint("work_fresh", "actor", "fake", t0.Add(50*time.Minute))
+	called := []string{}
+	if _, err := s.SweepStaleWithProbe(30*time.Minute, t0.Add(time.Hour), func(ra RunAttempt) (bool, error) {
+		called = append(called, ra.ID)
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(called, []string{stale.ID}) {
+		t.Fatalf("probe calls = %v, want only stale %s (fresh %s)", called, stale.ID, fresh.ID)
+	}
+}
+
+func TestLiveProbeReportsHeartbeatFailure(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	ra, err := s.Mint("work_live", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(home, "run_attempts")
+	if err := os.Chmod(runDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(runDir, 0o700) })
+	report, err := s.SweepStaleWithProbe(30*time.Minute, t0.Add(time.Hour), func(RunAttempt) (bool, error) {
+		return true, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "heartbeat") {
+		t.Fatalf("heartbeat failure hidden: report=%+v err=%v", report, err)
+	}
+	if report.Protected != 0 || len(report.SkippedIDs) != 1 || report.SkippedIDs[0] != ra.ID {
+		t.Fatalf("heartbeat failure report = %+v", report)
+	}
+}
+
+// deadProbeAbandonsViaSweep covers probe=live=false: the candidate is
+// abandoned as the generic sweep would, but the report shows it as
+// swept (the generic abandon path), not protected.
+func TestDeadProbeAbandonsViaSweep(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	ra, _ := s.Mint("work_dead", "actor", "fake", t0)
+	now := t0.Add(60 * time.Minute)
+	rep, err := s.SweepStaleWithProbe(30*time.Minute, now, func(r RunAttempt) (bool, error) {
+		return false, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Swept != 1 || rep.SweptIDs[0] != ra.ID {
+		t.Fatalf("dead probe must abandon: %+v", rep)
+	}
+	if rep.Protected != 0 {
+		t.Fatalf("dead probe must not protect: %+v", rep)
+	}
+	after, _ := s.Get(ra.ID)
+	if after.Status != StatusAbandoned {
+		t.Fatalf("expected abandoned, got %s", after.Status)
+	}
+}
+
+// probeErrorSkipsRatherThanAbandon: a transient probe fault leaves the
+// candidate non-terminal so the next pass retries.
+func TestProbeErrorSkipsRatherThanAbandon(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	ra, _ := s.Mint("work_probe_err", "actor", "fake", t0)
+	now := t0.Add(60 * time.Minute)
+	rep, err := s.SweepStaleWithProbe(30*time.Minute, now, func(r RunAttempt) (bool, error) {
+		return false, errors.New("transport: broken pipe")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Swept != 0 || rep.Protected != 0 {
+		t.Fatalf("probe error must not sweep/protect: %+v", rep)
+	}
+	if len(rep.SkippedIDs) != 1 || rep.SkippedIDs[0] != ra.ID {
+		t.Fatalf("probe error must keep candidate as skipped: %+v", rep)
+	}
+	after, _ := s.Get(ra.ID)
+	if after.Status != StatusPending {
+		t.Fatalf("probe error must not terminalize: %s", after.Status)
 	}
 }

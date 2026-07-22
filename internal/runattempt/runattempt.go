@@ -659,6 +659,12 @@ type SweepReport struct {
 	Skipped    int      `json:"skipped"` // fresh enough to keep
 	SweptIDs   []string `json:"swept_ids,omitempty"`
 	SkippedIDs []string `json:"skipped_ids,omitempty"`
+	// Protected counts stale candidates whose probe declared live=true
+	// and which SweepStaleWithProbe heartbeated without terminalizing.
+	// Always 0 for the no-probe SweepStale path; surfaced separately so
+	// generic and probe-aware passes share the same on-disk JSON shape
+	// for the headline counters.
+	Protected int `json:"protected,omitempty"`
 }
 
 // DefaultSweepThreshold is the staleness cutoff used when no explicit
@@ -753,6 +759,98 @@ func (s *Store) SweepStale(threshold time.Duration, now time.Time) (SweepReport,
 		if _, cerr := s.CompleteWithReason(ra.ID, StatusAbandoned, reason, now); cerr != nil {
 			// Best-effort: a write failure on one attempt does not abort the
 			// pass. The next sweep retries it.
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
+		rep.Swept++
+		rep.SweptIDs = append(rep.SweptIDs, ra.ID)
+	}
+	return rep, nil
+}
+
+// LivenessProbe abstracts the behind-the-scenes check a SweepStaleWithProbe
+// pass performs before terminalizing a candidate. The contract:
+//   - nil probe is byte-identical to SweepStale (see nilProbeMatchesSweepStale).
+//   - probe(ra) returns:
+//   - live=true → heartbeat refresh and protect (no terminalization).
+//   - live=false (vanished/dead/unbound) → ordinary stale abandonment.
+//     A prior DelegateSweep that already mapped observed exit would have
+//     terminalized this attempt; the generic pass does not duplicate that.
+//   - err != nil → SKIP the candidate. Do NOT abandon on a transient probe
+//     fault -- the next sweep retries.
+//
+// The probe is consulted ONLY on stale candidates. Probe receives the
+// full RunAttempt so callers can do work-owned binding lookup (the
+// runattempt store never persists a SessionName field on disk).
+type LivenessProbe func(ra RunAttempt) (live bool, err error)
+
+// SweepStaleWithProbe is the probe-aware sweep. With probe == nil it falls
+// through to SweepStale unchanged (same on-disk bytes; this is the assertion
+// that preserves compatibility for direct store callers). The CLI always
+// supplies the work-owned probe. With probe != nil:
+//
+//   - probe errors skip the candidate (no terminalization, no heartbeat),
+//     so a transient probe fault does not strand an attempt.
+//   - probe returns live=true → heartbeat refresh + protect (counts as
+//     Skipped in the report, with a Protected++ side-count so callers can
+//     distinguish kept-due-to-live from kept-due-to-fresh-heartbeat).
+//   - probe returns live=false (panes have died or vanished, OR the
+//     candidate has no bound pane -- in which case live defaults to
+//     false) → ordinary stale abandonment, identical to SweepStale. A
+//     DelegateSweep that has already mapped observed exit for this exact
+//     attempt would have terminalized it earlier; here we just release the
+//     attempt as abandoned, no kill, no heartbeat.
+//
+// Probe receives the full RunAttempt so callers can apply work-owned
+// binding lookup (e.g. work/delegate.lookupSessionFor(ra)) instead of
+// having runattempt guess at a SessionName field. The orchestrator owns
+// the seam.
+func (s *Store) SweepStaleWithProbe(threshold time.Duration, now time.Time, probe LivenessProbe) (SweepReport, error) {
+	if probe == nil {
+		return s.SweepStale(threshold, now)
+	}
+	if threshold <= 0 {
+		threshold = DefaultSweepThreshold
+	}
+	stuck, err := s.ListNonTerminal()
+	if err != nil {
+		return SweepReport{}, err
+	}
+	var rep SweepReport
+	rep.Scanned = len(stuck)
+	for _, ra := range stuck {
+		lastActivity := ra.CreatedAt
+		if ra.LastHeartbeatAt != nil {
+			lastActivity = *ra.LastHeartbeatAt
+		}
+		age := now.Sub(lastActivity)
+		if age < threshold {
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
+		live, perr := probe(ra)
+		if perr != nil {
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
+		if live {
+			if _, herr := s.Heartbeat(ra.ID, now); herr != nil {
+				rep.Skipped++
+				rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+				return rep, fmt.Errorf("protect live run attempt %s: heartbeat: %w", ra.ID, herr)
+			}
+			rep.Protected++
+			rep.Skipped++
+			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
+			continue
+		}
+		// Vanished or dead (and not previously swept by DelegateSweep) →
+		// ordinary stale abandonment.
+		reason := fmt.Sprintf("stale: no activity for %s (threshold %s)", age.Round(time.Second), threshold)
+		if _, cerr := s.CompleteWithReason(ra.ID, StatusAbandoned, reason, now); cerr != nil {
 			rep.Skipped++
 			rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
 			continue

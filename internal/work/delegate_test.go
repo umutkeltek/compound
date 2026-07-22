@@ -29,14 +29,19 @@
 package work
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"compound/internal/runattempt"
 )
 
 // fakeSessionRunner is the test double for the SessionRunner seam. It records
@@ -55,6 +60,19 @@ type fakeSessionRunner struct {
 	// createErr lets a test inject a Create failure (e.g. tmux-absent simulating
 	// by treating `available=false` separately).
 	createErr error
+	// partialCreate simulates tmux returning an error after a session with
+	// the requested name became observable. The orchestrator must classify
+	// this as ambiguous and perform zero kills.
+	partialCreate bool
+	onCreate      func()
+	killErr       error
+	statusErr     error
+
+	// panes holds explicit SessionStatus observations per session name.
+	// When unset the runner falls back to "live -> exists/ExitCode=-1"
+	// or "gone -> exists=false" so existing tests don't need to
+	// populate it.
+	panes map[string]SessionStatus
 }
 
 type fakeCreateCall struct {
@@ -85,14 +103,42 @@ func (f *fakeSessionRunner) Has(name string) (bool, error) {
 	return f.live[name], nil
 }
 
+// SessionStatus is the in-test SessionRunner pane probe. Tests inject the
+// shape they want each delegate verb to observe: a live pane returns
+// {Exists: true, ExitCode: -1}; a dead pane returns observed exit (and
+// optional signal); an unknown pane returns Exists=false and an
+// UnknownReason so the orchestrator must classify as abandoned. The
+// `pane` field overrides the default "Exists/PaneDead false" so a test
+// can hand-call the runner with an explicit observation.
+func (f *fakeSessionRunner) SessionStatus(name string) (SessionStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.statusErr != nil {
+		return SessionStatus{UnknownReason: "injected status uncertainty", ExitCode: -1}, f.statusErr
+	}
+	if ps, ok := f.panes[name]; ok {
+		return ps, nil
+	}
+	if f.live[name] {
+		return SessionStatus{Exists: true, ExitCode: -1}, nil
+	}
+	return SessionStatus{Exists: false}, nil
+}
+
 func (f *fakeSessionRunner) Create(name, dir, command string, args []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.createErr != nil {
+	if f.createErr != nil && !f.partialCreate {
 		return f.createErr
 	}
 	f.creates = append(f.creates, fakeCreateCall{Name: name, Dir: dir, Command: command, Args: append([]string{}, args...)})
 	f.live[name] = true
+	if f.onCreate != nil {
+		f.onCreate()
+	}
+	if f.createErr != nil {
+		return f.createErr
+	}
 	return nil
 }
 
@@ -109,8 +155,12 @@ func (f *fakeSessionRunner) SendKeys(name, text string, enter bool) error {
 func (f *fakeSessionRunner) Kill(name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.live, name)
 	f.kills = append(f.kills, name)
+	if f.killErr != nil {
+		return f.killErr
+	}
+	delete(f.live, name)
+	delete(f.panes, name)
 	return nil
 }
 
@@ -789,6 +839,181 @@ func TestDelegateDoesNotPersistPromptArguments(t *testing.T) {
 			t.Fatalf("delegate event leaked prompt argument: %s", canonical)
 		}
 	}
+	if err := filepath.WalkDir(s.home, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(body, []byte(privatePrompt)) {
+			t.Fatalf("durable file %s leaked prompt argument", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("scan durable files: %v", err)
+	}
+}
+
+func TestDelegateMintsBeforeCreateAndMarksRunningAfterBinding(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	var seenAtCreate string
+	runner.onCreate = func() {
+		for id, ra := range runAttemptsByID(t, s) {
+			if _, existed := before[id]; existed {
+				continue
+			}
+			if seenAtCreate != "" {
+				t.Fatalf("more than one delegate attempt existed before Create: %s and %s", seenAtCreate, id)
+			}
+			seenAtCreate = id
+			if ra.Status != runattempt.StatusPending {
+				t.Fatalf("attempt status at Create = %s, want pending until binding is durable", ra.Status)
+			}
+		}
+	}
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seenAtCreate == "" || result.RunAttemptID != seenAtCreate {
+		t.Fatalf("mint/create identity: at_create=%q result=%q", seenAtCreate, result.RunAttemptID)
+	}
+	if got := runAttemptAt(t, runattempt.Open(s.home), seenAtCreate); got.Status != runattempt.StatusRunning {
+		t.Fatalf("delegate attempt status after durable binding = %s, want running", got.Status)
+	}
+	linked, err := s.Get(wID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, id := range linked.RunAttemptIDs {
+		found = found || id == seenAtCreate
+	}
+	if !found {
+		t.Fatalf("work envelope does not forward-link delegate attempt %s: %v", seenAtCreate, linked.RunAttemptIDs)
+	}
+}
+
+func TestDelegateMintFailureMeansZeroCreate(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runDir := filepath.Join(s.home, "run_attempts")
+	if err := os.Chmod(runDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(runDir, 0o700) })
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "mint_failed" {
+		t.Fatalf("result = %+v, want mint_failed", result)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("mint failure reached Create: %+v", runner.creates)
+	}
+}
+
+func TestDelegateCreateFailureTerminalizesExactAttempt(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	runner.createErr = errors.New("opaque spawn failure")
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "spawn_failed" {
+		t.Fatalf("result = %+v, want spawn_failed", result)
+	}
+	assertOneNewAttemptStatus(t, s, before, runattempt.StatusFailed)
+}
+
+func TestDelegateAmbiguousPartialCreateNeverKillsOrBinds(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	runner.partialCreate = true
+	runner.createErr = errors.New("partial create")
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "spawn_ambiguous" {
+		t.Fatalf("result = %+v, want spawn_ambiguous", result)
+	}
+	if len(runner.kills) != 0 {
+		t.Fatalf("ambiguous partial create killed a possibly foreign session: %v", runner.kills)
+	}
+	assertOneNewAttemptStatus(t, s, before, runattempt.StatusFailed)
+	for _, event := range capturedDelegateEvents(t, s) {
+		if event["kind"] == "work.delegate.spawned" {
+			t.Fatalf("ambiguous partial create emitted a binding: %+v", event)
+		}
+	}
+}
+
+func TestDelegateCreateProbeUncertaintyIsAmbiguousAndNeverKills(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	runner.createErr = errors.New("create failed")
+	runner.statusErr = errors.New("probe transport failed")
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "spawn_ambiguous" || result.Refusal.Message != delegateProbeUnknownNote {
+		t.Fatalf("result = %+v, want probe-uncertain spawn_ambiguous", result)
+	}
+	if len(runner.kills) != 0 {
+		t.Fatalf("probe uncertainty killed a possibly foreign session: %v", runner.kills)
+	}
+	assertOneNewAttemptStatus(t, s, before, runattempt.StatusFailed)
 }
 
 func TestDelegateDoesNotPersistPromptFromSpawnFailure(t *testing.T) {
@@ -921,8 +1146,11 @@ func TestSteerDeadSessionRecordsExitAndAttachRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delegate: %v", err)
 	}
-	if err := runner.Kill(spawned.Binding.Session); err != nil {
-		t.Fatalf("kill: %v", err)
+	// remain-on-exit keeps the session observable while the pane is dead.
+	// Steer must route this through DelegateSweep: exact terminalization,
+	// one exited event, then removal of the finished pane.
+	runner.panes = map[string]SessionStatus{
+		spawned.Binding.Session: {Exists: true, PaneDead: true, ExitCode: 1},
 	}
 	if _, err := s.Steer(SteerOptions{
 		WorkID: wID, Text: "new direction", Now: fixedNow.Add(1),
@@ -937,6 +1165,12 @@ func TestSteerDeadSessionRecordsExitAndAttachRefuses(t *testing.T) {
 	}
 	if exitedID == "" || !lifeHasAttached(life, exitedID) {
 		t.Fatalf("dead steer exit %q is not attached to lifecycle: %+v", exitedID, life)
+	}
+	if len(runner.kills) != 1 || runner.kills[0] != spawned.Binding.Session {
+		t.Fatalf("dead steer did not remove finished pane: %v", runner.kills)
+	}
+	if got := runAttemptAt(t, runattempt.Open(s.home), spawned.RunAttemptID); got.Status != runattempt.StatusFailed {
+		t.Fatalf("dead steer left exact attempt %s", got.Status)
 	}
 	if _, err := s.Attach(AttachOptions{WorkID: wID}, runner); err == nil {
 		t.Fatal("attach must refuse a dead session")
@@ -1006,6 +1240,7 @@ func TestDelegateKillsSpawnWhenLifecycleAttachmentFails(t *testing.T) {
 
 	s := newStore(t)
 	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
 	runner := newFakeRunner()
 	origWrite := writeWorkEvent
 	writeWorkEvent = func(_ *os.File, _ []byte) (int, error) {
@@ -1025,6 +1260,71 @@ func TestDelegateKillsSpawnWhenLifecycleAttachmentFails(t *testing.T) {
 	}
 	if live, _ := runner.Has(delegateSessionName(wID)); live {
 		t.Fatalf("unrecorded session %s remains live", delegateSessionName(wID))
+	}
+	assertOneNewAttemptStatus(t, s, before, runattempt.StatusFailed)
+}
+
+func TestDelegatePostCreateCleanupReportsKillFailure(t *testing.T) {
+	origGuard := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = origGuard }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	runner.killErr = errors.New("injected kill failure")
+	origWrite := writeWorkEvent
+	writeWorkEvent = func(_ *os.File, _ []byte) (int, error) {
+		return 0, errors.New("injected lifecycle append failure")
+	}
+	defer func() { writeWorkEvent = origWrite }()
+
+	_, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err == nil || !strings.Contains(err.Error(), "injected lifecycle append failure") || !strings.Contains(err.Error(), "injected kill failure") {
+		t.Fatalf("cleanup hid a failure: %v", err)
+	}
+}
+
+func TestDelegateAdvanceFailureFinalizesAttachedBinding(t *testing.T) {
+	origGuard := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = origGuard }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	before := runAttemptsByID(t, s)
+	runner := newFakeRunner()
+	origHook := advanceBeforeWorkCommit
+	advanceBeforeWorkCommit = func() {
+		_ = os.Remove(s.advancePendingPath(wID))
+	}
+	defer func() { advanceBeforeWorkCommit = origHook }()
+
+	_, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err == nil {
+		t.Fatal("injected Advance commit failure must surface")
+	}
+	delegateAttemptID := assertOneNewAttemptStatus(t, s, before, runattempt.StatusFailed)
+	if len(runner.kills) != 1 {
+		t.Fatalf("Advance failure did not kill definitely-owned session: %v", runner.kills)
+	}
+	var finalized map[string]any
+	for _, event := range capturedDelegateEvents(t, s) {
+		if event["kind"] == "work.delegate.exited" && event["reason"] == "spawn_finalize_failure" {
+			finalized = event
+		}
+	}
+	if finalized == nil || finalized["run_attempt_id"] != delegateAttemptID {
+		t.Fatalf("Advance failure missing exact spawn-finalize exit: %+v", finalized)
+	}
+	if binding, _, recoverErr := s.recoverBoundSession(wID); recoverErr != nil || binding != nil {
+		t.Fatalf("spawn-finalize exit left active binding=%+v err=%v", binding, recoverErr)
 	}
 }
 
@@ -1110,6 +1410,578 @@ func lifeHasAttached(events []Event, id string) bool {
 		}
 	}
 	return false
+}
+
+// red-first falsifier: DelegateSweep on a LIVE pane must heartbeat
+// the exact ratt and return without writing ANY event, terminalizing the
+// attempt, or killing. A regression that maps Exists&&!PaneDead to
+// abandoned (the default branch) would emit work.delegate.exited and
+// mark the run attempt failed -- not what the operator wants for a
+// healthy in-flight session.
+func TestDelegateSweepLivePaneHeartbeatsAndProtects(t *testing.T) {
+	s := newStore(t)
+	writeContextPack(t, s, "ctx_sweep_live")
+	w, err := s.Create(CreateInput{
+		Owner: "memo", SuccessPredicate: "ok",
+		ContextPackID: "ctx_sweep_live", DesiredOutcome: "alive",
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Pre-mint the attempt and bring the binding into the eventlog.
+	holder := w.ID + "/memo"
+	raStore := runattempt.Open(s.home)
+	minted, err := raStore.Mint(w.ID, holder, "claude-zai", fixedNow)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if _, err := raStore.MarkRunning(minted.ID, fixedNow); err != nil {
+		t.Fatalf("markRunning: %v", err)
+	}
+	binding := &DelegateBinding{
+		WorkID:       w.ID,
+		Session:      "sweep-live-sess",
+		Harness:      "claude-zai",
+		Lane:         "memo",
+		Holder:       holder,
+		RunAttemptID: minted.ID,
+	}
+	spawnedID, err := s.recordDelegateSpawned(w.ID, binding, true, minted.ID, fixedNow)
+	if err != nil {
+		t.Fatalf("recordSpawned: %v", err)
+	}
+	// Append the lifecycle record so the binding is recoverable.
+	if err := s.appendEvent(Event{
+		TS: ts(fixedNow), WorkID: w.ID, From: w.State, To: w.State,
+		By: holder, Note: "delegate spawned", Attached: []string{spawnedID},
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	// LIVE pane observation: ExitCode=-1, PaneDead=false, Exists=true.
+	liveObs := SessionStatus{Exists: true, ExitCode: -1}
+	runner := newDelegateFakeRunner()
+	runner.live[binding.Session] = true
+	sweepT := fixedNow.Add(31 * time.Minute)
+	before := len(lifeEvents(t, s, w.ID))
+	beforeHb := runAttemptAt(t, raStore, minted.ID).LastHeartbeatAt
+	_ = beforeHb
+
+	out, err := s.DelegateSweep(binding, liveObs, runner, holder, sweepT)
+	if err != nil {
+		t.Fatalf("DelegateSweep live: %v", err)
+	}
+	// runattempt.Store caches reads per-instance. The production code
+	// opens a fresh store from s.home every call, so the test must do
+	// the same to observe post-Heartbeat state without stale cache.
+	after := runAttemptAt(t, runattempt.Open(s.home), minted.ID)
+	if out.ObservedExit != "live" || out.TerminalStatus != "live" {
+		t.Fatalf("live outcome wrong: %+v", out)
+	}
+	// ZERO new lifecycle events, ZERO writes to disk for exit.
+	if got := len(lifeEvents(t, s, w.ID)); got != before {
+		t.Fatalf("live sweep appended a lifecycle event (forbidden): %d -> %d", before, got)
+	}
+	// ZERO kills.
+	if len(runner.kills) != 0 {
+		t.Fatalf("live sweep issued kill (forbidden): %v", runner.kills)
+	}
+	// The exact ratt is heartbeated and STILL pending/running -- not
+	// terminalized.
+	if after.LastHeartbeatAt == nil {
+		t.Fatalf("live sweep did not heartbeat exact ratt: %+v", after)
+	}
+	if after.Status == runattempt.StatusSucceeded || after.Status == runattempt.StatusFailed || after.Status == runattempt.StatusAbandoned {
+		t.Fatalf("live sweep terminalized the attempt (forbidden): %s", after.Status)
+	}
+}
+
+// red-first falsifier: DelegateSweep on a DEAD pane + observed exit 1
+// must terminalize the exact ratt as failed AND kill the session.
+func TestDelegateSweepDeadPaneExitOneTerminalizesFailed(t *testing.T) {
+	s := newStore(t)
+	writeContextPack(t, s, "ctx_sweep_fail")
+	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_sweep_fail", DesiredOutcome: "alive"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := w.ID + "/memo"
+	raStore := runattempt.Open(s.home)
+	minted, err := raStore.Mint(w.ID, holder, "claude-zai", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raStore.MarkRunning(minted.ID, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	binding := &DelegateBinding{WorkID: w.ID, Session: "sweep-fail-sess", Harness: "claude-zai", Lane: "memo", Holder: holder, RunAttemptID: minted.ID}
+	if _, err := s.recordDelegateSpawned(w.ID, binding, true, minted.ID, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := newDelegateFakeRunner()
+	runner.panes = map[string]SessionStatus{
+		binding.Session: {Exists: true, PaneDead: true, ExitCode: 1},
+	}
+	out, err := s.DelegateSweep(binding, runner.panes[binding.Session], runner, holder, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if out.ObservedExit != "failed" || out.TerminalStatus != runattempt.StatusFailed {
+		t.Fatalf("wrong outcome: %+v", out)
+	}
+	if len(runner.kills) != 1 || runner.kills[0] != binding.Session {
+		t.Fatalf("sweep did not kill finished pane: %v", runner.kills)
+	}
+	after := runAttemptAt(t, runattempt.Open(s.home), minted.ID)
+	if after.Status != runattempt.StatusFailed {
+		t.Fatalf("exact ratt not terminalized as failed: %s", after.Status)
+	}
+	// Ensure no -1 leaked into the exited event (signal-only OR
+	// exit-only); exit 1 must serialize 1.
+	events := readDelegateEvents(t, s)
+	for _, ev := range events {
+		if ev["kind"] != "work.delegate.exited" {
+			continue
+		}
+		if v, ok := ev["exit_code"].(float64); ok && int(v) == -1 {
+			t.Fatalf("exited event serialized -1: %+v", ev)
+		}
+	}
+}
+
+// red-first falsifier: signal-only exit must NOT serialize ExitCode=-1
+// in the work.delegate.exited event.
+func TestDelegateExitedSignalOnlyOmitsExitCode(t *testing.T) {
+	s := newStore(t)
+	writeContextPack(t, s, "ctx_signal")
+	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_signal", DesiredOutcome: "alive"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := &DelegateBinding{WorkID: w.ID, Session: "sig-sess", Harness: "claude-zai", Lane: "memo", Holder: w.ID + "/memo", RunAttemptID: ""}
+	// Signal-only ExitCode: -1, signal "TERM".
+	obs := SessionStatus{Exists: true, PaneDead: true, ExitCode: -1, Signal: "TERM"}
+	evID, err := s.recordDelegateExited(w.ID, binding, &obs, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := jsonFile(t, s, evID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, has := body["exit_code"]; has {
+		t.Fatalf("signal-only exited event leaked exit_code: %+v", body)
+	}
+	if sig, _ := body["signal"].(string); sig != "TERM" {
+		t.Fatalf("signal field missing/wrong: %+v", body)
+	}
+	if obsFl, _ := body["observed_exit"].(bool); !obsFl {
+		t.Fatalf("observed_exit must be true: %+v", body)
+	}
+}
+
+// red-first falsifier: backward-compat recovery of an OLDER spawned
+// event without RunAttemptID must still return the binding (terminalize
+// step is silently skipped, but exited event is recorded).
+func TestDelegateRecoverBoundSessionOlderRunsBackCompat(t *testing.T) {
+	s := newStore(t)
+	writeContextPack(t, s, "ctx_legacy")
+	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_legacy", DesiredOutcome: "alive"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := &DelegateBinding{WorkID: w.ID, Session: "legacy-sess", Harness: "claude-zai", Lane: "memo", Holder: w.ID + "/memo"}
+	// Spawned event WITHOUT RunAttemptID (pre-slice shape).
+	legacyID := delegateEventID("work.delegate.spawned", w.ID, fixedNow)
+	if err := s.writeEventJSON(legacyID, delegateEvent{
+		SchemaVersion: delegateEventSchemaVersion,
+		ID:            legacyID,
+		Kind:          "work.delegate.spawned",
+		TS:            ts(fixedNow),
+		WorkID:        w.ID,
+		Harness:       "claude-zai",
+		Lane:          "memo",
+		Holder:        binding.Holder,
+		Session:       binding.Session,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// recoverBoundSession reads lifecycle events with `Attached` refs and
+	// then loads each attached wde_* by id. Attach the legacy id.
+	if err := s.appendEvent(Event{
+		TS: ts(fixedNow), WorkID: w.ID, From: w.State, To: w.State,
+		By: binding.Holder, Note: "legacy spawned", Attached: []string{legacyID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, err := s.recoverBoundSession(w.ID)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if rec == nil || rec.Session != binding.Session || rec.RunAttemptID != "" {
+		t.Fatalf("legacy recovery wrong: %+v", rec)
+	}
+}
+
+// red-first falsifier: probe uncertainty (UnknownReason) must NOT map
+// to any terminal status; it surfaces as an error.
+func TestDelegateSweepProbeUncertaintyReturnsError(t *testing.T) {
+	s := newStore(t)
+	writeContextPack(t, s, "ctx_unk")
+	w, err := s.Create(CreateInput{Owner: "memo", SuccessPredicate: "ok", ContextPackID: "ctx_unk", DesiredOutcome: "alive"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := &DelegateBinding{WorkID: w.ID, Session: "unk-sess", Harness: "claude-zai", Lane: "memo", Holder: w.ID + "/memo", RunAttemptID: ""}
+	obs := SessionStatus{Exists: false, UnknownReason: "tmux list-panes: fork/exec error"}
+	runner := newDelegateFakeRunner()
+	_, err = s.DelegateSweep(binding, obs, runner, "operator", fixedNow.Add(time.Minute))
+	if err == nil {
+		t.Fatal("probe uncertainty must error")
+	}
+	if !strings.Contains(err.Error(), "probe uncertainty") {
+		t.Fatalf("wrong error: %v", err)
+	}
+	if len(runner.kills) != 0 {
+		t.Fatalf("uncertainty must not kill: %v", runner.kills)
+	}
+}
+
+func TestDelegateDeadRemainedPaneAllowsRedelegate(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	first, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-minimax", Command: "claude-minimax",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.panes = map[string]SessionStatus{
+		first.Binding.Session: {Exists: true, PaneDead: true, ExitCode: 0},
+	}
+	second, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-minimax", Command: "claude-minimax",
+		Workspace: t.TempDir(), Now: fixedNow.Add(2 * time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != "spawned" || len(runner.creates) != 2 || len(runner.kills) != 1 {
+		t.Fatalf("re-delegate result=%+v creates=%d kills=%v", second, len(runner.creates), runner.kills)
+	}
+	if got := runAttemptAt(t, runattempt.Open(s.home), first.RunAttemptID); got.Status != runattempt.StatusSucceeded {
+		t.Fatalf("first attempt = %s, want succeeded", got.Status)
+	}
+	if got := runAttemptAt(t, runattempt.Open(s.home), second.RunAttemptID); got.Status != runattempt.StatusRunning {
+		t.Fatalf("second attempt = %s, want running", got.Status)
+	}
+}
+
+func TestDelegateAttachDeadPaneIsReadOnly(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	spawned, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-qwen", Command: "claude-qwen",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.panes = map[string]SessionStatus{
+		spawned.Binding.Session: {Exists: true, PaneDead: true, ExitCode: 0},
+	}
+	beforeLife := len(lifeEvents(t, s, wID))
+	beforeEvents := len(capturedDelegateEvents(t, s))
+	if _, err := s.Attach(AttachOptions{WorkID: wID}, runner); err == nil {
+		t.Fatal("attach must refuse a dead remained pane")
+	}
+	if len(lifeEvents(t, s, wID)) != beforeLife || len(capturedDelegateEvents(t, s)) != beforeEvents || len(runner.kills) != 0 {
+		t.Fatalf("attach mutated dead session: life=%d->%d events=%d->%d kills=%v", beforeLife, len(lifeEvents(t, s, wID)), beforeEvents, len(capturedDelegateEvents(t, s)), runner.kills)
+	}
+}
+
+func TestDelegateSweepTerminalizesOnlyBoundAttempt(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	claimed, err := s.Get(wID)
+	if err != nil || len(claimed.RunAttemptIDs) != 1 {
+		t.Fatalf("claim attempt: work=%+v err=%v", claimed, err)
+	}
+	siblingID := claimed.RunAttemptIDs[0]
+	runner := newFakeRunner()
+	spawned, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	siblingPath := filepath.Join(s.home, "run_attempts", siblingID+".json")
+	siblingBeforeSweep, err := os.ReadFile(siblingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := SessionStatus{Exists: true, PaneDead: true, ExitCode: 1}
+	if _, err := s.DelegateSweep(spawned.Binding, obs, runner, "operator", fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := runAttemptAt(t, runattempt.Open(s.home), spawned.RunAttemptID); got.Status != runattempt.StatusFailed {
+		t.Fatalf("bound attempt = %s, want failed", got.Status)
+	}
+	siblingAfterSweep, err := os.ReadFile(siblingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(siblingBeforeSweep, siblingAfterSweep) {
+		t.Fatalf("sweep mutated sibling claim reservation %s", siblingID)
+	}
+}
+
+func TestDelegateSweepVanishedBecomesAbandonedWithoutKill(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	spawned, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(runner.live, spawned.Binding.Session)
+	out, err := s.DelegateSweep(spawned.Binding, SessionStatus{Exists: false}, runner, "operator", fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalStatus != runattempt.StatusAbandoned || len(runner.kills) != 0 {
+		t.Fatalf("vanished outcome=%+v kills=%v", out, runner.kills)
+	}
+}
+
+func TestDelegateSweepRetryDoesNotDuplicateExitedEvent(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	spawned, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := SessionStatus{Exists: true, PaneDead: true, ExitCode: 0}
+	if _, err := s.DelegateSweep(spawned.Binding, dead, runner, "operator", fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	before := countDelegateEventKind(t, s, "work.delegate.exited")
+	recovered, err := s.DelegateSweepResolve(wID)
+	if err != nil || recovered == nil {
+		t.Fatalf("resolve finalized binding: %+v %v", recovered, err)
+	}
+	if _, err := s.DelegateSweep(recovered, SessionStatus{Exists: false}, runner, "operator", fixedNow.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if after := countDelegateEventKind(t, s, "work.delegate.exited"); after != before {
+		t.Fatalf("retry duplicated exited event: %d -> %d", before, after)
+	}
+}
+
+func TestDelegateSweepReportsFinishedPaneKillFailure(t *testing.T) {
+	orig := LaneCapacityGuard
+	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
+	defer func() { LaneCapacityGuard = orig }()
+
+	s := newStore(t)
+	wID := prepareClaimedWork(t, s, "orchestrator:test", "", "")
+	runner := newFakeRunner()
+	spawned, err := s.Delegate(DelegateOptions{
+		WorkID: wID, Harness: "claude-zai", Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.killErr = errors.New("kill transport failed")
+	_, err = s.DelegateSweep(spawned.Binding, SessionStatus{Exists: true, PaneDead: true, ExitCode: 1}, runner, "operator", fixedNow.Add(2*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "kill transport failed") {
+		t.Fatalf("kill failure hidden: %v", err)
+	}
+	if countDelegateEventKind(t, s, "work.delegate.exited") != 1 {
+		t.Fatal("kill failure lost the prior exited evidence")
+	}
+	if got := runAttemptAt(t, runattempt.Open(s.home), spawned.RunAttemptID); got.Status != runattempt.StatusFailed {
+		t.Fatalf("attempt not terminal before reported kill failure: %s", got.Status)
+	}
+}
+
+func newDelegateFakeRunner() *delegateFakeRunner {
+	return &delegateFakeRunner{live: map[string]bool{}, panes: map[string]SessionStatus{}}
+}
+
+// delegateFakeRunner is a SessionRunner test double for the new
+// DelegateSweep tests. It tracks kills + per-session SessionStatus
+// overrides and ignores create / send-keys on purpose (the sweep path
+// does not need them).
+type delegateFakeRunner struct {
+	mu    sync.Mutex
+	live  map[string]bool
+	panes map[string]SessionStatus
+	kills []string
+}
+
+func (d *delegateFakeRunner) Available() error { return nil }
+func (d *delegateFakeRunner) Has(name string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.live[name], nil
+}
+func (d *delegateFakeRunner) SessionStatus(name string) (SessionStatus, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if p, ok := d.panes[name]; ok {
+		return p, nil
+	}
+	if d.live[name] {
+		return SessionStatus{Exists: true, ExitCode: -1}, nil
+	}
+	return SessionStatus{Exists: false}, nil
+}
+func (d *delegateFakeRunner) Create(name, dir, command string, args []string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.live[name] = true
+	return nil
+}
+func (d *delegateFakeRunner) SendKeys(name, text string, enter bool) error { return nil }
+func (d *delegateFakeRunner) Kill(name string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.kills = append(d.kills, name)
+	delete(d.live, name)
+	delete(d.panes, name)
+	return nil
+}
+func (d *delegateFakeRunner) AttachArgv(name string) []string {
+	return []string{"tmux", "attach-session", "-t", name}
+}
+
+func lifeEvents(t *testing.T, s *Store, workID string) []Event {
+	t.Helper()
+	evs, err := s.eventsFor(workID)
+	if err != nil {
+		t.Fatalf("eventsFor: %v", err)
+	}
+	return evs
+}
+
+func runAttemptAt(t *testing.T, raStore *runattempt.Store, id string) runattempt.RunAttempt {
+	t.Helper()
+	ra, err := raStore.Get(id)
+	if err != nil {
+		t.Fatalf("raStore.Get: %v", err)
+	}
+	return ra
+}
+
+func runAttemptsByID(t *testing.T, s *Store) map[string]runattempt.RunAttempt {
+	t.Helper()
+	all, err := runattempt.Open(s.home).List()
+	if err != nil {
+		t.Fatalf("list run attempts: %v", err)
+	}
+	out := make(map[string]runattempt.RunAttempt, len(all))
+	for _, ra := range all {
+		out[ra.ID] = ra
+	}
+	return out
+}
+
+func assertOneNewAttemptStatus(t *testing.T, s *Store, before map[string]runattempt.RunAttempt, status string) string {
+	t.Helper()
+	var found string
+	for id, ra := range runAttemptsByID(t, s) {
+		if _, existed := before[id]; existed {
+			continue
+		}
+		if found != "" {
+			t.Fatalf("more than one new attempt: %s and %s", found, id)
+		}
+		found = id
+		if ra.Status != status {
+			t.Fatalf("new attempt %s status = %s, want %s", id, ra.Status, status)
+		}
+	}
+	if found == "" {
+		t.Fatal("no new attempt found")
+	}
+	return found
+}
+
+func countDelegateEventKind(t *testing.T, s *Store, kind string) int {
+	t.Helper()
+	count := 0
+	for _, event := range capturedDelegateEvents(t, s) {
+		if event["kind"] == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func jsonFile(t *testing.T, s *Store, id string) (map[string]any, error) {
+	t.Helper()
+	var m map[string]any
+	if err := s.readEventJSON(id, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func readDelegateEvents(t *testing.T, s *Store) []map[string]any {
+	t.Helper()
+	doc, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if len(doc) == 0 {
+		return nil
+	}
+	var out []map[string]any
+	for _, line := range bytes.Split(doc, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err == nil {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func firstEventID(events []map[string]any, kind string) string {

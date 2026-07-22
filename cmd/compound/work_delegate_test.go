@@ -4,19 +4,28 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
 var delegateCLITestNow = time.Date(2026, 7, 21, 9, 0, 0, 0, time.UTC)
 
 type delegateCLIFakeRunner struct {
-	live    map[string]bool
-	creates []delegateCLICreate
-	keys    []delegateCLIKeys
+	mu        sync.Mutex
+	live      map[string]bool
+	panes     map[string]work.SessionStatus
+	creates   []delegateCLICreate
+	keys      []delegateCLIKeys
+	kills     []string
+	createErr error
 }
 
 type delegateCLICreate struct {
@@ -30,19 +39,39 @@ type delegateCLIKeys struct {
 }
 
 func newDelegateCLIFakeRunner() *delegateCLIFakeRunner {
-	return &delegateCLIFakeRunner{live: map[string]bool{}}
+	return &delegateCLIFakeRunner{live: map[string]bool{}, panes: map[string]work.SessionStatus{}}
 }
 
 func (f *delegateCLIFakeRunner) Available() error { return nil }
 func (f *delegateCLIFakeRunner) Has(name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.live[name], nil
 }
+func (f *delegateCLIFakeRunner) SessionStatus(name string) (work.SessionStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ps, ok := f.panes[name]; ok {
+		return ps, nil
+	}
+	if f.live[name] {
+		return work.SessionStatus{Exists: true, ExitCode: -1}, nil
+	}
+	return work.SessionStatus{Exists: false}, nil
+}
 func (f *delegateCLIFakeRunner) Create(name, dir, command string, args []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return f.createErr
+	}
 	f.creates = append(f.creates, delegateCLICreate{name: name, dir: dir, command: command, args: append([]string(nil), args...)})
 	f.live[name] = true
 	return nil
 }
 func (f *delegateCLIFakeRunner) SendKeys(name, text string, enter bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if !f.live[name] {
 		return fmt.Errorf("session %s is dead", name)
 	}
@@ -50,7 +79,11 @@ func (f *delegateCLIFakeRunner) SendKeys(name, text string, enter bool) error {
 	return nil
 }
 func (f *delegateCLIFakeRunner) Kill(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.kills = append(f.kills, name)
 	delete(f.live, name)
+	delete(f.panes, name)
 	return nil
 }
 func (f *delegateCLIFakeRunner) AttachArgv(name string) []string {
@@ -59,7 +92,14 @@ func (f *delegateCLIFakeRunner) AttachArgv(name string) []string {
 
 func claimedDelegateCLIWork(t *testing.T, holder string) (*work.Store, string) {
 	t.Helper()
-	store, err := work.Open(t.TempDir())
+	store, workID, _ := claimedDelegateCLIWorkAt(t, holder)
+	return store, workID
+}
+
+func claimedDelegateCLIWorkAt(t *testing.T, holder string) (*work.Store, string, string) {
+	t.Helper()
+	home := t.TempDir()
+	store, err := work.Open(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +112,7 @@ func claimedDelegateCLIWork(t *testing.T, holder string) (*work.Store, string) {
 	if _, err := store.Claim(w.ID, holder, delegateCLITestNow); err != nil {
 		t.Fatal(err)
 	}
-	return store, w.ID
+	return store, w.ID, home
 }
 
 func allowDelegateCLIGuard(t *testing.T, confirmationRequired bool) {
@@ -188,6 +228,132 @@ func TestWorkDelegateCLISteerAndAttachUseRecoveredSession(t *testing.T) {
 	}
 }
 
+func TestWorkDelegateStatusIsReachableAndWritesNothing(t *testing.T) {
+	allowDelegateCLIGuard(t, false)
+	store, workID, home := claimedDelegateCLIWorkAt(t, "orchestrator:test")
+	runner := newDelegateCLIFakeRunner()
+	spawnOut, errOut, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		workID, "--harness", "claude-zai", "--json")
+	if code != 0 || errOut != "" {
+		t.Fatalf("spawn code=%d stderr=%q", code, errOut)
+	}
+	var spawned work.DelegateResult
+	if err := json.Unmarshal([]byte(spawnOut), &spawned); err != nil || spawned.Binding == nil {
+		t.Fatalf("decode spawn: %+v %v", spawned, err)
+	}
+	runner.panes[spawned.Binding.Session] = work.SessionStatus{Exists: true, PaneDead: true, ExitCode: 1}
+	before := snapshotFiles(t, home)
+	out, errOut, code := runDelegateCLIForTest(t, "delegate", store, runner, nil, "status", workID, "--json")
+	if code != 0 || errOut != "" {
+		t.Fatalf("status code=%d stderr=%q stdout=%q", code, errOut, out)
+	}
+	var observed work.DelegateStatusObservation
+	if err := json.Unmarshal([]byte(out), &observed); err != nil {
+		t.Fatalf("decode status: %v\n%s", err, out)
+	}
+	if !observed.Bound || !observed.PaneStatus.PaneDead || observed.RunAttemptID != spawned.RunAttemptID || observed.RunAttemptStatus != "running" {
+		t.Fatalf("status observation = %+v", observed)
+	}
+	after := snapshotFiles(t, home)
+	if !reflect.DeepEqual(before, after) || len(runner.kills) != 0 {
+		t.Fatalf("status mutated state: files_equal=%v kills=%v", reflect.DeepEqual(before, after), runner.kills)
+	}
+}
+
+func TestWorkDelegateSweepDryRunWritesAndKillsNothing(t *testing.T) {
+	allowDelegateCLIGuard(t, false)
+	store, workID, home := claimedDelegateCLIWorkAt(t, "orchestrator:test")
+	runner := newDelegateCLIFakeRunner()
+	spawnOut, _, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		workID, "--harness", "claude-minimax", "--json")
+	if code != 0 {
+		t.Fatalf("spawn code=%d", code)
+	}
+	var spawned work.DelegateResult
+	if err := json.Unmarshal([]byte(spawnOut), &spawned); err != nil || spawned.Binding == nil {
+		t.Fatalf("decode spawn: %+v %v", spawned, err)
+	}
+	runner.panes[spawned.Binding.Session] = work.SessionStatus{Exists: true, PaneDead: true, ExitCode: 0}
+	before := snapshotFiles(t, home)
+	out, errOut, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		"sweep", workID, "--dry-run", "--json")
+	if code != 0 || errOut != "" || !strings.Contains(out, spawned.RunAttemptID) {
+		t.Fatalf("dry-run code=%d stderr=%q stdout=%q", code, errOut, out)
+	}
+	if after := snapshotFiles(t, home); !reflect.DeepEqual(before, after) || len(runner.kills) != 0 {
+		t.Fatalf("dry-run mutated state: files_equal=%v kills=%v", reflect.DeepEqual(before, after), runner.kills)
+	}
+}
+
+func TestWorkDelegateSweepTerminalizesAndRemovesDeadPane(t *testing.T) {
+	allowDelegateCLIGuard(t, false)
+	store, workID := claimedDelegateCLIWork(t, "orchestrator:test")
+	runner := newDelegateCLIFakeRunner()
+	spawnOut, _, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		workID, "--harness", "claude-qwen", "--json")
+	if code != 0 {
+		t.Fatalf("spawn code=%d", code)
+	}
+	var spawned work.DelegateResult
+	if err := json.Unmarshal([]byte(spawnOut), &spawned); err != nil || spawned.Binding == nil {
+		t.Fatalf("decode spawn: %+v %v", spawned, err)
+	}
+	runner.panes[spawned.Binding.Session] = work.SessionStatus{Exists: true, PaneDead: true, ExitCode: 1}
+	out, errOut, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		"sweep", workID, "--json")
+	if code != 0 || errOut != "" {
+		t.Fatalf("sweep code=%d stderr=%q stdout=%q", code, errOut, out)
+	}
+	var swept work.DelegateSweepOutcome
+	if err := json.Unmarshal([]byte(out), &swept); err != nil {
+		t.Fatalf("decode sweep: %v\n%s", err, out)
+	}
+	if swept.RunAttemptID != spawned.RunAttemptID || swept.TerminalStatus != "failed" || len(runner.kills) != 1 {
+		t.Fatalf("sweep=%+v kills=%v", swept, runner.kills)
+	}
+}
+
+func TestRunAttemptSweepProbeUsesExactDelegateBinding(t *testing.T) {
+	allowDelegateCLIGuard(t, false)
+	store, workID, home := claimedDelegateCLIWorkAt(t, "orchestrator:test")
+	runner := newDelegateCLIFakeRunner()
+	spawnOut, _, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		workID, "--harness", "claude-zai", "--json")
+	if code != 0 {
+		t.Fatalf("spawn code=%d", code)
+	}
+	var spawned work.DelegateResult
+	if err := json.Unmarshal([]byte(spawnOut), &spawned); err != nil || spawned.Binding == nil {
+		t.Fatalf("decode spawn: %+v %v", spawned, err)
+	}
+	all, err := runattempt.Open(home).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delegated, sibling runattempt.RunAttempt
+	for _, ra := range all {
+		switch ra.ID {
+		case spawned.RunAttemptID:
+			delegated = ra
+		default:
+			if ra.WorkID == workID {
+				sibling = ra
+			}
+		}
+	}
+	probe := buildDelegateLivenessProbeWithRunner(home, runner)
+	if live, err := probe(delegated); err != nil || !live {
+		t.Fatalf("live exact delegate probe = %v, %v", live, err)
+	}
+	if live, err := probe(sibling); err != nil || live {
+		t.Fatalf("sibling claim reservation probe = %v, %v", live, err)
+	}
+	runner.panes[spawned.Binding.Session] = work.SessionStatus{Exists: true, PaneDead: true, ExitCode: 0}
+	if live, err := probe(delegated); err != nil || live {
+		t.Fatalf("dead exact delegate probe = %v, %v", live, err)
+	}
+}
+
 func TestWorkDelegateCLIUsageErrors(t *testing.T) {
 	store, workID := claimedDelegateCLIWork(t, "orchestrator:test")
 	runner := newDelegateCLIFakeRunner()
@@ -217,4 +383,27 @@ func TestWorkDelegateHelpInventory(t *testing.T) {
 			t.Fatalf("work help does not expose %s: root=%q sub=%q", verb, workUsage(""), workUsage(verb))
 		}
 	}
+}
+
+func snapshotFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(body)
+		return nil
+	}); err != nil {
+		t.Fatalf("snapshot files: %v", err)
+	}
+	return out
 }

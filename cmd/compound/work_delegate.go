@@ -27,9 +27,146 @@ type steerCLIOptions struct {
 	enter, jsonOut      bool
 }
 
+// runDelegateStatusCLI is the testable command edge for
+// `compound work delegate status <work_id>`. Read-only; writes nothing.
+func runDelegateStatusCLI(args []string, store *work.Store, runner work.SessionRunner, now time.Time, stdout, stderr io.Writer) int {
+	var positional []string
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			// Status is JSON by definition; accept the explicit flag so the
+			// documented machine-readable invocation stays composable.
+		default:
+			if strings.HasPrefix(arg, "-") {
+				fmt.Fprintln(stderr, "error: unknown flag", arg)
+				return 2
+			}
+			positional = append(positional, arg)
+		}
+	}
+	if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
+		fmt.Fprintln(stderr, "error: status requires exactly one work_id and no flags")
+		return 2
+	}
+	if store == nil || runner == nil {
+		fmt.Fprintln(stderr, "error: delegate runtime is unavailable")
+		return 1
+	}
+	obs, err := store.DelegateStatus(positional[0], runner)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(obs); err != nil {
+		fmt.Fprintln(stderr, "error: encode status:", err)
+		return 1
+	}
+	_ = now
+	return 0
+}
+
+// runDelegateSweepCLI is the testable command edge for
+// `compound work delegate sweep <work_id> [--dry-run] [--json]`. Writes
+// a work.delegate.exited artifact and kills the finished pane (NOT a
+// live one). Dry-run writes/kills nothing.
+func runDelegateSweepCLI(args []string, store *work.Store, runner work.SessionRunner, now time.Time, stdout, stderr io.Writer) int {
+	if store == nil || runner == nil {
+		fmt.Fprintln(stderr, "error: delegate runtime is unavailable")
+		return 1
+	}
+	var positional []string
+	dryRun := false
+	jsonOut := false
+	for _, a := range args {
+		switch a {
+		case "--dry-run":
+			dryRun = true
+		case "--json":
+			jsonOut = true
+		default:
+			if strings.HasPrefix(a, "-") {
+				fmt.Fprintln(stderr, "error: unknown flag", a)
+				return 2
+			}
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
+		fmt.Fprintln(stderr, "error: sweep requires exactly one work_id")
+		return 2
+	}
+	workID := positional[0]
+	if dryRun {
+		obs, err := store.DelegateStatus(workID, runner)
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		if jsonOut {
+			enc := json.NewEncoder(stdout)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(obs); err != nil {
+				fmt.Fprintln(stderr, "error: encode dry-run:", err)
+				return 1
+			}
+			return 0
+		}
+		fmt.Fprintf(stdout, "dry-run: would sweep work=%s bound=%t session=%s run_attempt_status=%s\n",
+			obs.WorkID, obs.Bound, obs.Session, obs.RunAttemptStatus)
+		_ = now
+		return 0
+	}
+	// Resolve the binding, probe the pane, and call DelegateSweep.
+	binding, err := store.DelegateSweepResolve(workID)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if binding == nil {
+		fmt.Fprintln(stderr, "error: no binding for work", workID)
+		return 1
+	}
+	st, sErr := runner.SessionStatus(binding.Session)
+	if sErr != nil {
+		fmt.Fprintln(stderr, "error:", sErr)
+		return 1
+	}
+	out, err := store.DelegateSweep(binding, st, runner, "operator", now)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if jsonOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(out); err != nil {
+			fmt.Fprintln(stderr, "error: encode sweep:", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintf(stdout, "swept work=%s session=%s run_attempt=%s observed=%s status=%s\n",
+		out.WorkID, out.Session, out.RunAttemptID, out.ObservedExit, out.TerminalStatus)
+	if out.KillError != "" {
+		fmt.Fprintf(stdout, "kill-error: %s\n", out.KillError)
+	}
+	return 0
+}
+
 // runWorkDelegateCLI is the testable command edge for work
-// delegate|steer|attach. Parsing and rendering live here; lifecycle meaning
-// remains in internal/work and process supervision remains behind runner.
+// delegate|steer|attach|<status>|<sweep>. Parsing and rendering live
+// here; lifecycle meaning remains in internal/work and process
+// supervision remains behind runner.
+//
+// `compound work delegate status <work_id>` and
+// `compound work delegate sweep <work_id> [--dry-run] [--json]` are
+// surfaced through the same top-level verb because the work-cli
+// dispatcher already routes `compound work delegate` here -- adding a
+// separate top-level verb would split the documentation surface. They
+// are special-cased BEFORE parseDelegate so "status" and "sweep" do
+// not become a work_id.
 func runWorkDelegateCLI(sub string, args []string, store *work.Store, runner work.SessionRunner, attach func([]string) error, now time.Time, stdout, stderr io.Writer) int {
 	if store == nil || runner == nil {
 		fmt.Fprintln(stderr, "error: delegate runtime is unavailable")
@@ -37,6 +174,15 @@ func runWorkDelegateCLI(sub string, args []string, store *work.Store, runner wor
 	}
 	switch sub {
 	case "delegate":
+		// Sub-dispatch: status/sweep before parseDelegate.
+		if len(args) > 0 {
+			switch args[0] {
+			case "status":
+				return runDelegateStatusCLI(args[1:], store, runner, now, stdout, stderr)
+			case "sweep":
+				return runDelegateSweepCLI(args[1:], store, runner, now, stdout, stderr)
+			}
+		}
 		opts, err := parseDelegateCLI(args)
 		if err != nil {
 			return delegateCLIUsageError(stderr, "delegate", err)

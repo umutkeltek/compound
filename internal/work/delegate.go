@@ -42,18 +42,44 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/runattempt"
 )
 
 const (
 	delegateEventSchemaVersion = "compound.work_delegate_event.v0.1"
 	delegateSpawnFailureNote   = "session runner could not create the governed session"
+	delegateAmbiguousNote      = "Create failed but the named session exists; classified as spawn_ambiguous (the session may be a stranger's); no kill performed"
+	delegateProbeUnknownNote   = "Create failed and session ownership could not be determined; classified as spawn_ambiguous; no kill performed"
 )
+
+// SessionStatus captures the supervised pane's liveness and (when
+// available) its exit code/signal. The orchestrator treats this -- not bare
+// Has -- as the source of truth for whether a previously-spawned session
+// is still running, because tmux keeps dead sessions around with
+// remain-on-exit.
+//
+// ExitCode is the observed exit status; -1 means the runner has no
+// observable value yet (server crash, pane_dead set without metadata, the
+// pane is live, etc). The orchestrator treats -1 as "unknown / cannot
+// conclude exit" rather than guessing the value 0.
+type SessionStatus struct {
+	Exists   bool   `json:"exists"`           // session exists in the server's namespace
+	PaneDead bool   `json:"pane_dead"`        // pane process is dead (remain-on-exit set)
+	ExitCode int    `json:"exit_code"`        // observed exit status; -1 means unknown / not observed
+	Signal   string `json:"signal,omitempty"` // non-empty when killed by a signal (e.g. "TERM")
+	// UnknownReason is set when the runner cannot determine the status
+	// (exec failure, malformed output, permissions, etc). The orchestrator
+	// propagates the uncertainty; it never guesses a terminal status.
+	UnknownReason string `json:"unknown_reason,omitempty"`
+}
 
 // SessionRunner is the seam between the orchestrator and any backing
 // supervised-execution backend (tmux in production; a fake in tests).
 type SessionRunner interface {
 	Available() error
 	Has(name string) (bool, error)
+	SessionStatus(name string) (SessionStatus, error)
 	Create(name, dir, command string, args []string) error
 	SendKeys(name, text string, enter bool) error
 	Kill(name string) error
@@ -82,8 +108,13 @@ type DelegateResult struct {
 	Binding       *DelegateBinding         `json:"binding,omitempty"`
 	Refusal       *DelegateRefusal         `json:"refusal,omitempty"`
 	Decision      *LaneCapacityGuardResult `json:"decision,omitempty"`
-	EventID       string                   `json:"event_id,omitempty"`
-	GeneratedAt   string                   `json:"generated_at"`
+	// RunAttemptID is the ratt_<UTC>_<hex> that was minted before Create
+	// and marked running after the supervised spawn succeeded. Always
+	// populated on Status="spawned"; older callers that recover a
+	// pre-slice binding decode this as empty.
+	RunAttemptID string `json:"run_attempt_id,omitempty"`
+	EventID      string `json:"event_id,omitempty"`
+	GeneratedAt  string `json:"generated_at"`
 }
 
 // DelegateBinding is the SYNTHESIZED view of the bound session. It is built
@@ -99,6 +130,11 @@ type DelegateBinding struct {
 	CapacityState string `json:"capacity_state,omitempty"`
 	RecordedAt    string `json:"recorded_at,omitempty"`
 	WorkSHA256    string `json:"work_sha256,omitempty"`
+	// RunAttemptID is the ratt_<UTC>_<hex> the orchestrator minted BEFORE
+	// the supervised spawn. Older bindings (pre-slice) leave it empty
+	// and remain backward-compatible: recovery still returns the
+	// binding, sweep falls back to "no probe target".
+	RunAttemptID string `json:"run_attempt_id,omitempty"`
 }
 
 type DelegateRefusal struct {
@@ -163,6 +199,17 @@ func resolveDelegateSessionName(workID, override string) string {
 // delegateEvent is the structured record stored in the existing eventstore
 // under compound.work_delegate_event.v0.1. It is the slice-1 single
 // meaning owner for the binding (work ↔ tmux session).
+//
+// RunAttemptID carries the exact ratt_<UTC>_<hex> the orchestrator minted
+// BEFORE the first supervised spawn side effect, so a later recovery or
+// sweep can resolve from this binding back to its attempt without a side
+// index. Older records (no RunAttemptID field) decode as empty string and
+// remain backward-compatible: recovery still returns the binding, and
+// sweep falls back to "no probe target".
+//
+// ExitCode / Signal carry the OBSERVED exit when present on a
+// work.delegate.exited event. Older exited events (no fields) still
+// serialize cleanly: the orchestrator accepts either shape.
 type delegateEvent struct {
 	SchemaVersion string `json:"schema_version"`
 	ID            string `json:"id"`
@@ -178,6 +225,10 @@ type delegateEvent struct {
 	Confirm       bool   `json:"confirm,omitempty"`
 	Session       string `json:"session,omitempty"`
 	WorkSHA256    string `json:"work_sha256,omitempty"`
+	RunAttemptID  string `json:"run_attempt_id,omitempty"`
+	ExitCode      *int   `json:"exit_code,omitempty"`
+	Signal        string `json:"signal,omitempty"`
+	ObservedExit  bool   `json:"observed_exit,omitempty"`
 }
 
 func delegateEventID(kind, workID string, now time.Time) string {
@@ -185,21 +236,35 @@ func delegateEventID(kind, workID string, now time.Time) string {
 	return "wde_" + hex.EncodeToString(h[:])[:16]
 }
 
-// recoverBoundSession walks the work's lifecycle events oldest-first,
+func delegateBindingEventID(kind, workID string, b *DelegateBinding, now time.Time) string {
+	identity := ""
+	if b != nil {
+		identity = strings.Join([]string{b.Session, b.RunAttemptID}, "|")
+	}
+	h := sha256.Sum256([]byte(strings.Join([]string{kind, workID, identity, ts(now)}, "|")))
+	return "wde_" + hex.EncodeToString(h[:])[:16]
+}
+
+// latestDelegateBinding walks the work's lifecycle events oldest-first,
 // reading every attached wde_* record through the existing eventstore API,
-// and synthesizes the current binding. A work.delegate.spawned sets the
-// binding; a work.delegate.exited clears it. After the walk, a non-nil
-// binding is alive BY EVENTLOG; the caller still probes SessionRunner.Has
-// because the runner is the liveness source of truth.
+// and synthesizes the latest binding. A work.delegate.spawned sets the
+// binding (and copies RunAttemptID so terminalization is keyed to the
+// exact ratt); a work.delegate.exited retains that identity but marks it
+// inactive so a partial cleanup can be retried without inventing a second
+// exit event. recoverBoundSession wraps this helper and exposes only active
+// bindings. Callers still probe SessionRunner.SessionStatus because the
+// runner is the process-liveness source of truth.
 //
-// Returns (nil, false, nil) when no binding exists. The second return is
-// the alive flag (eventlog view); Has at use time may still differ.
-func (s *Store) recoverBoundSession(workID string) (*DelegateBinding, bool, error) {
+// Returns (nil, false, nil) when no binding has ever existed. The second
+// return is the eventlog-alive flag; SessionStatus at use time may still
+// differ (pane dead under remain-on-exit).
+func (s *Store) latestDelegateBinding(workID string) (*DelegateBinding, bool, error) {
 	events, err := s.eventsFor(workID)
 	if err != nil {
 		return nil, false, err
 	}
 	var binding *DelegateBinding
+	alive := false
 	for _, e := range events {
 		for _, att := range e.Attached {
 			if !strings.HasPrefix(att, "wde_") {
@@ -223,18 +288,72 @@ func (s *Store) recoverBoundSession(workID string) (*DelegateBinding, bool, erro
 					CapacityState: dev.CapacityState,
 					RecordedAt:    dev.TS,
 					WorkSHA256:    dev.WorkSHA256,
+					// Older spawned events (pre-slice) decode with empty
+					// RunAttemptID; the rest of the orchestrator treats
+					// empty as "no exact attempt" and stays backward-
+					// compatible (terminalization is skipped; console
+					// shows an empty ratt).
+					RunAttemptID: dev.RunAttemptID,
 				}
+				alive = true
 			case "work.delegate.exited":
-				binding = nil // any active binding dies
+				alive = false
 			case "work.delegate.refused", "work.delegate.steered":
 				// These are binding-neutral but still valid delegate events.
 			}
 		}
 	}
-	if binding == nil {
-		return nil, false, nil
+	return binding, alive, nil
+}
+
+func (s *Store) recoverBoundSession(workID string) (*DelegateBinding, bool, error) {
+	binding, alive, err := s.latestDelegateBinding(workID)
+	if err != nil || !alive {
+		return nil, false, err
 	}
 	return binding, true, nil
+}
+
+// recordedDelegateExit returns the latest exit attached after the matching
+// spawned binding. Matching the exact RunAttemptID prevents an old exit from
+// a reused session name from making a new generation look finalized. Legacy
+// bindings without a ratt fall back to session identity and reset on the next
+// matching spawn.
+func (s *Store) recordedDelegateExit(workID string, b *DelegateBinding) (*delegateEvent, error) {
+	events, err := s.eventsFor(workID)
+	if err != nil {
+		return nil, err
+	}
+	var matchedSpawn bool
+	var found *delegateEvent
+	for _, e := range events {
+		for _, att := range e.Attached {
+			if !strings.HasPrefix(att, "wde_") {
+				continue
+			}
+			var dev delegateEvent
+			if err := s.readEventJSON(att, &dev); err != nil {
+				return nil, fmt.Errorf("recover delegate exit %s: %w", att, err)
+			}
+			if err := validateAttachedDelegateEvent(att, workID, dev); err != nil {
+				return nil, fmt.Errorf("recover delegate exit %s: %w", att, err)
+			}
+			identityMatches := dev.Session == b.Session && (b.RunAttemptID == "" || dev.RunAttemptID == b.RunAttemptID)
+			switch dev.Kind {
+			case "work.delegate.spawned":
+				if identityMatches {
+					matchedSpawn = true
+					found = nil
+				}
+			case "work.delegate.exited":
+				if matchedSpawn && identityMatches {
+					copy := dev
+					found = &copy
+				}
+			}
+		}
+	}
+	return found, nil
 }
 
 func validateAttachedDelegateEvent(eventID, workID string, event delegateEvent) error {
@@ -423,19 +542,21 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	}
 
 	sessionName := resolveDelegateSessionName(out.WorkID, opts.Session)
-	// Existing binding? Probe liveness; if live, refuse session_live; if
-	// not live, record .exited and proceed with a fresh spawn on the SAME
-	// session name (deterministic so a steer-while-dead can re-attach).
+	// Existing binding? Probe liveness via SessionStatus (NOT Has, which
+	// is false evidence once a pane dies under remain-on-exit); if
+	// exists+pane_dead, record .exited and proceed with a fresh spawn on
+	// the SAME session name (deterministic so a steer-while-dead can
+	// re-attach); if exists+alive, refuse session_live.
 	existing, _, rerr := s.recoverBoundSession(out.WorkID)
 	if rerr != nil {
 		return out, rerr
 	}
 	if existing != nil {
-		live, hasErr := runner.Has(existing.Session)
-		if hasErr != nil {
-			return out, fmt.Errorf("delegate: probe session %s: %w", existing.Session, hasErr)
+		st, sessErr := runner.SessionStatus(existing.Session)
+		if sessErr != nil {
+			return out, fmt.Errorf("delegate: probe session %s: %w", existing.Session, sessErr)
 		}
-		if live {
+		if st.Exists && !st.PaneDead {
 			evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "session_live", "a live bound session already exists for this work", opts.Now)
 			if eerr != nil {
 				return out, eerr
@@ -451,7 +572,12 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			}
 			return out, nil
 		}
-		if _, err := s.recordAndAttachDelegateExited(out.WorkID, w.State, existing, holder, opts.Now); err != nil {
+		// Dead or gone: finalize via the unified DelegateSweep helper
+		// (terminalize the attempt, record the exited artifact, kill the
+		// finished tmux pane if any). This MUST happen BEFORE respawning
+		// on the same session name -- otherwise the next Create sees the
+		// orphan pane and classifies spawn_ambiguous.
+		if _, err := s.DelegateSweep(existing, st, runner, holder, opts.Now); err != nil {
 			return out, err
 		}
 	}
@@ -491,19 +617,87 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	if shaErr != nil {
 		return out, shaErr
 	}
-	if err := runner.Create(sessionName, workspace, opts.Command, opts.Args); err != nil {
-		// SessionRunner is an adapter seam; do not trust its error text to be
-		// metadata-only. Some process libraries echo argv, which may contain
-		// the operator's complete prompt. Keep the durable refusal opaque.
-		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "spawn_failed", delegateSpawnFailureNote, opts.Now)
+
+	// MINT BEFORE CREATE: the orchestrator mints the delegate RunAttempt
+	// with origin/lane/workspace/wrapper command only -- NEVER prompt or
+	// argv, which may contain operator secrets. RunAttempt persistence is
+	// independent of the spawn side effect, so a Mint failure is a
+	// refuse -- ZERO Create side effects, ZERO session exists.
+	raStore := runattempt.Open(s.home)
+	minted, mintErr := raStore.Mint(out.WorkID, holder, resolvedHarness, opts.Now)
+	if mintErr != nil {
+		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "mint_failed", "RunAttempt mint failed before any spawn side effect", opts.Now)
 		if eerr != nil {
 			return out, eerr
 		}
-		if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason=spawn_failed", opts.Now); err != nil {
+		if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason=mint_failed", opts.Now); err != nil {
 			return out, err
 		}
 		out.EventID = evID
-		out.Refusal = &DelegateRefusal{Reason: "spawn_failed", Message: delegateSpawnFailureNote}
+		out.Refusal = &DelegateRefusal{Reason: "mint_failed", Message: "RunAttempt mint failed before any spawn side effect"}
+		return out, nil
+	}
+	runAttemptID := minted.ID
+	// Stamp the run-attempt envelope with origin / lane / workspace /
+	// wrapper command only -- prompt text / args must NEVER reach
+	// RunAttempt on disk. Stamp failures terminalize the mint (the
+	// attempt is the only thing that exists at this point) and refuse.
+	stamp := func(field, msg string) (DelegateResult, error) {
+		if _, terr := raStore.Complete(runAttemptID, runattempt.StatusFailed, opts.Now); terr != nil {
+			return out, terr
+		}
+		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "mint_failed", msg, opts.Now)
+		if eerr != nil {
+			return out, eerr
+		}
+		if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason=mint_failed ("+field+")", opts.Now); err != nil {
+			return out, err
+		}
+		out.EventID = evID
+		out.Refusal = &DelegateRefusal{Reason: "mint_failed", Message: msg}
+		return out, nil
+	}
+	if _, settErr := raStore.SetOrigin(runAttemptID, runattempt.OriginHarnessExecution); settErr != nil {
+		return stamp("origin", "RunAttempt origin stamp failed")
+	}
+	if _, settErr := raStore.SetWorkspace(runAttemptID, workspace); settErr != nil {
+		return stamp("workspace", "RunAttempt workspace stamp failed")
+	}
+	if _, settErr := raStore.SetCommand(runAttemptID, opts.Command); settErr != nil {
+		return stamp("command", "RunAttempt command stamp failed")
+	}
+	if _, settErr := raStore.SetAttribution(runAttemptID, laneForGuard, "", ""); settErr != nil {
+		return stamp("attribution", "RunAttempt attribution stamp failed")
+	}
+
+	if err := runner.Create(sessionName, workspace, opts.Command, opts.Args); err != nil {
+		// Create failed. Probe to detect partial / ambiguous: if the
+		// session exists on the server we DO NOT kill it (it may be a
+		// stranger's session) and we DO NOT emit a spawned binding. We
+		// terminalize the mint as failed and record
+		// work.delegate.refused(spawn_ambiguous).
+		probe, probeErr := runner.SessionStatus(sessionName)
+		reason := "spawn_failed"
+		msg := delegateSpawnFailureNote
+		if probeErr != nil || probe.UnknownReason != "" {
+			reason = "spawn_ambiguous"
+			msg = delegateProbeUnknownNote
+		} else if probe.Exists {
+			reason = "spawn_ambiguous"
+			msg = delegateAmbiguousNote
+		}
+		if _, terr := raStore.Complete(runAttemptID, runattempt.StatusFailed, opts.Now); terr != nil {
+			return out, terr
+		}
+		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, reason, msg, opts.Now)
+		if eerr != nil {
+			return out, eerr
+		}
+		if err := s.appendDelegateLifecycleEvent(out.WorkID, w.State, holder, evID, "delegate refused reason="+reason, opts.Now); err != nil {
+			return out, err
+		}
+		out.EventID = evID
+		out.Refusal = &DelegateRefusal{Reason: reason, Message: msg}
 		return out, nil
 	}
 
@@ -516,10 +710,19 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		CapacityState: decision.Capacity.State,
 		RecordedAt:    ts(opts.Now),
 		WorkSHA256:    workSHA,
+		RunAttemptID:  runAttemptID,
 	}
-	evID, evErr := s.recordDelegateSpawned(out.WorkID, binding, opts.Confirm, opts.Now)
+	// APPROVED ORDER: Create success -> record+attach spawned binding ->
+	// MarkRunning. Any failure AFTER the spawn + binding is a
+	// finalize-spawn-failure: kill the definitely-owned session,
+	// terminalize the attempt, and record a truthful exited artifact.
+	evID, evErr := s.recordDelegateSpawned(out.WorkID, binding, opts.Confirm, runAttemptID, opts.Now)
 	if evErr != nil {
-		return out, killSpawnedSession(runner, sessionName, evErr)
+		// recordDelegateSpawned failed: no recoverable binding yet.
+		// Kill definitely-owned session + terminalize attempt + return.
+		// Do NOT write a work.delegate.exited (that would create an
+		// exit-without-spawn).
+		return out, s.finalizeSpawnFailureAfterBinding(runner, out.WorkID, binding, holder, w.State, evErr, false, opts.Now)
 	}
 	if err := s.appendEvent(Event{
 		TS:       ts(opts.Now),
@@ -530,18 +733,105 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		Note:     fmt.Sprintf("delegate spawned session %s harness=%s lane=%s", binding.Session, binding.Harness, binding.Lane),
 		Attached: []string{evID},
 	}); err != nil {
-		return out, killSpawnedSession(runner, sessionName, err)
+		// Lifecycle append failed: same as recordDelegateSpawned failure
+		// -- no recoverable binding, no exited artifact.
+		return out, s.finalizeSpawnFailureAfterBinding(runner, out.WorkID, binding, holder, w.State, err, false, opts.Now)
+	}
+	// Forward-link the exact delegate attempt from the WorkEnvelope through
+	// the existing governed same-state Advance seam. The binding is already
+	// durable, so an attach failure is a post-spawn failure: finalize the
+	// definitely-owned session and the attempt rather than leaving a ratt
+	// reachable only from run_attempts/ and the delegate event.
+	if _, advanceErr := s.Advance(out.WorkID, AdvanceInput{
+		To:            w.State,
+		Actor:         holder,
+		RunAttemptIDs: []string{runAttemptID},
+		Note:          "delegate run attempt attached",
+	}, opts.Now); advanceErr != nil {
+		return out, s.finalizeSpawnFailureAfterBinding(runner, out.WorkID, binding, holder, w.State, advanceErr, true, opts.Now)
+	}
+	if _, mErr := raStore.MarkRunning(runAttemptID, opts.Now); mErr != nil {
+		// MarkRunning failure: binding IS attached in the eventstore
+		// (so a future recovery could return a stale live binding). We
+		// write the truthful work.delegate.exited here, kill the
+		// session, and terminalize. Without this, the orchestrator
+		// could later recover a binding with no matching run attempt.
+		return out, s.finalizeSpawnFailureAfterBinding(runner, out.WorkID, binding, holder, w.State, mErr, true, opts.Now)
 	}
 	out.Status = "spawned"
 	out.Binding = binding
 	out.EventID = evID
+	out.RunAttemptID = runAttemptID
 	return out, nil
+}
+
+// finalizeSpawnFailureAfterBinding is the post-Create failure-finalization
+// helper. bindingAttached controls whether the caller had already attached
+// the spawned lifecycle binding BEFORE the failure:
+//
+//	false -- recordDelegateSpawned failed, or the lifecycle append failed:
+//	  no binding is recoverable from the eventstore. Kill the session,
+//	  terminalize the attempt, and DO NOT write a work.delegate.exited
+//	  (emitting one here would create an exit-without-spawn).
+//	true  -- MarkRunning failed AFTER the binding was attached. Kill the
+//	  session, terminalize the attempt, AND write a truthful
+//	  work.delegate.exited so a future recovery does not surface a
+//	  stale live binding with no matching run attempt.
+//
+// In both branches the cause is returned unchanged. The cause's Error()
+// is NEVER persisted -- adapter errors may echo prompt argv.
+func (s *Store) finalizeSpawnFailureAfterBinding(runner SessionRunner, workID string, b *DelegateBinding, holder, state string, cause error, bindingAttached bool, now time.Time) error {
+	if b == nil {
+		return cause
+	}
+	cleanupErrs := []error{cause}
+	if runner != nil {
+		if killErr := runner.Kill(b.Session); killErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: kill definitely-owned session %s: %w", b.Session, killErr))
+		}
+	}
+	raStore := runattempt.Open(s.home)
+	if _, terr := raStore.Complete(b.RunAttemptID, runattempt.StatusFailed, now); terr != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: terminalize spawned attempt %s: %w", b.RunAttemptID, terr))
+	}
+	if !bindingAttached {
+		return errors.Join(cleanupErrs...)
+	}
+	ev := delegateEvent{
+		SchemaVersion: delegateEventSchemaVersion,
+		ID:            delegateBindingEventID("work.delegate.exited", workID, b, now),
+		Kind:          "work.delegate.exited",
+		TS:            ts(now),
+		WorkID:        workID,
+		Harness:       b.Harness,
+		Lane:          b.Lane,
+		Holder:        holder,
+		Session:       b.Session,
+		WorkSHA256:    b.WorkSHA256,
+		RunAttemptID:  b.RunAttemptID,
+		Message:       "spawn_finalize_failure",
+		Reason:        "spawn_finalize_failure",
+	}
+	if err := s.writeEventJSON(ev.ID, ev); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: record spawn-finalize exit: %w", err))
+	} else if err := s.appendEvent(Event{
+		TS:       ts(now),
+		WorkID:   workID,
+		From:     state,
+		To:       state,
+		By:       holder,
+		Note:     fmt.Sprintf("delegate exited session %s (spawn_finalize_failure)", b.Session),
+		Attached: []string{ev.ID},
+	}); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("delegate: attach spawn-finalize exit: %w", err))
+	}
+	return errors.Join(cleanupErrs...)
 }
 
 // --- record helpers (writeEventJSON, D7 contract) ---
 
-func (s *Store) recordDelegateSpawned(workID string, b *DelegateBinding, confirm bool, now time.Time) (string, error) {
-	id := delegateEventID("work.delegate.spawned", workID, now)
+func (s *Store) recordDelegateSpawned(workID string, b *DelegateBinding, confirm bool, runAttemptID string, now time.Time) (string, error) {
+	id := delegateBindingEventID("work.delegate.spawned", workID, b, now)
 	if err := s.writeEventJSON(id, delegateEvent{
 		SchemaVersion: delegateEventSchemaVersion,
 		ID:            id,
@@ -555,6 +845,7 @@ func (s *Store) recordDelegateSpawned(workID string, b *DelegateBinding, confirm
 		Confirm:       confirm,
 		Session:       b.Session,
 		WorkSHA256:    b.WorkSHA256,
+		RunAttemptID:  runAttemptID,
 	}); err != nil {
 		return "", err
 	}
@@ -601,9 +892,9 @@ func (s *Store) recordDelegateSteered(workID string, b *DelegateBinding, holder,
 	return id, nil
 }
 
-func (s *Store) recordDelegateExited(workID string, b *DelegateBinding, now time.Time) (string, error) {
-	id := delegateEventID("work.delegate.exited", workID, now)
-	if err := s.writeEventJSON(id, delegateEvent{
+func (s *Store) recordDelegateExited(workID string, b *DelegateBinding, observed *SessionStatus, now time.Time) (string, error) {
+	id := delegateBindingEventID("work.delegate.exited", workID, b, now)
+	ev := delegateEvent{
 		SchemaVersion: delegateEventSchemaVersion,
 		ID:            id,
 		Kind:          "work.delegate.exited",
@@ -615,14 +906,37 @@ func (s *Store) recordDelegateExited(workID string, b *DelegateBinding, now time
 		Session:       b.Session,
 		WorkSHA256:    b.WorkSHA256,
 		Message:       "session no longer live at delegate-time; orchestrator observed death",
-	}); err != nil {
+	}
+	// Carry observed exit when known. Older exited events without
+	// observed fields still serialize cleanly (omitempty / nil), so old
+	// records decode unchanged.
+	//
+	// ExitCode pointer is set ONLY when an observed value >= 0 exists
+	// -- a signal-only exit must NOT serialize -1 (that would lie).
+	if observed != nil {
+		if observed.ExitCode >= 0 {
+			code := observed.ExitCode
+			ev.ExitCode = &code
+			ev.ObservedExit = true
+		}
+		if observed.Signal != "" {
+			ev.Signal = observed.Signal
+			ev.ObservedExit = true
+		}
+	}
+	// Carry the exact ratt so the exit artifact is keyed to its
+	// attempt. Older bindings (empty RunAttemptID) decode unchanged.
+	if b != nil {
+		ev.RunAttemptID = b.RunAttemptID
+	}
+	if err := s.writeEventJSON(id, ev); err != nil {
 		return "", err
 	}
 	return id, nil
 }
 
-func (s *Store) recordAndAttachDelegateExited(workID, state string, b *DelegateBinding, observer string, now time.Time) (string, error) {
-	id, err := s.recordDelegateExited(workID, b, now)
+func (s *Store) recordAndAttachDelegateExited(workID, state string, b *DelegateBinding, observer string, observed SessionStatus, now time.Time) (string, error) {
+	id, err := s.recordDelegateExited(workID, b, &observed, now)
 	if err != nil {
 		return "", err
 	}
@@ -630,13 +944,6 @@ func (s *Store) recordAndAttachDelegateExited(workID, state string, b *DelegateB
 		return "", err
 	}
 	return id, nil
-}
-
-func killSpawnedSession(runner SessionRunner, session string, cause error) error {
-	if killErr := runner.Kill(session); killErr != nil {
-		return errors.Join(cause, fmt.Errorf("delegate: kill unrecorded session %s: %w", session, killErr))
-	}
-	return cause
 }
 
 // --- steer ---
@@ -687,17 +994,13 @@ func (s *Store) Steer(opts SteerOptions, runner SessionRunner) (SteerResult, err
 	if holder == "" {
 		holder = "codex"
 	}
-	live, hasErr := runner.Has(binding.Session)
-	if hasErr != nil {
-		return out, fmt.Errorf("steer: probe session %s: %w", binding.Session, hasErr)
+	st, stErr := runner.SessionStatus(binding.Session)
+	if stErr != nil {
+		return out, fmt.Errorf("steer: probe session %s: %w", binding.Session, stErr)
 	}
-	if !live {
-		w, werr := s.Get(out.WorkID)
-		if werr != nil {
-			return out, werr
-		}
-		if _, exitErr := s.recordAndAttachDelegateExited(out.WorkID, w.State, binding, holder, opts.Now); exitErr != nil {
-			return out, exitErr
+	if !st.Exists || st.PaneDead {
+		if _, sweepErr := s.DelegateSweep(binding, st, runner, holder, opts.Now); sweepErr != nil {
+			return out, sweepErr
 		}
 		return out, fmt.Errorf("steer: session %s for work %s is no longer live; spawn a new delegate", binding.Session, out.WorkID)
 	}
@@ -764,12 +1067,12 @@ func (s *Store) Attach(opts AttachOptions, runner SessionRunner) (AttachResult, 
 	}
 	out.Session = binding.Session
 	out.AttachArgv = runner.AttachArgv(binding.Session)
-	live, hasErr := runner.Has(binding.Session)
-	if hasErr != nil {
-		return out, fmt.Errorf("attach: probe session %s: %w", binding.Session, hasErr)
+	st, stErr := runner.SessionStatus(binding.Session)
+	if stErr != nil {
+		return out, fmt.Errorf("attach: probe session %s: %w", binding.Session, stErr)
 	}
-	out.Live = live
-	if !live {
+	out.Live = st.Exists && !st.PaneDead
+	if !out.Live {
 		return out, fmt.Errorf("attach: session %s for work %s is no longer live; spawn a new delegate", binding.Session, out.WorkID)
 	}
 	return out, nil
@@ -789,4 +1092,220 @@ func (s *Store) appendDelegateLifecycleEvent(workID, fromState, by, evID, note s
 		Note:     note,
 		Attached: []string{evID},
 	})
+}
+
+// DelegateSweep finalizes an exact binding: maps the observed exit
+// status to the right RunAttempt terminal status, kills the finished tmux
+// pane (NOT a live one -- bare Has is false evidence once remain-on-exit
+// keeps a dead pane alive; SessionStatus is the unified source of truth
+// for any pane that has actually died), and records work.delegate.exited.
+// Used by:
+//   - the explicit `compound work delegate sweep` path,
+//   - Steer when the bound pane is dead (instead of just appending an
+//     exited lifecycle note, the exact ratt terminalizes and the pane
+//     disappears too),
+//   - the existing-dead-binding respawn path (BEFORE same-name respawn,
+//     otherwise Create deterministically becomes spawn_ambiguous).
+//
+// Exit mapping (from observed SessionStatus):
+//   - observed.PaneDead + ExitCode == 0 -> succeeded
+//   - observed.PaneDead + ExitCode > 0 OR signal != "" -> failed
+//   - observed.UnknownReason != "" -> UNCERTAIN: surface as a sweep
+//     error; do NOT claim failed/abandoned/succeeded; the probe did
+//     not conclude. Caller propagates the error.
+//   - observed.Exists == false (no probe error) -> abandoned
+//
+// The RunAttemptID is what makes terminalization exact: only THIS ratt_
+// is completed, no sibling claim-reservation attempt is touched. When
+// the binding is older than slice-1 (RunAttemptID empty) terminalization
+// is skipped, but the killed pane and exited artifact are still emitted.
+// The lifecycle-self-transition uses the work envelope's CURRENT state
+// (loaded via s.Get), not "".
+func (s *Store) DelegateSweep(b *DelegateBinding, observed SessionStatus, runner SessionRunner, observer string, now time.Time) (DelegateSweepOutcome, error) {
+	if b == nil {
+		return DelegateSweepOutcome{}, fmt.Errorf("delegate sweep: nil binding")
+	}
+	out := DelegateSweepOutcome{Session: b.Session, WorkID: b.WorkID, RunAttemptID: b.RunAttemptID}
+	if observed.UnknownReason != "" {
+		// Probe error: do NOT claim an exit. Operator must re-run after
+		// the runner is fixed.
+		return out, fmt.Errorf("delegate sweep: probe uncertainty: %s", observed.UnknownReason)
+	}
+	recordedExit, err := s.recordedDelegateExit(b.WorkID, b)
+	if err != nil {
+		return out, err
+	}
+	// LIVE pane -- heartbeat the exact ratt (when present) and return
+	// WITHOUT writing an event, terminalizing the attempt, or killing.
+	// The sweep was not designed to abandon a healthy binding; the
+	// generic stale sweep protects it elsewhere.
+	if observed.Exists && !observed.PaneDead {
+		if recordedExit != nil {
+			return out, fmt.Errorf("delegate sweep: session %s is live after its exit was already recorded; refusing to touch a potentially foreign pane", b.Session)
+		}
+		if b.RunAttemptID != "" {
+			raStore := runattempt.Open(s.home)
+			if _, herr := raStore.Heartbeat(b.RunAttemptID, now); herr != nil {
+				return out, herr
+			}
+			if cur, gerr := raStore.Get(b.RunAttemptID); gerr == nil {
+				out.RunAttemptStatus = cur.Status
+			}
+		}
+		out.ObservedExit = "live"
+		out.TerminalStatus = "live"
+		return out, nil
+	}
+	var status, observedLabel string
+	if recordedExit != nil {
+		switch {
+		case recordedExit.Reason == "spawn_finalize_failure":
+			status, observedLabel = runattempt.StatusFailed, "failed"
+		case recordedExit.ExitCode != nil && *recordedExit.ExitCode == 0:
+			status, observedLabel = runattempt.StatusSucceeded, "succeeded"
+		case recordedExit.ExitCode != nil && *recordedExit.ExitCode > 0:
+			status, observedLabel = runattempt.StatusFailed, "failed"
+		case recordedExit.Signal != "":
+			status, observedLabel = runattempt.StatusFailed, "failed"
+		default:
+			status, observedLabel = runattempt.StatusAbandoned, "vanished"
+		}
+	} else {
+		switch {
+		case observed.Exists && observed.PaneDead && observed.ExitCode == 0:
+			status = runattempt.StatusSucceeded
+			observedLabel = "succeeded"
+		case observed.Exists && observed.PaneDead && observed.ExitCode > 0:
+			status = runattempt.StatusFailed
+			observedLabel = "failed"
+		case observed.Exists && observed.PaneDead && observed.Signal != "":
+			status = runattempt.StatusFailed
+			observedLabel = "failed"
+		case observed.Exists && observed.PaneDead:
+			// Pane dead but no observable exit value: be honest with "unknown"
+			// rather than guessing succeeded / failed.
+			return out, fmt.Errorf("delegate sweep: pane is dead but observed exit is unknown (ExitCode=%d)", observed.ExitCode)
+		default:
+			status = runattempt.StatusAbandoned
+			observedLabel = "vanished"
+		}
+	}
+	// Lifecycle self-transition needs the envelope's CURRENT state. A
+	// failed load is propagated -- we never append state="" (that would
+	// silently corrupt the eventlog).
+	if recordedExit == nil {
+		w, gerr := s.Get(b.WorkID)
+		if gerr != nil {
+			return out, fmt.Errorf("delegate sweep: load work %s: %w", b.WorkID, gerr)
+		}
+		if _, err := s.recordAndAttachDelegateExited(b.WorkID, w.State, b, observer, observed, now); err != nil {
+			return out, err
+		}
+	}
+	if b.RunAttemptID != "" {
+		raStore := runattempt.Open(s.home)
+		cur, gerr := raStore.Get(b.RunAttemptID)
+		if gerr != nil {
+			return out, gerr
+		}
+		if runattempt.IsTerminal(cur.Status) {
+			if cur.Status != status {
+				return out, fmt.Errorf("delegate sweep: attempt %s already terminal as %s, observed %s", b.RunAttemptID, cur.Status, status)
+			}
+		} else if _, terr := raStore.Complete(b.RunAttemptID, status, now); terr != nil {
+			return out, terr
+		}
+		out.RunAttemptStatus = status
+	}
+	if runner != nil && observed.PaneDead {
+		if err := runner.Kill(b.Session); err != nil {
+			out.KillError = err.Error()
+			return out, fmt.Errorf("delegate sweep: remove finished pane %s: %w", b.Session, err)
+		}
+	}
+	out.ObservedExit = observedLabel
+	out.TerminalStatus = status
+	return out, nil
+}
+
+// RecoverBoundSession is the exported form of recoverBoundSession. It
+// returns the current binding (or nil + no error for "no binding
+// exists") plus the eventlog-derived alive flag. Callers that need to
+// probe the runner themselves use this to look up the binding; it does
+// NOT touch tmux.
+func (s *Store) RecoverBoundSession(workID string) (*DelegateBinding, bool, error) {
+	return s.recoverBoundSession(workID)
+}
+
+// DelegateSweepResolve is a convenience wrapper that returns the current
+// binding (or nil + no error for "no binding exists") for the explicit
+// sweep CLI verb. It does NOT probe the runner; the caller owns the
+// session-status read so a missing pane surfaces immediately.
+func (s *Store) DelegateSweepResolve(workID string) (*DelegateBinding, error) {
+	b, _, err := s.latestDelegateBinding(workID)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// DelegateStatus returns a read-only, write-free observation of the
+// binding and its RunAttempt. It performs no kill, no event write, and
+// no terminalization -- the dry-run-capable sibling of DelegateSweep.
+func (s *Store) DelegateStatus(workID string, runner SessionRunner) (DelegateStatusObservation, error) {
+	out := DelegateStatusObservation{WorkID: workID}
+	b, _, err := s.recoverBoundSession(workID)
+	if err != nil {
+		return out, err
+	}
+	if b == nil {
+		return out, nil
+	}
+	out.Bound = true
+	out.Session = b.Session
+	out.Harness = b.Harness
+	out.Lane = b.Lane
+	out.RunAttemptID = b.RunAttemptID
+	if runner != nil {
+		st, stErr := runner.SessionStatus(b.Session)
+		if stErr != nil {
+			out.ProbeError = stErr.Error()
+		} else {
+			out.PaneStatus = st
+		}
+	}
+	if b.RunAttemptID != "" {
+		raStore := runattempt.Open(s.home)
+		ra, gerr := raStore.Get(b.RunAttemptID)
+		if gerr != nil {
+			return out, fmt.Errorf("delegate status: load run attempt %s: %w", b.RunAttemptID, gerr)
+		}
+		out.RunAttemptStatus = ra.Status
+	}
+	return out, nil
+}
+
+// DelegateStatusObservation is the read-only, JSON-friendly payload of
+// `compound work delegate status`.
+type DelegateStatusObservation struct {
+	WorkID           string        `json:"work_id"`
+	Bound            bool          `json:"bound"`
+	Session          string        `json:"session,omitempty"`
+	Harness          string        `json:"harness,omitempty"`
+	Lane             string        `json:"lane,omitempty"`
+	RunAttemptID     string        `json:"run_attempt_id,omitempty"`
+	RunAttemptStatus string        `json:"run_attempt_status,omitempty"`
+	PaneStatus       SessionStatus `json:"pane_status"`
+	ProbeError       string        `json:"probe_error,omitempty"`
+}
+
+// DelegateSweepOutcome is the per-binding result of DelegateSweep.
+type DelegateSweepOutcome struct {
+	WorkID           string `json:"work_id"`
+	Session          string `json:"session"`
+	RunAttemptID     string `json:"run_attempt_id,omitempty"`
+	RunAttemptStatus string `json:"run_attempt_status,omitempty"`
+	ObservedExit     string `json:"observed_exit"`
+	TerminalStatus   string `json:"terminal_status"`
+	KillError        string `json:"kill_error,omitempty"`
 }
