@@ -26,6 +26,7 @@
 //   - os-absorption-doctor
 //   - import-infra-database
 //   - import-infra-services
+//   - import-model-catalog
 //   - import-job-roster
 //   - import-job-token-governance
 //   - job-roster-authority
@@ -52,7 +53,7 @@ import (
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | worktree-retire <plan|review|apply> | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | worktree-retire <plan|review|apply> | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-model-catalog <provider-registry.json> | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
@@ -124,6 +125,43 @@ func cmdAuthority(args []string) {
 			RegisteredEntitySlugs:     entityReport.RegisteredSlugs,
 			SkippedEntitySlugs:        entityReport.SkippedSlugs,
 			CapabilityNodeIDs:         capabilityReport.NodeIDs,
+		})
+		return
+	}
+	if args[0] == "import-model-catalog" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority import-model-catalog <provider-registry.json>")
+			os.Exit(2)
+		}
+		now := time.Now()
+		report, err := authority.ImportModelCatalog(homePath, args[1], now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority import-model-catalog:", err)
+			os.Exit(1)
+		}
+		// Additive effects of the same import verb (same settled design as
+		// import-infra-services): register each enrollable model row as a
+		// resolvable mem.Entity, then enroll it as a capability-graph node.
+		entityReport, err := authority.RegisterModelCatalogEntities(store, homePath, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority import-model-catalog: register entities:", err)
+			os.Exit(1)
+		}
+		capabilityReport, err := authority.EnrollModelCatalogCapabilities(homePath, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority import-model-catalog: enroll capabilities:", err)
+			os.Exit(1)
+		}
+		printJSON(struct {
+			authority.ModelCatalogImportReport
+			RegisteredEntitySlugs []string `json:"registered_entity_slugs,omitempty"`
+			SkippedEntitySlugs    []string `json:"skipped_entity_slugs,omitempty"`
+			CapabilityNodeIDs     []string `json:"capability_node_ids,omitempty"`
+		}{
+			ModelCatalogImportReport: report,
+			RegisteredEntitySlugs:    entityReport.RegisteredSlugs,
+			SkippedEntitySlugs:       entityReport.SkippedSlugs,
+			CapabilityNodeIDs:        capabilityReport.NodeIDs,
 		})
 		return
 	}
@@ -384,6 +422,28 @@ func cmdAuthority(args []string) {
 				}
 				if prov.Status != "" {
 					fmt.Printf("status: %s\n", prov.Status)
+				}
+				if prov.SourceRevision != "" {
+					fmt.Printf("source_revision: %s\n", prov.SourceRevision)
+				}
+			}
+			// Additive only: a resolved model:* entity also prints its
+			// import provenance (provider/prices/context/tier/
+			// source_revision) read from the installed provider catalog +
+			// source-authority ledger. Every other entity kind's resolve
+			// output (including service:* above) stays unchanged.
+			if prov, found, err := authority.ResolveModelCatalogProvenance(homePath, res.Slug); err != nil {
+				fmt.Fprintln(os.Stderr, "authority resolve: model catalog provenance:", err)
+				os.Exit(1)
+			} else if found {
+				if prov.Provider != "" {
+					fmt.Printf("provider: %s\n", prov.Provider)
+				}
+				fmt.Printf("price_in_usd_per_mtok: %s\n", prov.PriceInUSDPerMtok)
+				fmt.Printf("price_out_usd_per_mtok: %s\n", prov.PriceOutUSDPerMtok)
+				fmt.Printf("context_window: %d\n", prov.ContextWindow)
+				if prov.Tier != "" {
+					fmt.Printf("tier: %s\n", prov.Tier)
 				}
 				if prov.SourceRevision != "" {
 					fmt.Printf("source_revision: %s\n", prov.SourceRevision)
