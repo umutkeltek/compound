@@ -3254,18 +3254,33 @@ func cmdContract(args []string) {
 	}
 	switch args[0] {
 	case "compile":
+		renderInstructions := hasFlag(args[1:], "--instructions")
+		checkInstructions := hasFlag(args[1:], "--check-instructions")
+		if checkInstructions && !renderInstructions {
+			fmt.Fprintln(os.Stderr, "--check-instructions requires --instructions")
+			os.Exit(2)
+		}
 		homePath, err := home.Resolve("")
 		die(err)
 		in, err := parseOrientArgsWithHome(args[1:], homePath)
 		die(err)
 		if in.Harness == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>]")
+			fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>] [--instructions [--check-instructions]]")
 			os.Exit(2)
 		}
 		ec, err := contract.CompileWithRuntime(in, orientPolicy(), homePath, time.Now())
 		die(err)
 		_, err = contract.RecordEffectiveContract(homePath, ec)
 		die(err)
+		if renderInstructions {
+			render, err := contract.RenderInstructionBlock(ec, in.Cwd)
+			die(err)
+			printJSON(render)
+			if checkInstructions && render.Drifted {
+				os.Exit(1)
+			}
+			return
+		}
 		printJSON(ec)
 	case "import-hooks":
 		sourcePath := valueFlag(args[1:], "--codex-hooks-json")
