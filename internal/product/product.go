@@ -77,14 +77,26 @@ type Bundle struct {
 }
 
 type Product struct {
-	ID             string       `json:"id" yaml:"id"`
-	Name           string       `json:"name" yaml:"name"`
-	OwnerEntity    string       `json:"owner_entity" yaml:"owner_entity"`
-	Surfaces       []Surface    `json:"surfaces" yaml:"surfaces"`
-	Channels       []string     `json:"channels" yaml:"channels"`
-	Positioning    string       `json:"positioning" yaml:"positioning"`
-	PrivacyPosture string       `json:"privacy_posture" yaml:"privacy_posture"`
-	TasteProfile   TasteProfile `json:"taste_profile,omitempty" yaml:"taste_profile,omitempty"`
+	ID              string          `json:"id" yaml:"id"`
+	Name            string          `json:"name" yaml:"name"`
+	OwnerEntity     string          `json:"owner_entity" yaml:"owner_entity"`
+	Surfaces        []Surface       `json:"surfaces" yaml:"surfaces"`
+	Channels        []string        `json:"channels" yaml:"channels"`
+	Positioning     string          `json:"positioning" yaml:"positioning"`
+	PrivacyPosture  string          `json:"privacy_posture" yaml:"privacy_posture"`
+	ReleaseIdentity ReleaseIdentity `json:"release_identity,omitempty" yaml:"release_identity,omitempty"`
+	TasteProfile    TasteProfile    `json:"taste_profile,omitempty" yaml:"taste_profile,omitempty"`
+}
+
+// ReleaseIdentity is the product-owned destination identity used by release
+// planning. It is imported into Compound claims; release planning never reads
+// a legacy registry or product repository to reconstruct these fields.
+type ReleaseIdentity struct {
+	BundleID             string   `json:"bundle_id,omitempty" yaml:"bundle_id,omitempty"`
+	AppStoreConnectAppID string   `json:"app_store_connect_app_id,omitempty" yaml:"app_store_connect_app_id,omitempty"`
+	SubscriptionIDs      []string `json:"subscription_product_ids,omitempty" yaml:"subscription_product_ids,omitempty"`
+	Version              string   `json:"version,omitempty" yaml:"version,omitempty"`
+	Build                string   `json:"build,omitempty" yaml:"build,omitempty"`
 }
 
 type Surface struct {
@@ -1847,12 +1859,31 @@ func productClaims(bundle Bundle, evidenceID, sourcePath string) []mem.Candidate
 			Visibility:     "operational",
 		}
 	}
-	return []mem.Candidate{
+	claims := []mem.Candidate{
 		add("positioning", p.Positioning),
 		add("privacy_posture", p.PrivacyPosture),
 		add("channels", strings.Join(p.Channels, ",")),
 		add("surfaces", strings.Join(surfaceRefs(p.Surfaces), ",")),
 	}
+	releaseClaims := []struct {
+		predicate string
+		value     string
+	}{
+		{"release_bundle_id", p.ReleaseIdentity.BundleID},
+		{"release_app_store_connect_app_id", p.ReleaseIdentity.AppStoreConnectAppID},
+		{"release_subscription_ids", strings.Join(compact(p.ReleaseIdentity.SubscriptionIDs), ",")},
+		{"release_version", p.ReleaseIdentity.Version},
+		{"release_build", p.ReleaseIdentity.Build},
+	}
+	for _, item := range releaseClaims {
+		if value := strings.TrimSpace(item.value); value != "" {
+			claims = append(claims, add(item.predicate, value))
+		}
+	}
+	if strings.TrimSpace(p.ReleaseIdentity.AppStoreConnectAppID) != "" {
+		claims = append(claims, add("release_mechanism", "app_store_connect"))
+	}
+	return claims
 }
 
 func productIdentifiers(p Product) []string {

@@ -28,6 +28,8 @@ func AnnotateReviewQueue(report *reviewartifact.QueueReport) {
 			annotateProductActionReviewItem(item)
 		case ObservationVerdictReviewArea:
 			annotateObservationVerdictItem(item)
+		case ProductReleaseReviewArea:
+			annotateProductReleaseItem(item)
 		}
 	}
 }

@@ -12,18 +12,22 @@ import (
 const AuthorityRef = "compound://ledger/product-feedback"
 
 type AuthorityReport struct {
-	AuthorityRef         string                 `json:"authority_ref"`
-	AuthorityPaths       []string               `json:"authority_paths"`
-	Status               string                 `json:"status"`
-	ProductCount         int                    `json:"product_count"`
-	SignalCount          int                    `json:"signal_count"`
-	HypothesisCount      int                    `json:"hypothesis_count"`
-	PendingReviewCount   int                    `json:"pending_review_count"`
-	ReviewReadyCount     int                    `json:"review_ready_count"`
-	SourceIssueCount     int                    `json:"source_issue_count"`
-	TransitionCount      int                    `json:"transition_count"`
-	MissingEvidenceCount int                    `json:"missing_evidence_count"`
-	Products             []ProductAuthorityItem `json:"products"`
+	AuthorityRef            string                 `json:"authority_ref"`
+	AuthorityPaths          []string               `json:"authority_paths"`
+	ReleasePlanningRef      string                 `json:"release_planning_ref"`
+	ProductReleaseCommand   string                 `json:"product_release_command"`
+	RepositoryExportCommand string                 `json:"repository_export_command"`
+	ReleaseBoundary         string                 `json:"release_boundary"`
+	Status                  string                 `json:"status"`
+	ProductCount            int                    `json:"product_count"`
+	SignalCount             int                    `json:"signal_count"`
+	HypothesisCount         int                    `json:"hypothesis_count"`
+	PendingReviewCount      int                    `json:"pending_review_count"`
+	ReviewReadyCount        int                    `json:"review_ready_count"`
+	SourceIssueCount        int                    `json:"source_issue_count"`
+	TransitionCount         int                    `json:"transition_count"`
+	MissingEvidenceCount    int                    `json:"missing_evidence_count"`
+	Products                []ProductAuthorityItem `json:"products"`
 }
 
 type ProductAuthorityItem struct {
@@ -47,7 +51,11 @@ func Authority(homePath string, store *mem.Store) (AuthorityReport, error) {
 		return AuthorityReport{}, err
 	}
 	report := AuthorityReport{
-		AuthorityRef: AuthorityRef,
+		AuthorityRef:            AuthorityRef,
+		ReleasePlanningRef:      "compound://product/release-flow",
+		ProductReleaseCommand:   "compound product release-plan --product <id> --change <summary> --candidate <ref> --rollback <text> --metric <post-release-metric>",
+		RepositoryExportCommand: "compound release export-public",
+		ReleaseBoundary:         "compound release is repository export, not product release; Compound owns product release authorization, operator-held work planning, and proof-backed observation while external execution remains separately PolicyDecision-gated",
 		AuthorityPaths: []string{
 			"ledger/claims.jsonl",
 			"ledger/product-signals.jsonl",

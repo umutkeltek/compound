@@ -6172,7 +6172,7 @@ func writeCLIInfraServicesFixture(t *testing.T, path string) {
 		"    role: example_role_a",
 		"    authority: example_authority_a",
 		"    status: active",
-		"  other-svc.internal:",
+		"  other-svc.example.invalid:",
 		"    role: example_role_b",
 		"    authority: example_authority_b",
 		"",
@@ -6257,7 +6257,7 @@ func TestAuthorityImportInfraServicesRegistersEntityAndResolvesWithProvenance(t 
 	}
 
 	unknown := captureStdout(t, func() {
-		cmdAuthority([]string{"resolve", "nosuch.internal"})
+		cmdAuthority([]string{"resolve", "nosuch.example.invalid"})
 	})
 	if !strings.Contains(unknown, "status: unresolved") {
 		t.Fatalf("unrelated token should stay unresolved after import, got:\n%s", unknown)
@@ -8264,7 +8264,7 @@ func TestProductImportProjectContractPromotesSourceInPlaceIdentity(t *testing.T)
 		})
 	})
 	if !strings.Contains(out, "# product import product:source_contract_demo") ||
-		!strings.Contains(out, "- claims: 4") ||
+		!strings.Contains(out, "- claims: 10") ||
 		!strings.Contains(out, "- signals: 0") ||
 		!strings.Contains(out, "- hypotheses: 0") {
 		t.Fatalf("product import output missing source-contract proof:\n%s", out)

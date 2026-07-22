@@ -4,7 +4,7 @@
 // so main.go holds only the cross-cutting dispatch table + non-product
 // verbs. The product runtime (product.Bundle import, ASC/GA4/GSC/AdSense
 // signal sources, loops, canonical-metrics, change-stream, hypothesis/
-// observation-verdict/review/action/source-issue/outbound-dry-run plan and
+// observation-verdict/review/action/source-issue/outbound-dry-run/release plan and
 // review seams, timeline, doctor) lives in compound/internal/product and is
 // unchanged; this file is only the CLI surface that drives it.
 //
@@ -33,10 +33,14 @@
 //   - action-work-plan              (--reviewed <reviewed.json> --actor <actor> [--json])
 //   - source-issue-plan             (--product <id> --issue <id> [--target <file>])
 //   - outbound-dry-run-plan         (--reviewed-receipt <reviewed.json> [--target <file>])
+//   - release-plan                  (--product/--change/--candidate/--rollback/--metric)
+//   - release-work-plan             (--reviewed <reviewed.json> --actor <actor> [--json])
+//   - release-observe               (--reviewed/--execution/--signal [--json])
 //   - review                        (<review.yaml> --reviewed-by <actor>)
 //   - action-review                 (<review.yaml>)
 //   - source-issue-review           (<review.yaml>)
 //   - outbound-dry-run-review       (<review.yaml> [--writeback])
+//   - release-review                (<review.yaml>)
 //   - timeline                      (<product_id>)
 //   - doctor                        (<product_id> [--writeback])
 package main
@@ -55,7 +59,7 @@ import (
 )
 
 func productUsage() string {
-	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>]|--posthog-report <json> --product <id> --project <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | content-draft record --product <id> --platform <x|bluesky|threads> [--text <body>] [--voice-pack <ref>] [--evidence <ref,ref>] (--ttl <dur>|--expires <rfc3339>) | content-draft list [--product <id>] [--json] | content-draft park|operationalize|reject <draft_id> | content-queue plan [--json]|content-queue apply --review <review.yaml> [--json] | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | release-plan --product <id> --change <summary> --candidate <ref> --rollback <text> --metric <post-release-metric> [--action-card <id>] [--evidence <ref>] | release-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | release-observe --reviewed <reviewed.json> --execution <receipt_id> --signal <signal_id> [--json] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | release-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -145,6 +149,10 @@ func cmdProduct(args []string) {
 		}
 		fmt.Printf("# product authority\n\n")
 		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- release_planning: %s\n", report.ReleasePlanningRef)
+		fmt.Printf("- product_release: %s\n", report.ProductReleaseCommand)
+		fmt.Printf("- repository_export: %s\n", report.RepositoryExportCommand)
+		fmt.Printf("- release_boundary: %s\n", report.ReleaseBoundary)
 		fmt.Printf("- status: %s\n", report.Status)
 		fmt.Printf("- products: %d\n", report.ProductCount)
 		fmt.Printf("- signals: %d\n", report.SignalCount)
@@ -542,6 +550,12 @@ func cmdProduct(args []string) {
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+	case "release-plan":
+		cmdProductReleasePlan(args[1:], homePath, store)
+	case "release-work-plan":
+		cmdProductReleaseWorkPlan(args[1:], homePath)
+	case "release-observe":
+		cmdProductReleaseObserve(args[1:], homePath)
 	case "review":
 		rest := args[1:]
 		reviewedBy := strings.TrimSpace(valueFlag(rest, "--reviewed-by"))
@@ -755,6 +769,8 @@ func cmdProduct(args []string) {
 		if report.TransitionID != "" {
 			fmt.Printf("- transition: %s\n", report.TransitionID)
 		}
+	case "release-review":
+		cmdProductReleaseReview(args[1:], homePath)
 	case "source-issue-review":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound product source-issue-review <review.yaml>")

@@ -114,6 +114,61 @@ The apply regression builds a temporary `compound`, uses a temporary
 `COMPOUND_HOME`, runs the bridge twice with `--apply`, and verifies
 ProductSignal ledger idempotency.
 
+## From product signal to release authorization
+
+`compound release` exports the Compound repository. It is not an application
+release command. Product releases stay on the product loop:
+
+1. Import the product's project and release contract so bundle, store app,
+   version, and build are Compound-owned claims.
+2. Create a release authorization plan from the verified candidate:
+
+   ```bash
+   compound product release-plan \
+     --product product:example \
+     --change "Ship the verified bounded change." \
+     --candidate commit:0000000000000000000000000000000000000000 \
+     --rollback "Restore the previous store version." \
+     --metric app_store_connect_units
+   ```
+
+3. Inspect the generated review card, complete its named checks and evidence,
+   then record the decision with `compound product release-review <review.yaml>`.
+
+4. Turn an `authorize_release` result into a tier-3 operator-held work preview:
+
+   ```bash
+   compound product release-work-plan \
+     --reviewed "${COMPOUND_HOME}/reviews/product-releases/<reviewed>.json" \
+     --actor operator:<name>
+   ```
+
+   This records a WorkEnvelope create-plan with the exact product, destination,
+   candidate, rollback, checks, authorization evidence, and post-release metric.
+   It does not admit, claim, dispatch, or execute the work. Admit it explicitly
+   with `compound work admit-plan --plan <create-plan.json>` only after the
+   execution policy and provider adapter are ready.
+
+5. After a separately governed external action emits a completed
+   `outward_delta` Receipt, import the planned ProductSignal through the normal
+   product signal door.
+
+6. Close the product loop with the exact authorization, receipt, and signal:
+
+   ```bash
+   compound product release-observe \
+     --reviewed "${COMPOUND_HOME}/reviews/product-releases/<reviewed>.json" \
+     --execution rec_<id> \
+     --signal sig_<id>
+   ```
+
+The review can authorize exactly one product identity and candidate. It never
+uploads, submits, publishes, changes price, or mutates App Store Connect.
+Execution remains a separate governed WorkEnvelope. Observation fails closed
+unless the Receipt is linked to an allowing PolicyDecision for that exact work,
+the signal belongs to the same product, its metric matches the plan, and its
+timestamp follows execution.
+
 ## Scheduling
 
 Scheduling is deployment-specific. Use cron, systemd timers, launchd, GitHub

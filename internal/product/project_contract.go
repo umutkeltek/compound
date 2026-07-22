@@ -119,13 +119,14 @@ func ProjectContractBundle(pc projectContract, rc releaseContract, projectRef, r
 	bundle := Bundle{
 		SchemaVersion: SchemaVersion,
 		Product: Product{
-			ID:             productID,
-			Name:           name,
-			OwnerEntity:    ownerEntity(pc.Project.Owner, slug),
-			Surfaces:       projectSurfaces(pc, identity),
-			Channels:       projectChannels(pc, identity),
-			Positioning:    projectPositioning(pc, rc, name),
-			PrivacyPosture: projectPrivacy(pc),
+			ID:              productID,
+			Name:            name,
+			OwnerEntity:     ownerEntity(pc.Project.Owner, slug),
+			Surfaces:        projectSurfaces(pc, identity),
+			Channels:        projectChannels(pc, identity),
+			Positioning:     projectPositioning(pc, rc, name),
+			PrivacyPosture:  projectPrivacy(pc),
+			ReleaseIdentity: exportedReleaseIdentity(identity),
 			TasteProfile: TasteProfile{
 				Standards: []string{"source-in-place product contract"},
 				RedLines:  []string{"do not infer product signal or causality from project contract"},
@@ -137,6 +138,20 @@ func ProjectContractBundle(pc projectContract, rc releaseContract, projectRef, r
 		return Bundle{}, err
 	}
 	return bundle, nil
+}
+
+func exportedReleaseIdentity(identity releaseIdentity) ReleaseIdentity {
+	build := ""
+	if identity.Build != nil {
+		build = strings.TrimSpace(fmt.Sprint(identity.Build))
+	}
+	return ReleaseIdentity{
+		BundleID:             strings.TrimSpace(identity.BundleID),
+		AppStoreConnectAppID: strings.TrimSpace(identity.AppStoreConnectAppID),
+		SubscriptionIDs:      compact(identity.SubscriptionIDs),
+		Version:              strings.TrimSpace(identity.Version),
+		Build:                build,
+	}
 }
 
 func mergeReleaseIdentity(project, release releaseIdentity) releaseIdentity {

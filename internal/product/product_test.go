@@ -276,6 +276,12 @@ func TestAuthoritySummarizesProductFeedbackState(t *testing.T) {
 	if report.AuthorityRef != AuthorityRef || report.Status != "needs_review" {
 		t.Fatalf("authority header = %+v", report)
 	}
+	if report.ReleasePlanningRef != "compound://product/release-flow" ||
+		!strings.Contains(report.ProductReleaseCommand, "compound product release-plan") ||
+		!strings.Contains(report.RepositoryExportCommand, "compound release export-public") ||
+		!strings.Contains(report.ReleaseBoundary, "not product release") {
+		t.Fatalf("authority must disambiguate product release from repository export: %+v", report)
+	}
 	if !slices.Contains(report.AuthorityPaths, "compound://events/<id>") || slices.Contains(report.AuthorityPaths, "events/*.json") {
 		t.Fatalf("authority event reference is not logical: %v", report.AuthorityPaths)
 	}
@@ -315,6 +321,12 @@ func TestProjectContractBundleMapsSourceInPlaceProductRegistry(t *testing.T) {
 	if !hasString(bundle.Product.Channels, "app_store") || !hasString(bundle.Product.Channels, "web") || !hasString(bundle.Product.Channels, "api") {
 		t.Fatalf("channels = %+v", bundle.Product.Channels)
 	}
+	if bundle.Product.ReleaseIdentity.BundleID != "com.example.sourcecontractdemo" ||
+		bundle.Product.ReleaseIdentity.AppStoreConnectAppID != "app-demo-sourcecontract" ||
+		bundle.Product.ReleaseIdentity.Version != "1.0.0" ||
+		bundle.Product.ReleaseIdentity.Build != "42" {
+		t.Fatalf("release identity = %+v", bundle.Product.ReleaseIdentity)
+	}
 	for _, ref := range []string{
 		"https://example.invalid/source-contract-demo.git",
 		"bundle:com.example.sourcecontractdemo",
@@ -338,8 +350,24 @@ func TestProjectContractBundleMapsSourceInPlaceProductRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "ok" || report.EntityID != "product:source_contract_demo" || len(report.ClaimIDs) != 4 || len(report.SignalIDs) != 0 || len(report.HypothesisIDs) != 0 {
+	if report.Status != "ok" || report.EntityID != "product:source_contract_demo" || len(report.ClaimIDs) != 10 || len(report.SignalIDs) != 0 || len(report.HypothesisIDs) != 0 {
 		t.Fatalf("report = %+v", report)
+	}
+	for predicate, want := range map[string]string{
+		"release_bundle_id":                "com.example.sourcecontractdemo",
+		"release_app_store_connect_app_id": "app-demo-sourcecontract",
+		"release_version":                  "1.0.0",
+		"release_build":                    "42",
+		"release_subscription_ids":         "com.example.sourcecontractdemo.pro.monthly",
+		"release_mechanism":                "app_store_connect",
+	} {
+		claim, ok, err := store.CurrentClaim(bundle.Product.ID, predicate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok || claim.Object != want {
+			t.Fatalf("release claim %s = %+v found=%t, want %q", predicate, claim, ok, want)
+		}
 	}
 	for _, token := range []string{"appstore:app-demo-sourcecontract", "bundle:com.example.sourcecontractdemo"} {
 		res, err := store.ResolveEntity(token)
