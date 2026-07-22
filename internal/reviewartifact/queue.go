@@ -30,8 +30,30 @@ type QueueReport struct {
 	Area          string       `json:"area,omitempty"`
 	Counts        QueueCounts  `json:"counts"`
 	Groups        []QueueGroup `json:"groups,omitempty"`
-	Items         []QueueItem  `json:"items"`
+	// SystemicBlocker is set only when EVERY group in the queue is blocked for
+	// the exact same reason (e.g. no producer currently seeds an owner authority
+	// bundle). It lets a console render one banner instead of stamping the same
+	// jargon on every card. It is additive and optional: it never changes
+	// SchemaVersion, and consumers that ignore it see the unchanged projection.
+	SystemicBlocker *SystemicBlocker `json:"systemic_blocker,omitempty"`
+	Items           []QueueItem      `json:"items"`
 }
+
+// SystemicBlocker names one reason that blocks the whole decide surface at once.
+// It is a projection convenience, not a new authority: the per-group blocked
+// reason it summarizes is still computed the same fail-closed way.
+type SystemicBlocker struct {
+	Reason             string `json:"reason"`
+	AffectedGroupCount int    `json:"affected_group_count"`
+}
+
+// systemicNoAuthorityReason is the fail-closed reason a group carries no owner
+// authority bundle an authority-aware surface can act on: none was seeded, the
+// action is unsigned, the bundle is partial, or it is no longer current. All of
+// these parse to nothing on the console and stamp one identical face, so this
+// string matches the console's wording exactly and one banner can stand in for
+// many identical cards.
+const systemicNoAuthorityReason = "No complete current owner authority bundle is available."
 
 // QueueCounts summarizes review artifact status without interpreting domain payloads.
 type QueueCounts struct {
@@ -260,6 +282,7 @@ func Recount(report *QueueReport) {
 	}
 	ApplyGenericResolutions(report)
 	report.Groups = buildQueueGroups(report.Items)
+	report.SystemicBlocker = computeSystemicBlocker(report.Groups)
 	report.Counts = QueueCounts{
 		ByArea:          map[string]int{},
 		ByStatus:        map[string]int{},
@@ -421,6 +444,52 @@ func queueGroupAction(group QueueGroup, items []QueueItem) (*Action, string) {
 		return nil, "owner has not exposed a safe action for this decision group"
 	}
 	return action, ""
+}
+
+// groupConsoleBlockedReason returns the reason an authority-aware surface (the
+// operator console) cannot act on a group, or "" when the group carries a
+// complete, current owner authority bundle (allowed → act now, held → decide
+// now: both are operator-decidable). It mirrors the console's fail-closed gate
+// so one systemic reason can summarize many identical cards. queueGroupAction
+// still exposes an unsigned legacy SafeBatchAction for non-authority consumers,
+// so the authority requirement is read back here rather than from the
+// batch-construction TerminalReason: a missing action, an unsigned action, a
+// partial bundle, and a non-current bundle all parse to nothing on the console
+// (authorityIdentity fails closed on the last three) and share one reason.
+func groupConsoleBlockedReason(group QueueGroup) string {
+	action := group.SafeBatchAction
+	if action == nil {
+		return systemicNoAuthorityReason
+	}
+	if identity, err := authorityIdentity(*action); err != nil || !identity.Present {
+		return systemicNoAuthorityReason
+	}
+	return ""
+}
+
+// computeSystemicBlocker returns a non-nil summary only when every group in the
+// queue is blocked for one identical reason. A single decidable group, or two
+// groups blocked for different reasons, leaves it nil so the console keeps
+// rendering per-card reasons. It never fabricates an actionable state.
+func computeSystemicBlocker(groups []QueueGroup) *SystemicBlocker {
+	if len(groups) == 0 {
+		return nil
+	}
+	reason := ""
+	for i := range groups {
+		got := groupConsoleBlockedReason(groups[i])
+		if got == "" {
+			return nil
+		}
+		if reason == "" {
+			reason = got
+			continue
+		}
+		if got != reason {
+			return nil
+		}
+	}
+	return &SystemicBlocker{Reason: reason, AffectedGroupCount: len(groups)}
 }
 
 func cloneAction(action Action) Action {
