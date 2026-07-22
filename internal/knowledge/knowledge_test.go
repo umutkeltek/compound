@@ -672,6 +672,27 @@ func TestExtractEssenceFixtureShapesCandidatesAndPersistsResidue(t *testing.T) {
 	}
 }
 
+// TestBuildKnowledgeEssencePromptForbidsUngroundedFactsAndAllowsEmpty
+// certifies the two faithfulness clauses of the essence prompt survive:
+// (1) statements must not add facts absent from the evidence quote, and
+// (2) an empty essence_lines list is preferred over restating the quote.
+// Teeth recipe: delete or weaken either clause string in
+// buildKnowledgeEssencePrompt and this test goes RED on the matching want;
+// the two wants are intentionally clause-specific substrings so a clause
+// dropping or silently rewording fails the falsifier rather than passing it.
+func TestBuildKnowledgeEssencePromptForbidsUngroundedFactsAndAllowsEmpty(t *testing.T) {
+	req := ExtractionRequest{ID: "kx_1", ItemRef: "arxiv:1234.5678v1", SourceKind: "arxiv", Title: "T", EvidenceRef: "ev_1"}
+	system, _ := buildKnowledgeEssencePrompt(req, mem.EvidenceItem{ID: "ev_1", QuoteText: "quote"})
+	for _, want := range []string{
+		"Every fact in statement must appear in the evidence quote. Never add numbers, names, dates, or claims that are not in the evidence.",
+		`return {"essence_lines":[]}`,
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("essence prompt missing %q:\n%s", want, system)
+		}
+	}
+}
+
 func TestExtractRejectsUngroundedFixtureEvidenceRefs(t *testing.T) {
 	homePath := t.TempDir()
 	store, err := mem.Open(homePath)

@@ -647,6 +647,8 @@ func buildKnowledgeEssencePrompt(req ExtractionRequest, evidence mem.EvidenceIte
 		"Do not emit Compound's full extraction envelope.",
 		"Each essence line has predicate_hint, statement, and quote.",
 		"The quote must be copied from the provided evidence text.",
+		"Every fact in statement must appear in the evidence quote. Never add numbers, names, dates, or claims that are not in the evidence.",
+		`If the evidence contains no durable insight beyond its own words, return {"essence_lines":[]}. An empty list is strongly preferred over restating or paraphrasing the quote.`,
 	}, "\n")
 	user := strings.Join(compactStrings(
 		"Knowledge extraction item: "+req.ItemRef,
