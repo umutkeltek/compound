@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,6 +191,57 @@ func TestObserveClosureLateSignalStillCloses(t *testing.T) {
 	}
 	if status[0].MatchedSignalID != "sig_late" {
 		t.Fatalf("expected sig_late matched, got %+v", status[0])
+	}
+}
+
+// TestPostSurfacesConsumptionRecordFailure (F9.1): when a post stages + receipts but
+// recording its budget consumption fails, Post must return an error naming the
+// consumption failure and the receipt id — and still report the move happened
+// (Executed=true, feedback loop closed) so the operator knows the staged post was NOT
+// rolled back. The budget dir is made read-only so EvaluatePlan's reads
+// (LoadBudget/Used) succeed but Record (a write) fails, isolating the record failure.
+// This mirrors TestRunSurfacesConsumptionRecordFailure for the run path.
+func TestPostSurfacesConsumptionRecordFailure(t *testing.T) {
+	home := t.TempDir()
+	budgetDir := filepath.Join(home, "actuator", "budget")
+	if err := os.MkdirAll(budgetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(budgetDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(budgetDir, 0o755) })
+
+	res, err := Post(home, PostInput{
+		WorkID:    "work_rec",
+		ProductID: "product:demo",
+		Channel:   "distribution",
+		Surface:   "x",
+		Content:   "Ship your agent work that compounds.",
+		Metric:    "posthog_signups",
+		Window:    "7d",
+	}, policy.DefaultConfig(), testNow)
+
+	if err == nil {
+		t.Fatal("a failed consumption record must surface as an error, not be silently discarded")
+	}
+	if !strings.Contains(err.Error(), "consumption") {
+		t.Fatalf("error must name the consumption-record failure, got: %v", err)
+	}
+	if !res.Executed {
+		t.Fatalf("the post DID stage + receipt; result must report Executed=true: %+v", res)
+	}
+	if res.ReceiptRef == "" {
+		t.Fatalf("expected a populated receipt ref (the post landed), got: %+v", res)
+	}
+	if !strings.Contains(err.Error(), res.ReceiptRef) {
+		t.Fatalf("error must report the receipt id %q, got: %v", res.ReceiptRef, err)
+	}
+	if res.HypothesisID == "" {
+		t.Fatalf("the feedback loop must still close (hypothesis minted) despite the record failure: %+v", res)
+	}
+	if _, statErr := os.Stat(res.PostPath); statErr != nil {
+		t.Fatalf("the staged post must remain on disk (no rollback), got: %v", statErr)
 	}
 }
 
