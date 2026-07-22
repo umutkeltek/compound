@@ -103,8 +103,9 @@ func cmdDecisions(args []string) {
 	case "candidate-plan":
 		candidateID := valueFlag(args[1:], "--candidate")
 		targetPath := valueFlag(args[1:], "--target")
+		workID := strings.TrimSpace(valueFlag(args[1:], "--work"))
 		if candidateID == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound decisions candidate-plan --candidate <candidate_id> [--target <file>]")
+			fmt.Fprintln(os.Stderr, "usage: compound decisions candidate-plan --candidate <candidate_id> [--target <file>] [--work <work_id>]")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
@@ -117,6 +118,10 @@ func cmdDecisions(args []string) {
 			fmt.Fprintln(os.Stderr, "decisions candidate-plan:", err)
 			os.Exit(1)
 		}
+		// Binding an owner work id lets the review-authority stamp sign the
+		// plan-review action so the operator surface can act on it; without it the
+		// action ships unsigned and the group renders fail-closed.
+		plan.WorkID = workID
 		paths, err := decisions.RecordDecisionCandidatePlan(homePath, plan)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "decisions candidate-plan:", err)

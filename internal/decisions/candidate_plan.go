@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/envelope"
+	"compound/internal/policy"
 	"compound/internal/reviewartifact"
 )
 
@@ -24,11 +26,17 @@ const (
 // distiller decision candidate. It never mutates decision source files and never
 // promotes memory truth.
 type DecisionCandidatePlan struct {
-	SchemaVersion    string                 `json:"schema_version"`
-	ID               string                 `json:"id"`
-	CreatedAt        string                 `json:"created_at"`
-	Status           string                 `json:"status"`
-	CandidateID      string                 `json:"candidate_id"`
+	SchemaVersion string `json:"schema_version"`
+	ID            string `json:"id"`
+	CreatedAt     string `json:"created_at"`
+	Status        string `json:"status"`
+	CandidateID   string `json:"candidate_id"`
+	// WorkID binds this review to a durable owner WorkEnvelope. When present and
+	// live, the queue annotator seeds an owner ActionIntent + AuthorityContext so
+	// the shared review-authority stamp can sign the plan-review action. Absent
+	// (the plan was recorded without an owner work), the action stays unsigned and
+	// the group renders fail-closed — never a fabricated button.
+	WorkID           string                 `json:"work_id,omitempty"`
 	CandidateVerdict string                 `json:"candidate_verdict,omitempty"`
 	DecisionKey      string                 `json:"decision_key"`
 	Subject          string                 `json:"subject,omitempty"`
@@ -258,14 +266,82 @@ func annotateDecisionCandidateQueueItem(item *reviewartifact.QueueItem) {
 	item.GroupKey = decisionCandidateReviewGroupKey(plan)
 	item.Owner = "internal/decisions"
 	item.NextAction = "plan decision-specific lens review"
-	item.Actions = []reviewartifact.Action{{
+	action := reviewartifact.Action{
 		ID:             DecisionCandidateReviewActionID,
 		Label:          "Plan decision review",
 		Command:        shellCommand(argv),
 		Argv:           argv,
 		RequiresReview: true,
 		PolicyNote:     "creates review evidence only; decision source and authority stay unchanged",
-	}}
+	}
+	// Seed the owner authority bundle so the shared review-authority stamp
+	// (reviewqueue.StampReviewActionAuthority) can sign the action. The stamp is
+	// the sole signer; a producer that omits ActionIntent + AuthorityContext ships
+	// an unsigned action that fails closed on every authority-aware surface.
+	action.ActionIntent, action.AuthorityContext = decisionCandidateReviewAuthoritySeed(plan)
+	item.Actions = []reviewartifact.Action{action}
+}
+
+// decisionCandidateReviewAuthoritySeed builds the owner ActionIntent and
+// AuthorityContext for the plan-review action. It returns (nil, nil) when the
+// plan is not bound to a durable, non-synthetic owner work id, or when the
+// intent it would produce is not structurally valid — either way the caller
+// keeps the action unsigned and the group stays fail-closed. Liveness of the
+// work id is re-checked at stamp time against the work store; this seed only
+// requires a well-formed identity so the stamp has something to validate.
+func decisionCandidateReviewAuthoritySeed(plan DecisionCandidatePlan) (*envelope.ActionIntent, *policy.AuthorityContext) {
+	workID := strings.TrimSpace(plan.WorkID)
+	if len(workID) <= len("work_") || !strings.HasPrefix(workID, "work_") ||
+		strings.HasPrefix(workID, "work_live_") || filepath.Base(workID) != workID {
+		return nil, nil
+	}
+	candidateID := strings.TrimSpace(plan.CandidateID)
+	createdAt := strings.TrimSpace(plan.CreatedAt)
+	if candidateID == "" || createdAt == "" {
+		return nil, nil
+	}
+	evidenceRefs := reviewartifact.Unique(append([]string{}, plan.EvidenceRefs...))
+	intent := &envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID: "act_" + reviewartifact.Digest12(strings.Join([]string{
+				"decision-candidate-review", DecisionCandidateReviewActionID, plan.ID, workID, candidateID,
+			}, "\x00")),
+			CreatedAt:    createdAt,
+			Producer:     envelope.Producer{Kind: "owner_projection", Name: "compound"},
+			IDs:          envelope.IDs{WorkID: workID},
+			Authority:    envelope.Authority{SourceClass: "runtime", Owner: "compound", Status: "current"},
+			Privacy:      "private",
+			Risk:         "tier1",
+			EvidenceRefs: evidenceRefs,
+			Uncertainty:  envelope.Uncertainty{Level: "known"},
+		},
+		Actor:         "compound",
+		Capability:    "review.decision_candidate",
+		Action:        DecisionCandidateReviewActionID,
+		Target:        envelope.ActionTarget{Kind: "decision_candidate", ID: candidateID},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       "Plan a decision-specific lens review for decision candidate " + candidateID + "; creates review evidence only.",
+		RollbackPlan:  "Discard the generated panel plan review artifact; no decision source, memory, or authority is mutated.",
+	}
+	if err := intent.Validate(); err != nil {
+		return nil, nil
+	}
+	context := &policy.AuthorityContext{
+		TargetScope:               "private",
+		VerifiedRecoverability:    policy.RecoverabilityVerified,
+		OperatorControlContinuity: policy.OperatorControlContinuous,
+		ExpectedReceipt:           "Recorded a panel plan review for decision candidate " + candidateID + " under work " + workID + "; decision source and memory remain unchanged.",
+		ExpectedProof: append([]string{
+			"decision-candidate:" + candidateID,
+			"decision-candidate-plan:" + plan.ID,
+			"work:" + workID,
+		}, evidenceRefs...),
+		EvidenceRefs: evidenceRefs,
+	}
+	return intent, context
 }
 
 func decisionCandidatePanelPlanArgv(candidateID string) []string {
