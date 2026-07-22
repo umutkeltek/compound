@@ -151,7 +151,34 @@ func ChatCompletionJSONWithMeta(ctx context.Context, client *http.Client, baseUR
 		latencyMS += retryLatency
 		meta = retryMeta
 	}
+	if err != nil {
+		return content, usage, latencyMS, meta, err
+	}
+	content, err = sanitizeModelJSONContent(content)
 	return content, usage, latencyMS, meta, err
+}
+
+func sanitizeModelJSONContent(content []byte) ([]byte, error) {
+	text := strings.TrimSpace(string(content))
+	if strings.HasPrefix(text, "<think>") {
+		end := strings.LastIndex(text, "</think>")
+		if end < 0 {
+			return nil, fmt.Errorf("openai-compatible response reasoning block not closed")
+		}
+		text = text[end+len("</think>"):]
+	}
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "```") {
+		lines := strings.Split(text, "\n")
+		if len(lines) >= 3 && (strings.TrimSpace(lines[0]) == "```" || strings.TrimSpace(lines[0]) == "```json") && strings.TrimSpace(lines[len(lines)-1]) == "```" {
+			text = strings.Join(lines[1:len(lines)-1], "\n")
+		}
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("openai-compatible response contained only reasoning content")
+	}
+	return []byte(text), nil
 }
 
 func isTransientOpenAICompatibleUpstreamError(err error) bool {

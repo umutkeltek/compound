@@ -416,6 +416,50 @@ func TestChatCompletionJSONLeavesSwitchbackMetadataEmptyWhenHeadersAbsent(t *tes
 	}
 }
 
+func TestSanitizeModelJSONContent(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+		err  string
+	}{
+		{"passthrough", `{"ok":true}`, `{"ok":true}`, ""},
+		{"think-preamble", "<think>reasoning</think>\n{\"ok\":true}", `{"ok":true}`, ""},
+		{"think-plus-fence", "<think>reasoning</think>\n```json\n{\"ok\":true}\n```", `{"ok":true}`, ""},
+		{"fence-only", "```\n{\"ok\":true}\n```", `{"ok":true}`, ""},
+		{"think-only", "<think>reasoning</think>", "", "only reasoning"},
+		{"unclosed-think", "<think>reasoning", "", "not closed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := sanitizeModelJSONContent([]byte(tt.in))
+			if tt.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.err) {
+					t.Fatalf("err=%v", err)
+				}
+				return
+			}
+			if err != nil || string(got) != tt.want {
+				t.Fatalf("got=%q err=%v", got, err)
+			}
+		})
+	}
+}
+func TestChatCompletionJSONStripsThinkPreambleOverHTTP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"<think>chain of thought</think>\n{\"ok\":true}"}}],"usage":{"total_tokens":9}}`))
+	}))
+	defer server.Close()
+
+	content, usage, _, err := ChatCompletionJSON(context.Background(), server.Client(), server.URL, "", "m", "s", "u")
+	if err != nil {
+		t.Fatalf("think-preamble path failed: %v", err)
+	}
+	if string(content) != `{"ok":true}` || usage.TotalTokens != 9 {
+		t.Fatalf("content=%s usage=%+v", content, usage)
+	}
+}
+
 func TestChatCompletionJSONRetriesWithoutResponseFormat(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
