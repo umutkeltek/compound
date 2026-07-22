@@ -19,7 +19,8 @@ import (
 // owns the reduction and the park-on-dissent invariant.
 //
 // usage: compound memory concur --claim <claim_id> --content "<text>"
-//            --lanes zai,minimax,qwen [--threshold N] [--id <probe_id>] [--json]
+//
+//	--lanes zai,minimax,qwen [--threshold N] [--id <probe_id>] [--json]
 //
 // threshold defaults to the number of lanes (unanimous concurrence — the
 // conservative "be sure" default). Per-lane endpoints come from

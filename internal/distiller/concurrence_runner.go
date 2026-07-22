@@ -33,9 +33,9 @@ import (
 // lane can never masquerade as agreement.
 
 const (
-	concurrenceEnvPrefix      = "COMPOUND_CONCUR_"
-	concurrenceCallTimeout    = 60 * time.Second
-	concurrenceVerdictSchema  = "compound.distiller.concurrence_verdict.v0.1"
+	concurrenceEnvPrefix     = "COMPOUND_CONCUR_"
+	concurrenceCallTimeout   = 60 * time.Second
+	concurrenceVerdictSchema = "compound.distiller.concurrence_verdict.v0.1"
 )
 
 // ConcurrenceLane is one lane's resolved endpoint.
@@ -129,15 +129,15 @@ func (r *ConcurrenceRunner) RunConcurrence(probe mem.ConcurrenceProbe, lane stri
 	)
 	if err != nil {
 		return mem.ConcurrenceAnswer{Lane: lane, Verdict: mem.ConcurrenceVerdictAbstain,
-			ModelProvider: meta.ResolvedProvider, ModelName: meta.ResolvedModel},
+				ModelProvider: meta.ResolvedProvider, ModelName: meta.ResolvedModel},
 			fmt.Errorf("concurrence: lane %q call failed: %w", lane, err)
 	}
 
 	verdict, summary, err := parseConcurrenceVerdict(content)
 	if err != nil {
 		return mem.ConcurrenceAnswer{Lane: lane, Verdict: mem.ConcurrenceVerdictAbstain,
-			ModelProvider: meta.ResolvedProvider, ModelName: meta.ResolvedModel,
-			Summary: "unparseable verdict; treated as abstain"},
+				ModelProvider: meta.ResolvedProvider, ModelName: meta.ResolvedModel,
+				Summary: "unparseable verdict; treated as abstain"},
 			fmt.Errorf("concurrence: lane %q returned an unparseable verdict: %w", lane, err)
 	}
 	return mem.ConcurrenceAnswer{
