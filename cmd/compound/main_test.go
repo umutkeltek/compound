@@ -6311,6 +6311,195 @@ func TestAuthorityImportInfraServicesReimportIsIdempotent(t *testing.T) {
 	}
 }
 
+func writeCLIModelCatalogFixture(t *testing.T, path string) {
+	t.Helper()
+	body := `{
+  "schema": "examplecorp/provider-registry@3",
+  "models": [
+    {
+      "provider_id": "examplecorp",
+      "model_id": "alpha-flash",
+      "display_name": "Alpha Flash",
+      "upstream_model_ids": ["alpha-flash-001"],
+      "input_micros_per_mtok": 140000,
+      "output_micros_per_mtok": 560000,
+      "context_window": 128000,
+      "tier": "standard",
+      "source_url": "https://catalog.invalid/alpha-flash",
+      "workload_kind": "chat"
+    },
+    {
+      "provider_id": "examplecorp",
+      "model_id": "shared-model",
+      "display_name": "Shared Model",
+      "upstream_model_ids": [],
+      "input_micros_per_mtok": 100000,
+      "output_micros_per_mtok": 300000,
+      "context_window": 32000,
+      "tier": "value",
+      "source_url": "",
+      "workload_kind": "chat"
+    },
+    {
+      "provider_id": "othercorp",
+      "model_id": "shared-model",
+      "display_name": "Shared Model Prime",
+      "upstream_model_ids": [],
+      "input_micros_per_mtok": 90000,
+      "output_micros_per_mtok": 270000,
+      "context_window": 64000,
+      "tier": "value",
+      "source_url": "https://catalog.invalid/shared-model-prime",
+      "workload_kind": "chat"
+    },
+    {
+      "provider_id": "examplecorp",
+      "model_id": "legacy-model",
+      "display_name": "Legacy Model",
+      "upstream_model_ids": [],
+      "input_micros_per_mtok": 50000,
+      "output_micros_per_mtok": 150000,
+      "context_window": 8000,
+      "tier": "legacy",
+      "source_url": "",
+      "workload_kind": "chat"
+    }
+  ],
+  "deprecated": [
+    {
+      "model": "legacy-model",
+      "providers": ["examplecorp"],
+      "status": "deprecated",
+      "note": "superseded by alpha-flash"
+    }
+  ]
+}
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAuthorityImportModelCatalogRegistersEntitiesAndResolvesWithProvenance
+// covers F1/F2/F3/F7 of work_07ea9df822a7 end to end through the CLI:
+// import-model-catalog registers a resolvable model:* entity per enrollable
+// row, `authority resolve` prints its import provenance (incl. an exact
+// micros->USD price string) additively, a shared alias resolves multi, and
+// the deprecated row stays unresolved.
+func TestAuthorityImportModelCatalogRegistersEntitiesAndResolvesWithProvenance(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	source := filepath.Join(t.TempDir(), "provider-registry.json")
+	writeCLIModelCatalogFixture(t, source)
+
+	before := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "model:examplecorp/alpha-flash"})
+	})
+	if !strings.Contains(before, "status: unresolved") {
+		t.Fatalf("expected unresolved before import, got:\n%s", before)
+	}
+
+	importOut := captureStdout(t, func() {
+		cmdAuthority([]string{"import-model-catalog", source})
+	})
+	for _, want := range []string{
+		`"authority_ref": "compound://registries/model-router"`,
+		`"registered_entity_slugs"`,
+		`"capability_node_ids"`,
+		`"deprecated_count": 1`,
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import-model-catalog output missing %q:\n%s", want, importOut)
+		}
+	}
+
+	bySlug := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "model:examplecorp/alpha-flash"})
+	})
+	for _, want := range []string{
+		"status: resolved",
+		"entity: model:examplecorp/alpha-flash",
+		"via: slug",
+		"provider: examplecorp",
+		"price_in_usd_per_mtok: 0.14",
+		"price_out_usd_per_mtok: 0.56",
+		"context_window: 128000",
+		"tier: standard",
+		"source_revision: sha256:",
+	} {
+		if !strings.Contains(bySlug, want) {
+			t.Fatalf("resolve by slug missing %q:\n%s", want, bySlug)
+		}
+	}
+
+	byAlias := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "alpha-flash"})
+	})
+	if !strings.Contains(byAlias, "entity: model:examplecorp/alpha-flash") || !strings.Contains(byAlias, "via: alias") {
+		t.Fatalf("resolve by alias =\n%s", byAlias)
+	}
+
+	bySharedAlias := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "shared-model"})
+	})
+	if !strings.Contains(bySharedAlias, "status: multi") {
+		t.Fatalf("shared alias resolve should be multi, got:\n%s", bySharedAlias)
+	}
+
+	deprecated := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "model:examplecorp/legacy-model"})
+	})
+	if !strings.Contains(deprecated, "status: unresolved") {
+		t.Fatalf("deprecated row should stay unresolved, got:\n%s", deprecated)
+	}
+}
+
+// TestAuthorityImportModelCatalogReimportIsIdempotent is F4 at the CLI level:
+// re-running import-model-catalog must not duplicate the entity row or the
+// capability node row, and resolve output must stay identical.
+func TestAuthorityImportModelCatalogReimportIsIdempotent(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	source := filepath.Join(t.TempDir(), "provider-registry.json")
+	writeCLIModelCatalogFixture(t, source)
+
+	captureStdout(t, func() { cmdAuthority([]string{"import-model-catalog", source}) })
+	resolveOnce := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "model:examplecorp/alpha-flash"})
+	})
+
+	captureStdout(t, func() { cmdAuthority([]string{"import-model-catalog", source}) })
+	resolveTwice := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "model:examplecorp/alpha-flash"})
+	})
+
+	if resolveOnce != resolveTwice {
+		t.Fatalf("resolve output changed after re-import:\nonce=%s\ntwice=%s", resolveOnce, resolveTwice)
+	}
+
+	entityLines := readNonEmptyLinesCLI(t, filepath.Join(homePath, "ledger", "entities.jsonl"))
+	count := 0
+	for _, line := range entityLines {
+		if strings.Contains(line, `"slug":"model:examplecorp/alpha-flash"`) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("re-import duplicated the entity row: %d matches in %v", count, entityLines)
+	}
+
+	nodeLines := readNonEmptyLinesCLI(t, filepath.Join(homePath, "registries", "capability-nodes.jsonl"))
+	nodeCount := 0
+	for _, line := range nodeLines {
+		if strings.Contains(line, `"id":"model:examplecorp/alpha-flash"`) {
+			nodeCount++
+		}
+	}
+	if nodeCount != 1 {
+		t.Fatalf("re-import duplicated the capability node row: %d matches in %v", nodeCount, nodeLines)
+	}
+}
+
 func TestAuthorityGitImportsSourceControlState(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
