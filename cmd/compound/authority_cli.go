@@ -94,12 +94,37 @@ func cmdAuthority(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: compound authority import-infra-services <services.yaml>")
 			os.Exit(2)
 		}
-		report, err := authority.ImportInfraServicesRegistry(homePath, args[1], time.Now())
+		now := time.Now()
+		report, err := authority.ImportInfraServicesRegistry(homePath, args[1], now)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority import-infra-services:", err)
 			os.Exit(1)
 		}
-		printJSON(report)
+		// Additive effects of the same import verb (settled design: entity
+		// import is the attach point, not a second resolver source): register
+		// each service as a resolvable mem.Entity, then enroll it as a
+		// capability-graph node so orient's existing surfacing picks it up.
+		entityReport, err := authority.RegisterInfraServiceEntities(store, homePath, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority import-infra-services: register entities:", err)
+			os.Exit(1)
+		}
+		capabilityReport, err := authority.EnrollInfraServiceCapabilities(homePath, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority import-infra-services: enroll capabilities:", err)
+			os.Exit(1)
+		}
+		printJSON(struct {
+			authority.InfraRegistryImportReport
+			RegisteredEntitySlugs []string `json:"registered_entity_slugs,omitempty"`
+			SkippedEntitySlugs    []string `json:"skipped_entity_slugs,omitempty"`
+			CapabilityNodeIDs     []string `json:"capability_node_ids,omitempty"`
+		}{
+			InfraRegistryImportReport: report,
+			RegisteredEntitySlugs:     entityReport.RegisteredSlugs,
+			SkippedEntitySlugs:        entityReport.SkippedSlugs,
+			CapabilityNodeIDs:         capabilityReport.NodeIDs,
+		})
 		return
 	}
 	if args[0] == "os-absorption" {
@@ -341,6 +366,29 @@ func cmdAuthority(args []string) {
 		}
 		if res.Via != "" {
 			fmt.Printf("via: %s\n", res.Via)
+		}
+		// Additive only: a resolved service:* entity also prints its
+		// import provenance (role/authority/status/source_revision) read
+		// from the installed services registry + source-authority ledger.
+		// Every other entity kind's resolve output is unchanged.
+		if res.Status == "resolved" {
+			if prov, found, err := authority.ResolveInfraServiceProvenance(homePath, res.Slug); err != nil {
+				fmt.Fprintln(os.Stderr, "authority resolve: infra service provenance:", err)
+				os.Exit(1)
+			} else if found {
+				if prov.Role != "" {
+					fmt.Printf("role: %s\n", prov.Role)
+				}
+				if prov.Authority != "" {
+					fmt.Printf("authority: %s\n", prov.Authority)
+				}
+				if prov.Status != "" {
+					fmt.Printf("status: %s\n", prov.Status)
+				}
+				if prov.SourceRevision != "" {
+					fmt.Printf("source_revision: %s\n", prov.SourceRevision)
+				}
+			}
 		}
 		return
 	}
