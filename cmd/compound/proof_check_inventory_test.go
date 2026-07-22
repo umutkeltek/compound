@@ -138,10 +138,12 @@ func inventoryGuardRepoRoot(t *testing.T) string {
 }
 
 // TestGoTestGateCarriesExplicitDeliberateTimeout pins the go-test gate's per-package
-// -timeout to an EXPLICIT, deliberately chosen budget. The two heaviest suites run
-// 592-602s on a quiet tree — flush against Go's implicit 10m default — so with no
-// explicit flag the full battery is a scheduling-lottery coin flip for every lander
-// (observed: the same SHA flipping ok<->FAIL across consecutive clean-worktree runs).
+// -timeout to an EXPLICIT, deliberately chosen budget. The heaviest suites run
+// ~578-602s on a quiet tree — flush against Go's implicit 10m default — and the
+// operator machine is multi-tenant by design: concurrent AI harnesses legitimately
+// contend for cores, which pushed a fully-green suite past the previous 20m budget
+// (observed 2026-07-22: 1200.453s kill, zero test failures, green in isolation).
+// The budget absorbs contention rather than demanding a quiet machine.
 // Removing the flag, or changing the budget without editing this test, must be loud:
 // the budget is a recorded decision, never an implicit default.
 func TestGoTestGateCarriesExplicitDeliberateTimeout(t *testing.T) {
@@ -157,11 +159,11 @@ func TestGoTestGateCarriesExplicitDeliberateTimeout(t *testing.T) {
 			t.Fatalf("go-test gate must stay CIPortable so the explicit timeout budget governs CI runs too; got CIPortable=false")
 		}
 		for _, arg := range s.Command {
-			if arg == "-timeout=20m" {
+			if arg == "-timeout=40m" {
 				return
 			}
 			if strings.HasPrefix(arg, "-timeout") {
-				t.Fatalf("go-test gate carries %q — the deliberate budget is -timeout=20m; change it here and in proofCheckSteps together, never silently", arg)
+				t.Fatalf("go-test gate carries %q — the deliberate budget is -timeout=40m; change it here and in proofCheckSteps together, never silently", arg)
 			}
 		}
 		t.Fatalf("go-test gate command %v carries no explicit -timeout; the implicit 10m default is a coin flip at current suite weight (592-602s heavy packages)", s.Command)

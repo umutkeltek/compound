@@ -286,11 +286,14 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		redactCommand = []string{"redact", "--repo-visibility", "public", "--from-file", "<files changed in " + strings.TrimSpace(baseRef) + "...HEAD>"}
 	}
 	return []proofCheckStep{
-		// -timeout=20m is a DELIBERATE budget, not a tuning knob: the two heaviest suites run
-		// 592-602s on a quiet tree, flush against Go's implicit 10m per-package default, which
-		// made the gate a scheduling-lottery coin flip (same SHA flipping ok<->FAIL). Change it
+		// -timeout=40m is a DELIBERATE budget, not a tuning knob: the heaviest suite runs
+		// ~578-600s on a quiet tree, and the operator machine is multi-tenant by design —
+		// concurrent AI harnesses (hook evaluations, agent pools) legitimately contend for
+		// cores, which pushed the same green suite past the old 20m budget (observed
+		// 2026-07-22: 1200.453s kill with zero test failures, suite green in isolation).
+		// The budget must absorb contention, not demand a quiet machine. Change it
 		// together with TestGoTestGateCarriesExplicitDeliberateTimeout, never silently.
-		{Name: "go-test", Command: []string{"go", "test", "-count=1", "-timeout=20m", "./..."}, ProofRef: "go-test-count-1-all", CIPortable: true},
+		{Name: "go-test", Command: []string{"go", "test", "-count=1", "-timeout=40m", "./..."}, ProofRef: "go-test-count-1-all", CIPortable: true},
 		{Name: "go-vet", Command: []string{"go", "vet", "./..."}, ProofRef: "go-vet-all", CIPortable: true},
 		{Name: "go-build", Command: []string{"go", "build", "./..."}, ProofRef: "go-build-all", CIPortable: true},
 		{Name: "gofmt", Command: []string{"gofmt", "-l", "<tracked *.go>"}, ProofRef: "gofmt-check", CIPortable: true},
