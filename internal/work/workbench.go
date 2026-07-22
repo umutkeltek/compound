@@ -40,6 +40,10 @@ type WorkbenchReport struct {
 	DispatchStepRuns  []DispatchStepRunSummary    `json:"dispatch_step_runs,omitempty"`
 	ContinueRuns      []ContinueRunSummary        `json:"continue_runs,omitempty"`
 	Integrity         []string                    `json:"integrity,omitempty"`
+	// eventsByWork is the single event-log snapshot already loaded to build this
+	// report. In-process consumers may reuse it for adjacent projections without
+	// paying a second full-ledger read; it is deliberately absent from JSON.
+	eventsByWork map[string][]Event
 }
 
 type WorkbenchCounts struct {
@@ -339,6 +343,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	if err != nil {
 		return report, err
 	}
+	report.eventsByWork = eventsByWork
 	for _, w := range works {
 		events := eventsByWork[w.ID]
 		item := s.workbenchItem(w, events, &report, holdEvidence, now)

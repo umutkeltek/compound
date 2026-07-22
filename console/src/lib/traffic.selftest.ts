@@ -59,6 +59,8 @@ function mkProj(rows: ExecutorRow[]): ExecutorProjection {
     staleAfterSeconds: 172800,
     counts: { total: rows.length, open: 0, running: 0, ready: 0, needsMe: 0, assigned: 0, leases: 0, staleHistory: 0 },
     executors: rows,
+    delegatedSessions: [],
+    delegatedCounts: { total: 0, running: 0, exited: 0, refused: 0, unknown: 0 },
   };
 }
 

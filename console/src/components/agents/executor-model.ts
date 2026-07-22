@@ -73,6 +73,109 @@ export interface ExecutorProjection {
   staleAfterSeconds: number;
   counts: ExecutorCounts;
   executors: ExecutorRow[];
+  delegatedSessions: DelegatedSessionRow[];
+  delegatedCounts: DelegatedSessionCounts;
+}
+
+/* ---------- delegated supervised-session board (pure) ----------
+ * The reduced view of `compound executors --json` `delegated_sessions`: one
+ * safe row per work+lane, folded server-side from work.delegate.{spawned,
+ * steered,refused,exited}. Privacy law: NO prompt text, pane/stdout content,
+ * credentials, argv, or provider env ever reaches these fields — only the
+ * binding shape, the reduced status, the last steer TIME, and the exact
+ * RunAttempt id/status. This file owns the shared type + the pure status→tone
+ * mapping the board renders and the smoke asserts. */
+
+export type DelegatedSessionStatus = "running" | "exited" | "refused" | "unknown";
+
+export interface DelegatedSessionRow {
+  workId: string;
+  lane: string;
+  session: string;
+  status: DelegatedSessionStatus;
+  holder: string;
+  runAttemptId: string;
+  runAttemptStatus: string;
+  refusedReason: string;
+  spawnedAt: string;
+  lastSteerAt: string;
+  exitedAt: string;
+  observedExit: string;
+}
+
+export interface DelegatedSessionCounts {
+  total: number;
+  running: number;
+  exited: number;
+  refused: number;
+  unknown: number;
+}
+
+export type DelegatedTone = "live" | "done" | "seam" | "faint";
+
+/** The rendered view of one delegated-session row: the status→tone/label
+ *  mapping the board draws. Pure so the smoke reasons about the same values. */
+export interface DelegatedSessionView {
+  workId: string;
+  status: DelegatedSessionStatus;
+  statusLabel: string;
+  tone: DelegatedTone;
+  lane: string;
+  session: string;
+  holder: string;
+  runAttemptId: string;
+  /** exact "<ratt> · <status>" when both present, else whichever exists. */
+  runAttemptLabel: string;
+  /** the single most-relevant right-hand detail for the row's status. */
+  detail: string;
+  lastSteerAt: string;
+}
+
+const DELEGATED_STATUS_META: Record<DelegatedSessionStatus, { label: string; tone: DelegatedTone }> = {
+  running: { label: "Running", tone: "live" },
+  exited: { label: "Exited", tone: "done" },
+  refused: { label: "Refused", tone: "seam" },
+  unknown: { label: "Unknown", tone: "faint" },
+};
+
+function delegatedStatusOf(value: string): DelegatedSessionStatus {
+  return value === "running" || value === "exited" || value === "refused" ? value : "unknown";
+}
+
+/** Pure per-row render model. The `detail` column names the status-relevant
+ *  fact (refusal reason, observed exit, or run-attempt status) WITHOUT ever
+ *  reaching for prompt/argv/message content. */
+export function delegatedSessionView(row: DelegatedSessionRow): DelegatedSessionView {
+  const status = delegatedStatusOf(row.status);
+  const meta = DELEGATED_STATUS_META[status];
+  const runAttemptLabel = row.runAttemptId
+    ? row.runAttemptStatus
+      ? `${row.runAttemptId} · ${row.runAttemptStatus}`
+      : row.runAttemptId
+    : "";
+  let detail = "";
+  if (status === "refused") detail = row.refusedReason;
+  else if (status === "exited") detail = row.observedExit || row.runAttemptStatus;
+  else if (status === "running") detail = row.runAttemptStatus;
+  return {
+    workId: row.workId,
+    status,
+    statusLabel: meta.label,
+    tone: meta.tone,
+    lane: row.lane,
+    session: row.session,
+    holder: row.holder,
+    runAttemptId: row.runAttemptId,
+    runAttemptLabel,
+    detail,
+    lastSteerAt: row.lastSteerAt,
+  };
+}
+
+/** The board's ordered render models — server order preserved (running,
+ *  unknown, refused, exited; ties by work id). */
+export function delegatedSessionViews(rows: DelegatedSessionRow[]): DelegatedSessionView[] {
+  return rows.map(delegatedSessionView);
 }
 
 /** A single stale lease surfaced to the hygiene band. */

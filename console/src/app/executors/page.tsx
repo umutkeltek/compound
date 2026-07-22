@@ -1,4 +1,5 @@
 import { CostLanes } from "@/components/agents/CostLanes";
+import { DelegatedSessions } from "@/components/agents/DelegatedSessions";
 import { summarizeHygiene, type ExecutorProjection } from "@/components/agents/executor-model";
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import { ExecutorTable } from "@/components/agents/ExecutorTable";
@@ -99,6 +100,8 @@ export default async function AgentsPage() {
           )}
 
           <LeasePressure executors={projection.executors} staleAfterSeconds={projection.staleAfterSeconds} />
+
+          <DelegatedSessions rows={projection.delegatedSessions} counts={projection.delegatedCounts} />
 
           <div className="grid gap-4 lg:grid-cols-2">
             <CostLanes executors={projection.executors} generatedAt={projection.generatedAt} />

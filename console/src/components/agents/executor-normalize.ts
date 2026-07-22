@@ -2,6 +2,9 @@ import { arr, num, str, type Json } from "@/lib/compound";
 
 import {
   LEASE_STALE_AFTER_SECONDS,
+  type DelegatedSessionCounts,
+  type DelegatedSessionRow,
+  type DelegatedSessionStatus,
   type ExecutorLease,
   type ExecutorProjection,
   type ExecutorRow,
@@ -88,6 +91,56 @@ function normalizeRow(raw: Json): ExecutorRow {
   };
 }
 
+function delegatedStatus(value: unknown): DelegatedSessionStatus {
+  const raw = str(value);
+  return raw === "running" || raw === "exited" || raw === "refused" ? raw : "unknown";
+}
+
+/**
+ * Whitelist parser for one delegated-session row. It reads ONLY the safe,
+ * reduced fields the projection exposes — never any prompt/argv/message key,
+ * even if a future server accidentally emitted one, because it never spreads
+ * the raw object. This is the privacy seam on the console side.
+ */
+function delegatedRow(value: unknown): DelegatedSessionRow | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Json;
+  const workId = str(raw.work_id);
+  if (!workId) return null;
+  return {
+    workId,
+    lane: str(raw.lane),
+    session: str(raw.session),
+    status: delegatedStatus(raw.status),
+    holder: str(raw.holder),
+    runAttemptId: str(raw.run_attempt_id),
+    runAttemptStatus: str(raw.run_attempt_status),
+    refusedReason: str(raw.refused_reason),
+    spawnedAt: str(raw.spawned_at),
+    lastSteerAt: str(raw.last_steer_at),
+    exitedAt: str(raw.exited_at),
+    observedExit: str(raw.observed_exit),
+  };
+}
+
+function delegatedCounts(rows: DelegatedSessionRow[], raw: unknown): DelegatedSessionCounts {
+  const source = (raw && typeof raw === "object" ? raw : {}) as Json;
+  // Prefer the server's counts; fall back to a recount of the parsed rows so a
+  // stale/absent counts block never disagrees with what the board renders.
+  const tally = { total: rows.length, running: 0, exited: 0, refused: 0, unknown: 0 };
+  for (const row of rows) tally[row.status] += 1;
+  const has = typeof source.total === "number";
+  return has
+    ? {
+        total: num(source.total),
+        running: num(source.running),
+        exited: num(source.exited),
+        refused: num(source.refused),
+        unknown: num(source.unknown),
+      }
+    : tally;
+}
+
 export function normalizeExecutorProjection(projection: Json | null): ExecutorProjection | null {
   if (!projection) return null;
   const counts = (projection.counts && typeof projection.counts === "object" ? projection.counts : {}) as Json;
@@ -98,6 +151,10 @@ export function normalizeExecutorProjection(projection: Json | null): ExecutorPr
     optionalNumber(projection.lease_stale_after_seconds) ??
     optionalNumber(counts.lease_stale_after_seconds) ??
     LEASE_STALE_AFTER_SECONDS;
+
+  const delegatedSessions = arr(projection.delegated_sessions)
+    .map(delegatedRow)
+    .filter((row): row is DelegatedSessionRow => row !== null);
 
   return {
     generatedAt: str(projection.generated_at),
@@ -116,5 +173,7 @@ export function normalizeExecutorProjection(projection: Json | null): ExecutorPr
       staleHistory: num(counts.stale_leases),
     },
     executors: arr(projection.executors).map(normalizeRow),
+    delegatedSessions,
+    delegatedCounts: delegatedCounts(delegatedSessions, projection.delegated_counts),
   };
 }

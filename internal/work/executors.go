@@ -29,9 +29,15 @@ type ExecutorsProjection struct {
 	GeneratedAt   string         `json:"generated_at"`
 	Counts        ExecutorCounts `json:"counts"`
 	Executors     []ExecutorRow  `json:"executors"`
-	SourceRefs    []string       `json:"source_refs"`
-	NextCommand   []string       `json:"next_command"`
-	Integrity     []string       `json:"integrity,omitempty"`
+	// DelegatedSessions is the safe, reduced supervised-session board folded
+	// from work.delegate.{spawned,steered,refused,exited}. Always a non-nil
+	// slice (empty when nothing is delegated) so the console renders a clean
+	// empty state instead of null.
+	DelegatedSessions []DelegatedSessionRow  `json:"delegated_sessions"`
+	DelegatedCounts   DelegatedSessionCounts `json:"delegated_counts"`
+	SourceRefs        []string               `json:"source_refs"`
+	NextCommand       []string               `json:"next_command"`
+	Integrity         []string               `json:"integrity,omitempty"`
 }
 
 type ExecutorCounts struct {
@@ -369,6 +375,15 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 
 	projection.Counts.Total = len(projection.Executors)
 	projection.Counts.Open = workbench.Counts.Open
+
+	delegated, delegatedCounts, err := s.reduceDelegatedSessions(workbench.eventsByWork)
+	if err != nil {
+		return ExecutorsProjection{}, err
+	}
+	projection.DelegatedSessions = delegated
+	projection.DelegatedCounts = delegatedCounts
+	projection.SourceRefs = append(projection.SourceRefs, DelegatedSessionsSourceRef)
+
 	return projection, nil
 }
 

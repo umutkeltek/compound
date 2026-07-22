@@ -197,6 +197,7 @@ func printExecutorsProjection(projection executorsProjectionOutput) {
 		fmt.Printf("- residue: stale_leases=%d stalled_jobs=%d\n", projection.Counts.StaleLeases, projection.Counts.StalledJobs)
 	}
 	fmt.Printf("- source_refs: %s\n", strings.Join(projection.SourceRefs, ", "))
+	printDelegatedSessions(projection.DelegatedSessions, projection.DelegatedCounts)
 	for _, executor := range projection.Executors {
 		fmt.Printf("\n## %s\n", executor.Label)
 		fmt.Printf("- status: %s (%s)\n", executor.Status, executor.StatusSource)
@@ -271,5 +272,38 @@ func printExecutorsProjection(projection executorsProjectionOutput) {
 		if executor.LastFailure != nil {
 			fmt.Printf("- last_failure: %s %s\n", executor.LastFailure.WorkID, executor.LastFailure.Title)
 		}
+	}
+}
+
+// printDelegatedSessions renders the safe supervised-session board in the
+// human view. It prints only reduced, privacy-safe fields (lane, session name,
+// status, last steer TIME, exact RunAttempt id/status) — never prompt text,
+// pane content, argv, or the refusal message.
+func printDelegatedSessions(rows []work.DelegatedSessionRow, counts work.DelegatedSessionCounts) {
+	fmt.Printf("\n## delegated sessions (%d)\n", counts.Total)
+	fmt.Printf("- counts: running=%d exited=%d refused=%d unknown=%d\n",
+		counts.Running, counts.Exited, counts.Refused, counts.Unknown)
+	if len(rows) == 0 {
+		fmt.Println("- none")
+		return
+	}
+	for _, r := range rows {
+		fmt.Printf("- %s [%s] work=%s", r.Status, r.Lane, r.WorkID)
+		if r.Session != "" {
+			fmt.Printf(" session=%s", r.Session)
+		}
+		if r.RunAttemptID != "" {
+			fmt.Printf(" run_attempt=%s(%s)", r.RunAttemptID, r.RunAttemptStatus)
+		}
+		if r.LastSteerAt != "" {
+			fmt.Printf(" last_steer=%s", r.LastSteerAt)
+		}
+		if r.Status == "refused" && r.RefusedReason != "" {
+			fmt.Printf(" reason=%s", r.RefusedReason)
+		}
+		if r.Status == "exited" && r.ObservedExit != "" {
+			fmt.Printf(" observed=%s", r.ObservedExit)
+		}
+		fmt.Println()
 	}
 }
