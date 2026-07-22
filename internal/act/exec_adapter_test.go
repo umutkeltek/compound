@@ -161,7 +161,9 @@ func TestExecTransportExitFailureIncludesOutputWithoutReceipt(t *testing.T) {
 	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
 		t.Fatalf("write failing transport: %v", err)
 	}
-	writeTransportConfig(t, homePath, "fixture", []string{script}, 2)
+	// Generous budget: the spy exits immediately, so the deadline exists only as a
+	// safety net — a tight budget races shell startup under full-battery load.
+	writeTransportConfig(t, homePath, "fixture", []string{script}, 30)
 	store, err := NewArtifactStore(homePath)
 	if err != nil {
 		t.Fatalf("new artifact store: %v", err)
@@ -194,11 +196,13 @@ func TestExecTransportExitFailureIncludesOutputWithoutReceipt(t *testing.T) {
 func TestExecTransportTimeoutIncludesPartialOutputWithoutReceipt(t *testing.T) {
 	homePath := t.TempDir()
 	script := filepath.Join(homePath, "slow-transport.sh")
-	scriptBody := "#!/bin/sh\nprintf 'transport started\\n' >&2\nexec sleep 5\n"
+	// 5s budget for shell startup + printf vs a 60s hang: the deadline deterministically
+	// wins AND the partial output deterministically lands, even under full-battery load.
+	scriptBody := "#!/bin/sh\nprintf 'transport started\\n' >&2\nexec sleep 60\n"
 	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
 		t.Fatalf("write slow transport: %v", err)
 	}
-	writeTransportConfig(t, homePath, "fixture", []string{script}, 1)
+	writeTransportConfig(t, homePath, "fixture", []string{script}, 5)
 	store, err := NewArtifactStore(homePath)
 	if err != nil {
 		t.Fatalf("new artifact store: %v", err)
@@ -206,7 +210,7 @@ func TestExecTransportTimeoutIncludesPartialOutputWithoutReceipt(t *testing.T) {
 	ai := execTransportIntent(t, "work_transport_timeout", "fixture")
 	pd := policy.Evaluate(ai, execTransportGrantConfig(ai), fixedNow())
 	result, err := Execute(store, NewExecTransportAdapter("fixture", homePath), ai, pd, []byte("body"), fixedNow())
-	if err == nil || !strings.Contains(err.Error(), "timed out after 1s") || !strings.Contains(err.Error(), "transport started") {
+	if err == nil || !strings.Contains(err.Error(), "timed out after 5s") || !strings.Contains(err.Error(), "transport started") {
 		t.Fatalf("timeout error = %v, want timeout plus partial output", err)
 	}
 	if result.Receipt.ID != "" || result.PostImageRef != "" || receiptCount(t, homePath) != 0 {

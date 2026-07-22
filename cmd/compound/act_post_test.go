@@ -96,7 +96,7 @@ func writePostSpyTransport(t *testing.T, homePath, name string) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("create transport config dir: %v", err)
 	}
-	config, err := json.Marshal(map[string]any{"argv": []string{script, marker}, "timeout_s": 2})
+	config, err := json.Marshal(map[string]any{"argv": []string{script, marker}, "timeout_s": 30})
 	if err != nil {
 		t.Fatalf("marshal transport config: %v", err)
 	}
