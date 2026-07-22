@@ -718,3 +718,226 @@ func TestReadLaneCapacityMalformedAliasPlusStaleRowsAnnotatesBoth(t *testing.T) 
 		t.Fatalf("malformed-alias note did not compose with stale annotation: %q", capacity.DataRef)
 	}
 }
+
+// --- exact delegated-lane capacity identities (work_819d076cb3b0) ---
+//
+// claude-qwen and claude-minimax are provider-backed Claude-shaped harness lanes,
+// not Anthropic subscription aliases. Capacity admission must resolve them to
+// qwen and minimax provider rows. Missing provider evidence stays explicit unknown
+// — it must never borrow the generic claude row.
+
+// Exact names and underscore/hyphen/suffix variants of qwen and minimax must
+// resolve BEFORE the generic claude prefix. Existing zai/glm precedence (zai
+// beats generic claude) and the existing sub-lane-strip retry are unchanged.
+func TestNormalizeLaneCapacityKeyQwenMinimaxExactAndStructural(t *testing.T) {
+	cases := []struct {
+		name string
+		lane string
+		want string
+	}{
+		{"exact-qwen", "qwen", "qwen"},
+		{"exact-minimax", "minimax", "minimax"},
+		{"claude-qwen-hyphen", "claude-qwen", "qwen"},
+		{"claude_qwen-underscore", "claude_qwen", "qwen"},
+		{"claude-qwen-suffix", "claude-qwen:sub-lane", "qwen"},
+		{"claude_qwen-suffix", "claude_qwen:worker-2", "qwen"},
+		{"claude-minimax-hyphen", "claude-minimax", "minimax"},
+		{"claude_minimax-underscore", "claude_minimax", "minimax"},
+		{"claude-minimax-suffix", "claude-minimax:sub-lane", "minimax"},
+		// Regression guards — these MUST NOT regress to qwen/minimax.
+		{"claude-main-stays-claude", "claude-main", "claude"},
+		{"claude-zai-stays-zai", "claude-zai", "zai"},
+		{"claude-zai-suffix-stays-zai", "claude-zai:worker-2", "zai"},
+		{"unknown-stays-unknown", "synthesis", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeLaneCapacityKey(tc.lane); got != tc.want {
+				t.Fatalf("normalizeLaneCapacityKey(%q) = %q, want %q", tc.lane, got, tc.want)
+			}
+		})
+	}
+}
+
+// Provider-row consumption: claude-qwen resolves to qwen, so a fresh qwen
+// provider row must be consumed (DataRef cites provider=qwen, state=alive).
+func TestReadLaneCapacityQwenRowConsumedByClaudeQwenLane(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	writeCapacityUsage(t, cfg, "qwen", 25, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+
+	capacity, err := ReadLaneCapacityWithConfig("claude-qwen", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if capacity.State != CapacityAlive {
+		t.Fatalf("claude-qwen did not consume fresh qwen row: %+v", capacity)
+	}
+	if !strings.Contains(capacity.DataRef, "provider=qwen") {
+		t.Fatalf("claude-qwen DataRef did not cite qwen row: %q", capacity.DataRef)
+	}
+}
+
+// claude-minimax mirrors the qwen case — a fresh minimax row is consumed.
+func TestReadLaneCapacityMinimaxRowConsumedByClaudeMinimaxLane(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	writeCapacityUsage(t, cfg, "minimax", 30, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+
+	capacity, err := ReadLaneCapacityWithConfig("claude-minimax", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if capacity.State != CapacityAlive {
+		t.Fatalf("claude-minimax did not consume fresh minimax row: %+v", capacity)
+	}
+	if !strings.Contains(capacity.DataRef, "provider=minimax") {
+		t.Fatalf("claude-minimax DataRef did not cite minimax row: %q", capacity.DataRef)
+	}
+}
+
+// Generic-claude non-borrowing: lane "claude" must never satisfy a qwen or
+// minimax provider row, even when those rows are the only fresh rows in the
+// file. Row filtering is keyed by structural family, so the lane stays unknown
+// and the DataRef reports zero rows for the claude family.
+func TestReadLaneCapacityGenericClaudeDoesNotBorrowQwenOrMinimaxRows(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	writeCapacityUsage(t, cfg, "qwen", 25, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+	appendCapacityUsageRow(t, cfg, "minimax", 25, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+
+	capacity, err := ReadLaneCapacityWithConfig("claude", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if capacity.State != CapacityUnknown {
+		t.Fatalf("generic claude must not borrow qwen/minimax row, got state=%s: %+v", capacity.State, capacity)
+	}
+	if !strings.Contains(capacity.DataRef, "no usage rows for family: claude") {
+		t.Fatalf("generic claude DataRef should report zero rows for claude family, got %q", capacity.DataRef)
+	}
+}
+
+// Mixed file: claude and qwen rows both present. Each lane resolves to its own
+// structural family and consumes only the matching row; claude-minimax (no
+// minimax row) stays unknown and reports zero rows for the minimax family.
+func TestReadLaneCapacityMixedQwenAndClaudeRowsRespectPerLaneFamily(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	writeCapacityUsage(t, cfg, "claude", 80, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+	appendCapacityUsageRow(t, cfg, "qwen", 20, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+
+	qwenLane, err := ReadLaneCapacityWithConfig("claude-qwen", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read claude-qwen: %v", err)
+	}
+	if qwenLane.State != CapacityAlive {
+		t.Fatalf("claude-qwen should be alive from qwen row: %+v", qwenLane)
+	}
+	if !strings.Contains(qwenLane.DataRef, "provider=qwen") {
+		t.Fatalf("claude-qwen should consume qwen row, got DataRef=%q", qwenLane.DataRef)
+	}
+
+	claudeLane, err := ReadLaneCapacityWithConfig("claude", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read claude: %v", err)
+	}
+	if claudeLane.State != CapacityAlive {
+		t.Fatalf("claude should be alive from claude row: %+v", claudeLane)
+	}
+	if !strings.Contains(claudeLane.DataRef, "provider=claude") {
+		t.Fatalf("claude should consume claude row, got DataRef=%q", claudeLane.DataRef)
+	}
+
+	minimaxLane, err := ReadLaneCapacityWithConfig("claude-minimax", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read claude-minimax: %v", err)
+	}
+	if minimaxLane.State != CapacityUnknown {
+		t.Fatalf("claude-minimax without a minimax row should stay unknown: %+v", minimaxLane)
+	}
+	if !strings.Contains(minimaxLane.DataRef, "no usage rows for family: minimax") {
+		t.Fatalf("claude-minimax DataRef should report zero minimax rows, got %q", minimaxLane.DataRef)
+	}
+}
+
+// Stale 15m annotation: qwen and minimax fall under the default codex 15-minute
+// freshness window. Stale-only rows must produce the codexbar stale annotation
+// and cite the resolved family key (qwen / minimax), not the lane alias.
+func TestReadLaneCapacityQwenAndMinimaxStale15mAnnotation(t *testing.T) {
+	cfg := capacityFixtureConfig(t)
+	// 16m old exceeds the 15m default freshness used for non-zai/non-claude families.
+	writeCapacityUsage(t, cfg, "qwen", 10, capacityNow.Add(2*time.Hour), capacityNow.Add(-16*time.Minute))
+
+	capacity, err := ReadLaneCapacityWithConfig("claude-qwen", capacityNow, cfg)
+	if err != nil {
+		t.Fatalf("read lane capacity: %v", err)
+	}
+	if capacity.State != CapacityUnknown {
+		t.Fatalf("stale qwen row should keep lane unknown: %+v", capacity)
+	}
+	if !strings.HasPrefix(capacity.DataRef, "codexbar/usage-history:") {
+		t.Fatalf("stale qwen DataRef must carry codexbar prefix: %q", capacity.DataRef)
+	}
+	if !strings.Contains(capacity.DataRef, "family=qwen") {
+		t.Fatalf("stale qwen DataRef must cite family=qwen: %q", capacity.DataRef)
+	}
+	expected := capacityNow.Add(-16 * time.Minute).UTC().Format(time.RFC3339)
+	if !strings.Contains(capacity.DataRef, expected) {
+		t.Fatalf("stale qwen DataRef must cite newest RFC3339 %q: %q", expected, capacity.DataRef)
+	}
+
+	staleMinimax := capacityFixtureConfig(t)
+	writeCapacityUsage(t, staleMinimax, "minimax", 10, capacityNow.Add(2*time.Hour), capacityNow.Add(-16*time.Minute))
+
+	minimaxCapacity, err := ReadLaneCapacityWithConfig("claude-minimax", capacityNow, staleMinimax)
+	if err != nil {
+		t.Fatalf("read minimax lane capacity: %v", err)
+	}
+	if minimaxCapacity.State != CapacityUnknown {
+		t.Fatalf("stale minimax row should keep lane unknown: %+v", minimaxCapacity)
+	}
+	if !strings.Contains(minimaxCapacity.DataRef, "family=minimax") {
+		t.Fatalf("stale minimax DataRef must cite family=minimax: %q", minimaxCapacity.DataRef)
+	}
+}
+
+// Refusal evidence recorded for a claude-qwen lane must carry the structural
+// provider identity (qwen) — not the lane alias (claude-qwen). Both Provider
+// and Model on the refusal row follow the resolved family key.
+func TestRecordCapacityRefusalQwenLaneProviderIdentity(t *testing.T) {
+	home := t.TempDir()
+	cfg := capacityFixtureConfig(t)
+	// 100% used → CapacityWalled → refusal recorded with the resolved family key.
+	writeCapacityUsage(t, cfg, "qwen", 100, capacityNow.Add(2*time.Hour), capacityNow.Add(-5*time.Minute))
+	installCapacityGuard(t, cfg)
+
+	plan, err := readyDispatchStore(t, home).DispatchPlan(capacityNow, work.DispatchPlanOptions{
+		Actor: "claude-qwen",
+	})
+	if err != nil {
+		t.Fatalf("dispatch plan: %v", err)
+	}
+	if plan.Status != "capacity_refused" {
+		t.Fatalf("walled qwen lane did not refuse: %+v", plan)
+	}
+
+	body, err := os.ReadFile(ExecutionRouteEvidenceLedgerPath(home))
+	if err != nil {
+		t.Fatalf("read route evidence: %v", err)
+	}
+	lines := strings.FieldsFunc(strings.TrimSpace(string(body)), func(r rune) bool { return r == '\n' })
+	if len(lines) != 1 {
+		t.Fatalf("refusal wrote %d rows, want exactly one:\n%s", len(lines), body)
+	}
+	evidence, err := Decode([]byte(lines[0]))
+	if err != nil {
+		t.Fatalf("refusal row not schema-valid route evidence: %v", err)
+	}
+	if evidence.Status != "capacity_refused" {
+		t.Fatalf("wrong refusal status: %+v", evidence)
+	}
+	if evidence.SelectedTarget.Provider != "qwen" {
+		t.Fatalf("refusal evidence Provider = %q, want %q (claude-qwen resolves to qwen family)",
+			evidence.SelectedTarget.Provider, "qwen")
+	}
+	if evidence.SelectedTarget.Model != "qwen" {
+		t.Fatalf("refusal evidence Model = %q, want %q", evidence.SelectedTarget.Model, "qwen")
+	}
+}
