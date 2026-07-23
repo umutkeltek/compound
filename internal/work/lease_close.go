@@ -13,10 +13,19 @@ package work
 //   - A different actor with no --steal, or --steal with an empty reason, is REFUSED: the
 //     refusal is recorded (ActionIntent + deny PolicyDecision + lifecycle event) so liveness
 //     probes can see the contention, and the work is left exactly as it was.
-//   - A different actor with --steal and a non-empty reason SUCCEEDS: the steal is recorded
-//     (ActionIntent + PolicyDecision + lifecycle event carrying prior holder, reason, and the
-//     stealing actor) and the caller proceeds. Coordination is advisory-with-teeth, not a
-//     deadlock machine — a dead lane must never brick an envelope.
+//   - A different actor with --steal and a non-empty reason SUCCEEDS: the lease file itself is
+//     rewritten so By becomes the stealing actor (transferLeaseOnSteal, atomic stage+rename,
+//     same publish path Claim uses), and the steal is recorded (ActionIntent + PolicyDecision +
+//     lifecycle event carrying prior holder, reason, and the stealing actor) and the caller
+//     proceeds. Coordination is advisory-with-teeth, not a deadlock machine — a dead lane must
+//     never brick an envelope.
+//
+// P0 (2026-07-23): recordLeaseSteal used to record only the ActionIntent/PolicyDecision/Event
+// trail and never touched work/leases/<id>.json — the file kept naming the original holder, so
+// that holder's NEXT advance/close without --steal passed leaseHolderStatusFor's holder==actor
+// short-circuit as if the steal had never happened (the exact twin-collision class this file
+// exists to close, now against the stealer instead of a stranger). transferLeaseOnSteal closes
+// that gap; see lease_advance_test.go/lease_close_test.go for the falsifiers.
 
 import (
 	"fmt"
@@ -119,12 +128,19 @@ func (s *Store) recordLeaseHolderDeny(w envelope.WorkEnvelope, actor, holder, me
 	})
 }
 
-// recordLeaseSteal writes the ActionIntent and a recorded PolicyDecision for an explicit
-// lease steal (--steal --reason) on the mutation named by capability/action, plus a
-// lifecycle event carrying the prior holder, the reason, and the stealing actor — the same
-// auditable trail a refusal leaves, so a steal is a loud, recorded override, not a silent
-// bypass.
+// recordLeaseSteal transfers workID's live lease to actor (transferLeaseOnSteal) and, only
+// once that transfer has actually committed, writes the ActionIntent and a recorded
+// PolicyDecision for the explicit lease steal (--steal --reason) on the mutation named by
+// capability/action, plus a lifecycle event carrying the prior holder, the reason, and the
+// stealing actor — the same auditable trail a refusal leaves, so a steal is a loud, recorded
+// override, not a silent bypass. The transfer runs FIRST and fails closed: if it errors, this
+// returns immediately and writes none of the trail, so the ledger never claims a steal that
+// did not actually take the lease (and the caller's gate returns the error, blocking the
+// underlying advance/close mutation too — see leaseHolderAdvanceGate/leaseHolderCloseGate).
 func (s *Store) recordLeaseSteal(w envelope.WorkEnvelope, actor, holder, reason, capability, action string, now time.Time) error {
+	if err := s.transferLeaseOnSteal(w.ID, actor); err != nil {
+		return err
+	}
 	ai := s.leaseGateActionIntent(w, actor, capability, action, now)
 	if err := ai.Validate(); err != nil {
 		return err
@@ -148,6 +164,38 @@ func (s *Store) recordLeaseSteal(w envelope.WorkEnvelope, actor, holder, reason,
 		Note:     fmt.Sprintf("lease stolen from %q: %s", holder, reason),
 		Attached: []string{ai.ID, pd.ID},
 	})
+}
+
+// transferLeaseOnSteal is the actual hand-off a steal performs: it rewrites workID's live
+// lease so By becomes actor, preserving every other field (WorkID, ClaimAt, LaneID,
+// WorkSHA256) exactly as the original claim/advance-lane recorded them. Without this write,
+// work/leases/<id>.json keeps naming the original holder, so that holder's next unguarded
+// advance/close would pass leaseHolderStatusFor's holder==actor short-circuit as if the steal
+// never happened — the P0 this closes. It reuses the same atomic stage+rename publish path
+// the claim flow uses (publishClaimJSON, via stageJSON + commitStagedJSON), so a torn write is
+// not observable: either the file ends up wholly rewritten, or (rename never reached) it is
+// left wholly as it was.
+//
+// Read-then-write is race-free here: every caller reaches this seam only from inside
+// withLifecycleMutation's home-level lock (Advance/Close both take it before ever calling
+// leaseHolderAdvanceGate/leaseHolderCloseGate), so no concurrent writer can observe or produce
+// a torn intermediate state.
+//
+// Failure is returned as-is, deliberately BEFORE recordLeaseSteal writes any of the
+// ActionIntent/PolicyDecision/lifecycle-event trail: a write failure here must fail the whole
+// steal closed rather than let the ledger claim a steal that did not actually take the lease.
+// TestAdvanceStealFailsClosedWhenLeaseTransferWriteFails fault-injects exactly this path
+// (chmod work/leases read-only) and asserts no trail entry and no mutation follow through.
+func (s *Store) transferLeaseOnSteal(workID, actor string) error {
+	lease, err := s.readLease(workID)
+	if err != nil {
+		return fmt.Errorf("steal %s: read live lease before transfer: %w", workID, err)
+	}
+	lease.By = actor
+	if err := s.publishClaimJSON(s.leasePath(workID), &lease); err != nil {
+		return fmt.Errorf("steal %s: transfer lease to %q: %w", workID, actor, err)
+	}
+	return nil
 }
 
 // refusalNotePrefix keeps the close refusal event Note byte-identical ("close refused: ...")
