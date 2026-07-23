@@ -119,6 +119,9 @@ carries the resulting Gate exit code for non-blocking adapter fallbacks.
 into `COMPOUND_HOME/registries/placement-rules.json` as `compound://registries/placement-rules`; after
 that handoff the generated source view is evidence/rollback input, and PreToolUse reads the Compound copy.
 `compound policy placement-authority [--json]` is the read-only machine handoff for operator surfaces.
+`PLACEMENT_OVERRIDE` keeps fail-opening the guard, but a fired override is persisted as an audit
+observation Event by `work.RecordAction` (the same seam that already persists the PolicyDecision), not
+only reasoned about inside that one decision.
 `compound policy import-standing-grants <standing-grants.yaml|json>` imports scoped grant envelopes into
 `COMPOUND_HOME/registries/standing-grants.json` at `compound://registries/standing-grants`; policy
 evaluation consumes that authority via `LoadConfig`, while config-file `standing_grants` remains rollback

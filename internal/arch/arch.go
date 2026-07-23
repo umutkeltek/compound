@@ -2796,6 +2796,7 @@ func checkPlacementGuardContract(repoRoot string) []Finding {
 	hasOpenWriteOverride := false
 	hasFailOpen := false
 	hasGateEnforce := false
+	hasOverrideObservation := false
 	docs := filepath.Join(repoRoot, "docs")
 	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
@@ -2827,12 +2828,19 @@ func checkPlacementGuardContract(repoRoot string) []Finding {
 		if strings.Contains(low, "hook pre-tool-use --enforce") && (strings.Contains(low, "gate exit") || strings.Contains(low, "exit code")) {
 			hasGateEnforce = true
 		}
+		// A PLACEMENT_OVERRIDE fail-open stays fail-open, but its use must now be
+		// auditable beyond the in-decision reason string: docs must say the fired
+		// override is persisted as an observation, not just reasoned about in place.
+		if strings.Contains(low, "placement_override") && strings.Contains(low, "observation") &&
+			(strings.Contains(low, "audit") || strings.Contains(low, "persist")) {
+			hasOverrideObservation = true
+		}
 		return nil
 	})
-	if !hasPlacementGuard || !hasPolicyContext || !hasModes || !hasConfidenceBlock || !hasOpenWriteOverride || !hasFailOpen || !hasGateEnforce {
-		return []Finding{{"placement-guard-contract", Fail, "public docs do not describe PlacementGuard as PolicyDecision context with observe/warn/block, confidence:block threshold, OPEN_WRITE/PLACEMENT_OVERRIDE fail-open behavior, and Gate exit enforcement"}}
+	if !hasPlacementGuard || !hasPolicyContext || !hasModes || !hasConfidenceBlock || !hasOpenWriteOverride || !hasFailOpen || !hasGateEnforce || !hasOverrideObservation {
+		return []Finding{{"placement-guard-contract", Fail, "public docs do not describe PlacementGuard as PolicyDecision context with observe/warn/block, confidence:block threshold, OPEN_WRITE/PLACEMENT_OVERRIDE fail-open behavior, Gate exit enforcement, and a persisted audit observation whenever PLACEMENT_OVERRIDE fires"}}
 	}
-	return []Finding{{"placement-guard-contract", Info, "PlacementGuard remains PolicyDecision context with staged fail-open enforcement"}}
+	return []Finding{{"placement-guard-contract", Info, "PlacementGuard remains PolicyDecision context with staged fail-open enforcement, and PLACEMENT_OVERRIDE use is persisted as an audit observation"}}
 }
 
 // checkProductContractContract keeps project/release source contracts from

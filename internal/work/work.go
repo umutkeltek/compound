@@ -1530,7 +1530,39 @@ func (s *Store) recordActionLocked(workID string, ai envelope.ActionIntent, pd e
 	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
 		return w, err
 	}
-	return w, s.appendEvent(Event{TS: ts(now), WorkID: workID, From: w.State, To: w.State, Note: "action recorded: " + ai.Action + " (policy " + pd.Outcome + ")", Attached: []string{ai.ID, pd.ID}})
+	if err := s.appendEvent(Event{TS: ts(now), WorkID: workID, From: w.State, To: w.State, Note: "action recorded: " + ai.Action + " (policy " + pd.Outcome + ")", Attached: []string{ai.ID, pd.ID}}); err != nil {
+		return w, err
+	}
+	// PLACEMENT_OVERRIDE observability: policy.go fail-opens the placement-guard
+	// input on PLACEMENT_OVERRIDE (operator-ratified; see docs/architecture/runtime.md),
+	// and already appends a visible reason string to the PolicyDecision. That
+	// reason lives only inside this one decision unless we persist it here — this
+	// is the smallest honest seam: RecordAction is the consumer that already
+	// durably persists every PolicyDecision, so an override use gets one
+	// additional observation Event, auditable beyond the in-decision reasons.
+	if reason := placementOverrideReason(pd); reason != "" {
+		if err := s.appendEvent(Event{TS: ts(now), WorkID: workID, From: w.State, To: w.State, Note: "placement_override observed: " + reason, Attached: []string{pd.ID}}); err != nil {
+			return w, err
+		}
+	}
+	return w, nil
+}
+
+// placementOverrideObservationMarker matches the exact reason suffix
+// internal/policy appends to a PolicyDecision when PLACEMENT_OVERRIDE (or an
+// override-flagged PlacementGuardContext) fail-opens the placement guard.
+const placementOverrideObservationMarker = "PLACEMENT_OVERRIDE active, fail-open"
+
+// placementOverrideReason returns the matching reason string if pd carries
+// evidence that a placement-guard fail-open fired via PLACEMENT_OVERRIDE, or
+// "" if it did not fire (so RecordAction persists nothing extra).
+func placementOverrideReason(pd envelope.PolicyDecision) string {
+	for _, reason := range pd.Reasons {
+		if strings.Contains(reason, placementOverrideObservationMarker) {
+			return reason
+		}
+	}
+	return ""
 }
 
 // --- close ---

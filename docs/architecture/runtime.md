@@ -254,6 +254,11 @@ the native Codex adapter returns `permissionDecision=deny` for a hold. `compound
 as `compound://registries/placement-rules` under `COMPOUND_HOME`; the source view is evidence/rollback
 input after import, while PreToolUse reads the Compound-owned registry.
 
+The `PLACEMENT_OVERRIDE` fail-open stays fail-open by design, but it does not stay silent: whenever it
+actually fires, `work.RecordAction` persists one additional observation Event alongside the PolicyDecision
+it already writes, so a fired override is an audit observation on the work event log, not only an
+in-decision reason string.
+
 A dirty-repository mutation can proceed only through an exact recorded capability, not a general cleanup
 acknowledgement. The first blocked PreToolUse persists its ActionIntents with one session-bound,
 content-free mutation-input digest shared by the complete target batch. `compound authority dirty-plan
