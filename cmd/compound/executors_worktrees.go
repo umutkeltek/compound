@@ -222,8 +222,8 @@ func printWorktreeInventory(w io.Writer, inv authority.WorktreeInventory) {
 	fmt.Fprintf(w, "- repo: %s\n", inv.Repo)
 	fmt.Fprintf(w, "- generated_at: %s\n", inv.GeneratedAt)
 	fmt.Fprintf(w, "- authority: %s @ %s (%s)\n", inv.MainRef, shortWorktreeSHA(inv.MainTip), inv.AuthorityRef)
-	fmt.Fprintf(w, "- counts: total=%d live=%d main_dirty=%d stalled_unlanded=%d landed_clean=%d probe=%d unknown=%d kept=%d\n",
-		inv.Counts.Total, inv.Counts.Live, inv.Counts.MainDirty, inv.Counts.StalledUnlanded, inv.Counts.LandedClean, inv.Counts.Probe, inv.Counts.Unknown, inv.Counts.Kept)
+	fmt.Fprintf(w, "- counts: total=%d live=%d main_dirty=%d stalled_unlanded=%d landed_clean=%d probe=%d unknown=%d kept=%d scratch_worktree_debt=%d\n",
+		inv.Counts.Total, inv.Counts.Live, inv.Counts.MainDirty, inv.Counts.StalledUnlanded, inv.Counts.LandedClean, inv.Counts.Probe, inv.Counts.Unknown, inv.Counts.Kept, inv.Counts.ScratchWorktreeDebt)
 	if inv.KeepsReadable != nil && !*inv.KeepsReadable {
 		fmt.Fprintln(w, "- keep records unreadable — kept status not shown; retirement stays blocked until keeps can be read")
 	}
@@ -259,6 +259,19 @@ func printWorktreeInventory(w io.Writer, inv authority.WorktreeInventory) {
 	fmt.Fprintln(w, "reasons:")
 	for _, row := range inv.Rows {
 		fmt.Fprintf(w, "- %s [%s]: %s\n", worktreeRowLabel(row), row.Class, row.Reason)
+	}
+
+	// Scratch-worktree-debt advisory (non-fatal): report the count and the exact
+	// per-row sweep suggestion. Follows the archive-history/BackupWarnings pattern
+	// — reported, never gates anything. The inventory is read-only; these are
+	// copy-paste hints, and the governed retire path remains available per row.
+	if inv.Counts.ScratchWorktreeDebt > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "scratch-worktree-debt: %d contained+clean+older-than-48h worktree(s) — sweep:\n", inv.Counts.ScratchWorktreeDebt)
+		for _, suggestion := range inv.ScratchWorktreeDebtSweep {
+			fmt.Fprintf(w, "  %s\n", suggestion)
+		}
+		fmt.Fprintln(w, "  (advisory — check lane liveness first; compound authority worktree-retire remains the governed path)")
 	}
 }
 

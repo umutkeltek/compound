@@ -453,3 +453,86 @@ func TestExecutorsWorktreesCLIReportsKeepsUnreadable(t *testing.T) {
 		t.Fatalf("text mode should note keeps unreadable:\n%s", text)
 	}
 }
+
+// F-DEBT-CLI (work_984e63b68945): `compound executors worktrees` must surface the
+// scratch-worktree-debt count and the exact sweep suggestion in JSON and text output.
+// Reported (advisory, non-fatal) — the inventory is read-only. The fixture's
+// lane-landed (contained+clean) branch is the debt candidate at 72h; the candidate
+// branch (one commit ahead, stalled_unlanded) is the negative.
+func TestExecutorsWorktreesCLIScratchWorktreeDebt(t *testing.T) {
+	repo := newExecutorsWorktreesCLIFixture(t)
+	setExecutorsWorktreesLedger(t, worktreeInventoryLedger{KeepsReadable: true})
+	// 72h future: fixture rows are comfortably past the 48h debt threshold and well
+	// outside the 60m activity window. Runtime-relative (time.Now()), not a fixed
+	// fixture date — no staleness time bomb.
+	now := time.Now().Add(72 * time.Hour)
+
+	var stdout, stderr bytes.Buffer
+	if code := runExecutorsWorktrees(context.Background(), []string{"--json", "--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("json code=%d stderr=%s", code, stderr.String())
+	}
+	var inv authority.WorktreeInventory
+	if err := json.Unmarshal(stdout.Bytes(), &inv); err != nil {
+		t.Fatalf("decode json: %v\n%s", err, stdout.String())
+	}
+	if inv.Counts.ScratchWorktreeDebt != 1 {
+		t.Fatalf("counts.scratch_worktree_debt = %d, want 1: %+v", inv.Counts.ScratchWorktreeDebt, inv.Counts)
+	}
+	if len(inv.ScratchWorktreeDebtSweep) != 1 {
+		t.Fatalf("sweep suggestions = %d, want 1: %+v", len(inv.ScratchWorktreeDebtSweep), inv.ScratchWorktreeDebtSweep)
+	}
+	if !strings.Contains(inv.ScratchWorktreeDebtSweep[0], "git worktree remove") {
+		t.Fatalf("sweep suggestion must name `git worktree remove`: %q", inv.ScratchWorktreeDebtSweep[0])
+	}
+	landed := executorsWorktreesCLIRow(t, inv, "lane-landed")
+	if !landed.DebtEligible {
+		t.Fatalf("lane-landed must be debt-eligible at 72h: %+v", landed)
+	}
+	// Negative: the candidate branch (one commit ahead of main, dirty) is
+	// stalled_unlanded and must NOT be debt-eligible.
+	candidate := executorsWorktreesCLIRow(t, inv, "candidate")
+	if candidate.DebtEligible {
+		t.Fatalf("candidate (unmerged+dirty) must NOT be debt-eligible: %+v", candidate)
+	}
+
+	// Text mode must surface both the count on the counts line and the sweep block.
+	stdout.Reset()
+	stderr.Reset()
+	if code := runExecutorsWorktrees(context.Background(), []string{"--repo", repo}, &stdout, &stderr, now); code != 0 {
+		t.Fatalf("text code=%d stderr=%s", code, stderr.String())
+	}
+	text := stdout.String()
+	if !strings.Contains(text, "scratch_worktree_debt=1") {
+		t.Fatalf("text counts line must surface scratch_worktree_debt=1:\n%s", text)
+	}
+	if !strings.Contains(text, "git worktree remove") || !strings.Contains(text, "scratch-worktree-debt:") {
+		t.Fatalf("text must surface the sweep suggestion block:\n%s", text)
+	}
+	if !strings.Contains(text, "advisory") {
+		t.Fatalf("text must label the sweep advisory/non-fatal:\n%s", text)
+	}
+
+	// Threshold falsifier: the same fixture at 24h reports zero debt (lane-landed
+	// is still landed_clean but under the 48h threshold — cooling down, not debt).
+	nowFresh := time.Now().Add(24 * time.Hour)
+	stdout.Reset()
+	stderr.Reset()
+	if code := runExecutorsWorktrees(context.Background(), []string{"--json", "--repo", repo}, &stdout, &stderr, nowFresh); code != 0 {
+		t.Fatalf("fresh json code=%d stderr=%s", code, stderr.String())
+	}
+	var invFresh authority.WorktreeInventory
+	if err := json.Unmarshal(stdout.Bytes(), &invFresh); err != nil {
+		t.Fatalf("decode fresh json: %v\n%s", err, stdout.String())
+	}
+	if invFresh.Counts.ScratchWorktreeDebt != 0 || len(invFresh.ScratchWorktreeDebtSweep) != 0 {
+		t.Fatalf("under-48h inventory must report zero debt and no sweep: counts=%+v sweep=%+v", invFresh.Counts, invFresh.ScratchWorktreeDebtSweep)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := runExecutorsWorktrees(context.Background(), []string{"--repo", repo}, &stdout, &stderr, nowFresh); code != 0 {
+		t.Fatalf("fresh text code=%d stderr=%s", code, stderr.String())
+	}
+	if freshText := stdout.String(); strings.Contains(freshText, "scratch-worktree-debt:") {
+		t.Fatalf("under-48h text must NOT surface the sweep block:\n%s", freshText)
+	}
+}

@@ -46,6 +46,14 @@ const (
 	defaultWorktreeInventoryLivenessTimeout = 5 * time.Second
 )
 
+// ScratchWorktreeDebtThreshold is the age at which a contained+clean (landed_clean)
+// scratch worktree becomes debt: its branch landed to main and the checkout has sat
+// idle long enough that it is pure surface area. Below this age it is still cooling
+// down from its lane (rehearsing/verifying). The watchdog is advisory and non-fatal
+// — the inventory is read-only and never retires anything; the sweep suggestion is a
+// copy-paste hint, not an action.
+const ScratchWorktreeDebtThreshold = 48 * time.Hour
+
 // WorktreeInventoryDependencies reuses the retirement Git seam but has its own
 // inventory-wide liveness seam. Retirement proves one requested worktree with
 // a recursive probe; inventory must observe every root in one snapshot so its
@@ -350,6 +358,12 @@ type WorktreeInventoryRow struct {
 	Kept           bool   `json:"kept,omitempty"`
 	KeepDecisionID string `json:"keep_decision_id,omitempty"`
 	KeepRevisit    string `json:"keep_revisit,omitempty"`
+	// DebtEligible annotates a landed_clean row whose age exceeds
+	// ScratchWorktreeDebtThreshold: the branch is contained in main, the working
+	// tree is clean, and the checkout has been idle long enough to be surface-area
+	// debt. Additive annotation — the row KEEPS its landed_clean class. A kept row
+	// is never debt-eligible. Reported, never retires anything.
+	DebtEligible bool `json:"debt_eligible,omitempty"`
 }
 
 type WorktreeInventoryCounts struct {
@@ -362,6 +376,10 @@ type WorktreeInventoryCounts struct {
 	Probe           int `json:"probe"`
 	Unknown         int `json:"unknown"`
 	Kept            int `json:"kept"`
+	// ScratchWorktreeDebt counts landed_clean rows older than
+	// ScratchWorktreeDebtThreshold (contained in main, clean, idle). Advisory,
+	// non-fatal: the inventory is read-only. Excludes operator-kept rows.
+	ScratchWorktreeDebt int `json:"scratch_worktree_debt"`
 }
 
 // WorktreeInventory is the versioned read-only projection envelope.
@@ -379,6 +397,11 @@ type WorktreeInventory struct {
 	// and could not read them: no kept annotations are trustworthy, so the
 	// projection says so instead of implying none exist. Omitted otherwise.
 	KeepsReadable *bool `json:"keeps_readable,omitempty"`
+	// ScratchWorktreeDebtSweep carries the exact per-row sweep suggestion for each
+	// debt-eligible worktree (one entry per row, in row order). The inventory is
+	// read-only and never retires anything; these are advisory copy-paste commands
+	// the operator may run after checking lane liveness. Emitted only when non-empty.
+	ScratchWorktreeDebtSweep []string `json:"scratch_worktree_debt_sweep,omitempty"`
 }
 
 // BuildWorktreeInventory classifies every Git worktree of repo from ground
@@ -495,7 +518,52 @@ func BuildWorktreeInventory(ctx context.Context, deps WorktreeInventoryDependenc
 			inv.KeepsReadable = &unreadable
 		}
 	}
+	// Scratch-worktree-debt watchdog (advisory, non-fatal). Computed AFTER the
+	// keeps annotation so an operator-kept landed_clean row is excluded from the
+	// sweep even when its age is past the threshold. Only a landed_clean row
+	// (contained + clean + readable + not-live) can qualify, so dirty trees,
+	// unmerged trees, live lanes, and unreadable facts never carry a sweep
+	// suggestion — the whole point of cleanup-sweep safety.
+	inv.Counts.ScratchWorktreeDebt = annotateScratchWorktreeDebt(inv.Rows, &inv.ScratchWorktreeDebtSweep)
 	return inv, nil
+}
+
+// annotateScratchWorktreeDebt marks each landed_clean row older than the threshold
+// as debt-eligible and appends an exact per-row sweep suggestion to sweepOut. It
+// returns the debt count. A kept row is never debt-eligible. The function never
+// mutates a class: DebtEligible is an additive annotation, and the sweep is a
+// copy-paste hint, never an action (the inventory is read-only).
+func annotateScratchWorktreeDebt(rows []WorktreeInventoryRow, sweepOut *[]string) int {
+	debt := 0
+	for i := range rows {
+		row := &rows[i]
+		if row.Class != WorktreeClassLandedClean || row.Kept || row.AgeSeconds == nil {
+			continue
+		}
+		age := time.Duration(*row.AgeSeconds) * time.Second
+		if age <= ScratchWorktreeDebtThreshold {
+			continue
+		}
+		row.DebtEligible = true
+		debt++
+		if sweepOut != nil {
+			*sweepOut = append(*sweepOut, "git worktree remove "+shellQuoteWorktreePath(row.Path))
+		}
+	}
+	return debt
+}
+
+// shellQuoteWorktreePath quotes a worktree path for shell copy-paste when it contains
+// whitespace or shell metacharacters; a bare path passes through unchanged so the
+// common case (no spaces, no metacharacters) reads cleanly.
+func shellQuoteWorktreePath(path string) string {
+	if path == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(path, " \t\n\"'\\$`;<>&|*?[]{}()~#!") {
+		return path
+	}
+	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 }
 
 func inventoryLivenessObservation(snapshot map[string]WorktreeLivenessObservation, worktreePath string) WorktreeLivenessObservation {

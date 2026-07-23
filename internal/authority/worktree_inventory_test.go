@@ -780,7 +780,178 @@ func TestBuildWorktreeInventoryUnreadableKeepsFailClosed(t *testing.T) {
 	}
 }
 
+// F-DEBT (work_984e63b68945): the scratch-worktree-debt watchdog flags
+// contained+clean+older-than-48h (landed_clean past the threshold) rows and emits
+// the exact per-row sweep suggestion, reported (advisory, non-fatal — the inventory
+// is read-only and never retires anything). A dirty tree or an unmerged tree must
+// NOT qualify even when old, so the sweep never targets unlanded work; and a
+// contained+clean tree under the 48h threshold must NOT qualify (still cooling down
+// from its lane). This is the falsifier the task demanded: a synthetic repo/worktree
+// fixture where contained+clean+old yields the debt row and dirty or unmerged does NOT.
+func TestBuildWorktreeInventoryScratchWorktreeDebt(t *testing.T) {
+	fix := newScratchWorktreeDebtFixture(t)
+
+	// 72h future: every fixture row is comfortably past the 48h debt threshold and
+	// well outside the 60m activity window. Freshened at runtime (time.Now()), not a
+	// fixed fixture date, so this falsifier cannot red days after a green land.
+	now := time.Now().Add(72 * time.Hour)
+	inv, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: inventoryFakeLiveness{},
+	}, fix.repo, WorktreeInventoryOptions{Now: now})
+	if err != nil {
+		t.Fatalf("build inventory: %v", err)
+	}
+
+	// POSITIVE: contained + clean + old → debt-eligible.
+	debt := inventoryRowByBranch(t, inv, "lane-debt")
+	if debt.Class != WorktreeClassLandedClean {
+		t.Fatalf("lane-debt precondition: class = %q, want landed_clean; row=%+v", debt.Class, debt)
+	}
+	if !debt.DebtEligible {
+		t.Fatalf("lane-debt (contained+clean+old) must be debt-eligible: %+v", debt)
+	}
+
+	// NEGATIVE: contained but dirty → NOT debt-eligible (data-loss guard: a dirty
+	// tree holds uncommitted work the sweep would lose).
+	dirty := inventoryRowByBranch(t, inv, "lane-dirty")
+	if dirty.DebtEligible {
+		t.Fatalf("lane-dirty (dirty working tree) must NOT be debt-eligible: %+v", dirty)
+	}
+
+	// NEGATIVE: clean but unmerged (one commit ahead of main) → NOT debt-eligible
+	// (data-loss guard: HEAD not contained in main, sweep would lose the commit).
+	unmerged := inventoryRowByBranch(t, inv, "lane-unmerged")
+	if unmerged.DebtEligible {
+		t.Fatalf("lane-unmerged (HEAD not contained in main) must NOT be debt-eligible: %+v", unmerged)
+	}
+
+	if inv.Counts.ScratchWorktreeDebt != 1 {
+		t.Fatalf("counts.scratch_worktree_debt = %d, want 1: %+v", inv.Counts.ScratchWorktreeDebt, inv.Counts)
+	}
+	if len(inv.ScratchWorktreeDebtSweep) != 1 {
+		t.Fatalf("sweep suggestions = %d, want 1: %+v", len(inv.ScratchWorktreeDebtSweep), inv.ScratchWorktreeDebtSweep)
+	}
+	suggestion := inv.ScratchWorktreeDebtSweep[0]
+	if !strings.Contains(suggestion, "git worktree remove") {
+		t.Fatalf("sweep suggestion must name `git worktree remove`: %q", suggestion)
+	}
+	if !strings.Contains(suggestion, debt.Path) {
+		t.Fatalf("sweep suggestion must name the debt worktree path (%q): %q", debt.Path, suggestion)
+	}
+
+	// Threshold falsifier: the SAME fixture re-run with Now only 24h in the future
+	// reads every row as under the 48h threshold. lane-debt is still landed_clean
+	// (contained+clean+not-live) but must NOT be debt-eligible and the sweep must
+	// be empty — a freshly-landed lane is cooling down, not debt.
+	nowFresh := time.Now().Add(24 * time.Hour)
+	invFresh, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: inventoryFakeLiveness{},
+	}, fix.repo, WorktreeInventoryOptions{Now: nowFresh})
+	if err != nil {
+		t.Fatalf("build fresh inventory: %v", err)
+	}
+	freshDebt := inventoryRowByBranch(t, invFresh, "lane-debt")
+	if freshDebt.Class != WorktreeClassLandedClean {
+		t.Fatalf("fresh lane-debt precondition: class = %q, want landed_clean; row=%+v", freshDebt.Class, freshDebt)
+	}
+	if freshDebt.DebtEligible {
+		t.Fatalf("lane-debt under 48h must NOT be debt-eligible: %+v", freshDebt)
+	}
+	if invFresh.Counts.ScratchWorktreeDebt != 0 || len(invFresh.ScratchWorktreeDebtSweep) != 0 {
+		t.Fatalf("under-48h inventory must report zero debt and no sweep: counts=%+v sweep=%+v", invFresh.Counts, invFresh.ScratchWorktreeDebtSweep)
+	}
+}
+
+// K3+kept-debt: an operator-kept landed_clean row must NOT carry a sweep suggestion,
+// even when old — the keep defers retirement to the operator decision.
+func TestBuildWorktreeInventoryScratchWorktreeDebtKeptRowExcluded(t *testing.T) {
+	fix := newScratchWorktreeDebtFixture(t)
+	now := time.Now().Add(72 * time.Hour)
+	readable := true
+	inv, err := BuildWorktreeInventory(context.Background(), WorktreeInventoryDependencies{
+		Git: ExecWorktreeRetirementGit{}, Liveness: inventoryFakeLiveness{},
+	}, fix.repo, WorktreeInventoryOptions{
+		Now: now,
+		Keeps: map[string]WorktreeKeepAnnotation{
+			"refs/heads/lane-debt": {DecisionID: "keep-debt", Revisit: "rehearsing rebase"},
+		},
+		KeepsReadable: &readable,
+	})
+	if err != nil {
+		t.Fatalf("build inventory: %v", err)
+	}
+	debt := inventoryRowByBranch(t, inv, "lane-debt")
+	if !debt.Kept {
+		t.Fatalf("lane-debt should be annotated kept: %+v", debt)
+	}
+	if debt.DebtEligible {
+		t.Fatalf("kept lane-debt must NOT be debt-eligible: %+v", debt)
+	}
+	if inv.Counts.ScratchWorktreeDebt != 0 || len(inv.ScratchWorktreeDebtSweep) != 0 {
+		t.Fatalf("kept row must not contribute to debt: counts=%+v sweep=%+v", inv.Counts, inv.ScratchWorktreeDebtSweep)
+	}
+}
+
 // --- fixtures & fakes ---
+
+type scratchWorktreeDebtFixture struct {
+	repo         string
+	mainTip      string
+	laneDebt     string
+	laneDirty    string
+	laneUnmerged string
+}
+
+// newScratchWorktreeDebtFixture builds a minimal synthetic repo with three linked
+// worktrees that isolate the scratch-worktree-debt classifier: lane-debt is the
+// POSITIVE (contained+clean), lane-dirty and lane-unmerged are the two data-loss
+// NEGATIVES. Every row's age is controlled by the caller's inventory Now, not a
+// fixture date.
+func newScratchWorktreeDebtFixture(t *testing.T) scratchWorktreeDebtFixture {
+	t.Helper()
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	retirementRunGit(t, repo, "init", "-b", "main")
+	retirementRunGit(t, repo, "config", "user.email", "test@example.invalid")
+	retirementRunGit(t, repo, "config", "user.name", "Compound Test")
+	if err := os.WriteFile(filepath.Join(repo, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	retirementRunGit(t, repo, "add", "seed.txt")
+	retirementRunGit(t, repo, "commit", "-m", "seed")
+	mainTip := retirementGitOutput(t, repo, "rev-parse", "refs/heads/main")
+
+	// lane-debt: branch at main, clean working tree → contained + clean.
+	laneDebt := filepath.Join(root, "wt-debt")
+	retirementRunGit(t, repo, "worktree", "add", "-b", "lane-debt", laneDebt, "main")
+
+	// lane-dirty: branch at main (contained) but with an uncommitted file → dirty.
+	laneDirty := filepath.Join(root, "wt-dirty")
+	retirementRunGit(t, repo, "worktree", "add", "-b", "lane-dirty", laneDirty, "main")
+	if err := os.WriteFile(filepath.Join(laneDirty, "wip.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// lane-unmerged: one commit ahead of main, working tree clean → not contained.
+	laneUnmerged := filepath.Join(root, "wt-unmerged")
+	retirementRunGit(t, repo, "worktree", "add", "-b", "lane-unmerged", laneUnmerged, "main")
+	if err := os.WriteFile(filepath.Join(laneUnmerged, "unique.txt"), []byte("unique\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	retirementRunGit(t, laneUnmerged, "add", "unique.txt")
+	retirementRunGit(t, laneUnmerged, "commit", "-m", "unmerged work")
+
+	return scratchWorktreeDebtFixture{
+		repo:         evalInventoryPath(t, repo),
+		mainTip:      mainTip,
+		laneDebt:     evalInventoryPath(t, laneDebt),
+		laneDirty:    evalInventoryPath(t, laneDirty),
+		laneUnmerged: evalInventoryPath(t, laneUnmerged),
+	}
+}
 
 type worktreeInventoryFixture struct {
 	repo        string
