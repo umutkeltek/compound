@@ -1252,6 +1252,136 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
     );
   }
 
+  {
+    const runId = "prun_20260723T120000Z_fixture";
+    const panelItem = (suffix: string, claim: string, evidenceRef: string): Json => {
+      const id = `panel_verdict_fixture_${suffix}`;
+      const action = authorityActionFixture(id);
+      action.id = "panel_verdict_record_member";
+      action.label = "Record this verdict";
+      action.argv = [
+        "compound",
+        "panel",
+        "verdict-record",
+        "--review",
+        `/tmp/${id}.json`,
+        "--reviewed-by",
+        "operator",
+      ];
+      action.requires_review = true;
+      action.policy_authority.wording = "Allowed by current policy";
+      action.policy_authority.expected_receipt = `Recorded human review for ${id}.`;
+      return {
+        id,
+        area: "panel-verdicts",
+        created_at: "2026-07-23T12:05:00Z",
+        group_key: `panel-verdicts|${runId}|needs_human`,
+        context_label: "Synthetic source statement.",
+        status: "review_required",
+        readiness: "needs_review",
+        authority_work_id: "work_review_area_panel_verdicts",
+        evidence_refs: [evidenceRef],
+        actions: [action],
+        decision_card: {
+          claim,
+          why: [
+            {
+              label: "panel rationale",
+              detail: "Evidence strength is low and one lens disagrees, so an operator must decide.",
+            },
+            {
+              label: "evidence strength",
+              question: "How well is this supported?",
+              severity: "high",
+              detail: "knowledge:fixture:tweet:0000000000000000001 reports the synthetic claim.",
+            },
+          ],
+          choices: [
+            { id: "promote", label: "Promote", effect: "Becomes ambient canon." },
+            { id: "park", label: "Park", effect: "Remains evidence, not ambient." },
+            { id: "reject", label: "Reject", effect: "Discarded for this memory lane." },
+            { id: "no_promote", label: "No-promote", effect: "Declined so echoes stop." },
+          ],
+          panel_lean: "needs_human (confidence 0.70)",
+          optional_rationale: true,
+          canonical_action_hint: "Record review evidence before a separate memory adjudication.",
+          boundary: ["read-only projection", "operator choice required before mutation"],
+          meta: {
+            run_id: runId,
+            target_kind: "memory_candidate",
+            target_ref: `cand_fixture_${suffix}`,
+            verdict_id: id,
+          },
+        },
+      };
+    };
+    const first = panelItem("alpha", "Synthetic claim alpha needs adjudication.", "route_fixture_alpha");
+    const second = panelItem("bravo", "Synthetic claim bravo needs adjudication.", "route_fixture_bravo");
+    const items = [first, second];
+    const itemByID = new Map(items.map((item) => [String(item.id), item]));
+    const group = {
+      key: `panel-verdicts|${runId}|needs_human`,
+      area: "panel-verdicts",
+      count: 2,
+      item_ids: items.map((item) => item.id),
+      operator_summary: "The judge panel needs your call on this claim.",
+      operator_unlock: "memory gets a reviewed answer",
+      sample: first,
+    } as Json;
+    const [decided] = buildDecideGroups([group], itemByID, null, () => first, "live");
+
+    push(
+      "panel-decision-card-remains-claim-granular-with-truthful-proof-inputs",
+      decided.title === "Synthetic claim alpha needs adjudication." &&
+        decided.objectText === "Synthetic claim alpha needs adjudication." &&
+        decided.body === "Evidence strength is low and one lens disagrees, so an operator must decide." &&
+        decided.face.owner === "Panel review" &&
+        decided.face.confidence?.value === 0.7 &&
+        decided.evidence.length === 1 &&
+        decided.evidence[0]?.ref === "route_fixture_alpha" &&
+        decided.panel?.runId === runId &&
+        decided.panel.disposition === "needs_human" &&
+        decided.panel.reviews.length === 2 &&
+        decided.panel.reviews[0]?.sourceRef === "tweet:0000000000000000001" &&
+        decided.panel.reviews[0]?.choices.map((choice) => choice.id).join(",") ===
+          "promote,park,reject,no_promote" &&
+        decided.panel.reviews[0]?.member.actionId === "panel_verdict_record_member" &&
+        decided.panel.reviews[0]?.member.authority?.current === true &&
+        decided.panel.reviews[1]?.claim === "Synthetic claim bravo needs adjudication.",
+      `title=${decided.title} evidence=${decided.evidence.map((row) => row.ref).join(",")} panel=${JSON.stringify(decided.panel)}`,
+    );
+
+    const churnedGroup = {
+      ...group,
+      item_ids: ["panel_verdict_refreshed_member"],
+      review_item_ids: items.map((item) => item.id),
+      sample: undefined,
+      safe_batch_action: undefined,
+    } as Json;
+    const [churned] = buildDecideGroups(
+      [churnedGroup],
+      itemByID,
+      null,
+      () => ({
+        id: churnedGroup.key,
+        area: "panel-verdicts",
+        operator_summary: churnedGroup.operator_summary,
+      }),
+      "live",
+    );
+
+    push(
+      "panel-proof-continuity-survives-cross-projection-member-churn-read-only",
+      churned.panel?.projectionAligned === false &&
+        churned.panel.reviews.length === 2 &&
+        churned.title === "Synthetic claim alpha needs adjudication." &&
+        churned.act.mode === "copy" &&
+        churned.face.state === "waiting" &&
+        churned.panel.reviews.every((review) => review.member.actionId === ""),
+      `title=${churned.title} act=${churned.act.mode} state=${churned.face.state} panel=${JSON.stringify(churned.panel)}`,
+    );
+  }
+
   const failed = checks.filter((c) => !c.ok);
   return {
     ok: failed.length === 0,

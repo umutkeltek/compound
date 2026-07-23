@@ -201,6 +201,11 @@ assert.deepEqual(
     [{ ...reviewsGroup, count: 2, item_ids: [item.id, "review_only_member"] }],
   )[0];
   assert.deepEqual(mismatched.item_ids, [item.id], "Attention must retain exact group membership");
+  assert.deepEqual(
+    mismatched.review_item_ids,
+    [item.id, "review_only_member"],
+    "mismatched Reviews membership must remain available under an explicitly read-only enrichment key",
+  );
   assert.equal(
     mismatched.safe_batch_action,
     undefined,

@@ -147,6 +147,12 @@ export function enrichAttentionGroups(
       ...group,
     } as unknown as Json;
     if (review && !sameMembers(group.item_ids, review.item_ids)) {
+      // Attention remains the membership/action owner. Keep the Reviews
+      // member ids under a separate evidence-only key so a matching Panel
+      // run/disposition can retain its claim detail while the two projections
+      // refresh at slightly different moments. Consumers must never execute
+      // against this fallback membership.
+      enriched.review_item_ids = arr(review.item_ids).map(String).filter(Boolean);
       delete enriched.safe_batch_action;
     }
     const sample = enriched.sample as Json | undefined;

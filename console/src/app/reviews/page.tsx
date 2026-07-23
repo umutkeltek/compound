@@ -106,7 +106,7 @@ export default async function Decide({
   searchParams: Promise<{ decision?: string | string[] }>;
 }) {
   const [reviews, attentionProjection, params] = await Promise.all([
-    getReviews(),
+    getReviews({ timeoutMs: 45_000 }),
     getAttentionProjection({ timeoutMs: 45_000 }),
     searchParams,
   ]);
@@ -155,17 +155,23 @@ export default async function Decide({
 
   const empty = decideGroups.length === 0;
   const decideRender = feedRenderModel(attentionRead.status, decideGroups.length > 0);
+  const initialGroup = initialSelectedKey
+    ? decideGroups.find((group) => group.key === initialSelectedKey)
+    : null;
+  const panelDetailOpen = Boolean(initialGroup?.panel);
 
   return (
-    <div className="flex flex-col gap-6">
-      <PageHeader breadcrumb="operate / decide" title="Decide" />
+    <div className={`flex flex-col ${panelDetailOpen ? "gap-3" : "gap-6"}`}>
+      <PageHeader breadcrumb={panelDetailOpen ? undefined : "operate / decide"} title="Decide" />
 
       <section className="flex flex-col gap-3">
-        <SectionHeader
-          tone="seam"
-          icon={<GavelIcon />}
-          label="Needs your decision"
-        />
+        {panelDetailOpen ? null : (
+          <SectionHeader
+            tone="seam"
+            icon={<GavelIcon />}
+            label="Needs your decision"
+          />
+        )}
 
         {decideRender === "degraded" ? (
           <FeedDegraded

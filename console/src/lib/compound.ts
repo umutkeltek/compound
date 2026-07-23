@@ -435,8 +435,12 @@ export async function getWorkbench(): Promise<Json | null> {
   return runJson(["workbench", "--json"]);
 }
 
-export async function getReviews(): Promise<Json | null> {
-  return runJson(["reviews", "--json"]);
+export async function getReviews(opts?: { timeoutMs?: number }): Promise<Json | null> {
+  const entry = await readRunJsonEntry(
+    ["reviews", "--json"],
+    opts?.timeoutMs ?? DEFAULT_RUN_JSON_TIMEOUT_MS,
+  );
+  return entry.value;
 }
 
 export async function getSourceConnections(): Promise<Json | null> {

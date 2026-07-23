@@ -21,6 +21,7 @@ import type { DecisionEffectKind } from "@/lib/decision-registry";
 import { buildEnumerableActionRequest, decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
 import { blockedReasonPlain, ownerUnavailableMessage } from "@/lib/glossary";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
+import { PanelProofContinuity } from "./PanelProofContinuity";
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
 const DOMAIN_TILE: Record<DecideDomain, string> = {
@@ -1105,6 +1106,32 @@ export function DecideQueue({
   const liveMessage = selected ? `Selected decision: ${operatorText(selected.title)}` : "Nothing waits on you.";
   const selectedIdentity = selected ? decisionIdentity(selected) : "";
   const selectedRetained = selected ? retained[selected.key] : undefined;
+  const panelGroups = groups.filter((group) => Boolean(group.panel));
+
+  if (selected?.panel) {
+    return (
+      <PanelProofContinuity
+        group={selected}
+        panelGroups={panelGroups}
+        totalDecisions={groups.length}
+        mutationsEnabled={mutationsEnabled}
+        onSelectGroup={(next) => {
+          const nextIndex = Math.max(0, groups.findIndex((group) => group.key === next.key));
+          setSelectedKey(next.key);
+          setFocused(nextIndex);
+          replaceSelectionInURL(next.key);
+        }}
+        onBack={() => {
+          const next = groups.find((group) => !group.panel) ?? groups[0];
+          if (!next) return;
+          const nextIndex = Math.max(0, groups.findIndex((group) => group.key === next.key));
+          setSelectedKey(next.key);
+          setFocused(nextIndex);
+          replaceSelectionInURL(next.key);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="grid gap-3">

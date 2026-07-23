@@ -433,5 +433,46 @@ export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
     }
   }
 
+  /* ---------- f9: Panel proof continuity is wired without authority theater ---------- */
+
+  {
+    const queue = read("components/decide/DecideQueue.tsx");
+    const panel = read("components/decide/PanelProofContinuity.tsx");
+    if (
+      !/import \{ PanelProofContinuity \}/.test(queue) ||
+      !/if \(selected\?\.panel\)/.test(queue) ||
+      !/<PanelProofContinuity/.test(queue)
+    ) {
+      fail("DecideQueue does not route a selected Panel group into the proof-continuity treatment");
+    } else if (!/Panel verdict is evidence, not authority\./.test(panel)) {
+      fail("Panel proof continuity lost the evidence-not-authority boundary");
+    } else if (
+      ![
+        "Observed candidate",
+        "Lens review",
+        "Judge synthesis",
+        "Human review",
+        "Governed action",
+        "PolicyDecision",
+        "Receipt",
+        "Transition",
+      ].every((label) => panel.includes(label))
+    ) {
+      fail("Panel proof continuity no longer exposes all eight evidence-to-proof stages");
+    } else if (!/review\.choices\.map/.test(panel) || !/setSelectedChoice\(choice\.id\)/.test(panel)) {
+      fail("Panel operator choices are no longer rendered from the owner-projected decision card");
+    } else if (!/<Button[\s\S]*disabled[\s\S]*Apply \$\{selected\.label\}/.test(panel)) {
+      fail("Panel combined adjudication no longer fails closed while its safe console adapter is absent");
+    } else if (!/safeRecordAct && safeRecordAuthority/.test(panel) || !/<GovernedAct/.test(panel)) {
+      fail("Panel review recording is not gated on current authority through the existing governed action surface");
+    } else if (/fetch\(/.test(panel)) {
+      fail("Panel proof-continuity component bypasses GovernedAct with its own network mutation");
+    } else if (!/<details className="group border-t border-hair bg-soft">/.test(panel)) {
+      fail("Panel technical depth is no longer collapsed by default");
+    } else {
+      pass("Panel proof continuity keeps one claim primary, exposes all stages and choices, fails closed on the unwired combined act, and reuses governed review recording only when current");
+    }
+  }
+
   return { ok, details };
 }

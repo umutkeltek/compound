@@ -1,107 +1,78 @@
-# Compound Console Experience Depth — Design QA
+# Panel Proof Continuity — Design QA
 
 ## Comparison target
 
-The approved concepts are visual direction for six existing Compound surfaces, not permission to fabricate history, consequences, dependencies, or execution authority. The implementation therefore preserves the concepts' hierarchy and interaction model while applying Compound's simple-to-advanced disclosure rule and current projection contract.
+Selected Product Design direction: **Option 3, Proof Continuity**. The implementation applies that direction to the existing Compound Decide surface and keeps the existing left navigation, theme, tokens, components, and projection-first language.
 
-Source visual truth (`1487 × 1058` pixels each):
-
-- Today causal focus: `${HOME}/.codex/generated_images/019f89b4-32b7-73b0-b3b5-8a042496a6bc/exec-8e228ffd-598b-4c9f-afcb-1167870fdeee.png`
-- Live operations: `${HOME}/.codex/generated_images/019f89b4-32b7-73b0-b3b5-8a042496a6bc/exec-9f946656-49d7-4ab3-af89-c377dd66d1b6.png`
-- Work table and Ask Compound: `${HOME}/.codex/generated_images/019f89b4-32b7-73b0-b3b5-8a042496a6bc/exec-177e9c92-9235-46fb-af13-cf54c58abeec.png`
-- Work space: `${HOME}/.codex/generated_images/019f89b4-32b7-73b0-b3b5-8a042496a6bc/exec-b3032ddd-82cc-4585-b31c-c03395e2c2f3.png`
-- Decide comparison: `${HOME}/.codex/generated_images/019f89b4-32b7-73b0-b3b5-8a042496a6bc/exec-ed04b105-0031-473f-84e0-f2bec6bdce06.png`
-- Work flow: `${HOME}/.codex/generated_images/019f89b4-32b7-73b0-b3b5-8a042496a6bc/exec-ee01867b-6cc7-4a4d-a56a-1770455f9f7e.png`
-
-Rendered implementation evidence:
-
-- Today, Investigate depth: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/today-focus-pass4.jpg`
-- Live: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/live-pass2.jpg`
-- Work table: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/work-table-pass2.jpg`
-- Ask Compound composed view: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/work-table-ask-pass2.jpg`
-- Work flow: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/work-flow-pass3.jpg`
-- Work space: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/work-space-pass5.jpg`
-- Decide comparison: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/decide-compare-pass2.jpg`
-- Mobile Work table: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/work-table-mobile-pass2.jpg`
-- Current needs-first preview: `docs_private/marketing/console-fidelity-qa/{today,live,work,decide-compare}-preview.png`
-- Current Ask composed result: `docs_private/marketing/console-fidelity-qa/work-ask-result-preview.png`
+- Source visual truth: `${HOME}/.codex/visualizations/2026/07/23/019f8ed7-eb8a-7c43-8ed5-6d341033bc64/proof-continuity-design-qa/proof-continuity-source-normalized.png`
+- Browser-rendered implementation: `${HOME}/.codex/visualizations/2026/07/23/019f8ed7-eb8a-7c43-8ed5-6d341033bc64/proof-continuity-design-qa/proof-continuity-implementation-pass5-clean-1440x1024.png`
+- Full combined comparison, source left and implementation right: `${HOME}/.codex/visualizations/2026/07/23/019f8ed7-eb8a-7c43-8ed5-6d341033bc64/proof-continuity-design-qa/proof-continuity-comparison-pass5-clean.png`
 
 ## Viewport and normalization
 
-- Desktop CSS viewport: `1536 × 1080`; implementation captures: `1536 × 1080` at density `1`, except the full-page Decide evidence (`1536 × 3480`), whose first `1536 × 1080` viewport was used for the full-view comparison.
-- Responsive check: `390 × 844` at density `1`. Document width remained `390` for Work and Live. The final Space canvas keeps its `1180`-pixel workfield inside a `332`-pixel internal scroller; document width remains `390`.
-- Current in-app verification viewport: `1280 × 720` at density `1`. Sources were top-cropped to `1487 × 837` and normalized to `1280 × 720` for the latest combined comparison.
-- Sources are `1487 × 1058`. Full comparisons fit source and implementation viewport into equal halves. Focused comparisons use semantic crops from each artifact and equal-width normalization; no finding is based on the small source/viewport density difference.
-- State alignment: Today uses `Investigate` or `Understand`, Work uses the named `Table`, `Flow`, and `Space` lenses, Decide uses `Compare`, Live uses its default `Overview`, and Ask Compound shows the completed “Why is work blocked?” composition.
+- Source pixels: `1440 × 1024`.
+- Implementation pixels: `1440 × 1024`.
+- CSS viewport: `1440 × 1024`.
+- Device scale factor: `1`.
+- No density or scale normalization was required.
+- State: dark theme; Decide; one live Panel run; `needs_human`; first claim; Human review selected; no operator choice selected; Technical depth collapsed.
+- Both artifacts show stale/non-actionable owner evidence. Their exact freshness ages and policy identifiers differ because the implementation uses the current live projections rather than mock data.
 
-## Combined comparison evidence
+## Focused comparison evidence
 
-Left side is the approved concept; right side is the rendered implementation.
+Focused comparisons were required because the lifecycle states, evidence labels, lens findings, and choice effects are too small to judge reliably from the full `2880 × 1024` comparison alone.
 
-Full-view comparisons:
-
-- Today: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/today-pass4.jpg`
-- Live: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/live.jpg`
-- Work table: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/work-table.jpg`
-- Work table with Ask: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/work-table-ask.jpg`
-- Work flow: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/work-flow.jpg`
-- Work space: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/work-space-pass5.jpg`
-- Decide: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/decide.jpg`
-- Current fidelity pass: `docs_private/marketing/console-fidelity-qa/compare-{today,live,work-ask,decide}.png`
-
-Focused comparisons were required because the concepts contain dense tables, lifecycle nodes, evidence rows, and small state labels:
-
-- Today causal path: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/focus-today-pass4.jpg`
-- Live timeline: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/focus-live.jpg`
-- Work table: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/focus-work-table.jpg`
-- Work flow: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/focus-work-flow.jpg`
-- Work space: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/focus-work-space.jpg`
-- Decide comparison: `${HOME}/.codex/visualizations/2026/07/22/019f89b4-32b7-73b0-b3b5-8a042496a6bc/implementation-qa/comparisons/focus-decide.jpg`
+- Claim, authority boundary, and eight-stage trace: `${HOME}/.codex/visualizations/2026/07/23/019f8ed7-eb8a-7c43-8ed5-6d341033bc64/proof-continuity-design-qa/proof-continuity-focus-trace-pass5.png`
+- Rationale, findings, evidence, choices, disabled action, and Technical depth: `${HOME}/.codex/visualizations/2026/07/23/019f8ed7-eb8a-7c43-8ed5-6d341033bc64/proof-continuity-design-qa/proof-continuity-focus-choice-pass5.png`
 
 ## Findings
 
 No actionable P0, P1, or P2 finding remains.
 
-- Typography: the implementation consistently uses Compound's existing sans and mono families, optical weights, hierarchy, truncation, and line heights. Dense identifiers remain mono; user-facing causal copy remains readable sans. No concept-only display typeface was introduced.
-- Spacing and layout rhythm: the existing navigation, content frame, panel radii, borders, and density tokens are preserved. All new lenses contain their own horizontal overflow; persistent navigation and document width do not overflow at tablet or mobile widths.
-- Colors and visual tokens: brighter dark-mode values retain the existing semantic grammar. Amber remains intervention/waiting, green remains live/available, blue remains selected/actionable, purple remains evidence/decision context, and harness identity receives stable domain accents. No decorative color invents state.
-- Image and asset fidelity: the concepts contain no raster product assets, logos, illustrations, or non-standard icons that needed extraction. The implementation uses the existing Compound mark and icon system; lifecycle rails and cards are native UI, not asset substitutes.
-- Copy and content: real Compound projections replace concept placeholder records. Missing consequences, dependencies, execution detail, and historical paths are explicitly labeled unknown, unavailable, or not projected. Tambo is named only as a replaceable composition adapter and receives no mutation authority.
-- Interactions and affordances: Table filter, search, and progressive loading work; rows open the shared trace; Flow and Space update the URL; Space selection updates the persistent inspector; Decide Compare renders known and unknown consequences; Ask Compound composes only registered views and shows loading, result, and error states; `/flow` redirects to `/work?lens=flow`.
-- Accessibility: controls use native buttons, tabs, labels, dialog semantics, visible focus treatment, and accessible card labels. State is not carried by color alone in table, inspector, decision, or Ask views.
+- Fonts and typography: the implementation reuses Compound's existing sans and mono families and type tokens. Claims and operator decisions retain the strongest hierarchy; identifiers, freshness, and proof references remain mono. Line clamps only affect secondary evidence detail and retain the full value in `title` or Technical depth.
+- Spacing and layout rhythm: the selected three-part frame—claim and proof trace, human-review evidence, operator choice—fits inside the `1440 × 1024` viewport with Technical depth visible and collapsed. The safe review-only action is a compact disclosure rather than an always-expanded form.
+- Colors and visual tokens: current, complete, blocked, unknown, absent, stale, and evidence states reuse Compound's blue, green, amber, red, and muted token grammar. Every state also has a text label.
+- Image quality and asset fidelity: the source contains no raster product imagery, custom logo, illustration, or decorative asset that requires extraction. The implementation reuses Compound's existing logo and UI icon/component system; no placeholder or generated asset was substituted.
+- Copy and content: the current claim, run, candidate, evidence refs, lens findings, policy decision, and authority work are read from Compound projections. The implementation does not copy invented mock consequences, receipts, transitions, history, or authority.
+- Information hierarchy: one claim remains primary. Panel synthesis is explicitly evidence rather than authority. Human review is current; governed action and PolicyDecision are separated; Receipt and Transition remain visibly absent.
+- Interaction and accessibility: run/disposition selection, Previous/Next claim navigation, stage selection, operator radio choices, the disabled composite action, the review-only safe-action disclosure, authority Work link, and Technical depth all have native interactive semantics and visible focus. The composite review-plus-memory action remains disabled because no safe owner adapter exists.
+- Projection churn: when Attention and Reviews refresh with different member IDs for the same Panel run/disposition, the claim stays in the Proof Continuity treatment as evidence-only, receives a visible alignment warning, and strips all action authority until exact membership realigns.
 
 Accepted intentional differences:
 
-- The concepts show richer historical-looking connectors. The implementation draws current lifecycle position only because Compound does not project a trustworthy dependency history for these records.
-- Today keeps a calm greeting and live decision seam above the causal Focus Path rather than fabricating one universal operator question.
-- Live makes the truthful harness workfield the Understand-level hero and moves denser operations detail to Investigate.
-- Decide displays “Consequence not projected by the owner” instead of inventing the concept's example consequences.
+- The generated direction draws a connected lifecycle rail. The implementation uses Compound's existing compact interactive stage cards so every stage remains selectable, responsive, and text-labeled without introducing a bespoke diagram component.
+- The mock says `Open in Work (future)`. Current backend data projects `work_review_area_panel_verdicts`, so the implementation truthfully enables `Open review authority work`.
+- The mock uses abbreviated example effects and evidence. The implementation shows the current owner-projected choice effects and evidence refs, with additional detail moved to Technical depth.
+- The implementation keeps the existing persistent navigation and global console toolbar unchanged, as requested.
 
-## Browser and responsive verification
+## Browser verification
 
-- Checked Today depth switching, Work lens URL state, Table filter/search/show-more, trace opening and rapid close-plus-lens switching, Space card selection, Decide Compare and evidence tabs, Ask open/close, route-aware suggestions, loading, composed result, and `/flow` redirect.
-- The initial route pass reported no browser console warnings or errors. The current in-app pass also returned an empty warning/error log after Work, Live, Decide, and Ask interactions.
-- Desktop document width: `1536` at a `1536` viewport. Tablet Work document width: `1024` at `1024`. Mobile Work and Live document width: `390` at `390`. Final mobile Space document width: `390` at `390`, with spatial overflow contained inside the lens.
+Fresh verification used the Codex in-app Browser against the local `/reviews` deep link on the isolated preview port.
+
+Primary interactions tested:
+
+- Previous and Next change the claim and return to the original claim.
+- Needs human, Park, Promote, and Reject are run-scoped Panel lenses; Park changed both the claim and the deep-link URL, and returning to Needs human restored the selected group.
+- Selecting Promote changes the primary button label to `Apply Promote`; it remains disabled.
+- Selecting PolicyDecision updates the pressed stage and its announced state.
+- Safe review recording opens as a separate review-evidence-only disclosure when current authority exists; it never enables the combined memory adjudication.
+- Technical depth opens and closes.
+- Manual refresh preserved the selected Proof Continuity route and current claim.
+- Browser console warnings/errors after the interaction pass: `0`.
+
+## Verification
+
+- `bunx tsc --noEmit`: passed.
+- `bun scripts/decide-model-brief-smoke.mjs`: passed.
+- `bun scripts/decide-decision-feedback-smoke.mjs`: passed.
+- `bun scripts/attention-consistency-smoke.mjs`: passed.
+- `bunx next build`: passed; all seven static-generation steps and route optimization completed.
 
 ## Comparison history
 
-1. First pass found P2 information-order and responsive issues: ambient transitions appeared before the selected Work lens, Work tabs/table could widen the document, and Live's primary response waited on slow coordination evidence. The lens moved first, ambient evidence moved to Investigate depth, overflow was contained, and coordination now streams behind the primary Live response. Post-fix evidence: `live-pass2.jpg`, `work-table-pass2.jpg`, and `work-table-mobile-pass2.jpg`.
-2. Second pass found P2 density drift: Live showed too many timeline rows, and Flow/Space showed six cards per lane. Live was capped at six priority rows with a complete-Work link; Flow and Space now prioritize three current/proof-bound items per lane. Post-fix evidence: `live-pass2.jpg`, `work-flow-pass3.jpg`, and `work-space-pass3.jpg`.
-3. Combined source-versus-build review found a P2 distinction problem: Flow and Space were truthful but visually too similar. Space was rebuilt around harness rooms, current-position rails, and a persistent selected-work inspector. The first revised capture then exposed a P1 overlap between stacked cards; cards were compressed into readable single-line current-state rows with full details in the inspector. Post-fix evidence: `work-space-pass5.jpg`, `comparisons/work-space-pass5.jpg`, and `comparisons/focus-work-space.jpg`.
-4. Needs-first review found P1/P2 hierarchy drift: Pipeline overpowered Work, Live's canvas sat below secondary operations detail, Decide did not privilege comparison when consequences existed, and Ask prompts were generic. Table now defaults to Needs focus, the Live workfield is primary, consequence-bearing decisions open on Compare, and Ask is route-aware.
-5. Interaction verification found a P1 deep-link race and a P1 Space visibility issue. A synchronous query snapshot prevents trace resurrection during rapid lens changes, and the selected-work inspector stays visible while its lifecycle plane scrolls.
-6. Final combined review found Ask too modal at 680px with a blurred source surface. The sidecar is now 560px with a quiet non-blurred contextual scrim; the composed result and source Work table remain legible together.
-7. Final same-state comparison found no actionable P0/P1/P2 differences. Remaining differences are explicit truth, current data, and progressive-disclosure constraints, not unresolved visual defects.
-
-## Implementation checklist
-
-- [x] Seven top-level surfaces preserved.
-- [x] Six approved concepts integrated into existing pages/lenses.
-- [x] Real projection data only; unknowns stay unknown.
-- [x] Simple-to-advanced disclosure preserved.
-- [x] Primary interactions, loading, and error states work.
-- [x] Desktop, tablet, and mobile overflow checked.
-- [x] Full and focused combined-image comparisons completed.
-- [x] No actionable P0/P1/P2 finding remains.
+1. The first coded pass established the claim-first layout, eight proof stages, owner evidence, lens findings, choices, and fail-closed composite action.
+2. A same-viewport review found P2 vertical-density drift: the live safe-action form and duplicate paused-state message pushed Technical depth below the `1440 × 1024` frame. Choice rows were compacted, duplicate boundary copy was merged, and the safe review-only action became a collapsed disclosure. Post-fix evidence: `proof-continuity-implementation-pass5-clean-1440x1024.png`.
+3. Live refresh exposed a P1 continuity failure: when Attention and Reviews temporarily named different member IDs, the selected Panel group lost its claim detail and fell back to the generic decision card. A red-first falsifier now proves that matching run/disposition detail survives as evidence-only, with actions stripped and the mismatch labeled until exact membership realigns.
+4. The final full and focused combined comparisons found no remaining actionable P0/P1/P2 difference. Remaining visual differences are intentional existing-component, current-data, and backend-truth constraints.
 
 final result: passed

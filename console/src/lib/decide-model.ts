@@ -199,6 +199,61 @@ export type DecideBrief = {
   preparedAt: string;
 };
 
+export type PanelReviewFinding = {
+  label: string;
+  question: string;
+  severity: string;
+  detail: string;
+};
+
+export type PanelReviewChoice = {
+  id: string;
+  label: string;
+  effect: string;
+};
+
+/**
+ * One Panel decision card, preserved at claim granularity. The reviews
+ * projection already owns this information; the console must not collapse it
+ * into a generic group summary or combine its evidence with sibling claims.
+ */
+export type PanelReview = {
+  id: string;
+  claim: string;
+  sourceText: string;
+  sourceRef: string;
+  panelLean: string;
+  panelDecision: string;
+  confidence: number | null;
+  rationale: string;
+  findings: PanelReviewFinding[];
+  choices: PanelReviewChoice[];
+  boundaries: string[];
+  canonicalActionHint: string;
+  optionalRationale: boolean;
+  runId: string;
+  targetKind: string;
+  targetRef: string;
+  verdictId: string;
+  evidenceRefs: string[];
+  proposedAt: string;
+  proposedAtLabel: string;
+  authorityWorkId: string;
+  member: DecideMember;
+};
+
+export type PanelReviewGroup = {
+  runId: string;
+  disposition: string;
+  reviews: PanelReview[];
+  /**
+   * True only when every Attention-owned member id resolves to the Reviews
+   * detail used below. False keeps claim evidence visible across projection
+   * churn, but all actions must remain disabled.
+   */
+  projectionAligned: boolean;
+};
+
 export type DecideGroup = {
   key: string;
   area: string;
@@ -241,6 +296,8 @@ export type DecideGroup = {
   capability: DecideCapability;
   /** True when the caller supplied a real ProjectionRead status and strict authority readiness applies. */
   authorityBound?: boolean;
+  /** Claim-granular Panel truth for the proof-continuity Decide treatment. */
+  panel?: PanelReviewGroup | null;
   /**
    * A prepared, propose-only translation of this decision — optional so
    * existing DecideGroup literals built outside buildDecideGroups (e.g. the
@@ -315,6 +372,133 @@ function memberOf(area: string, id: string, itemByID: Map<string, Json>): Decide
     policyNote: operatorPolicyNote(area, action ? str((action as Json).policy_note) : ""),
     proposedAt,
     proposedAtLabel: localDateTime(proposedAt),
+  };
+}
+
+function parsePanelLean(value: string): { decision: string; confidence: number | null } {
+  const match = value.trim().match(/^([a-z_]+)(?:\s+\(confidence\s+([0-9.]+)\))?$/i);
+  if (!match) return { decision: value.trim(), confidence: null };
+  const parsed = Number.parseFloat(match[2] ?? "");
+  return {
+    decision: match[1].toLowerCase(),
+    confidence: Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : null,
+  };
+}
+
+function panelSourceRef(findings: PanelReviewFinding[]): string {
+  for (const finding of findings) {
+    const tweet = finding.detail.match(/\btweet:\d+\b/i)?.[0];
+    if (tweet) return tweet;
+    const knowledge = finding.detail.match(/\bknowledge:[^\s,;]+/i)?.[0];
+    if (knowledge) return knowledge;
+  }
+  return "";
+}
+
+function evidenceOnlyMember(member: DecideMember): DecideMember {
+  return {
+    ...member,
+    argv: null,
+    actionId: "",
+    expectedRevision: "",
+    actionIntentId: undefined,
+    expectedAuthorityRevision: undefined,
+    authority: undefined,
+    actionLabel: "",
+    requiresReview: false,
+    policyNote: "",
+  };
+}
+
+function panelReviewOf(
+  item: Json,
+  itemByID: Map<string, Json>,
+  projectionAligned = true,
+): PanelReview | null {
+  const card = item.decision_card && typeof item.decision_card === "object"
+    ? item.decision_card as Json
+    : null;
+  if (!card) return null;
+  const claim = str(card.claim);
+  const meta = card.meta && typeof card.meta === "object" ? card.meta as Json : {};
+  const runId = str(meta.run_id);
+  const id = str(item.id) || str(meta.verdict_id);
+  if (!claim || !runId || !id) return null;
+
+  const findings = arr(card.why)
+    .filter((finding): finding is Json => Boolean(finding) && typeof finding === "object")
+    .map((finding) => ({
+      label: str(finding.label),
+      question: str(finding.question),
+      severity: str(finding.severity).toLowerCase(),
+      detail: str(finding.detail),
+    }))
+    .filter((finding) => finding.label || finding.detail);
+  const choices = arr(card.choices)
+    .filter((choice): choice is Json => Boolean(choice) && typeof choice === "object")
+    .map((choice) => ({
+      id: str(choice.id),
+      label: str(choice.label) || str(choice.id),
+      effect: str(choice.effect),
+    }))
+    .filter((choice) => choice.id && choice.label);
+  const lean = parsePanelLean(str(card.panel_lean));
+  const rationale = findings.find((finding) => finding.label.toLowerCase() === "panel rationale")?.detail ?? "";
+  const proposedAt = str(item.created_at);
+
+  return {
+    id,
+    claim,
+    sourceText: str(item.context_label),
+    sourceRef: panelSourceRef(findings),
+    panelLean: str(card.panel_lean),
+    panelDecision: lean.decision,
+    confidence: lean.confidence,
+    rationale,
+    findings: findings.filter((finding) => finding.label.toLowerCase() !== "panel rationale"),
+    choices,
+    boundaries: arr(card.boundary).map(String).filter(Boolean),
+    canonicalActionHint: str(card.canonical_action_hint),
+    optionalRationale: card.optional_rationale === true,
+    runId,
+    targetKind: str(meta.target_kind),
+    targetRef: str(meta.target_ref),
+    verdictId: str(meta.verdict_id) || id,
+    evidenceRefs: arr(item.evidence_refs).map(String).filter(Boolean),
+    proposedAt,
+    proposedAtLabel: localDateTime(proposedAt),
+    authorityWorkId: str(item.authority_work_id),
+    member: projectionAligned
+      ? memberOf("panel-verdicts", id, itemByID)
+      : evidenceOnlyMember(memberOf("panel-verdicts", id, itemByID)),
+  };
+}
+
+function panelReviewGroup(group: Json, itemByID: Map<string, Json>): PanelReviewGroup | null {
+  if (areaOf(group) !== "panel-verdicts") return null;
+  const projectedIDs = [...new Set(arr(group.item_ids).map(String).filter(Boolean))];
+  const projectedItems = projectedIDs
+    .map((id) => itemByID.get(id))
+    .filter((item): item is Json => Boolean(item));
+  const projectionAligned =
+    projectedIDs.length > 0 && projectedItems.length === projectedIDs.length;
+  const evidenceItems = projectionAligned
+    ? projectedItems
+    : arr(group.review_item_ids)
+    .map(String)
+    .map((id) => itemByID.get(id))
+    .filter((item): item is Json => Boolean(item));
+  const detailItems = evidenceItems.length > 0 ? evidenceItems : projectedItems;
+  const reviews = detailItems
+    .map((item) => panelReviewOf(item, itemByID, projectionAligned))
+    .filter((review): review is PanelReview => Boolean(review));
+  if (!reviews.length) return null;
+  const keyParts = str(group.key).split("|");
+  return {
+    runId: reviews[0]?.runId || keyParts[1] || "",
+    disposition: keyParts[2] || reviews[0]?.panelDecision || "unknown",
+    reviews,
+    projectionAligned,
   };
 }
 
@@ -887,6 +1071,8 @@ export function buildDecideGroups(
     const briefTarget = groupBriefTarget(group, itemByID);
     const sample = briefTarget?.item ?? sampleFor(group);
     const sampleId = str(sample.id) || str(sample.review_id) || str(group.key);
+    const panel = panelReviewGroup(group, itemByID);
+    const panelReview = panel?.reviews.find((review) => review.id === sampleId) ?? panel?.reviews[0] ?? null;
     const spec = specFor(area);
     const pl = spec ? spec.plainLanguage(sample) : null;
 
@@ -907,7 +1093,14 @@ export function buildDecideGroups(
     // An Attention group can contain several repositories, but the bespoke
     // registry action resolves only one member's YAML. Keep the aggregate
     // identity read-only so one click cannot imply an atomic group decision.
-    const act: DecideAct = area === "external-repo-intake"
+    const act: DecideAct = panel && !panel.projectionAligned
+      ? {
+          mode: "copy",
+          command: fallbackCommand(group, sample),
+          reason:
+            "Panel claim detail and current Attention membership are not aligned. Refresh before acting.",
+        }
+      : area === "external-repo-intake"
       ? {
           mode: "copy",
           command: "compound reviews --area external-repo-intake",
@@ -962,8 +1155,20 @@ export function buildDecideGroups(
       ? "Review a proposed operating rule"
       : isHarnessEditGroup
         ? "Choose which capability map fixes to allow"
-      : (hasDecisionCard ? pl?.headline : "") || str(group.operator_summary) || pl?.headline || "Review this decision.";
-    const evidence = groupEvidence(group, pl?.evidence ?? []);
+      : panelReview?.claim ||
+        (hasDecisionCard ? pl?.headline : "") ||
+        str(group.operator_summary) ||
+        pl?.headline ||
+        "Review this decision.";
+    const evidence = panelReview
+      ? panelReview.evidenceRefs.slice(0, 12).map((ref) => ({
+          ref,
+          label: ref,
+          sourceKind: "route evidence",
+          summary: "",
+          openCommand: `compound system lineage ${ref} --json`,
+        }))
+      : groupEvidence(group, pl?.evidence ?? []);
     const members =
       act.mode === "batch-enumerable" && act.members.length === representedMemberIDs.length
         ? act.members
@@ -979,6 +1184,8 @@ export function buildDecideGroups(
       ? candidateRule
       : isHarnessEditGroup
         ? members.map((m, i) => `${i + 1}. ${m.label}`).join(" ") || harnessEditBody
+        : panelReview?.claim
+          ? panelReview.claim
         : title;
     const brief = briefTarget?.brief ?? null;
     const freshnessRow = group.freshness && typeof group.freshness === "object" ? group.freshness as Json : {};
@@ -1052,11 +1259,18 @@ export function buildDecideGroups(
           effect: capability.kind === "unavailable" ? "apply" as const : capability.kind,
           description: actionDescription,
         };
-    const confidence = faceConfidence(sample);
+    const confidence = panelReview?.confidence != null
+      ? {
+          value: panelReview.confidence,
+          label: `${Math.round(panelReview.confidence * 100)}% panel confidence`,
+        }
+      : faceConfidence(sample);
     const owner = candidateRule
       ? "Decision review"
       : isHarnessEditGroup
       ? "Capability map editor"
+      : panelReview
+        ? "Panel review"
       : spec?.title || (area ? area.replace(/-/g, " ") : "Unassigned review owner");
     const face: ObjectFace = {
       id: sampleId,
@@ -1074,6 +1288,8 @@ export function buildDecideGroups(
           ? authority.wording
           : authorityReady
             ? "Ready"
+            : panel && !panel.projectionAligned
+              ? "Projection detail not aligned"
             : projectionStatus !== "live"
               ? "Owner evidence not live"
               : !authority || !authority.current
@@ -1085,10 +1301,14 @@ export function buildDecideGroups(
           ? "This is not the final approval. Compound first needs an independent review before this rule can enter the decision source."
           : isHarnessEditGroup
             ? "Some checks ask for capabilities that Compound cannot find even though they should be available."
-          : str(group.operator_unlock) ||
-            pl?.consequences?.approve ||
-            pl?.body ||
-            "Your review is the next safe step for this item.",
+            : panelReview
+              ? panelReview.rationale ||
+                panelReview.canonicalActionHint ||
+                "Your review is the next safe step for this claim."
+              : str(group.operator_unlock) ||
+                pl?.consequences?.approve ||
+                pl?.body ||
+                "Your review is the next safe step for this item.",
       owner,
       proposedAt: createdAt,
       proposedAtLabel: localDateTime(createdAt),
@@ -1098,7 +1318,9 @@ export function buildDecideGroups(
       primaryAction,
       unavailableReason,
       unblockPath: authorityBound && copyOnly
-        ? authorityHeld && authority
+        ? panel && !panel.projectionAligned
+          ? "Refresh until Attention membership and Reviews claim detail align."
+          : authorityHeld && authority
           ? `Gate: ${authority.exactGate}. Refresh after current authority changes.`
           : projectionStatus !== "live"
             ? "Refresh current owner evidence before acting."
@@ -1125,6 +1347,8 @@ export function buildDecideGroups(
         ? `Proposed rule: ${candidateRule}`
         : isHarnessEditGroup
           ? harnessEditBody
+          : panelReview?.rationale
+            ? panelReview.rationale
           : pl?.body || "",
       objectText,
       consequences: pl?.consequences ?? null,
@@ -1145,6 +1369,7 @@ export function buildDecideGroups(
       act,
       capability,
       authorityBound,
+      panel,
       brief,
     };
   });
