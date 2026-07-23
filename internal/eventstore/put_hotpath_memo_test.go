@@ -191,9 +191,9 @@ func TestPutConflictViaIntraDivergentDuplicates(t *testing.T) {
 
 // F5 — torn-tail heal preserved. A memo warmed BEFORE a torn (newline-less)
 // final frame is appended must not serve stale (pre-truncation) content
-// after the next put heals the tail: the heal's truncateAndSync moves the
-// file's size, so the stat guard invalidates the memo same as any other
-// concurrent-writer move. The heal itself (byte-for-byte truncation) must
+// after the next put heals the tail: the heal restores the cached size and
+// some filesystems can reuse the cached mtime, so repair must invalidate the
+// memo explicitly. The heal itself (byte-for-byte truncation) must
 // match base behavior exactly -- this test only adds the memo-interaction
 // angle on top of repair_test.go's existing (memo-untouched) heal coverage.
 func TestPutTornTailHealInvalidatesWarmMemo(t *testing.T) {
@@ -216,10 +216,9 @@ func TestPutTornTailHealInvalidatesWarmMemo(t *testing.T) {
 	appendFile(t, path, torn[:len(torn)/2]) // no trailing newline: torn tail
 
 	// Install the counter only now: the heal branch itself (truncateAndSync)
-	// truncates the torn tail back to exactly the pre-append size but still
-	// moves mtime, so checkID's post-heal memo consult below MUST see a stat
-	// mismatch against the pre-append warm entry and genuinely reparse --
-	// not silently serve the (by coincidence, byte-equal-content) stale map.
+	// truncates the torn tail back to exactly the pre-append size. Even when
+	// the filesystem reuses the cached mtime, checkID's post-heal memo consult
+	// below MUST genuinely reparse rather than serve the stale map.
 	count, restore := installParseCounter(t)
 	defer restore()
 
@@ -231,7 +230,7 @@ func TestPutTornTailHealInvalidatesWarmMemo(t *testing.T) {
 		t.Fatalf("repair log = %q, want exactly one repair entry", repairs)
 	}
 	if got := count(path); got != 1 {
-		t.Fatalf("parses during the post-heal put = %d, want 1 (the truncate moves mtime even though the heal restores the pre-append size, so the stat guard must still detect it and reparse rather than serve the pre-torn-append warm entry)", got)
+		t.Fatalf("parses during the post-heal put = %d, want 1 (repair must explicitly invalidate the pre-torn-append warm entry even when truncate restores the cached size+mtime tuple)", got)
 	}
 
 	parsed, err := parseSegment(path, false)
