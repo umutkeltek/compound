@@ -312,6 +312,7 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-ai-boundary-smoke", Command: consoleSmokeCommand("scripts/ai-boundary-smoke.mjs"), Dir: "console", ProofRef: "console-ai-boundary-smoke"},
 		{Name: "console-client-bundle-guard-smoke", Command: consoleSmokeCommand("scripts/client-bundle-guard-smoke.mjs"), Dir: "console", ProofRef: "console-client-bundle-guard-smoke"},
 		{Name: "console-work-trace-smoke", Command: consoleBunSmokeCommand("scripts/work-trace-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-work-trace-smoke"},
+		{Name: "console-lineage-smoke", Command: consoleBunSmokeCommand("scripts/lineage-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-lineage-smoke"},
 		{Name: "console-generic-actions-smoke", Command: consoleBunSmokeCommand("scripts/generic-actions-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-generic-actions-smoke"},
 		{Name: "console-view-registry-smoke", Command: consoleBunSmokeCommand("scripts/view-registry-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-view-registry-smoke"},
 		{Name: "console-decide-brief-smoke", Command: consoleBunSmokeCommand("scripts/decide-model-brief-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decide-brief-smoke"},

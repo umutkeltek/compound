@@ -33,7 +33,7 @@ const CANDIDATES = path.resolve(COMPOUND_HOME, "inbox", "memory-candidates");
  * hex, 12 chars (internal/mem idFor) or 16 (internal/knowledge shortDigest).
  * No separators, no dot segments, no encoded forms — any other shape is
  * untrusted route input, never a minted id, and must not build a path. */
-const CANDIDATE_ID = /^cand_[0-9a-f]{12,16}$/;
+const CANDIDATE_ID = /^cand_(?:[0-9a-f]{12}|[0-9a-f]{16})$/;
 
 async function readJsonl(file: string): Promise<Json[]> {
   try {

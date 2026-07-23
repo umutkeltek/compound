@@ -28,6 +28,7 @@ type Check = { name: string; ok: boolean; detail: string };
 const HOME_SENTINEL = "SECRET-HOME-SENTINEL";
 const PARENT_SENTINEL = "SECRET-PARENT-SENTINEL";
 const DECOY_ENTITY = "DECOY-ENTITY";
+const INVALID_LENGTH_ENTITY = "INVALID-LENGTH-ENTITY";
 
 export async function runLineageSelfTest(): Promise<{ ok: boolean; details: string[] }> {
   const checks: Check[] = [];
@@ -68,6 +69,16 @@ export async function runLineageSelfTest(): Promise<{ ok: boolean; details: stri
       path.join(candidates, "cand_x.json"),
       JSON.stringify({ entity: DECOY_ENTITY, predicate: "should", object: "never surface" }),
     );
+    for (const id of ["cand_0123456789abc", "cand_0123456789abcd", "cand_0123456789abcde"]) {
+      writeFileSync(
+        path.join(candidates, `${id}.json`),
+        JSON.stringify({
+          entity: INVALID_LENGTH_ENTITY,
+          predicate: "should",
+          object: "never surface",
+        }),
+      );
+    }
 
     // Freeze the instance pin and gates BEFORE lineage.ts (and thus
     // compound.ts) is first imported: COMPOUND_HOME resolves once at module
@@ -148,7 +159,19 @@ export async function runLineageSelfTest(): Promise<{ ok: boolean; details: stri
       );
     }
 
-    // 5. Encoded/alternate/short grammar forms stay fail-soft: found:false,
+    // 5. The minted grammar accepts exactly 12 or 16 hex characters, not the
+    //    in-between lengths a `{12,16}` range would accidentally admit. Real
+    //    decoy files make each check fail if an invalid length reaches readFile.
+    for (const bad of ["cand_0123456789abc", "cand_0123456789abcd", "cand_0123456789abcde"]) {
+      const { lineage, threw } = await trace(bad);
+      push(
+        `invalid-hex-length-performs-no-read:${bad.length - "cand_".length}`,
+        !threw && lineage?.found === false && leakFree(lineage, INVALID_LENGTH_ENTITY),
+        `found=${lineage?.found} threw=${threw || "no"}`,
+      );
+    }
+
+    // 6. Encoded/alternate/short grammar forms stay fail-soft: found:false,
     //    never a throw, never a fabricated step.
     for (const bad of ["cand_..%2f..%2fsecret", "cand_..\\..\\secret", "cand_9DF96833602E", "cand_"]) {
       const { lineage, threw } = await trace(bad);
