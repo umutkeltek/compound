@@ -95,6 +95,77 @@ func TestRefreshBridgesDeadObservationToError(t *testing.T) {
 	}
 }
 
+// TestRefreshAliveClearsProbeDerivedError is the recovery falsifier (audit E8):
+// a row whose LastStatus=error / LastError came from a PRIOR probe observation
+// (not from the snapshot import) must have those fields cleared when a
+// subsequent probe observes the unit alive. Otherwise recovered jobs stay red
+// forever, inflating the operator's needs_you backlog with error claims the
+// probe itself wrote and should retract. The existing
+// TestRefreshAliveDoesNotDowngradeExistingError pins the asymmetric bridge for
+// imported errors — this test pins the symmetric bridge for probe-derived
+// errors.
+func TestRefreshAliveClearsProbeDerivedError(t *testing.T) {
+	home := t.TempDir()
+	importRefreshFixtureRoster(t, home, `{
+  "version": 1,
+  "jobs": [
+    {"job_id": "recovered-job", "name": "recovered job", "enabled": true, "state": "scheduled", "last_status": "ok", "last_run_at": "2026-07-13T07:30:00Z"}
+  ]
+}`)
+
+	// First pass: probe observes the unit dead → we write LastStatus=error.
+	if _, err := RefreshJobRosterFromObservations(home, "jobprobe:test", []JobRosterObservation{
+		{JobID: "recovered-job", Alive: false, Detail: "unit not loaded", ObservedAt: refreshTestNow.Format(time.RFC3339)},
+	}, refreshTestNow.Add(time.Hour)); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	mid, err := LoadJobRosterAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := rosterRow(t, mid, "recovered-job")
+	if row.LastStatus != "error" || row.LastError != "unit not loaded" || row.ProbeState != "dead" {
+		t.Fatalf("after first dead pass want status=error error=%q state=dead, got status=%q error=%q state=%q",
+			"unit not loaded", row.LastStatus, row.LastError, row.ProbeState)
+	}
+
+	// Second pass: probe observes the unit alive → probe-derived error MUST clear.
+	report, err := RefreshJobRosterFromObservations(home, "jobprobe:test", []JobRosterObservation{
+		{JobID: "recovered-job", Alive: true, Detail: "unit loaded", ObservedAt: refreshTestNow.Format(time.RFC3339)},
+	}, refreshTestNow.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("recovery refresh: %v", err)
+	}
+	if report.AliveCount != 1 {
+		t.Fatalf("alive observation count = %d, want 1", report.AliveCount)
+	}
+
+	after, err := LoadJobRosterAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row2 := rosterRow(t, after, "recovered-job")
+	if row2.LastStatus == "error" {
+		t.Fatalf("alive observation must clear probe-derived LastStatus=error, still got %q", row2.LastStatus)
+	}
+	if row2.LastError != "" {
+		t.Fatalf("alive observation must clear probe-derived LastError, still got %q", row2.LastError)
+	}
+	if row2.ProbeState != "alive" {
+		t.Fatalf("row must record ProbeState=alive, got %q", row2.ProbeState)
+	}
+
+	// And it must NOT yield a job-health plan now that the probe-derived error
+	// has been retracted (the recovered job is no longer actionable).
+	plans, err := BuildJobHealthPlans(home, after, refreshTestNow.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 0 {
+		t.Fatalf("recovered row must not yield a job-health plan, got %d", len(plans))
+	}
+}
+
 // TestRefreshAliveDoesNotDowngradeExistingError proves the asymmetric bridge: an
 // observed-alive verdict records probe metadata but never clears a genuine
 // imported error (a loaded unit can still have a failed last run).

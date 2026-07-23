@@ -111,6 +111,20 @@ func RefreshJobRosterFromObservations(homePath, sourceLabel string, observations
 		job.ProbeDetail = strings.TrimSpace(obs.Detail)
 		if obs.Alive {
 			report.AliveCount++
+			// Clear a probe-derived error: if we previously observed THIS row
+			// dead (ProbeState was "dead" from a prior probe pass), the
+			// LastStatus=error / LastError claim came from us, and a fresh
+			// alive observation now retracts it. Otherwise recovered jobs
+			// would stay red forever and inflate the operator's needs_you
+			// backlog with error claims the probe itself wrote. The existing
+			// TestRefreshAliveDoesNotDowngradeExistingError pins the
+			// asymmetric bridge for IMPORTED errors (ProbeState was empty, so
+			// an alive unit can still have a failing last run — liveness and
+			// run success are distinct axes).
+			if job.ProbeState == "dead" {
+				job.LastStatus = ""
+				job.LastError = ""
+			}
 			job.ProbeState = "alive"
 			continue
 		}
