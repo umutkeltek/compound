@@ -1150,12 +1150,20 @@ func parseOSAbsorptionServedOrientationEvidence(refs []string) (osAbsorptionServ
 	return evidence, nil
 }
 
-const osAbsorptionRequiredOrientHeading = "## Orient first — Compound (the served contract)"
+const (
+	osAbsorptionRequiredOrientHeading    = "## Orient first — Compound (the served contract)"
+	osAbsorptionRequiredMeaningAuthority = "Compound owns durable semantic meaning and promotion."
+	osAbsorptionRequiredBrainRole        = "brain is source/projection/migration evidence."
+	osAbsorptionRequiredGBrainRole       = "gbrain is a bridge/index only."
+)
 
 func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error {
 	required := []string{
 		osAbsorptionRequiredOrientHeading,
 		"compound orient --harness " + harness + " --task \"<task>\"",
+		osAbsorptionRequiredMeaningAuthority,
+		osAbsorptionRequiredBrainRole,
+		osAbsorptionRequiredGBrainRole,
 		"source-in-place evidence",
 		"rollback",
 		sourceRef,
@@ -1180,6 +1188,25 @@ func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error
 	} {
 		if strings.Contains(body, retired) {
 			return fmt.Errorf("%s entrypoint retains retired first-action directive %q", harness, retired)
+		}
+	}
+	authorityText := strings.ToLower(strings.NewReplacer(
+		"`", "",
+		"*", "",
+		"~", "",
+		"/", "",
+	).Replace(body))
+	for _, contradictory := range []string{
+		"brain is the curated markdown source of truth",
+		"brain is the source of truth",
+		"brain is source of truth",
+		"brain is canon",
+		"curated brain wins",
+		"durable outcomes land in brain",
+		"durable outcomes land directly in brain",
+	} {
+		if strings.Contains(authorityText, contradictory) {
+			return fmt.Errorf("%s entrypoint retains contradictory memory authority guidance %q", harness, contradictory)
 		}
 	}
 	return nil

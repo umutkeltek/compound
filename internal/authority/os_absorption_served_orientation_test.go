@@ -54,6 +54,9 @@ func TestValidateOSAbsorptionServedEntrypointRejectsAnyNonCompoundOrientHeading(
 	body := strings.Join([]string{
 		"## Orient first — Compound (the served contract)",
 		"compound orient --harness claude --task \"<task>\"",
+		"Compound owns durable semantic meaning and promotion.",
+		"brain is source/projection/migration evidence.",
+		"gbrain is a bridge/index only.",
 		"source-in-place evidence",
 		"rollback",
 		sourceRef,
@@ -70,6 +73,61 @@ func TestValidateOSAbsorptionServedEntrypointRejectsAnyNonCompoundOrientHeading(
 	}
 	if !strings.Contains(err.Error(), "Arbitrary Other Control Plane") {
 		t.Fatalf("error %q should quote the offending heading", err.Error())
+	}
+}
+
+func TestValidateOSAbsorptionServedEntrypointEnforcesMemoryAuthorityBoundary(t *testing.T) {
+	sourceRef := "/synthetic/example-source/ENTRYPOINT.md"
+	required := []string{
+		"Compound owns durable semantic meaning and promotion.",
+		"brain is source/projection/migration evidence.",
+		"gbrain is a bridge/index only.",
+	}
+	validLines := []string{
+		"## Orient first — Compound (the served contract)",
+		"compound orient --harness codex --task \"<task>\"",
+		required[0],
+		required[1],
+		required[2],
+		"source-in-place evidence",
+		"rollback",
+		sourceRef,
+	}
+
+	for _, missing := range required {
+		t.Run("requires "+missing, func(t *testing.T) {
+			lines := make([]string, 0, len(validLines)-1)
+			for _, line := range validLines {
+				if line != missing {
+					lines = append(lines, line)
+				}
+			}
+			err := validateOSAbsorptionServedEntrypoint("codex", sourceRef, strings.Join(lines, "\n"))
+			if err == nil {
+				t.Fatalf("expected rejection when required memory-authority guidance %q is missing", missing)
+			}
+			if !strings.Contains(err.Error(), missing) {
+				t.Fatalf("error %q should name missing guidance %q", err.Error(), missing)
+			}
+		})
+	}
+
+	for _, contradictory := range []string{
+		"**~/brain** is the curated markdown **source of truth**.",
+		"brain is canon.",
+		"If curated brain and gbrain disagree, curated brain wins.",
+		"Durable outcomes land directly in `~/brain`.",
+	} {
+		t.Run("rejects "+contradictory, func(t *testing.T) {
+			body := strings.Join(append(append([]string{}, validLines...), contradictory), "\n")
+			err := validateOSAbsorptionServedEntrypoint("codex", sourceRef, body)
+			if err == nil {
+				t.Fatalf("expected rejection of contradictory memory-authority guidance %q", contradictory)
+			}
+			if !strings.Contains(err.Error(), "contradictory memory authority guidance") {
+				t.Fatalf("error %q does not identify the memory-authority contradiction", err.Error())
+			}
+		})
 	}
 }
 
@@ -181,6 +239,9 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 			"<!-- GENERATED from an absorbed-OS steering config; generator stamp test -->",
 			"## Orient first — Compound (the served contract)",
 			"Run `compound orient --harness " + entrypoint.harness + " --task \"<task>\"`.",
+			"Compound owns durable semantic meaning and promotion.",
+			"brain is source/projection/migration evidence.",
+			"gbrain is a bridge/index only.",
 			"These files remain source-in-place evidence and rollback:",
 			liveStart,
 			wholeMap,
