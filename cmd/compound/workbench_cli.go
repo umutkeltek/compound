@@ -369,6 +369,21 @@ func cmdWorkbench(args []string) {
 			}
 		}
 	}
+	if report.BranchDebt != nil && (report.BranchDebt.Counts.Open > 0 || report.BranchDebt.Counts.DanglingCovers > 0 || report.BranchDebt.Counts.UnverifiableChanged > 0) {
+		bd := report.BranchDebt
+		fmt.Printf("branch_debt open=%d stale=%d covered=%d expansions=%d unverifiable=%d dangling=%d window=%dd\n",
+			bd.Counts.Open, bd.Counts.Stale, bd.Counts.Covered, bd.Counts.Expansions, bd.Counts.UnverifiableChanged, bd.Counts.DanglingCovers, bd.WindowDays)
+		for i, entry := range bd.Debt {
+			if i >= 3 {
+				break
+			}
+			marker := ""
+			if entry.Stale {
+				marker = " STALE"
+			}
+			fmt.Printf("  branch: %s owner=%s age=%dd%s opened_by=%s\n", entry.Branch, entry.Owner, entry.AgeDays, marker, entry.OpenedBy)
+		}
+	}
 	if capabilitySurface != nil {
 		fmt.Printf("capability_surface status=%s offers=%d showing=%d omitted=%d task=%q harness=%q authority=%s\n",
 			capabilitySurface.Status,

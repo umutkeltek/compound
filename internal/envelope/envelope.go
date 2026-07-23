@@ -45,7 +45,13 @@ var (
 	// DeltaCauses is the causal CLASS of a source-truth change carried on a Transition's optional
 	// Cause (see TransitionCause and docs/architecture/transition.md). It lets a future agent choose
 	// repair/retirement/acceptance/invalidation instead of re-litigating the old value.
-	DeltaCauses     = []string{"repair", "retire", "accept", "invalidate"}
+	DeltaCauses = []string{"repair", "retire", "accept", "invalidate"}
+	// BranchKinds is the branch-lifecycle enum a Transition's OpensBranches entry may declare
+	// (docs/architecture/transition.md future-branch semantics: opened → expanded → resolved →
+	// retired). Only validates|supersedes|retires COVER an opened branch; blocks|routes_to are
+	// neutral records; a repeated `opens` is an expansion. Coverage is computed by the read
+	// model (internal/work BranchCoverage), never by this schema.
+	BranchKinds     = []string{"opens", "blocks", "supersedes", "validates", "retires", "routes_to"}
 	ProofMedia      = []string{"web-ui", "ios", "cli", "api", "none"}
 	ProjectionKinds = []string{"memory", "skill", "product", "cost", "risk", "taste", "routing", "human_attention", "rule", "control_plane"}
 	ProjectionRoles = []string{"offered", "used", "missed", "false_triggered", "validated", "candidate", "promoted", "parked", "rejected", "proof"}
@@ -78,6 +84,11 @@ const (
 // nextConsumerRe: a Transition cause's next_consumer is a consumer slug/ref
 // (component or surface id), never prose — no whitespace, lowercase start.
 var nextConsumerRe = regexp.MustCompile(`^[a-z][a-z0-9_.:/-]{0,63}$`)
+
+// branchSlugRe: an opens_branches branch is a single machine slug (no path
+// separators, no prose) — it names a future-branch handle other transitions
+// cover by exact slug match.
+var branchSlugRe = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
 
 func oneOf(val string, set []string) bool {
 	for _, s := range set {
@@ -1185,6 +1196,17 @@ type TransitionCause struct {
 	NextConsumer string   `json:"next_consumer,omitempty"` // consumer slug/ref matching nextConsumerRe; empty => audit_only
 }
 
+// BranchRef is ONE future-branch statement on a Transition: which branch slug,
+// who is expected to act on it next (owner, a consumer ref matching
+// nextConsumerRe), and the lifecycle kind (one of BranchKinds). One statement
+// per branch per transition. Coverage is explicit-only: a later transition's
+// validates|supersedes|retires on the same slug resolves the branch.
+type BranchRef struct {
+	Branch string `json:"branch"` // branch slug matching branchSlugRe
+	Owner  string `json:"owner"`  // consumer slug/ref matching nextConsumerRe
+	Kind   string `json:"kind"`   // one of BranchKinds
+}
+
 type Transition struct {
 	Header
 	SourceTraceID string           `json:"source_trace_id,omitempty"`
@@ -1195,6 +1217,11 @@ type Transition struct {
 	Projections   Projections      `json:"projections"`
 	SecondOrder   SecondOrder      `json:"second_order"`
 	Cause         *TransitionCause `json:"cause,omitempty"`
+	// OpensBranches ships the deferred future-branch semantics of
+	// docs/architecture/transition.md: additive + omitempty, so absence leaves
+	// every pre-existing Transition untouched. prevents_branch stays deferred
+	// (no consumer yet).
+	OpensBranches []BranchRef `json:"opens_branches,omitempty"`
 }
 
 func (e *Transition) Kind() string { return "transition" }
@@ -1216,6 +1243,19 @@ func (e *Transition) Validate() error {
 		}
 		if e.Cause.NextConsumer != "" && !nextConsumerRe.MatchString(e.Cause.NextConsumer) {
 			v.addf("cause.next_consumer must be a consumer slug/ref (no prose), got %q", e.Cause.NextConsumer)
+		}
+	}
+	seenBranches := map[string]bool{}
+	for i, b := range e.OpensBranches {
+		v.enum(fmt.Sprintf("opens_branches[%d].kind", i), b.Kind, BranchKinds, true)
+		if !branchSlugRe.MatchString(b.Branch) {
+			v.addf("opens_branches[%d].branch must be a branch slug (no prose), got %q", i, b.Branch)
+		} else if seenBranches[b.Branch] {
+			v.addf("opens_branches[%d].branch %q duplicates an earlier entry (one statement per branch per transition)", i, b.Branch)
+		}
+		seenBranches[b.Branch] = true
+		if !nextConsumerRe.MatchString(b.Owner) {
+			v.addf("opens_branches[%d].owner must be a consumer slug/ref (no prose), got %q", i, b.Owner)
 		}
 	}
 	return v.result(e.Kind())

@@ -1610,6 +1610,13 @@ type CloseInput struct {
 	// run is reachable from the envelope, not only from the run_attempts dir).
 	// Same ratt_ prefix rule as AdvanceInput.RunAttemptIDs (enforced below).
 	RunAttemptIDs []string
+	// OpensBranches is the executor's declared future-branch set (the model
+	// PROPOSES; envelope validation decides; the BranchCoverage read model
+	// verifies over later flow). Empty means this close opens no checkable
+	// branch — which, combined with an empty next_consumer, makes a
+	// future_behavior_changed claim unverifiable by construction.
+	// Additive; validated as part of the emitted Transition.
+	OpensBranches []envelope.BranchRef
 }
 
 // CloseResult is the connected chain proof: the final work plus the Receipt and the
@@ -1776,6 +1783,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			FutureBehaviorChanged: in.MoveType != "audit_only",
 			ShouldHarden:          shouldHardenOnClose(w.TargetSurface, in.Outcome, in.ProofRefs),
 		},
+		OpensBranches: in.OpensBranches,
 	}
 	if err := tr.Validate(); err != nil {
 		return res, fmt.Errorf("emitted transition invalid: %w", err)

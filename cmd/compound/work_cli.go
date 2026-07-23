@@ -1684,7 +1684,7 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "close":
-		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--steal --reason R]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, so injected-but-unused refs count as ignored; omitting --used leaves them unknown)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)"
+		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--opens-branch slug:owner:kind]... [--steal --reason R]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, so injected-but-unused refs count as ignored; omitting --used leaves them unknown)\n  (--opens-branch declares a future branch on the emitted transition: kind is opens|blocks|supersedes|validates|retires|routes_to; the owner may itself contain colons)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)"
 		closeValueFlags := map[string]bool{
 			"--outcome":           true,
 			"--move-type":         true,
@@ -1702,6 +1702,7 @@ func cmdWork(args []string) {
 			"--memory-promoted":   true,
 			"--memory-parked":     true,
 			"--memory-rejected":   true,
+			"--opens-branch":      true,
 			"--reason":            true,
 		}
 		if err := validateKnownFlags(rest, closeValueFlags, map[string]bool{
@@ -1709,6 +1710,12 @@ func cmdWork(args []string) {
 			"--steal":   true,
 		}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, closeUsage)
+			os.Exit(2)
+		}
+		branchRefs, branchErr := parseOpensBranchFlags(flagCSVValues(rest, "--opens-branch"))
+		if branchErr != nil {
+			fmt.Fprintln(os.Stderr, "error:", branchErr)
 			fmt.Fprintln(os.Stderr, closeUsage)
 			os.Exit(2)
 		}
@@ -1733,6 +1740,7 @@ func cmdWork(args []string) {
 			FailureMechanism:           flag("--failure-mechanism"),
 			Steal:                      has("--steal"),
 			StealReason:                flag("--reason"),
+			OpensBranches:              branchRefs,
 		}, time.Now())
 		die(err)
 		fmt.Printf("%s closed: %s  move_type=%s  policy=%s  receipt=%s  transition=%s\n",
@@ -1758,6 +1766,53 @@ func cmdWork(args []string) {
 // A matching (non-diverged) close or a close with no staked prediction mints nothing (F6): this
 // is a no-op. Exhaust failure (open store, marshal) must NEVER fail an already-successful close;
 // it prints a warning line to stderr instead.
+// parseOpensBranchFlags parses the repeatable --opens-branch flag values into
+// validated BranchRefs before any close runs (fail-fast at the door).
+func parseOpensBranchFlags(values []string) ([]envelope.BranchRef, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	refs := make([]envelope.BranchRef, 0, len(values))
+	for _, v := range values {
+		ref, err := parseOpensBranchFlag(v)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
+// parseOpensBranchFlag parses "slug:owner:kind". The owner is a consumer ref
+// that may itself contain colons (e.g. claude:orchestrator), so the slug is
+// taken up to the FIRST colon and the kind after the LAST; the middle is the
+// owner. Kind is validated here; slug/owner shape is validated again by the
+// emitted Transition's own validation inside Close (fail-closed mint).
+func parseOpensBranchFlag(value string) (envelope.BranchRef, error) {
+	var ref envelope.BranchRef
+	first := strings.Index(value, ":")
+	last := strings.LastIndex(value, ":")
+	if first <= 0 || last <= first || last == len(value)-1 {
+		return ref, fmt.Errorf("--opens-branch must be slug:owner:kind, got %q", value)
+	}
+	ref.Branch = value[:first]
+	ref.Owner = value[first+1 : last]
+	ref.Kind = value[last+1:]
+	if ref.Owner == "" {
+		return ref, fmt.Errorf("--opens-branch owner must be non-empty, got %q", value)
+	}
+	kindOK := false
+	for _, k := range envelope.BranchKinds {
+		if ref.Kind == k {
+			kindOK = true
+		}
+	}
+	if !kindOK {
+		return ref, fmt.Errorf("--opens-branch kind must be one of %v, got %q", envelope.BranchKinds, ref.Kind)
+	}
+	return ref, nil
+}
+
 func observeWorkSurpriseOnDivergedClose(homePath string, res work.CloseResult) {
 	surprise := res.Receipt.Surprise
 	if surprise == nil || !surprise.Diverged {

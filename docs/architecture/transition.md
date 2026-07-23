@@ -31,6 +31,7 @@ particular, `ids.work_id` is the root link from intent through transition and
 | `Projections` | `Projections` | `json:"projections"` |
 | `SecondOrder` | `SecondOrder` | `json:"second_order"` |
 | `Cause` | `*TransitionCause` | `json:"cause,omitempty"` |
+| `OpensBranches` | `[]BranchRef` | `json:"opens_branches,omitempty"` |
 
 The Transition-specific JSON body has this shape (the flattened `Header` keys precede it in a full
 envelope):
@@ -62,7 +63,10 @@ envelope):
     "delta_cause": "accept",
     "caused_by_refs": ["work_..."],
     "next_consumer": "memory-review"
-  }
+  },
+  "opens_branches": [
+    { "branch": "branch-lifecycle", "owner": "workbench", "kind": "opens" }
+  ]
 }
 ```
 `runtime.md` and `contracts/README.md` reference this canonical shape. `source_trace_id` identifies
@@ -174,7 +178,17 @@ action, evaluation, or pruning. Owner placement prevents fragmentation; it does 
 compounding. So a `Transition`/`Receipt` declares the branch it opens and who consumes it:
 
 - `opens_branches[]` — `{branch, owner, kind}`, kind ∈ `opens | blocks | supersedes | validates |
-  retires | routes_to`.
+  retires | routes_to`. **SHIPPED (2026-07-24, work_18f8ce768471):** validated schema on
+  `Transition` (`envelope.BranchRef`), the `compound work close --opens-branch slug:owner:kind`
+  write door, and the consumer that un-deferred it — `internal/work` `BranchCoverage`, the
+  deterministic read model over `events/tr_*.json` surfaced as `branch_debt` in
+  `compound workbench`. Coverage is explicit-only: only `validates | supersedes | retires` on the
+  same slug resolve a branch; a repeated `opens` is an expansion that keeps the original
+  `opened_at`; covering an unopened slug is a dangling-cover integrity finding; `blocks |
+  routes_to` are neutral records. An open branch past the 7-day window surfaces as STALE debt —
+  advisory visibility pressure, never auto-closed (humans stay on irreversible decisions).
+  Transitions claiming `future_behavior_changed` with no branch and no `next_consumer` are counted
+  as unverifiable claims — the evaluation rule's first teeth.
 - `next_consumer` — who is expected to act next. No named consumer ⇒ `audit_only` until one exists.
 - `delta_cause` — the causal *class* of a source-truth change (`repair | retire | accept |
   invalidate`), carried with the new value so a future agent chooses repair/retirement/acceptance
@@ -200,8 +214,9 @@ This is the archive half of the compounding-knowledge loop (`../roadmap/phases.m
 
 **Harness co-evolution (shipped subset).** `Transition.Cause` (`internal/envelope`) ships a proven
 subset of the above: `delta_cause` + `caused_by_refs` (≥1, validated only when `Cause != nil`) +
-`next_consumer` (empty ⇒ `audit_only`). `opens_branches[]` / `prevents_branch` stay deferred — dead
-schema without a consumer. The `harness co-evolution` slice wires it end to end: harness-canon files
+`next_consumer` (empty ⇒ `audit_only`). `opens_branches[]` is ALSO shipped (see the branch entry
+above); `prevents_branch` stays deferred — dead schema without a consumer. The `harness
+co-evolution` slice wires Cause end to end: harness-canon files
 are a source-manifest family; `compound source canon-observe` (Importer `sourceobs.ObserveCanonDrift`)
 re-hashes them, parks one no-promote `CapabilityObs` candidate per drifted file, and the ObjectFamily
 `capgraph.RecordCanonEvolution` mints ONE cause-carrying `Transition` projected onto the touched

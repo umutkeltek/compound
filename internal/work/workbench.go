@@ -39,7 +39,11 @@ type WorkbenchReport struct {
 	DispatchNext      WorkbenchDispatchNext       `json:"dispatch_next"`
 	DispatchStepRuns  []DispatchStepRunSummary    `json:"dispatch_step_runs,omitempty"`
 	ContinueRuns      []ContinueRunSummary        `json:"continue_runs,omitempty"`
-	Integrity         []string                    `json:"integrity,omitempty"`
+	// BranchDebt is the branch-lifecycle read model (opens vs covered vs stale
+	// over the transition stream): the anti-freeze meter. Bounded lists; full
+	// counts. Nil only when the coverage fold itself failed (see Integrity).
+	BranchDebt *BranchCoverageReport `json:"branch_debt,omitempty"`
+	Integrity  []string              `json:"integrity,omitempty"`
 	// eventsByWork is the single event-log snapshot already loaded to build this
 	// report. In-process consumers may reuse it for adjacent projections without
 	// paying a second full-ledger read; it is deliberately absent from JSON.
@@ -409,6 +413,14 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	})
 	if len(report.Recent) > opts.RecentLimit {
 		report.Recent = report.Recent[:opts.RecentLimit]
+	}
+	// Branch debt is folded from the transition event stream (the SAME store
+	// this workbench already serves): a coverage failure degrades to an
+	// integrity note, never a workbench failure.
+	if coverage, err := s.BranchCoverage(now, BranchDebtStaleWindowDays); err != nil {
+		report.Integrity = append(report.Integrity, "branch coverage unavailable: "+err.Error())
+	} else {
+		report.BranchDebt = &coverage
 	}
 	return report, nil
 }
