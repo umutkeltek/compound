@@ -29,68 +29,27 @@ decisions). Without it, the console runs in a restricted read-only mode.
 
 ## What you'll see
 
-### Briefing (home page)
+The current left rail is a stable, needs-led map. Backend commands and
+projections appear inside the destination that owns their operator question;
+they do not automatically become new navigation rows.
 
-The main page is an **operator briefing** — one screen that answers "what
-needs my attention right now?"
+| Destination | Operator question | Context it owns |
+|---|---|---|
+| **Today** | What deserves my attention now? | Cross-domain attention and recently proven change |
+| **Live** | What is observed moving, waiting, stale, or unreachable? | RunAttempts, heartbeats, executors, leases, and coordination |
+| **Work** | What is moving, blocked, ready, or waiting for proof? | WorkEnvelopes, ownership, lifecycle, Receipts, and Transitions |
+| **Decide** | Which consequential calls need my judgment? | Evidence, consequence, reversibility, authority, and safe actions |
+| **Knowledge** | What does Compound know, why, and how current is it? | Claims, candidates, positions, patterns, Sources, and provenance |
+| **System** | What technical and authority configuration is effective? | Capabilities, routing, hooks, health, Settings, and Standing law |
+| **Outcomes** | What external change fed learning back into the system? | Product signals, hypotheses, reviews, and learned next moves |
 
-| Section | What it shows |
-|---|---|
-| **Headline** | The single most important thing right now |
-| **Continue card** | The highest-leverage next action (one click to continue) |
-| **Decide list** | Decisions that genuinely need your judgment |
-| **Needs me** | Tasks, sources, or decisions blocked on operator input |
-| **Pipeline strip** | Work items by lifecycle stage (proposed → ready → running → closed) |
-| **KPI strip** | Key metrics: open work, claims, transitions, capability count |
-| **Activity feed** | Recent receipts and transitions |
-| **Self-healing panel** | Divergences between expected and observed state |
-| **Knows strip** | What Compound currently knows (promoted claims) |
+Ask Compound is a global read-only overlay rather than another destination. A
+Live row opens the same WorkEnvelope in Work; Today links to the owning Work or
+decision record; evidence links to its Knowledge source; contextual authority
+links to the full System record.
 
-### Work (`/work`)
-
-The work board shows all WorkEnvelopes with their lifecycle state, owner,
-success predicate, and proof chain. Click any item to see the full envelope
-with receipts, transitions, and run attempts.
-
-### Memory (`/memory`)
-
-Browse promoted claims, positions, and patterns. Search the memory ledger.
-See the evidence chain behind any claim.
-
-### Reviews (`/reviews`)
-
-The owner-review queue: candidates, hypotheses, and proposals that need your
-judgment. Each review card shows the evidence, the decision options, and the
-impact of each choice.
-
-### Executors (`/executors`)
-
-Live view of running agent sessions, their work items, and liveness status.
-Dead executors are flagged for re-dispatch.
-
-### Routing (`/routing`)
-
-Model routing evidence: which lanes/models served which calls, at what cost,
-with what outcome. Route evidence, not task success.
-
-### Sources (`/sources`)
-
-Source observations and their adjudication status. What came in, what was
-promoted, what was parked or rejected.
-
-### Flow (`/flow`)
-
-Visual flow diagram of the spine: intent → context → work → policy → receipt
-→ transition. See how objects connect.
-
-### Standing Law (`/standing-law`)
-
-The policy posture: standing grants, operator state, placement rules, and
-autonomy ceiling. What the system is allowed to do without asking.
-
-### Settings (`/settings`)
-
-Instance identity, home path, and configuration.
+The binding context-ownership and progressive-disclosure rules live in
+[`console/DESIGN.md`](../console/DESIGN.md#10-experience-architecture--simple-first-depth-on-demand).
 
 ## Design principles
 

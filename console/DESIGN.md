@@ -390,19 +390,53 @@ The console's spectacle is the organism visibly living. Representations that car
 
 ## 10. Experience architecture — simple first, depth on demand
 
-The console groups its stable routes into seven needs-led surfaces. This is an information-
-architecture layer, not a route migration: existing deep links remain valid and appear as
-contextual secondary navigation inside their owning surface.
+The current seven-item left rail is the stable operator map. Preserve its labels and order unless
+an explicit operator decision changes them. A backend object, command, projection, or route does
+not earn persistent navigation merely because it exists.
+
+This section is the canonical information-architecture contract for console audits, mockups, and
+implementation. Existing deep links remain valid, but appear as contextual secondary navigation
+inside the surface that owns their operator question.
 
 | Surface | User question | Routes |
 |---|---|---|
 | **Today** | What deserves my attention now? | Briefing |
-| **Live** | What is genuinely happening, where, and through which harness? | Overview, Harnesses, Coordination |
-| **Work** | What is moving, blocked, or ready to move? | Pipeline and work traces |
-| **Decide** | Which consequential calls need evidence-backed judgment? | Decision queue |
-| **Knowledge** | What does Compound know, trust, or still question? | Memory, Standing law, Sources |
-| **System** | What capabilities, routes, policy, and authority are effective? | Map, Routing, Settings, View grammar |
+| **Live** | What is observed moving, waiting, stale, or unreachable right now? | Overview, Harnesses, Coordination |
+| **Work** | What is moving, blocked, ready, or waiting for proof? | Pipeline, WorkEnvelopes, traces, Receipts, Transitions |
+| **Decide** | Which consequential calls need evidence-backed judgment, and what authority applies? | Decision/review queue, contextual authority inspector |
+| **Knowledge** | What does Compound know, why, and how current or contested is it? | Memory, claims, positions, patterns, Sources |
+| **System** | What capabilities, routes, health, policy, and authority configuration are effective? | Map, Routing, Settings, View grammar, Standing law |
 | **Outcomes** | What shipped, changed, and fed learning back into the system? | Feedback loops |
+
+### 10.0 Context ownership contract
+
+Each fact has one primary surface. Other surfaces may show its identity, freshness, and a
+decision-relevant summary, then link to the owner; they do not create a second interpretation.
+
+- **Today ranks and links.** It owns cross-domain attention and recently proven change, not the
+  full Work, decision, knowledge, or system record.
+- **Live owns observation.** It distinguishes WorkEnvelope state, RunAttempt state, heartbeat,
+  executor identity, lease state, and coordination reachability. `running` alone never means
+  heartbeat-backed or genuinely active.
+- **Work owns the governed unit.** The WorkEnvelope is the primary operator object for lifecycle,
+  ownership, ActionIntent, PolicyDecision, execution evidence, Receipt, Transition, and the next
+  proof required.
+- **Decide owns judgment.** It shows the question, available evidence, known or explicitly unknown
+  consequence, reversibility, blast radius, applicable authority, and the one safe action.
+- **Knowledge owns meaning and provenance.** It shows claims and candidates with sources,
+  evidence, freshness, confidence when projected, contention, and adjudication state.
+- **System owns technical and configuration depth.** Capability graphs, routing/provider traffic,
+  hooks, projection health, raw registries, settings, and the complete standing-law/authority view
+  live here. Work and Decide may open a contextual authority inspector for the active object.
+- **Outcomes owns external feedback.** Product signals, hypotheses, reviews, and learned next moves
+  belong here; an internal Receipt is not an outcome merely because work completed.
+- **Ask Compound is a global read-only overlay, not an eighth destination.** It composes registered
+  views, cites their owners and freshness, and never invents authority or duplicate state.
+
+Cross-surface navigation preserves object identity: a Live row opens the same WorkEnvelope in
+Work; a Today seam opens its decision or work owner; evidence opens its Knowledge source; authority
+opens the relevant System record. Before adding context to a screen, name its primary owner and
+the operator decision the duplicate would enable. If neither is clear, link instead of copying.
 
 ### 10.1 Progressive disclosure contract
 

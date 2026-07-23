@@ -82,11 +82,17 @@ Optional local-only gates:
 - If a card cannot name a projection or an explicit private fallback, it does
   not ship.
 
-## Base + Append
+## Stable destinations + contextual append
 
-Stable grid: Dashboard, Work board, Reviews, Memory, lens-switchable System Map,
-Feedback loops. New surfaces append by adding a read-only fetcher, rendering a
-card/lens/loop, and adding the nav row.
+The left rail is the stable seven-surface map defined by
+[`DESIGN.md` §10](./DESIGN.md#10-experience-architecture--simple-first-depth-on-demand):
+Today, Live, Work, Decide, Knowledge, System, and Outcomes. Ask Compound is a
+global read-only overlay.
+
+New projections append inside their context owner. They do not add a top-level
+navigation row merely because a command, object, or read model exists. When a
+fact appears outside its owner, render only the decision-relevant summary,
+freshness, and a link back to the canonical surface.
 
 ## Executor Attribution
 
