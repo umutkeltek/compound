@@ -346,16 +346,11 @@ func openWorkbenchAuthorityWorkStore(t *testing.T, homePath string) *work.Store 
 
 func recordWorkbenchAuthorityReview(t *testing.T, homePath, workID string, now time.Time) authority.SourceControlReviewPlanPaths {
 	t.Helper()
-	snapshot := authority.SourceControlSnapshot{
-		SchemaVersion:           authority.SourceControlSchemaVersion,
-		RepoID:                  "repo:workbench-authority",
-		GitRoot:                 filepath.Join(homePath, "source-repo"),
-		Head:                    strings.Repeat("a", 40),
-		Status:                  "dirty",
-		Unstaged:                1,
-		ChangedPaths:            1,
-		ChangedStateFingerprint: "sha256:" + strings.Repeat("b", 64),
-		EvidenceRef:             "source-control:repo:workbench-authority:fixture",
+	repo := initCompoundCommandGitRepo(t)
+	writeFileAt(t, filepath.Join(repo, "README.md"), "reviewed dirty state\n")
+	snapshot, err := authority.ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
 	}
 	plan, err := authority.BuildSourceControlReviewPlan(snapshot, workID, now)
 	if err != nil {
