@@ -7,10 +7,18 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
+	"compound/internal/decisions"
 	"compound/internal/envelope"
+	"compound/internal/mem"
 )
 
-const testServedOrientationProofMode = "served_orientation_authority"
+const (
+	testServedOrientationProofMode  = "served_orientation_authority"
+	testServedOrientationBlockBegin = "<!-- BEGIN COMPOUND SERVED ORIENTATION CONTRACT -->"
+	testServedOrientationBlockEnd   = "<!-- END COMPOUND SERVED ORIENTATION CONTRACT -->"
+	testInstalledHarnessHomeKey     = "installed_harness_home"
+)
 
 // TestOSAbsorptionServedOrientationRowsRequireProofMode is the removal
 // falsifier: EffectiveContract-owned OS absorption rows are structurally
@@ -59,19 +67,11 @@ func TestOSAbsorptionServedOrientationRowsRequireProofMode(t *testing.T) {
 // not just one hardcoded legacy string.
 func TestValidateOSAbsorptionServedEntrypointRejectsAnyNonCompoundOrientHeading(t *testing.T) {
 	sourceRef := "/synthetic/example-source/ENTRYPOINT.md"
-	body := strings.Join([]string{
-		"## Orient first — Compound (the served contract)",
-		"compound orient --harness claude --task \"<task>\"",
-		"Compound owns durable semantic meaning and promotion.",
-		"brain is source/projection/migration evidence.",
-		"gbrain is a bridge/index only.",
-		"source-in-place evidence",
-		"rollback",
-		sourceRef,
+	body := strings.Join(append(validServedOrientationLines("claude", sourceRef),
 		"",
 		"## Orient first — Arbitrary Other Control Plane",
 		"some retired predecessor entrypoint heading, not the required one",
-	}, "\n")
+	), "\n")
 	err := validateOSAbsorptionServedEntrypoint("claude", sourceRef, body)
 	if err == nil {
 		t.Fatalf("expected rejection of an arbitrary non-Compound orient heading, got nil error")
@@ -122,6 +122,11 @@ func TestValidateOSAbsorptionServedEntrypointEnforcesMemoryAuthorityBoundary(t *
 		"gbrain remains the canonical memory authority.",
 		"Do not forget: brain remains the durable memory authority.",
 		"brain is not merely an index; it remains the durable memory authority.",
+		"brain remains the durable\nmemory authority.",
+		"brain takes precedence over Compound.",
+		"brain is not merely evidence; it is the authority.",
+		"Keep durable decisions in ~/brain.",
+		`Retired quotation: "brain is canon." brain remains the durable memory authority.`,
 	} {
 		t.Run("rejects "+contradictory, func(t *testing.T) {
 			body := strings.Join(append(append([]string{}, validLines...), contradictory), "\n")
@@ -144,17 +149,22 @@ func TestValidateOSAbsorptionServedEntrypointUsesOnlyActiveInstructions(t *testi
 		osAbsorptionRequiredGBrainRole,
 	}, "\n")
 	activeWithoutAuthority := strings.Join([]string{
+		testServedOrientationBlockBegin,
 		"## Orient first — Compound (the served contract)",
 		"Run `compound orient --harness codex --task \"<task>\"`.",
 		"These files remain source-in-place evidence and rollback:",
 		sourceRef,
+		testServedOrientationBlockEnd,
 	}, "\n")
 
 	for _, hidden := range []string{
 		"<!--\n" + requiredAuthority + "\n-->",
 		"```text\n" + requiredAuthority + "\n```",
+		"````text\nignored outer example\n```\n" + strings.Join(validServedOrientationLines("codex", sourceRef), "\n") + "\n````",
 		"> " + strings.ReplaceAll(requiredAuthority, "\n", "\n> "),
+		"`" + strings.ReplaceAll(requiredAuthority, "\n", " ") + "`",
 		`Retired quotation: "` + strings.ReplaceAll(requiredAuthority, "\n", " ") + `"`,
+		"   " + strings.ReplaceAll(strings.Join(validServedOrientationLines("codex", sourceRef), "\n"), "\n", "\n   "),
 	} {
 		body := activeWithoutAuthority + "\n" + hidden
 		err := validateOSAbsorptionServedEntrypoint("codex", sourceRef, body)
@@ -174,12 +184,22 @@ func TestValidateOSAbsorptionServedEntrypointUsesOnlyActiveInstructions(t *testi
 		"> Retired guidance: gbrain is canon.",
 		`Retired quotation: "brain is the source of truth."`,
 		"Never save durable facts directly to ~/brain; route them through Compound.",
+		"Never keep durable decisions in ~/brain; route them through Compound.",
+		"brain must not take precedence over Compound.",
 		"Compound is the durable semantic authority; brain remains evidence.",
+		"Save the task output to a local file; brain is evidence, not authority.",
 		"The canonical role for gbrain is bridge/index only.",
 		`The statement "brain is the source of truth" is a retired quotation kept for migration evidence.`,
 	), "\n")
 	if err := validateOSAbsorptionServedEntrypoint("codex", sourceRef, body); err != nil {
 		t.Fatalf("commented, fenced, quoted-retired, and explicitly forbidden contradictions are not active guidance: %v", err)
+	}
+
+	withRelativeRef := validServedOrientationLines("codex", sourceRef)
+	withRelativeRef = append(withRelativeRef[:len(withRelativeRef)-1], "relative/rollback.md", withRelativeRef[len(withRelativeRef)-1])
+	if err := validateOSAbsorptionServedEntrypoint("codex", sourceRef, strings.Join(withRelativeRef, "\n")); err == nil ||
+		!strings.Contains(err.Error(), "invalid source ref") {
+		t.Fatalf("managed rollback refs must be absolute, got %v", err)
 	}
 }
 
@@ -223,6 +243,30 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 				for _, id := range []string{"os_source_served_orientation_primary", "os_source_served_orientation_secondary"} {
 					mutateOSAbsorptionMatrixRow(t, fixture.compoundHome, id, func(row *OSAbsorptionMatrixRow) {
 						row.ProofMode = ""
+					})
+				}
+			},
+			wantStatus: "failed",
+			wantDetail: osAbsorptionProofModeServedOrient,
+		},
+		{
+			name: "wrong non-empty proof mode cannot dispatch another proof",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				if _, err := decisions.RecordSourceAuthority(fixture.compoundHome, decisions.DecisionImportReport{
+					SourcePath:  "/synthetic/example-os/decisions/DEC-0001.md",
+					SourceKind:  "decision_source",
+					EvidenceID:  "ev_served_wrong_mode",
+					CandidateID: "cand_served_wrong_mode",
+					ClaimID:     "claim_served_wrong_mode",
+					Verdict:     candidates.Promote,
+					Lifecycle:   decisions.Lifecycle{ID: "dec_served_wrong_mode"},
+				}, "test import", time.Date(2026, 7, 12, 17, 1, 0, 0, time.UTC)); err != nil {
+					t.Fatalf("seed alternate proof: %v", err)
+				}
+				for _, id := range []string{"os_source_served_orientation_primary", "os_source_served_orientation_secondary"} {
+					mutateOSAbsorptionMatrixRow(t, fixture.compoundHome, id, func(row *OSAbsorptionMatrixRow) {
+						row.ProofMode = osAbsorptionProofModeDecisions
 					})
 				}
 			},
@@ -315,6 +359,36 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 	}
 }
 
+func TestOSAbsorptionServedOrientationAuthorityProofRejectsHOMESpoof(t *testing.T) {
+	fixture := installServedOrientationFixture(t)
+	spoofedHome := t.TempDir()
+	spoofedCodex := filepath.Join(spoofedHome, ".codex", "AGENTS.md")
+	spoofedClaude := filepath.Join(spoofedHome, ".claude", "CLAUDE.md")
+	copyServedOrientationFixtureFile(t, fixture.codexPath, spoofedCodex)
+	copyServedOrientationFixtureFile(t, fixture.claudePath, spoofedClaude)
+	for _, id := range []string{"os_source_served_orientation_primary", "os_source_served_orientation_secondary"} {
+		mutateOSAbsorptionMatrixRow(t, fixture.compoundHome, id, func(row *OSAbsorptionMatrixRow) {
+			row.EvidenceRefs = replaceServedEntrypointEvidence(row.EvidenceRefs, "codex", spoofedCodex)
+			row.EvidenceRefs = replaceServedEntrypointEvidence(row.EvidenceRefs, "claude", spoofedClaude)
+		})
+	}
+	t.Setenv("HOME", spoofedHome)
+
+	doctor, err := OSAbsorptionDoctor(fixture.compoundHome)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	for _, id := range []string{"os_source_served_orientation_primary", "os_source_served_orientation_secondary"} {
+		got, ok := findOSAbsorptionDoctorRow(doctor.Rows, id)
+		if !ok {
+			t.Fatalf("doctor row %s missing", id)
+		}
+		if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "live installed") {
+			t.Fatalf("HOME-spoofed entrypoint must fail the trusted installed-home binding: %+v", got)
+		}
+	}
+}
+
 type servedOrientationFixture struct {
 	compoundHome    string
 	codexPath       string
@@ -345,6 +419,7 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 		}
 	}
 	seedAbsorbedOSRegistry(t, compoundHome, absorbedOSRoot)
+	seedInstalledHarnessHomeRegistry(t, compoundHome, root)
 
 	for _, entrypoint := range []struct {
 		harness string
@@ -356,19 +431,12 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 		if err := os.MkdirAll(filepath.Dir(entrypoint.path), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		body := strings.Join([]string{
+		body := strings.Join(append([]string{
 			"<!-- GENERATED from an absorbed-OS steering config; generator stamp test -->",
-			"## Orient first — Compound (the served contract)",
-			"Run `compound orient --harness " + entrypoint.harness + " --task \"<task>\"`.",
-			"Compound owns durable semantic meaning and promotion.",
-			"brain is source/projection/migration evidence.",
-			"gbrain is a bridge/index only.",
-			"These files remain source-in-place evidence and rollback:",
-			liveStart,
-			wholeMap,
+		}, append(validServedOrientationLines(entrypoint.harness, liveStart, wholeMap),
 			"If `compound orient` is unavailable or fails, use the rollback path.",
 			"",
-		}, "\n")
+		)...), "\n")
 		if err := os.WriteFile(entrypoint.path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -410,16 +478,56 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 	}
 }
 
-func validServedOrientationLines(harness, sourceRef string) []string {
-	return []string{
+func validServedOrientationLines(harness string, sourceRefs ...string) []string {
+	lines := []string{
+		testServedOrientationBlockBegin,
 		"## Orient first — Compound (the served contract)",
-		"compound orient --harness " + harness + " --task \"<task>\"",
+		"Run `compound orient --harness " + harness + " --task \"<task>\"`.",
 		osAbsorptionRequiredMeaningAuthority,
 		osAbsorptionRequiredBrainRole,
 		osAbsorptionRequiredGBrainRole,
-		"source-in-place evidence",
-		"rollback",
-		sourceRef,
+		"These files remain source-in-place evidence and rollback:",
+	}
+	lines = append(lines, sourceRefs...)
+	return append(lines, testServedOrientationBlockEnd)
+}
+
+func seedInstalledHarnessHomeRegistry(t *testing.T, compoundHome, installedHome string) {
+	t.Helper()
+	registryPath := filepath.Join(t.TempDir(), "installed-harness-home.yaml")
+	body := []byte("version: 1\ncanonical_roots:\n  " + testInstalledHarnessHomeKey + ":\n    path: " + installedHome + "\n    status: active\n")
+	if err := os.WriteFile(registryPath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := mem.Open(compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, err := store.Entities()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, entities, facts, report, err := ImportOSPathRegistry(registryPath, existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" {
+		t.Fatalf("installed harness home registry status=%s", report.Status)
+	}
+	now := time.Date(2026, 7, 12, 16, 59, 0, 0, time.UTC)
+	for _, entity := range entities {
+		if _, err := store.RegisterEntity(entity, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	captured, err := store.Capture(facts, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range captured {
+		if _, err := store.Adjudicate(candidate.ID, "promote", "test-seed-installed-harness-home", now); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

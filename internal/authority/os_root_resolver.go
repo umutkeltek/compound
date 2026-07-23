@@ -15,12 +15,18 @@ import (
 // `compound authority path-registry`); compound owns the internal layout
 // below that root (the AbsorbedOS* sub-path constants below). No absorbed-OS
 // path is ever hardcoded into product source.
-const AbsorbedOSRegistryKey = "absorbed_os"
+const (
+	AbsorbedOSRegistryKey   = "absorbed_os"
+	InstalledHarnessHomeKey = "installed_harness_home"
+)
 
 // absorbedOSEntityRef mirrors pathAuthorityFromOSRoot's entity_ref minting
 // ("source:" + key with underscores replaced by hyphens) for the
 // AbsorbedOSRegistryKey key.
-var absorbedOSEntityRef = "source:" + strings.ReplaceAll(AbsorbedOSRegistryKey, "_", "-")
+var (
+	absorbedOSEntityRef     = "source:" + strings.ReplaceAll(AbsorbedOSRegistryKey, "_", "-")
+	installedHarnessHomeRef = "source:" + strings.ReplaceAll(InstalledHarnessHomeKey, "_", "-")
+)
 
 // Compound-owned sub-paths beneath an absorbed OS root. These are CODE (the
 // internal layout compound expects), not operator data — only the root
@@ -40,12 +46,23 @@ const (
 // clone with no operator os-path-authority.yaml imported must resolve
 // found=false, not fail.
 func ResolveAbsorbedOSRoot(compoundHome string) (string, bool, error) {
+	return resolveDeclaredOSPath(compoundHome, absorbedOSEntityRef)
+}
+
+// ResolveInstalledHarnessHome resolves the live harness installation home
+// from Compound's promoted path-authority claim. Unlike os.UserHomeDir, this
+// binding cannot be redirected by a process-local HOME override.
+func ResolveInstalledHarnessHome(compoundHome string) (string, bool, error) {
+	return resolveDeclaredOSPath(compoundHome, installedHarnessHomeRef)
+}
+
+func resolveDeclaredOSPath(compoundHome, entityRef string) (string, bool, error) {
 	store, err := mem.OpenReadOnly(compoundHome)
 	if err != nil {
 		// No COMPOUND_HOME, or no ledger dir yet: nothing declared, skip.
 		return "", false, nil
 	}
-	claim, ok, err := store.CurrentClaim(absorbedOSEntityRef, "current_path")
+	claim, ok, err := store.CurrentClaim(entityRef, "current_path")
 	if err != nil {
 		return "", false, err
 	}

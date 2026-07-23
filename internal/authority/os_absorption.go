@@ -284,7 +284,10 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 		if row.Status == "pending" && row.CompoundOwner != "" && row.Consumer != "" && row.RetirementGate != "" {
 			report.PendingWithGateCount++
 		}
+		servedDeclarationErr := validateOSAbsorptionServedOrientationDeclaration(row)
 		switch {
+		case servedDeclarationErr != nil:
+			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionProofResult{reason: servedDeclarationErr.Error()})
 		case osAbsorptionNeedsWorkPacketProof(row):
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionWorkPacketProof(homePath, row))
 		case osAbsorptionNeedsOSCapabilityProof(row):
@@ -445,23 +448,8 @@ func validateOSAbsorptionMatrix(matrix OSAbsorptionSourceMatrix) error {
 			return fmt.Errorf("duplicate os absorption row id %q", row.ID)
 		}
 		seen[row.ID] = true
-		if osAbsorptionIsServedOrientationAuthorityRow(row) && row.ProofMode != osAbsorptionProofModeServedOrient {
-			return fmt.Errorf(
-				"os absorption row %q owned by %s requires proof_mode %q, got %q",
-				row.ID,
-				osAbsorptionEffectiveContractAuthorityRef,
-				osAbsorptionProofModeServedOrient,
-				row.ProofMode,
-			)
-		}
-		if row.ProofMode == osAbsorptionProofModeServedOrient && !osAbsorptionIsServedOrientationAuthorityRow(row) {
-			return fmt.Errorf(
-				"os absorption row %q uses proof_mode %q but compound_owner is %q, want %q",
-				row.ID,
-				osAbsorptionProofModeServedOrient,
-				row.CompoundOwner,
-				osAbsorptionEffectiveContractAuthorityRef,
-			)
+		if err := validateOSAbsorptionServedOrientationDeclaration(row); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1019,6 +1007,28 @@ func osAbsorptionIsServedOrientationAuthorityRow(row OSAbsorptionMatrixRow) bool
 	return row.CompoundOwner == osAbsorptionEffectiveContractAuthorityRef
 }
 
+func validateOSAbsorptionServedOrientationDeclaration(row OSAbsorptionMatrixRow) error {
+	if osAbsorptionIsServedOrientationAuthorityRow(row) && row.ProofMode != osAbsorptionProofModeServedOrient {
+		return fmt.Errorf(
+			"os absorption row %q owned by %s requires proof_mode %q, got %q",
+			row.ID,
+			osAbsorptionEffectiveContractAuthorityRef,
+			osAbsorptionProofModeServedOrient,
+			row.ProofMode,
+		)
+	}
+	if row.ProofMode == osAbsorptionProofModeServedOrient && !osAbsorptionIsServedOrientationAuthorityRow(row) {
+		return fmt.Errorf(
+			"os absorption row %q uses proof_mode %q but compound_owner is %q, want %q",
+			row.ID,
+			osAbsorptionProofModeServedOrient,
+			row.CompoundOwner,
+			osAbsorptionEffectiveContractAuthorityRef,
+		)
+	}
+	return nil
+}
+
 // osAbsorptionNeedsServedOrientationProof fails closed for both current and
 // legacy-installed matrices. Import validation requires the explicit proof
 // mode, while this structural fallback still dispatches the proof if someone
@@ -1199,6 +1209,8 @@ const (
 	osAbsorptionRequiredMeaningAuthority = "Compound owns durable semantic meaning and promotion."
 	osAbsorptionRequiredBrainRole        = "brain is source/projection/migration evidence."
 	osAbsorptionRequiredGBrainRole       = "gbrain is a bridge/index only."
+	osAbsorptionServedBlockBegin         = "<!-- BEGIN COMPOUND SERVED ORIENTATION CONTRACT -->"
+	osAbsorptionServedBlockEnd           = "<!-- END COMPOUND SERVED ORIENTATION CONTRACT -->"
 
 	osAbsorptionServedCodexEntrypoint  = ".codex/AGENTS.md"
 	osAbsorptionServedClaudeEntrypoint = ".claude/CLAUDE.md"
@@ -1208,10 +1220,9 @@ const (
 
 // validateOSAbsorptionServedOrientationBinding prevents copied files from
 // masquerading as live evidence. Compound owns both sides of the binding:
-// the absorbed-OS root comes from the promoted path-authority claim, source
-// entrypoint layout is code, and installed harness entrypoints are derived
-// from the actual user home. Evidence refs may attest those exact paths; they
-// may not choose new ones.
+// the absorbed-OS root and installed harness home both come from promoted
+// path-authority claims, while source/installed entrypoint layouts are code.
+// Evidence refs may attest those exact paths; they may not choose new ones.
 func validateOSAbsorptionServedOrientationBinding(
 	homePath string,
 	row OSAbsorptionMatrixRow,
@@ -1244,13 +1255,16 @@ func validateOSAbsorptionServedOrientationBinding(
 		return fmt.Errorf("declared absorbed-OS source entrypoint %s is not a regular file", sourceRef)
 	}
 
-	userHome, err := os.UserHomeDir()
+	installedHome, found, err := ResolveInstalledHarnessHome(homePath)
 	if err != nil {
-		return fmt.Errorf("resolve live harness home: %w", err)
+		return fmt.Errorf("resolve declared installed harness home: %w", err)
+	}
+	if !found || !absorbedOSRootPresentOnDisk(installedHome) {
+		return fmt.Errorf("served orientation evidence has no declared live installed harness home")
 	}
 	expectedEntrypoints := map[string]string{
-		"codex":  filepath.Clean(filepath.Join(userHome, filepath.FromSlash(osAbsorptionServedCodexEntrypoint))),
-		"claude": filepath.Clean(filepath.Join(userHome, filepath.FromSlash(osAbsorptionServedClaudeEntrypoint))),
+		"codex":  filepath.Clean(filepath.Join(installedHome, filepath.FromSlash(osAbsorptionServedCodexEntrypoint))),
+		"claude": filepath.Clean(filepath.Join(installedHome, filepath.FromSlash(osAbsorptionServedClaudeEntrypoint))),
 	}
 	for _, harness := range []string{"codex", "claude"} {
 		got := filepath.Clean(evidence.entrypoints[harness])
@@ -1268,27 +1282,53 @@ func validateOSAbsorptionServedOrientationBinding(
 }
 
 func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error {
-	activeBody := osAbsorptionActiveMarkdown(body)
-	required := []string{
+	block, err := osAbsorptionServedContractBlock(body)
+	if err != nil {
+		return fmt.Errorf("%s entrypoint %w", harness, err)
+	}
+	requiredPrefix := []string{
 		osAbsorptionRequiredOrientHeading,
-		"compound orient --harness " + harness + " --task \"<task>\"",
+		"Run `compound orient --harness " + harness + " --task \"<task>\"`.",
 		osAbsorptionRequiredMeaningAuthority,
 		osAbsorptionRequiredBrainRole,
 		osAbsorptionRequiredGBrainRole,
-		"source-in-place evidence",
-		"rollback",
-		sourceRef,
+		"These files remain source-in-place evidence and rollback:",
 	}
-	for _, want := range required {
-		if !osAbsorptionActiveMarkdownContains(activeBody, want) {
-			return fmt.Errorf("%s entrypoint missing %q", harness, want)
+	for i, want := range requiredPrefix {
+		if i >= len(block) {
+			return fmt.Errorf("%s entrypoint managed block missing exact line %q at position %d", harness, want, i+1)
+		}
+		if block[i] != want {
+			return fmt.Errorf("%s entrypoint managed block missing exact line %q at position %d; got %q", harness, want, i+1, block[i])
 		}
 	}
+	if len(block) == len(requiredPrefix) {
+		return fmt.Errorf("%s entrypoint managed block missing source ref %q", harness, sourceRef)
+	}
+	sourceFound := false
+	sourceSeen := map[string]bool{}
+	for _, ref := range block[len(requiredPrefix):] {
+		if strings.TrimSpace(ref) != ref || ref == "" || strings.ContainsAny(ref, "`<>") || !filepath.IsAbs(ref) {
+			return fmt.Errorf("%s entrypoint managed block has invalid source ref line %q", harness, ref)
+		}
+		if sourceSeen[ref] {
+			return fmt.Errorf("%s entrypoint managed block has duplicate source ref %q", harness, ref)
+		}
+		sourceSeen[ref] = true
+		if ref == sourceRef {
+			sourceFound = true
+		}
+	}
+	if !sourceFound {
+		return fmt.Errorf("%s entrypoint managed block missing source ref %q", harness, sourceRef)
+	}
+
+	paragraphs := osAbsorptionActiveMarkdownParagraphs(body)
 	// Reject ANY "## Orient first — " heading that is not the required
 	// Compound heading — genericized so this holds for any retired
 	// predecessor orientation entrypoint, not just one hardcoded legacy name.
-	for _, line := range strings.Split(activeBody, "\n") {
-		trimmed := strings.TrimSpace(line)
+	for _, paragraph := range paragraphs {
+		trimmed := strings.TrimSpace(paragraph)
 		if strings.HasPrefix(trimmed, "## Orient first — ") && trimmed != osAbsorptionRequiredOrientHeading {
 			return fmt.Errorf("%s entrypoint retains retired orient heading %q", harness, trimmed)
 		}
@@ -1297,71 +1337,231 @@ func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error
 		"FIRST action is recall",
 		"**Recall first:**",
 	} {
-		if strings.Contains(activeBody, retired) {
-			return fmt.Errorf("%s entrypoint retains retired first-action directive %q", harness, retired)
+		for _, paragraph := range paragraphs {
+			if strings.Contains(paragraph, retired) {
+				return fmt.Errorf("%s entrypoint retains retired first-action directive %q", harness, retired)
+			}
 		}
 	}
 
-	for _, line := range strings.Split(activeBody, "\n") {
-		if contradiction, ok := osAbsorptionMemoryAuthorityContradiction(line); ok {
-			return fmt.Errorf("%s entrypoint retains contradictory memory authority guidance %q", harness, contradiction)
+	for _, paragraph := range paragraphs {
+		for _, clause := range osAbsorptionSemanticClauses(paragraph) {
+			if contradiction, ok := osAbsorptionMemoryAuthorityContradiction(clause); ok {
+				return fmt.Errorf("%s entrypoint retains contradictory memory authority guidance %q", harness, contradiction)
+			}
 		}
 	}
 	return nil
 }
 
-// osAbsorptionActiveMarkdown keeps instructions a harness can actually
-// consume while excluding HTML comments, fenced/indented examples, and
-// blockquotes. Required authority text hidden in any of those regions cannot
-// satisfy the guard, and retired quotations there cannot trip it.
-func osAbsorptionActiveMarkdown(body string) string {
+// osAbsorptionServedContractBlock extracts one exact managed active-prose
+// block. The delimiters themselves are comments, but must appear as unquoted,
+// unindented physical lines outside any CommonMark fenced block. This makes
+// positive authority proof structural: examples, inline-code quotations, and
+// longer outer fences cannot satisfy it.
+func osAbsorptionServedContractBlock(body string) ([]string, error) {
 	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
-	active := make([]string, 0, len(lines))
+	var block []string
+	inBlock := false
+	foundBlock := false
 	inComment := false
-	var fence byte
+	var fence osAbsorptionMarkdownFence
 
 	for _, raw := range lines {
-		if fence != 0 {
-			if osAbsorptionMarkdownFence(raw, fence) {
-				fence = 0
+		if fence.marker != 0 {
+			if fence.closes(raw) {
+				fence = osAbsorptionMarkdownFence{}
 			}
 			continue
 		}
-
-		line := osAbsorptionStripHTMLComments(raw, &inComment)
-		if inComment && strings.TrimSpace(line) == "" {
+		if inComment {
+			_ = osAbsorptionStripHTMLComments(raw, &inComment)
 			continue
 		}
-		if marker := osAbsorptionMarkdownFenceMarker(line); marker != 0 {
-			fence = marker
+		if osAbsorptionMarkdownNonProseLine(raw) {
+			continue
+		}
+		switch raw {
+		case osAbsorptionServedBlockBegin:
+			if foundBlock || inBlock {
+				return nil, fmt.Errorf("has duplicate managed block begin marker")
+			}
+			inBlock = true
+			foundBlock = true
+			continue
+		case osAbsorptionServedBlockEnd:
+			if !inBlock {
+				return nil, fmt.Errorf("has managed block end without active begin")
+			}
+			inBlock = false
+			continue
+		}
+		if opened, ok := osAbsorptionOpenMarkdownFence(raw); ok {
+			fence = opened
+			continue
+		}
+		line := osAbsorptionStripHTMLComments(raw, &inComment)
+		if inBlock {
+			if inComment || strings.TrimSpace(line) != raw || raw == "" {
+				return nil, fmt.Errorf("managed block contains non-active or non-exact line %q", raw)
+			}
+			block = append(block, raw)
+		}
+	}
+	if inBlock {
+		return nil, fmt.Errorf("managed block is missing end marker")
+	}
+	if !foundBlock {
+		return nil, fmt.Errorf("missing managed block begin marker %q", osAbsorptionServedBlockBegin)
+	}
+	return block, nil
+}
+
+// osAbsorptionActiveMarkdownParagraphs renders the limited text surface this
+// guard needs: comments, CommonMark fenced/indented code, and blockquotes are
+// excluded; consecutive prose lines are joined into paragraphs so semantic
+// checks cannot be bypassed with a physical line break.
+func osAbsorptionActiveMarkdownParagraphs(body string) []string {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	var paragraphs []string
+	var paragraph []string
+	inComment := false
+	var fence osAbsorptionMarkdownFence
+	flush := func() {
+		if len(paragraph) == 0 {
+			return
+		}
+		paragraphs = append(paragraphs, strings.Join(paragraph, " "))
+		paragraph = nil
+	}
+
+	for _, raw := range lines {
+		if fence.marker != 0 {
+			if fence.closes(raw) {
+				fence = osAbsorptionMarkdownFence{}
+			}
+			continue
+		}
+		if osAbsorptionMarkdownNonProseLine(raw) {
+			flush()
+			continue
+		}
+		line := osAbsorptionStripHTMLComments(raw, &inComment)
+		if opened, ok := osAbsorptionOpenMarkdownFence(line); ok {
+			flush()
+			fence = opened
 			continue
 		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
-			active = append(active, "")
+			flush()
 			continue
 		}
-		if strings.HasPrefix(trimmed, ">") ||
-			strings.HasPrefix(line, "\t") ||
-			strings.HasPrefix(line, "    ") {
+		if strings.HasPrefix(trimmed, "#") {
+			flush()
+			paragraphs = append(paragraphs, trimmed)
 			continue
 		}
-		active = append(active, line)
+		if osAbsorptionMarkdownListItem(trimmed) {
+			flush()
+		}
+		paragraph = append(paragraph, trimmed)
 	}
-	return strings.Join(active, "\n")
+	flush()
+	return paragraphs
 }
 
-func osAbsorptionActiveMarkdownContains(activeBody, want string) bool {
-	for _, line := range strings.Split(activeBody, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || osAbsorptionRetiredQuotation(trimmed) {
-			continue
-		}
-		if strings.Contains(line, want) {
-			return true
+// osAbsorptionSemanticClauses splits rendered prose at sentence terminators
+// before applying retired-quotation and authority checks. Without this seam, a
+// paragraph that begins with a retired quotation can hide a live instruction
+// later in the same paragraph. Semicolons deliberately stay inside a clause:
+// "brain is not merely evidence; it is the authority" is one assertion.
+func osAbsorptionSemanticClauses(paragraph string) []string {
+	var clauses []string
+	start := 0
+	for i, r := range paragraph {
+		switch r {
+		case '.', '!', '?':
+			clause := strings.TrimSpace(paragraph[start : i+1])
+			if clause != "" {
+				clauses = append(clauses, clause)
+			}
+			start = i + 1
 		}
 	}
-	return false
+	if clause := strings.TrimSpace(paragraph[start:]); clause != "" {
+		clauses = append(clauses, clause)
+	}
+	return clauses
+}
+
+type osAbsorptionMarkdownFence struct {
+	marker byte
+	length int
+}
+
+func osAbsorptionOpenMarkdownFence(line string) (osAbsorptionMarkdownFence, bool) {
+	content, ok := osAbsorptionMarkdownFenceContent(line)
+	if !ok || len(content) < 3 || (content[0] != '`' && content[0] != '~') {
+		return osAbsorptionMarkdownFence{}, false
+	}
+	marker := content[0]
+	length := 0
+	for length < len(content) && content[length] == marker {
+		length++
+	}
+	if length < 3 {
+		return osAbsorptionMarkdownFence{}, false
+	}
+	if marker == '`' && strings.ContainsRune(content[length:], '`') {
+		return osAbsorptionMarkdownFence{}, false
+	}
+	return osAbsorptionMarkdownFence{marker: marker, length: length}, true
+}
+
+func (f osAbsorptionMarkdownFence) closes(line string) bool {
+	content, ok := osAbsorptionMarkdownFenceContent(line)
+	if !ok || len(content) < f.length || content[0] != f.marker {
+		return false
+	}
+	length := 0
+	for length < len(content) && content[length] == f.marker {
+		length++
+	}
+	return length >= f.length && strings.TrimSpace(content[length:]) == ""
+}
+
+func osAbsorptionMarkdownFenceContent(line string) (string, bool) {
+	if strings.HasPrefix(line, "\t") {
+		return "", false
+	}
+	leading := 0
+	for leading < len(line) && line[leading] == ' ' {
+		leading++
+	}
+	if leading > 3 {
+		return "", false
+	}
+	return line[leading:], true
+}
+
+func osAbsorptionMarkdownNonProseLine(line string) bool {
+	if strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "    ") {
+		return true
+	}
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, ">")
+}
+
+func osAbsorptionMarkdownListItem(line string) bool {
+	if len(line) >= 2 && (line[0] == '-' || line[0] == '*' || line[0] == '+') && line[1] == ' ' {
+		return true
+	}
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	return i > 0 && i+1 < len(line) && (line[i] == '.' || line[i] == ')') && line[i+1] == ' '
 }
 
 func osAbsorptionStripHTMLComments(line string, inComment *bool) string {
@@ -1388,29 +1588,6 @@ func osAbsorptionStripHTMLComments(line string, inComment *bool) string {
 	return out.String()
 }
 
-func osAbsorptionMarkdownFenceMarker(line string) byte {
-	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "```") {
-		return '`'
-	}
-	if strings.HasPrefix(trimmed, "~~~") {
-		return '~'
-	}
-	return 0
-}
-
-func osAbsorptionMarkdownFence(line string, marker byte) bool {
-	trimmed := strings.TrimSpace(line)
-	if len(trimmed) < 3 || trimmed[0] != marker {
-		return false
-	}
-	count := 0
-	for count < len(trimmed) && trimmed[count] == marker {
-		count++
-	}
-	return count >= 3 && strings.TrimSpace(trimmed[count:]) == ""
-}
-
 func osAbsorptionMemoryAuthorityContradiction(line string) (string, bool) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" || osAbsorptionRetiredQuotation(trimmed) {
@@ -1430,8 +1607,16 @@ func osAbsorptionMemoryAuthorityContradiction(line string) (string, bool) {
 		return trimmed, true
 	}
 
-	if osAbsorptionDirectBrainWrite(words) {
-		return trimmed, true
+	// A semicolon can connect two independent instructions. Keep it intact for
+	// authority assertions ("not merely evidence; it is the authority"), but
+	// do not let a write verb in one side acquire brain/gbrain as the target
+	// from the other side.
+	for _, writeClause := range strings.Split(trimmed, ";") {
+		writeWords := strings.Fields(osAbsorptionSemanticWords(writeClause))
+		if (osAbsorptionHasWord(writeWords, "brain") || osAbsorptionHasWord(writeWords, "gbrain")) &&
+			osAbsorptionDirectBrainWrite(writeWords) {
+			return strings.TrimSpace(writeClause), true
+		}
 	}
 	return "", false
 }
@@ -1498,16 +1683,13 @@ func osAbsorptionHasActiveMemoryAuthorityAssertion(words []string) bool {
 }
 
 func osAbsorptionMemoryAuthorityRoleAfter(words []string, subjectIndex int) (int, bool) {
-	end := subjectIndex + 13
-	if end > len(words) {
-		end = len(words)
-	}
+	end := len(words)
 	for i := subjectIndex + 1; i < end; i++ {
 		if words[i] == "compound" || words[i] == "brain" || words[i] == "gbrain" {
 			break
 		}
 		switch words[i] {
-		case "authority", "authoritative", "canon", "wins":
+		case "authority", "authoritative", "canon", "outranks", "overrides", "precedence", "prevails", "supersedes", "wins":
 			return i, true
 		case "canonical":
 			windowEnd := i + 4
@@ -1552,7 +1734,9 @@ func osAbsorptionMemoryAuthorityAssertionNegated(words []string, subjectIndex, r
 			continue
 		}
 		afterNegative := segment[i+1:]
-		if osAbsorptionHasAnyWord(afterNegative, "remains", "wins") {
+		if osAbsorptionHasAnyWord(afterNegative, "remains", "wins") ||
+			(osAbsorptionHasAnyWord(afterNegative, "merely", "just", "only") &&
+				osAbsorptionHasAnyWord(afterNegative, "is", "becomes", "authority", "authoritative", "canon", "canonical", "precedence")) {
 			return false
 		}
 		return true
@@ -1587,6 +1771,7 @@ func osAbsorptionDirectBrainWrite(words []string) bool {
 	actions := map[string]bool{
 		"append": true, "appends": true,
 		"curate": true, "curates": true,
+		"keep": true, "keeps": true,
 		"land": true, "lands": true,
 		"persist": true, "persists": true,
 		"promote": true, "promotes": true,
@@ -1616,7 +1801,7 @@ func osAbsorptionDirectBrainWrite(words []string) bool {
 		if osAbsorptionWriteActionNegated(words, actionIndex) {
 			continue
 		}
-		for targetIndex := actionIndex + 1; targetIndex < len(words) && targetIndex <= actionIndex+12; targetIndex++ {
+		for targetIndex := actionIndex + 1; targetIndex < len(words); targetIndex++ {
 			if words[targetIndex] != "brain" && words[targetIndex] != "gbrain" {
 				continue
 			}
