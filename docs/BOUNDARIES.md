@@ -56,16 +56,19 @@ directory (`docs_private/`) that is never committed. A gitignored in-tree overla
 convenient but reachable by `git add -f` or a removed ignore rule, so the public/private
 contamination check plus a redact scan gate every commit.
 
-CI (`.github/workflows/ci.yml`) enforces a portable second line on every push and pull request: the
-fresh-clone-portable subset of `compound proof-check` (run via `proof-check --ci`, single-sourced
-from `cmd/compound/proof_check.go` — go test/vet/build, gofmt, `git diff --check`, `architecture
-doctor --strict` including the armed doc-leak gate, and `memory doctor`) plus a `gitleaks` secret
-scan (config `.gitleaks.toml`). The armed doc-leak gate enforces generic identity-leak classes
+CI (`.woodpecker.yml`) runs on the owned Woodpecker agent for scheduled/manual builds (and
+push/pull-request events when a forge webhook is reachable), so verification does not consume
+GitHub-hosted Actions minutes. It enforces the fresh-clone-portable subset of `compound proof-check`
+(run via `proof-check --ci`, single-sourced from `cmd/compound/proof_check.go` — go test/vet/build,
+gofmt, `git diff --check`, `architecture doctor --strict` including the armed doc-leak gate, and
+`memory doctor`) plus the console subset (`proof-check --ci-console`) and a `gitleaks` secret scan
+(config `.gitleaks.toml`). The armed doc-leak gate enforces generic identity-leak classes
 (non-RFC2606 email shapes; boundary-guarded absolute /Users|/home path shapes) over every tracked
 text file — root files, docs, skills, and source alike — with no operator overlay required. The
 `redact` public-push floor is the richer, local gate (it also detects PII, private paths, and
-private-tool names a generic scanner misses) and remains required before a public push; the CI
-gitleaks step complements it because `redact` is a local tool not installed on a CI runner.
+private-tool names a generic scanner misses) and remains required before a public push; the
+Woodpecker gitleaks step complements it because `redact` is a local tool not installed on the CI
+runner.
 
 ## Adapter Contract
 

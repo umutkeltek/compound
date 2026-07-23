@@ -207,6 +207,10 @@ Execution and policy:
 - `compound proof-check [--json]` runs the deterministic local proof bundle:
   tests, vet, build, diff check, strict architecture doctor, memory doctor, and
   public redact scan.
+- `.woodpecker.yml` runs the portable core, console, and gitleaks gates on the
+  owned Woodpecker agent. A scheduled/manual run is the reliable trigger while
+  the forge cannot reach the LAN-only webhook; GitHub-hosted Actions are
+  intentionally not part of the runtime contract.
 - `compound reviews [--json]` reads owner-review artifacts without applying
   them.
 - `compound policy evaluate` turns ActionIntent into an enforceable
