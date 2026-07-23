@@ -49,6 +49,7 @@ const (
 	postCompletionRepairProofSchema             = "compound.eventstore.post_completion_repair_proof.v0.1"
 	postCompletionRepairRootSchema              = "compound.eventstore.post_completion_repair_root.v0.1"
 	postCompletionRepairAnchorSchema            = "compound.eventstore.post_completion_repair_anchor.v0.1"
+	postCompletionRepairPolicySchema            = "compound.policy_decision.v0.1"
 	postCompletionRepairRootFile                = "root.json"
 	postCompletionRepairAnchorFile              = "post-completion-repair-anchor.json"
 	RepairImportAbsent                          = "import_absent"
@@ -3712,7 +3713,7 @@ func (s *Store) validatePostCompletionRepairEnvelopeChain(auth PostCompletionRep
 		id, schema string
 	}{
 		{auth.ActionIntentID, "compound.action_intent.v0.1"},
-		{auth.PolicyDecisionID, "compound.policy_decision.v0.1"},
+		{auth.PolicyDecisionID, postCompletionRepairPolicySchema},
 		{receiptID, "compound.receipt.v0.1"},
 		{transitionID, "compound.transition.v0.1"},
 	}
