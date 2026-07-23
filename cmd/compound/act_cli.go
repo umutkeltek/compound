@@ -41,7 +41,7 @@ const actDefaultCapability = "outbound.config_key.write"
 func actUsage() string {
 	return "usage:\n" +
 		"  compound act repoint --target-path P --target-id KEY --value V --work W [--confirm] [--capability CAP] [--home P] [--json]\n" +
-		"  compound act post (--from-work W | --content -) --work W [--transport NAME] [--confirm] [--capability CAP] [--home P] [--json]\n" +
+		"  compound act post (--from-work W | --content -) --work W --transport NAME [--confirm] [--home P] [--json]\n" +
 		"    Governed outbound write: repoint the dotted KEY inside the YAML/JSON config at P to V.\n" +
 		"    DRY-RUN by default (shows current -> proposed + the PolicyDecision, writes nothing).\n" +
 		"    --confirm performs the write THROUGH the act seam — it REQUIRES an allowing PolicyDecision\n" +

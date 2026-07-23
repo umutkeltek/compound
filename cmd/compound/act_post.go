@@ -19,8 +19,20 @@ import (
 func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fromWork := strings.TrimSpace(flagValue(args, "--from-work"))
 	hasContent := hasFlag(args, "--content")
-	if (fromWork == "") == !hasContent || (hasContent && flagValue(args, "--content") != "-") {
-		fmt.Fprintln(stderr, "usage: compound act post (--from-work W | --content -) --work W [--transport NAME] [--confirm] [--capability CAP]")
+	// --transport is required: compound is transport-agnostic, so there is no
+	// implicit default to fall back to. This refusal (and the --capability one
+	// below) happens before home resolution, policy evaluation, or adapter
+	// resolution — a refused invocation mints nothing.
+	transport := strings.TrimSpace(flagValue(args, "--transport"))
+	if (fromWork == "") == !hasContent || (hasContent && flagValue(args, "--content") != "-") || transport == "" {
+		fmt.Fprintln(stderr, "usage: compound act post (--from-work W | --content -) --work W --transport NAME [--confirm]")
+		return 2
+	}
+	// The capability of a governed post is fixed: callers must not select it,
+	// or a post could be laundered through a different capability's standing
+	// grants.
+	if hasFlag(args, "--capability") {
+		fmt.Fprintln(stderr, "error: --capability is not caller-selectable for act post; the capability is always "+product.ContentPostCapability)
 		return 2
 	}
 	workID := strings.TrimSpace(flagValue(args, "--work"))
@@ -45,14 +57,7 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	transport := strings.TrimSpace(flagValue(args, "--transport"))
-	if transport == "" {
-		transport = "buzz"
-	}
-	capability := strings.TrimSpace(flagValue(args, "--capability"))
-	if capability == "" {
-		capability = product.ContentPostCapability
-	}
+	capability := product.ContentPostCapability
 	if workID == "" {
 		workID = "work_dryrun"
 	}
@@ -70,7 +75,7 @@ func runActPost(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	pd := policy.Evaluate(ai, cfg, now)
 	if !hasFlag(args, "--confirm") {
-		return printActPostPreview(stdout, transport, body, pd, hasFlag(args, "--json"))
+		return printActPostPreview(stdout, transport, target.Path, body, pd, hasFlag(args, "--json"))
 	}
 	if !policy.Allowed(pd) {
 		return printActPostHeld(stdout, transport, body, pd, hasFlag(args, "--json"))
@@ -107,18 +112,25 @@ func governedPostIntent(workID, capability string, target envelope.ActionTarget,
 		Action:        "post_content",
 		Target:        target,
 		MutationClass: "external_side_effect",
-		Reversibility: "manual",
+		// The generic exec transport adapter has no delete verb, so nothing
+		// guarantees a posted body can be recalled. A future richer adapter
+		// that PROVES deletion may re-declare "manual" with a concrete
+		// rollback plan.
+		Reversibility: "irreversible",
 		BlastRadius:   "local",
 		Preview:       "post content through transport " + target.ID,
-		RollbackPlan:  "delete the posted message via the transport's delete verb (manual)",
+		RollbackPlan:  "none guaranteed by the transport adapter",
 	}
 }
 
-func printActPostPreview(stdout io.Writer, transport, body string, pd envelope.PolicyDecision, asJSON bool) int {
+// printActPostPreview names the exact resolved transport and its adapter
+// config path so the operator sees precisely which authority would fire on
+// --confirm.
+func printActPostPreview(stdout io.Writer, transport, transportConfig, body string, pd envelope.PolicyDecision, asJSON bool) int {
 	allowed := policy.Allowed(pd)
 	if asJSON {
 		if err := encodeJSON(stdout, map[string]any{
-			"mode": "dry-run", "transport": transport, "card": body,
+			"mode": "dry-run", "transport": transport, "transport_config": transportConfig, "card": body,
 			"policy_outcome": pd.Outcome, "allowed": allowed,
 		}); err != nil {
 			fmt.Fprintln(stdout, "error:", err)
@@ -129,6 +141,7 @@ func printActPostPreview(stdout io.Writer, transport, body string, pd envelope.P
 	fmt.Fprintln(stdout, "# act post (dry-run — nothing sent)")
 	fmt.Fprintln(stdout, body)
 	fmt.Fprintf(stdout, "- transport: %s\n", transport)
+	fmt.Fprintf(stdout, "- transport-config: %s\n", transportConfig)
 	if allowed {
 		fmt.Fprintf(stdout, "- policy: %s (ALLOWED) — run again with --confirm --work W to execute\n", pd.Outcome)
 	} else {
