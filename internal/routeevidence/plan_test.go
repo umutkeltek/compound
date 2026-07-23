@@ -89,3 +89,35 @@ func TestRoutePolicyPlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T
 		t.Fatalf("route-plan must not promote claims, stat err=%v", err)
 	}
 }
+
+// TestReadRouteCandidateRejectsPathTraversalID is the S3 red falsifier:
+// readRouteCandidate must reject a path-traversal-shaped candidate id before
+// it ever touches disk. A candidate file with no "id" field is planted
+// OUTSIDE inbox/route-observations/ so a pre-fix reader (bare
+// filepath.Join, id equality checked only AFTER reading) succeeds and
+// defaults the empty id to the traversal string — proving the escape
+// rather than a coincidental not-exist error.
+func TestReadRouteCandidateRejectsPathTraversalID(t *testing.T) {
+	home := t.TempDir()
+	inboxDir := filepath.Join(home, candidates.InboxDir(candidates.RouteObservation))
+	if err := os.MkdirAll(inboxDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := filepath.Join(home, "outside-route-secret")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planted := routeCandidate{Kind: string(candidates.RouteObservation), Subject: "escaped read"}
+	data, err := json.MarshalIndent(planted, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideDir, "planted.json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	traversalID := "../../outside-route-secret/planted"
+	if _, err := readRouteCandidate(home, traversalID); err == nil {
+		t.Fatalf("path-traversal-shaped candidate id %q must be rejected before touching disk", traversalID)
+	}
+}

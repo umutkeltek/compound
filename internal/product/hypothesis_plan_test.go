@@ -168,3 +168,35 @@ func TestHypothesisPlanAcceptsDistillerShapedProductCandidate(t *testing.T) {
 		t.Fatalf("distiller-shaped plan = %+v", plan)
 	}
 }
+
+// TestReadHypothesisPlanCandidateRejectsPathTraversalID is the S3 red
+// falsifier: readHypothesisPlanCandidate must reject a path-traversal-shaped
+// candidate id before it ever touches disk. A candidate file with no "id"
+// field is planted OUTSIDE inbox/product-hypotheses/ so a pre-fix reader
+// (bare filepath.Join, id equality checked only AFTER reading) succeeds and
+// defaults the empty id to the traversal string — proving the escape rather
+// than a coincidental not-exist error.
+func TestReadHypothesisPlanCandidateRejectsPathTraversalID(t *testing.T) {
+	home := t.TempDir()
+	inboxDir := filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis))
+	if err := os.MkdirAll(inboxDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := filepath.Join(home, "outside-hypothesis-secret")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planted := hypothesisPlanCandidate{Kind: string(candidates.ProductHypothesis), Subject: "escaped read"}
+	data, err := json.MarshalIndent(planted, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideDir, "planted.json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	traversalID := "../../outside-hypothesis-secret/planted"
+	if _, err := readHypothesisPlanCandidate(home, traversalID); err == nil {
+		t.Fatalf("path-traversal-shaped candidate id %q must be rejected before touching disk", traversalID)
+	}
+}

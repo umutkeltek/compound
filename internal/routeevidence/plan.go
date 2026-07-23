@@ -1,10 +1,7 @@
 package routeevidence
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -134,19 +131,11 @@ func BuildRoutePolicyPlan(homePath, candidateID, targetPath string, now time.Tim
 
 func readRouteCandidate(homePath, candidateID string) (routeCandidate, error) {
 	var c routeCandidate
-	path := filepath.Join(homePath, candidates.InboxDir(candidates.RouteObservation), candidateID+".json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return c, err
-	}
-	if err := json.Unmarshal(data, &c); err != nil {
+	if err := candidates.ReadCandidate(homePath, candidates.RouteObservation, candidateID, &c); err != nil {
 		return c, err
 	}
 	if c.ID == "" {
 		c.ID = candidateID
-	}
-	if c.ID != candidateID {
-		return c, fmt.Errorf("candidate file id %q does not match requested %q", c.ID, candidateID)
 	}
 	return c, nil
 }

@@ -84,3 +84,36 @@ func TestSkillPlanRecordsReviewArtifactsWithoutMutatingGraphOrTarget(t *testing.
 		t.Fatalf("skill-plan must not promote claims, stat err=%v", err)
 	}
 }
+
+// TestReadSkillCandidateRejectsPathTraversalID is the S3 red falsifier:
+// readSkillCandidate must reject a path-traversal-shaped candidate id before
+// it ever touches disk, not just fail to find a file at the naive path. A
+// candidate file with no "id" field is planted OUTSIDE
+// inbox/skill-candidates/ so a pre-fix reader (which builds the path with a
+// bare filepath.Join and only checks id equality AFTER reading) succeeds
+// and defaults the empty id to the traversal string — proving the escape
+// rather than a coincidental not-exist error.
+func TestReadSkillCandidateRejectsPathTraversalID(t *testing.T) {
+	home := t.TempDir()
+	inboxDir := filepath.Join(home, candidates.InboxDir(candidates.Skill))
+	if err := os.MkdirAll(inboxDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := filepath.Join(home, "outside-skill-secret")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planted := skillCandidate{Kind: string(candidates.Skill), Subject: "escaped read"}
+	data, err := json.MarshalIndent(planted, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideDir, "planted.json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	traversalID := "../../outside-skill-secret/planted"
+	if _, err := readSkillCandidate(home, traversalID); err == nil {
+		t.Fatalf("path-traversal-shaped candidate id %q must be rejected before touching disk", traversalID)
+	}
+}
