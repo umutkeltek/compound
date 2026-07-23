@@ -1061,6 +1061,85 @@ func TestRetiredSurfaceReferencesRequireToolResolverRetirement(t *testing.T) {
 	}
 }
 
+// TestRetiredGen1PackagesStayDeadAgainstRealRepo proves the real worktree is clean: none of the
+// nine Gen-1 names docs/architecture/status.md declares retired exist as internal/ directories.
+func TestRetiredGen1PackagesStayDeadAgainstRealRepo(t *testing.T) {
+	findings := checkRetiredGen1PackagesStayDead(repoRoot)
+	var saw bool
+	for _, f := range findings {
+		if f.Check != "retired-gen1" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("retired-gen1 check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected a retired-gen1 finding")
+	}
+}
+
+// TestRetiredGen1PackagesStayDeadFailsOnResurrection proves the check has teeth: resurrecting any
+// one of the nine retired names as an internal/ directory reds the doctor, and removing it again
+// goes back to green. This is the scratch-mutation proof the packet calls for since arch tests
+// exercise real package names, not a synthetic package-tree.
+func TestRetiredGen1PackagesStayDeadFailsOnResurrection(t *testing.T) {
+	repo := t.TempDir()
+	internalDir := filepath.Join(repo, "internal")
+	if err := os.MkdirAll(internalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Green: no retired package directories present.
+	findings := checkRetiredGen1PackagesStayDead(repo)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("findings = %+v, want one non-failure finding on a clean tree", findings)
+	}
+
+	// Red: resurrect internal/recall.
+	if err := os.MkdirAll(filepath.Join(internalDir, "recall"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	findings = checkRetiredGen1PackagesStayDead(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want exactly one failure for resurrected internal/recall", findings)
+	}
+	if !strings.Contains(findings[0].Message, "internal/recall") {
+		t.Fatalf("failure should name internal/recall: %+v", findings)
+	}
+
+	// Green again: remove the scratch mutation.
+	if err := os.RemoveAll(filepath.Join(internalDir, "recall")); err != nil {
+		t.Fatal(err)
+	}
+	findings = checkRetiredGen1PackagesStayDead(repo)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("findings = %+v, want one non-failure finding after removing the scratch mutation", findings)
+	}
+}
+
+// TestRetiredGen1PackagesStayDeadFailsOnAllNames proves every one of the nine names is checked,
+// not just the first, by resurrecting all of them at once and counting one failure per name.
+func TestRetiredGen1PackagesStayDeadFailsOnAllNames(t *testing.T) {
+	repo := t.TempDir()
+	internalDir := filepath.Join(repo, "internal")
+	for _, pkg := range retiredGen1Packages {
+		if err := os.MkdirAll(filepath.Join(internalDir, pkg), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	findings := checkRetiredGen1PackagesStayDead(repo)
+	if len(findings) != len(retiredGen1Packages) {
+		t.Fatalf("findings = %+v, want exactly %d failures (one per retired name)", findings, len(retiredGen1Packages))
+	}
+	for _, f := range findings {
+		if f.Severity != Fail {
+			t.Fatalf("finding %+v should be Fail", f)
+		}
+	}
+}
+
 func TestPrivateAdaptationSteeringResolved(t *testing.T) {
 	findings := checkPrivateAdaptationSteering(repoRoot)
 	if len(findings) != 1 || findings[0].Severity == Fail {

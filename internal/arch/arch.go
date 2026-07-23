@@ -314,6 +314,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkPrivateSourceBodyContract(repoRoot)...)
 		f = append(f, checkStatusHotPath(repoRoot)...)
 		f = append(f, checkRetiredSurfaceReferences(repoRoot)...)
+		f = append(f, checkRetiredGen1PackagesStayDead(repoRoot)...)
 		f = append(f, checkDistillerDuplicateContract(repoRoot)...)
 		f = append(f, checkLLMExtractionGroundingContract(repoRoot)...)
 		f = append(f, checkDistillerCandidateShapeContract(repoRoot)...)
@@ -1111,6 +1112,31 @@ func checkRetiredSurfaceReferences(repoRoot string) []Finding {
 		return []Finding{{"retired-surface", Fail, "public docs must state generated tool-resolver authority is retired to compound://registries/capability-graph and remains evidence-only rollback input"}}
 	}
 	return []Finding{{"retired-surface", Info, "capability graph replaced public old-skill-matrix debt; generated tool-resolver authority retired as evidence-only input"}}
+}
+
+// retiredGen1Packages names the Gen-1 packages docs/architecture/status.md declares retired: the
+// Gen-1 memory stack migrated into the spine memory family (internal/mem), and these names must
+// never be resurrected as internal/ directories. Nothing enforced this mechanically before this
+// check — a package could be silently reintroduced as a parallel meaning-owner.
+var retiredGen1Packages = []string{
+	"memory", "position", "pattern", "recall", "reconcile", "distill", "engine", "scope", "ledger",
+}
+
+// checkRetiredGen1PackagesStayDead fails the doctor if any retired Gen-1 package name exists again
+// as a directory under internal/. Missing capability lands on internal/mem, internal/distiller, or
+// a newly classified package instead of resurrecting a retired name.
+func checkRetiredGen1PackagesStayDead(repoRoot string) []Finding {
+	var f []Finding
+	for _, pkg := range retiredGen1Packages {
+		info, err := os.Stat(filepath.Join(repoRoot, "internal", pkg))
+		if err == nil && info.IsDir() {
+			f = append(f, Finding{"retired-gen1", Fail, "internal/" + pkg + " is a retired Gen-1 package (docs/architecture/status.md) and must not be resurrected — land new capability on internal/mem, internal/distiller, or a newly classified package instead"})
+		}
+	}
+	if len(f) == 0 {
+		f = append(f, Finding{"retired-gen1", Info, "all " + itoa(len(retiredGen1Packages)) + " retired Gen-1 packages stay absent from internal/"})
+	}
+	return f
 }
 
 // checkPrivateAdaptationSteering keeps the operator-only goal prompt from
