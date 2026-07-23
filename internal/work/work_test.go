@@ -1,7 +1,9 @@
 package work
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,6 +119,200 @@ func TestWorkLifecycleThreadsOneID(t *testing.T) {
 		if gotStates[i] != want[i] {
 			t.Errorf("event[%d] = %q, want %q", i, gotStates[i], want[i])
 		}
+	}
+}
+
+func TestClosePublishesCanonicalWorkByAtomicReplacement(t *testing.T) {
+	s := newStore(t)
+	w := atomicCloseWork(t, s)
+	before, err := os.Stat(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Close(w.ID, atomicCloseInput(), fixedNow.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("Close rewrote the canonical WorkEnvelope inode in place; want staged atomic replacement")
+	}
+	if _, err := s.Get(w.ID); err != nil {
+		t.Fatalf("atomically replaced WorkEnvelope is unreadable: %v", err)
+	}
+}
+
+func TestRecordActionPublishesCanonicalWorkByAtomicReplacement(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "atomic-action", SuccessPredicate: "action work publication is atomic"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "atomic-action", fixedNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "atomic-action"}, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.Stat(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ai, pd := atomicRecordedAction(w.ID)
+	if _, err := s.RecordAction(w.ID, ai, pd, fixedNow.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("RecordAction rewrote the canonical WorkEnvelope inode in place; want staged atomic replacement")
+	}
+	persisted, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatalf("atomically replaced WorkEnvelope is unreadable: %v", err)
+	}
+	if !contains(persisted.ActionIntentIDs, ai.ID) {
+		t.Fatalf("persisted WorkEnvelope lost action %s: %v", ai.ID, persisted.ActionIntentIDs)
+	}
+}
+
+func TestLifecycleMutationsKeepCanonicalWorkIntactWhenStageWriteTears(t *testing.T) {
+	t.Run("close", func(t *testing.T) {
+		s := newStore(t)
+		w := atomicCloseWork(t, s)
+		path := s.workPath(w.ID)
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		injected := errors.New("injected torn close stage")
+		previous := writeStagedJSONFile
+		writeStagedJSONFile = tornStagedJSONWriter(injected)
+		if _, err := s.Close(w.ID, atomicCloseInput(), fixedNow.Add(4*time.Second)); !errors.Is(err, injected) {
+			writeStagedJSONFile = previous
+			t.Fatalf("Close error = %v, want injected stage failure", err)
+		}
+		writeStagedJSONFile = previous
+		t.Cleanup(func() { writeStagedJSONFile = previous })
+
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(after, before) {
+			t.Fatal("torn close stage changed canonical WorkEnvelope bytes")
+		}
+		current, err := s.Get(w.ID)
+		if err != nil {
+			t.Fatalf("torn close stage corrupted canonical WorkEnvelope: %v", err)
+		}
+		if current.State != "verifying" {
+			t.Fatalf("torn close stage published state %q, want verifying", current.State)
+		}
+		if _, err := s.Close(w.ID, atomicCloseInput(), fixedNow.Add(4*time.Second)); err != nil {
+			t.Fatalf("Close retry did not converge: %v", err)
+		}
+	})
+
+	t.Run("record-action", func(t *testing.T) {
+		s := newStore(t)
+		w, err := s.Create(CreateInput{Owner: "atomic-action", SuccessPredicate: "action work publication survives torn stage"}, fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Claim(w.ID, "atomic-action", fixedNow.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "atomic-action"}, fixedNow.Add(2*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		path := s.workPath(w.ID)
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ai, pd := atomicRecordedAction(w.ID)
+
+		injected := errors.New("injected torn action stage")
+		previous := writeStagedJSONFile
+		writeStagedJSONFile = tornStagedJSONWriter(injected)
+		if _, err := s.RecordAction(w.ID, ai, pd, fixedNow.Add(3*time.Second)); !errors.Is(err, injected) {
+			writeStagedJSONFile = previous
+			t.Fatalf("RecordAction error = %v, want injected stage failure", err)
+		}
+		writeStagedJSONFile = previous
+		t.Cleanup(func() { writeStagedJSONFile = previous })
+
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(after, before) {
+			t.Fatal("torn action stage changed canonical WorkEnvelope bytes")
+		}
+		current, err := s.Get(w.ID)
+		if err != nil {
+			t.Fatalf("torn action stage corrupted canonical WorkEnvelope: %v", err)
+		}
+		if contains(current.ActionIntentIDs, ai.ID) {
+			t.Fatalf("torn action stage published action %s", ai.ID)
+		}
+		if _, err := s.RecordAction(w.ID, ai, pd, fixedNow.Add(3*time.Second)); err != nil {
+			t.Fatalf("RecordAction retry did not converge: %v", err)
+		}
+	})
+}
+
+func atomicCloseWork(t *testing.T, s *Store) envelope.WorkEnvelope {
+	t.Helper()
+	w, err := s.Create(CreateInput{Owner: "atomic-close", SuccessPredicate: "terminal work publication is atomic"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "atomic-close", fixedNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "atomic-close"}, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "atomic-close"}, fixedNow.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+func atomicCloseInput() CloseInput {
+	return CloseInput{
+		Outcome: "completed", MoveType: "control_plane_repair", Actor: "atomic-close",
+		Summary: "terminal work publication is atomic", Changed: true,
+		ProofRefs: []string{"check:atomic-work-envelope"},
+	}
+}
+
+func atomicRecordedAction(workID string) (envelope.ActionIntent, envelope.PolicyDecision) {
+	ai := mkPlacementTestAction(workID, "act_atomic_record")
+	pd := envelope.PolicyDecision{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVPolicyDecision, ID: "pol_atomic_record", CreatedAt: fixedNow.Format(time.RFC3339),
+			Producer: envelope.Producer{Kind: "cli", Name: "compound"}, IDs: envelope.IDs{WorkID: workID},
+			Authority: envelope.Authority{SourceClass: "runtime"}, Privacy: "private", Risk: "tier1",
+			EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		ActionIntentID: ai.ID, Outcome: "allow_with_obligations", Obligations: []string{"emit a Receipt"},
+	}
+	return ai, pd
+}
+
+func tornStagedJSONWriter(injected error) func(*os.File, []byte) error {
+	return func(file *os.File, data []byte) error {
+		_, _ = file.Write(data[:len(data)/2])
+		return injected
 	}
 }
 

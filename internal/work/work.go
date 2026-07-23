@@ -1913,15 +1913,24 @@ func (s *Store) writeJSON(path string, v any) error {
 		}
 		return s.writeEventJSON(ref.ID(), v)
 	}
-	b, err := json.MarshalIndent(v, "", "  ")
+	stagedPath, err := s.stageJSON(path, v)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	if err := commitStagedJSON(stagedPath, path); err != nil {
+		_ = os.Remove(stagedPath)
+		return err
+	}
+	return nil
 }
 
 func (s *Store) writeEventJSON(id string, v any) error {
 	_, err := s.events.PutJSON(id, v, "  ")
+	return err
+}
+
+var writeStagedJSONFile = func(file *os.File, data []byte) error {
+	_, err := file.Write(data)
 	return err
 }
 
@@ -1943,7 +1952,7 @@ func (s *Store) stageJSON(path string, v any) (string, error) {
 	if err := file.Chmod(0o644); err != nil {
 		return cleanup(err)
 	}
-	if _, err := file.Write(append(data, '\n')); err != nil {
+	if err := writeStagedJSONFile(file, append(data, '\n')); err != nil {
 		return cleanup(err)
 	}
 	if err := file.Sync(); err != nil {
