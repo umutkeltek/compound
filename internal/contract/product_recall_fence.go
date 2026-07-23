@@ -115,12 +115,13 @@ func resolveProductRecallFence(in Input, view *mem.CurrentView) productRecallFen
 }
 
 func productAuthorityCandidates(index productIdentityIndex, evidence workspaceProductEvidence) map[string]bool {
-	primaryExact := collectProductCandidates(index.exact, evidence.PrimaryTokens, exactProductIdentity)
-	if len(primaryExact) > 0 {
+	exact := collectProductCandidates(index.exact, evidence.Tokens, exactProductIdentity)
+	if len(exact) > 0 {
 		// A boundary-preserving contract identity is stronger than compact
-		// resemblance or repository identifiers. Multiple exact canonical
-		// entities remain ambiguous rather than being guessed apart.
-		return primaryExact
+		// resemblance or repository identifiers, whether it came from the
+		// primary slug/project field, name, or a structured alias. Multiple
+		// exact canonical entities remain ambiguous rather than guessed apart.
+		return exact
 	}
 
 	primaryCompact := collectProductCandidates(index.compact, evidence.PrimaryTokens, compactProductIdentityKey)
@@ -132,10 +133,6 @@ func productAuthorityCandidates(index productIdentityIndex, evidence workspacePr
 		return identifiers
 	}
 
-	remainingExact := collectProductCandidates(index.exact, evidence.Tokens, exactProductIdentity)
-	if len(remainingExact) > 0 {
-		return remainingExact
-	}
 	remainingCompact := collectProductCandidates(index.compact, evidence.Tokens, compactProductIdentityKey)
 	if len(remainingCompact) > 0 {
 		return uniquelyIntersectProductCandidates(remainingCompact, identifiers)
@@ -216,16 +213,18 @@ func currentProductIdentityIndex(claims []mem.Claim) productIdentityIndex {
 		}
 		exactKey := exactProductIdentity(entity)
 		compactKey := compactProductIdentityKey(entity)
-		if exactKey == "" || compactKey == "" {
+		if compactKey == "" {
 			continue
 		}
-		if byExact[exactKey] == nil {
-			byExact[exactKey] = map[string]bool{}
+		if exactKey != "" {
+			if byExact[exactKey] == nil {
+				byExact[exactKey] = map[string]bool{}
+			}
+			byExact[exactKey][entity] = true
 		}
 		if byCompact[compactKey] == nil {
 			byCompact[compactKey] = map[string]bool{}
 		}
-		byExact[exactKey][entity] = true
 		byCompact[compactKey][entity] = true
 		products[entity] = entity
 	}
@@ -288,11 +287,28 @@ func exactProductIdentity(value string) string {
 			boundary = false
 			continue
 		}
-		if b.Len() > 0 {
-			boundary = true
+		if r == '-' || r == '_' || unicode.IsSpace(r) {
+			if b.Len() > 0 {
+				boundary = true
+			}
+			continue
 		}
+		// Slash, dot, and other punctuation are compact-alias evidence only.
+		// Treating them as exact boundaries lets resemblance outrank a real
+		// word-boundary identity.
+		return ""
 	}
 	return b.String()
+}
+
+func contractProductIdentityKey(value string) string {
+	if exact := exactProductIdentity(value); exact != "" {
+		return "exact:" + exact
+	}
+	if compact := compactProductIdentityKey(value); compact != "" {
+		return "compact:" + compact
+	}
+	return ""
 }
 
 func compactProductIdentityKey(value string) string {
@@ -476,7 +492,7 @@ func productReleaseEvidence(data []byte) (workspaceProductEvidence, bool) {
 func oneProductContractIdentity(tokens []string) bool {
 	identities := map[string]bool{}
 	for _, token := range tokens {
-		if identity := exactProductIdentity(token); identity != "" {
+		if identity := contractProductIdentityKey(token); identity != "" {
 			identities[identity] = true
 		}
 	}

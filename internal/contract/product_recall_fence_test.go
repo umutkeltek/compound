@@ -271,6 +271,7 @@ func TestProductRecallFenceKeepsSampleClaimsSeparateFromCompactAndIOSProducts(t 
 		productFenceCandidate("product:sampleclaims", "surfaces", "https://github.com/example/sampleclaims", "product", "status", ""),
 		productFenceCandidate("product:sampleclaims", "compact_collision_fact", "SAMPLE-CLAIMS-COMPACT release safety", "product", "status", ""),
 		productFenceCandidate("product:sample_claims_ios", "sibling_fact", "SAMPLE-CLAIMS-IOS release safety", "product", "status", ""),
+		productFenceCandidate("product:exampleapp", "exampleapp_sibling_fact", "EXAMPLEAPP-SIBLING release safety", "product", "status", ""),
 	})
 
 	pack, err := PackWithCapabilities(Input{
@@ -282,7 +283,67 @@ func TestProductRecallFenceKeepsSampleClaimsSeparateFromCompactAndIOSProducts(t 
 	}
 	assertProductFenceMarkers(t, pack,
 		[]string{"SAMPLE-CLAIMS-OWN"},
-		[]string{"SAMPLE-CLAIMS-COMPACT", "SAMPLE-CLAIMS-IOS"},
+		[]string{"SAMPLE-CLAIMS-COMPACT", "SAMPLE-CLAIMS-IOS", "EXAMPLEAPP-SIBLING"},
+	)
+}
+
+func TestProductRecallFenceExactStructuredTokenOutranksCompactPrimary(t *testing.T) {
+	home := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), "wid-get-alpha")
+	workspace := filepath.Join(workspaceRoot, "client")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProductProjectContractWithName(t, workspaceRoot, "wid-get-alpha", "widget-alpha")
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoteProductFenceCandidates(t, store, []mem.Candidate{
+		productFenceCandidate("product:widget_alpha", "exact_name_fact", "EXACT-NAME-OWN release safety", "product", "status", ""),
+		productFenceCandidate("product:widgetalpha", "compact_slug_fact", "COMPACT-SLUG-COLLISION release safety", "product", "status", ""),
+	})
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: workspace, Task: "release safety",
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProductFenceMarkers(t, pack,
+		[]string{"EXACT-NAME-OWN"},
+		[]string{"COMPACT-SLUG-COLLISION"},
+	)
+}
+
+func TestProductRecallFenceUsesUniqueCompactFallbackWithoutIdentifier(t *testing.T) {
+	home := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), "wid-get-alpha")
+	workspace := filepath.Join(workspaceRoot, "client")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProductProjectContract(t, workspaceRoot, "wid-get-alpha")
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoteProductFenceCandidates(t, store, []mem.Candidate{
+		productFenceCandidate("product:widget_alpha", "unique_compact_fact", "UNIQUE-COMPACT-OWN release safety", "product", "status", ""),
+		productFenceCandidate("product:widget_beta", "compact_sibling_fact", "UNIQUE-COMPACT-SIBLING release safety", "product", "status", ""),
+	})
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: workspace, Task: "release safety",
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProductFenceMarkers(t, pack,
+		[]string{"UNIQUE-COMPACT-OWN"},
+		[]string{"UNIQUE-COMPACT-SIBLING"},
 	)
 }
 
@@ -315,6 +376,41 @@ func TestProductRecallFenceUsesUniqueIdentifierToDisambiguateCompactFallback(t *
 		[]string{"IDENTIFIER-OWN"},
 		[]string{"IDENTIFIER-COLLISION"},
 	)
+}
+
+func TestProductRecallFenceUnsupportedPunctuationCannotGainExactPrecedence(t *testing.T) {
+	for _, slug := range []string{"widget/alpha", "widget.alpha"} {
+		t.Run(slug, func(t *testing.T) {
+			home := t.TempDir()
+			workspaceRoot := filepath.Join(t.TempDir(), "unsupported-punctuation")
+			workspace := filepath.Join(workspaceRoot, "client")
+			if err := os.MkdirAll(workspace, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeProductProjectContract(t, workspaceRoot, slug)
+			store, err := mem.Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			promoteProductFenceCandidates(t, store, []mem.Candidate{
+				productFenceCandidate("product:widget_alpha", "punctuated_underscore_fact", "PUNCTUATION-UNDERSCORE release safety", "product", "status", ""),
+				productFenceCandidate("product:widgetalpha", "punctuated_compact_fact", "PUNCTUATION-COMPACT release safety", "product", "status", ""),
+				productFenceCandidate("UniversalReleaseRule", "punctuated_global_rule", "PUNCTUATION-GLOBAL release safety", "standing-law", "architecture", ""),
+			})
+
+			pack, err := PackWithCapabilities(Input{
+				Harness: "codex", Cwd: workspace, Task: "release safety",
+				RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+			}, DefaultPolicy(), home, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertProductFenceMarkers(t, pack,
+				[]string{"PUNCTUATION-GLOBAL"},
+				[]string{"PUNCTUATION-UNDERSCORE", "PUNCTUATION-COMPACT"},
+			)
+		})
+	}
 }
 
 func TestProductRecallFenceFailsClosedWhenOnlyCompactIdentityIsAmbiguous(t *testing.T) {
@@ -669,6 +765,14 @@ func writeProductProjectContract(t *testing.T, root, slug string) {
 func writeProductProjectContractWithRepo(t *testing.T, root, slug, repo string) {
 	t.Helper()
 	body := fmt.Sprintf("schema_version: 1\nproject:\n  slug: %s\nsource:\n  authority:\n    path: %s\n    repo: %s\n", slug, root, repo)
+	if err := os.WriteFile(filepath.Join(root, "project.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeProductProjectContractWithName(t *testing.T, root, slug, name string) {
+	t.Helper()
+	body := fmt.Sprintf("schema_version: 1\nproject:\n  slug: %s\n  name: %s\nsource:\n  authority:\n    path: %s\n", slug, name, root)
 	if err := os.WriteFile(filepath.Join(root, "project.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
