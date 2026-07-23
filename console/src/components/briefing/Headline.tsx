@@ -74,14 +74,14 @@ export function Headline({
   // it composes with the bg-panel color without a second competing gradient.
   return (
     <section
-      className={`${classA ? "heat-seam" : "heat-work"} rounded-lg border border-hair bg-panel px-6 py-6 shadow-sm`}
+      className={`${classA ? "heat-seam" : "heat-work"} focus-hero rounded-xl border border-hair bg-panel px-6 py-7`}
       style={{
         borderLeftWidth: "3px",
         borderLeftColor: "var(--seam-fg)",
       }}
     >
       <DomainKicker area={str(top.area)} />
-      <p className="mt-3 text-xl font-medium leading-snug text-balance text-strong" style={{ maxWidth: "44ch" }}>
+      <p className="mt-3 text-hero font-medium text-balance text-strong" style={{ maxWidth: "44ch" }}>
         {summary}
         {unlock ? (
           <>

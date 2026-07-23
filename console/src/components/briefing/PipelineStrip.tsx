@@ -59,7 +59,7 @@ export function PipelineStrip({
   const lastIndex = stages.length - 1;
   return (
     <Link
-      href="/work"
+      href="/work?lens=pipeline"
       className="block rounded-lg border border-hair bg-panel px-5 py-4 shadow-sm transition-colors hover:bg-soft focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
     >
       <div className="flex items-start">

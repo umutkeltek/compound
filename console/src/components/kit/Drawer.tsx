@@ -16,24 +16,30 @@ export type DrawerProps = {
   title: ReactNode;
   meta?: ReactNode;
   footer?: ReactNode;
+  size?: "default" | "wide";
+  contextual?: boolean;
   children: ReactNode;
 };
 
-export function Drawer({ open, onOpenChange, title, meta, footer, children }: DrawerProps) {
+export function Drawer({ open, onOpenChange, title, meta, footer, size = "default", contextual = false, children }: DrawerProps) {
+  const width = size === "wide" ? "w-[min(var(--composer-w),96vw)]" : "w-[min(var(--drawer-w),94vw)]";
+  const overlay = contextual
+    ? "bg-scrim/55"
+    : "bg-scrim backdrop-blur-sm motion-reduce:backdrop-blur-none";
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay
-          className="fixed inset-0 z-40 bg-scrim backdrop-blur-sm
+          className={`fixed inset-0 z-40 ${overlay}
                      data-[state=open]:animate-[scrim-in_var(--dur-base)_var(--ease-standard)]
                      data-[state=closed]:animate-[scrim-out_var(--dur-base)_var(--ease-standard)]
-                     motion-reduce:animate-none motion-reduce:backdrop-blur-none"
+                     motion-reduce:animate-none`}
         />
         <Dialog.Content
-          className="fixed inset-y-0 right-0 z-40 flex w-[min(var(--drawer-w),94vw)] flex-col border-l border-hair bg-panel shadow-lg
+          className={`fixed inset-y-0 right-0 z-40 flex ${width} flex-col border-l border-hair bg-panel shadow-lg
                      data-[state=open]:animate-[drawer-in_var(--dur-slow)_var(--ease-drawer)]
                      data-[state=closed]:animate-[drawer-out_var(--dur-slow)_var(--ease-drawer)]
-                     motion-reduce:animate-none focus:outline-none"
+                     motion-reduce:animate-none focus:outline-none`}
         >
           <div className="flex items-start justify-between gap-3 border-b border-hair px-5 py-4">
             <div className="min-w-0">

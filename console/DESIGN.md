@@ -35,15 +35,16 @@ values in class names are banned (§7).
    STATIC SCALES  (theme-independent)
    ============================================================ */
 @theme {
-  /* — type: 13px base, explicit line-heights, tabular for numerics — */
+  /* — type: 13.5px base, explicit line-heights, tabular for numerics — */
   --text-2xs: 10.5px;   --text-2xs--line-height: 1.4;    /* inline mono ids, boundary tags */
-  --text-xs:  11px;     --text-xs--line-height: 1.45;    /* meta, section labels, pills */
-  --text-sm:  12px;     --text-sm--line-height: 1.5;     /* secondary body */
-  --text-base:13px;     --text-base--line-height: 1.55;  /* DEFAULT body */
-  --text-md:  14px;     --text-md--line-height: 1.5;     /* card titles emphasis */
-  --text-lg:  16px;     --text-lg--line-height: 1.35;    /* drawer title */
-  --text-xl:  20px;     --text-xl--line-height: 1.2;
-  --text-2xl: 26px;     --text-2xl--line-height: 1.1;    /* KPI value */
+  --text-xs:  11.5px;   --text-xs--line-height: 1.45;    /* meta, section labels, pills */
+  --text-sm:  12.5px;   --text-sm--line-height: 1.5;     /* secondary body */
+  --text-base:13.5px;   --text-base--line-height: 1.55;  /* DEFAULT body */
+  --text-md:  14.5px;   --text-md--line-height: 1.5;     /* card titles emphasis */
+  --text-lg:  17px;     --text-lg--line-height: 1.35;    /* drawer title */
+  --text-xl:  22px;     --text-xl--line-height: 1.2;
+  --text-hero:24px;     --text-hero--line-height: 1.24;  /* primary operator question */
+  --text-2xl: 30px;     --text-2xl--line-height: 1.1;    /* KPI value */
 
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
   --font-mono: "SF Mono", ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
@@ -54,7 +55,7 @@ values in class names are banned (§7).
   --radius-xl: 18px;    --radius-pill: 100px;
 
   /* — semantic layout sizes (the only "spacing" tokens) — */
-  --rail-w: 52px;   --nav-w: 218px;   --drawer-w: 460px;   --read-max: 720px;
+  --rail-w: 52px;   --nav-w: 218px;   --drawer-w: 460px;   --composer-w: 560px;   --read-max: 720px;
 
   /* — motion — */
   --dur-fast: 120ms;   --dur-base: 180ms;   --dur-slow: 240ms;   --dur-slower: 400ms;
@@ -114,18 +115,18 @@ values in class names are banned (§7).
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page:#080B10; --panel:#12171F; --soft:#161C25; --soft-2:#1A212B;
-  --ink:#E4E9F0; --strong:#F4F7FA; --muted:#93A0AF; --faint:#66727F;
+  --ink:#E4E9F0; --strong:#F4F7FA; --muted:#93A0AF; --faint:#7D8996;
   --hair:#242C37; --hair-2:#1F2630;
 
-  --work-fg:#5AA2FF;   --work-soft:#0E2436;   --work-line:#1D3E5C;
-  --memory-fg:#A78BFA; --memory-soft:#1E1938; --memory-line:#362E5A;
-  --cap-fg:#3FC8DE;    --cap-soft:#0E2C34;    --cap-line:#1D4750;
-  --route-fg:#8A8CF7;  --route-soft:#191A38;  --route-line:#2E2F5C;
-  --product-fg:#F472B6;--product-soft:#331023;--product-line:#571C3A;
+  --work-fg:#67ADFF;   --work-soft:#102A42;   --work-line:#28527A;
+  --memory-fg:#B49AFF; --memory-soft:#221B42; --memory-line:#443873;
+  --cap-fg:#50D4E6;    --cap-soft:#0F3039;    --cap-line:#23606B;
+  --route-fg:#9799FF;  --route-soft:#1D1F43;  --route-line:#3C3F78;
+  --product-fg:#FF83C2;--product-soft:#361228;--product-line:#6A2850;
 
-  --good-fg:#33B679;   --good-soft:#10281E;   --good-line:#1E4331;
-  --seam-fg:#D69B3C;   --seam-soft:#2A2211;   --seam-line:#48391B;
-  --crit-fg:#E06E5C;   --crit-soft:#2C1714;   --crit-line:#4C2620;
+  --good-fg:#4BD092;   --good-soft:#112F23;   --good-line:#275840;
+  --seam-fg:#F0AE48;   --seam-soft:#302510;   --seam-line:#654A18;
+  --crit-fg:#FF7A68;   --crit-soft:#331714;   --crit-line:#633029;
 
   --shadow-sm:0 1px 2px rgba(0,0,0,.3);
   --shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px -12px rgba(0,0,0,.6);
@@ -141,7 +142,8 @@ body { background:var(--color-page); color:var(--color-ink);
 .tnum, .mono, [data-num] { font-variant-numeric: tabular-nums; }
 ```
 
-**Type/mono rules.** Base 13px. Mono (tabular) is mandatory for: every machine id (`work_…`,
+**Type/mono rules.** Base 13.5px; operator questions use the 24px hero step rather than scaling
+ordinary card text into a second headline system. Mono (tabular) is mandatory for: every machine id (`work_…`,
 `ctx_…`, `rec_…`, `tr_…`, lease/node ids), all timestamps, costs/`$`, counts inside pills and
 badges, argv previews, lease durations. Sans is for prose. Weights: 400 body · 500 secondary
 labels · 600 titles/nav-active · 700 uppercase section labels · 800 the KPI value only.
@@ -415,10 +417,13 @@ than explicit depth on the two overview surfaces.
 
 Live renders a harness → WorkEnvelope graph from the executor, RunAttempt, traffic, and
 coordination projections. Configured harnesses are not activity. A node or edge animates only
-when heartbeat, RunAttempt, or work-state evidence reports a live run. Each harness overview
-shows at most its two highest-signal work items while retaining exact running, in-flight, and
-waiting totals. Selecting a node opens the evidence drawer; deeper coordination and delegated-
-session identity remain available below the canvas.
+when heartbeat, RunAttempt, or work-state evidence reports a live run. Summary counts orient the
+operator, then the workfield is the **Understand-level hero**; the denser operations table belongs
+to Investigate. Each harness overview shows at most its two highest-signal work items while
+retaining exact running, in-flight, and waiting totals. Codex, Claude, Scripts, and
+Switchback/API retain distinct semantic identity colors. Selecting a node updates a persistent
+inspector beside the workfield; deeper coordination and delegated-session identity remain below
+the canvas.
 
 The canvas is a projection, never an authority surface. It does not infer work ownership from
 layout, invent activity to make the system feel alive, or persist prompt content.
@@ -430,3 +435,17 @@ the view; the registry owns rendering and every act. The current deterministic A
 replaceable adapter boundary for Tambo or another model runtime. Replacing it MUST NOT grant the
 model mutation authority: registered actions still cross the existing policy, confirmation,
 receipt, and transition seams.
+
+The composer is route-aware: Today, Live, Work, and Decide each supply prompts that match the
+question the operator is already trying to answer. It opens as a wide explanation workspace,
+shows loading, result, and failure states, and never displaces the source projection or hides the
+registered owner of an action.
+
+### 10.4 Work starts with intervention
+
+Work defaults to **Table → Needs focus**, ordered by blocked/held, running, verifying, claimed,
+then ready. It initially exposes 18 rows and expands deliberately so a 100-item backlog does not
+become the first screen. Search and state filters stay in the table. Flow answers lifecycle
+position by executor, Space answers harness ownership and current stage, and both open the same
+deep-linked trace. Space keeps its selected-work inspector visible while the lifecycle plane
+scrolls. Pipeline, Board, and Offered packets remain advanced lenses over the same projection.

@@ -714,10 +714,10 @@ function ComparePanel({ group }: { group: DecideGroup }) {
         </div>
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
-          {genericPaths.map((path) => <div key={path.key} className="rounded-lg border border-hair bg-soft px-3 py-3">
-            <div className={`text-sm font-semibold ${path.tone === "good" ? "text-good" : "text-memory"}`}>{path.label}</div>
+          {genericPaths.map((path) => <div key={path.key} className={`rounded-xl border px-4 py-4 ${path.tone === "good" ? "border-good-line bg-good-soft/45" : "border-memory-line bg-memory-soft/45"}`}>
+            <div className={`text-md font-semibold ${path.tone === "good" ? "text-good" : "text-memory"}`}>{path.label}</div>
             <div className="mt-3 section-label">Projected consequence</div>
-            <p className="mt-1 text-xs leading-relaxed text-ink">{path.consequence || "Consequence not projected by the owner."}</p>
+            <p className="mt-1 text-sm leading-relaxed text-ink">{path.consequence || "Consequence not projected by the owner."}</p>
           </div>)}
         </div>
       )}
@@ -761,12 +761,12 @@ function DecisionDetail({
 }) {
   const { act } = group;
   const [tab, setTab] = useState<"summary" | "compare" | "action" | "history" | "evidence">(
-    group.face.state === "ready" ? "action" : "summary",
+    group.brief?.options.length || group.consequences ? "compare" : group.face.state === "ready" ? "action" : "summary",
   );
   const effectKind = group.capability.kind === "unavailable" ? "apply" : group.capability.kind;
   const reviewResolutionActs = genericReviewResolutionActs(group);
   return (
-    <article className="overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
+    <article className="decision-focus overflow-hidden rounded-xl border border-hair bg-panel">
       <header className="px-4 py-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-3">
@@ -799,22 +799,24 @@ function DecisionDetail({
         {/* 3. WHAT to do now — the action when the group exposes one,
          * otherwise ONE plain-language blocked line (never the raw jargon
          * reason string verbatim). */}
-        <div className="mt-3 rounded-md bg-soft px-3 py-2.5">
-          <div className="text-2xs font-bold uppercase tracking-wide text-faint">What to do now</div>
-          {group.face.primaryAction ? (
-            <p className="mt-1 text-sm leading-relaxed text-ink">
-              <span className="font-semibold text-good">{group.face.primaryAction.label}</span> — open the Action tab below.
-            </p>
-          ) : (
-            <p className="mt-1 text-sm leading-relaxed text-seam">
-              {blockedReasonPlain(group.face.unavailableReason) || "No governed action is available yet."}
-            </p>
-          )}
-        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
+            <div className="text-2xs font-bold uppercase tracking-wide text-faint">What to do now</div>
+            {group.face.primaryAction ? (
+              <p className="mt-1 text-sm leading-relaxed text-ink">
+                <span className="font-semibold text-good">{group.face.primaryAction.label}</span> — open the Action tab below.
+              </p>
+            ) : (
+              <p className="mt-1 text-sm leading-relaxed text-seam">
+                {blockedReasonPlain(group.face.unavailableReason) || "No governed action is available yet."}
+              </p>
+            )}
+          </div>
 
-        <div className="mt-3 rounded-md bg-soft px-3 py-2.5">
-          <div className="text-2xs font-bold uppercase tracking-wide text-faint">Why now</div>
-          <p className="mt-1 max-w-read text-sm leading-relaxed text-ink">{group.face.whyNow}</p>
+          <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
+            <div className="text-2xs font-bold uppercase tracking-wide text-faint">Why now</div>
+            <p className="mt-1 max-w-read text-sm leading-relaxed text-ink">{group.face.whyNow}</p>
+          </div>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-2xs text-faint">
           <span className="inline-flex items-center gap-1.5">
@@ -839,8 +841,8 @@ function DecisionDetail({
       <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)} className="border-t border-hair">
         <div className="overflow-x-auto px-4 py-3">
           <TabsList label="Decision face">
-            <TabsTrigger value="summary">Summary</TabsTrigger>
             <TabsTrigger value="compare" count={group.brief?.options.length}>Compare</TabsTrigger>
+            <TabsTrigger value="summary">Summary</TabsTrigger>
             <TabsTrigger value="action">Action</TabsTrigger>
             <TabsTrigger value="history">History</TabsTrigger>
             <TabsTrigger value="evidence" count={group.evidence.length}>Evidence</TabsTrigger>

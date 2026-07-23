@@ -13,8 +13,9 @@ export const dynamic = "force-dynamic";
 
 /**
  * Work — "Where is every unit of work in its lifecycle, and what can I move?"
- * Default Pipeline lens (the seven work stages), plus a by-state Board and
- * the Offered-packets menu; any card opens its history and available actions.
+ * Default Table lens answers who owns each active item and what moves next.
+ * Flow, Space, Pipeline, Board, and Offered stay available as progressively
+ * deeper views over the same source projection.
  */
 export default async function WorkPage({
   searchParams,
@@ -47,10 +48,10 @@ export default async function WorkPage({
   const items = buildWorkLensItems(open, traffic);
   const groups = groupWorkLensItems(items, traffic);
   const allowedLenses = new Set<WorkLensKey>(["pipeline", "table", "flow", "space", "board", "offered"]);
-  const defaultLens = allowedLenses.has(lens as WorkLensKey) ? lens as WorkLensKey : "pipeline";
+  const defaultLens = allowedLenses.has(lens as WorkLensKey) ? lens as WorkLensKey : "table";
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="console-stage flex flex-col gap-6">
       <PageHeader
         breadcrumb="operate / work"
         title="Work"
@@ -62,8 +63,8 @@ export default async function WorkPage({
         }
       />
       <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        See where every job stands and what can move next. Scan Add to work for what waits on you; open any card
-        for its history and available actions.
+        See what is moving, who owns it, and what needs intervention. Start with the focused table; switch to Flow
+        or Space when relationships matter, and open any item for its complete trace.
       </p>
 
       <WorkLenses

@@ -113,10 +113,10 @@ export default async function Briefing() {
   ];
 
   return (
-    <div className="mx-auto flex flex-col gap-9 pb-16" style={{ maxWidth: "1080px" }}>
+    <div className="console-stage mx-auto flex flex-col gap-7 pb-16" style={{ maxWidth: "1180px" }}>
       <BriefingHeader now={now} needsYouCount={needsYouGroupCount} oldest={oldest} />
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-[1.3fr_.9fr]">
         <Headline
           top={top}
           act={act}
@@ -131,11 +131,11 @@ export default async function Briefing() {
         />
       </div>
 
-      <div data-depth-min="understand"><ContinueCard model={continueModel} mutationsReady={mutationsEnabled} /></div>
-
       <div data-depth-min="understand">
         <CausalFocus top={top} openWork={open.length} activeLanes={runningAgents} />
       </div>
+
+      <div data-depth-min="understand"><ContinueCard model={continueModel} mutationsReady={mutationsEnabled} /></div>
 
       <section data-depth-min="understand">
         <SectionLabel>Decide</SectionLabel>

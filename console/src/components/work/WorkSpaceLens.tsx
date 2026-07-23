@@ -75,7 +75,7 @@ export function WorkSpaceLens({ stages, groups, onOpenTrace }: { stages: Pipelin
             </div>
           </div>
 
-          <aside className="rounded-lg border border-[var(--canvas-border)] bg-[var(--canvas-panel)] p-3 text-[var(--canvas-ink)]">
+          <aside className="sticky right-0 z-40 self-start rounded-lg border border-[var(--canvas-border)] bg-[var(--canvas-panel)] p-3 text-[var(--canvas-ink)] shadow-lg">
             <div className="flex items-center justify-between gap-3">
               <div className="text-2xs font-bold uppercase tracking-wide text-[var(--canvas-muted)]">Selected work</div>
               {selected ? <span className="inline-flex items-center gap-1 text-2xs text-good"><span className="h-1.5 w-1.5 rounded-full bg-current" />projected</span> : null}
@@ -83,7 +83,7 @@ export function WorkSpaceLens({ stages, groups, onOpenTrace }: { stages: Pipelin
             {selected ? (
               <div className="mt-3 grid gap-4">
                 <div>
-                  <h3 className="text-base font-semibold leading-snug">{selected.title}</h3>
+                  <h3 className="line-clamp-5 text-base font-semibold leading-snug" title={selected.title}>{selected.title}</h3>
                   <div className="mt-2 flex flex-wrap items-center gap-2"><StateBadge state={selected.runStatus || selected.state} /><span className="mono text-2xs text-[var(--canvas-muted)]">{selected.ageLabel}</span></div>
                 </div>
                 <div>

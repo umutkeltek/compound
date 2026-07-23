@@ -35,11 +35,11 @@ export function ExperienceBar() {
   }
 
   return (
-    <div className="border-b border-hair bg-panel/75 px-3 py-2 backdrop-blur sm:px-5 md:px-6">
-      <div className="mx-auto flex w-full flex-wrap items-center gap-3" style={{ maxWidth: "1440px" }}>
-        <div className="min-w-0 shrink-0">
+    <div className="border-b border-hair bg-panel/75 px-3 py-1.5 backdrop-blur sm:px-5 md:px-6">
+      <div className="mx-auto flex w-full items-center gap-3" style={{ maxWidth: "1440px" }}>
+        <div className="sr-only">
           <div className="text-xs font-semibold text-ink">{surface.label}</div>
-          <div className="hidden text-2xs text-faint lg:block">{surface.description}</div>
+          <div>{surface.description}</div>
         </div>
 
         {surface.routes.length > 1 ? (

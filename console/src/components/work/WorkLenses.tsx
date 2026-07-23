@@ -1,9 +1,8 @@
 "use client";
 
 import * as Tabs from "@radix-ui/react-tabs";
-import { usePathname, useRouter } from "next/navigation";
-import { useSearchParams } from "next/navigation";
-import { useCallback, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { BoardLens } from "@/components/work/BoardLens";
 import { CapsuleColumns } from "@/components/work/CapsuleColumns";
@@ -20,9 +19,10 @@ import type { WorkLensGroup, WorkLensItem } from "@/lib/work-views";
 
 /**
  * Work screen shell (redesign plan Part 3): three lenses over the same units of
- * work — Pipeline (default, the envelope stages), Board (by-state kanban), and
- * Offered packets — with ONE Trace drawer mounted once and opened by any card
- * in any lens. The open trace is mirrored into `?trace=<id>` so it is
+ * work — Table (default, the needs-first operational view), then Flow, Space,
+ * Pipeline, Board, and Offered packets — with ONE Trace drawer mounted once
+ * and opened by any card in any lens. The open trace is mirrored into
+ * `?trace=<id>` so it is
  * deep-linkable and shareable (Briefing's pipeline strip links straight here).
  *
  * Above the lenses: the DESIGN.md §9.6 "information flow" ambient row — the
@@ -34,8 +34,8 @@ import type { WorkLensGroup, WorkLensItem } from "@/lib/work-views";
 export type WorkLensKey = "pipeline" | "table" | "flow" | "space" | "board" | "offered";
 
 const TAB_CLASS =
-  "shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold text-muted data-[state=active]:bg-panel data-[state=active]:text-ink " +
-  "data-[state=active]:shadow-sm";
+  "shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold text-muted " +
+  "data-[state=active]:bg-work-soft data-[state=active]:text-work data-[state=active]:shadow-sm";
 
 export function WorkLenses({
   stages,
@@ -63,20 +63,28 @@ export function WorkLenses({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const paramsRef = useRef(searchParams.toString());
   const [trace, setTrace] = useState<string | null>(initialTrace);
   const [lens, setLens] = useState<WorkLensKey>(defaultLens);
 
+  useEffect(() => {
+    paramsRef.current = searchParams.toString();
+  }, [searchParams]);
+
   const replaceParams = useCallback((next: { trace?: string | null; lens?: WorkLensKey }) => {
-    const params = new URLSearchParams(searchParams.toString());
+    // Keep a synchronous query snapshot. A close followed immediately by a
+    // lens switch must not resurrect the trace while router.replace settles.
+    const params = new URLSearchParams(paramsRef.current);
     if (next.trace === null) params.delete("trace");
     else if (next.trace) params.set("trace", next.trace);
     if (next.lens) {
-      if (next.lens === "pipeline") params.delete("lens");
+      if (next.lens === "table") params.delete("lens");
       else params.set("lens", next.lens);
     }
     const query = params.toString();
+    paramsRef.current = query;
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
-  }, [pathname, router, searchParams]);
+  }, [pathname, router]);
 
   const openTrace = useCallback(
     (workId: string) => {
@@ -99,15 +107,15 @@ export function WorkLenses({
         replaceParams({ lens: next });
       }} className="flex min-w-0 flex-col gap-4">
         <Tabs.List className="inline-flex w-full max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-hair bg-soft p-1 sm:w-fit">
-          <Tabs.Trigger value="pipeline" className={TAB_CLASS}>
-            Pipeline
-          </Tabs.Trigger>
           <Tabs.Trigger value="table" className={TAB_CLASS}>
             Table
             <span className="mono ml-1.5 tabular-nums text-faint">{items.length}</span>
           </Tabs.Trigger>
           <Tabs.Trigger value="flow" className={TAB_CLASS}>Flow</Tabs.Trigger>
           <Tabs.Trigger value="space" className={TAB_CLASS}>Space</Tabs.Trigger>
+          <Tabs.Trigger value="pipeline" className={TAB_CLASS}>
+            Pipeline
+          </Tabs.Trigger>
           <Tabs.Trigger value="board" className={TAB_CLASS}>
             Board
             <span className="mono ml-1.5 tabular-nums text-faint">{openCount}</span>

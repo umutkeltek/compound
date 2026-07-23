@@ -83,7 +83,7 @@ export default async function LivePage() {
 
   const delegatedRunning = projection?.delegatedCounts.running ?? 0;
   return (
-    <div className="flex flex-col gap-6">
+    <div className="console-stage flex flex-col gap-6">
       <PageHeader
         breadcrumb="live / overview"
         title="Live"
@@ -113,21 +113,21 @@ export default async function LivePage() {
         <SectionHeader
           tone="work"
           icon={<PulseIcon />}
-          label="Operations timeline"
-          sub="observed → executing → current seam · RunAttempt-backed when available"
+          label="Harness workfield"
+          sub="ownership → active WorkEnvelope → next seam"
+          right={<span className="mono text-2xs text-faint">{traffic.runAttemptsPresent ? "RunAttempt joined" : "execution detail unavailable"}</span>}
         />
-        <LiveOperationsTimeline report={traffic} />
+        <LiveHarnessCanvas lanes={lanes} />
       </section>
 
       <section data-depth-min="investigate" className="flex flex-col gap-3">
         <SectionHeader
           tone="work"
           icon={<PulseIcon />}
-          label="Harness space"
-          sub="lane → WorkEnvelope · animated only when the run is live"
-          right={<span className="mono text-2xs text-faint">{traffic.runAttemptsPresent ? "RunAttempt joined" : "execution detail unavailable"}</span>}
+          label="Operations evidence"
+          sub="observed → executing → current seam · motion requires live evidence"
         />
-        <LiveHarnessCanvas lanes={lanes} />
+        <LiveOperationsTimeline report={traffic} />
       </section>
 
       <Suspense fallback={<section data-depth-min="technical" className="rounded-xl border border-hair bg-panel px-4 py-6 text-sm text-muted">Loading coordination evidence…</section>}>
