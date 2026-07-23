@@ -348,3 +348,37 @@ func TestDoctorRecognizesOwnedFeatureRoots(t *testing.T) {
 		t.Fatalf("doctor not ok with owned feature roots present: %+v", report)
 	}
 }
+
+// TestHabitatCatalogOwnsSecretsRoot: live transport credentials are custodied
+// under secrets/ (e.g. secrets/buzz/agent-compound-lane.json). An unregistered
+// root reds home doctor — and with it every lane's battery — as unknown_root
+// "secrets" (lived 2026-07-22: the console-projection-doors-smoke gate went red
+// machine-wide on a live home carrying the buzz lane's credentials). Falsifier:
+// removing the secrets catalog entry turns this RED — HabitatForPath misses and
+// InspectHabitat reports the root as unknown. Backup MUST stay false:
+// credentials never flow into backup bundles.
+func TestHabitatCatalogOwnsSecretsRoot(t *testing.T) {
+	entry, ok := HabitatForPath("secrets/buzz/agent-compound-lane.json")
+	if !ok {
+		t.Fatal("secrets/ is not owned by the habitat catalog")
+	}
+	if entry.ID != "secrets" || entry.Prefix != "secrets" || entry.Status != HabitatStatusActive || entry.Class != HabitatClassConfig {
+		t.Fatalf("secrets habitat is not active configuration state: %+v", entry)
+	}
+	if entry.Backup {
+		t.Fatalf("secrets habitat must never flow into backup bundles: %+v", entry)
+	}
+	if entry.Scaffold || entry.Compact {
+		t.Fatalf("secrets habitat must not scaffold or compact: %+v", entry)
+	}
+
+	homePath := t.TempDir()
+	writeHomeFile(t, homePath, "secrets/buzz/agent-compound-lane.json", `{}`)
+	inventory, err := InspectHabitat(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.UnknownRoots) != 0 {
+		t.Fatalf("secrets must be a known root; unknown_roots=%v", inventory.UnknownRoots)
+	}
+}
