@@ -196,6 +196,9 @@ func TestConsoleLifecycleCanRequireAnExplicitHome(t *testing.T) {
 }
 
 func TestConsoleRuntimeStatusDistinguishesHealthyUnhealthyAndForeign(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	expectedHash := consoleHomeShortHash(homePath)
 
@@ -504,6 +507,9 @@ func waitForTestProcessGroupExit(t *testing.T, pgid int, timeout time.Duration) 
 }
 
 func TestConsoleStatusReportsCanonicalHealth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	stdout, stderr, err := invokeConsoleCommand(t, nil, "status", "--json")
 	if err != nil {
 		t.Fatalf("compound console status --json failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)

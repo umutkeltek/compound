@@ -70,6 +70,9 @@ func TestOSAbsorptionDoctorMemoryLedgerAuthorityBindsConsumedContextPack(t *test
 }
 
 func TestOSAbsorptionDoctorMemoryLedgerAuthorityFailsClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	tests := []struct {
 		name       string
 		options    memoryLedgerAuthorityTestOptions

@@ -215,6 +215,9 @@ func TestProofCheckOutDryRunExitsZeroWithOkVerdict(t *testing.T) {
 // wiring in seconds, not the ~10-minute real compound test suite.
 func TestProofCheckOutTruthfulExitOneOnRedBattery(t *testing.T) {
 	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
+	if testing.Short() {
 		t.Skip("builds the compound binary and runs a real go-test gate subprocess")
 	}
 	wd, err := os.Getwd()

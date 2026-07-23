@@ -91,6 +91,9 @@ func TestPreFingerprintGitDeliveryBackfillsOnlyThroughExactOperatorSameStateAdva
 }
 
 func TestPreFingerprintGitDeliveryRejectsUnsafeMigrationPaths(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 14, 4, 0, 0, 0, time.UTC)
 	t.Run("executor", func(t *testing.T) {
 		store, legacy, repo, base := preFingerprintGitDeliveryFixture(t, now, "running", "codex")

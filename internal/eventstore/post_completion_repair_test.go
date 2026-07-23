@@ -96,6 +96,9 @@ func TestLegacyMigrateApplyAfterCompletionRefusesArrivalBetweenRetirementAndMuta
 }
 
 func TestPostCompletionRepairMixedCurrentScalePreservesEveryLooseByteAndSegmentAuthority(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	store := openMigrateStore(t)
 	const perClass = 367 // 1,101 post-cutover loose records: current-home scale.
 
@@ -208,6 +211,9 @@ func TestPostCompletionRepairMixedCurrentScalePreservesEveryLooseByteAndSegmentA
 }
 
 func TestPostCompletionRepairCompletedExactSourceReoccurrenceCreatesNewLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	store := openMigrateStore(t)
 	seedLoose(t, store, "rec_repeat", "same")
 	if report, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err != nil || !report.Completion.Complete {
@@ -383,6 +389,9 @@ func TestPostCompletionRepairReplayPreservesSealedResultIntegrity(t *testing.T) 
 }
 
 func TestPostCompletionRepairRefusesResultAndProofBeforeLatestAuthorization(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	t.Run("result", func(t *testing.T) {
 		store := postCompletionRepairFixture(t)
 		planned, err := store.CreatePostCompletionRepairPlan(repairNow)
@@ -442,6 +451,9 @@ func TestPostCompletionRepairRefusesResultAndProofBeforeLatestAuthorization(t *t
 }
 
 func TestPostCompletionRepairProofRejectsCausalBackdating(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name string
 		at   time.Time
@@ -495,6 +507,9 @@ func TestPostCompletionRepairProofRejectsCausalBackdating(t *testing.T) {
 }
 
 func TestPostCompletionRepairProofRejectsBackdatedReceiptAndTransitionBeforeMutation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name            string
 		receiptDelta    time.Duration
@@ -552,6 +567,9 @@ func TestPostCompletionRepairProofRejectsBackdatedReceiptAndTransitionBeforeMuta
 }
 
 func TestPostCompletionRepairPhysicalResultExactRecurrenceAdvancesAfterProof(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	t.Run("exact recurrence", func(t *testing.T) {
 		store := openMigrateStore(t)
 		seedLoose(t, store, "rec_preproof_repeat", "same")
@@ -876,6 +894,9 @@ func TestPostCompletionRepairRejectsMatchingArchiveSymlinkBeforeApply(t *testing
 }
 
 func TestPostCompletionRepairRejectsMatchingArchiveSymlinkDuringReplayAndProof(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, operation := range []string{"replay", "proof"} {
 		t.Run(operation, func(t *testing.T) {
 			store := postCompletionRepairFixture(t)
@@ -1024,6 +1045,9 @@ func TestPostCompletionRepairSupersessionRejectsSymlinkedPendingControlArtifactB
 }
 
 func TestPostCompletionRepairSupersessionRejectsSymlinkedQuarantineDirectoriesBeforeMutation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name     string
 		level    string
@@ -1309,6 +1333,9 @@ func TestPostCompletionRepairSupersessionFinalizationRejectsExactByteSymlink(t *
 }
 
 func TestPostCompletionRepairRejectsSymlinkedAuthorityAndImmutableArtifacts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, kind := range []string{"root", "anchor", "plan", "review", "result", "proof"} {
 		t.Run(kind, func(t *testing.T) {
 			store := postCompletionRepairFixture(t)
@@ -2257,6 +2284,9 @@ func TestPostCompletionRepairSealedFinalizationRequiresResultToBeOnlyMissingRoot
 }
 
 func TestPostCompletionRepairResultRemainsPendingUntilWorkProofFinalizes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	store := postCompletionRepairFixture(t)
 	created, err := store.CreatePostCompletionRepairPlan(repairNow)
 	if err != nil {
@@ -2305,6 +2335,9 @@ func TestPostCompletionRepairResultRemainsPendingUntilWorkProofFinalizes(t *test
 }
 
 func TestPostCompletionRepairMissingProgressJournalOnlyRecoversProofBackedCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	t.Run("missing rooted journal before proof refuses", func(t *testing.T) {
 		store := postCompletionRepairFixture(t)
 		planned, err := store.CreatePostCompletionRepairPlan(repairNow)
@@ -2501,6 +2534,9 @@ func TestPostCompletionRepairRootRejectsProofDeletionAndOrphanArtifacts(t *testi
 }
 
 func TestPostCompletionRepairVerifyRejectsUnownedQuarantineInventory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name string
 		rel  string
@@ -2694,6 +2730,9 @@ func TestPostCompletionRepairConcurrentApplySerializesRootAndPhysicalMutation(t 
 }
 
 func TestPostCompletionRepairApplyUsesOneLinearSourceCensus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	store := postCompletionRepairFixture(t)
 	for index := range 32 {
 		id := fmt.Sprintf("rec_linear_%02d", index)
@@ -2766,6 +2805,9 @@ func TestPostCompletionRepairAppendLockDoesNotBlockNormalWriterDuringArchiveWork
 }
 
 func TestPostCompletionRepairResumesExactReservedTornFrame(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name string
 		cut  func([]byte) int
@@ -3598,6 +3640,9 @@ func TestPostCompletionRepairZeroProgressSupersessionPreservesHistoryAndAllowsBr
 }
 
 func TestPostCompletionRepairSupersessionRejectsCausalBackdating(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name string
 		at   time.Time
@@ -3642,6 +3687,9 @@ func TestPostCompletionRepairSupersessionRejectsCausalBackdating(t *testing.T) {
 }
 
 func TestPostCompletionRepairSupersessionProofRejectsCausalBackdating(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name string
 		at   time.Time

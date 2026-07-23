@@ -5181,6 +5181,9 @@ func TestWorkDispatchPlanCommandPreviewsSourcePacketReadOnly(t *testing.T) {
 }
 
 func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -11189,6 +11192,9 @@ func TestMemoryVectorCacheReadinessReportsManifestState(t *testing.T) {
 }
 
 func TestMemoryDoctorEngineProfileWiresReadOnlyCLISidecar(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {

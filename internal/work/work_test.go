@@ -814,6 +814,9 @@ func TestCloseInfersChangedForCompletedNonAuditMoveTypes(t *testing.T) {
 }
 
 func TestCloseMoveTypeProofValidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	tests := []struct {
 		name    string
 		in      CloseInput

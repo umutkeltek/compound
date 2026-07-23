@@ -458,6 +458,9 @@ func TestLegacyWriterActiveDetectsFrozenStreamRegrowth(t *testing.T) {
 // Structural perf falsifier: after migration a scan opens O(families×days)
 // segment files, never O(records), and the loose directory is no longer walked.
 func TestMigratePostCompletionScanIsSegmentStructuralNotPerRecord(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	store := openMigrateStore(t)
 	const records = 120
 	for i := 0; i < records; i++ {

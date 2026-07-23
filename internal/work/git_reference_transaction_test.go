@@ -39,6 +39,9 @@ func TestCloseRejectsTargetRefMoveBeforePreparedReferenceTransaction(t *testing.
 }
 
 func TestCloseRejectsPublicationRefMoveBeforePreparedReferenceTransaction(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 14, 3, 30, 0, 0, time.UTC)
 	fixture := newPublishedLandingProofFixture(t, now)
 	lateTip := landingEmptyDescendant(t, fixture.repo, "late-publication")
@@ -69,6 +72,9 @@ func TestCloseRejectsPublicationRefMoveBeforePreparedReferenceTransaction(t *tes
 }
 
 func TestCloseRejectsRepositoryIdentityMoveBeforeLockedPersistence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 14, 3, 45, 0, 0, time.UTC)
 	fixture := newPublishedLandingProofFixture(t, now)
 	before := snapshotLifecycleAuthority(t, fixture.store)
@@ -103,6 +109,9 @@ func TestCloseRejectsRepositoryIdentityMoveBeforeLockedPersistence(t *testing.T)
 }
 
 func TestRepositoryIdentityIsNotClaimedAtomicThroughTerminalPersistence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 14, 3, 50, 0, 0, time.UTC)
 	fixture := newPublishedLandingProofFixture(t, now)
 
@@ -135,6 +144,9 @@ func TestRepositoryIdentityIsNotClaimedAtomicThroughTerminalPersistence(t *testi
 }
 
 func TestPreparedReferenceTransactionLocksTargetAndPublicationThroughTerminalPersistence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 14, 4, 0, 0, 0, time.UTC)
 	fixture := newPublishedLandingProofFixture(t, now)
 	lateTarget := landingEmptyDescendant(t, fixture.repo, "concurrent-target")

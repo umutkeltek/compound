@@ -196,6 +196,9 @@ func TestRecordReceiptedActionReplaysHistoricalTransactionWithoutRewindingWork(t
 }
 
 func TestRecordReceiptedActionBlocksNewActionUntilIncompletePrefixRecovers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	tests := []struct {
 		name            string
 		failureBoundary string
@@ -316,6 +319,9 @@ func TestRecordReceiptedActionBlocksNewActionUntilIncompletePrefixRecovers(t *te
 }
 
 func TestPendingReceiptedActionExcludesCanonicalLifecycleWriters(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	tests := []struct {
 		name string
 		run  func(*Store, envelope.WorkEnvelope, envelope.ActionIntent, envelope.PolicyDecision, time.Time) error
@@ -810,6 +816,9 @@ func TestRecordReceiptedActionTerminalProjectionUsesClosingTransitionReceipt(t *
 }
 
 func TestRecordReceiptedActionRecoversEveryWriteBoundary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	boundaries := []string{"pending", "action", "decision", "receipt", "transition", "work", "event", "pending_clear"}
 	phases := []string{"before_publish", "after_publish"}
 	for _, phase := range phases {
@@ -1168,6 +1177,9 @@ func receiptedActionCrashInput(w envelope.WorkEnvelope, claimID, actionID string
 }
 
 func TestRecordReceiptedActionDiscardsTornStagedJSONWrites(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, boundary := range []string{"pending", "action", "decision", "receipt", "transition", "work"} {
 		t.Run(boundary, func(t *testing.T) {
 			s := newStore(t)

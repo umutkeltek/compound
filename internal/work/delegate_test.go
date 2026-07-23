@@ -587,6 +587,9 @@ func TestDelegateSingleHolder(t *testing.T) {
 // returns a non-nil error; steer on a live session records exactly one
 // send-keys. With --enter, the fake records Enter=true.
 func TestDelegateSteerRequiresLive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	orig := LaneCapacityGuard
 	LaneCapacityGuard = fakeGuard(false, false, "ok", "ok")
 	defer func() { LaneCapacityGuard = orig }()

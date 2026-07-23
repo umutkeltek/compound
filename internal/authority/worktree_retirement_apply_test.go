@@ -240,6 +240,9 @@ func TestApplyWorktreeRetirementResumesPreparedIntentWithoutGitMutation(t *testi
 }
 
 func TestApplyWorktreeRetirementPendingOnlyResumeReevaluatesCurrentPolicyBeforeMutation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, outcome := range []string{"hold", "deny"} {
 		t.Run(outcome, func(t *testing.T) {
 			fixture := newRetirementGitFixture(t)
@@ -333,6 +336,9 @@ func TestApplyWorktreeRetirementResumeRecordsCompletedTruthWithoutReauthorizingF
 }
 
 func TestApplyWorktreeRetirementRecordsPolicyDeniedPartialMutationAndCanRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	fixture := newRetirementGitFixture(t)
 	home, paths, report := authorizedRetirementFixture(t, fixture)
 	crash := errors.New("crash with prepared pending transaction")
@@ -391,6 +397,9 @@ func TestApplyWorktreeRetirementRecordsPolicyDeniedPartialMutationAndCanRetry(t 
 }
 
 func TestApplyWorktreeRetirementRetriesTransientWorktreeRemovalWithSelfCausedOwnerDigest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	fixture := newRetirementGitFixture(t)
 	home, paths, report := authorizedRetirementFixture(t, fixture)
 	injected := errors.New("transient worktree remove failure")
@@ -419,6 +428,9 @@ func TestApplyWorktreeRetirementRetriesTransientWorktreeRemovalWithSelfCausedOwn
 }
 
 func TestApplyWorktreeRetirementCASDriftLeavesRefAndRecordsPartialOutcome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	fixture := newRetirementGitFixture(t)
 	home, paths, report := authorizedRetirementFixture(t, fixture)
 	runner := &casDriftRetirementGit{delegate: ExecWorktreeRetirementGit{}, ref: fixture.candidateRef, replacement: fixture.mainTip}
@@ -465,6 +477,9 @@ func TestApplyWorktreeRetirementRetriesPartialOnlyWhileExactRefRemains(t *testin
 }
 
 func TestApplyWorktreeRetirementRefusesPolicyAndStateDriftBeforeMutation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name    string
 		prepare func(*WorktreeRetirementApplyDependencies)
@@ -539,6 +554,9 @@ func TestApplyWorktreeRetirementResumeBindsExactSelfCausedOwnerDigest(t *testing
 }
 
 func TestApplyWorktreeRetirementResumeRefusesUnboundOwnerDigestOrLease(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(*WorktreeRetirementOwnerProof)
@@ -579,6 +597,9 @@ func TestApplyWorktreeRetirementResumeRefusesUnboundOwnerDigestOrLease(t *testin
 }
 
 func TestApplyWorktreeRetirementFailureOutcomeProofMustBeCompleteBeforeResultPersistence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(*WorktreeRetirementActionProof)

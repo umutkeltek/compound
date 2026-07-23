@@ -18,6 +18,9 @@ import (
 // `sub != "consumption" && sub != "search"` becomes `sub != "consumption"`
 // turns this test RED with "created ledger/" -- verified 2026-07-20.
 func TestMemorySearchDoesNotMutateCompoundHome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)

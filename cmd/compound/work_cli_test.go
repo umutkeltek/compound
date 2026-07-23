@@ -15,6 +15,9 @@ import (
 )
 
 func TestWorkLandCheckDefaultTextReportsForeignDirtPreservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {

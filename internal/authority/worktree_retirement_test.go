@@ -279,6 +279,9 @@ func TestBuildWorktreeRetirementPlanContainsCandidateWithoutMutatingGit(t *testi
 }
 
 func TestWorktreeRetirementPlanAllowsPatchEquivalentAndRefusesUniqueCandidate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name         string
 		equivalent   bool
@@ -307,6 +310,9 @@ func TestWorktreeRetirementPlanAllowsPatchEquivalentAndRefusesUniqueCandidate(t 
 }
 
 func TestWorktreeRetirementPlanFailsClosedOnDirtyLockAndLiveness(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name      string
 		prepare   func(*testing.T, retirementGitFixture)
@@ -348,6 +354,9 @@ func TestWorktreeRetirementPlanFailsClosedOnDirtyLockAndLiveness(t *testing.T) {
 }
 
 func TestWorktreeRetirementPlanRefusesAuthorityDriftAndIncompleteProofs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	fixture := newRetirementGitFixture(t)
 	req := retirementPlanRequest(fixture)
 	retirementRunGit(t, fixture.repo, "update-ref", req.PublicationRef, fixture.candidateTip)
@@ -492,6 +501,9 @@ func TestWorktreeRetirementPlanAlwaysRefusesMainCandidateEvenWhenAuthorityIsAnot
 }
 
 func TestWorktreeRetirementPlanValidatesContentAddressedRecoveryProof(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(*testing.T, *WorktreeRetirementPlanRequest)

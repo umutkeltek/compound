@@ -564,6 +564,9 @@ func TestOrientOperatorTreatsConsumedSurfacingFeedbackReportTerminal(t *testing.
 }
 
 func TestOrientOperatorCLIPrintsTriptychAndJSON(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	now := time.Date(2026, 7, 2, 20, 45, 0, 0, time.UTC)
@@ -1631,6 +1634,9 @@ func finalizeOrientStrangerForTest(t *testing.T, store *mem.Store, homePath, exc
 // TestOrientStrangerCardDealerFalsifiers covers the S3b dealer's F5-F7 falsifiers across its
 // prepare + Store-owned finalize seam (packet D4/D5/D7).
 func TestOrientStrangerCardDealerFalsifiers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	t.Run("f5 topic-excluded-only candidate is not dealt", func(t *testing.T) {
 		homePath := t.TempDir()
 		now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)

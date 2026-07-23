@@ -494,6 +494,9 @@ func TestParityReplayRejectsMissingEngineExpectationValue(t *testing.T) {
 }
 
 func TestParityReplayRejectsInvalidArgvBeforeWritingArtifacts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Now().UTC()
 	tests := []struct {
 		name  string
@@ -1557,6 +1560,9 @@ func TestParityReplayCheckpointResumesAfterRecordedRuntimeGap(t *testing.T) {
 }
 
 func TestParityReplayCheckpointBindsExactFixturePrefix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Now().UTC()
 	claimA := "claim://claim_aaaaaaaaaaaa"
 	claimB := "claim://claim_bbbbbbbbbbbb"

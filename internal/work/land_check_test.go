@@ -14,6 +14,9 @@ import (
 )
 
 func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	t.Run("ready then landed", func(t *testing.T) {
 		repo, base := initLandingRepo(t)
@@ -145,6 +148,9 @@ func TestLandCheckFailsClosedForDirtyTargetAndMovedSnapshot(t *testing.T) {
 }
 
 func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
 	candidate := landingFeatureCommit(t, repo)
@@ -208,6 +214,9 @@ func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
 }
 
 func TestCompletedCodeWorkRevalidatesContainedLandingProofAtClose(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
 	candidate := landingFeatureCommit(t, repo)
@@ -357,6 +366,9 @@ func TestLandCheckPublishedContainmentOutranksOwnedPathDirt(t *testing.T) {
 }
 
 func TestCompletedRequiredPublicationWorkClosesOverLaterOwnedPathDirt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 18, 9, 45, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
@@ -657,6 +669,9 @@ func TestLandCheckLocalOnlyPreservationNamesOnlyTargetAuthority(t *testing.T) {
 // a neighbor lane's live unrelated WIP dirties the shared checkout after the proof
 // was recorded, because close live-revalidates land-check.
 func TestCompletedCodeWorkClosesOverPreservedUnrelatedDirt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 16, 20, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
 	candidate := landingFeatureCommit(t, repo)
@@ -702,6 +717,9 @@ func TestCompletedCodeWorkClosesOverPreservedUnrelatedDirt(t *testing.T) {
 }
 
 func TestLandCheckRecordsMissingTipAndInvalidLineage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
 	landingGit(t, repo, "switch", "--orphan", "unrelated")
@@ -757,6 +775,9 @@ func TestLandCheckRecordsMissingTipAndInvalidLineage(t *testing.T) {
 }
 
 func TestLandCheckRequiresLatestAttachedCommitArtifact(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
 	candidate := landingFeatureCommit(t, repo)
@@ -823,6 +844,9 @@ func TestLandCheckRequiresLatestAttachedCommitArtifact(t *testing.T) {
 }
 
 func TestRecordedLandCheckContentIsTamperEvident(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name   string
@@ -1074,6 +1098,9 @@ func TestLandCheckRejectsWrongRepoSecondCloneAndWrongBranch(t *testing.T) {
 }
 
 func TestLandCheckRejectsSamePathRepositoryReplacement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 14, 2, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
 	landingGit(t, repo, "remote", "add", "origin", "https://source.example.invalid/acme/product.git")
@@ -1121,6 +1148,9 @@ func TestLandCheckRejectsSamePathRepositoryReplacement(t *testing.T) {
 }
 
 func TestPublicationProofIsAttachedDiscoverableAndRequiredForDispatchClose(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	now := time.Date(2026, 7, 13, 22, 0, 0, 0, time.UTC)
 	repo, base := initLandingRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")

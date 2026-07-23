@@ -407,6 +407,9 @@ func TestOSAbsorptionOSCapabilityProofRequiresReviewedSourceDigests(t *testing.T
 }
 
 func TestOSAbsorptionOSCapabilityProofRejectsUnreviewedProjectionModule(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{projectionShadow: true})
 	got := doctorOSCapabilityRow(t, fixture.compoundHome)
 
@@ -494,6 +497,9 @@ func TestOSAbsorptionOSCapabilityProofRejectsClassSpecificFallback(t *testing.T)
 }
 
 func TestOSAbsorptionOSCapabilityProofRejectsDisabledPacketWrite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name string
 		opts osCapabilityProofFixture
@@ -587,6 +593,9 @@ func TestOSAbsorptionOSCapabilityProofRejectsBinarySwapAndRestoreDuringProbe(t *
 }
 
 func TestOSAbsorptionOSCapabilityProofRejectsDormantIndependentResolverSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, source := range []string{
 		`import { classifyCapability } from "./classify-capability";`,
 		`import { resolve as resolveCapabilityIntent } from "../scripts/resolve_capability";`,
@@ -610,6 +619,9 @@ func TestOSAbsorptionOSCapabilityProofRejectsDormantIndependentResolverSource(t 
 }
 
 func TestOSAbsorptionOSCapabilityProofRejectsDormantIndependentProjectionSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, source := range []string{
 		`const routeInfo = {};`,
 		`function classifyCapability() {}`,
@@ -650,6 +662,9 @@ func TestOSAbsorptionOSCapabilityProofModeRequiresExactTuple(t *testing.T) {
 }
 
 func TestOSAbsorptionWorkPacketAuthorityProofBindsArchivedSourcePacket(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	if err := home.Init(homePath, "test", now); err != nil {
@@ -696,6 +711,9 @@ func TestOSAbsorptionWorkPacketAuthorityProofRequiresEveryListedWork(t *testing.
 }
 
 func TestOSAbsorptionWorkPacketAuthorityProofRejectsNonPacketWork(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	tests := []struct {
 		name   string
 		mutate func(t *testing.T, homePath string, closed work.CloseResult)

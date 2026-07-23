@@ -181,6 +181,9 @@ func TestPanelRunArgsUsesHostContextLimitEnv(t *testing.T) {
 }
 
 func TestPanelPlanRunShowCLIHappyPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -255,6 +258,9 @@ func TestPanelPlanRunShowCLIHappyPath(t *testing.T) {
 }
 
 func TestPanelRunCLIExecutesAndAppliesInOneCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {

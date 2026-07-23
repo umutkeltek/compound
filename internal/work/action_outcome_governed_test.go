@@ -17,6 +17,9 @@ import (
 )
 
 func TestRecordReceiptedActionPersistsExactGovernedOutcome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name         string
 		outcome      string
@@ -109,6 +112,9 @@ func TestRecordReceiptedActionDirectCrashReplayReusesCompletionTime(t *testing.T
 }
 
 func TestRecordReceiptedActionPendingReplayUsesSealedAuthorityAfterExpiry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	t.Run("exact pending transaction converges", func(t *testing.T) {
 		s, w, in, firstAt, expiresAt, _ := interruptedExpiringDirectGovernedAction(t)
 		replayed, err := s.RecordReceiptedAction(w.ID, in, expiresAt.Add(time.Minute))
@@ -539,6 +545,9 @@ func interruptedExpiringDirectGovernedAction(t *testing.T) (*Store, envelope.Wor
 }
 
 func TestReceiptedActionReservationBlocksLifecycleUntilFinalizeOrAbort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	newInput := func(w envelope.WorkEnvelope, action envelope.ActionIntent, decision envelope.PolicyDecision) ReceiptedActionInput {
 		return ReceiptedActionInput{
 			Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
@@ -600,6 +609,9 @@ func TestReceiptedActionReservationAuthorizationFailureDoesNotBlockWork(t *testi
 }
 
 func TestReceiptedActionReservationSchemaVersionsRecoveryEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	newReservation := func(t *testing.T) (*Store, envelope.WorkEnvelope, ReceiptedActionInput, time.Time, string) {
 		t.Helper()
 		s := newStore(t)
@@ -905,6 +917,9 @@ func TestCompletedReceiptedActionPersistsExactOutputDigests(t *testing.T) {
 }
 
 func TestCompletedReceiptedActionRejectsLegacyAndMissingExactOutputDigests(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(map[string]any)
@@ -952,6 +967,9 @@ func TestCompletedReceiptedActionRejectsLegacyAndMissingExactOutputDigests(t *te
 }
 
 func TestCompletedReceiptedActionRejectsSchemaValidExactOutputTamper(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(*testing.T, *Store, ReceiptedActionResult)
@@ -1144,6 +1162,9 @@ func TestAbortReceiptedActionReservationRefusesAfterReceiptPublicationBegins(t *
 }
 
 func TestRecordReceiptedActionRefusesInvalidPreEvaluatedSecurityDecisionWithoutWriting(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
 	tests := []struct {
 		name   string
 		setup  func(t *testing.T, s *Store) envelope.WorkEnvelope
