@@ -10,6 +10,7 @@ package work
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,6 +316,64 @@ func TestObserveRunWithoutJobFileProducesNoRunAttempt(t *testing.T) {
 	}
 	if result.RunAttemptID != "" {
 		t.Fatalf("observe-run without job file must not produce RunAttemptID, got %q", result.RunAttemptID)
+	}
+}
+
+func TestObserveRunTerminalJobFailsWhenRunAttemptCannotTerminalize(t *testing.T) {
+	s := newStore(t)
+	workID := runningWorkForObserve(t, s, "terminalization failure is hard")
+	trace := seedTraceEnvelope(t, s, workID)
+	jobPath := writeCodexJobFile(t, t.TempDir(), "job-terminalize-fail", "completed", "/tmp/terminalize-fail.log", "done")
+	original := completeObservedRunAttempt
+	completeObservedRunAttempt = func(*runattempt.Store, string, string, time.Time) (runattempt.RunAttempt, error) {
+		return runattempt.RunAttempt{}, errors.New("forced terminal persistence failure")
+	}
+	t.Cleanup(func() { completeObservedRunAttempt = original })
+
+	_, err := s.ObserveRun(workID, ObserveRunInput{
+		Actor:       "codex",
+		TraceID:     trace.ID,
+		JobFilePath: jobPath,
+	}, fixedNow.Add(2*time.Minute))
+
+	if err == nil || !strings.Contains(err.Error(), "terminal") {
+		t.Fatalf("terminal job must fail when RunAttempt terminalization fails, got %v", err)
+	}
+	workAfter, getErr := s.Get(workID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if workAfter.State != "running" {
+		t.Fatalf("failed terminalization must abort before work advances: state=%q", workAfter.State)
+	}
+}
+
+func TestObserveRunRunningJobFailsWhenRunAttemptCannotMarkRunning(t *testing.T) {
+	s := newStore(t)
+	workID := runningWorkForObserve(t, s, "running status persistence failure is hard")
+	trace := seedTraceEnvelope(t, s, workID)
+	jobPath := writeCodexJobFile(t, t.TempDir(), "job-running-mark-fail", "running", "/tmp/running-mark-fail.log", "still running")
+	original := markObservedRunAttemptRunning
+	markObservedRunAttemptRunning = func(*runattempt.Store, string, time.Time) (runattempt.RunAttempt, error) {
+		return runattempt.RunAttempt{}, errors.New("forced running persistence failure")
+	}
+	t.Cleanup(func() { markObservedRunAttemptRunning = original })
+
+	_, err := s.ObserveRun(workID, ObserveRunInput{
+		Actor:       "codex",
+		TraceID:     trace.ID,
+		JobFilePath: jobPath,
+	}, fixedNow.Add(2*time.Minute))
+
+	if err == nil || !strings.Contains(err.Error(), "running") {
+		t.Fatalf("running job must fail when RunAttempt status persistence fails, got %v", err)
+	}
+	workAfter, getErr := s.Get(workID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if workAfter.State != "running" {
+		t.Fatalf("failed running-status persistence must abort before work advances: state=%q", workAfter.State)
 	}
 }
 

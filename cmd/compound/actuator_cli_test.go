@@ -3,10 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"compound/internal/actuator"
+	"compound/internal/policy"
 )
 
 // T1 (packet 2026-07-21-zip27-actuator-cli.md): `actuator budget-set --max-actions ten`
@@ -316,5 +321,75 @@ func TestActuatorPostPreStagingFailureStaysErrorOnly(t *testing.T) {
 	}
 	if stderr.Len() == 0 {
 		t.Fatalf("a pre-staging failure must name the error on stderr; got empty")
+	}
+}
+
+func TestActuatorSwitchbackJSONPreservesAccountingFailureAndExitsNonzero(t *testing.T) {
+	homePath := t.TempDir()
+	profilePath := filepath.Join(t.TempDir(), "profile.yaml")
+	if err := os.WriteFile(profilePath, []byte("id: accounting_test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := actuatorSwitchbackFn
+	actuatorSwitchbackFn = func(string, actuator.ProjectProfile, string, policy.Config, time.Time) (actuator.SwitchbackResult, error) {
+		return actuator.SwitchbackResult{
+			ProfileID: "accounting_test",
+			WorkID:    "work_switchback_accounting",
+			Steps: []actuator.StepResult{{
+				Kind:             actuator.StepInstructions,
+				Applied:          true,
+				ReceiptRef:       "rec_accounting_test",
+				TransitionRef:    "tr_accounting_test",
+				AccountingFailed: true,
+				AccountingError:  "accounting sink unavailable",
+			}},
+		}, errors.New("switchback accounting failed after receipted mutation")
+	}
+	t.Cleanup(func() { actuatorSwitchbackFn = original })
+
+	var stdout, stderr bytes.Buffer
+	code := runActuator([]string{
+		"switchback",
+		"--profile", profilePath,
+		"--work", "work_switchback_accounting",
+		"--home", homePath,
+		"--json",
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("accounting failure must exit 1, got %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var result actuator.SwitchbackResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("stdout must preserve the structured partial result: %v; stdout=%q", err, stdout.String())
+	}
+	if len(result.Steps) != 1 || !result.Steps[0].Applied || !result.Steps[0].AccountingFailed ||
+		result.Steps[0].ReceiptRef != "rec_accounting_test" {
+		t.Fatalf("partial result lost applied/accounting/receipt state: %+v", result)
+	}
+	if !strings.Contains(stderr.String(), "accounting") {
+		t.Fatalf("stderr must name the accounting failure, got %q", stderr.String())
+	}
+}
+
+func TestActuatorRunJSONNamesMissingWorkError(t *testing.T) {
+	homePath := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := runActuator([]string{
+		"run",
+		"--work", "work_missing",
+		"--harness", "claude",
+		"--permission-mode", "plan",
+		"--prompt", "inspect only",
+		"--home", homePath,
+		"--json",
+	}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("missing work must exit 1, got %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "work_missing") || !strings.Contains(stderr.String(), "not found") {
+		t.Fatalf("JSON mode must name the missing work error on stderr, got %q", stderr.String())
 	}
 }

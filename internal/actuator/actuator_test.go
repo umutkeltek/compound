@@ -2,6 +2,8 @@ package actuator
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"compound/internal/harness"
 	"compound/internal/policy"
 	"compound/internal/runattempt"
+	"compound/internal/work"
 )
 
 // stubClaudeAdapter is a hermetic stand-in for the real subprocess-spawning claude
@@ -27,6 +30,34 @@ func (a *stubClaudeAdapter) Run(_ context.Context, in harness.RunInput) (harness
 		RunAttempt: runattempt.RunAttempt{ID: "ratt_stub", WorkID: in.WorkID, Harness: in.Harness, Status: "succeeded"},
 		ExitCode:   0,
 	}, nil
+}
+
+func createKnownActuatorWork(t *testing.T, homePath, workID string) {
+	t.Helper()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(work.CreateInput{
+		WorkID:           workID,
+		Owner:            "actuator-test",
+		SuccessPredicate: "actuator test work completes",
+	}, testNow); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func installStubActuatorRegistry(t *testing.T, stub *stubClaudeAdapter) {
+	t.Helper()
+	original := buildAdapterRegistry
+	buildAdapterRegistry = func(homePath string) *harness.AdapterRegistry {
+		registry := harness.NewAdapterRegistry(runattempt.Open(homePath))
+		if err := registry.RegisterAdapter(stub); err != nil {
+			t.Fatalf("register stub adapter: %v", err)
+		}
+		return registry
+	}
+	t.Cleanup(func() { buildAdapterRegistry = original })
 }
 
 // T5 (F10): the switchback instruction write is GOVERNED, not a raw os.WriteFile.
@@ -116,6 +147,7 @@ func TestRunIntentHoldsArbitraryHarnessCommand(t *testing.T) {
 // dispatching — no subprocess, no RunAttempt minted — and persist a held-move card.
 func TestRunHoldsArbitraryCommandWithoutDispatch(t *testing.T) {
 	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_run")
 	res, err := Run(home, RunInput{
 		WorkID:  "work_run",
 		Harness: "os-harness-entrypoints",
@@ -227,6 +259,7 @@ func TestCorruptLedgerErrorsAndHoldsBudget(t *testing.T) {
 // isolating the record failure.
 func TestRunSurfacesConsumptionRecordFailure(t *testing.T) {
 	home := t.TempDir()
+	createKnownActuatorWork(t, home, "work_rec")
 	budgetDir := filepath.Join(home, "actuator", "budget")
 	if err := os.MkdirAll(budgetDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -268,5 +301,143 @@ func TestRunSurfacesConsumptionRecordFailure(t *testing.T) {
 	}
 	if res.RunAttemptID == "" || !strings.Contains(err.Error(), res.RunAttemptID) {
 		t.Fatalf("error must report the run happened (run_attempt id %q), got: %v", res.RunAttemptID, err)
+	}
+}
+
+func TestRunRejectsMissingWorkBeforeDispatch(t *testing.T) {
+	homePath := t.TempDir()
+	stub := &stubClaudeAdapter{}
+	installStubActuatorRegistry(t, stub)
+
+	result, err := Run(homePath, RunInput{
+		WorkID:         "work_missing",
+		Harness:        "claude",
+		PermissionMode: "plan",
+		Prompt:         "inspect the work",
+	}, policy.DefaultConfig(), testNow)
+
+	if err == nil || !strings.Contains(err.Error(), "work_missing") || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing work must fail with a named not-found error, result=%+v err=%v", result, err)
+	}
+	if stub.ran {
+		t.Fatal("missing work must fail before harness dispatch")
+	}
+	if entries, _ := os.ReadDir(filepath.Join(homePath, "run_attempts")); len(entries) != 0 {
+		t.Fatalf("missing work must not mint a RunAttempt; found %d entries", len(entries))
+	}
+}
+
+func TestRunPersistsAuthorizationBeforeDispatch(t *testing.T) {
+	homePath := t.TempDir()
+	createKnownActuatorWork(t, homePath, "work_authorized")
+	stub := &stubClaudeAdapter{}
+	installStubActuatorRegistry(t, stub)
+
+	result, err := Run(homePath, RunInput{
+		WorkID:         "work_authorized",
+		Harness:        "claude",
+		PermissionMode: "plan",
+		Prompt:         "inspect the work",
+	}, policy.DefaultConfig(), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stub.ran || !result.Executed {
+		t.Fatalf("known auto-safe work must dispatch after authorization persists: %+v", result)
+	}
+	if result.Plan.PolicyDecision.ActionIntentID != result.Plan.Intent.ID {
+		t.Fatalf("policy decision %s authorizes %q, want %q", result.Plan.PolicyDecision.ID, result.Plan.PolicyDecision.ActionIntentID, result.Plan.Intent.ID)
+	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.Read(result.Plan.Intent.ID); err != nil {
+		t.Fatalf("ActionIntent %s is not resolvable after dispatch: %v", result.Plan.Intent.ID, err)
+	}
+	if _, err := events.Read(result.Plan.PolicyDecision.ID); err != nil {
+		t.Fatalf("PolicyDecision %s is not resolvable after dispatch: %v", result.Plan.PolicyDecision.ID, err)
+	}
+}
+
+func TestRunDoesNotDispatchWhenAuthorizationPersistenceFails(t *testing.T) {
+	homePath := t.TempDir()
+	createKnownActuatorWork(t, homePath, "work_persist_fail")
+	input := RunInput{
+		WorkID:         "work_persist_fail",
+		Harness:        "claude",
+		PermissionMode: "plan",
+		Prompt:         "inspect the work",
+	}
+	intent := runIntent(input, testNow)
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(intent.ID, map[string]any{
+		"id":       intent.ID,
+		"conflict": "pre-existing different authorization",
+	}, "  "); err != nil {
+		t.Fatal(err)
+	}
+	stub := &stubClaudeAdapter{}
+	installStubActuatorRegistry(t, stub)
+
+	result, err := Run(homePath, input, policy.DefaultConfig(), testNow)
+
+	if err == nil || !strings.Contains(err.Error(), "persist") {
+		t.Fatalf("authorization persistence failure must abort with a named error, result=%+v err=%v", result, err)
+	}
+	if stub.ran || result.Executed {
+		t.Fatalf("authorization persistence failure must happen before dispatch: result=%+v ran=%v", result, stub.ran)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(homePath, "run_attempts")); len(entries) != 0 {
+		t.Fatalf("authorization persistence failure must not mint a RunAttempt; found %d entries", len(entries))
+	}
+}
+
+func TestSwitchbackAccountingFailureIsStructuredAndNonGreen(t *testing.T) {
+	homePath := t.TempDir()
+	workspace := t.TempDir()
+	original := recordSwitchbackConsumption
+	recordSwitchbackConsumption = func(*Ledger, Consumption) error {
+		return errors.New("accounting sink unavailable")
+	}
+	t.Cleanup(func() { recordSwitchbackConsumption = original })
+
+	result, err := Switchback(homePath, ProjectProfile{
+		SchemaVersion: ProfileSchemaVersion,
+		ID:            "prof_accounting_failure",
+		Slug:          "accounting-demo",
+		Workspace:     workspace,
+		Routing:       RoutingSpec{Harness: "claude"},
+		Instructions: []InstructionSurface{{
+			Name: "AGENTS.md",
+			Path: "AGENTS.md",
+			Body: "# accounting failure remains visible\n",
+		}},
+		CreatedAt: testNow.Format(time.RFC3339),
+	}, "work_switch_accounting", policy.DefaultConfig(), testNow)
+
+	if err == nil || !strings.Contains(err.Error(), "accounting") {
+		t.Fatalf("receipted write with failed accounting must return a named error, result=%+v err=%v", result, err)
+	}
+	var appliedWithReceipt bool
+	for _, step := range result.Steps {
+		if step.Applied && step.ReceiptRef != "" {
+			appliedWithReceipt = true
+			break
+		}
+	}
+	if !appliedWithReceipt {
+		t.Fatalf("partial result must preserve the applied receipted step: %+v", result.Steps)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"accounting_failed":true`) ||
+		!strings.Contains(string(encoded), `"accounting_error":"accounting sink unavailable"`) {
+		t.Fatalf("partial result must expose structured accounting failure fields: %s", encoded)
 	}
 }

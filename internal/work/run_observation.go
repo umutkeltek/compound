@@ -14,6 +14,17 @@ import (
 
 const RunObservationSchemaVersion = "compound.work_run_observation.v0.1"
 
+// completeObservedRunAttempt is the terminal job-observation seam. Production
+// delegates to RunAttempt.Complete; tests can force the persistence failure that
+// ObserveRun must treat as enforcement failure rather than optional metadata.
+var completeObservedRunAttempt = func(store *runattempt.Store, id, status string, now time.Time) (runattempt.RunAttempt, error) {
+	return store.Complete(id, status, now)
+}
+
+var markObservedRunAttemptRunning = func(store *runattempt.Store, id string, now time.Time) (runattempt.RunAttempt, error) {
+	return store.MarkRunning(id, now)
+}
+
 type ObserveRunInput struct {
 	Actor   string
 	TraceID string
@@ -253,22 +264,28 @@ func (s *Store) observeRunFromJobFile(in ObserveRunInput, workID, actor string, 
 	jobStatus := strings.ToLower(strings.TrimSpace(job.Status))
 	switch jobStatus {
 	case "completed", "succeeded", "done":
-		if updated, err := store.Complete(ra.ID, runattempt.StatusSucceeded, now); err == nil {
-			ra = updated
+		updated, err := completeObservedRunAttempt(store, ra.ID, runattempt.StatusSucceeded, now)
+		if err != nil {
+			return runattempt.RunAttempt{}, fmt.Errorf("terminalize observed job %s as succeeded: %w", jobID, err)
 		}
+		ra = updated
 	case "failed", "error":
-		if updated, err := store.Complete(ra.ID, runattempt.StatusFailed, now); err == nil {
-			ra = updated
+		updated, err := completeObservedRunAttempt(store, ra.ID, runattempt.StatusFailed, now)
+		if err != nil {
+			return runattempt.RunAttempt{}, fmt.Errorf("terminalize observed job %s as failed: %w", jobID, err)
 		}
+		ra = updated
 	case "running", "in_progress":
 		// F5: mark genuinely running (was left as pending, contradicting
 		// this function's own doc comment). C3 sweeps stuck attempts; a
 		// later observe-run with a terminal job file still terminalizes it
 		// (see the early-return guard above, which only skips a truly
 		// terminal existing record).
-		if updated, err := store.MarkRunning(ra.ID, now); err == nil {
-			ra = updated
+		updated, err := markObservedRunAttemptRunning(store, ra.ID, now)
+		if err != nil {
+			return runattempt.RunAttempt{}, fmt.Errorf("mark observed job %s running: %w", jobID, err)
 		}
+		ra = updated
 	default:
 		// Unknown status: leave as pending. Doctor surfaces it.
 	}

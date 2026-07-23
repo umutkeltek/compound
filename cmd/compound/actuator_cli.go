@@ -17,6 +17,8 @@ import (
 	"compound/internal/product"
 )
 
+var actuatorSwitchbackFn = actuator.Switchback
+
 func cmdActuator(args []string) {
 	if code := runActuator(args, os.Stdout, os.Stderr); code != 0 {
 		os.Exit(code)
@@ -342,13 +344,18 @@ func runActuatorSwitchback(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error: parse profile:", err)
 		return 1
 	}
-	result, err := actuator.Switchback(homePath, profile, work, cfg, time.Now())
-	if err != nil {
+	result, err := actuatorSwitchbackFn(homePath, profile, work, cfg, time.Now())
+	hasResult := result.ProfileID != "" || result.WorkID != "" || len(result.Steps) > 0
+	if err != nil && !hasResult {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
 	if hasFlag(args, "--json") {
-		if err := encodeJSON(stdout, result); err != nil {
+		if encodeErr := encodeJSON(stdout, result); encodeErr != nil {
+			fmt.Fprintln(stderr, "error:", encodeErr)
+			return 1
+		}
+		if err != nil {
 			fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
@@ -370,6 +377,10 @@ func runActuatorSwitchback(args []string, stdout, stderr io.Writer) int {
 		if s.ApplyHint != "" {
 			fmt.Fprintf(stdout, "      apply: %s\n", s.ApplyHint)
 		}
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
 	}
 	return 0
 }
@@ -430,6 +441,7 @@ func runActuatorRun(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		if runErr != nil {
+			fmt.Fprintln(stderr, "run error:", runErr)
 			return 1
 		}
 		return 0

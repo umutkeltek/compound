@@ -1845,6 +1845,7 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		return res, abortReferenceTransaction(err)
 	}
 	from := w.State
+	existingRunAttemptIDs := append([]string{}, w.RunAttemptIDs...)
 	// Attach close-time RunAttempt ids (the failed-harness-run forward link)
 	// before the envelope is written. Same ratt_ prefix rule as Advance; a
 	// non-ratt_ id is a caller bug, not a retry, so it aborts the close.
@@ -1880,6 +1881,14 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 			return res, fmt.Errorf("commit Git reference transaction: %w", err)
 		}
 		referenceTransactionFinished = true
+	}
+	// A failed governed execution attaches its harness_execution attempt through
+	// Close rather than Advance. Retire any still-pending claim reservation only
+	// after the terminal work/event/ref transaction is durable, mirroring
+	// Advance's supersede-at-attach posture without abandoning a reservation for
+	// a close that later fails.
+	if len(in.RunAttemptIDs) > 0 {
+		s.supersedeClaimReservations(existingRunAttemptIDs, in.RunAttemptIDs, now)
 	}
 	return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
 }

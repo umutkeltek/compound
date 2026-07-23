@@ -933,3 +933,73 @@ func containsProjection(set []envelope.ProjectionRef, kind, ref, role string) bo
 	}
 	return false
 }
+
+func TestCloseSupersedesClaimReservationOnHarnessExecutionAttach(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{
+		Owner:            "execution-rail",
+		SuccessPredicate: "failed execution retires its claim reservation",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(w.ID, "agent_a", fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.RunAttemptIDs) != 1 {
+		t.Fatalf("claim must mint one reservation, got %v", claimed.RunAttemptIDs)
+	}
+	claimAttemptID := claimed.RunAttemptIDs[0]
+	if _, err := s.Advance(w.ID, AdvanceInput{
+		To:    "running",
+		Actor: "agent_a",
+		Note:  "dispatching governed harness execution",
+	}, fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	attempts := runattempt.Open(s.home)
+	execution, err := attempts.Mint(w.ID, "agent_a", "claude", fixedNow.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attempts.SetOrigin(execution.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attempts.Complete(execution.ID, runattempt.StatusFailed, fixedNow.Add(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	closed, err := s.Close(w.ID, CloseInput{
+		Outcome:       "failed",
+		MoveType:      "audit_only",
+		Actor:         "agent_a",
+		Summary:       "harness execution failed",
+		ProofRefs:     []string{"failure:harness-exit"},
+		RunAttemptIDs: []string{execution.ID},
+	}, fixedNow.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(closed.Work.RunAttemptIDs, claimAttemptID) || !contains(closed.Work.RunAttemptIDs, execution.ID) {
+		t.Fatalf("closed work must retain claim and execution lineage, got %v", closed.Work.RunAttemptIDs)
+	}
+	claimAttempt, err := attempts.Get(claimAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimAttempt.Status != runattempt.StatusAbandoned {
+		t.Fatalf("claim reservation status = %q, want abandoned", claimAttempt.Status)
+	}
+	if !strings.Contains(claimAttempt.SweepReason, execution.ID) {
+		t.Fatalf("claim reservation supersede reason %q must name execution %s", claimAttempt.SweepReason, execution.ID)
+	}
+	failedExecution, err := attempts.Get(execution.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failedExecution.Status != runattempt.StatusFailed {
+		t.Fatalf("execution status changed during supersede: got %q, want failed", failedExecution.Status)
+	}
+}

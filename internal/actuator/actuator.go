@@ -6,14 +6,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"compound/internal/act"
 	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/harness"
 	"compound/internal/policy"
 	"compound/internal/runattempt"
+	"compound/internal/work"
 )
 
 // buildAdapterRegistry constructs the harness adapter registry Run dispatches
@@ -22,6 +25,13 @@ import (
 // home's runattempt store. Mirrors the recordEnvelopeFn seam in internal/act.
 var buildAdapterRegistry = func(homePath string) *harness.AdapterRegistry {
 	return harness.NewAdapterRegistry(runattempt.Open(homePath))
+}
+
+// recordSwitchbackConsumption is the accounting seam used after a governed
+// switchback step lands. Production delegates to Ledger.Record; tests can force
+// the otherwise timing-sensitive "write receipted, accounting failed" boundary.
+var recordSwitchbackConsumption = func(ledger *Ledger, consumption Consumption) error {
+	return ledger.Record(consumption)
 }
 
 // Plan is the actuator's full routing verdict for one move: the policy decision,
@@ -81,6 +91,11 @@ type StepResult struct {
 	ReceiptRef    string   `json:"receipt_ref,omitempty"`
 	TransitionRef string   `json:"transition_ref,omitempty"`
 	ApplyHint     string   `json:"apply_hint,omitempty"`
+	// AccountingFailed is distinct from Applied: the governed mutation and
+	// receipt may already be durable even though budget consumption failed to
+	// record. Callers must preserve this partial result and return non-green.
+	AccountingFailed bool   `json:"accounting_failed,omitempty"`
+	AccountingError  string `json:"accounting_error,omitempty"`
 }
 
 // SwitchbackResult is the outcome of applying a ProjectProfile's switchback.
@@ -108,23 +123,32 @@ func Switchback(homePath string, p ProjectProfile, workID string, cfg policy.Con
 		return SwitchbackResult{}, err
 	}
 	result := SwitchbackResult{ProfileID: p.ID, WorkID: workID}
+	var accountingErrors []error
 
 	for _, step := range steps {
+		var applied StepResult
 		switch step.Kind {
 		case StepInstructions:
-			result.Steps = append(result.Steps, applyInstructionStep(homePath, p, workID, step, cfg, ledger, now))
+			applied = applyInstructionStep(homePath, p, workID, step, cfg, ledger, now)
 		case StepRouting:
-			result.Steps = append(result.Steps, applyRoutingStep(homePath, p, step, budget, cfg, ledger, now))
+			applied = applyRoutingStep(homePath, p, step, budget, cfg, ledger, now)
 		default:
 			// settings + budget: surface the governed command, do not reimplement.
-			result.Steps = append(result.Steps, StepResult{
+			applied = StepResult{
 				Kind:        step.Kind,
 				Description: step.Description,
 				Held:        true,
 				Reasons:     []string{"operator-governed step; run the existing command to apply"},
 				ApplyHint:   step.ApplyHint,
-			})
+			}
 		}
+		result.Steps = append(result.Steps, applied)
+		if applied.AccountingFailed {
+			accountingErrors = append(accountingErrors, fmt.Errorf("%s step (%s): %s", applied.Kind, applied.ReceiptRef, applied.AccountingError))
+		}
+	}
+	if len(accountingErrors) > 0 {
+		return result, fmt.Errorf("switchback accounting failed after receipted mutation: %w", errors.Join(accountingErrors...))
 	}
 	return result, nil
 }
@@ -162,7 +186,7 @@ func applyInstructionStep(homePath string, p ProjectProfile, workID string, step
 		res.Reasons = []string{fmt.Sprintf("governed instruction write for %s refused/rolled back: %v", step.FilePath, err)}
 		return res
 	}
-	if recErr := ledger.Record(Consumption{
+	if recErr := recordSwitchbackConsumption(ledger, Consumption{
 		SchemaVersion: ConsumptionSchemaVersion,
 		At:            now.UTC().Format(time.RFC3339),
 		ProductID:     p.ProductID,
@@ -173,6 +197,8 @@ func applyInstructionStep(homePath string, p ProjectProfile, workID string, step
 	}); recErr != nil {
 		// The instruction write DID land and is receipted; surface the budget
 		// accounting failure rather than dropping it silently (F9.1).
+		res.AccountingFailed = true
+		res.AccountingError = recErr.Error()
 		res.Reasons = append(res.Reasons, fmt.Sprintf("instruction write receipted %s but budget consumption NOT recorded: %v", out.Receipt.ID, recErr))
 	}
 	res.Applied = true
@@ -256,7 +282,7 @@ func applyRoutingStep(homePath string, p ProjectProfile, step SwitchbackStep, bu
 	// DID land and is receipted; if the consumption record fails, surface it on the
 	// step (F9.1) rather than dropping it silently — budget accounting must not be
 	// quietly wrong. The applied write is not rolled back.
-	if recErr := ledger.Record(Consumption{
+	if recErr := recordSwitchbackConsumption(ledger, Consumption{
 		SchemaVersion: ConsumptionSchemaVersion,
 		At:            now.UTC().Format(time.RFC3339),
 		ProductID:     p.ProductID,
@@ -265,6 +291,8 @@ func applyRoutingStep(homePath string, p ProjectProfile, step SwitchbackStep, bu
 		WorkID:        step.Intent.IDs.WorkID,
 		ReceiptRef:    out.Receipt.ID,
 	}); recErr != nil {
+		res.AccountingFailed = true
+		res.AccountingError = recErr.Error()
 		res.Reasons = append(res.Reasons, fmt.Sprintf("routing repoint receipted %s but budget consumption NOT recorded: %v", out.Receipt.ID, recErr))
 	}
 	res.Applied = true
@@ -317,6 +345,16 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 	if strings.TrimSpace(in.Harness) == "" {
 		return RunResult{}, fmt.Errorf("actuator run: harness required")
 	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("actuator run: open work store: %w", err)
+	}
+	if _, err := workStore.Get(in.WorkID); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return RunResult{}, fmt.Errorf("actuator run: work %s not found: %w", in.WorkID, err)
+		}
+		return RunResult{}, fmt.Errorf("actuator run: read work %s: %w", in.WorkID, err)
+	}
 	channel := firstNonEmpty(in.Channel, "execution")
 	intent := runIntent(in, now)
 	plan, err := EvaluatePlan(homePath, intent, channel, in.ProductID, cfg, now)
@@ -335,6 +373,9 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 	adapter, ok := registry.AdapterByName(in.Harness)
 	if !ok {
 		return RunResult{}, fmt.Errorf("actuator run: unknown harness %q; available: %v", in.Harness, registry.Names())
+	}
+	if err := persistRunAuthorization(homePath, plan.Intent, plan.PolicyDecision); err != nil {
+		return RunResult{}, fmt.Errorf("actuator run: persist authorization: %w", err)
 	}
 	out, runErr := adapter.Run(context.Background(), harness.RunInput{
 		WorkID:         in.WorkID,
@@ -381,6 +422,42 @@ func Run(homePath string, in RunInput, cfg policy.Config, now time.Time) (RunRes
 	}
 
 	return result, runErr
+}
+
+func persistRunAuthorization(homePath string, intent envelope.ActionIntent, decision envelope.PolicyDecision) error {
+	if err := intent.Validate(); err != nil {
+		return fmt.Errorf("ActionIntent %s invalid: %w", intent.ID, err)
+	}
+	if err := decision.Validate(); err != nil {
+		return fmt.Errorf("PolicyDecision %s invalid: %w", decision.ID, err)
+	}
+	if decision.ActionIntentID != intent.ID || decision.IDs.WorkID != intent.IDs.WorkID {
+		return fmt.Errorf("PolicyDecision %s does not authorize ActionIntent %s for work %s", decision.ID, intent.ID, intent.IDs.WorkID)
+	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		return err
+	}
+	if err := events.Preflight(); err != nil {
+		return fmt.Errorf("event store preflight: %w", err)
+	}
+	for _, record := range []struct {
+		id    string
+		value any
+	}{
+		{id: intent.ID, value: &intent},
+		{id: decision.ID, value: &decision},
+	} {
+		if _, err := events.PutJSON(record.id, record.value, "  "); err != nil {
+			return fmt.Errorf("record %s: %w", record.id, err)
+		}
+		if resolved, err := events.Read(record.id); err != nil {
+			return fmt.Errorf("prove %s persistence: %w", record.id, err)
+		} else if resolved.ID != record.id {
+			return fmt.Errorf("prove %s persistence: resolved %s", record.id, resolved.ID)
+		}
+	}
+	return nil
 }
 
 // runPlanSafe reports whether a harness run is read-only BY CONTRACT and therefore
