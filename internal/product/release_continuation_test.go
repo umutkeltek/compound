@@ -258,6 +258,10 @@ func seedGovernedReleaseReceiptForTarget(t *testing.T, homePath string, draft Pr
 		Outcome:        "allow_with_obligations",
 		Reasons:        []string{"exact product release authorization recorded"},
 		Obligations:    []string{"emit governed receipt", "observe planned post-release metric"},
+		// public is a dangerous mutation class (E5): the pre-evaluated decision
+		// must carry the standing-grant authority the operator review minted,
+		// not merely an "allow" outcome the caller asserts.
+		StandingGrantID: "grant:product-release:" + authorization.ID,
 	}
 	result, err := workStore.RecordReceiptedAction(w.ID, work.ReceiptedActionInput{
 		Action:               action,

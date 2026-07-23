@@ -1264,6 +1264,81 @@ func TestRecordReceiptedActionRefusesInvalidPreEvaluatedSecurityDecisionWithoutW
 	}
 }
 
+// TestRecordReceiptedActionRefusesFabricatedDangerousMutationClassDecision is
+// the E5 falsifier: validatePreEvaluatedReceiptedActionStatic historically
+// re-validated operator provenance and standing-grant authority ONLY when
+// MutationClass=="security". A caller could fabricate an "allow" decision for
+// any other dangerous mutation class (destructive/financial/public) — no
+// operator actor, no standing grant, no policy.Evaluate — and it passed. This
+// proves the gate now closes for every dangerous class, not just security.
+func TestRecordReceiptedActionRefusesFabricatedDangerousMutationClassDecision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsync-heavy: skipped in -short mode")
+	}
+	for _, mutationClass := range []string{"destructive", "financial", "public"} {
+		t.Run(mutationClass, func(t *testing.T) {
+			s := newStore(t)
+			// The lease holder is an ordinary executor identity, not an
+			// operator/human actor: policy.HasOperatorProvenance("codex-lane")
+			// is false, and the decision carries no standing_grant_id.
+			w := governedActionRunningWork(t, s, "codex-lane")
+			action, decision := fabricatedDangerousActionApproval(w, "codex-lane", mutationClass, fixedNow.Add(time.Minute))
+			before, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.RecordReceiptedAction(w.ID, ReceiptedActionInput{
+				Action: action, PreEvaluatedDecision: &decision, ExpectedWorkState: "running",
+				Outcome: "completed", Changed: true, Summary: "fabricated dangerous mutation must not pass", MoveType: "control_plane_repair",
+				BeforeRefs: []string{"sha256:preimage"}, AfterRefs: []string{"sha256:postimage"},
+			}, fixedNow.Add(2*time.Minute))
+			if err == nil {
+				t.Fatalf("%s: fabricated allow decision with no operator provenance or standing grant was accepted", mutationClass)
+			}
+			lower := strings.ToLower(err.Error())
+			if !strings.Contains(lower, "provenance") && !strings.Contains(lower, "standing-grant") {
+				t.Fatalf("%s: want rejection citing provenance or standing-grant authority, got: %v", mutationClass, err)
+			}
+			after, readErr := os.ReadFile(s.workPath(w.ID))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if !reflect.DeepEqual(after, before) {
+				t.Fatal("refused fabricated dangerous-class action changed work")
+			}
+			for _, id := range []string{action.ID, decision.ID} {
+				if exists, statErr := s.eventExists(id); statErr != nil || exists {
+					t.Fatalf("refused fabricated dangerous-class action persisted %s: %v", id, statErr)
+				}
+			}
+		})
+	}
+}
+
+func fabricatedDangerousActionApproval(w envelope.WorkEnvelope, actor, mutationClass string, now time.Time) (envelope.ActionIntent, envelope.PolicyDecision) {
+	action := envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent, ID: "act_fabricated_" + mutationClass, CreatedAt: now.UTC().Format(time.RFC3339),
+			Producer: envelope.Producer{Kind: "cli", Name: "compound"}, IDs: envelope.IDs{WorkID: w.ID},
+			Authority: envelope.Authority{SourceClass: "runtime", Owner: "compound", Status: "current"}, Privacy: "private", Risk: "tier1",
+			EvidenceRefs: []string{"sha256:fabricated-render"}, Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		Actor: actor, Capability: "harness.permissions.apply", Action: "reconcile_harness_permissions",
+		Target:        envelope.ActionTarget{Kind: "harness_settings", ID: "claude_code", Path: "/synthetic/settings.json"},
+		MutationClass: mutationClass, Reversibility: "manual", BlastRadius: "public", RollbackPlan: "restore exact pre-image",
+	}
+	decision := envelope.PolicyDecision{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVPolicyDecision, ID: "pol_fabricated_" + mutationClass, CreatedAt: now.UTC().Format(time.RFC3339),
+			Producer: envelope.Producer{Kind: "cli", Name: "compound"}, IDs: envelope.IDs{WorkID: w.ID},
+			Authority: envelope.Authority{SourceClass: "runtime", Status: "current"}, Privacy: "private", Risk: "tier1",
+			EvidenceRefs: []string{"fabricated:no-real-authority"}, Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		ActionIntentID: action.ID, Outcome: "allow", Reasons: []string{"fabricated by caller, no real policy.Evaluate"},
+	}
+	return action, decision
+}
+
 func governedActionRunningWork(t *testing.T, s *Store, leaseHolder string) envelope.WorkEnvelope {
 	t.Helper()
 	w, err := s.Create(CreateInput{Owner: "operator:test", Actor: "operator:test", SuccessPredicate: "permission outcome", State: "ready"}, fixedNow)

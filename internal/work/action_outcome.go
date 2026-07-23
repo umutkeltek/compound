@@ -437,8 +437,9 @@ func validatePreEvaluatedReceiptedAction(s *Store, w envelope.WorkEnvelope, acti
 }
 
 func validatePreEvaluatedReceiptedActionStatic(s *Store, w envelope.WorkEnvelope, action envelope.ActionIntent, decision envelope.PolicyDecision) error {
-	if action.MutationClass == "security" && !policy.HasOperatorProvenance(action.Actor) {
-		return fmt.Errorf("pre-evaluated security action requires operator provenance")
+	dangerous := preEvaluatedReceiptedActionIsDangerous(action.MutationClass)
+	if dangerous && !policy.HasOperatorProvenance(action.Actor) {
+		return fmt.Errorf("pre-evaluated %s action requires operator provenance", action.MutationClass)
 	}
 	lease, err := s.readLease(w.ID)
 	if err != nil {
@@ -456,10 +457,31 @@ func validatePreEvaluatedReceiptedActionStatic(s *Store, w envelope.WorkEnvelope
 	if !policy.Allowed(decision) {
 		return fmt.Errorf("pre-evaluated policy decision is not allowed: %s", decision.Outcome)
 	}
-	if action.MutationClass == "security" && strings.TrimSpace(decision.StandingGrantID) == "" {
-		return fmt.Errorf("pre-evaluated security action requires standing-grant authority")
+	if dangerous && strings.TrimSpace(decision.StandingGrantID) == "" {
+		return fmt.Errorf("pre-evaluated %s action requires standing-grant authority", action.MutationClass)
 	}
 	return nil
+}
+
+// preEvaluatedReceiptedActionIsDangerous reports whether a caller-supplied
+// (pre-evaluated) PolicyDecision for this mutation class must independently
+// prove operator provenance and standing-grant authority before being
+// trusted, rather than accepting the caller's "allow" outcome at face value.
+// A pre-evaluated decision never calls policy.Evaluate, so for a dangerous
+// class this is the only re-validation the governance plane performs (E5).
+// Enumerated from envelope.MutationClasses: read/local_reversible/
+// external_side_effect are low-stakes and pass through unchanged; security/
+// destructive/financial/public are dangerous and always re-validated; any
+// future or unrecognized mutation class fails closed into the dangerous set.
+func preEvaluatedReceiptedActionIsDangerous(mutationClass string) bool {
+	switch mutationClass {
+	case "read", "local_reversible", "external_side_effect":
+		return false
+	case "security", "destructive", "financial", "public":
+		return true
+	default:
+		return true
+	}
 }
 
 func validatePreEvaluatedReceiptedActionAt(action envelope.ActionIntent, decision envelope.PolicyDecision, now time.Time) error {
