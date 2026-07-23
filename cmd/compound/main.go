@@ -3782,7 +3782,26 @@ type homeDoctorJSONReport struct {
 	Governance                 homeDoctorGovernanceReport `json:"governance"`
 	Setup                      home.SetupReport           `json:"setup"`
 	SetupOK                    bool                       `json:"setup_ok"`
-	Verdict                    string                     `json:"verdict"`
+	// CapacityFeedWarnings is the non-fatal capacity.blackout:<family> watchdog (work_9928ccb3621b):
+	// a family with capacity rows of ANY age (CodexBar's usage-history.jsonl or Compound's own
+	// usage-supplement.jsonl) but nothing fresh in 4x its own freshness window. Additive only —
+	// never folded into Verdict below.
+	CapacityFeedWarnings []routeevidence.CapacityFeedWarning `json:"capacity_feed_warnings,omitempty"`
+	Verdict              string                              `json:"verdict"`
+}
+
+// homeDoctorCapacityFeedWarnings computes the capacity-feed-blackout watchdog for a home doctor
+// report. It is deliberately NOT threaded through buildHomeDoctorReport's/printHomeDoctor's
+// signatures: both functions already have out-of-fence callers
+// (cmd/compound/home_doctor_generated_at_test.go, cmd/compound/home_habitat_cli_test.go) that
+// invoke them with today's single home.Report argument, so adding a parameter would break those
+// files mechanically for a change this packet does not own. Computing from r.Home keeps every
+// existing call site source-compatible.
+func homeDoctorCapacityFeedWarnings(homePath string) []routeevidence.CapacityFeedWarning {
+	if strings.TrimSpace(homePath) == "" {
+		return nil
+	}
+	return routeevidence.CapacityFeedWarnings(routeevidence.DefaultLaneCapacityConfig(homePath), time.Now())
 }
 
 type homeDoctorHygieneReport struct {
@@ -3835,6 +3854,7 @@ func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
 		Governance:                 buildHomeGovernanceReport(r.Home),
 		Setup:                      r.Setup,
 		SetupOK:                    r.SetupOK,
+		CapacityFeedWarnings:       homeDoctorCapacityFeedWarnings(r.Home),
 		Verdict:                    verdict,
 	}
 }
@@ -3919,6 +3939,9 @@ func printHomeDoctor(r home.Report) {
 	}
 	for _, item := range r.BackupWarnings {
 		fmt.Printf("%s: %s\n", item.Name, homeCleanStr(item.OK))
+	}
+	for _, w := range homeDoctorCapacityFeedWarnings(r.Home) {
+		fmt.Printf("%s: %s — %s\n", w.Name, homeCleanStr(w.OK), w.Detail)
 	}
 	for _, action := range buildHomeDoctorReport(r).OperationalHygieneActions {
 		fmt.Printf("hygiene_action: %s kind=%s\n", action.ID, action.Kind)
