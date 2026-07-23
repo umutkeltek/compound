@@ -154,9 +154,21 @@ model id, alias, then harness id form the resolution precedence; ambiguity fails
 `capacity_source` binds quota evidence to its own provider ref (for example
 `codexbar://provider/qwencloud`) even when the execution route has another name. Inline governed
 execution and delegated tmux sessions both resolve this tuple before work moves or a RunAttempt is
-minted. A raw command may replace only the executable, never the tuple, capacity gate, or requested
-route attribution. RunAttempt records requested tuple/provider separately from observed
-`model_id`/`provider_route`, which remain unknown until ExecutionRouteEvidence supplies them.
+minted. A raw command override is not executable authority: governed delegated activation refuses it
+until an authority can attest that exact executable/profile. RunAttempt records requested
+tuple/provider separately from observed `model_id`/`provider_route`, which remain unknown until
+ExecutionRouteEvidence supplies them.
+
+After the work and lease holder are validated, delegated activation consumes one read-only
+harness-readiness check at that boundary. Permission authority and applied posture must agree; the
+installed-hooks declaration must expose a native blocking `PreToolUse` gate **and** read-only live
+reconciliation must attest its active handler bytes; and the current, non-degraded InstructionPack
+must bind the WorkEnvelope's ContextPack, EffectiveContract harness, and delegated workspace.
+Failure returns structured `readiness_unmet` evidence before capacity admission, event persistence,
+tmux creation, or a `harness_execution` RunAttempt mint. A missing readiness checker fails closed.
+A successful activation carries the compact revision-bearing readiness evidence in its returned
+result and persisted `work.delegate.spawned` binding, so later recovery can name what admitted the
+run rather than inferring readiness from current configuration.
 
 ## Second-order effects (design against these)
 

@@ -119,6 +119,7 @@ func allowDelegateCLIGuard(t *testing.T, confirmationRequired bool) {
 	t.Helper()
 	orig := work.LaneCapacityGuard
 	origResolver := work.DelegateHarnessResolver
+	origReadiness := work.DelegateHarnessReadiness
 	work.LaneCapacityGuard = func(req work.LaneCapacityGuardRequest) (work.LaneCapacityGuardResult, error) {
 		return work.LaneCapacityGuardResult{
 			Capacity:             work.DispatchLaneCapacity{State: "ok", Remaining: 0.8},
@@ -137,9 +138,13 @@ func allowDelegateCLIGuard(t *testing.T, confirmationRequired bool) {
 			CapacityLane: req.Harness, TupleBacked: true,
 		}, nil
 	}
+	work.DelegateHarnessReadiness = func(work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		return work.DelegateHarnessReadinessResult{Ready: true}, nil
+	}
 	t.Cleanup(func() {
 		work.LaneCapacityGuard = orig
 		work.DelegateHarnessResolver = origResolver
+		work.DelegateHarnessReadiness = origReadiness
 	})
 }
 
@@ -208,6 +213,70 @@ func TestWorkDelegateCLIDryRunPrintsGuardDecisionAndDoesNotSpawn(t *testing.T) {
 	}
 	if len(runner.creates) != 0 {
 		t.Fatalf("dry-run spawned: %+v", runner.creates)
+	}
+}
+
+func TestWorkDelegateCLIRefusesUnreadyHarnessBeforeAnyMutation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	originalGuard := work.LaneCapacityGuard
+	originalResolver := work.DelegateHarnessResolver
+	capacityCalls := 0
+	work.LaneCapacityGuard = func(req work.LaneCapacityGuardRequest) (work.LaneCapacityGuardResult, error) {
+		capacityCalls++
+		return work.LaneCapacityGuardResult{
+			Capacity: work.DispatchLaneCapacity{State: "ok", Remaining: 0.8},
+			Message:  "lane has headroom",
+		}, nil
+	}
+	work.DelegateHarnessResolver = func(req work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
+		return work.DelegateHarnessResolution{
+			Harness:                "claude_minimax",
+			Command:                "claude-minimax",
+			LaneID:                 "claude_minimax",
+			RequestedModelID:       "claude-minimax (token plan)",
+			RequestedProviderRoute: "minimax",
+			CapacityLane:           "minimax",
+			TupleBacked:            true,
+		}, nil
+	}
+	t.Cleanup(func() {
+		work.LaneCapacityGuard = originalGuard
+		work.DelegateHarnessResolver = originalResolver
+	})
+
+	store, workID, homePath := claimedDelegateCLIWorkAt(t, "orchestrator:test")
+	runner := newDelegateCLIFakeRunner()
+	before := snapshotFiles(t, homePath)
+
+	out, errOut, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		workID, "--harness", "claude_minimax", "--prompt", "do the bounded task", "--json")
+
+	if code != 1 || errOut != "" {
+		t.Fatalf("code=%d stderr=%q stdout=%q", code, errOut, out)
+	}
+	var result work.DelegateResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode refusal: %v\n%s", err, out)
+	}
+	if result.Status != "refused" || result.Refusal == nil || result.Refusal.Reason != "readiness_unmet" {
+		t.Fatalf("result = %+v, want structured readiness_unmet refusal", result)
+	}
+	if result.Readiness == nil || result.Readiness.Ready {
+		t.Fatalf("readiness = %+v, want explicit unready evidence", result.Readiness)
+	}
+	for _, want := range []string{"permission_authority:", "blocking_hook:", "instruction_pack:"} {
+		if !strings.Contains(strings.Join(result.Readiness.Details, "\n"), want) {
+			t.Fatalf("readiness details = %v, want %q component", result.Readiness.Details, want)
+		}
+	}
+	if capacityCalls != 0 {
+		t.Fatalf("capacity guard calls = %d, want 0 before readiness admission", capacityCalls)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("session creates = %+v, want none", runner.creates)
+	}
+	if after := snapshotFiles(t, homePath); !reflect.DeepEqual(before, after) {
+		t.Fatalf("unready refusal mutated Compound state\nbefore=%v\nafter=%v", before, after)
 	}
 }
 

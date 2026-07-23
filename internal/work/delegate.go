@@ -29,8 +29,9 @@
 //   - Dry-run runs the guard + binding + tmux-available checks, prints the
 //     decision, and writes NO event record (preview-only).
 //   - Named lane aliases resolve through Compound's injected LaneTuple
-//     resolver. An explicit raw command may override only the executable;
-//     tuple identity and attribution remain mandatory in production.
+//     resolver. Governed activation admits only an executable attested by the
+//     readiness adapter; a raw override remains parseable for compatibility
+//     but fails closed unless an authority can attest it.
 package work
 
 import (
@@ -124,14 +125,50 @@ type DelegateHarnessResolverFunc func(DelegateHarnessResolveRequest) (DelegateHa
 // import cycle while keeping a single tuple resolver.
 var DelegateHarnessResolver DelegateHarnessResolverFunc
 
+type DelegateHarnessReadinessRequest struct {
+	HomePath               string
+	HarnessHome            string
+	WorkID                 string
+	ContextPackID          string
+	Workspace              string
+	Harness                string
+	LaneID                 string
+	RequestedModelID       string
+	RequestedProviderRoute string
+	Command                string
+	CommandOverridden      bool
+	Now                    time.Time
+}
+
+type DelegateHarnessReadinessEvidence struct {
+	Kind     string `json:"kind"`
+	Ref      string `json:"ref"`
+	Revision string `json:"revision,omitempty"`
+}
+
+type DelegateHarnessReadinessResult struct {
+	Ready    bool                               `json:"ready"`
+	Details  []string                           `json:"details,omitempty"`
+	Evidence []DelegateHarnessReadinessEvidence `json:"evidence,omitempty"`
+}
+
+type DelegateHarnessReadinessFunc func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error)
+
+// DelegateHarnessReadiness is installed by the executable composition root.
+// It reads the permission, hook, and instruction authorities without mutating
+// them. A missing guard fails closed: tuple/executable/capacity evidence alone
+// is not proof that a harness is safe to activate.
+var DelegateHarnessReadiness DelegateHarnessReadinessFunc
+
 type DelegateResult struct {
-	SchemaVersion string                   `json:"schema_version"`
-	WorkID        string                   `json:"work_id"`
-	Lane          string                   `json:"lane,omitempty"`
-	Status        string                   `json:"status"` // spawned|refused|preview
-	Binding       *DelegateBinding         `json:"binding,omitempty"`
-	Refusal       *DelegateRefusal         `json:"refusal,omitempty"`
-	Decision      *LaneCapacityGuardResult `json:"decision,omitempty"`
+	SchemaVersion string                          `json:"schema_version"`
+	WorkID        string                          `json:"work_id"`
+	Lane          string                          `json:"lane,omitempty"`
+	Status        string                          `json:"status"` // spawned|refused|preview
+	Binding       *DelegateBinding                `json:"binding,omitempty"`
+	Refusal       *DelegateRefusal                `json:"refusal,omitempty"`
+	Readiness     *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
+	Decision      *LaneCapacityGuardResult        `json:"decision,omitempty"`
 	// RunAttemptID is the ratt_<UTC>_<hex> that was minted before Create
 	// and marked running after the supervised spawn succeeded. Always
 	// populated on Status="spawned"; older callers that recover a
@@ -146,14 +183,15 @@ type DelegateResult struct {
 // from a sidecar file). The orchestrator returns it to the verb layer so
 // the operator can print a single "session: <name>" hint.
 type DelegateBinding struct {
-	WorkID        string `json:"work_id"`
-	Session       string `json:"session"`
-	Harness       string `json:"harness"`
-	Lane          string `json:"lane,omitempty"`
-	Holder        string `json:"holder,omitempty"`
-	CapacityState string `json:"capacity_state,omitempty"`
-	RecordedAt    string `json:"recorded_at,omitempty"`
-	WorkSHA256    string `json:"work_sha256,omitempty"`
+	WorkID        string                          `json:"work_id"`
+	Session       string                          `json:"session"`
+	Harness       string                          `json:"harness"`
+	Lane          string                          `json:"lane,omitempty"`
+	Holder        string                          `json:"holder,omitempty"`
+	CapacityState string                          `json:"capacity_state,omitempty"`
+	RecordedAt    string                          `json:"recorded_at,omitempty"`
+	WorkSHA256    string                          `json:"work_sha256,omitempty"`
+	Readiness     *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
 	// RunAttemptID is the ratt_<UTC>_<hex> the orchestrator minted BEFORE
 	// the supervised spawn. Older bindings (pre-slice) leave it empty
 	// and remain backward-compatible: recovery still returns the
@@ -162,7 +200,7 @@ type DelegateBinding struct {
 }
 
 type DelegateRefusal struct {
-	Reason  string `json:"reason"` // walled|dead|expiring_unconfirmed|not_claimed|session_live|tmux_absent|gate_absent|harness_unknown|spawn_failed
+	Reason  string `json:"reason"` // readiness_unmet|walled|dead|expiring_unconfirmed|not_claimed|session_live|tmux_absent|gate_absent|harness_unknown|spawn_failed
 	Message string `json:"message,omitempty"`
 	Session string `json:"session,omitempty"` // session_live: the existing session name
 }
@@ -191,24 +229,25 @@ func resolveDelegateSessionName(workID, override string) string {
 // work.delegate.exited event. Older exited events (no fields) still
 // serialize cleanly: the orchestrator accepts either shape.
 type delegateEvent struct {
-	SchemaVersion string `json:"schema_version"`
-	ID            string `json:"id"`
-	Kind          string `json:"kind"`
-	TS            string `json:"ts"`
-	WorkID        string `json:"work_id"`
-	Harness       string `json:"harness"`
-	Lane          string `json:"lane,omitempty"`
-	Holder        string `json:"holder,omitempty"`
-	CapacityState string `json:"capacity_state,omitempty"`
-	Reason        string `json:"reason,omitempty"`
-	Message       string `json:"message,omitempty"`
-	Confirm       bool   `json:"confirm,omitempty"`
-	Session       string `json:"session,omitempty"`
-	WorkSHA256    string `json:"work_sha256,omitempty"`
-	RunAttemptID  string `json:"run_attempt_id,omitempty"`
-	ExitCode      *int   `json:"exit_code,omitempty"`
-	Signal        string `json:"signal,omitempty"`
-	ObservedExit  bool   `json:"observed_exit,omitempty"`
+	SchemaVersion string                          `json:"schema_version"`
+	ID            string                          `json:"id"`
+	Kind          string                          `json:"kind"`
+	TS            string                          `json:"ts"`
+	WorkID        string                          `json:"work_id"`
+	Harness       string                          `json:"harness"`
+	Lane          string                          `json:"lane,omitempty"`
+	Holder        string                          `json:"holder,omitempty"`
+	CapacityState string                          `json:"capacity_state,omitempty"`
+	Reason        string                          `json:"reason,omitempty"`
+	Message       string                          `json:"message,omitempty"`
+	Confirm       bool                            `json:"confirm,omitempty"`
+	Session       string                          `json:"session,omitempty"`
+	WorkSHA256    string                          `json:"work_sha256,omitempty"`
+	RunAttemptID  string                          `json:"run_attempt_id,omitempty"`
+	Readiness     *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
+	ExitCode      *int                            `json:"exit_code,omitempty"`
+	Signal        string                          `json:"signal,omitempty"`
+	ObservedExit  bool                            `json:"observed_exit,omitempty"`
 }
 
 func delegateEventID(kind, workID string, now time.Time) string {
@@ -268,6 +307,7 @@ func (s *Store) latestDelegateBinding(workID string) (*DelegateBinding, bool, er
 					CapacityState: dev.CapacityState,
 					RecordedAt:    dev.TS,
 					WorkSHA256:    dev.WorkSHA256,
+					Readiness:     dev.Readiness,
 					// Older spawned events (pre-slice) decode with empty
 					// RunAttemptID; the rest of the orchestrator treats
 					// empty as "no exact attempt" and stays backward-
@@ -475,6 +515,55 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		return out, nil
 	}
 
+	workspace := strings.TrimSpace(opts.Workspace)
+	if workspace == "" && w.GitDelivery != nil {
+		workspace = strings.TrimSpace(w.GitDelivery.TargetWorktreeRoot)
+	}
+	if workspace == "" {
+		workspace, err = os.Getwd()
+		if err != nil {
+			return out, fmt.Errorf("delegate: resolve workspace: %w", err)
+		}
+	}
+	if strings.TrimSpace(workspace) == "" {
+		return out, errors.New("delegate: no workspace resolved from --workspace, git_delivery.target_worktree_root, or cwd")
+	}
+
+	readiness := DelegateHarnessReadinessResult{}
+	var readinessErr error
+	if DelegateHarnessReadiness == nil {
+		readiness.Details = []string{"no delegate harness readiness guard is installed"}
+	} else {
+		readiness, readinessErr = DelegateHarnessReadiness(DelegateHarnessReadinessRequest{
+			HomePath:               s.home,
+			WorkID:                 out.WorkID,
+			ContextPackID:          w.IDs.ContextPackID,
+			Workspace:              workspace,
+			Harness:                resolvedHarness,
+			LaneID:                 out.Lane,
+			RequestedModelID:       resolution.RequestedModelID,
+			RequestedProviderRoute: resolution.RequestedProviderRoute,
+			Command:                command,
+			CommandOverridden:      strings.TrimSpace(opts.Command) != "",
+			Now:                    opts.Now,
+		})
+	}
+	if readinessErr != nil {
+		readiness.Ready = false
+		readiness.Details = append(readiness.Details, "readiness probe failed: "+readinessErr.Error())
+	}
+	out.Readiness = &readiness
+	if !readiness.Ready {
+		if len(readiness.Details) == 0 {
+			readiness.Details = []string{"harness readiness was not established"}
+		}
+		out.Refusal = &DelegateRefusal{
+			Reason:  "readiness_unmet",
+			Message: strings.Join(readiness.Details, "; "),
+		}
+		return out, nil
+	}
+
 	decision, err := runLaneCapacityGuard(LaneCapacityGuard, LaneCapacityGuardRequest{
 		HomePath:        s.home,
 		Lane:            laneForGuard,
@@ -597,24 +686,6 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		return out, nil
 	}
 
-	if opts.DryRun {
-		out.Status = "preview"
-		return out, nil
-	}
-	workspace := strings.TrimSpace(opts.Workspace)
-	if workspace == "" && w.GitDelivery != nil {
-		workspace = strings.TrimSpace(w.GitDelivery.TargetWorktreeRoot)
-	}
-	if workspace == "" {
-		workspace, err = os.Getwd()
-		if err != nil {
-			return out, fmt.Errorf("delegate: resolve workspace: %w", err)
-		}
-	}
-	if strings.TrimSpace(workspace) == "" {
-		return out, errors.New("delegate: no workspace resolved from --workspace, git_delivery.target_worktree_root, or cwd")
-	}
-
 	workSHA, shaErr := workEnvelopeSHA256(w)
 	if shaErr != nil {
 		return out, shaErr
@@ -712,6 +783,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		CapacityState: decision.Capacity.State,
 		RecordedAt:    ts(opts.Now),
 		WorkSHA256:    workSHA,
+		Readiness:     out.Readiness,
 		RunAttemptID:  runAttemptID,
 	}
 	// APPROVED ORDER: Create success -> record+attach spawned binding ->
@@ -848,6 +920,7 @@ func (s *Store) recordDelegateSpawned(workID string, b *DelegateBinding, confirm
 		Session:       b.Session,
 		WorkSHA256:    b.WorkSHA256,
 		RunAttemptID:  runAttemptID,
+		Readiness:     b.Readiness,
 	}); err != nil {
 		return "", err
 	}

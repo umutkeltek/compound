@@ -25,6 +25,9 @@ func TestMain(m *testing.M) {
 	// injected temp paths.
 	LaneCapacityGuard = nil
 	DelegateHarnessResolver = nil
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
 
 	// land_check_test.go's tests share three prebuilt git repositories rather
 	// than each reconstructing one via ~6-12 git subprocess spawns. Build them

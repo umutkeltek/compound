@@ -321,6 +321,79 @@ func TestDelegateTupleResolutionFailureCreatesNoSessionOrAttempt(t *testing.T) {
 	}
 }
 
+func TestDelegateNilReadinessFailsClosedBeforeCapacityOrSpawn(t *testing.T) {
+	originalReadiness := DelegateHarnessReadiness
+	originalGuard := LaneCapacityGuard
+	capacityCalls := 0
+	DelegateHarnessReadiness = nil
+	LaneCapacityGuard = func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+		capacityCalls++
+		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ok"}}, nil
+	}
+	t.Cleanup(func() {
+		DelegateHarnessReadiness = originalReadiness
+		LaneCapacityGuard = originalGuard
+	})
+
+	s := newStore(t)
+	workID := prepareClaimedWork(t, s, "codex", "", "")
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: workID, Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "refused" || result.Refusal == nil || result.Refusal.Reason != "readiness_unmet" ||
+		result.Readiness == nil || result.Readiness.Ready {
+		t.Fatalf("nil readiness result = %+v", result)
+	}
+	if capacityCalls != 0 || len(runner.creates) != 0 {
+		t.Fatalf("nil readiness reached side effects: capacity_calls=%d creates=%+v", capacityCalls, runner.creates)
+	}
+	if events := capturedDelegateEvents(t, s); len(events) != 0 {
+		t.Fatalf("nil readiness persisted delegate events: %+v", events)
+	}
+}
+
+func TestDelegateValidatesWorkAndLeaseBeforeReadiness(t *testing.T) {
+	originalReadiness := DelegateHarnessReadiness
+	readinessCalls := 0
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		readinessCalls++
+		return DelegateHarnessReadinessResult{Ready: true}, nil
+	}
+	t.Cleanup(func() { DelegateHarnessReadiness = originalReadiness })
+
+	s := newStore(t)
+	runner := newFakeRunner()
+	if _, err := s.Delegate(DelegateOptions{
+		WorkID: "work_missing", Harness: "claude", Actor: "codex", Command: "claude", Now: fixedNow,
+	}, runner); err == nil || !strings.Contains(err.Error(), "load work") {
+		t.Fatalf("missing work error = %v", err)
+	}
+	if readinessCalls != 0 {
+		t.Fatalf("missing work reached readiness %d time(s)", readinessCalls)
+	}
+
+	workID := prepareClaimedWork(t, s, "lease-owner", "", "")
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: workID, Harness: "claude", Actor: "other-actor", Command: "claude", DryRun: true, Now: fixedNow,
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "lease_held" {
+		t.Fatalf("wrong-holder result = %+v", result)
+	}
+	if readinessCalls != 0 {
+		t.Fatalf("wrong holder reached readiness %d time(s)", readinessCalls)
+	}
+	if events := capturedDelegateEvents(t, s); len(events) != 0 {
+		t.Fatalf("wrong-holder dry-run persisted delegate events: %+v", events)
+	}
+}
+
 // prepareClaimedWork returns a WorkEnvelope already in "claimed" state under
 // byActor, with a real lease; the test pool then runs Delegate/Steer against
 // it. The lease carries the canonical lane id (set via ClaimWithLane) so the

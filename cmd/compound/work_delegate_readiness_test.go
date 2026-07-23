@@ -1,0 +1,472 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"compound/internal/contract"
+	"compound/internal/envelope"
+	"compound/internal/eventstore"
+	"compound/internal/harness"
+	"compound/internal/hookplan"
+	"compound/internal/work"
+)
+
+func TestEvaluateDelegateHarnessReadinessRejectsCleanDegradedInstructionPack(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	const harnessName = "claude_minimax"
+
+	if _, err := harness.RenderInstructionPack(homePath, harnessName, now); err != nil {
+		t.Fatal(err)
+	}
+	drift, err := harness.InstructionPackDrift(homePath, harnessName, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drift.Drifted {
+		t.Fatalf("fixture premise: freshly rendered degraded pack must be drift-clean: %+v", drift)
+	}
+
+	result, err := evaluateDelegateHarnessReadiness(work.DelegateHarnessReadinessRequest{
+		HomePath:    homePath,
+		HarnessHome: t.TempDir(),
+		Harness:     harnessName,
+		Now:         now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Ready {
+		t.Fatalf("clean-but-degraded instruction pack admitted: %+v", result)
+	}
+	details := strings.Join(result.Details, "\n")
+	for _, want := range []string{
+		"instruction_pack: policy_core is absent",
+		"instruction_pack: posture is absent",
+		"instruction_pack: installed_hooks roster is absent",
+		"instruction_pack: effective_contract roster is absent",
+	} {
+		if !strings.Contains(details, want) {
+			t.Fatalf("details = %q, want %q", details, want)
+		}
+	}
+}
+
+func TestEvaluateDelegateHarnessReadinessBindsExecutableLiveHookAndWorkContext(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_readiness")
+	request := work.DelegateHarnessReadinessRequest{
+		HomePath:               fixture.compoundHome,
+		HarnessHome:            fixture.harnessHome,
+		WorkID:                 fixture.workID,
+		ContextPackID:          fixture.contextPackID,
+		Workspace:              fixture.workspace,
+		Harness:                fixture.harness,
+		LaneID:                 fixture.harness,
+		RequestedModelID:       "fixture-zai",
+		RequestedProviderRoute: "zai",
+		Command:                fixture.binary,
+		Now:                    fixture.now.Add(time.Minute),
+	}
+
+	ready, err := evaluateDelegateHarnessReadiness(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ready.Ready || len(ready.Details) != 0 {
+		t.Fatalf("fully attested harness rejected: %+v", ready)
+	}
+	kinds := map[string]bool{}
+	for _, item := range ready.Evidence {
+		kinds[item.Kind] = true
+	}
+	for _, want := range []string{
+		"executable",
+		"permission_authority",
+		"permission_posture",
+		"blocking_hook_plan",
+		"blocking_hook_installation",
+		"context_pack",
+		"effective_contract",
+		"instruction_pack",
+	} {
+		if !kinds[want] {
+			t.Fatalf("readiness evidence kinds = %v, missing %q", kinds, want)
+		}
+	}
+
+	overridden := request
+	overridden.Command = "/bin/sh"
+	overridden.CommandOverridden = true
+	overrideResult, err := evaluateDelegateHarnessReadiness(overridden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overrideResult.Ready || !strings.Contains(strings.Join(overrideResult.Details, "\n"), "raw command override is not attested") {
+		t.Fatalf("unattested command override admitted: %+v", overrideResult)
+	}
+
+	removeDelegateFixturePreToolUse(t, fixture.profilePath)
+	liveDrift, err := evaluateDelegateHarnessReadiness(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if liveDrift.Ready || !strings.Contains(strings.Join(liveDrift.Details, "\n"), "blocking_hook_live: status=missing") {
+		t.Fatalf("missing live profile hook admitted: %+v", liveDrift)
+	}
+}
+
+func TestEvaluateDelegateHarnessReadinessRejectsUnrelatedEffectiveContract(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_wrong_contract")
+	effective := fixture.effective
+	effective.Harness = "codex"
+	if _, err := contract.RecordEffectiveContract(fixture.compoundHome, effective); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.RenderInstructionPack(fixture.compoundHome, fixture.harness, fixture.now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := evaluateDelegateHarnessReadiness(work.DelegateHarnessReadinessRequest{
+		HomePath:               fixture.compoundHome,
+		HarnessHome:            fixture.harnessHome,
+		WorkID:                 fixture.workID,
+		ContextPackID:          fixture.contextPackID,
+		Workspace:              fixture.workspace,
+		Harness:                fixture.harness,
+		LaneID:                 fixture.harness,
+		RequestedModelID:       "fixture-zai",
+		RequestedProviderRoute: "zai",
+		Command:                fixture.binary,
+		Now:                    fixture.now.Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Ready || !strings.Contains(strings.Join(result.Details, "\n"), "effective contract harness identity does not match") {
+		t.Fatalf("unrelated effective contract admitted: %+v", result)
+	}
+}
+
+func TestWorkDelegatePersistsSuccessfulReadinessAttestation(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_attestation")
+	store, err := work.Open(fixture.compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(work.CreateInput{
+		WorkID:           fixture.workID,
+		Owner:            "orchestrator:test",
+		Actor:            "orchestrator:test",
+		ContextPackID:    fixture.contextPackID,
+		SuccessPredicate: "delegated activation preserves its admission evidence",
+		State:            "ready",
+	}, fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(created.ID, "orchestrator:test", fixture.now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	originalGuard := work.LaneCapacityGuard
+	originalResolver := work.DelegateHarnessResolver
+	originalReadiness := work.DelegateHarnessReadiness
+	work.LaneCapacityGuard = func(work.LaneCapacityGuardRequest) (work.LaneCapacityGuardResult, error) {
+		return work.LaneCapacityGuardResult{Capacity: work.DispatchLaneCapacity{State: "ok", Remaining: 0.8}}, nil
+	}
+	work.DelegateHarnessResolver = func(work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
+		return work.DelegateHarnessResolution{
+			Harness:                fixture.harness,
+			Command:                fixture.binary,
+			LaneID:                 fixture.harness,
+			RequestedModelID:       "fixture-zai",
+			RequestedProviderRoute: "zai",
+			CapacityLane:           "zai",
+			TupleBacked:            true,
+		}, nil
+	}
+	work.DelegateHarnessReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		req.HarnessHome = fixture.harnessHome
+		return evaluateDelegateHarnessReadiness(req)
+	}
+	t.Cleanup(func() {
+		work.LaneCapacityGuard = originalGuard
+		work.DelegateHarnessResolver = originalResolver
+		work.DelegateHarnessReadiness = originalReadiness
+	})
+
+	result, err := store.Delegate(work.DelegateOptions{
+		WorkID:    fixture.workID,
+		Harness:   fixture.harness,
+		Actor:     "orchestrator:test",
+		Workspace: fixture.workspace,
+		Now:       fixture.now.Add(2 * time.Minute),
+	}, newDelegateCLIFakeRunner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "spawned" || result.Readiness == nil || !result.Readiness.Ready ||
+		result.Binding == nil || result.Binding.Readiness == nil || !result.Binding.Readiness.Ready {
+		t.Fatalf("spawned readiness attestation = %+v", result)
+	}
+	events, err := eventstore.Open(fixture.compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := events.Read(result.EventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event struct {
+		Readiness *work.DelegateHarnessReadinessResult `json:"readiness"`
+	}
+	if err := json.Unmarshal(record.Bytes, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Readiness == nil || !event.Readiness.Ready || len(event.Readiness.Evidence) == 0 {
+		t.Fatalf("spawn event lost readiness attestation: %s", record.Bytes)
+	}
+}
+
+func TestWorkDelegateCLIRefusesUnattestedCommandOverrideBeforeMutation(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_raw_override")
+	store, err := work.Open(fixture.compoundHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(work.CreateInput{
+		WorkID:           fixture.workID,
+		Owner:            "orchestrator:test",
+		Actor:            "orchestrator:test",
+		ContextPackID:    fixture.contextPackID,
+		SuccessPredicate: "an arbitrary command cannot borrow a harness readiness attestation",
+		State:            "ready",
+	}, fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(created.ID, "orchestrator:test", fixture.now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	originalGuard := work.LaneCapacityGuard
+	originalResolver := work.DelegateHarnessResolver
+	originalReadiness := work.DelegateHarnessReadiness
+	capacityCalls := 0
+	work.LaneCapacityGuard = func(work.LaneCapacityGuardRequest) (work.LaneCapacityGuardResult, error) {
+		capacityCalls++
+		return work.LaneCapacityGuardResult{Capacity: work.DispatchLaneCapacity{State: "ok", Remaining: 0.8}}, nil
+	}
+	work.DelegateHarnessResolver = func(req work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
+		command := fixture.binary
+		if strings.TrimSpace(req.CommandOverride) != "" {
+			command = req.CommandOverride
+		}
+		return work.DelegateHarnessResolution{
+			Harness:                fixture.harness,
+			Command:                command,
+			LaneID:                 fixture.harness,
+			RequestedModelID:       "fixture-zai",
+			RequestedProviderRoute: "zai",
+			CapacityLane:           "zai",
+			TupleBacked:            true,
+		}, nil
+	}
+	work.DelegateHarnessReadiness = func(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessResult, error) {
+		req.HarnessHome = fixture.harnessHome
+		return evaluateDelegateHarnessReadiness(req)
+	}
+	t.Cleanup(func() {
+		work.LaneCapacityGuard = originalGuard
+		work.DelegateHarnessResolver = originalResolver
+		work.DelegateHarnessReadiness = originalReadiness
+	})
+
+	runner := newDelegateCLIFakeRunner()
+	before := snapshotFiles(t, fixture.compoundHome)
+	out, errOut, code := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		fixture.workID,
+		"--harness", fixture.harness,
+		"--actor", "orchestrator:test",
+		"--workspace", fixture.workspace,
+		"--json",
+		"--", "/bin/sh", "-c", "true",
+	)
+	if code != 1 || errOut != "" {
+		t.Fatalf("code=%d stderr=%q stdout=%q", code, errOut, out)
+	}
+	var result work.DelegateResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "readiness_unmet" ||
+		result.Readiness == nil || !strings.Contains(strings.Join(result.Readiness.Details, "\n"), "raw command override is not attested") {
+		t.Fatalf("raw override refusal = %+v", result)
+	}
+	if capacityCalls != 0 || len(runner.creates) != 0 {
+		t.Fatalf("raw override reached side effects: capacity_calls=%d creates=%+v", capacityCalls, runner.creates)
+	}
+	if after := snapshotFiles(t, fixture.compoundHome); !reflect.DeepEqual(before, after) {
+		t.Fatalf("raw override refusal mutated Compound state\nbefore=%v\nafter=%v", before, after)
+	}
+}
+
+type readyDelegateHarnessFixture struct {
+	compoundHome  string
+	harnessHome   string
+	workspace     string
+	workID        string
+	contextPackID string
+	harness       string
+	binary        string
+	profilePath   string
+	now           time.Time
+	effective     envelope.EffectiveContract
+}
+
+func buildReadyDelegateHarnessFixture(t *testing.T, workID string) readyDelegateHarnessFixture {
+	t.Helper()
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", harnessHome)
+	const harnessName = "claude_zai"
+
+	source := filepath.Join("..", "..", "adapters", "claude-zai", "hook-registration.ts")
+	if err := contract.StageSyntheticHookHandlers(harnessHome, source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := contract.ImportHookRegistrationTS(compoundHome, source, now); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(harnessHome, ".local", "bin", "compound")
+	profileDir := hookplan.ClaudeZaiProfileDir(harnessHome)
+	if _, err := hookplan.InstallHooksWithConfigDir(harnessHome, binary, "global", []string{"claude-zai"}, profileDir, false); err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(profileDir, "settings.json")
+	writeDelegateReadinessJSON(t, harness.PermissionAuthorityPath(compoundHome, harnessName), harness.PermissionAuthority{
+		SchemaVersion: harness.PermissionAuthoritySchemaVersion,
+		Harness:       harnessName,
+		AuthorityRef:  harness.PermissionAuthorityRef(harnessName),
+		TargetPath:    profilePath,
+		Permissions: harness.PermissionRules{
+			Allow: []string{"Read"}, Deny: []string{}, Ask: []string{}, DefaultMode: "auto",
+		},
+		AutoMode: harness.AutoModePolicy{Allow: []string{"$defaults", "Read"}},
+	})
+	render, err := harness.RenderPermissions(compoundHome, harnessName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profilePath, render.Content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.WriteHarnessArtifactManifest(compoundHome, []harness.HarnessArtifact{render.Artifact}); err != nil {
+		t.Fatal(err)
+	}
+
+	taskContract := envelope.TaskContract{
+		Intent:           "execute the claimed delegated work",
+		Mode:             "execute",
+		DesiredOutcome:   "the governed lane runs",
+		SuccessPredicate: "readiness evidence remains attached",
+	}
+	effective := envelope.EffectiveContract{
+		Header:             delegateReadinessHeader(envelope.SVEffectiveContract, "contract_"+workID, workID, workspace, now),
+		Harness:            harnessName,
+		TaskContract:       taskContract,
+		ActiveInstructions: []string{},
+		ActiveHooks:        []string{"hook://" + harnessName + "/PreToolUse"},
+		ActiveDecisions:    []string{},
+		Excluded:           []envelope.ExcludedRef{},
+		SourceRevisions:    []envelope.SourceRev{},
+		Unknowns:           []string{},
+		Conflicts:          []string{},
+	}
+	if _, err := contract.RecordEffectiveContract(compoundHome, effective); err != nil {
+		t.Fatal(err)
+	}
+	contextPackID := "ctx_" + strings.TrimPrefix(workID, "work_")
+	contextPack := validCLIContextPack()
+	contextPack.ID = contextPackID
+	contextPack.IDs = envelope.IDs{WorkID: workID, ContractID: effective.ID}
+	contextPack.Scope = envelope.Scope{Surface: workspace}
+	contextPack.TaskContract = taskContract
+	contextPack.CreatedAt = now.Format(time.RFC3339)
+	if _, err := contract.RecordContextPack(compoundHome, contextPack); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.RenderInstructionPack(compoundHome, harnessName, now); err != nil {
+		t.Fatal(err)
+	}
+	return readyDelegateHarnessFixture{
+		compoundHome:  compoundHome,
+		harnessHome:   harnessHome,
+		workspace:     workspace,
+		workID:        workID,
+		contextPackID: contextPackID,
+		harness:       harnessName,
+		binary:        binary,
+		profilePath:   profilePath,
+		now:           now,
+		effective:     effective,
+	}
+}
+
+func delegateReadinessHeader(schemaVersion, id, workID, workspace string, now time.Time) envelope.Header {
+	return envelope.Header{
+		SchemaVersion: schemaVersion,
+		ID:            id,
+		CreatedAt:     now.UTC().Format(time.RFC3339),
+		Producer:      envelope.Producer{Kind: "cli", Name: "compound", Version: "test"},
+		IDs:           envelope.IDs{WorkID: workID},
+		Scope:         envelope.Scope{Surface: workspace},
+		Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+		Privacy:       "private",
+		Risk:          "tier1",
+		EvidenceRefs:  []string{},
+		Uncertainty:   envelope.Uncertainty{Level: "known"},
+	}
+}
+
+func removeDelegateFixturePreToolUse(t *testing.T, profilePath string) {
+	t.Helper()
+	var settings map[string]any
+	readDelegateReadinessJSONForTest(t, profilePath, &settings)
+	hooks, _ := settings["hooks"].(map[string]any)
+	delete(hooks, "PreToolUse")
+	writeDelegateReadinessJSON(t, profilePath, settings)
+}
+
+func writeDelegateReadinessJSON(t *testing.T, path string, value any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(body, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readDelegateReadinessJSONForTest(t *testing.T, path string, out any) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		t.Fatal(err)
+	}
+}
