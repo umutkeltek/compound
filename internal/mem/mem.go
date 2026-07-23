@@ -341,7 +341,11 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 		if err := validateVolatileWrite("candidate "+c.Entity, c.Visibility, c.ExpiresAt, c.ClaimType, c.CanonClass); err != nil {
 			return out, err
 		}
-		c.ID = idFor("cand_", c.Entity, c.Predicate, c.Object, ts(now))
+		candidateID, err := captureCandidateID(c, now)
+		if err != nil {
+			return out, fmt.Errorf("candidate %s: derive id: %w", c.Entity, err)
+		}
+		c.ID = candidateID
 		echo, err := s.reinforceIfEcho(c, now)
 		if err != nil {
 			return out, err
@@ -359,6 +363,24 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// captureCandidateID distinguishes separate observations of the same fact when
+// their provenance or other evidence-bearing fields differ. Lifecycle fields
+// are excluded because Capture and adjudication own them after intake.
+func captureCandidateID(c Candidate, now time.Time) (string, error) {
+	c.ID = ""
+	c.State = ""
+	c.Reason = ""
+	c.AdjudicatedBy = ""
+	c.AdjudicatedAt = ""
+	c.Annotations = nil
+	c.CreatedAt = ""
+	payload, err := json.Marshal(c)
+	if err != nil {
+		return "", err
+	}
+	return idFor("cand_", string(payload), ts(now)), nil
 }
 
 func (s *Store) getCandidate(id string) (Candidate, error) {
