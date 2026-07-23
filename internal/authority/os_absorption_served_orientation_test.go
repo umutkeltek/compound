@@ -12,36 +12,44 @@ import (
 
 const testServedOrientationProofMode = "served_orientation_authority"
 
-// TestOSAbsorptionNeedsServedOrientationProofHasNoLegacyRowIDFallback proves
-// osAbsorptionNeedsServedOrientationProof selects purely on ProofMode: a row
-// replaying the OLD hardcoded (status, compound_owner, row.ID) tuple that used
-// to trigger the fallback — but with ProofMode left unset — no longer needs
-// the proof. Only an explicit osAbsorptionProofModeServedOrient opt-in does.
-func TestOSAbsorptionNeedsServedOrientationProofHasNoLegacyRowIDFallback(t *testing.T) {
-	legacyShapedRow := OSAbsorptionMatrixRow{
-		ID:            "os_source_example_live_start",
-		Status:        "absorbed",
-		CompoundOwner: osAbsorptionEffectiveContractAuthorityRef,
+// TestOSAbsorptionServedOrientationRowsRequireProofMode is the removal
+// falsifier: EffectiveContract-owned OS absorption rows are structurally
+// served-orientation rows. Removing or changing proof_mode must fail matrix
+// validation and must not turn the doctor proof into "manual".
+func TestOSAbsorptionServedOrientationRowsRequireProofMode(t *testing.T) {
+	relevant := row(
+		"os_source_example_live_start",
+		"/synthetic/example-os/LIVE_START.md",
+		"absorbed",
+		osAbsorptionEffectiveContractAuthorityRef,
+		"compound orient and served client contract",
+		"",
+	)
+	relevant.CurrentRole = "source_in_place_evidence"
+	if !osAbsorptionNeedsServedOrientationProof(relevant) {
+		t.Fatalf("EffectiveContract-owned row must need served-orientation proof even when proof_mode is removed: %+v", relevant)
 	}
-	if osAbsorptionNeedsServedOrientationProof(legacyShapedRow) {
-		t.Fatalf("row with unset ProofMode should not need served-orientation proof, even matching the old legacy tuple: %+v", legacyShapedRow)
-	}
-
-	legacyShapedRow.ID = "os_source_example_whole_system_map"
-	if osAbsorptionNeedsServedOrientationProof(legacyShapedRow) {
-		t.Fatalf("second legacy row id should also not need proof without ProofMode: %+v", legacyShapedRow)
-	}
-
-	optedIn := legacyShapedRow
-	optedIn.ProofMode = osAbsorptionProofModeServedOrient
-	if !osAbsorptionNeedsServedOrientationProof(optedIn) {
-		t.Fatalf("row with ProofMode=%q should need served-orientation proof: %+v", osAbsorptionProofModeServedOrient, optedIn)
+	if err := validateOSAbsorptionMatrix(OSAbsorptionSourceMatrix{
+		SchemaVersion: OSAbsorptionMatrixSchema,
+		Rows:          []OSAbsorptionMatrixRow{relevant},
+	}); err == nil || !strings.Contains(err.Error(), osAbsorptionProofModeServedOrient) {
+		t.Fatalf("missing proof_mode should fail the matrix with the required mode named, got %v", err)
 	}
 
-	otherMode := legacyShapedRow
-	otherMode.ProofMode = osAbsorptionProofModeDecisions
-	if osAbsorptionNeedsServedOrientationProof(otherMode) {
-		t.Fatalf("row with a different ProofMode should not need served-orientation proof: %+v", otherMode)
+	relevant.ProofMode = osAbsorptionProofModeDecisions
+	if err := validateOSAbsorptionMatrix(OSAbsorptionSourceMatrix{
+		SchemaVersion: OSAbsorptionMatrixSchema,
+		Rows:          []OSAbsorptionMatrixRow{relevant},
+	}); err == nil || !strings.Contains(err.Error(), osAbsorptionProofModeServedOrient) {
+		t.Fatalf("wrong proof_mode should fail the matrix with the required mode named, got %v", err)
+	}
+
+	relevant.ProofMode = osAbsorptionProofModeServedOrient
+	if err := validateOSAbsorptionMatrix(OSAbsorptionSourceMatrix{
+		SchemaVersion: OSAbsorptionMatrixSchema,
+		Rows:          []OSAbsorptionMatrixRow{relevant},
+	}); err != nil {
+		t.Fatalf("required proof_mode should validate: %v", err)
 	}
 }
 
@@ -83,16 +91,7 @@ func TestValidateOSAbsorptionServedEntrypointEnforcesMemoryAuthorityBoundary(t *
 		"brain is source/projection/migration evidence.",
 		"gbrain is a bridge/index only.",
 	}
-	validLines := []string{
-		"## Orient first — Compound (the served contract)",
-		"compound orient --harness codex --task \"<task>\"",
-		required[0],
-		required[1],
-		required[2],
-		"source-in-place evidence",
-		"rollback",
-		sourceRef,
-	}
+	validLines := validServedOrientationLines("codex", sourceRef)
 
 	for _, missing := range required {
 		t.Run("requires "+missing, func(t *testing.T) {
@@ -117,6 +116,12 @@ func TestValidateOSAbsorptionServedEntrypointEnforcesMemoryAuthorityBoundary(t *
 		"brain is canon.",
 		"If curated brain and gbrain disagree, curated brain wins.",
 		"Durable outcomes land directly in `~/brain`.",
+		"brain remains the durable memory authority.",
+		"Save durable facts to ~/brain.",
+		"Hermes cron writes to ~/brain/reviews; curate to canon.",
+		"gbrain remains the canonical memory authority.",
+		"Do not forget: brain remains the durable memory authority.",
+		"brain is not merely an index; it remains the durable memory authority.",
 	} {
 		t.Run("rejects "+contradictory, func(t *testing.T) {
 			body := strings.Join(append(append([]string{}, validLines...), contradictory), "\n")
@@ -128,6 +133,53 @@ func TestValidateOSAbsorptionServedEntrypointEnforcesMemoryAuthorityBoundary(t *
 				t.Fatalf("error %q does not identify the memory-authority contradiction", err.Error())
 			}
 		})
+	}
+}
+
+func TestValidateOSAbsorptionServedEntrypointUsesOnlyActiveInstructions(t *testing.T) {
+	sourceRef := "/synthetic/example-source/ENTRYPOINT.md"
+	requiredAuthority := strings.Join([]string{
+		osAbsorptionRequiredMeaningAuthority,
+		osAbsorptionRequiredBrainRole,
+		osAbsorptionRequiredGBrainRole,
+	}, "\n")
+	activeWithoutAuthority := strings.Join([]string{
+		"## Orient first — Compound (the served contract)",
+		"Run `compound orient --harness codex --task \"<task>\"`.",
+		"These files remain source-in-place evidence and rollback:",
+		sourceRef,
+	}, "\n")
+
+	for _, hidden := range []string{
+		"<!--\n" + requiredAuthority + "\n-->",
+		"```text\n" + requiredAuthority + "\n```",
+		"> " + strings.ReplaceAll(requiredAuthority, "\n", "\n> "),
+		`Retired quotation: "` + strings.ReplaceAll(requiredAuthority, "\n", " ") + `"`,
+	} {
+		body := activeWithoutAuthority + "\n" + hidden
+		err := validateOSAbsorptionServedEntrypoint("codex", sourceRef, body)
+		if err == nil {
+			t.Fatalf("authority roles hidden outside active instructions must not satisfy the guard:\n%s", hidden)
+		}
+		if !strings.Contains(err.Error(), "missing") {
+			t.Fatalf("hidden authority roles should report missing active guidance, got %q", err)
+		}
+	}
+
+	body := strings.Join(append(validServedOrientationLines("codex", sourceRef),
+		"<!-- brain remains the durable memory authority. -->",
+		"```text",
+		"Save durable facts to ~/brain.",
+		"```",
+		"> Retired guidance: gbrain is canon.",
+		`Retired quotation: "brain is the source of truth."`,
+		"Never save durable facts directly to ~/brain; route them through Compound.",
+		"Compound is the durable semantic authority; brain remains evidence.",
+		"The canonical role for gbrain is bridge/index only.",
+		`The statement "brain is the source of truth" is a retired quotation kept for migration evidence.`,
+	), "\n")
+	if err := validateOSAbsorptionServedEntrypoint("codex", sourceRef, body); err != nil {
+		t.Fatalf("commented, fenced, quoted-retired, and explicitly forbidden contradictions are not active guidance: %v", err)
 	}
 }
 
@@ -163,6 +215,63 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 			},
 			wantStatus: "failed",
 			wantDetail: "ContextPack",
+		},
+		{
+			name: "removed proof mode fails closed instead of becoming manual",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				for _, id := range []string{"os_source_served_orientation_primary", "os_source_served_orientation_secondary"} {
+					mutateOSAbsorptionMatrixRow(t, fixture.compoundHome, id, func(row *OSAbsorptionMatrixRow) {
+						row.ProofMode = ""
+					})
+				}
+			},
+			wantStatus: "failed",
+			wantDetail: osAbsorptionProofModeServedOrient,
+		},
+		{
+			name: "arbitrary copied harness entrypoints fail binding",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				copiedCodex := filepath.Join(t.TempDir(), "AGENTS.md")
+				copiedClaude := filepath.Join(t.TempDir(), "CLAUDE.md")
+				copyServedOrientationFixtureFile(t, fixture.codexPath, copiedCodex)
+				copyServedOrientationFixtureFile(t, fixture.claudePath, copiedClaude)
+				for _, id := range []string{"os_source_served_orientation_primary", "os_source_served_orientation_secondary"} {
+					mutateOSAbsorptionMatrixRow(t, fixture.compoundHome, id, func(row *OSAbsorptionMatrixRow) {
+						row.EvidenceRefs = replaceServedEntrypointEvidence(row.EvidenceRefs, "codex", copiedCodex)
+						row.EvidenceRefs = replaceServedEntrypointEvidence(row.EvidenceRefs, "claude", copiedClaude)
+					})
+				}
+			},
+			wantStatus: "failed",
+			wantDetail: "live installed",
+		},
+		{
+			name: "arbitrary copied source entrypoint fails binding",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				copiedSource := filepath.Join(t.TempDir(), "LIVE_START.md")
+				copyServedOrientationFixtureFile(t, fixture.liveStartPath, copiedSource)
+				for _, id := range []string{"os_source_served_orientation_primary", "os_source_served_orientation_secondary"} {
+					mutateOSAbsorptionMatrixRow(t, fixture.compoundHome, id, func(row *OSAbsorptionMatrixRow) {
+						oldSourceRef := row.SourceRef
+						row.SourceRef = copiedSource
+						for _, entrypointPath := range []string{fixture.codexPath, fixture.claudePath} {
+							body, err := os.ReadFile(entrypointPath)
+							if err != nil {
+								t.Fatal(err)
+							}
+							body = []byte(strings.ReplaceAll(string(body), oldSourceRef, copiedSource))
+							if err := os.WriteFile(entrypointPath, body, 0o644); err != nil {
+								t.Fatal(err)
+							}
+						}
+					})
+				}
+			},
+			wantStatus: "failed",
+			wantDetail: "declared absorbed-OS source entrypoint",
 		},
 	}
 
@@ -210,6 +319,7 @@ type servedOrientationFixture struct {
 	compoundHome    string
 	codexPath       string
 	claudePath      string
+	liveStartPath   string
 	contextPackID   string
 	contextPackPath string
 }
@@ -217,13 +327,24 @@ type servedOrientationFixture struct {
 func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 	t.Helper()
 	root := t.TempDir()
+	t.Setenv("HOME", root)
 	compoundHome := filepath.Join(root, "compound-home")
-	codexPath := filepath.Join(root, "codex", "AGENTS.md")
-	claudePath := filepath.Join(root, "claude", "CLAUDE.md")
+	codexPath := filepath.Join(root, ".codex", "AGENTS.md")
+	claudePath := filepath.Join(root, ".claude", "CLAUDE.md")
 	contextPackID := "ctx_served_orientation"
 	contextPackPath := filepath.Join(compoundHome, "context", "packs", contextPackID+".json")
-	liveStart := filepath.Join(root, "example-os", "LIVE_START.md")
-	wholeMap := filepath.Join(root, "example-os", "universe", "WHOLE_SYSTEM_MAP.md")
+	absorbedOSRoot := filepath.Join(root, "example-os")
+	liveStart := filepath.Join(absorbedOSRoot, "LIVE_START.md")
+	wholeMap := filepath.Join(absorbedOSRoot, "universe", "WHOLE_SYSTEM_MAP.md")
+	if err := os.MkdirAll(filepath.Dir(wholeMap), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{liveStart, wholeMap} {
+		if err := os.WriteFile(path, []byte("# synthetic absorbed-OS source entrypoint\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedAbsorbedOSRegistry(t, compoundHome, absorbedOSRoot)
 
 	for _, entrypoint := range []struct {
 		harness string
@@ -283,9 +404,48 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 		compoundHome:    compoundHome,
 		codexPath:       codexPath,
 		claudePath:      claudePath,
+		liveStartPath:   liveStart,
 		contextPackID:   contextPackID,
 		contextPackPath: contextPackPath,
 	}
+}
+
+func validServedOrientationLines(harness, sourceRef string) []string {
+	return []string{
+		"## Orient first — Compound (the served contract)",
+		"compound orient --harness " + harness + " --task \"<task>\"",
+		osAbsorptionRequiredMeaningAuthority,
+		osAbsorptionRequiredBrainRole,
+		osAbsorptionRequiredGBrainRole,
+		"source-in-place evidence",
+		"rollback",
+		sourceRef,
+	}
+}
+
+func copyServedOrientationFixtureFile(t *testing.T, from, to string) {
+	t.Helper()
+	body, err := os.ReadFile(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(to, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func replaceServedEntrypointEvidence(refs []string, harness, path string) []string {
+	got := append([]string(nil), refs...)
+	prefix := osAbsorptionServedEntrypointEvidenceRef + harness + ":"
+	for i, ref := range got {
+		if strings.HasPrefix(ref, prefix) {
+			got[i] = prefix + path
+		}
+	}
+	return got
 }
 
 func writeServedOrientationContextPack(t *testing.T, path, id string) {

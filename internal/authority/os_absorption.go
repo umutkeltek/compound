@@ -445,6 +445,24 @@ func validateOSAbsorptionMatrix(matrix OSAbsorptionSourceMatrix) error {
 			return fmt.Errorf("duplicate os absorption row id %q", row.ID)
 		}
 		seen[row.ID] = true
+		if osAbsorptionIsServedOrientationAuthorityRow(row) && row.ProofMode != osAbsorptionProofModeServedOrient {
+			return fmt.Errorf(
+				"os absorption row %q owned by %s requires proof_mode %q, got %q",
+				row.ID,
+				osAbsorptionEffectiveContractAuthorityRef,
+				osAbsorptionProofModeServedOrient,
+				row.ProofMode,
+			)
+		}
+		if row.ProofMode == osAbsorptionProofModeServedOrient && !osAbsorptionIsServedOrientationAuthorityRow(row) {
+			return fmt.Errorf(
+				"os absorption row %q uses proof_mode %q but compound_owner is %q, want %q",
+				row.ID,
+				osAbsorptionProofModeServedOrient,
+				row.CompoundOwner,
+				osAbsorptionEffectiveContractAuthorityRef,
+			)
+		}
 	}
 	return nil
 }
@@ -993,15 +1011,22 @@ func osAbsorptionNeedsOperatorStateProof(row OSAbsorptionMatrixRow) bool {
 	return row.CompoundOwner == policy.OperatorStateAuthorityRef
 }
 
-// osAbsorptionNeedsServedOrientationProof selects the served-orientation
-// proof by explicit proof_mode alone: any row that names
-// osAbsorptionProofModeServedOrient gets the proof. Rows without ProofMode
-// need NO served-orientation proof — the operator re-imports the matrix
-// with proof_mode set, which is the designed cutover, not a gap. There is
-// no row-ID fallback; a matrix imported before proof_mode existed simply
-// stops requiring this proof until it is re-tagged.
+// osAbsorptionIsServedOrientationAuthorityRow is the structural owner
+// invariant for served orientation. Row IDs, source filenames, current_role,
+// and prose are all mutable evidence; the EffectiveContract authority owner
+// is the stable classification seam.
+func osAbsorptionIsServedOrientationAuthorityRow(row OSAbsorptionMatrixRow) bool {
+	return row.CompoundOwner == osAbsorptionEffectiveContractAuthorityRef
+}
+
+// osAbsorptionNeedsServedOrientationProof fails closed for both current and
+// legacy-installed matrices. Import validation requires the explicit proof
+// mode, while this structural fallback still dispatches the proof if someone
+// removes proof_mode directly from the installed JSON. The proof itself then
+// rejects the missing mode instead of silently degrading to "manual".
 func osAbsorptionNeedsServedOrientationProof(row OSAbsorptionMatrixRow) bool {
-	return row.ProofMode == osAbsorptionProofModeServedOrient
+	return osAbsorptionIsServedOrientationAuthorityRow(row) ||
+		row.ProofMode == osAbsorptionProofModeServedOrient
 }
 
 // osAbsorptionProofResult is the outcome of one row's auto-proof attempt.
@@ -1058,8 +1083,27 @@ type osAbsorptionServedOrientationEvidence struct {
 }
 
 func osAbsorptionServedOrientationProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
+	if row.ProofMode != osAbsorptionProofModeServedOrient {
+		return osAbsorptionProofResult{reason: fmt.Sprintf(
+			"served orientation row %s requires proof_mode %q, got %q",
+			row.ID,
+			osAbsorptionProofModeServedOrient,
+			row.ProofMode,
+		)}
+	}
+	if !osAbsorptionIsServedOrientationAuthorityRow(row) {
+		return osAbsorptionProofResult{reason: fmt.Sprintf(
+			"served orientation row %s must be owned by %s, got %q",
+			row.ID,
+			osAbsorptionEffectiveContractAuthorityRef,
+			row.CompoundOwner,
+		)}
+	}
 	evidence, err := parseOSAbsorptionServedOrientationEvidence(row.EvidenceRefs)
 	if err != nil {
+		return osAbsorptionProofResult{reason: err.Error()}
+	}
+	if err := validateOSAbsorptionServedOrientationBinding(homePath, row, evidence); err != nil {
 		return osAbsorptionProofResult{reason: err.Error()}
 	}
 
@@ -1155,9 +1199,76 @@ const (
 	osAbsorptionRequiredMeaningAuthority = "Compound owns durable semantic meaning and promotion."
 	osAbsorptionRequiredBrainRole        = "brain is source/projection/migration evidence."
 	osAbsorptionRequiredGBrainRole       = "gbrain is a bridge/index only."
+
+	osAbsorptionServedCodexEntrypoint  = ".codex/AGENTS.md"
+	osAbsorptionServedClaudeEntrypoint = ".claude/CLAUDE.md"
+	osAbsorptionServedLiveStart        = "LIVE_START.md"
+	osAbsorptionServedWholeSystemMap   = "universe/WHOLE_SYSTEM_MAP.md"
 )
 
+// validateOSAbsorptionServedOrientationBinding prevents copied files from
+// masquerading as live evidence. Compound owns both sides of the binding:
+// the absorbed-OS root comes from the promoted path-authority claim, source
+// entrypoint layout is code, and installed harness entrypoints are derived
+// from the actual user home. Evidence refs may attest those exact paths; they
+// may not choose new ones.
+func validateOSAbsorptionServedOrientationBinding(
+	homePath string,
+	row OSAbsorptionMatrixRow,
+	evidence osAbsorptionServedOrientationEvidence,
+) error {
+	absorbedOSRoot, found, err := ResolveAbsorbedOSRoot(homePath)
+	if err != nil {
+		return fmt.Errorf("resolve declared absorbed-OS root: %w", err)
+	}
+	if !found || !absorbedOSRootPresentOnDisk(absorbedOSRoot) {
+		return fmt.Errorf("served orientation evidence has no declared live absorbed-OS root")
+	}
+
+	sourceRef := filepath.Clean(strings.TrimSpace(row.SourceRef))
+	allowedSources := map[string]bool{
+		filepath.Clean(filepath.Join(absorbedOSRoot, filepath.FromSlash(osAbsorptionServedLiveStart))):      true,
+		filepath.Clean(filepath.Join(absorbedOSRoot, filepath.FromSlash(osAbsorptionServedWholeSystemMap))): true,
+	}
+	if !allowedSources[sourceRef] {
+		return fmt.Errorf(
+			"served orientation source_ref %s is not a declared absorbed-OS source entrypoint",
+			row.SourceRef,
+		)
+	}
+	sourceInfo, err := os.Stat(sourceRef)
+	if err != nil {
+		return fmt.Errorf("declared absorbed-OS source entrypoint %s: %w", sourceRef, err)
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return fmt.Errorf("declared absorbed-OS source entrypoint %s is not a regular file", sourceRef)
+	}
+
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve live harness home: %w", err)
+	}
+	expectedEntrypoints := map[string]string{
+		"codex":  filepath.Clean(filepath.Join(userHome, filepath.FromSlash(osAbsorptionServedCodexEntrypoint))),
+		"claude": filepath.Clean(filepath.Join(userHome, filepath.FromSlash(osAbsorptionServedClaudeEntrypoint))),
+	}
+	for _, harness := range []string{"codex", "claude"} {
+		got := filepath.Clean(evidence.entrypoints[harness])
+		want := expectedEntrypoints[harness]
+		if got != want {
+			return fmt.Errorf(
+				"%s served entrypoint %s must equal live installed entrypoint %s",
+				harness,
+				got,
+				want,
+			)
+		}
+	}
+	return nil
+}
+
 func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error {
+	activeBody := osAbsorptionActiveMarkdown(body)
 	required := []string{
 		osAbsorptionRequiredOrientHeading,
 		"compound orient --harness " + harness + " --task \"<task>\"",
@@ -1169,14 +1280,14 @@ func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error
 		sourceRef,
 	}
 	for _, want := range required {
-		if !strings.Contains(body, want) {
+		if !osAbsorptionActiveMarkdownContains(activeBody, want) {
 			return fmt.Errorf("%s entrypoint missing %q", harness, want)
 		}
 	}
 	// Reject ANY "## Orient first — " heading that is not the required
 	// Compound heading — genericized so this holds for any retired
 	// predecessor orientation entrypoint, not just one hardcoded legacy name.
-	for _, line := range strings.Split(body, "\n") {
+	for _, line := range strings.Split(activeBody, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "## Orient first — ") && trimmed != osAbsorptionRequiredOrientHeading {
 			return fmt.Errorf("%s entrypoint retains retired orient heading %q", harness, trimmed)
@@ -1186,30 +1297,394 @@ func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error
 		"FIRST action is recall",
 		"**Recall first:**",
 	} {
-		if strings.Contains(body, retired) {
+		if strings.Contains(activeBody, retired) {
 			return fmt.Errorf("%s entrypoint retains retired first-action directive %q", harness, retired)
 		}
 	}
-	authorityText := strings.ToLower(strings.NewReplacer(
-		"`", "",
-		"*", "",
-		"~", "",
-		"/", "",
-	).Replace(body))
-	for _, contradictory := range []string{
-		"brain is the curated markdown source of truth",
-		"brain is the source of truth",
-		"brain is source of truth",
-		"brain is canon",
-		"curated brain wins",
-		"durable outcomes land in brain",
-		"durable outcomes land directly in brain",
-	} {
-		if strings.Contains(authorityText, contradictory) {
-			return fmt.Errorf("%s entrypoint retains contradictory memory authority guidance %q", harness, contradictory)
+
+	for _, line := range strings.Split(activeBody, "\n") {
+		if contradiction, ok := osAbsorptionMemoryAuthorityContradiction(line); ok {
+			return fmt.Errorf("%s entrypoint retains contradictory memory authority guidance %q", harness, contradiction)
 		}
 	}
 	return nil
+}
+
+// osAbsorptionActiveMarkdown keeps instructions a harness can actually
+// consume while excluding HTML comments, fenced/indented examples, and
+// blockquotes. Required authority text hidden in any of those regions cannot
+// satisfy the guard, and retired quotations there cannot trip it.
+func osAbsorptionActiveMarkdown(body string) string {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	active := make([]string, 0, len(lines))
+	inComment := false
+	var fence byte
+
+	for _, raw := range lines {
+		if fence != 0 {
+			if osAbsorptionMarkdownFence(raw, fence) {
+				fence = 0
+			}
+			continue
+		}
+
+		line := osAbsorptionStripHTMLComments(raw, &inComment)
+		if inComment && strings.TrimSpace(line) == "" {
+			continue
+		}
+		if marker := osAbsorptionMarkdownFenceMarker(line); marker != 0 {
+			fence = marker
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			active = append(active, "")
+			continue
+		}
+		if strings.HasPrefix(trimmed, ">") ||
+			strings.HasPrefix(line, "\t") ||
+			strings.HasPrefix(line, "    ") {
+			continue
+		}
+		active = append(active, line)
+	}
+	return strings.Join(active, "\n")
+}
+
+func osAbsorptionActiveMarkdownContains(activeBody, want string) bool {
+	for _, line := range strings.Split(activeBody, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || osAbsorptionRetiredQuotation(trimmed) {
+			continue
+		}
+		if strings.Contains(line, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func osAbsorptionStripHTMLComments(line string, inComment *bool) string {
+	var out strings.Builder
+	for line != "" {
+		if *inComment {
+			end := strings.Index(line, "-->")
+			if end < 0 {
+				return out.String()
+			}
+			line = line[end+3:]
+			*inComment = false
+			continue
+		}
+		start := strings.Index(line, "<!--")
+		if start < 0 {
+			out.WriteString(line)
+			break
+		}
+		out.WriteString(line[:start])
+		line = line[start+4:]
+		*inComment = true
+	}
+	return out.String()
+}
+
+func osAbsorptionMarkdownFenceMarker(line string) byte {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "```") {
+		return '`'
+	}
+	if strings.HasPrefix(trimmed, "~~~") {
+		return '~'
+	}
+	return 0
+}
+
+func osAbsorptionMarkdownFence(line string, marker byte) bool {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) < 3 || trimmed[0] != marker {
+		return false
+	}
+	count := 0
+	for count < len(trimmed) && trimmed[count] == marker {
+		count++
+	}
+	return count >= 3 && strings.TrimSpace(trimmed[count:]) == ""
+}
+
+func osAbsorptionMemoryAuthorityContradiction(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || osAbsorptionRetiredQuotation(trimmed) {
+		return "", false
+	}
+	normalized := osAbsorptionSemanticWords(trimmed)
+	if normalized == "" {
+		return "", false
+	}
+	words := strings.Fields(normalized)
+
+	hasMemorySubject := osAbsorptionHasWord(words, "brain") || osAbsorptionHasWord(words, "gbrain")
+	if !hasMemorySubject {
+		return "", false
+	}
+	if osAbsorptionHasActiveMemoryAuthorityAssertion(words) {
+		return trimmed, true
+	}
+
+	if osAbsorptionDirectBrainWrite(words) {
+		return trimmed, true
+	}
+	return "", false
+}
+
+func osAbsorptionRetiredQuotation(line string) bool {
+	normalized := osAbsorptionSemanticWords(line)
+	for _, prefix := range []string{
+		"retired quotation ",
+		"retired guidance ",
+		"retired instruction ",
+		"obsolete wording ",
+		"obsolete guidance ",
+		"historical quotation ",
+		"superseded wording ",
+		"superseded guidance ",
+		"former instruction ",
+	} {
+		if strings.HasPrefix(normalized+" ", prefix) {
+			return true
+		}
+	}
+	words := strings.Fields(normalized)
+	if osAbsorptionHasAnyWord(words, "retired", "obsolete", "superseded", "historical", "former") &&
+		osAbsorptionHasAnyWord(words, "quotation", "quote", "statement", "claim", "guidance", "instruction", "wording") &&
+		!osAbsorptionHasAnyWord(words, "but", "however", "remains", "still", "wins") {
+		return true
+	}
+	return false
+}
+
+func osAbsorptionSemanticWords(value string) string {
+	value = strings.ToLower(value)
+	var out strings.Builder
+	lastSpace := true
+	for _, r := range value {
+		isWord := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if isWord {
+			out.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			out.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func osAbsorptionHasActiveMemoryAuthorityAssertion(words []string) bool {
+	for subjectIndex, word := range words {
+		if word != "brain" && word != "gbrain" {
+			continue
+		}
+		roleIndex, ok := osAbsorptionMemoryAuthorityRoleAfter(words, subjectIndex)
+		if !ok {
+			continue
+		}
+		if !osAbsorptionMemoryAuthorityAssertionNegated(words, subjectIndex, roleIndex) {
+			return true
+		}
+	}
+	return false
+}
+
+func osAbsorptionMemoryAuthorityRoleAfter(words []string, subjectIndex int) (int, bool) {
+	end := subjectIndex + 13
+	if end > len(words) {
+		end = len(words)
+	}
+	for i := subjectIndex + 1; i < end; i++ {
+		if words[i] == "compound" || words[i] == "brain" || words[i] == "gbrain" {
+			break
+		}
+		switch words[i] {
+		case "authority", "authoritative", "canon", "wins":
+			return i, true
+		case "canonical":
+			windowEnd := i + 4
+			if windowEnd > end {
+				windowEnd = end
+			}
+			if osAbsorptionHasAnyWord(words[i+1:windowEnd], "authority", "memory", "meaning", "truth") ||
+				osAbsorptionHasAnyWord(words[subjectIndex+1:i], "is", "remains") {
+				return i, true
+			}
+		case "source":
+			if i+2 < end && words[i+1] == "of" && words[i+2] == "truth" {
+				return i, true
+			}
+		case "owner", "owns":
+			windowEnd := i + 4
+			if windowEnd > end {
+				windowEnd = end
+			}
+			if osAbsorptionHasAnyWord(words[i+1:windowEnd], "meaning", "memory", "promotion", "truth") ||
+				osAbsorptionHasAnyWord(words[subjectIndex+1:i], "meaning", "memory", "promotion", "truth") {
+				return i, true
+			}
+		case "memory":
+			windowEnd := i + 3
+			if windowEnd > end {
+				windowEnd = end
+			}
+			if osAbsorptionHasAnyWord(words[i+1:windowEnd], "authority", "owner") &&
+				osAbsorptionHasAnyWord(words[subjectIndex+1:i], "durable", "canonical") {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func osAbsorptionMemoryAuthorityAssertionNegated(words []string, subjectIndex, roleIndex int) bool {
+	segment := words[subjectIndex+1 : roleIndex+1]
+	for i, word := range segment {
+		if word != "not" && word != "never" {
+			continue
+		}
+		afterNegative := segment[i+1:]
+		if osAbsorptionHasAnyWord(afterNegative, "remains", "wins") {
+			return false
+		}
+		return true
+	}
+
+	if subjectIndex > 0 && words[subjectIndex-1] == "not" {
+		return true
+	}
+	if subjectIndex > 1 && words[subjectIndex-2] == "not" {
+		switch words[subjectIndex-1] {
+		case "call", "consider", "declare", "make", "regard", "treat", "use":
+			return true
+		case "forget":
+			return false
+		}
+	}
+	from := subjectIndex - 3
+	if from < 0 {
+		from = 0
+	}
+	if osAbsorptionHasAnyWord(words[from:subjectIndex], "reject", "rejects", "rejected", "prevent", "prevents") {
+		return true
+	}
+	end := roleIndex + 4
+	if end > len(words) {
+		end = len(words)
+	}
+	return osAbsorptionHasAnyWord(words[roleIndex+1:end], "forbidden", "prohibited", "rejected", "retired")
+}
+
+func osAbsorptionDirectBrainWrite(words []string) bool {
+	actions := map[string]bool{
+		"append": true, "appends": true,
+		"curate": true, "curates": true,
+		"land": true, "lands": true,
+		"persist": true, "persists": true,
+		"promote": true, "promotes": true,
+		"record": true, "records": true,
+		"save": true, "saves": true,
+		"store": true, "stores": true,
+		"write": true, "writes": true,
+	}
+	durableMarkers := map[string]bool{
+		"canon": true, "canonical": true,
+		"claim": true, "claims": true,
+		"decision": true, "decisions": true,
+		"durable":  true,
+		"evidence": true,
+		"fact":     true, "facts": true,
+		"memory":  true,
+		"outcome": true, "outcomes": true,
+		"recipe": true, "recipes": true,
+		"review": true, "reviews": true,
+		"truth": true,
+	}
+
+	for actionIndex, word := range words {
+		if !actions[word] {
+			continue
+		}
+		if osAbsorptionWriteActionNegated(words, actionIndex) {
+			continue
+		}
+		for targetIndex := actionIndex + 1; targetIndex < len(words) && targetIndex <= actionIndex+12; targetIndex++ {
+			if words[targetIndex] != "brain" && words[targetIndex] != "gbrain" {
+				continue
+			}
+			if targetIndex > 0 && words[targetIndex-1] == "from" {
+				continue
+			}
+			if osAbsorptionWordsContain(words[targetIndex+1:], "to", "compound") {
+				continue
+			}
+			hasTargetDirection := targetIndex == actionIndex+1 ||
+				osAbsorptionHasAnyWord(words[actionIndex+1:targetIndex], "to", "into", "in", "under", "at")
+			if !hasTargetDirection {
+				continue
+			}
+			if osAbsorptionHasAnyMappedWord(words, durableMarkers) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func osAbsorptionWriteActionNegated(words []string, actionIndex int) bool {
+	from := actionIndex - 3
+	if from < 0 {
+		from = 0
+	}
+	window := words[from:actionIndex]
+	if osAbsorptionHasWord(window, "forget") {
+		return false
+	}
+	return osAbsorptionHasAnyWord(window, "not", "never")
+}
+
+func osAbsorptionHasWord(words []string, want string) bool {
+	for _, word := range words {
+		if word == want {
+			return true
+		}
+	}
+	return false
+}
+
+func osAbsorptionHasAnyWord(words []string, wants ...string) bool {
+	for _, want := range wants {
+		if osAbsorptionHasWord(words, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func osAbsorptionHasAnyMappedWord(words []string, wants map[string]bool) bool {
+	for _, word := range words {
+		if wants[word] {
+			return true
+		}
+	}
+	return false
+}
+
+func osAbsorptionWordsContain(words []string, first, second string) bool {
+	for i := 0; i+1 < len(words); i++ {
+		if words[i] == first && words[i+1] == second {
+			return true
+		}
+	}
+	return false
 }
 
 func readOSAbsorptionContextPack(homePath, id string) (envelope.ContextPack, error) {
