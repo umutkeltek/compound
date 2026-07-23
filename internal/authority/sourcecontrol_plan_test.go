@@ -140,6 +140,106 @@ evidence_refs:
 	}
 }
 
+func TestSourceControlReviewQueueFilesCleanSupersededPlanWithoutDeletingEvidence(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_dirty_state_resolved", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	paths, err := RecordSourceControlReviewPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(repo, "README.md"), "initial\n")
+	current, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != "clean" {
+		t.Fatalf("test repository status = %q, want clean", current.Status)
+	}
+
+	queue := sourceControlCleanupQueue(t, home)
+	item := queue.Items[0]
+	if item.Status != "resolved" || item.Readiness != "no_action" || item.Band != reviewartifact.BandFiled || len(item.Actions) != 0 {
+		t.Fatalf("clean repository retained a current dirty-review action: %+v", item)
+	}
+	if queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 || len(queue.Groups) != 0 {
+		t.Fatalf("clean repository retained operator attention: counts=%+v groups=%+v", queue.Counts, queue.Groups)
+	}
+	if _, err := os.Stat(paths.PlanPath); err != nil {
+		t.Fatalf("historical dirty-plan evidence was not preserved: %v", err)
+	}
+}
+
+func TestSourceControlReviewQueueBlocksWhenDirtyStateChangedSincePlan(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "first dirty state\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_dirty_state_changed", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if _, err := RecordSourceControlReviewPlan(home, plan); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(repo, "README.md"), "different dirty state\n")
+	queue := sourceControlCleanupQueue(t, home)
+	item := queue.Items[0]
+	if item.Status != "blocked" || item.Readiness != "blocked" || item.Band != reviewartifact.BandNeedsYou || len(item.Actions) != 0 {
+		t.Fatalf("changed dirty state retained stale review authority: %+v", item)
+	}
+	if !strings.Contains(item.BlockedReason, "changed since this dirty-plan") ||
+		!strings.Contains(item.NextAction, "regenerate") {
+		t.Fatalf("changed dirty state did not expose a truthful recovery: %+v", item)
+	}
+	if queue.Counts.ReviewRequired != 1 || queue.Counts.OK != 0 {
+		t.Fatalf("changed dirty state left the wrong attention counts: %+v", queue.Counts)
+	}
+}
+
+func TestSourceControlReviewQueueBlocksWhenCurrentRepoCannotBeRead(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_dirty_state_unreadable", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if _, err := RecordSourceControlReviewPlan(home, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(repo, repo+".offline"); err != nil {
+		t.Fatal(err)
+	}
+
+	queue := sourceControlCleanupQueue(t, home)
+	item := queue.Items[0]
+	if item.Status != "blocked" || item.Readiness != "blocked" || item.Band != reviewartifact.BandNeedsYou || len(item.Actions) != 0 {
+		t.Fatalf("unreadable repository retained unverified review authority: %+v", item)
+	}
+	if !strings.Contains(item.BlockedReason, "cannot read current source-control state") ||
+		!strings.Contains(item.NextAction, "restore repository visibility") {
+		t.Fatalf("unreadable repository did not expose a truthful recovery: %+v", item)
+	}
+}
+
 func TestSourceControlReviewQueueSeedsStableOwnerAuthority(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")

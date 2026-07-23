@@ -201,6 +201,11 @@ entrypoint imports conservatively infer only `session_start_context` from entryp
 presence and preserve generator/check/status as limitations. The adapter does not
 install hooks, mutate CapabilityGraph nodes, or make registry defaults authority.
 
+Source-control review freshness is resolved at projection time with another read-only snapshot. An
+exact dirty snapshot remains reviewable; a changed dirty snapshot or unreadable repository is
+blocked without authority; a clean repository files the old dirty plan as resolved historical
+evidence. The original plan and sidecars remain intact in every case.
+
 ## First Acceptance Test
 
 The first implementation should be deliberately narrow:

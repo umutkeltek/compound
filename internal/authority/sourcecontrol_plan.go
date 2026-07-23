@@ -1123,6 +1123,38 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 		}
 		return
 	}
+	currentSnapshot, snapshotErr := ReadGitSnapshot(plan.GitRoot)
+	if snapshotErr != nil {
+		blockSourceControlPlanCurrentState(
+			item,
+			plan,
+			"cannot read current source-control state: "+sourceControlQueueError(snapshotErr),
+			"restore repository visibility, then retry the read-only review projection",
+			"The current repository state cannot be verified; this dirty source-control review is blocked.",
+		)
+		return
+	}
+	if currentSnapshot.Status == "clean" {
+		item.Status = "resolved"
+		item.Readiness = "no_action"
+		item.BlockedReason = ""
+		item.NextAction = "historical dirty-plan evidence is superseded by the current clean repository; create a new dirty-plan only if uncommitted state returns"
+		item.Actions = nil
+		annotateSourceControlOperatorCard(item, plan, reviewartifact.BandFiled)
+		item.OperatorSummary = "The repository is clean; this dirty source-control review is historical evidence."
+		item.OperatorUnlock = ""
+		return
+	}
+	if !sourceControlReviewPlanMatchesSnapshot(plan, currentSnapshot) {
+		blockSourceControlPlanCurrentState(
+			item,
+			plan,
+			"current source-control state changed since this dirty-plan; stored review authority is stale",
+			"regenerate dirty-plan from the current read-only source-control snapshot before reviewing",
+			"The repository is still dirty, but this source-control review no longer matches the current state.",
+		)
+		return
+	}
 	annotateSourceControlOperatorCard(item, plan, reviewartifact.BandNeedsYou)
 	reviewYAML := sourceControlReviewYAMLPath(*item)
 	if reviewYAML == "" {
@@ -1173,6 +1205,34 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 	item.Actions = []reviewartifact.Action{action}
 	item.Readiness = "ready_to_record"
 	item.NextAction = "record reviewed source-control cleanup disposition"
+}
+
+func blockSourceControlPlanCurrentState(item *reviewartifact.QueueItem, plan SourceControlReviewPlan, reason, nextAction, summary string) {
+	item.Status = "blocked"
+	item.Readiness = "blocked"
+	item.BlockedReason = reason
+	item.NextAction = nextAction
+	item.Actions = nil
+	annotateSourceControlOperatorCard(item, plan, reviewartifact.BandNeedsYou)
+	item.OperatorSummary = summary
+	item.OperatorUnlock = nextAction
+}
+
+func sourceControlReviewPlanMatchesSnapshot(plan SourceControlReviewPlan, snapshot SourceControlSnapshot) bool {
+	return snapshot.Status == "dirty" &&
+		plan.RepoID == snapshot.RepoID &&
+		filepath.Clean(plan.GitRoot) == filepath.Clean(snapshot.GitRoot) &&
+		plan.Remote == snapshot.Remote &&
+		plan.Branch == snapshot.Branch &&
+		plan.Head == snapshot.Head &&
+		plan.Upstream == snapshot.Upstream &&
+		plan.Ahead == snapshot.Ahead &&
+		plan.Behind == snapshot.Behind &&
+		plan.Staged == snapshot.Staged &&
+		plan.Unstaged == snapshot.Unstaged &&
+		plan.Untracked == snapshot.Untracked &&
+		plan.ChangedPaths == snapshot.ChangedPaths &&
+		plan.ChangedStateFingerprint == snapshot.ChangedStateFingerprint
 }
 
 func sourceControlRecordReviewAuthoritySeed(item reviewartifact.QueueItem, plan SourceControlReviewPlan, review SourceControlReview, reviewYAML, sourceDigest, actionID string) (*envelope.ActionIntent, *policy.AuthorityContext) {

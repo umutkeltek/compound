@@ -1,7 +1,7 @@
 package authority
 
 import (
-	"strings"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,23 +10,17 @@ import (
 
 // TestAnnotateSourceControlCleanupQueueFillsFallback covers gap #1's
 // source-control-cleanup area: AnnotateSourceControlCleanupQueue tracked
-// readiness/actions but never computed the operator card, so every unannotated
-// plan rendered the generic fallback sentence.
+// readiness/actions but never computed an operator card, so every unannotated
+// plan rendered a generic fallback sentence.
 func TestAnnotateSourceControlCleanupQueueFillsFallback(t *testing.T) {
 	homePath := t.TempDir()
-	plan, err := BuildSourceControlReviewPlan(SourceControlSnapshot{
-		SchemaVersion:           SourceControlSchemaVersion,
-		RepoID:                  "compound",
-		GitRoot:                 t.TempDir(),
-		Upstream:                "origin/main",
-		Head:                    strings.Repeat("a", 40),
-		Ahead:                   3,
-		Status:                  "dirty",
-		Unstaged:                5,
-		ChangedPaths:            5,
-		ChangedStateFingerprint: "sha256:" + strings.Repeat("b", 64),
-		EvidenceRef:             "source-control:repo:compound:fixture",
-	}, "work_operator_card", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_operator_card", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,22 +32,26 @@ func TestAnnotateSourceControlCleanupQueueFillsFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if report.Items[0].SummarySource != reviewartifact.SummarySourceFallback {
-		t.Fatalf("precondition: unannotated plan should start as fallback, got %+v", report.Items[0])
+		t.Fatalf("precondition: unannotated plan should start fallback, got %+v", report.Items[0])
 	}
+
 	AnnotateSourceControlCleanupQueue(&report)
 	reviewartifact.Recount(&report)
 
 	item := report.Items[0]
-	want := "Repo watch sees compound has 5 uncommitted files and 3 commits ahead of origin/main. Tidy it?"
-	if item.OperatorSummary != want {
-		t.Fatalf("OperatorSummary = %q, want %q", item.OperatorSummary, want)
+	card, err := OperatorCardForSourceControlReviewPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.OperatorSummary != card.Summary {
+		t.Fatalf("OperatorSummary = %q, want %q", item.OperatorSummary, card.Summary)
 	}
 	if item.Band != reviewartifact.BandNeedsYou {
-		t.Fatalf("Band = %q, want needs_you", item.Band)
+		t.Fatalf("Band = %q, want %q", item.Band, reviewartifact.BandNeedsYou)
 	}
 }
 
-// TestOperatorCardForSourceControlReviewPlanStripsRepoPrefix pins a real
+// TestOperatorCardForSourceControlReviewPlanStripsRepoPrefix pins the real
 // live bug: repo_id carries a "repo:" machine prefix on disk (e.g.
 // "repo:compound"), which must not leak into the sentence or context_label.
 func TestOperatorCardForSourceControlReviewPlanStripsRepoPrefix(t *testing.T) {
