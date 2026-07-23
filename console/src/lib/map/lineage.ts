@@ -29,6 +29,12 @@ export type Lineage = {
 const LEDGER = path.resolve(COMPOUND_HOME, "ledger");
 const CANDIDATES = path.resolve(COMPOUND_HOME, "inbox", "memory-candidates");
 
+/** Canonical candidate-id grammar compound itself mints: `cand_` + lowercase
+ * hex, 12 chars (internal/mem idFor) or 16 (internal/knowledge shortDigest).
+ * No separators, no dot segments, no encoded forms — any other shape is
+ * untrusted route input, never a minted id, and must not build a path. */
+const CANDIDATE_ID = /^cand_[0-9a-f]{12,16}$/;
+
 async function readJsonl(file: string): Promise<Json[]> {
   try {
     const source = await readFile(file, "utf8");
@@ -50,8 +56,17 @@ async function readJsonl(file: string): Promise<Json[]> {
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
 async function readCandidate(id: string): Promise<Json | null> {
+  // The id arrives as a decoded URL segment; it never constructs a path unless
+  // it matches the minted grammar. Traversal, separators, and encoded or
+  // alternate forms fail soft as not-found with no filesystem read.
+  if (!CANDIDATE_ID.test(id)) return null;
+  const file = path.resolve(CANDIDATES, `${id}.json`);
+  // Containment invariant stated independently of the grammar above: a
+  // candidate read is always a DIRECT CHILD of the candidate directory, so a
+  // later grammar change cannot silently reopen the traversal door.
+  if (path.dirname(file) !== CANDIDATES) return null;
   try {
-    return JSON.parse(await readFile(path.join(CANDIDATES, `${id}.json`), "utf8")) as Json;
+    return JSON.parse(await readFile(file, "utf8")) as Json;
   } catch {
     return null;
   }
