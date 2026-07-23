@@ -30,9 +30,14 @@ type productRecallFence struct {
 	Status   string
 	Identity string
 	Entity   string
-	known    map[string][]string
-	ids      map[string][]string
+	products productIdentityIndex
 	Revision string
+}
+
+type productIdentityIndex struct {
+	exact       map[string][]string
+	compact     map[string][]string
+	identifiers map[string][]string
 }
 
 type workspaceProductEvidence struct {
@@ -52,27 +57,14 @@ func resolveProductRecallFence(in Input, view *mem.CurrentView) productRecallFen
 	}
 
 	claims := view.Claims()
-	fence.known, fence.ids = currentProductIdentityIndex(claims)
-	authorityCandidates := map[string]bool{}
-	addToken := func(target map[string]bool, token string) {
-		key := productIdentityKey(token)
-		if len(fence.known[key]) > 0 {
-			target[key] = true
-		}
-	}
+	fence.products = currentProductIdentityIndex(claims)
 	addWorkspaceClaimToken := func(target map[string]bool, token string) {
-		addToken(target, token)
+		addUniqueProductToken(target, fence.products, token)
 		// Path evidence may be owned by repo:/workspace: entities rather than
 		// product: entities. Only this corroboration path interprets the final
-		// namespace segment as a product alias.
-		key := productFieldKey(token)
-		if len(fence.known[key]) > 0 {
-			target[key] = true
-		}
-	}
-	addIdentifier := func(target map[string]bool, identifier string) {
-		for _, identity := range fence.ids[productIdentifierKey(identifier)] {
-			target[identity] = true
+		// namespace segment as a boundary-preserving product alias.
+		if alias, ok := structuralProductEntityAlias(token); ok {
+			addUniqueProductToken(target, fence.products, alias)
 		}
 	}
 
@@ -82,12 +74,7 @@ func resolveProductRecallFence(in Input, view *mem.CurrentView) productRecallFen
 		fence.Revision = productRecallFenceRevision(fence)
 		return fence
 	}
-	for _, token := range evidence.Tokens {
-		addToken(authorityCandidates, token)
-	}
-	for _, identifier := range evidence.Identifiers {
-		addIdentifier(authorityCandidates, identifier)
-	}
+	authorityCandidates := productAuthorityCandidates(fence.products, evidence)
 
 	// Promoted path claims may corroborate or disambiguate a valid physical
 	// contract, but can never establish product identity on their own.
@@ -100,20 +87,9 @@ func resolveProductRecallFence(in Input, view *mem.CurrentView) productRecallFen
 	}
 
 	candidates := authorityCandidates
-	if len(authorityCandidates) > 1 && len(claimCandidates) > 0 {
-		intersection := map[string]bool{}
-		for identity := range authorityCandidates {
-			if claimCandidates[identity] {
-				intersection[identity] = true
-			}
-		}
-		if len(intersection) == 1 && len(claimCandidates) == 1 {
-			candidates = intersection
-		}
-	}
 	if len(authorityCandidates) == 1 && len(claimCandidates) > 0 {
-		for identity := range claimCandidates {
-			if !authorityCandidates[identity] {
+		for entity := range claimCandidates {
+			if !authorityCandidates[entity] {
 				candidates = map[string]bool{}
 				fence.Status = "ambiguous"
 				fence.Revision = productRecallFenceRevision(fence)
@@ -125,9 +101,9 @@ func resolveProductRecallFence(in Input, view *mem.CurrentView) productRecallFen
 	switch len(candidates) {
 	case 1:
 		fence.Status = "resolved"
-		for identity := range candidates {
-			fence.Identity = identity
-			fence.Entity = "product:" + identity
+		for entity := range candidates {
+			fence.Entity = entity
+			fence.Identity = exactProductIdentity(entity)
 		}
 	case 0:
 		fence.Status = "unresolved"
@@ -138,8 +114,97 @@ func resolveProductRecallFence(in Input, view *mem.CurrentView) productRecallFen
 	return fence
 }
 
-func currentProductIdentityIndex(claims []mem.Claim) (map[string][]string, map[string][]string) {
-	byKey := map[string]map[string]bool{}
+func productAuthorityCandidates(index productIdentityIndex, evidence workspaceProductEvidence) map[string]bool {
+	primaryExact := collectProductCandidates(index.exact, evidence.PrimaryTokens, exactProductIdentity)
+	if len(primaryExact) > 0 {
+		// A boundary-preserving contract identity is stronger than compact
+		// resemblance or repository identifiers. Multiple exact canonical
+		// entities remain ambiguous rather than being guessed apart.
+		return primaryExact
+	}
+
+	primaryCompact := collectProductCandidates(index.compact, evidence.PrimaryTokens, compactProductIdentityKey)
+	identifiers := collectProductCandidates(index.identifiers, evidence.Identifiers, productIdentifierKey)
+	if len(primaryCompact) > 0 {
+		return uniquelyIntersectProductCandidates(primaryCompact, identifiers)
+	}
+	if len(identifiers) == 1 {
+		return identifiers
+	}
+
+	remainingExact := collectProductCandidates(index.exact, evidence.Tokens, exactProductIdentity)
+	if len(remainingExact) > 0 {
+		return remainingExact
+	}
+	remainingCompact := collectProductCandidates(index.compact, evidence.Tokens, compactProductIdentityKey)
+	if len(remainingCompact) > 0 {
+		return uniquelyIntersectProductCandidates(remainingCompact, identifiers)
+	}
+	return identifiers
+}
+
+func collectProductCandidates(index map[string][]string, values []string, keyFor func(string) string) map[string]bool {
+	out := map[string]bool{}
+	for _, value := range values {
+		key := keyFor(value)
+		if key == "" {
+			continue
+		}
+		for _, entity := range index[key] {
+			out[entity] = true
+		}
+	}
+	return out
+}
+
+func uniquelyIntersectProductCandidates(primary, corroborating map[string]bool) map[string]bool {
+	if len(primary) <= 1 || len(corroborating) == 0 {
+		return primary
+	}
+	intersection := map[string]bool{}
+	for entity := range primary {
+		if corroborating[entity] {
+			intersection[entity] = true
+		}
+	}
+	if len(intersection) == 1 {
+		return intersection
+	}
+	if len(intersection) > 1 {
+		return intersection
+	}
+	// Conflicting evidence cannot turn an ambiguous primary into "not found."
+	return primary
+}
+
+func addUniqueProductToken(target map[string]bool, index productIdentityIndex, token string) {
+	if entities := index.exact[exactProductIdentity(token)]; len(entities) == 1 {
+		target[entities[0]] = true
+		return
+	} else if len(entities) > 1 {
+		return
+	}
+	if entities := index.compact[compactProductIdentityKey(token)]; len(entities) == 1 {
+		target[entities[0]] = true
+	}
+}
+
+func structuralProductEntityAlias(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	lower := strings.ToLower(value)
+	if !strings.HasPrefix(lower, "repo:") && !strings.HasPrefix(lower, "workspace:") {
+		return "", false
+	}
+	i := strings.LastIndex(value, ":")
+	if i < 0 || i+1 >= len(value) {
+		return "", false
+	}
+	return strings.TrimSpace(value[i+1:]), true
+}
+
+func currentProductIdentityIndex(claims []mem.Claim) productIdentityIndex {
+	byExact := map[string]map[string]bool{}
+	byCompact := map[string]map[string]bool{}
 	products := map[string]string{}
 	for _, claim := range claims {
 		entity := strings.TrimSpace(claim.Entity)
@@ -149,25 +214,23 @@ func currentProductIdentityIndex(claims []mem.Claim) (map[string][]string, map[s
 		if !strings.HasPrefix(strings.ToLower(entity), "product:") || strings.Count(entity, ":") != 1 {
 			continue
 		}
-		key := productIdentityKey(entity)
-		if key == "" {
+		exactKey := exactProductIdentity(entity)
+		compactKey := compactProductIdentityKey(entity)
+		if exactKey == "" || compactKey == "" {
 			continue
 		}
-		if byKey[key] == nil {
-			byKey[key] = map[string]bool{}
+		if byExact[exactKey] == nil {
+			byExact[exactKey] = map[string]bool{}
 		}
-		byKey[key][entity] = true
-		products[entity] = key
-	}
-	out := make(map[string][]string, len(byKey))
-	for key, entities := range byKey {
-		for entity := range entities {
-			out[key] = append(out[key], entity)
+		if byCompact[compactKey] == nil {
+			byCompact[compactKey] = map[string]bool{}
 		}
-		sort.Strings(out[key])
+		byExact[exactKey][entity] = true
+		byCompact[compactKey][entity] = true
+		products[entity] = entity
 	}
 	byIdentifier := map[string]map[string]bool{}
-	addIdentifier := func(identity, value string) {
+	addIdentifier := func(entity, value string) {
 		key := productIdentifierKey(value)
 		if key == "" {
 			return
@@ -175,11 +238,11 @@ func currentProductIdentityIndex(claims []mem.Claim) (map[string][]string, map[s
 		if byIdentifier[key] == nil {
 			byIdentifier[key] = map[string]bool{}
 		}
-		byIdentifier[key][identity] = true
+		byIdentifier[key][entity] = true
 	}
 	for _, claim := range claims {
-		identity := products[claim.Entity]
-		if identity == "" {
+		entity := products[strings.TrimSpace(claim.Entity)]
+		if entity == "" {
 			continue
 		}
 		switch productFieldKey(claim.Predicate) {
@@ -187,21 +250,52 @@ func currentProductIdentityIndex(claims []mem.Claim) (map[string][]string, map[s
 			for _, value := range strings.FieldsFunc(claim.Object, func(r rune) bool {
 				return r == ',' || r == ';' || r == '|'
 			}) {
-				addIdentifier(identity, value)
+				addIdentifier(entity, value)
 			}
 		}
 	}
-	ids := make(map[string][]string, len(byIdentifier))
-	for key, entities := range byIdentifier {
-		for entity := range entities {
-			ids[key] = append(ids[key], entity)
-		}
-		sort.Strings(ids[key])
+	return productIdentityIndex{
+		exact:       sortedProductIdentityIndex(byExact),
+		compact:     sortedProductIdentityIndex(byCompact),
+		identifiers: sortedProductIdentityIndex(byIdentifier),
 	}
-	return out, ids
 }
 
-func productIdentityKey(value string) string {
+func sortedProductIdentityIndex(source map[string]map[string]bool) map[string][]string {
+	out := make(map[string][]string, len(source))
+	for key, entities := range source {
+		for entity := range entities {
+			out[key] = append(out[key], entity)
+		}
+		sort.Strings(out[key])
+	}
+	return out
+}
+
+func exactProductIdentity(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if strings.HasPrefix(value, "product:") {
+		value = strings.TrimSpace(strings.TrimPrefix(value, "product:"))
+	}
+	var b strings.Builder
+	boundary := false
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if boundary && b.Len() > 0 {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r)
+			boundary = false
+			continue
+		}
+		if b.Len() > 0 {
+			boundary = true
+		}
+	}
+	return b.String()
+}
+
+func compactProductIdentityKey(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if strings.HasPrefix(value, "product:") {
 		value = strings.TrimSpace(strings.TrimPrefix(value, "product:"))
@@ -382,7 +476,7 @@ func productReleaseEvidence(data []byte) (workspaceProductEvidence, bool) {
 func oneProductContractIdentity(tokens []string) bool {
 	identities := map[string]bool{}
 	for _, token := range tokens {
-		if identity := productIdentityKey(token); identity != "" {
+		if identity := exactProductIdentity(token); identity != "" {
 			identities[identity] = true
 		}
 	}
@@ -602,7 +696,7 @@ func productRecallFenceAllowsClaim(fence productRecallFence, claim mem.Claim) bo
 	if len(associated) == 0 && !unknown {
 		return true
 	}
-	return !unknown && fence.Identity != "" && len(associated) == 1 && associated[fence.Identity]
+	return !unknown && fence.Entity != "" && len(associated) == 1 && associated[fence.Entity]
 }
 
 func productEntitiesForClaim(fence productRecallFence, claim mem.Claim) (map[string]bool, bool) {
@@ -622,10 +716,17 @@ func productEntitiesForClaim(fence productRecallFence, claim mem.Claim) (map[str
 				continue
 			}
 			sawToken = true
-			identity := productIdentityKey(token)
-			if len(fence.known[identity]) > 0 {
-				associated[identity] = true
-			} else if unknownWhenUnresolved {
+			exact := fence.products.exact[exactProductIdentity(token)]
+			if len(exact) > 0 {
+				for _, entity := range exact {
+					associated[entity] = true
+				}
+				continue
+			}
+			compact := fence.products.compact[compactProductIdentityKey(token)]
+			if len(compact) == 1 {
+				associated[compact[0]] = true
+			} else if len(compact) > 1 || unknownWhenUnresolved {
 				unknown = true
 			}
 		}
@@ -633,9 +734,10 @@ func productEntitiesForClaim(fence productRecallFence, claim mem.Claim) (map[str
 			unknown = true
 		}
 	}
-	add(claim.Entity, strings.HasPrefix(strings.ToLower(strings.TrimSpace(claim.Entity)), "product:"))
-	if identity := productFieldKey(claim.Entity); len(fence.known[identity]) > 0 {
-		associated[identity] = true
+	entity := strings.TrimSpace(claim.Entity)
+	add(entity, strings.HasPrefix(strings.ToLower(entity), "product:"))
+	if alias, ok := structuralProductEntityAlias(entity); ok {
+		add(alias, false)
 	}
 	for _, topicRef := range claim.TopicRefs {
 		add(topicRef, strings.HasPrefix(strings.ToLower(strings.TrimSpace(topicRef)), "product:"))

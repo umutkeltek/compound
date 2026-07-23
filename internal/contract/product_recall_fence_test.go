@@ -223,7 +223,7 @@ func TestProductRecallFenceDoesNotTrustWorkspaceClaimWithoutContract(t *testing.
 	)
 }
 
-func TestProductRecallFenceCollapsesSpellingAliasesIntoOneIdentity(t *testing.T) {
+func TestProductRecallFenceNormalizesContractWordBoundariesForOneCanonicalIdentity(t *testing.T) {
 	home := t.TempDir()
 	workspaceRoot := filepath.Join(t.TempDir(), "widget-alpha")
 	workspace := filepath.Join(workspaceRoot, "client")
@@ -237,7 +237,6 @@ func TestProductRecallFenceCollapsesSpellingAliasesIntoOneIdentity(t *testing.T)
 	}
 	promoteProductFenceCandidates(t, store, []mem.Candidate{
 		productFenceCandidate("product:widget_alpha", "underscore_fact", "ALIAS-UNDERSCORE release safety", "product", "status", ""),
-		productFenceCandidate("product:widgetalpha", "compact_fact", "ALIAS-COMPACT release safety", "product", "status", ""),
 		productFenceCandidate("product:widget_beta", "beta_fact", "ALIAS-SIBLING release safety", "product", "status", ""),
 	})
 
@@ -249,8 +248,104 @@ func TestProductRecallFenceCollapsesSpellingAliasesIntoOneIdentity(t *testing.T)
 		t.Fatal(err)
 	}
 	assertProductFenceMarkers(t, pack,
-		[]string{"ALIAS-UNDERSCORE", "ALIAS-COMPACT"},
+		[]string{"ALIAS-UNDERSCORE"},
 		[]string{"ALIAS-SIBLING"},
+	)
+}
+
+func TestProductRecallFenceKeepsSampleClaimsSeparateFromCompactAndIOSProducts(t *testing.T) {
+	home := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), "sample-claims")
+	workspace := filepath.Join(workspaceRoot, "client")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProductProjectContractWithRepo(t, workspaceRoot, "sample-claims", "https://github.com/example/sampleclaims")
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoteProductFenceCandidates(t, store, []mem.Candidate{
+		productFenceCandidate("product:sample_claims", "surfaces", "https://github.com/example/sampleclaims", "product", "status", ""),
+		productFenceCandidate("product:sample_claims", "word_boundary_fact", "SAMPLE-CLAIMS-OWN release safety", "product", "status", ""),
+		productFenceCandidate("product:sampleclaims", "surfaces", "https://github.com/example/sampleclaims", "product", "status", ""),
+		productFenceCandidate("product:sampleclaims", "compact_collision_fact", "SAMPLE-CLAIMS-COMPACT release safety", "product", "status", ""),
+		productFenceCandidate("product:sample_claims_ios", "sibling_fact", "SAMPLE-CLAIMS-IOS release safety", "product", "status", ""),
+	})
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: workspace, Task: "release safety",
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProductFenceMarkers(t, pack,
+		[]string{"SAMPLE-CLAIMS-OWN"},
+		[]string{"SAMPLE-CLAIMS-COMPACT", "SAMPLE-CLAIMS-IOS"},
+	)
+}
+
+func TestProductRecallFenceUsesUniqueIdentifierToDisambiguateCompactFallback(t *testing.T) {
+	home := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), "wid-get-alpha")
+	workspace := filepath.Join(workspaceRoot, "client")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProductProjectContractWithRepo(t, workspaceRoot, "wid-get-alpha", "https://github.com/example/widget-alpha")
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoteProductFenceCandidates(t, store, []mem.Candidate{
+		productFenceCandidate("product:widget_alpha", "surfaces", "https://github.com/example/widget-alpha", "product", "status", ""),
+		productFenceCandidate("product:widget_alpha", "identifier_fact", "IDENTIFIER-OWN release safety", "product", "status", ""),
+		productFenceCandidate("product:widgetalpha", "compact_fact", "IDENTIFIER-COLLISION release safety", "product", "status", ""),
+	})
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: workspace, Task: "release safety",
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProductFenceMarkers(t, pack,
+		[]string{"IDENTIFIER-OWN"},
+		[]string{"IDENTIFIER-COLLISION"},
+	)
+}
+
+func TestProductRecallFenceFailsClosedWhenOnlyCompactIdentityIsAmbiguous(t *testing.T) {
+	home := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), "wid-get-alpha")
+	workspace := filepath.Join(workspaceRoot, "client")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProductProjectContract(t, workspaceRoot, "wid-get-alpha")
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoteProductFenceCandidates(t, store, []mem.Candidate{
+		productFenceCandidate("product:widget_alpha", "underscore_fact", "AMBIGUOUS-UNDERSCORE release safety", "product", "status", ""),
+		productFenceCandidate("product:widgetalpha", "compact_fact", "AMBIGUOUS-COMPACT release safety", "product", "status", ""),
+		productFenceCandidate("repo:widget_alpha", "git_root", workspaceRoot, "git_root", "status", ""),
+		productFenceCandidate("UniversalReleaseRule", "global_rule", "AMBIGUOUS-GLOBAL release safety", "standing-law", "architecture", ""),
+	})
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: workspace, Task: "release safety",
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProductFenceMarkers(t, pack,
+		[]string{"AMBIGUOUS-GLOBAL"},
+		[]string{"AMBIGUOUS-UNDERSCORE", "AMBIGUOUS-COMPACT"},
 	)
 }
 
@@ -435,6 +530,11 @@ func TestProductRecallFenceRejectsInvalidNearestContracts(t *testing.T) {
 			release: "schema_version: 1\nproject: ghost-product\n",
 		},
 		{
+			name:    "compact-only release product collision",
+			project: "schema_version: 1\nproject:\n  slug: widget-alpha\n",
+			release: "schema_version: 1\nproject: widgetalpha\n",
+		},
+		{
 			name:    "unsupported release schema",
 			project: "schema_version: 1\nproject:\n  slug: widget-alpha\n",
 			release: "schema_version: 2\nproject: widget-alpha\n",
@@ -561,6 +661,14 @@ func TestProductRecallFenceAppliesToEveryRuntimeContractAPI(t *testing.T) {
 func writeProductProjectContract(t *testing.T, root, slug string) {
 	t.Helper()
 	body := fmt.Sprintf("schema_version: 1\nproject:\n  slug: %s\nsource:\n  authority:\n    path: %s\n", slug, root)
+	if err := os.WriteFile(filepath.Join(root, "project.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeProductProjectContractWithRepo(t *testing.T, root, slug, repo string) {
+	t.Helper()
+	body := fmt.Sprintf("schema_version: 1\nproject:\n  slug: %s\nsource:\n  authority:\n    path: %s\n    repo: %s\n", slug, root, repo)
 	if err := os.WriteFile(filepath.Join(root, "project.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
