@@ -342,9 +342,16 @@ func nearestProductProjectEvidence(cwd string) (workspaceProductEvidence, string
 	if err != nil {
 		return workspaceProductEvidence{}, "invalid"
 	}
+	ceiling, found, err := trustedProductContractCeiling(dir)
+	if err != nil {
+		return workspaceProductEvidence{}, "invalid"
+	}
+	if !found {
+		return workspaceProductEvidence{}, "untrusted"
+	}
 	for {
-		projectData, projectPresent, projectErr := readOptionalProductContract(filepath.Join(dir, "project.yaml"))
-		releaseData, releasePresent, releaseErr := readOptionalProductContract(filepath.Join(dir, "release.yaml"))
+		projectData, projectPresent, projectErr := readOptionalProductContract(filepath.Join(dir, "project.yaml"), ceiling)
+		releaseData, releasePresent, releaseErr := readOptionalProductContract(filepath.Join(dir, "release.yaml"), ceiling)
 		if projectErr != nil || releaseErr != nil {
 			return workspaceProductEvidence{}, "invalid"
 		}
@@ -376,16 +383,53 @@ func nearestProductProjectEvidence(cwd string) (workspaceProductEvidence, string
 			}
 			return evidence, "valid"
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
+		if dir == ceiling {
 			return workspaceProductEvidence{}, "absent"
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir || !workspacePathContains(ceiling, parent) {
+			return workspaceProductEvidence{}, "invalid"
 		}
 		dir = parent
 	}
 }
 
-func readOptionalProductContract(path string) ([]byte, bool, error) {
-	data, err := os.ReadFile(path)
+func trustedProductContractCeiling(dir string) (string, bool, error) {
+	for {
+		for _, marker := range []string{".git", repoMarker} {
+			if _, err := os.Lstat(filepath.Join(dir, marker)); err == nil {
+				return dir, true, nil
+			} else if !os.IsNotExist(err) {
+				return "", false, err
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false, nil
+		}
+		dir = parent
+	}
+}
+
+func readOptionalProductContract(path, ceiling string) ([]byte, bool, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, false, err
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return nil, false, err
+	}
+	if !workspacePathContains(ceiling, resolved) {
+		return nil, false, os.ErrPermission
+	}
+	data, err := os.ReadFile(resolved)
 	if err == nil {
 		return data, true, nil
 	}
@@ -739,10 +783,12 @@ func productEntitiesForClaim(fence productRecallFence, claim mem.Claim) (map[str
 				}
 				continue
 			}
+			tokenUnknownWhenUnresolved := unknownWhenUnresolved ||
+				strings.HasPrefix(strings.ToLower(token), "product:")
 			compact := fence.products.compact[compactProductIdentityKey(token)]
 			if len(compact) == 1 {
 				associated[compact[0]] = true
-			} else if len(compact) > 1 || unknownWhenUnresolved {
+			} else if len(compact) > 1 || tokenUnknownWhenUnresolved {
 				unknown = true
 			}
 		}

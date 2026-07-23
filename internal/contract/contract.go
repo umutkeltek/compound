@@ -829,7 +829,7 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 	if len(snapshot.hooks) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d active hook ref(s) included Compound runtime.", len(snapshot.hooks))
 	}
-	pack.Excluded = append(pack.Excluded, snapshot.excludedDecisions...)
+	pack.Excluded = appendServedRuntimeExclusions(pack.Excluded, snapshot.excludedDecisions)
 	for _, ref := range snapshot.decisions {
 		pack.Included = append(pack.Included, envelope.IncludedRef{
 			Ref: ref, SourceClass: "runtime",
@@ -842,7 +842,7 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 	if len(snapshot.decisions) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d active decision ref(s) included from Compound runtime.", len(snapshot.decisions))
 	}
-	pack.Excluded = append(pack.Excluded, snapshot.excludedMemoryRefs...)
+	pack.Excluded = appendServedRuntimeExclusions(pack.Excluded, snapshot.excludedMemoryRefs)
 	for _, ref := range snapshot.memoryRefs {
 		pack.ActiveMemory = append(pack.ActiveMemory, ref.Ref)
 		pack.Included = append(pack.Included, envelope.IncludedRef{
@@ -850,7 +850,7 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 			Confidence: ref.Confidence, Status: "current",
 		})
 	}
-	pack.Excluded = append(pack.Excluded, snapshot.excludedPositionRefs...)
+	pack.Excluded = appendServedRuntimeExclusions(pack.Excluded, snapshot.excludedPositionRefs)
 	for _, ref := range snapshot.positionRefs {
 		pack.ActiveMemory = append(pack.ActiveMemory, ref.Ref)
 		pack.ActivePositions = append(pack.ActivePositions, ref.Position)
@@ -922,6 +922,37 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 		}
 	}
 	return pack
+}
+
+const servedProductFenceExclusionRef = "memory://product-associated-context-omitted"
+
+func appendServedRuntimeExclusions(dst []envelope.ExcludedRef, refs []envelope.ExcludedRef) []envelope.ExcludedRef {
+	productFenceOmitted := false
+	for _, ref := range dst {
+		if ref.Ref == servedProductFenceExclusionRef {
+			productFenceOmitted = true
+			break
+		}
+	}
+	for _, ref := range refs {
+		if strings.HasPrefix(ref.Reason, "product-associated context omitted:") {
+			productFenceOmitted = true
+			continue
+		}
+		dst = append(dst, ref)
+	}
+	if productFenceOmitted {
+		for _, ref := range dst {
+			if ref.Ref == servedProductFenceExclusionRef {
+				return dst
+			}
+		}
+		dst = append(dst, envelope.ExcludedRef{
+			Ref:    servedProductFenceExclusionRef,
+			Reason: "product-associated context omitted by workspace product fence",
+		})
+	}
+	return dst
 }
 
 func appendSnapshotOfferToPack(pack envelope.ContextPack, runtime runtimeOffer, ref, reason, summary string) envelope.ContextPack {
