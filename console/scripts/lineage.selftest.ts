@@ -13,7 +13,7 @@
  * the containment fix, checks 1/2/5 FAIL (the reads land); canonical
  * cand_<minted-token> ids keep resolving their direct-child JSON.
  *
- * Run from console/: `bun src/lib/map/lineage.selftest.ts`
+ * Run from console/: `bun scripts/lineage.selftest.ts`
  * (bun resolves the `@/lib` alias lineage.ts pulls in).
  */
 
@@ -21,7 +21,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { Lineage } from "./lineage";
+import type { Lineage } from "../src/lib/map/lineage";
 
 type Check = { name: string; ok: boolean; detail: string };
 
@@ -89,7 +89,7 @@ export async function runLineageSelfTest(): Promise<{ ok: boolean; details: stri
     process.env.COMPOUND_CONSOLE_PRIVATE_FALLBACKS = "1";
     process.env.COMPOUND_BIN = path.join(tmpParent, "failbin");
 
-    const { traceLineage } = await import("./lineage");
+    const { traceLineage } = await import("../src/lib/map/lineage");
 
     const trace = async (id: string): Promise<{ lineage: Lineage | null; threw: string }> => {
       try {

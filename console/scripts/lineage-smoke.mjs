@@ -3,7 +3,7 @@
  * candidate reader. The selftest imports extensionless TypeScript and the
  * console alias, so the proof battery runs this wrapper with Bun.
  */
-import { runLineageSelfTest } from "../src/lib/map/lineage.selftest.ts";
+import { runLineageSelfTest } from "./lineage.selftest.ts";
 
 const result = await runLineageSelfTest();
 for (const line of result.details) {
