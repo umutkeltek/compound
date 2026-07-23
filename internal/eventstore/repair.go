@@ -138,6 +138,7 @@ func (e *engine) repairTail(path string) error {
 		if err := truncateAndSync(path, truncateAt, false); err != nil {
 			return err
 		}
+		invalidateHotSegment(path)
 		e.logf("eventstore: repaired torn final frame in %s at offset %d", path, truncateAt)
 		return nil
 	}
@@ -177,6 +178,7 @@ func (e *engine) repairTail(path string) error {
 	if err := truncateAndSync(path, lineStart, true); err != nil {
 		return err
 	}
+	invalidateHotSegment(path)
 	e.logf("eventstore: repaired invalid final frame in %s at offset %d", path, lineStart)
 	return nil
 }

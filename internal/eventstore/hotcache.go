@@ -113,6 +113,19 @@ func (e *engine) hotSegmentFresh(path string) (bool, error) {
 	return ok && entry.path == path && entry.size == st.Size() && entry.mtime.Equal(st.ModTime()), nil
 }
 
+// invalidateHotSegment removes a cached view after an in-process mutation
+// rewrites the segment without necessarily changing its final size or mtime.
+// Some filesystems can collapse append+truncate into the cached stat tuple;
+// explicit invalidation prevents that ABA from serving pre-repair frames.
+func invalidateHotSegment(path string) {
+	key := filepath.Dir(path)
+	sharedHotCache.mu.Lock()
+	defer sharedHotCache.mu.Unlock()
+	if entry, ok := sharedHotCache.entries[key]; ok && entry.path == path {
+		delete(sharedHotCache.entries, key)
+	}
+}
+
 // hotSegmentEntryFor returns the memoized entry for path's family directory,
 // reparsing only when the memo is absent or its {path, size, mtime} stat
 // guard no longer matches path's current stat. The returned entry (and its
