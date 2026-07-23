@@ -308,6 +308,7 @@ func Doctor(repoRoot string, strict bool) Report {
 	if repoRoot != "" {
 		f = append(f, checkClassificationTotal(repoRoot)...)
 		f = append(f, checkPackageClassificationTableContract(repoRoot)...)
+		f = append(f, checkTransitionFieldContract(repoRoot)...)
 		f = append(f, checkEventStoreOwnership(repoRoot)...)
 		f = append(f, checkEventStorePublicContract(repoRoot)...)
 		f = append(f, checkDocLeak(repoRoot, strict)...)
@@ -597,6 +598,198 @@ func checkPackageClassificationTableContract(repoRoot string) []Finding {
 		return []Finding{{"package-table-single-source", Fail, "docs/architecture/status.md package table diverges from arch.Classification: " + strings.Join(problems, "; ")}}
 	}
 	return []Finding{{"package-table-single-source", Info, "docs/architecture/status.md package table matches arch.Classification for all " + itoa(len(Classification)) + " classified packages"}}
+}
+
+type transitionFieldSpec struct {
+	GoType  string
+	JSONTag string
+}
+
+// checkTransitionFieldContract keeps transition.md's direct Go-field contract synchronized with
+// envelope.Transition. Header is one anonymous field here; its separately documented universal
+// fields flatten into Transition's JSON representation.
+func checkTransitionFieldContract(repoRoot string) []Finding {
+	actual, err := readStructFieldContract(filepath.Join(repoRoot, "internal", "envelope"), "Transition")
+	if err != nil {
+		return []Finding{{"transition-field-contract", Fail, "could not inspect envelope.Transition: " + err.Error()}}
+	}
+	docPath := filepath.Join(repoRoot, "docs", "architecture", "transition.md")
+	b, err := os.ReadFile(docPath)
+	if err != nil {
+		return []Finding{{"transition-field-contract", Fail, "could not read docs/architecture/transition.md: " + err.Error()}}
+	}
+	documented, duplicates, err := parseTransitionFieldTable(string(b))
+	if err != nil {
+		return []Finding{{"transition-field-contract", Fail, "could not parse docs/architecture/transition.md Transition field contract: " + err.Error()}}
+	}
+
+	var problems []string
+	for _, name := range duplicates {
+		problems = append(problems, "documented field "+name+" appears more than once")
+	}
+	var actualNames []string
+	for name := range actual {
+		actualNames = append(actualNames, name)
+	}
+	sort.Strings(actualNames)
+	for _, name := range actualNames {
+		want := actual[name]
+		got, ok := documented[name]
+		if !ok {
+			problems = append(problems, "docs missing envelope.Transition field "+name)
+			continue
+		}
+		if got.GoType != want.GoType {
+			problems = append(problems, "field "+name+" has Go type "+strconv(want.GoType)+" but transition.md says "+strconv(got.GoType))
+		}
+		if got.JSONTag != want.JSONTag {
+			problems = append(problems, "field "+name+" has JSON tag "+strconv(want.JSONTag)+" but transition.md says "+strconv(got.JSONTag))
+		}
+	}
+	var extra []string
+	for name := range documented {
+		if _, ok := actual[name]; !ok {
+			extra = append(extra, name)
+		}
+	}
+	sort.Strings(extra)
+	for _, name := range extra {
+		problems = append(problems, "transition.md documents non-existent envelope.Transition field "+name)
+	}
+	if len(problems) > 0 {
+		return []Finding{{"transition-field-contract", Fail, "docs/architecture/transition.md diverges from envelope.Transition: " + strings.Join(problems, "; ")}}
+	}
+	return []Finding{{"transition-field-contract", Info, "docs/architecture/transition.md matches all " + itoa(len(actual)) + " direct envelope.Transition fields"}}
+}
+
+func readStructFieldContract(dir, structName string) (map[string]transitionFieldSpec, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var found map[string]transitionFieldSpec
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
+				continue
+			}
+			for _, rawSpec := range gen.Specs {
+				typeSpec, ok := rawSpec.(*ast.TypeSpec)
+				if !ok || typeSpec.Name.Name != structName {
+					continue
+				}
+				if found != nil {
+					return nil, fmt.Errorf("type %s declared more than once", structName)
+				}
+				structType, ok := typeSpec.Type.(*ast.StructType)
+				if !ok {
+					return nil, fmt.Errorf("type %s is not a struct", structName)
+				}
+				found, err = structFieldContract(fset, structType)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	if found == nil {
+		return nil, fmt.Errorf("type %s not found in %s", structName, dir)
+	}
+	return found, nil
+}
+
+func structFieldContract(fset *token.FileSet, structType *ast.StructType) (map[string]transitionFieldSpec, error) {
+	out := map[string]transitionFieldSpec{}
+	for _, field := range structType.Fields.List {
+		var typeBuf bytes.Buffer
+		if err := format.Node(&typeBuf, fset, field.Type); err != nil {
+			return nil, err
+		}
+		tag := ""
+		if field.Tag != nil {
+			tag = strings.Trim(field.Tag.Value, "`")
+		}
+		names := field.Names
+		if len(names) == 0 {
+			name := embeddedFieldName(field.Type)
+			if name == "" {
+				return nil, fmt.Errorf("unsupported anonymous field type %s", typeBuf.String())
+			}
+			names = []*ast.Ident{{Name: name}}
+		}
+		for _, name := range names {
+			if _, exists := out[name.Name]; exists {
+				return nil, fmt.Errorf("field %s declared more than once", name.Name)
+			}
+			out[name.Name] = transitionFieldSpec{GoType: typeBuf.String(), JSONTag: tag}
+		}
+	}
+	return out, nil
+}
+
+func embeddedFieldName(expr ast.Expr) string {
+	switch value := expr.(type) {
+	case *ast.Ident:
+		return value.Name
+	case *ast.SelectorExpr:
+		return value.Sel.Name
+	case *ast.StarExpr:
+		return embeddedFieldName(value.X)
+	default:
+		return ""
+	}
+}
+
+func parseTransitionFieldTable(text string) (map[string]transitionFieldSpec, []string, error) {
+	out := map[string]transitionFieldSpec{}
+	var duplicates []string
+	inTable := false
+	for _, line := range strings.Split(text, "\n") {
+		cells := splitMarkdownTableRow(line)
+		if !inTable {
+			if len(cells) == 3 && strings.EqualFold(cells[0], "Go field") && strings.EqualFold(cells[1], "Go type") && strings.EqualFold(cells[2], "JSON tag") {
+				inTable = true
+			}
+			continue
+		}
+		if len(cells) == 0 {
+			break
+		}
+		if isMarkdownSeparatorRow(cells) {
+			continue
+		}
+		if len(cells) != 3 {
+			return nil, nil, fmt.Errorf("field row has %d cells, want 3", len(cells))
+		}
+		name := cleanEpistemicsCell(cells[0])
+		goType := cleanEpistemicsCell(cells[1])
+		jsonTag := cleanEpistemicsCell(cells[2])
+		if jsonTag == "-" {
+			jsonTag = ""
+		}
+		if name == "" || goType == "" {
+			return nil, nil, fmt.Errorf("field name and Go type must be non-empty")
+		}
+		if _, exists := out[name]; exists {
+			duplicates = append(duplicates, name)
+		}
+		out[name] = transitionFieldSpec{GoType: goType, JSONTag: jsonTag}
+	}
+	if !inTable {
+		return nil, nil, fmt.Errorf("missing | Go field | Go type | JSON tag | table")
+	}
+	sort.Strings(duplicates)
+	return out, duplicates, nil
 }
 
 // checkStatusHotPath keeps status.md bounded as a hot map, not a runtime proof journal.

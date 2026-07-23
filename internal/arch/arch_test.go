@@ -935,6 +935,72 @@ func TestPackageClassificationTableMatchesArchClassification(t *testing.T) {
 	}
 }
 
+func TestTransitionFieldContractMatchesEnvelopeStruct(t *testing.T) {
+	// The live documentation must enumerate the exact direct fields, Go types, and JSON tags from
+	// envelope.Transition. This deliberately reads source rather than importing envelope so the
+	// architecture doctor remains a filesystem auditor.
+	if findings := checkTransitionFieldContract(repoRoot); len(findings) != 1 || findings[0].Severity != Info {
+		t.Fatalf("real transition.md field contract must match envelope.Transition, got %+v", findings)
+	}
+
+	writeFixture := func(t *testing.T, doc string) string {
+		t.Helper()
+		repo := t.TempDir()
+		envelopeDir := filepath.Join(repo, "internal", "envelope")
+		docDir := filepath.Join(repo, "docs", "architecture")
+		if err := os.MkdirAll(envelopeDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(docDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		source := "package envelope\n\n" +
+			"type Header struct{}\n" +
+			"type TransitionCause struct{}\n" +
+			"type Transition struct {\n" +
+			"\tHeader\n" +
+			"\tBeforeRefs []string `json:\"before_refs\"`\n" +
+			"\tCause *TransitionCause `json:\"cause,omitempty\"`\n" +
+			"}\n"
+		if err := os.WriteFile(filepath.Join(envelopeDir, "envelope.go"), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(docDir, "transition.md"), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return repo
+	}
+
+	clean := "| Go field | Go type | JSON tag |\n" +
+		"|---|---|---|\n" +
+		"| `Header` | `Header` | `-` |\n" +
+		"| `BeforeRefs` | `[]string` | `json:\"before_refs\"` |\n" +
+		"| `Cause` | `*TransitionCause` | `json:\"cause,omitempty\"` |\n"
+	if findings := checkTransitionFieldContract(writeFixture(t, clean)); len(findings) != 1 || findings[0].Severity != Info {
+		t.Fatalf("exact transition field contract should pass, got %+v", findings)
+	}
+
+	stale := "| Go field | Go type | JSON tag |\n" +
+		"|---|---|---|\n" +
+		"| `Header` | `UniversalHeader` | `-` |\n" +
+		"| `BeforeRefs` | `[]string` | `json:\"before\"` |\n" +
+		"| `Ghost` | `string` | `json:\"ghost\"` |\n"
+	findings := checkTransitionFieldContract(writeFixture(t, stale))
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("drifted transition field contract should fail, got %+v", findings)
+	}
+	for _, want := range []string{
+		"field Header has Go type",
+		"field BeforeRefs has JSON tag",
+		"docs missing envelope.Transition field Cause",
+		"documents non-existent envelope.Transition field Ghost",
+	} {
+		if !strings.Contains(findings[0].Message, want) {
+			t.Fatalf("failure should report %q, got %s", want, findings[0].Message)
+		}
+	}
+}
+
 // The convergence debt is reported (observable), not hidden — the coherent treatment of a duplicate
 // that cannot yet be retired.
 func TestStatusHotPathFailsAboveLineBudget(t *testing.T) {

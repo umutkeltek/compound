@@ -16,33 +16,57 @@ system trust + open loops + dead surfaces.
 ## The Transition object
 
 A `Transition` is a state change plus its **projections** into multiple representational spaces.
+The anonymous `Header` field supplies the universal envelope keys and flattens them into JSON; in
+particular, `ids.work_id` is the root link from intent through transition and
+`ids.transition_id` carries the transition identifier. The direct struct-field contract is:
+
+| Go field | Go type | JSON tag |
+|---|---|---|
+| `Header` | `Header` | `-` |
+| `SourceTraceID` | `string` | `json:"source_trace_id,omitempty"` |
+| `BeforeRefs` | `[]string` | `json:"before_refs"` |
+| `ActionRefs` | `[]string` | `json:"action_refs"` |
+| `AfterRefs` | `[]string` | `json:"after_refs"` |
+| `StateDelta` | `string` | `json:"state_delta,omitempty"` |
+| `Projections` | `Projections` | `json:"projections"` |
+| `SecondOrder` | `SecondOrder` | `json:"second_order"` |
+| `Cause` | `*TransitionCause` | `json:"cause,omitempty"` |
+
+The Transition-specific JSON body has this shape (the flattened `Header` keys precede it in a full
+envelope):
 
 ```json
 {
-  "transition_id": "tr_...",
-  "work_id": "work_...",                    // the root id (runtime.md); links intent→…→transition
   "source_trace_id": "trace_...",
-  "scope":  { "entity_id": "product:notes-app", "surface": "...", "mode": "product_loop|system|..." },
-  "before": { "known_state_refs": ["claim_...", "metric_...", "asset_..."] },
-  "action": { "run_id": "run_...", "actor": "claude_code|codex|script|human",
-              "capabilities_used": ["..."], "models_used": ["..."], "tools_used": ["..."] },
-  "after":  { "state_delta": "...", "evidence_refs": ["ev_..."], "artifact_refs": ["..."] },
+  "before_refs": ["claim_...", "metric_..."],
+  "action_refs": ["run_..."],
+  "after_refs": ["ev_...", "artifact_..."],
+  "state_delta": "...",
   "projections": {
-    "memory":  ["claim_candidate_..."],
-    "skill":   ["capability://skill_or_procedure_offered", "missed_skill_signal_..."],
-    "product": ["hypothesis_...", "metric_watch_..."],
-    "cost":    ["cost_record_..."],
-    "risk":    ["tier_..."],
-    "taste":   ["taste_observation_..."],
+    "memory": ["claim_candidate_..."],
+    "skill": ["capability://skill_or_procedure_offered"],
+    "product": ["hypothesis_..."],
+    "cost": ["cost_record_..."],
+    "risk": ["tier_..."],
+    "taste": ["taste_observation_..."],
     "routing": ["route_decision_..."],
-    "human_attention": ["synthesis_debt_...", "approval_needed_..."]
+    "human_attention": ["approval_needed_..."]
   },
-  "second_order": { "future_behavior_changed": true, "should_harden": false,
-                    "should_create_rule": false, "should_decay": false, "revisit_at": null }
+  "second_order": {
+    "future_behavior_changed": true,
+    "should_harden": false,
+    "should_create_rule": false,
+    "should_decay": false
+  },
+  "cause": {
+    "delta_cause": "accept",
+    "caused_by_refs": ["work_..."],
+    "next_consumer": "memory-review"
+  }
 }
 ```
-This is the canonical `Transition` shape (`runtime.md` and `contracts/README.md` reference it). The root
-`work_id` ties it into the envelope spine; `source_trace_id` is the originating raw trace.
+`runtime.md` and `contracts/README.md` reference this canonical shape. `source_trace_id` identifies
+an originating raw trace when one exists.
 
 It forces three questions on every run: **What changed? Across which spaces? What future
 behavior should this affect?**
