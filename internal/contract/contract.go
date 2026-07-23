@@ -787,13 +787,13 @@ func projectRuntimeContract(ec envelope.EffectiveContract, snapshot runtimeSnaps
 		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{runtime.rev})
 	}
 	ec.ActiveDecisions = snapshot.decisions
-	ec.Excluded = append(ec.Excluded, snapshot.excludedDecisions...)
+	ec.Excluded = appendServedRuntimeExclusions(ec.Excluded, snapshot.excludedDecisions)
 	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, snapshot.decisionRevisions)
-	ec.Excluded = append(ec.Excluded, snapshot.excludedMemoryRefs...)
+	ec.Excluded = appendServedRuntimeExclusions(ec.Excluded, snapshot.excludedMemoryRefs)
 	for _, ref := range snapshot.memoryRefs {
 		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
 	}
-	ec.Excluded = append(ec.Excluded, snapshot.excludedPositionRefs...)
+	ec.Excluded = appendServedRuntimeExclusions(ec.Excluded, snapshot.excludedPositionRefs)
 	for _, ref := range snapshot.positionRefs {
 		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
 	}
@@ -935,7 +935,7 @@ func appendServedRuntimeExclusions(dst []envelope.ExcludedRef, refs []envelope.E
 		}
 	}
 	for _, ref := range refs {
-		if strings.HasPrefix(ref.Reason, "product-associated context omitted:") {
+		if strings.Contains(ref.Reason, "product-associated context omitted:") {
 			productFenceOmitted = true
 			continue
 		}

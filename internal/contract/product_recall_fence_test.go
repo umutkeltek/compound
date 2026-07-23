@@ -273,29 +273,23 @@ func TestProductRecallFenceServedPackContainsNoSiblingProductIdentity(t *testing
 		productFenceCandidate("product:sampleclaims", "compact_collision_fact", "SAMPLE-CLAIMS-COMPACT release safety", "product", "status", ""),
 		productFenceCandidate("product:sample_claims_ios", "sibling_fact", "SAMPLE-CLAIMS-IOS release safety", "product", "status", ""),
 		productFenceCandidate("product:exampleapp", "exampleapp_sibling_fact", "EXAMPLEAPP-SIBLING release safety", "product", "status", ""),
+		productFenceDecision("DEC-EXAMPLEAPP", "EXAMPLEAPP-DECISION release safety", "product:exampleapp"),
 	})
 
-	pack, err := PackWithCapabilities(Input{
+	materialized, err := MaterializeRuntime(Input{
 		Harness: "codex", Cwd: workspace, Task: "release safety",
 		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
 	}, DefaultPolicy(), home, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
+	pack := materialized.ContextPack
 	assertProductFenceMarkers(t, pack,
 		[]string{"SAMPLE-CLAIMS-OWN"},
-		[]string{"SAMPLE-CLAIMS-COMPACT", "SAMPLE-CLAIMS-IOS", "EXAMPLEAPP-SIBLING"},
+		[]string{"SAMPLE-CLAIMS-COMPACT", "SAMPLE-CLAIMS-IOS", "EXAMPLEAPP-SIBLING", "EXAMPLEAPP-DECISION", "decision://DEC-EXAMPLEAPP"},
 	)
-	serialized, err := json.Marshal(pack)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lowerSerialized := strings.ToLower(string(serialized))
-	for _, forbidden := range []string{"exampleapp", "sampleclaims", "sample_claims_ios"} {
-		if strings.Contains(lowerSerialized, forbidden) {
-			t.Errorf("serialized ContextPack leaked sibling product identity %q:\n%s", forbidden, serialized)
-		}
-	}
+	assertServedProductFenceSerialization(t, "ContextPack", pack)
+	assertServedProductFenceSerialization(t, "EffectiveContract", materialized.EffectiveContract)
 }
 
 func TestProductRecallFenceExactStructuredTokenOutranksCompactPrimary(t *testing.T) {
@@ -923,6 +917,26 @@ func markProductTestRepo(t *testing.T, root string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertServedProductFenceSerialization(t *testing.T, outputName string, output any) {
+	t.Helper()
+	serialized, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lowerSerialized := strings.ToLower(string(serialized))
+	for _, forbidden := range []string{"exampleapp", "sampleclaims", "sample_claims_ios"} {
+		if strings.Contains(lowerSerialized, forbidden) {
+			t.Errorf("serialized %s leaked sibling product identity %q:\n%s", outputName, forbidden, serialized)
+		}
+	}
+	if got := strings.Count(lowerSerialized, servedProductFenceExclusionRef); got != 1 {
+		t.Errorf("serialized %s contains opaque product-fence sentinel %d times, want exactly once:\n%s", outputName, got, serialized)
+	}
+	if !strings.Contains(lowerSerialized, "control-plane://orientation-map") {
+		t.Errorf("serialized %s erased non-product exclusion diagnostics:\n%s", outputName, serialized)
 	}
 }
 
