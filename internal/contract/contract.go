@@ -924,35 +924,35 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 	return pack
 }
 
-const servedProductFenceExclusionRef = "memory://product-associated-context-omitted"
+const (
+	servedProductFenceExclusionRef    = "memory://product-associated-context-omitted"
+	servedProductFenceExclusionReason = "product-associated context omitted by workspace product fence"
+)
 
 func appendServedRuntimeExclusions(dst []envelope.ExcludedRef, refs []envelope.ExcludedRef) []envelope.ExcludedRef {
 	productFenceOmitted := false
+	out := make([]envelope.ExcludedRef, 0, len(dst)+len(refs)+1)
 	for _, ref := range dst {
 		if ref.Ref == servedProductFenceExclusionRef {
 			productFenceOmitted = true
-			break
+			continue
 		}
+		out = append(out, ref)
 	}
 	for _, ref := range refs {
-		if strings.Contains(ref.Reason, "product-associated context omitted:") {
+		if ref.Ref == servedProductFenceExclusionRef {
 			productFenceOmitted = true
 			continue
 		}
-		dst = append(dst, ref)
+		out = append(out, ref)
 	}
 	if productFenceOmitted {
-		for _, ref := range dst {
-			if ref.Ref == servedProductFenceExclusionRef {
-				return dst
-			}
-		}
-		dst = append(dst, envelope.ExcludedRef{
+		out = append(out, envelope.ExcludedRef{
 			Ref:    servedProductFenceExclusionRef,
-			Reason: "product-associated context omitted by workspace product fence",
+			Reason: servedProductFenceExclusionReason,
 		})
 	}
-	return dst
+	return out
 }
 
 func appendSnapshotOfferToPack(pack envelope.ContextPack, runtime runtimeOffer, ref, reason, summary string) envelope.ContextPack {
@@ -2107,8 +2107,8 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 		if !productRecallFenceAllowsClaim(productFence, claim) {
 			if relevanceRank > 0 {
 				excluded = append(excluded, contextMemoryRef{
-					Ref:    "claim://" + claim.ID,
-					Reason: productRecallFenceExclusionReason(productFence),
+					Ref:    servedProductFenceExclusionRef,
+					Reason: servedProductFenceExclusionReason,
 					Seq:    claim.Seq,
 					Rank:   relevanceRank,
 				})
@@ -2354,8 +2354,8 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 		if !productRecallFenceAllowsClaim(productFence, activeClaim) {
 			if relevanceRank > 0 {
 				excluded = append(excluded, contextPositionRef{
-					Ref:    activePosition.Ref,
-					Reason: productRecallFenceExclusionReason(productFence),
+					Ref:    servedProductFenceExclusionRef,
+					Reason: servedProductFenceExclusionReason,
 					Seq:    activeClaim.Seq,
 					Rank:   relevanceRank,
 				})
@@ -2819,8 +2819,8 @@ func loadDecisionRefsFromView(in Input, view *mem.CurrentView, productFence prod
 		claim := byRef[ref]
 		if !productRecallFenceAllowsClaim(productFence, claim) {
 			excluded = append(excluded, envelope.ExcludedRef{
-				Ref:    ref,
-				Reason: "accepted decision from Compound ledger omitted: " + productRecallFenceExclusionReason(productFence),
+				Ref:    servedProductFenceExclusionRef,
+				Reason: servedProductFenceExclusionReason,
 			})
 			continue
 		}

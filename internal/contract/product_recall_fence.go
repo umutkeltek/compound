@@ -783,12 +783,14 @@ func productEntitiesForClaim(fence productRecallFence, claim mem.Claim) (map[str
 				}
 				continue
 			}
-			tokenUnknownWhenUnresolved := unknownWhenUnresolved ||
-				strings.HasPrefix(strings.ToLower(token), "product:")
+			if strings.HasPrefix(strings.ToLower(token), "product:") {
+				unknown = true
+				continue
+			}
 			compact := fence.products.compact[compactProductIdentityKey(token)]
 			if len(compact) == 1 {
 				associated[compact[0]] = true
-			} else if len(compact) > 1 || tokenUnknownWhenUnresolved {
+			} else if len(compact) > 1 || unknownWhenUnresolved {
 				unknown = true
 			}
 		}
@@ -823,13 +825,6 @@ func seedProductFenceEntity(entities map[string]bool, fence productRecallFence) 
 	if fence.Entity != "" {
 		entities[memoryKey(fence.Entity)] = true
 	}
-}
-
-func productRecallFenceExclusionReason(fence productRecallFence) string {
-	if fence.Entity == "" {
-		return "product-associated context omitted: workspace product identity " + fence.Status
-	}
-	return "product-associated context omitted: outside resolved workspace product fence"
 }
 
 func productRecallFenceRevision(fence productRecallFence) string {
