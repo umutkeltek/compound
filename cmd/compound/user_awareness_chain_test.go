@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"compound/internal/breadth"
@@ -251,6 +252,34 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 
 type userAwarenessEmbedder struct{}
 
+// protocolResponseWriter guarantees that each protocol response row reaches the
+// persistence file BEFORE the same row is exposed on the parent process's stdout.
+// The parent's test asserts the log transcript matches the round-trip count, so
+// any visible-on-stdout-but-missing-from-log row is a flake. io.MultiWriter alone
+// relies on the kernel's per-syscall page-cache ordering; on darwin this races
+// with the parent's pipe read under the locked-held coprocess transport, causing
+// the log to lag the parent's observation by one row. The mutex serializes the
+// pair; the fsync forces the page cache for the log into the stable on-disk
+// state the parent's fresh file descriptor reads from, so the parent can never
+// observe a response on stdout without that same row being visible in the log.
+type protocolResponseWriter struct {
+	log    *os.File
+	parent io.Writer
+	mu     sync.Mutex
+}
+
+func (w *protocolResponseWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, err := w.log.Write(p); err != nil {
+		return 0, err
+	}
+	if err := w.log.Sync(); err != nil {
+		return 0, err
+	}
+	return w.parent.Write(p)
+}
+
 func (userAwarenessEmbedder) Identity() string { return userAwarenessEmbedderIdentity }
 func (userAwarenessEmbedder) Dim() int         { return 4 }
 func (userAwarenessEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -281,11 +310,17 @@ func TestUserAwarenessBreadthSidecar(t *testing.T) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	// protocolResponseWriter serializes each response row on a mutex, writes the
+	// persistence file before exposing the row on stdout, and fsyncs the file so
+	// the parent's subsequent read of the log (after reaping the sidecar) is
+	// guaranteed to see every response the parent already observed on stdout.
+	// io.MultiWriter alone relies on the kernel keeping its page-cache ordering,
+	// which on darwin has been observed to lag the parent's pipe read by a cycle
+	// (~1 in 150) and produces request/response-count drift in this test.
+	respWriter := &protocolResponseWriter{log: responseLog, parent: os.Stdout}
 	err = breadth.RunProtocol(
 		io.TeeReader(os.Stdin, requestLog),
-		// Persist the response row before exposing it to the parent process. Writing stdout
-		// first lets the parent assert the transcript while the matching log write is pending.
-		io.MultiWriter(responseLog, os.Stdout),
+		respWriter,
 		breadth.ProtocolConfig{
 			Embedder:     userAwarenessEmbedder{},
 			CompoundHome: os.Getenv("COMPOUND_HOME"),
