@@ -6,7 +6,7 @@ when:
 
 steps:
   proof-gates:
-    image: docker.io/library/golang:1.25.0-bookworm
+    image: docker.io/library/golang:1.26.4-bookworm
     commands:
       - mkdir -p .ci/bin
       - go build -o .ci/bin/compound ./cmd/compound
