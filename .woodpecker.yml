@@ -15,6 +15,7 @@ steps:
       docker:
         user: "1000:1000"
     commands:
+      - git config --global --add safe.directory "$CI_WORKSPACE"
       - mkdir -p .ci/bin
       - go build -o .ci/bin/compound ./cmd/compound
       - .ci/bin/compound proof-check --ci
