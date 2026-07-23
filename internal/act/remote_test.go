@@ -271,7 +271,7 @@ func TestRemoteAdapterAlreadyExistsConflict(t *testing.T) {
 	runner := newFakeRunner()
 	path := "/etc/dnsmasq.d/compound.conf"
 	// The record for this host is already present on the remote.
-	runner.files[path] = []byte("address=/example-host.internal/198.51.100.9\n")
+	runner.files[path] = []byte("address=/example-host.internal/10.10.10.9\n")
 	adapter := NewDNSRecordAdapter(runner, testEndpoint(), path, "")
 	ai := mkRemoteIntent(t, "work_conflict", "outbound.dns_record.write", "dns_record", path, "example-host.internal")
 	pd := policy.Evaluate(ai, remoteGrantConfig(ai), now)
@@ -287,7 +287,7 @@ func TestRemoteAdapterAlreadyExistsConflict(t *testing.T) {
 		t.Fatalf("no apply may run on a conflict; got %v", runner.opKinds())
 	}
 	// The remote file is byte-identical to before.
-	if string(runner.files[path]) != "address=/example-host.internal/198.51.100.9\n" {
+	if string(runner.files[path]) != "address=/example-host.internal/10.10.10.9\n" {
 		t.Fatalf("remote file mutated on a refused conflict: %q", runner.files[path])
 	}
 }
@@ -342,7 +342,7 @@ func TestRemoteAdapterRevertRestoresPreImage(t *testing.T) {
 	}
 	runner := newFakeRunner()
 	path := "/etc/dnsmasq.d/compound.conf"
-	runner.files[path] = []byte("address=/example-existing.internal/198.51.100.1\n")
+	runner.files[path] = []byte("address=/example-existing.internal/10.10.10.1\n")
 	before := append([]byte(nil), runner.files[path]...)
 	adapter := NewDNSRecordAdapter(runner, testEndpoint(), path, "")
 	ai := mkRemoteIntent(t, "work_revert", "outbound.dns_record.write", "dns_record", path, "example-host.internal")
@@ -400,7 +400,7 @@ func TestRemoteAdapterRestoreDelimiterNeverCollidesWithContent(t *testing.T) {
 	// A captured pre-image whose content contains, as its own line, the exact
 	// literal string restore() historically used as its heredoc terminator,
 	// followed by an injected command it would hand to the remote shell.
-	malicious := []byte("address=/existing.internal/198.51.100.1\n" +
+	malicious := []byte("address=/existing.internal/10.10.10.1\n" +
 		"COMPOUND_RESTORE_EOF\n" +
 		"rm -rf / #injected-by-preimage\n")
 
