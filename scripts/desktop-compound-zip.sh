@@ -53,7 +53,7 @@ Environment:
 Notes:
   Memory pruning only applies to top-level memory/* external clones. It does not
   remove Compound source surfaces like internal/mem, docs/memory-architecture.md,
-  prototype-ts/src/memory, or console memory pages.
+  or console memory pages.
 
   AUDIT-NOTES.md is generated fresh on every run from the SOURCE checkout's git
   state (HEAD, branch, worktree cleanliness, ahead/behind vs upstream) at the
