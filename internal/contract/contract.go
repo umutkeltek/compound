@@ -2111,15 +2111,38 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 		}
 		return excluded[i].Seq > excluded[j].Seq
 	})
+	overflowExcluded := 0
 	if len(excluded) > maxContextMemoryRefs {
+		overflowExcluded = len(excluded) - maxContextMemoryRefs
 		excluded = excluded[:maxContextMemoryRefs]
 	}
-	excludedRefs := make([]envelope.ExcludedRef, 0, len(excluded))
+	excludedRefs := make([]envelope.ExcludedRef, 0, len(excluded)+1)
 	for _, ref := range excluded {
 		excludedRefs = append(excludedRefs, envelope.ExcludedRef{Ref: ref.Ref, Reason: ref.Reason})
 	}
 	sort.Slice(excludedRefs, func(i, j int) bool { return excludedRefs[i].Ref < excludedRefs[j].Ref })
+	if overflowExcluded > 0 {
+		// The itemized list is capped at maxContextMemoryRefs, but the Excluded ledger is
+		// documented as never-silently-dropped: record a visible summary of what the cap
+		// left out instead of letting the 6th+ exclusion vanish without a trace (audit E11).
+		excludedRefs = append(excludedRefs, memoryExclusionOverflowRef(overflowExcluded))
+	}
 	return out, excludedRefs, nil
+}
+
+// memoryExclusionOverflowRef is the visible stand-in for exclusions the itemized-list
+// cap (maxContextMemoryRefs) dropped from loadMemoryRefsFromView's Excluded output.
+// Its ref uses a dedicated "exclusion-overflow://" scheme so it can never collide with
+// a real claim/position/decision/hook ref (each of which uses its own scheme: claim://,
+// position://, ...).
+func memoryExclusionOverflowRef(omitted int) envelope.ExcludedRef {
+	return envelope.ExcludedRef{
+		Ref: "exclusion-overflow://memory",
+		Reason: fmt.Sprintf(
+			"%d additional memory exclusion(s) omitted: the excluded ledger itemizes at most %d entries per contract build; the omitted entries' individual refs/reasons are not listed here",
+			omitted, maxContextMemoryRefs,
+		),
+	}
 }
 
 // BenchMemoryRank ranks current memory claim IDs by the SAME ambient-recall relevance

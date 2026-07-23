@@ -2117,6 +2117,110 @@ func TestPackWithCapabilitiesNarrowsAmbientMemoryByTopic(t *testing.T) {
 	}
 }
 
+// TestExcludedMemoryLedgerRecordsOverflowInsteadOfSilentlyDropping is the E11 audit
+// falsifier: loadMemoryRefsFromView hard-caps its `excluded` slice at
+// maxContextMemoryRefs (5) with a bare `excluded = excluded[:maxContextMemoryRefs]`,
+// exactly like the legitimate `out` (ambient inclusion) cap just above it -- but
+// Excluded is documented as a "never silently dropped" accounting ledger, not a
+// budget-bounded offer list. Reusing more than five out-of-topic claims proves the
+// 6th+ exclusion vanishes from pack.Excluded with no trace it was ever evaluated.
+func TestExcludedMemoryLedgerRecordsOverflowInsteadOfSilentlyDropping(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topics := []byte(`{
+	  "schema_version": "compound.memory_topics.v0.1",
+	  "topics": [
+	    {"slug": "topic:alpha", "narrows_to": ["topic:alpha-workflows"]},
+	    {"slug": "topic:alpha-workflows", "part_of": ["topic:alpha"]},
+	    {"slug": "topic:beta"}
+	  ]
+	}`)
+	if _, err := store.ImportTopics(topics, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+
+	cands := []mem.Candidate{{
+		Entity:          "compound",
+		Predicate:       "alpha_stance",
+		Object:          "workflow automation ledger stance",
+		Confidence:      0.9,
+		Derivation:      "deterministic",
+		ClaimType:       "architecture",
+		TopicRefs:       []string{"topic:alpha-workflows"},
+		PromotionBasis:  candidates.BasisCuratedPage,
+		SourceTraceRef:  "ev_alpha",
+		SnippetHash:     "sha256:alpha",
+		Visibility:      "contextual",
+		ObservationDate: "2026-06-30T00:00:00Z",
+	}}
+	// Comfortably more than maxContextMemoryRefs (5) out-of-topic claims -- past the
+	// cap, exclusions must still be visible, not silently vanish.
+	const outOfTopicCount = maxContextMemoryRefs + 2
+	for i := 0; i < outOfTopicCount; i++ {
+		cands = append(cands, mem.Candidate{
+			Entity:          "compound",
+			Predicate:       fmt.Sprintf("beta_stance_%d", i),
+			Object:          "workflow automation gateway stance",
+			Confidence:      0.9,
+			Derivation:      "deterministic",
+			ClaimType:       "architecture",
+			TopicRefs:       []string{"topic:beta"},
+			PromotionBasis:  candidates.BasisCuratedPage,
+			SourceTraceRef:  fmt.Sprintf("ev_beta_%d", i),
+			SnippetHash:     fmt.Sprintf("sha256:beta-%d", i),
+			Visibility:      "contextual",
+			ObservationDate: "2026-06-30T00:00:00Z",
+		})
+	}
+	got, err := store.Capture(cands, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var betaRefs []string
+	for i := range got {
+		res, err := store.Adjudicate(got[i].ID, "promote", "test", fixedNow.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Claim != nil && strings.HasPrefix(res.Claim.Predicate, "beta_stance") {
+			betaRefs = append(betaRefs, "claim://"+res.Claim.ID)
+		}
+	}
+	if len(betaRefs) != outOfTopicCount {
+		t.Fatalf("setup: want %d beta claims promoted, got %d", outOfTopicCount, len(betaRefs))
+	}
+
+	in := Input{Harness: "codex", Cwd: "/repo/compound", Task: "workflow automation stance", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute", Topic: "topic:alpha"}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	itemizedBeta := 0
+	for _, ref := range betaRefs {
+		if hasExcluded(pack, ref) {
+			itemizedBeta++
+		}
+	}
+	if itemizedBeta >= outOfTopicCount {
+		t.Fatalf("test fixture did not exercise the cap: all %d out-of-topic exclusions were itemized (want capped at %d)", itemizedBeta, maxContextMemoryRefs)
+	}
+
+	overflowRef := "exclusion-overflow://memory"
+	reason := excludedRefReason(pack.Excluded, overflowRef)
+	if reason == "" {
+		t.Fatalf("only %d of %d out-of-topic exclusions were itemized and no overflow summary entry (%s) recorded the rest -- %d exclusions vanished silently, violating the never-silently-dropped Excluded ledger contract (audit E11): excluded=%+v",
+			itemizedBeta, outOfTopicCount, overflowRef, outOfTopicCount-itemizedBeta, pack.Excluded)
+	}
+	wantOverflow := outOfTopicCount - itemizedBeta
+	if !strings.Contains(reason, fmt.Sprintf("%d", wantOverflow)) {
+		t.Fatalf("overflow reason should record the omitted count %d, got %q", wantOverflow, reason)
+	}
+}
+
 func excludedReasonContains(pack envelope.ContextPack, ref, want string) bool {
 	for _, exc := range pack.Excluded {
 		if exc.Ref == ref && strings.Contains(exc.Reason, want) {
