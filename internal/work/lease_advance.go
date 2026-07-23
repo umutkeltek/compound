@@ -16,6 +16,18 @@ package work
 //   - A different actor with --steal and a non-empty reason SUCCEEDS: the steal is recorded
 //     (ActionIntent + PolicyDecision + lifecycle event carrying prior holder, reason, and the
 //     stealing actor) and the caller proceeds.
+//
+// Lease TRANSFER on steal is conditional on the verb, unlike the trail above (see
+// recordLeaseSteal/transferLeaseOnSteal in lease_close.go). A close-gate steal always
+// transfers: Close is terminal, so there is no "next mutation" for a stale lease to
+// mis-authorize. An advance-gate steal transfers only when in.To != w.State — a real
+// lifecycle transition (the E1 twin-collision class: running->verifying and friends). A
+// SAME-STATE advance steal (in.To == w.State) is the land-check/proof-attachment class
+// (LandCheck's same-state Advance in land_check.go, "Steal ... forwarded only to the
+// same-state Advance that attaches a successful recorded proof. They do not transfer the
+// lease..."): --steal there authorizes exactly one evidence-attachment write, not a
+// hand-off, and every subsequent lifecycle command must still see the original holder —
+// see TestWorkLandCheckCLIStealOnlyOverridesProofAttachment (cmd/compound).
 
 import (
 	"fmt"
@@ -40,7 +52,12 @@ func (s *Store) leaseHolderAdvanceGate(w envelope.WorkEnvelope, actor string, in
 		}
 		return fmt.Errorf("cannot advance %s: %s", w.ID, status.Message)
 	case status.Stolen:
-		return s.recordLeaseSteal(w, actor, status.Holder, strings.TrimSpace(in.StealReason), "work.advance", "advance_lease_stolen", now)
+		// A same-state advance (in.To == w.State) is the land-check/proof-attachment class:
+		// --steal there authorizes one evidence write, not a hand-off, so the lease stays
+		// put. Any real transition (in.To != w.State) is the E1 twin-collision class and
+		// does transfer.
+		transitions := in.To != w.State
+		return s.recordLeaseSteal(w, actor, status.Holder, strings.TrimSpace(in.StealReason), "work.advance", "advance_lease_stolen", transitions, now)
 	default:
 		return nil
 	}

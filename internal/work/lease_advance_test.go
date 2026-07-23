@@ -180,6 +180,77 @@ func TestAdvanceStealTransfersLeaseBlockingOriginalHolder(t *testing.T) {
 	}
 }
 
+// Land-check/proof-attachment falsifier (collateral fix): a SAME-STATE advance steal
+// (in.To == w.State) is the class LandCheck uses to attach a recorded proof under a
+// different --actor (internal/work/land_check.go: "Steal and StealReason are forwarded only
+// to the same-state Advance that attaches a successful recorded proof. They do not transfer
+// the lease..."). --steal there authorizes exactly one evidence write, not a hand-off: the
+// lease file must stay untouched, and the ORIGINAL holder's next real lifecycle advance must
+// still pass unguarded (documented residual behavior). This is the exact contract
+// TestWorkLandCheckCLIStealOnlyOverridesProofAttachment (cmd/compound) pins end-to-end
+// through the CLI; this is the internal/work-level version of the same falsifier. If
+// recordLeaseSteal transferred unconditionally (this repo's first pass at the P0 fix did),
+// this test goes red: lease.By flips to the stealing actor and actor-a's follow-up advance
+// gets blocked instead of passing.
+func TestAdvanceSameStateStealNarratesWithoutTransferringLease(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "same-state steal does not transfer"}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Claim(w.ID, "actor-a", fixedNow); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "actor-a"}, fixedNow); err != nil {
+		t.Fatalf("actor-a's own advance to running: %v", err)
+	}
+
+	// Same-state steal: in.To ("running") == w.State ("running"). Mirrors LandCheck's
+	// proof-attachment Advance, which passes To: current.State.
+	if _, err := s.Advance(w.ID, AdvanceInput{
+		To:          "running",
+		Actor:       "operator:test",
+		Steal:       true,
+		StealReason: "attaching landing proof",
+	}, fixedNow); err != nil {
+		t.Fatalf("expected same-state steal to succeed: %v", err)
+	}
+
+	// (a) lease.By must stay actor-a — a same-state steal narrates, it does not transfer.
+	lease, err := s.readLease(w.ID)
+	if err != nil {
+		t.Fatalf("read lease after same-state steal: %v", err)
+	}
+	if lease.By != "actor-a" {
+		t.Fatalf("same-state advance steal must NOT transfer the lease: got by=%q, want %q", lease.By, "actor-a")
+	}
+
+	// The steal is still narrated on the trail (loud override, not a silent bypass).
+	_, evs, err := s.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawSteal := false
+	for _, e := range evs {
+		if strings.Contains(e.Note, "lease stolen from \"actor-a\": attaching landing proof") {
+			sawSteal = true
+		}
+	}
+	if !sawSteal {
+		t.Fatalf("same-state steal must still record a steal event: %+v", evs)
+	}
+
+	// (c) the ORIGINAL holder's next real lifecycle advance must still pass unguarded —
+	// the lease never moved, so actor-a is still the recorded holder.
+	advanced, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "actor-a"}, fixedNow)
+	if err != nil {
+		t.Fatalf("original holder actor-a must still pass the lease gate after a same-state steal: %v", err)
+	}
+	if advanced.State != "verifying" {
+		t.Fatalf("actor-a's follow-up advance should land the new state, got %q", advanced.State)
+	}
+}
+
 // Failure-ordering falsifier: if the lease-transfer write itself fails, the steal must fail
 // closed — no misleading "stolen" trail entry, no advance mutation, and the original holder
 // left in place on both the WorkEnvelope and the lease file. Fault-injected the same way

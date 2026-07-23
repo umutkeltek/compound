@@ -26,6 +26,13 @@ package work
 // short-circuit as if the steal had never happened (the exact twin-collision class this file
 // exists to close, now against the stealer instead of a stranger). transferLeaseOnSteal closes
 // that gap; see lease_advance_test.go/lease_close_test.go for the falsifiers.
+//
+// Follow-up (same day): a close-gate steal always transfers (this file), but an advance-gate
+// steal only transfers for a real state transition — a same-state advance steal is the
+// land-check/proof-attachment class (LandCheck's same-state Advance in land_check.go), where
+// --steal authorizes one evidence write and must NOT move the lease. See
+// leaseHolderAdvanceGate's transitions computation in lease_advance.go and
+// TestWorkLandCheckCLIStealOnlyOverridesProofAttachment (cmd/compound).
 
 import (
 	"fmt"
@@ -87,7 +94,9 @@ func (s *Store) leaseHolderCloseGate(w envelope.WorkEnvelope, actor string, in C
 		}
 		return fmt.Errorf("cannot close %s: %s", w.ID, status.Message)
 	case status.Stolen:
-		return s.recordLeaseSteal(w, actor, status.Holder, strings.TrimSpace(in.StealReason), "work.close", "close_lease_stolen", now)
+		// Close is terminal: there is no further mutation a stale lease could mis-authorize
+		// after this, so a close-gate steal always transfers.
+		return s.recordLeaseSteal(w, actor, status.Holder, strings.TrimSpace(in.StealReason), "work.close", "close_lease_stolen", true, now)
 	default:
 		return nil
 	}
@@ -128,18 +137,27 @@ func (s *Store) recordLeaseHolderDeny(w envelope.WorkEnvelope, actor, holder, me
 	})
 }
 
-// recordLeaseSteal transfers workID's live lease to actor (transferLeaseOnSteal) and, only
-// once that transfer has actually committed, writes the ActionIntent and a recorded
-// PolicyDecision for the explicit lease steal (--steal --reason) on the mutation named by
-// capability/action, plus a lifecycle event carrying the prior holder, the reason, and the
-// stealing actor — the same auditable trail a refusal leaves, so a steal is a loud, recorded
-// override, not a silent bypass. The transfer runs FIRST and fails closed: if it errors, this
-// returns immediately and writes none of the trail, so the ledger never claims a steal that
-// did not actually take the lease (and the caller's gate returns the error, blocking the
-// underlying advance/close mutation too — see leaseHolderAdvanceGate/leaseHolderCloseGate).
-func (s *Store) recordLeaseSteal(w envelope.WorkEnvelope, actor, holder, reason, capability, action string, now time.Time) error {
-	if err := s.transferLeaseOnSteal(w.ID, actor); err != nil {
-		return err
+// recordLeaseSteal, when transfersLease is true, transfers workID's live lease to actor
+// (transferLeaseOnSteal) FIRST and fails closed before writing anything else: if the
+// transfer errors, this returns immediately and writes none of the trail below, so the
+// ledger never claims a steal that did not actually take the lease (and the caller's gate
+// returns the error, blocking the underlying advance/close mutation too — see
+// leaseHolderAdvanceGate/leaseHolderCloseGate). When transfersLease is false (a same-state
+// advance steal — the land-check/proof-attachment class, see leaseHolderAdvanceGate), the
+// lease file is left untouched: --steal there authorizes exactly one evidence-attachment
+// write, not a hand-off, and the original holder must still be the recorded holder for every
+// subsequent lifecycle command.
+//
+// Either way, this writes the ActionIntent and a recorded PolicyDecision for the explicit
+// lease steal (--steal --reason) on the mutation named by capability/action, plus a lifecycle
+// event carrying the prior holder, the reason, and the stealing actor — the same auditable
+// trail a refusal leaves, so a steal is a loud, recorded override, not a silent bypass,
+// whether or not it also transfers the lease.
+func (s *Store) recordLeaseSteal(w envelope.WorkEnvelope, actor, holder, reason, capability, action string, transfersLease bool, now time.Time) error {
+	if transfersLease {
+		if err := s.transferLeaseOnSteal(w.ID, actor); err != nil {
+			return err
+		}
 	}
 	ai := s.leaseGateActionIntent(w, actor, capability, action, now)
 	if err := ai.Validate(); err != nil {
