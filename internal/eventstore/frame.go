@@ -130,6 +130,21 @@ func familyForPrefix(prefix string) (string, bool) {
 	return "", false
 }
 
+// idPrefixFamily reports the family idPrefixFamilies alone would route id to,
+// ignoring any schema_version -- i.e. exactly what every READ path resolves
+// (segmentFrame calls familyOf(nil, id), so the schema-first branch never
+// runs there: a read has no record bytes to consult before it has found the
+// record). ok is false when no entry matches, meaning no read path could
+// disagree with a schema-derived family for this id.
+func idPrefixFamily(id string) (string, bool) {
+	for _, pf := range idPrefixFamilies {
+		if strings.HasPrefix(id, pf.prefix) {
+			return pf.family, true
+		}
+	}
+	return "", false
+}
+
 func buildFrame(id string, record []byte) (Frame, []byte, error) {
 	if _, err := ReferenceForID(id); err != nil {
 		return Frame{}, nil, err
@@ -145,9 +160,21 @@ func buildFrame(id string, record []byte) (Frame, []byte, error) {
 	if header.ID != id {
 		return Frame{}, nil, &FrameInvalidError{Reason: fmt.Sprintf("record id %q does not match put id %q", header.ID, id)}
 	}
+	family := familyOf(compact, id)
+	// Fail closed on a routing disagreement: every READ path (segmentFrame)
+	// resolves family via familyOf(nil, id) -- id-prefix only, since a read has
+	// no record bytes yet to consult the schema-first branch with. If this
+	// id's prefix names a DIFFERENT family than the schema just resolved to,
+	// the frame would be written into one family's segment while every same-id
+	// read looks in the other and misses it -- silent, unrecoverable data loss
+	// (audit E4). Refusing here is the only point that has both the id and the
+	// record at once to catch it.
+	if prefixFamily, ok := idPrefixFamily(id); ok && prefixFamily != family {
+		return Frame{}, nil, &FrameInvalidError{Reason: fmt.Sprintf("id %q prefix routes to family %q but its schema_version routes to family %q; refusing to write a frame no id-prefix read could ever find", id, prefixFamily, family)}
+	}
 	frame := Frame{
 		FrameVersion:  frameVersion,
-		Family:        familyOf(compact, id),
+		Family:        family,
 		ID:            id,
 		SchemaVersion: header.SchemaVersion,
 		CreatedAt:     header.CreatedAt,

@@ -142,6 +142,35 @@ func TestPutJSONCanonicalizesRecordAndReturnsLogicalDiagnosticRef(t *testing.T) 
 	}
 }
 
+// TestPutJSONFailsClosedOnFamilyRoutingMismatch is the store-level companion to
+// frame_test.go's TestBuildFrameFailsClosedOnIDPrefixSchemaFamilyDisagreement:
+// it proves the E4 mismatch through the public PutJSON/Read seam a real caller
+// uses, not just the internal familyOf helper. Before the fix, this PutJSON
+// would silently succeed by writing the frame under its schema-derived family
+// segment (transition) while the immediately-following Read -- which can only
+// route by id-prefix (receipt) since it has no record bytes yet -- would miss
+// it entirely: a real caller writes a record and then cannot read back its own
+// write, with no error at write time to explain why.
+func TestPutJSONFailsClosedOnFamilyRoutingMismatch(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	id := "rec_mismatched_family"
+	record := map[string]string{
+		"id":             id,
+		"schema_version": "compound.transition.v0.1",
+		"created_at":     "2026-07-15T00:00:00Z",
+	}
+
+	if _, err := store.PutJSON(id, record, " "); err == nil {
+		t.Fatalf("PutJSON accepted an id-prefix/schema-family disagreement for %q -- the write would be unreadable by its own id", id)
+	}
+
+	if _, err := store.Read(id); err == nil {
+		t.Fatalf("record %q should never have been persisted (fail-closed), but Read found it", id)
+	}
+}
+
 func TestPutModesPreserveConflictExclusiveAndSkipIfPresent(t *testing.T) {
 	t.Parallel()
 

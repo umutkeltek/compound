@@ -64,3 +64,39 @@ func TestFamilyUsesSchemaBeforeIDPrefixAndFallsBackToPrefix(t *testing.T) {
 		t.Fatalf("unknown family = %q, want other", got)
 	}
 }
+
+// TestBuildFrameFailsClosedOnIDPrefixSchemaFamilyDisagreement proves the E4
+// routing mismatch: familyOf(record, id) used by the WRITE path (buildFrame)
+// resolves family schema-first, while every READ path resolves family via
+// familyOf(nil, id) -- id-prefix ONLY, because a read has no record bytes yet
+// to consult. A frame whose id-prefix (e.g. "rec_" -> receipt) disagrees with
+// its schema-derived family (e.g. "compound.transition.v0.1" -> transition) is
+// written into one family's segment but a same-id read looks in the OTHER
+// family's segment and misses it -- silent data loss, never surfaced. The fix
+// must reject such a frame at build time rather than writing it somewhere a
+// same-id read can never find it.
+func TestBuildFrameFailsClosedOnIDPrefixSchemaFamilyDisagreement(t *testing.T) {
+	id := "rec_mismatched"
+	record := []byte(`{"id":"` + id + `","schema_version":"compound.transition.v0.1","created_at":"2026-07-15T00:00:00Z"}`)
+
+	// Precondition proving the disagreement is real, not a typo in the test:
+	// the write-side family (schema-first) and the read-side family (id-prefix
+	// only) name two DIFFERENT families for the exact same id+record.
+	writeFamily := familyOf(record, id)
+	readFamily := familyOf(nil, id)
+	if writeFamily == readFamily {
+		t.Fatalf("test fixture does not exercise a disagreement: write family = read family = %q", writeFamily)
+	}
+	if writeFamily != "transition" || readFamily != "receipt" {
+		t.Fatalf("unexpected families: write=%q read=%q, want write=transition read=receipt", writeFamily, readFamily)
+	}
+
+	if _, _, err := buildFrame(id, record); err == nil {
+		t.Fatalf("buildFrame accepted a frame whose id-prefix family (%q) disagrees with its schema family (%q) -- it would be written under %q but every read routes it to %q and misses it", readFamily, writeFamily, writeFamily, readFamily)
+	} else {
+		var invalid *FrameInvalidError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("disagreement error type = %T, want *FrameInvalidError: %v", err, err)
+		}
+	}
+}
