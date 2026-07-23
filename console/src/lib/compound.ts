@@ -224,6 +224,25 @@ function commitRunJsonFailure(key: string, message: string): RunJsonCacheEntry {
   return entry;
 }
 
+function startRunJsonInflight(
+  key: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<RunJsonCacheEntry> {
+  const inflight = runJsonInflight.get(key);
+  if (inflight && inflight.timeoutMs >= timeoutMs) return inflight.promise;
+
+  const token = Symbol(key);
+  const promise = execRunJson(args, timeoutMs)
+    .then((value) => commitRunJsonSuccess(key, value))
+    .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message))
+    .finally(() => {
+      if (runJsonInflight.get(key)?.token === token) runJsonInflight.delete(key);
+    });
+  runJsonInflight.set(key, { timeoutMs, token, promise });
+  return promise;
+}
+
 /**
  * The one place a `compound ... --json` argv is actually resolved: exec, TTL
  * cache, stale-while-revalidate, in-flight de-dup, never-cache-null. Both
@@ -238,29 +257,16 @@ async function readRunJsonEntry(args: string[], timeoutMs: number): Promise<RunJ
     const fresh = cached.storedAt !== null && Date.now() - cached.storedAt < RUN_JSON_TTL_MS;
     if (fresh) return cached;
 
-    // Stale (or never-succeeded): serve what we have immediately; at most one
-    // background exec refreshes it for the next reader.
-    if (!cached.revalidating) {
-      cached.revalidating = true;
-      execRunJson(args, timeoutMs)
-        .then((value) => commitRunJsonSuccess(key, value))
-        .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message));
-    }
-    return cached;
+    // Stale values return immediately while they revalidate. A cached cold
+    // failure still awaits its retry, because it has no truthful value to
+    // serve. Track both paths in the shared in-flight map so a longer caller
+    // can replace a shorter refresh instead of inheriting its timeout.
+    cached.revalidating = true;
+    const refresh = startRunJsonInflight(key, args, timeoutMs);
+    return cached.storedAt === null ? refresh : cached;
   }
 
-  const inflight = runJsonInflight.get(key);
-  if (inflight && inflight.timeoutMs >= timeoutMs) return inflight.promise;
-
-  const token = Symbol(key);
-  const promise = execRunJson(args, timeoutMs)
-    .then((value) => commitRunJsonSuccess(key, value))
-    .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message))
-    .finally(() => {
-      if (runJsonInflight.get(key)?.token === token) runJsonInflight.delete(key);
-    });
-  runJsonInflight.set(key, { timeoutMs, token, promise });
-  return promise;
+  return startRunJsonInflight(key, args, timeoutMs);
 }
 
 /**
