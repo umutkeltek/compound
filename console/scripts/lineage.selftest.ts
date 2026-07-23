@@ -173,7 +173,7 @@ export async function runLineageSelfTest(): Promise<{ ok: boolean; details: stri
 
     // 6. Encoded/alternate/short grammar forms stay fail-soft: found:false,
     //    never a throw, never a fabricated step.
-    for (const bad of ["cand_..%2f..%2fsecret", "cand_..\\..\\secret", "cand_9DF96833602E", "cand_"]) {
+    for (const bad of ["cand_..%2f..%2foutside", "cand_..\\..\\outside", "cand_9DF96833602E", "cand_"]) {
       const { lineage, threw } = await trace(bad);
       push(
         `invalid-form-fail-soft:${bad}`,
