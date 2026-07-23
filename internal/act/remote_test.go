@@ -371,6 +371,80 @@ func TestRemoteAdapterRevertRestoresPreImage(t *testing.T) {
 	}
 }
 
+// TestRemoteAdapterRestoreDelimiterNeverCollidesWithContent is the E6
+// falsifier: restore() historically built its heredoc with a STATIC
+// delimiter ("COMPOUND_RESTORE_EOF") over unsanitized remote file content. A
+// captured pre-image containing that literal line — attacker-controlled or
+// merely unlucky drift on the remote host — closes the heredoc early and
+// hands everything after it to the remote shell as commands: a command
+// injection surface in the governed DNS/vhost rollback path (landed
+// cbe7ca28). This proves the terminator restore() actually emits can never
+// collide with a line inside the content it wraps, whatever that terminator
+// is — it does not hardcode the historical delimiter value, so it keeps
+// falsifying after the fix randomizes it per invocation.
+func TestRemoteAdapterRestoreDelimiterNeverCollidesWithContent(t *testing.T) {
+	now := fixedNow()
+	store, err := NewArtifactStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("artifact store: %v", err)
+	}
+	runner := newFakeRunner()
+	path := "/etc/dnsmasq.d/compound.conf"
+	adapter := NewDNSRecordAdapter(runner, testEndpoint(), path, "")
+	ai := mkRemoteIntent(t, "work_injection", "outbound.dns_record.write", "dns_record", path, "example-host.internal")
+	pd := policy.Evaluate(ai, remoteGrantConfig(ai), now)
+	if !policy.Allowed(pd) {
+		t.Fatalf("granted decision must allow, got %s", pd.Outcome)
+	}
+
+	// A captured pre-image whose content contains, as its own line, the exact
+	// literal string restore() historically used as its heredoc terminator,
+	// followed by an injected command it would hand to the remote shell.
+	malicious := []byte("address=/existing.internal/198.51.100.1\n" +
+		"COMPOUND_RESTORE_EOF\n" +
+		"rm -rf / #injected-by-preimage\n")
+
+	if _, err := Execute(store, adapter, ai, pd, encodeRemotePreImage(malicious), now); err != nil {
+		t.Fatalf("governed restore failed: %v", err)
+	}
+
+	restoreIdx := -1
+	for i, op := range runner.ops {
+		if op.Kind == RemoteOpRestore {
+			restoreIdx = i
+		}
+	}
+	if restoreIdx < 0 {
+		t.Fatalf("expected a restore op, got %v", runner.opKinds())
+	}
+	cmd := runner.ops[restoreIdx].Command
+	delim := heredocTerminator(t, cmd)
+	for _, line := range strings.Split(string(malicious), "\n") {
+		if line == delim {
+			t.Fatalf("heredoc delimiter %q collides with a content line — command injection surface: %s", delim, cmd)
+		}
+	}
+}
+
+// heredocTerminator extracts the delimiter word restore() actually chose from
+// a `cat > 'path' <<'DELIM'\n...` command, so the test asserts a general
+// safety property (whatever delimiter is chosen never collides with content)
+// instead of asserting against a hardcoded value.
+func heredocTerminator(t *testing.T, cmd string) string {
+	t.Helper()
+	const marker = "<<'"
+	idx := strings.Index(cmd, marker)
+	if idx < 0 {
+		t.Fatalf("command has no heredoc operator: %q", cmd)
+	}
+	rest := cmd[idx+len(marker):]
+	end := strings.IndexByte(rest, '\'')
+	if end < 0 {
+		t.Fatalf("command has an unterminated heredoc delimiter: %q", cmd)
+	}
+	return rest[:end]
+}
+
 func indexOf(hay []string, needle string) int {
 	for i, v := range hay {
 		if v == needle {

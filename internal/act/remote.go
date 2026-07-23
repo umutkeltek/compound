@@ -2,6 +2,8 @@ package act
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -277,10 +279,39 @@ func (a remoteManagedFileAdapter) restore(content []byte) error {
 	if err := validateRemotePath(a.path); err != nil {
 		return err
 	}
-	const eof = "COMPOUND_RESTORE_EOF"
+	eof, err := restoreHeredocDelimiter(content)
+	if err != nil {
+		return err
+	}
 	cmd := "cat > " + singleQuote(a.path) + " <<'" + eof + "'\n" + string(content) + "\n" + eof + "\n" + a.reload
-	_, err := a.runner.Run(a.endpoint, RemoteOp{Kind: RemoteOpRestore, Path: a.path, Command: cmd, Payload: content})
+	_, err = a.runner.Run(a.endpoint, RemoteOp{Kind: RemoteOpRestore, Path: a.path, Command: cmd, Payload: content})
 	return err
+}
+
+// restoreHeredocDelimiterAttempts bounds delimiter regeneration so content
+// engineered to always collide fails closed instead of looping forever.
+const restoreHeredocDelimiterAttempts = 8
+
+// restoreHeredocDelimiter picks a per-invocation heredoc terminator that does
+// not occur anywhere in content. restore() previously used a single static
+// delimiter (COMPOUND_RESTORE_EOF) over unsanitized remote file content: a
+// captured pre-image containing that literal line closed the heredoc early
+// and handed the remainder of the file to the remote shell as commands — a
+// command-injection surface in the governed DNS/vhost rollback path (E6).
+// Randomizing the delimiter per call and scanning content for a collision
+// (regenerating on one) closes it.
+func restoreHeredocDelimiter(content []byte) (string, error) {
+	for attempt := 0; attempt < restoreHeredocDelimiterAttempts; attempt++ {
+		var raw [16]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return "", fmt.Errorf("restore: generate heredoc delimiter: %w", err)
+		}
+		candidate := "COMPOUND_RESTORE_" + hex.EncodeToString(raw[:])
+		if !bytes.Contains(content, []byte(candidate)) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("restore: could not generate a heredoc delimiter absent from content after %d attempts", restoreHeredocDelimiterAttempts)
 }
 
 func (a remoteManagedFileAdapter) readRemote() ([]byte, error) {
