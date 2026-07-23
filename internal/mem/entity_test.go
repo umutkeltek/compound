@@ -1,6 +1,9 @@
 package mem
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEntityResolveByAliasIdentifierPath(t *testing.T) {
 	s := newStore(t)
@@ -74,5 +77,44 @@ func TestEntityAmbiguousResolvesMulti(t *testing.T) {
 	s.RegisterEntity(Entity{Slug: "b", Kind: "concept", Aliases: []string{"shared"}}, t0)
 	if r, _ := s.ResolveEntity("shared"); r.Status != "multi" {
 		t.Errorf("a shared alias must resolve to multi (no guessing); got %+v", r)
+	}
+}
+
+func TestTopicEntitiesSkipsNonTopicPayloadsAndFoldsLastWins(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.RegisterEntity(Entity{
+		Slug:        "repo:large",
+		Kind:        "repo",
+		Identifiers: []string{strings.Repeat("x", 2<<20)},
+	}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterEntity(Entity{
+		Slug: "topic:live", Kind: "topic", Aliases: []string{"Living Topic"},
+	}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterEntity(Entity{
+		Slug: "topic:retired", Kind: "topic", Aliases: []string{"Old Topic"},
+	}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterEntity(Entity{
+		Slug: "topic:retired", Kind: "concept", Aliases: []string{"Old Topic"},
+	}, t0); err != nil {
+		t.Fatal(err)
+	}
+
+	s.entityLoader = func() ([]Entity, error) {
+		t.Fatal("TopicEntities must not call the full entity loader")
+		return nil, nil
+	}
+	got, err := s.TopicEntities()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Slug != "topic:live" || got[0].Kind != "topic" ||
+		len(got[0].Aliases) != 1 || got[0].Aliases[0] != "Living Topic" {
+		t.Fatalf("topic entities = %+v, want only current topic:live", got)
 	}
 }

@@ -68,6 +68,10 @@ type probeGroupSelection struct {
 	Overlap bool
 }
 
+type probeTopicStore interface {
+	TopicEntities() ([]mem.Entity, error)
+}
+
 // builtInProbeContracts are portable contracts, not an always-on feature flag. With no registry
 // file they activate only when the task classifier produces a registered topic seed and the
 // selected class has a resolvable probe root. A home without that complete trigger takes the
@@ -188,7 +192,7 @@ func compactProbeStrings(values []string) []string {
 	return out
 }
 
-func buildProbeSelectionPlan(homePath string, in Input, store *mem.Store, view *mem.CurrentView) (*probeSelectionPlan, error) {
+func buildProbeSelectionPlan(homePath string, in Input, store probeTopicStore, view *mem.CurrentView) (*probeSelectionPlan, error) {
 	registry, explicit, err := loadProbeContractRegistry(homePath)
 	if err != nil {
 		return nil, err
@@ -198,7 +202,7 @@ func buildProbeSelectionPlan(homePath string, in Input, store *mem.Store, view *
 			return nil, fmt.Errorf("built-in probe contracts invalid: %w", err)
 		}
 	}
-	entities, err := store.Entities()
+	entities, err := store.TopicEntities()
 	if err != nil {
 		// Built-ins are fail-open migration scaffolding. An unreadable/missing entity registry
 		// cannot be allowed to break or alter the legacy prompt path. An explicit registry is an

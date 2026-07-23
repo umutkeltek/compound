@@ -26,6 +26,47 @@ func TestProbeTopicClassifierUsesCaseFoldedTokenBoundaries(t *testing.T) {
 	}
 }
 
+type probeTopicStoreStub struct {
+	topics []mem.Entity
+	calls  int
+}
+
+func (s *probeTopicStoreStub) TopicEntities() ([]mem.Entity, error) {
+	s.calls++
+	return append([]mem.Entity(nil), s.topics...), nil
+}
+
+func TestBuildProbeSelectionPlanConsumesTopicOnlyStore(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := store.CurrentView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	topics := &probeTopicStoreStub{topics: []mem.Entity{
+		{Slug: "system:widget", Kind: "topic", Aliases: []string{"system"}},
+		{Slug: "standing-law", Kind: "topic"},
+		{Slug: "trap", Kind: "topic"},
+		{Slug: "opportunity", Kind: "topic"},
+	}}
+	plan, err := buildProbeSelectionPlan(home, Input{
+		Harness: "codex", Cwd: "/repo/widget", Task: "system inspection",
+		RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute",
+	}, topics, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topics.calls != 1 {
+		t.Fatalf("topic reader calls = %d, want 1", topics.calls)
+	}
+	if plan == nil || plan.Class != "system-work" {
+		t.Fatalf("probe plan = %+v, want system-work", plan)
+	}
+}
+
 func TestPackWithCapabilitiesSelectsDeterministicBudgetedProbeGroups(t *testing.T) {
 	home := t.TempDir()
 	writeProbeContracts(t, home, `{

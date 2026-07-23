@@ -21,6 +21,8 @@ const (
 	intentApplyUsage  = "usage: compound intent apply <create-plan.json> --by <reviewer> [--json]"
 )
 
+var materializeRuntimeForOrient = contract.MaterializeRuntime
+
 // materializeOrientContextPack is the one cmd-layer orientation path used by
 // both `compound orient` and expressive intent. It compiles and records the
 // EffectiveContract, assembles the task-scoped ContextPack through the existing
@@ -36,18 +38,16 @@ func materializeOrientContextPack(homePath string, in contract.Input, bodyBudget
 	if err != nil {
 		return envelope.ContextPack{}, err
 	}
-	ec, err := contract.CompileWithRuntime(in, orientationPolicy, homePath, now)
-	if err != nil {
-		return envelope.ContextPack{}, err
+	retrievalStarted := time.Now()
+	runtime, materializeErr := materializeRuntimeForOrient(in, orientationPolicy, homePath, now)
+	pack := runtime.ContextPack
+	retrievalparity.Record(homePath, retrievalparity.NewOrientRow(in.Task, parityOrientInput(in), pack.ActiveMemory, time.Since(retrievalStarted), materializeErr == nil, time.Now()))
+	if materializeErr != nil {
+		return envelope.ContextPack{}, materializeErr
 	}
+	ec := runtime.EffectiveContract
 	if _, err := contract.RecordEffectiveContract(homePath, ec); err != nil {
 		return envelope.ContextPack{}, err
-	}
-	retrievalStarted := time.Now()
-	pack, packErr := contract.PackWithCapabilities(in, orientationPolicy, homePath, now)
-	retrievalparity.Record(homePath, retrievalparity.NewOrientRow(in.Task, parityOrientInput(in), pack.ActiveMemory, time.Since(retrievalStarted), packErr == nil, time.Now()))
-	if packErr != nil {
-		return envelope.ContextPack{}, packErr
 	}
 	if pack.IDs.ContractID != ec.ID {
 		return envelope.ContextPack{}, fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID)

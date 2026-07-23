@@ -1,8 +1,12 @@
 package mem
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -84,6 +88,216 @@ func (s *Store) loadEntities() ([]Entity, error) {
 		out = append(out, byID[slug])
 	}
 	return out, nil
+}
+
+// TopicEntities streams only the routing fields probe selection consumes. The
+// entity ledger can contain very large identifier payloads, so this path stops
+// decoding as soon as a row is known not to be a topic and drains the rest of
+// that JSONL record without materializing it.
+func (s *Store) TopicEntities() ([]Entity, error) {
+	f, err := os.Open(s.entitiesLog())
+	if os.IsNotExist(err) {
+		return []Entity{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("entity registry is not a regular file: %s", s.entitiesLog())
+	}
+
+	reader := bufio.NewReaderSize(f, 1024*1024)
+	byID := map[string]Entity{}
+	seen := map[string]bool{}
+	var order []string
+	for {
+		record := &entityJSONLRecord{source: reader}
+		entity, topic := decodeTopicEntity(record)
+		if err := record.drain(); err != nil {
+			return nil, err
+		}
+		if record.bytesRead == 0 && record.sourceEOF {
+			break
+		}
+		// A torn or otherwise incomplete row must not brick the registry or
+		// become a partially decoded topic.
+		if record.lastNonSpace != '}' {
+			continue
+		}
+		if entity.Slug != "" && !seen[entity.Slug] {
+			seen[entity.Slug] = true
+			order = append(order, entity.Slug)
+		}
+		if !topic {
+			delete(byID, entity.Slug)
+			continue
+		}
+		byID[entity.Slug] = entity
+	}
+
+	out := make([]Entity, 0, len(byID))
+	for _, slug := range order {
+		if entity, ok := byID[slug]; ok {
+			out = append(out, entity)
+		}
+	}
+	return out, nil
+}
+
+// entityJSONLRecord exposes one JSONL record as an io.Reader without copying
+// the complete line. This keeps a large identifiers array bounded by the
+// bufio chunk size while still letting encoding/json parse the small prefix.
+type entityJSONLRecord struct {
+	source       *bufio.Reader
+	pending      []byte
+	terminal     bool
+	done         bool
+	sourceEOF    bool
+	readErr      error
+	bytesRead    int
+	lastNonSpace byte
+}
+
+func (r *entityJSONLRecord) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.done {
+		if r.readErr != nil {
+			err := r.readErr
+			r.readErr = nil
+			return 0, err
+		}
+		return 0, io.EOF
+	}
+	if len(r.pending) == 0 {
+		fragment, err := r.source.ReadSlice('\n')
+		r.pending = fragment
+		switch {
+		case err == nil:
+			r.terminal = true
+		case errors.Is(err, bufio.ErrBufferFull):
+			r.terminal = false
+		case errors.Is(err, io.EOF):
+			r.terminal = true
+			r.sourceEOF = true
+		default:
+			r.terminal = true
+			r.readErr = err
+		}
+		if len(r.pending) == 0 && r.terminal {
+			r.done = true
+			return r.Read(p)
+		}
+	}
+	n := copy(p, r.pending)
+	r.observe(r.pending[:n])
+	r.pending = r.pending[n:]
+	if len(r.pending) == 0 && r.terminal {
+		r.done = true
+	}
+	return n, nil
+}
+
+func (r *entityJSONLRecord) drain() error {
+	if len(r.pending) > 0 {
+		r.observe(r.pending)
+		r.pending = nil
+	}
+	if r.terminal || r.done {
+		r.done = true
+		return r.readErr
+	}
+	for {
+		fragment, err := r.source.ReadSlice('\n')
+		r.observe(fragment)
+		switch {
+		case err == nil:
+			r.done = true
+			return nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			r.done = true
+			r.sourceEOF = true
+			return nil
+		default:
+			r.done = true
+			return err
+		}
+	}
+}
+
+func (r *entityJSONLRecord) observe(data []byte) {
+	r.bytesRead += len(data)
+	for i := len(data) - 1; i >= 0; i-- {
+		b := data[i]
+		switch b {
+		case ' ', '\t', '\r', '\n':
+		default:
+			r.lastNonSpace = b
+			return
+		}
+	}
+}
+
+func decodeTopicEntity(reader io.Reader) (Entity, bool) {
+	decoder := json.NewDecoder(reader)
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return Entity{}, false
+	}
+	var entity Entity
+	aliasesSeen := false
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return Entity{}, false
+		}
+		key, ok := token.(string)
+		if !ok {
+			return Entity{}, false
+		}
+		switch key {
+		case "slug":
+			if err := decoder.Decode(&entity.Slug); err != nil {
+				return Entity{}, false
+			}
+		case "kind":
+			if err := decoder.Decode(&entity.Kind); err != nil {
+				return Entity{}, false
+			}
+			if !strings.EqualFold(strings.TrimSpace(entity.Kind), "topic") {
+				return entity, false
+			}
+		case "aliases":
+			if err := decoder.Decode(&entity.Aliases); err != nil {
+				return Entity{}, false
+			}
+			aliasesSeen = true
+		case "identifiers":
+			// Entity's canonical JSON order places routing fields before the
+			// potentially huge identifiers payload.
+			return entity, entity.Slug != "" && strings.EqualFold(strings.TrimSpace(entity.Kind), "topic")
+		default:
+			var ignored json.RawMessage
+			if err := decoder.Decode(&ignored); err != nil {
+				return Entity{}, false
+			}
+		}
+		if aliasesSeen && entity.Slug != "" && strings.EqualFold(strings.TrimSpace(entity.Kind), "topic") {
+			return entity, true
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return Entity{}, false
+	}
+	return entity, entity.Slug != "" && strings.EqualFold(strings.TrimSpace(entity.Kind), "topic")
 }
 
 // ResolveEntity maps a token (a slug, an identifier, an alias, or a path under a path-identifier)
