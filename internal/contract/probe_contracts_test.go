@@ -170,6 +170,58 @@ func TestPackWithCapabilitiesUsesBuiltInProbeContractsWhenTopicTaxonomyTriggers(
 	}
 }
 
+func TestPackWithCapabilitiesProductProbeRejectsSiblingProductEntity(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topics := []byte(`{
+	  "schema_version": "compound.memory_topics.v0.1",
+	  "topics": [
+	    {"slug": "product"},
+	    {"slug": "standing-law"},
+	    {"slug": "trap"},
+	    {"slug": "opportunity"}
+	  ]
+	}`)
+	if _, err := store.ImportTopics(topics, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	promoteProbeCandidates(t, store, []mem.Candidate{
+		probeCandidate("product:widget-alpha", "release_version", "1.2.3", "product", "status", "operational"),
+		probeCandidate("product:widget-beta", "release_version", "9.9.9", "product", "status", "operational"),
+	})
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: "/repo/widget_alpha", Task: "release this product safely",
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundWorkspaceProduct bool
+	for _, position := range pack.ActivePositions {
+		switch position.Entity {
+		case "product:widget-alpha":
+			foundWorkspaceProduct = true
+		case "product:widget-beta":
+			t.Fatalf("sibling product crossed workspace identity boundary: %+v", position)
+		}
+	}
+	for _, line := range pack.ActiveMemory {
+		if strings.Contains(line, "product:widget-beta") {
+			t.Fatalf("sibling product crossed workspace identity boundary through active memory: %q", line)
+		}
+	}
+	if strings.Contains(pack.SummaryMD, "product:widget-beta") {
+		t.Fatalf("sibling product crossed workspace identity boundary through summary: %q", pack.SummaryMD)
+	}
+	if !foundWorkspaceProduct {
+		t.Fatalf("workspace product missing from product probe: %+v", pack.ActivePositions)
+	}
+}
+
 func TestPackWithCapabilitiesPopulatedTaxonomyWithoutClassifierSeedStaysFlat(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
