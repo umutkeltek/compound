@@ -89,7 +89,20 @@ export function runWorkTraceSelfTest(): { ok: boolean; details: string[] } {
     `transition=${stepByKey(completed.steps, "transition").status} receipt=${stepByKey(completed.steps, "receipt").status}`,
   );
 
-  // 7. The spine is always the seven envelope steps in runtime-grammar order.
+  // 7. audit_only is observation, not completion: it must not render as done.
+  const auditOnly = mapEnvelopeSpine({
+    id: "work_audit0",
+    state: "completed",
+    move_type: "audit_only",
+    ids: { transition_id: "tr_audit" },
+  });
+  push(
+    "audit-only-is-not-done",
+    stepByKey(auditOnly.steps, "transition").status !== "done",
+    `transition=${stepByKey(auditOnly.steps, "transition").status}`,
+  );
+
+  // 8. The spine is always the seven envelope steps in runtime-grammar order.
   const order = running.steps.map((s) => s.key).join(">");
   push(
     "seven-step-envelope-order",

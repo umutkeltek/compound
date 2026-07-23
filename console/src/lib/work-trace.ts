@@ -246,7 +246,7 @@ export function mapEnvelopeSpine(
       key: "transition",
       name: "Transition",
       phase: transitionHasRecord ? moveType || "recorded" : "—",
-      status: transitionHasRecord ? "done" : "pending",
+      status: transitionHasRecord && moveType !== "audit_only" ? "done" : "pending",
       description: transitionHasRecord
         ? `Apex transition recorded${moveType ? ` (${moveType.replace(/_/g, " ")})` : ""}. audit_only counts for nothing.`
         : "No transition recorded — audit_only or still open.",
