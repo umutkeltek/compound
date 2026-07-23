@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -2204,6 +2206,90 @@ func writeKnowledgeExtractionFixture(t *testing.T, dir, extractionID, evidenceID
 }`
 	if err := os.WriteFile(filepath.Join(dir, extractionID+".json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+const knowledgeExtractPendingChildEnv = "COMPOUND_TEST_KNOWLEDGE_EXTRACT_PENDING_CHILD"
+
+// TestKnowledgeExtractPendingPrintsReportEvenWhenItemsFail is the bulk-drain
+// falsifier (envelope work_f10d5bffed0d): for a --pending batch on which at
+// least one item fails, the CLI must still emit the JSON report (so a bulk
+// drainer can see what did and did not get processed) before any non-zero exit.
+// The current code path calls die(err) BEFORE printJSON(report), which
+// suppresses the entire batch report — the normal partial-failure case for a
+// dispatcher burning a queue. Uses the same child-re-exec pattern as
+// TestHomeDoctorJSONFailureExitsNonZero because the in-process die/os.Exit
+// would kill the test binary.
+func TestKnowledgeExtractPendingPrintsReportEvenWhenItemsFail(t *testing.T) {
+	if childHome := os.Getenv(knowledgeExtractPendingChildEnv); childHome != "" {
+		t.Setenv("COMPOUND_HOME", childHome)
+		fixturesDir := os.Getenv("COMPOUND_TEST_KNOWLEDGE_EXTRACT_PENDING_FIXTURES")
+		cmdKnowledge([]string{"extract", "--pending", "--fixtures", fixturesDir, "--json"})
+		os.Exit(0)
+		return
+	}
+
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	var importReport knowledge.ImportReport
+	importOut := captureStdout(t, func() {
+		cmdKnowledge([]string{"import", filepath.Join("..", "..", "fixtures", "knowledge", "arxiv-export.json"), "--json"})
+	})
+	if err := json.Unmarshal([]byte(importOut), &importReport); err != nil {
+		t.Fatalf("parse import report: %v\n%s", err, importOut)
+	}
+	if len(importReport.ExtractionIDs) < 2 {
+		t.Fatalf("need at least 2 pending extractions to stage a bulk-drain partial failure, got %+v", importReport)
+	}
+
+	// Fixture for one item, MISSING fixtures for the rest → every other item
+	// fails inside Extract (no fixture on disk), Extract returns both a
+	// partially-populated report and a non-nil error. The CLI must still
+	// print the report before exiting.
+	fixturesDir := t.TempDir()
+	writeKnowledgeExtractionFixture(t, fixturesDir, importReport.ExtractionIDs[0], importReport.EvidenceIDs[0])
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestKnowledgeExtractPendingPrintsReportEvenWhenItemsFail$")
+	cmd.Env = append(os.Environ(),
+		knowledgeExtractPendingChildEnv+"="+homePath,
+		"COMPOUND_TEST_KNOWLEDGE_EXTRACT_PENDING_FIXTURES="+fixturesDir,
+	)
+	var stdout, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderrBuf
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("partial-failure --pending batch must exit non-zero, got err=%v stdout:\n%s\nstderr:\n%s", err, stdout.String(), stderrBuf.String())
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("partial-failure --pending batch must exit 1 (failed items present), got %d stdout:\n%s\nstderr:\n%s", exitErr.ExitCode(), stdout.String(), stderrBuf.String())
+	}
+
+	// The bulk-drain contract: the JSON report is the only authoritative
+	// record of what was processed, on stdout. Even on a partial failure,
+	// the report must be parseable from the JSON the CLI emitted BEFORE any
+	// non-zero exit. The error narrative goes to stderr (the existing
+	// drainer-friendly contract).
+	if !strings.Contains(stderrBuf.String(), "knowledge extraction completed with") {
+		t.Fatalf("stderr should carry the partial-failure error narrative, got:\n%s", stderrBuf.String())
+	}
+	var got knowledge.ExtractReport
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("bulk-drain JSON on stdout must be parseable on partial failure: %v\nstdout:\n%s", err, stdout.String())
+	}
+	if got.Processed < 1 {
+		t.Fatalf("at least one item should have processed (the one with a fixture), got %+v", got)
+	}
+	if got.Failed < 1 {
+		t.Fatalf("partial failure must be reflected as Failed>0 in the report, got %+v", got)
+	}
+	if len(got.ExtractionIDs) < 1 {
+		t.Fatalf("report must record the processed extraction id(s), got %+v", got)
 	}
 }
 

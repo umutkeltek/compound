@@ -811,11 +811,23 @@ func cmdKnowledge(args []string) {
 			os.Exit(2)
 		}
 		report, err := knowledge.Extract(homePath, store, opts, time.Now())
-		die(err)
+		// For a --pending bulk-drain pass, partial failures (some items succeed
+		// while others fail) are the NORMAL case: Extract returns both a
+		// populated report AND a non-nil error. Printing the JSON report FIRST
+		// — then exiting non-zero — preserves the report as the authoritative
+		// record of what did and did not get processed, instead of suppressing
+		// the entire batch behind a single error line. Non-partial failures
+		// (setup errors like a missing --fixtures dir) still fail closed
+		// without a useful report to emit.
 		if hasFlag(rest, "--json") {
 			printJSON(report)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
 			return
 		}
+		die(err)
 		fmt.Println("# knowledge extract")
 		fmt.Printf("- processed: %d\n", report.Processed)
 		fmt.Printf("- created: %d\n", report.Created)
