@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/home"
 	"compound/internal/reviewartifact"
@@ -239,6 +240,70 @@ func TestReviewsBindingPlanAndRecordRepairDigestDrift(t *testing.T) {
 		if strings.Contains(warning, "owner-work binding invalid") {
 			t.Fatalf("queue retained binding error after repair: %v", report.Items[0].Warnings)
 		}
+	}
+}
+
+func TestReviewBindingAuthorizationPersistsDistinctAttemptsAcrossTime(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := reviewartifact.Write(homePath, "panel-verdicts", "pver_attempt_identity", map[string]any{
+		"id":     "pver_attempt_identity",
+		"status": "review_required",
+	}, "  ", "# panel verdict\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(work.CreateInput{
+		WorkID:           "work_binding_governor",
+		Owner:            "review-binding-test",
+		SuccessPredicate: "binding record attempts remain auditable",
+	}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: "panel-verdicts"}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := exactReviewBindingItem(report.Items, "panel-verdicts", "pver_attempt_identity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := reviewartifact.PlanWorkBinding(homePath, reviewartifact.RecordWorkBindingInput{
+		Area:           "panel-verdicts",
+		ReviewID:       "pver_attempt_identity",
+		CoreReviewPath: paths.PlanPath,
+		FallbackWorkID: "work_binding_governor",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, firstDecision, _, err := authorizeReviewBindingRecord(
+		homePath, "work_binding_governor", "operator:test", item, binding, cliTestNow,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistReviewBindingAuthorization(homePath, first, firstDecision); err != nil {
+		t.Fatal(err)
+	}
+	second, secondDecision, _, err := authorizeReviewBindingRecord(
+		homePath, "work_binding_governor", "operator:test", item, binding, cliTestNow.Add(time.Second),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("distinct authorization attempts reused ActionIntent id %s", first.ID)
+	}
+	if err := persistReviewBindingAuthorization(homePath, second, secondDecision); err != nil {
+		t.Fatalf("persist second authorization attempt: %v", err)
 	}
 }
 

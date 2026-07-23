@@ -198,7 +198,7 @@ func authorizeReviewBindingRecord(homePath, workID, actor string, item reviewart
 	intent := envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
-			ID:            reviewartifact.ID("act_", "review-work-binding", workID, item.Area, item.ID, binding.ReviewSHA256, binding.SourceWorkID, binding.FallbackWorkID),
+			ID:            reviewartifact.ID("act_", "review-work-binding", workID, item.Area, item.ID, binding.ReviewSHA256, binding.SourceWorkID, binding.FallbackWorkID, now.UTC().Format(time.RFC3339Nano)),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "cli", Name: "compound reviews binding-record"},
 			IDs:           envelope.IDs{WorkID: workID},
