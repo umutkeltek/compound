@@ -66,7 +66,7 @@ type PreflightReport = {
 };
 
 function usage(): never {
-  console.error(`usage: bun tools/asc_preflight.ts --config <json|yaml> [--compound-bin compound] [--asc-command <cmd>] [--date YYYY-MM-DD] [--smoke-limit N] [--plist ops/launchd/ai.compound.asc-daily.plist] [--json]
+  console.error(`usage: bun tools/asc_preflight.ts --config <json|yaml> [--compound-bin compound] [--asc-command <cmd>] [--date YYYY-MM-DD] [--smoke-limit N] [--plist tools/templates/ai.compound.asc-daily.plist] [--json]
 
 Preflights the ASC private-config / credential-smoke / scheduler valve without applying product signals or loading a scheduler.`);
   process.exit(2);
@@ -112,7 +112,7 @@ function buildPreflightReport(opts: PreflightOptions): PreflightReport {
     "launchctl setenv COMPOUND_REPO \"$(pwd)\"",
     "launchctl setenv COMPOUND_ASC_PRODUCTS \"${COMPOUND_HOME:-${HOME}/.compound}/private/asc-products.json\"",
     "launchctl setenv COMPOUND_ASC_DAILY_COMMAND '<ASC_DAILY_COMMAND>'",
-    "cp ops/launchd/ai.compound.asc-daily.plist \"${HOME}/Library/LaunchAgents/ai.compound.asc-daily.plist\"",
+    "cp tools/templates/ai.compound.asc-daily.plist \"${HOME}/Library/LaunchAgents/ai.compound.asc-daily.plist\"",
     "launchctl bootstrap \"gui/$(id -u)\" \"${HOME}/Library/LaunchAgents/ai.compound.asc-daily.plist\"",
   ];
   const unloadCommands = [
@@ -254,7 +254,7 @@ function schedulerPlan(plistPath: string): { check: Check } {
         id: "scheduler_plan",
         status: "fail",
         summary: "ASC launchd example plist missing",
-        next_action: "restore ops/launchd/ai.compound.asc-daily.plist or provide another scheduler plan",
+        next_action: "restore tools/templates/ai.compound.asc-daily.plist or provide another scheduler plan",
       },
     };
   }
@@ -379,7 +379,7 @@ if (import.meta.main) {
       ascCommand: typeof args["asc-command"] === "string" ? args["asc-command"] : undefined,
       date: typeof args.date === "string" ? args.date : todayISO(),
       smokeLimit: typeof args["smoke-limit"] === "string" ? Number.parseInt(args["smoke-limit"], 10) : 1,
-      plistPath: typeof args.plist === "string" ? args.plist : "ops/launchd/ai.compound.asc-daily.plist",
+      plistPath: typeof args.plist === "string" ? args.plist : "tools/templates/ai.compound.asc-daily.plist",
     });
     if (args.json) {
       console.log(JSON.stringify(report, null, 2));

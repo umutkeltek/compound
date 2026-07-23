@@ -46,7 +46,7 @@ describe("asc_preflight edge", () => {
       ascCommand: "printf '%s\\n' '{\"date\":\"2026-07-04\",\"apps\":[{\"metrics\":{\"units\":1}}]}'",
       date: "2026-07-04",
       smokeLimit: 1,
-      plistPath: "ops/launchd/ai.compound.asc-daily.plist",
+      plistPath: "tools/templates/ai.compound.asc-daily.plist",
       env,
     });
 
@@ -105,7 +105,7 @@ describe("asc_preflight edge", () => {
       compoundBin: bin,
       date: "2026-07-04",
       smokeLimit: 1,
-      plistPath: "ops/launchd/ai.compound.asc-daily.plist",
+      plistPath: "tools/templates/ai.compound.asc-daily.plist",
       env: { ...process.env, COMPOUND_HOME: home },
     });
 
