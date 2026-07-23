@@ -87,6 +87,7 @@ func TestEvaluateDelegateHarnessReadinessBindsExecutableLiveHookAndWorkContext(t
 	}
 	for _, want := range []string{
 		"executable",
+		"activation_argv",
 		"permission_authority",
 		"permission_posture",
 		"blocking_hook_plan",
@@ -116,8 +117,57 @@ func TestEvaluateDelegateHarnessReadinessBindsExecutableLiveHookAndWorkContext(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if liveDrift.Ready || !strings.Contains(strings.Join(liveDrift.Details, "\n"), "blocking_hook_live: status=missing") {
+	if liveDrift.Ready || !strings.Contains(strings.Join(liveDrift.Details, "\n"), "blocking_hook_live: write-scoped binding status=missing") {
 		t.Fatalf("missing live profile hook admitted: %+v", liveDrift)
+	}
+}
+
+func TestEvaluateDelegateHarnessReadinessRejectsActivationAffectingArgv(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_activation_argv")
+	base := work.DelegateHarnessReadinessRequest{
+		HomePath:               fixture.compoundHome,
+		HarnessHome:            fixture.harnessHome,
+		WorkID:                 fixture.workID,
+		ContextPackID:          fixture.contextPackID,
+		Workspace:              fixture.workspace,
+		Harness:                fixture.harness,
+		LaneID:                 fixture.harness,
+		RequestedModelID:       "fixture-zai",
+		RequestedProviderRoute: "zai",
+		Command:                fixture.binary,
+		Now:                    fixture.now.Add(time.Minute),
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "permission bypass", args: []string{"--dangerously-skip-permissions"}},
+		{name: "profile override", args: []string{"--config-dir", t.TempDir()}},
+		{name: "programmatic trailing flag", args: []string{"ordinary prompt", "--permission-mode", "bypass"}},
+		{name: "unattested multi positional", args: []string{"ordinary", "second"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := base
+			req.Args = tc.args
+			result, err := evaluateDelegateHarnessReadiness(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Ready || !strings.Contains(strings.Join(result.Details, "\n"), "activation_argv:") {
+				t.Fatalf("activation-affecting argv admitted: args=%q result=%+v", tc.args, result)
+			}
+		})
+	}
+
+	ordinary := base
+	ordinary.Args = []string{"continue the claimed work"}
+	result, err := evaluateDelegateHarnessReadiness(ordinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Ready {
+		t.Fatalf("ordinary positional prompt rejected: %+v", result)
 	}
 }
 
@@ -153,6 +203,163 @@ func TestEvaluateDelegateHarnessReadinessRejectsUnrelatedEffectiveContract(t *te
 	}
 }
 
+func TestEvaluateDelegateHarnessReadinessUsesWorkBoundImmutableContract(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_immutable_contract_a")
+	otherWorkspace := t.TempDir()
+	other := fixture.effective
+	other.ID = "contract_work_delegate_immutable_contract_b"
+	other.IDs.WorkID = "work_delegate_immutable_contract_b"
+	other.Scope.Surface = otherWorkspace
+	other.CreatedAt = fixture.now.Add(time.Minute).Format(time.RFC3339)
+	if _, err := contract.RecordEffectiveContract(fixture.compoundHome, other); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := evaluateDelegateHarnessReadiness(work.DelegateHarnessReadinessRequest{
+		HomePath:               fixture.compoundHome,
+		HarnessHome:            fixture.harnessHome,
+		WorkID:                 fixture.workID,
+		ContextPackID:          fixture.contextPackID,
+		Workspace:              fixture.workspace,
+		Harness:                fixture.harness,
+		LaneID:                 fixture.harness,
+		RequestedModelID:       "fixture-zai",
+		RequestedProviderRoute: "zai",
+		Command:                fixture.binary,
+		Now:                    fixture.now.Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Ready {
+		t.Fatalf("later orientation invalidated work-bound contract: %+v", result)
+	}
+	var contractEvidence *work.DelegateHarnessReadinessEvidence
+	for i := range result.Evidence {
+		if result.Evidence[i].Kind == "effective_contract" {
+			contractEvidence = &result.Evidence[i]
+			break
+		}
+	}
+	if contractEvidence == nil || contractEvidence.Ref != "contract://"+fixture.effective.ID ||
+		!strings.HasPrefix(contractEvidence.Revision, "sha256:") {
+		t.Fatalf("effective-contract evidence did not bind immutable work artifact: %+v", result.Evidence)
+	}
+}
+
+func TestEvaluateDelegateHarnessReadinessRequiresExactDeclaredWriteHookBinding(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_exact_write_hook")
+	installReadyReadButMissingWriteHook(t, fixture)
+
+	result, err := evaluateDelegateHarnessReadiness(work.DelegateHarnessReadinessRequest{
+		HomePath:               fixture.compoundHome,
+		HarnessHome:            fixture.harnessHome,
+		WorkID:                 fixture.workID,
+		ContextPackID:          fixture.contextPackID,
+		Workspace:              fixture.workspace,
+		Harness:                fixture.harness,
+		LaneID:                 fixture.harness,
+		RequestedModelID:       "fixture-zai",
+		RequestedProviderRoute: "zai",
+		Command:                fixture.binary,
+		Now:                    fixture.now.Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Ready || !strings.Contains(strings.Join(result.Details, "\n"), "blocking_hook_live: write-scoped") {
+		t.Fatalf("unrelated ready PreToolUse binding substituted for missing write gate: %+v", result)
+	}
+}
+
+func TestEvaluateDelegateHarnessReadinessRejectsPermissionAuthorityRevisionChange(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_permission_revision")
+	originalLoad := delegateLoadPermissionAuthority
+	loads := 0
+	delegateLoadPermissionAuthority = func(homePath, harnessName string) (harness.PermissionAuthority, string, error) {
+		policy, revision, err := originalLoad(homePath, harnessName)
+		loads++
+		if err == nil && loads > 1 {
+			revision = "sha256:" + strings.Repeat("f", 64)
+		}
+		return policy, revision, err
+	}
+	t.Cleanup(func() {
+		delegateLoadPermissionAuthority = originalLoad
+	})
+
+	result, err := evaluateDelegateHarnessReadiness(work.DelegateHarnessReadinessRequest{
+		HomePath:               fixture.compoundHome,
+		HarnessHome:            fixture.harnessHome,
+		WorkID:                 fixture.workID,
+		ContextPackID:          fixture.contextPackID,
+		Workspace:              fixture.workspace,
+		Harness:                fixture.harness,
+		LaneID:                 fixture.harness,
+		RequestedModelID:       "fixture-zai",
+		RequestedProviderRoute: "zai",
+		Command:                fixture.binary,
+		Now:                    fixture.now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loads < 2 {
+		t.Fatalf("permission authority was not revalidated after drift check: loads=%d", loads)
+	}
+	if result.Ready || !strings.Contains(strings.Join(result.Details, "\n"), "permission_authority: revision changed during readiness") {
+		t.Fatalf("permission authority TOCTOU admitted: %+v", result)
+	}
+}
+
+func TestEvaluateDelegateHarnessReadinessAttestsExactPermissionBytesValidatedByOwner(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_permission_target_revision")
+	originalDrift := delegatePermissionDrift
+	var validatedRevision string
+	delegatePermissionDrift = func(homePath, harnessName string) (harness.PermissionDriftReport, error) {
+		report, err := originalDrift(homePath, harnessName)
+		if err != nil {
+			return report, err
+		}
+		validatedRevision = report.TargetRevision
+		mutated := []byte("{\"permissions\":{\"defaultMode\":\"bypass\"}}\n")
+		if err := os.WriteFile(report.TargetPath, mutated, 0o644); err != nil {
+			return report, err
+		}
+		return report, nil
+	}
+	t.Cleanup(func() {
+		delegatePermissionDrift = originalDrift
+	})
+
+	result, err := evaluateDelegateHarnessReadiness(work.DelegateHarnessReadinessRequest{
+		HomePath:               fixture.compoundHome,
+		HarnessHome:            fixture.harnessHome,
+		WorkID:                 fixture.workID,
+		ContextPackID:          fixture.contextPackID,
+		Workspace:              fixture.workspace,
+		Harness:                fixture.harness,
+		LaneID:                 fixture.harness,
+		RequestedModelID:       "fixture-zai",
+		RequestedProviderRoute: "zai",
+		Command:                fixture.binary,
+		Now:                    fixture.now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var postureRevision string
+	for _, evidence := range result.Evidence {
+		if evidence.Kind == "permission_posture" {
+			postureRevision = evidence.Revision
+			break
+		}
+	}
+	if validatedRevision == "" || postureRevision != validatedRevision {
+		t.Fatalf("permission posture attested revision %q, want exact owner-validated bytes %q; result=%+v", postureRevision, validatedRevision, result)
+	}
+}
+
 func TestWorkDelegatePersistsSuccessfulReadinessAttestation(t *testing.T) {
 	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_attestation")
 	store, err := work.Open(fixture.compoundHome)
@@ -177,7 +384,9 @@ func TestWorkDelegatePersistsSuccessfulReadinessAttestation(t *testing.T) {
 	originalGuard := work.LaneCapacityGuard
 	originalResolver := work.DelegateHarnessResolver
 	originalReadiness := work.DelegateHarnessReadiness
+	capacityCalls := 0
 	work.LaneCapacityGuard = func(work.LaneCapacityGuardRequest) (work.LaneCapacityGuardResult, error) {
+		capacityCalls++
 		return work.LaneCapacityGuardResult{Capacity: work.DispatchLaneCapacity{State: "ok", Remaining: 0.8}}, nil
 	}
 	work.DelegateHarnessResolver = func(work.DelegateHarnessResolveRequest) (work.DelegateHarnessResolution, error) {
@@ -201,19 +410,66 @@ func TestWorkDelegatePersistsSuccessfulReadinessAttestation(t *testing.T) {
 		work.DelegateHarnessReadiness = originalReadiness
 	})
 
+	runner := newDelegateCLIFakeRunner()
+	blockedOut, blockedErr, blockedCode := runDelegateCLIForTest(t, "delegate", store, runner, nil,
+		fixture.workID,
+		"--harness", fixture.harness,
+		"--actor", "orchestrator:test",
+		"--workspace", fixture.workspace,
+		"--prompt", "--dangerously-skip-permissions",
+		"--json",
+	)
+	if blockedCode != 1 || blockedErr != "" {
+		t.Fatalf("activation argv refusal code=%d stderr=%q stdout=%q", blockedCode, blockedErr, blockedOut)
+	}
+	var blocked work.DelegateResult
+	if err := json.Unmarshal([]byte(blockedOut), &blocked); err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Refusal == nil || blocked.Refusal.Reason != "readiness_unmet" ||
+		blocked.Readiness == nil ||
+		!strings.Contains(strings.Join(blocked.Readiness.Details, "\n"), "activation_argv: flag-shaped argv is not attested") {
+		t.Fatalf("activation argv refusal = %+v", blocked)
+	}
+	if capacityCalls != 0 || len(runner.creates) != 0 {
+		t.Fatalf("activation argv reached side effects: capacity_calls=%d creates=%+v", capacityCalls, runner.creates)
+	}
+
 	result, err := store.Delegate(work.DelegateOptions{
 		WorkID:    fixture.workID,
 		Harness:   fixture.harness,
 		Actor:     "orchestrator:test",
 		Workspace: fixture.workspace,
 		Now:       fixture.now.Add(2 * time.Minute),
-	}, newDelegateCLIFakeRunner())
+	}, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Status != "spawned" || result.Readiness == nil || !result.Readiness.Ready ||
 		result.Binding == nil || result.Binding.Readiness == nil || !result.Binding.Readiness.Ready {
 		t.Fatalf("spawned readiness attestation = %+v", result)
+	}
+	if !strings.HasPrefix(result.Readiness.SnapshotRevision, "sha256:") ||
+		result.Binding.Readiness.SnapshotRevision != result.Readiness.SnapshotRevision {
+		t.Fatalf("spawned binding lost exact readiness snapshot revision: result=%+v binding=%+v", result.Readiness, result.Binding.Readiness)
+	}
+	evidenceKinds := map[string]bool{}
+	for _, item := range result.Readiness.Evidence {
+		evidenceKinds[item.Kind] = true
+	}
+	for _, kind := range []string{
+		"permission_authority",
+		"permission_posture",
+		"blocking_hook_plan",
+		"blocking_hook_installation",
+		"context_pack",
+		"effective_contract",
+		"instruction_pack",
+		"lane_capacity",
+	} {
+		if !evidenceKinds[kind] {
+			t.Fatalf("snapshot revision omitted %s evidence: %+v", kind, result.Readiness)
+		}
 	}
 	events, err := eventstore.Open(fixture.compoundHome)
 	if err != nil {
@@ -229,8 +485,12 @@ func TestWorkDelegatePersistsSuccessfulReadinessAttestation(t *testing.T) {
 	if err := json.Unmarshal(record.Bytes, &event); err != nil {
 		t.Fatal(err)
 	}
-	if event.Readiness == nil || !event.Readiness.Ready || len(event.Readiness.Evidence) == 0 {
+	if event.Readiness == nil || !event.Readiness.Ready || len(event.Readiness.Evidence) == 0 ||
+		event.Readiness.SnapshotRevision != result.Readiness.SnapshotRevision {
 		t.Fatalf("spawn event lost readiness attestation: %s", record.Bytes)
+	}
+	if capacityCalls != 2 {
+		t.Fatalf("successful activation capacity calls = %d, want admission + immediate pre-mint revalidation", capacityCalls)
 	}
 }
 
@@ -444,6 +704,56 @@ func removeDelegateFixturePreToolUse(t *testing.T, profilePath string) {
 	hooks, _ := settings["hooks"].(map[string]any)
 	delete(hooks, "PreToolUse")
 	writeDelegateReadinessJSON(t, profilePath, settings)
+}
+
+func installReadyReadButMissingWriteHook(t *testing.T, fixture readyDelegateHarnessFixture) {
+	t.Helper()
+	source := filepath.Join(t.TempDir(), "hook-registration.ts")
+	const registration = `const HOME = "${HOME}"
+export const HOOK_REGISTRATIONS = [
+  { harness: "claude-zai", event: "PreToolUse", matcher: "Read", file: "compound", command: ` + "`${HOME}/.local/bin/compound hook pre-tool-use --live --harness claude-zai`" + ` },
+  { harness: "claude-zai", event: "PreToolUse", matcher: "Write|Edit|MultiEdit", file: "compound", command: ` + "`${HOME}/.local/bin/compound hook pre-tool-use --live --harness claude-zai`" + ` },
+]
+`
+	if err := os.WriteFile(source, []byte(registration), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := contract.StageSyntheticHookHandlers(fixture.harnessHome, source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := contract.ImportHookRegistrationTS(fixture.compoundHome, source, fixture.now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	var settings map[string]any
+	readDelegateReadinessJSONForTest(t, fixture.profilePath, &settings)
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("profile hooks = %#v", settings["hooks"])
+	}
+	groups, ok := hooks["PreToolUse"].([]any)
+	if !ok || len(groups) == 0 {
+		t.Fatalf("profile PreToolUse = %#v", hooks["PreToolUse"])
+	}
+	var commandHooks []any
+	for _, raw := range groups {
+		group, _ := raw.(map[string]any)
+		if group["matcher"] == "Write|Edit|MultiEdit" {
+			commandHooks, _ = group["hooks"].([]any)
+			break
+		}
+	}
+	if len(commandHooks) == 0 {
+		t.Fatalf("profile missing baseline write hook: %#v", groups)
+	}
+	hooks["PreToolUse"] = []any{map[string]any{
+		"matcher": "Read",
+		"hooks":   commandHooks,
+	}}
+	writeDelegateReadinessJSON(t, fixture.profilePath, settings)
+	if _, err := harness.RenderInstructionPack(fixture.compoundHome, fixture.harness, fixture.now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeDelegateReadinessJSON(t *testing.T, path string, value any) {

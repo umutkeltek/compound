@@ -243,6 +243,31 @@ func TestPermissionDriftRedGreenAndIgnoresUnrelatedKeys(t *testing.T) {
 	assertPermissionDrift(t, homePath, true, "$defaults")
 }
 
+func TestPermissionDriftReportsRevisionOfExactValidatedTargetBytes(t *testing.T) {
+	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
+	writeTestJSON(t, targetPath, map[string]any{"theme": "dark"})
+	writePermissionFixture(t, homePath, targetPath, permissionFixture([]string{"Read"}))
+	render, err := RenderPermissions(homePath, "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, render.Content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := PermissionDrift(homePath, "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Drifted {
+		t.Fatalf("clean target reported drift: %+v", report)
+	}
+	want := "sha256:" + digest(render.Content)
+	if report.TargetRevision != want {
+		t.Fatalf("validated target revision = %q, want %q", report.TargetRevision, want)
+	}
+}
+
 func TestApplyPermissionsWritesManagedRulesAndArtifactIdempotently(t *testing.T) {
 	homePath, targetPath := t.TempDir(), filepath.Join(t.TempDir(), "settings.json")
 	writeTestJSON(t, targetPath, map[string]any{

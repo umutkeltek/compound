@@ -37,9 +37,11 @@ package work
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,6 +54,14 @@ const (
 	delegateAmbiguousNote      = "Create failed but the named session exists; classified as spawn_ambiguous (the session may be a stranger's); no kill performed"
 	delegateProbeUnknownNote   = "Create failed and session ownership could not be determined; classified as spawn_ambiguous; no kill performed"
 )
+
+type delegateAuthorityChangedError struct {
+	detail string
+}
+
+func (e *delegateAuthorityChangedError) Error() string {
+	return "delegate authority changed during admission: " + e.detail
+}
 
 // SessionStatus captures the supervised pane's liveness and (when
 // available) its exit code/signal. The orchestrator treats this -- not bare
@@ -136,6 +146,7 @@ type DelegateHarnessReadinessRequest struct {
 	RequestedModelID       string
 	RequestedProviderRoute string
 	Command                string
+	Args                   []string
 	CommandOverridden      bool
 	Now                    time.Time
 }
@@ -147,9 +158,10 @@ type DelegateHarnessReadinessEvidence struct {
 }
 
 type DelegateHarnessReadinessResult struct {
-	Ready    bool                               `json:"ready"`
-	Details  []string                           `json:"details,omitempty"`
-	Evidence []DelegateHarnessReadinessEvidence `json:"evidence,omitempty"`
+	Ready            bool                               `json:"ready"`
+	SnapshotRevision string                             `json:"snapshot_revision,omitempty"`
+	Details          []string                           `json:"details,omitempty"`
+	Evidence         []DelegateHarnessReadinessEvidence `json:"evidence,omitempty"`
 }
 
 type DelegateHarnessReadinessFunc func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error)
@@ -200,7 +212,7 @@ type DelegateBinding struct {
 }
 
 type DelegateRefusal struct {
-	Reason  string `json:"reason"` // readiness_unmet|walled|dead|expiring_unconfirmed|not_claimed|session_live|tmux_absent|gate_absent|harness_unknown|spawn_failed
+	Reason  string `json:"reason"` // readiness_unmet|authority_changed|walled|dead|expiring_unconfirmed|not_claimed|session_live|tmux_absent|gate_absent|harness_unknown|mint_failed|spawn_failed
 	Message string `json:"message,omitempty"`
 	Session string `json:"session,omitempty"` // session_live: the existing session name
 }
@@ -420,6 +432,64 @@ func runLaneCapacityGuard(guard LaneCapacityGuardFunc, req LaneCapacityGuardRequ
 	return res, nil
 }
 
+// completeDelegateReadinessSnapshot binds the harness-readiness evidence and
+// the exact capacity verdict into one canonical revision. The resulting
+// snapshot is persisted on the delegate binding; a second evaluation must
+// produce the same revision immediately before RunAttempt mint.
+func completeDelegateReadinessSnapshot(readiness DelegateHarnessReadinessResult, lane string, decision LaneCapacityGuardResult) (DelegateHarnessReadinessResult, error) {
+	capacityMaterial, err := json.Marshal(struct {
+		Lane                 string               `json:"lane"`
+		Capacity             DispatchLaneCapacity `json:"capacity"`
+		Refused              bool                 `json:"refused"`
+		ConfirmationRequired bool                 `json:"confirmation_required"`
+		Message              string               `json:"message,omitempty"`
+	}{
+		Lane:                 strings.TrimSpace(lane),
+		Capacity:             decision.Capacity,
+		Refused:              decision.Refused,
+		ConfirmationRequired: decision.ConfirmationRequired,
+		Message:              decision.Message,
+	})
+	if err != nil {
+		return DelegateHarnessReadinessResult{}, fmt.Errorf("delegate: encode capacity readiness: %w", err)
+	}
+	capacitySum := sha256.Sum256(capacityMaterial)
+	evidence := append([]DelegateHarnessReadinessEvidence(nil), readiness.Evidence...)
+	evidence = append(evidence, DelegateHarnessReadinessEvidence{
+		Kind:     "lane_capacity",
+		Ref:      "lane-capacity://" + strings.TrimSpace(lane) + "/" + strings.TrimSpace(decision.Capacity.State),
+		Revision: "sha256:" + hex.EncodeToString(capacitySum[:]),
+	})
+	sort.Slice(evidence, func(i, j int) bool {
+		if evidence[i].Kind != evidence[j].Kind {
+			return evidence[i].Kind < evidence[j].Kind
+		}
+		if evidence[i].Ref != evidence[j].Ref {
+			return evidence[i].Ref < evidence[j].Ref
+		}
+		return evidence[i].Revision < evidence[j].Revision
+	})
+	details := append([]string(nil), readiness.Details...)
+	sort.Strings(details)
+	snapshotMaterial, err := json.Marshal(struct {
+		Ready    bool                               `json:"ready"`
+		Details  []string                           `json:"details,omitempty"`
+		Evidence []DelegateHarnessReadinessEvidence `json:"evidence"`
+	}{
+		Ready:    readiness.Ready,
+		Details:  details,
+		Evidence: evidence,
+	})
+	if err != nil {
+		return DelegateHarnessReadinessResult{}, fmt.Errorf("delegate: encode readiness snapshot: %w", err)
+	}
+	snapshotSum := sha256.Sum256(snapshotMaterial)
+	readiness.Details = details
+	readiness.Evidence = evidence
+	readiness.SnapshotRevision = "sha256:" + hex.EncodeToString(snapshotSum[:])
+	return readiness, nil
+}
+
 // Delegate is the governed execution entry: routes through the existing
 // LaneCapacityGuard (or refuses closed when no guard is installed),
 // refuses on walled/death, requires --confirm on expiring/unknown, then
@@ -514,6 +584,11 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		out.Refusal = &DelegateRefusal{Reason: "lease_held", Message: message}
 		return out, nil
 	}
+	authorizedWorkSHA, shaErr := workEnvelopeSHA256(w)
+	if shaErr != nil {
+		return out, shaErr
+	}
+	authorizedLease := lease
 
 	workspace := strings.TrimSpace(opts.Workspace)
 	if workspace == "" && w.GitDelivery != nil {
@@ -528,25 +603,29 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	if strings.TrimSpace(workspace) == "" {
 		return out, errors.New("delegate: no workspace resolved from --workspace, git_delivery.target_worktree_root, or cwd")
 	}
+	activationArgs := append([]string(nil), opts.Args...)
+	readinessRequest := DelegateHarnessReadinessRequest{
+		HomePath:               s.home,
+		WorkID:                 out.WorkID,
+		ContextPackID:          w.IDs.ContextPackID,
+		Workspace:              workspace,
+		Harness:                resolvedHarness,
+		LaneID:                 out.Lane,
+		RequestedModelID:       resolution.RequestedModelID,
+		RequestedProviderRoute: resolution.RequestedProviderRoute,
+		Command:                command,
+		Args:                   append([]string(nil), activationArgs...),
+		CommandOverridden:      strings.TrimSpace(opts.Command) != "",
+		Now:                    opts.Now,
+	}
+	readinessGuard := DelegateHarnessReadiness
 
 	readiness := DelegateHarnessReadinessResult{}
 	var readinessErr error
-	if DelegateHarnessReadiness == nil {
+	if readinessGuard == nil {
 		readiness.Details = []string{"no delegate harness readiness guard is installed"}
 	} else {
-		readiness, readinessErr = DelegateHarnessReadiness(DelegateHarnessReadinessRequest{
-			HomePath:               s.home,
-			WorkID:                 out.WorkID,
-			ContextPackID:          w.IDs.ContextPackID,
-			Workspace:              workspace,
-			Harness:                resolvedHarness,
-			LaneID:                 out.Lane,
-			RequestedModelID:       resolution.RequestedModelID,
-			RequestedProviderRoute: resolution.RequestedProviderRoute,
-			Command:                command,
-			CommandOverridden:      strings.TrimSpace(opts.Command) != "",
-			Now:                    opts.Now,
-		})
+		readiness, readinessErr = readinessGuard(readinessRequest)
 	}
 	if readinessErr != nil {
 		readiness.Ready = false
@@ -564,7 +643,12 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		return out, nil
 	}
 
-	decision, err := runLaneCapacityGuard(LaneCapacityGuard, LaneCapacityGuardRequest{
+	capacitySource := resolution.CapacitySource
+	if capacitySource != nil {
+		copied := *capacitySource
+		capacitySource = &copied
+	}
+	capacityRequest := LaneCapacityGuardRequest{
 		HomePath:        s.home,
 		Lane:            laneForGuard,
 		WorkID:          out.WorkID,
@@ -573,12 +657,19 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		ReadOnly:        opts.DryRun,
 		Now:             opts.Now,
 		TupleBacked:     resolution.TupleBacked,
-		CapacitySource:  resolution.CapacitySource,
-	})
+		CapacitySource:  capacitySource,
+	}
+	capacityGuard := LaneCapacityGuard
+	decision, err := runLaneCapacityGuard(capacityGuard, capacityRequest)
 	if err != nil {
 		return out, fmt.Errorf("delegate: guard lane capacity: %w", err)
 	}
 	out.Decision = &decision
+	readiness, err = completeDelegateReadinessSnapshot(readiness, laneForGuard, decision)
+	if err != nil {
+		return out, err
+	}
+	out.Readiness = &readiness
 
 	// Dry-run: surface the verdict WITHOUT refusing and WITHOUT persisting
 	// any event. The decision carries enough for the operator to decide
@@ -686,18 +777,75 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		return out, nil
 	}
 
-	workSHA, shaErr := workEnvelopeSHA256(w)
-	if shaErr != nil {
-		return out, shaErr
-	}
-
 	// MINT BEFORE CREATE: the orchestrator mints the delegate RunAttempt
 	// with origin/lane/workspace/wrapper command only -- NEVER prompt or
 	// argv, which may contain operator secrets. RunAttempt persistence is
 	// independent of the spawn side effect, so a Mint failure is a
 	// refuse -- ZERO Create side effects, ZERO session exists.
 	raStore := runattempt.Open(s.home)
-	minted, mintErr := raStore.Mint(out.WorkID, holder, resolvedHarness, opts.Now)
+	var minted runattempt.RunAttempt
+	mintErr := s.withLifecycleMutation(func() error {
+		current, err := s.Get(out.WorkID)
+		if err != nil {
+			return &delegateAuthorityChangedError{detail: "work envelope is no longer readable"}
+		}
+		currentSHA, err := workEnvelopeSHA256(current)
+		if err != nil {
+			return err
+		}
+		if currentSHA != authorizedWorkSHA {
+			return &delegateAuthorityChangedError{detail: "work envelope changed"}
+		}
+		if current.State != "claimed" && current.State != "running" {
+			return &delegateAuthorityChangedError{detail: "work state is no longer claimed or running"}
+		}
+		currentLease, err := s.readLease(out.WorkID)
+		if err != nil {
+			return &delegateAuthorityChangedError{detail: "work lease is no longer readable"}
+		}
+		if currentLease != authorizedLease || strings.TrimSpace(currentLease.By) != holder {
+			return &delegateAuthorityChangedError{detail: "work lease changed"}
+		}
+		revalidatedReadiness, err := readinessGuard(readinessRequest)
+		if err != nil {
+			return &delegateAuthorityChangedError{detail: "harness readiness revalidation failed"}
+		}
+		if !revalidatedReadiness.Ready {
+			return &delegateAuthorityChangedError{detail: "harness readiness is no longer satisfied"}
+		}
+		recheckCapacity := capacityRequest
+		// Revalidation is evidence-only: it must not emit a duplicate
+		// capacity-refusal observation while deciding whether the original
+		// activation snapshot still holds.
+		recheckCapacity.ReadOnly = true
+		revalidatedCapacity, err := runLaneCapacityGuard(capacityGuard, recheckCapacity)
+		if err != nil {
+			return &delegateAuthorityChangedError{detail: "lane capacity revalidation failed"}
+		}
+		revalidatedSnapshot, err := completeDelegateReadinessSnapshot(revalidatedReadiness, laneForGuard, revalidatedCapacity)
+		if err != nil {
+			return err
+		}
+		if revalidatedSnapshot.SnapshotRevision != readiness.SnapshotRevision {
+			return &delegateAuthorityChangedError{
+				detail: fmt.Sprintf(
+					"readiness snapshot changed (admitted=%s current=%s)",
+					readiness.SnapshotRevision,
+					revalidatedSnapshot.SnapshotRevision,
+				),
+			}
+		}
+		minted, err = raStore.Mint(out.WorkID, holder, resolvedHarness, opts.Now)
+		return err
+	})
+	var authorityChanged *delegateAuthorityChangedError
+	if errors.As(mintErr, &authorityChanged) {
+		out.Refusal = &DelegateRefusal{
+			Reason:  "authority_changed",
+			Message: authorityChanged.Error(),
+		}
+		return out, nil
+	}
 	if mintErr != nil {
 		evID, eerr := s.recordDelegateRefused(out.WorkID, resolvedHarness, laneForGuard, holder, "mint_failed", "RunAttempt mint failed before any spawn side effect", opts.Now)
 		if eerr != nil {
@@ -743,7 +891,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		return stamp("attribution", "RunAttempt attribution stamp failed")
 	}
 
-	if err := runner.Create(sessionName, workspace, command, opts.Args); err != nil {
+	if err := runner.Create(sessionName, workspace, command, activationArgs); err != nil {
 		// Create failed. Probe to detect partial / ambiguous: if the
 		// session exists on the server we DO NOT kill it (it may be a
 		// stranger's session) and we DO NOT emit a spawned binding. We
@@ -782,7 +930,7 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		Holder:        holder,
 		CapacityState: decision.Capacity.State,
 		RecordedAt:    ts(opts.Now),
-		WorkSHA256:    workSHA,
+		WorkSHA256:    authorizedWorkSHA,
 		Readiness:     out.Readiness,
 		RunAttemptID:  runAttemptID,
 	}

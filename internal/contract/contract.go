@@ -1241,6 +1241,95 @@ func recordRuntimeMaterializationWithFS(homePath string, runtime RuntimeMaterial
 	return paths, nil
 }
 
+// ContextPackContractArtifacts is the immutable context/contract pair selected
+// by a recorded ContextPack. The latest EffectiveContract projection is
+// deliberately absent: callers executing old work must follow the pack's
+// contract_id to its owned dated artifact, not whichever orientation ran last.
+type ContextPackContractArtifacts struct {
+	ContextPack               envelope.ContextPack
+	EffectiveContract         envelope.EffectiveContract
+	ContextPackRevision       string
+	EffectiveContractRevision string
+}
+
+// ReadContextPackContract reads and validates one persisted ContextPack plus
+// the immutable EffectiveContract it names. Consumers must not reconstruct
+// artifact paths or consult contracts/effective/latest.json.
+func ReadContextPackContract(homePath, contextPackID string) (ContextPackContractArtifacts, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return ContextPackContractArtifacts{}, fmt.Errorf("compound home required")
+	}
+	contextPackID = strings.TrimSpace(contextPackID)
+	if !safeOwnedContractArtifactID(contextPackID, "ctx_") {
+		return ContextPackContractArtifacts{}, fmt.Errorf("context pack id %q is invalid", contextPackID)
+	}
+
+	packPath := filepath.Join(homePath, "context", "packs", contextPackID+".json")
+	packBody, err := os.ReadFile(packPath)
+	if err != nil {
+		return ContextPackContractArtifacts{}, fmt.Errorf("read ContextPack %s: %w", contextPackID, err)
+	}
+	var pack envelope.ContextPack
+	if err := json.Unmarshal(packBody, &pack); err != nil {
+		return ContextPackContractArtifacts{}, fmt.Errorf("decode ContextPack %s: %w", contextPackID, err)
+	}
+	if pack.ID != contextPackID {
+		return ContextPackContractArtifacts{}, fmt.Errorf("ContextPack path id %s contains %s", contextPackID, pack.ID)
+	}
+	if err := pack.Validate(); err != nil {
+		return ContextPackContractArtifacts{}, fmt.Errorf("ContextPack %s invalid: %w", contextPackID, err)
+	}
+
+	contractID := strings.TrimSpace(pack.IDs.ContractID)
+	if !safeOwnedContractArtifactID(contractID, "contract_") {
+		return ContextPackContractArtifacts{}, fmt.Errorf("ContextPack %s contract_id %q is invalid", contextPackID, contractID)
+	}
+	pattern := filepath.Join(homePath, "contracts", "effective", "*", contractID+".json")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return ContextPackContractArtifacts{}, fmt.Errorf("find EffectiveContract %s: %w", contractID, err)
+	}
+	sort.Strings(matches)
+	if len(matches) == 0 {
+		return ContextPackContractArtifacts{}, fmt.Errorf("ContextPack %s references missing EffectiveContract %s", contextPackID, contractID)
+	}
+	if len(matches) != 1 {
+		return ContextPackContractArtifacts{}, fmt.Errorf("ContextPack %s references ambiguous EffectiveContract %s (%d owned artifacts)", contextPackID, contractID, len(matches))
+	}
+
+	contractBody, err := os.ReadFile(matches[0])
+	if err != nil {
+		return ContextPackContractArtifacts{}, fmt.Errorf("read EffectiveContract %s: %w", contractID, err)
+	}
+	var effective envelope.EffectiveContract
+	if err := json.Unmarshal(contractBody, &effective); err != nil {
+		return ContextPackContractArtifacts{}, fmt.Errorf("decode EffectiveContract %s: %w", contractID, err)
+	}
+	if effective.ID != contractID {
+		return ContextPackContractArtifacts{}, fmt.Errorf("EffectiveContract path id %s contains %s", contractID, effective.ID)
+	}
+	if err := effective.Validate(); err != nil {
+		return ContextPackContractArtifacts{}, fmt.Errorf("EffectiveContract %s invalid: %w", contractID, err)
+	}
+
+	return ContextPackContractArtifacts{
+		ContextPack:               pack,
+		EffectiveContract:         effective,
+		ContextPackRevision:       "sha256:" + hashBytesFull(packBody),
+		EffectiveContractRevision: "sha256:" + hashBytesFull(contractBody),
+	}, nil
+}
+
+func safeOwnedContractArtifactID(id, prefix string) bool {
+	return id != "" &&
+		strings.HasPrefix(id, prefix) &&
+		id != "." &&
+		id != ".." &&
+		id == filepath.Base(id) &&
+		!strings.ContainsAny(id, `/\`) &&
+		!strings.ContainsRune(id, 0)
+}
+
 func validateInstalledEntrypointRevisionParity(contractRevisions, packRevisions []envelope.SourceRev) error {
 	collect := func(revisions []envelope.SourceRev) map[string]string {
 		bindings := map[string]string{}

@@ -144,10 +144,11 @@ func IsPermissionApplyFinalizationPending(err error) bool {
 }
 
 type PermissionDriftReport struct {
-	Harness    string   `json:"harness"`
-	TargetPath string   `json:"target_path"`
-	Drifted    bool     `json:"drifted"`
-	Details    []string `json:"details,omitempty"`
+	Harness        string   `json:"harness"`
+	TargetPath     string   `json:"target_path"`
+	TargetRevision string   `json:"target_revision,omitempty"`
+	Drifted        bool     `json:"drifted"`
+	Details        []string `json:"details,omitempty"`
 }
 
 func PermissionAuthorityRef(harness string) string {
@@ -1257,12 +1258,19 @@ func PermissionDrift(homePath, harness string) (PermissionDriftReport, error) {
 		report.Details = append(report.Details, "incomplete permission apply transaction requires recovery")
 	}
 	if tomlSettingsMode(policy) {
+		// RenderPermissions parsed and retained this exact preimage; the TOML
+		// drift checker below validates owned keys from these same bytes.
+		report.TargetRevision = "sha256:" + digest(render.Preimage)
 		return tomlPermissionDrift(policy, render, report)
 	}
 	current, err := os.ReadFile(render.TargetPath)
 	if err != nil {
 		return report, err
 	}
+	// TargetRevision identifies the exact bytes validated below. Consumers
+	// must attest this revision rather than re-reading the mutable target and
+	// accidentally attributing unvalidated replacement bytes.
+	report.TargetRevision = "sha256:" + digest(current)
 	var settings map[string]any
 	if err := json.Unmarshal(current, &settings); err != nil {
 		return report, err

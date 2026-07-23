@@ -155,20 +155,34 @@ model id, alias, then harness id form the resolution precedence; ambiguity fails
 `codexbar://provider/qwencloud`) even when the execution route has another name. Inline governed
 execution and delegated tmux sessions both resolve this tuple before work moves or a RunAttempt is
 minted. A raw command override is not executable authority: governed delegated activation refuses it
-until an authority can attest that exact executable/profile. RunAttempt records requested
-tuple/provider separately from observed `model_id`/`provider_route`, which remain unknown until
-ExecutionRouteEvidence supplies them.
+until an authority can attest that exact executable/profile. The delegated argv policy is also
+fail-closed: the current tuple-backed policy admits no argv or one non-flag positional prompt; it
+refuses flag-shaped or multi-token argv, so permission/profile flags cannot borrow the wrapper's
+attestation. RunAttempt records requested tuple/provider separately from observed
+`model_id`/`provider_route`, which remain unknown until ExecutionRouteEvidence supplies them.
 
-After the work and lease holder are validated, delegated activation consumes one read-only
+After the work and lease holder are validated, delegated activation consumes a read-only
 harness-readiness check at that boundary. Permission authority and applied posture must agree; the
-installed-hooks declaration must expose a native blocking `PreToolUse` gate **and** read-only live
-reconciliation must attest its active handler bytes; and the current, non-degraded InstructionPack
-must bind the WorkEnvelope's ContextPack, EffectiveContract harness, and delegated workspace.
+permission owner hashes the exact target bytes it validated, and the authority revision is re-read
+after posture validation so neither unvalidated replacement bytes nor a mixed-generation check can
+be attested.
+The installed-hooks declaration must expose one exact native-blocking, write-scoped `PreToolUse`
+binding, and read-only live reconciliation must match that binding's id, matcher, invocation, and
+handler bytes—not merely some ready `PreToolUse` row. The current, non-degraded InstructionPack must
+agree with current policy/hook authorities, while the WorkEnvelope's ContextPack selects its
+immutable owned EffectiveContract artifact by `contract_id`; rotation of the unrelated
+`contracts/effective/latest.json` projection cannot invalidate older work.
+
 Failure returns structured `readiness_unmet` evidence before capacity admission, event persistence,
 tmux creation, or a `harness_execution` RunAttempt mint. A missing readiness checker fails closed.
-A successful activation carries the compact revision-bearing readiness evidence in its returned
-result and persisted `work.delegate.spawned` binding, so later recovery can name what admitted the
-run rather than inferring readiness from current configuration.
+The admitted evidence rows plus the full lane-capacity verdict are canonicalized into one
+`snapshot_revision`. Immediately before mint, the lifecycle-admission lock re-reads the exact
+WorkEnvelope hash and lease, re-runs harness readiness and capacity with the same captured inputs,
+and requires the same snapshot revision. Any changed authority or capacity returns
+`authority_changed` with no mint or spawn. A successful activation carries the compact
+revision-bearing snapshot in its returned result and persisted `work.delegate.spawned` binding, so
+later recovery can name what admitted the run rather than inferring readiness from current
+configuration.
 
 ## Second-order effects (design against these)
 

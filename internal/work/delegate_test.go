@@ -394,6 +394,184 @@ func TestDelegateValidatesWorkAndLeaseBeforeReadiness(t *testing.T) {
 	}
 }
 
+func TestDelegateRevalidatesWorkImmediatelyBeforeMint(t *testing.T) {
+	assertDelegateConcurrentAuthorityMutationRefused(t, func(s *Store, workID, holder string) error {
+		_, err := s.Advance(workID, AdvanceInput{
+			To:    "running",
+			Actor: holder,
+			Note:  "concurrent lifecycle mutation during delegate admission",
+		}, fixedNow.Add(time.Second))
+		return err
+	})
+}
+
+func TestDelegateRevalidatesLeaseImmediatelyBeforeMint(t *testing.T) {
+	assertDelegateConcurrentAuthorityMutationRefused(t, func(s *Store, workID, _ string) error {
+		return s.recordDeclaredLaneOnLease(workID, "agent-lane://changed-during-admission")
+	})
+}
+
+func TestDelegateRevalidatesReadinessSnapshotAfterCapacityAdmission(t *testing.T) {
+	originalReadiness := DelegateHarnessReadiness
+	originalGuard := LaneCapacityGuard
+	t.Cleanup(func() {
+		DelegateHarnessReadiness = originalReadiness
+		LaneCapacityGuard = originalGuard
+	})
+
+	s := newStore(t)
+	const holder = "orchestrator:test"
+	workID := prepareClaimedWork(t, s, holder, "", "")
+	beforeAttempts := runAttemptsByID(t, s)
+	readinessRevision := "sha256:before-capacity"
+	readinessCalls := 0
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		readinessCalls++
+		return DelegateHarnessReadinessResult{
+			Ready: true,
+			Evidence: []DelegateHarnessReadinessEvidence{{
+				Kind: "permission_posture", Ref: "harness-posture://claude-zai", Revision: readinessRevision,
+			}},
+		}, nil
+	}
+	capacityCalls := 0
+	LaneCapacityGuard = func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+		capacityCalls++
+		if capacityCalls == 1 {
+			readinessRevision = "sha256:after-capacity"
+		}
+		return LaneCapacityGuardResult{
+			Capacity: DispatchLaneCapacity{State: "ok", Remaining: 0.8, DataRef: "test://capacity/stable"},
+		}, nil
+	}
+
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: workID, Harness: "claude-zai", Actor: holder, Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "authority_changed" {
+		t.Fatalf("readiness mutation during capacity admission result = %+v", result)
+	}
+	if readinessCalls != 2 {
+		t.Fatalf("readiness calls = %d, want initial check + immediate pre-mint revalidation", readinessCalls)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("changed readiness reached Create: %+v", runner.creates)
+	}
+	assertNoNewDelegateAttempt(t, beforeAttempts, runAttemptsByID(t, s))
+}
+
+func TestDelegateRevalidatesCapacityImmediatelyBeforeMint(t *testing.T) {
+	originalReadiness := DelegateHarnessReadiness
+	originalGuard := LaneCapacityGuard
+	t.Cleanup(func() {
+		DelegateHarnessReadiness = originalReadiness
+		LaneCapacityGuard = originalGuard
+	})
+
+	s := newStore(t)
+	const holder = "orchestrator:test"
+	workID := prepareClaimedWork(t, s, holder, "", "")
+	beforeAttempts := runAttemptsByID(t, s)
+	DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+		return DelegateHarnessReadinessResult{
+			Ready: true,
+			Evidence: []DelegateHarnessReadinessEvidence{{
+				Kind: "permission_posture", Ref: "harness-posture://claude-zai", Revision: "sha256:stable",
+			}},
+		}, nil
+	}
+	capacityCalls := 0
+	LaneCapacityGuard = func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+		capacityCalls++
+		if capacityCalls == 1 {
+			return LaneCapacityGuardResult{
+				Capacity: DispatchLaneCapacity{State: "ok", Remaining: 0.8, DataRef: "test://capacity/open"},
+			}, nil
+		}
+		return LaneCapacityGuardResult{
+			Capacity: DispatchLaneCapacity{State: "walled", Remaining: 0, DataRef: "test://capacity/walled"},
+			Refused:  true,
+			Message:  "capacity walled during admission",
+		}, nil
+	}
+
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID: workID, Harness: "claude-zai", Actor: holder, Command: "claude-zai",
+		Workspace: t.TempDir(), Now: fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refusal == nil || result.Refusal.Reason != "authority_changed" {
+		t.Fatalf("capacity mutation before mint result = %+v", result)
+	}
+	if capacityCalls != 2 {
+		t.Fatalf("capacity calls = %d, want initial admission + immediate pre-mint revalidation", capacityCalls)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("changed capacity reached Create: %+v", runner.creates)
+	}
+	assertNoNewDelegateAttempt(t, beforeAttempts, runAttemptsByID(t, s))
+}
+
+func assertNoNewDelegateAttempt(t *testing.T, before, after map[string]runattempt.RunAttempt) {
+	t.Helper()
+	for id, attempt := range after {
+		if _, existed := before[id]; !existed && attempt.Origin == runattempt.OriginHarnessExecution {
+			t.Fatalf("admission race minted delegate attempt %s: %+v", id, attempt)
+		}
+	}
+}
+
+func assertDelegateConcurrentAuthorityMutationRefused(t *testing.T, mutate func(*Store, string, string) error) {
+	t.Helper()
+	originalGuard := LaneCapacityGuard
+	s := newStore(t)
+	const holder = "orchestrator:test"
+	workID := prepareClaimedWork(t, s, holder, "", "")
+	beforeAttempts := runAttemptsByID(t, s)
+	LaneCapacityGuard = func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+		if err := mutate(s, workID, holder); err != nil {
+			return LaneCapacityGuardResult{}, err
+		}
+		return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "ok", Remaining: 0.8}}, nil
+	}
+	t.Cleanup(func() {
+		LaneCapacityGuard = originalGuard
+	})
+
+	runner := newFakeRunner()
+	result, err := s.Delegate(DelegateOptions{
+		WorkID:    workID,
+		Harness:   "claude-zai",
+		Actor:     holder,
+		Command:   "claude-zai",
+		Workspace: t.TempDir(),
+		Now:       fixedNow.Add(time.Minute),
+	}, runner)
+	if err != nil {
+		t.Fatalf("concurrent authority mutation should produce a structured refusal before mint: %v", err)
+	}
+	if result.Status != "refused" || result.Refusal == nil || result.Refusal.Reason != "authority_changed" {
+		t.Fatalf("concurrent authority mutation result = %+v", result)
+	}
+	if len(runner.creates) != 0 {
+		t.Fatalf("concurrent authority mutation reached Create: %+v", runner.creates)
+	}
+	afterAttempts := runAttemptsByID(t, s)
+	for id, attempt := range afterAttempts {
+		if _, existed := beforeAttempts[id]; !existed && attempt.Origin == runattempt.OriginHarnessExecution {
+			t.Fatalf("concurrent authority mutation minted delegate attempt %s: %+v", id, attempt)
+		}
+	}
+}
+
 // prepareClaimedWork returns a WorkEnvelope already in "claimed" state under
 // byActor, with a real lease; the test pool then runs Delegate/Steer against
 // it. The lease carries the canonical lane id (set via ClaimWithLane) so the

@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"compound/internal/contract"
-	"compound/internal/envelope"
 	"compound/internal/harness"
 	"compound/internal/hookplan"
 	"compound/internal/work"
@@ -18,6 +17,11 @@ import (
 func init() {
 	work.DelegateHarnessReadiness = evaluateDelegateHarnessReadiness
 }
+
+var (
+	delegateLoadPermissionAuthority = harness.LoadPermissionAuthority
+	delegatePermissionDrift         = harness.PermissionDrift
+)
 
 // evaluateDelegateHarnessReadiness is the read-only activation check for the
 // governed delegated-session path. Tuple resolution and capacity answer where
@@ -41,17 +45,19 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 			Ref:  "lane-tuple://" + firstDelegateReadinessValue(req.RequestedModelID, req.LaneID, harnessName),
 		})
 	}
+	argvEvidence, argvDetail := delegateActivationArgvReadiness(req)
+	if argvDetail != "" {
+		details = append(details, argvDetail)
+	} else {
+		evidence = append(evidence, argvEvidence)
+	}
 
-	_, permissionRevision, err := harness.LoadPermissionAuthority(req.HomePath, harnessName)
+	permissionPolicy, permissionRevision, err := delegateLoadPermissionAuthority(req.HomePath, harnessName)
 	if err != nil {
 		details = append(details, "permission_authority: "+err.Error())
 	} else {
-		evidence = append(evidence, work.DelegateHarnessReadinessEvidence{
-			Kind:     "permission_authority",
-			Ref:      harness.PermissionAuthorityRef(harnessName),
-			Revision: permissionRevision,
-		})
-		drift, err := harness.PermissionDrift(req.HomePath, harnessName)
+		var postureEvidence *work.DelegateHarnessReadinessEvidence
+		drift, err := delegatePermissionDrift(req.HomePath, harnessName)
 		switch {
 		case err != nil:
 			details = append(details, "permission_posture: "+err.Error())
@@ -61,16 +67,34 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 				detail = "managed settings differ from authority"
 			}
 			details = append(details, "permission_posture: "+detail)
+		case filepath.Clean(drift.TargetPath) != filepath.Clean(permissionPolicy.TargetPath):
+			details = append(details, "permission_posture: validated target does not match permission authority")
+		case strings.TrimSpace(drift.TargetRevision) == "":
+			details = append(details, "permission_posture: owner did not attest the validated target revision")
 		default:
-			livePosture, readErr := os.ReadFile(drift.TargetPath)
-			if readErr != nil {
-				details = append(details, "permission_posture: read applied target: "+readErr.Error())
-			} else {
-				evidence = append(evidence, work.DelegateHarnessReadinessEvidence{
-					Kind:     "permission_posture",
-					Ref:      "harness-posture://" + harnessName,
-					Revision: delegateReadinessBytesRevision(livePosture),
-				})
+			// PermissionDrift validates and hashes one captured target body.
+			// Attest that owner-produced revision directly: a second ReadFile
+			// here could hash replacement bytes that were never validated.
+			postureEvidence = &work.DelegateHarnessReadinessEvidence{
+				Kind:     "permission_posture",
+				Ref:      "harness-posture://" + harnessName,
+				Revision: drift.TargetRevision,
+			}
+		}
+		_, stableRevision, stableErr := delegateLoadPermissionAuthority(req.HomePath, harnessName)
+		switch {
+		case stableErr != nil:
+			details = append(details, "permission_authority: revalidate after posture: "+stableErr.Error())
+		case stableRevision != permissionRevision:
+			details = append(details, "permission_authority: revision changed during readiness")
+		default:
+			evidence = append(evidence, work.DelegateHarnessReadinessEvidence{
+				Kind:     "permission_authority",
+				Ref:      harness.PermissionAuthorityRef(harnessName),
+				Revision: permissionRevision,
+			})
+			if postureEvidence != nil {
+				evidence = append(evidence, *postureEvidence)
 			}
 		}
 	}
@@ -104,17 +128,26 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 		if reconcileErr != nil {
 			details = append(details, "blocking_hook_live: "+reconcileErr.Error())
 		} else {
-			delta := delegatePreToolUseReconciliation(reconciled.Reconciliation, harnessName)
+			binding, bindingDetail := delegateDeclaredWriteBlockingBinding(reconciled.Plan, harnessName)
+			delta := delegateBindingReconciliation(reconciled.Reconciliation, binding)
 			switch {
+			case bindingDetail != "":
+				details = append(details, "blocking_hook_live: "+bindingDetail)
 			case delta == nil:
-				details = append(details, "blocking_hook_live: no observed PreToolUse reconciliation")
+				details = append(details, "blocking_hook_live: write-scoped binding has no exact reconciliation")
 			case delta.State != hookplan.StateReady:
-				details = append(details, "blocking_hook_live: status="+delta.State)
+				details = append(details, "blocking_hook_live: write-scoped binding status="+delta.State)
+			case delta.BindingID != binding.ID ||
+				delta.Matcher != binding.Matcher ||
+				delta.DesiredHandlerRef != binding.HandlerRef ||
+				delta.DesiredInvocationRevision != binding.InvocationRevision ||
+				delta.DesiredHandlerRevision != binding.HandlerRevision:
+				details = append(details, "blocking_hook_live: write-scoped reconciliation identity does not match declared binding")
 			default:
 				evidence = append(evidence,
 					work.DelegateHarnessReadinessEvidence{
 						Kind:     "blocking_hook_plan",
-						Ref:      "hook://" + harnessName + "/PreToolUse",
+						Ref:      binding.ID,
 						Revision: reconciled.Reconciliation.PlanRevision,
 					},
 					work.DelegateHarnessReadinessEvidence{
@@ -128,16 +161,16 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 	}
 
 	packDrift, err := harness.InstructionPackDrift(req.HomePath, harnessName, req.Now)
+	blockingPackDrift := delegateBlockingInstructionPackDrift(packDrift.Details)
 	switch {
 	case err != nil:
 		details = append(details, "instruction_pack: "+err.Error())
 	case packDrift.Drifted:
-		detail := strings.Join(packDrift.Details, ", ")
-		if detail == "" {
-			detail = "latest pack differs from current authorities"
+		if len(blockingPackDrift) > 0 {
+			details = append(details, "instruction_pack: "+strings.Join(blockingPackDrift, ", "))
 		}
-		details = append(details, "instruction_pack: "+detail)
-	default:
+	}
+	if err == nil && len(blockingPackDrift) == 0 {
 		pack, err := loadDelegateInstructionPack(req.HomePath, harnessName)
 		switch {
 		case err != nil:
@@ -146,6 +179,8 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 			details = append(details, "instruction_pack: schema_version is not current")
 		case normalizeDelegateReadinessHarness(pack.Harness) != harnessName:
 			details = append(details, "instruction_pack: harness identity does not match")
+		case pack.ContentSHA256 != delegateInstructionPackContentSHA256(pack):
+			details = append(details, "instruction_pack: managed pack body content_sha256 is invalid")
 		default:
 			if pack.PolicyCore.Absent {
 				details = append(details, "instruction_pack: policy_core is absent")
@@ -185,14 +220,132 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 	}, nil
 }
 
-func delegatePreToolUseReconciliation(reconciliation hookplan.Reconciliation, harnessName string) *hookplan.Delta {
+func delegateBlockingInstructionPackDrift(driftDetails []string) []string {
+	var blocking []string
+	contractRotated := false
+	bodyChanged := false
+	for _, detail := range driftDetails {
+		switch {
+		case strings.HasPrefix(detail, "effective_contract layer drifted"):
+			contractRotated = true
+		case detail == "managed pack body content_sha256 differs":
+			bodyChanged = true
+		default:
+			blocking = append(blocking, detail)
+		}
+	}
+	if len(blocking) > 0 {
+		if bodyChanged {
+			blocking = append(blocking, "managed pack body content_sha256 differs")
+		}
+		return blocking
+	}
+	if bodyChanged && !contractRotated {
+		return []string{"managed pack body content_sha256 differs"}
+	}
+	return nil
+}
+
+func delegateActivationArgvReadiness(req work.DelegateHarnessReadinessRequest) (work.DelegateHarnessReadinessEvidence, string) {
+	const policy = "compound.delegate.argv.positional-prompt-only.v0.1"
+	evidence := work.DelegateHarnessReadinessEvidence{
+		Kind:     "activation_argv",
+		Ref:      "lane-tuple://" + firstDelegateReadinessValue(req.RequestedModelID, req.LaneID, normalizeDelegateReadinessHarness(req.Harness)) + "/argv-policy",
+		Revision: delegateReadinessBytesRevision([]byte(policy)),
+	}
+	switch {
+	case len(req.Args) == 0:
+		return evidence, ""
+	case len(req.Args) != 1:
+		return work.DelegateHarnessReadinessEvidence{}, "activation_argv: lane tuple does not attest multi-token argv"
+	case strings.TrimSpace(req.Args[0]) == "":
+		return work.DelegateHarnessReadinessEvidence{}, "activation_argv: empty positional argv is not attested"
+	case strings.HasPrefix(strings.TrimSpace(req.Args[0]), "-"):
+		return work.DelegateHarnessReadinessEvidence{}, "activation_argv: flag-shaped argv is not attested"
+	case strings.ContainsRune(req.Args[0], '\x00'):
+		return work.DelegateHarnessReadinessEvidence{}, "activation_argv: argv contains an invalid NUL byte"
+	default:
+		return evidence, ""
+	}
+}
+
+func delegateDeclaredWriteBlockingBinding(plan hookplan.HookPlan, harnessName string) (*hookplan.Binding, string) {
+	var match *hookplan.Binding
+	for i := range plan.Bindings {
+		binding := &plan.Bindings[i]
+		if normalizeDelegateReadinessHarness(binding.Harness) != harnessName ||
+			binding.Event != "PreToolUse" ||
+			!binding.Blocking ||
+			!delegateWriteScopedMatcher(binding.Matcher) {
+			continue
+		}
+		if match != nil {
+			return nil, "write-scoped blocking PreToolUse declaration is ambiguous"
+		}
+		match = binding
+	}
+	if match == nil {
+		return nil, "write-scoped blocking PreToolUse declaration is absent"
+	}
+	return match, ""
+}
+
+func delegateWriteScopedMatcher(matcher string) bool {
+	matcher = strings.ToLower(strings.TrimSpace(matcher))
+	return matcher == "" ||
+		strings.Contains(matcher, "write") ||
+		strings.Contains(matcher, "edit") ||
+		strings.Contains(matcher, "multiedit")
+}
+
+func delegateBindingReconciliation(reconciliation hookplan.Reconciliation, binding *hookplan.Binding) *hookplan.Delta {
+	if binding == nil {
+		return nil
+	}
 	for i := range reconciliation.Deltas {
 		delta := &reconciliation.Deltas[i]
-		if normalizeDelegateReadinessHarness(delta.Harness) == harnessName && delta.Event == "PreToolUse" {
+		if delta.BindingID == binding.ID {
 			return delta
 		}
 	}
 	return nil
+}
+
+func delegateInstructionPackContentSHA256(pack harness.InstructionPack) string {
+	body := map[string]any{
+		"schema_version": pack.SchemaVersion,
+		"harness":        pack.Harness,
+		"policy_core": map[string]any{
+			"authority_ref":   pack.PolicyCore.AuthorityRef,
+			"source_revision": pack.PolicyCore.SourceRevision,
+			"content_sha256":  pack.PolicyCore.ContentSHA256,
+			"absent":          pack.PolicyCore.Absent,
+		},
+		"posture": map[string]any{
+			"authority_ref":   pack.Posture.AuthorityRef,
+			"source_revision": pack.Posture.SourceRevision,
+			"content_sha256":  pack.Posture.ContentSHA256,
+			"absent":          pack.Posture.Absent,
+		},
+		"roster": map[string]any{
+			"registry_revision": pack.Roster.RegistryRevision,
+			"installed_hooks": map[string]any{
+				"ref":      pack.Roster.InstalledHooks.Ref,
+				"revision": pack.Roster.InstalledHooks.Revision,
+				"absent":   pack.Roster.InstalledHooks.Absent,
+			},
+			"effective_contract": map[string]any{
+				"ref":      pack.Roster.EffectiveContract.Ref,
+				"revision": pack.Roster.EffectiveContract.Revision,
+				"absent":   pack.Roster.EffectiveContract.Absent,
+			},
+		},
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return ""
+	}
+	return delegateReadinessBytesRevision(encoded)
 }
 
 func validateDelegateInstructionContext(req work.DelegateHarnessReadinessRequest, pack harness.InstructionPack) ([]work.DelegateHarnessReadinessEvidence, []string) {
@@ -206,17 +359,12 @@ func validateDelegateInstructionContext(req work.DelegateHarnessReadinessRequest
 		return evidence, []string{"instruction_pack: work context_pack_id is invalid"}
 	}
 
-	contextPath := filepath.Join(req.HomePath, "context", "packs", contextPackID+".json")
-	var contextPack envelope.ContextPack
-	if err := readDelegateReadinessJSON(contextPath, &contextPack); err != nil {
-		return evidence, []string{"instruction_pack: context pack: " + err.Error()}
+	artifacts, err := contract.ReadContextPackContract(req.HomePath, contextPackID)
+	if err != nil {
+		return evidence, []string{"instruction_pack: context/contract artifacts: " + err.Error()}
 	}
-	switch {
-	case contextPack.ID != contextPackID:
-		details = append(details, "instruction_pack: context pack identity does not match work")
-	case contextPack.Validate() != nil:
-		details = append(details, "instruction_pack: context pack is invalid")
-	}
+	contextPack := artifacts.ContextPack
+	effective := artifacts.EffectiveContract
 	if workID := strings.TrimSpace(contextPack.IDs.WorkID); workID != "" && workID != strings.TrimSpace(req.WorkID) {
 		details = append(details, "instruction_pack: context pack work identity does not match")
 	}
@@ -225,14 +373,6 @@ func validateDelegateInstructionContext(req work.DelegateHarnessReadinessRequest
 	if filepath.ToSlash(filepath.Clean(pack.Roster.EffectiveContract.Ref)) != latestContractRef {
 		details = append(details, "instruction_pack: effective_contract ref is not the owned latest projection")
 		return evidence, details
-	}
-	var effective envelope.EffectiveContract
-	if err := readDelegateReadinessJSON(filepath.Join(req.HomePath, filepath.FromSlash(latestContractRef)), &effective); err != nil {
-		details = append(details, "instruction_pack: effective contract: "+err.Error())
-		return evidence, details
-	}
-	if err := effective.Validate(); err != nil {
-		details = append(details, "instruction_pack: effective contract is invalid")
 	}
 	if normalizeDelegateReadinessHarness(effective.Harness) != normalizeDelegateReadinessHarness(req.Harness) {
 		details = append(details, "instruction_pack: effective contract harness identity does not match")
@@ -250,13 +390,14 @@ func validateDelegateInstructionContext(req work.DelegateHarnessReadinessRequest
 	if len(details) == 0 {
 		evidence = append(evidence,
 			work.DelegateHarnessReadinessEvidence{
-				Kind: "context_pack",
-				Ref:  "context-pack://" + contextPack.ID,
+				Kind:     "context_pack",
+				Ref:      "context-pack://" + contextPack.ID,
+				Revision: artifacts.ContextPackRevision,
 			},
 			work.DelegateHarnessReadinessEvidence{
 				Kind:     "effective_contract",
 				Ref:      "contract://" + effective.ID,
-				Revision: pack.Roster.EffectiveContract.Revision,
+				Revision: artifacts.EffectiveContractRevision,
 			},
 		)
 	}
