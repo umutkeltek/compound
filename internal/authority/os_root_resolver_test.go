@@ -3,6 +3,7 @@ package authority
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,8 +13,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestAbsorbedOSRootReusesExistingUmutOSRegistryKey(t *testing.T) {
+	if AbsorbedOSRegistryKey != "umut_os" {
+		t.Fatalf("absorbed OS resolver must reuse canonical_roots.umut_os, got %q", AbsorbedOSRegistryKey)
+	}
+	if absorbedOSEntityRef != "source:umut-os" {
+		t.Fatalf("absorbed OS entity ref = %q, want source:umut-os", absorbedOSEntityRef)
+	}
+	if strings.Contains(osAbsorptionAbsorbedOSSkipReason, "absorbed_os") ||
+		!strings.Contains(osAbsorptionAbsorbedOSSkipReason, "umut_os") {
+		t.Fatalf("skip reason must name the existing registry key: %q", osAbsorptionAbsorbedOSSkipReason)
+	}
+}
+
 // seedAbsorbedOSRegistry writes a minimal os-path-authority.yaml declaring
-// osRoot as the active absorbed_os canonical root and imports it into
+// osRoot as the active umut_os canonical root and imports it into
 // compoundHome's mem ledger exactly the way `compound authority
 // path-registry` does in production (RegisterEntity + Capture + Adjudicate
 // promote — see cmd/compound/main.go's "path-registry" handler). Every
@@ -107,8 +121,48 @@ func TestResolveAbsorbedOSRootSeededRegistryResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if !found || got != osRoot {
-		t.Fatalf("ResolveAbsorbedOSRoot = %q found=%v, want %q found=true", got, found, osRoot)
+	want, err := filepath.EvalSymlinks(osRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || got != want {
+		t.Fatalf("ResolveAbsorbedOSRoot = %q found=%v, want %q found=true", got, found, want)
+	}
+}
+
+func TestResolveAbsorbedOSRootRejectsPostImportSymlinkRepointing(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	osRoot := filepath.Join(root, "absorbed-os")
+	if err := os.MkdirAll(osRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	compoundHome := filepath.Join(root, "compound-home")
+	if err := home.Init(compoundHome, "test", time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	seedAbsorbedOSRegistry(t, compoundHome, osRoot)
+
+	movedRoot := filepath.Join(root, "absorbed-os-original")
+	if err := os.Rename(osRoot, movedRoot); err != nil {
+		t.Fatal(err)
+	}
+	repointedTarget := filepath.Join(root, "repointed-target")
+	if err := os.MkdirAll(repointedTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(repointedTarget, osRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	got, found, err := ResolveAbsorbedOSRoot(compoundHome)
+	if err == nil {
+		t.Fatalf("post-import symlink repointing must fail closed, got root=%q found=%v", got, found)
+	}
+	if !strings.Contains(err.Error(), "canonical") {
+		t.Fatalf("repointing error must name canonical path drift, got %v", err)
 	}
 }
 
@@ -130,7 +184,11 @@ func TestResolveAbsorbedOSEntrypointResolvesUnderDeclaredRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve entrypoint: %v", err)
 	}
-	want := filepath.Join(osRoot, "exec-lane", "os.ts")
+	canonicalRoot, err := filepath.EvalSymlinks(osRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canonicalRoot, "exec-lane", "os.ts")
 	if !found || got != want {
 		t.Fatalf("ResolveAbsorbedOSEntrypoint = %q found=%v, want %q found=true", got, found, want)
 	}

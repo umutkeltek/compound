@@ -268,6 +268,10 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 	if err != nil {
 		return report, err
 	}
+	servedSourceRowsCheck, err := osAbsorptionServedOrientationSourceRowsCheck(homePath, matrix.Rows)
+	if err != nil {
+		return report, err
+	}
 	for _, row := range matrix.Rows {
 		dr := OSAbsorptionDoctorRow{
 			ID:            row.ID,
@@ -370,6 +374,7 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 	report.Checks = append(report.Checks,
 		doctorCheck("installed", report.Installed, fmt.Sprintf("%s rows=%d", report.AuthorityPath, report.RowCount)),
 		doctorCheck("required_fields", report.MissingRequiredCount == 0, fmt.Sprintf("missing=%d", report.MissingRequiredCount)),
+		servedSourceRowsCheck,
 		doctorCheck("capability_auto_proofs", report.AutoProofCount >= 3 && report.FailedAutoProofCount == 0, fmt.Sprintf("auto=%d failed=%d", report.AutoProofCount, report.FailedAutoProofCount)),
 		// This floor is a liveness/honesty sanity check ("the matrix still
 		// names real, gated pending work — it hasn't been gamed into
@@ -1007,6 +1012,70 @@ func osAbsorptionIsServedOrientationAuthorityRow(row OSAbsorptionMatrixRow) bool
 	return row.CompoundOwner == osAbsorptionEffectiveContractAuthorityRef
 }
 
+func osAbsorptionExpectedServedSourceRefs(homePath string) ([]string, bool, error) {
+	absorbedOSRoot, found, err := ResolveAbsorbedOSRoot(homePath)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+	return []string{
+		filepath.Clean(filepath.Join(absorbedOSRoot, filepath.FromSlash(osAbsorptionServedLiveStart))),
+		filepath.Clean(filepath.Join(absorbedOSRoot, filepath.FromSlash(osAbsorptionServedWholeSystemMap))),
+	}, true, nil
+}
+
+func osAbsorptionServedOrientationSourceRowsCheck(
+	homePath string,
+	rows []OSAbsorptionMatrixRow,
+) (OSAbsorptionDoctorCheck, error) {
+	expected, found, err := osAbsorptionExpectedServedSourceRefs(homePath)
+	if err != nil {
+		return OSAbsorptionDoctorCheck{}, fmt.Errorf("resolve served orientation source rows: %w", err)
+	}
+	if !found {
+		return doctorCheck(
+			"served_orientation_source_rows",
+			true,
+			"not applicable: no absorbed-OS root declared",
+		), nil
+	}
+
+	matches := make(map[string][]OSAbsorptionMatrixRow, len(expected))
+	for _, row := range rows {
+		sourceRef := filepath.Clean(strings.TrimSpace(row.SourceRef))
+		for _, expectedRef := range expected {
+			if sourceRef == expectedRef {
+				matches[expectedRef] = append(matches[expectedRef], row)
+			}
+		}
+	}
+	ok := true
+	details := make([]string, 0, len(expected))
+	for _, expectedRef := range expected {
+		matched := matches[expectedRef]
+		detail := fmt.Sprintf("%s count=%d", expectedRef, len(matched))
+		if len(matched) != 1 {
+			ok = false
+		} else if matched[0].CompoundOwner != osAbsorptionEffectiveContractAuthorityRef ||
+			matched[0].ProofMode != osAbsorptionProofModeServedOrient {
+			ok = false
+			detail += fmt.Sprintf(
+				" owner=%q proof_mode=%q",
+				matched[0].CompoundOwner,
+				matched[0].ProofMode,
+			)
+		}
+		details = append(details, detail)
+	}
+	return doctorCheck(
+		"served_orientation_source_rows",
+		ok,
+		"expected exactly one classified row for each derived source: "+strings.Join(details, "; "),
+	), nil
+}
+
 func validateOSAbsorptionServedOrientationDeclaration(row OSAbsorptionMatrixRow) error {
 	if osAbsorptionIsServedOrientationAuthorityRow(row) && row.ProofMode != osAbsorptionProofModeServedOrient {
 		return fmt.Errorf(
@@ -1088,11 +1157,28 @@ func osAbsorptionOperatorStateProof(homePath string) osAbsorptionProofResult {
 }
 
 type osAbsorptionServedOrientationEvidence struct {
-	entrypoints   map[string]string
-	contextPackID string
+	entrypoints  map[string]string
+	contextPacks map[string]osAbsorptionServedContextPackEvidence
+}
+
+type osAbsorptionServedContextPackEvidence struct {
+	id               string
+	entrypointDigest string
 }
 
 func osAbsorptionServedOrientationProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
+	structural := osAbsorptionServedOrientationStructuralProof(homePath, row)
+	if !structural.ok {
+		return structural
+	}
+	evidence, err := parseOSAbsorptionServedOrientationEvidence(row.EvidenceRefs)
+	if err != nil {
+		return osAbsorptionProofResult{reason: err.Error()}
+	}
+	return osAbsorptionServedOrientationCurrentProof(homePath, row, evidence, time.Now().UTC())
+}
+
+func osAbsorptionServedOrientationStructuralProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
 	if row.ProofMode != osAbsorptionProofModeServedOrient {
 		return osAbsorptionProofResult{reason: fmt.Sprintf(
 			"served orientation row %s requires proof_mode %q, got %q",
@@ -1116,60 +1202,298 @@ func osAbsorptionServedOrientationProof(homePath string, row OSAbsorptionMatrixR
 	if err := validateOSAbsorptionServedOrientationBinding(homePath, row, evidence); err != nil {
 		return osAbsorptionProofResult{reason: err.Error()}
 	}
+	expectedSourceRefs, found, err := osAbsorptionExpectedServedSourceRefs(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("resolve served orientation rollback refs: %v", err)}
+	}
+	if !found {
+		return osAbsorptionProofResult{reason: "served orientation evidence has no declared absorbed-OS rollback refs"}
+	}
 
-	digests := make(map[string]string, len(evidence.entrypoints))
 	for _, harness := range []string{"codex", "claude"} {
 		path := evidence.entrypoints[harness]
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return osAbsorptionProofResult{reason: fmt.Sprintf("%s entrypoint %s: %v", harness, path, err)}
 		}
-		if err := validateOSAbsorptionServedEntrypoint(harness, row.SourceRef, string(body)); err != nil {
+		if err := validateOSAbsorptionServedEntrypointSources(harness, expectedSourceRefs, string(body)); err != nil {
 			return osAbsorptionProofResult{reason: err.Error()}
 		}
-		digests[harness] = digestBytes(body)
 	}
 
-	pack, err := readOSAbsorptionContextPack(homePath, evidence.contextPackID)
-	if err != nil {
-		return osAbsorptionProofResult{reason: err.Error()}
-	}
-	for _, ref := range []string{
+	return osAbsorptionProofResult{ok: true}
+}
+
+const (
+	osAbsorptionServedContextPackMaxAge     = 24 * time.Hour
+	osAbsorptionServedContextPackFutureSkew = 5 * time.Minute
+)
+
+func osAbsorptionServedOrientationCurrentProof(
+	homePath string,
+	row OSAbsorptionMatrixRow,
+	evidence osAbsorptionServedOrientationEvidence,
+	now time.Time,
+) osAbsorptionProofResult {
+	requiredRefs := []string{
 		"control-plane://orientation-map",
 		"control-plane://workflow-contract",
 		"control-plane://sop-packets",
 		"memory://relevance-gated",
-	} {
-		if !osAbsorptionContextPackIncludes(pack, ref) {
-			return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing included ref %s", pack.ID, ref)}
-		}
-		rev := osAbsorptionContextPackRevision(pack, ref)
-		if rev == "" || rev == "unknown" {
-			return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing source revision for %s", pack.ID, ref)}
-		}
 	}
-	if strings.TrimSpace(pack.IDs.ContractID) == "" {
-		return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing EffectiveContract id", pack.ID)}
-	}
-	if strings.TrimSpace(pack.TaskContract.Intent) == "" {
-		return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing task intent", pack.ID)}
+	contextPackIDs := map[string]string{}
+	contractIDs := map[string]string{}
+	entrypointDigests := map[string]string{}
+	sharedScope := ""
+
+	for _, harness := range []string{"codex", "claude"} {
+		entrypointPath := evidence.entrypoints[harness]
+		entrypointBody, err := os.ReadFile(entrypointPath)
+		if err != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("%s entrypoint %s: %v", harness, entrypointPath, err)}
+		}
+		liveEntrypointDigest := digestBytes(entrypointBody)
+		if liveEntrypointDigest != evidence.contextPacks[harness].entrypointDigest {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"%s ContextPack evidence entrypoint digest %s differs from live installed digest %s",
+				harness,
+				evidence.contextPacks[harness].entrypointDigest,
+				liveEntrypointDigest,
+			)}
+		}
+		entrypointInfo, err := os.Stat(entrypointPath)
+		if err != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("%s entrypoint %s: %v", harness, entrypointPath, err)}
+		}
+
+		pack, err := readOSAbsorptionContextPack(homePath, evidence.contextPacks[harness].id)
+		if err != nil {
+			return osAbsorptionProofResult{reason: err.Error()}
+		}
+		if pack.Authority.SourceClass != "runtime" || pack.Authority.Status != "current" {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s is not runtime/current authority", pack.ID)}
+		}
+		if pack.Privacy != row.Privacy {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"ContextPack %s privacy %q differs from row privacy %q",
+				pack.ID,
+				pack.Privacy,
+				row.Privacy,
+			)}
+		}
+		if strings.TrimSpace(pack.TaskContract.Intent) == "" {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing task intent", pack.ID)}
+		}
+		createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(pack.CreatedAt))
+		if err != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s created_at invalid: %v", pack.ID, err)}
+		}
+		if createdAt.After(now.Add(osAbsorptionServedContextPackFutureSkew)) {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s created_at exceeds allowed clock skew", pack.ID)}
+		}
+		if now.Sub(createdAt) > osAbsorptionServedContextPackMaxAge {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"ContextPack %s is stale: age=%s max=%s",
+				pack.ID,
+				now.Sub(createdAt).Round(time.Second),
+				osAbsorptionServedContextPackMaxAge,
+			)}
+		}
+		if entrypointInfo.ModTime().After(createdAt.Add(time.Second)) {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"ContextPack %s predates the installed %s entrypoint digest",
+				pack.ID,
+				harness,
+			)}
+		}
+
+		contractID := strings.TrimSpace(pack.IDs.ContractID)
+		if !safeOSAbsorptionRuntimeID(contractID, "contract_") {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"ContextPack %s missing or invalid EffectiveContract id %q",
+				pack.ID,
+				contractID,
+			)}
+		}
+		contract, err := readMemoryLedgerEffectiveContract(homePath, pack, contractID)
+		if err != nil {
+			return osAbsorptionProofResult{reason: err.Error()}
+		}
+		if contract.Authority.SourceClass != "runtime" || contract.Authority.Status != "current" {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("EffectiveContract %s is not runtime/current authority", contract.ID)}
+		}
+		if contract.Harness != harness {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"EffectiveContract %s harness %q does not bind cited %s ContextPack %s",
+				contract.ID,
+				contract.Harness,
+				harness,
+				pack.ID,
+			)}
+		}
+		if contract.CreatedAt != pack.CreatedAt {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"EffectiveContract %s created_at differs from ContextPack %s",
+				contract.ID,
+				pack.ID,
+			)}
+		}
+		if !sameMemoryLedgerTaskContract(pack.TaskContract, contract.TaskContract) {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"EffectiveContract %s task contract differs from ContextPack %s",
+				contract.ID,
+				pack.ID,
+			)}
+		}
+
+		scope, err := validateOSAbsorptionServedScope(pack.Scope.Surface)
+		if err != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s scope: %v", pack.ID, err)}
+		}
+		if contract.Scope.Surface != scope {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"EffectiveContract %s scope %q differs from ContextPack %s scope %q",
+				contract.ID,
+				contract.Scope.Surface,
+				pack.ID,
+				scope,
+			)}
+		}
+		if sharedScope == "" {
+			sharedScope = scope
+		} else if scope != sharedScope {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"%s ContextPack %s scope %q differs from shared served-orientation scope %q",
+				harness,
+				pack.ID,
+				scope,
+				sharedScope,
+			)}
+		}
+
+		for _, ref := range requiredRefs {
+			if !osAbsorptionContextPackIncludes(pack, ref) {
+				return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing included ref %s", pack.ID, ref)}
+			}
+			packRevision := osAbsorptionContextPackRevision(pack, ref)
+			if packRevision == "" || packRevision == "unknown" {
+				return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing source revision for %s", pack.ID, ref)}
+			}
+			contractRevision := osAbsorptionEffectiveContractRevision(contract, ref)
+			if contractRevision != packRevision {
+				return osAbsorptionProofResult{reason: fmt.Sprintf(
+					"EffectiveContract %s source revision %q differs from ContextPack %s revision %q for %s",
+					contract.ID,
+					contractRevision,
+					pack.ID,
+					packRevision,
+					ref,
+				)}
+			}
+			if strings.HasPrefix(ref, "control-plane://") {
+				currentRevision, err := osAbsorptionCurrentServedSourceRevision(scope, ref)
+				if err != nil {
+					return osAbsorptionProofResult{reason: fmt.Sprintf("current source revision for %s: %v", ref, err)}
+				}
+				if currentRevision != packRevision {
+					return osAbsorptionProofResult{reason: fmt.Sprintf(
+						"ContextPack %s current source revision for %s is %s, recorded %s",
+						pack.ID,
+						ref,
+						currentRevision,
+						packRevision,
+					)}
+				}
+			}
+		}
+
+		contextPackIDs[harness] = pack.ID
+		contractIDs[harness] = contract.ID
+		entrypointDigests[harness] = liveEntrypointDigest
 	}
 
 	return osAbsorptionProofResult{
 		ok: true,
 		proofRef: fmt.Sprintf(
-			"%s:context_pack=%s;contract=%s;codex_sha256=%s;claude_sha256=%s",
+			"%s:codex_context_pack=%s;codex_contract=%s;claude_context_pack=%s;claude_contract=%s;scope_sha256=%s;codex_sha256=%s;claude_sha256=%s",
 			osAbsorptionProofModeServedOrient,
-			pack.ID,
-			pack.IDs.ContractID,
-			digests["codex"],
-			digests["claude"],
+			contextPackIDs["codex"],
+			contractIDs["codex"],
+			contextPackIDs["claude"],
+			contractIDs["claude"],
+			digestBytes([]byte(sharedScope)),
+			entrypointDigests["codex"],
+			entrypointDigests["claude"],
 		),
 	}
 }
 
+func validateOSAbsorptionServedScope(scope string) (string, error) {
+	scope = filepath.Clean(strings.TrimSpace(scope))
+	if scope == "." || !filepath.IsAbs(scope) {
+		return "", fmt.Errorf("must be an absolute directory, got %q", scope)
+	}
+	canonicalScope, err := filepath.EvalSymlinks(scope)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize %s: %w", scope, err)
+	}
+	canonicalScope = filepath.Clean(canonicalScope)
+	if canonicalScope != scope {
+		return "", fmt.Errorf("must be canonical: claim=%s resolved=%s", scope, canonicalScope)
+	}
+	info, err := os.Stat(canonicalScope)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("is not a directory: %s", canonicalScope)
+	}
+	return canonicalScope, nil
+}
+
+func osAbsorptionCurrentServedSourceRevision(scope, ref string) (string, error) {
+	var rels []string
+	switch ref {
+	case "control-plane://orientation-map":
+		rels = []string{"docs/ARCHITECTURE.md", "docs/LAYERS.md"}
+	case "control-plane://workflow-contract":
+		rels = []string{"docs/architecture/contracts/README.md"}
+	case "control-plane://sop-packets":
+		rels = []string{"docs/architecture/runtime.md", "docs/roadmap/phases.md"}
+	default:
+		return "", fmt.Errorf("unsupported served source %q", ref)
+	}
+
+	root := scope
+	for {
+		info, err := os.Stat(filepath.Join(root, "docs"))
+		if err == nil && info.IsDir() {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			return "", fmt.Errorf("no docs root found from scope %s", scope)
+		}
+		root = parent
+	}
+
+	rows := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", rel, err)
+		}
+		rows = append(rows, rel+":sha256:"+digestBytes(body)[:12])
+	}
+	sort.Strings(rows)
+	return "sha256:" + digest12(strings.Join(rows, "\n")), nil
+}
+
 func parseOSAbsorptionServedOrientationEvidence(refs []string) (osAbsorptionServedOrientationEvidence, error) {
-	evidence := osAbsorptionServedOrientationEvidence{entrypoints: map[string]string{}}
+	evidence := osAbsorptionServedOrientationEvidence{
+		entrypoints:  map[string]string{},
+		contextPacks: map[string]osAbsorptionServedContextPackEvidence{},
+	}
 	for _, ref := range refs {
 		ref = strings.TrimSpace(ref)
 		switch {
@@ -1183,14 +1507,26 @@ func parseOSAbsorptionServedOrientationEvidence(refs []string) (osAbsorptionServ
 			}
 			evidence.entrypoints[parts[0]] = strings.TrimSpace(parts[1])
 		case strings.HasPrefix(ref, osAbsorptionContextPackEvidenceRef):
-			id := strings.TrimSpace(strings.TrimPrefix(ref, osAbsorptionContextPackEvidenceRef))
+			parts := strings.SplitN(strings.TrimPrefix(ref, osAbsorptionContextPackEvidenceRef), ":", 3)
+			if len(parts) != 3 || (parts[0] != "codex" && parts[0] != "claude") {
+				return evidence, fmt.Errorf("served orientation evidence has invalid harness-scoped ContextPack ref %q", ref)
+			}
+			harness := parts[0]
+			id := strings.TrimSpace(parts[1])
+			entrypointDigest := strings.TrimSpace(parts[2])
 			if !safeOSAbsorptionRuntimeID(id, "ctx_") {
-				return evidence, fmt.Errorf("served orientation evidence has invalid ContextPack id %q", id)
+				return evidence, fmt.Errorf("served orientation evidence has invalid %s ContextPack id %q", harness, id)
 			}
-			if evidence.contextPackID != "" {
-				return evidence, fmt.Errorf("served orientation evidence has duplicate ContextPack ref")
+			if len(entrypointDigest) != 64 || !isOSAbsorptionHex(entrypointDigest) {
+				return evidence, fmt.Errorf("served orientation evidence has invalid %s entrypoint digest %q", harness, entrypointDigest)
 			}
-			evidence.contextPackID = id
+			if _, exists := evidence.contextPacks[harness]; exists {
+				return evidence, fmt.Errorf("served orientation evidence has duplicate %s ContextPack ref", harness)
+			}
+			evidence.contextPacks[harness] = osAbsorptionServedContextPackEvidence{
+				id:               id,
+				entrypointDigest: entrypointDigest,
+			}
 		}
 	}
 	for _, harness := range []string{"codex", "claude"} {
@@ -1198,8 +1534,10 @@ func parseOSAbsorptionServedOrientationEvidence(refs []string) (osAbsorptionServ
 			return evidence, fmt.Errorf("served orientation evidence missing %s entrypoint ref", harness)
 		}
 	}
-	if evidence.contextPackID == "" {
-		return evidence, fmt.Errorf("served orientation evidence missing ContextPack ref")
+	for _, harness := range []string{"codex", "claude"} {
+		if evidence.contextPacks[harness].id == "" {
+			return evidence, fmt.Errorf("served orientation evidence missing %s ContextPack ref", harness)
+		}
 	}
 	return evidence, nil
 }
@@ -1282,6 +1620,10 @@ func validateOSAbsorptionServedOrientationBinding(
 }
 
 func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error {
+	return validateOSAbsorptionServedEntrypointSources(harness, []string{sourceRef}, body)
+}
+
+func validateOSAbsorptionServedEntrypointSources(harness string, sourceRefs []string, body string) error {
 	block, err := osAbsorptionServedContractBlock(body)
 	if err != nil {
 		return fmt.Errorf("%s entrypoint %w", harness, err)
@@ -1302,12 +1644,9 @@ func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error
 			return fmt.Errorf("%s entrypoint managed block missing exact line %q at position %d; got %q", harness, want, i+1, block[i])
 		}
 	}
-	if len(block) == len(requiredPrefix) {
-		return fmt.Errorf("%s entrypoint managed block missing source ref %q", harness, sourceRef)
-	}
-	sourceFound := false
 	sourceSeen := map[string]bool{}
-	for _, ref := range block[len(requiredPrefix):] {
+	actualSourceRefs := block[len(requiredPrefix):]
+	for _, ref := range actualSourceRefs {
 		if strings.TrimSpace(ref) != ref || ref == "" || strings.ContainsAny(ref, "`<>") || !filepath.IsAbs(ref) {
 			return fmt.Errorf("%s entrypoint managed block has invalid source ref line %q", harness, ref)
 		}
@@ -1315,12 +1654,24 @@ func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error
 			return fmt.Errorf("%s entrypoint managed block has duplicate source ref %q", harness, ref)
 		}
 		sourceSeen[ref] = true
-		if ref == sourceRef {
-			sourceFound = true
-		}
 	}
-	if !sourceFound {
-		return fmt.Errorf("%s entrypoint managed block missing source ref %q", harness, sourceRef)
+	if len(actualSourceRefs) != len(sourceRefs) {
+		return fmt.Errorf(
+			"%s entrypoint managed block must contain exact rollback refs %v, got %v",
+			harness,
+			sourceRefs,
+			actualSourceRefs,
+		)
+	}
+	for i, want := range sourceRefs {
+		if actualSourceRefs[i] != want {
+			return fmt.Errorf(
+				"%s entrypoint managed block must contain exact rollback refs %v in order, got %v",
+				harness,
+				sourceRefs,
+				actualSourceRefs,
+			)
+		}
 	}
 
 	paragraphs := osAbsorptionActiveMarkdownParagraphs(body)
@@ -1333,14 +1684,9 @@ func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error
 			return fmt.Errorf("%s entrypoint retains retired orient heading %q", harness, trimmed)
 		}
 	}
-	for _, retired := range []string{
-		"FIRST action is recall",
-		"**Recall first:**",
-	} {
-		for _, paragraph := range paragraphs {
-			if strings.Contains(paragraph, retired) {
-				return fmt.Errorf("%s entrypoint retains retired first-action directive %q", harness, retired)
-			}
+	for _, paragraph := range paragraphs {
+		if directive, ok := osAbsorptionRetiredFirstActionRecall(paragraph); ok {
+			return fmt.Errorf("%s entrypoint retains retired first-action directive %q", harness, directive)
 		}
 	}
 
@@ -1352,6 +1698,27 @@ func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error
 		}
 	}
 	return nil
+}
+
+func osAbsorptionRetiredFirstActionRecall(paragraph string) (string, bool) {
+	trimmed := strings.TrimSpace(paragraph)
+	if trimmed == "" || osAbsorptionRetiredQuotation(trimmed) {
+		return "", false
+	}
+	normalized := osAbsorptionSemanticWords(trimmed)
+	words := strings.Fields(normalized)
+	candidate := strings.Contains(normalized, "first action is recall") ||
+		strings.Contains(normalized, "recall first") ||
+		strings.Contains(normalized, "before any work") &&
+			(osAbsorptionHasWord(words, "brain") || osAbsorptionHasWord(words, "gbrain"))
+	if candidate {
+		for i, word := range words {
+			if word == "recall" && !osAbsorptionWriteActionNegated(words, i) {
+				return trimmed, true
+			}
+		}
+	}
+	return "", false
 }
 
 // osAbsorptionServedContractBlock extracts one exact managed active-prose
@@ -1603,6 +1970,12 @@ func osAbsorptionMemoryAuthorityContradiction(line string) (string, bool) {
 	if !hasMemorySubject {
 		return "", false
 	}
+	for _, authorityClause := range strings.Split(trimmed, ";") {
+		authorityWords := strings.Fields(osAbsorptionSemanticWords(authorityClause))
+		if osAbsorptionMemoryAuthorityRoleBeforeSubject(authorityWords) {
+			return strings.TrimSpace(authorityClause), true
+		}
+	}
 	if osAbsorptionHasActiveMemoryAuthorityAssertion(words) {
 		return trimmed, true
 	}
@@ -1671,11 +2044,39 @@ func osAbsorptionHasActiveMemoryAuthorityAssertion(words []string) bool {
 		if word != "brain" && word != "gbrain" {
 			continue
 		}
+		if subjectIndex > 0 && words[subjectIndex-1] == "not" {
+			continue
+		}
 		roleIndex, ok := osAbsorptionMemoryAuthorityRoleAfter(words, subjectIndex)
 		if !ok {
 			continue
 		}
 		if !osAbsorptionMemoryAuthorityAssertionNegated(words, subjectIndex, roleIndex) {
+			return true
+		}
+	}
+	return false
+}
+
+func osAbsorptionMemoryAuthorityRoleBeforeSubject(words []string) bool {
+	for subjectIndex, word := range words {
+		if word != "brain" && word != "gbrain" {
+			continue
+		}
+		start := 0
+		for i := subjectIndex - 1; i >= 0; i-- {
+			if words[i] == "compound" || words[i] == "brain" || words[i] == "gbrain" {
+				start = i + 1
+				break
+			}
+		}
+		before := words[start:subjectIndex]
+		if !osAbsorptionHasAnyWord(before, "is", "remains", "becomes") {
+			continue
+		}
+		if osAbsorptionHasAnyWord(before, "authority", "authoritative", "canon", "canonical") ||
+			osAbsorptionWordsContain(before, "system", "record") ||
+			(osAbsorptionWordsContain(before, "system", "of") && osAbsorptionHasWord(before, "record")) {
 			return true
 		}
 	}
@@ -1702,6 +2103,10 @@ func osAbsorptionMemoryAuthorityRoleAfter(words []string, subjectIndex int) (int
 			}
 		case "source":
 			if i+2 < end && words[i+1] == "of" && words[i+2] == "truth" {
+				return i, true
+			}
+		case "system":
+			if i+2 < end && words[i+1] == "of" && words[i+2] == "record" {
 				return i, true
 			}
 		case "owner", "owns":
@@ -1817,6 +2222,25 @@ func osAbsorptionDirectBrainWrite(words []string) bool {
 				continue
 			}
 			if osAbsorptionHasAnyMappedWord(words, durableMarkers) {
+				return true
+			}
+		}
+	}
+	for targetIndex, word := range words {
+		if word != "brain" && word != "gbrain" {
+			continue
+		}
+		if targetIndex == 0 ||
+			!osAbsorptionHasAnyWord(words[targetIndex-1:targetIndex], "to", "into", "in", "under", "at") {
+			continue
+		}
+		for actionIndex := targetIndex + 1; actionIndex < len(words); actionIndex++ {
+			if words[actionIndex] == "brain" || words[actionIndex] == "gbrain" || words[actionIndex] == "compound" {
+				break
+			}
+			if actions[words[actionIndex]] &&
+				!osAbsorptionWriteActionNegated(words, actionIndex) &&
+				osAbsorptionHasAnyMappedWord(words[actionIndex+1:], durableMarkers) {
 				return true
 			}
 		}

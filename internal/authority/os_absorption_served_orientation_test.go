@@ -1,8 +1,10 @@
 package authority
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -126,6 +128,9 @@ func TestValidateOSAbsorptionServedEntrypointEnforcesMemoryAuthorityBoundary(t *
 		"brain takes precedence over Compound.",
 		"brain is not merely evidence; it is the authority.",
 		"Keep durable decisions in ~/brain.",
+		"The final authority for durable memory is brain.",
+		"brain is the system of record.",
+		"In brain, store durable facts.",
 		`Retired quotation: "brain is canon." brain remains the durable memory authority.`,
 	} {
 		t.Run("rejects "+contradictory, func(t *testing.T) {
@@ -136,6 +141,23 @@ func TestValidateOSAbsorptionServedEntrypointEnforcesMemoryAuthorityBoundary(t *
 			}
 			if !strings.Contains(err.Error(), "contradictory memory authority guidance") {
 				t.Fatalf("error %q does not identify the memory-authority contradiction", err.Error())
+			}
+		})
+	}
+}
+
+func TestValidateOSAbsorptionServedEntrypointRejectsFirstActionRecallCaseInsensitively(t *testing.T) {
+	sourceRef := "/synthetic/example-source/ENTRYPOINT.md"
+	for _, directive := range []string{
+		"first ACTION is RECALL from gbrain.",
+		"Before any work, recall from gbrain.",
+		"BEFORE ANY WORK, RECALL FROM GBRAIN.",
+	} {
+		t.Run(directive, func(t *testing.T) {
+			body := strings.Join(append(validServedOrientationLines("codex", sourceRef), directive), "\n")
+			err := validateOSAbsorptionServedEntrypoint("codex", sourceRef, body)
+			if err == nil || !strings.Contains(err.Error(), "retired first-action directive") {
+				t.Fatalf("case-insensitive first-action recall must be rejected, got %v", err)
 			}
 		})
 	}
@@ -185,6 +207,7 @@ func TestValidateOSAbsorptionServedEntrypointUsesOnlyActiveInstructions(t *testi
 		`Retired quotation: "brain is the source of truth."`,
 		"Never save durable facts directly to ~/brain; route them through Compound.",
 		"Never keep durable decisions in ~/brain; route them through Compound.",
+		"Never recall first from gbrain; Compound orient remains the first action.",
 		"brain must not take precedence over Compound.",
 		"Compound is the durable semantic authority; brain remains evidence.",
 		"Save the task output to a local file; brain is evidence, not authority.",
@@ -203,6 +226,72 @@ func TestValidateOSAbsorptionServedEntrypointUsesOnlyActiveInstructions(t *testi
 	}
 }
 
+func TestValidateOSAbsorptionServedEntrypointRejectsExtraRollbackRef(t *testing.T) {
+	sourceRefs := []string{
+		"/synthetic/example-os/LIVE_START.md",
+		"/synthetic/example-os/universe/WHOLE_SYSTEM_MAP.md",
+	}
+	lines := validServedOrientationLines("codex", sourceRefs...)
+	lines = append(lines[:len(lines)-1], "/synthetic/example-os/EXTRA.md", lines[len(lines)-1])
+
+	err := validateOSAbsorptionServedEntrypointSources("codex", sourceRefs, strings.Join(lines, "\n"))
+	if err == nil || !strings.Contains(err.Error(), "exact rollback refs") {
+		t.Fatalf("managed block must reject any extra active absolute rollback ref, got %v", err)
+	}
+}
+
+func TestOSAbsorptionDoctorRequiresExactServedOrientationSourceRows(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*OSAbsorptionSourceMatrix)
+	}{
+		{
+			name: "deleting both rows fails",
+			mutate: func(matrix *OSAbsorptionSourceMatrix) {
+				matrix.Rows = nil
+			},
+		},
+		{
+			name: "relabeling both rows and owner fields fails",
+			mutate: func(matrix *OSAbsorptionSourceMatrix) {
+				for i := range matrix.Rows {
+					matrix.Rows[i].SourceRef = filepath.Join(filepath.Dir(matrix.Rows[i].SourceRef), "OTHER.md")
+					matrix.Rows[i].CompoundOwner = "compound://registries/unrelated"
+					matrix.Rows[i].ProofMode = ""
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := installServedOrientationFixture(t)
+			matrix, err := LoadOSAbsorptionMatrix(fixture.compoundHome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(&matrix)
+			writeJSONFixture(t, OSAbsorptionMatrixPath(fixture.compoundHome), matrix)
+
+			doctor, err := OSAbsorptionDoctor(fixture.compoundHome)
+			if err != nil {
+				t.Fatalf("doctor: %v", err)
+			}
+			check, ok := findOSAbsorptionDoctorCheck(doctor.Checks, "served_orientation_source_rows")
+			if !ok {
+				t.Fatalf("served-orientation coverage check missing: %+v", doctor.Checks)
+			}
+			if check.Status != "fail" || !strings.Contains(check.Detail, "LIVE_START.md") ||
+				!strings.Contains(check.Detail, "WHOLE_SYSTEM_MAP.md") {
+				t.Fatalf("expected both derived source rows to fail independently of row owner/mode: %+v", check)
+			}
+			if doctor.Status != "fail" {
+				t.Fatalf("missing served source rows must fail doctor: %+v", doctor)
+			}
+		})
+	}
+}
+
 func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -213,6 +302,70 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 		{
 			name:       "both generated clients and cited ContextPack are live",
 			wantStatus: "ok",
+		},
+		{
+			name: "historical ContextPack is stale evidence",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				mutateServedOrientationPack(t, fixture.contextPackPaths["codex"], func(pack *envelope.ContextPack) {
+					pack.CreatedAt = time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
+				})
+			},
+			wantStatus: "failed",
+			wantDetail: "stale",
+		},
+		{
+			name: "ContextPack must bind to its harness contract",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				mutateServedOrientationContract(t, fixture.contractPaths["codex"], func(contract *envelope.EffectiveContract) {
+					contract.Harness = "claude"
+				})
+			},
+			wantStatus: "failed",
+			wantDetail: "harness",
+		},
+		{
+			name: "both harness orientations must share one live scope",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				otherScope := t.TempDir()
+				mutateServedOrientationPack(t, fixture.contextPackPaths["claude"], func(pack *envelope.ContextPack) {
+					pack.Scope.Surface = otherScope
+				})
+				mutateServedOrientationContract(t, fixture.contractPaths["claude"], func(contract *envelope.EffectiveContract) {
+					contract.Scope.Surface = otherScope
+				})
+			},
+			wantStatus: "failed",
+			wantDetail: "scope",
+		},
+		{
+			name: "ContextPack source revisions must still be current",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				if err := os.WriteFile(fixture.currentSourcePath, []byte("# architecture changed after orient\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantStatus: "failed",
+			wantDetail: "current source revision",
+		},
+		{
+			name: "ContextPack evidence must bind the installed entrypoint digest",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				body, err := os.ReadFile(fixture.codexPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = append(body, []byte("\n<!-- harmless post-orient regeneration -->\n")...)
+				if err := os.WriteFile(fixture.codexPath, body, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantStatus: "failed",
+			wantDetail: "digest",
 		},
 		{
 			name: "missing served client fails closed",
@@ -229,12 +382,31 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 			name: "missing cited ContextPack fails closed",
 			mutate: func(t *testing.T, fixture servedOrientationFixture) {
 				t.Helper()
-				if err := os.Remove(fixture.contextPackPath); err != nil {
+				if err := os.Remove(fixture.contextPackPaths["codex"]); err != nil {
 					t.Fatal(err)
 				}
 			},
 			wantStatus: "failed",
 			wantDetail: "ContextPack",
+		},
+		{
+			name: "each harness requires its own ContextPack citation",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				for _, id := range []string{"os_source_served_orientation_primary", "os_source_served_orientation_secondary"} {
+					mutateOSAbsorptionMatrixRow(t, fixture.compoundHome, id, func(row *OSAbsorptionMatrixRow) {
+						kept := row.EvidenceRefs[:0]
+						for _, ref := range row.EvidenceRefs {
+							if !strings.HasPrefix(ref, "context_pack:claude:") {
+								kept = append(kept, ref)
+							}
+						}
+						row.EvidenceRefs = kept
+					})
+				}
+			},
+			wantStatus: "failed",
+			wantDetail: "missing claude ContextPack",
 		},
 		{
 			name: "removed proof mode fails closed instead of becoming manual",
@@ -341,7 +513,8 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 				if tt.wantStatus == "ok" {
 					for _, want := range []string{
 						testServedOrientationProofMode,
-						"context_pack=" + fixture.contextPackID,
+						"codex_context_pack=" + fixture.contextPackIDs["codex"],
+						"claude_context_pack=" + fixture.contextPackIDs["claude"],
 						"codex_sha256=",
 						"claude_sha256=",
 					} {
@@ -390,23 +563,51 @@ func TestOSAbsorptionServedOrientationAuthorityProofRejectsHOMESpoof(t *testing.
 }
 
 type servedOrientationFixture struct {
-	compoundHome    string
-	codexPath       string
-	claudePath      string
-	liveStartPath   string
-	contextPackID   string
-	contextPackPath string
+	compoundHome      string
+	codexPath         string
+	claudePath        string
+	liveStartPath     string
+	contextPackIDs    map[string]string
+	contextPackPaths  map[string]string
+	contractPaths     map[string]string
+	scopePath         string
+	currentSourcePath string
 }
 
 func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", root)
 	compoundHome := filepath.Join(root, "compound-home")
 	codexPath := filepath.Join(root, ".codex", "AGENTS.md")
 	claudePath := filepath.Join(root, ".claude", "CLAUDE.md")
-	contextPackID := "ctx_served_orientation"
-	contextPackPath := filepath.Join(compoundHome, "context", "packs", contextPackID+".json")
+	scopePath := filepath.Join(root, "served-scope")
+	currentSourcePath := filepath.Join(scopePath, "docs", "ARCHITECTURE.md")
+	for rel, body := range map[string]string{
+		"docs/ARCHITECTURE.md":                  "# architecture\n",
+		"docs/LAYERS.md":                        "# layers\n",
+		"docs/architecture/contracts/README.md": "# contracts\n",
+		"docs/architecture/runtime.md":          "# runtime\n",
+		"docs/roadmap/phases.md":                "# phases\n",
+	} {
+		path := filepath.Join(scopePath, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	contextPackIDs := map[string]string{
+		"codex":  "ctx_served_orientation_codex",
+		"claude": "ctx_served_orientation_claude",
+	}
+	contextPackPaths := make(map[string]string, len(contextPackIDs))
+	contractPaths := make(map[string]string, len(contextPackIDs))
+	createdAt := time.Now().UTC().Truncate(time.Second)
 	absorbedOSRoot := filepath.Join(root, "example-os")
 	liveStart := filepath.Join(absorbedOSRoot, "LIVE_START.md")
 	wholeMap := filepath.Join(absorbedOSRoot, "universe", "WHOLE_SYSTEM_MAP.md")
@@ -440,9 +641,30 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 		if err := os.WriteFile(entrypoint.path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.Chtimes(entrypoint.path, createdAt.Add(-time.Minute), createdAt.Add(-time.Minute)); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	writeServedOrientationContextPack(t, contextPackPath, contextPackID)
+	for _, harness := range []string{"codex", "claude"} {
+		contextPackPaths[harness], contractPaths[harness] = writeServedOrientationContextPack(
+			t,
+			compoundHome,
+			scopePath,
+			harness,
+			contextPackIDs[harness],
+			"contract_served_orientation_"+harness,
+			createdAt,
+		)
+	}
+	entrypointDigests := map[string]string{}
+	for harness, path := range map[string]string{"codex": codexPath, "claude": claudePath} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entrypointDigests[harness] = digestBytes(body)
+	}
 	matrixPath := filepath.Join(root, "matrix.json")
 	rows := make([]OSAbsorptionMatrixRow, 0, 2)
 	for _, source := range []struct {
@@ -457,7 +679,8 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 		r.EvidenceRefs = []string{
 			"served_entrypoint:codex:" + codexPath,
 			"served_entrypoint:claude:" + claudePath,
-			"context_pack:" + contextPackID,
+			"context_pack:codex:" + contextPackIDs["codex"] + ":" + entrypointDigests["codex"],
+			"context_pack:claude:" + contextPackIDs["claude"] + ":" + entrypointDigests["claude"],
 		}
 		rows = append(rows, r)
 	}
@@ -469,12 +692,15 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 		t.Fatalf("import matrix: %v", err)
 	}
 	return servedOrientationFixture{
-		compoundHome:    compoundHome,
-		codexPath:       codexPath,
-		claudePath:      claudePath,
-		liveStartPath:   liveStart,
-		contextPackID:   contextPackID,
-		contextPackPath: contextPackPath,
+		compoundHome:      compoundHome,
+		codexPath:         codexPath,
+		claudePath:        claudePath,
+		liveStartPath:     liveStart,
+		contextPackIDs:    contextPackIDs,
+		contextPackPaths:  contextPackPaths,
+		contractPaths:     contractPaths,
+		scopePath:         scopePath,
+		currentSourcePath: currentSourcePath,
 	}
 }
 
@@ -556,7 +782,15 @@ func replaceServedEntrypointEvidence(refs []string, harness, path string) []stri
 	return got
 }
 
-func writeServedOrientationContextPack(t *testing.T, path, id string) {
+func writeServedOrientationContextPack(
+	t *testing.T,
+	compoundHome string,
+	scopePath string,
+	harness string,
+	id string,
+	contractID string,
+	createdAt time.Time,
+) (string, string) {
 	t.Helper()
 	refs := []struct {
 		ref         string
@@ -577,39 +811,142 @@ func writeServedOrientationContextPack(t *testing.T, path, id string) {
 			Confidence:  1,
 			Status:      "current",
 		})
-		revisions = append(revisions, envelope.SourceRev{Source: ref.ref, Rev: "sha256:" + digest12(ref.ref)})
+		revision := "sha256:" + digestBytes([]byte("current memory revision"))
+		if ref.sourceClass == "source" {
+			revision = testServedOrientationSourceRevision(t, scopePath, ref.ref)
+		}
+		revisions = append(revisions, envelope.SourceRev{Source: ref.ref, Rev: revision})
 	}
+	taskContract := envelope.TaskContract{Intent: "prove served orientation"}
 	pack := envelope.ContextPack{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVContextPack,
 			ID:            id,
-			CreatedAt:     "2026-07-12T17:00:00Z",
+			CreatedAt:     createdAt.Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "test", Name: "served-orientation"},
-			IDs:           envelope.IDs{ContractID: "contract_served_orientation"},
+			IDs:           envelope.IDs{ContractID: contractID},
+			Scope:         envelope.Scope{Surface: scopePath},
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier0",
 			EvidenceRefs:  []string{},
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
-		SummaryMD:          "served orientation fixture",
-		TaskContract:       envelope.TaskContract{Intent: "prove served orientation"},
-		Included:           included,
-		Excluded:           []envelope.ExcludedRef{{Ref: "repo://unrelated", Reason: "out of scope"}},
-		ActiveInstructions: []string{"control-plane://orientation-map"},
-		ActiveHooks:        []string{},
-		ActiveDecisions:    []string{},
-		SourceRevisions:    revisions,
-		RequiredChecks:     []string{},
-		Avoid:              []string{},
+		SummaryMD:    "served orientation fixture",
+		TaskContract: taskContract,
+		Included:     included,
+		Excluded:     []envelope.ExcludedRef{{Ref: "repo://unrelated", Reason: "out of scope"}},
+		ActiveInstructions: []string{
+			"control-plane://orientation-map",
+			"control-plane://workflow-contract",
+			"control-plane://sop-packets",
+		},
+		ActiveHooks:     []string{},
+		ActiveDecisions: []string{},
+		SourceRevisions: revisions,
+		RequiredChecks:  []string{},
+		Avoid:           []string{},
 	}
 	if err := pack.Validate(); err != nil {
 		t.Fatalf("fixture ContextPack invalid: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	packPath := filepath.Join(compoundHome, "context", "packs", id+".json")
+	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeJSONFixture(t, packPath, pack)
+
+	contract := envelope.EffectiveContract{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVEffectiveContract,
+			ID:            contractID,
+			CreatedAt:     pack.CreatedAt,
+			Producer:      envelope.Producer{Kind: "test", Name: "served-orientation"},
+			Scope:         pack.Scope,
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier0",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Harness:            harness,
+		TaskContract:       taskContract,
+		ActiveInstructions: append([]string(nil), pack.ActiveInstructions...),
+		ActiveHooks:        []string{},
+		ActiveDecisions:    []string{},
+		Excluded:           []envelope.ExcludedRef{},
+		SourceRevisions:    append([]envelope.SourceRev(nil), revisions...),
+		Unknowns:           []string{},
+		Conflicts:          []string{},
+	}
+	if err := contract.Validate(); err != nil {
+		t.Fatalf("fixture EffectiveContract invalid: %v", err)
+	}
+	contractPath := filepath.Join(
+		compoundHome,
+		"contracts",
+		"effective",
+		createdAt.UTC().Format("2006-01-02"),
+		contractID+".json",
+	)
+	if err := os.MkdirAll(filepath.Dir(contractPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFixture(t, contractPath, contract)
+	return packPath, contractPath
+}
+
+func testServedOrientationSourceRevision(t *testing.T, scopePath, ref string) string {
+	t.Helper()
+	var rels []string
+	switch ref {
+	case "control-plane://orientation-map":
+		rels = []string{"docs/ARCHITECTURE.md", "docs/LAYERS.md"}
+	case "control-plane://workflow-contract":
+		rels = []string{"docs/architecture/contracts/README.md"}
+	case "control-plane://sop-packets":
+		rels = []string{"docs/architecture/runtime.md", "docs/roadmap/phases.md"}
+	default:
+		t.Fatalf("unknown served source ref %q", ref)
+	}
+	rows := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		body, err := os.ReadFile(filepath.Join(scopePath, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, rel+":sha256:"+digest12(string(body)))
+	}
+	sort.Strings(rows)
+	return "sha256:" + digest12(strings.Join(rows, "\n"))
+}
+
+func mutateServedOrientationPack(t *testing.T, path string, mutate func(*envelope.ContextPack)) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pack envelope.ContextPack
+	if err := json.Unmarshal(body, &pack); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&pack)
 	writeJSONFixture(t, path, pack)
+}
+
+func mutateServedOrientationContract(t *testing.T, path string, mutate func(*envelope.EffectiveContract)) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract envelope.EffectiveContract
+	if err := json.Unmarshal(body, &contract); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&contract)
+	writeJSONFixture(t, path, contract)
 }
 
 func findOSAbsorptionDoctorRow(rows []OSAbsorptionDoctorRow, id string) (OSAbsorptionDoctorRow, bool) {
@@ -619,4 +956,13 @@ func findOSAbsorptionDoctorRow(rows []OSAbsorptionDoctorRow, id string) (OSAbsor
 		}
 	}
 	return OSAbsorptionDoctorRow{}, false
+}
+
+func findOSAbsorptionDoctorCheck(checks []OSAbsorptionDoctorCheck, name string) (OSAbsorptionDoctorCheck, bool) {
+	for _, check := range checks {
+		if check.Name == name {
+			return check, true
+		}
+	}
+	return OSAbsorptionDoctorCheck{}, false
 }

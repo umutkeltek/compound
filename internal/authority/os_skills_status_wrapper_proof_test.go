@@ -436,7 +436,7 @@ func TestOSAbsorptionOSSkillsProofBindsCompoundOnlySurface(t *testing.T) {
 
 // TestOSAbsorptionOSSkillsProofSkipsWhenNoAbsorbedOSConfigured is the
 // public-clone falsifier: real entrypoint/shim files exist on disk, but the
-// absorbed_os path-authority registry was never seeded into mem, so the
+// umut_os path-authority registry was never seeded into mem, so the
 // resolver reports found=false and the proof must skip, not fail or
 // fabricate ok.
 func TestOSAbsorptionOSSkillsProofSkipsWhenNoAbsorbedOSConfigured(t *testing.T) {

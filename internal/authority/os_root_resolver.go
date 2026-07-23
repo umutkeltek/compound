@@ -1,6 +1,7 @@
 package authority
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,7 @@ import (
 // below that root (the AbsorbedOS* sub-path constants below). No absorbed-OS
 // path is ever hardcoded into product source.
 const (
-	AbsorbedOSRegistryKey   = "absorbed_os"
+	AbsorbedOSRegistryKey   = "umut_os"
 	InstalledHarnessHomeKey = "installed_harness_home"
 )
 
@@ -39,10 +40,10 @@ const (
 )
 
 // ResolveAbsorbedOSRoot resolves the operator-declared absorbed-OS root from
-// the promoted current_path claim on the absorbed_os path-authority entity.
+// the promoted current_path claim on the umut_os path-authority entity.
 // It returns found=false (never an error) whenever there is nothing to
 // resolve: no COMPOUND_HOME ledger yet, or no current_path claim for the
-// absorbed_os key. That is the public-clone skip case, not a fault — a fresh
+// umut_os key. That is the public-clone skip case, not a fault — a fresh
 // clone with no operator os-path-authority.yaml imported must resolve
 // found=false, not fail.
 func ResolveAbsorbedOSRoot(compoundHome string) (string, bool, error) {
@@ -73,7 +74,37 @@ func resolveDeclaredOSPath(compoundHome, entityRef string) (string, bool, error)
 	if root == "" {
 		return "", false, nil
 	}
-	return root, true, nil
+	root = filepath.Clean(root)
+	if !filepath.IsAbs(root) {
+		return "", false, fmt.Errorf("declared path authority %s current_path must be absolute, got %q", entityRef, root)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if entityRef == installedHarnessHomeRef {
+				return "", false, fmt.Errorf("declared installed harness home must be an existing directory: %s", root)
+			}
+			return root, true, nil
+		}
+		return "", false, fmt.Errorf("canonicalize declared path authority %s current_path %s: %w", entityRef, root, err)
+	}
+	canonicalRoot = filepath.Clean(canonicalRoot)
+	if canonicalRoot != root {
+		return "", false, fmt.Errorf(
+			"declared path authority %s current_path is no longer canonical: claim=%s resolved=%s",
+			entityRef,
+			root,
+			canonicalRoot,
+		)
+	}
+	info, err := os.Stat(canonicalRoot)
+	if err != nil {
+		return "", false, fmt.Errorf("inspect declared path authority %s current_path %s: %w", entityRef, canonicalRoot, err)
+	}
+	if !info.IsDir() {
+		return "", false, fmt.Errorf("declared path authority %s current_path is not a directory: %s", entityRef, canonicalRoot)
+	}
+	return canonicalRoot, true, nil
 }
 
 // ResolveAbsorbedOSEntrypoint resolves subPath (one of the compound-owned
@@ -104,7 +135,7 @@ func absorbedOSRootPresentOnDisk(root string) bool {
 // osAbsorptionAbsorbedOSSkipReason is the standard proof_detail every
 // OS-absorption wrapper proof reports when it declines to run because no
 // absorbed-OS root is configured on this machine (the public-clone case).
-const osAbsorptionAbsorbedOSSkipReason = "no absorbed-OS root declared (os-path-authority key 'absorbed_os' absent or path missing) — OS-absorption proofs skipped"
+const osAbsorptionAbsorbedOSSkipReason = "no absorbed-OS root declared (os-path-authority key 'umut_os' absent or path missing) — OS-absorption proofs skipped"
 
 // resolveAbsorbedOSRootForProof is the shared entry check every OS-absorption
 // wrapper proof (os_capability, os_skills, os_status) calls first: it

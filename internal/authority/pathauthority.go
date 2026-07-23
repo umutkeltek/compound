@@ -3,6 +3,7 @@ package authority
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -91,6 +92,14 @@ type osPathRoot struct {
 }
 
 func ImportOSPathRegistry(path string, existing []mem.Entity) ([]PathAuthority, []mem.Entity, []mem.Candidate, OSPathRegistryReport, error) {
+	return importOSPathRegistryWithAccountHome(path, existing, currentAccountHome)
+}
+
+func importOSPathRegistryWithAccountHome(
+	path string,
+	existing []mem.Entity,
+	resolveAccountHome func() (string, error),
+) ([]PathAuthority, []mem.Entity, []mem.Candidate, OSPathRegistryReport, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, nil, OSPathRegistryReport{}, err
@@ -112,7 +121,7 @@ func ImportOSPathRegistry(path string, existing []mem.Entity) ([]PathAuthority, 
 	var facts []mem.Candidate
 	var reports []PathAuthorityReport
 	for _, key := range sortedKeys(rf.CanonicalRoots) {
-		pa, err := pathAuthorityFromOSRoot(key, rf.CanonicalRoots[key], true, filepath.Base(path))
+		pa, err := pathAuthorityFromOSRoot(key, rf.CanonicalRoots[key], true, filepath.Base(path), resolveAccountHome)
 		if err != nil {
 			return out, entities, facts, OSPathRegistryReport{Status: "fail", Reports: reports}, err
 		}
@@ -124,7 +133,7 @@ func ImportOSPathRegistry(path string, existing []mem.Entity) ([]PathAuthority, 
 		allExisting = mergeEntityForImport(allExisting, entity)
 	}
 	for _, key := range sortedKeys(rf.StaleOrCompatRoots) {
-		pa, err := pathAuthorityFromOSRoot(key, rf.StaleOrCompatRoots[key], false, filepath.Base(path))
+		pa, err := pathAuthorityFromOSRoot(key, rf.StaleOrCompatRoots[key], false, filepath.Base(path), resolveAccountHome)
 		if err != nil {
 			return out, entities, facts, OSPathRegistryReport{Status: "fail", Reports: reports}, err
 		}
@@ -219,6 +228,9 @@ func validatePathAuthority(pa PathAuthority) error {
 		if !oneOf(pb.Status, []string{"active", "stale", "retired"}) {
 			return fmt.Errorf("path_binding %q bad status %q", pb.Path, pb.Status)
 		}
+		if pb.Status == "active" && !filepath.IsAbs(strings.TrimSpace(pb.Path)) {
+			return fmt.Errorf("active path_binding must be absolute, got %q", pb.Path)
+		}
 	}
 	for _, sb := range pa.SourceBindings {
 		if strings.TrimSpace(sb.Kind) == "" || strings.TrimSpace(sb.Value) == "" {
@@ -243,7 +255,13 @@ func mergePathAuthorityEntity(pa PathAuthority, existing []mem.Entity) mem.Entit
 	return mergeEntity(existing, pa.EntityRef, pa.EntityKind, pa.Aliases, ids)
 }
 
-func pathAuthorityFromOSRoot(key string, root osPathRoot, canonical bool, sourceName string) (PathAuthority, error) {
+func pathAuthorityFromOSRoot(
+	key string,
+	root osPathRoot,
+	canonical bool,
+	sourceName string,
+	resolveAccountHome func() (string, error),
+) (PathAuthority, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return PathAuthority{}, fmt.Errorf("os path root key required")
@@ -254,6 +272,10 @@ func pathAuthorityFromOSRoot(key string, root osPathRoot, canonical bool, source
 	status := normalizeOSPathStatus(root.Status, canonical)
 	if status == "" {
 		return PathAuthority{}, fmt.Errorf("os path root %q bad status %q", key, root.Status)
+	}
+	resolvedPath, err := resolveImportedOSRootPath(key, root.Path, status, resolveAccountHome)
+	if err != nil {
+		return PathAuthority{}, err
 	}
 	aliases := []string{key, strings.ReplaceAll(key, "_", "-")}
 	pa := PathAuthority{
@@ -266,7 +288,7 @@ func pathAuthorityFromOSRoot(key string, root osPathRoot, canonical bool, source
 			{Kind: "registry_key", Value: key},
 		},
 		PathBindings: []PathBinding{{
-			Path:   expandHome(root.Path),
+			Path:   resolvedPath,
 			Status: status,
 		}},
 		EvidenceRefs: []string{"os-path-authority:" + sourceName},
@@ -307,20 +329,73 @@ func normalizeOSPathStatus(status string, canonical bool) string {
 	}
 }
 
-func expandHome(path string) string {
+func currentAccountHome() (string, error) {
+	account, err := user.Current()
+	if err != nil {
+		return "", fmt.Errorf("resolve current account: %w", err)
+	}
+	home := strings.TrimSpace(account.HomeDir)
+	if home == "" {
+		return "", fmt.Errorf("current account home directory is empty")
+	}
+	return home, nil
+}
+
+func resolveImportedOSRootPath(
+	key string,
+	path string,
+	status string,
+	resolveAccountHome func() (string, error),
+) (string, error) {
 	path = strings.TrimSpace(path)
-	if path == "~" {
-		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			return home
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if resolveAccountHome == nil {
+			return "", fmt.Errorf("os path root %q account-home resolver required", key)
 		}
-		return path
-	}
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		accountHome, err := resolveAccountHome()
+		if err != nil {
+			return "", fmt.Errorf("os path root %q resolve account home: %w", key, err)
+		}
+		accountHome = strings.TrimSpace(accountHome)
+		if accountHome == "" {
+			return "", fmt.Errorf("os path root %q resolve account home: empty path", key)
+		}
+		if path == "~" {
+			path = accountHome
+		} else {
+			path = filepath.Join(accountHome, strings.TrimPrefix(path, "~/"))
 		}
 	}
-	return path
+	path = filepath.Clean(path)
+	if status == "active" && !filepath.IsAbs(path) {
+		return "", fmt.Errorf("os path root %q active path must be absolute, got %q", key, path)
+	}
+	if !filepath.IsAbs(path) {
+		return path, nil
+	}
+
+	info, err := os.Stat(path)
+	switch {
+	case err == nil:
+		if key == InstalledHarnessHomeKey && !info.IsDir() {
+			return "", fmt.Errorf("os path root %q must resolve to an existing directory: %s", key, path)
+		}
+		canonicalPath, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", fmt.Errorf("os path root %q canonicalize %s: %w", key, path, err)
+		}
+		if !filepath.IsAbs(canonicalPath) {
+			return "", fmt.Errorf("os path root %q canonical path must be absolute, got %q", key, canonicalPath)
+		}
+		return filepath.Clean(canonicalPath), nil
+	case os.IsNotExist(err):
+		if key == InstalledHarnessHomeKey && status == "active" {
+			return "", fmt.Errorf("os path root %q must resolve to an existing directory: %s", key, path)
+		}
+		return path, nil
+	default:
+		return "", fmt.Errorf("os path root %q inspect %s: %w", key, path, err)
+	}
 }
 
 func sortedKeys[V any](m map[string]V) []string {

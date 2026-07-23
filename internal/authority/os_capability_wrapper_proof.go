@@ -348,7 +348,15 @@ func resolveInstalledOSCapabilitySource(absorbedOSRoot string) (osCapabilitySour
 	relSource := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(relSourceText, "/")))
 	entrypointPath := filepath.Join(homePath, relSource)
 	wantEntrypoint := filepath.Clean(filepath.Join(absorbedOSRoot, filepath.FromSlash(AbsorbedOSExecLaneEntrypoint)))
-	if filepath.Clean(entrypointPath) != wantEntrypoint {
+	canonicalEntrypoint, err := filepath.EvalSymlinks(entrypointPath)
+	if err != nil {
+		return osCapabilitySourceSnapshot{}, "", err
+	}
+	canonicalWantEntrypoint, err := filepath.EvalSymlinks(wantEntrypoint)
+	if err != nil {
+		return osCapabilitySourceSnapshot{}, "", err
+	}
+	if filepath.Clean(canonicalEntrypoint) != filepath.Clean(canonicalWantEntrypoint) {
 		return osCapabilitySourceSnapshot{}, "", fmt.Errorf("installed os shim targets unexpected entrypoint")
 	}
 	entrypoint, entrypointInfo, err := readRegularBoundedSnapshot(entrypointPath, maxOSCapabilityEntrypointBytes)
