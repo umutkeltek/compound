@@ -23,12 +23,15 @@ func closeMemCompletionGate(t *testing.T, s *Store) {
 	}
 }
 
+// Backdated events are intentionally covered separately: incremental loading
+// can diverge from a full rescan because the persisted cursor is append-based.
+// See reconcile_backdated_test.go for the fold-once contract.
 // Falsifier (a) at the CONSUMER seam: the synthesis-reconcile fold input is
 // byte-identical whether it resumes from the persisted byte cursor (incremental)
 // or re-scans the whole event log (base, cursor empty) — same post-checkpoint
 // event set, same order. The cursor changes only how much is parsed, never the
 // result. Red if incremental consumption dropped or reordered an event.
-func TestLoadReconcileEventsIncrementalMatchesFullRescan(t *testing.T) {
+func TestLoadReconcileEventsIncrementalMatchesFullRescanForForwardDatedEvents(t *testing.T) {
 	s := newStore(t)
 	closeMemCompletionGate(t, s)
 
