@@ -200,12 +200,18 @@ func TestResolveAbsorbedOSEntrypointResolvesUnderDeclaredRoot(t *testing.T) {
 // hard failure.
 func TestResolveAbsorbedOSEntrypointDeclaredButAbsentSkips(t *testing.T) {
 	root := t.TempDir()
-	osRoot := filepath.Join(root, "absorbed-os-moved-away") // deliberately never created
+	osRoot := filepath.Join(root, "absorbed-os-moved-away")
+	if err := os.MkdirAll(osRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	compoundHome := filepath.Join(root, "compound-home")
 	if err := home.Init(compoundHome, "test", time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 	seedAbsorbedOSRegistry(t, compoundHome, osRoot)
+	if err := os.Remove(osRoot); err != nil {
+		t.Fatal(err)
+	}
 
 	path, found, err := ResolveAbsorbedOSEntrypoint(compoundHome, AbsorbedOSExecLaneEntrypoint)
 	if err != nil {

@@ -1,6 +1,8 @@
 package authority
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +21,8 @@ import (
 const (
 	AbsorbedOSRegistryKey   = "umut_os"
 	InstalledHarnessHomeKey = "installed_harness_home"
+
+	InstalledHarnessEntrypointRevisionPrefix = "installed-entrypoint://"
 )
 
 // absorbedOSEntityRef mirrors pathAuthorityFromOSRoot's entity_ref minting
@@ -55,6 +59,45 @@ func ResolveAbsorbedOSRoot(compoundHome string) (string, bool, error) {
 // binding cannot be redirected by a process-local HOME override.
 func ResolveInstalledHarnessHome(compoundHome string) (string, bool, error) {
 	return resolveDeclaredOSPath(compoundHome, installedHarnessHomeRef)
+}
+
+// InstalledHarnessEntrypointBinding returns the artifact revision that a
+// cmd-layer orient materialization must bind into both its ContextPack and
+// EffectiveContract. A public clone without an installed-harness marker has
+// no binding. Once the marker exists, supported harness entrypoints fail
+// closed when their exact installed file is missing, unreadable, or not a
+// regular file.
+func InstalledHarnessEntrypointBinding(compoundHome, harness string) (string, string, bool, error) {
+	var relativePath string
+	switch strings.TrimSpace(harness) {
+	case "codex":
+		relativePath = osAbsorptionServedCodexEntrypoint
+	case "claude":
+		relativePath = osAbsorptionServedClaudeEntrypoint
+	default:
+		return "", "", false, nil
+	}
+	installedHome, found, err := ResolveInstalledHarnessHome(compoundHome)
+	if err != nil {
+		return "", "", false, err
+	}
+	if !found {
+		return "", "", false, nil
+	}
+	entrypointPath := filepath.Join(installedHome, filepath.FromSlash(relativePath))
+	info, err := os.Stat(entrypointPath)
+	if err != nil {
+		return "", "", false, fmt.Errorf("installed %s entrypoint %s: %w", harness, entrypointPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", "", false, fmt.Errorf("installed %s entrypoint is not a regular file: %s", harness, entrypointPath)
+	}
+	body, err := os.ReadFile(entrypointPath)
+	if err != nil {
+		return "", "", false, fmt.Errorf("read installed %s entrypoint %s: %w", harness, entrypointPath, err)
+	}
+	digest := sha256.Sum256(body)
+	return InstalledHarnessEntrypointRevisionPrefix + harness, "sha256:" + hex.EncodeToString(digest[:]), true, nil
 }
 
 func resolveDeclaredOSPath(compoundHome, entityRef string) (string, bool, error) {

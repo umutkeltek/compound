@@ -1030,15 +1030,32 @@ func osAbsorptionServedOrientationSourceRowsCheck(
 	homePath string,
 	rows []OSAbsorptionMatrixRow,
 ) (OSAbsorptionDoctorCheck, error) {
+	_, installedHarnessFound, err := ResolveInstalledHarnessHome(homePath)
+	if err != nil {
+		return OSAbsorptionDoctorCheck{}, fmt.Errorf("resolve installed harness expectation: %w", err)
+	}
 	expected, found, err := osAbsorptionExpectedServedSourceRefs(homePath)
 	if err != nil {
 		return OSAbsorptionDoctorCheck{}, fmt.Errorf("resolve served orientation source rows: %w", err)
 	}
 	if !found {
+		if installedHarnessFound {
+			return doctorCheck(
+				"served_orientation_source_rows",
+				false,
+				fmt.Sprintf(
+					"%s is installed but canonical_roots.%s and exact %s / %s served rows are missing",
+					InstalledHarnessHomeKey,
+					AbsorbedOSRegistryKey,
+					osAbsorptionServedLiveStart,
+					osAbsorptionServedWholeSystemMap,
+				),
+			), nil
+		}
 		return doctorCheck(
 			"served_orientation_source_rows",
 			true,
-			"not applicable: no absorbed-OS root declared",
+			"not applicable: neither installed harness home nor absorbed-OS root declared",
 		), nil
 	}
 
@@ -1343,6 +1360,41 @@ func osAbsorptionServedOrientationCurrentProof(
 				"EffectiveContract %s task contract differs from ContextPack %s",
 				contract.ID,
 				pack.ID,
+			)}
+		}
+		entrypointRevisionSource := InstalledHarnessEntrypointRevisionPrefix + harness
+		expectedEntrypointRevision := "sha256:" + liveEntrypointDigest
+		packEntrypointRevision := osAbsorptionContextPackRevision(pack, entrypointRevisionSource)
+		contractEntrypointRevision := osAbsorptionEffectiveContractRevision(contract, entrypointRevisionSource)
+		switch {
+		case packEntrypointRevision == "" && contractEntrypointRevision == "":
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"%s ContextPack %s and EffectiveContract %s missing installed entrypoint artifact binding %s",
+				harness,
+				pack.ID,
+				contract.ID,
+				entrypointRevisionSource,
+			)}
+		case packEntrypointRevision == "":
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"ContextPack %s missing installed entrypoint artifact binding %s",
+				pack.ID,
+				entrypointRevisionSource,
+			)}
+		case contractEntrypointRevision == "":
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"EffectiveContract %s missing installed entrypoint artifact binding %s",
+				contract.ID,
+				entrypointRevisionSource,
+			)}
+		case packEntrypointRevision != expectedEntrypointRevision ||
+			contractEntrypointRevision != expectedEntrypointRevision:
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"%s installed entrypoint artifact binding mismatch: ContextPack=%s EffectiveContract=%s matrix/live=%s",
+				harness,
+				packEntrypointRevision,
+				contractEntrypointRevision,
+				expectedEntrypointRevision,
 			)}
 		}
 

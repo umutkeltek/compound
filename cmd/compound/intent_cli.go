@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/authority"
 	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/home"
@@ -46,6 +47,14 @@ func materializeOrientContextPack(homePath string, in contract.Input, bodyBudget
 		return envelope.ContextPack{}, materializeErr
 	}
 	ec := runtime.EffectiveContract
+	entrypointSource, entrypointRevision, found, err := authority.InstalledHarnessEntrypointBinding(homePath, in.Harness)
+	if err != nil {
+		return envelope.ContextPack{}, err
+	}
+	if found {
+		pack.SourceRevisions = bindOrientSourceRevision(pack.SourceRevisions, entrypointSource, entrypointRevision)
+		ec.SourceRevisions = bindOrientSourceRevision(ec.SourceRevisions, entrypointSource, entrypointRevision)
+	}
 	if _, err := contract.RecordEffectiveContract(homePath, ec); err != nil {
 		return envelope.ContextPack{}, err
 	}
@@ -64,6 +73,17 @@ func materializeOrientContextPack(homePath string, in contract.Input, bodyBudget
 		return envelope.ContextPack{}, err
 	}
 	return pack, nil
+}
+
+func bindOrientSourceRevision(revisions []envelope.SourceRev, source, revision string) []envelope.SourceRev {
+	bound := append([]envelope.SourceRev(nil), revisions...)
+	for i := range bound {
+		if bound[i].Source == source {
+			bound[i].Rev = revision
+			return bound
+		}
+	}
+	return append(bound, envelope.SourceRev{Source: source, Rev: revision})
 }
 
 func cmdIntent(args []string) {

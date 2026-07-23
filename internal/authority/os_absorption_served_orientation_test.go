@@ -292,6 +292,36 @@ func TestOSAbsorptionDoctorRequiresExactServedOrientationSourceRows(t *testing.T
 	}
 }
 
+func TestServedOrientationSourceRowsUsesInstalledHarnessExpectation(t *testing.T) {
+	t.Run("public clone without either marker is not applicable", func(t *testing.T) {
+		check, err := osAbsorptionServedOrientationSourceRowsCheck(t.TempDir(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if check.Status != "ok" || !strings.Contains(check.Detail, "not applicable") {
+			t.Fatalf("public clone should remain not applicable: %+v", check)
+		}
+	})
+
+	t.Run("installed harness marker without absorbed OS root fails", func(t *testing.T) {
+		homePath := filepath.Join(t.TempDir(), "compound-home")
+		installedHome := t.TempDir()
+		seedInstalledHarnessHomeRegistry(t, homePath, installedHome)
+
+		check, err := osAbsorptionServedOrientationSourceRowsCheck(homePath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if check.Status != "fail" ||
+			!strings.Contains(check.Detail, InstalledHarnessHomeKey) ||
+			!strings.Contains(check.Detail, AbsorbedOSRegistryKey) ||
+			!strings.Contains(check.Detail, osAbsorptionServedLiveStart) ||
+			!strings.Contains(check.Detail, osAbsorptionServedWholeSystemMap) {
+			t.Fatalf("installed expectation must fail when root and exact rows disappear: %+v", check)
+		}
+	})
+}
+
 func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -366,6 +396,53 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 			},
 			wantStatus: "failed",
 			wantDetail: "digest",
+		},
+		{
+			name: "matrix-only digest evidence is insufficient",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				mutateServedOrientationPack(t, fixture.contextPackPaths["codex"], func(pack *envelope.ContextPack) {
+					pack.SourceRevisions = removeServedEntrypointRevision(pack.SourceRevisions, "codex")
+				})
+				mutateServedOrientationContract(t, fixture.contractPaths["codex"], func(contract *envelope.EffectiveContract) {
+					contract.SourceRevisions = removeServedEntrypointRevision(contract.SourceRevisions, "codex")
+				})
+			},
+			wantStatus: "failed",
+			wantDetail: "artifact binding",
+		},
+		{
+			name: "ContextPack missing installed entrypoint binding fails",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				mutateServedOrientationPack(t, fixture.contextPackPaths["codex"], func(pack *envelope.ContextPack) {
+					pack.SourceRevisions = removeServedEntrypointRevision(pack.SourceRevisions, "codex")
+				})
+			},
+			wantStatus: "failed",
+			wantDetail: "ContextPack",
+		},
+		{
+			name: "EffectiveContract missing installed entrypoint binding fails",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				mutateServedOrientationContract(t, fixture.contractPaths["codex"], func(contract *envelope.EffectiveContract) {
+					contract.SourceRevisions = removeServedEntrypointRevision(contract.SourceRevisions, "codex")
+				})
+			},
+			wantStatus: "failed",
+			wantDetail: "EffectiveContract",
+		},
+		{
+			name: "artifact entrypoint digest mismatch fails",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				mutateServedOrientationPack(t, fixture.contextPackPaths["codex"], func(pack *envelope.ContextPack) {
+					setServedEntrypointRevision(pack.SourceRevisions, "codex", strings.Repeat("0", 64))
+				})
+			},
+			wantStatus: "failed",
+			wantDetail: "artifact binding",
 		},
 		{
 			name: "missing served client fails closed",
@@ -646,6 +723,14 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 		}
 	}
 
+	entrypointDigests := map[string]string{}
+	for harness, path := range map[string]string{"codex": codexPath, "claude": claudePath} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entrypointDigests[harness] = digestBytes(body)
+	}
 	for _, harness := range []string{"codex", "claude"} {
 		contextPackPaths[harness], contractPaths[harness] = writeServedOrientationContextPack(
 			t,
@@ -654,16 +739,9 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 			harness,
 			contextPackIDs[harness],
 			"contract_served_orientation_"+harness,
+			entrypointDigests[harness],
 			createdAt,
 		)
-	}
-	entrypointDigests := map[string]string{}
-	for harness, path := range map[string]string{"codex": codexPath, "claude": claudePath} {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		entrypointDigests[harness] = digestBytes(body)
 	}
 	matrixPath := filepath.Join(root, "matrix.json")
 	rows := make([]OSAbsorptionMatrixRow, 0, 2)
@@ -789,6 +867,7 @@ func writeServedOrientationContextPack(
 	harness string,
 	id string,
 	contractID string,
+	entrypointDigest string,
 	createdAt time.Time,
 ) (string, string) {
 	t.Helper()
@@ -817,6 +896,10 @@ func writeServedOrientationContextPack(
 		}
 		revisions = append(revisions, envelope.SourceRev{Source: ref.ref, Rev: revision})
 	}
+	revisions = append(revisions, envelope.SourceRev{
+		Source: servedEntrypointRevisionSource(harness),
+		Rev:    "sha256:" + entrypointDigest,
+	})
 	taskContract := envelope.TaskContract{Intent: "prove served orientation"}
 	pack := envelope.ContextPack{
 		Header: envelope.Header{
@@ -894,6 +977,29 @@ func writeServedOrientationContextPack(
 	}
 	writeJSONFixture(t, contractPath, contract)
 	return packPath, contractPath
+}
+
+func servedEntrypointRevisionSource(harness string) string {
+	return "installed-entrypoint://" + harness
+}
+
+func removeServedEntrypointRevision(revisions []envelope.SourceRev, harness string) []envelope.SourceRev {
+	got := make([]envelope.SourceRev, 0, len(revisions))
+	for _, revision := range revisions {
+		if revision.Source != servedEntrypointRevisionSource(harness) {
+			got = append(got, revision)
+		}
+	}
+	return got
+}
+
+func setServedEntrypointRevision(revisions []envelope.SourceRev, harness, digest string) {
+	for i := range revisions {
+		if revisions[i].Source == servedEntrypointRevisionSource(harness) {
+			revisions[i].Rev = "sha256:" + digest
+			return
+		}
+	}
 }
 
 func testServedOrientationSourceRevision(t *testing.T, scopePath, ref string) string {

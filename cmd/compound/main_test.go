@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -6147,35 +6148,58 @@ func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 func TestAuthorityPathRegistryImportsOSRegistryAndResolvesMovedPaths(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
-	fakeHome := filepath.Join(string(os.PathSeparator), "tmp", "compound-home-fixture")
+	account, err := user.Current()
+	if err != nil {
+		t.Fatalf("current account: %v", err)
+	}
+	accountHome, err := filepath.EvalSymlinks(account.HomeDir)
+	if err != nil {
+		t.Fatalf("canonical account home: %v", err)
+	}
+	fakeHome := filepath.Join(t.TempDir(), "spoofed-home")
 	t.Setenv("HOME", fakeHome)
-	activePath := filepath.Join(fakeHome, "Projects", "control-spine", "root")
-	retiredPath := filepath.Join(fakeHome, "Projects", "old-control-spine")
-	fixture := filepath.Join("..", "..", "fixtures", "authority", "os-path-authority.yaml")
+	activePath := accountHome
+	retiredPath := filepath.Join(accountHome, "retired-path-authority-fixture")
+	fixture := filepath.Join(t.TempDir(), "os-path-authority.yaml")
+	fixtureBody := strings.Join([]string{
+		"version: 1",
+		"canonical_roots:",
+		"  account_home_probe:",
+		`    path: "~"`,
+		"    status: active",
+		"stale_or_compat_roots:",
+		"  retired_probe:",
+		`    path: "~/retired-path-authority-fixture"`,
+		"    status: retired",
+		"",
+	}, "\n")
+	if err := os.WriteFile(fixture, []byte(fixtureBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	out := captureStdout(t, func() {
 		cmdAuthority([]string{"path-registry", fixture})
 	})
-	if !strings.Contains(out, "entities: 5") || !strings.Contains(out, "status: ok") {
+	if !strings.Contains(out, "entities: 2") || !strings.Contains(out, "status: ok") {
 		t.Fatalf("path-registry output =\n%s", out)
 	}
 
 	active := captureStdout(t, func() {
 		cmdAuthority([]string{"resolve", activePath})
 	})
-	if !strings.Contains(active, "status: resolved") || !strings.Contains(active, "entity: source:control-spine") {
+	if !strings.Contains(active, "status: resolved") || !strings.Contains(active, "entity: source:account-home-probe") {
 		t.Fatalf("active path resolve output =\n%s", active)
 	}
 
 	retired := captureStdout(t, func() {
 		cmdAuthority([]string{"resolve", retiredPath})
 	})
-	if !strings.Contains(retired, "status: resolved") || !strings.Contains(retired, "entity: source:old-control-spine") {
+	if !strings.Contains(retired, "status: resolved") || !strings.Contains(retired, "entity: source:retired-probe") {
 		t.Fatalf("retired path resolve output =\n%s", retired)
 	}
 
 	oldAuthority := captureStdout(t, func() {
-		cmdAuthority([]string{"source:old-control-spine"})
+		cmdAuthority([]string{"source:retired-probe"})
 	})
 	if strings.Contains(oldAuthority, "**current_path**") {
 		t.Fatalf("retired root must not be current authority:\n%s", oldAuthority)

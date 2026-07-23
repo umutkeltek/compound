@@ -61,6 +61,9 @@ func ImportPathAuthority(path string, existing []mem.Entity) (PathAuthority, mem
 	if err := yaml.Unmarshal(data, &pa); err != nil {
 		return PathAuthority{}, mem.Entity{}, nil, PathAuthorityReport{}, err
 	}
+	if err := canonicalizeActivePathBindings(&pa); err != nil {
+		return pa, mem.Entity{}, nil, PathAuthorityReport{EntityRef: pa.EntityRef, Status: "fail"}, err
+	}
 	if err := validatePathAuthority(pa); err != nil {
 		return pa, mem.Entity{}, nil, PathAuthorityReport{EntityRef: pa.EntityRef, Status: "fail"}, err
 	}
@@ -240,6 +243,30 @@ func validatePathAuthority(pa PathAuthority) error {
 	return nil
 }
 
+func canonicalizeActivePathBindings(pa *PathAuthority) error {
+	for i := range pa.PathBindings {
+		binding := &pa.PathBindings[i]
+		path := filepath.Clean(strings.TrimSpace(binding.Path))
+		if binding.Status != "active" {
+			binding.Path = path
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("active path_binding must be absolute, got %q", binding.Path)
+		}
+		canonicalPath, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("active path_binding %q must resolve to an existing canonical path: %w", path, err)
+		}
+		canonicalPath = filepath.Clean(canonicalPath)
+		if !filepath.IsAbs(canonicalPath) {
+			return fmt.Errorf("active path_binding canonical path must be absolute, got %q", canonicalPath)
+		}
+		binding.Path = canonicalPath
+	}
+	return nil
+}
+
 func mergePathAuthorityEntity(pa PathAuthority, existing []mem.Entity) mem.Entity {
 	var ids []string
 	for _, sb := range pa.SourceBindings {
@@ -389,8 +416,8 @@ func resolveImportedOSRootPath(
 		}
 		return filepath.Clean(canonicalPath), nil
 	case os.IsNotExist(err):
-		if key == InstalledHarnessHomeKey && status == "active" {
-			return "", fmt.Errorf("os path root %q must resolve to an existing directory: %s", key, path)
+		if status == "active" {
+			return "", fmt.Errorf("os path root %q active path must resolve to an existing canonical path: %s", key, path)
 		}
 		return path, nil
 	default:
