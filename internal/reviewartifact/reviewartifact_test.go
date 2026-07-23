@@ -500,6 +500,31 @@ func TestQueueEmptyReviews(t *testing.T) {
 	}
 }
 
+func TestQueueAreaFilterDoesNotTraverseUnrelatedAreas(t *testing.T) {
+	homePath := t.TempDir()
+	if _, err := Write(homePath, "route-policy", "rpp_scoped", map[string]any{
+		"id":     "rpp_scoped",
+		"status": "recorded",
+	}, " ", "# Scoped\n"); err != nil {
+		t.Fatal(err)
+	}
+	unrelatedDir := filepath.Join(homePath, "reviews", "unrelated-area")
+	if err := os.MkdirAll(unrelatedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unrelatedDir, "broken.json"), []byte("{not-json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Queue(homePath, QueueOptions{Area: "route-policy"}, time.Date(2026, 7, 1, 1, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("area-scoped queue traversed unrelated review area: %v", err)
+	}
+	if report.Counts.Total != 1 || len(report.Items) != 1 || report.Items[0].ID != "rpp_scoped" {
+		t.Fatalf("area-scoped queue = %+v, want only rpp_scoped", report)
+	}
+}
+
 func TestRecountTracksReviewCardCoverage(t *testing.T) {
 	report := QueueReport{Items: []QueueItem{
 		{

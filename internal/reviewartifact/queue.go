@@ -235,7 +235,11 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 			ByStatus: map[string]int{},
 		},
 	}
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	walkRoot := root
+	if opt.Area != "" {
+		walkRoot = filepath.Join(root, filepath.FromSlash(opt.Area))
+	}
+	err := filepath.WalkDir(walkRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
