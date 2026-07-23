@@ -466,6 +466,7 @@ type runtimeSnapshot struct {
 	probePlan            *probeSelectionPlan
 	probeGroups          []probeGroupSelection
 	probeRevision        string
+	productFenceRevision string
 	capabilityHits       []capgraph.Surfaced
 	capabilityTotal      int
 	capabilityRevision   string
@@ -549,11 +550,12 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 		return snapshot, err
 	}
 	memoryResult := lanes.memory
-	snapshot.decisions, snapshot.decisionRevisions, snapshot.excludedDecisions, err = loadDecisionRefsFromView(in, memoryResult.view)
+	dependencies := captureRuntimeMemoryDependencies(homePath, in, memoryResult.view)
+	snapshot.productFenceRevision = dependencies.ProductFence.Revision
+	snapshot.decisions, snapshot.decisionRevisions, snapshot.excludedDecisions, err = loadDecisionRefsFromView(in, memoryResult.view, dependencies.ProductFence)
 	if err != nil {
 		return snapshot, err
 	}
-	dependencies := captureRuntimeMemoryDependencies(homePath, in, memoryResult.view)
 	if captured := runtimeMemoryDependenciesCaptured; captured != nil {
 		captured()
 	}
@@ -569,7 +571,7 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 		if err != nil {
 			return snapshot, err
 		}
-		snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, dependencies.TopicSet, dependencies.SelfEntities)
+		snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, dependencies.TopicSet, dependencies.SelfEntities, dependencies.ProductFence)
 		if err != nil {
 			return snapshot, err
 		}
@@ -673,6 +675,7 @@ type runtimeMemoryDependencies struct {
 	RecallCandidate     mem.ExpandedQuery
 	RecallConsumed      *mem.ExpandedQuery
 	ProbeRevision       string
+	ProductFence        productRecallFence
 	// SelfEntities is the resolved self-entity set for homePath (see
 	// compound/internal/mem.ResolveSelfEntitySet), captured once per runtime
 	// snapshot and threaded through to selfModelClaim/personalMemoryClaim
@@ -702,6 +705,7 @@ func captureRuntimeMemoryDependencies(homePath string, in Input, view *mem.Curre
 		SelfEntities:        mem.ResolveSelfEntitySet(homePath),
 		AppliedTemperatures: map[string]float64{},
 		RecallCandidate:     mem.ExpandedQuery{Original: in.Task, Text: in.Task},
+		ProductFence:        resolveProductRecallFence(in, view),
 	}
 	if topic := strings.TrimSpace(in.Topic); topic != "" {
 		root := topic
@@ -737,7 +741,13 @@ func runtimeMemoryRevision(view *mem.CurrentView, captured runtimeMemoryDependen
 		Topic        *runtimeTopicDependency        `json:"topic,omitempty"`
 		RecallAdded  []string                       `json:"recall_added,omitempty"`
 		Probe        string                         `json:"probe,omitempty"`
-	}{View: view.Revision(), Topic: captured.Topic, Probe: captured.ProbeRevision}
+		ProductFence string                         `json:"product_fence,omitempty"`
+	}{
+		View:         view.Revision(),
+		Topic:        captured.Topic,
+		Probe:        captured.ProbeRevision,
+		ProductFence: captured.ProductFence.Revision,
+	}
 
 	for claimID, temperature := range captured.AppliedTemperatures {
 		dependencies.Temperatures = append(dependencies.Temperatures, runtimeTemperatureDependency{ClaimID: claimID, Temperature: temperature})
@@ -792,6 +802,9 @@ func projectRuntimeContract(ec envelope.EffectiveContract, snapshot runtimeSnaps
 	}
 	if snapshot.probeRevision != "" {
 		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: probeContractsAuthorityRef, Rev: snapshot.probeRevision}})
+	}
+	if snapshot.productFenceRevision != "" {
+		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: productRecallFenceAuthorityRef, Rev: snapshot.productFenceRevision}})
 	}
 	return ec
 }
@@ -851,6 +864,9 @@ func projectRuntimePack(pack envelope.ContextPack, in Input, snapshot runtimeSna
 	}
 	if snapshot.probeRevision != "" {
 		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: probeContractsAuthorityRef, Rev: snapshot.probeRevision}})
+	}
+	if snapshot.productFenceRevision != "" {
+		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: productRecallFenceAuthorityRef, Rev: snapshot.productFenceRevision}})
 	}
 	if snapshot.probePlan == nil && len(snapshot.memoryRefs) > 0 {
 		lines := make([]string, 0, len(snapshot.memoryRefs))
@@ -2029,6 +2045,11 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 		return nil, nil, nil
 	}
 	entities := memoryEntityKeys(in)
+	var productFence productRecallFence
+	if dependencies != nil {
+		productFence = dependencies.ProductFence
+	}
+	seedProductFenceEntity(entities, productFence)
 	taskTokens := memoryTextTokens(in.Task)
 	if len(entities) == 0 && len(taskTokens) == 0 {
 		return nil, nil, nil
@@ -2051,6 +2072,17 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 			if temperature := memoryTemperatureTerm(temps, claim.ID); temperature != 0 {
 				dependencies.AppliedTemperatures[claim.ID] = temperature
 			}
+		}
+		if !productRecallFenceAllowsClaim(productFence, claim) {
+			if relevanceRank > 0 {
+				excluded = append(excluded, contextMemoryRef{
+					Ref:    "claim://" + claim.ID,
+					Reason: productRecallFenceExclusionReason(productFence),
+					Seq:    claim.Seq,
+					Rank:   relevanceRank,
+				})
+			}
+			continue
 		}
 		if topicSet != nil && !mem.ClaimHasTopicRef(claim, topicSet) {
 			// Topic narrowing is a HARD scope gate (mirrors the recall/position topic filter):
@@ -2247,14 +2279,15 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 		return nil, nil, err
 	}
 	dependencies := captureRuntimeMemoryDependencies(homePath, in, view)
-	return loadPositionRefsFromView(in, rule, semanticRanks, view, dependencies.TopicSet, dependencies.SelfEntities)
+	return loadPositionRefsFromView(in, rule, semanticRanks, view, dependencies.TopicSet, dependencies.SelfEntities, dependencies.ProductFence)
 }
 
-func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, topicSet map[string]bool, selfEntities map[string]bool) ([]contextPositionRef, []envelope.ExcludedRef, error) {
+func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, topicSet map[string]bool, selfEntities map[string]bool, productFence productRecallFence) ([]contextPositionRef, []envelope.ExcludedRef, error) {
 	if len(rule.Ambient) == 0 {
 		return nil, nil, nil
 	}
 	entities := memoryEntityKeys(in)
+	seedProductFenceEntity(entities, productFence)
 	taskTokens := memoryTextTokens(in.Task)
 	if len(entities) == 0 && len(taskTokens) == 0 {
 		return nil, nil, nil
@@ -2287,6 +2320,17 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 		// recall this round (nil lookup => no temperature term). Extending it to positions is a
 		// named follow-up.
 		relevanceRank := memoryRelevanceRank(activeClaim, entities, taskTokens, sem, nil)
+		if !productRecallFenceAllowsClaim(productFence, activeClaim) {
+			if relevanceRank > 0 {
+				excluded = append(excluded, contextPositionRef{
+					Ref:    activePosition.Ref,
+					Reason: productRecallFenceExclusionReason(productFence),
+					Seq:    activeClaim.Seq,
+					Rank:   relevanceRank,
+				})
+			}
+			continue
+		}
 		if topicSet != nil && !probePositionInTopicSet(activePosition, activeClaim, topicSet) {
 			// A folded position owns its topic axis. Older promoted claims may predate TopicRefs,
 			// so narrowing must also accept Position.Topic or valid subtree positions disappear.
@@ -2712,10 +2756,10 @@ func loadDecisionRefs(homePath string, in Input) ([]string, []envelope.SourceRev
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return loadDecisionRefsFromView(in, view)
+	return loadDecisionRefsFromView(in, view, resolveProductRecallFence(in, view))
 }
 
-func loadDecisionRefsFromView(in Input, view *mem.CurrentView) ([]string, []envelope.SourceRev, []envelope.ExcludedRef, error) {
+func loadDecisionRefsFromView(in Input, view *mem.CurrentView, productFence productRecallFence) ([]string, []envelope.SourceRev, []envelope.ExcludedRef, error) {
 	claims := view.Claims()
 	claims = decisionstate.AllActiveDecisions(claims)
 	byRef := map[string]mem.Claim{}
@@ -2737,21 +2781,26 @@ func loadDecisionRefsFromView(in Input, view *mem.CurrentView) ([]string, []enve
 		refs = append(refs, ref)
 	}
 	sort.Strings(refs)
-	active := refs
+	active := make([]string, 0, len(refs))
 	var excluded []envelope.ExcludedRef
-	if !decisionScopeIncludesAll(in.RepoKind) {
-		active = make([]string, 0, len(refs))
-		taskTokens := memoryTextTokens(in.Task + " " + filepath.Base(in.Cwd))
-		for _, ref := range refs {
-			if decisionRelevantToTask(byRef[ref], taskTokens) {
-				active = append(active, ref)
-				continue
-			}
+	taskTokens := memoryTextTokens(in.Task + " " + filepath.Base(in.Cwd) + " " + productFence.Entity)
+	for _, ref := range refs {
+		claim := byRef[ref]
+		if !productRecallFenceAllowsClaim(productFence, claim) {
 			excluded = append(excluded, envelope.ExcludedRef{
 				Ref:    ref,
-				Reason: "accepted decision from Compound ledger omitted: not relevant to repo/task scoped context",
+				Reason: "accepted decision from Compound ledger omitted: " + productRecallFenceExclusionReason(productFence),
 			})
+			continue
 		}
+		if decisionScopeIncludesAll(in.RepoKind) || decisionRelevantToTask(claim, taskTokens) {
+			active = append(active, ref)
+			continue
+		}
+		excluded = append(excluded, envelope.ExcludedRef{
+			Ref:    ref,
+			Reason: "accepted decision from Compound ledger omitted: not relevant to repo/task scoped context",
+		})
 	}
 	revs := make([]envelope.SourceRev, 0, len(refs))
 	for _, ref := range active {

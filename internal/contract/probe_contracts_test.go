@@ -172,6 +172,12 @@ func TestPackWithCapabilitiesUsesBuiltInProbeContractsWhenTopicTaxonomyTriggers(
 
 func TestPackWithCapabilitiesProductProbeRejectsSiblingProductEntity(t *testing.T) {
 	home := t.TempDir()
+	workspaceRoot := t.TempDir()
+	workspace := filepath.Join(workspaceRoot, "ios-app", "Sources")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProductProjectContract(t, workspaceRoot, "widget-alpha")
 	store, err := mem.Open(home)
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +200,7 @@ func TestPackWithCapabilitiesProductProbeRejectsSiblingProductEntity(t *testing.
 	})
 
 	pack, err := PackWithCapabilities(Input{
-		Harness: "codex", Cwd: "/repo/widget_alpha", Task: "release this product safely",
+		Harness: "codex", Cwd: workspace, Task: "release this product safely",
 		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
 	}, DefaultPolicy(), home, fixedNow)
 	if err != nil {
@@ -285,7 +291,7 @@ func TestPackWithCapabilitiesWithoutProbeTriggerMatchesFlatPackByteForByte(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	flat.positionRefs, flat.excludedPositionRefs, err = loadPositionRefsFromView(in, DefaultPolicy().Memory[in.RepoKind], nil, view, dependencies.TopicSet, dependencies.SelfEntities)
+	flat.positionRefs, flat.excludedPositionRefs, err = loadPositionRefsFromView(in, DefaultPolicy().Memory[in.RepoKind], nil, view, dependencies.TopicSet, dependencies.SelfEntities, dependencies.ProductFence)
 	if err != nil {
 		t.Fatal(err)
 	}

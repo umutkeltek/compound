@@ -53,13 +53,11 @@ type probeSelectionPlan struct {
 }
 
 type probeGroupPlan struct {
-	Group               string
-	Root                string
-	Budget              int
-	Subtree             []string
-	EntityFenceRequired bool
-	EntityFence         string
-	topicSet            map[string]bool
+	Group    string
+	Root     string
+	Budget   int
+	Subtree  []string
+	topicSet map[string]bool
 }
 
 type probeGroupSelection struct {
@@ -236,11 +234,6 @@ func buildProbeSelectionPlan(homePath string, in Input, store probeTopicStore, v
 			group.topicSet = probeTopicSet(group.Subtree)
 			hasBuiltInTrigger = true
 		}
-		if strings.EqualFold(strings.TrimSpace(in.RepoKind), "product") &&
-			strings.EqualFold(strings.TrimSpace(group.Root), "product") {
-			group.EntityFenceRequired = true
-			group.EntityFence = probeWorkspaceProductEntity(in, view)
-		}
 		plan.Groups = append(plan.Groups, group)
 	}
 	if !explicit && !hasBuiltInTrigger {
@@ -360,12 +353,10 @@ func probeTopicSet(topics []string) map[string]bool {
 
 func probeSelectionRevision(registry probeContractRegistry, plan *probeSelectionPlan) string {
 	type revisionGroup struct {
-		Group               string   `json:"group"`
-		Root                string   `json:"root,omitempty"`
-		Budget              int      `json:"budget"`
-		Subtree             []string `json:"subtree,omitempty"`
-		EntityFenceRequired bool     `json:"entity_fence_required,omitempty"`
-		EntityFence         string   `json:"entity_fence,omitempty"`
+		Group   string   `json:"group"`
+		Root    string   `json:"root,omitempty"`
+		Budget  int      `json:"budget"`
+		Subtree []string `json:"subtree,omitempty"`
 	}
 	body := struct {
 		Registry      probeContractRegistry `json:"registry"`
@@ -375,12 +366,10 @@ func probeSelectionRevision(registry probeContractRegistry, plan *probeSelection
 	}{Registry: registry, Class: plan.Class, MatchedTopics: plan.MatchedTopics}
 	for _, group := range plan.Groups {
 		body.Groups = append(body.Groups, revisionGroup{
-			Group:               group.Group,
-			Root:                group.Root,
-			Budget:              group.Budget,
-			Subtree:             group.Subtree,
-			EntityFenceRequired: group.EntityFenceRequired,
-			EntityFence:         group.EntityFence,
+			Group:   group.Group,
+			Root:    group.Root,
+			Budget:  group.Budget,
+			Subtree: group.Subtree,
 		})
 	}
 	data, _ := json.Marshal(body)
@@ -403,6 +392,7 @@ func loadProbeGroupedRefsFromView(in Input, rule MemoryRule, semanticRanks map[s
 		return nil, nil, nil, nil
 	}
 	entities := memoryEntityKeys(in)
+	seedProductFenceEntity(entities, dependencies.ProductFence)
 	for _, seed := range plan.MatchedTopics {
 		entities[memoryKey(seed)] = true
 	}
@@ -482,7 +472,7 @@ func loadProbeGroupedRefsFromView(in Input, rule MemoryRule, semanticRanks map[s
 }
 
 func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]float64, dependencies *runtimeMemoryDependencies, entities, taskTokens map[string]bool, group probeGroupPlan, claim mem.Claim) (probeMemoryCandidate, bool) {
-	if !probeEntityFenceAllows(group, claim) || !probeClaimInTopicSet(claim, group.topicSet) || !probeClaimInInputTopic(claim, dependencies) || !memoryAbsoluteGateAllowsOrient(claim) {
+	if !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) || !probeClaimInTopicSet(claim, group.topicSet) || !probeClaimInInputTopic(claim, dependencies) || !memoryAbsoluteGateAllowsOrient(claim) {
 		return probeMemoryCandidate{}, false
 	}
 	sem := semanticRanks[claim.ID]
@@ -511,7 +501,7 @@ func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]flo
 
 func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]float64, dependencies *runtimeMemoryDependencies, entities, taskTokens map[string]bool, group probeGroupPlan, position mem.Position, claim mem.Claim) (probeMemoryCandidate, bool) {
 	active := activePositionFromFold(position, claim)
-	if active.Ref == "" || !probeEntityFenceAllows(group, claim) || !probePositionInTopicSet(active, claim, group.topicSet) || !probePositionInInputTopic(active, claim, dependencies) || !memoryAbsoluteGateAllowsOrient(claim) {
+	if active.Ref == "" || !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) || !probePositionInTopicSet(active, claim, group.topicSet) || !probePositionInInputTopic(active, claim, dependencies) || !memoryAbsoluteGateAllowsOrient(claim) {
 		return probeMemoryCandidate{}, false
 	}
 	sem := semanticRanks[claim.ID]
@@ -532,41 +522,6 @@ func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]
 		Rank:       probeGroupBaseRank + relevance,
 	}
 	return probeMemoryCandidate{kind: "position", ref: ref.Ref, line: ref.Line, rank: ref.Rank, seq: ref.Seq, position: ref}, true
-}
-
-func probeWorkspaceProductEntity(in Input, view *mem.CurrentView) string {
-	workspaceKey := memoryKey(filepath.Base(filepath.Clean(in.Cwd)))
-	if workspaceKey == "" || view == nil {
-		return ""
-	}
-	// The current folded claims are the meaning authority already captured for
-	// this invocation. Resolve against them instead of reopening the append-only
-	// entity registry on the prompt hot path. Ambiguous or absent identity stays
-	// empty so a required product fence fails closed.
-	matches := map[string]bool{}
-	for _, claim := range view.Claims() {
-		entity := strings.TrimSpace(claim.Entity)
-		if !strings.HasPrefix(strings.ToLower(entity), "product:") ||
-			!strings.EqualFold(strings.TrimSpace(claim.Qualifiers["domain"]), "product") ||
-			memoryKey(entity) != workspaceKey {
-			continue
-		}
-		matches[entity] = true
-	}
-	if len(matches) != 1 {
-		return ""
-	}
-	for entity := range matches {
-		return entity
-	}
-	return ""
-}
-
-func probeEntityFenceAllows(group probeGroupPlan, claim mem.Claim) bool {
-	if !group.EntityFenceRequired {
-		return true
-	}
-	return group.EntityFence != "" && claim.Entity == group.EntityFence
 }
 
 func probeMemoryPolicyAllows(claim mem.Claim, rule MemoryRule, relevance float64, selfEntities map[string]bool) bool {
