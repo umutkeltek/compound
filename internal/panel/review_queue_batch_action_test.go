@@ -196,8 +196,8 @@ func TestPanelVerdictGroupBatchActionRecordsHumanReviewGroup(t *testing.T) {
 func TestPanelChoiceCommandUsesGenericOperatorDefault(t *testing.T) {
 	t.Setenv("COMPOUND_OPERATOR_ID", "")
 	cmd := panelChoiceCommand("/tmp/verdict.json", "cand_example", "park")
-	if strings.Contains(cmd, "--reviewed-by umut") {
-		t.Fatalf("panel choice command leaked personal reviewer: %s", cmd)
+	if strings.Contains(cmd, "--reviewed-by example-person") {
+		t.Fatalf("panel choice command leaked a hardcoded personal reviewer: %s", cmd)
 	}
 	if !strings.Contains(cmd, "--reviewed-by operator") {
 		t.Fatalf("panel choice command = %s, want generic operator default", cmd)

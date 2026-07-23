@@ -233,7 +233,7 @@ func TestPackWithCapabilitiesWithoutProbeTriggerMatchesFlatPackByteForByte(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	flat.positionRefs, flat.excludedPositionRefs, err = loadPositionRefsFromView(in, DefaultPolicy().Memory[in.RepoKind], nil, view, dependencies.TopicSet)
+	flat.positionRefs, flat.excludedPositionRefs, err = loadPositionRefsFromView(in, DefaultPolicy().Memory[in.RepoKind], nil, view, dependencies.TopicSet, dependencies.SelfEntities)
 	if err != nil {
 		t.Fatal(err)
 	}

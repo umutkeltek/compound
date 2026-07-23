@@ -30,7 +30,7 @@ const (
 )
 
 // osStatusSnapshotKeys is the FIELD-PARITY FIXTURE (W5 J4 falsifier): every
-// top-level key os.ts writes to umut-os/dashboard/os-status-latest.json, as
+// top-level key os.ts writes to the legacy operator OS's dashboard/os-status-latest.json, as
 // live-probed 2026-07-11. Enumerated by reading both the os.ts snapshot assembly
 // (probe* functions writing onto a shared record, write site os.ts:4351) and the
 // on-disk dashboard file (22 keys, confirmed consistent). If os.ts grows a key,

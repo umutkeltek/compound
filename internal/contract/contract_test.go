@@ -846,7 +846,7 @@ func TestResolveRepoKindUsesRuntimeRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	controlRoot := t.TempDir()
-	controlNested := filepath.Join(controlRoot, "umut-os", "ops")
+	controlNested := filepath.Join(controlRoot, "example-os", "ops")
 	if err := os.MkdirAll(controlNested, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1963,7 +1963,7 @@ func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
 			ObservationDate: "2026-06-30T00:00:00Z",
 		},
 		{
-			Entity:          "umut",
+			Entity:          "operator",
 			Predicate:       "preference",
 			Object:          "private self-model fact",
 			Confidence:      1,
@@ -2446,7 +2446,7 @@ func TestPackWithCapabilitiesIncludesTaskRelevantMemoryBeyondEntityKey(t *testin
 			ObservationDate: "2026-07-02T00:00:00Z",
 		},
 		mem.Candidate{
-			Entity:          "umut",
+			Entity:          "operator",
 			Predicate:       "preference",
 			Object:          "private external skill repo preference",
 			Confidence:      1,

@@ -256,7 +256,7 @@ func TestRecordAutonomyGrantRequiresCompleteSafeThreshold(t *testing.T) {
 }
 
 func TestRecordAutonomyGrantRequiresOperatorProvenance(t *testing.T) {
-	for _, reviewedBy := range []string{"director", "codex", "umut", "test-operator", "rented-executor"} {
+	for _, reviewedBy := range []string{"director", "codex", "example-reviewer", "test-operator", "rented-executor"} {
 		t.Run(reviewedBy, func(t *testing.T) {
 			home := t.TempDir()
 			store, err := mem.Open(home)

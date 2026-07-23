@@ -123,6 +123,10 @@ func (s *Store) RenderHarnessDigest(opts HarnessDigestOptions, meta HarnessDiges
 		claimByID[c.ID] = c
 	}
 
+	// Resolved once per render from the store's own home, then threaded
+	// through the fold below — see self_entity_config.go.
+	selfEntities := ResolveSelfEntitySet(s.home)
+
 	var groupRenders []digestGroupRender
 	var groupReports []HarnessDigestGroupReport
 	totalIncluded, totalExcluded := 0, 0
@@ -144,7 +148,7 @@ func (s *Store) RenderHarnessDigest(opts HarnessDigestOptions, meta HarnessDiges
 				continue
 			}
 			claim, ok := claimByID[p.ActiveClaimID]
-			if !ok || !digestClaimAllowed(claim) {
+			if !ok || !digestClaimAllowed(claim, selfEntities) {
 				totalExcluded++
 				continue
 			}
@@ -368,8 +372,9 @@ func splitHarnessDigestFrontMatter(data []byte) (declaredSHA string, body []byte
 
 // digestClaimAllowed is the strict ambient-visibility gate — see the package
 // doc comment above for why this mirrors (rather than imports)
-// internal/contract's orient gate.
-func digestClaimAllowed(claim Claim) bool {
+// internal/contract's orient gate. selfEntities is the resolved self-entity
+// set for the home (see self_entity_config.go), resolved once by the caller.
+func digestClaimAllowed(claim Claim, selfEntities map[string]bool) bool {
 	if strings.EqualFold(strings.TrimSpace(claim.ClaimType), "decision") {
 		return false
 	}
@@ -379,7 +384,7 @@ func digestClaimAllowed(claim Claim) bool {
 	if !digestVisibilityWhitelisted(claim.Visibility) {
 		return false
 	}
-	if digestPersonalOrSelfModelClaim(claim) {
+	if digestPersonalOrSelfModelClaim(claim, selfEntities) {
 		return false
 	}
 	if digestVolatileOperationalRepoStateClaim(claim) {
@@ -405,17 +410,26 @@ func digestVisibilityWhitelisted(visibility string) bool {
 // private visibility, preference claims, self-model entities/qualifiers, and
 // corpus-sourced qualifiers are personal-corpus content that never belongs on
 // an ambient harness surface, independent of the topic it was tagged under.
-func digestPersonalOrSelfModelClaim(claim Claim) bool {
+func digestPersonalOrSelfModelClaim(claim Claim, selfEntities map[string]bool) bool {
 	return strings.EqualFold(strings.TrimSpace(claim.Visibility), "private") ||
 		strings.EqualFold(strings.TrimSpace(claim.ClaimType), "preference") ||
-		digestSelfModelClaim(claim) ||
+		digestSelfModelClaim(claim, selfEntities) ||
 		digestQualifierContains(claim, "source", "corpus")
 }
 
-// digestSelfModelClaim mirrors internal/contract.selfModelClaim.
-func digestSelfModelClaim(claim Claim) bool {
+// digestSelfModelClaim mirrors internal/contract.selfModelClaim: membership
+// in the resolved self-entity set (always "operator", extendable via
+// COMPOUND_HOME/config/identity.yaml — see self_entity_config.go) rather
+// than one hardcoded name. A nil selfEntities (defensive/test callers that
+// skip resolution) falls back to the bare "operator" default so privacy
+// classification never goes silently permissive.
+func digestSelfModelClaim(claim Claim, selfEntities map[string]bool) bool {
 	key := digestMemoryKey(claim.Entity)
-	if key == "umut" || key == "operator" {
+	if selfEntities == nil {
+		if key == DefaultSelfEntity {
+			return true
+		}
+	} else if selfEntities[key] {
 		return true
 	}
 	return digestQualifierContains(claim, "domain", "self") || digestQualifierContains(claim, "domain", "personal")

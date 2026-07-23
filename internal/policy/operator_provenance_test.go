@@ -8,7 +8,7 @@ func TestHasOperatorProvenance(t *testing.T) {
 			t.Errorf("operator provenance rejected: %q", actor)
 		}
 	}
-	for _, actor := range []string{"", "director", "codex", "umut", "test-operator", "rented-executor"} {
+	for _, actor := range []string{"", "director", "codex", "example-reviewer", "test-operator", "rented-executor"} {
 		if HasOperatorProvenance(actor) {
 			t.Errorf("executor provenance accepted as operator: %q", actor)
 		}

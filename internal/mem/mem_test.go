@@ -1586,15 +1586,15 @@ func TestAdjudicateAsOperatorStampsProvenance(t *testing.T) {
 	if err != nil || len(namedCaptured) != 1 {
 		t.Fatalf("capture named = %+v, err=%v", namedCaptured, err)
 	}
-	if _, err := s.AdjudicateAsOperator(namedCaptured[0].ID, "park", "", "operator:umut", t0); err != nil {
+	if _, err := s.AdjudicateAsOperator(namedCaptured[0].ID, "park", "", "operator:example", t0); err != nil {
 		t.Fatalf("named operator park: %v", err)
 	}
 	namedGot, err := s.getCandidate(namedCaptured[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if namedGot.AdjudicatedBy != "operator:umut" {
-		t.Fatalf("adjudicated_by = %q, want %q", namedGot.AdjudicatedBy, "operator:umut")
+	if namedGot.AdjudicatedBy != "operator:example" {
+		t.Fatalf("adjudicated_by = %q, want %q", namedGot.AdjudicatedBy, "operator:example")
 	}
 
 	// candidates-list projection (what the console standing-law queue reads)

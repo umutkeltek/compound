@@ -569,7 +569,7 @@ func loadRuntimeSnapshot(in Input, pol OrientationPolicy, homePath string, trace
 		if err != nil {
 			return snapshot, err
 		}
-		snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, dependencies.TopicSet)
+		snapshot.positionRefs, snapshot.excludedPositionRefs, err = loadPositionRefsFromView(in, pol.Memory[in.RepoKind], semanticRanks, memoryResult.view, dependencies.TopicSet, dependencies.SelfEntities)
 		if err != nil {
 			return snapshot, err
 		}
@@ -673,15 +673,33 @@ type runtimeMemoryDependencies struct {
 	RecallCandidate     mem.ExpandedQuery
 	RecallConsumed      *mem.ExpandedQuery
 	ProbeRevision       string
+	// SelfEntities is the resolved self-entity set for homePath (see
+	// compound/internal/mem.ResolveSelfEntitySet), captured once per runtime
+	// snapshot and threaded through to selfModelClaim/personalMemoryClaim
+	// rather than re-resolved per claim.
+	SelfEntities map[string]bool
 }
 
 // runtimeMemoryDependenciesCaptured is a test seam immediately after every
 // auxiliary dependency has been captured and before any consumer runs.
 var runtimeMemoryDependenciesCaptured func()
 
+// dependencySelfEntities is the nil-safe accessor callers use to reach
+// dependencies.SelfEntities: a nil dependencies pointer (defensive/test
+// callers that skip captureRuntimeMemoryDependencies) resolves an
+// unconfigured default set rather than silently dropping self-model
+// classification.
+func dependencySelfEntities(dependencies *runtimeMemoryDependencies) map[string]bool {
+	if dependencies != nil && dependencies.SelfEntities != nil {
+		return dependencies.SelfEntities
+	}
+	return mem.ResolveSelfEntitySet("")
+}
+
 func captureRuntimeMemoryDependencies(homePath string, in Input, view *mem.CurrentView) runtimeMemoryDependencies {
 	dependencies := runtimeMemoryDependencies{
 		Temperatures:        loadMemoryTemperatures(homePath),
+		SelfEntities:        mem.ResolveSelfEntitySet(homePath),
 		AppliedTemperatures: map[string]float64{},
 		RecallCandidate:     mem.ExpandedQuery{Original: in.Task, Text: in.Task},
 	}
@@ -2022,6 +2040,7 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 		topicSet = dependencies.TopicSet
 		temps = dependencies.Temperatures
 	}
+	selfEntities := dependencySelfEntities(dependencies)
 	out := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	excluded := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	for _, claim := range claims {
@@ -2047,7 +2066,7 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 			}
 			continue
 		}
-		if reason := memoryPolicyExclusionReason(claim, rule, relevanceRank); reason != "" {
+		if reason := memoryPolicyExclusionReason(claim, rule, relevanceRank, selfEntities); reason != "" {
 			excluded = append(excluded, contextMemoryRef{
 				Ref:    "claim://" + claim.ID,
 				Reason: reason,
@@ -2056,7 +2075,7 @@ func loadMemoryRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]
 			})
 			continue
 		}
-		rank := ambientMemoryRank(claim, rule, entities, taskTokens, sem, temps)
+		rank := ambientMemoryRank(claim, rule, entities, taskTokens, sem, temps, selfEntities)
 		if rank <= 0 {
 			continue
 		}
@@ -2155,16 +2174,17 @@ func BenchMemoryRank(homePath string, in Input, pol OrientationPolicy) (ranked [
 	// bench evaluator organ's call site (internal/bench/bench.go) stays call-compatible while the
 	// temperature term is exercised through the same scorer orient uses. Fail-open on absence.
 	temps := loadMemoryTemperatures(homePath)
+	selfEntities := mem.ResolveSelfEntitySet(homePath)
 	ordered := make([]scoredClaim, 0, len(claims))
 	for _, claim := range claims {
 		if topicSet != nil && !mem.ClaimHasTopicRef(claim, topicSet) {
 			continue
 		}
 		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens, 0, temps)
-		if memoryPolicyExclusionReason(claim, rule, relevanceRank) != "" {
+		if memoryPolicyExclusionReason(claim, rule, relevanceRank, selfEntities) != "" {
 			continue
 		}
-		rank := ambientMemoryRank(claim, rule, entities, taskTokens, 0, temps)
+		rank := ambientMemoryRank(claim, rule, entities, taskTokens, 0, temps, selfEntities)
 		if rank <= 0 {
 			continue
 		}
@@ -2204,10 +2224,10 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 		return nil, nil, err
 	}
 	dependencies := captureRuntimeMemoryDependencies(homePath, in, view)
-	return loadPositionRefsFromView(in, rule, semanticRanks, view, dependencies.TopicSet)
+	return loadPositionRefsFromView(in, rule, semanticRanks, view, dependencies.TopicSet, dependencies.SelfEntities)
 }
 
-func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, topicSet map[string]bool) ([]contextPositionRef, []envelope.ExcludedRef, error) {
+func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[string]float64, view *mem.CurrentView, topicSet map[string]bool, selfEntities map[string]bool) ([]contextPositionRef, []envelope.ExcludedRef, error) {
 	if len(rule.Ambient) == 0 {
 		return nil, nil, nil
 	}
@@ -2219,6 +2239,9 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 	positions := view.Positions()
 	if len(positions) == 0 {
 		return nil, nil, nil
+	}
+	if selfEntities == nil {
+		selfEntities = mem.ResolveSelfEntitySet("")
 	}
 	claims := view.Claims()
 	claimByID := map[string]mem.Claim{}
@@ -2254,7 +2277,7 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 			}
 			continue
 		}
-		if reason := memoryPolicyExclusionReason(activeClaim, rule, relevanceRank); reason != "" {
+		if reason := memoryPolicyExclusionReason(activeClaim, rule, relevanceRank, selfEntities); reason != "" {
 			excluded = append(excluded, contextPositionRef{
 				Ref:    activePosition.Ref,
 				Reason: reason,
@@ -2263,7 +2286,7 @@ func loadPositionRefsFromView(in Input, rule MemoryRule, semanticRanks map[strin
 			})
 			continue
 		}
-		rank := ambientMemoryRank(activeClaim, rule, entities, taskTokens, sem, nil)
+		rank := ambientMemoryRank(activeClaim, rule, entities, taskTokens, sem, nil, selfEntities)
 		if rank <= 0 {
 			continue
 		}
@@ -2468,28 +2491,28 @@ func cheapProvenanceLane(lane string) bool {
 	return strings.Contains(lane, "cheap")
 }
 
-func memoryPolicyExclusionReason(claim mem.Claim, rule MemoryRule, relevanceRank float64) string {
+func memoryPolicyExclusionReason(claim mem.Claim, rule MemoryRule, relevanceRank float64, selfEntities map[string]bool) string {
 	if relevanceRank <= 0 {
 		return ""
 	}
-	if contains(rule.Forbidden, "self-model") && selfModelClaim(claim) {
+	if contains(rule.Forbidden, "self-model") && selfModelClaim(claim, selfEntities) {
 		return "memory policy forbids self-model for this repo kind; relevant claim left out of active_memory"
 	}
-	if contains(rule.Forbidden, "personal-corpus") && personalMemoryClaim(claim) {
+	if contains(rule.Forbidden, "personal-corpus") && personalMemoryClaim(claim, selfEntities) {
 		return "memory policy forbids personal-corpus for this repo kind; relevant claim left out of active_memory"
 	}
-	if contains(rule.ExplicitOnly, "self-model") && selfModelClaim(claim) {
+	if contains(rule.ExplicitOnly, "self-model") && selfModelClaim(claim, selfEntities) {
 		return "memory policy requires explicit self-model handling; relevant claim left out of active_memory"
 	}
 	return ""
 }
 
-func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool, semanticScore float64, temps map[string]float64) float64 {
+func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool, semanticScore float64, temps map[string]float64, selfEntities map[string]bool) float64 {
 	rank := memoryRelevanceRank(claim, entities, taskTokens, semanticScore, temps)
-	if memoryPolicyExclusionReason(claim, rule, rank) != "" {
+	if memoryPolicyExclusionReason(claim, rule, rank, selfEntities) != "" {
 		return 0
 	}
-	if contains(rule.ExplicitOnly, "personal-corpus") && personalMemoryClaim(claim) && rank <= 0 {
+	if contains(rule.ExplicitOnly, "personal-corpus") && personalMemoryClaim(claim, selfEntities) && rank <= 0 {
 		return 0
 	}
 	return rank
@@ -2615,17 +2638,29 @@ func memoryVisibilityAllowedForOrient(claim mem.Claim) bool {
 	return memoryVisibilityAllowed(claim.Visibility)
 }
 
-func selfModelClaim(claim mem.Claim) bool {
-	if memoryKey(claim.Entity) == "umut" || memoryKey(claim.Entity) == "operator" {
+// selfModelClaim classifies claim as self-model by membership in the
+// resolved self-entity set (see compound/internal/mem.ResolveSelfEntitySet:
+// always "operator", extendable per-home via
+// COMPOUND_HOME/config/identity.yaml) rather than one hardcoded name. A nil
+// selfEntities (defensive/test callers that skip resolution) falls back to
+// the bare "operator" default so classification never goes silently
+// permissive.
+func selfModelClaim(claim mem.Claim, selfEntities map[string]bool) bool {
+	key := memoryKey(claim.Entity)
+	if selfEntities == nil {
+		if key == "operator" {
+			return true
+		}
+	} else if selfEntities[key] {
 		return true
 	}
 	return qualifierContains(claim, "domain", "self") || qualifierContains(claim, "domain", "personal")
 }
 
-func personalMemoryClaim(claim mem.Claim) bool {
+func personalMemoryClaim(claim mem.Claim, selfEntities map[string]bool) bool {
 	return strings.EqualFold(claim.Visibility, "private") ||
 		strings.EqualFold(claim.ClaimType, "preference") ||
-		selfModelClaim(claim) ||
+		selfModelClaim(claim, selfEntities) ||
 		qualifierContains(claim, "source", "corpus")
 }
 

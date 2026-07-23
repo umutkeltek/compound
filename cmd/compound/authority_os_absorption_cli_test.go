@@ -20,9 +20,9 @@ func TestAuthorityOSAbsorptionCLICommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	capSources := []string{
-		"/synthetic/umut-os/spine/views/skill-manifest.json",
-		"/synthetic/umut-os/registry/tool-topology.json",
-		"/synthetic/umut-os/spine/views/skills-selection-board.json",
+		"/synthetic/example-os/spine/views/skill-manifest.json",
+		"/synthetic/example-os/registry/tool-topology.json",
+		"/synthetic/example-os/spine/views/skills-selection-board.json",
 	}
 	for _, source := range capSources {
 		rev := "sha256:" + testDigest(source)
@@ -46,7 +46,7 @@ func TestAuthorityOSAbsorptionCLICommands(t *testing.T) {
 			osAbsorptionCLIRow("brain", "/synthetic/brain/projects/compound.md", "", "pending", "compound://ledger/memory", "compound memory recall", "manual"),
 			osAbsorptionCLIRow("gbrain", "gbrain://synthetic-store", "", "pending", "compound://adapters/memory-engine/gbrain", "compound memory recall", "manual"),
 			osAbsorptionCLIRow("infra_os", "/synthetic/infra-os/project-registry.yaml", "", "pending", "compound://registries/projects", "compound system map", "manual"),
-			osAbsorptionCLIRow("packets", "/synthetic/umut-os/packets", "", "pending", "compound://work/packets", "compound workbench", "manual"),
+			osAbsorptionCLIRow("packets", "/synthetic/example-os/packets", "", "pending", "compound://work/packets", "compound workbench", "manual"),
 		},
 	}
 	matrixPath := filepath.Join(t.TempDir(), "matrix.json")

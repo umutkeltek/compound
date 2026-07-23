@@ -164,8 +164,8 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 	claudePath := filepath.Join(root, "claude", "CLAUDE.md")
 	contextPackID := "ctx_served_orientation"
 	contextPackPath := filepath.Join(compoundHome, "context", "packs", contextPackID+".json")
-	liveStart := filepath.Join(root, "umut-os", "LIVE_START.md")
-	wholeMap := filepath.Join(root, "umut-os", "universe", "WHOLE_SYSTEM_MAP.md")
+	liveStart := filepath.Join(root, "example-os", "LIVE_START.md")
+	wholeMap := filepath.Join(root, "example-os", "universe", "WHOLE_SYSTEM_MAP.md")
 
 	for _, entrypoint := range []struct {
 		harness string

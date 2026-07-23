@@ -574,7 +574,7 @@ func TestOperationalArchiveKeepsOperatorPendingPanelVerdictsHot(t *testing.T) {
 	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_legacy_reviewed.reviewed.json", `{"schema_version":"compound.panel_verdict_human_review.v0.1","id":"pvr_legacy","status":"recorded"}`)
 	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_operator_reviewed.json", `{"schema_version":"compound.panel_verdict.v0.1","id":"panel_verdict_operator_reviewed","target":{"kind":"comparison","ref":"cmp_judged"},"synthesis":{"decision":"needs_human"}}`)
 	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_operator_reviewed.md", "# operator reviewed\n")
-	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_operator_reviewed.reviewed.json", `{"schema_version":"compound.panel_verdict_human_review.v0.1","id":"pvr_operator","status":"recorded","reviewed_by":"umut"}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_operator_reviewed.reviewed.json", `{"schema_version":"compound.panel_verdict_human_review.v0.1","id":"pvr_operator","status":"recorded","reviewed_by":"operator"}`)
 
 	report, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{Kinds: []string{"review"}}, now)
 	if err != nil {

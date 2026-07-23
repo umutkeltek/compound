@@ -471,7 +471,7 @@ func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]flo
 	}
 	sem := semanticRanks[claim.ID]
 	baseRelevance := memoryRelevanceRank(claim, entities, taskTokens, sem, nil)
-	if !probeMemoryPolicyAllows(claim, rule, baseRelevance) {
+	if !probeMemoryPolicyAllows(claim, rule, baseRelevance, dependencySelfEntities(dependencies)) {
 		return probeMemoryCandidate{}, false
 	}
 	temps := dependencies.Temperatures
@@ -500,7 +500,7 @@ func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]
 	}
 	sem := semanticRanks[claim.ID]
 	relevance := memoryRelevanceRank(claim, entities, taskTokens, sem, nil)
-	if !probeMemoryPolicyAllows(claim, rule, relevance) {
+	if !probeMemoryPolicyAllows(claim, rule, relevance, dependencySelfEntities(dependencies)) {
 		return probeMemoryCandidate{}, false
 	}
 	if currentStatePositionFreshnessExclusionReason(active.Ref, claim) != "" {
@@ -518,17 +518,17 @@ func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]
 	return probeMemoryCandidate{kind: "position", ref: ref.Ref, line: ref.Line, rank: ref.Rank, seq: ref.Seq, position: ref}, true
 }
 
-func probeMemoryPolicyAllows(claim mem.Claim, rule MemoryRule, relevance float64) bool {
+func probeMemoryPolicyAllows(claim mem.Claim, rule MemoryRule, relevance float64, selfEntities map[string]bool) bool {
 	policyRank := relevance
 	if policyRank <= 0 {
 		policyRank = probeGroupBaseRank
 	}
-	if memoryPolicyExclusionReason(claim, rule, policyRank) != "" {
+	if memoryPolicyExclusionReason(claim, rule, policyRank, selfEntities) != "" {
 		return false
 	}
 	// Explicit-only personal memory still requires task relevance. The group base may sweep
 	// ordinary standing facts, but it cannot turn an ambient probe into explicit user intent.
-	return !(contains(rule.ExplicitOnly, "personal-corpus") && personalMemoryClaim(claim) && relevance <= 0)
+	return !(contains(rule.ExplicitOnly, "personal-corpus") && personalMemoryClaim(claim, selfEntities) && relevance <= 0)
 }
 
 func probeClaimInTopicSet(claim mem.Claim, topicSet map[string]bool) bool {

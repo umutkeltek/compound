@@ -2403,7 +2403,7 @@ func TestOrientUsesRepoKindRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	controlRoot := t.TempDir()
-	controlCwd := filepath.Join(controlRoot, "umut-os")
+	controlCwd := filepath.Join(controlRoot, "example-os")
 	if err := os.MkdirAll(controlCwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
