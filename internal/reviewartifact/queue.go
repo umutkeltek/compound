@@ -158,6 +158,13 @@ type QueueItem struct {
 	// from queueing (e.g. an invalid `.brief.json` sidecar) — distinct from
 	// BlockedReason, which explains why the ITEM's own action is blocked.
 	Warnings []string `json:"warnings,omitempty"`
+	// WorkBinding is the current append-only owner-work companion for this
+	// sealed review artifact. The queue only loads provenance here; active work
+	// authority is resolved later by reviewqueue against the current work store.
+	WorkBinding      *ReviewWorkBinding `json:"work_binding,omitempty"`
+	WorkBindingError string             `json:"work_binding_error,omitempty"`
+	AuthorityWorkID  string             `json:"authority_work_id,omitempty"`
+	AuthoritySource  string             `json:"authority_source,omitempty"`
 }
 
 // Action is a non-mutating operator hint attached by the domain owner that
@@ -330,6 +337,15 @@ func Recount(report *QueueReport) {
 		}
 	}
 	stampReviewResolutionRevisions(report)
+}
+
+// RefreshSystemicBlocker recomputes only the authority-aware group blocker
+// after a caller stamps post-Recount domain batch actions.
+func RefreshSystemicBlocker(report *QueueReport) {
+	if report == nil {
+		return
+	}
+	report.SystemicBlocker = computeSystemicBlocker(report.Groups)
 }
 
 func buildQueueGroups(items []QueueItem) []QueueGroup {
@@ -799,7 +815,24 @@ func queueItem(root, path string) (QueueItem, error) {
 	if err != nil {
 		return QueueItem{}, err
 	}
-	return queueItemForRel(path, filepath.ToSlash(rel))
+	item, err := queueItemForRel(path, filepath.ToSlash(rel))
+	if err != nil {
+		return QueueItem{}, err
+	}
+	if strings.TrimSpace(item.Area) == "" {
+		return item, nil
+	}
+	homePath := filepath.Dir(root)
+	binding, bindingErr := LoadCurrentWorkBinding(homePath, WorkBindingTarget{
+		Area: item.Area, ReviewID: item.ID, CoreReviewPath: path,
+	})
+	if bindingErr != nil {
+		item.WorkBindingError = bindingErr.Error()
+		item.Warnings = append(item.Warnings, "owner-work binding invalid: "+bindingErr.Error())
+	} else {
+		item.WorkBinding = binding
+	}
+	return item, nil
 }
 
 func queueItemForRel(path, rel string) (QueueItem, error) {
@@ -988,6 +1021,9 @@ func coreReviewJSON(path string) bool {
 		if strings.HasSuffix(name, suffix) {
 			return false
 		}
+	}
+	if strings.Contains(name, ".work-binding.") {
+		return false
 	}
 	return true
 }

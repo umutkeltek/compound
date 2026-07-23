@@ -672,6 +672,39 @@ func annotateContentQueueItem(item *reviewartifact.QueueItem) {
 		Argv:           argv,
 		RequiresReview: true,
 	}}
+	seedContentQueueReviewAuthority(item, plan, reviewPath)
+}
+
+func seedContentQueueReviewAuthority(item *reviewartifact.QueueItem, plan ContentQueuePlan, reviewPath string) {
+	if item == nil || len(item.Actions) != 1 {
+		return
+	}
+	workID := reviewartifact.AuthoritySeedWorkID(*item, "")
+	if workID == "" {
+		return
+	}
+	evidenceRefs := []string{"content-queue-plan:" + plan.ID}
+	for _, row := range plan.Rows {
+		evidenceRefs = append(evidenceRefs, row.EvidenceRefs...)
+		evidenceRefs = append(evidenceRefs, "content-draft:"+row.DraftID)
+	}
+	evidenceRefs = reviewartifact.UniqueSorted(evidenceRefs)
+	if err := reviewartifact.SeedActionAuthority(&item.Actions[0], reviewartifact.ActionAuthoritySeedSpec{
+		WorkID: workID, CreatedAt: plan.CreatedAt, ProducerName: "compound/internal/product",
+		Capability: "product.content_queue.review", Action: "apply_content_queue_verdicts",
+		Target:        envelope.ActionTarget{Kind: "content_queue_plan", ID: plan.ID, Path: reviewPath},
+		MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "local",
+		Preview:      "Apply reviewed approve/reject/hold verdicts for " + strconv.Itoa(plan.ReviewableCount) + " content drafts; approval may mint publication authorization but never posts publicly.",
+		RollbackPlan: "Record superseding per-draft verdicts and retire any unconsumed publication authorization before outbound execution.",
+		Privacy:      "private", Risk: "tier1", EvidenceRefs: evidenceRefs, TargetScope: "private",
+		ExpectedReceipt: "Applied reviewed content queue verdicts for plan " + plan.ID + " without public posting.",
+		ExpectedProof: append([]string{
+			"content-queue-plan:" + plan.ID,
+			"content-queue-review:" + reviewPath,
+		}, evidenceRefs...),
+	}); err != nil {
+		item.Warnings = reviewartifact.Unique(append(item.Warnings, "content queue authority seed blocked: "+err.Error()))
+	}
 }
 
 func contentQueueDecisionCard(plan ContentQueuePlan, reviewPath string) *reviewartifact.DecisionCard {

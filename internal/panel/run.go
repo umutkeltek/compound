@@ -763,6 +763,19 @@ func writeVerdictArtifact(homePath string, run Run, target TargetInput, lensFind
 	if err != nil {
 		return "", err
 	}
+	if run.WorkBound && strings.TrimSpace(run.WorkID) != "" {
+		_, _, err := reviewartifact.RecordWorkBinding(homePath, reviewartifact.RecordWorkBindingInput{
+			Area:           verdictReviewArea,
+			ReviewID:       id,
+			CoreReviewPath: paths.PlanPath,
+			SourceWorkID:   run.WorkID,
+			SourceRun:      &reviewartifact.ReviewSourceRun{Kind: "panel_run", ID: run.ID, WorkID: run.WorkID},
+			EvidenceRefs:   reviewartifact.UniqueSorted(append(append([]string{}, evidenceRefs...), "panel-run:"+run.ID)),
+		}, createdAt)
+		if err != nil {
+			return "", err
+		}
+	}
 	return paths.PlanPath, nil
 }
 

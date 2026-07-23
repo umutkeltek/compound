@@ -75,8 +75,9 @@ type DecisionLifecycleDraft struct {
 }
 
 type DecisionCandidatePlanPaths struct {
-	PlanPath   string
-	ReviewPath string
+	PlanPath        string
+	ReviewPath      string
+	WorkBindingPath string
 }
 
 type decisionCandidateRecord struct {
@@ -214,7 +215,24 @@ func RecordDecisionCandidatePlan(homePath string, plan DecisionCandidatePlan) (D
 		return DecisionCandidatePlanPaths{}, fmt.Errorf("decision candidate plan id required")
 	}
 	paths, err := reviewartifact.Write(homePath, "decision-candidates", plan.ID, plan, " ", RenderDecisionCandidatePlanReview(plan))
-	return DecisionCandidatePlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
+	if err != nil {
+		return DecisionCandidatePlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
+	}
+	out := DecisionCandidatePlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}
+	if strings.TrimSpace(plan.WorkID) != "" {
+		_, bindingPath, bindErr := reviewartifact.RecordWorkBinding(homePath, reviewartifact.RecordWorkBindingInput{
+			Area:           DecisionCandidateReviewArea,
+			ReviewID:       plan.ID,
+			CoreReviewPath: paths.PlanPath,
+			SourceWorkID:   plan.WorkID,
+			EvidenceRefs:   reviewartifact.UniqueSorted(append(append([]string{}, plan.EvidenceRefs...), "decision-candidate-plan:"+plan.ID)),
+		}, timeFromDecisionCandidatePlan(plan))
+		if bindErr != nil {
+			return out, bindErr
+		}
+		out.WorkBindingPath = bindingPath
+	}
+	return out, nil
 }
 
 // AnnotateDecisionCandidateQueue gives each still-open DecisionLifecycle draft
@@ -278,8 +296,17 @@ func annotateDecisionCandidateQueueItem(item *reviewartifact.QueueItem) {
 	// (reviewqueue.StampReviewActionAuthority) can sign the action. The stamp is
 	// the sole signer; a producer that omits ActionIntent + AuthorityContext ships
 	// an unsigned action that fails closed on every authority-aware surface.
-	action.ActionIntent, action.AuthorityContext = decisionCandidateReviewAuthoritySeed(plan)
+	authorityPlan := plan
+	authorityPlan.WorkID = reviewartifact.AuthoritySeedWorkID(*item, plan.WorkID)
+	action.ActionIntent, action.AuthorityContext = decisionCandidateReviewAuthoritySeed(authorityPlan)
 	item.Actions = []reviewartifact.Action{action}
+}
+
+func timeFromDecisionCandidatePlan(plan DecisionCandidatePlan) time.Time {
+	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(plan.CreatedAt)); err == nil {
+		return parsed
+	}
+	return time.Now()
 }
 
 // decisionCandidateReviewAuthoritySeed builds the owner ActionIntent and

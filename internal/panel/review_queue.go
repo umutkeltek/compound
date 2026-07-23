@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"compound/internal/envelope"
 	"compound/internal/mem"
 	"compound/internal/reviewartifact"
 )
@@ -120,6 +121,7 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 	item.DecisionCard = buildPanelDecisionCard(*item, verdict)
 	item.Actions = panelDecisionCardActions(item.DecisionCard)
 	item.Actions = append(item.Actions, panelMemberCleanAction(item.JSONPath))
+	seedPanelVerdictActions(item, verdict, homePath)
 	annotateVerdictOperatorCard(item, verdict, reviewartifact.BandNeedsYou, "")
 	target := panelVerdictTarget(verdict.Target)
 	failedLenses := failedLensCount(verdict.LensFindings)
@@ -182,14 +184,14 @@ func panelVerdictGroupBatchAction(group reviewartifact.QueueGroup) reviewartifac
 			defaultPanelReviewedBy(),
 		}
 		return reviewartifact.GroupSummaryResult{
-			BatchAction: &reviewartifact.Action{
+			BatchAction: panelSeededGroupAction(&reviewartifact.Action{
 				ID:             "panel_verdict_record_group",
 				Label:          fmt.Sprintf("Record %d reviews", group.Count),
 				Command:        panelShellJoin(argv),
 				Argv:           argv,
 				RequiresReview: true,
 				PolicyNote:     "one operator act; member review refs included; no panel apply or memory mutation",
-			},
+			}, group, runID, "record_panel_review_group"),
 		}
 	}
 	homePath := homeFromReviewRoot(filepath.Dir(filepath.Dir(group.Sample.JSONPath)))
@@ -213,15 +215,115 @@ func panelVerdictGroupBatchAction(group reviewartifact.QueueGroup) reviewartifac
 	}
 	argv := []string{"compound", "panel", "run", "--plan", runID, "--apply"}
 	return reviewartifact.GroupSummaryResult{
-		BatchAction: &reviewartifact.Action{
+		BatchAction: panelSeededGroupAction(&reviewartifact.Action{
 			ID:             "panel_run_apply",
 			Label:          fmt.Sprintf("Apply %d verdicts", group.Count),
 			Command:        panelShellJoin(argv),
 			Argv:           argv,
 			RequiresReview: true,
 			PolicyNote:     "one operator act; each target gets its own PolicyDecision",
-		},
+		}, group, runID, "apply_panel_run"),
 	}
+}
+
+func seedPanelVerdictActions(item *reviewartifact.QueueItem, verdict verdictArtifactPayload, homePath string) {
+	if item == nil {
+		return
+	}
+	workID := panelVerdictSeedWorkID(*item, verdict.RunID, homePath)
+	if workID == "" {
+		return
+	}
+	evidenceRefs := reviewartifact.UniqueSorted(append(append([]string{}, verdict.EvidenceRefs...),
+		"panel-run:"+verdict.RunID,
+		"panel-verdict:"+verdict.ID,
+	))
+	for i := range item.Actions {
+		action := &item.Actions[i]
+		target := envelope.ActionTarget{Kind: verdict.Target.Kind, ID: verdict.Target.Ref}
+		capability := "panel.adjudicate"
+		actionName := "adjudicate_panel_verdict_" + action.ID
+		preview := "Record the reviewed panel verdict and apply the selected bounded adjudication to " + panelVerdictTarget(verdict.Target) + "."
+		rollback := "Retain the append-only review evidence and record the inverse or superseding candidate disposition."
+		expectedReceipt := "Recorded and adjudicated panel verdict " + verdict.ID + " under run " + verdict.RunID + "."
+		if action.ID == "panel_verdict_record_member" {
+			target = envelope.ActionTarget{Kind: "panel_verdict", ID: verdict.ID, Path: item.JSONPath}
+			capability = "review.panel_verdict"
+			actionName = "record_panel_verdict_review"
+			preview = "Record one human-review sidecar for panel verdict " + verdict.ID + "; memory authority remains unchanged."
+			rollback = "Record a superseding human-review disposition; the core verdict artifact remains sealed."
+			expectedReceipt = "Recorded human review for panel verdict " + verdict.ID + "."
+		}
+		if err := reviewartifact.SeedActionAuthority(action, reviewartifact.ActionAuthoritySeedSpec{
+			WorkID: workID, CreatedAt: verdict.CreatedAt, ProducerName: "compound/internal/panel",
+			Capability: capability, Action: actionName, Target: target,
+			MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "local",
+			Preview: preview, RollbackPlan: rollback, Privacy: "private", Risk: "tier1",
+			RunID: verdict.RunID, EvidenceRefs: evidenceRefs, TargetScope: "private",
+			ExpectedReceipt: expectedReceipt,
+			ExpectedProof:   append([]string{"panel-verdict:" + verdict.ID, "panel-run:" + verdict.RunID}, evidenceRefs...),
+		}); err != nil {
+			item.Warnings = reviewartifact.Unique(append(item.Warnings, "panel authority seed blocked: "+err.Error()))
+		}
+	}
+}
+
+func panelSeededGroupAction(action *reviewartifact.Action, group reviewartifact.QueueGroup, runID, actionName string) *reviewartifact.Action {
+	if action == nil || group.Sample == nil {
+		return action
+	}
+	workID := reviewartifact.AuthoritySeedWorkID(*group.Sample, "")
+	createdAt := group.Sample.CreatedAt
+	if workID == "" {
+		homePath := homeFromReviewRoot(filepath.Dir(filepath.Dir(group.Sample.JSONPath)))
+		if store, err := Open(homePath); err == nil {
+			if run, err := store.LoadRun(runID); err == nil && run.WorkBound {
+				workID = run.WorkID
+				createdAt = reviewartifact.FirstNonEmpty(createdAt, run.CreatedAt)
+			}
+		}
+	}
+	if workID == "" {
+		return action
+	}
+	capability := "review.panel_verdict"
+	target := envelope.ActionTarget{Kind: "panel_verdict_group", ID: group.Key}
+	preview := fmt.Sprintf("Record human-review sidecars for %d panel verdicts in group %s; memory authority remains unchanged.", group.Count, group.Key)
+	rollback := "Record superseding human-review dispositions; core panel verdict artifacts remain sealed."
+	receipt := fmt.Sprintf("Recorded %d panel verdict reviews for group %s.", group.Count, group.Key)
+	if actionName == "apply_panel_run" {
+		capability = "panel.adjudicate"
+		target = envelope.ActionTarget{Kind: "panel_run", ID: runID}
+		preview = fmt.Sprintf("Apply the already-reviewed verdicts in panel run %s; each target retains its own policy decision.", runID)
+		rollback = "Use the target-specific inverse or superseding adjudication recorded by panel apply receipts."
+		receipt = "Applied reviewed panel run " + runID + "."
+	}
+	evidenceRefs := reviewartifact.UniqueSorted(append(append([]string{}, group.EvidenceRefs...), "panel-run:"+runID))
+	_ = reviewartifact.SeedActionAuthority(action, reviewartifact.ActionAuthoritySeedSpec{
+		WorkID: workID, CreatedAt: createdAt, ProducerName: "compound/internal/panel",
+		Capability: capability, Action: actionName, Target: target,
+		MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "local",
+		Preview: preview, RollbackPlan: rollback, Privacy: "private", Risk: "tier1",
+		RunID: runID, EvidenceRefs: evidenceRefs, TargetScope: "private",
+		ExpectedReceipt: receipt,
+		ExpectedProof:   append([]string{"panel-run:" + runID}, evidenceRefs...),
+	})
+	return action
+}
+
+func panelVerdictSeedWorkID(item reviewartifact.QueueItem, runID, homePath string) string {
+	if workID := reviewartifact.AuthoritySeedWorkID(item, ""); workID != "" {
+		return workID
+	}
+	store, err := Open(homePath)
+	if err != nil {
+		return ""
+	}
+	run, err := store.LoadRun(runID)
+	if err != nil || !run.WorkBound {
+		return ""
+	}
+	return strings.TrimSpace(run.WorkID)
 }
 
 // panelVerdictGroupRunID parses the run id out of a panel-verdicts group_key

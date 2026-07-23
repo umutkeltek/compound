@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/reviewartifact"
 )
 
@@ -234,6 +235,7 @@ func annotateCapabilityLifecycleProposalItem(item *reviewartifact.QueueItem, now
 		item.Readiness = "needs_review"
 		item.NextAction = "review capability lifecycle proposal " + reviewartifact.FirstNonEmpty(proposal.Subject, proposal.ID)
 	}
+	seedCapabilityLifecycleActions(item, proposal, snapshot.Hash)
 	card, err := OperatorCardForLifecycleProposal(proposal)
 	if err != nil {
 		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "capability lifecycle operator card invalid: "+err.Error())
@@ -248,6 +250,45 @@ func annotateCapabilityLifecycleProposalItem(item *reviewartifact.QueueItem, now
 	} else if !choicesAvailable {
 		item.DecisionCard.Choices = nil
 		item.DecisionCard.CanonicalActionHint = ""
+	}
+}
+
+func seedCapabilityLifecycleActions(item *reviewartifact.QueueItem, proposal CapabilityLifecycleProposal, proposalHash string) {
+	if item == nil {
+		return
+	}
+	workID := reviewartifact.AuthoritySeedWorkID(*item, "")
+	if workID == "" {
+		return
+	}
+	evidenceRefs := reviewartifact.UniqueSorted(append(append([]string{}, proposal.EvidenceRefs...),
+		"capability-lifecycle-proposal:"+proposal.ID,
+		"capability-lifecycle-proposal-hash:"+proposalHash,
+	))
+	for i := range item.Actions {
+		action := &item.Actions[i]
+		actionName := "record_capability_lifecycle_" + action.ID
+		preview := "Record the reviewed " + action.ID + " disposition for capability lifecycle proposal " + proposal.ID + "."
+		rollback := "Record a superseding lifecycle proposal or disposition before any downstream work executes."
+		receipt := "Recorded " + action.ID + " for capability lifecycle proposal " + proposal.ID + "."
+		if action.ID == CapabilityLifecycleOpenWork || action.ID == "resume_open_work" {
+			actionName = "open_capability_lifecycle_work"
+			preview = "Create or resume the exact proposed WorkEnvelope for capability lifecycle proposal " + proposal.ID + "; no capability graph mutation executes here."
+			rollback = "Cancel the proposed WorkEnvelope before execution and retain the proposal/reservation as evidence."
+			receipt = "Created or resumed tracked work for capability lifecycle proposal " + proposal.ID + "."
+		}
+		_ = reviewartifact.SeedActionAuthority(action, reviewartifact.ActionAuthoritySeedSpec{
+			WorkID: workID, CreatedAt: proposal.CreatedAt, ProducerName: "compound/internal/capgraph",
+			Capability: "capability.lifecycle.review", Action: actionName,
+			Target:        envelope.ActionTarget{Kind: "capability_lifecycle_proposal", ID: proposal.ID, Path: item.JSONPath},
+			MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "local",
+			Preview: preview, RollbackPlan: rollback, Privacy: "private", Risk: "tier1",
+			EvidenceRefs: evidenceRefs, TargetScope: "private", ExpectedReceipt: receipt,
+			ExpectedProof: append([]string{
+				"capability-lifecycle-proposal:" + proposal.ID,
+				"capability-lifecycle-proposal-hash:" + proposalHash,
+			}, evidenceRefs...),
+		})
 	}
 }
 

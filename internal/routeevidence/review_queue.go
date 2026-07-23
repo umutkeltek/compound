@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"compound/internal/envelope"
 	"compound/internal/reviewartifact"
 )
 
@@ -110,6 +111,7 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		if review.Recommendation == promotionRecommendationHoldInsufficient {
 			action = promotionRecordCleanAction(item.JSONPath)
 		}
+		seedPromotionReviewAuthority(&action, *item, review)
 		item.Actions = []reviewartifact.Action{action}
 		band := reviewartifact.BandNeedsYou
 		if review.Recommendation == promotionRecommendationHoldInsufficient {
@@ -132,6 +134,40 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		annotatePromotionOperatorCard(item, review, reviewartifact.BandNeedsYou, "")
 		item.Actions = nil
 	}
+}
+
+func seedPromotionReviewAuthority(action *reviewartifact.Action, item reviewartifact.QueueItem, review PromotionReview) {
+	workID := reviewartifact.AuthoritySeedWorkID(item, "")
+	if workID == "" {
+		return
+	}
+	capability := "review.route_promotion"
+	actionName := "prepare_route_promotion_authority_review"
+	mutationClass := "read"
+	preview := "Prepare an evidence-linked authority brief for route promotion review " + review.ID + "; routing authority remains unchanged."
+	rollback := "No owner state changes; discard the generated instruction packet."
+	receipt := "Prepared authority review brief for route promotion review " + review.ID + "."
+	if action.ID == "route_promotion_record" {
+		actionName = "record_route_promotion_hold"
+		mutationClass = "local_reversible"
+		preview = "Record the reviewed hold for route promotion review " + review.ID + "; routing authority remains unchanged."
+		rollback = "Record a superseding review after additional route evidence arrives."
+		receipt = "Recorded reviewed hold for route promotion review " + review.ID + "."
+	}
+	evidenceRefs := reviewartifact.UniqueSorted(append(append([]string{}, review.EvidenceRefs...), "route-promotion-review:"+review.ID))
+	_ = reviewartifact.SeedActionAuthority(action, reviewartifact.ActionAuthoritySeedSpec{
+		WorkID: workID, CreatedAt: review.CreatedAt, ProducerName: "compound/internal/routeevidence",
+		Capability: capability, Action: actionName,
+		Target:        envelope.ActionTarget{Kind: "route_promotion_review", ID: review.ID, Path: item.JSONPath},
+		MutationClass: mutationClass, Reversibility: "easy", BlastRadius: "local",
+		Preview: preview, RollbackPlan: rollback, Privacy: "private", Risk: "tier1",
+		EvidenceRefs: evidenceRefs, TargetScope: "private", ExpectedReceipt: receipt,
+		ExpectedProof: append([]string{
+			"route-promotion-review:" + review.ID,
+			"route-lane:" + review.LaneID,
+			"route-capability:" + review.CapabilityClass,
+		}, evidenceRefs...),
+	})
 }
 
 // promotionRecordCleanAction emits the one clean-argv (argv[0]=="compound", no shell)

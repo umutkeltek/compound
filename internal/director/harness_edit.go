@@ -40,6 +40,7 @@ import (
 
 	"compound/internal/bench"
 	"compound/internal/capgraph"
+	"compound/internal/envelope"
 	"compound/internal/policy"
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
@@ -795,8 +796,46 @@ func annotateHarnessEditProposalItem(item *reviewartifact.QueueItem) {
 		Argv:           argv,
 		RequiresReview: true,
 	}}
+	seedHarnessEditReviewAuthority(item)
 	item.Readiness = "needs_review"
 	item.Band = reviewartifact.BandNeedsYou
+}
+
+func seedHarnessEditReviewAuthority(item *reviewartifact.QueueItem) {
+	if item == nil {
+		return
+	}
+	workID := reviewartifact.AuthoritySeedWorkID(*item, "")
+	if workID == "" || len(item.Actions) != 1 {
+		return
+	}
+	homePath := filepath.Dir(filepath.Dir(filepath.Dir(item.JSONPath)))
+	card, _, err := loadHarnessEditProposalCardForReview(homePath, item.JSONPath)
+	if err != nil {
+		item.Warnings = reviewartifact.Unique(append(item.Warnings, "harness-edit authority seed blocked: "+err.Error()))
+		return
+	}
+	evidenceRefs := reviewartifact.UniqueSorted(append(append([]string{}, card.EvidenceRefs...),
+		"harness-edit-proposal:"+card.ID,
+		"harness-edit-surface:"+card.TargetSurface,
+	))
+	if err := reviewartifact.SeedActionAuthority(&item.Actions[0], reviewartifact.ActionAuthoritySeedSpec{
+		WorkID: workID, CreatedAt: card.CreatedAt, ProducerName: "compound/internal/director",
+		Capability: "harness_edit.whitelist", Action: "whitelist_harness_edit_surface",
+		Target:        envelope.ActionTarget{Kind: "editable_surface", ID: card.TargetSurface, Path: item.JSONPath},
+		MutationClass: "security", Reversibility: "manual", BlastRadius: "control_plane",
+		Preview:      "Whitelist editable surface " + card.TargetSurface + " for the exact reviewed harness-edit proposal " + card.ID + ".",
+		RollbackPlan: "Retire the editable-surface whitelist record and verify subsequent admission is denied again.",
+		Privacy:      "private", Risk: "tier2", EvidenceRefs: evidenceRefs, TargetScope: "private",
+		ExpectedReceipt: "Recorded reviewed editable-surface whitelist decision for " + card.TargetSurface + ".",
+		ExpectedProof: append([]string{
+			"harness-edit-proposal:" + card.ID,
+			"harness-edit-surface:" + card.TargetSurface,
+			"editable-surface-admission-proof:" + card.TargetSurface,
+		}, evidenceRefs...),
+	}); err != nil {
+		item.Warnings = reviewartifact.Unique(append(item.Warnings, "harness-edit authority seed blocked: "+err.Error()))
+	}
 }
 
 func harnessEditReviewedPath(item reviewartifact.QueueItem) string {

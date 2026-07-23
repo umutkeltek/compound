@@ -59,6 +59,10 @@ func TestDecisionCandidateReviewSeedsSignableAllowedAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(report.Items) != 1 || report.Items[0].WorkBinding == nil ||
+		report.Items[0].WorkBinding.SourceWorkID != plan.WorkID {
+		t.Fatalf("bound decision plan did not preserve source work companion: %+v", report.Items)
+	}
 	AnnotateDecisionCandidateQueue(&report)
 
 	if len(report.Items) != 1 || len(report.Items[0].Actions) != 1 {

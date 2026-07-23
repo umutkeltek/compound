@@ -1200,6 +1200,10 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	// wrapper re-rolls counts here to capture the synthesis-driven
 	// status changes.
 	reviewartifact.Recount(&report)
+	if err := reviewqueue.StampReviewGroupActionAuthority(homePath, &report, time.Now()); err != nil {
+		return reviewartifact.QueueReport{}, err
+	}
+	reviewartifact.RefreshSystemicBlocker(&report)
 	return report, nil
 }
 
