@@ -53,7 +53,7 @@ $COMPOUND_HOME/
 | `work/` | WorkEnvelope lifecycle, leases, checkpoints, runs, and delivery proof |
 | `events/` | normalized raw runtime/hook/tool events; evidence, not automatically meaning |
 | `context/` | ContextRequests, frozen ContextPacks, inclusion/exclusion reasons, and exact injected text |
-| `reviews/` | adjudication, owner writeback, contradiction, policy, and retirement review artifacts; sealed core reviews may carry append-only digest-bound `work-binding` companions that preserve source provenance and select explicit active authority without rewriting the core |
+| `reviews/` | adjudication, owner writeback, contradiction, policy, and retirement review artifacts; versioned core reviews may carry append-only digest-bound `work-binding` companions whose historical digests remain immutable and whose exact-head supersessions preserve source provenance and select explicit active authority without rewriting the core |
 | `projections/` | rebuildable Markdown, dashboard, harness, timeline, and export views |
 | `indexes/` | disposable local or remote retrieval state and build manifests |
 | `archives/` | sealed local snapshots, import/export bundles, retention manifests, and rollback material |

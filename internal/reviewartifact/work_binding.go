@@ -108,7 +108,7 @@ func PlanWorkBinding(homePath string, in RecordWorkBindingInput, now time.Time) 
 		return ReviewWorkBinding{}, fmt.Errorf("review work binding supersedes_binding_id invalid")
 	}
 	binding.ID = workBindingID(binding)
-	if err := validateReviewWorkBinding(binding, target, reviewRel, digest); err != nil {
+	if err := validateReviewWorkBinding(binding, target, reviewRel); err != nil {
 		return ReviewWorkBinding{}, err
 	}
 	return binding, nil
@@ -119,7 +119,7 @@ func PlanWorkBinding(homePath string, in RecordWorkBindingInput, now time.Time) 
 // head in SupersedesBindingID, preventing last-writer-wins authority drift.
 func RecordWorkBinding(homePath string, in RecordWorkBindingInput, now time.Time) (ReviewWorkBinding, string, error) {
 	target := WorkBindingTarget{Area: in.Area, ReviewID: in.ReviewID, CoreReviewPath: in.CoreReviewPath}
-	current, err := LoadCurrentWorkBinding(homePath, target)
+	current, err := LoadWorkBindingHead(homePath, target)
 	if err != nil {
 		return ReviewWorkBinding{}, "", err
 	}
@@ -174,20 +174,44 @@ func RecordWorkBinding(homePath string, in RecordWorkBindingInput, now time.Time
 }
 
 // LoadCurrentWorkBinding validates the complete append-only chain and returns
-// its single unsuperseded head. Any corrupt member, fork, digest drift, or path
-// drift fails closed.
+// its single unsuperseded head only when that head binds the current core
+// review bytes. Historical bindings retain the digest of the review version
+// they bound. Any corrupt member, fork, head digest drift, or path drift fails
+// closed.
 func LoadCurrentWorkBinding(homePath string, target WorkBindingTarget) (*ReviewWorkBinding, error) {
+	head, digest, err := loadWorkBindingHead(homePath, target)
+	if err != nil || head == nil {
+		return head, err
+	}
+	if head.ReviewSHA256 != digest {
+		return nil, fmt.Errorf("review work binding head %s review digest drift: got %q want %q", head.ID, head.ReviewSHA256, digest)
+	}
+	return head, nil
+}
+
+// LoadWorkBindingHead validates the complete append-only chain and returns its
+// single unsuperseded structural head without requiring that head to bind the
+// current core review bytes. Record and planning callers use this seam to name
+// the exact stale head when a regenerated review needs explicit supersession.
+// Queue authority must use LoadCurrentWorkBinding and remain fail closed until
+// the superseding head exists.
+func LoadWorkBindingHead(homePath string, target WorkBindingTarget) (*ReviewWorkBinding, error) {
+	head, _, err := loadWorkBindingHead(homePath, target)
+	return head, err
+}
+
+func loadWorkBindingHead(homePath string, target WorkBindingTarget) (*ReviewWorkBinding, string, error) {
 	normalized, reviewRel, digest, err := normalizeWorkBindingTarget(homePath, target)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	pattern := strings.TrimSuffix(normalized.CoreReviewPath, ".json") + ".work-binding.*.json"
 	paths, err := filepath.Glob(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("scan review work bindings: %w", err)
+		return nil, "", fmt.Errorf("scan review work bindings: %w", err)
 	}
 	if len(paths) == 0 {
-		return nil, nil
+		return nil, digest, nil
 	}
 	sort.Strings(paths)
 	byID := make(map[string]ReviewWorkBinding, len(paths))
@@ -195,21 +219,21 @@ func LoadCurrentWorkBinding(homePath string, target WorkBindingTarget) (*ReviewW
 	for _, path := range paths {
 		binding, err := loadReviewWorkBindingFile(path)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if want := workBindingPath(normalized.CoreReviewPath, binding.ID); filepath.Clean(path) != filepath.Clean(want) {
-			return nil, fmt.Errorf("review work binding path drift: %s does not match id %s", path, binding.ID)
+			return nil, "", fmt.Errorf("review work binding path drift: %s does not match id %s", path, binding.ID)
 		}
-		if err := validateReviewWorkBinding(binding, normalized, reviewRel, digest); err != nil {
-			return nil, fmt.Errorf("review work binding %s invalid: %w", path, err)
+		if err := validateReviewWorkBinding(binding, normalized, reviewRel); err != nil {
+			return nil, "", fmt.Errorf("review work binding %s invalid: %w", path, err)
 		}
 		if _, exists := byID[binding.ID]; exists {
-			return nil, fmt.Errorf("duplicate review work binding id %s", binding.ID)
+			return nil, "", fmt.Errorf("duplicate review work binding id %s", binding.ID)
 		}
 		byID[binding.ID] = binding
 		if parent := binding.SupersedesBindingID; parent != "" {
 			if priorChild, fork := childByParent[parent]; fork {
-				return nil, fmt.Errorf("review work binding chain fork at %s: %s and %s", parent, priorChild, binding.ID)
+				return nil, "", fmt.Errorf("review work binding chain fork at %s: %s and %s", parent, priorChild, binding.ID)
 			}
 			childByParent[parent] = binding.ID
 		}
@@ -220,27 +244,27 @@ func LoadCurrentWorkBinding(homePath string, target WorkBindingTarget) (*ReviewW
 		if binding.SupersedesBindingID == "" {
 			roots++
 		} else if _, ok := byID[binding.SupersedesBindingID]; !ok {
-			return nil, fmt.Errorf("review work binding %s supersedes missing binding %s", id, binding.SupersedesBindingID)
+			return nil, "", fmt.Errorf("review work binding %s supersedes missing binding %s", id, binding.SupersedesBindingID)
 		}
 		if _, superseded := childByParent[id]; !superseded {
 			heads = append(heads, id)
 		}
 	}
 	if roots != 1 || len(heads) != 1 {
-		return nil, fmt.Errorf("review work binding chain requires one root and one head; roots=%d heads=%d", roots, len(heads))
+		return nil, "", fmt.Errorf("review work binding chain requires one root and one head; roots=%d heads=%d", roots, len(heads))
 	}
 	seen := map[string]bool{}
 	for id := heads[0]; id != ""; id = byID[id].SupersedesBindingID {
 		if seen[id] {
-			return nil, fmt.Errorf("review work binding chain cycle at %s", id)
+			return nil, "", fmt.Errorf("review work binding chain cycle at %s", id)
 		}
 		seen[id] = true
 	}
 	if len(seen) != len(byID) {
-		return nil, fmt.Errorf("review work binding chain is disconnected")
+		return nil, "", fmt.Errorf("review work binding chain is disconnected")
 	}
 	head := byID[heads[0]]
-	return &head, nil
+	return &head, digest, nil
 }
 
 func normalizeWorkBindingTarget(homePath string, target WorkBindingTarget) (WorkBindingTarget, string, string, error) {
@@ -317,7 +341,7 @@ func normalizeReviewSourceRun(source *ReviewSourceRun, sourceWorkID string) (*Re
 	return &out, nil
 }
 
-func validateReviewWorkBinding(binding ReviewWorkBinding, target WorkBindingTarget, reviewRel, digest string) error {
+func validateReviewWorkBinding(binding ReviewWorkBinding, target WorkBindingTarget, reviewRel string) error {
 	if binding.SchemaVersion != ReviewWorkBindingSchemaVersion {
 		return fmt.Errorf("schema_version = %q", binding.SchemaVersion)
 	}
@@ -327,8 +351,8 @@ func validateReviewWorkBinding(binding ReviewWorkBinding, target WorkBindingTarg
 	if binding.ReviewPath != reviewRel {
 		return fmt.Errorf("review path drift: got %q want %q", binding.ReviewPath, reviewRel)
 	}
-	if binding.ReviewSHA256 != digest {
-		return fmt.Errorf("review digest drift: got %q want %q", binding.ReviewSHA256, digest)
+	if !validSHA256Digest(binding.ReviewSHA256) {
+		return fmt.Errorf("review_sha256 must be a canonical sha256 digest")
 	}
 	if _, err := time.Parse(time.RFC3339, binding.CreatedAt); err != nil {
 		return fmt.Errorf("created_at invalid: %w", err)
@@ -355,6 +379,19 @@ func validateReviewWorkBinding(binding ReviewWorkBinding, target WorkBindingTarg
 		return fmt.Errorf("binding id does not match immutable content")
 	}
 	return nil
+}
+
+func validSHA256Digest(digest string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(digest, prefix) || len(digest) != len(prefix)+sha256.Size*2 {
+		return false
+	}
+	hexPart := strings.TrimPrefix(digest, prefix)
+	if hexPart != strings.ToLower(hexPart) {
+		return false
+	}
+	decoded, err := hex.DecodeString(hexPart)
+	return err == nil && len(decoded) == sha256.Size
 }
 
 func loadReviewWorkBindingFile(path string) (ReviewWorkBinding, error) {

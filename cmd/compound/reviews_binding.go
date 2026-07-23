@@ -111,7 +111,7 @@ func cmdReviewsBinding(args []string, record bool) {
 		fmt.Fprintln(os.Stderr, "reviews binding:", err)
 		os.Exit(1)
 	}
-	current, err := reviewartifact.LoadCurrentWorkBinding(homePath, reviewartifact.WorkBindingTarget{
+	current, err := reviewartifact.LoadWorkBindingHead(homePath, reviewartifact.WorkBindingTarget{
 		Area: area, ReviewID: itemID, CoreReviewPath: item.JSONPath,
 	})
 	if err != nil {
