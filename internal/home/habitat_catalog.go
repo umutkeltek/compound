@@ -112,6 +112,11 @@ func buildHabitatEntries() []HabitatEntry {
 		// tars (internal/authority records their absolute paths + digests);
 		// retirement proofs must stay resolvable, so the root is evidence.
 		active("recovery", "recovery", HabitatClassEvidence, false, true, false),
+		// secrets/ custodies live lane credentials (agent tokens, env bodies).
+		// Backup=false is deliberate: credentials must NEVER flow into backup
+		// bundles — a lost secret is re-provisioned, not restored. Scaffold=false
+		// like profiles: only lanes that custody credentials create it.
+		active("secrets", "secrets", HabitatClassConfig, false, false, false),
 		active("context", "context", HabitatClassOperational, true, true, false),
 		child("context.requests", "context/requests", HabitatClassOperational, true, true, false),
 		child("context.packs", "context/packs", HabitatClassOperational, true, true, false),
