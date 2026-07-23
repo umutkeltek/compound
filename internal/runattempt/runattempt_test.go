@@ -862,11 +862,18 @@ func TestLiveProbeReportsHeartbeatFailure(t *testing.T) {
 	report, err := s.SweepStaleWithProbe(30*time.Minute, t0.Add(time.Hour), func(RunAttempt) (bool, error) {
 		return true, nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "heartbeat") {
-		t.Fatalf("heartbeat failure hidden: report=%+v err=%v", report, err)
-	}
+	// Per-attempt best-effort (audit E15): a heartbeat-write failure on one
+	// live-flagged candidate is reported via SkippedIDs and does NOT abort
+	// the sweep pass. The previous contract -- returning the wrapped error
+	// and stopping the loop -- stranded every later candidate.
 	if report.Protected != 0 || len(report.SkippedIDs) != 1 || report.SkippedIDs[0] != ra.ID {
-		t.Fatalf("heartbeat failure report = %+v", report)
+		t.Fatalf("heartbeat failure report = %+v (must carry the failed id in SkippedIDs)", report)
+	}
+	if report.Scanned != 1 {
+		t.Fatalf("heartbeat failure Scanned=%d, want 1", report.Scanned)
+	}
+	if err != nil {
+		t.Fatalf("sweep should not return a top-level error for a per-attempt heartbeat failure: %v", err)
 	}
 }
 

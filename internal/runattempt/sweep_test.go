@@ -8,6 +8,9 @@
 //   - sweep records a reason on the swept attempt
 //   - empty dir is not an error
 //   - write() produces a durable file (fsync path exercised)
+//   - SweepStaleWithProbe continues past a heartbeat-write failure on one
+//     candidate so a later candidate is still processed (mirrors the
+//     per-attempt best-effort contract of SweepStale).
 
 package runattempt
 
@@ -363,5 +366,74 @@ func TestWriteDurableRoundTrip(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(home, "run_attempts", ra.ID+".json"))
 	if strings.Contains(string(data), "sweep_reason") {
 		t.Fatal("sweep_reason must be absent from non-swept attempt JSON (omitempty)")
+	}
+}
+
+// Falsifier (audit E15): SweepStaleWithProbe must be per-attempt best-effort
+// even when Heartbeat itself fails on a live-flagged candidate — a sibling
+// to the probe-error branch (continue) and the CompleteWithReason failure
+// branch (continue) one block below. A heartbeat-write failure today does
+// `return rep, error`, aborting the entire sweep, so a later stale
+// candidate never gets touched.
+func TestSweepStaleWithProbeHeartbeatFailureContinuesPastIt(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home)
+	t0 := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+
+	// Two stale non-terminal attempts; both well past the 30m threshold at
+	// sweep time, so each one enters the live branch.
+	ra1, err := s.Mint("work_a", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ra2, err := s.Mint("work_b", "actor", "fake", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Block ra1's atomic .tmp with a directory so Heartbeat's underlying
+	// Store.write (os.Create -> IsExist/EISDIR) fails. ra2's write path is
+	// untouched, so the falsifier is observed only if the sweep reaches ra2.
+	if err := os.MkdirAll(filepath.Join(home, "run_attempts", ra1.ID+".json.tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	probe := func(ra RunAttempt) (bool, error) {
+		return true, nil // every probe says "live" -> heartbeat path
+	}
+
+	rep, err := s.SweepStaleWithProbe(30*time.Minute, t0.Add(time.Hour), probe)
+	if err != nil {
+		t.Fatalf("SweepStaleWithProbe aborted on a per-attempt heartbeat failure: %v", err)
+	}
+	if rep.Scanned != 2 {
+		t.Fatalf("scanned = %d, want 2 (both attempts must be processed)", rep.Scanned)
+	}
+	if rep.Protected != 1 {
+		t.Fatalf("protected = %d, want 1 (ra2 must have been heartbeated even though ra1's heartbeat failed)", rep.Protected)
+	}
+	if rep.Skipped != 2 {
+		t.Fatalf("skipped = %d, want 2 (ra1 via failed heartbeat, ra2 via successful protected)", rep.Skipped)
+	}
+	wantSkipped := map[string]bool{ra1.ID: false, ra2.ID: false}
+	for _, id := range rep.SkippedIDs {
+		if _, ok := wantSkipped[id]; ok {
+			wantSkipped[id] = true
+		}
+	}
+	for id, seen := range wantSkipped {
+		if !seen {
+			t.Fatalf("skipped_ids missing %s, got %v", id, rep.SkippedIDs)
+		}
+	}
+
+	// Hard proof the loop actually reached ra2: its LastHeartbeatAt is now
+	// populated (Heartbeat was called on it successfully).
+	got, err := s.Get(ra2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastHeartbeatAt == nil {
+		t.Fatal("ra2 must have received a heartbeat during the sweep -- the loop aborted on ra1's heartbeat failure")
 	}
 }

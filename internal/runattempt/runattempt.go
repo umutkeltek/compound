@@ -896,9 +896,15 @@ func (s *Store) SweepStaleWithProbe(threshold time.Duration, now time.Time, prob
 		}
 		if live {
 			if _, herr := s.Heartbeat(ra.ID, now); herr != nil {
+				// Heartbeat-refresh write failures are best-effort per
+				// attempt (same shape as the probe-error branch above and
+				// the CompleteWithReason branch below): skip this candidate
+				// and let later stale candidates be processed by the same
+				// pass. Aborting the sweep on a single transient failure
+				// would strand every subsequent candidate.
 				rep.Skipped++
 				rep.SkippedIDs = append(rep.SkippedIDs, ra.ID)
-				return rep, fmt.Errorf("protect live run attempt %s: heartbeat: %w", ra.ID, herr)
+				continue
 			}
 			rep.Protected++
 			rep.Skipped++
