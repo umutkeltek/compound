@@ -294,7 +294,11 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, 
 				continue
 			}
 		}
-		out[i] = hashUnitVector(text, f.dim)
+		vec, err := hashUnitVector(text, f.dim)
+		if err != nil {
+			return nil, fmt.Errorf("fake embedder: %w", err)
+		}
+		out[i] = vec
 	}
 	return out, nil
 }
@@ -322,7 +326,17 @@ func normalizeVector(vec []float32) ([]float32, error) {
 	return out, nil
 }
 
-func hashUnitVector(text string, dim int) []float32 {
+// hashUnitVector derives a deterministic unit vector from arbitrary text via
+// SHA-256 blocks. A real hash output degenerating to a zero or non-finite
+// vector is astronomically unlikely but not provably impossible, so the
+// degenerate branch is an error, never a panic, propagated to the caller
+// (the enclosing fakeEmbedder.Embed already returns an error).
+func hashUnitVector(text string, dim int) ([]float32, error) {
+	return hashUnitVectorFromRaw(text, hashRawVector(text, dim))
+}
+
+// hashRawVector computes the raw (unnormalized) SHA-256-derived vector.
+func hashRawVector(text string, dim int) []float32 {
 	if dim <= 0 {
 		dim = 8
 	}
@@ -339,9 +353,18 @@ func hashUnitVector(text string, dim int) []float32 {
 			filled++
 		}
 	}
-	normalized, err := normalizeVector(vec)
+	return vec
+}
+
+// hashUnitVectorFromRaw normalizes a raw hash vector, naming the source text
+// in the error if it degenerates (zero vector / non-finite value). Split out
+// from hashUnitVector so the degenerate branch is directly testable with a
+// crafted raw vector, since a real (text, dim) pair essentially never
+// produces one.
+func hashUnitVectorFromRaw(text string, raw []float32) ([]float32, error) {
+	normalized, err := normalizeVector(raw)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("hash embedding degenerate for %q: %w", text, err)
 	}
-	return normalized
+	return normalized, nil
 }
