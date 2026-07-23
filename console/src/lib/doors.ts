@@ -29,6 +29,13 @@ export const DOORS: Door[] = [
     readOnly: true,
   },
   {
+    id: "workbench-ask",
+    label: "Workbench (ask drawer)",
+    argv: ["workbench", "--json", "--recent", "100"],
+    budgetMs: 1_000,
+    readOnly: true,
+  },
+  {
     id: "memory-candidates",
     label: "Memory candidates",
     argv: ["memory", "candidates", "--json"],
