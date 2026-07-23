@@ -224,6 +224,7 @@ func validatePathAuthority(pa PathAuthority) error {
 	if len(pa.EvidenceRefs) == 0 {
 		return fmt.Errorf("evidence_refs required")
 	}
+	activePaths := 0
 	for _, pb := range pa.PathBindings {
 		if strings.TrimSpace(pb.Path) == "" {
 			return fmt.Errorf("path_binding path required")
@@ -234,6 +235,12 @@ func validatePathAuthority(pa PathAuthority) error {
 		if pb.Status == "active" && !filepath.IsAbs(strings.TrimSpace(pb.Path)) {
 			return fmt.Errorf("active path_binding must be absolute, got %q", pb.Path)
 		}
+		if pb.Status == "active" {
+			activePaths++
+		}
+	}
+	if activePaths > 1 {
+		return fmt.Errorf("path authority %s has %d active path_bindings; at most one is allowed", pa.EntityRef, activePaths)
 	}
 	for _, sb := range pa.SourceBindings {
 		if strings.TrimSpace(sb.Kind) == "" || strings.TrimSpace(sb.Value) == "" {
@@ -404,7 +411,7 @@ func resolveImportedOSRootPath(
 	info, err := os.Stat(path)
 	switch {
 	case err == nil:
-		if key == InstalledHarnessHomeKey && !info.IsDir() {
+		if status == "active" && !info.IsDir() {
 			return "", fmt.Errorf("os path root %q must resolve to an existing directory: %s", key, path)
 		}
 		canonicalPath, err := filepath.EvalSymlinks(path)

@@ -68,36 +68,63 @@ func ResolveInstalledHarnessHome(compoundHome string) (string, bool, error) {
 // closed when their exact installed file is missing, unreadable, or not a
 // regular file.
 func InstalledHarnessEntrypointBinding(compoundHome, harness string) (string, string, bool, error) {
-	var relativePath string
-	switch strings.TrimSpace(harness) {
-	case "codex":
-		relativePath = osAbsorptionServedCodexEntrypoint
-	case "claude":
-		relativePath = osAbsorptionServedClaudeEntrypoint
-	default:
+	family, relativePath, supported := installedHarnessFamily(harness)
+	if !supported {
 		return "", "", false, nil
 	}
-	installedHome, found, err := ResolveInstalledHarnessHome(compoundHome)
-	if err != nil {
-		return "", "", false, err
-	}
-	if !found {
-		return "", "", false, nil
-	}
-	entrypointPath := filepath.Join(installedHome, filepath.FromSlash(relativePath))
-	info, err := os.Stat(entrypointPath)
-	if err != nil {
-		return "", "", false, fmt.Errorf("installed %s entrypoint %s: %w", harness, entrypointPath, err)
-	}
-	if !info.Mode().IsRegular() {
-		return "", "", false, fmt.Errorf("installed %s entrypoint is not a regular file: %s", harness, entrypointPath)
+	entrypointPath, found, err := resolveInstalledHarnessEntrypoint(compoundHome, family, relativePath)
+	if err != nil || !found {
+		return "", "", found, err
 	}
 	body, err := os.ReadFile(entrypointPath)
 	if err != nil {
-		return "", "", false, fmt.Errorf("read installed %s entrypoint %s: %w", harness, entrypointPath, err)
+		return "", "", false, fmt.Errorf("read installed %s entrypoint %s: %w", family, entrypointPath, err)
 	}
 	digest := sha256.Sum256(body)
-	return InstalledHarnessEntrypointRevisionPrefix + harness, "sha256:" + hex.EncodeToString(digest[:]), true, nil
+	return InstalledHarnessEntrypointRevisionPrefix + family, "sha256:" + hex.EncodeToString(digest[:]), true, nil
+}
+
+func installedHarnessFamily(harness string) (string, string, bool) {
+	harness = strings.TrimSpace(strings.ToLower(harness))
+	switch {
+	case harness == "codex" || strings.HasPrefix(harness, "codex-") || strings.HasPrefix(harness, "codex_"):
+		return "codex", osAbsorptionServedCodexEntrypoint, true
+	case harness == "claude" || strings.HasPrefix(harness, "claude-") || strings.HasPrefix(harness, "claude_"):
+		return "claude", osAbsorptionServedClaudeEntrypoint, true
+	default:
+		return "", "", false
+	}
+}
+
+func resolveInstalledHarnessEntrypoint(compoundHome, family, relativePath string) (string, bool, error) {
+	installedHome, found, err := ResolveInstalledHarnessHome(compoundHome)
+	if err != nil {
+		return "", false, err
+	}
+	if !found {
+		return "", false, nil
+	}
+	entrypointPath := filepath.Join(installedHome, filepath.FromSlash(relativePath))
+	resolvedPath, err := filepath.EvalSymlinks(entrypointPath)
+	if err != nil {
+		return "", false, fmt.Errorf("installed %s entrypoint %s: %w", family, entrypointPath, err)
+	}
+	resolvedPath = filepath.Clean(resolvedPath)
+	rel, relErr := filepath.Rel(installedHome, resolvedPath)
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", false, fmt.Errorf("installed %s entrypoint symlink escapes installed harness home: %s", family, resolvedPath)
+	}
+	if resolvedPath != filepath.Clean(entrypointPath) {
+		return "", false, fmt.Errorf("installed %s entrypoint must not traverse symlinks: lexical=%s resolved=%s", family, entrypointPath, resolvedPath)
+	}
+	info, err := os.Stat(entrypointPath)
+	if err != nil {
+		return "", false, fmt.Errorf("installed %s entrypoint %s: %w", family, entrypointPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", false, fmt.Errorf("installed %s entrypoint is not a regular file: %s", family, entrypointPath)
+	}
+	return entrypointPath, true, nil
 }
 
 func resolveDeclaredOSPath(compoundHome, entityRef string) (string, bool, error) {

@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -284,6 +285,113 @@ func TestRecordContextPackWritesPackArtifact(t *testing.T) {
 	}
 	if got.ID != pack.ID || got.IDs.ContractID != pack.IDs.ContractID {
 		t.Fatalf("artifact id/contract = %q/%q, want %q/%q", got.ID, got.IDs.ContractID, pack.ID, pack.IDs.ContractID)
+	}
+}
+
+func TestRecordRuntimeMaterializationLeavesNoOrphanOnPackFailure(t *testing.T) {
+	homePath := t.TempDir()
+	in := mkInput("control-plane")
+	runtime := RuntimeMaterialization{
+		EffectiveContract: Compile(in, DefaultPolicy(), fixedNow),
+		ContextPack:       Pack(in, DefaultPolicy(), fixedNow),
+	}
+	blockedPack := filepath.Join(homePath, "context", "packs", runtime.ContextPack.ID+".json")
+	if err := os.MkdirAll(blockedPack, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordRuntimeMaterialization(homePath, runtime); err == nil {
+		t.Fatal("pack staging failure must fail the pair")
+	}
+	contractPath := filepath.Join(homePath, "contracts", "effective", fixedNow.Format("2006-01-02"), runtime.EffectiveContract.ID+".json")
+	latestPath := filepath.Join(homePath, "contracts", "effective", "latest.json")
+	for _, path := range []string{contractPath, latestPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("pair failure left orphan %s: %v", path, err)
+		}
+	}
+}
+
+func TestRecordRuntimeMaterializationRestoresAllPreimagesWhenLatestCommitFails(t *testing.T) {
+	homePath := t.TempDir()
+	in := mkInput("control-plane")
+	runtime := RuntimeMaterialization{EffectiveContract: Compile(in, DefaultPolicy(), fixedNow), ContextPack: Pack(in, DefaultPolicy(), fixedNow)}
+	paths, err := RecordRuntimeMaterialization(homePath, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preimages := map[string][]byte{}
+	for _, path := range []string{paths.ContractPath, paths.PackPath, paths.LatestPath} {
+		preimages[path], err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime.ContextPack.SummaryMD += " changed"
+	runtime.EffectiveContract.Unknowns = append(runtime.EffectiveContract.Unknowns, "changed")
+	priorRename := runtimeMaterializationRename
+	runtimeMaterializationRename = func(oldPath, newPath string) error {
+		if newPath == paths.LatestPath {
+			return fmt.Errorf("injected latest commit failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	t.Cleanup(func() { runtimeMaterializationRename = priorRename })
+	if _, err := RecordRuntimeMaterialization(homePath, runtime); err == nil {
+		t.Fatal("latest commit injection must fail")
+	}
+	for path, want := range preimages {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("preimage changed at %s: err=%v", path, err)
+		}
+	}
+	for _, dir := range []string{filepath.Dir(paths.ContractPath), filepath.Dir(paths.PackPath), filepath.Dir(paths.LatestPath)} {
+		matches, err := filepath.Glob(filepath.Join(dir, ".runtime-materialization-*"))
+		if err != nil || len(matches) != 0 {
+			t.Fatalf("latest failure left temp files in %s: %v err=%v", dir, matches, err)
+		}
+	}
+}
+
+func TestRecordRuntimeMaterializationPackStageFailurePreservesAllPreimages(t *testing.T) {
+	homePath := t.TempDir()
+	in := mkInput("control-plane")
+	runtime := RuntimeMaterialization{EffectiveContract: Compile(in, DefaultPolicy(), fixedNow), ContextPack: Pack(in, DefaultPolicy(), fixedNow)}
+	paths, err := RecordRuntimeMaterialization(homePath, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preimages := map[string][]byte{}
+	for _, path := range []string{paths.ContractPath, paths.PackPath, paths.LatestPath} {
+		preimages[path], err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	priorCreateTemp := runtimeMaterializationCreateTemp
+	calls := 0
+	runtimeMaterializationCreateTemp = func(dir, pattern string) (*os.File, error) {
+		calls++
+		if calls == 2 {
+			return nil, fmt.Errorf("injected pack stage failure")
+		}
+		return os.CreateTemp(dir, pattern)
+	}
+	t.Cleanup(func() { runtimeMaterializationCreateTemp = priorCreateTemp })
+	if _, err := RecordRuntimeMaterialization(homePath, runtime); err == nil {
+		t.Fatal("pack stage injection must fail")
+	}
+	for path, want := range preimages {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("preimage changed at %s: err=%v", path, err)
+		}
+	}
+	for _, dir := range []string{filepath.Dir(paths.ContractPath), filepath.Dir(paths.PackPath), filepath.Dir(paths.LatestPath)} {
+		matches, err := filepath.Glob(filepath.Join(dir, ".runtime-materialization-*"))
+		if err != nil || len(matches) != 0 {
+			t.Fatalf("stage failure left temp files in %s: %v err=%v", dir, matches, err)
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package authority
 
 import (
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -181,6 +182,32 @@ func TestImportPathAuthorityRejectsMissingActiveBinding(t *testing.T) {
 	}
 }
 
+func TestImportPathAuthorityRejectsMultipleActiveBindingsRegardlessOfOrder(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
+			root := t.TempDir()
+			first := filepath.Join(root, "first")
+			second := filepath.Join(root, "second")
+			for _, path := range []string{first, second} {
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if reverse {
+				first, second = second, first
+			}
+			path := filepath.Join(root, "path-authority.yaml")
+			body := "schema_version: " + PathAuthoritySchemaVersion + "\nentity_ref: source:two-active\nentity_kind: repo\nauthoritative_source: test\npath_bindings:\n  - path: " + first + "\n    status: active\n  - path: " + second + "\n    status: active\nevidence_refs: [test]\n"
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, _, err := ImportPathAuthority(path, nil); err == nil || !strings.Contains(err.Error(), "at most one") {
+				t.Fatalf("multiple active bindings must fail independent of order, got %v", err)
+			}
+		})
+	}
+}
+
 func TestImportOSPathRegistryNormalizesActiveAndStaleRoots(t *testing.T) {
 	accountHome, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -341,6 +368,21 @@ func TestImportOSPathRegistryRejectsMissingActiveRoot(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "ordinary_active_root") || !strings.Contains(err.Error(), "existing") {
 		t.Fatalf("every missing active root must fail closed, got %v", err)
+	}
+}
+
+func TestImportOSPathRegistryRejectsActiveRegularFileRoot(t *testing.T) {
+	root := t.TempDir()
+	fileRoot := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(fileRoot, []byte("file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry := filepath.Join(root, "registry.yaml")
+	if err := os.WriteFile(registry, []byte("version: 1\ncanonical_roots:\n  file_root:\n    path: "+fileRoot+"\n    status: active\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := ImportOSPathRegistry(registry, nil); err == nil || !strings.Contains(err.Error(), "directory") {
+		t.Fatalf("active OS root backed by a regular file must fail, got %v", err)
 	}
 }
 

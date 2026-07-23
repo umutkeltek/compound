@@ -316,6 +316,7 @@ func (e *EffectiveContract) Validate() error {
 		v.addf("task_mode %q conflicts with task_contract.mode %q", taskMode, contractMode)
 	}
 	validateCapabilityOffers(v, "capability_offers", e.CapabilityOffers)
+	validateUniqueSourceRevisions(v, e.SourceRevisions)
 	return v.result(e.Kind())
 }
 
@@ -530,12 +531,24 @@ func (e *ContextPack) Validate() error {
 		v.req(fmt.Sprintf("included[%d].ref", i), inc.Ref)
 	}
 	validateCapabilityOffers(v, "capability_offers", e.CapabilityOffers)
+	validateUniqueSourceRevisions(v, e.SourceRevisions)
 	// the excluded list (what was NOT loaded, and why) is the whole point of replaceability;
 	// require its presence (may be empty) so it's never silently dropped.
 	if e.Excluded == nil {
 		v.addf("excluded must be present (record what was not loaded and why)")
 	}
 	return v.result(e.Kind())
+}
+
+func validateUniqueSourceRevisions(v *verr, revisions []SourceRev) {
+	seen := map[string]bool{}
+	for _, revision := range revisions {
+		source := strings.TrimSpace(revision.Source)
+		if source != "" && seen[source] {
+			v.addf("duplicate source revision %q", source)
+		}
+		seen[source] = true
+	}
 }
 
 func validateCapabilityOffers(v *verr, field string, values []CapabilityOffer) {

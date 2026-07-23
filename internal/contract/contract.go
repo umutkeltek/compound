@@ -977,6 +977,109 @@ type ContextPackArtifactPaths struct {
 	PackPath string `json:"pack_path"`
 }
 
+type RuntimeMaterializationArtifactPaths struct {
+	ContractPath string `json:"contract_path"`
+	LatestPath   string `json:"latest_path"`
+	PackPath     string `json:"pack_path"`
+}
+
+var runtimeMaterializationCreateTemp = os.CreateTemp
+var runtimeMaterializationRename = os.Rename
+
+// RecordRuntimeMaterialization stages the dated contract and pack before
+// making either visible, publishes latest only after both dated artifacts,
+// and restores preimages on ordinary commit-phase errors. A process crash
+// between filesystem renames can still leave a partial pair; readers must
+// continue joining artifacts by contract_id rather than treating presence as
+// atomic transaction proof.
+func RecordRuntimeMaterialization(homePath string, runtime RuntimeMaterialization) (RuntimeMaterializationArtifactPaths, error) {
+	ec, pack := runtime.EffectiveContract, runtime.ContextPack
+	if strings.TrimSpace(homePath) == "" {
+		return RuntimeMaterializationArtifactPaths{}, fmt.Errorf("compound home required")
+	}
+	if pack.IDs.ContractID != ec.ID {
+		return RuntimeMaterializationArtifactPaths{}, fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID)
+	}
+	if err := ec.Validate(); err != nil {
+		return RuntimeMaterializationArtifactPaths{}, fmt.Errorf("effective contract invalid: %w", err)
+	}
+	if err := pack.Validate(); err != nil {
+		return RuntimeMaterializationArtifactPaths{}, fmt.Errorf("context pack invalid: %w", err)
+	}
+	createdAt, err := time.Parse(time.RFC3339, ec.CreatedAt)
+	if err != nil {
+		return RuntimeMaterializationArtifactPaths{}, err
+	}
+	paths := RuntimeMaterializationArtifactPaths{
+		ContractPath: filepath.Join(homePath, "contracts", "effective", createdAt.UTC().Format("2006-01-02"), ec.ID+".json"),
+		LatestPath:   filepath.Join(homePath, "contracts", "effective", "latest.json"),
+		PackPath:     filepath.Join(homePath, "context", "packs", pack.ID+".json"),
+	}
+	ecBytes, err := json.MarshalIndent(ec, "", "  ")
+	if err != nil {
+		return RuntimeMaterializationArtifactPaths{}, err
+	}
+	packBytes, err := json.MarshalIndent(pack, "", "  ")
+	if err != nil {
+		return RuntimeMaterializationArtifactPaths{}, err
+	}
+	type staged struct {
+		path, temp string
+		body       []byte
+		old        []byte
+		existed    bool
+	}
+	items := []staged{{path: paths.ContractPath, body: ecBytes}, {path: paths.PackPath, body: packBytes}, {path: paths.LatestPath, body: ecBytes}}
+	defer func() {
+		for _, item := range items {
+			if item.temp != "" {
+				_ = os.Remove(item.temp)
+			}
+		}
+	}()
+	for i := range items {
+		if err := os.MkdirAll(filepath.Dir(items[i].path), 0o755); err != nil {
+			return RuntimeMaterializationArtifactPaths{}, err
+		}
+		if old, readErr := os.ReadFile(items[i].path); readErr == nil {
+			items[i].old, items[i].existed = old, true
+		} else if !os.IsNotExist(readErr) {
+			return RuntimeMaterializationArtifactPaths{}, readErr
+		}
+		file, createErr := runtimeMaterializationCreateTemp(filepath.Dir(items[i].path), ".runtime-materialization-*")
+		if createErr != nil {
+			return RuntimeMaterializationArtifactPaths{}, createErr
+		}
+		items[i].temp = file.Name()
+		if _, err = file.Write(append(items[i].body, '\n')); err == nil {
+			err = file.Sync()
+		}
+		if closeErr := file.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			file.Close()
+			os.Remove(items[i].temp)
+			return RuntimeMaterializationArtifactPaths{}, err
+		}
+	}
+	committed := 0
+	for i := range items {
+		if err := runtimeMaterializationRename(items[i].temp, items[i].path); err != nil {
+			for j := committed - 1; j >= 0; j-- {
+				if items[j].existed {
+					_ = os.WriteFile(items[j].path, items[j].old, 0o644)
+				} else {
+					_ = os.Remove(items[j].path)
+				}
+			}
+			return RuntimeMaterializationArtifactPaths{}, err
+		}
+		committed++
+	}
+	return paths, nil
+}
+
 func RecordEffectiveContract(homePath string, ec envelope.EffectiveContract) (EffectiveContractArtifactPaths, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return EffectiveContractArtifactPaths{}, fmt.Errorf("compound home required")

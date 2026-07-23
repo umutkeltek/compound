@@ -54,6 +54,60 @@ func TestMaterializeOrientContextPackUsesOneSharedRuntimeSnapshot(t *testing.T) 
 	}
 }
 
+func TestMaterializeOrientContextPackDoesNotPersistPartialPairOnPrecommitErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		bodyBudget int
+		mutate     func(*contract.RuntimeMaterialization)
+		bodyError  bool
+	}{
+		{name: "id mismatch", mutate: func(runtime *contract.RuntimeMaterialization) {
+			runtime.ContextPack.IDs.ContractID = "contract_mismatch"
+		}},
+		{name: "body error", bodyBudget: 1, bodyError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+			in := contract.Input{Harness: "codex", Cwd: t.TempDir(), Task: tc.name, RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+			priorRuntime, priorBodies := materializeRuntimeForOrient, materializeBodiesForOrient
+			var produced contract.RuntimeMaterialization
+			materializeRuntimeForOrient = func(in contract.Input, pol contract.OrientationPolicy, homePath string, now time.Time) (contract.RuntimeMaterialization, error) {
+				produced = contract.RuntimeMaterialization{EffectiveContract: contract.Compile(in, pol, now), ContextPack: contract.Pack(in, pol, now)}
+				if tc.mutate != nil {
+					tc.mutate(&produced)
+				}
+				return produced, nil
+			}
+			if tc.bodyError {
+				materializeBodiesForOrient = func(string, envelope.ContextPack, string, string, int) (envelope.ContextPack, error) {
+					return envelope.ContextPack{}, fmt.Errorf("injected body error")
+				}
+			}
+			t.Cleanup(func() { materializeRuntimeForOrient, materializeBodiesForOrient = priorRuntime, priorBodies })
+			if _, err := materializeOrientContextPack(homePath, in, tc.bodyBudget, cliTestNow); err == nil {
+				t.Fatal("expected precommit error")
+			}
+			assertOrientPairAbsent(t, homePath, produced)
+		})
+	}
+}
+
+func assertOrientPairAbsent(t *testing.T, homePath string, runtime contract.RuntimeMaterialization) {
+	t.Helper()
+	for _, path := range []string{
+		filepath.Join(homePath, "contracts", "effective", cliTestNow.Format("2006-01-02"), runtime.EffectiveContract.ID+".json"),
+		filepath.Join(homePath, "contracts", "effective", "latest.json"),
+		filepath.Join(homePath, "context", "packs", runtime.ContextPack.ID+".json"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("precommit error left artifact %s: %v", path, err)
+		}
+	}
+}
+
 func TestMaterializeOrientContextPackBindsInstalledEntrypointIntoBothArtifacts(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -102,6 +156,44 @@ func TestMaterializeOrientContextPackBindsInstalledEntrypointIntoBothArtifacts(t
 	}
 	if got := orientSourceRevision(effective.SourceRevisions, source); got != wantRevision {
 		t.Fatalf("EffectiveContract entrypoint revision = %q, want %q", got, wantRevision)
+	}
+}
+
+func TestMaterializeOrientContextPackBindsClaudeFamilyAliasesCanonically(t *testing.T) {
+	for _, harness := range []string{"claude-code", "claude_lane_opus"} {
+		t.Run(harness, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+			installedHome := t.TempDir()
+			entrypoint := filepath.Join(installedHome, ".claude", "CLAUDE.md")
+			if err := os.MkdirAll(filepath.Dir(entrypoint), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(entrypoint, []byte("claude"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			seedOrientInstalledHarnessHome(t, homePath, installedHome)
+			pack, err := materializeOrientContextPack(homePath, contract.Input{Harness: harness, Cwd: t.TempDir(), Task: "alias", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}, 0, cliTestNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := orientSourceRevision(pack.SourceRevisions, authority.InstalledHarnessEntrypointRevisionPrefix+"claude"); got == "" {
+				t.Fatalf("canonical claude source missing: %+v", pack.SourceRevisions)
+			}
+			body, err := os.ReadFile(filepath.Join(homePath, "contracts", "effective", cliTestNow.Format("2006-01-02"), pack.IDs.ContractID+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var effective envelope.EffectiveContract
+			if err := json.Unmarshal(body, &effective); err != nil {
+				t.Fatal(err)
+			}
+			if effective.Harness != harness {
+				t.Fatalf("artifact harness = %q, want preserved alias %q", effective.Harness, harness)
+			}
+		})
 	}
 }
 

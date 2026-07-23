@@ -1265,11 +1265,18 @@ func osAbsorptionServedOrientationCurrentProof(
 
 	for _, harness := range []string{"codex", "claude"} {
 		entrypointPath := evidence.entrypoints[harness]
+		_, boundRevision, found, err := InstalledHarnessEntrypointBinding(homePath, harness)
+		if err != nil || !found {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("%s installed entrypoint binding: found=%v err=%v", harness, found, err)}
+		}
 		entrypointBody, err := os.ReadFile(entrypointPath)
 		if err != nil {
 			return osAbsorptionProofResult{reason: fmt.Sprintf("%s entrypoint %s: %v", harness, entrypointPath, err)}
 		}
 		liveEntrypointDigest := digestBytes(entrypointBody)
+		if boundRevision != "sha256:"+liveEntrypointDigest {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("%s installed entrypoint resolver digest mismatch", harness)}
+		}
 		if liveEntrypointDigest != evidence.contextPacks[harness].entrypointDigest {
 			return osAbsorptionProofResult{reason: fmt.Sprintf(
 				"%s ContextPack evidence entrypoint digest %s differs from live installed digest %s",
@@ -1339,7 +1346,8 @@ func osAbsorptionServedOrientationCurrentProof(
 		if contract.Authority.SourceClass != "runtime" || contract.Authority.Status != "current" {
 			return osAbsorptionProofResult{reason: fmt.Sprintf("EffectiveContract %s is not runtime/current authority", contract.ID)}
 		}
-		if contract.Harness != harness {
+		contractHarnessFamily, _, supportedHarness := installedHarnessFamily(contract.Harness)
+		if !supportedHarness || contractHarnessFamily != harness {
 			return osAbsorptionProofResult{reason: fmt.Sprintf(
 				"EffectiveContract %s harness %q does not bind cited %s ContextPack %s",
 				contract.ID,

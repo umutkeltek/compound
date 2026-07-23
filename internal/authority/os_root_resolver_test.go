@@ -1,6 +1,7 @@
 package authority
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,70 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+func TestInstalledHarnessEntrypointBindingCanonicalizesHarnessFamilies(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), "compound-home")
+	installedHome := t.TempDir()
+	for rel, body := range map[string]string{
+		osAbsorptionServedCodexEntrypoint: "codex", osAbsorptionServedClaudeEntrypoint: "claude",
+	} {
+		path := filepath.Join(installedHome, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedInstalledHarnessHomeRegistry(t, homePath, installedHome)
+	for _, tc := range []struct{ harness, family string }{
+		{"claude-code", "claude"}, {"claude-zai", "claude"}, {"claude_lane_opus", "claude"}, {"codex-tap", "codex"},
+	} {
+		t.Run(tc.harness, func(t *testing.T) {
+			source, _, found, err := InstalledHarnessEntrypointBinding(homePath, tc.harness)
+			if err != nil || !found || source != InstalledHarnessEntrypointRevisionPrefix+tc.family {
+				t.Fatalf("alias binding = source %q found=%v err=%v", source, found, err)
+			}
+		})
+	}
+}
+
+func TestInstalledHarnessEntrypointBindingRejectsSymlinkTraversal(t *testing.T) {
+	for _, tc := range []struct {
+		harness, dir, file string
+		intermediate       bool
+	}{
+		{"codex", ".codex", "AGENTS.md", false},
+		{"codex", ".codex", "AGENTS.md", true},
+		{"claude-code", ".claude", "CLAUDE.md", true},
+	} {
+		t.Run(fmt.Sprintf("%s/intermediate=%v", tc.harness, tc.intermediate), func(t *testing.T) {
+			homePath := filepath.Join(t.TempDir(), "compound-home")
+			installedHome := t.TempDir()
+			externalDir := t.TempDir()
+			external := filepath.Join(externalDir, tc.file)
+			if err := os.WriteFile(external, []byte("stable external"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.intermediate {
+				if err := os.Symlink(externalDir, filepath.Join(installedHome, tc.dir)); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.MkdirAll(filepath.Join(installedHome, tc.dir), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(external, filepath.Join(installedHome, tc.dir, tc.file)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			seedInstalledHarnessHomeRegistry(t, homePath, installedHome)
+			if _, _, _, err := InstalledHarnessEntrypointBinding(homePath, tc.harness); err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Fatalf("symlink traversal must fail closed, got %v", err)
+			}
+		})
+	}
+}
 
 func TestAbsorbedOSRootReusesExistingUmutOSRegistryKey(t *testing.T) {
 	if AbsorbedOSRegistryKey != "umut_os" {

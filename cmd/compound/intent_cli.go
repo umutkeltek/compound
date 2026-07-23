@@ -23,6 +23,17 @@ const (
 )
 
 var materializeRuntimeForOrient = contract.MaterializeRuntime
+var materializeBodiesForOrient = func(homePath string, pack envelope.ContextPack, cwd, task string, bodyBudget int) (envelope.ContextPack, error) {
+	if bodyBudget <= 0 {
+		return pack, nil
+	}
+	resolver := newOrientBodyResolver(homePath, pack, cwd)
+	candidates, err := resolver.Resolve(task)
+	if err != nil {
+		return envelope.ContextPack{}, err
+	}
+	return contract.ApplyBodyPack(pack, contract.MaterializeBodyPack(candidates, pack, bodyBudget)), nil
+}
 
 // materializeOrientContextPack is the one cmd-layer orientation path used by
 // both `compound orient` and expressive intent. It compiles and records the
@@ -55,21 +66,19 @@ func materializeOrientContextPack(homePath string, in contract.Input, bodyBudget
 		pack.SourceRevisions = bindOrientSourceRevision(pack.SourceRevisions, entrypointSource, entrypointRevision)
 		ec.SourceRevisions = bindOrientSourceRevision(ec.SourceRevisions, entrypointSource, entrypointRevision)
 	}
-	if _, err := contract.RecordEffectiveContract(homePath, ec); err != nil {
-		return envelope.ContextPack{}, err
-	}
 	if pack.IDs.ContractID != ec.ID {
 		return envelope.ContextPack{}, fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID)
 	}
 	if bodyBudget > 0 {
-		resolver := newOrientBodyResolver(homePath, pack, in.Cwd)
-		candidates, err := resolver.Resolve(in.Task)
+		pack, err = materializeBodiesForOrient(homePath, pack, in.Cwd, in.Task, bodyBudget)
 		if err != nil {
 			return envelope.ContextPack{}, err
 		}
-		pack = contract.ApplyBodyPack(pack, contract.MaterializeBodyPack(candidates, pack, bodyBudget))
 	}
-	if _, err := contract.RecordContextPack(homePath, pack); err != nil {
+	if _, err := contract.RecordRuntimeMaterialization(homePath, contract.RuntimeMaterialization{
+		EffectiveContract: ec,
+		ContextPack:       pack,
+	}); err != nil {
 		return envelope.ContextPack{}, err
 	}
 	return pack, nil

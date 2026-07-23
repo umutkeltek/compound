@@ -334,6 +334,15 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 			wantStatus: "ok",
 		},
 		{
+			name: "documented Claude harness alias remains bound to Claude family",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				mutateServedOrientationContract(t, fixture.contractPaths["claude"], func(contract *envelope.EffectiveContract) {
+					contract.Harness = "claude-code"
+				})
+			},
+			wantStatus: "ok",
+		},
+		{
 			name: "historical ContextPack is stale evidence",
 			mutate: func(t *testing.T, fixture servedOrientationFixture) {
 				t.Helper()
@@ -398,6 +407,22 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 			wantDetail: "digest",
 		},
 		{
+			name: "installed entrypoint symlink repoint after materialization fails",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				t.Helper()
+				external := filepath.Join(t.TempDir(), "AGENTS.md")
+				copyServedOrientationFixtureFile(t, fixture.codexPath, external)
+				if err := os.Remove(fixture.codexPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(external, fixture.codexPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantStatus: "failed",
+			wantDetail: "symlink",
+		},
+		{
 			name: "matrix-only digest evidence is insufficient",
 			mutate: func(t *testing.T, fixture servedOrientationFixture) {
 				t.Helper()
@@ -443,6 +468,42 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 			},
 			wantStatus: "failed",
 			wantDetail: "artifact binding",
+		},
+		{
+			name: "ContextPack duplicate installed entrypoint revision fails",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				mutateServedOrientationPack(t, fixture.contextPackPaths["codex"], func(pack *envelope.ContextPack) {
+					pack.SourceRevisions = append(pack.SourceRevisions, envelope.SourceRev{Source: servedEntrypointRevisionSource("codex"), Rev: "sha256:" + strings.Repeat("f", 64)})
+				})
+			},
+			wantStatus: "failed", wantDetail: "duplicate source revision",
+		},
+		{
+			name: "EffectiveContract duplicate installed entrypoint revision fails",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				mutateServedOrientationContract(t, fixture.contractPaths["codex"], func(contract *envelope.EffectiveContract) {
+					contract.SourceRevisions = append(contract.SourceRevisions, envelope.SourceRev{Source: servedEntrypointRevisionSource("codex"), Rev: "sha256:" + strings.Repeat("f", 64)})
+				})
+			},
+			wantStatus: "failed", wantDetail: "duplicate source revision",
+		},
+		{
+			name: "ContextPack duplicate control plane revision fails",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				mutateServedOrientationPack(t, fixture.contextPackPaths["codex"], func(pack *envelope.ContextPack) {
+					pack.SourceRevisions = append(pack.SourceRevisions, envelope.SourceRev{Source: "control-plane://orientation-map", Rev: "sha256:conflict"})
+				})
+			},
+			wantStatus: "failed", wantDetail: "duplicate source revision",
+		},
+		{
+			name: "EffectiveContract duplicate control plane revision fails",
+			mutate: func(t *testing.T, fixture servedOrientationFixture) {
+				mutateServedOrientationContract(t, fixture.contractPaths["codex"], func(contract *envelope.EffectiveContract) {
+					contract.SourceRevisions = append(contract.SourceRevisions, envelope.SourceRev{Source: "control-plane://orientation-map", Rev: "sha256:conflict"})
+				})
+			},
+			wantStatus: "failed", wantDetail: "duplicate source revision",
 		},
 		{
 			name: "missing served client fails closed",
