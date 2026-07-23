@@ -98,6 +98,56 @@ func TestCloseStealOverridesLeaseHolder(t *testing.T) {
 	if !strings.Contains(stealNote, "actor-a's executor died mid-build") {
 		t.Fatalf("steal event must carry the reason string: %q", stealNote)
 	}
+	// P0: a close-steal must transfer the lease file too (recordLeaseSteal is the one
+	// write path shared by both leaseHolderCloseGate and leaseHolderAdvanceGate).
+	lease, err := s.readLease(w.ID)
+	if err != nil {
+		t.Fatalf("read lease after steal: %v", err)
+	}
+	if lease.By != "actor-b" {
+		t.Fatalf("close-steal must rewrite the lease file's holder to the stealing actor: got %q, want %q", lease.By, "actor-b")
+	}
+}
+
+// P0 falsifier, close-path mirror (RED FIRST): actor-a claims; actor-b steals via Advance
+// (a different gated verb, proven above to succeed and to transfer the lease); THEN actor-a
+// attempts Close WITHOUT --steal. Both gates read the same work/leases/<id>.json through the
+// shared leaseHolderStatusFor, so a steal recorded on one verb must be honored by the other —
+// otherwise the original holder could route around a steal simply by calling the other
+// mutation verb. On the unfixed code this test fails: actor-a's close sails through because
+// the lease file was never rewritten by actor-b's advance-steal.
+func TestCloseBlockedAfterAdvanceStealTransfersLease(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "lane-w", SuccessPredicate: "cross-verb steal transfer"}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Claim(w.ID, "actor-a", fixedNow); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{
+		To:          "running",
+		Actor:       "actor-b",
+		Steal:       true,
+		StealReason: "actor-a's executor died mid-build",
+	}, fixedNow); err != nil {
+		t.Fatalf("expected actor-b's advance-steal to succeed: %v", err)
+	}
+
+	_, err = s.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "audit_only", Actor: "actor-a"}, fixedNow)
+	if err == nil {
+		t.Fatal("expected actor-a's post-steal close (no --steal) to be BLOCKED: the lease is now actor-b's")
+	}
+	if !strings.Contains(err.Error(), "actor-b") {
+		t.Fatalf("refusal must name the new holder actor-b: %v", err)
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "running" {
+		t.Fatalf("actor-a's blocked close must not mutate work state: got %q, want %q", after.State, "running")
+	}
 }
 
 // Falsifier 3: claimed by A, closed by A — byte-identical behavior to pre-change. No

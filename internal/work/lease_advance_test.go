@@ -7,6 +7,8 @@ package work
 // shape for Close.
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -122,6 +124,116 @@ func TestAdvanceStealOverridesLeaseHolder(t *testing.T) {
 	}
 	if !strings.Contains(stealNote, "actor-a's executor died mid-build") {
 		t.Fatalf("steal event must carry the reason string: %q", stealNote)
+	}
+	// P0: a steal must actually transfer the lease file, not just narrate it on the
+	// trail. Before the fix, recordLeaseSteal wrote the ActionIntent/PolicyDecision/Event
+	// trail but never rewrote work/leases/<id>.json, so the file still named actor-a —
+	// the exact bug TestAdvanceStealTransfersLeaseBlockingOriginalHolder reproduces below.
+	lease, err := s.readLease(w.ID)
+	if err != nil {
+		t.Fatalf("read lease after steal: %v", err)
+	}
+	if lease.By != "actor-b" {
+		t.Fatalf("steal must rewrite the lease file's holder to the stealing actor: got %q, want %q", lease.By, "actor-b")
+	}
+}
+
+// P0 falsifier (RED FIRST): a lease steal must transfer the lease, not just narrate it.
+// actor-a claims; actor-b steals via Advance (succeeds, as proven above); THEN actor-a
+// advances again WITHOUT --steal. Because recordLeaseSteal never rewrote
+// work/leases/<id>.json, the file still says "actor-a", so leaseHolderStatusFor's
+// holder==actor short-circuit lets actor-a sail through as if nothing happened — the exact
+// "twin-collision" class lease_close.go's header says this gate exists to close. On the
+// gated-but-unfixed code this test fails: actor-a's second advance succeeds when it must be
+// blocked.
+func TestAdvanceStealTransfersLeaseBlockingOriginalHolder(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "steal transfers lease"}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Claim(w.ID, "actor-a", fixedNow); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{
+		To:          "running",
+		Actor:       "actor-b",
+		Steal:       true,
+		StealReason: "actor-a's executor died mid-build",
+	}, fixedNow); err != nil {
+		t.Fatalf("expected actor-b's steal to succeed: %v", err)
+	}
+
+	_, err = s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "actor-a"}, fixedNow)
+	if err == nil {
+		t.Fatal("expected actor-a's post-steal advance (no --steal) to be BLOCKED: the lease is now actor-b's")
+	}
+	if !strings.Contains(err.Error(), "actor-b") {
+		t.Fatalf("refusal must name the new holder actor-b: %v", err)
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "running" {
+		t.Fatalf("actor-a's blocked advance must not mutate work state: got %q, want %q", after.State, "running")
+	}
+}
+
+// Failure-ordering falsifier: if the lease-transfer write itself fails, the steal must fail
+// closed — no misleading "stolen" trail entry, no advance mutation, and the original holder
+// left in place on both the WorkEnvelope and the lease file. Fault-injected the same way
+// TestDelegateMintFailureMeansZeroCreate does (delegate_test.go): chmod the target directory
+// read+execute-only so the atomic stage+rename write (publishClaimJSON) cannot create its temp
+// file. On the unfixed code this test fails outright: there is no lease-transfer write at all,
+// so the chmod has no effect and the steal succeeds.
+func TestAdvanceStealFailsClosedWhenLeaseTransferWriteFails(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "lane-ag", SuccessPredicate: "fail-closed transfer"}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Claim(w.ID, "actor-a", fixedNow); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	leasesDir := filepath.Join(s.home, "work", "leases")
+	if err := os.Chmod(leasesDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(leasesDir, 0o755) })
+
+	_, err = s.Advance(w.ID, AdvanceInput{
+		To:          "running",
+		Actor:       "actor-b",
+		Steal:       true,
+		StealReason: "actor-a's executor died mid-build",
+	}, fixedNow)
+	if err == nil {
+		t.Fatal("expected the steal to fail closed when the lease-transfer write cannot be committed")
+	}
+
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "claimed" {
+		t.Fatalf("a steal that fails to transfer the lease must not let advance proceed: got state %q", after.State)
+	}
+	lease, err := s.readLease(w.ID)
+	if err != nil {
+		t.Fatalf("read lease after failed transfer: %v", err)
+	}
+	if lease.By != "actor-a" {
+		t.Fatalf("a failed lease-transfer write must leave the original holder in place: got %q", lease.By)
+	}
+	_, evs, err := s.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range evs {
+		if strings.Contains(e.Note, "stolen") {
+			t.Fatalf("a steal that failed to transfer the lease must not record a misleading 'stolen' event: %+v", e)
+		}
 	}
 }
 
