@@ -366,6 +366,62 @@ func TestConsumeReceiptsValidatedSkillRaisesFutureSurfacing(t *testing.T) {
 	}
 }
 
+// TestValidatedByContributionIsBoundedNotLifetimeEdgeCount is the E9 audit
+// falsifier: every validated_by edge is a distinct, permanent row (edgeKey
+// includes SourceReceipt, so repeat validations never dedupe -- that is
+// correct, each is a real historical event). But surface()'s validatedAdd
+// accumulator sums edgeScore over EVERY such edge with no ceiling, so a node's
+// surfacing score becomes its lifetime usage count rather than a bounded
+// relevance signal (live evidence: one skill node carries 404 validated_by
+// edges). This proves the accumulated contribution must be capped per node:
+// a node validated exactly maxValidatedByAdd times (raw sum already at the
+// ceiling) and a node validated 404 times in the identical context must score
+// IDENTICALLY -- more historical validations beyond the cap must not keep
+// inflating the score.
+func TestValidatedByContributionIsBoundedNotLifetimeEdgeCount(t *testing.T) {
+	const nodeID = "skill:overvalidated"
+	const task = "pricing followup task"
+	const atCapCount = 5        // raw sum already at the intended ceiling, no clipping needed
+	const wayOverCapCount = 404 // the live-evidence figure from the audit
+
+	scoreAfterNValidations := func(n int) float64 {
+		_, s := newStore(t)
+		if err := s.Add(Node{ID: nodeID, Kind: "skill", Name: "Overvalidated", Triggers: []string{"unrelated-trigger-nobody-typed"}, Weight: 1}); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < n; i++ {
+			edge := Edge{
+				Kind:          EdValidatedBy,
+				From:          "context:pricing",
+				To:            nodeID,
+				Confidence:    1,
+				Weight:        1,
+				Provenance:    "cheap_lane",
+				SourceReceipt: "rec_hist_" + strconv.Itoa(i),
+			}
+			if err := s.AddEdge(edge, t0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		hits, err := s.Surface(task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hit := findSurfaceHit(hits, nodeID)
+		if hit == nil {
+			t.Fatalf("node with %d validated_by edges did not surface at all: %+v", n, hits)
+		}
+		return hit.Score
+	}
+
+	atCap := scoreAfterNValidations(atCapCount)
+	wayOverCap := scoreAfterNValidations(wayOverCapCount)
+
+	if wayOverCap > atCap {
+		t.Fatalf("validated_by contribution is unbounded by lifetime edge count: %d edges scored %.1f, %d edges scored %.1f (want capped, equal) -- surfacing score must not equal lifetime usage count (audit E9)", atCapCount, atCap, wayOverCapCount, wayOverCap)
+	}
+}
+
 func TestConsumeReceiptsWithoutSkillIDsDoesNotCreateBlankFeedbackEdges(t *testing.T) {
 	home, s := newStore(t)
 	if err := s.Add(Node{ID: "skill:present", Kind: "skill", Name: "Present", Triggers: []string{"present"}}); err != nil {

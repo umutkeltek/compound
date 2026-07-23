@@ -113,6 +113,26 @@ const (
 	semanticFloor        = 0.55
 	semanticWeight       = 2.0
 	defaultEmbedTimeout  = 3 * time.Second
+
+	// maxValidatedByAdd bounds validated_by's contribution to a node's
+	// surfacing score. Each historical validation is a distinct, permanent
+	// edge (edgeKey includes the source receipt id, by design -- it is a real
+	// audit trail, not a duplicate to collapse), so a frequently-used
+	// capability accumulates validated_by edges without limit over its
+	// lifetime. Summing edgeScore over all of them turned "score" into
+	// "lifetime usage count": a live registry showed one skill node with 404
+	// validated_by edges outranking every genuinely task-matching capability
+	// regardless of relevance (audit E9). Capping the SUMMED CONTRIBUTION
+	// (not the edge count recorded -- ConsumeReceipts still writes one edge
+	// per receipt, preserving the full evidence trail) is the smallest honest
+	// fix: it stops the runway score inflation while still letting repeated
+	// validation raise a capability's rank up to a bounded ceiling, on the
+	// same order of magnitude as the other additive bonuses here
+	// (semanticWeight tops out at 2.0). Chosen over a decay/recency curve
+	// because a flat cap needs no clock input and cannot regress an edge that
+	// was true when recorded into "no longer counts" -- simplicity over a
+	// more expressive but unrequested scoring semantics change.
+	maxValidatedByAdd = 5.0
 )
 
 func Open(homePath string) (*Store, error) {
@@ -509,6 +529,11 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 				continue
 			}
 			sub[e.To] += edgeScore(e)
+		}
+	}
+	for id, add := range validatedAdd {
+		if add > maxValidatedByAdd {
+			validatedAdd[id] = maxValidatedByAdd
 		}
 	}
 
