@@ -376,7 +376,7 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 		// and os_source_os_status_cli moved from pending to proven wrapper
 		// rows here, dropping the live count from 5 to 3 — see
 		// os_source_brain_solo_builder_doctrine, os_source_gbrain,
-		// os_source_umut_events). Re-tune it down again the next time a
+		// os_source_example_events). Re-tune it down again the next time a
 		// pending row is honestly resolved; never raise it to paper over a
 		// regression.
 		doctorCheck("pending_retirement_gates", report.PendingWithGateCount >= 3, fmt.Sprintf("pending_with_gate=%d", report.PendingWithGateCount)),
@@ -994,18 +994,14 @@ func osAbsorptionNeedsOperatorStateProof(row OSAbsorptionMatrixRow) bool {
 }
 
 // osAbsorptionNeedsServedOrientationProof selects the served-orientation
-// proof by explicit proof_mode alone once a row opts in — it no longer
-// requires the row.ID to be one of two hardcoded operator-specific source
-// rows. Any row that names osAbsorptionProofModeServedOrient gets the
-// proof; the legacy (row.ID, status, compound_owner) tuple match remains
-// only as the fallback for rows that never set proof_mode at all.
+// proof by explicit proof_mode alone: any row that names
+// osAbsorptionProofModeServedOrient gets the proof. Rows without ProofMode
+// need NO served-orientation proof — the operator re-imports the matrix
+// with proof_mode set, which is the designed cutover, not a gap. There is
+// no row-ID fallback; a matrix imported before proof_mode existed simply
+// stops requiring this proof until it is re-tagged.
 func osAbsorptionNeedsServedOrientationProof(row OSAbsorptionMatrixRow) bool {
-	if row.ProofMode != "" {
-		return row.ProofMode == osAbsorptionProofModeServedOrient
-	}
-	return row.Status == "absorbed" &&
-		row.CompoundOwner == osAbsorptionEffectiveContractAuthorityRef &&
-		(row.ID == "os_source_umut_live_start" || row.ID == "os_source_umut_whole_system_map")
+	return row.ProofMode == osAbsorptionProofModeServedOrient
 }
 
 // osAbsorptionProofResult is the outcome of one row's auto-proof attempt.
@@ -1154,9 +1150,11 @@ func parseOSAbsorptionServedOrientationEvidence(refs []string) (osAbsorptionServ
 	return evidence, nil
 }
 
+const osAbsorptionRequiredOrientHeading = "## Orient first — Compound (the served contract)"
+
 func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error {
 	required := []string{
-		"## Orient first — Compound (the served contract)",
+		osAbsorptionRequiredOrientHeading,
 		"compound orient --harness " + harness + " --task \"<task>\"",
 		"source-in-place evidence",
 		"rollback",
@@ -1167,8 +1165,16 @@ func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error
 			return fmt.Errorf("%s entrypoint missing %q", harness, want)
 		}
 	}
+	// Reject ANY "## Orient first — " heading that is not the required
+	// Compound heading — genericized so this holds for any retired
+	// predecessor orientation entrypoint, not just one hardcoded legacy name.
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## Orient first — ") && trimmed != osAbsorptionRequiredOrientHeading {
+			return fmt.Errorf("%s entrypoint retains retired orient heading %q", harness, trimmed)
+		}
+	}
 	for _, retired := range []string{
-		"## Orient first — umut-os",
 		"FIRST action is recall",
 		"**Recall first:**",
 	} {
@@ -1632,7 +1638,7 @@ func infraRegistryProof(homePath string, row OSAbsorptionMatrixRow) (osAbsorptio
 	}, false
 }
 
-// osAbsorptionNeedsEventSourceProof matches the os_source_umut_events row
+// osAbsorptionNeedsEventSourceProof matches the os_source_example_events row
 // (and any row that opts in via proof_mode): its compound_owner is the real
 // trace-envelope authority ref eventsource.TraceEventsAuthorityRef, and its
 // source_kind marks it as an events directory rather than a single file.
@@ -1649,7 +1655,7 @@ func osAbsorptionNeedsEventSourceProof(row OSAbsorptionMatrixRow) bool {
 // full filesystem walk.
 const osAbsorptionEventSourceTraceSpotCheckSample = 5
 
-// eventSourceAuthorityProof proves the os_source_umut_events row directly
+// eventSourceAuthorityProof proves the os_source_example_events row directly
 // against live eventsource.LoadSourceAuthority evidence, with zero new
 // imports: every live *.ndjson file under row.SourceRef (README.md and any
 // non-.ndjson file excluded) must have at least one matching source-authority

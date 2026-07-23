@@ -12,6 +12,67 @@ import (
 
 const testServedOrientationProofMode = "served_orientation_authority"
 
+// TestOSAbsorptionNeedsServedOrientationProofHasNoLegacyRowIDFallback proves
+// osAbsorptionNeedsServedOrientationProof selects purely on ProofMode: a row
+// replaying the OLD hardcoded (status, compound_owner, row.ID) tuple that used
+// to trigger the fallback — but with ProofMode left unset — no longer needs
+// the proof. Only an explicit osAbsorptionProofModeServedOrient opt-in does.
+func TestOSAbsorptionNeedsServedOrientationProofHasNoLegacyRowIDFallback(t *testing.T) {
+	legacyShapedRow := OSAbsorptionMatrixRow{
+		ID:            "os_source_example_live_start",
+		Status:        "absorbed",
+		CompoundOwner: osAbsorptionEffectiveContractAuthorityRef,
+	}
+	if osAbsorptionNeedsServedOrientationProof(legacyShapedRow) {
+		t.Fatalf("row with unset ProofMode should not need served-orientation proof, even matching the old legacy tuple: %+v", legacyShapedRow)
+	}
+
+	legacyShapedRow.ID = "os_source_example_whole_system_map"
+	if osAbsorptionNeedsServedOrientationProof(legacyShapedRow) {
+		t.Fatalf("second legacy row id should also not need proof without ProofMode: %+v", legacyShapedRow)
+	}
+
+	optedIn := legacyShapedRow
+	optedIn.ProofMode = osAbsorptionProofModeServedOrient
+	if !osAbsorptionNeedsServedOrientationProof(optedIn) {
+		t.Fatalf("row with ProofMode=%q should need served-orientation proof: %+v", osAbsorptionProofModeServedOrient, optedIn)
+	}
+
+	otherMode := legacyShapedRow
+	otherMode.ProofMode = osAbsorptionProofModeDecisions
+	if osAbsorptionNeedsServedOrientationProof(otherMode) {
+		t.Fatalf("row with a different ProofMode should not need served-orientation proof: %+v", otherMode)
+	}
+}
+
+// TestValidateOSAbsorptionServedEntrypointRejectsAnyNonCompoundOrientHeading
+// proves the retired-heading check is genericized: it rejects ANY
+// "## Orient first — " heading that is not the required Compound heading,
+// not just one hardcoded legacy string.
+func TestValidateOSAbsorptionServedEntrypointRejectsAnyNonCompoundOrientHeading(t *testing.T) {
+	sourceRef := "/synthetic/example-source/ENTRYPOINT.md"
+	body := strings.Join([]string{
+		"## Orient first — Compound (the served contract)",
+		"compound orient --harness claude --task \"<task>\"",
+		"source-in-place evidence",
+		"rollback",
+		sourceRef,
+		"",
+		"## Orient first — Arbitrary Other Control Plane",
+		"some retired predecessor entrypoint heading, not the required one",
+	}, "\n")
+	err := validateOSAbsorptionServedEntrypoint("claude", sourceRef, body)
+	if err == nil {
+		t.Fatalf("expected rejection of an arbitrary non-Compound orient heading, got nil error")
+	}
+	if !strings.Contains(err.Error(), "retired orient heading") {
+		t.Fatalf("error %q does not name the retired-heading reason", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Arbitrary Other Control Plane") {
+		t.Fatalf("error %q should quote the offending heading", err.Error())
+	}
+}
+
 func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 	tests := []struct {
 		name       string

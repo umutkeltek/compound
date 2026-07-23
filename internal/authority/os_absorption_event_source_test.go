@@ -13,14 +13,14 @@ import (
 )
 
 // TestOSAbsorptionEventSourceAuthorityProof exercises the
-// "event_source_authority" proof mode against a synthetic umut-os events/
+// "event_source_authority" proof mode against a synthetic example-os events/
 // directory: two live .ndjson streams plus a README.md that must never be
 // treated as a data file. The base fixture already carries a real
 // eventsource.LoadSourceAuthority record per file (via a real
 // eventsource.ImportOSEvents call) and real TraceEnvelope files under
 // COMPOUND_HOME/events/, so the ok case proves the row machine-proves from
 // existing evidence with zero new imports, exactly like the real
-// os_source_umut_events row does against evsrc_0ccb6af33dab /
+// os_source_example_events row does against evsrc_0ccb6af33dab /
 // evsrc_16152da98c8b.
 func TestOSAbsorptionEventSourceAuthorityProof(t *testing.T) {
 	tests := []struct {
@@ -83,9 +83,9 @@ func TestOSAbsorptionEventSourceAuthorityProof(t *testing.T) {
 			if err != nil {
 				t.Fatalf("doctor: %v", err)
 			}
-			got, ok := findOSAbsorptionDoctorRow(doctor.Rows, "os_source_umut_events")
+			got, ok := findOSAbsorptionDoctorRow(doctor.Rows, "os_source_example_events")
 			if !ok {
-				t.Fatalf("doctor row os_source_umut_events missing: %+v", doctor.Rows)
+				t.Fatalf("doctor row os_source_example_events missing: %+v", doctor.Rows)
 			}
 			if got.ProofStatus != tt.wantStatus {
 				t.Fatalf("proof_status=%q, want %q (detail=%q)", got.ProofStatus, tt.wantStatus, got.ProofDetail)
@@ -114,9 +114,9 @@ func TestOSAbsorptionEventSourceAuthorityProofRefNamesBothFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
-	got, ok := findOSAbsorptionDoctorRow(doctor.Rows, "os_source_umut_events")
+	got, ok := findOSAbsorptionDoctorRow(doctor.Rows, "os_source_example_events")
 	if !ok {
-		t.Fatalf("doctor row os_source_umut_events missing: %+v", doctor.Rows)
+		t.Fatalf("doctor row os_source_example_events missing: %+v", doctor.Rows)
 	}
 	if got.ProofStatus != "ok" {
 		t.Fatalf("proof_status = %q, want ok (detail=%q)", got.ProofStatus, got.ProofDetail)
@@ -165,7 +165,7 @@ func installEventSourceFixture(t *testing.T) eventSourceFixture {
 	}
 
 	matrixPath := filepath.Join(root, "matrix.json")
-	r := row("os_source_umut_events", sourceDir, "absorbed", eventsource.TraceEventsAuthorityRef, "compound event import / trace and transition projections", osAbsorptionProofModeEventSource)
+	r := row("os_source_example_events", sourceDir, "absorbed", eventsource.TraceEventsAuthorityRef, "compound event import / trace and transition projections", osAbsorptionProofModeEventSource)
 	r.SourceKind = "events_dir"
 	writeJSONFixture(t, matrixPath, OSAbsorptionSourceMatrix{
 		SchemaVersion: OSAbsorptionMatrixSchema,

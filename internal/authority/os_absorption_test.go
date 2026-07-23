@@ -23,9 +23,9 @@ func TestOSAbsorptionMatrixImportAndDoctor(t *testing.T) {
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	capRows := []string{
-		"/synthetic/umut-os/spine/views/skill-manifest.json",
-		"/synthetic/umut-os/registry/tool-topology.json",
-		"/synthetic/umut-os/spine/views/skills-selection-board.json",
+		"/synthetic/example-os/spine/views/skill-manifest.json",
+		"/synthetic/example-os/registry/tool-topology.json",
+		"/synthetic/example-os/spine/views/skills-selection-board.json",
 	}
 	for _, source := range capRows {
 		if _, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
@@ -165,7 +165,7 @@ func TestOSAbsorptionAutoProofDecisionsAndOperatorState(t *testing.T) {
 		SchemaVersion: OSAbsorptionMatrixSchema,
 		Rows: []OSAbsorptionMatrixRow{
 			row("os_source_decisions_repo", "/synthetic/operating-system/decisions/", "evidence_only", osAbsorptionDecisionsLedgerRef, "compound decisions authority", ""),
-			row("os_source_operator_state", "/synthetic/umut-os/registry/operator-state.json", "absorbed", policy.OperatorStateAuthorityRef, "compound policy evaluate", ""),
+			row("os_source_operator_state", "/synthetic/example-os/registry/operator-state.json", "absorbed", policy.OperatorStateAuthorityRef, "compound policy evaluate", ""),
 		},
 	}
 	writeJSONFixture(t, matrixPath, matrix)
@@ -238,7 +238,7 @@ func TestOSAbsorptionOperatorStateProofFailsWhenRegistryAbsent(t *testing.T) {
 	matrix := OSAbsorptionSourceMatrix{
 		SchemaVersion: OSAbsorptionMatrixSchema,
 		Rows: []OSAbsorptionMatrixRow{
-			row("os_source_operator_state", "/synthetic/umut-os/registry/operator-state.json", "absorbed", policy.OperatorStateAuthorityRef, "compound policy evaluate", ""),
+			row("os_source_operator_state", "/synthetic/example-os/registry/operator-state.json", "absorbed", policy.OperatorStateAuthorityRef, "compound policy evaluate", ""),
 		},
 	}
 	writeJSONFixture(t, matrixPath, matrix)
@@ -270,7 +270,7 @@ func TestOSAbsorptionCountsSplitProvenVsAsserted(t *testing.T) {
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 
-	capSource := "/synthetic/umut-os/spine/views/skill-manifest.json"
+	capSource := "/synthetic/example-os/spine/views/skill-manifest.json"
 	if _, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
 		SourcePath:     capSource,
 		SourceRevision: "sha256:" + digest12(capSource),
@@ -656,7 +656,7 @@ func TestOSAbsorptionWorkPacketAuthorityProofBindsArchivedSourcePacket(t *testin
 		t.Fatalf("init home: %v", err)
 	}
 
-	sourceDir := filepath.Join(t.TempDir(), "umut-os", "packets")
+	sourceDir := filepath.Join(t.TempDir(), "example-os", "packets")
 	sourcePacket := writePacketAuthorityFixture(t, sourceDir, "source-packet.md", "Source packet")
 	sourceClosed := closePacketAuthorityWork(t, homePath, sourcePacket, true, now)
 	listedPacket := writePacketAuthorityFixture(t, t.TempDir(), "listed-packet.md", "Listed absorption packet")
@@ -850,7 +850,7 @@ func TestOSAbsorptionWorkPacketAuthorityRejectsRelativeSourceDirectory(t *testin
 }
 
 func packetAuthorityRow(sourceDir string, workIDs ...string) OSAbsorptionMatrixRow {
-	r := row("os_source_umut_packets", sourceDir, "wrapper", "compound://work", "compound work import-packet / workbench / dispatch-step", "")
+	r := row("os_source_example_packets", sourceDir, "wrapper", "compound://work", "compound work import-packet / workbench / dispatch-step", "")
 	r.SourceKind = "packet_dir"
 	r.EvidenceRefs = append([]string(nil), workIDs...)
 	return r
