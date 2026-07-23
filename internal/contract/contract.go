@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -983,8 +984,12 @@ type RuntimeMaterializationArtifactPaths struct {
 	PackPath     string `json:"pack_path"`
 }
 
-var runtimeMaterializationCreateTemp = os.CreateTemp
-var runtimeMaterializationRename = os.Rename
+type runtimeMaterializationFS struct {
+	createTemp    func(string, string) (*os.File, error)
+	rename        func(string, string) error
+	beforeLock    func()
+	lockContended func()
+}
 
 // RecordRuntimeMaterialization stages the dated contract and pack before
 // making either visible, publishes latest only after both dated artifacts,
@@ -993,6 +998,13 @@ var runtimeMaterializationRename = os.Rename
 // continue joining artifacts by contract_id rather than treating presence as
 // atomic transaction proof.
 func RecordRuntimeMaterialization(homePath string, runtime RuntimeMaterialization) (RuntimeMaterializationArtifactPaths, error) {
+	return recordRuntimeMaterializationWithFS(homePath, runtime, runtimeMaterializationFS{
+		createTemp: os.CreateTemp,
+		rename:     os.Rename,
+	})
+}
+
+func recordRuntimeMaterializationWithFS(homePath string, runtime RuntimeMaterialization, fsOps runtimeMaterializationFS) (resultPaths RuntimeMaterializationArtifactPaths, resultErr error) {
 	ec, pack := runtime.EffectiveContract, runtime.ContextPack
 	if strings.TrimSpace(homePath) == "" {
 		return RuntimeMaterializationArtifactPaths{}, fmt.Errorf("compound home required")
@@ -1023,6 +1035,16 @@ func RecordRuntimeMaterialization(homePath string, runtime RuntimeMaterializatio
 	if err != nil {
 		return RuntimeMaterializationArtifactPaths{}, err
 	}
+	if fsOps.beforeLock != nil {
+		fsOps.beforeLock()
+	}
+	lock, err := acquireRuntimeMaterializationLock(homePath, fsOps.lockContended)
+	if err != nil {
+		return RuntimeMaterializationArtifactPaths{}, err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, lock.release())
+	}()
 	type staged struct {
 		path, temp string
 		body       []byte
@@ -1046,7 +1068,7 @@ func RecordRuntimeMaterialization(homePath string, runtime RuntimeMaterializatio
 		} else if !os.IsNotExist(readErr) {
 			return RuntimeMaterializationArtifactPaths{}, readErr
 		}
-		file, createErr := runtimeMaterializationCreateTemp(filepath.Dir(items[i].path), ".runtime-materialization-*")
+		file, createErr := fsOps.createTemp(filepath.Dir(items[i].path), ".runtime-materialization-*")
 		if createErr != nil {
 			return RuntimeMaterializationArtifactPaths{}, createErr
 		}
@@ -1065,7 +1087,7 @@ func RecordRuntimeMaterialization(homePath string, runtime RuntimeMaterializatio
 	}
 	committed := 0
 	for i := range items {
-		if err := runtimeMaterializationRename(items[i].temp, items[i].path); err != nil {
+		if err := fsOps.rename(items[i].temp, items[i].path); err != nil {
 			for j := committed - 1; j >= 0; j-- {
 				if items[j].existed {
 					_ = os.WriteFile(items[j].path, items[j].old, 0o644)
@@ -1078,6 +1100,47 @@ func RecordRuntimeMaterialization(homePath string, runtime RuntimeMaterializatio
 		committed++
 	}
 	return paths, nil
+}
+
+type runtimeMaterializationLock struct {
+	file *os.File
+}
+
+// acquireRuntimeMaterializationLock is the outermost lock for orient artifact
+// publication; callers must not hold another Compound lock. It spans preimage
+// capture, staging, renames, rollback, and temp cleanup. A process crash makes
+// the kernel release flock, but cannot make the multi-rename publication
+// atomic; contract_id joins remain the recovery boundary for crash residuals.
+func acquireRuntimeMaterializationLock(homePath string, onContended func()) (*runtimeMaterializationLock, error) {
+	lockPath := filepath.Join(homePath, "lock", "runtime-materialization.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create runtime materialization lock directory: %w", err)
+	}
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open runtime materialization lock: %w", err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return nil, errors.Join(fmt.Errorf("lock runtime materialization: %w", err), file.Close())
+		}
+		if onContended != nil {
+			onContended()
+		}
+		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+			return nil, errors.Join(fmt.Errorf("wait for runtime materialization lock: %w", err), file.Close())
+		}
+	}
+	return &runtimeMaterializationLock{file: file}, nil
+}
+
+func (lock *runtimeMaterializationLock) release() error {
+	if lock == nil || lock.file == nil {
+		return nil
+	}
+	unlockErr := syscall.Flock(int(lock.file.Fd()), syscall.LOCK_UN)
+	closeErr := lock.file.Close()
+	return errors.Join(unlockErr, closeErr)
 }
 
 func RecordEffectiveContract(homePath string, ec envelope.EffectiveContract) (EffectiveContractArtifactPaths, error) {

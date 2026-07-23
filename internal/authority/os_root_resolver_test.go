@@ -11,6 +11,7 @@ import (
 	"compound/internal/home"
 	"compound/internal/mem"
 
+	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 )
 
@@ -78,6 +79,127 @@ func TestInstalledHarnessEntrypointBindingRejectsSymlinkTraversal(t *testing.T) 
 	}
 }
 
+func TestInstalledHarnessEntrypointBindingRejectsSwapBetweenValidationAndRead(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), "compound-home")
+	installedHome := t.TempDir()
+	entrypoint := filepath.Join(installedHome, ".codex", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(entrypoint), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entrypoint, []byte("trusted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "AGENTS.md")
+	if err := os.WriteFile(external, []byte("external"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedInstalledHarnessHomeRegistry(t, homePath, installedHome)
+	ops := installedEntrypointReadOps{
+		beforeOpen: func(path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(external, path); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	if _, _, _, err := installedHarnessEntrypointBindingWithOps(homePath, "codex", ops); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("swap-at-read must fail closed, got %v", err)
+	}
+}
+
+func TestInstalledHarnessEntrypointBindingRejectsAncestorSwapBeforeRootOpen(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), "compound-home")
+	container := t.TempDir()
+	installedParent := filepath.Join(container, "installed-parent")
+	installedHome := filepath.Join(installedParent, "home")
+	entrypoint := filepath.Join(installedHome, ".codex", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(entrypoint), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entrypoint, []byte("trusted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	externalParent := t.TempDir()
+	externalEntrypoint := filepath.Join(externalParent, "home", ".codex", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(externalEntrypoint), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(externalEntrypoint, []byte("external"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedInstalledHarnessHomeRegistry(t, homePath, installedHome)
+
+	ops := installedEntrypointReadOps{
+		beforeRootOpen: func(string) {
+			if err := os.Rename(installedParent, installedParent+"-original"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(externalParent, installedParent); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	if _, _, _, err := installedHarnessEntrypointBindingWithOps(homePath, "codex", ops); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("ancestor swap must fail closed, got %v", err)
+	}
+}
+
+func TestInstalledHarnessEntrypointBindingRejectsFIFOWithoutBlocking(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), "compound-home")
+	installedHome := t.TempDir()
+	entrypoint := filepath.Join(installedHome, ".codex", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(entrypoint), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entrypoint, []byte("trusted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedInstalledHarnessHomeRegistry(t, homePath, installedHome)
+
+	fifoSetup := make(chan error, 1)
+	ops := installedEntrypointReadOps{
+		beforeOpen: func(path string) {
+			if err := os.Remove(path); err != nil {
+				fifoSetup <- err
+				return
+			}
+			if err := unix.Mkfifo(path, 0o600); err != nil {
+				fifoSetup <- err
+				return
+			}
+			fifoSetup <- nil
+		},
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, _, _, err := installedHarnessEntrypointBindingWithOps(homePath, "codex", ops)
+		result <- err
+	}()
+	if err := <-fifoSetup; err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("FIFO must fail closed as non-regular, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		writer, err := os.OpenFile(entrypoint, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		blockedErr := <-result
+		t.Fatalf("FIFO rejection blocked in open; eventual error: %v", blockedErr)
+	}
+}
+
 func TestAbsorbedOSRootReusesExistingUmutOSRegistryKey(t *testing.T) {
 	if AbsorbedOSRegistryKey != "umut_os" {
 		t.Fatalf("absorbed OS resolver must reuse canonical_roots.umut_os, got %q", AbsorbedOSRegistryKey)
@@ -88,6 +210,26 @@ func TestAbsorbedOSRootReusesExistingUmutOSRegistryKey(t *testing.T) {
 	if strings.Contains(osAbsorptionAbsorbedOSSkipReason, "absorbed_os") ||
 		!strings.Contains(osAbsorptionAbsorbedOSSkipReason, "umut_os") {
 		t.Fatalf("skip reason must name the existing registry key: %q", osAbsorptionAbsorbedOSSkipReason)
+	}
+}
+
+func TestResolveInstalledHarnessHomePropagatesMalformedLedgerOpenFailure(t *testing.T) {
+	homePath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(homePath, "ledger"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := ResolveInstalledHarnessHome(homePath); err == nil || found {
+		t.Fatalf("malformed ledger must fail closed, found=%v err=%v", found, err)
+	}
+}
+
+func TestResolveInstalledHarnessHomePropagatesDanglingLedgerSymlink(t *testing.T) {
+	homePath := t.TempDir()
+	if err := os.Symlink(filepath.Join(homePath, "missing-ledger"), filepath.Join(homePath, "ledger")); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := ResolveInstalledHarnessHome(homePath); err == nil || found {
+		t.Fatalf("dangling ledger symlink must fail closed, found=%v err=%v", found, err)
 	}
 }
 

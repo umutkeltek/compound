@@ -3,12 +3,15 @@ package authority
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"compound/internal/mem"
+	"golang.org/x/sys/unix"
 )
 
 // AbsorbedOSRegistryKey is the os-path-authority.yaml canonical_roots key an
@@ -68,20 +71,31 @@ func ResolveInstalledHarnessHome(compoundHome string) (string, bool, error) {
 // closed when their exact installed file is missing, unreadable, or not a
 // regular file.
 func InstalledHarnessEntrypointBinding(compoundHome, harness string) (string, string, bool, error) {
-	family, relativePath, supported := installedHarnessFamily(harness)
-	if !supported {
-		return "", "", false, nil
-	}
-	entrypointPath, found, err := resolveInstalledHarnessEntrypoint(compoundHome, family, relativePath)
+	return installedHarnessEntrypointBindingWithOps(compoundHome, harness, installedEntrypointReadOps{})
+}
+
+type installedEntrypointSnapshot struct {
+	path   string
+	body   []byte
+	digest string
+	info   os.FileInfo
+}
+
+type installedEntrypointReadOps struct {
+	beforeRootOpen func(string)
+	beforeOpen     func(string)
+}
+
+func installedHarnessEntrypointBindingWithOps(
+	compoundHome, harness string,
+	ops installedEntrypointReadOps,
+) (string, string, bool, error) {
+	snapshot, found, err := readInstalledHarnessEntrypoint(compoundHome, harness, ops)
 	if err != nil || !found {
 		return "", "", found, err
 	}
-	body, err := os.ReadFile(entrypointPath)
-	if err != nil {
-		return "", "", false, fmt.Errorf("read installed %s entrypoint %s: %w", family, entrypointPath, err)
-	}
-	digest := sha256.Sum256(body)
-	return InstalledHarnessEntrypointRevisionPrefix + family, "sha256:" + hex.EncodeToString(digest[:]), true, nil
+	family, _, _ := installedHarnessFamily(harness)
+	return InstalledHarnessEntrypointRevisionPrefix + family, "sha256:" + snapshot.digest, true, nil
 }
 
 func installedHarnessFamily(harness string) (string, string, bool) {
@@ -96,42 +110,193 @@ func installedHarnessFamily(harness string) (string, string, bool) {
 	}
 }
 
-func resolveInstalledHarnessEntrypoint(compoundHome, family, relativePath string) (string, bool, error) {
+// readInstalledHarnessEntrypoint returns one descriptor-backed snapshot of
+// the installed entrypoint. Every path component is opened relative to its
+// already-open parent with O_NOFOLLOW, and the body, digest, and metadata all
+// come from the final descriptor. Callers must not reopen snapshot.path.
+func readInstalledHarnessEntrypoint(
+	compoundHome, harness string,
+	ops installedEntrypointReadOps,
+) (installedEntrypointSnapshot, bool, error) {
+	family, relativePath, supported := installedHarnessFamily(harness)
+	if !supported {
+		return installedEntrypointSnapshot{}, false, nil
+	}
+
 	installedHome, found, err := ResolveInstalledHarnessHome(compoundHome)
+	if err != nil || !found {
+		return installedEntrypointSnapshot{}, found, err
+	}
+
+	relativePath = filepath.Clean(filepath.FromSlash(relativePath))
+	if relativePath == "." || filepath.IsAbs(relativePath) {
+		return installedEntrypointSnapshot{}, false, fmt.Errorf(
+			"installed %s entrypoint path must be a non-empty relative path: %q",
+			family,
+			relativePath,
+		)
+	}
+	components := strings.Split(relativePath, string(os.PathSeparator))
+	for _, component := range components {
+		if component == "" || component == "." || component == ".." {
+			return installedEntrypointSnapshot{}, false, fmt.Errorf(
+				"installed %s entrypoint path has unsafe component %q",
+				family,
+				component,
+			)
+		}
+	}
+
+	entrypointPath := filepath.Join(installedHome, relativePath)
+	if ops.beforeRootOpen != nil {
+		ops.beforeRootOpen(installedHome)
+	}
+	rootFD, err := unix.Open(
+		string(os.PathSeparator),
+		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_DIRECTORY,
+		0,
+	)
 	if err != nil {
-		return "", false, err
+		return installedEntrypointSnapshot{}, false, fmt.Errorf(
+			"open filesystem root for installed %s harness home %s: %w",
+			family,
+			installedHome,
+			err,
+		)
 	}
-	if !found {
-		return "", false, nil
+	openedDirectories := []int{rootFD}
+	defer func() {
+		for i := len(openedDirectories) - 1; i >= 0; i-- {
+			_ = unix.Close(openedDirectories[i])
+		}
+	}()
+
+	dirFD := rootFD
+	walkedPath := string(os.PathSeparator)
+	homeRelativePath := strings.TrimPrefix(installedHome, string(os.PathSeparator))
+	if homeRelativePath != "" {
+		for _, component := range strings.Split(homeRelativePath, string(os.PathSeparator)) {
+			if component == "" || component == "." || component == ".." {
+				return installedEntrypointSnapshot{}, false, fmt.Errorf(
+					"installed %s harness home has unsafe component %q",
+					family,
+					component,
+				)
+			}
+			nextFD, openErr := unix.Openat(
+				dirFD,
+				component,
+				unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_DIRECTORY,
+				0,
+			)
+			walkedPath = filepath.Join(walkedPath, component)
+			if openErr != nil {
+				return installedEntrypointSnapshot{}, false, fmt.Errorf(
+					"open installed %s harness home without symlink traversal %s: %w",
+					family,
+					walkedPath,
+					openErr,
+				)
+			}
+			openedDirectories = append(openedDirectories, nextFD)
+			dirFD = nextFD
+		}
 	}
-	entrypointPath := filepath.Join(installedHome, filepath.FromSlash(relativePath))
-	resolvedPath, err := filepath.EvalSymlinks(entrypointPath)
+
+	for index, component := range components[:len(components)-1] {
+		nextFD, openErr := unix.Openat(
+			dirFD,
+			component,
+			unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_DIRECTORY,
+			0,
+		)
+		if openErr != nil {
+			return installedEntrypointSnapshot{}, false, fmt.Errorf(
+				"open installed %s entrypoint directory without symlink traversal %s: %w",
+				family,
+				filepath.Join(installedHome, filepath.Join(components[:index+1]...)),
+				openErr,
+			)
+		}
+		openedDirectories = append(openedDirectories, nextFD)
+		dirFD = nextFD
+	}
+
+	if ops.beforeOpen != nil {
+		ops.beforeOpen(entrypointPath)
+	}
+	entrypointFD, err := unix.Openat(
+		dirFD,
+		components[len(components)-1],
+		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK,
+		0,
+	)
 	if err != nil {
-		return "", false, fmt.Errorf("installed %s entrypoint %s: %w", family, entrypointPath, err)
+		return installedEntrypointSnapshot{}, false, fmt.Errorf(
+			"open installed %s entrypoint without symlink traversal %s: %w",
+			family,
+			entrypointPath,
+			err,
+		)
 	}
-	resolvedPath = filepath.Clean(resolvedPath)
-	rel, relErr := filepath.Rel(installedHome, resolvedPath)
-	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", false, fmt.Errorf("installed %s entrypoint symlink escapes installed harness home: %s", family, resolvedPath)
+	entrypointFile := os.NewFile(uintptr(entrypointFD), entrypointPath)
+	if entrypointFile == nil {
+		_ = unix.Close(entrypointFD)
+		return installedEntrypointSnapshot{}, false, fmt.Errorf(
+			"open installed %s entrypoint descriptor %s",
+			family,
+			entrypointPath,
+		)
 	}
-	if resolvedPath != filepath.Clean(entrypointPath) {
-		return "", false, fmt.Errorf("installed %s entrypoint must not traverse symlinks: lexical=%s resolved=%s", family, entrypointPath, resolvedPath)
-	}
-	info, err := os.Stat(entrypointPath)
+	defer entrypointFile.Close()
+
+	info, err := entrypointFile.Stat()
 	if err != nil {
-		return "", false, fmt.Errorf("installed %s entrypoint %s: %w", family, entrypointPath, err)
+		return installedEntrypointSnapshot{}, false, fmt.Errorf(
+			"inspect installed %s entrypoint descriptor %s: %w",
+			family,
+			entrypointPath,
+			err,
+		)
 	}
 	if !info.Mode().IsRegular() {
-		return "", false, fmt.Errorf("installed %s entrypoint is not a regular file: %s", family, entrypointPath)
+		return installedEntrypointSnapshot{}, false, fmt.Errorf(
+			"installed %s entrypoint is not a regular file: %s",
+			family,
+			entrypointPath,
+		)
 	}
-	return entrypointPath, true, nil
+	body, err := io.ReadAll(entrypointFile)
+	if err != nil {
+		return installedEntrypointSnapshot{}, false, fmt.Errorf(
+			"read installed %s entrypoint descriptor %s: %w",
+			family,
+			entrypointPath,
+			err,
+		)
+	}
+	digest := sha256.Sum256(body)
+	return installedEntrypointSnapshot{
+		path:   entrypointPath,
+		body:   body,
+		digest: hex.EncodeToString(digest[:]),
+		info:   info,
+	}, true, nil
 }
 
 func resolveDeclaredOSPath(compoundHome, entityRef string) (string, bool, error) {
 	store, err := mem.OpenReadOnly(compoundHome)
 	if err != nil {
-		// No COMPOUND_HOME, or no ledger dir yet: nothing declared, skip.
-		return "", false, nil
+		if errors.Is(err, os.ErrNotExist) {
+			ledgerPath := filepath.Join(compoundHome, "ledger")
+			if _, lstatErr := os.Lstat(ledgerPath); errors.Is(lstatErr, os.ErrNotExist) {
+				// No ledger yet is the public-clone case: nothing declared.
+				// Lstat deliberately distinguishes absence from a dangling
+				// ledger symlink, which is malformed state and must fail closed.
+				return "", false, nil
+			}
+		}
+		return "", false, fmt.Errorf("resolve declared path authority %s: %w", entityRef, err)
 	}
 	claim, ok, err := store.CurrentClaim(entityRef, "current_path")
 	if err != nil {

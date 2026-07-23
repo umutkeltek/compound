@@ -1183,26 +1183,31 @@ type osAbsorptionServedContextPackEvidence struct {
 	entrypointDigest string
 }
 
+type osAbsorptionServedOrientationProofInputs struct {
+	evidence  osAbsorptionServedOrientationEvidence
+	snapshots map[string]installedEntrypointSnapshot
+}
+
 func osAbsorptionServedOrientationProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
-	structural := osAbsorptionServedOrientationStructuralProof(homePath, row)
+	structural, inputs := osAbsorptionServedOrientationStructuralProof(homePath, row)
 	if !structural.ok {
 		return structural
 	}
-	evidence, err := parseOSAbsorptionServedOrientationEvidence(row.EvidenceRefs)
-	if err != nil {
-		return osAbsorptionProofResult{reason: err.Error()}
-	}
-	return osAbsorptionServedOrientationCurrentProof(homePath, row, evidence, time.Now().UTC())
+	return osAbsorptionServedOrientationCurrentProof(homePath, row, inputs, time.Now().UTC())
 }
 
-func osAbsorptionServedOrientationStructuralProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
+func osAbsorptionServedOrientationStructuralProof(
+	homePath string,
+	row OSAbsorptionMatrixRow,
+) (osAbsorptionProofResult, osAbsorptionServedOrientationProofInputs) {
+	var inputs osAbsorptionServedOrientationProofInputs
 	if row.ProofMode != osAbsorptionProofModeServedOrient {
 		return osAbsorptionProofResult{reason: fmt.Sprintf(
 			"served orientation row %s requires proof_mode %q, got %q",
 			row.ID,
 			osAbsorptionProofModeServedOrient,
 			row.ProofMode,
-		)}
+		)}, inputs
 	}
 	if !osAbsorptionIsServedOrientationAuthorityRow(row) {
 		return osAbsorptionProofResult{reason: fmt.Sprintf(
@@ -1210,35 +1215,50 @@ func osAbsorptionServedOrientationStructuralProof(homePath string, row OSAbsorpt
 			row.ID,
 			osAbsorptionEffectiveContractAuthorityRef,
 			row.CompoundOwner,
-		)}
+		)}, inputs
 	}
 	evidence, err := parseOSAbsorptionServedOrientationEvidence(row.EvidenceRefs)
 	if err != nil {
-		return osAbsorptionProofResult{reason: err.Error()}
+		return osAbsorptionProofResult{reason: err.Error()}, inputs
 	}
 	if err := validateOSAbsorptionServedOrientationBinding(homePath, row, evidence); err != nil {
-		return osAbsorptionProofResult{reason: err.Error()}
+		return osAbsorptionProofResult{reason: err.Error()}, inputs
 	}
 	expectedSourceRefs, found, err := osAbsorptionExpectedServedSourceRefs(homePath)
 	if err != nil {
-		return osAbsorptionProofResult{reason: fmt.Sprintf("resolve served orientation rollback refs: %v", err)}
+		return osAbsorptionProofResult{reason: fmt.Sprintf("resolve served orientation rollback refs: %v", err)}, inputs
 	}
 	if !found {
-		return osAbsorptionProofResult{reason: "served orientation evidence has no declared absorbed-OS rollback refs"}
+		return osAbsorptionProofResult{reason: "served orientation evidence has no declared absorbed-OS rollback refs"}, inputs
 	}
 
+	inputs.evidence = evidence
+	inputs.snapshots = make(map[string]installedEntrypointSnapshot, 2)
 	for _, harness := range []string{"codex", "claude"} {
-		path := evidence.entrypoints[harness]
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return osAbsorptionProofResult{reason: fmt.Sprintf("%s entrypoint %s: %v", harness, path, err)}
+		snapshot, found, err := readInstalledHarnessEntrypoint(homePath, harness, installedEntrypointReadOps{})
+		if err != nil || !found {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"%s installed entrypoint snapshot: found=%v err=%v",
+				harness,
+				found,
+				err,
+			)}, inputs
 		}
-		if err := validateOSAbsorptionServedEntrypointSources(harness, expectedSourceRefs, string(body)); err != nil {
-			return osAbsorptionProofResult{reason: err.Error()}
+		if filepath.Clean(evidence.entrypoints[harness]) != snapshot.path {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"%s served entrypoint %s differs from descriptor snapshot %s",
+				harness,
+				evidence.entrypoints[harness],
+				snapshot.path,
+			)}, inputs
+		}
+		inputs.snapshots[harness] = snapshot
+		if err := validateOSAbsorptionServedEntrypointSources(harness, expectedSourceRefs, string(snapshot.body)); err != nil {
+			return osAbsorptionProofResult{reason: err.Error()}, inputs
 		}
 	}
 
-	return osAbsorptionProofResult{ok: true}
+	return osAbsorptionProofResult{ok: true}, inputs
 }
 
 const (
@@ -1249,9 +1269,10 @@ const (
 func osAbsorptionServedOrientationCurrentProof(
 	homePath string,
 	row OSAbsorptionMatrixRow,
-	evidence osAbsorptionServedOrientationEvidence,
+	inputs osAbsorptionServedOrientationProofInputs,
 	now time.Time,
 ) osAbsorptionProofResult {
+	evidence := inputs.evidence
 	requiredRefs := []string{
 		"control-plane://orientation-map",
 		"control-plane://workflow-contract",
@@ -1264,19 +1285,11 @@ func osAbsorptionServedOrientationCurrentProof(
 	sharedScope := ""
 
 	for _, harness := range []string{"codex", "claude"} {
-		entrypointPath := evidence.entrypoints[harness]
-		_, boundRevision, found, err := InstalledHarnessEntrypointBinding(homePath, harness)
-		if err != nil || !found {
-			return osAbsorptionProofResult{reason: fmt.Sprintf("%s installed entrypoint binding: found=%v err=%v", harness, found, err)}
+		snapshot, found := inputs.snapshots[harness]
+		if !found {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("%s installed entrypoint snapshot missing", harness)}
 		}
-		entrypointBody, err := os.ReadFile(entrypointPath)
-		if err != nil {
-			return osAbsorptionProofResult{reason: fmt.Sprintf("%s entrypoint %s: %v", harness, entrypointPath, err)}
-		}
-		liveEntrypointDigest := digestBytes(entrypointBody)
-		if boundRevision != "sha256:"+liveEntrypointDigest {
-			return osAbsorptionProofResult{reason: fmt.Sprintf("%s installed entrypoint resolver digest mismatch", harness)}
-		}
+		liveEntrypointDigest := snapshot.digest
 		if liveEntrypointDigest != evidence.contextPacks[harness].entrypointDigest {
 			return osAbsorptionProofResult{reason: fmt.Sprintf(
 				"%s ContextPack evidence entrypoint digest %s differs from live installed digest %s",
@@ -1284,10 +1297,6 @@ func osAbsorptionServedOrientationCurrentProof(
 				evidence.contextPacks[harness].entrypointDigest,
 				liveEntrypointDigest,
 			)}
-		}
-		entrypointInfo, err := os.Stat(entrypointPath)
-		if err != nil {
-			return osAbsorptionProofResult{reason: fmt.Sprintf("%s entrypoint %s: %v", harness, entrypointPath, err)}
 		}
 
 		pack, err := readOSAbsorptionContextPack(homePath, evidence.contextPacks[harness].id)
@@ -1323,7 +1332,7 @@ func osAbsorptionServedOrientationCurrentProof(
 				osAbsorptionServedContextPackMaxAge,
 			)}
 		}
-		if entrypointInfo.ModTime().After(createdAt.Add(time.Second)) {
+		if snapshot.info.ModTime().After(createdAt.Add(time.Second)) {
 			return osAbsorptionProofResult{reason: fmt.Sprintf(
 				"ContextPack %s predates the installed %s entrypoint digest",
 				pack.ID,

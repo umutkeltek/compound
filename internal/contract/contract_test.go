@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,102 @@ import (
 	"compound/internal/mem"
 	"compound/internal/projection"
 )
+
+func TestRecordRuntimeMaterializationSerializesConcurrentIdenticalCommits(t *testing.T) {
+	homePath := t.TempDir()
+	in := mkInput("control-plane")
+	oldRuntime := RuntimeMaterialization{EffectiveContract: Compile(in, DefaultPolicy(), fixedNow), ContextPack: Pack(in, DefaultPolicy(), fixedNow)}
+	paths, err := RecordRuntimeMaterialization(homePath, oldRuntime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := oldRuntime
+	next.EffectiveContract.Unknowns = append(next.EffectiveContract.Unknowns, "new")
+	next.ContextPack.SummaryMD += " new"
+
+	aAtPack := make(chan struct{})
+	releaseA := make(chan struct{})
+	bAtLockAttempt := make(chan struct{})
+	bLockContended := make(chan struct{})
+	bEnteredCommit := make(chan struct{})
+	var lockAttempts atomic.Int32
+	var contractRenames atomic.Int32
+	var packRenames atomic.Int32
+	fsOps := runtimeMaterializationFS{
+		createTemp: os.CreateTemp,
+		beforeLock: func() {
+			if lockAttempts.Add(1) == 2 {
+				close(bAtLockAttempt)
+			}
+		},
+		lockContended: func() { close(bLockContended) },
+		rename: func(oldPath, newPath string) error {
+			if newPath == paths.ContractPath && contractRenames.Add(1) == 2 {
+				close(bEnteredCommit)
+			}
+			if newPath == paths.PackPath && packRenames.Add(1) == 1 {
+				close(aAtPack)
+				<-releaseA
+				return fmt.Errorf("injected A pack failure")
+			}
+			return os.Rename(oldPath, newPath)
+		},
+	}
+
+	aDone := make(chan error, 1)
+	bDone := make(chan error, 1)
+	go func() {
+		_, err := recordRuntimeMaterializationWithFS(homePath, next, fsOps)
+		aDone <- err
+	}()
+	<-aAtPack
+	go func() {
+		_, err := recordRuntimeMaterializationWithFS(homePath, next, fsOps)
+		bDone <- err
+	}()
+	awaitContractSignal(t, bAtLockAttempt, "B pre-lock attempt")
+	awaitContractSignal(t, bLockContended, "B lock contention")
+	select {
+	case <-bEnteredCommit:
+		t.Fatal("B entered the filesystem commit section before A rolled back")
+	default:
+	}
+	close(releaseA)
+	if err := <-aDone; err == nil {
+		t.Fatal("A must fail at its injected pack rename")
+	}
+	if err := <-bDone; err != nil {
+		t.Fatalf("B must complete after A rolls back: %v", err)
+	}
+	for path, want := range map[string][]byte{
+		paths.ContractPath: mustRuntimeArtifactJSON(t, next.EffectiveContract),
+		paths.PackPath:     mustRuntimeArtifactJSON(t, next.ContextPack),
+		paths.LatestPath:   mustRuntimeArtifactJSON(t, next.EffectiveContract),
+	} {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("final artifact mismatch at %s: err=%v", path, err)
+		}
+	}
+}
+
+func awaitContractSignal(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func mustRuntimeArtifactJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	body, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(body, '\n')
+}
 
 var fixedNow = time.Date(2026, 6, 28, 0, 0, 0, 0, time.UTC)
 
@@ -328,15 +425,13 @@ func TestRecordRuntimeMaterializationRestoresAllPreimagesWhenLatestCommitFails(t
 	}
 	runtime.ContextPack.SummaryMD += " changed"
 	runtime.EffectiveContract.Unknowns = append(runtime.EffectiveContract.Unknowns, "changed")
-	priorRename := runtimeMaterializationRename
-	runtimeMaterializationRename = func(oldPath, newPath string) error {
+	fsOps := runtimeMaterializationFS{createTemp: os.CreateTemp, rename: func(oldPath, newPath string) error {
 		if newPath == paths.LatestPath {
 			return fmt.Errorf("injected latest commit failure")
 		}
 		return os.Rename(oldPath, newPath)
-	}
-	t.Cleanup(func() { runtimeMaterializationRename = priorRename })
-	if _, err := RecordRuntimeMaterialization(homePath, runtime); err == nil {
+	}}
+	if _, err := recordRuntimeMaterializationWithFS(homePath, runtime, fsOps); err == nil {
 		t.Fatal("latest commit injection must fail")
 	}
 	for path, want := range preimages {
@@ -368,17 +463,15 @@ func TestRecordRuntimeMaterializationPackStageFailurePreservesAllPreimages(t *te
 			t.Fatal(err)
 		}
 	}
-	priorCreateTemp := runtimeMaterializationCreateTemp
 	calls := 0
-	runtimeMaterializationCreateTemp = func(dir, pattern string) (*os.File, error) {
+	fsOps := runtimeMaterializationFS{rename: os.Rename, createTemp: func(dir, pattern string) (*os.File, error) {
 		calls++
 		if calls == 2 {
 			return nil, fmt.Errorf("injected pack stage failure")
 		}
 		return os.CreateTemp(dir, pattern)
-	}
-	t.Cleanup(func() { runtimeMaterializationCreateTemp = priorCreateTemp })
-	if _, err := RecordRuntimeMaterialization(homePath, runtime); err == nil {
+	}}
+	if _, err := recordRuntimeMaterializationWithFS(homePath, runtime, fsOps); err == nil {
 		t.Fatal("pack stage injection must fail")
 	}
 	for path, want := range preimages {
