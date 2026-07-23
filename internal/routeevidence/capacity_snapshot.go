@@ -39,6 +39,20 @@ const (
 	laneAliasesRelPath = "projections/lane-aliases.json"
 	// laneAliasesSchema versions the lane-alias override projection body.
 	laneAliasesSchema = "compound.lane_aliases.v0.1"
+
+	// capacitySupplementRelPath is the home-relative path to Compound's OWN supplement usage
+	// feed — claude/zai/etc capacity rows Compound writes and controls, merged alongside
+	// CodexBar's own usage-history.jsonl so an external app relaunch that rewrites/prunes its
+	// own file can never again silently blind a whole lane family (2026-07-23 blackout).
+	capacitySupplementRelPath = "projections/usage-supplement.jsonl"
+
+	// capacityBlackoutMultiplier is how many freshness windows of total silence (across BOTH
+	// merged sources) turn a stale-but-once-enrolled capacity family into a doctor-visible
+	// capacity.blackout:<family> warning. 4x the family's own freshness window (15m/15m/30m)
+	// gives relaunch/restart jitter room before firing, while still catching a silently pruned
+	// or stopped feed well before an operator would otherwise notice via a hard dispatch
+	// refusal.
+	capacityBlackoutMultiplier = 4
 )
 
 type LaneCapacity struct {
@@ -63,6 +77,11 @@ type LaneCapacityPaths struct {
 	// renames a lane to a family before the structural rules run — so it is deliberately excluded
 	// from capacitySourceInstalled.
 	AliasesPath string
+	// SupplementUsagePath is Compound's OWN supplement usage feed
+	// (`<COMPOUND_HOME>/projections/usage-supplement.jsonl`) — same row shape as
+	// UsageHistoryPath, merged at row level before any freshness/cluster logic runs. It IS a
+	// capacity source (unlike AliasesPath) so it participates in capacitySourceInstalled.
+	SupplementUsagePath string
 }
 
 type LaneCapacityConfig struct {
@@ -82,6 +101,7 @@ func DefaultLaneCapacityConfig(homePath string) LaneCapacityConfig {
 	if strings.TrimSpace(homePath) != "" {
 		paths.AccountProjectionPath = AccountProjectionPath(homePath)
 		paths.AliasesPath = LaneAliasesPath(homePath)
+		paths.SupplementUsagePath = CapacitySupplementPath(homePath)
 	}
 	return LaneCapacityConfig{Paths: paths, ExpectedMinutes: defaultExpectedMinutes}
 }
@@ -90,6 +110,12 @@ func DefaultLaneCapacityConfig(homePath string) LaneCapacityConfig {
 // from (mirrors AccountProjectionPath's home-relative convention).
 func LaneAliasesPath(homePath string) string {
 	return filepath.Join(homePath, filepath.FromSlash(laneAliasesRelPath))
+}
+
+// CapacitySupplementPath is the absolute path Compound's own supplement usage feed is read from
+// (mirrors LaneAliasesPath's home-relative convention).
+func CapacitySupplementPath(homePath string) string {
+	return filepath.Join(homePath, filepath.FromSlash(capacitySupplementRelPath))
 }
 
 // ReadLaneCapacity is the production front door. COMPOUND_HOME is used only to locate Compound's
@@ -113,7 +139,7 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 		return capacity, nil
 	}
 
-	usage, ok, err := readCodexBarCapacity(cfg.Paths.UsageHistoryPath, key, now, cfg.ExpectedMinutes, capacityFreshness(key))
+	usage, ok, err := readCodexBarCapacity(cfg.Paths, key, now, cfg.ExpectedMinutes, capacityFreshness(key))
 	if err != nil {
 		return LaneCapacity{}, err
 	}
@@ -163,7 +189,7 @@ func ReadLaneCapacityWithConfig(lane string, now time.Time, cfg LaneCapacityConf
 }
 
 func capacitySourceInstalled(paths LaneCapacityPaths) bool {
-	for _, path := range []string{paths.UsageHistoryPath, paths.QuotaCachePath, paths.AccountProjectionPath} {
+	for _, path := range []string{paths.UsageHistoryPath, paths.QuotaCachePath, paths.AccountProjectionPath, paths.SupplementUsagePath} {
 		if strings.TrimSpace(path) == "" {
 			continue
 		}
@@ -182,35 +208,50 @@ type codexBarCapacityRow struct {
 	ResetsAt      string  `json:"resetsAt"`
 	SampledAt     string  `json:"sampledAt"`
 	sampled       time.Time
+	// source names the file this row was read from (e.g. "codexbar/usage-history" or
+	// "compound/usage-supplement") — set post-parse, never part of the on-disk JSON shape.
+	source string
 }
 
-func readCodexBarCapacity(path, lane string, now time.Time, expectedMinutes int, freshness time.Duration) (LaneCapacity, bool, error) {
-	return readCodexBarCapacityMatching(path, lane, now, expectedMinutes, freshness, func(provider string) bool {
-		return normalizeLaneCapacityKey(provider) == lane
-	})
+// capacityRowSource pairs a usage-row JSONL file path with the human-readable source label
+// recorded on a LaneCapacity result (Source/DataRef) whenever a row from that file constrains
+// the decision.
+type capacityRowSource struct {
+	path  string
+	label string
 }
 
-func readCodexBarCapacityExact(path, provider string, now time.Time, expectedMinutes int, freshness time.Duration) (LaneCapacity, bool, error) {
-	wanted := normalizeCodexBarProvider(provider)
-	return readCodexBarCapacityMatching(path, provider, now, expectedMinutes, freshness, func(candidate string) bool {
-		return normalizeCodexBarProvider(candidate) == wanted
-	})
-}
-
-func readCodexBarCapacityMatching(path, provider string, now time.Time, expectedMinutes int, freshness time.Duration, matches func(string) bool) (LaneCapacity, bool, error) {
-	if strings.TrimSpace(path) == "" {
-		return LaneCapacity{}, false, nil
+// capacityRowSourcesFor builds the merge set for a lookup: CodexBar's own usage-history file and
+// Compound's own supplement feed. Iteration order does not decide the winner — the newest
+// sampledAt row across BOTH always constrains, regardless of which source produced it — so an
+// empty/absent SupplementUsagePath (every pre-supplement caller and fixture) degrades to exactly
+// the single-source behavior that existed before this feed was added.
+func capacityRowSourcesFor(paths LaneCapacityPaths) []capacityRowSource {
+	return []capacityRowSource{
+		{path: paths.UsageHistoryPath, label: "codexbar/usage-history"},
+		{path: paths.SupplementUsagePath, label: "compound/usage-supplement"},
 	}
-	file, err := os.Open(path)
+}
+
+// readCapacityRowsFromSource scans a single usage-row JSONL file, tagging every matching row with
+// the source's label. A blank path or a missing file is not an error — it simply contributes zero
+// rows and reports installed=false so the caller can distinguish "nothing wired" from "wired but
+// empty". An unreadable/corrupt file IS an error: silently treating "broken" as "empty" would hide
+// a real misconfiguration from the freshness veto above it.
+func readCapacityRowsFromSource(src capacityRowSource, now time.Time, matches func(string) bool) (rows []codexBarCapacityRow, installed bool, err error) {
+	if strings.TrimSpace(src.path) == "" {
+		return nil, false, nil
+	}
+	file, err := os.Open(src.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return LaneCapacity{}, false, nil
+			return nil, false, nil
 		}
-		return LaneCapacity{}, false, fmt.Errorf("read capacity usage history: %w", err)
+		return nil, false, fmt.Errorf("read capacity usage history (%s): %w", src.label, err)
 	}
 	defer file.Close()
+	installed = true
 
-	var rows []codexBarCapacityRow
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -226,10 +267,55 @@ func readCodexBarCapacityMatching(path, provider string, now time.Time, expected
 			continue
 		}
 		row.sampled = sampled
+		row.source = src.label
 		rows = append(rows, row)
 	}
 	if err := scanner.Err(); err != nil {
-		return LaneCapacity{}, false, fmt.Errorf("scan capacity usage history: %w", err)
+		return nil, installed, fmt.Errorf("scan capacity usage history (%s): %w", src.label, err)
+	}
+	return rows, installed, nil
+}
+
+// readCapacityRowsFromSources merges matching rows from every source file that exists.
+// installed reports whether ANY of the source files exist on disk at all — used to tell "zero
+// rows because nothing is wired" apart from "zero rows because nothing matched this family".
+func readCapacityRowsFromSources(sources []capacityRowSource, now time.Time, matches func(string) bool) (rows []codexBarCapacityRow, installed bool, err error) {
+	for _, src := range sources {
+		fileRows, fileInstalled, ferr := readCapacityRowsFromSource(src, now, matches)
+		if ferr != nil {
+			return nil, false, ferr
+		}
+		installed = installed || fileInstalled
+		rows = append(rows, fileRows...)
+	}
+	return rows, installed, nil
+}
+
+func readCodexBarCapacity(paths LaneCapacityPaths, lane string, now time.Time, expectedMinutes int, freshness time.Duration) (LaneCapacity, bool, error) {
+	return readCodexBarCapacityMatching(capacityRowSourcesFor(paths), lane, now, expectedMinutes, freshness, func(provider string) bool {
+		return normalizeLaneCapacityKey(provider) == lane
+	})
+}
+
+func readCodexBarCapacityExact(paths LaneCapacityPaths, provider string, now time.Time, expectedMinutes int, freshness time.Duration) (LaneCapacity, bool, error) {
+	wanted := normalizeCodexBarProvider(provider)
+	return readCodexBarCapacityMatching(capacityRowSourcesFor(paths), provider, now, expectedMinutes, freshness, func(candidate string) bool {
+		return normalizeCodexBarProvider(candidate) == wanted
+	})
+}
+
+// readCodexBarCapacityMatching merges rows from every configured source BEFORE any
+// freshness/cluster logic runs — the newest-sampledAt row across all sources decides freshness,
+// and the "recent cluster" window/veto/state logic below is unchanged from the single-source
+// version, just fed a merged row set. Source/DataRef of the result always name the ACTUAL source
+// of the constraining (or, on the stale path, the merged-newest) row.
+func readCodexBarCapacityMatching(sources []capacityRowSource, provider string, now time.Time, expectedMinutes int, freshness time.Duration, matches func(string) bool) (LaneCapacity, bool, error) {
+	rows, installed, err := readCapacityRowsFromSources(sources, now, matches)
+	if err != nil {
+		return LaneCapacity{}, false, err
+	}
+	if !installed {
+		return LaneCapacity{}, false, nil
 	}
 	if len(rows) == 0 {
 		return LaneCapacity{
@@ -240,6 +326,7 @@ func readCodexBarCapacityMatching(path, provider string, now time.Time, expected
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].sampled.After(rows[j].sampled) })
 	newest := rows[0].sampled
+	newestSource := rows[0].source
 	if freshness <= 0 {
 		freshness = capacityFreshness(provider)
 	}
@@ -248,9 +335,9 @@ func readCodexBarCapacityMatching(path, provider string, now time.Time, expected
 			State:           CapacityUnknown,
 			SourceInstalled: true,
 			LastProven:      newest.UTC(),
-			Source:          "codexbar/usage-history",
-			DataRef: fmt.Sprintf("codexbar/usage-history:no_fresh_rows,family=%s,newest=%s,age=%dm,freshness=%dm",
-				provider, newest.UTC().Format(time.RFC3339), int(age.Minutes()), int(freshness.Minutes())),
+			Source:          newestSource,
+			DataRef: fmt.Sprintf("%s:no_fresh_rows,family=%s,newest=%s,age=%dm,freshness=%dm",
+				newestSource, provider, newest.UTC().Format(time.RFC3339), int(age.Minutes()), int(freshness.Minutes())),
 		}, false, nil
 	}
 
@@ -284,13 +371,21 @@ func readCodexBarCapacityMatching(path, provider string, now time.Time, expected
 	if remaining > 100 {
 		remaining = 100
 	}
+	// dataRefPrefix keeps the pre-supplement DataRef format byte-identical when the constraining
+	// row still comes from CodexBar's own file ("codexbar:provider=..."); a supplement-sourced
+	// row instead names itself explicitly so an operator can tell which feed is load-bearing.
+	dataRefPrefix := constraining.source
+	if dataRefPrefix == "codexbar/usage-history" {
+		dataRefPrefix = "codexbar"
+	}
 	out := LaneCapacity{
 		Remaining:  remaining,
 		LastProven: constraining.sampled.UTC(),
 		State:      CapacityUnknown,
-		Source:     "codexbar/usage-history",
+		Source:     constraining.source,
 		DataRef: fmt.Sprintf(
-			"codexbar:provider=%s,window=%s/%dm,sampled_at=%s",
+			"%s:provider=%s,window=%s/%dm,sampled_at=%s",
+			dataRefPrefix,
 			provider,
 			strings.TrimSpace(constraining.WindowKind),
 			constraining.WindowMinutes,
@@ -311,6 +406,73 @@ func readCodexBarCapacityMatching(path, provider string, now time.Time, expected
 		out.State = CapacityAlive
 	}
 	return out, true, nil
+}
+
+// capacityWatchedFamilies enumerates every capacity family the blackout watchdog checks — the
+// same families exactLaneCapacityFamily/normalizeLaneCapacityKey recognize.
+var capacityWatchedFamilies = []string{"codex", "claude", "zai", "qwen", "minimax"}
+
+// CapacityFeedWarning is a single non-fatal `compound home doctor` watchdog item. It never gates
+// the doctor verdict — see cmd/compound's buildHomeDoctorReport, which folds this in as an
+// additive, non-verdict-affecting field.
+type CapacityFeedWarning struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+}
+
+// newestCapacitySampleAcrossSources returns the most recent sampledAt timestamp for `family`
+// across every configured capacity row source (CodexBar's file + Compound's own supplement) with
+// NO freshness veto — the blackout watchdog needs to see a row of ANY age to tell a
+// stale-but-once-enrolled family (blackout) apart from a family that was never enrolled at all
+// (silent by design, not a warning).
+func newestCapacitySampleAcrossSources(paths LaneCapacityPaths, family string, now time.Time) (time.Time, bool, error) {
+	rows, _, err := readCapacityRowsFromSources(capacityRowSourcesFor(paths), now, func(provider string) bool {
+		return normalizeLaneCapacityKey(provider) == family
+	})
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if len(rows) == 0 {
+		return time.Time{}, false, nil
+	}
+	newest := rows[0].sampled
+	for _, row := range rows[1:] {
+		if row.sampled.After(newest) {
+			newest = row.sampled
+		}
+	}
+	return newest, true, nil
+}
+
+// CapacityFeedWarnings is the non-fatal capacity-feed-blackout watchdog folded into
+// `compound home doctor`: a family with at least one row EVER (from either source) but nothing
+// within capacityBlackoutMultiplier x its own freshness window produces a
+// `capacity.blackout:<family>` item. A family with zero rows ever is not enrolled — not blacked
+// out — and produces no item; a family with a fresh-enough row produces no item either. A source
+// read error is swallowed here (mirrors capacitySourceInstalled's fail-open posture) — this is a
+// doctor-only annotation, never a veto, so it must never itself panic or block doctor output.
+func CapacityFeedWarnings(cfg LaneCapacityConfig, now time.Time) []CapacityFeedWarning {
+	cfg = normalizeLaneCapacityConfig(cfg, "")
+	var warnings []CapacityFeedWarning
+	for _, family := range capacityWatchedFamilies {
+		newest, found, err := newestCapacitySampleAcrossSources(cfg.Paths, family, now)
+		if err != nil || !found {
+			continue
+		}
+		threshold := capacityBlackoutMultiplier * capacityFreshness(family)
+		age := now.Sub(newest)
+		if age <= threshold {
+			continue
+		}
+		warnings = append(warnings, CapacityFeedWarning{
+			Name: "capacity.blackout:" + family,
+			OK:   false,
+			Detail: fmt.Sprintf("newest=%s age=%dm threshold=%dm",
+				newest.UTC().Format(time.RFC3339), int(age.Minutes()), int(threshold.Minutes())),
+		})
+	}
+	return warnings
 }
 
 func readFreshQuotaWall(path, lane string, now time.Time) (LaneCapacity, bool, error) {
@@ -457,10 +619,13 @@ func guardDeclaredLaneCapacityWithConfigAndProbe(homePath, lane, capabilityClass
 	}
 	cfg.ExpectedMinutes = expectedMinutes
 	cfg.SuppressRefusalEvidence = suppressRefusalEvidence
-	installed := capacitySourceInstalled(LaneCapacityPaths{UsageHistoryPath: cfg.Paths.UsageHistoryPath})
+	installed := capacitySourceInstalled(LaneCapacityPaths{
+		UsageHistoryPath:    cfg.Paths.UsageHistoryPath,
+		SupplementUsagePath: cfg.Paths.SupplementUsagePath,
+	})
 	freshness := time.Duration(source.FreshnessMinutes) * time.Minute
 	capacity, ok, err := readCodexBarCapacityExact(
-		cfg.Paths.UsageHistoryPath,
+		cfg.Paths,
 		provider,
 		now,
 		cfg.ExpectedMinutes,
@@ -601,6 +766,9 @@ func normalizeLaneCapacityConfig(cfg LaneCapacityConfig, homePath string) LaneCa
 	}
 	if strings.TrimSpace(cfg.Paths.AliasesPath) == "" {
 		cfg.Paths.AliasesPath = defaults.Paths.AliasesPath
+	}
+	if strings.TrimSpace(cfg.Paths.SupplementUsagePath) == "" {
+		cfg.Paths.SupplementUsagePath = defaults.Paths.SupplementUsagePath
 	}
 	if cfg.ExpectedMinutes <= 0 {
 		cfg.ExpectedMinutes = defaultExpectedMinutes
