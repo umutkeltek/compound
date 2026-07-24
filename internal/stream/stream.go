@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -31,9 +32,13 @@ import (
 const (
 	KindSnapshot  = "snapshot"
 	KindWorkEvent = "work_event"
-	KindSeqPulse  = "seq_pulse"
-	KindHeartbeat = "heartbeat"
-	KindWarning   = "warning"
+	// KindCollaborationEvent is a typed projection of a work lifecycle event
+	// carrying one attached work.CollaborationEvent. The lifecycle Event stays
+	// on the frame so consumers retain the authoritative cursor/work linkage.
+	KindCollaborationEvent = "collaboration_event"
+	KindSeqPulse           = "seq_pulse"
+	KindHeartbeat          = "heartbeat"
+	KindWarning            = "warning"
 )
 
 // DefaultBacklog is the --once backlog line count (mirrors the console's
@@ -58,11 +63,12 @@ type Snapshot struct {
 // work.jsonl immediately AFTER the frame's source line, so a consumer that
 // reconnects from the last-seen cursor resumes without loss or duplication.
 type Frame struct {
-	Kind    string      `json:"kind"`
-	Event   *work.Event `json:"event,omitempty"`
-	Seq     string      `json:"seq,omitempty"`
-	Message string      `json:"message,omitempty"`
-	Cursor  int64       `json:"cursor"`
+	Kind          string                   `json:"kind"`
+	Event         *work.Event              `json:"event,omitempty"`
+	Collaboration *work.CollaborationEvent `json:"collaboration,omitempty"`
+	Seq           string                   `json:"seq,omitempty"`
+	Message       string                   `json:"message,omitempty"`
+	Cursor        int64                    `json:"cursor"`
 }
 
 // BuildSnapshot reads the last `backlog` work events, the current seq, and the
@@ -171,6 +177,7 @@ func Follow(ctx context.Context, home string, opts FollowOptions, w io.Writer) e
 			return err
 		}
 		for _, f := range t.feed(chunk) {
+			f = projectCollaborationFrame(eventStore, f)
 			if err := emit(f); err != nil {
 				return err
 			}
@@ -222,6 +229,62 @@ func Follow(ctx context.Context, home string, opts FollowOptions, w io.Writer) e
 			}
 		}
 	}
+}
+
+func projectCollaborationFrame(eventStore *eventstore.Store, frame Frame) Frame {
+	if frame.Event == nil {
+		return frame
+	}
+	var refs []string
+	for _, attached := range frame.Event.Attached {
+		if strings.HasPrefix(attached, "wco_") {
+			refs = append(refs, attached)
+		}
+	}
+	if len(refs) == 0 {
+		return frame
+	}
+	if len(refs) != 1 {
+		frame.Kind = KindWarning
+		frame.Message = fmt.Sprintf("work event carries %d collaboration attachments; want 1", len(refs))
+		return frame
+	}
+	record, err := eventStore.Read(refs[0])
+	if err != nil {
+		frame.Kind = KindWarning
+		frame.Message = fmt.Sprintf("collaboration attachment %s is unreadable: %v", refs[0], err)
+		return frame
+	}
+	var collaboration work.CollaborationEvent
+	if err := json.Unmarshal(record.Bytes, &collaboration); err != nil {
+		frame.Kind = KindWarning
+		frame.Message = fmt.Sprintf("collaboration attachment %s is malformed: %v", refs[0], err)
+		return frame
+	}
+	if err := collaboration.Validate(); err != nil {
+		frame.Kind = KindWarning
+		frame.Message = fmt.Sprintf("collaboration attachment %s is invalid: %v", refs[0], err)
+		return frame
+	}
+	if collaboration.WorkID != frame.Event.WorkID ||
+		!contains(frame.Event.Attached, collaboration.ActionIntentID) ||
+		!contains(frame.Event.Attached, collaboration.PolicyDecisionID) {
+		frame.Kind = KindWarning
+		frame.Message = fmt.Sprintf("collaboration attachment %s does not match its governed work event", refs[0])
+		return frame
+	}
+	frame.Kind = KindCollaborationEvent
+	frame.Collaboration = &collaboration
+	return frame
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // ResolveOffset decides where to resume reading given the previously-consumed

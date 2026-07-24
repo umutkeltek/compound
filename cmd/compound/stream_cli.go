@@ -24,7 +24,7 @@ const streamUsage = "usage: compound stream (--once [--backlog N] | --follow [--
 //	--once   a finite snapshot (last N events + end-of-log cursor + seq +
 //	         generated_at) as ONE JSON object — the stream-snapshot door.
 //	--follow a long-running JSONL tail from --cursor, one frame per line
-//	         (work_event / seq_pulse / heartbeat / warning), each carrying the
+//	         (work_event / collaboration_event / seq_pulse / heartbeat / warning), each carrying the
 //	         new cursor so a reconnect resumes losslessly.
 //
 // Output is always JSON; --json is accepted (and used by the doors argv) to make

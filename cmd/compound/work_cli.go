@@ -80,7 +80,7 @@ type workVerbHelp struct {
 	Example string
 }
 
-const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close> ..."
+const genericWorkUsage = "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|delegate|steer|attach|collaborate|observe-run|land-check|salvage-plan|action-plan|act|close-plan|close> ..."
 
 var workVerbHelpByName = map[string]workVerbHelp{
 	"create-plan": {
@@ -178,6 +178,10 @@ var workVerbHelpByName = map[string]workVerbHelp{
 	"attach": {
 		Usage:   "usage: compound work attach <work_id>",
 		Example: "compound work attach work_abc123",
+	},
+	"collaborate": {
+		Usage:   "usage: compound work collaborate <work_id> --actor A --idempotency-key K --body-ref artifact:sha256:<digest> [--session S] [--run-attempt RATT_ID] [--target-actor A] [--causal-parent WCO_ID]... [--visibility work] [--json]",
+		Example: "compound work collaborate work_abc123 --actor codex:session --idempotency-key turn-1 --body-ref artifact:sha256:<digest> --json",
 	},
 	"observe-run": {
 		Usage:   "usage: compound work observe-run <work_id> --trace <trace_id> [--job-file <path>] [--actor A] [--note N] [--json]",
@@ -1416,6 +1420,8 @@ func cmdWork(args []string) {
 		if result.ResultPath != "" {
 			fmt.Printf("result: %s\n", result.ResultPath)
 		}
+	case "collaborate":
+		runWorkCollaborate(store, rest, time.Now())
 	case "land-check":
 		usage := workUsage("land-check")
 		landCheckValueFlags := map[string]bool{"--tip": true, "--repo": true, "--target-ref": true, "--actor": true, "--reason": true}

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	compoundhome "compound/internal/home"
 	"compound/internal/work"
 )
 
@@ -252,6 +253,97 @@ func TestFollowResumeFromSnapshotCursor(t *testing.T) {
 	if len(ids) != 1 || ids[0] != "work_new" {
 		t.Fatalf("follow from snapshot cursor delivered %v, want exactly [work_new] (no backlog replay, no loss)", ids)
 	}
+}
+
+func TestFollowProjectsAttachedCollaborationAsTypedFrame(t *testing.T) {
+	home := t.TempDir()
+	store, err := work.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	w, err := store.Create(work.CreateInput{
+		Owner:            "multiplayer",
+		SuccessPredicate: "typed collaboration stream frame",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const actor = "codex:multiplayer"
+	if _, err := store.Claim(w.ID, actor, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := compoundhome.NewArtifactStore(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyRef, err := artifacts.Put([]byte("typed collaboration stream body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := store.RecordCollaboration(w.ID, work.CollaborationInput{
+		Actor:          actor,
+		IdempotencyKey: "stream-turn-1",
+		SessionID:      "session-a",
+		BodyRef:        bodyRef,
+	}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	sink := &collaborationFrameSink{done: cancel, want: recorded.Event.ID}
+	if err := Follow(ctx, home, FollowOptions{
+		Cursor:       0,
+		PollInterval: 20 * time.Millisecond,
+		SeqInterval:  time.Hour,
+		Heartbeat:    time.Hour,
+	}, sink); err != nil {
+		t.Fatalf("follow collaboration stream: %v", err)
+	}
+	var typed []Frame
+	for _, frame := range sink.frames {
+		if frame.Kind == KindCollaborationEvent {
+			typed = append(typed, frame)
+		}
+	}
+	if len(typed) != 1 {
+		t.Fatalf("typed collaboration frames=%d, want exactly 1; all=%+v", len(typed), sink.frames)
+	}
+	frame := typed[0]
+	if frame.Collaboration == nil || frame.Collaboration.ID != recorded.Event.ID {
+		t.Fatalf("typed frame lost collaboration event: %+v", frame)
+	}
+	if frame.Collaboration.BodyRef != recorded.Event.BodyRef || frame.Collaboration.Actor != actor {
+		t.Fatalf("typed frame metadata mismatch: %+v", frame.Collaboration)
+	}
+	if frame.Event == nil || frame.Event.WorkID != w.ID {
+		t.Fatalf("typed frame lost source lifecycle event: %+v", frame)
+	}
+}
+
+type collaborationFrameSink struct {
+	frames []Frame
+	want   string
+	done   context.CancelFunc
+}
+
+func (s *collaborationFrameSink) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(strings.TrimSpace(string(p)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var frame Frame
+		if err := json.Unmarshal([]byte(line), &frame); err != nil {
+			return 0, err
+		}
+		s.frames = append(s.frames, frame)
+		if frame.Kind == KindCollaborationEvent && frame.Collaboration != nil && frame.Collaboration.ID == s.want {
+			s.done()
+		}
+	}
+	return len(p), nil
 }
 
 // frameSink is a test io.Writer that parses emitted JSONL frames and cancels the

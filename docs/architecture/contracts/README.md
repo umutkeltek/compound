@@ -37,6 +37,10 @@ segment/index paths. `events/work.jsonl`, `events/hook-events.ndjson`, and `even
 compatibility streams with separate semantics, but their construction and filesystem access stay behind the same
 owner seam.
 
+## Work collaboration observation contract
+
+`compound.work_collaboration_event.v0.1` is the first multiplayer coordination seam and remains subordinate to the envelope spine. One `wco_*` observation belongs to exactly one nonterminal, leased `work_id`; the recording actor must be the live lease holder. Its payload is bounded metadata only: actor, optional session/target actor, optional same-work `ratt_*`, already-attached same-work causal `wco_*` parents, `visibility=work`, inherited privacy, and a required content-addressed `artifact:sha256:<digest>` body reference that resolves and hash-verifies through the existing artifact-store owner. An idempotency key is scoped to the work and deterministically addresses the event; reusing it with different metadata fails closed. Recording requires and attaches an allowing ActionIntent/PolicyDecision, and interrupted attachment retries converge on one governed work-log row. `compound stream --follow` may hydrate that row into a typed `collaboration_event` frame while retaining the source lifecycle event and byte cursor. The stream is a rebuildable projection: this contract creates no chat/message authority, transports no inline body, promotes no memory, and does not let an agent bypass the normal candidate/adjudication or ActionIntent/PolicyDecision paths.
+
 Fragmentation happens when seams between pieces are fuzzy: change one and others break. The cure is
 a small explicit contract — port + lifecycle + receipt — with implementations swapped behind it.
 Defined before implementation so agents stop re-deriving them. Implement a contract only when a
