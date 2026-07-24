@@ -5,10 +5,20 @@
 > work envelope from creation through a receipt, with the next session starting
 > smarter. Zero personal data required; everything runs locally.
 
-Compound is a local-first meaning + execution substrate. It makes agent work
-**accumulate**: every session leaves claims, receipts, and lenses behind, and
-the next session starts smarter because of them. This guide proves that loop
-on your machine.
+Compound is local-first and makes agent work **accumulate**: it records the
+work as it actually happens — every session leaves claims, receipts, and
+lenses behind, and the next session starts smarter because of them. This
+guide proves that loop on your machine.
+
+Hold the whole system as five places; each step below visits one:
+
+| Place | What happens there | Step |
+|---|---|---|
+| **the door** | your task enters as a typed envelope, validated first | 3 |
+| **the ledger** | adjudicated meaning; serves the briefing your agent starts from | 2 |
+| **the edge** | your agent — a rented executor — claims and runs the job | 4 |
+| **the gate** | mutations ask policy before they happen | 6 |
+| **the receipt** | proof of what ran, plus what it should change next time | 5 |
 
 ## Prerequisites
 
@@ -113,9 +123,9 @@ compound work show <work_id>
 compound transition show <transition_id>
 ```
 
-The Transition is the **proof apex**: what changed, which evidence supports it,
-and how future behavior should differ. This is what makes the next session
-start smarter.
+The Transition is the ledger entry: the system moved from state A to B because
+of this work — what changed, which evidence supports it, and how future
+behavior should differ. This is what makes the next session start smarter.
 
 ## 6. Wire your agent (hooks)
 
@@ -151,11 +161,11 @@ compound architecture doctor --strict
 ## What just happened
 
 ```text
-orient          → ContextPack (task-scoped context, not a preamble)
-work create     → WorkEnvelope (one stable identity for the work)
-claim/advance   → lifecycle (single-holder lease, state machine)
-close           → Receipt + Transition (proof that behavior changed)
-hooks           → next session gets the ContextPack with prior learning
+orient          → the briefing (ContextPack: task-scoped context, not a preamble)
+work create     → the job at the door (WorkEnvelope: one stable identity)
+claim/advance   → the edge at work (single-holder lease, state machine)
+close           → the receipt (Receipt + Transition: proof behavior changed)
+hooks           → the gate, plus next session's briefing carries prior learning
 ```
 
 **The loop compounds.** The next `compound orient` on this repo includes the

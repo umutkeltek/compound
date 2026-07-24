@@ -1,24 +1,27 @@
 # compound
 
-Local-first, agent-agnostic meaning + execution substrate.
+Local-first, agent-agnostic substrate that makes the flow of agent work leave
+reusable structure behind — without freezing the flow.
 
 Agent sessions are amnesiac by default: whatever an agent learned, decided, or
-broke evaporates when the context window closes. Compound is the substrate that
-makes agent work accumulate instead — every session leaves claims, receipts,
-and lenses behind, and the next session starts smarter because of them. Across
-any harness, any model, any vendor.
+broke evaporates when the context window closes. Compound records the work as
+it actually happens — every session leaves claims, receipts, and lenses
+behind, and the next session starts smarter because of them. Across any
+harness, any model, any vendor.
 
 The thesis: meta-thinking must be engineered — compounding is not a feeling
-that emerges on its own. Ideas die when they are captured wrong. Captured at
-execution-abstraction — a predicate, a falsifier, an envelope — an idea
-survives the moment it was had and reaches a factory that can act on it and
-adapt because of it. Compound is that capture format and that factory, as one
-substrate.
+that emerges on its own. Probabilistic intelligence needs an owned, structured
+world around it, or it cannot accumulate into reliable action. Ideas die when
+they are captured wrong. Captured at execution-abstraction — a predicate, a
+falsifier, an envelope — an idea survives the moment it was had and reaches a
+factory that can act on it and adapt because of it. Compound is that capture
+format and that factory, as one substrate.
 
-Compound owns the spine: context, decisions, work, policy, evidence, receipts,
-transitions, memory, capabilities, products, routes, and runtime bindings.
-Executors are rented edges. Search is not truth. Model output is not canon.
-Mutation requires an envelope and proof.
+The whole system in one line: **typed envelopes at the door · adjudicated
+meaning in the ledger · rented executors at the edge · policy before mutation
+· receipts and transitions after action.** Compound owns that structure;
+models, engines, and harnesses are replaceable edges. Search is not truth.
+Model output is not canon. Mutation requires an envelope and proof.
 
 ## Why
 
@@ -96,21 +99,43 @@ The loop this repo exists to make ordinary.
 
 ## What It Is
 
-Compound is built envelope-first, not memory-first.
+Compound is built envelope-first, not memory-first. Hold the shape as five
+places, not eleven nouns:
+
+- **The door.** Everything that enters — a task, an observation, a model's
+  output — arrives as a typed envelope and is validated before it can matter.
+- **The ledger.** Meaning lives in one adjudicated home: nothing becomes
+  ambient truth without a recorded verdict, and supersession is a record,
+  never a prose edit.
+- **The edge.** Executors — models, harnesses, engines — are rented: they
+  propose, extract, and execute, but never own truth, promotion, or policy.
+- **The gate.** Every mutation asks policy first; destructive and irreversible
+  actions stay with the human by construction.
+- **The receipt.** After action, a receipt records what actually ran, and a
+  transition records what it means for future behavior.
+
+In ontology terms, Compound's typed object families form an operational
+ontology: shared entities, constraints, lifecycles, and evidence rules that
+every executor must use at the runtime boundary. Probabilistic models may
+extract, propose, or execute; deterministic code validates and adjudicates
+their output before mutation; receipts and transitions verify what actually
+changed.
+
+The typed grammar behind those five places, for contract consumers:
 
 ```text
 ContextRequest
--> ContextPack
--> WorkEnvelope
--> ActionIntent
--> PolicyDecision
--> Receipt
--> typed Transition
+-> ContextPack        the briefing: what the agent is told, and what was left out
+-> WorkEnvelope       the job: one stable identity for one unit of work
+-> ActionIntent       what an executor wants to do
+-> PolicyDecision     the gate's answer: allow, deny, or hold
+-> Receipt            proof the job ran: what was touched, what came out
+-> Transition         the ledger entry: state A -> B because of this work
 -> candidates / adjudication / projections
 ```
 
 Memory is one object family on that spine, alongside decisions, capabilities,
-products, route evidence, runtime bindings, and policy. The proof apex is the
+products, route evidence, runtime bindings, and policy. The apex is the
 `Transition`: what changed, which evidence supports it, and how future behavior
 should differ.
 
