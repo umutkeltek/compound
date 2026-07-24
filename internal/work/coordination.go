@@ -24,10 +24,6 @@ import (
 
 const CoordinationSchemaVersion = "compound.coordination.v0.1"
 
-var coordinationWorkbench = func(store *Store, now time.Time, opts WorkbenchOptions) (WorkbenchReport, error) {
-	return store.Workbench(now, opts)
-}
-
 // CoordinationOptions controls the read-only coordination projection.
 type CoordinationOptions struct {
 	// Actor selects who "me" is. Empty picks the most-present actor
@@ -109,7 +105,7 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 		Others:        []ActorCoordination{},
 		Waits:         []WaitEdge{},
 	}
-	workbench, err := coordinationWorkbench(s, now, WorkbenchOptions{RecentLimit: 8})
+	workbench, err := s.Workbench(now, WorkbenchOptions{RecentLimit: 8})
 	if err != nil {
 		return CoordinationReport{}, err
 	}
