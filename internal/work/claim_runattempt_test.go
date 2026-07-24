@@ -10,6 +10,7 @@
 package work
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -347,5 +348,95 @@ func TestClaimRetryChainsPredecessor(t *testing.T) {
 	// The first attempt has no predecessor (it was the first).
 	if ra1.PredecessorID != "" {
 		t.Fatalf("first attempt predecessor = %q, want empty", ra1.PredecessorID)
+	}
+}
+
+// failingOriginStore wraps a real *runattempt.Store but forces SetOrigin to
+// fail, simulating a store-write fault on origin stamping immediately after
+// a successful Mint. Every OTHER write (Mint, SetPredecessor, Complete,
+// CompleteWithReason, Get, ...) delegates to the embedded real store, so
+// the terminalizing write the claim path performs on the failure path
+// still lands on disk. That isolation is the whole point: a blunt
+// read-only-fault on the run_attempts directory would also break the
+// terminalizing CompleteWithReason, so the test could never observe the
+// attempt reaching terminal `failed`. mintedID captures the id Mint
+// produced so the test can prove the OnDisk attempt is the freshly
+// minted one.
+type failingOriginStore struct {
+	*runattempt.Store
+	mintedID string
+}
+
+func (s *failingOriginStore) Mint(workID, actor, harness string, now time.Time) (runattempt.RunAttempt, error) {
+	ra, err := s.Store.Mint(workID, actor, harness, now)
+	s.mintedID = ra.ID
+	return ra, err
+}
+
+func (s *failingOriginStore) SetOrigin(_, _ string) (runattempt.RunAttempt, error) {
+	return runattempt.RunAttempt{}, errors.New("disk full")
+}
+
+// TestClaimSetOriginFailureTerminalizes (E14 twin): a store.SetOrigin
+// failure immediately after a successful store.Mint in the claim path
+// MUST terminalize the freshly minted reservation RunAttempt as `failed`
+// (reason naming the origin-stamp failure) and STILL return a non-nil
+// error to the caller. Falsifier: the old code did
+// `return w, fmt.Errorf(...)`, leaving a `pending` ratt_ record stranded
+// forever (the C3 sweeper would later mislabel it as
+// "stale: no heartbeat for 30m", masking the real infra failure).
+// Mirrors the harness-execution-lane fix in internal/harness/
+// subprocess_runner.go (slice/audit-e14-setorigin-20260724).
+func TestClaimSetOriginFailureTerminalizes(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "e14-twin", SuccessPredicate: "setorigin fail terminal"}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	real := runattempt.Open(s.home)
+	wrapper := &failingOriginStore{Store: real}
+	prevFactory := runAttemptsFactory
+	runAttemptsFactory = func(home string) runAttemptStore {
+		return wrapper
+	}
+	defer func() { runAttemptsFactory = prevFactory }()
+
+	// (1) Claim returns a non-nil error: a SetOrigin failure is a real
+	// infra failure, not a swallowed one.
+	_, err = s.Claim(w.ID, "actor-a", fixedNow)
+	if err == nil {
+		t.Fatal("Claim with SetOrigin failure must still return a non-nil error")
+	}
+
+	// (2) The OnDisk ratt_ record is terminal `failed`, NOT `pending`.
+	// The returned WorkEnvelope does not advertise the new attempt (the
+	// SetOrigin failure path returns early before w.RunAttemptIDs is
+	// appended), so we read the record directly via the real store
+	// against the wrapper's captured mintedID.
+	if wrapper.mintedID == "" {
+		t.Fatal("failingOriginStore never observed a Mint call; the claim path did not take the seam")
+	}
+	got, gerr := real.Get(wrapper.mintedID)
+	if gerr != nil {
+		t.Fatalf("Get(%s): %v", wrapper.mintedID, gerr)
+	}
+	if got.Status != runattempt.StatusFailed {
+		t.Fatalf("RunAttempt status = %q, want failed (SetOrigin failure must terminalize, not leave pending)", got.Status)
+	}
+
+	// (3) The terminal record names the origin-stamp failure. The
+	// terminalization write uses CompleteWithReason so the reason
+	// lands in the persisted JSON (SweepReason field), readable via
+	// either Get or the raw file body.
+	if !strings.Contains(got.SweepReason, "stamp origin") {
+		t.Fatalf("RunAttempt.SweepReason = %q, want it to name the origin-stamp failure", got.SweepReason)
+	}
+	body, rerr := os.ReadFile(filepath.Join(s.home, "run_attempts", wrapper.mintedID+".json"))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if !strings.Contains(string(body), "stamp origin") {
+		t.Fatalf("persisted RunAttempt JSON must record a reason naming the origin-stamp failure; got:\n%s", body)
 	}
 }

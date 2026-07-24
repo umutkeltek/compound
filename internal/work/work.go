@@ -79,12 +79,56 @@ func (s *Store) eventLogReadCount() int64 {
 	return s.eventLogReads.Load()
 }
 
+// runAttemptStore is the RunAttempt persistence surface that the claim
+// path depends on. *runattempt.Store satisfies it in production -- every
+// method here is a verbatim signature of the concrete store -- so the
+// runtime behavior is unchanged. The interface exists purely as a test
+// seam: claim_runattempt_test substitutes a fault-injecting wrapper to
+// exercise infra-failure return paths -- in particular a store whose
+// SetOrigin fails while every other write (including the terminalizing
+// Complete/CompleteWithReason) still lands, so the test can assert the
+// freshly minted attempt is terminalized failed on disk rather than left
+// stranded pending. The mirror of this seam in internal/harness
+// (subprocess_runner.go) catches the same contract violation on the
+// harness-execution lane.
+type runAttemptStore interface {
+	Mint(workID, actor, harness string, now time.Time) (runattempt.RunAttempt, error)
+	SetOrigin(id, origin string) (runattempt.RunAttempt, error)
+	SetPredecessor(id, predecessorID string) (runattempt.RunAttempt, error)
+	Get(id string) (runattempt.RunAttempt, error)
+	Complete(id, status string, now time.Time) (runattempt.RunAttempt, error)
+	CompleteWithReason(id, status, reason string, now time.Time) (runattempt.RunAttempt, error)
+}
+
+// runAttemptsFactory is the test seam through which the claim path
+// obtains its RunAttempt store. Production: runattempt.Open(home).
+// Tests inject a wrapper that fails individual writes (e.g., SetOrigin)
+// while letting terminalizing writes land.
+var runAttemptsFactory = func(home string) runAttemptStore {
+	return runattempt.Open(home)
+}
+
 // runAttempts returns the RunAttempt evidence store rooted at the same
 // COMPOUND_HOME. C1 mints a RunAttempt on every claim so the execution
 // organ fires in production, not just in panel.Apply tests. The store is
-// cheap to construct (path only, no I/O); no caching needed.
+// cheap to construct (path only, no I/O); no caching needed. The
+// run-observation sibling uses the concrete *runattempt.Store directly
+// for its own typed test seams (see run_observation.go); the claim path
+// reaches the same store through the runAttemptStore interface seam
+// instead, so claim_runattempt_test can inject a fault-injecting
+// wrapper for the SetOrigin-failure return path.
 func (s *Store) runAttempts() *runattempt.Store {
 	return runattempt.Open(s.home)
+}
+
+// runAttemptsClaim is the claim-path entry point for the RunAttempt
+// store. It returns the runAttemptStore interface so the test seam can
+// swap in a fault-injecting wrapper; production behavior is byte-
+// identical to runAttempts() (the factory returns the same concrete
+// store). Only the claim path uses this; the run-observation sibling
+// continues to use the typed *runattempt.Store directly.
+func (s *Store) runAttemptsClaim() runAttemptStore {
+	return runAttemptsFactory(s.home)
 }
 
 func (s *Store) holdEvidenceFileReadCount() int64 {
@@ -573,14 +617,14 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	if raHarness == "" {
 		raHarness = runattempt.HarnessPlaceholder
 	}
-	ra, raErr := s.runAttempts().Mint(workID, plan.Actor, raHarness, now)
+	ra, raErr := s.runAttemptsClaim().Mint(workID, plan.Actor, raHarness, now)
 	if raErr != nil {
 		return w, fmt.Errorf("claim %s: mint run attempt: %w", workID, raErr)
 	}
 	// F2: stamp provenance -- this is a claim-time placeholder reservation,
 	// not a real execution. supersede-at-attach (in Advance) reads this to
 	// terminalize the reservation once a harness_execution attempt attaches.
-	if stamped, oErr := s.runAttempts().SetOrigin(ra.ID, runattempt.OriginClaimReservation); oErr != nil {
+	if stamped, oErr := s.runAttemptsClaim().SetOrigin(ra.ID, runattempt.OriginClaimReservation); oErr != nil {
 		return w, fmt.Errorf("claim %s: stamp run attempt origin: %w", workID, oErr)
 	} else {
 		ra = stamped
@@ -590,7 +634,7 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	// the claim (the attempt exists, lineage is evidence, not enforcement).
 	if len(w.RunAttemptIDs) > 0 {
 		prev := w.RunAttemptIDs[len(w.RunAttemptIDs)-1]
-		if _, linkErr := s.runAttempts().SetPredecessor(ra.ID, prev); linkErr != nil {
+		if _, linkErr := s.runAttemptsClaim().SetPredecessor(ra.ID, prev); linkErr != nil {
 			// Best-effort: log nothing, the claim proceeds.
 			_ = linkErr
 		}
