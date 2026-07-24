@@ -51,6 +51,23 @@ type CandidateListItem struct {
 	PromotionBasis  string            `json:"promotion_basis,omitempty"`
 	Qualifiers      map[string]string `json:"qualifiers,omitempty"`
 	Reason          string            `json:"reason,omitempty"`
+	// RecurrenceCount + ConfidenceTrend are READ-ONLY DERIVED signals. They
+	// are computed at projection time from existing ledger/inbox data and
+	// never written back to the stored candidate JSON. The standing-law
+	// console chip ("seen Nx, rising") uses them as a readiness cue, not a
+	// promotion signal — promotion stays the governed memory-adjudicate
+	// act.
+	//
+	// RecurrenceCount: distinct evidence refs across candidates that cite
+	// the same normalized claim (entity|predicate|object). Includes the
+	// current candidate. A lone candidate projects 1.
+	//
+	// ConfidenceTrend: "new" when only the current candidate exists for
+	// the normalized key, "rising" when the current confidence is
+	// strictly above any prior candidate's confidence (epsilon 1e-3),
+	// "falling" when strictly below, "flat" otherwise.
+	RecurrenceCount int    `json:"recurrence_count,omitempty"`
+	ConfidenceTrend string `json:"confidence_trend,omitempty"`
 	// AdjudicatedBy/AdjudicatedAt mirror Candidate's operator-ratification
 	// provenance (see mem.Candidate) so `memory candidates --json` — the
 	// projection the console standing-law queue reads — can distinguish a
@@ -139,6 +156,12 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 	for _, c := range cands {
 		report.Counts.ByState[c.State]++
 	}
+
+	// Precompute recurrence + trend signals once over the FULL candidate set
+	// so per-item reads are O(1). The signals are derived at projection time
+	// and never written back to the inbox JSON.
+	signals := candidateReadinessSignals(cands)
+
 	for _, c := range cands {
 		reviewState := reviewByCandidate[c.ID]
 		rawKind := rawKinds[c.ID]
@@ -157,6 +180,10 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 		item, err := s.candidateListItem(c, reviewState, rawKind, opts.IncludeEvidence)
 		if err != nil {
 			return report, err
+		}
+		if sig, ok := signals[c.ID]; ok {
+			item.RecurrenceCount = sig.RecurrenceCount
+			item.ConfidenceTrend = sig.ConfidenceTrend
 		}
 		report.Items = append(report.Items, item)
 		if opts.Limit > 0 && len(report.Items) >= opts.Limit {
@@ -301,4 +328,120 @@ func (s *Store) reviewStateByCandidate() (map[string]string, []string) {
 		out[candidateID] = ClaimStateNeedsReview
 	}
 	return out, nil
+}
+
+// candidateReadinessSignal is the per-candidate projection of two read-only
+// derived fields (see CandidateListItem.RecurrenceCount / ConfidenceTrend).
+type candidateReadinessSignal struct {
+	RecurrenceCount int
+	ConfidenceTrend string
+}
+
+// trendEpsilon is the half-width of the "equal" band for trend classification
+// (a difference strictly below this is not a momentum signal).
+const trendEpsilon = 1e-3
+
+// normalizeClaimKey builds the projection-time join key for the two derived
+// signals: lowercased + whitespace-trimmed entity|predicate|object. Empty
+// fields collapse to "" so an entity-only row still joins with its peers
+// (rather than silently dropping from the cohort).
+func normalizeClaimKey(c Candidate) string {
+	return strings.ToLower(strings.TrimSpace(c.Entity)) +
+		"|" + strings.ToLower(strings.TrimSpace(c.Predicate)) +
+		"|" + strings.ToLower(strings.TrimSpace(c.Object))
+}
+
+// candidateReadinessSignals computes the derived (recurrence_count,
+// confidence_trend) pair for every candidate in the input set, keyed by the
+// normalized claim key. The trend compares the candidate's confidence with
+// the maximum confidence of any PRIOR candidate (earlier ObservationDate) for
+// the same key. The function is pure: it does not read or write disk, and it
+// never mutates its input.
+func candidateReadinessSignals(cands []Candidate) map[string]candidateReadinessSignal {
+	if len(cands) == 0 {
+		return map[string]candidateReadinessSignal{}
+	}
+
+	// Bucket by normalized claim key; sort each bucket in temporal order so
+	// the trend sees PRIOR observations (ObservationDate ascending), not
+	// random ID order. Ties (same ObservationDate + same CreatedAt) break
+	// on ID for determinism.
+	byKey := map[string][]int{}
+	for i, c := range cands {
+		byKey[normalizeClaimKey(c)] = append(byKey[normalizeClaimKey(c)], i)
+	}
+
+	out := make(map[string]candidateReadinessSignal, len(cands))
+	for _, indices := range byKey {
+		sort.SliceStable(indices, func(a, b int) bool {
+			ca, cb := cands[indices[a]], cands[indices[b]]
+			if ca.ObservationDate != cb.ObservationDate {
+				return ca.ObservationDate < cb.ObservationDate
+			}
+			if ca.CreatedAt != cb.CreatedAt {
+				return ca.CreatedAt < cb.CreatedAt
+			}
+			return ca.ID < cb.ID
+		})
+
+		// Distinct evidence refs across the cohort: each candidate contributes
+		// its SourceTraceRef (when present) so two candidates citing the
+		// same trace share one ref, but independent traces count twice.
+		refs := map[string]struct{}{}
+		for _, idx := range indices {
+			c := cands[idx]
+			if ref := strings.TrimSpace(c.SourceTraceRef); ref != "" {
+				refs[ref] = struct{}{}
+			}
+		}
+		recurrence := len(refs)
+		// A cohort that cites NO trace still has a "recurrence" of 1 — it
+		// has been observed once. (We deliberately do NOT count refs=0
+		// cohorts as zero, which would let a stray empty trace suppress the
+		// chip for a single-observation candidate.)
+		if recurrence == 0 {
+			recurrence = 1
+		}
+
+		// Two passes: first to compute each candidate's prior max, then to
+		// assign. Walking in temporal order means "prior" is the max of all
+		// earlier observations' confidences.
+		priorMax := make([]float64, len(indices))
+		priorHave := make([]bool, len(indices))
+		var maxPrior float64
+		havePrior := false
+		for j, idx := range indices {
+			if j == 0 {
+				priorMax[j] = 0
+				priorHave[j] = false
+			} else {
+				priorMax[j] = maxPrior
+				priorHave[j] = havePrior
+			}
+			if !havePrior || cands[idx].Confidence > maxPrior {
+				maxPrior = cands[idx].Confidence
+				havePrior = true
+			}
+		}
+
+		for j, idx := range indices {
+			c := cands[idx]
+			trend := "new"
+			if priorHave[j] {
+				switch {
+				case c.Confidence > priorMax[j]+trendEpsilon:
+					trend = "rising"
+				case c.Confidence < priorMax[j]-trendEpsilon:
+					trend = "falling"
+				default:
+					trend = "flat"
+				}
+			}
+			out[c.ID] = candidateReadinessSignal{
+				RecurrenceCount: recurrence,
+				ConfidenceTrend: trend,
+			}
+		}
+	}
+	return out
 }

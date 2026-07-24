@@ -1,6 +1,7 @@
 package mem
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -232,6 +233,290 @@ func TestListCandidatesIncludeEvidenceAddsCardContext(t *testing.T) {
 	}
 	if got.BelievedBefore.ClaimID != promoted.Claim.ID || got.BelievedBefore.Object != promoted.Claim.Object || got.BelievedBefore.CreatedAt == "" {
 		t.Fatalf("believed_before = %+v, want claim %+v", got.BelievedBefore, promoted.Claim)
+	}
+}
+
+// F1 (packet work_709c9ba49c56): a candidate cited by two independent
+// evidence refs/projects with confidence >= 0.8 must project
+// recurrence_count = 2 (distinct evidence refs across candidates sharing the
+// same normalized claim key) and a confidence_trend. A single-ref candidate
+// must not. The fields are derived read-only signals, computed at projection
+// time — the on-disk candidate JSON must stay byte-identical (no schema
+// mutation, no new stored state).
+func TestListCandidatesRecurrenceAndTrendAreDerivedSignals(t *testing.T) {
+	s := newStore(t)
+
+	// Two distinct evidence refs, same normalized claim (entity|predicate|
+	// object): the chip threshold.
+	rec1, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "chatgpt",
+		SourceID:   "conversation:alpha",
+		QuoteText:  "Project alpha runbook is the canonical entry point.",
+		EventTime:  "2026-07-01T09:00:00Z",
+		Actor:      "user",
+		Visibility: "private",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec2, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "chatgpt",
+		SourceID:   "conversation:beta",
+		QuoteText:  "Project alpha runbook is the canonical entry point.",
+		EventTime:  "2026-07-02T09:00:00Z",
+		Actor:      "user",
+		Visibility: "private",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	high := []Candidate{{
+		Entity:          "project:alpha",
+		Predicate:       "runbook_role",
+		Object:          "canonical entry point",
+		ObservationDate: "2026-07-01",
+		Confidence:      0.9,
+		Derivation:      "extracted",
+		PromotionBasis:  candidates.BasisExplicitConfirmation,
+		SourceTraceRef:  rec1.ID,
+		SnippetHash:     rec1.ContentHash,
+	}, {
+		Entity:          "project:alpha",
+		Predicate:       "runbook_role",
+		Object:          "canonical entry point",
+		ObservationDate: "2026-07-02",
+		Confidence:      0.85,
+		Derivation:      "extracted",
+		PromotionBasis:  candidates.BasisExplicitConfirmation,
+		SourceTraceRef:  rec2.ID,
+		SnippetHash:     rec2.ContentHash,
+	}}
+	caps, err := s.Capture(high, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(caps[0].ID, "park", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(caps[1].ID, "park", "", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	// One-off candidate with a different normalized claim (different object).
+	rec3, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "chatgpt",
+		SourceID:   "conversation:gamma",
+		QuoteText:  "Unrelated single-observation fact.",
+		EventTime:  "2026-07-03T09:00:00Z",
+		Actor:      "user",
+		Visibility: "private",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lone, err := s.Capture([]Candidate{{
+		Entity:          "project:alpha",
+		Predicate:       "runbook_role",
+		Object:          "supplementary handbook",
+		ObservationDate: "2026-07-03",
+		Confidence:      0.92,
+		Derivation:      "extracted",
+		PromotionBasis:  candidates.BasisExplicitConfirmation,
+		SourceTraceRef:  rec3.ID,
+		SnippetHash:     rec3.ContentHash,
+	}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(lone[0].ID, "park", "", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.ListCandidates(t0, CandidateListOptions{State: "parked", IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	items := map[string]CandidateListItem{}
+	for _, it := range report.Items {
+		items[it.ID] = it
+	}
+
+	both := items[caps[0].ID]
+	if both.RecurrenceCount != 2 {
+		t.Fatalf("two-ref candidate %s RecurrenceCount = %d, want 2 (item=%+v)", caps[0].ID, both.RecurrenceCount, both)
+	}
+	if both.ConfidenceTrend == "" {
+		t.Fatalf("two-ref candidate %s ConfidenceTrend is empty, want a non-empty label", caps[0].ID)
+	}
+
+	loneItem := items[lone[0].ID]
+	if loneItem.RecurrenceCount != 1 {
+		t.Fatalf("lone candidate %s RecurrenceCount = %d, want 1 (item=%+v)", lone[0].ID, loneItem.RecurrenceCount, loneItem)
+	}
+	if loneItem.ConfidenceTrend != "new" {
+		t.Fatalf("lone candidate %s ConfidenceTrend = %q, want \"new\"", lone[0].ID, loneItem.ConfidenceTrend)
+	}
+
+	// Storage invariant: derived fields must NOT mutate the on-disk candidate.
+	// We re-run the projection twice and byte-compare the persisted file
+	// before and after the second pass — the projection must be a pure read.
+	for _, id := range []string{caps[0].ID, caps[1].ID, lone[0].ID} {
+		rawBefore, err := os.ReadFile(filepath.Join(s.candDir(), id+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Re-run the projection; it must not touch disk.
+		if _, err := s.ListCandidates(t0, CandidateListOptions{State: "parked", IncludeEvidence: true}); err != nil {
+			t.Fatal(err)
+		}
+		rawAfter, err := os.ReadFile(filepath.Join(s.candDir(), id+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(rawBefore, rawAfter) {
+			t.Fatalf("persisted candidate %s mutated by list projection\n before: %s\n after:  %s", id, rawBefore, rawAfter)
+		}
+		// The persisted JSON must not carry the derived field names either —
+		// they are projection-only, not stored.
+		var blob map[string]any
+		if err := json.Unmarshal(rawAfter, &blob); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"recurrence_count", "confidence_trend"} {
+			if _, ok := blob[key]; ok {
+				t.Fatalf("derived field %q leaked into stored candidate %s JSON", key, id)
+			}
+		}
+	}
+}
+
+// F2 (packet work_709c9ba49c56): confidence_trend discriminates rising vs
+// flat. The trend is computed against the SAME normalized claim key (entity +
+// predicate + object, lowercased/trimmed). A second observation with a
+// strictly higher confidence → "rising"; equal confidence → "flat".
+func TestListCandidatesConfidenceTrendRisesWithNewerHigherConfidence(t *testing.T) {
+	s := newStore(t)
+
+	rec1, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "chatgpt",
+		SourceID:   "conversation:r1",
+		QuoteText:  "Project alpha runbook is the canonical entry point.",
+		EventTime:  "2026-07-01T09:00:00Z",
+		Actor:      "user",
+		Visibility: "private",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec2, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "chatgpt",
+		SourceID:   "conversation:r2",
+		QuoteText:  "Project alpha runbook is the canonical entry point.",
+		EventTime:  "2026-07-02T09:00:00Z",
+		Actor:      "user",
+		Visibility: "private",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Earlier observation: lower confidence.
+	earlier, err := s.Capture([]Candidate{{
+		Entity:          "project:alpha",
+		Predicate:       "runbook_role",
+		Object:          "canonical entry point",
+		ObservationDate: "2026-07-01",
+		Confidence:      0.7,
+		Derivation:      "extracted",
+		PromotionBasis:  candidates.BasisExplicitConfirmation,
+		SourceTraceRef:  rec1.ID,
+		SnippetHash:     rec1.ContentHash,
+	}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(earlier[0].ID, "park", "", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Later observation: higher confidence + a second independent ref.
+	later, err := s.Capture([]Candidate{{
+		Entity:          "project:alpha",
+		Predicate:       "runbook_role",
+		Object:          "canonical entry point",
+		ObservationDate: "2026-07-02",
+		Confidence:      0.9,
+		Derivation:      "extracted",
+		PromotionBasis:  candidates.BasisExplicitConfirmation,
+		SourceTraceRef:  rec2.ID,
+		SnippetHash:     rec2.ContentHash,
+	}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(later[0].ID, "park", "", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.ListCandidates(t0, CandidateListOptions{State: "parked", IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	items := map[string]CandidateListItem{}
+	for _, it := range report.Items {
+		items[it.ID] = it
+	}
+
+	if items[later[0].ID].ConfidenceTrend != "rising" {
+		t.Fatalf("higher-confidence later candidate trend = %q, want \"rising\"", items[later[0].ID].ConfidenceTrend)
+	}
+	if items[later[0].ID].RecurrenceCount != 2 {
+		t.Fatalf("rising candidate recurrence = %d, want 2 (item=%+v)", items[later[0].ID].RecurrenceCount, items[later[0].ID])
+	}
+
+	// A third observation with the SAME confidence as a prior produces a
+	// "flat" trend (no upward momentum, no decline).
+	rec3, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "chatgpt",
+		SourceID:   "conversation:r3",
+		QuoteText:  "Project alpha runbook is the canonical entry point.",
+		EventTime:  "2026-07-04T09:00:00Z",
+		Actor:      "user",
+		Visibility: "private",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat, err := s.Capture([]Candidate{{
+		Entity:          "project:alpha",
+		Predicate:       "runbook_role",
+		Object:          "canonical entry point",
+		ObservationDate: "2026-07-04",
+		Confidence:      0.9,
+		Derivation:      "extracted",
+		PromotionBasis:  candidates.BasisExplicitConfirmation,
+		SourceTraceRef:  rec3.ID,
+		SnippetHash:     rec3.ContentHash,
+	}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(flat[0].ID, "park", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	report2, err := s.ListCandidates(t0, CandidateListOptions{State: "parked", IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items2 := map[string]CandidateListItem{}
+	for _, it := range report2.Items {
+		items2[it.ID] = it
+	}
+	if got := items2[flat[0].ID].ConfidenceTrend; got != "flat" {
+		t.Fatalf("equal-confidence candidate trend = %q, want \"flat\"", got)
 	}
 }
 

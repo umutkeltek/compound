@@ -85,3 +85,23 @@ func TestUnknownKindHasNoDir(t *testing.T) {
 		}
 	}
 }
+
+// F3 depth probe (packet work_709c9ba49c56): the MemoryCandidate kind stays
+// the canonical home for the inbox path used by the candidate projection the
+// console reads. The packet's "recurrence_count + confidence_trend" derived
+// fields are computed at projection time by internal/mem.ListCandidates; this
+// test pins the seam so the projection emit site can never silently key off
+// a different inbox dir (which would orphan the standing-law-candidate chip
+// from the candidate set it is supposed to summarise).
+func TestMemoryCandidateKindIsCanonicalProjectionSource(t *testing.T) {
+	spec, ok := SpecFor(Memory)
+	if !ok {
+		t.Fatal("memory candidate spec missing")
+	}
+	if spec.InboxDir != "inbox/memory-candidates" {
+		t.Fatalf("memory inbox drifted: %q", spec.InboxDir)
+	}
+	if spec.Consumer != "compound memory adjudicate" {
+		t.Fatalf("memory consumer drifted: %q", spec.Consumer)
+	}
+}
