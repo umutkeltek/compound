@@ -1092,8 +1092,20 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 		item.NextAction = "regenerate dirty-plan"
 		return
 	}
-	plan, planErr := loadSourceControlPlanFile(item.JSONPath)
+	plan, planErr := readSourceControlPlanFile(item.JSONPath)
 	if planErr != nil {
+		item.Actions = nil
+		item.Readiness = "blocked"
+		item.BlockedReason = "source-control cleanup plan invalid: " + sourceControlQueueError(planErr)
+		item.NextAction = "regenerate dirty-plan from a current source-control snapshot"
+		return
+	}
+	planErr = ValidateSourceControlReviewPlan(plan)
+	if planErr != nil {
+		if sourceControlLegacyPlanIsNowClean(plan) {
+			fileHistoricalSourceControlPlan(item, plan)
+			return
+		}
 		item.Actions = nil
 		item.Readiness = "blocked"
 		item.BlockedReason = "source-control cleanup plan invalid: " + sourceControlQueueError(planErr)
@@ -1135,14 +1147,7 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 		return
 	}
 	if currentSnapshot.Status == "clean" {
-		item.Status = "resolved"
-		item.Readiness = "no_action"
-		item.BlockedReason = ""
-		item.NextAction = "historical dirty-plan evidence is superseded by the current clean repository; create a new dirty-plan only if uncommitted state returns"
-		item.Actions = nil
-		annotateSourceControlOperatorCard(item, plan, reviewartifact.BandFiled)
-		item.OperatorSummary = "The repository is clean; this dirty source-control review is historical evidence."
-		item.OperatorUnlock = ""
+		fileHistoricalSourceControlPlan(item, plan)
 		return
 	}
 	if !sourceControlReviewPlanMatchesSnapshot(plan, currentSnapshot) {
@@ -1205,6 +1210,27 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 	item.Actions = []reviewartifact.Action{action}
 	item.Readiness = "ready_to_record"
 	item.NextAction = "record reviewed source-control cleanup disposition"
+}
+
+func sourceControlLegacyPlanIsNowClean(plan SourceControlReviewPlan) bool {
+	if plan.SchemaVersion != SourceControlReviewPlanSchemaVersion ||
+		strings.TrimSpace(plan.RepoID) == "" ||
+		!filepath.IsAbs(strings.TrimSpace(plan.GitRoot)) {
+		return false
+	}
+	current, err := ReadGitSnapshot(plan.GitRoot)
+	return err == nil && current.Status == "clean" && current.RepoID == plan.RepoID
+}
+
+func fileHistoricalSourceControlPlan(item *reviewartifact.QueueItem, plan SourceControlReviewPlan) {
+	item.Status = "resolved"
+	item.Readiness = "no_action"
+	item.BlockedReason = ""
+	item.NextAction = "historical dirty-plan evidence is superseded by the current clean repository; create a new dirty-plan only if uncommitted state returns"
+	item.Actions = nil
+	annotateSourceControlOperatorCard(item, plan, reviewartifact.BandFiled)
+	item.OperatorSummary = "The repository is clean; this dirty source-control review is historical evidence."
+	item.OperatorUnlock = ""
 }
 
 func blockSourceControlPlanCurrentState(item *reviewartifact.QueueItem, plan SourceControlReviewPlan, reason, nextAction, summary string) {
@@ -1393,15 +1419,23 @@ func annotateSourceControlOperatorCard(item *reviewartifact.QueueItem, plan Sour
 }
 
 func loadSourceControlPlanFile(path string) (SourceControlReviewPlan, error) {
+	plan, err := readSourceControlPlanFile(path)
+	if err != nil {
+		return SourceControlReviewPlan{}, err
+	}
+	if err := ValidateSourceControlReviewPlan(plan); err != nil {
+		return SourceControlReviewPlan{}, err
+	}
+	return plan, nil
+}
+
+func readSourceControlPlanFile(path string) (SourceControlReviewPlan, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return SourceControlReviewPlan{}, err
 	}
 	var plan SourceControlReviewPlan
 	if err := json.Unmarshal(data, &plan); err != nil {
-		return SourceControlReviewPlan{}, err
-	}
-	if err := ValidateSourceControlReviewPlan(plan); err != nil {
 		return SourceControlReviewPlan{}, err
 	}
 	return plan, nil

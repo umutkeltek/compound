@@ -179,6 +179,83 @@ func TestSourceControlReviewQueueFilesCleanSupersededPlanWithoutDeletingEvidence
 	}
 }
 
+func TestSourceControlReviewQueueFilesLegacyInvalidPlanWhenCurrentRepoIsClean(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_legacy_dirty_state", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Head = plan.Head[:12]
+	if err := ValidateSourceControlReviewPlan(plan); err == nil {
+		t.Fatal("test precondition: legacy short-SHA plan unexpectedly validated")
+	}
+	home := t.TempDir()
+	if _, err := reviewartifact.WriteJSON(home, SourceControlCleanupReviewArea, plan.ID+".json", plan, "  "); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(repo, "README.md"), "initial\n")
+	current, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != "clean" {
+		t.Fatalf("test repository status = %q, want clean", current.Status)
+	}
+
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: SourceControlCleanupReviewArea}, fixedSourceControlReviewTime.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateSourceControlCleanupQueue(&queue)
+	reviewartifact.Recount(&queue)
+	item := queue.Items[0]
+	if item.Status != "resolved" || item.Readiness != "no_action" || item.Band != reviewartifact.BandFiled || len(item.Actions) != 0 {
+		t.Fatalf("clean repository retained a legacy-invalid dirty-review action: %+v", item)
+	}
+	if queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 || len(queue.Groups) != 0 {
+		t.Fatalf("clean repository retained legacy-invalid operator attention: counts=%+v groups=%+v", queue.Counts, queue.Groups)
+	}
+}
+
+func TestSourceControlReviewQueueKeepsLegacyInvalidPlanBlockedWhileRepoIsDirty(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, "work_legacy_dirty_state_current", fixedSourceControlReviewTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Head = plan.Head[:12]
+	home := t.TempDir()
+	if _, err := reviewartifact.WriteJSON(home, SourceControlCleanupReviewArea, plan.ID+".json", plan, "  "); err != nil {
+		t.Fatal(err)
+	}
+
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: SourceControlCleanupReviewArea}, fixedSourceControlReviewTime.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateSourceControlCleanupQueue(&queue)
+	reviewartifact.Recount(&queue)
+	item := queue.Items[0]
+	if item.Status != "review_required" || item.Readiness != "blocked" || item.Band != reviewartifact.BandNeedsYou {
+		t.Fatalf("dirty repository lost its legacy-invalid review block: %+v", item)
+	}
+	if !strings.Contains(item.BlockedReason, "head must be a full git object id") ||
+		queue.Counts.ReviewRequired != 1 || len(queue.Groups) != 1 {
+		t.Fatalf("dirty repository did not preserve truthful blocked attention: item=%+v counts=%+v groups=%+v", item, queue.Counts, queue.Groups)
+	}
+}
+
 func TestSourceControlReviewQueueBlocksWhenDirtyStateChangedSincePlan(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "README.md"), "first dirty state\n")
