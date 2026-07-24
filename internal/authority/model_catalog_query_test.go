@@ -18,8 +18,8 @@ import (
 var modelCatalogQueryTestNow = time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 
 // writeModelCatalogQueryFixture is the same synthetic fixture the slice-1
-// test owns, replayed here so the F1 test is self-contained and not coupled
-// to slice-1's fixture internals.
+// test owns, replayed here so the F1/F2 tests are self-contained and not
+// coupled to slice-1's fixture internals.
 func writeModelCatalogQueryFixture(t *testing.T, path string) {
 	t.Helper()
 	body := `{
@@ -299,5 +299,196 @@ func TestModelCatalogQueryRejectsBadModelID(t *testing.T) {
 	}
 	if _, err := QueryModelCatalog(context.Background(), homePath, ModelCatalogQueryFilter{Model: "model:no-slash"}, modelCatalogQueryTestNow); err == nil {
 		t.Fatal("expected malformed --model value to fail validation, got nil")
+	}
+}
+
+// TestModelCatalogDoctorReportsOkWhenSourceMatchesInstalled is F2's "ok"
+// half: with a fixture source path that BYTE-EQUALS the just-installed
+// catalog, the doctor MUST report status=ok. A red result here means
+// the doctor is misreading digests or the source-comparison seam is
+// wrongly inverted.
+func TestModelCatalogDoctorReportsOkWhenSourceMatchesInstalled(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", modelCatalogQueryTestNow); err != nil {
+		t.Fatalf("home init: %v", err)
+	}
+	source := filepath.Join(t.TempDir(), "provider-registry.json")
+	writeModelCatalogQueryFixture(t, source)
+	installModelCatalogQueryFixture(t, homePath, source)
+
+	report, err := ModelCatalogDoctor(homePath, source, modelCatalogQueryTestNow)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if report.Status != "ok" {
+		t.Fatalf("doctor status = %q, want ok", report.Status)
+	}
+	if report.InstalledDigest == "" {
+		t.Fatal("installed_digest must be populated when the install is present")
+	}
+	if report.SourceDigest == "" {
+		t.Fatal("source_digest must be populated when --source is supplied and the file is present")
+	}
+	if report.InstalledDigest != report.SourceDigest {
+		t.Fatalf("digests must match on identical content: installed=%s source=%s", report.InstalledDigest, report.SourceDigest)
+	}
+	if report.SourcePath != source {
+		t.Fatalf("source_path = %q, want %q", report.SourcePath, source)
+	}
+	if report.LastImportID == "" {
+		t.Fatal("last_import_id must surface the ledger's latest record id")
+	}
+	// The doctor MUST NOT auto-import; an unchanged source and an unchanged
+	// installed digest prove nothing was written.
+	if _, err := os.Stat(ModelCatalogRegistryPath(homePath)); err != nil {
+		t.Fatalf("installed catalog must still be present: %v", err)
+	}
+}
+
+// TestModelCatalogDoctorReportsDriftWhenSourceDiffersFromInstalled is
+// F2's "drift" half: mutate the fixture source after install and the
+// doctor MUST report status=drift with both digests surfaced. A red
+// result here means the doctor silently re-categorized drift as ok.
+func TestModelCatalogDoctorReportsDriftWhenSourceDiffersFromInstalled(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", modelCatalogQueryTestNow); err != nil {
+		t.Fatalf("home init: %v", err)
+	}
+	source := filepath.Join(t.TempDir(), "provider-registry.json")
+	writeModelCatalogQueryFixture(t, source)
+	installModelCatalogQueryFixture(t, homePath, source)
+
+	// Mutate the SOURCE file post-install. This is the case the packet
+	// calls out: an upstream provider-registry.json that has changed but
+	// the install hasn't been re-run.
+	mutated := []byte(`{
+  "schema": "examplecorp/provider-registry@4",
+  "models": [
+    {
+      "provider_id": "examplecorp",
+      "model_id": "alpha-flash",
+      "display_name": "Alpha Flash Updated",
+      "upstream_model_ids": ["alpha-flash-001"],
+      "input_micros_per_mtok": 200000,
+      "output_micros_per_mtok": 800000,
+      "context_window": 256000,
+      "tier": "premium",
+      "source_url": "https://catalog.invalid/alpha-flash",
+      "workload_kind": "chat"
+    }
+  ],
+  "deprecated": []
+}
+`)
+	if err := os.WriteFile(source, mutated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := ModelCatalogDoctor(homePath, source, modelCatalogQueryTestNow)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if report.Status != "drift" {
+		t.Fatalf("doctor status = %q, want drift", report.Status)
+	}
+	if report.InstalledDigest == report.SourceDigest {
+		t.Fatal("drift case must surface different digests")
+	}
+	// The doctor MUST NOT auto-import; the mutation happened only on the
+	// SOURCE file, so the INSTALLED digest must stay unchanged.
+	installedData, err := os.ReadFile(ModelCatalogRegistryPath(homePath))
+	if err != nil {
+		t.Fatalf("read installed: %v", err)
+	}
+	if "sha256:"+digestBytes(installedData) != report.InstalledDigest {
+		t.Fatal("installed_digest must reflect the actual installed file, not the source mutation")
+	}
+	// The drift check row must surface the actionable re-import command.
+	foundDriftCheck := false
+	for _, c := range report.Checks {
+		if c.Name == "digest_match" {
+			foundDriftCheck = true
+			if c.Status != "fail" {
+				t.Fatalf("digest_match check status = %q, want fail", c.Status)
+			}
+		}
+	}
+	if !foundDriftCheck {
+		t.Fatalf("digest_match check missing from doctor report: %+v", report.Checks)
+	}
+}
+
+// TestModelCatalogDoctorReportsSourceAbsentWhenFileMissing is F2's
+// "source-absent" half: a --source path that doesn't exist on disk
+// must NOT collapse to a silent ok — the doctor must surface the absence
+// so the operator can decide whether to re-run import.
+func TestModelCatalogDoctorReportsSourceAbsentWhenFileMissing(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", modelCatalogQueryTestNow); err != nil {
+		t.Fatalf("home init: %v", err)
+	}
+	source := filepath.Join(t.TempDir(), "provider-registry.json")
+	writeModelCatalogQueryFixture(t, source)
+	installModelCatalogQueryFixture(t, homePath, source)
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist.json")
+	report, err := ModelCatalogDoctor(homePath, missing, modelCatalogQueryTestNow)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if report.Status != "source-absent" {
+		t.Fatalf("doctor status = %q, want source-absent", report.Status)
+	}
+	if report.SourcePath != missing {
+		t.Fatalf("source_path = %q, want %q", report.SourcePath, missing)
+	}
+	if report.SourceDigest != "" {
+		t.Fatalf("source_digest must be empty when source is absent, got %q", report.SourceDigest)
+	}
+}
+
+// TestModelCatalogDoctorReportsSourceAbsentWhenNoSourceFlag is F2's
+// "source-absent" half for the no-flag case: a doctor call without
+// --source must also surface source-absent (not silently ok) so an
+// operator knows the comparison didn't run.
+func TestModelCatalogDoctorReportsSourceAbsentWhenNoSourceFlag(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", modelCatalogQueryTestNow); err != nil {
+		t.Fatalf("home init: %v", err)
+	}
+	source := filepath.Join(t.TempDir(), "provider-registry.json")
+	writeModelCatalogQueryFixture(t, source)
+	installModelCatalogQueryFixture(t, homePath, source)
+
+	report, err := ModelCatalogDoctor(homePath, "", modelCatalogQueryTestNow)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if report.Status != "source-absent" {
+		t.Fatalf("doctor status = %q, want source-absent", report.Status)
+	}
+	if report.SourcePath != "" {
+		t.Fatalf("source_path = %q, want empty when --source is unset", report.SourcePath)
+	}
+}
+
+// TestModelCatalogDoctorReportsNotInstalledWhenHomeMissing is the
+// not-installed edge case: a fresh home (no install) must report
+// not-installed with an actionable hint, not crash on a missing file.
+func TestModelCatalogDoctorReportsNotInstalledWhenHomeMissing(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", modelCatalogQueryTestNow); err != nil {
+		t.Fatalf("home init: %v", err)
+	}
+	// No install — doctor must surface not-installed.
+	report, err := ModelCatalogDoctor(homePath, "", modelCatalogQueryTestNow)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if report.Status != "not-installed" {
+		t.Fatalf("doctor status = %q, want not-installed", report.Status)
+	}
+	if report.InstalledDigest != "" {
+		t.Fatalf("installed_digest must be empty on not-installed, got %q", report.InstalledDigest)
 	}
 }

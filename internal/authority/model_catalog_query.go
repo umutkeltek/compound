@@ -3,6 +3,7 @@ package authority
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -223,4 +224,136 @@ func splitModelCatalogSlugForQuery(slug string) (provider, modelID string, ok bo
 		return "", "", false
 	}
 	return splitModelCatalogSlugRest(strings.TrimPrefix(slug, prefix))
+}
+
+// --- model catalog refresh reflex (F2) ---
+// Lives in the same file as the query because both consume the same
+// installed-source-authority read seam; slice-2 stays a thin reader on
+// top of slice-1's install path with no new internal/arch triad.
+
+// ModelCatalogDoctorReport is the read-only drift surface. A red status
+// ("drift") means the source on disk changed since the last import;
+// "ok" means identical content; "source-absent" means --source was not
+// supplied OR the source file is not present locally; "not-installed"
+// means the installed catalog is missing entirely. The doctor is never
+// blank — every status carries a check list with an actionable hint.
+type ModelCatalogDoctorReport struct {
+	AuthorityRef    string                    `json:"authority_ref"`
+	AuthorityPath   string                    `json:"authority_path"`
+	Status          string                    `json:"status"` // drift|ok|source-absent|not-installed
+	InstalledDigest string                    `json:"installed_digest,omitempty"`
+	SourcePath      string                    `json:"source_path,omitempty"`
+	SourceDigest    string                    `json:"source_digest,omitempty"`
+	LastImportID    string                    `json:"last_import_id,omitempty"`
+	Checks          []ModelCatalogDoctorCheck `json:"checks"`
+}
+
+// ModelCatalogDoctorCheck is one cell of the drift surface (installed ok,
+// source-readable, digests match, etc.). Same name/status/detail shape as
+// the other authority doctor reports so the CLI / JSON consumers stay
+// uniform.
+type ModelCatalogDoctorCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// ModelCatalogDoctor is the read-only refresh reflex. It loads the
+// installed catalog (the source of truth), reads the latest
+// source-authority ledger entry, and (if --source was supplied and the
+// source file is present locally) compares its sha256 against the
+// installed digest. Writes nothing. Auto-import lives on the import
+// verb, never here.
+func ModelCatalogDoctor(homePath, sourcePath string, now time.Time) (ModelCatalogDoctorReport, error) {
+	_ = now
+	homePath = strings.TrimSpace(homePath)
+	if homePath == "" {
+		return ModelCatalogDoctorReport{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	report := ModelCatalogDoctorReport{
+		AuthorityRef:  ModelCatalogAuthorityRef,
+		AuthorityPath: ModelCatalogRegistryPath(homePath),
+		Checks:        []ModelCatalogDoctorCheck{},
+	}
+
+	// Installed digest: read the installed catalog file directly so the
+	// doctor works even when the source-authority ledger is empty (e.g.
+	// a manual install that bypassed the import verb).
+	installedData, err := os.ReadFile(report.AuthorityPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			report.Status = "not-installed"
+			report.Checks = append(report.Checks, ModelCatalogDoctorCheck{
+				Name: "installed", Status: "fail",
+				Detail: "no installed catalog at " + report.AuthorityPath + " — run `compound authority import-model-catalog <provider-registry.json>`",
+			})
+			return report, nil
+		}
+		return ModelCatalogDoctorReport{}, fmt.Errorf("read installed catalog: %w", err)
+	}
+	report.InstalledDigest = "sha256:" + digestBytes(installedData)
+	report.Checks = append(report.Checks, ModelCatalogDoctorCheck{
+		Name: "installed", Status: "ok",
+		Detail: "installed catalog at " + report.AuthorityPath,
+	})
+
+	records, err := LoadModelCatalogSourceAuthority(homePath)
+	if err != nil {
+		return ModelCatalogDoctorReport{}, fmt.Errorf("load source authority: %w", err)
+	}
+	if len(records) > 0 {
+		last := records[len(records)-1]
+		report.LastImportID = last.ID
+		report.Checks = append(report.Checks, ModelCatalogDoctorCheck{
+			Name: "ledger", Status: "ok",
+			Detail: "last import " + last.ID + " at " + last.CreatedAt,
+		})
+	} else {
+		report.Checks = append(report.Checks, ModelCatalogDoctorCheck{
+			Name: "ledger", Status: "warn",
+			Detail: "no source-authority ledger entry — installed digest is the only available signal",
+		})
+	}
+
+	// Source comparison: only when --source was supplied AND the file is
+	// present locally. We never wake up the source repo file's content
+	// speculatively — the doctor is READ-ONLY, and the operator owns
+	// picking the source path.
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		report.Status = "source-absent"
+		report.Checks = append(report.Checks, ModelCatalogDoctorCheck{
+			Name: "source", Status: "skipped",
+			Detail: "no --source path supplied; pass --source <provider-registry.json> to enable drift compare",
+		})
+		return report, nil
+	}
+	report.SourcePath = sourcePath
+	sourceData, err := os.ReadFile(sourcePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			report.Status = "source-absent"
+			report.Checks = append(report.Checks, ModelCatalogDoctorCheck{
+				Name: "source", Status: "fail",
+				Detail: "source file not found at " + sourcePath,
+			})
+			return report, nil
+		}
+		return ModelCatalogDoctorReport{}, fmt.Errorf("read source %s: %w", sourcePath, err)
+	}
+	report.SourceDigest = "sha256:" + digestBytes(sourceData)
+	if report.SourceDigest == report.InstalledDigest {
+		report.Status = "ok"
+		report.Checks = append(report.Checks, ModelCatalogDoctorCheck{
+			Name: "digest_match", Status: "ok",
+			Detail: "installed sha256 == source sha256",
+		})
+		return report, nil
+	}
+	report.Status = "drift"
+	report.Checks = append(report.Checks, ModelCatalogDoctorCheck{
+		Name: "digest_match", Status: "fail",
+		Detail: "source " + report.SourceDigest + " differs from installed " + report.InstalledDigest + " — re-run `compound authority import-model-catalog " + sourcePath + "`",
+	})
+	return report, nil
 }

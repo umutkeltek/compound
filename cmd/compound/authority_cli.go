@@ -28,6 +28,7 @@
 //   - import-infra-services
 //   - import-model-catalog
 //   - model-catalog              (read-only query: rows + source revision)
+//   - model-catalog-doctor       (refresh reflex: drift/ok/source-absent)
 //   - import-job-roster
 //   - import-job-token-governance
 //   - job-roster-authority
@@ -55,7 +56,7 @@ import (
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | worktree-retire <plan|review|apply> | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-model-catalog <provider-registry.json> | model-catalog [--family F] [--model M] [--json] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | worktree-retire <plan|review|apply> | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-model-catalog <provider-registry.json> | model-catalog [--family F] [--model M] [--json] | model-catalog-doctor [--source P] [--json] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
@@ -234,6 +235,69 @@ func cmdAuthority(args []string) {
 			if row.SupersededBy != "" {
 				fmt.Printf("    superseded_by: %s\n", row.SupersededBy)
 			}
+		}
+		return
+	}
+	if args[0] == "model-catalog-doctor" {
+		// model-catalog-doctor is the refresh reflex: compare the installed
+		// catalog sha256 against the source on-disk (if path provided and
+		// present), report drift/ok/source-absent. Read-only — the import
+		// verb stays the governed door.
+		jsonOut := false
+		sourcePath := ""
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--json":
+				jsonOut = true
+			case "--source":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "usage: compound authority model-catalog-doctor [--source P] [--json]")
+					os.Exit(2)
+				}
+				i++
+				sourcePath = args[i]
+			default:
+				fmt.Fprintln(os.Stderr, "usage: compound authority model-catalog-doctor [--source P] [--json]")
+				os.Exit(2)
+			}
+		}
+		report, err := authority.ModelCatalogDoctor(homePath, sourcePath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority model-catalog-doctor:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# model-catalog doctor\n")
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- authority_path: %s\n", report.AuthorityPath)
+		fmt.Printf("- status: %s\n", report.Status)
+		if report.InstalledDigest != "" {
+			fmt.Printf("- installed_digest: %s\n", report.InstalledDigest)
+		}
+		if report.SourcePath != "" {
+			fmt.Printf("- source_path: %s\n", report.SourcePath)
+		}
+		if report.SourceDigest != "" {
+			fmt.Printf("- source_digest: %s\n", report.SourceDigest)
+		}
+		if report.LastImportID != "" {
+			fmt.Printf("- last_import: %s\n", report.LastImportID)
+		}
+		for _, ev := range report.Checks {
+			fmt.Printf("- check: %s %s", ev.Name, ev.Status)
+			if ev.Detail != "" {
+				fmt.Printf(" (%s)", ev.Detail)
+			}
+			fmt.Println()
+		}
+		// The refresh reflex is read-only; it makes drift visible without
+		// auto-importing. Exit 0 on ok/source-absent (intentional), non-zero
+		// on drift so scripts can chain.
+		if report.Status == "drift" {
+			os.Exit(1)
 		}
 		return
 	}
