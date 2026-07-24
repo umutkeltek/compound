@@ -135,9 +135,13 @@ compound **observes** executions; it does not become one. The rail is proven by 
   steal-with-reason advisory mutex over the ACT of landing to main; the full ceremony (rehearse → battery →
   `--ff-only` under a fresh main-SHA guard → `land-check` → close) is owned by `compound-land`. The SHA guard is
   the correctness check; the lease only serializes the window.
-- **Main-checkout hygiene:** the MAIN checkout stays on `main` and clean; WIP lives in worktrees/branches — uncommitted
-  work in the shared tree is a lane mid-ceremony that blocks every other lane. Never `git checkout <branch>` in the MAIN
-  worktree — a later `git merge` compares against THEIR HEAD, not main, and `land-check` fails `wrong_target_worktree`.
+ - **Main-checkout hygiene:** the MAIN checkout stays on `main` and clean; WIP lives in worktrees/branches — uncommitted
+   work in the shared tree is a lane mid-ceremony that blocks every other lane. Never `git checkout <branch>` in the MAIN
+   worktree — a later `git merge` compares against THEIR HEAD, not main, and `land-check` fails `wrong_target_worktree`.
+   **Build in a worktree from minute one** (lived 2026-07-24, work_18f8ce768471): uncommitted WIP in MAIN is wipeable by
+   the cleanup lane at any time; a salvage lane may preserve it as a `wip(...)` commit on a salvage branch attached to
+   YOUR envelope — check `work show <id>` artifacts before assuming a wipe, and expect `land-check`
+   `candidate_tip_mismatch` until you attach your newer landed tip and re-check.
 
 ## Audit-reconcile law (an audit is a snapshot that LAGS the lanes)
 External audits (ChatGPT zip rounds, critique lists, prior review docs) are point-in-time snapshots; the lanes
