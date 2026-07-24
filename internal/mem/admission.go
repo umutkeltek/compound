@@ -82,6 +82,7 @@ func ClassifyCandidateAdmission(c Candidate, now time.Time) CandidateAdmission {
 		CanonClass:     c.CanonClass,
 		Source:         c.Qualifiers["source"],
 		Tags:           c.Tags,
+		Object:         c.Object,
 	})
 	switch disp.Kind {
 	case policy.DispositionAutoFile:

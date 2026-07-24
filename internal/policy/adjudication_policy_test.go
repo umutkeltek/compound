@@ -57,6 +57,42 @@ func TestResolveAdjudicationDecisionsDown(t *testing.T) {
 			in:   AdjudicationInput{CanonClass: "principle", Visibility: "operational"},
 			want: DispositionOperatorRequired,
 		},
+		{
+			// Falsifier for the pointer guard: a bare content hash with no basis is a
+			// pointer, not a claim — decay_park would strand it (corroboration can never
+			// arrive for a cid). Red without the guard, green with it.
+			name: "bare content-hash pointer auto-files",
+			in: AdjudicationInput{
+				Visibility: "operational",
+				Object:     "sha256:277a3a18dd61158433163f7a8c42aa0dc47324db88eeb9bc2a3d089fb5f0cb4a",
+			},
+			want: DispositionAutoFile,
+		},
+		{
+			name: "private pointer still never auto-files (privacy law wins)",
+			in: AdjudicationInput{
+				Visibility: "private",
+				Object:     "sha256:277a3a18dd61158433163f7a8c42aa0dc47324db88eeb9bc2a3d089fb5f0cb4a",
+			},
+			want: DispositionDecayPark,
+		},
+		{
+			name: "sentence containing a hash is a claim, not a pointer",
+			in: AdjudicationInput{
+				Visibility: "operational",
+				Object:     "build artifact sha256:277a3a18dd61158433163f7a8c42aa0dc47324db88eeb9bc2a3d089fb5f0cb4a verified on CI",
+			},
+			want: DispositionDecayPark,
+		},
+		{
+			name: "cheap-lane pointer still decay-parks (cheap lane never raises tier)",
+			in: AdjudicationInput{
+				ProvenanceLane: "cheap-lane",
+				Visibility:     "operational",
+				Object:         "sha256:277a3a18dd61158433163f7a8c42aa0dc47324db88eeb9bc2a3d089fb5f0cb4a",
+			},
+			want: DispositionDecayPark,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

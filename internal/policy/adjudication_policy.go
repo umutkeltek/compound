@@ -25,6 +25,7 @@ type AdjudicationInput struct {
 	CanonClass     string
 	Source         string // Qualifiers["source"]
 	Tags           []string
+	Object         string // the claim body; a bare content hash marks a pointer, not a claim
 }
 
 // AdjudicationDisposition is the write-seam outcome for a candidate.
@@ -84,6 +85,17 @@ func ResolveAdjudication(in AdjudicationInput) AdjudicationDisposition {
 			ParkDays:       DefaultDecayParkDays,
 		}
 	}
+	// A bare content hash with no promotion basis is a POINTER (tool-output blob cid), not a
+	// claim: corroboration can never arrive for it, so decay_park would strand it in the
+	// durable-memory queue (2,580 such rows accumulated by 2026-07-24). File it terminal.
+	// Private visibility still wins above: privacy-sensitive items never auto_file.
+	if basis == "" && isBareContentHash(in.Object) && vis != "private" {
+		return AdjudicationDisposition{
+			Kind:           DispositionAutoFile,
+			Reason:         "content-addressed pointer, not a claim; structurally never promotable; filed terminal",
+			ReviewRequired: false,
+		}
+	}
 	// Measurement / deterministic import artifacts can auto-file when not private or cheap-lane.
 	if isAutoFileBasis(basis) {
 		return AdjudicationDisposition{
@@ -111,6 +123,23 @@ func isOperatorPermanentKind(claimType, canonClass string) bool {
 		return true
 	}
 	return false
+}
+
+// isBareContentHash reports whether the whole object is exactly "sha256:" + 64 lowercase hex —
+// the content-id shape minted by blob doors (tool-output, capture). A URL or sentence that merely
+// CONTAINS a hash is not a pointer.
+func isBareContentHash(object string) bool {
+	const prefix = "sha256:"
+	s := strings.TrimSpace(object)
+	if !strings.HasPrefix(s, prefix) || len(s) != len(prefix)+64 {
+		return false
+	}
+	for _, r := range s[len(prefix):] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func isAutoFileBasis(basis string) bool {

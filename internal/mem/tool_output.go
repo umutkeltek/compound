@@ -89,6 +89,10 @@ func (s *Store) CaptureToolOutput(tool, workID, body string, now time.Time) (cid
 	if strings.TrimSpace(workID) != "" {
 		c.EvidenceRefs = []string{"work:" + workID}
 	}
+	// Route through admission so the pointer is BORN terminal (auto_file → no_promote): a bare-cid
+	// candidate can never be corroborated, and leaving it proposed strands it in the durable-memory
+	// queue via decay_park (2,580 accumulated by 2026-07-24; see find_ab52cffb9bf5).
+	c, _ = AdmitCandidateAt(c, now)
 	if err = candidates.WriteCandidate(s.home, candidates.Memory, id, &c); err != nil {
 		return "", "", err
 	}

@@ -76,7 +76,9 @@ func TestCaptureToolOutputRoundTripObservedNeverLedger(t *testing.T) {
 		t.Fatalf("ledger digest changed: before=%s after=%s", before, after)
 	}
 
-	// Minted candidate is observed-class, proposed, no promotion basis.
+	// Minted candidate is observed-class, BORN TERMINAL (no_promote), no promotion basis.
+	// A bare-cid pointer can never be corroborated; leaving it proposed strands it in the
+	// durable-memory queue via decay_park (2,580 accumulated by 2026-07-24, find_ab52cffb9bf5).
 	id := idFor("cand_", "tool-output", cid)
 	var c Candidate
 	if err := candidates.ReadCandidate(home, candidates.Memory, id, &c); err != nil {
@@ -85,8 +87,11 @@ func TestCaptureToolOutputRoundTripObservedNeverLedger(t *testing.T) {
 	if c.Derivation != DerivationObserved {
 		t.Errorf("derivation = %q, want %q", c.Derivation, DerivationObserved)
 	}
-	if c.State != "proposed" {
-		t.Errorf("state = %q, want proposed", c.State)
+	if c.State != "no_promote" {
+		t.Errorf("state = %q, want no_promote (pointer candidates are born filed, never queued)", c.State)
+	}
+	if !strings.Contains(c.Reason, "pointer") {
+		t.Errorf("reason = %q, want the pointer auto-file reason", c.Reason)
 	}
 	if c.PromotionBasis != "" {
 		t.Errorf("promotion_basis = %q, want empty (never auto-promotes)", c.PromotionBasis)
