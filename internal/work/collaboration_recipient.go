@@ -35,9 +35,9 @@ type CollaborationRecipientResolution struct {
 }
 
 // ResolveCollaborationRecipient binds a native session/cwd/harness payload to
-// one exact active, attached harness-execution RunAttempt. An exact existing
-// delegate-session binding wins; otherwise the workspace/harness match must be
-// unique. Ambiguity is never guessed.
+// one exact active, attached harness-execution RunAttempt. Session identity is
+// conjunctive authority: workspace/harness proximity never adopts an unknown
+// native session.
 func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery) (CollaborationRecipientResolution, bool, error) {
 	query.Harness = normalizeCollaborationHarness(query.Harness)
 	query.SessionID = strings.TrimSpace(query.SessionID)
@@ -102,10 +102,7 @@ func (s *Store) ResolveCollaborationRecipient(query CollaborationRecipientQuery)
 	if len(exact) == 1 {
 		return s.collaborationRecipientResolution(exact[0].work, exact[0].attempt)
 	}
-	if len(exact) > 1 || len(candidates) != 1 {
-		return CollaborationRecipientResolution{}, false, nil
-	}
-	return s.collaborationRecipientResolution(candidates[0].work, candidates[0].attempt)
+	return CollaborationRecipientResolution{}, false, nil
 }
 
 func (s *Store) collaborationRecipientResolution(item envelope.WorkEnvelope, attempt runattempt.RunAttempt) (CollaborationRecipientResolution, bool, error) {

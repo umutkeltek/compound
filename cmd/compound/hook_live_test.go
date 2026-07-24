@@ -1228,18 +1228,18 @@ func TestLiveCoordinationBoundaryMappingCarriesPromptResumeCompactAndPreToolUse(
 		t.Run(tt.name, func(t *testing.T) {
 			testCase := newNativeCoordinationCase(t, "codex")
 			payload := fmt.Sprintf(
-				`{"session_id":"session-boundary","cwd":%q,"source":%q}`,
+				`{"session_id":"native-session","cwd":%q,"source":%q}`,
 				testCase.workspace, tt.wantSource,
 			)
 			switch tt.hook {
 			case "user-prompt-submit":
 				payload = fmt.Sprintf(
-					`{"session_id":"session-boundary","cwd":%q,"prompt":"continue"}`,
+					`{"session_id":"native-session","cwd":%q,"prompt":"continue"}`,
 					testCase.workspace,
 				)
 			case "pre-tool-use":
 				payload = fmt.Sprintf(
-					`{"session_id":"session-boundary","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q}}`,
+					`{"session_id":"native-session","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q}}`,
 					testCase.workspace, filepath.Join(testCase.workspace, "README.md"),
 				)
 			}
@@ -1277,29 +1277,44 @@ func TestNativePreToolAdaptersDenyOrHoldEligibleCoordinationInterruptBeforeMutat
 		Reasons: []string{"exact active run invalidated"}, Obligations: []string{},
 	}
 	result := hook.Result{
-		Event:         envelope.HookEvent{Status: "blocked"},
-		Produced:      []envelope.Envelope{hold},
-		ContextOutput: card,
+		Event:                envelope.HookEvent{Status: "blocked"},
+		Produced:             []envelope.Envelope{hold},
+		ContextOutput:        card,
+		CoordinationDelivery: &hookplan.DeliveryReport{ExecutionHeld: true},
 	}
 	codex := liveHookResponse("codex", "pre-tool-use", result, nil).(claudeLiveHookResponse)
 	claude := liveHookResponse("claude-code", "pre-tool-use", result, nil).(claudeLiveHookResponse)
 	if codex.HookSpecificOutput.PermissionDecision != "deny" ||
-		claude.HookSpecificOutput.PermissionDecision != "ask" ||
+		claude.HookSpecificOutput.PermissionDecision != "deny" ||
 		codex.HookSpecificOutput.AdditionalContext != card ||
 		claude.HookSpecificOutput.AdditionalContext != card {
 		t.Fatalf("native interrupt gate diverged: codex=%+v claude=%+v",
 			codex.HookSpecificOutput, claude.HookSpecificOutput)
+	}
+	for _, contextOnly := range []string{
+		"coordination-card: next_boundary policy:changed",
+		"operator-attention-reference: human_attention",
+	} {
+		for _, harnessName := range []string{"codex", "claude-code"} {
+			response := liveHookResponse(harnessName, "pre-tool-use", hook.Result{
+				ContextOutput: contextOnly,
+			}, nil).(claudeLiveHookResponse)
+			if response.HookSpecificOutput.PermissionDecision != "" {
+				t.Fatalf("%s context-only non-interrupt response denied: %+v",
+					harnessName, response.HookSpecificOutput)
+			}
+		}
 	}
 }
 
 func TestLiveHookFixtureBuildsStableCoordinationDeliveryRecipient(t *testing.T) {
 	testCase := newNativeCoordinationCase(t, "codex")
 	input := []byte(fmt.Sprintf(
-		`{"session_id":"session-delivery","cwd":%q,"prompt":"continue"}`,
+		`{"session_id":"native-session","cwd":%q,"prompt":"continue"}`,
 		testCase.workspace,
 	))
 	interruptInput := []byte(fmt.Sprintf(
-		`{"session_id":"session-delivery","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q}}`,
+		`{"session_id":"native-session","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q}}`,
 		testCase.workspace, filepath.Join(testCase.workspace, "README.md"),
 	))
 	boundary, err := liveHookFixtureForHome(hookCommandArgs{

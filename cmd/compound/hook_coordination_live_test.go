@@ -1,9 +1,13 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +45,46 @@ func TestInstalledNativePayloadResolvesOwnedRecipientAndDeliversBoundaryAndInter
 				strings.Contains(promptContext, testCase.privateBody) {
 				t.Fatalf("native prompt did not receive reference-only boundary state:\n%s", promptContext)
 			}
+			beforeBodyRead := collaborationEventCount(t, testCase.homePath)
+			body, err := testCase.store.RetrieveCollaborationBody(work.CollaborationBodyRequest{
+				WorkID: testCase.workID, EventID: testCase.boundaryEvent.ID,
+				Actor: testCase.receiver, RunAttemptID: testCase.attempt.ID,
+				SessionID: "native-session",
+			})
+			if err != nil {
+				t.Fatalf("active native successor could not fetch delivered work-level body: %v", err)
+			}
+			if string(body.Body) != testCase.privateBody || body.BodyRef != testCase.boundaryEvent.BodyRef {
+				t.Fatalf("native work-level body result = %+v", body)
+			}
+			sibling, err := runattempt.Open(testCase.homePath).Mint(
+				testCase.workID, testCase.receiver, harnessName, cliTestNow.Add(5*time.Second),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, request := range map[string]work.CollaborationBodyRequest{
+				"unbound sibling": {
+					WorkID: testCase.workID, EventID: testCase.boundaryEvent.ID,
+					Actor: testCase.receiver, RunAttemptID: sibling.ID, SessionID: "native-session",
+				},
+				"wrong session": {
+					WorkID: testCase.workID, EventID: testCase.boundaryEvent.ID,
+					Actor: testCase.receiver, RunAttemptID: testCase.attempt.ID, SessionID: "wrong-session",
+				},
+				"wrong work": {
+					WorkID: "work_wrong", EventID: testCase.boundaryEvent.ID,
+					Actor: testCase.receiver, RunAttemptID: testCase.attempt.ID, SessionID: "native-session",
+				},
+			} {
+				if _, err := testCase.store.RetrieveCollaborationBody(request); err == nil {
+					t.Fatalf("%s fetched delivered work-level body", name)
+				}
+			}
+			if afterBodyRead := collaborationEventCount(t, testCase.homePath); afterBodyRead != beforeBodyRead {
+				t.Fatalf("native body reads emitted coordination acknowledgement/event: before=%d after=%d",
+					beforeBodyRead, afterBodyRead)
+			}
 
 			preToolPayload := fmt.Sprintf(
 				`{"hook_event_name":"PreToolUse","session_id":"native-session","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q,"content":"change"}}`,
@@ -61,7 +105,7 @@ func TestInstalledNativePayloadResolvesOwnedRecipientAndDeliversBoundaryAndInter
 			if err := json.Unmarshal([]byte(preToolOut), &response); err != nil {
 				t.Fatalf("parse native pre-tool response: %v\n%s", err, preToolOut)
 			}
-			if response.HookSpecificOutput.PermissionDecision == "" ||
+			if response.HookSpecificOutput.PermissionDecision != "deny" ||
 				!strings.Contains(response.HookSpecificOutput.AdditionalContext, testCase.interruptEvent.ID) ||
 				strings.Contains(response.HookSpecificOutput.AdditionalContext, testCase.privateBody) {
 				t.Fatalf("native pre-tool did not hold with reference-only interrupt: %+v",
@@ -71,10 +115,23 @@ func TestInstalledNativePayloadResolvesOwnedRecipientAndDeliversBoundaryAndInter
 	}
 }
 
+func collaborationEventCount(t *testing.T, homePath string) int {
+	t.Helper()
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := events.Scan(eventstore.ScanOptions{Prefixes: []string{"wco_"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(entries)
+}
+
 func TestNativeCoordinationCursorIsStableAcrossSuccessorRunAttempts(t *testing.T) {
 	testCase := newNativeCoordinationCase(t, "codex")
 	payload := []byte(fmt.Sprintf(
-		`{"hook_event_name":"UserPromptSubmit","session_id":"stable-session","cwd":%q,"prompt":"continue"}`,
+		`{"hook_event_name":"UserPromptSubmit","session_id":"native-session","cwd":%q,"prompt":"continue"}`,
 		testCase.workspace,
 	))
 	first, err := liveHookFixtureForHome(hookCommandArgs{
@@ -222,9 +279,10 @@ func (testCase *nativeCoordinationCase) attachAttempt(t *testing.T, suffix strin
 	if attempt, err = attempts.SetWorkspace(attempt.ID, testCase.workspace); err != nil {
 		t.Fatal(err)
 	}
+	bindingID := testCase.recordNativeSessionBinding(t, attempt, "native-session", now)
 	if _, err := testCase.store.Advance(testCase.workID, work.AdvanceInput{
 		To: "claimed", Actor: testCase.sender, RunAttemptIDs: []string{attempt.ID},
-		Note: "native " + suffix + " run attached",
+		EvidenceRefs: []string{bindingID}, Note: "native " + suffix + " run attached",
 	}, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -232,6 +290,247 @@ func (testCase *nativeCoordinationCase) attachAttempt(t *testing.T, suffix strin
 		t.Fatal(err)
 	}
 	return attempt
+}
+
+func (testCase *nativeCoordinationCase) recordNativeSessionBinding(
+	t *testing.T,
+	attempt runattempt.RunAttempt,
+	session string,
+	now time.Time,
+) string {
+	t.Helper()
+	digest := sha256.Sum256([]byte(testCase.workID + "\x00" + session + "\x00" + attempt.ID))
+	eventID := "wde_" + hex.EncodeToString(digest[:])[:16]
+	events, err := eventstore.Open(testCase.homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(eventID, map[string]any{
+		"schema_version": "compound.work_delegate_event.v0.1",
+		"id":             eventID,
+		"kind":           "work.delegate.spawned",
+		"ts":             now.UTC().Format(time.RFC3339),
+		"work_id":        testCase.workID,
+		"harness":        testCase.harness,
+		"holder":         testCase.receiver,
+		"session":        session,
+		"run_attempt_id": attempt.ID,
+	}, "  "); err != nil {
+		t.Fatal(err)
+	}
+	return eventID
+}
+
+func TestInstalledNativeUnknownSessionReceivesNoCoordinationOrProjectionWrites(t *testing.T) {
+	testCase := newNativeCoordinationCase(t, "codex")
+	t.Setenv("COMPOUND_HOME", testCase.homePath)
+	before := nativeCoordinationProjectionFiles(t, testCase.homePath)
+	payload := fmt.Sprintf(
+		`{"hook_event_name":"UserPromptSubmit","session_id":"unknown-session","cwd":%q,"prompt":"continue"}`,
+		testCase.workspace,
+	)
+	var code int
+	output := captureStdout(t, func() {
+		_ = captureStderr(t, func() {
+			withStdin(t, payload, func() {
+				code = runHookCommand([]string{"user-prompt-submit", "--live", "--harness", "codex"})
+			})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("unknown native session exit=%d\n%s", code, output)
+	}
+	if strings.Contains(output, testCase.boundaryEvent.ID) ||
+		strings.Contains(output, testCase.interruptEvent.ID) {
+		t.Fatalf("unknown native session received coordination: %s", output)
+	}
+	preToolPayload := fmt.Sprintf(
+		`{"hook_event_name":"PreToolUse","session_id":"unknown-session","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q,"content":"change"}}`,
+		testCase.workspace, filepath.Join(testCase.workspace, "unknown-session.txt"),
+	)
+	var preToolCode int
+	preToolOutput := captureStdout(t, func() {
+		_ = captureStderr(t, func() {
+			withStdin(t, preToolPayload, func() {
+				preToolCode = runHookCommand([]string{
+					"pre-tool-use", "--live", "--harness", "codex", "--enforce",
+				})
+			})
+		})
+	})
+	if preToolCode != 0 {
+		t.Fatalf("unknown native PreToolUse exit=%d\n%s", preToolCode, preToolOutput)
+	}
+	var preToolResponse claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(preToolOutput), &preToolResponse); err != nil {
+		t.Fatal(err)
+	}
+	if preToolResponse.HookSpecificOutput.PermissionDecision != "" ||
+		strings.Contains(preToolResponse.HookSpecificOutput.AdditionalContext, testCase.interruptEvent.ID) {
+		t.Fatalf("unknown native session received hold/card: %+v", preToolResponse.HookSpecificOutput)
+	}
+	after := nativeCoordinationProjectionFiles(t, testCase.homePath)
+	if strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Fatalf("unknown native session wrote cursor/report projection:\nbefore=%v\nafter=%v", before, after)
+	}
+}
+
+func TestNativePreToolPublicationFaultEmitsCurrentDenyAndKeepsCardRetryableOnce(t *testing.T) {
+	tests := []struct {
+		name  string
+		block func(*testing.T, *nativeCoordinationCase) func()
+	}{
+		{
+			name: "report persistence",
+			block: func(t *testing.T, testCase *nativeCoordinationCase) func() {
+				t.Helper()
+				path := filepath.Join(testCase.homePath, "context", "coordination-delivery", "reports")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("block report directory"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Remove(path) })
+				return func() {
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+		{
+			name: "state persistence",
+			block: func(t *testing.T, testCase *nativeCoordinationCase) func() {
+				t.Helper()
+				cursorKey := strings.Join([]string{
+					"harness=codex", "session=native-session", "work=" + testCase.workID,
+				}, "|")
+				digest := sha256.Sum256([]byte(cursorKey))
+				dir := filepath.Join(
+					testCase.homePath, "context", "coordination-delivery", "cursors",
+				)
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				lockPath := filepath.Join(dir, hex.EncodeToString(digest[:])+".lock")
+				if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(dir, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+				return func() {
+					if err := os.Chmod(dir, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testCase := newNativeCoordinationCase(t, "codex")
+			t.Setenv("COMPOUND_HOME", testCase.homePath)
+			unblock := tt.block(t, testCase)
+			beforeEvents := collaborationEventCount(t, testCase.homePath)
+
+			failedCode, failedOutput := invokeNativeCoordinationPreTool(t, testCase)
+			if failedCode == 0 {
+				t.Fatalf("publication fault exited successfully:\n%s", failedOutput)
+			}
+			var failedResponse claudeLiveHookResponse
+			if err := json.Unmarshal([]byte(failedOutput), &failedResponse); err != nil {
+				t.Fatalf("publication fault emitted no native deny JSON: %v\n%s", err, failedOutput)
+			}
+			if failedResponse.HookSpecificOutput.PermissionDecision != "deny" ||
+				strings.Contains(failedResponse.HookSpecificOutput.AdditionalContext, testCase.interruptEvent.ID) {
+				t.Fatalf("publication fault did not deny without prematurely publishing card: %+v",
+					failedResponse.HookSpecificOutput)
+			}
+
+			unblock()
+			retryCode, retryOutput := invokeNativeCoordinationPreTool(t, testCase)
+			if retryCode != 3 {
+				t.Fatalf("retry exit=%d, want governed hold\n%s", retryCode, retryOutput)
+			}
+			var retryResponse claudeLiveHookResponse
+			if err := json.Unmarshal([]byte(retryOutput), &retryResponse); err != nil {
+				t.Fatal(err)
+			}
+			if retryResponse.HookSpecificOutput.PermissionDecision != "deny" ||
+				!strings.Contains(retryResponse.HookSpecificOutput.AdditionalContext, testCase.interruptEvent.ID) {
+				t.Fatalf("retry did not publish the recoverable interrupt once: %+v",
+					retryResponse.HookSpecificOutput)
+			}
+
+			againCode, againOutput := invokeNativeCoordinationPreTool(t, testCase)
+			if againCode != 3 {
+				t.Fatalf("level hold retry exit=%d, want governed hold\n%s", againCode, againOutput)
+			}
+			var againResponse claudeLiveHookResponse
+			if err := json.Unmarshal([]byte(againOutput), &againResponse); err != nil {
+				t.Fatal(err)
+			}
+			if againResponse.HookSpecificOutput.PermissionDecision != "deny" ||
+				strings.Contains(againResponse.HookSpecificOutput.AdditionalContext, testCase.interruptEvent.ID) {
+				t.Fatalf("persisted interrupt was redelivered or stopped denying: %+v",
+					againResponse.HookSpecificOutput)
+			}
+			if afterEvents := collaborationEventCount(t, testCase.homePath); afterEvents != beforeEvents {
+				t.Fatalf("publication recovery emitted acknowledgement/coordination event: before=%d after=%d",
+					beforeEvents, afterEvents)
+			}
+		})
+	}
+}
+
+func invokeNativeCoordinationPreTool(
+	t *testing.T,
+	testCase *nativeCoordinationCase,
+) (int, string) {
+	t.Helper()
+	payload := fmt.Sprintf(
+		`{"hook_event_name":"PreToolUse","session_id":"native-session","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q,"content":"change"}}`,
+		testCase.workspace, filepath.Join(testCase.workspace, "README.md"),
+	)
+	var code int
+	output := captureStdout(t, func() {
+		_ = captureStderr(t, func() {
+			withStdin(t, payload, func() {
+				code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "codex", "--enforce"})
+			})
+		})
+	})
+	return code, output
+}
+
+func nativeCoordinationProjectionFiles(t *testing.T, homePath string) []string {
+	t.Helper()
+	root := filepath.Join(homePath, "context", "coordination-delivery")
+	var files []string
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, relative)
+		return nil
+	}); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	sort.Strings(files)
+	return files
 }
 
 func nativeInterruptAction(workID, actor, runAttemptID string, now time.Time) envelope.ActionIntent {

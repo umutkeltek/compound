@@ -119,7 +119,7 @@ func runWorkCollaborate(store *work.Store, args []string, now time.Time) {
 
 func runWorkCollaborationBody(store *work.Store, args []string) {
 	usage := workUsage("collaborate")
-	var workID, eventID, actor, runAttemptID string
+	var workID, eventID, actor, runAttemptID, sessionID string
 	jsonOutput := false
 	value := func(i *int) string {
 		if *i+1 >= len(args) || strings.TrimSpace(args[*i+1]) == "" {
@@ -137,6 +137,8 @@ func runWorkCollaborationBody(store *work.Store, args []string) {
 			actor = value(&i)
 		case "--run-attempt":
 			runAttemptID = value(&i)
+		case "--session":
+			sessionID = value(&i)
 		case "--json":
 			jsonOutput = true
 		default:
@@ -147,18 +149,19 @@ func runWorkCollaborationBody(store *work.Store, args []string) {
 			workID = strings.TrimSpace(args[i])
 		}
 	}
-	if workID == "" || eventID == "" || actor == "" || runAttemptID == "" {
+	if workID == "" || eventID == "" || actor == "" || runAttemptID == "" || sessionID == "" {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 	result, err := store.RetrieveCollaborationBody(work.CollaborationBodyRequest{
-		WorkID: workID, EventID: eventID, Actor: actor, RunAttemptID: runAttemptID,
+		WorkID: workID, EventID: eventID, Actor: actor,
+		RunAttemptID: runAttemptID, SessionID: sessionID,
 	})
 	die(err)
 	if jsonOutput {
 		printJSON(struct {
-			EventID   string `json:"event_id"`
-			BodyRef   string `json:"body_ref"`
+			EventID    string `json:"event_id"`
+			BodyRef    string `json:"body_ref"`
 			BodyBase64 []byte `json:"body_base64"`
 		}{EventID: result.EventID, BodyRef: result.BodyRef, BodyBase64: result.Body})
 		return

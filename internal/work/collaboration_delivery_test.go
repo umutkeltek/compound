@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -433,10 +434,11 @@ func TestRetrieveCollaborationBodyRequiresExactActiveRecipientAndWritesNoAcknowl
 		t.Fatal(err)
 	}
 	attempts := runattempt.Open(store.home)
-	addressed, err := attempts.Mint(item.ID, receiver, "claude-code", fixedNow.Add(2*time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
+	workspace := t.TempDir()
+	addressed := bindCollaborationRecipientForTest(
+		t, store, item.ID, sender, receiver, "claude-code", "addressed-session", workspace,
+		fixedNow.Add(2*time.Second),
+	)
 	unrelated, err := attempts.Mint(item.ID, receiver, "claude-code", fixedNow.Add(3*time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -458,7 +460,8 @@ func TestRetrieveCollaborationBodyRequiresExactActiveRecipientAndWritesNoAcknowl
 		t.Fatal(err)
 	}
 	if _, err := store.RetrieveCollaborationBody(CollaborationBodyRequest{
-		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver, RunAttemptID: unrelated.ID,
+		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver,
+		RunAttemptID: unrelated.ID, SessionID: "addressed-session",
 	}); err == nil {
 		t.Fatal("unrelated attempt fetched collaboration body")
 	}
@@ -466,15 +469,16 @@ func TestRetrieveCollaborationBodyRequiresExactActiveRecipientAndWritesNoAcknowl
 		t.Fatal(err)
 	}
 	if _, err := store.RetrieveCollaborationBody(CollaborationBodyRequest{
-		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver, RunAttemptID: addressed.ID,
+		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver,
+		RunAttemptID: addressed.ID, SessionID: "addressed-session",
 	}); err == nil {
 		t.Fatal("terminal attempt fetched collaboration body")
 	}
 
-	active, err := attempts.Mint(item.ID, receiver, "claude-code", fixedNow.Add(6*time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
+	active := bindCollaborationRecipientForTest(
+		t, store, item.ID, sender, receiver, "claude-code", "active-session", workspace,
+		fixedNow.Add(6*time.Second),
+	)
 	recorded, err = store.RecordCollaboration(item.ID, CollaborationInput{
 		Actor: sender, IdempotencyKey: "body-door-active", TargetActor: receiver,
 		BodyRef: bodyRef, DeliveryClass: CollaborationDeliveryNextBoundary,
@@ -486,8 +490,13 @@ func TestRetrieveCollaborationBodyRequiresExactActiveRecipientAndWritesNoAcknowl
 	if err != nil {
 		t.Fatal(err)
 	}
+	before, err = store.eventsFor(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, err := store.RetrieveCollaborationBody(CollaborationBodyRequest{
-		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver, RunAttemptID: active.ID,
+		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver,
+		RunAttemptID: active.ID, SessionID: "active-session",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -499,8 +508,15 @@ func TestRetrieveCollaborationBodyRequiresExactActiveRecipientAndWritesNoAcknowl
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(after) != len(before)+1 {
+	if len(after) != len(before) {
 		t.Fatalf("successful body fetch emitted acknowledgement/event: before=%d after=%d", len(before), len(after))
+	}
+}
+
+func TestCollaborationBodyRequestCarriesExactSessionAuthority(t *testing.T) {
+	field, ok := reflect.TypeOf(CollaborationBodyRequest{}).FieldByName("SessionID")
+	if !ok || field.Type.Kind() != reflect.String {
+		t.Fatal("collaboration body request has no exact native session authority coordinate")
 	}
 }
 
@@ -519,12 +535,10 @@ func TestRetrieveUntargetedCollaborationBodyUsesExactActiveRunRelevanceWithoutAc
 	if _, err := store.Claim(item.ID, sender, fixedNow.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	attempt, err := runattempt.Open(store.home).Mint(
-		item.ID, receiver, "claude-code", fixedNow.Add(2*time.Second),
+	attempt := bindCollaborationRecipientForTest(
+		t, store, item.ID, sender, receiver, "claude-code", "broadcast-session", t.TempDir(),
+		fixedNow.Add(2*time.Second),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	bodyRef := collaborationBodyRef(t, store, "broadcast body fetched on demand")
 	recorded, err := store.RecordCollaboration(item.ID, CollaborationInput{
 		Actor: sender, IdempotencyKey: "body-door-broadcast",
@@ -542,7 +556,8 @@ func TestRetrieveUntargetedCollaborationBodyUsesExactActiveRunRelevanceWithoutAc
 		t.Fatal(err)
 	}
 	got, err := store.RetrieveCollaborationBody(CollaborationBodyRequest{
-		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver, RunAttemptID: attempt.ID,
+		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver,
+		RunAttemptID: attempt.ID, SessionID: "broadcast-session",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -556,5 +571,83 @@ func TestRetrieveUntargetedCollaborationBodyUsesExactActiveRunRelevanceWithoutAc
 	}
 	if len(after) != len(before) {
 		t.Fatalf("broadcast body fetch emitted acknowledgement/event: before=%d after=%d", len(before), len(after))
+	}
+}
+
+func TestRetrieveWorkLevelCollaborationBodyUsesCurrentActiveRecipientWithoutPreNamedRun(t *testing.T) {
+	store := newStore(t)
+	const (
+		sender   = "codex:sender"
+		receiver = "claude:receiver"
+	)
+	item, err := store.Create(CreateInput{
+		Owner: sender, SuccessPredicate: "work-level body follows the current owned recipient",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(item.ID, sender, fixedNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	bodyRef := collaborationBodyRef(t, store, "work-level body fetched by active successor")
+	recorded, err := store.RecordCollaboration(item.ID, CollaborationInput{
+		Actor: sender, IdempotencyKey: "body-door-work-level",
+		BodyRef: bodyRef, DeliveryClass: CollaborationDeliveryNextBoundary,
+		Delta: CollaborationStateDelta{Kind: "work", SubjectRef: item.ID, After: "changed"},
+		Affects: CollaborationAffects{
+			WorkIDs: []string{item.ID},
+		},
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts := runattempt.Open(store.home)
+	workspace := t.TempDir()
+	active := bindCollaborationRecipientForTest(
+		t, store, item.ID, sender, receiver, "claude-code", "work-level-session", workspace,
+		fixedNow.Add(3*time.Second),
+	)
+	sibling, err := attempts.Mint(item.ID, receiver, "claude-code", fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.eventsFor(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.RetrieveCollaborationBody(CollaborationBodyRequest{
+		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver,
+		RunAttemptID: active.ID, SessionID: "work-level-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Body) != "work-level body fetched by active successor" || got.BodyRef != bodyRef {
+		t.Fatalf("retrieved work-level body = %+v", got)
+	}
+	if _, err := store.RetrieveCollaborationBody(CollaborationBodyRequest{
+		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver,
+		RunAttemptID: sibling.ID, SessionID: "work-level-session",
+	}); err == nil {
+		t.Fatal("unbound sibling fetched work-level collaboration body")
+	}
+	if _, err := store.RetrieveCollaborationBody(CollaborationBodyRequest{
+		WorkID: item.ID, EventID: recorded.Event.ID, Actor: receiver,
+		RunAttemptID: active.ID, SessionID: "wrong-session",
+	}); err == nil {
+		t.Fatal("wrong session fetched work-level collaboration body")
+	}
+	if _, err := store.RetrieveCollaborationBody(CollaborationBodyRequest{
+		WorkID: "work_wrong", EventID: recorded.Event.ID, Actor: receiver,
+		RunAttemptID: active.ID, SessionID: "work-level-session",
+	}); err == nil {
+		t.Fatal("wrong work fetched work-level collaboration body")
+	}
+	after, err := store.eventsFor(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("work-level body fetch emitted acknowledgement/event: before=%d after=%d", len(before), len(after))
 	}
 }

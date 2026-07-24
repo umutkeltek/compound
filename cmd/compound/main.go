@@ -1633,6 +1633,23 @@ func runHookCommand(args []string) int {
 
 	res, err := hook.Run(fx, deps, now)
 	if err != nil {
+		if parsed.Live && parsed.HookName == "pre-tool-use" &&
+			res.CoordinationDelivery != nil && res.CoordinationDelivery.ExecutionHeld {
+			// The governed hold and HookEvent are already durable, but a later
+			// delivery projection write failed. Publish only the unconditional
+			// native deny for this mutation; keep the semantic card undisclosed
+			// so the retry can deliver it exactly once after publication heals.
+			failClosed := res
+			failClosed.ContextOutput = ""
+			printJSON(liveHookResponse(parsed.Harness, parsed.HookName, failClosed, stopOutcome))
+			fmt.Fprintln(os.Stderr, "error:", err)
+			if parsed.Enforce {
+				if code := hookEnforceExit(parsed.HookName, failClosed); code != 0 {
+					return code
+				}
+			}
+			return 4
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}

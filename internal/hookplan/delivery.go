@@ -14,7 +14,6 @@ import (
 
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
-	"compound/internal/policy"
 	"compound/internal/stream"
 	"compound/internal/work"
 )
@@ -22,10 +21,11 @@ import (
 const (
 	LifecyclePlanSchemaVersion       = "compound.lifecycle_plan.v0.1"
 	DeliveryCardSchemaVersion        = "compound.coordination_delivery_card.v0.1"
-	DeliveryStateSchemaVersion       = "compound.coordination_delivery_state.v0.2"
+	DeliveryStateSchemaVersion       = "compound.coordination_delivery_state.v0.3"
 	DeliveryReportSchemaVersion      = "compound.coordination_delivery_report.v0.1"
 	DeliveryMeasurementSchemaVersion = "compound.coordination_delivery_measurement.v0.1"
 	OperatorAttentionSchemaVersion   = "compound.operator_attention_projection.v0.1"
+	deliveryStatePreviousVersion     = "compound.coordination_delivery_state.v0.2"
 )
 
 const (
@@ -110,10 +110,8 @@ type OperatorAttentionItem struct {
 	WorkRef          string                       `json:"work_ref"`
 	DeliveryClass    string                       `json:"delivery_class"`
 	Delta            work.CollaborationStateDelta `json:"delta"`
-	AuthorityRefs    []string                     `json:"authority_refs"`
 	ArtifactRefs     []string                     `json:"artifact_refs"`
 	SemanticRevision string                       `json:"semantic_revision"`
-	CreatedAt        string                       `json:"created_at"`
 }
 
 // LifecyclePlan is the semantic owner. Native hook presentation is compiled
@@ -209,6 +207,7 @@ type deliveryState struct {
 	SemanticRevision  string                          `json:"semantic_revision"`
 	Applied           map[string]string               `json:"applied"`
 	Pending           map[string]pendingSemanticState `json:"pending"`
+	ActiveInterrupts  map[string]pendingSemanticState `json:"active_interrupts"`
 }
 
 // DeliverCoordination scans the canonical governed replay, advances one
@@ -238,12 +237,9 @@ func ReadOperatorAttention(request OperatorAttentionRequest) (OperatorAttentionP
 	if request.MaxItems < 0 {
 		return OperatorAttentionProjection{}, fmt.Errorf("operator attention max items cannot be negative")
 	}
-	const (
-		defaultMaxItems = 32
-		hardMaxItems    = 64
-	)
+	const hardMaxItems = 8
 	if request.MaxItems == 0 {
-		request.MaxItems = defaultMaxItems
+		request.MaxItems = hardMaxItems
 	}
 	if request.MaxItems > hardMaxItems {
 		request.MaxItems = hardMaxItems
@@ -289,10 +285,8 @@ func ReadOperatorAttention(request OperatorAttentionRequest) (OperatorAttentionP
 			WorkRef:          event.WorkID,
 			DeliveryClass:    work.CollaborationDeliveryHumanAttention,
 			Delta:            delta,
-			AuthorityRefs:    operatorAttentionAuthorityRefs(collaborationAffects(event).PolicyRefs),
 			ArtifactRefs:     []string{event.BodyRef},
 			SemanticRevision: collaborationStateRevision(event),
-			CreatedAt:        event.CreatedAt,
 		}
 	}
 
@@ -316,23 +310,6 @@ func ReadOperatorAttention(request OperatorAttentionRequest) (OperatorAttentionP
 	}
 	projection.Revision = operatorAttentionProjectionRevision(all)
 	return projection, nil
-}
-
-func operatorAttentionAuthorityRefs(refs []string) []string {
-	var decisions []string
-	hasOwner := false
-	for _, ref := range normalizedDeliveryRefs(refs) {
-		switch {
-		case strings.HasPrefix(ref, "pol_"):
-			decisions = append(decisions, ref)
-		case ref == policy.OperatorStateAuthorityRef:
-			hasOwner = true
-		}
-	}
-	if hasOwner {
-		decisions = append(decisions, policy.OperatorStateAuthorityRef)
-	}
-	return decisions
 }
 
 func operatorAttentionProjectionRevision(items []OperatorAttentionItem) string {
@@ -428,11 +405,17 @@ func deliverCoordination(request DeliveryRequest, publish DeliveryPublisher) (De
 				key := collaborationSemanticKey(event)
 				state.Applied[key] = collaborationStateRevision(event)
 				delete(state.Pending, key)
+				delete(state.ActiveInterrupts, key)
 				setIntention(event.ID, class, "silent_state", "state recorded without context injection")
 			default:
 				key := collaborationSemanticKey(event)
 				revision := collaborationStateRevision(event)
 				if state.Applied[key] == revision {
+					if class == work.CollaborationDeliveryInterrupt {
+						state.ActiveInterrupts[key] = pendingSemanticState{
+							EventRef: event.ID, StateRevision: revision,
+						}
+					}
 					if previous, exists := state.Pending[key]; exists {
 						setIntention(previous.EventRef, class, "coalesced", "newer event restores the already-delivered effective state")
 						delete(state.Pending, key)
@@ -535,6 +518,13 @@ func deliverCoordination(request DeliveryRequest, publish DeliveryPublisher) (De
 					key := eventKeys[event.ID]
 					state.Applied[key] = collaborationStateRevision(event)
 					delete(state.Pending, key)
+					if collaborationDeliveryClass(event) == work.CollaborationDeliveryInterrupt {
+						state.ActiveInterrupts[key] = pendingSemanticState{
+							EventRef: event.ID, StateRevision: collaborationStateRevision(event),
+						}
+					} else {
+						delete(state.ActiveInterrupts, key)
+					}
 					setIntention(event.ID, collaborationDeliveryClass(event), "delivered", "relevant at current semantic boundary")
 					if event.Delta != nil && event.Delta.Before != event.Delta.After {
 						report.DeclaredStateDeltaRefs = append(report.DeclaredStateDeltaRefs, event.ID)
@@ -553,6 +543,13 @@ func deliverCoordination(request DeliveryRequest, publish DeliveryPublisher) (De
 					}
 					holdInterruptExecution(&report, held)
 				}
+			}
+		}
+		if request.Trigger == DeliveryTriggerInterrupt {
+			if err := holdCurrentInterruptExecution(
+				request.HomePath, request.Recipient, &state, &report,
+			); err != nil {
+				return err
 			}
 		}
 
@@ -758,6 +755,22 @@ func deliverySemanticRevision(state deliveryState) string {
 		RecipientRevision string                          `json:"recipient_revision"`
 		Applied           map[string]string               `json:"applied"`
 		Pending           map[string]pendingSemanticState `json:"pending"`
+		ActiveInterrupts  map[string]pendingSemanticState `json:"active_interrupts"`
+	}{
+		RecipientRevision: state.RecipientRevision,
+		Applied:           state.Applied,
+		Pending:           state.Pending,
+		ActiveInterrupts:  state.ActiveInterrupts,
+	})
+	digest := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func deliverySemanticRevisionV2(state deliveryState) string {
+	body, _ := json.Marshal(struct {
+		RecipientRevision string                          `json:"recipient_revision"`
+		Applied           map[string]string               `json:"applied"`
+		Pending           map[string]pendingSemanticState `json:"pending"`
 	}{
 		RecipientRevision: state.RecipientRevision,
 		Applied:           state.Applied,
@@ -877,6 +890,39 @@ func holdInterruptExecution(report *DeliveryReport, events []work.CollaborationE
 	}
 }
 
+func holdCurrentInterruptExecution(
+	homePath string,
+	recipient DeliveryRecipient,
+	state *deliveryState,
+	report *DeliveryReport,
+) error {
+	if state == nil || report == nil || len(state.ActiveInterrupts) == 0 {
+		return nil
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		return err
+	}
+	for _, key := range sortedPendingKeys(state.ActiveInterrupts) {
+		active := state.ActiveInterrupts[key]
+		event, err := readCollaborationEvent(homePath, active.EventRef)
+		if err != nil {
+			return err
+		}
+		if collaborationDeliveryClass(event) != work.CollaborationDeliveryInterrupt ||
+			collaborationStateRevision(event) != active.StateRevision ||
+			!deliveryRelevant(event, recipient) {
+			delete(state.ActiveInterrupts, key)
+			continue
+		}
+		if err := store.ValidateCollaborationDeliveryEvidence(event); err != nil {
+			return fmt.Errorf("coordination active interrupt %s ineligible: %w", event.ID, err)
+		}
+		holdInterruptExecution(report, []work.CollaborationEvent{event})
+	}
+	return nil
+}
+
 func normalizeDeliveryHarness(value string) string {
 	return strings.ReplaceAll(strings.TrimSpace(value), "_", "-")
 }
@@ -914,6 +960,21 @@ func appendUniqueRef(values []string, ref string) []string {
 }
 
 func loadCollaborationEvent(homePath, ref string) (work.CollaborationEvent, error) {
+	event, err := readCollaborationEvent(homePath, ref)
+	if err != nil {
+		return work.CollaborationEvent{}, err
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		return work.CollaborationEvent{}, err
+	}
+	if err := workStore.ValidateCollaborationDeliveryEvidence(event); err != nil {
+		return work.CollaborationEvent{}, fmt.Errorf("coordination delivery event %s ineligible: %w", ref, err)
+	}
+	return event, nil
+}
+
+func readCollaborationEvent(homePath, ref string) (work.CollaborationEvent, error) {
 	store, err := eventstore.Open(homePath)
 	if err != nil {
 		return work.CollaborationEvent{}, err
@@ -928,13 +989,6 @@ func loadCollaborationEvent(homePath, ref string) (work.CollaborationEvent, erro
 	}
 	if err := event.Validate(); err != nil {
 		return work.CollaborationEvent{}, fmt.Errorf("coordination delivery event %s invalid: %w", ref, err)
-	}
-	workStore, err := work.Open(homePath)
-	if err != nil {
-		return work.CollaborationEvent{}, err
-	}
-	if err := workStore.ValidateCollaborationDeliveryEvidence(event); err != nil {
-		return work.CollaborationEvent{}, fmt.Errorf("coordination delivery event %s ineligible: %w", ref, err)
 	}
 	return event, nil
 }
@@ -1120,6 +1174,7 @@ func readDeliveryState(path, cursorKey, recipientRevision string) (deliveryState
 		RecipientRevision: recipientRevision,
 		Applied:           map[string]string{},
 		Pending:           map[string]pendingSemanticState{},
+		ActiveInterrupts:  map[string]pendingSemanticState{},
 	}
 	body, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -1133,13 +1188,31 @@ func readDeliveryState(path, cursorKey, recipientRevision string) (deliveryState
 	if err := decoder.Decode(&state); err != nil {
 		return deliveryState{}, fmt.Errorf("coordination delivery state decode: %w", err)
 	}
-	if state.SchemaVersion != DeliveryStateSchemaVersion || state.CursorKey != cursorKey ||
-		state.Cursor < 0 {
+	if state.CursorKey != cursorKey || state.Cursor < 0 {
 		return deliveryState{}, fmt.Errorf("coordination delivery state identity is invalid")
 	}
-	if state.Applied == nil || state.Pending == nil ||
-		(state.SemanticRevision != "" && state.SemanticRevision != deliverySemanticRevision(state)) {
+	if state.Applied == nil || state.Pending == nil {
 		return deliveryState{}, fmt.Errorf("coordination delivery semantic state is invalid")
+	}
+	switch state.SchemaVersion {
+	case DeliveryStateSchemaVersion:
+		if state.ActiveInterrupts == nil ||
+			(state.SemanticRevision != "" && state.SemanticRevision != deliverySemanticRevision(state)) {
+			return deliveryState{}, fmt.Errorf("coordination delivery semantic state is invalid")
+		}
+	case deliveryStatePreviousVersion:
+		if state.SemanticRevision != "" && state.SemanticRevision != deliverySemanticRevisionV2(state) {
+			return deliveryState{}, fmt.Errorf("coordination delivery semantic state is invalid")
+		}
+		state.SchemaVersion = DeliveryStateSchemaVersion
+		state.ActiveInterrupts = map[string]pendingSemanticState{}
+		// v0.2 knew an interrupt had been applied but did not retain whether
+		// it was still an execution hold. Replay governed semantics to rebuild
+		// only current interrupt state; Applied still prevents card redelivery.
+		state.Cursor = 0
+		state.SemanticRevision = ""
+	default:
+		return deliveryState{}, fmt.Errorf("coordination delivery state identity is invalid")
 	}
 	for key, revision := range state.Applied {
 		if !validSemanticStateEntry(key, revision) {
@@ -1149,6 +1222,11 @@ func readDeliveryState(path, cursorKey, recipientRevision string) (deliveryState
 	for key, pending := range state.Pending {
 		if !validSemanticStateEntry(key, pending.StateRevision) || !strings.HasPrefix(pending.EventRef, "wco_") {
 			return deliveryState{}, fmt.Errorf("coordination delivery pending semantic state is invalid")
+		}
+	}
+	for key, active := range state.ActiveInterrupts {
+		if !validSemanticStateEntry(key, active.StateRevision) || !strings.HasPrefix(active.EventRef, "wco_") {
+			return deliveryState{}, fmt.Errorf("coordination delivery active interrupt state is invalid")
 		}
 	}
 	if state.RecipientRevision != recipientRevision {
@@ -1167,6 +1245,9 @@ func writeDeliveryState(path string, state deliveryState) error {
 	}
 	if state.Pending == nil {
 		state.Pending = map[string]pendingSemanticState{}
+	}
+	if state.ActiveInterrupts == nil {
+		state.ActiveInterrupts = map[string]pendingSemanticState{}
 	}
 	state.SemanticRevision = deliverySemanticRevision(state)
 	body, err := json.MarshalIndent(state, "", "  ")

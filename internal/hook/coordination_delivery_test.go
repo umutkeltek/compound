@@ -318,6 +318,69 @@ func TestEligibleInterruptHoldsPreToolUseBeforeMutationWithinBudget(t *testing.T
 	}
 }
 
+func TestDeliveredInterruptHoldsEveryPreToolUseUntilGovernedClearance(t *testing.T) {
+	testCase := newHookInterruptCase(t, "level-triggered-interrupt")
+	testCase.fixture.Action.Target.Path = filepath.Join(t.TempDir(), "mutation-sentinel.txt")
+	deps := Deps{
+		Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
+		Policy: policy.DefaultConfig(),
+	}
+	mutationRan := false
+	invokeMutationBoundary := func(now time.Time) Result {
+		t.Helper()
+		result, err := Run(testCase.fixture, deps, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Event.Status != "blocked" {
+			mutationRan = true
+		}
+		return result
+	}
+
+	first := invokeMutationBoundary(testCase.now.Add(3 * time.Second))
+	if first.CoordinationDelivery == nil || first.CoordinationDelivery.Native == nil ||
+		!first.CoordinationDelivery.ExecutionHeld ||
+		!strings.Contains(first.ContextOutput, testCase.event.ID) {
+		t.Fatalf("first interrupt boundary did not deliver and hold: event=%+v delivery=%+v",
+			first.Event, first.CoordinationDelivery)
+	}
+	repeated := invokeMutationBoundary(testCase.now.Add(4 * time.Second))
+	if repeated.CoordinationDelivery == nil || repeated.CoordinationDelivery.Native != nil ||
+		repeated.CoordinationDelivery.DeliveredBytes != 0 ||
+		!repeated.CoordinationDelivery.ExecutionHeld ||
+		!containsString(repeated.CoordinationDelivery.HoldEvidenceRefs, testCase.event.ID) {
+		t.Fatalf("unchanged interrupt was redelivered or stopped holding: event=%+v delivery=%+v",
+			repeated.Event, repeated.CoordinationDelivery)
+	}
+	if mutationRan {
+		t.Fatal("mutation sentinel ran while the exact recipient interrupt remained active")
+	}
+
+	if _, err := testCase.store.RecordCollaboration(testCase.event.WorkID, work.CollaborationInput{
+		Actor: testCase.event.Actor, IdempotencyKey: "level-triggered-interrupt-clearance",
+		BodyRef: testCase.event.BodyRef, DeliveryClass: work.CollaborationDeliverySilentState,
+		Delta: work.CollaborationStateDelta{
+			Kind: testCase.event.Delta.Kind, SubjectRef: testCase.event.Delta.SubjectRef,
+			Before: "invalidated", After: "active",
+		},
+		Affects: work.CollaborationAffects{
+			WorkIDs: testCase.event.Affects.WorkIDs, RunAttemptIDs: testCase.event.Affects.RunAttemptIDs,
+		},
+	}, testCase.now.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := Run(testCase.fixture, deps, testCase.now.Add(6*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Event.Status == "blocked" || cleared.CoordinationDelivery == nil ||
+		cleared.CoordinationDelivery.ExecutionHeld || cleared.CoordinationDelivery.Native != nil {
+		t.Fatalf("governed superseding state did not clear execution hold: event=%+v delivery=%+v",
+			cleared.Event, cleared.CoordinationDelivery)
+	}
+}
+
 func TestHookDeliveryPublicationFaultsLeaveInterruptRetryableExactlyOnce(t *testing.T) {
 	tests := []struct {
 		name string

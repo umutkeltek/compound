@@ -490,6 +490,55 @@ func TestSemanticDedupSurvivesCursorReset(t *testing.T) {
 	}
 }
 
+func TestPreviousSemanticCursorMigrationRestoresCurrentInterruptHoldWithoutRedelivery(t *testing.T) {
+	fixture := newDeliveryFixture(t)
+	event := fixture.record(t, "cursor-v2-interrupt", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{
+		WorkIDs: []string{fixture.work},
+	})
+	request := DeliveryRequest{
+		HomePath: fixture.home, Harness: "codex", CursorKey: "cursor-v2-interrupt",
+		Recipient: DeliveryRecipient{
+			WorkID: fixture.work, RunAttemptID: fixture.runAttemptID,
+			PolicyRefs: event.Affects.PolicyRefs,
+		},
+		Trigger: DeliveryTriggerInterrupt, Budget: wideDeliveryBudget(),
+	}
+	first, err := DeliverCoordination(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Native == nil || !first.ExecutionHeld {
+		t.Fatalf("first interrupt did not deliver and hold: %+v", first)
+	}
+	if err := withDeliveryStateLock(fixture.home, request.CursorKey, func(path string) error {
+		state, err := readDeliveryState(
+			path, request.CursorKey, deliveryRecipientRevision(request.Recipient),
+		)
+		if err != nil {
+			return err
+		}
+		state.SchemaVersion = deliveryStatePreviousVersion
+		state.ActiveInterrupts = nil
+		state.SemanticRevision = deliverySemanticRevisionV2(state)
+		body, err := json.MarshalIndent(state, "", "  ")
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, append(body, '\n'), 0o600)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := DeliverCoordination(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.Native != nil || migrated.DeliveredBytes != 0 ||
+		!migrated.ExecutionHeld || !containsRef(migrated.HoldEvidenceRefs, event.ID) {
+		t.Fatalf("v2 cursor migration redelivered or released current interrupt: %+v", migrated)
+	}
+}
+
 func TestRecipientRevisionEvolutionReevaluatesScopeDependencyAndRun(t *testing.T) {
 	t.Run("scope", func(t *testing.T) {
 		fixture := newDeliveryFixture(t)
@@ -926,12 +975,8 @@ func TestReadOperatorAttentionIsLevelTriggeredReferenceOnlyAndReadOnly(t *testin
 		!reflect.DeepEqual(projection.Items[0].Delta, work.CollaborationStateDelta{
 			Kind: "authority", SubjectRef: policyRef, Before: "pending", After: "unresolved",
 		}) ||
-		!reflect.DeepEqual(projection.Items[0].AuthorityRefs, []string{
-			policyRef, policy.OperatorStateAuthorityRef,
-		}) ||
 		!reflect.DeepEqual(projection.Items[0].ArtifactRefs, []string{latestBodyRef}) ||
 		projection.Items[0].SemanticRevision != collaborationStateRevision(recorded.Event) ||
-		projection.Items[0].CreatedAt == "" ||
 		projection.Total != 1 || projection.Truncated {
 		t.Fatalf("operator attention projection lost reference-only human meaning: %+v", projection)
 	}
@@ -980,6 +1025,90 @@ func TestReadOperatorAttentionIsLevelTriggeredReferenceOnlyAndReadOnly(t *testin
 	}
 	if len(resolved.Items) != 0 {
 		t.Fatalf("resolved operator authority remained in current projection: %+v", resolved)
+	}
+}
+
+func TestReadOperatorAttentionHardCapsEightItemsAndExposesExactDTO(t *testing.T) {
+	fixture := newDeliveryFixture(t)
+	policyRef := fixture.recordHumanAttentionEvidence(t)
+	artifacts, err := home.NewArtifactStore(fixture.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyRef, err := artifacts.Put([]byte("operator projection body remains in artifact custody"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 12; index++ {
+		if _, err := fixture.store.RecordCollaboration(fixture.work, work.CollaborationInput{
+			Actor: fixture.actor, IdempotencyKey: fmt.Sprintf("attention-cap-%02d", index),
+			TargetActor: "claude:ordinary-agent", BodyRef: bodyRef,
+			DeliveryClass: work.CollaborationDeliveryHumanAttention,
+			Delta: work.CollaborationStateDelta{
+				Kind: "authority", SubjectRef: fmt.Sprintf("authority_gate_%02d", index),
+				Before: "pending", After: "unresolved",
+			},
+			Affects: work.CollaborationAffects{
+				WorkIDs: []string{fixture.work},
+				PolicyRefs: []string{
+					policyRef, policy.OperatorStateAuthorityRef,
+				},
+			},
+		}, fixture.now.Add(time.Duration(index+2)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	omitted, err := ReadOperatorAttention(OperatorAttentionRequest{HomePath: fixture.home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized, err := ReadOperatorAttention(OperatorAttentionRequest{
+		HomePath: fixture.home, MaxItems: 64,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, projection := range map[string]OperatorAttentionProjection{
+		"omitted": omitted, "oversized": oversized,
+	} {
+		if projection.Total != 12 || len(projection.Items) != 8 || !projection.Truncated {
+			t.Fatalf("%s projection escaped hard max-8: %+v", name, projection)
+		}
+	}
+	if !reflect.DeepEqual(omitted, oversized) {
+		t.Fatalf("caller-selected max changed the hard-capped projection:\nomitted=%+v\noversized=%+v",
+			omitted, oversized)
+	}
+
+	body, err := json.Marshal(omitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if len(wire.Items) != 8 {
+		t.Fatalf("wire item count = %d, want 8", len(wire.Items))
+	}
+	wantKeys := []string{
+		"artifact_refs", "delivery_class", "delta", "event_ref", "semantic_revision", "work_ref",
+	}
+	for index, item := range wire.Items {
+		gotKeys := make([]string, 0, len(item))
+		for key := range item {
+			gotKeys = append(gotKeys, key)
+		}
+		sort.Strings(gotKeys)
+		if !reflect.DeepEqual(gotKeys, wantKeys) {
+			t.Fatalf("operator DTO item %d keys = %v, want exactly %v", index, gotKeys, wantKeys)
+		}
+	}
+	if strings.Contains(string(body), "operator projection body remains in artifact custody") {
+		t.Fatalf("operator DTO exposed artifact body: %s", body)
 	}
 }
 

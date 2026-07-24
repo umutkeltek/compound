@@ -108,12 +108,14 @@ type CollaborationResult struct {
 }
 
 // CollaborationBodyRequest authorizes the explicit on-demand body door. The
-// event target, work, actor, and active run attempt must all agree.
+// event target, work, actor, active run attempt, and owned native session must
+// all agree.
 type CollaborationBodyRequest struct {
 	WorkID       string
 	EventID      string
 	Actor        string
 	RunAttemptID string
+	SessionID    string
 }
 
 type CollaborationBodyResult struct {
@@ -668,9 +670,10 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 	in.EventID = strings.TrimSpace(in.EventID)
 	in.Actor = strings.TrimSpace(in.Actor)
 	in.RunAttemptID = strings.TrimSpace(in.RunAttemptID)
+	in.SessionID = strings.TrimSpace(in.SessionID)
 	if in.WorkID == "" || !strings.HasPrefix(in.EventID, "wco_") ||
-		in.Actor == "" || !runattempt.Valid(in.RunAttemptID) {
-		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires work, event, actor, and ratt_ run attempt")
+		in.Actor == "" || !runattempt.Valid(in.RunAttemptID) || in.SessionID == "" {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires work, event, actor, ratt_ run attempt, and native session")
 	}
 	var event CollaborationEvent
 	if err := s.readEventJSON(in.EventID, &event); err != nil {
@@ -679,11 +682,8 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 	if err := event.Validate(); err != nil {
 		return CollaborationBodyResult{}, err
 	}
-	affects := collaborationAffectsValue(event)
-	if event.WorkID != in.WorkID || !oneOf(in.RunAttemptID, affects.RunAttemptIDs) ||
-		(event.TargetActor != "" && event.TargetActor != in.Actor) ||
-		(len(affects.Actors) > 0 && !oneOf(in.Actor, affects.Actors)) {
-		return CollaborationBodyResult{}, fmt.Errorf("collaboration body request does not match event target work/actor/run attempt")
+	if event.WorkID != in.WorkID {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body request does not match event work")
 	}
 	attempt, err := s.runAttempts().Get(in.RunAttemptID)
 	if err != nil {
@@ -691,6 +691,27 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 	}
 	if attempt.WorkID != in.WorkID || attempt.Actor != in.Actor || runattempt.IsTerminal(attempt.Status) {
 		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires the exact active recipient run attempt")
+	}
+	binding, alive, err := s.latestDelegateBinding(in.WorkID)
+	if err != nil {
+		return CollaborationBodyResult{}, err
+	}
+	if !alive || binding == nil || binding.Session != in.SessionID ||
+		binding.RunAttemptID != attempt.ID ||
+		normalizeCollaborationHarness(binding.Harness) != normalizeCollaborationHarness(attempt.Harness) ||
+		attempt.Origin != runattempt.OriginHarnessExecution {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires the exact owned native session binding")
+	}
+	item, err := s.Get(in.WorkID)
+	if err != nil {
+		return CollaborationBodyResult{}, err
+	}
+	recipient, ok, err := s.collaborationRecipientResolution(item, attempt)
+	if err != nil {
+		return CollaborationBodyResult{}, err
+	}
+	if !ok || !collaborationBodyRelevant(event, recipient) {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body request does not match current recipient relevance")
 	}
 	artifacts, err := home.NewArtifactStore(s.home)
 	if err != nil {
@@ -704,6 +725,44 @@ func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (Collabor
 		return CollaborationBodyResult{}, err
 	}
 	return CollaborationBodyResult{EventID: event.ID, BodyRef: event.BodyRef, Body: body}, nil
+}
+
+func collaborationBodyRelevant(event CollaborationEvent, recipient CollaborationRecipientResolution) bool {
+	affects := collaborationAffectsValue(event)
+	if event.WorkID != recipient.WorkID {
+		return false
+	}
+	if event.TargetActor != "" && event.TargetActor != recipient.Actor {
+		return false
+	}
+	for _, dimension := range []struct {
+		affected  []string
+		recipient []string
+	}{
+		{affected: affects.Actors, recipient: []string{recipient.Actor}},
+		{affected: affects.WorkIDs, recipient: []string{recipient.WorkID}},
+		{affected: affects.RunAttemptIDs, recipient: []string{recipient.RunAttemptID}},
+		{affected: affects.ScopeRefs, recipient: recipient.ScopeRefs},
+		{affected: affects.DependencyRefs, recipient: recipient.DependencyRefs},
+		{affected: affects.PolicyRefs, recipient: recipient.PolicyRefs},
+		{affected: affects.BaseRevisions, recipient: recipient.BaseRevisions},
+		{affected: affects.ResourceRefs, recipient: recipient.ResourceRefs},
+	} {
+		if len(dimension.affected) > 0 &&
+			!collaborationRefsIntersect(dimension.affected, dimension.recipient) {
+			return false
+		}
+	}
+	return true
+}
+
+func collaborationRefsIntersect(left, right []string) bool {
+	for _, value := range left {
+		if collaborationContains(right, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func collaborationAffectsValue(event CollaborationEvent) CollaborationAffects {

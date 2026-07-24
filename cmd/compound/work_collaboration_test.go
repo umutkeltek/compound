@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/eventstore"
 	"compound/internal/home"
 	"compound/internal/runattempt"
 	"compound/internal/work"
@@ -147,6 +148,41 @@ func TestWorkCollaborateBodyCLIUsesExactActiveAttemptWithoutAcknowledgement(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	attempts := runattempt.Open(homePath)
+	if attempt, err = attempts.SetOrigin(attempt.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	if attempt, err = attempts.SetWorkspace(attempt.ID, workspace); err != nil {
+		t.Fatal(err)
+	}
+	const bindingID = "wde_1111111111111111"
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(bindingID, map[string]any{
+		"schema_version": "compound.work_delegate_event.v0.1",
+		"id":             bindingID,
+		"kind":           "work.delegate.spawned",
+		"ts":             now.Add(2 * time.Second).UTC().Format(time.RFC3339),
+		"work_id":        item.ID,
+		"harness":        "claude-code",
+		"holder":         receiver,
+		"session":        "body-cli-session",
+		"run_attempt_id": attempt.ID,
+	}, "  "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(item.ID, work.AdvanceInput{
+		To: "claimed", Actor: sender, RunAttemptIDs: []string{attempt.ID},
+		EvidenceRefs: []string{bindingID}, Note: "body CLI native session bound",
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if attempt, err = attempts.MarkRunning(attempt.ID, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	artifacts, err := home.NewArtifactStore(homePath)
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +208,7 @@ func TestWorkCollaborateBodyCLIUsesExactActiveAttemptWithoutAcknowledgement(t *t
 		"--event", recorded.Event.ID,
 		"--actor", receiver,
 		"--run-attempt", attempt.ID,
+		"--session", "body-cli-session",
 		"--json",
 	}
 	cmd := exec.Command(os.Args[0], commandArgs...)

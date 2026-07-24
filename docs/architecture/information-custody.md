@@ -222,12 +222,16 @@ receiving actor's work, claimed scope, dependency, policy, base revision, and re
 one of four dispositions: `silent_state`, `next_boundary`, `interrupt`, or `human_attention`. Relevant compatible
 `next_boundary` and `interrupt` events coalesce into one bounded structured agent card containing only state deltas
 and artifact refs. `human_attention` is operator-projection state only: a bounded, level-triggered, read-only fold
-returns current unresolved event/work/delta/authority/artifact refs and never compiles native model context.
-Per-recipient cursors and delivered semantic state make agent retries idempotent; interrupt-class intentions bypass
-the next-boundary queue. Codex and Claude-family adapters compile the same card meaning into native presentation,
-while hooks merely pass recipient state and return the compiled bytes. Artifact bodies are fetched only by an
-explicit retrieval call. An acknowledgement is absent unless it would itself change governed state. Clocks may
-drive heartbeat, debounce, TTL, and stale sweeping, but never decide semantic relevance or delivery.
+returns at most eight current unresolved `{event_ref,work_ref,delivery_class,delta,artifact_refs,semantic_revision}`
+items and never compiles native model context. Per-recipient cursors and delivered semantic state make agent retries
+idempotent; interrupt-class intentions bypass the next-boundary queue and remain a level-triggered execution deny
+until newer governed semantic state clears them, without repeating the card. Codex and Claude-family adapters compile
+the same card and interrupt-deny meaning into native presentation, while hooks merely pass recipient state and return
+the compiled bytes. Native delivery and artifact retrieval require the exact owned session/work/run binding; an
+unknown session never inherits a sole workspace candidate. Artifact bodies are fetched only by an explicit retrieval
+call whose populated relevance dimensions are conjunctive. An acknowledgement is absent unless it would itself change
+governed state. Clocks may drive heartbeat, debounce, TTL, and stale sweeping, but never decide semantic relevance or
+delivery.
 
 Compaction, resume, delegation, and harness replacement are normal lifecycle branches. The working object and
 remaining envelope are persisted before a lossy boundary, restored from owned refs afterward, and recompiled for
