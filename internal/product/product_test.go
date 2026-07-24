@@ -380,6 +380,438 @@ func TestProjectContractBundleMapsSourceInPlaceProductRegistry(t *testing.T) {
 	}
 }
 
+func TestLoadProjectContractBundleAcceptsReleaseOnly(t *testing.T) {
+	releasePath := writeProjectContractTestFile(t, "release.yaml", `
+schema_version: 1
+project: alpha-guard
+release_status: ready
+`)
+
+	bundle, err := LoadProjectContractBundle("", releasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Product.ID != "product:alpha_guard" {
+		t.Fatalf("product id = %q, want product:alpha_guard", bundle.Product.ID)
+	}
+	if len(bundle.EvidenceRefs) != 1 || bundle.EvidenceRefs[0] != "release-contract:release.yaml" {
+		t.Fatalf("release-only evidence refs = %+v", bundle.EvidenceRefs)
+	}
+}
+
+func TestLoadProjectContractBundleProjectOnlyOmitsReleaseEvidence(t *testing.T) {
+	projectPath := writeProjectContractTestFile(t, "project.yaml", `
+schema_version: 1
+project:
+  slug: alpha-guard
+  name: Alpha Guard
+`)
+
+	bundle, err := LoadProjectContractBundle(projectPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.EvidenceRefs) != 1 || bundle.EvidenceRefs[0] != "project-contract:project.yaml" {
+		t.Fatalf("project-only evidence refs = %+v", bundle.EvidenceRefs)
+	}
+}
+
+func TestLoadProjectContractBundleUsesCanonicalProjectSlug(t *testing.T) {
+	projectPath := writeProjectContractTestFile(t, "project.yaml", `
+schema_version: 1
+project:
+  slug: wid-get-alpha
+  name: Alpha Guard
+  aliases:
+    - alpha_guard
+    - alphaguard
+`)
+
+	bundle, err := LoadProjectContractBundle(projectPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Product.ID != "product:wid_get_alpha" {
+		t.Fatalf("product id = %q, want canonical project.slug identity", bundle.Product.ID)
+	}
+}
+
+func TestLoadProjectContractBundleRejectsUnsupportedCanonicalPunctuation(t *testing.T) {
+	for _, identity := range []string{"widget/alpha", "widget.alpha"} {
+		t.Run(identity, func(t *testing.T) {
+			projectPath := writeProjectContractTestFile(t, "project.yaml",
+				"schema_version: 1\nproject:\n  slug: \""+identity+"\"\n")
+			if _, err := LoadProjectContractBundle(projectPath, ""); err == nil {
+				t.Fatalf("canonical identity %q with unsupported punctuation should be rejected", identity)
+			}
+		})
+	}
+}
+
+func TestLoadProjectContractBundleRejectsGenericCanonicalIdentities(t *testing.T) {
+	genericIdentities := []string{
+		"",
+		"-",
+		"unknown",
+		"none",
+		"null",
+		"n/a",
+		"na",
+		"tbd",
+		"todo",
+		"not_configured",
+		"not-configured",
+		"unconfigured",
+	}
+	sources := []struct {
+		name        string
+		fileName    string
+		body        func(string) string
+		projectPath bool
+	}{
+		{
+			name:     "project contract",
+			fileName: "project.yaml",
+			body: func(identity string) string {
+				return "schema_version: 1\nproject:\n  slug: \"" + identity + "\"\n"
+			},
+			projectPath: true,
+		},
+		{
+			name:     "release contract",
+			fileName: "release.yaml",
+			body: func(identity string) string {
+				return "schema_version: 1\nproject: \"" + identity + "\"\n"
+			},
+		},
+	}
+
+	for _, source := range sources {
+		t.Run(source.name, func(t *testing.T) {
+			for _, identity := range genericIdentities {
+				testName := identity
+				if testName == "" {
+					testName = "empty"
+				}
+				t.Run(testName, func(t *testing.T) {
+					path := writeProjectContractTestFile(t, source.fileName, source.body(identity))
+					projectPath, releasePath := "", path
+					if source.projectPath {
+						projectPath, releasePath = path, ""
+					}
+					if _, err := LoadProjectContractBundle(projectPath, releasePath); err == nil {
+						t.Fatalf("generic canonical identity %q should be rejected", identity)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestLoadProjectContractBundleDoesNotMaskInvalidPairedIdentity(t *testing.T) {
+	tests := []struct {
+		name            string
+		projectIdentity string
+		releaseIdentity string
+	}{
+		{
+			name:            "invalid project identity",
+			projectIdentity: "",
+			releaseIdentity: "alpha-guard",
+		},
+		{
+			name:            "invalid release identity",
+			projectIdentity: "alpha-guard",
+			releaseIdentity: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projectPath := writeProjectContractTestFile(t, "project.yaml",
+				"schema_version: 1\nproject:\n  slug: \""+tt.projectIdentity+"\"\n")
+			releasePath := writeProjectContractTestFile(t, "release.yaml",
+				"schema_version: 1\nproject: \""+tt.releaseIdentity+"\"\n")
+			if _, err := LoadProjectContractBundle(projectPath, releasePath); err == nil {
+				t.Fatal("a valid paired contract must not mask an invalid canonical identity")
+			}
+		})
+	}
+}
+
+func TestLoadProjectContractBundleRequiresAContractPath(t *testing.T) {
+	_, err := LoadProjectContractBundle("", "")
+	if err == nil || !strings.Contains(err.Error(), "project or release contract path required") {
+		t.Fatalf("error = %v, want missing contract path rejection", err)
+	}
+}
+
+func TestLoadProjectContractBundleRejectsDuplicateYAMLKeys(t *testing.T) {
+	tests := []struct {
+		name        string
+		fileName    string
+		body        string
+		projectPath bool
+	}{
+		{
+			name:     "project contract",
+			fileName: "project.yaml",
+			body: `
+schema_version: 1
+project:
+  slug: alpha-guard
+  slug: beta-store
+`,
+			projectPath: true,
+		},
+		{
+			name:     "release contract",
+			fileName: "release.yaml",
+			body: `
+schema_version: 1
+project: alpha-guard
+project: beta-store
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeProjectContractTestFile(t, tt.fileName, tt.body)
+			projectPath, releasePath := "", path
+			if tt.projectPath {
+				projectPath, releasePath = path, ""
+			}
+			if _, err := LoadProjectContractBundle(projectPath, releasePath); err == nil {
+				t.Fatal("duplicate YAML key should be rejected")
+			}
+		})
+	}
+}
+
+func TestLoadProjectContractBundleRejectsCaseInsensitiveDuplicateYAMLKeys(t *testing.T) {
+	tests := []struct {
+		name        string
+		fileName    string
+		body        string
+		projectPath bool
+	}{
+		{
+			name:     "nested project key",
+			fileName: "project.yaml",
+			body: `
+schema_version: 1
+project:
+  slug: alpha-guard
+  SLUG: beta-store
+`,
+			projectPath: true,
+		},
+		{
+			name:     "top-level release key",
+			fileName: "release.yaml",
+			body: `
+schema_version: 1
+project: alpha-guard
+PROJECT: beta-store
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeProjectContractTestFile(t, tt.fileName, tt.body)
+			projectPath, releasePath := "", path
+			if tt.projectPath {
+				projectPath, releasePath = path, ""
+			}
+			if _, err := LoadProjectContractBundle(projectPath, releasePath); err == nil {
+				t.Fatal("case-insensitive duplicate YAML key should be rejected")
+			}
+		})
+	}
+}
+
+func TestLoadProjectContractBundleRejectsYAMLMergeKeys(t *testing.T) {
+	tests := []struct {
+		name        string
+		fileName    string
+		body        string
+		projectPath bool
+	}{
+		{
+			name:     "nested project merge",
+			fileName: "project.yaml",
+			body: `
+schema_version: 1
+defaults: &defaults
+  slug: beta-store
+project:
+  <<: *defaults
+  slug: alpha-guard
+`,
+			projectPath: true,
+		},
+		{
+			name:     "top-level release merge",
+			fileName: "release.yaml",
+			body: `
+defaults: &defaults
+  schema_version: 1
+  project: beta-store
+<<: *defaults
+schema_version: 1
+project: alpha-guard
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeProjectContractTestFile(t, tt.fileName, tt.body)
+			projectPath, releasePath := "", path
+			if tt.projectPath {
+				projectPath, releasePath = path, ""
+			}
+			if _, err := LoadProjectContractBundle(projectPath, releasePath); err == nil {
+				t.Fatal("YAML merge key should be rejected")
+			}
+		})
+	}
+}
+
+func TestLoadProjectContractBundleAcceptsQuotedSchemaVersions(t *testing.T) {
+	tests := []struct {
+		name        string
+		fileName    string
+		body        string
+		projectPath bool
+	}{
+		{
+			name:     "project contract",
+			fileName: "project.yaml",
+			body: `
+schema_version: "1"
+project:
+  slug: alpha-guard
+`,
+			projectPath: true,
+		},
+		{
+			name:     "release contract",
+			fileName: "release.yaml",
+			body: `
+schema_version: "1"
+project: alpha-guard
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeProjectContractTestFile(t, tt.fileName, tt.body)
+			projectPath, releasePath := "", path
+			if tt.projectPath {
+				projectPath, releasePath = path, ""
+			}
+			if _, err := LoadProjectContractBundle(projectPath, releasePath); err != nil {
+				t.Fatalf("quoted schema_version 1 should be accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadProjectContractBundleRejectsUnsupportedSchemaVersions(t *testing.T) {
+	tests := []struct {
+		name        string
+		fileName    string
+		body        string
+		projectPath bool
+	}{
+		{
+			name:     "project contract",
+			fileName: "project.yaml",
+			body: `
+schema_version: 2
+project:
+  slug: alpha-guard
+`,
+			projectPath: true,
+		},
+		{
+			name:     "release contract",
+			fileName: "release.yaml",
+			body: `
+schema_version: 2
+project: alpha-guard
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeProjectContractTestFile(t, tt.fileName, tt.body)
+			projectPath, releasePath := "", path
+			if tt.projectPath {
+				projectPath, releasePath = path, ""
+			}
+			_, err := LoadProjectContractBundle(projectPath, releasePath)
+			if err == nil || !strings.Contains(err.Error(), "schema_version") {
+				t.Fatalf("error = %v, want unsupported schema_version rejection", err)
+			}
+		})
+	}
+}
+
+func TestLoadProjectContractBundleRejectsMissingSchemaVersions(t *testing.T) {
+	tests := []struct {
+		name        string
+		fileName    string
+		body        string
+		projectPath bool
+	}{
+		{
+			name:     "project contract",
+			fileName: "project.yaml",
+			body: `
+project:
+  slug: alpha-guard
+`,
+			projectPath: true,
+		},
+		{
+			name:     "release contract",
+			fileName: "release.yaml",
+			body: `
+project: alpha-guard
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeProjectContractTestFile(t, tt.fileName, tt.body)
+			projectPath, releasePath := "", path
+			if tt.projectPath {
+				projectPath, releasePath = path, ""
+			}
+			_, err := LoadProjectContractBundle(projectPath, releasePath)
+			if err == nil || !strings.Contains(err.Error(), "schema_version") {
+				t.Fatalf("error = %v, want missing schema_version rejection", err)
+			}
+		})
+	}
+}
+
+func writeProjectContractTestFile(t *testing.T, name, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestValidateRejectsSignalForOtherProduct(t *testing.T) {
 	b := validBundle()
 	b.Signals[0].ProductID = "product:other"

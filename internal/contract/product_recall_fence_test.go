@@ -13,6 +13,30 @@ import (
 	"compound/internal/mem"
 )
 
+func TestProductRecallFenceDelegatesContractParsingToProductOwner(t *testing.T) {
+	data, err := os.ReadFile("product_recall_fence.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	if !strings.Contains(source, `"compound/internal/product"`) ||
+		!strings.Contains(source, "product.LoadProjectContractBundle(") {
+		t.Fatal("product recall fence must consume the canonical internal/product contract owner")
+	}
+	for _, forbidden := range []string{
+		"gopkg.in/yaml",
+		"yaml.",
+		"workspaceProductEvidence",
+		"productProjectEvidence",
+		"productReleaseEvidence",
+		"productIdentifierKey",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("product recall fence reopened a parallel contract-parser door %q", forbidden)
+		}
+	}
+}
+
 func TestProductRecallFenceScopesFlatMemoryAndAcceptedDecisions(t *testing.T) {
 	home := t.TempDir()
 	workspaceRoot := filepath.Join(t.TempDir(), "widget-alpha")
@@ -49,7 +73,7 @@ func TestProductRecallFenceScopesFlatMemoryAndAcceptedDecisions(t *testing.T) {
 	)
 }
 
-func TestProductRecallFenceResolvesCurrentEntityFromReleaseIdentity(t *testing.T) {
+func TestProductRecallFenceDoesNotUseReleaseIdentifiersAsProductIdentity(t *testing.T) {
 	home := t.TempDir()
 	workspaceRoot := filepath.Join(t.TempDir(), "legacy-client-folder")
 	workspace := filepath.Join(workspaceRoot, "packages", "ios")
@@ -69,6 +93,7 @@ func TestProductRecallFenceResolvesCurrentEntityFromReleaseIdentity(t *testing.T
 		productFenceCandidate("product:widget_alpha", "surfaces", "appstore:com.example.widget-alpha", "product", "status", ""),
 		productFenceCandidate("product:widget_alpha", "own_release_identity_fact", "OWN-RELEASE-ID release safety", "product", "status", ""),
 		productFenceCandidate("product:widget_beta", "sibling_release_identity_fact", "SIBLING-RELEASE-ID release safety", "product", "status", ""),
+		productFenceCandidate("UniversalReleaseRule", "global_release_identity_rule", "GLOBAL-RELEASE-ID release safety", "standing-law", "architecture", ""),
 	})
 
 	pack, err := PackWithCapabilities(Input{
@@ -79,8 +104,8 @@ func TestProductRecallFenceResolvesCurrentEntityFromReleaseIdentity(t *testing.T
 		t.Fatal(err)
 	}
 	assertProductFenceMarkers(t, pack,
-		[]string{"OWN-RELEASE-ID"},
-		[]string{"SIBLING-RELEASE-ID"},
+		[]string{"GLOBAL-RELEASE-ID"},
+		[]string{"OWN-RELEASE-ID", "SIBLING-RELEASE-ID"},
 	)
 }
 
@@ -137,7 +162,99 @@ func TestProductRecallFenceScopesEveryProbeGroupIncludingAliasedProductRoot(t *t
 	}
 }
 
-func TestProductRecallFenceFailsClosedWhenWorkspaceIdentityIsAbsentOrAmbiguous(t *testing.T) {
+func TestProductRecallFenceGroupedProbesEmitOneStructuralOmissionSentinel(t *testing.T) {
+	home := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), "widget-alpha")
+	workspace := filepath.Join(workspaceRoot, "client")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProductProjectContract(t, workspaceRoot, "widget-alpha")
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topics := []byte(`{
+	  "schema_version": "compound.memory_topics.v0.1",
+	  "topics": [
+	    {"slug": "product"},
+	    {"slug": "standing-law"},
+	    {"slug": "trap"},
+	    {"slug": "opportunity"}
+	  ]
+	}`)
+	if _, err := store.ImportTopics(topics, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	promoteProductFenceCandidates(t, store, []mem.Candidate{
+		productFenceCandidate("product:widget_alpha", "own_grouped_probe", "GROUPED-OWN product release", "product", "status", ""),
+		productFenceCandidate("product:widget_beta", "sibling_grouped_probe", "GROUPED-SIBLING product release", "product", "status", ""),
+	})
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: workspace, Task: "product release",
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProductFenceMarkers(t, pack, []string{"GROUPED-OWN"}, []string{"GROUPED-SIBLING"})
+	var omissionCount int
+	for _, excluded := range pack.Excluded {
+		if excluded.Ref == servedProductFenceExclusionRef {
+			omissionCount++
+		}
+	}
+	if omissionCount != 1 {
+		t.Fatalf("grouped product-fence omissions = %d, want exactly one structural sentinel: %+v", omissionCount, pack.Excluded)
+	}
+}
+
+func TestProductRecallFenceGroupedProbesDoNotReportUnrelatedSiblingOmission(t *testing.T) {
+	home := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), "widget-alpha")
+	workspace := filepath.Join(workspaceRoot, "client")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProductProjectContract(t, workspaceRoot, "widget-alpha")
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topics := []byte(`{
+	  "schema_version": "compound.memory_topics.v0.1",
+	  "topics": [
+	    {"slug": "product"},
+	    {"slug": "standing-law"},
+	    {"slug": "trap"},
+	    {"slug": "opportunity"}
+	  ]
+	}`)
+	if _, err := store.ImportTopics(topics, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	promoteProductFenceCandidates(t, store, []mem.Candidate{
+		productFenceCandidate("product:widget_alpha", "own_grouped_probe", "GROUPED-ELIGIBLE-OWN product release", "product", "status", ""),
+		productFenceCandidate("product:widget_beta", "unrelated_sibling", "GROUPED-UNRELATED-SIBLING product release", "outside-product-probe", "status", ""),
+	})
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: workspace, Task: "product release",
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProductFenceMarkers(t, pack, []string{"GROUPED-ELIGIBLE-OWN"}, []string{"GROUPED-UNRELATED-SIBLING"})
+	for _, excluded := range pack.Excluded {
+		if excluded.Ref == servedProductFenceExclusionRef {
+			t.Fatalf("unrelated sibling outside selected probe groups emitted a product-fence sentinel: %+v", pack.Excluded)
+		}
+	}
+}
+
+func TestProductRecallFenceFailsClosedWhenCanonicalProductIdentityIsAbsent(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		configure func(t *testing.T, root string, store *mem.Store)
@@ -149,13 +266,10 @@ func TestProductRecallFenceFailsClosedWhenWorkspaceIdentityIsAbsentOrAmbiguous(t
 			},
 		},
 		{
-			name: "ambiguous",
+			name: "canonical product absent",
 			configure: func(t *testing.T, root string, store *mem.Store) {
 				t.Helper()
-				writeProductProjectContract(t, root, "widget-alpha")
-				promoteProductFenceCandidates(t, store, []mem.Candidate{
-					productFenceCandidate("repo:widget_beta", "git_root", root, "git_root", "status", ""),
-				})
+				writeProductProjectContract(t, root, "widget-gamma")
 			},
 		},
 	} {
@@ -192,6 +306,38 @@ func TestProductRecallFenceFailsClosedWhenWorkspaceIdentityIsAbsentOrAmbiguous(t
 			)
 		})
 	}
+}
+
+func TestProductRecallFenceCanonicalContractIgnoresWorkspaceClaimIdentity(t *testing.T) {
+	home := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
+	workspace := filepath.Join(workspaceRoot, "nested", "client")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProductProjectContract(t, workspaceRoot, "widget-alpha")
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoteProductFenceCandidates(t, store, []mem.Candidate{
+		productFenceCandidate("product:widget_alpha", "alpha_fact", "CANONICAL-CONTRACT-ALPHA release safety", "product", "status", ""),
+		productFenceCandidate("product:widget_beta", "beta_fact", "WORKSPACE-CLAIM-BETA release safety", "product", "status", ""),
+		productFenceCandidate("repo:widget_beta", "git_root", workspaceRoot, "git_root", "status", ""),
+		productFenceCandidate("UniversalReleaseRule", "global_rule", "CANONICAL-CONTRACT-GLOBAL release safety", "standing-law", "architecture", ""),
+	})
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: workspace, Task: "release safety",
+		RepoKind: "product", RepoKindVia: "flag", Mode: "execute",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProductFenceMarkers(t, pack,
+		[]string{"CANONICAL-CONTRACT-ALPHA", "CANONICAL-CONTRACT-GLOBAL"},
+		[]string{"WORKSPACE-CLAIM-BETA"},
+	)
 }
 
 func TestProductRecallFenceDoesNotTrustWorkspaceClaimWithoutContract(t *testing.T) {
@@ -256,24 +402,24 @@ func TestProductRecallFenceNormalizesContractWordBoundariesForOneCanonicalIdenti
 
 func TestProductRecallFenceServedPackContainsNoSiblingProductIdentity(t *testing.T) {
 	home := t.TempDir()
-	workspaceRoot := filepath.Join(t.TempDir(), "sample-claims")
+	workspaceRoot := filepath.Join(t.TempDir(), "alpha-guard")
 	workspace := filepath.Join(workspaceRoot, "client")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeProductProjectContractWithRepo(t, workspaceRoot, "sample-claims", "https://github.com/example/sample-claims")
+	writeProductProjectContractWithRepo(t, workspaceRoot, "alpha-guard", "https://example.invalid/alpha-guard")
 	store, err := mem.Open(home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	promoteProductFenceCandidates(t, store, []mem.Candidate{
-		productFenceCandidate("product:sample_claims", "surfaces", "https://github.com/example/sample-claims", "product", "status", ""),
-		productFenceCandidate("product:sample_claims", "word_boundary_fact", "SAMPLE-CLAIMS-OWN release safety", "product", "status", ""),
-		productFenceCandidate("product:sampleclaims", "surfaces", "https://github.com/example/sampleclaims", "product", "status", ""),
-		productFenceCandidate("product:sampleclaims", "compact_collision_fact", "SAMPLE-CLAIMS-COMPACT release safety", "product", "status", ""),
-		productFenceCandidate("product:sample_claims_ios", "sibling_fact", "SAMPLE-CLAIMS-IOS release safety", "product", "status", ""),
-		productFenceCandidate("product:exampleapp", "exampleapp_sibling_fact", "EXAMPLEAPP-SIBLING release safety", "product", "status", ""),
-		productFenceDecision("DEC-EXAMPLEAPP", "EXAMPLEAPP-DECISION release safety", "product:exampleapp"),
+		productFenceCandidate("product:alpha_guard", "surfaces", "https://example.invalid/alpha-guard", "product", "status", ""),
+		productFenceCandidate("product:alpha_guard", "word_boundary_fact", "ALPHA-GUARD-OWN release safety", "product", "status", ""),
+		productFenceCandidate("product:alphaguard", "surfaces", "https://example.invalid/alphaguard", "product", "status", ""),
+		productFenceCandidate("product:alphaguard", "compact_collision_fact", "ALPHA-GUARD-COMPACT release safety", "product", "status", ""),
+		productFenceCandidate("product:alpha_guard_ios", "sibling_fact", "ALPHA-GUARD-IOS release safety", "product", "status", ""),
+		productFenceCandidate("product:beta_store", "beta_store_sibling_fact", "BETA-STORE-SIBLING release safety", "product", "status", ""),
+		productFenceDecision("DEC-BETA-STORE", "BETA-STORE-DECISION release safety", "product:beta_store"),
 	})
 
 	in := Input{
@@ -309,8 +455,8 @@ func TestProductRecallFenceServedPackContainsNoSiblingProductIdentity(t *testing
 	}
 	pack := materialized.ContextPack
 	assertProductFenceMarkers(t, pack,
-		[]string{"SAMPLE-CLAIMS-OWN"},
-		[]string{"SAMPLE-CLAIMS-COMPACT", "SAMPLE-CLAIMS-IOS", "EXAMPLEAPP-SIBLING", "EXAMPLEAPP-DECISION", "decision://DEC-EXAMPLEAPP"},
+		[]string{"ALPHA-GUARD-OWN"},
+		[]string{"ALPHA-GUARD-COMPACT", "ALPHA-GUARD-IOS", "BETA-STORE-SIBLING", "BETA-STORE-DECISION", "decision://DEC-BETA-STORE"},
 	)
 	assertServedProductFenceSerialization(t, "ContextPack", pack)
 	assertServedProductFenceSerialization(t, "EffectiveContract", materialized.EffectiveContract)
@@ -324,7 +470,7 @@ func TestServedRuntimeExclusionsUseStructuralProvenance(t *testing.T) {
 	got := appendServedRuntimeExclusions(nil, []envelope.ExcludedRef{
 		{
 			Ref:    servedProductFenceExclusionRef,
-			Reason: "producer wording changed and mentions product:exampleapp",
+			Reason: "producer wording changed and mentions product:beta_store",
 		},
 		quotedDiagnostic,
 		{
@@ -348,7 +494,7 @@ func TestServedRuntimeExclusionsUseStructuralProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(strings.ToLower(string(serialized)), "exampleapp") {
+	if strings.Contains(strings.ToLower(string(serialized)), "beta_store") {
 		t.Fatalf("arbitrary producer reason leaked sibling identity through served exclusions: %s", serialized)
 	}
 	if count := strings.Count(string(serialized), servedProductFenceExclusionRef); count != 1 {
@@ -356,21 +502,22 @@ func TestServedRuntimeExclusionsUseStructuralProvenance(t *testing.T) {
 	}
 }
 
-func TestProductRecallFenceExactStructuredTokenOutranksCompactPrimary(t *testing.T) {
+func TestProductRecallFenceCanonicalProductIDIgnoresDisplayNameAndAliases(t *testing.T) {
 	home := t.TempDir()
 	workspaceRoot := filepath.Join(t.TempDir(), "wid-get-alpha")
 	workspace := filepath.Join(workspaceRoot, "client")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeProductProjectContractWithName(t, workspaceRoot, "wid-get-alpha", "widget-alpha")
+	writeProductProjectContractWithMetadata(t, workspaceRoot, "wid-get-alpha", "widget-alpha", "alpha-widget")
 	store, err := mem.Open(home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	promoteProductFenceCandidates(t, store, []mem.Candidate{
-		productFenceCandidate("product:widget_alpha", "exact_name_fact", "EXACT-NAME-OWN release safety", "product", "status", ""),
-		productFenceCandidate("product:widgetalpha", "compact_slug_fact", "COMPACT-SLUG-COLLISION release safety", "product", "status", ""),
+		productFenceCandidate("product:wid_get_alpha", "canonical_id_fact", "CANONICAL-ID-OWN release safety", "product", "status", ""),
+		productFenceCandidate("product:widget_alpha", "display_name_fact", "DISPLAY-NAME-LOOKALIKE release safety", "product", "status", ""),
+		productFenceCandidate("product:alpha_widget", "alias_fact", "ALIAS-LOOKALIKE release safety", "product", "status", ""),
 	})
 
 	pack, err := PackWithCapabilities(Input{
@@ -381,12 +528,12 @@ func TestProductRecallFenceExactStructuredTokenOutranksCompactPrimary(t *testing
 		t.Fatal(err)
 	}
 	assertProductFenceMarkers(t, pack,
-		[]string{"EXACT-NAME-OWN"},
-		[]string{"COMPACT-SLUG-COLLISION"},
+		[]string{"CANONICAL-ID-OWN"},
+		[]string{"DISPLAY-NAME-LOOKALIKE", "ALIAS-LOOKALIKE"},
 	)
 }
 
-func TestProductRecallFenceUsesUniqueCompactFallbackWithoutIdentifier(t *testing.T) {
+func TestProductRecallFenceFailsClosedWithoutCanonicalProductIDDespiteUniqueCompactResemblance(t *testing.T) {
 	home := t.TempDir()
 	workspaceRoot := filepath.Join(t.TempDir(), "wid-get-alpha")
 	workspace := filepath.Join(workspaceRoot, "client")
@@ -399,8 +546,9 @@ func TestProductRecallFenceUsesUniqueCompactFallbackWithoutIdentifier(t *testing
 		t.Fatal(err)
 	}
 	promoteProductFenceCandidates(t, store, []mem.Candidate{
-		productFenceCandidate("product:widget_alpha", "unique_compact_fact", "UNIQUE-COMPACT-OWN release safety", "product", "status", ""),
+		productFenceCandidate("product:widgetalpha", "unique_compact_fact", "UNIQUE-COMPACT-OWN release safety", "product", "status", ""),
 		productFenceCandidate("product:widget_beta", "compact_sibling_fact", "UNIQUE-COMPACT-SIBLING release safety", "product", "status", ""),
+		productFenceCandidate("UniversalReleaseRule", "unique_compact_global_rule", "UNIQUE-COMPACT-GLOBAL release safety", "standing-law", "architecture", ""),
 	})
 
 	pack, err := PackWithCapabilities(Input{
@@ -411,27 +559,28 @@ func TestProductRecallFenceUsesUniqueCompactFallbackWithoutIdentifier(t *testing
 		t.Fatal(err)
 	}
 	assertProductFenceMarkers(t, pack,
-		[]string{"UNIQUE-COMPACT-OWN"},
-		[]string{"UNIQUE-COMPACT-SIBLING"},
+		[]string{"UNIQUE-COMPACT-GLOBAL"},
+		[]string{"UNIQUE-COMPACT-OWN", "UNIQUE-COMPACT-SIBLING"},
 	)
 }
 
-func TestProductRecallFenceUsesUniqueIdentifierToDisambiguateCompactFallback(t *testing.T) {
+func TestProductRecallFenceFailsClosedWhenOnlyIdentifierMatchesNonCanonicalProduct(t *testing.T) {
 	home := t.TempDir()
 	workspaceRoot := filepath.Join(t.TempDir(), "wid-get-alpha")
 	workspace := filepath.Join(workspaceRoot, "client")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeProductProjectContractWithRepo(t, workspaceRoot, "wid-get-alpha", "https://github.com/example/widget-alpha")
+	writeProductProjectContractWithRepo(t, workspaceRoot, "wid-get-alpha", "https://example.invalid/widget-alpha")
 	store, err := mem.Open(home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	promoteProductFenceCandidates(t, store, []mem.Candidate{
-		productFenceCandidate("product:widget_alpha", "surfaces", "https://github.com/example/widget-alpha", "product", "status", ""),
+		productFenceCandidate("product:widget_alpha", "surfaces", "https://example.invalid/widget-alpha", "product", "status", ""),
 		productFenceCandidate("product:widget_alpha", "identifier_fact", "IDENTIFIER-OWN release safety", "product", "status", ""),
 		productFenceCandidate("product:widgetalpha", "compact_fact", "IDENTIFIER-COLLISION release safety", "product", "status", ""),
+		productFenceCandidate("UniversalReleaseRule", "identifier_global_rule", "IDENTIFIER-GLOBAL release safety", "standing-law", "architecture", ""),
 	})
 
 	pack, err := PackWithCapabilities(Input{
@@ -442,8 +591,8 @@ func TestProductRecallFenceUsesUniqueIdentifierToDisambiguateCompactFallback(t *
 		t.Fatal(err)
 	}
 	assertProductFenceMarkers(t, pack,
-		[]string{"IDENTIFIER-OWN"},
-		[]string{"IDENTIFIER-COLLISION"},
+		[]string{"IDENTIFIER-GLOBAL"},
+		[]string{"IDENTIFIER-OWN", "IDENTIFIER-COLLISION"},
 	)
 }
 
@@ -678,7 +827,7 @@ func TestProductRecallFenceDeniesUnknownProductTokenInMultiValueScope(t *testing
 	)
 }
 
-func TestProductRecallFenceRejectsMalformedProductNamespaceTokensBeforeCompactFallback(t *testing.T) {
+func TestProductRecallFenceRejectsMalformedProductTokensWithoutCompactFallback(t *testing.T) {
 	index := currentProductIdentityIndex([]mem.Claim{
 		{Entity: "product:widgetalpha"},
 	})
@@ -714,6 +863,19 @@ func TestProductRecallFenceRejectsMalformedProductNamespaceTokensBeforeCompactFa
 		}
 		if productRecallFenceAllowsClaim(fence, claim) {
 			t.Errorf("malformed product namespace token %q compact-fell back to current product", token)
+		}
+	}
+	for _, token := range []string{
+		"widget/alpha",
+		"widget.alpha",
+		"widget alpha",
+	} {
+		claim := mem.Claim{
+			Entity:     "MalformedProductID",
+			Qualifiers: map[string]string{"product_id": token},
+		}
+		if productRecallFenceAllowsClaim(fence, claim) {
+			t.Errorf("malformed product_id token %q compact-fell back to current product", token)
 		}
 	}
 }
@@ -1049,10 +1211,17 @@ func writeProductProjectContractWithRepo(t *testing.T, root, slug, repo string) 
 	}
 }
 
-func writeProductProjectContractWithName(t *testing.T, root, slug, name string) {
+func writeProductProjectContractWithMetadata(t *testing.T, root, slug, name string, aliases ...string) {
 	t.Helper()
 	markProductTestRepo(t, root)
 	body := fmt.Sprintf("schema_version: 1\nproject:\n  slug: %s\n  name: %s\nsource:\n  authority:\n    path: %s\n", slug, name, root)
+	if len(aliases) > 0 {
+		body = fmt.Sprintf("schema_version: 1\nproject:\n  slug: %s\n  name: %s\n  aliases:\n", slug, name)
+		for _, alias := range aliases {
+			body += fmt.Sprintf("    - %s\n", alias)
+		}
+		body += fmt.Sprintf("source:\n  authority:\n    path: %s\n", root)
+	}
 	if err := os.WriteFile(filepath.Join(root, "project.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1072,7 +1241,7 @@ func assertServedProductFenceSerialization(t *testing.T, outputName string, outp
 		t.Fatal(err)
 	}
 	lowerSerialized := strings.ToLower(string(serialized))
-	for _, forbidden := range []string{"exampleapp", "sampleclaims", "sample_claims_ios"} {
+	for _, forbidden := range []string{"beta_store", "alphaguard", "alpha_guard_ios"} {
 		if strings.Contains(lowerSerialized, forbidden) {
 			t.Errorf("serialized %s leaked sibling product identity %q:\n%s", outputName, forbidden, serialized)
 		}

@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
+
+const projectContractSchemaVersion = "1"
 
 type projectContract struct {
 	Project struct {
@@ -62,18 +65,34 @@ type releaseIdentity struct {
 // the existing Product registry bundle. It is source-in-place intake only:
 // analytics and causality still enter through ProductSignal.
 func LoadProjectContractBundle(projectPath, releasePath string) (Bundle, error) {
-	pc, err := loadProjectContract(projectPath)
-	if err != nil {
-		return Bundle{}, err
+	hasProject := strings.TrimSpace(projectPath) != ""
+	hasRelease := strings.TrimSpace(releasePath) != ""
+	if !hasProject && !hasRelease {
+		return Bundle{}, fmt.Errorf("project or release contract path required")
 	}
-	var rc releaseContract
-	if strings.TrimSpace(releasePath) != "" {
+
+	var (
+		pc         projectContract
+		rc         releaseContract
+		projectRef string
+		releaseRef string
+		err        error
+	)
+	if hasProject {
+		pc, err = loadProjectContract(projectPath)
+		if err != nil {
+			return Bundle{}, err
+		}
+		projectRef = filepath.Base(projectPath)
+	}
+	if hasRelease {
 		rc, err = loadReleaseContract(releasePath)
 		if err != nil {
 			return Bundle{}, err
 		}
+		releaseRef = filepath.Base(releasePath)
 	}
-	return ProjectContractBundle(pc, rc, filepath.Base(projectPath), filepath.Base(releasePath))
+	return ProjectContractBundle(pc, rc, projectRef, releaseRef)
 }
 
 func loadProjectContract(path string) (projectContract, error) {
@@ -82,8 +101,14 @@ func loadProjectContract(path string) (projectContract, error) {
 		return projectContract{}, fmt.Errorf("read project contract %s: %w", path, err)
 	}
 	var pc projectContract
-	if err := yaml.Unmarshal(data, &pc); err != nil {
+	if err := decodeProjectContractYAML(data, &pc); err != nil {
 		return projectContract{}, fmt.Errorf("parse project contract %s: %w", path, err)
+	}
+	if genericProjectIdentity(pc.Project.Slug) {
+		return projectContract{}, fmt.Errorf("project contract canonical identity %q is generic", pc.Project.Slug)
+	}
+	if !supportedProjectIdentitySyntax(pc.Project.Slug) {
+		return projectContract{}, fmt.Errorf("project contract canonical identity %q contains unsupported punctuation", pc.Project.Slug)
 	}
 	return pc, nil
 }
@@ -94,10 +119,99 @@ func loadReleaseContract(path string) (releaseContract, error) {
 		return releaseContract{}, fmt.Errorf("read release contract %s: %w", path, err)
 	}
 	var rc releaseContract
-	if err := yaml.Unmarshal(data, &rc); err != nil {
+	if err := decodeProjectContractYAML(data, &rc); err != nil {
 		return releaseContract{}, fmt.Errorf("parse release contract %s: %w", path, err)
 	}
+	if genericProjectIdentity(rc.Project) {
+		return releaseContract{}, fmt.Errorf("release contract canonical identity %q is generic", rc.Project)
+	}
+	if !supportedProjectIdentitySyntax(rc.Project) {
+		return releaseContract{}, fmt.Errorf("release contract canonical identity %q contains unsupported punctuation", rc.Project)
+	}
 	return rc, nil
+}
+
+func decodeProjectContractYAML(data []byte, out any) error {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	if len(document.Content) != 1 {
+		return fmt.Errorf("contract must contain one YAML document root")
+	}
+	root := document.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("contract root must be a YAML mapping")
+	}
+	if err := validateProjectContractMappingKeys(root); err != nil {
+		return err
+	}
+	version := projectContractMappingValue(root, "schema_version")
+	if version == nil || version.Kind != yaml.ScalarNode {
+		return fmt.Errorf("schema_version is required and must be a scalar")
+	}
+	switch version.Tag {
+	case "", "!!int", "!!str":
+	default:
+		return fmt.Errorf("schema_version has unsupported YAML tag %q", version.Tag)
+	}
+	if strings.TrimSpace(version.Value) != projectContractSchemaVersion {
+		return fmt.Errorf("unsupported schema_version %q", version.Value)
+	}
+	if err := root.Decode(out); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateProjectContractMappingKeys(node *yaml.Node) error {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.MappingNode {
+		if len(node.Content)%2 != 0 {
+			return fmt.Errorf("YAML mapping must contain key-value pairs")
+		}
+		seen := map[string]bool{}
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key.Kind != yaml.ScalarNode {
+				return fmt.Errorf("YAML mapping key must be a scalar")
+			}
+			normalized := strings.ToLower(strings.TrimSpace(key.Value))
+			switch {
+			case normalized == "":
+				return fmt.Errorf("YAML mapping key must not be empty")
+			case normalized == "<<":
+				return fmt.Errorf("YAML merge keys are not supported")
+			case seen[normalized]:
+				return fmt.Errorf("duplicate YAML mapping key %q", key.Value)
+			}
+			seen[normalized] = true
+			if err := validateProjectContractMappingKeys(node.Content[i+1]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, child := range node.Content {
+		if err := validateProjectContractMappingKeys(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func projectContractMappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if strings.EqualFold(strings.TrimSpace(mapping.Content[i].Value), key) {
+			return mapping.Content[i+1]
+		}
+	}
+	return nil
 }
 
 func ProjectContractBundle(pc projectContract, rc releaseContract, projectRef, releaseRef string) (Bundle, error) {
@@ -108,13 +222,19 @@ func ProjectContractBundle(pc projectContract, rc releaseContract, projectRef, r
 	if slug == "" {
 		return Bundle{}, fmt.Errorf("project contract project.slug required")
 	}
+	if genericProjectIdentity(slug) {
+		return Bundle{}, fmt.Errorf("project contract canonical identity %q is generic", slug)
+	}
+	if !supportedProjectIdentitySyntax(slug) {
+		return Bundle{}, fmt.Errorf("project contract canonical identity %q contains unsupported punctuation", slug)
+	}
 	if rc.Project != "" && pc.Project.Slug != "" && strings.TrimSpace(rc.Project) != strings.TrimSpace(pc.Project.Slug) {
 		return Bundle{}, fmt.Errorf("release project %q does not match project slug %q", rc.Project, pc.Project.Slug)
 	}
 	name := firstNonEmpty(pc.Project.Name, slug)
 	identity := mergeReleaseIdentity(pc.ReleaseIdentity, rc.ReleaseIdentity)
 	productID := "product:" + normalizeIDPart(slug)
-	evidenceRefs := compact([]string{"project-contract:" + projectRef, optionalRef("release-contract:", releaseRef)})
+	evidenceRefs := compact([]string{optionalRef("project-contract:", projectRef), optionalRef("release-contract:", releaseRef)})
 
 	bundle := Bundle{
 		SchemaVersion: SchemaVersion,
@@ -122,7 +242,7 @@ func ProjectContractBundle(pc projectContract, rc releaseContract, projectRef, r
 			ID:              productID,
 			Name:            name,
 			OwnerEntity:     ownerEntity(pc.Project.Owner, slug),
-			Surfaces:        projectSurfaces(pc, identity),
+			Surfaces:        projectSurfaces(pc, identity, slug),
 			Channels:        projectChannels(pc, identity),
 			Positioning:     projectPositioning(pc, rc, name),
 			PrivacyPosture:  projectPrivacy(pc),
@@ -174,7 +294,7 @@ func mergeReleaseIdentity(project, release releaseIdentity) releaseIdentity {
 	return out
 }
 
-func projectSurfaces(pc projectContract, id releaseIdentity) []Surface {
+func projectSurfaces(pc projectContract, id releaseIdentity, slug string) []Surface {
 	var surfaces []Surface
 	add := func(surfaceID, kind, ref string) {
 		ref = strings.TrimSpace(ref)
@@ -196,7 +316,7 @@ func projectSurfaces(pc projectContract, id releaseIdentity) []Surface {
 		add(fmt.Sprintf("healthcheck-%d", i+1), "healthcheck", url)
 	}
 	if len(surfaces) == 0 {
-		add("project", "project", pc.Project.Slug)
+		add("project", "project", slug)
 	}
 	return surfaces
 }
@@ -250,6 +370,30 @@ func ownerEntity(owner, slug string) string {
 		return "owner:" + owner
 	}
 	return "project:" + normalizeIDPart(slug)
+}
+
+func genericProjectIdentity(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "-", "unknown", "none", "null", "n/a", "na", "tbd", "todo", "not_configured", "not-configured", "unconfigured":
+		return true
+	default:
+		return false
+	}
+}
+
+func supportedProjectIdentitySyntax(value string) bool {
+	for _, r := range strings.TrimSpace(value) {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-' ||
+			r == '_' ||
+			unicode.IsSpace(r) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func optionalRef(prefix, value string) string {

@@ -195,8 +195,8 @@ func TestPackWithCapabilitiesProductProbeRejectsSiblingProductEntity(t *testing.
 		t.Fatal(err)
 	}
 	promoteProbeCandidates(t, store, []mem.Candidate{
-		probeCandidate("product:widget-alpha", "release_version", "1.2.3", "product", "status", "operational"),
-		probeCandidate("product:widget-beta", "release_version", "9.9.9", "product", "status", "operational"),
+		probeCandidate("product:widget_alpha", "release_version", "1.2.3", "product", "status", "operational"),
+		probeCandidate("product:widget_beta", "release_version", "9.9.9", "product", "status", "operational"),
 	})
 
 	pack, err := PackWithCapabilities(Input{
@@ -209,18 +209,18 @@ func TestPackWithCapabilitiesProductProbeRejectsSiblingProductEntity(t *testing.
 	var foundWorkspaceProduct bool
 	for _, position := range pack.ActivePositions {
 		switch position.Entity {
-		case "product:widget-alpha":
+		case "product:widget_alpha":
 			foundWorkspaceProduct = true
-		case "product:widget-beta":
+		case "product:widget_beta":
 			t.Fatalf("sibling product crossed workspace identity boundary: %+v", position)
 		}
 	}
 	for _, line := range pack.ActiveMemory {
-		if strings.Contains(line, "product:widget-beta") {
+		if strings.Contains(line, "product:widget_beta") {
 			t.Fatalf("sibling product crossed workspace identity boundary through active memory: %q", line)
 		}
 	}
-	if strings.Contains(pack.SummaryMD, "product:widget-beta") {
+	if strings.Contains(pack.SummaryMD, "product:widget_beta") {
 		t.Fatalf("sibling product crossed workspace identity boundary through summary: %q", pack.SummaryMD)
 	}
 	if !foundWorkspaceProduct {

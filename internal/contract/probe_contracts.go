@@ -408,12 +408,17 @@ func loadProbeGroupedRefsFromView(in Input, rule MemoryRule, semanticRanks map[s
 	var positionRefs []contextPositionRef
 	var excluded []envelope.ExcludedRef
 	var selections []probeGroupSelection
+	productFenceOmitted := false
 	for _, group := range plan.Groups {
 		selection := probeGroupSelection{Class: plan.Class, Group: group.Group}
 		candidates := make([]probeMemoryCandidate, 0)
 		if len(group.topicSet) > 0 {
 			for _, claim := range claims {
-				if candidate, ok := probeClaimCandidate(in, rule, semanticRanks, dependencies, entities, taskTokens, group, claim); ok {
+				candidate, ok, omitted := probeClaimCandidate(in, rule, semanticRanks, dependencies, entities, taskTokens, group, claim)
+				if omitted {
+					productFenceOmitted = true
+				}
+				if ok {
 					candidates = append(candidates, candidate)
 				}
 			}
@@ -422,7 +427,11 @@ func loadProbeGroupedRefsFromView(in Input, rule MemoryRule, semanticRanks map[s
 				if !ok {
 					continue
 				}
-				if candidate, ok := probePositionCandidate(in, rule, semanticRanks, dependencies, entities, taskTokens, group, position, claim); ok {
+				candidate, ok, omitted := probePositionCandidate(in, rule, semanticRanks, dependencies, entities, taskTokens, group, position, claim)
+				if omitted {
+					productFenceOmitted = true
+				}
+				if ok {
 					candidates = append(candidates, candidate)
 				}
 			}
@@ -468,20 +477,29 @@ func loadProbeGroupedRefsFromView(in Input, rule MemoryRule, semanticRanks map[s
 		}
 		selections = append(selections, selection)
 	}
+	if productFenceOmitted {
+		excluded = append(excluded, envelope.ExcludedRef{
+			Ref:    servedProductFenceExclusionRef,
+			Reason: servedProductFenceExclusionReason,
+		})
+	}
 	return memoryRefs, positionRefs, excluded, selections
 }
 
-func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]float64, dependencies *runtimeMemoryDependencies, entities, taskTokens map[string]bool, group probeGroupPlan, claim mem.Claim) (probeMemoryCandidate, bool) {
-	if !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) || !probeClaimInTopicSet(claim, group.topicSet) || !probeClaimInInputTopic(claim, dependencies) || !memoryAbsoluteGateAllowsOrient(claim) {
-		return probeMemoryCandidate{}, false
+func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]float64, dependencies *runtimeMemoryDependencies, entities, taskTokens map[string]bool, group probeGroupPlan, claim mem.Claim) (probeMemoryCandidate, bool, bool) {
+	if !probeClaimInTopicSet(claim, group.topicSet) || !probeClaimInInputTopic(claim, dependencies) || !memoryAbsoluteGateAllowsOrient(claim) {
+		return probeMemoryCandidate{}, false, false
 	}
 	sem := semanticRanks[claim.ID]
 	baseRelevance := memoryRelevanceRank(claim, entities, taskTokens, sem, nil)
 	if !probeMemoryPolicyAllows(claim, rule, baseRelevance, dependencySelfEntities(dependencies)) {
-		return probeMemoryCandidate{}, false
+		return probeMemoryCandidate{}, false, false
 	}
 	temps := dependencies.Temperatures
 	relevance := memoryRelevanceRank(claim, entities, taskTokens, sem, temps)
+	if !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) {
+		return probeMemoryCandidate{}, false, true
+	}
 	if baseRelevance > 0 {
 		if temperature := memoryTemperatureTerm(temps, claim.ID); temperature != 0 {
 			dependencies.AppliedTemperatures[claim.ID] = temperature
@@ -496,21 +514,24 @@ func probeClaimCandidate(in Input, rule MemoryRule, semanticRanks map[string]flo
 		Seq:        claim.Seq,
 		Rank:       probeGroupBaseRank + relevance,
 	}
-	return probeMemoryCandidate{kind: "claim", ref: ref.Ref, line: line, rank: ref.Rank, seq: ref.Seq, memory: ref}, true
+	return probeMemoryCandidate{kind: "claim", ref: ref.Ref, line: line, rank: ref.Rank, seq: ref.Seq, memory: ref}, true, false
 }
 
-func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]float64, dependencies *runtimeMemoryDependencies, entities, taskTokens map[string]bool, group probeGroupPlan, position mem.Position, claim mem.Claim) (probeMemoryCandidate, bool) {
+func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]float64, dependencies *runtimeMemoryDependencies, entities, taskTokens map[string]bool, group probeGroupPlan, position mem.Position, claim mem.Claim) (probeMemoryCandidate, bool, bool) {
 	active := activePositionFromFold(position, claim)
-	if active.Ref == "" || !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) || !probePositionInTopicSet(active, claim, group.topicSet) || !probePositionInInputTopic(active, claim, dependencies) || !memoryAbsoluteGateAllowsOrient(claim) {
-		return probeMemoryCandidate{}, false
+	if active.Ref == "" || !probePositionInTopicSet(active, claim, group.topicSet) || !probePositionInInputTopic(active, claim, dependencies) || !memoryAbsoluteGateAllowsOrient(claim) {
+		return probeMemoryCandidate{}, false, false
 	}
 	sem := semanticRanks[claim.ID]
 	relevance := memoryRelevanceRank(claim, entities, taskTokens, sem, nil)
 	if !probeMemoryPolicyAllows(claim, rule, relevance, dependencySelfEntities(dependencies)) {
-		return probeMemoryCandidate{}, false
+		return probeMemoryCandidate{}, false, false
 	}
 	if currentStatePositionFreshnessExclusionReason(active.Ref, claim) != "" {
-		return probeMemoryCandidate{}, false
+		return probeMemoryCandidate{}, false, false
+	}
+	if !productRecallFenceAllowsClaim(dependencies.ProductFence, claim) {
+		return probeMemoryCandidate{}, false, true
 	}
 	ref := contextPositionRef{
 		Ref:        active.Ref,
@@ -521,7 +542,7 @@ func probePositionCandidate(in Input, rule MemoryRule, semanticRanks map[string]
 		Seq:        claim.Seq,
 		Rank:       probeGroupBaseRank + relevance,
 	}
-	return probeMemoryCandidate{kind: "position", ref: ref.Ref, line: ref.Line, rank: ref.Rank, seq: ref.Seq, position: ref}, true
+	return probeMemoryCandidate{kind: "position", ref: ref.Ref, line: ref.Line, rank: ref.Rank, seq: ref.Seq, position: ref}, true, false
 }
 
 func probeMemoryPolicyAllows(claim mem.Claim, rule MemoryRule, relevance float64, selfEntities map[string]bool) bool {
