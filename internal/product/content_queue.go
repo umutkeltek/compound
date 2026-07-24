@@ -91,6 +91,14 @@ type ContentQueueRow struct {
 	ExpiresAt     string   `json:"expires_at"`
 	Expired       bool     `json:"expired"`
 	ApplyCommands []string `json:"apply_commands"`
+	// Warnings is the additive content-staleness flag set. Slice 2 of
+	// the model-catalog envelope adds a check: a draft body naming a
+	// model the installed catalog marks superseded surfaces a visible
+	// flag here so the operator adjudicating the weekly review sees
+	// the staleness signal next to the post text, not behind a
+	// separate verb. The flag is INFORMATIONAL — the operator still
+	// owns the post; the gate never refuses a draft.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ContentQueuePlanDraft is the review-skeleton header the annotator surfaces.
@@ -198,11 +206,12 @@ func BuildContentQueuePlan(homePath string, now time.Time) (ContentQueuePlan, er
 	}
 
 	var (
-		rows     []ContentQueueRow
-		warnings []string
-		expired  int
-		ids      []string
-		products = map[string]bool{}
+		rows       []ContentQueueRow
+		warnings   []string
+		expired    int
+		ids        []string
+		products   = map[string]bool{}
+		stalenessN int
 	)
 	for _, draft := range drafts {
 		if draft.State != ContentDraftStateProposed && draft.State != ContentDraftStateParked {
@@ -228,10 +237,19 @@ func BuildContentQueuePlan(homePath string, now time.Time) (ContentQueuePlan, er
 			ExpiresAt:     draft.ExpiresAt,
 			Expired:       isExpired,
 			ApplyCommands: contentQueueRowApplyCommands(isExpired),
+			// Content-staleness gate: surface the per-draft warnings
+			// computed at record time, so the operator adjudicating the
+			// weekly review sees the staleness signal next to the post
+			// text. Slice 2 of the model-catalog envelope — read-only,
+			// no refusal, the operator still owns the post.
+			Warnings: draft.Warnings,
 		}
 		rows = append(rows, row)
 		ids = append(ids, draft.ID)
 		products[draft.ProductID] = true
+		if len(draft.Warnings) > 0 {
+			stalenessN++
+		}
 	}
 
 	sort.Strings(ids)
@@ -257,6 +275,13 @@ func BuildContentQueuePlan(homePath string, now time.Time) (ContentQueuePlan, er
 			ReviewNote:      "Approve mints a governed post ActionIntent+PolicyDecision and operationalizes the draft; it never posts publicly by itself. Expired drafts are not approvable; rejected drafts are retained.",
 		},
 		Warnings: warnings,
+	}
+	// Surface a plan-level staleness summary so the operator sees the
+	// count at a glance (each per-row warning remains the per-draft
+	// detail). The slice-2 gate is INFORMATIONAL — never refuses, never
+	// overrides the queue's own status; the operator still owns the post.
+	if stalenessN > 0 {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("%d draft(s) name models the installed catalog marks superseded — see per-row warnings for which model", stalenessN))
 	}
 	return plan, nil
 }

@@ -75,6 +75,13 @@ type ContentDraft struct {
 	CreatedAt     string   `json:"created_at"`
 	ExpiresAt     string   `json:"expires_at"`
 	AdjudicatedAt string   `json:"adjudicated_at,omitempty"`
+	// Warnings is the additive set of content-staleness flags. Slice 2 of
+	// the model-catalog envelope adds a check: a body naming a model the
+	// installed catalog marks superseded gets a visible flag here. The
+	// flag is INFORMATIONAL — the operator still owns the post; the gate
+	// never refuses a draft. Empty when the installed catalog has no
+	// superseded models, or when the body names no models at all.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // RecordContentDraft intakes a new draft: it custodies the body content-addressed
@@ -124,6 +131,11 @@ func RecordContentDraft(homePath string, in ContentDraftInput, now time.Time) (C
 		State:         ContentDraftStateProposed,
 		CreatedAt:     createdAt.Format(time.RFC3339),
 		ExpiresAt:     in.ExpiresAt.UTC().Format(time.RFC3339),
+		// Content-staleness gate: surface a visible flag when the body
+		// names a model the installed catalog marks superseded. Slice 2 of
+		// the model-catalog envelope — read-only, no refusal, no
+		// mutation; the operator still owns the post.
+		Warnings: modelCatalogStalenessWarnings(homePath, in.Body),
 	}
 	if err := candidates.WriteCandidate(homePath, candidates.ContentDraft, id, &draft); err != nil {
 		return ContentDraft{}, err
