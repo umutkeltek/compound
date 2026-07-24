@@ -452,6 +452,9 @@ func TestLoadProjectContractBundleRejectsGenericCanonicalIdentities(t *testing.T
 	genericIdentities := []string{
 		"",
 		"-",
+		"--",
+		"__",
+		"_-_",
 		"unknown",
 		"none",
 		"null",
@@ -503,6 +506,54 @@ func TestLoadProjectContractBundleRejectsGenericCanonicalIdentities(t *testing.T
 						t.Fatalf("generic canonical identity %q should be rejected", identity)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestLoadProjectContractBundleRejectsMultipleYAMLDocuments(t *testing.T) {
+	tests := []struct {
+		name        string
+		fileName    string
+		body        string
+		projectPath bool
+	}{
+		{
+			name:     "project contract",
+			fileName: "project.yaml",
+			body: `
+schema_version: 1
+project:
+  slug: alpha-guard
+---
+schema_version: 1
+project:
+  slug: beta-store
+`,
+			projectPath: true,
+		},
+		{
+			name:     "release contract",
+			fileName: "release.yaml",
+			body: `
+schema_version: 1
+project: alpha-guard
+---
+schema_version: 1
+project: beta-store
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeProjectContractTestFile(t, tt.fileName, tt.body)
+			projectPath, releasePath := "", path
+			if tt.projectPath {
+				projectPath, releasePath = path, ""
+			}
+			if _, err := LoadProjectContractBundle(projectPath, releasePath); err == nil {
+				t.Fatal("multiple YAML documents should be rejected")
 			}
 		})
 	}

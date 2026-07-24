@@ -1,7 +1,9 @@
 package product
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,9 +134,17 @@ func loadReleaseContract(path string) (releaseContract, error) {
 }
 
 func decodeProjectContractYAML(data []byte, out any) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	var document yaml.Node
-	if err := yaml.Unmarshal(data, &document); err != nil {
+	if err := decoder.Decode(&document); err != nil {
 		return err
+	}
+	var trailing yaml.Node
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("contract must contain exactly one YAML document")
 	}
 	if len(document.Content) != 1 {
 		return fmt.Errorf("contract must contain one YAML document root")
@@ -382,18 +392,22 @@ func genericProjectIdentity(value string) bool {
 }
 
 func supportedProjectIdentitySyntax(value string) bool {
+	hasAlphanumeric := false
 	for _, r := range strings.TrimSpace(value) {
 		if (r >= 'a' && r <= 'z') ||
 			(r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') ||
-			r == '-' ||
+			(r >= '0' && r <= '9') {
+			hasAlphanumeric = true
+			continue
+		}
+		if r == '-' ||
 			r == '_' ||
 			unicode.IsSpace(r) {
 			continue
 		}
 		return false
 	}
-	return true
+	return hasAlphanumeric
 }
 
 func optionalRef(prefix, value string) string {
