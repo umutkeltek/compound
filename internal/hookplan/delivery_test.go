@@ -1267,6 +1267,52 @@ func TestReadOperatorCoordinationHardCapsAndReplacesSemanticState(t *testing.T) 
 		}
 	})
 
+	t.Run("attention filters after current-state fold", func(t *testing.T) {
+		fixture := newDeliveryFixture(t)
+		human := fixture.record(t, "operator-human-suppression", work.CollaborationDeliveryHumanAttention, work.CollaborationAffects{
+			WorkIDs: []string{fixture.work},
+		})
+		clearance := fixture.recordDelta(t, "operator-human-clearance", work.CollaborationDeliverySilentState, work.CollaborationStateDelta{
+			Kind: human.Delta.Kind, SubjectRef: human.Delta.SubjectRef,
+			Before: "unresolved", After: "cleared",
+		}, work.CollaborationAffects{WorkIDs: []string{fixture.work}})
+
+		before := operatorProjectionHomeHash(t, fixture.home)
+		coordination, err := ReadOperatorCoordination(OperatorCoordinationRequest{HomePath: fixture.home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		attention, err := ReadOperatorAttention(OperatorAttentionRequest{HomePath: fixture.home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if coordination.Total != 1 || len(coordination.Items) != 1 ||
+			coordination.Items[0].EventRef != clearance.ID ||
+			coordination.Items[0].DeliveryClass != work.CollaborationDeliverySilentState {
+			t.Fatalf("coordination did not expose latest governed clearance: %+v", coordination)
+		}
+		if attention.Total != 0 || len(attention.Items) != 0 {
+			t.Fatalf("attention retained stale human state after clearance: %+v", attention)
+		}
+
+		repeatedCoordination, err := ReadOperatorCoordination(OperatorCoordinationRequest{HomePath: fixture.home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		repeatedAttention, err := ReadOperatorAttention(OperatorAttentionRequest{HomePath: fixture.home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(repeatedCoordination, coordination) || !reflect.DeepEqual(repeatedAttention, attention) {
+			t.Fatalf("repeated operator reads changed:\ncoordination=%+v\nrepeated=%+v\nattention=%+v\nrepeated=%+v",
+				coordination, repeatedCoordination, attention, repeatedAttention)
+		}
+		after := operatorProjectionHomeHash(t, fixture.home)
+		if before != after {
+			t.Fatalf("operator reads mutated home: before=%s after=%s", before, after)
+		}
+	})
+
 	t.Run("latest clearance replaces suppression", func(t *testing.T) {
 		fixture := newDeliveryFixture(t)
 		interrupt := fixture.record(t, "operator-suppression", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{

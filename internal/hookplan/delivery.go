@@ -291,9 +291,6 @@ func readOperatorCoordination(
 		if event.SchemaVersion == work.CollaborationLegacySchemaVersion {
 			class = work.CollaborationDeliverySilentState
 		}
-		if classFilter != "" && class != classFilter {
-			continue
-		}
 		delta := collaborationDelta(event)
 		key := event.WorkID + "|" + delta.Kind + "|" + delta.SubjectRef
 		if err := store.ValidateCollaborationDeliveryEvidence(event); err != nil {
@@ -323,7 +320,10 @@ func readOperatorCoordination(
 	sort.Strings(keys)
 	all := make([]OperatorCoordinationItem, 0, len(keys))
 	for _, key := range keys {
-		all = append(all, current[key])
+		item := current[key]
+		if classFilter == "" || item.DeliveryClass == classFilter {
+			all = append(all, item)
+		}
 	}
 	projection := OperatorCoordinationProjection{
 		SchemaVersion: schemaVersion,

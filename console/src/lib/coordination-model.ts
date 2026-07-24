@@ -70,6 +70,15 @@ export type OperatorCoordinationProjection = {
 };
 
 const OPERATOR_COORDINATION_MAX_ITEMS = 8;
+const OPERATOR_DELIVERY_CLASSES = new Set([
+  "silent_state",
+  "next_boundary",
+  "interrupt",
+  "human_attention",
+]);
+const COLLABORATION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/;
+const SEMANTIC_REVISION = /^sha256:[0-9a-f]{64}$/;
+const ARTIFACT_REF = /^artifact:sha256:[0-9a-f]{64}$/;
 
 function projectionString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -83,6 +92,18 @@ function projectionArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function validRequiredRef(value: unknown, prefix: string): value is string {
+  return typeof value === "string" &&
+    value.startsWith(prefix) &&
+    value.length > prefix.length &&
+    COLLABORATION_TOKEN.test(value);
+}
+
+function validStateToken(value: unknown): value is string | undefined {
+  return value === undefined ||
+    (typeof value === "string" && (value === "" || COLLABORATION_TOKEN.test(value)));
+}
+
 // normalizeOperatorCoordination is a pure client-side whitelist. Unknown and
 // hostile fields are discarded instead of crossing into rendered props.
 export function normalizeOperatorCoordination(
@@ -93,27 +114,55 @@ export function normalizeOperatorCoordination(
     ? value as Record<string, unknown>
     : {};
   const eligible = projectionArray(raw.items)
-    .map((candidate): OperatorCoordinationItem => {
+    .map((candidate): OperatorCoordinationItem | null => {
       const item = candidate && typeof candidate === "object" && !Array.isArray(candidate)
         ? candidate as Record<string, unknown>
-        : {};
+        : null;
+      if (!item) return null;
       const rawDelta = item.delta && typeof item.delta === "object" && !Array.isArray(item.delta)
         ? item.delta as Record<string, unknown>
-        : {};
+        : null;
+      if (!rawDelta) return null;
+      const eventRef = item.event_ref;
+      const workRef = item.work_ref;
+      const deliveryClass = item.delivery_class;
+      const kind = rawDelta.kind;
+      const subjectRef = rawDelta.subject_ref;
+      const semanticRevision = item.semantic_revision;
+      const rawArtifactRefs = projectionArray(item.artifact_refs);
+      if (
+        !validRequiredRef(eventRef, "wco_") ||
+        !validRequiredRef(workRef, "work_") ||
+        typeof deliveryClass !== "string" ||
+        !OPERATOR_DELIVERY_CLASSES.has(deliveryClass) ||
+        typeof kind !== "string" ||
+        !COLLABORATION_TOKEN.test(kind) ||
+        typeof subjectRef !== "string" ||
+        !COLLABORATION_TOKEN.test(subjectRef) ||
+        typeof semanticRevision !== "string" ||
+        !SEMANTIC_REVISION.test(semanticRevision) ||
+        rawArtifactRefs.length === 0 ||
+        !rawArtifactRefs.every((ref) => typeof ref === "string" && ARTIFACT_REF.test(ref)) ||
+        !validStateToken(rawDelta.before) ||
+        !validStateToken(rawDelta.after)
+      ) {
+        return null;
+      }
       return {
-        eventRef: projectionString(item.event_ref),
-        workRef: projectionString(item.work_ref),
-        deliveryClass: projectionString(item.delivery_class),
+        eventRef,
+        workRef,
+        deliveryClass,
         delta: {
-          kind: projectionString(rawDelta.kind),
-          subjectRef: projectionString(rawDelta.subject_ref),
+          kind,
+          subjectRef,
           before: projectionString(rawDelta.before),
           after: projectionString(rawDelta.after),
         },
-        artifactRefs: projectionArray(item.artifact_refs).map(projectionString).filter(Boolean),
-        semanticRevision: projectionString(item.semantic_revision),
+        artifactRefs: rawArtifactRefs as string[],
+        semanticRevision,
       };
     })
+    .filter((item): item is OperatorCoordinationItem => item !== null)
     .filter((item) => !humanOnly || item.deliveryClass === "human_attention");
   const items = eligible.slice(0, OPERATOR_COORDINATION_MAX_ITEMS);
   const rawTotal = Math.max(0, projectionNumber(raw.total));

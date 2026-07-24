@@ -234,6 +234,60 @@ export function runCoordinationSelfTest(): { ok: boolean; details: string[] } {
       detail: `items=${human.items.length} classes=${human.items.map((item) => item.deliveryClass).join(",")}`,
     });
 
+    const valid = hostileItems[0];
+    const invalidItems = [
+      null,
+      {},
+      { ...valid, delivery_class: "urgent_message" },
+      { ...valid, event_ref: "" },
+      { ...valid, event_ref: "wco_" },
+      { ...valid, event_ref: "event_not_wco" },
+      { ...valid, work_ref: "" },
+      { ...valid, work_ref: "work_" },
+      { ...valid, work_ref: "not_work" },
+      { ...valid, delta: { ...valid.delta, kind: "" } },
+      { ...valid, delta: { ...valid.delta, kind: "<script>" } },
+      { ...valid, delta: { ...valid.delta, subject_ref: "" } },
+      { ...valid, delta: { ...valid.delta, subject_ref: { arbitrary: true } } },
+      { ...valid, delta: { ...valid.delta, before: { arbitrary: true } } },
+      { ...valid, delta: { ...valid.delta, after: "<script>" } },
+      { ...valid, semantic_revision: "" },
+      { ...valid, semantic_revision: "sha256:not-a-digest" },
+      { ...valid, artifact_refs: [] },
+      { ...valid, artifact_refs: [{ arbitrary: true }] },
+      { ...valid, artifact_refs: ["body prose, not a reference"] },
+    ];
+    const rejected = normalizeOperatorCoordination({
+      schema_version: "compound.operator_coordination_projection.v0.1",
+      revision: "sha256:rejected",
+      total: invalidItems.length,
+      items: invalidItems,
+    });
+    const rejectedHuman = normalizeOperatorCoordination({
+      schema_version: "compound.operator_attention_projection.v0.1",
+      revision: "sha256:rejected-human",
+      total: invalidItems.length,
+      items: invalidItems,
+    }, true);
+    const rejectedView = buildCoordinationView(
+      mkReport({
+        operator_coordination: {
+          schema_version: "compound.operator_coordination_projection.v0.1",
+          revision: "sha256:rejected-view",
+          total: invalidItems.length,
+          items: invalidItems,
+        },
+      }) as any,
+    );
+    checks.push({
+      name: "malformed operator items are rejected from every surface",
+      ok:
+        rejected.items.length === 0 &&
+        rejectedHuman.items.length === 0 &&
+        rejectedView.operatorCoordination.items.length === 0,
+      detail: `general=${rejected.items.length} human=${rejectedHuman.items.length} board=${rejectedView.operatorCoordination.items.length}`,
+    });
+
     const view = buildCoordinationView(
       mkReport({
         operator_coordination: {
