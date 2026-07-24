@@ -20,6 +20,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/hookplan"
 	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/retrievalparity"
@@ -1166,4 +1167,96 @@ func capturePromptHookStderr(t *testing.T, fn func()) string {
 	output := <-done
 	_ = r.Close()
 	return output
+}
+
+func TestLiveHookResponseCarriesInterruptContextForCodexAndClaude(t *testing.T) {
+	const card = "coordination-card: interrupt policy:review-needed artifact:sha256:0123456789abcdef"
+	result := hook.Result{ContextOutput: card}
+
+	codex, ok := liveHookResponse("codex", "post-tool-use", result, nil).(codexLiveHookResponse)
+	if !ok {
+		t.Fatalf("codex response type = %T", liveHookResponse("codex", "post-tool-use", result, nil))
+	}
+	claude, ok := liveHookResponse("claude-code", "post-tool-use", result, nil).(claudeLiveHookResponse)
+	if !ok {
+		t.Fatalf("claude response type = %T", liveHookResponse("claude-code", "post-tool-use", result, nil))
+	}
+	if codex.AdditionalContext != card || claude.HookSpecificOutput.AdditionalContext != card {
+		t.Fatalf("interrupt context meaning diverged: codex=%q claude=%q", codex.AdditionalContext, claude.HookSpecificOutput.AdditionalContext)
+	}
+}
+
+func TestLivePreToolResponseDoesNotDropCoordinationContext(t *testing.T) {
+	const card = "coordination-card: interrupt resource:reservation-lost"
+	result := hook.Result{ContextOutput: card}
+	for _, harnessName := range []string{"codex", "claude-code"} {
+		response, ok := liveHookResponse(harnessName, "pre-tool-use", result, nil).(claudeLiveHookResponse)
+		if !ok {
+			t.Fatalf("%s pre-tool response type = %T", harnessName, liveHookResponse(harnessName, "pre-tool-use", result, nil))
+		}
+		if response.HookSpecificOutput.AdditionalContext != card {
+			t.Fatalf("%s pre-tool context = %q", harnessName, response.HookSpecificOutput.AdditionalContext)
+		}
+	}
+}
+
+func TestLiveHookFixtureBuildsStableCoordinationDeliveryRecipient(t *testing.T) {
+	input := []byte(`{
+		"session_id":"session-delivery",
+		"work_id":"work_delivery",
+		"actor":"codex:receiver",
+		"scope_refs":["scope:hookplan"],
+		"dependency_refs":["dependency:stream"],
+		"policy_refs":["policy:delivery"],
+		"base_revisions":["git:base"],
+		"resource_refs":["resource:proof-battery"]
+	}`)
+	boundary, err := liveHookFixture(hookCommandArgs{
+		HookName: "user-prompt-submit", Harness: "codex", Live: true,
+	}, input, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interrupt, err := liveHookFixture(hookCommandArgs{
+		HookName: "post-tool-use", Harness: "codex", Live: true,
+	}, input, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if boundary.CoordinationDelivery == nil || interrupt.CoordinationDelivery == nil {
+		t.Fatalf("coordination delivery missing: boundary=%+v interrupt=%+v", boundary, interrupt)
+	}
+	if boundary.CoordinationDelivery.CursorKey == "" ||
+		boundary.CoordinationDelivery.CursorKey != interrupt.CoordinationDelivery.CursorKey ||
+		boundary.CoordinationDelivery.Trigger != hookplan.DeliveryTriggerBoundary ||
+		interrupt.CoordinationDelivery.Trigger != hookplan.DeliveryTriggerInterrupt {
+		t.Fatalf("delivery cursor/trigger boundary=%+v interrupt=%+v", boundary.CoordinationDelivery, interrupt.CoordinationDelivery)
+	}
+	got := boundary.CoordinationDelivery.Recipient
+	if got.Actor != "codex:receiver" || got.WorkID != "work_delivery" ||
+		strings.Join(got.ScopeRefs, ",") != "scope:hookplan" ||
+		strings.Join(got.DependencyRefs, ",") != "dependency:stream" ||
+		strings.Join(got.PolicyRefs, ",") != "policy:delivery" ||
+		strings.Join(got.BaseRevisions, ",") != "git:base" ||
+		strings.Join(got.ResourceRefs, ",") != "resource:proof-battery" {
+		t.Fatalf("delivery recipient = %+v", got)
+	}
+}
+
+func TestLiveHookResponsePreservesSessionSummaryWithCoordinationContext(t *testing.T) {
+	result := hook.Result{Summary: "normal orientation summary", ContextOutput: "coordination state delta"}
+	for _, harnessName := range []string{"codex", "claude-code"} {
+		var context string
+		switch response := liveHookResponse(harnessName, "session-start", result, nil).(type) {
+		case codexLiveHookResponse:
+			context = response.AdditionalContext
+		case claudeLiveHookResponse:
+			context = response.HookSpecificOutput.AdditionalContext
+		default:
+			t.Fatalf("%s response type = %T", harnessName, response)
+		}
+		if !strings.Contains(context, result.Summary) || !strings.Contains(context, result.ContextOutput) {
+			t.Fatalf("%s session context lost meaning: %q", harnessName, context)
+		}
+	}
 }

@@ -62,6 +62,17 @@ func TestWorkCollaborateCLIRecordsIdempotentObservation(t *testing.T) {
 		"--session", "cli-session",
 		"--target-actor", "claude:reviewer",
 		"--body-ref", bodyRef,
+		"--delivery-class", work.CollaborationDeliveryInterrupt,
+		"--delta-kind", "policy",
+		"--delta-subject", "policy:review",
+		"--delta-before", "allow",
+		"--delta-after", "hold",
+		"--affects-work", w.ID,
+		"--scope-ref", "scope:hookplan",
+		"--dependency-ref", "dependency:stream",
+		"--policy-ref", "policy:review",
+		"--base-revision", "git:base",
+		"--resource-ref", "resource:proof-battery",
 		"--json",
 	}
 	first := runWorkCollaborateHelper(t, homePath, args)
@@ -74,6 +85,19 @@ func TestWorkCollaborateCLIRecordsIdempotentObservation(t *testing.T) {
 	}
 	if first.Event.SessionID != "cli-session" || first.Event.TargetActor != "claude:reviewer" {
 		t.Fatalf("CLI metadata missing: %+v", first.Event)
+	}
+	if first.Event.DeliveryClass != work.CollaborationDeliveryInterrupt ||
+		first.Event.Delta == nil || first.Event.Delta.Kind != "policy" ||
+		first.Event.Delta.SubjectRef != "policy:review" ||
+		first.Event.Delta.Before != "allow" || first.Event.Delta.After != "hold" ||
+		first.Event.Affects == nil ||
+		len(first.Event.Affects.WorkIDs) != 1 || first.Event.Affects.WorkIDs[0] != w.ID ||
+		len(first.Event.Affects.ScopeRefs) != 1 ||
+		len(first.Event.Affects.DependencyRefs) != 1 ||
+		len(first.Event.Affects.PolicyRefs) != 1 ||
+		len(first.Event.Affects.BaseRevisions) != 1 ||
+		len(first.Event.Affects.ResourceRefs) != 1 {
+		t.Fatalf("CLI delivery semantics missing: %+v", first.Event)
 	}
 }
 

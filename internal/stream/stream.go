@@ -121,6 +121,44 @@ type FollowOptions struct {
 	Heartbeat    time.Duration // heartbeat cadence
 }
 
+// ReadAvailable is the finite form of Follow's initial pump. It consumes every
+// complete work-log frame currently available after cursor, applies the same
+// collaboration projection, and returns the exact next byte cursor. It owns no
+// cursor state; callers persist the opaque offset they consumed.
+func ReadAvailable(home string, cursor int64) ([]Frame, int64, error) {
+	if cursor < 0 {
+		return nil, cursor, fmt.Errorf("stream cursor must be non-negative")
+	}
+	eventStore, err := eventstore.Open(home)
+	if err != nil {
+		return nil, cursor, err
+	}
+	size, err := eventStore.WorkLogSize()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []Frame{}, 0, nil
+		}
+		return nil, cursor, err
+	}
+	t := &tailer{consumed: cursor}
+	if _, truncated := ResolveOffset(cursor, size); truncated {
+		t.reset()
+	}
+	from := t.readFrom()
+	if size <= from {
+		return []Frame{}, t.consumed, nil
+	}
+	chunk, err := eventStore.ReadWorkLogAt(from, size-from)
+	if err != nil {
+		return nil, cursor, err
+	}
+	frames := t.feed(chunk)
+	for i := range frames {
+		frames[i] = projectCollaborationFrame(eventStore, frames[i])
+	}
+	return frames, t.consumed, nil
+}
+
 func (o FollowOptions) withDefaults() FollowOptions {
 	if o.PollInterval <= 0 {
 		o.PollInterval = 500 * time.Millisecond

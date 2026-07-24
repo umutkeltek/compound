@@ -20,6 +20,9 @@ func runWorkCollaborate(store *work.Store, args []string, now time.Time) {
 		targetActor     string
 		bodyRef         string
 		visibility      string
+		deliveryClass   string
+		delta           work.CollaborationStateDelta
+		affects         work.CollaborationAffects
 		causalParentIDs []string
 		jsonOutput      bool
 	)
@@ -49,6 +52,30 @@ func runWorkCollaborate(store *work.Store, args []string, now time.Time) {
 			bodyRef = value("--body-ref", &i)
 		case "--visibility":
 			visibility = value("--visibility", &i)
+		case "--delivery-class":
+			deliveryClass = value("--delivery-class", &i)
+		case "--delta-kind":
+			delta.Kind = value("--delta-kind", &i)
+		case "--delta-subject":
+			delta.SubjectRef = value("--delta-subject", &i)
+		case "--delta-before":
+			delta.Before = value("--delta-before", &i)
+		case "--delta-after":
+			delta.After = value("--delta-after", &i)
+		case "--affects-actor":
+			affects.Actors = append(affects.Actors, value("--affects-actor", &i))
+		case "--affects-work":
+			affects.WorkIDs = append(affects.WorkIDs, value("--affects-work", &i))
+		case "--scope-ref":
+			affects.ScopeRefs = append(affects.ScopeRefs, value("--scope-ref", &i))
+		case "--dependency-ref":
+			affects.DependencyRefs = append(affects.DependencyRefs, value("--dependency-ref", &i))
+		case "--policy-ref":
+			affects.PolicyRefs = append(affects.PolicyRefs, value("--policy-ref", &i))
+		case "--base-revision":
+			affects.BaseRevisions = append(affects.BaseRevisions, value("--base-revision", &i))
+		case "--resource-ref":
+			affects.ResourceRefs = append(affects.ResourceRefs, value("--resource-ref", &i))
 		case "--json":
 			jsonOutput = true
 		default:
@@ -72,6 +99,9 @@ func runWorkCollaborate(store *work.Store, args []string, now time.Time) {
 		CausalParentIDs: causalParentIDs,
 		BodyRef:         bodyRef,
 		Visibility:      visibility,
+		DeliveryClass:   deliveryClass,
+		Delta:           delta,
+		Affects:         affects,
 	}, now)
 	die(err)
 	if jsonOutput {

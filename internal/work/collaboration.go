@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,9 +18,39 @@ import (
 )
 
 const (
-	CollaborationSchemaVersion = "compound.work_collaboration_event.v0.1"
-	CollaborationKindObserved  = "work.collaboration.observed"
+	CollaborationSchemaVersion       = "compound.work_collaboration_event.v0.2"
+	CollaborationLegacySchemaVersion = "compound.work_collaboration_event.v0.1"
+	CollaborationKindObserved        = "work.collaboration.observed"
 )
+
+const (
+	CollaborationDeliverySilentState    = "silent_state"
+	CollaborationDeliveryNextBoundary   = "next_boundary"
+	CollaborationDeliveryInterrupt      = "interrupt"
+	CollaborationDeliveryHumanAttention = "human_attention"
+)
+
+// CollaborationStateDelta is deliberately structural and bounded. Full prose
+// remains in BodyRef; delivery cards need only the changed coordinate.
+type CollaborationStateDelta struct {
+	Kind       string `json:"kind"`
+	SubjectRef string `json:"subject_ref"`
+	Before     string `json:"before,omitempty"`
+	After      string `json:"after,omitempty"`
+}
+
+// CollaborationAffects is the relevance index carried with an event. A
+// receiver is eligible only when at least one coordinate intersects its live
+// work context.
+type CollaborationAffects struct {
+	Actors         []string `json:"actors,omitempty"`
+	WorkIDs        []string `json:"work_ids,omitempty"`
+	ScopeRefs      []string `json:"scope_refs,omitempty"`
+	DependencyRefs []string `json:"dependency_refs,omitempty"`
+	PolicyRefs     []string `json:"policy_refs,omitempty"`
+	BaseRevisions  []string `json:"base_revisions,omitempty"`
+	ResourceRefs   []string `json:"resource_refs,omitempty"`
+}
 
 // CollaborationInput is metadata for one content-free multiplayer observation.
 // InlineBody exists only as a fail-closed API guard: callers must preserve the
@@ -33,28 +64,34 @@ type CollaborationInput struct {
 	CausalParentIDs []string
 	BodyRef         string
 	Visibility      string
+	DeliveryClass   string
+	Delta           CollaborationStateDelta
+	Affects         CollaborationAffects
 	InlineBody      string
 }
 
 // CollaborationEvent is evidence attached to one WorkEnvelope lifecycle. It
 // intentionally has no message, prompt, transcript, or inline body field.
 type CollaborationEvent struct {
-	SchemaVersion    string   `json:"schema_version"`
-	ID               string   `json:"id"`
-	Kind             string   `json:"kind"`
-	CreatedAt        string   `json:"created_at"`
-	WorkID           string   `json:"work_id"`
-	Actor            string   `json:"actor"`
-	IdempotencyKey   string   `json:"idempotency_key"`
-	SessionID        string   `json:"session_id,omitempty"`
-	RunAttemptID     string   `json:"run_attempt_id,omitempty"`
-	TargetActor      string   `json:"target_actor,omitempty"`
-	CausalParentIDs  []string `json:"causal_parent_ids,omitempty"`
-	BodyRef          string   `json:"body_ref"`
-	Visibility       string   `json:"visibility"`
-	Privacy          string   `json:"privacy"`
-	ActionIntentID   string   `json:"action_intent_id"`
-	PolicyDecisionID string   `json:"policy_decision_id"`
+	SchemaVersion    string                   `json:"schema_version"`
+	ID               string                   `json:"id"`
+	Kind             string                   `json:"kind"`
+	CreatedAt        string                   `json:"created_at"`
+	WorkID           string                   `json:"work_id"`
+	Actor            string                   `json:"actor"`
+	IdempotencyKey   string                   `json:"idempotency_key"`
+	SessionID        string                   `json:"session_id,omitempty"`
+	RunAttemptID     string                   `json:"run_attempt_id,omitempty"`
+	TargetActor      string                   `json:"target_actor,omitempty"`
+	CausalParentIDs  []string                 `json:"causal_parent_ids,omitempty"`
+	BodyRef          string                   `json:"body_ref"`
+	Visibility       string                   `json:"visibility"`
+	DeliveryClass    string                   `json:"delivery_class,omitempty"`
+	Delta            *CollaborationStateDelta `json:"delta,omitempty"`
+	Affects          *CollaborationAffects    `json:"affects,omitempty"`
+	Privacy          string                   `json:"privacy"`
+	ActionIntentID   string                   `json:"action_intent_id"`
+	PolicyDecisionID string                   `json:"policy_decision_id"`
 }
 
 type CollaborationResult struct {
@@ -87,6 +124,12 @@ func (s *Store) recordCollaborationLocked(workID string, in CollaborationInput, 
 		return CollaborationResult{}, fmt.Errorf("collaboration work_id is required")
 	}
 	in = normalizeCollaborationInput(in)
+	if in.Delta.Kind == "" {
+		in.Delta = CollaborationStateDelta{Kind: "observation", SubjectRef: workID, After: "observed"}
+	}
+	if in.TargetActor != "" {
+		in.Affects.Actors = mergeCollaborationRefs(in.Affects.Actors, []string{in.TargetActor})
+	}
 	if err := validateCollaborationInput(in); err != nil {
 		return CollaborationResult{}, err
 	}
@@ -162,6 +205,9 @@ func (s *Store) recordCollaborationLocked(workID string, in CollaborationInput, 
 		CausalParentIDs:  append([]string{}, in.CausalParentIDs...),
 		BodyRef:          in.BodyRef,
 		Visibility:       in.Visibility,
+		DeliveryClass:    in.DeliveryClass,
+		Delta:            &in.Delta,
+		Affects:          &in.Affects,
 		Privacy:          w.Privacy,
 		ActionIntentID:   action.ID,
 		PolicyDecisionID: decision.ID,
@@ -238,6 +284,21 @@ func normalizeCollaborationInput(in CollaborationInput) CollaborationInput {
 	if in.Visibility == "" {
 		in.Visibility = "work"
 	}
+	in.DeliveryClass = strings.TrimSpace(in.DeliveryClass)
+	if in.DeliveryClass == "" {
+		in.DeliveryClass = CollaborationDeliveryNextBoundary
+	}
+	in.Delta.Kind = strings.TrimSpace(in.Delta.Kind)
+	in.Delta.SubjectRef = strings.TrimSpace(in.Delta.SubjectRef)
+	in.Delta.Before = strings.TrimSpace(in.Delta.Before)
+	in.Delta.After = strings.TrimSpace(in.Delta.After)
+	in.Affects.Actors = normalizeCollaborationRefs(in.Affects.Actors)
+	in.Affects.WorkIDs = normalizeCollaborationRefs(in.Affects.WorkIDs)
+	in.Affects.ScopeRefs = normalizeCollaborationRefs(in.Affects.ScopeRefs)
+	in.Affects.DependencyRefs = normalizeCollaborationRefs(in.Affects.DependencyRefs)
+	in.Affects.PolicyRefs = normalizeCollaborationRefs(in.Affects.PolicyRefs)
+	in.Affects.BaseRevisions = normalizeCollaborationRefs(in.Affects.BaseRevisions)
+	in.Affects.ResourceRefs = normalizeCollaborationRefs(in.Affects.ResourceRefs)
 	for i := range in.CausalParentIDs {
 		in.CausalParentIDs[i] = strings.TrimSpace(in.CausalParentIDs[i])
 	}
@@ -266,12 +327,94 @@ func validateCollaborationInput(in CollaborationInput) error {
 	if in.Visibility != "work" {
 		return fmt.Errorf("collaboration visibility must be %q in v1", "work")
 	}
+	if !oneOf(in.DeliveryClass, []string{
+		CollaborationDeliverySilentState,
+		CollaborationDeliveryNextBoundary,
+		CollaborationDeliveryInterrupt,
+		CollaborationDeliveryHumanAttention,
+	}) {
+		return fmt.Errorf("collaboration delivery_class %q is invalid", in.DeliveryClass)
+	}
+	if !validCollaborationToken(in.Delta.Kind) || !validCollaborationToken(in.Delta.SubjectRef) {
+		return fmt.Errorf("collaboration delta kind and subject_ref must be bounded identifiers")
+	}
+	if in.Delta.Before == "" && in.Delta.After == "" {
+		return fmt.Errorf("collaboration delta requires before or after")
+	}
+	if (in.Delta.Before != "" && !validCollaborationToken(in.Delta.Before)) ||
+		(in.Delta.After != "" && !validCollaborationToken(in.Delta.After)) {
+		return fmt.Errorf("collaboration delta before and after must be bounded identifiers")
+	}
+	for _, item := range []struct {
+		name   string
+		values []string
+	}{
+		{name: "actors", values: in.Affects.Actors},
+		{name: "work_ids", values: in.Affects.WorkIDs},
+		{name: "scope_refs", values: in.Affects.ScopeRefs},
+		{name: "dependency_refs", values: in.Affects.DependencyRefs},
+		{name: "policy_refs", values: in.Affects.PolicyRefs},
+		{name: "base_revisions", values: in.Affects.BaseRevisions},
+		{name: "resource_refs", values: in.Affects.ResourceRefs},
+	} {
+		for _, value := range item.values {
+			if !validCollaborationToken(value) {
+				return fmt.Errorf("collaboration affects.%s must contain bounded identifiers", item.name)
+			}
+		}
+	}
 	return nil
 }
 
+func normalizeCollaborationRefs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mergeCollaborationRefs(left, right []string) []string {
+	return normalizeCollaborationRefs(append(append([]string{}, left...), right...))
+}
+
 func (e CollaborationEvent) Validate() error {
-	if e.SchemaVersion != CollaborationSchemaVersion {
-		return fmt.Errorf("collaboration schema_version = %q, want %q", e.SchemaVersion, CollaborationSchemaVersion)
+	switch e.SchemaVersion {
+	case CollaborationLegacySchemaVersion:
+		if e.DeliveryClass != "" || e.Delta != nil || e.Affects != nil {
+			return fmt.Errorf("legacy collaboration event cannot carry v0.2 delivery metadata")
+		}
+	case CollaborationSchemaVersion:
+		input := CollaborationInput{
+			Actor:          e.Actor,
+			IdempotencyKey: e.IdempotencyKey,
+			SessionID:      e.SessionID,
+			RunAttemptID:   e.RunAttemptID,
+			TargetActor:    e.TargetActor,
+			BodyRef:        e.BodyRef,
+			Visibility:     e.Visibility,
+			DeliveryClass:  e.DeliveryClass,
+		}
+		if e.Delta == nil || e.Affects == nil {
+			return fmt.Errorf("current collaboration event requires delta and affects")
+		}
+		input.Delta = *e.Delta
+		input.Affects = *e.Affects
+		if err := validateCollaborationInput(input); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("collaboration schema_version = %q, want %q or %q", e.SchemaVersion, CollaborationLegacySchemaVersion, CollaborationSchemaVersion)
 	}
 	if !strings.HasPrefix(e.ID, "wco_") {
 		return fmt.Errorf("collaboration id %q must start with wco_", e.ID)
@@ -356,12 +499,15 @@ func collaborationPolicyID(eventID string) string {
 
 func collaborationSemanticDigest(in CollaborationInput) string {
 	body, _ := json.Marshal(struct {
-		SessionID       string   `json:"session_id,omitempty"`
-		RunAttemptID    string   `json:"run_attempt_id,omitempty"`
-		TargetActor     string   `json:"target_actor,omitempty"`
-		CausalParentIDs []string `json:"causal_parent_ids,omitempty"`
-		BodyRef         string   `json:"body_ref"`
-		Visibility      string   `json:"visibility"`
+		SessionID       string                  `json:"session_id,omitempty"`
+		RunAttemptID    string                  `json:"run_attempt_id,omitempty"`
+		TargetActor     string                  `json:"target_actor,omitempty"`
+		CausalParentIDs []string                `json:"causal_parent_ids,omitempty"`
+		BodyRef         string                  `json:"body_ref"`
+		Visibility      string                  `json:"visibility"`
+		DeliveryClass   string                  `json:"delivery_class"`
+		Delta           CollaborationStateDelta `json:"delta"`
+		Affects         CollaborationAffects    `json:"affects"`
 	}{
 		SessionID:       in.SessionID,
 		RunAttemptID:    in.RunAttemptID,
@@ -369,6 +515,9 @@ func collaborationSemanticDigest(in CollaborationInput) string {
 		CausalParentIDs: in.CausalParentIDs,
 		BodyRef:         in.BodyRef,
 		Visibility:      in.Visibility,
+		DeliveryClass:   in.DeliveryClass,
+		Delta:           in.Delta,
+		Affects:         in.Affects,
 	})
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])

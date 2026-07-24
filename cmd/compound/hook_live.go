@@ -15,6 +15,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/harvest"
 	"compound/internal/hook"
+	"compound/internal/hookplan"
 	"compound/internal/policy"
 )
 
@@ -44,6 +45,13 @@ type claudeLiveHookInput struct {
 	LastAssistant  string          `json:"last_assistant_message"`
 	WorkID         string          `json:"work_id"`
 	CompoundWorkID string          `json:"compound_work_id"`
+	Actor          string          `json:"actor"`
+	CompoundActor  string          `json:"compound_actor"`
+	ScopeRefs      []string        `json:"scope_refs"`
+	DependencyRefs []string        `json:"dependency_refs"`
+	PolicyRefs     []string        `json:"policy_refs"`
+	BaseRevisions  []string        `json:"base_revisions"`
+	ResourceRefs   []string        `json:"resource_refs"`
 }
 
 type claudeHookSpecificOutput struct {
@@ -132,10 +140,12 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 		Prompt:    in.Prompt,
 		Task:      liveTask(in),
 		Tool:      in.ToolName,
+		WorkID:    firstNonEmpty(in.WorkID, in.CompoundWorkID),
 	}
 	if fx.Cwd == "" {
 		fx.Cwd = os.Getenv("CLAUDE_PROJECT_DIR")
 	}
+	fx.CoordinationDelivery = liveCoordinationDeliveryInput(fx.Harness, parsed.HookName, in)
 	switch parsed.HookName {
 	case "pre-tool-use":
 		actions, err := liveActionIntents(fx.Harness, in, now)
@@ -171,6 +181,54 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 		fx.Summary = "session-end receipt from live hook event " + firstNonEmpty(fx.SessionID, fx.WorkID, "unknown-session")
 	}
 	return fx, nil
+}
+
+func liveCoordinationDeliveryInput(harnessName, hookName string, in claudeLiveHookInput) *hook.CoordinationDeliveryInput {
+	sessionID := strings.TrimSpace(in.SessionID)
+	workID := firstNonEmpty(in.WorkID, in.CompoundWorkID)
+	if sessionID == "" && workID == "" {
+		return nil
+	}
+	trigger := hookplan.DeliveryTriggerInterrupt
+	if hookName == "session-start" || hookName == "user-prompt-submit" {
+		trigger = hookplan.DeliveryTriggerBoundary
+	}
+	cursorKey := strings.Join([]string{
+		"harness=" + normalizeLiveHarness(harnessName),
+		"session=" + sessionID,
+		"work=" + workID,
+	}, "|")
+	return &hook.CoordinationDeliveryInput{
+		CursorKey: cursorKey,
+		Recipient: hookplan.DeliveryRecipient{
+			Actor:          firstNonEmpty(in.Actor, in.CompoundActor),
+			WorkID:         workID,
+			ScopeRefs:      normalizeLiveRefs(in.ScopeRefs),
+			DependencyRefs: normalizeLiveRefs(in.DependencyRefs),
+			PolicyRefs:     normalizeLiveRefs(in.PolicyRefs),
+			BaseRevisions:  normalizeLiveRefs(in.BaseRevisions),
+			ResourceRefs:   normalizeLiveRefs(in.ResourceRefs),
+		},
+		Trigger: trigger,
+	}
+}
+
+func normalizeLiveRefs(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	sort.Strings(normalized)
+	return normalized
 }
 
 // liveToolOutput normalizes a claude-code PostToolUse tool_response into the body C3 externalizes:
@@ -365,7 +423,10 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 	}
 	if normalizeLiveHarness(harnessName) == "codex" {
 		if hookName == "pre-tool-use" {
-			out := claudeHookSpecificOutput{HookEventName: hookEnumName(hookName)}
+			out := claudeHookSpecificOutput{
+				HookEventName:     hookEnumName(hookName),
+				AdditionalContext: res.ContextOutput,
+			}
 			if decision, reason := livePermissionDecision(res); decision != "" {
 				// Codex PreToolUse supports allow/deny; a Compound hold denies this
 				// attempt until its separate review/approval changes the policy state.
@@ -380,13 +441,16 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 			EventID:       res.Event.Header.ID,
 			Status:        res.Event.Status,
 		}
+		if strings.TrimSpace(res.ContextOutput) != "" {
+			out.AdditionalContext = res.ContextOutput
+		}
 		if hookName == "stop" && stopOutcome != nil {
 			out.Decision = stopOutcome.Decision
 			out.Reason = stopOutcome.Reason
 		}
 		switch hookName {
 		case "session-start":
-			out.AdditionalContext = res.Summary
+			out.AdditionalContext = liveAdditionalContext(res.Summary, res.ContextOutput)
 		case "user-prompt-submit":
 			out.AdditionalContext = res.ContextOutput
 		case "pre-tool-use":
@@ -398,9 +462,12 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 		return out
 	}
 	out := claudeHookSpecificOutput{HookEventName: hookEnumName(hookName)}
+	if strings.TrimSpace(res.ContextOutput) != "" {
+		out.AdditionalContext = res.ContextOutput
+	}
 	switch hookName {
 	case "session-start":
-		out.AdditionalContext = res.Summary
+		out.AdditionalContext = liveAdditionalContext(res.Summary, res.ContextOutput)
 	case "user-prompt-submit":
 		out.AdditionalContext = res.ContextOutput
 	case "pre-tool-use":
@@ -410,6 +477,16 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 		}
 	}
 	return claudeLiveHookResponse{HookSpecificOutput: out}
+}
+
+func liveAdditionalContext(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, "\n\n")
 }
 
 func prepareLiveStopTriage(parsed hookCommandArgs, homePath string, fx *hook.Fixture, now time.Time) (*liveStopTriageOutcome, error) {

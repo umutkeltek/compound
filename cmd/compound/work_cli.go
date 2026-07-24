@@ -180,8 +180,8 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work attach work_abc123",
 	},
 	"collaborate": {
-		Usage:   "usage: compound work collaborate <work_id> --actor A --idempotency-key K --body-ref artifact:sha256:<digest> [--session S] [--run-attempt RATT_ID] [--target-actor A] [--causal-parent WCO_ID]... [--visibility work] [--json]",
-		Example: "compound work collaborate work_abc123 --actor codex:session --idempotency-key turn-1 --body-ref artifact:sha256:<digest> --json",
+		Usage:   "usage: compound work collaborate <work_id> --actor A --idempotency-key K --body-ref artifact:sha256:<digest> [--session S] [--run-attempt RATT_ID] [--target-actor A] [--causal-parent WCO_ID]... [--visibility work] [--delivery-class silent_state|next_boundary|interrupt|human_attention] [--delta-kind K --delta-subject REF --delta-before V --delta-after V] [--affects-actor A]... [--affects-work W]... [--scope-ref REF]... [--dependency-ref REF]... [--policy-ref REF]... [--base-revision REF]... [--resource-ref REF]... [--json]",
+		Example: "compound work collaborate work_abc123 --actor codex:session --idempotency-key turn-1 --body-ref artifact:sha256:<digest> --delivery-class next_boundary --delta-kind work --delta-subject work_abc123 --delta-after changed --affects-work work_abc123 --json",
 	},
 	"observe-run": {
 		Usage:   "usage: compound work observe-run <work_id> --trace <trace_id> [--job-file <path>] [--actor A] [--note N] [--json]",

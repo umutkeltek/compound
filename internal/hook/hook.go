@@ -25,6 +25,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/harness"
+	"compound/internal/hookplan"
 	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/work"
@@ -93,6 +94,9 @@ type Fixture struct {
 	// MutationInputRef is adapter-derived on successful PostToolUse and can
 	// promote only the exact pending governed mutation for this session.
 	MutationInputRef string `json:"-"`
+	// CoordinationDelivery is adapter-derived recipient state. It is excluded
+	// from fixture JSON so replay fixtures cannot impersonate live relevance.
+	CoordinationDelivery *CoordinationDeliveryInput `json:"-"`
 }
 
 // Deps are the services a hook orchestrates.
@@ -136,16 +140,27 @@ type ContextObservation struct {
 	RetrievalLatency time.Duration
 }
 
+// CoordinationDeliveryInput is adapter-derived recipient state for the
+// hookplan LifecyclePlan boundary. Hooks pass it through; hookplan owns
+// relevance, cursor, boundary, budget, and native compilation semantics.
+type CoordinationDeliveryInput struct {
+	CursorKey string
+	Recipient hookplan.DeliveryRecipient
+	Trigger   string
+	Budget    *hookplan.DeliveryBudget
+}
+
 // Result is what a hook produces: the normalized event, the typed objects, and the small
 // harness-facing output line.
 type Result struct {
-	Event          envelope.HookEvent  `json:"event"`
-	Produced       []envelope.Envelope `json:"produced"`
-	Summary        string              `json:"summary"`
-	ContextOutput  string              `json:"-"`
-	Injection      *InjectionArtifact  `json:"injection,omitempty"`
-	Context        *ContextObservation `json:"-"`
-	BreakerTripped bool                `json:"breaker_tripped,omitempty"`
+	Event                envelope.HookEvent       `json:"event"`
+	Produced             []envelope.Envelope      `json:"produced"`
+	Summary              string                   `json:"summary"`
+	ContextOutput        string                   `json:"-"`
+	Injection            *InjectionArtifact       `json:"injection,omitempty"`
+	Context              *ContextObservation      `json:"-"`
+	CoordinationDelivery *hookplan.DeliveryReport `json:"-"`
+	BreakerTripped       bool                     `json:"breaker_tripped,omitempty"`
 }
 
 // Run dispatches a hook fixture, validating everything it produces through the spine.
@@ -178,6 +193,26 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 	if err != nil {
 		return res, err
 	}
+	if fx.CoordinationDelivery != nil {
+		delivery, err := hookplan.DeliverCoordination(hookplan.DeliveryRequest{
+			HomePath:  deps.HomePath,
+			Harness:   fx.Harness,
+			CursorKey: fx.CoordinationDelivery.CursorKey,
+			Recipient: fx.CoordinationDelivery.Recipient,
+			Trigger:   fx.CoordinationDelivery.Trigger,
+			Budget:    fx.CoordinationDelivery.Budget,
+		})
+		if err != nil {
+			return res, fmt.Errorf("coordination delivery: %w", err)
+		}
+		res.CoordinationDelivery = &delivery
+		if delivery.Native != nil {
+			res.ContextOutput = appendContextOutput(res.ContextOutput, delivery.Native.Context)
+		}
+		if delivery.ReportRef != "" {
+			res.Event.SideEffects = mergeRefs(res.Event.SideEffects, []string{delivery.ReportRef})
+		}
+	}
 	if err := res.Event.Validate(); err != nil {
 		return res, fmt.Errorf("hook event invalid: %w", err)
 	}
@@ -192,6 +227,19 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 		}
 	}
 	return res, nil
+}
+
+func appendContextOutput(existing, addition string) string {
+	existing = strings.TrimSpace(existing)
+	addition = strings.TrimSpace(addition)
+	switch {
+	case existing == "":
+		return addition
+	case addition == "":
+		return existing
+	default:
+		return existing + "\n\n" + addition
+	}
 }
 
 type contextBuild struct {
