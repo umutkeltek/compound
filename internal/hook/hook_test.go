@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1732,26 +1733,6 @@ func TestReviewedMutationSkipsUnusableOwnerReportsAndUsesNextExactAuthorization(
 	if err != nil {
 		t.Fatal(err)
 	}
-	const validOwner = "work_reviewed_retry_valid"
-	valid, err := store.Create(work.CreateInput{
-		WorkID: validOwner, Owner: "codex", SuccessPredicate: "apply the exact reviewed retry",
-	}, fixedNow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Claim(valid.ID, "codex", fixedNow); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Advance(valid.ID, work.AdvanceInput{To: "running", Actor: "codex"}, fixedNow); err != nil {
-		t.Fatal(err)
-	}
-	const nonCurrentOwner = "work_reviewed_retry_ready"
-	if _, err := store.Create(work.CreateInput{
-		WorkID: nonCurrentOwner, Owner: "codex", SuccessPredicate: "not yet current retry owner",
-	}, fixedNow); err != nil {
-		t.Fatal(err)
-	}
-
 	inputHash := "mutation-input:sha256:" + strings.Repeat("8", 64)
 	prepared := []preparedPreToolAction{{
 		action: envelope.ActionIntent{
@@ -1792,25 +1773,45 @@ func TestReviewedMutationSkipsUnusableOwnerReportsAndUsesNextExactAuthorization(
 		}
 		return plan
 	}
-	validPlan := buildPlan(validOwner, "act_reviewed_retry_valid_old")
-	nonCurrentPlan := buildPlan(nonCurrentOwner, "act_reviewed_retry_ready_old")
-	var shadowPlan authority.SourceControlReviewPlan
-	for i := 0; i < 256; i++ {
-		candidate := buildPlan(fmt.Sprintf("work_reviewed_retry_shadow_%03d", i), "act_reviewed_retry_shadow_old")
-		if candidate.ID > validPlan.ID && candidate.ID > nonCurrentPlan.ID {
-			shadowPlan = candidate
-			break
-		}
+	plans := []authority.SourceControlReviewPlan{
+		buildPlan("work_reviewed_retry_candidate_a", "act_reviewed_retry_candidate_a_old"),
+		buildPlan("work_reviewed_retry_candidate_b", "act_reviewed_retry_candidate_b_old"),
+		buildPlan("work_reviewed_retry_candidate_c", "act_reviewed_retry_candidate_c_old"),
 	}
-	if shadowPlan.ID == "" {
-		t.Fatal("could not construct lexical-first unusable shadow report")
+	// Plan IDs are content hashes that include the temp-repo snapshot. Assign
+	// lifecycle roles after ordering the real IDs so the unusable shadow is
+	// deterministically lexical-first without probabilistically mining hashes.
+	sort.Slice(plans, func(i, j int) bool { return plans[i].ID < plans[j].ID })
+	validPlan, nonCurrentPlan, shadowPlan := plans[0], plans[1], plans[2]
+	if validPlan.ID == nonCurrentPlan.ID || nonCurrentPlan.ID == shadowPlan.ID {
+		t.Fatalf("candidate plan IDs must be distinct: %q %q %q", validPlan.ID, nonCurrentPlan.ID, shadowPlan.ID)
+	}
+	validOwner := validPlan.WorkID
+	nonCurrentOwner := nonCurrentPlan.WorkID
+	valid, err := store.Create(work.CreateInput{
+		WorkID: validOwner, Owner: "codex", SuccessPredicate: "apply the exact reviewed retry",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(valid.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(valid.ID, work.AdvanceInput{To: "running", Actor: "codex"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(work.CreateInput{
+		WorkID: nonCurrentOwner, Owner: "codex", SuccessPredicate: "not yet current retry owner",
+	}, fixedNow); err != nil {
+		t.Fatal(err)
 	}
 
 	validReport := recordHookSourceControlMutationAuthorization(t, homePath, validPlan, fixedNow.Add(time.Minute))
 	recordHookSourceControlMutationAuthorization(t, homePath, nonCurrentPlan, fixedNow.Add(2*time.Minute))
 	shadowReport := recordHookSourceControlMutationAuthorization(t, homePath, shadowPlan, fixedNow.Add(3*time.Minute))
-	if shadowReport.CreatedAt <= validReport.CreatedAt || shadowPlan.ID <= validPlan.ID {
-		t.Fatalf("test precondition failed: shadow=%s/%s valid=%s/%s", shadowReport.CreatedAt, shadowPlan.ID, validReport.CreatedAt, validPlan.ID)
+	if shadowReport.CreatedAt <= validReport.CreatedAt || shadowPlan.ID <= validPlan.ID || shadowPlan.ID <= nonCurrentPlan.ID {
+		t.Fatalf("test precondition failed: shadow=%s/%s non-current=%s valid=%s/%s",
+			shadowReport.CreatedAt, shadowPlan.ID, nonCurrentPlan.ID, validReport.CreatedAt, validPlan.ID)
 	}
 
 	deps := baseDeps()
