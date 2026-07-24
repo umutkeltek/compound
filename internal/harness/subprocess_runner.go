@@ -24,6 +24,29 @@ import (
 // shared runner does not know or care which.
 type buildCmdFn func(context.Context, RunInput) *exec.Cmd
 
+// runAttemptStore is the RunAttempt persistence surface that
+// runWithSubprocess depends on. *runattempt.Store satisfies it in
+// production (every adapter passes its concrete store), so the runtime
+// behavior is unchanged. The interface exists purely as a test seam: the
+// subprocess_runner_test substitutes a fault-injecting wrapper to exercise
+// infra-failure return paths -- in particular a store whose SetOrigin fails
+// while every other write (including the terminalizing Complete /
+// SetProofRefs) still lands, so the test can assert the freshly minted
+// attempt is terminalized failed on disk rather than left stranded pending.
+type runAttemptStore interface {
+	Mint(workID, actor, harness string, now time.Time) (runattempt.RunAttempt, error)
+	SetOrigin(id, origin string) (runattempt.RunAttempt, error)
+	SetWorkspace(id, workspace string) (runattempt.RunAttempt, error)
+	SetCommand(id, command string) (runattempt.RunAttempt, error)
+	AttachActionIntent(id, actionIntentID string) error
+	SetDispatchIntent(id, laneID, requestedModelID, requestedProviderRoute string) (runattempt.RunAttempt, error)
+	SetProofRefs(id string, refs []string) (runattempt.RunAttempt, error)
+	SetTranscript(id, ref string) (runattempt.RunAttempt, error)
+	Complete(id string, status string, now time.Time) (runattempt.RunAttempt, error)
+	Heartbeat(id string, now time.Time) (runattempt.RunAttempt, error)
+	Home() string
+}
+
 // runWithSubprocess is the shared subprocess execution core used by
 // every harness adapter (os-entrypoints, claude, codex). It takes a
 // harnessName (for the RunAttempt.Harness field and error-message
@@ -51,7 +74,7 @@ type buildCmdFn func(context.Context, RunInput) *exec.Cmd
 // (TranscriptPath, ExitCode) so callers have a complete audit trail.
 func runWithSubprocess(
 	ctx context.Context,
-	store *runattempt.Store,
+	store runAttemptStore,
 	harnessName string,
 	in RunInput,
 	build buildCmdFn,
@@ -285,7 +308,7 @@ func capture(r io.Reader, label string, lw *lockedWriter) {
 	}
 }
 
-func heartbeatLoop(store *runattempt.Store, id string, start time.Time, interval time.Duration, stop <-chan struct{}, wg *sync.WaitGroup) {
+func heartbeatLoop(store runAttemptStore, id string, start time.Time, interval time.Duration, stop <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -303,6 +326,6 @@ func heartbeatLoop(store *runattempt.Store, id string, start time.Time, interval
 
 // storePath is the canonical JSON path for the minted RunAttempt. Used
 // to colocate the transcript under the same directory.
-func storePath(store *runattempt.Store, ra runattempt.RunAttempt) string {
+func storePath(store runAttemptStore, ra runattempt.RunAttempt) string {
 	return filepath.Join(store.Home(), "run_attempts", ra.ID+".json")
 }

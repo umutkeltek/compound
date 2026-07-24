@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"regexp"
@@ -11,6 +12,89 @@ import (
 
 	"compound/internal/runattempt"
 )
+
+// failingOriginStore wraps a real *runattempt.Store but forces SetOrigin to
+// fail, simulating a store-write fault on origin stamping immediately after
+// a successful Mint. Every OTHER write (Mint, SetProofRefs, SetTranscript,
+// Complete, ...) delegates to the embedded real store, so the terminalizing
+// writes the runner performs on the failure path still land on disk. That
+// isolation is the whole point: a blunt read-only-dir fault would also break
+// the terminalizing Complete, so the test could never observe the attempt
+// reaching terminal `failed`. mintedID captures the id Mint produced so the
+// test can prove the returned RunAttempt IS the freshly minted one.
+type failingOriginStore struct {
+	*runattempt.Store
+	mintedID string
+}
+
+func (s *failingOriginStore) Mint(workID, actor, harness string, now time.Time) (runattempt.RunAttempt, error) {
+	ra, err := s.Store.Mint(workID, actor, harness, now)
+	s.mintedID = ra.ID
+	return ra, err
+}
+
+func (s *failingOriginStore) SetOrigin(_, _ string) (runattempt.RunAttempt, error) {
+	return runattempt.RunAttempt{}, errors.New("disk full")
+}
+
+// TestRunnerSetOriginFailureTerminalizes (audit E14): a store.SetOrigin
+// failure immediately after a successful store.Mint MUST terminalize the
+// freshly minted RunAttempt as `failed` and return it in
+// RunOutput.RunAttempt -- honoring the Adapter contract "terminalize the
+// RunAttempt on EVERY return path" (adapter.go) so callers can forward-link
+// the failed attempt's id. Falsifier: the old code did
+// `return RunOutput{}, fmt.Errorf(...)`, handing back a nil-id RunAttempt
+// and leaving a `pending` ratt_ record stranded forever.
+func TestRunnerSetOriginFailureTerminalizes(t *testing.T) {
+	home := t.TempDir()
+	real := runattempt.Open(home)
+	store := &failingOriginStore{Store: real}
+
+	build := func(ctx context.Context, in RunInput) *exec.Cmd {
+		return exec.CommandContext(ctx, in.Command, in.Args...)
+	}
+	out, err := runWithSubprocess(context.Background(), store, "os-harness-entrypoints",
+		RunInput{
+			WorkID:    "work_setorigin_fail",
+			Harness:   "os-harness-entrypoints",
+			Workspace: home,
+			Command:   "echo",
+			Args:      []string{"ok"},
+			Now:       time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC),
+		}, build, defaultHeartbeatInterval)
+
+	// (1) A non-nil error is still returned: an origin-stamp failure is a
+	// real infra failure, not a swallowed one.
+	if err == nil {
+		t.Fatalf("SetOrigin failure must still return a non-nil error")
+	}
+	// (2) RunOutput.RunAttempt.ID is non-empty AND equals the minted attempt
+	// -- so a caller (work-advance) can append it to allRunAttempts. The old
+	// code returned RunOutput{}, stranding the attempt.
+	if out.RunAttempt.ID == "" {
+		t.Fatalf("SetOrigin-failure RunOutput.RunAttempt.ID is empty; the minted attempt was stranded")
+	}
+	if out.RunAttempt.ID != store.mintedID {
+		t.Fatalf("returned RunAttempt.ID = %q, want the minted id %q", out.RunAttempt.ID, store.mintedID)
+	}
+	// (3) The persisted ratt_ record is terminal `failed`, NOT `pending`.
+	got, gerr := real.Get(store.mintedID)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if got.Status != runattempt.StatusFailed {
+		t.Fatalf("persisted status = %q, want failed (SetOrigin failure must terminalize, not leave pending)", got.Status)
+	}
+	// (4) The terminal record names the origin-stamp failure. No transcript
+	// exists yet at the SetOrigin stage, so the reason lands as a proof_ref.
+	body, rerr := os.ReadFile(storePath(real, got))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if !strings.Contains(string(body), "stamp origin") {
+		t.Fatalf("persisted RunAttempt must record a reason naming the origin-stamp failure; got:\n%s", body)
+	}
+}
 
 // TestRunnerStdinReachesSubprocess: RunInput.Stdin is piped to the
 // subprocess (cat) and its echoed stdout lands in the transcript. Pinned:
