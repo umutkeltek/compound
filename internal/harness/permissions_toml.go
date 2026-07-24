@@ -405,6 +405,13 @@ func extractTOMLAssignmentValue(body, key string) string {
 }
 
 func stripTOMLInlineComment(s string) string {
+	if idx := tomlInlineCommentIndex(s); idx >= 0 {
+		return strings.TrimSpace(s[:idx])
+	}
+	return strings.TrimSpace(s)
+}
+
+func tomlInlineCommentIndex(s string) int {
 	inBasic, inLiteral := false, false
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -428,11 +435,25 @@ func stripTOMLInlineComment(s string) string {
 			case '\'':
 				inLiteral = true
 			case '#':
-				return strings.TrimSpace(s[:i])
+				return i
 			}
 		}
 	}
-	return strings.TrimSpace(s)
+	return -1
+}
+
+// tomlInlineCommentSuffix returns the comment and its original separating
+// horizontal whitespace. Those bytes are operator-owned context around an
+// owned value and must survive a value correction.
+func tomlInlineCommentSuffix(s string) string {
+	idx := tomlInlineCommentIndex(s)
+	if idx < 0 {
+		return ""
+	}
+	for idx > 0 && (s[idx-1] == ' ' || s[idx-1] == '\t') {
+		idx--
+	}
+	return s[idx:]
 }
 
 func ensureTrailingTOMLNewline(lines []string, terminator string) []string {
@@ -477,9 +498,13 @@ func applyOwnedTOMLKeys(before []byte, owned []ownedTOMLKey) ([]byte, error) {
 			re := tomlAssignmentRegex(k.Key)
 			body := lineBody(lines[idx])
 			m := re.FindStringSubmatch(body)
+			if stripTOMLInlineComment(m[2]) == value {
+				continue
+			}
 			leading := m[1]
+			comment := tomlInlineCommentSuffix(m[2])
 			term := lineTerminator(lines[idx])
-			lines[idx] = leading + k.Key + " = " + value + term
+			lines[idx] = leading + k.Key + " = " + value + comment + term
 			continue
 		}
 		if k.Table == "" {
