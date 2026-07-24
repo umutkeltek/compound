@@ -624,7 +624,23 @@ func (s *Store) claimLocked(workID, by, laneID string, now time.Time) (envelope.
 	// F2: stamp provenance -- this is a claim-time placeholder reservation,
 	// not a real execution. supersede-at-attach (in Advance) reads this to
 	// terminalize the reservation once a harness_execution attempt attaches.
+	//
+	// Audit invariant (E14 twin): on a SetOrigin failure, the freshly
+	// minted reservation attempt MUST be terminalized as `failed` with a
+	// reason naming the origin-stamp failure -- never left `pending`. The
+	// same invariant is enforced on the harness-execution lane by
+	// subprocess_runner.go (slice/audit-e14-setorigin-20260724). A pending
+	// ratt_ record stranded here would either be swept-as-stale by the
+	// C3 sweeper (mislabeling a real infra failure as "no heartbeat"),
+	// or worse, attach to a later envelope and propagate as a phantom
+	// provenance. If the terminalization ITSELF fails, best-effort: we
+	// return the original SetOrigin error (do not mask it).
 	if stamped, oErr := s.runAttemptsClaim().SetOrigin(ra.ID, runattempt.OriginClaimReservation); oErr != nil {
+		if _, tErr := s.runAttemptsClaim().CompleteWithReason(ra.ID, runattempt.StatusFailed, "stamp origin: "+oErr.Error(), now); tErr != nil {
+			// best-effort: the terminalization failure is not reported --
+			// the original SetOrigin error is the truth we want to surface.
+			_ = tErr
+		}
 		return w, fmt.Errorf("claim %s: stamp run attempt origin: %w", workID, oErr)
 	} else {
 		ra = stamped
