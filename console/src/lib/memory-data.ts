@@ -10,6 +10,22 @@ export type MemoryCandidate = Json & {
   id: string;
   json_path?: string;
   console_source?: Json;
+  /**
+   * READ-ONLY DERIVED signal projected by `compound memory candidates --json`.
+   * Distinct evidence refs across candidates citing the same normalized
+   * claim (entity|predicate|object, lowercased/trimmed). A lone candidate
+   * projects 1. The standing-law-candidate chip surfaces this as the
+   * "seen Nx" cue when the candidate qualifies — it is a readiness
+   * signal, not a promotion criterion (promotion stays the governed
+   * memory-adjudicate act).
+   */
+  recurrence_count?: number;
+  /**
+   * READ-ONLY DERIVED trend label: "new" | "rising" | "flat" | "falling"
+   * against the max confidence of any earlier observation for the same
+   * normalized claim. Same trust model as recurrence_count.
+   */
+  confidence_trend?: string;
 };
 
 function asObject(value: unknown): Json {
@@ -230,4 +246,45 @@ export async function loadMemoryCounts(): Promise<Record<string, number>> {
     counts[s] = (counts[s] ?? 0) + 1;
   }
   return counts;
+}
+
+/**
+ * Readiness chip — derived-only signal projected by `compound memory
+ * candidates --json`. The chip renders on the standing-law-candidate card
+ * when the candidate is a parked decision candidate with at least two
+ * distinct evidence refs (recurrence_count >= 2) AND a confidence >= 0.8.
+ *
+ * The threshold is the packet's specificity: recurrence alone does not
+ * qualify (one operator repeatedly re-stating the same rule does not
+ * make it ready); high confidence alone does not qualify (a confident
+ * single observation may still need corroboration). Both must hold.
+ *
+ * Returns null when the candidate does not qualify — callers render
+ * nothing rather than a "not ready" chip (a negative chip would compete
+ * with the existing chrome and add no operator value).
+ */
+export function standingLawReadinessChip(candidate: Json): { label: string; tone: "seam" | "good" | "muted" } | null {
+  const recurrence = numberOrNull(candidate.recurrence_count);
+  const confidence = numberOrZero(candidate.confidence);
+  const trend = str(candidate.confidence_trend).trim();
+  if (recurrence === null || recurrence < 2) return null;
+  if (confidence < 0.8) return null;
+  const trendLabel = trend === "rising" ? "rising" : trend === "flat" ? "flat" : trend === "falling" ? "falling" : "new";
+  // Tone: "rising" is the operator-cue (memory is gaining corroboration
+  // momentum); "flat" is informational (already-seen, no momentum);
+  // "new"/"falling" is muted (the chip still surfaces recurrence, but
+  // the trend is not a positive signal).
+  const tone: "seam" | "good" | "muted" =
+    trendLabel === "rising" ? "good" : trendLabel === "flat" ? "seam" : "muted";
+  return { label: `seen ${recurrence}× · ${trendLabel}`, tone };
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+
+function numberOrZero(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return 0;
 }

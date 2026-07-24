@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 import { StandingLawBrowser } from "@/components/standing-law/StandingLawBrowser";
-import { FreshnessChip, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
+import { StandingLawCandidateCard } from "@/components/standing-law/StandingLawCandidateCard";
+import { EmptyState, FreshnessChip, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
 import { runJson, type Json } from "@/lib/compound";
 import { loadStandingLawCandidates } from "@/lib/memory-data";
 import { buildStandingLaw, type StandingLawConflict } from "@/lib/standing-law";
@@ -121,6 +122,29 @@ export default async function StandingLaw() {
           }
         />
         <StandingLawBrowser records={model.records} />
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <SectionHeader
+          tone="seam"
+          icon={<GavelIcon />}
+          label="Candidates awaiting your call"
+          sub="parked decision candidates — chip is a derived readiness signal, promotion stays governed"
+          right={
+            <span className="mono text-2xs text-faint">
+              {lawCandidates.length} waiting
+            </span>
+          }
+        />
+        {lawCandidates.length ? (
+          <div className="flex flex-col gap-2.5">
+            {lawCandidates.map((candidate) => (
+              <StandingLawCandidateCard key={candidate.id} candidate={candidate} />
+            ))}
+          </div>
+        ) : (
+          <EmptyState>No parked decision candidates are waiting for a ruling.</EmptyState>
+        )}
       </section>
     </div>
   );

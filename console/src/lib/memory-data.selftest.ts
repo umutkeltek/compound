@@ -9,7 +9,7 @@
  * queue. Run via scripts/memory-data-smoke.mjs.
  */
 
-import { isStandingLawCandidate } from "./memory-data";
+import { isStandingLawCandidate, standingLawReadinessChip } from "./memory-data";
 
 type Check = { name: string; ok: boolean; detail: string };
 
@@ -95,6 +95,116 @@ export function runMemoryDataSelfTest(): { ok: boolean; details: string[] } {
     "non-decision-parked-row-excluded",
     isStandingLawCandidate(knowledgeRow) === false,
     `isStandingLawCandidate(knowledge) = ${isStandingLawCandidate(knowledgeRow)}`,
+  );
+
+  // ----------------------------------------------------------------------
+  // F3 (packet work_709c9ba49c56): standing-law-candidate readiness chip.
+  // Derived-only signal projected by `compound memory candidates --json`.
+  // The chip renders on a parked decision candidate when
+  //   recurrence_count >= 2 AND confidence >= 0.8
+  // and reports the trend label projected by the same call. A qualifying
+  // candidate MUST render the chip; a non-qualifying one MUST NOT.
+  // ----------------------------------------------------------------------
+
+  // Qualifying candidate: 2 distinct evidence refs + high confidence + rising.
+  const qualifyingRising = {
+    id: "cand_ready_001",
+    entity: "decision:brain-ready001",
+    claim_type: "decision",
+    state: "parked",
+    confidence: 0.9,
+    recurrence_count: 2,
+    confidence_trend: "rising",
+  };
+  const chipRising = standingLawReadinessChip(qualifyingRising);
+  push(
+    "qualifying-rising-renders-chip",
+    chipRising !== null && chipRising.label === "seen 2× · rising" && chipRising.tone === "good",
+    `chip=${JSON.stringify(chipRising)}`,
+  );
+
+  // Qualifying candidate: 3 distinct evidence refs + high confidence + flat.
+  const qualifyingFlat = {
+    id: "cand_ready_002",
+    entity: "decision:brain-ready002",
+    claim_type: "decision",
+    state: "parked",
+    confidence: 0.85,
+    recurrence_count: 3,
+    confidence_trend: "flat",
+  };
+  const chipFlat = standingLawReadinessChip(qualifyingFlat);
+  push(
+    "qualifying-flat-renders-chip-with-seam-tone",
+    chipFlat !== null && chipFlat.label === "seen 3× · flat" && chipFlat.tone === "seam",
+    `chip=${JSON.stringify(chipFlat)}`,
+  );
+
+  // Non-qualifying: only one evidence ref (operator has not corroborated).
+  const singleRef = {
+    id: "cand_not_ready_001",
+    entity: "decision:brain-notready001",
+    claim_type: "decision",
+    state: "parked",
+    confidence: 0.95,
+    recurrence_count: 1,
+    confidence_trend: "rising",
+  };
+  push(
+    "single-ref-candidate-skipped",
+    standingLawReadinessChip(singleRef) === null,
+    `chip=${JSON.stringify(standingLawReadinessChip(singleRef))}`,
+  );
+
+  // Non-qualifying: low confidence (must not promote on a single high-conf
+  // observation either — both gates must hold).
+  const lowConfidence = {
+    id: "cand_not_ready_002",
+    entity: "decision:brain-notready002",
+    claim_type: "decision",
+    state: "parked",
+    confidence: 0.5,
+    recurrence_count: 4,
+    confidence_trend: "rising",
+  };
+  push(
+    "low-confidence-candidate-skipped",
+    standingLawReadinessChip(lowConfidence) === null,
+    `chip=${JSON.stringify(standingLawReadinessChip(lowConfidence))}`,
+  );
+
+  // Non-qualifying: missing derived fields (older binary without the
+  // projection must not render a chip — the chip is a derived-only signal,
+  // never inferred from arbitrary numeric inputs).
+  const missingSignals = {
+    id: "cand_not_ready_003",
+    entity: "decision:brain-notready003",
+    claim_type: "decision",
+    state: "parked",
+    confidence: 0.9,
+  };
+  push(
+    "missing-derived-fields-candidate-skipped",
+    standingLawReadinessChip(missingSignals) === null,
+    `chip=${JSON.stringify(standingLawReadinessChip(missingSignals))}`,
+  );
+
+  // Non-qualifying: a candidate cited by 2 distinct refs but whose confidence
+  // exactly equals the 0.8 threshold (boundary case — the comparison is
+  // strict-less-than, so 0.8 itself qualifies).
+  const boundaryConf = {
+    id: "cand_boundary_001",
+    entity: "decision:brain-boundary001",
+    claim_type: "decision",
+    state: "parked",
+    confidence: 0.8,
+    recurrence_count: 2,
+    confidence_trend: "rising",
+  };
+  push(
+    "confidence-equals-threshold-qualifies",
+    standingLawReadinessChip(boundaryConf) !== null,
+    `chip=${JSON.stringify(standingLawReadinessChip(boundaryConf))}`,
   );
 
   const details = checks.map((c) => `${c.ok ? "ok  " : "FAIL"} ${c.name} — ${c.detail}`);
