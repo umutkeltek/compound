@@ -27,6 +27,7 @@
 //   - import-infra-database
 //   - import-infra-services
 //   - import-model-catalog
+//   - model-catalog              (read-only query: rows + source revision)
 //   - import-job-roster
 //   - import-job-token-governance
 //   - job-roster-authority
@@ -38,6 +39,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -53,7 +55,7 @@ import (
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | worktree-retire <plan|review|apply> | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-model-catalog <provider-registry.json> | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] [--action-intent id ...] | worktree-retire <plan|review|apply> | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-model-catalog <provider-registry.json> | model-catalog [--family F] [--model M] [--json] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | harness-edit-review <card.json> --decision whitelist|reject --rationale <text> [--actor <id>] [--json] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
@@ -163,6 +165,76 @@ func cmdAuthority(args []string) {
 			SkippedEntitySlugs:       entityReport.SkippedSlugs,
 			CapabilityNodeIDs:        capabilityReport.NodeIDs,
 		})
+		return
+	}
+	if args[0] == "model-catalog" {
+		// model-catalog is the read-only query: reads the INSTALLED registry
+		// under $COMPOUND_HOME, never the source repo file. Output carries
+		// the installed source revision on every row so an operator can tell
+		// at a glance whether the answer is current.
+		jsonOut := false
+		provider := ""
+		modelSlug := ""
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--json":
+				jsonOut = true
+			case "--family":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "usage: compound authority model-catalog [--family F] [--model M] [--json]")
+					os.Exit(2)
+				}
+				i++
+				provider = args[i]
+			case "--model":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "usage: compound authority model-catalog [--family F] [--model M] [--json]")
+					os.Exit(2)
+				}
+				i++
+				modelSlug = args[i]
+			default:
+				fmt.Fprintln(os.Stderr, "usage: compound authority model-catalog [--family F] [--model M] [--json]")
+				os.Exit(2)
+			}
+		}
+		result, err := authority.QueryModelCatalog(context.Background(), homePath, authority.ModelCatalogQueryFilter{Provider: provider, Model: modelSlug}, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority model-catalog:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			printJSON(result)
+			return
+		}
+		fmt.Printf("# model-catalog authority\n")
+		fmt.Printf("- authority: %s\n", result.AuthorityRef)
+		if result.SourceRevisionSet {
+			fmt.Printf("- source_revision: %s\n", result.SourceRevision)
+		} else {
+			fmt.Printf("- source_revision: (none — no import record yet)\n")
+		}
+		fmt.Printf("- rows: %d\n", len(result.Rows))
+		if len(result.Rows) == 0 {
+			fmt.Println("  (no rows — re-run `compound authority import-model-catalog <provider-registry.json>`)")
+			return
+		}
+		for _, row := range result.Rows {
+			fmt.Printf("- %s\n", row.Slug)
+			fmt.Printf("    display_name: %s\n", row.DisplayName)
+			fmt.Printf("    price_in_usd_per_mtok: %s\n", row.PriceInUSDPerMtok)
+			fmt.Printf("    price_out_usd_per_mtok: %s\n", row.PriceOutUSDPerMtok)
+			fmt.Printf("    context_window: %d\n", row.ContextWindow)
+			if row.Tier != "" {
+				fmt.Printf("    tier: %s\n", row.Tier)
+			}
+			if row.FreeLane {
+				fmt.Printf("    free_lane: true\n")
+			}
+			if row.SupersededBy != "" {
+				fmt.Printf("    superseded_by: %s\n", row.SupersededBy)
+			}
+		}
 		return
 	}
 	if args[0] == "os-absorption" {
