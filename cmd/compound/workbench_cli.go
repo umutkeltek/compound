@@ -28,7 +28,7 @@ const workbenchOperatorProofMaxRunes = 72
 const workbenchOperatorSummaryOpportunityMaxRunes = 44
 const workbenchOperatorSummaryChoiceMaxRunes = 32
 
-const workbenchUsage = "usage: compound workbench [--json] [--operator] [--advanced|--operator-advanced] [--operator-limit N] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
+const workbenchUsage = "usage: compound workbench [--json] [--operator] [--advanced|--operator-advanced] [--operator-limit N] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]\n  (branch_debt surfaces the open/covered/stale/dangling/unverifiable transition fold from `internal/work.BranchCoverage`; counts are advisory visibility pressure, never auto-closed; the text render caps at 3 entries when present, the precise counts and full lists are in `compound workbench --json` under `.branch_debt`)"
 
 var (
 	operatorAbsolutePathPattern = regexp.MustCompile(`(^|[[:space:]("'=\[])/(?:[^[:space:]|,;)]*)`)
@@ -374,7 +374,7 @@ func cmdWorkbench(args []string) {
 		fmt.Printf("branch_debt open=%d stale=%d covered=%d expansions=%d unverifiable=%d dangling=%d window=%dd\n",
 			bd.Counts.Open, bd.Counts.Stale, bd.Counts.Covered, bd.Counts.Expansions, bd.Counts.UnverifiableChanged, bd.Counts.DanglingCovers, bd.WindowDays)
 		for i, entry := range bd.Debt {
-			if i >= 3 {
+			if i >= work.BranchDebtTextRenderCap() {
 				break
 			}
 			marker := ""

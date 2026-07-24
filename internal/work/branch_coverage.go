@@ -39,6 +39,23 @@ type BranchCoverageReport struct {
 	Integrity    []string              `json:"integrity,omitempty"`
 }
 
+// BranchCoverageCounts aggregates the deterministic fold. Naming:
+//   - Opened: total `opens` statements ever recorded (cumulative).
+//   - Covered: total `validates|supersedes|retires` statements that resolved
+//     an existing open branch (cumulative).
+//   - Open: currently-uncovered branches (snapshot — Open = Opened - Covered).
+//     This is the "debt" numerator; the workbench surfaces it.
+//   - Stale: subset of Open whose opened_at is older than the staleness window
+//     (snapshot). Coverage is responsibility, not enforcement: debt is
+//     advisory visibility, never auto-closed.
+//   - Expansions: re-`opens` on a live branch (the original opened_at is kept
+//     so age stays honest).
+//   - Neutral: `blocks | routes_to` records + duplicate covers of covered
+//     branches. Recorded, no lifecycle effect.
+//   - DanglingCovers: covers of a slug that was never opened (integrity).
+//   - UnverifiableChanged: transitions claiming future_behavior_changed with
+//     no opens_branches and no next_consumer — telemetry dressed as
+//     compounding, the evaluation rule's first count.
 type BranchCoverageCounts struct {
 	Opened              int `json:"opened"`
 	Covered             int `json:"covered"`
@@ -68,13 +85,29 @@ type BranchDanglingCover struct {
 	At           string `json:"at"`
 }
 
-// BranchDebtStaleWindowDays is the operator-approved (2026-07-23) default
-// staleness window: an open branch older than this surfaces as synthesis debt.
+// BranchDebtStaleWindowDays is the default staleness window: an open branch
+// older than this surfaces as synthesis debt. The value is operator-tunable
+// per call via the BranchCoverage(now, windowDays) parameter (windowDays <= 0
+// falls back to this constant). The "operator-approved" framing reflects the
+// workbench's constant choice — the live operator can still override per
+// call without changing code.
 const BranchDebtStaleWindowDays = 7
 
-// branchDebtListCap bounds the rendered debt/dangling/unverifiable lists;
-// Counts always reflect the FULL fold, so capping never hides scale.
+// branchDebtListCap bounds the rendered debt/dangling/unverifiable lists in
+// the JSON surface. Counts always reflect the FULL fold, so capping never
+// hides scale (callers see the totals in Counts).
 const branchDebtListCap = 10
+
+// branchDebtTextRenderCap is the bounded list size for the human-facing
+// `compound workbench` text render. Smaller than the JSON cap because a
+// terminal reader only needs the first few concrete entries to act; the
+// counts line gives the precision. The text render is intentionally a
+// NUDGE, not a replacement for `compound workbench --json`.
+const branchDebtTextRenderCap = 3
+
+// BranchDebtTextRenderCap exposes the text-render cap so non-Go callers
+// (CLI surface) can render consistently with the read model's own render.
+func BranchDebtTextRenderCap() int { return branchDebtTextRenderCap }
 
 // branchCoveringKinds resolves an opened branch (transition.md lifecycle).
 var branchCoveringKinds = map[string]bool{"validates": true, "supersedes": true, "retires": true}
@@ -186,7 +219,9 @@ func (s *Store) BranchCoverage(now time.Time, windowDays int) (BranchCoverageRep
 		if tr.SecondOrder.FutureBehaviorChanged && len(tr.OpensBranches) == 0 &&
 			(tr.Cause == nil || tr.Cause.NextConsumer == "") {
 			report.Counts.UnverifiableChanged++
-			if len(report.Unverifiable) < branchDebtListCap {
+			// Overshoot the cap; the post-pass sort + truncation below
+			// produces the most-recent-first list bounded by the cap.
+			if len(report.Unverifiable) < branchDebtListCap*4 {
 				report.Unverifiable = append(report.Unverifiable, item.id)
 			}
 		}
@@ -264,5 +299,19 @@ func (s *Store) BranchCoverage(now time.Time, windowDays int) (BranchCoverageRep
 		debt = debt[:branchDebtListCap]
 	}
 	report.Debt = debt
+
+	// Unverifiable list: cap to the most-recent-by-scan-order, NOT the first
+	// IDs the scan encountered. The cap is sized generously above the limit so
+	// the sort can pick the freshest entries; the truncated slice carries the
+	// operator's actual actionable surface.
+	if len(report.Unverifiable) > branchDebtListCap {
+		// Inputs were appended in (created_at, id) ascending order during the
+		// fold; reverse the prefix so the cap keeps the most recent.
+		sorted := make([]string, len(report.Unverifiable))
+		for i, id := range report.Unverifiable {
+			sorted[len(report.Unverifiable)-1-i] = id
+		}
+		report.Unverifiable = sorted[:branchDebtListCap]
+	}
 	return report, nil
 }

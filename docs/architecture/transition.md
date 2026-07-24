@@ -184,7 +184,12 @@ compounding. So a `Transition`/`Receipt` declares the branch it opens and who co
   deterministic read model over `events/tr_*.json` surfaced as `branch_debt` in
   `compound workbench`. Coverage is explicit-only: only `validates | supersedes | retires` on the
   same slug resolve a branch; a repeated `opens` is an expansion that keeps the original
-  `opened_at`; covering an unopened slug is a dangling-cover integrity finding; `blocks |
+  `opened_at`; covering an unopened slug is a dangling-cover integrity finding.
+  Count semantics in `branch_debt.counts`: `opened`/`covered` are cumulative; `open` is the
+  snapshot (`opened - covered`) — that is the debt numerator; `stale` is the subset of `open`
+  past the 7-day window; `unverifiable_changed` is the count of transitions claiming
+  `future_behavior_changed` with no branch and no `next_consumer` — the evaluation rule's first
+  teeth. `blocks |
   routes_to` are neutral records. An open branch past the 7-day window surfaces as STALE debt —
   advisory visibility pressure, never auto-closed (humans stay on irreversible decisions).
   Transitions claiming `future_behavior_changed` with no branch and no `next_consumer` are counted

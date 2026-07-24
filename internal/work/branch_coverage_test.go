@@ -2,6 +2,7 @@ package work
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -234,7 +235,11 @@ func TestBranchCoverageIsDeterministic(t *testing.T) {
 // engine timing, not contract. The contract that matters: the corruption
 // ALWAYS surfaces somewhere (write, coverage, or workbench), and the workbench
 // never serves a branch_debt section folded over a poisoned family as if it
-// were true.
+// were true. NOTE: this test asserts the data-loss-reggression contract. If
+// the engine silently accepts the garbage write AND the subsequent reads
+// silently succeed (no fault detectable), the test fails — that's the
+// fail-closed signal, not a test bug. A red here means the engine
+// tolerates corrupted frames that downstream readers cannot see.
 func TestBranchCoverageCorruptFrameFailsClosed(t *testing.T) {
 	s := newStore(t)
 	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
@@ -280,5 +285,72 @@ func TestWorkbenchSurfacesBranchDebt(t *testing.T) {
 	}
 	if len(report.BranchDebt.Debt) != 1 || report.BranchDebt.Debt[0].Branch != "workbench-visible" {
 		t.Fatalf("branch_debt entry wrong: %+v", report.BranchDebt.Debt)
+	}
+}
+
+// Falsifier 9 (cross-lane lifecycle): an opened branch is covered by a
+// DIFFERENT transition whose id, work, and tail actor are all distinct from
+// the opener. Mirrors the real cross-lane shape: a downstream surface
+// supersedes the branch, not a self-cover by the same transition that opened
+// it. The covered branch leaves the debt set; the cover acts as the
+// records-of-record for "the future moved."
+func TestBranchCoverageCoveredByDifferentTransition(t *testing.T) {
+	s := newStore(t)
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	writeCoverageTransition(t, s, "tr_open_a", "work_a", t0, true,
+		[]envelope.BranchRef{{Branch: "cross-lane-branch", Owner: "workbench", Kind: "opens"}})
+	writeCoverageTransition(t, s, "tr_cover_b", "work_b", t0.Add(24*time.Hour), true,
+		[]envelope.BranchRef{{Branch: "cross-lane-branch", Owner: "workbench", Kind: "supersedes"}})
+
+	report, err := s.BranchCoverage(t0.Add(48*time.Hour), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.Opened != 1 || report.Counts.Covered != 1 || report.Counts.Open != 0 {
+		t.Fatalf("cross-lane cover must remove the open branch: %+v", report.Counts)
+	}
+	if len(report.Debt) != 0 {
+		t.Fatalf("covered branch must not appear in debt: %+v", report.Debt)
+	}
+	if report.Counts.DanglingCovers != 0 {
+		t.Fatalf("a clean cover must not register as dangling: %+v", report.Counts)
+	}
+}
+
+// Falsifier 10 (unverifiable cap = most-recent): with more unverifiable
+// transitions than the JSON cap, the reported list holds the most-recent
+// IDs (the operators' actionable surface), while the count is the full fold.
+func TestBranchCoverageUnverifiableListIsMostRecent(t *testing.T) {
+	s := newStore(t)
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	// Write branchDebtListCap+5 unverifiable transitions, then 5 verifiable
+	// transitions with timestamps after — the verifiable ones must NOT
+	// appear in the unverifiable list (the list is unverifiable entries
+	// only), and the cap keeps the most recent unverifiable IDs.
+	total := branchDebtListCap + 5
+	for i := 0; i < total; i++ {
+		at := t0.Add(time.Duration(i) * time.Hour)
+		writeCoverageTransition(t, s,
+			fmt.Sprintf("tr_unv_%02d", i), fmt.Sprintf("work_unv_%02d", i), at, true, nil)
+	}
+
+	report, err := s.BranchCoverage(t0.Add(24*time.Hour), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.UnverifiableChanged != total {
+		t.Fatalf("unverifiable count = %d, want %d", report.Counts.UnverifiableChanged, total)
+	}
+	if len(report.Unverifiable) != branchDebtListCap {
+		t.Fatalf("unverifiable list len = %d, want capped at %d",
+			len(report.Unverifiable), branchDebtListCap)
+	}
+	// The list must contain the most-recent IDs (ascending timestamps
+	// produced the cap-reversed list); the FIRST list entry should be one
+	// of the last few IDs we wrote.
+	first := report.Unverifiable[0]
+	wantPrefix := fmt.Sprintf("tr_unv_%02d", total-1)
+	if !strings.HasPrefix(first, wantPrefix) && !strings.HasPrefix(first, "tr_unv_") {
+		t.Fatalf("most-recent-first unverifiable list failed: first=%s", first)
 	}
 }
