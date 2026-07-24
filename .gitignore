@@ -19,3 +19,6 @@ node_modules/
 
 # External memory systems cloned for audit (P6 evidence-gathering, never vendored)
 /memory/
+
+# prebuilt release artifacts (make release-artifacts) — generated, never committed
+/dist/
