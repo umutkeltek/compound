@@ -24,6 +24,10 @@ import (
 
 const CoordinationSchemaVersion = "compound.coordination.v0.1"
 
+var coordinationWorkbench = func(store *Store, now time.Time, opts WorkbenchOptions) (WorkbenchReport, error) {
+	return store.Workbench(now, opts)
+}
+
 // CoordinationOptions controls the read-only coordination projection.
 type CoordinationOptions struct {
 	// Actor selects who "me" is. Empty picks the most-present actor
@@ -105,10 +109,15 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 		Others:        []ActorCoordination{},
 		Waits:         []WaitEdge{},
 	}
-	actors, involved, err := s.coordinationActors(now)
+	workbench, err := coordinationWorkbench(s, now, WorkbenchOptions{RecentLimit: 8})
 	if err != nil {
 		return CoordinationReport{}, err
 	}
+	projection, err := s.ExecutorsProjection(now, ExecutorsProjectionOptions{Workbench: &workbench})
+	if err != nil {
+		return CoordinationReport{}, err
+	}
+	actors, involved := coordinationActorsFromSnapshot(projection, workbench)
 	explicit := strings.TrimSpace(opts.Actor) != ""
 	me := strings.TrimSpace(opts.Actor)
 
@@ -118,7 +127,7 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 	gateNeeded := false
 	for _, actor := range actors {
 		_, isInvolved := involved[actor]
-		face, waits, needsGate, err := s.coordinationActor(now, actor, isInvolved, edgeKeys)
+		face, waits, needsGate, err := s.coordinationActor(now, actor, isInvolved, workbench, edgeKeys)
 		if err != nil {
 			return CoordinationReport{}, err
 		}
@@ -150,7 +159,7 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 		// re-targets or flattens X to an empty face. The explicit me is treated
 		// as involved — its waits are first-class edges in the graph.
 		if explicit && strings.TrimSpace(me) != "" {
-			face, waits, needsGate, aerr := s.coordinationActor(now, me, true, edgeKeys)
+			face, waits, needsGate, aerr := s.coordinationActor(now, me, true, workbench, edgeKeys)
 			if aerr != nil {
 				return CoordinationReport{}, aerr
 			}
@@ -182,12 +191,10 @@ func (s *Store) Coordination(now time.Time, opts CoordinationOptions) (Coordinat
 // gate would decide (used only for the integrity note about a missing guard).
 // involved marks actors with a live lease or claim — only involved actors (or
 // an explicitly chosen me) contribute wait edges to the global graph.
-func (s *Store) coordinationActor(now time.Time, actor string, involved bool, edgeKeys map[string]struct{}) (ActorCoordination, []WaitEdge, bool, error) {
+func (s *Store) coordinationActor(now time.Time, actor string, involved bool, workbench WorkbenchReport, edgeKeys map[string]struct{}) (ActorCoordination, []WaitEdge, bool, error) {
 	face := ActorCoordination{Actor: actor}
-	wb, err := s.Workbench(now, WorkbenchOptions{Actor: actor})
-	if err != nil {
-		return face, nil, false, err
-	}
+	wb := workbench
+	wb.DispatchNext = workbenchDispatchNext(wb, actor)
 	face.Open = wb.Counts.Open
 	face.InProgress = wb.Counts.InProgress
 	face.NeedsReview = wb.Counts.NeedsReview
@@ -432,7 +439,7 @@ func coordinationNextAction(wb WorkbenchReport, actor string) string {
 // deterministic output. The involved set (lease holders ∪ claimers) marks
 // actors with live skin in the game — only involved actors emit wait edges;
 // an idle fleet row is idle, not "waiting."
-func (s *Store) coordinationActors(now time.Time) (actors []string, involved map[string]struct{}, err error) {
+func coordinationActorsFromSnapshot(projection ExecutorsProjection, wb WorkbenchReport) (actors []string, involved map[string]struct{}) {
 	seen := make(map[string]struct{})
 	involved = make(map[string]struct{})
 	add := func(a string, isInvolvement bool) {
@@ -449,19 +456,11 @@ func (s *Store) coordinationActors(now time.Time) (actors []string, involved map
 		seen[a] = struct{}{}
 		actors = append(actors, a)
 	}
-	projection, perr := s.ExecutorsProjection(now, ExecutorsProjectionOptions{})
-	if perr != nil {
-		return nil, nil, perr
-	}
 	for _, row := range projection.Executors {
 		add(row.ID, false)
 		for _, lease := range row.Leases {
 			add(lease.By, true)
 		}
-	}
-	wb, werr := s.Workbench(now, WorkbenchOptions{})
-	if werr != nil {
-		return nil, nil, werr
 	}
 	for _, item := range wb.Open {
 		add(item.ClaimedBy, true)
@@ -470,7 +469,7 @@ func (s *Store) coordinationActors(now time.Time) (actors []string, involved map
 		add(preview.Actor, false)
 	}
 	sort.Strings(actors)
-	return actors, involved, nil
+	return actors, involved
 }
 
 func coordinationPresence(face ActorCoordination) int {

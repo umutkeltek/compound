@@ -152,6 +152,32 @@ func TestCoordinationProjectsGenericActorsAndWaits(t *testing.T) {
 	}
 }
 
+// A coordination snapshot is one point-in-time view shared by every actor.
+// Rebuilding the full Workbench per actor makes the observer scale as
+// actors × ledger size and can leave the human-facing projection unavailable
+// on a mature home.
+func TestCoordinationBuildsWorkbenchOnceForAllActors(t *testing.T) {
+	s, _, _ := coordinationFixture(t)
+	original := coordinationWorkbench
+	calls := 0
+	coordinationWorkbench = func(store *Store, now time.Time, opts WorkbenchOptions) (WorkbenchReport, error) {
+		calls++
+		return store.Workbench(now, opts)
+	}
+	t.Cleanup(func() { coordinationWorkbench = original })
+
+	report, err := s.Coordination(fixedNow.Add(10*time.Minute), CoordinationOptions{Actor: "lane-x"})
+	if err != nil {
+		t.Fatalf("coordination: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("workbench builds = %d, want exactly 1 shared snapshot", calls)
+	}
+	if report.Me.Actor != "lane-x" || len(report.Others) == 0 {
+		t.Fatalf("shared snapshot lost actor faces: me=%+v others=%+v", report.Me, report.Others)
+	}
+}
+
 // F3: default me is the most-present actor, deterministically — never a
 // hardcoded identity.
 func TestCoordinationDefaultActorIsMostPresent(t *testing.T) {
