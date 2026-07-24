@@ -374,6 +374,28 @@ func tomlAssignmentRegex(key string) *regexp.Regexp {
 	return regexp.MustCompile(`^([ \t]*)` + regexp.QuoteMeta(key) + `[ \t]*=[ \t]*(.*)$`)
 }
 
+// alternateOwnedTOMLAssignment identifies assignment spellings that TOML
+// resolves to the owned path but that this bare-key editor cannot safely
+// rewrite without taking ownership of additional syntax.
+func alternateOwnedTOMLAssignment(body string, structure tomlStructure, line int, owned ownedTOMLKey) string {
+	if structure.opaque[line] || structure.isHeader[line] || structure.arrayTableAt[line] {
+		return ""
+	}
+	if structure.tableAt[line] == owned.Table {
+		quoted := regexp.MustCompile(`^[ \t]*(?:"` + regexp.QuoteMeta(owned.Key) + `"|'` + regexp.QuoteMeta(owned.Key) + `')[ \t]*=`)
+		if quoted.MatchString(body) {
+			return "quoted"
+		}
+	}
+	if owned.Table != "" && structure.tableAt[line] == "" {
+		dotted := regexp.MustCompile(`^[ \t]*` + regexp.QuoteMeta(owned.Table) + `[ \t]*\.[ \t]*` + regexp.QuoteMeta(owned.Key) + `[ \t]*=`)
+		if dotted.MatchString(body) {
+			return "dotted"
+		}
+	}
+	return ""
+}
+
 // locateOwnedTOMLKey finds the single assignment line owning key within its
 // declared table scope. Zero matches means "absent" (not an error, so apply
 // can insert). More than one candidate match — including a look-alike found
@@ -385,10 +407,13 @@ func locateOwnedTOMLKey(lines []string, structure tomlStructure, owned ownedTOML
 	matchCount := 0
 	ambiguous := false
 	for i, raw := range lines {
+		body := lineBody(raw)
+		if spelling := alternateOwnedTOMLAssignment(body, structure, i, owned); spelling != "" {
+			return 0, false, fmt.Errorf("settings key %q uses an unsupported %s assignment spelling; refusing to edit", owned.Path, spelling)
+		}
 		if structure.tableAt[i] != owned.Table || structure.arrayTableAt[i] || structure.isHeader[i] {
 			continue
 		}
-		body := lineBody(raw)
 		if structure.opaque[i] {
 			if re.MatchString(body) {
 				ambiguous = true

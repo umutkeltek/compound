@@ -541,9 +541,9 @@ func TestCodexTOMLQuotedOrDottedOwnedKeyFailsClosed(t *testing.T) {
 			}
 			writePermissionFixture(t, homePath, targetPath, codexTOMLAuthorityFixture(tc.settings))
 
-			_, applyErr := applyGovernedPermissions(t, homePath, "codex")
-			if applyErr == nil || !strings.Contains(applyErr.Error(), tc.key) || !strings.Contains(strings.ToLower(applyErr.Error()), "refus") {
-				t.Errorf("apply error = %v, want refusal naming %s", applyErr, tc.key)
+			_, renderErr := RenderPermissions(homePath, "codex")
+			if renderErr == nil || !strings.Contains(renderErr.Error(), tc.key) || !strings.Contains(strings.ToLower(renderErr.Error()), "refus") {
+				t.Errorf("render error = %v, want refusal naming %s", renderErr, tc.key)
 			}
 			after, err := os.ReadFile(targetPath)
 			if err != nil {
