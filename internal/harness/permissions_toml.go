@@ -237,27 +237,36 @@ func dominantTOMLTerminator(lines []string) string {
 	return "\n"
 }
 
-var tomlTableHeaderRe = regexp.MustCompile(`^\[([^\[\]]+)\]\s*(#.*)?$`)
+var (
+	tomlTableHeaderRe      = regexp.MustCompile(`^\[([^\[\]]+)\]\s*(#.*)?$`)
+	tomlArrayTableHeaderRe = regexp.MustCompile(`^\[\[([^\[\]]+)\]\]\s*(#.*)?$`)
+)
 
 // tomlStructure is the per-line scope map produced by a single pass over the
-// file: which table (if any) a line belongs to, whether it is a table
-// header, and whether it lies inside a multi-line array or triple-quoted
-// string (opaque to key/header detection).
+// file: which table (if any) a line belongs to, whether that scope is an
+// array-of-tables, whether the line is a table header, and whether it lies
+// inside a multi-line array or triple-quoted string (opaque to key/header
+// detection).
 type tomlStructure struct {
-	tableAt         []string
-	opaque          []bool
-	isHeader        []bool
-	firstHeaderLine map[string]int
+	tableAt          []string
+	arrayTableAt     []bool
+	opaque           []bool
+	isHeader         []bool
+	firstHeaderLine  map[string]int
+	arrayHeaderNames map[string]bool
 }
 
 func scanTOMLStructure(lines []string) tomlStructure {
 	structure := tomlStructure{
-		tableAt:         make([]string, len(lines)),
-		opaque:          make([]bool, len(lines)),
-		isHeader:        make([]bool, len(lines)),
-		firstHeaderLine: map[string]int{},
+		tableAt:          make([]string, len(lines)),
+		arrayTableAt:     make([]bool, len(lines)),
+		opaque:           make([]bool, len(lines)),
+		isHeader:         make([]bool, len(lines)),
+		firstHeaderLine:  map[string]int{},
+		arrayHeaderNames: map[string]bool{},
 	}
 	currentTable := ""
+	currentArrayTable := false
 	inTripleDouble, inTripleSingle := false, false
 	arrayDepth := 0
 	for i, raw := range lines {
@@ -267,10 +276,17 @@ func scanTOMLStructure(lines []string) tomlStructure {
 		if !startedOpaque {
 			trimmed := strings.TrimSpace(body)
 			if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-				if m := tomlTableHeaderRe.FindStringSubmatch(trimmed); m != nil {
+				if m := tomlArrayTableHeaderRe.FindStringSubmatch(trimmed); m != nil {
 					name := strings.TrimSpace(m[1])
 					structure.isHeader[i] = true
 					currentTable = name
+					currentArrayTable = true
+					structure.arrayHeaderNames[name] = true
+				} else if m := tomlTableHeaderRe.FindStringSubmatch(trimmed); m != nil {
+					name := strings.TrimSpace(m[1])
+					structure.isHeader[i] = true
+					currentTable = name
+					currentArrayTable = false
 					if _, ok := structure.firstHeaderLine[name]; !ok {
 						structure.firstHeaderLine[name] = i
 					}
@@ -278,6 +294,7 @@ func scanTOMLStructure(lines []string) tomlStructure {
 			}
 		}
 		structure.tableAt[i] = currentTable
+		structure.arrayTableAt[i] = currentArrayTable
 		inTripleDouble, inTripleSingle, arrayDepth = advanceTOMLLineState(body, inTripleDouble, inTripleSingle, arrayDepth)
 	}
 	return structure
@@ -368,7 +385,7 @@ func locateOwnedTOMLKey(lines []string, structure tomlStructure, owned ownedTOML
 	matchCount := 0
 	ambiguous := false
 	for i, raw := range lines {
-		if structure.tableAt[i] != owned.Table || structure.isHeader[i] {
+		if structure.tableAt[i] != owned.Table || structure.arrayTableAt[i] || structure.isHeader[i] {
 			continue
 		}
 		body := lineBody(raw)
@@ -514,6 +531,9 @@ func applyOwnedTOMLKeys(before []byte, owned []ownedTOMLKey) ([]byte, error) {
 		if headerIdx, ok := structure.firstHeaderLine[k.Table]; ok {
 			lines = insertTOMLLine(lines, headerIdx+1, k.Key+" = "+value+terminator)
 			continue
+		}
+		if structure.arrayHeaderNames[k.Table] {
+			return nil, fmt.Errorf("owned TOML table %s exists only as an array-of-tables; refusing to insert %s", k.Table, k.Path)
 		}
 		lines = ensureTrailingTOMLNewline(lines, terminator)
 		lines = append(lines, "["+k.Table+"]"+terminator, k.Key+" = "+value+terminator)
