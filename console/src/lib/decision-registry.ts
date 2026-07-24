@@ -1,4 +1,5 @@
 import { arr, type Json, str } from "@/lib/compound";
+import { MOVE_TYPES } from "@/lib/move-types";
 import { shortText, targetLabel, uniqueBoundaries } from "@/lib/plain-language";
 
 /*
@@ -180,13 +181,15 @@ const WORK_OPTION_META: Record<string, { label: string; tone: Accent; descriptio
   cancelled: { label: "Cancel", tone: "gray", description: "Drop the work; audit-only close." },
 };
 
-export const MOVE_TYPES = [
-  { value: "outward_delta", label: "Outward delta" },
-  { value: "memory_delta", label: "Memory delta" },
-  { value: "rule_delta", label: "Rule delta" },
-  { value: "control_plane_repair", label: "Control-plane repair" },
-  { value: "audit_only", label: "Audit only" },
-];
+// MOVE_TYPES is the move-type registry shared between this server-only module
+// and the client-safe move-types module. The Go side (internal/envelope MoveTypes)
+// is the enum authority; the move-types module mirrors the labels and one-liners
+// byte-for-byte. This module imports the values so the work-advance select
+// dropdown stays in sync with the client's glide path (decision-registry is
+// server-only because it pulls in @/lib/compound — node:child_process/fs).
+// Re-export removed: the canonical home is now @/lib/move-types; downstream
+// consumers that needed MOVE_TYPES from this module should import it directly
+// from there. (The work-advance move-type select below uses the import above.)
 
 /** Build the work argv for a target state. Terminal targets use `work close`. */
 export function workArgvFor(

@@ -47,30 +47,14 @@ export const TERM_GLOSSARY: Record<string, string> = {
   park: "Keep it, decide later. The safe default.",
 };
 
-/**
- * Move-type plain language for the live transitions ticker (DESIGN.md §9.6).
- * Mirrors decision-registry.ts's MOVE_TYPES labels but is duplicated rather
- * than imported: decision-registry.ts pulls in `@/lib/compound`
- * (node:child_process/fs), so it is server-only, while this glossary is read
- * from client components. move-type-drift-smoke.mjs guards decision-registry
- * against the Go enum; keep this map's five keys identical to that list if it
- * ever changes.
- */
-export const MOVE_TYPE_LABELS: Record<string, string> = {
-  outward_delta: "Outward delta",
-  memory_delta: "Memory delta",
-  rule_delta: "Rule delta",
-  control_plane_repair: "Control-plane repair",
-  audit_only: "Audit only",
-};
-
-export const MOVE_TYPE_GLOSSARY: Record<string, string> = {
-  outward_delta: "Shipped a real product change — the outward-facing move.",
-  memory_delta: "Wrote new memory the system can recall later.",
-  rule_delta: "Changed a rule, contract, or doctrine the system follows.",
-  control_plane_repair: "Fixed the control plane itself — no product or memory change.",
-  audit_only: "Recorded for the audit trail; no state moved.",
-};
+// Move-type plain-language layer is owned by `./move-types` (EP-U1 plain
+// register). The Go side (internal/envelope/glossary.go MoveTypePlain) is the
+// canonical one-liner owner; this module re-exports from the client-safe
+// move-types module so existing consumers (e.g. components/work/TransitionsTicker)
+// keep importing from `@/lib/glossary` without dragging in server-only deps.
+// move-type-drift-smoke.mjs asserts the values stay byte-equal to Go.
+import { MOVE_TYPE_GLOSSARY } from "./move-types";
+export { MOVE_TYPE_LABELS, MOVE_TYPE_GLOSSARY } from "./move-types";
 
 export function areaPlain(area: string): string {
   return AREA_GLOSSARY[area] ?? "A review area awaiting a decision.";
