@@ -71,7 +71,7 @@ console.log(JSON.stringify({ generated_at: "after-mutation", stamp: "post-invali
     process.env.COMPOUND_HOME = home;
     process.env.RUN_JSON_INVALIDATION_STATE = state;
 
-    const { invalidateRunJsonCache, runProjection } = await import("./compound");
+    const { invalidateRunJsonCache, runProjection } = await import("../src/lib/compound");
     invalidate = invalidateRunJsonCache;
     invalidateRunJsonCache();
 
@@ -118,4 +118,9 @@ console.log(JSON.stringify({ generated_at: "after-mutation", stamp: "post-invali
     else process.env.RUN_JSON_INVALIDATION_STATE = previousState;
     await rm(scratch, { recursive: true, force: true });
   }
+}
+
+if ((import.meta as { main?: boolean }).main) {
+  const result = await runRunJsonInvalidationSelfTest();
+  console.log(`run-json-invalidation selftest ok: ${result.details}`);
 }
