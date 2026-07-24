@@ -7,8 +7,8 @@
 //
 // What the tests cover:
 //   - TmuxRunner.Create uses the approved new-session -> set-option
-//     remain-on-exit on -> respawn-pane -k -- command argv launch
-//     sequence, preserving argv verbatim in respawn-pane and NOT
+//     remain-on-exit on -> respawn-pane -k -c DIR -- sh cd-guard launch
+//     sequence, preserving argv verbatim behind the guard and NOT
 //     launching the real command in new-session. Verified by capturing
 //     the actual production argv via the tmuxCmd factory.
 //   - A respawn-pane failure leaves the half-created session intact
@@ -183,8 +183,54 @@ func TestTmuxRunnerCreateLaunchOrderAgainstProduction(t *testing.T) {
 		t.Fatalf("set-option argv wrong (production): %v", second)
 	}
 	third := calls[2]
-	if third[0] != "respawn-pane" || third[1] != "-k" || third[2] != "-t" || third[3] != "sess-launch-order" || third[4] != "--" || third[5] != "/bin/sleep" || third[6] != "30" {
-		t.Fatalf("respawn-pane argv wrong (args not preserved verbatim): %v", third)
+	// The sh cd-guard is a regression tripwire, not style: without it a
+	// wedged tmux server (deleted server cwd, observed 2026-07-24)
+	// ignores -c, panes start with an invalid cwd, and bun-compiled
+	// harness binaries die at spawn with an opaque ENOENT while the
+	// RunAttempt rots in `running`. $0 must be the workspace and the
+	// caller argv must follow verbatim after the script.
+	want := []string{
+		"respawn-pane", "-k", "-c", dir, "-t", "sess-launch-order", "--",
+		"/bin/sh", "-c", `cd -- "$0" && exec "$@"`, dir, "/bin/sleep", "30"}
+	if len(third) != len(want) {
+		t.Fatalf("respawn-pane argv wrong (cd-guard or verbatim args missing): got %v want %v", third, want)
+	}
+	for i := range want {
+		if third[i] != want[i] {
+			t.Fatalf("respawn-pane argv[%d] = %q, want %q (full: %v)", i, third[i], want[i], third)
+		}
+	}
+}
+
+// TestTmuxRunnerCreatePaneCwdIsWorkspace proves the pane's REAL working
+// directory is the workspace by observing behavior, not argv: the spawned
+// command writes $(pwd) to a file. This is the test that fails if the
+// cd-guard regresses to -c-only on a server that honors -c but would not
+// on a wedged one — the guard must hold regardless.
+func TestTmuxRunnerCreatePaneCwdIsWorkspace(t *testing.T) {
+	sock := newPrivateTmuxServer(t)
+	cr := newCapturingRunner(t, sock)
+	dir := t.TempDir()
+	out := dir + "/pwd.txt"
+	if err := cr.Create("sess-cwd-proof", dir, "/bin/sh", []string{"-c", "pwd > " + out}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _ = cr.Kill("sess-cwd-proof") })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		b, err := os.ReadFile(out)
+		if err == nil {
+			got := strings.TrimSpace(string(b))
+			resolved, _ := filepath.EvalSymlinks(dir)
+			if got != dir && got != resolved {
+				t.Fatalf("pane cwd = %q, want workspace %q", got, dir)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pane never wrote pwd proof file: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

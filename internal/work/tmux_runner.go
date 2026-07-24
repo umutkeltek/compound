@@ -170,12 +170,25 @@ func (r *TmuxRunner) SessionStatus(name string) (SessionStatus, error) {
 //     command MUST NOT be passed here, otherwise it can exit before
 //     remain-on-exit is installed and the dead-pane marker disappears),
 //  2. set-option -t NAME remain-on-exit on (so the pane persists dead),
-//  3. respawn-pane -k -t NAME -- COMMAND ARGS (preserves argv
-//     verbatim; -k kills the default shell; -- terminates tmux's own
-//     flag parsing). The bare NAME targets the (only) pane of the
-//     newly-created session regardless of server base-index, which we
-//     can NOT control at the new-session step without affecting the
-//     operator's other workspaces.
+//  3. respawn-pane -k -c DIR -t NAME -- /bin/sh -c 'cd -- "$0" && exec "$@"' DIR COMMAND ARGS
+//     (preserves argv verbatim through "$@"; -k kills the default
+//     shell; -- terminates tmux's own flag parsing). The bare NAME
+//     targets the (only) pane of the newly-created session regardless
+//     of server base-index, which we can NOT control at the
+//     new-session step without affecting the operator's other
+//     workspaces.
+//
+// The sh cd-guard is load-bearing, not decoration: a wedged tmux
+// server (observed 2026-07-24: server cwd stuck in a deleted worktree)
+// silently ignores -c on BOTH new-session and respawn-pane and starts
+// every pane with an invalid cwd, which kills bun-compiled binaries
+// (claude and the claude-* lane wrappers) at startup with an opaque
+// "ENOENT: Bun could not find a file" before the harness runs at all —
+// the RunAttempt then rots in `running` with a dead pane. cd-ing
+// inside the pane command makes workspace entry independent of tmux
+// server state and turns a genuinely missing workspace into a loud
+// in-pane `cd` failure (fail closed) instead of an inherited-garbage
+// cwd.
 //
 // respawn-pane is the load-bearing supervision step: if it fails the
 // session may exist but the real command never started. The runner
@@ -212,12 +225,16 @@ func (r *TmuxRunner) Create(name, dir, command string, args []string) error {
 		// opaque error is the entire contract.
 		return fmt.Errorf("tmux set-option remain-on-exit failed: %s", opaqueOneLiner(err))
 	}
-	// 3. respawn-pane -k with the user's exact argv. Args preserved
-	//    verbatim; -- terminates tmux's flag parsing. -t uses the bare
-	//    session name because the new session's window index is
-	//    base-index-dependent and we can't pin base-index 0 without
-	//    writing to the operator's global tmux.conf.
-	respawnArgv := append([]string{"respawn-pane", "-k", "-t", name, "--", command}, args...)
+	// 3. respawn-pane -k with the user's exact argv behind the sh
+	//    cd-guard (see the Create doc comment: -c alone is ignored by a
+	//    wedged server). $0 is the workspace, "$@" is the verbatim
+	//    command+args — no shell quoting of caller argv ever happens.
+	//    -t uses the bare session name because the new session's window
+	//    index is base-index-dependent and we can't pin base-index 0
+	//    without writing to the operator's global tmux.conf.
+	respawnArgv := append([]string{
+		"respawn-pane", "-k", "-c", dir, "-t", name, "--",
+		"/bin/sh", "-c", `cd -- "$0" && exec "$@"`, dir, command}, args...)
 	if err := r.tmuxRunOpaque(respawnArgv...); err != nil {
 		// NO KILL: same contract as the set-option branch above.
 		return fmt.Errorf("tmux respawn-pane failed: %s", opaqueExitOnly(err))
