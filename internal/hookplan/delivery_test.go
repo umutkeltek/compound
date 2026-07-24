@@ -1415,6 +1415,44 @@ func TestReadOperatorCoordinationDropsResolvedOrTerminalStateAndFailsClosed(t *t
 			t.Fatal("malformed replay returned a partial operator projection")
 		}
 	})
+
+	t.Run("partial final replay fails closed without projection", func(t *testing.T) {
+		fixture := newDeliveryFixture(t)
+		fixture.record(t, "operator-before-partial-clearance", work.CollaborationDeliveryHumanAttention, work.CollaborationAffects{
+			WorkIDs: []string{fixture.work},
+		})
+		logPath := filepath.Join(fixture.home, "events", "work.jsonl")
+		file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		partial := fmt.Sprintf(
+			`{"ts":"2026-07-24T12:03:00Z","work_id":%q,"from":"claimed","to":"claimed","by":"delivery","attached":["wco_clearance`,
+			fixture.work,
+		)
+		if _, err := file.WriteString(partial); err != nil {
+			file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		before := operatorProjectionHomeHash(t, fixture.home)
+		coordination, coordinationErr := ReadOperatorCoordination(OperatorCoordinationRequest{HomePath: fixture.home})
+		attention, attentionErr := ReadOperatorAttention(OperatorAttentionRequest{HomePath: fixture.home})
+		if coordinationErr == nil || attentionErr == nil {
+			t.Fatalf("partial tail did not fail both operator reads: coordination_err=%v attention_err=%v", coordinationErr, attentionErr)
+		}
+		if !reflect.DeepEqual(coordination, OperatorCoordinationProjection{}) ||
+			!reflect.DeepEqual(attention, OperatorAttentionProjection{}) {
+			t.Fatalf("partial tail returned stale projection: coordination=%+v attention=%+v", coordination, attention)
+		}
+		after := operatorProjectionHomeHash(t, fixture.home)
+		if before != after {
+			t.Fatalf("strict operator reads mutated home: before=%s after=%s", before, after)
+		}
+	})
 }
 
 func operatorProjectionHomeHash(t *testing.T, homePath string) string {

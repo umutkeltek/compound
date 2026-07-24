@@ -126,6 +126,17 @@ type FollowOptions struct {
 // collaboration projection, and returns the exact next byte cursor. It owns no
 // cursor state; callers persist the opaque offset they consumed.
 func ReadAvailable(home string, cursor int64) ([]Frame, int64, error) {
+	return readAvailable(home, cursor, false)
+}
+
+// ReadAvailableStrict is the finite replay form for projections that must
+// observe one complete sampled log. Unlike Follow and ReadAvailable, it rejects
+// a non-newline-terminated tail rather than buffering it for a future read.
+func ReadAvailableStrict(home string, cursor int64) ([]Frame, int64, error) {
+	return readAvailable(home, cursor, true)
+}
+
+func readAvailable(home string, cursor int64, strict bool) ([]Frame, int64, error) {
 	if cursor < 0 {
 		return nil, cursor, fmt.Errorf("stream cursor must be non-negative")
 	}
@@ -153,6 +164,9 @@ func ReadAvailable(home string, cursor int64) ([]Frame, int64, error) {
 		return nil, cursor, err
 	}
 	frames := t.feed(chunk)
+	if strict && (len(t.partial) != 0 || t.consumed != size) {
+		return nil, cursor, fmt.Errorf("strict finite stream replay ended with an incomplete frame")
+	}
 	for i := range frames {
 		frames[i] = projectCollaborationFrame(eventStore, frames[i])
 	}

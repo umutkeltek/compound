@@ -1,6 +1,8 @@
 package stream
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,6 +12,66 @@ import (
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
+
+func TestReadAvailableStrictRejectsPartialFinalFrame(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(homePath, "events", "work.jsonl")
+	valid := eventLine(t, "work_strict_finite", "", "running")
+	if err := os.WriteFile(logPath, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	complete, cursor, err := ReadAvailableStrict(homePath, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(complete) != 1 || cursor != int64(len(valid)) {
+		t.Fatalf("strict complete replay = frames=%d cursor=%d, want one/%d", len(complete), cursor, len(valid))
+	}
+
+	partial := `{"ts":"2026-07-24T12:01:00Z","work_id":"work_strict_finite","from":"running","to":"running","attached":["wco_clearance`
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(partial); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	frames, failedCursor, err := ReadAvailableStrict(homePath, 0)
+	if err == nil {
+		t.Fatalf("strict finite replay accepted partial tail: frames=%+v cursor=%d", frames, failedCursor)
+	}
+	if len(frames) != 0 || failedCursor != 0 {
+		t.Fatalf("strict finite replay returned partial result: frames=%+v cursor=%d", frames, failedCursor)
+	}
+	defaultFrames, defaultCursor, err := ReadAvailable(homePath, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaultFrames) != 1 || defaultCursor != int64(len(valid)) {
+		t.Fatalf("ordinary finite buffering changed: frames=%+v cursor=%d", defaultFrames, defaultCursor)
+	}
+	after, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("strict finite read mutated the work log")
+	}
+}
 
 func TestReadAvailableProjectsGovernedCollaborationOnceByCursor(t *testing.T) {
 	homePath := t.TempDir()

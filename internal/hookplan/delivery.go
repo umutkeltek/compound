@@ -266,7 +266,7 @@ func readOperatorCoordination(
 		request.MaxItems = hardMaxItems
 	}
 
-	frames, _, err := stream.ReadAvailable(request.HomePath, 0)
+	frames, _, err := stream.ReadAvailableStrict(request.HomePath, 0)
 	if err != nil {
 		return OperatorCoordinationProjection{}, err
 	}
