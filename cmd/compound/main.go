@@ -348,7 +348,7 @@ compound capture --source S [--text T] [--work W] | capture show <cid> gesture-f
 compound intent <plan|review|apply> expressive utterance -> task-scoped ContextPack -> reviewable existing work create-plan; ambiguity parks and apply requires an explicit reviewer
 compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
 compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hook install/drift, land-lease state, pending findings, placement guard mode; writes nothing
-compound proof-check [--json] [--dry-run] [--repo P] [--out FILE] deterministic local gate bundle: tests/vet/build/gofmt/diff/doctors/redact; --out writes the full report to FILE and prints a final truthful-exit verdict line
+compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] deterministic verification bundle; --dev is fast, cache-enabled, non-certifying feedback while canonical proof stays fresh
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
   compound reviews [--json] [--area A] [--include-archived] read-only owner-review artifact queue; no apply

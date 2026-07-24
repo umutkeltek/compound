@@ -44,6 +44,11 @@ This skill replaces re-deriving the "standing session rules" from
 
 ## 1 · Pre-flight battery (all of it, every time)
 
+During iteration, use `go run ./cmd/compound proof-check --dev --base main` for
+cache-enabled short feedback. It is explicitly non-certifying: it does not write
+the canonical installed-runtime proof artifact and never substitutes for either
+the pre-land or post-land full proof below.
+
 Run the `compound-verify` skill. Minimum bar before any commit to main:
 
 ```bash

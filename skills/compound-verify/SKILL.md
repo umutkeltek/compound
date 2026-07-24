@@ -33,6 +33,10 @@ gap, loudly, in the receipt/close notes.
 1. **Never trust the checked-in binary.** `./compound` at repo root is a local build artifact and
    is routinely stale. Verify through `go run ./cmd/compound <verb>` or a fresh `make install`.
 
+   For iteration only, `go run ./cmd/compound proof-check --dev --base main` provides
+   cache-enabled short feedback. It is non-certifying, does not write the canonical
+   installed-runtime proof artifact, and never satisfies the deterministic bundle below.
+
 2. **Deterministic bundle:**
    ```bash
    go run ./cmd/compound proof-check --json

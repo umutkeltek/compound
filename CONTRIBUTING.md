@@ -28,8 +28,11 @@ go build ./cmd/compound
 ## Test
 
 ```sh
-# Full suite (takes ~5 min on a modern machine):
-go test -count=1 -timeout 20m -p 2 ./...
+# Fast repeatable development feedback (non-certifying):
+go run ./cmd/compound proof-check --dev --base main
+
+# Standalone fresh Go suite (non-certifying; canonical bundle below):
+go test -count=1 -timeout=40m ./...
 
 # Single package:
 go test ./internal/work/ -count=1 -timeout 5m
@@ -106,7 +109,18 @@ skills/                   Agent ceremony definitions
 1. **Fork and branch** from `main`.
 2. **Write tests** that would fail if the depth were wrong. Tests are how the
    system understands its own depth — not happy-path coverage.
-3. **Run the proof bundle** before pushing:
+3. **Use the fast development profile while iterating**, then run the canonical
+   proof bundle before pushing:
+   ```sh
+   go run ./cmd/compound proof-check --dev --base main
+   ```
+   `--dev` runs repository-wide `go test -short` with Go's content-addressed
+   cache: unchanged package passes are reused, while packages rerun when their
+   source, dependencies, or observed test inputs change. It also checks formatting,
+   the diff, strict architecture, changed-file redaction, and console TypeScript
+   when relevant. This is iteration feedback only: it does not write canonical
+   installed-runtime proof evidence or satisfy pre-land or post-land proof.
+
    ```sh
    go run ./cmd/compound proof-check --json
    ```

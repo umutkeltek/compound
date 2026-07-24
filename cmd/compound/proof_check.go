@@ -18,6 +18,7 @@ const proofCheckSchemaVersion = "compound.proof_check_report.v0.1"
 
 type proofCheckReport struct {
 	SchemaVersion string           `json:"schema_version"`
+	ProfileKind   string           `json:"profile_kind,omitempty"`
 	Status        string           `json:"status"`
 	GeneratedAt   string           `json:"generated_at"`
 	Repo          string           `json:"repo"`
@@ -50,12 +51,17 @@ type proofCheckStep struct {
 
 func cmdProofCheck(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--ci|--ci-console] [--repo P] [--base REF] [--out FILE]")
+		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--dev|--ci|--ci-console] [--repo P] [--base REF] [--out FILE]")
+		fmt.Println("  --dev         fast, cache-enabled, non-certifying developer feedback")
 		fmt.Println("  --ci          run only the fresh-clone-portable gate subset (bare Go gates; what CI runs on push/PR)")
 		fmt.Println("  --ci-console  run only the console/TypeScript gate subset (needs bun + console/node_modules;")
 		fmt.Println("                run by the CI console job, not the bare-clone --ci job)")
 		fmt.Println("  --out FILE    write the full JSON report to FILE and print a final 'battery: ok|FAILED' verdict")
 		fmt.Println("                line as the last stdout line; the process exit code stays truthful (0/1/2)")
+		return
+	}
+	if proofCheckDevelopmentRequested(args) {
+		cmdProofCheckDevelopment(args)
 		return
 	}
 	jsonOut := hasFlag(args, "--json")
@@ -153,8 +159,11 @@ func proofCheckVerdictLine(report proofCheckReport, path string) string {
 	passed := 0
 	skipped := 0
 	failed := 0
+	planned := 0
 	firstFailed := ""
+	var elapsedMS int64
 	for _, step := range report.Steps {
+		elapsedMS += step.DurationMS
 		switch step.Status {
 		case "ok":
 			passed++
@@ -165,7 +174,22 @@ func proofCheckVerdictLine(report proofCheckReport, path string) string {
 			if firstFailed == "" {
 				firstFailed = step.Name
 			}
+		case "planned":
+			planned++
 		}
+	}
+	if report.ProfileKind == proofCheckProfileDevelopment {
+		out := ""
+		if strings.TrimSpace(path) != "" {
+			out = " out=" + path
+		}
+		if report.DryRun {
+			return fmt.Sprintf("dev-check: planned non_certifying=true planned=%d total=%d elapsed_ms=%d%s", planned, total, elapsedMS, out)
+		}
+		if report.Status == "ok" {
+			return fmt.Sprintf("dev-check: ok non_certifying=true passed=%d skipped=%d failed=%d total=%d elapsed_ms=%d%s", passed, skipped, failed, total, elapsedMS, out)
+		}
+		return fmt.Sprintf("dev-check: FAILED non_certifying=true passed=%d skipped=%d failed=%d total=%d elapsed_ms=%d first_failed=%s%s", passed, skipped, failed, total, elapsedMS, firstFailed, out)
 	}
 	if report.Status == "ok" {
 		return fmt.Sprintf("battery: ok passed=%d skipped=%d failed=%d total=%d out=%s", passed, skipped, failed, total, path)
@@ -218,6 +242,9 @@ func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, ci
 }
 
 func recordProofCheckRuntimeArtifact(homePath string, report proofCheckReport) (proofCheckReport, error) {
+	if report.ProfileKind == proofCheckProfileDevelopment {
+		return report, fmt.Errorf("development profile cannot record canonical installed-runtime proof")
+	}
 	if strings.TrimSpace(homePath) == "" {
 		return report, fmt.Errorf("COMPOUND_HOME is empty")
 	}
@@ -640,6 +667,27 @@ func runProofCheckRedact(repo, baseRef string) ([]byte, error) {
 }
 
 func proofCheckChangedFiles(repo, baseRef string) ([]string, error) {
+	// Redact scans only bodies that still exist. With rename detection disabled,
+	// a rename is represented as delete+add: ACM retains the new body while the
+	// deleted source is excluded.
+	paths, err := proofCheckChangedPaths(repo, baseRef, "ACM")
+	if err != nil {
+		return nil, err
+	}
+	files := paths[:0]
+	for _, path := range paths {
+		if _, err := os.Stat(filepath.Join(repo, filepath.FromSlash(path))); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("stat changed file %q: %w", path, err)
+		}
+		files = append(files, path)
+	}
+	return files, nil
+}
+
+func proofCheckChangedPaths(repo, baseRef, diffFilter string) ([]string, error) {
 	seen := map[string]bool{}
 	var files []string
 	add := func(paths []string) {
@@ -653,15 +701,15 @@ func proofCheckChangedFiles(repo, baseRef string) ([]string, error) {
 		}
 	}
 	if baseRef = strings.TrimSpace(baseRef); baseRef != "" {
-		paths, err := proofCheckGitNULList(repo, "diff", "--name-only", "--diff-filter=ACM", "-z", baseRef+"...HEAD")
+		paths, err := proofCheckGitNULList(repo, "diff", "--no-renames", "--name-only", "--diff-filter="+diffFilter, "-z", baseRef+"...HEAD")
 		if err != nil {
 			return nil, err
 		}
 		add(paths)
 	}
 	for _, args := range [][]string{
-		{"diff", "--name-only", "--diff-filter=ACM", "-z"},
-		{"diff", "--cached", "--name-only", "--diff-filter=ACM", "-z"},
+		{"diff", "--no-renames", "--name-only", "--diff-filter=" + diffFilter, "-z"},
+		{"diff", "--cached", "--no-renames", "--name-only", "--diff-filter=" + diffFilter, "-z"},
 		{"ls-files", "--others", "--exclude-standard", "-z"},
 	} {
 		paths, err := proofCheckGitNULList(repo, args...)
@@ -700,7 +748,12 @@ func proofCheckTail(output []byte, max int) string {
 }
 
 func printProofCheck(report proofCheckReport) {
-	fmt.Printf("# proof-check\n")
+	if report.ProfileKind == proofCheckProfileDevelopment {
+		fmt.Printf("# proof-check development (non-certifying)\n")
+		fmt.Printf("- profile_kind: %s\n", report.ProfileKind)
+	} else {
+		fmt.Printf("# proof-check\n")
+	}
 	fmt.Printf("- status: %s\n", report.Status)
 	fmt.Printf("- repo: %s\n", report.Repo)
 	fmt.Printf("- dry_run: %t\n", report.DryRun)
