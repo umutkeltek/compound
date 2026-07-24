@@ -1012,10 +1012,11 @@ type runtimeMaterializationFS struct {
 
 // RecordRuntimeMaterialization stages the dated contract and pack before
 // making either visible, publishes latest only after both dated artifacts,
-// and restores preimages on ordinary commit-phase errors. A process crash
-// between filesystem renames can still leave a partial pair; readers must
-// continue joining artifacts by contract_id rather than treating presence as
-// atomic transaction proof.
+// and restores preimages on ordinary commit-phase errors. Any failed restore
+// is joined into the returned error instead of hiding a partial pair. A
+// process crash between filesystem renames can still leave a partial pair;
+// readers must continue joining artifacts by contract_id rather than treating
+// presence as atomic transaction proof.
 func RecordRuntimeMaterialization(homePath string, runtime RuntimeMaterialization) (RuntimeMaterializationArtifactPaths, error) {
 	return recordRuntimeMaterializationWithFS(homePath, runtime, runtimeMaterializationFS{
 		createTemp: os.CreateTemp,
@@ -1036,6 +1037,9 @@ func recordRuntimeMaterializationWithFS(homePath string, runtime RuntimeMaterial
 	}
 	if err := pack.Validate(); err != nil {
 		return RuntimeMaterializationArtifactPaths{}, fmt.Errorf("context pack invalid: %w", err)
+	}
+	if err := validateInstalledEntrypointRevisionParity(ec.SourceRevisions, pack.SourceRevisions); err != nil {
+		return RuntimeMaterializationArtifactPaths{}, err
 	}
 	createdAt, err := time.Parse(time.RFC3339, ec.CreatedAt)
 	if err != nil {
@@ -1107,18 +1111,72 @@ func recordRuntimeMaterializationWithFS(homePath string, runtime RuntimeMaterial
 	committed := 0
 	for i := range items {
 		if err := fsOps.rename(items[i].temp, items[i].path); err != nil {
+			commitErr := fmt.Errorf("commit runtime materialization %q: %w", items[i].path, err)
+			var rollbackErr error
 			for j := committed - 1; j >= 0; j-- {
 				if items[j].existed {
-					_ = os.WriteFile(items[j].path, items[j].old, 0o644)
+					if restoreErr := os.WriteFile(items[j].path, items[j].old, 0o644); restoreErr != nil {
+						rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback restore %q: %w", items[j].path, restoreErr))
+					}
 				} else {
-					_ = os.Remove(items[j].path)
+					if removeErr := os.Remove(items[j].path); removeErr != nil && !os.IsNotExist(removeErr) {
+						rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback remove %q: %w", items[j].path, removeErr))
+					}
 				}
 			}
-			return RuntimeMaterializationArtifactPaths{}, err
+			return RuntimeMaterializationArtifactPaths{}, errors.Join(commitErr, rollbackErr)
 		}
 		committed++
 	}
 	return paths, nil
+}
+
+func validateInstalledEntrypointRevisionParity(contractRevisions, packRevisions []envelope.SourceRev) error {
+	collect := func(revisions []envelope.SourceRev) map[string]string {
+		bindings := map[string]string{}
+		for _, revision := range revisions {
+			if strings.HasPrefix(revision.Source, authority.InstalledHarnessEntrypointRevisionPrefix) {
+				bindings[revision.Source] = revision.Rev
+			}
+		}
+		return bindings
+	}
+	contractBindings := collect(contractRevisions)
+	packBindings := collect(packRevisions)
+	sources := make([]string, 0, len(contractBindings)+len(packBindings))
+	seen := map[string]bool{}
+	for source := range contractBindings {
+		seen[source] = true
+		sources = append(sources, source)
+	}
+	for source := range packBindings {
+		if !seen[source] {
+			sources = append(sources, source)
+		}
+	}
+	sort.Strings(sources)
+	for _, source := range sources {
+		contractRevision, contractFound := contractBindings[source]
+		packRevision, packFound := packBindings[source]
+		if !contractFound || !packFound {
+			return fmt.Errorf(
+				"installed entrypoint revision parity: binding %q must be present on both effective contract and context pack",
+				source,
+			)
+		}
+		if strings.TrimSpace(contractRevision) == "" || strings.TrimSpace(packRevision) == "" {
+			return fmt.Errorf("installed entrypoint revision parity: binding %q must carry a non-empty revision", source)
+		}
+		if contractRevision != packRevision {
+			return fmt.Errorf(
+				"installed entrypoint revision parity: binding %q differs between effective contract %q and context pack %q",
+				source,
+				contractRevision,
+				packRevision,
+			)
+		}
+	}
+	return nil
 }
 
 type runtimeMaterializationLock struct {

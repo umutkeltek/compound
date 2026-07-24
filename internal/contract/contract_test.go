@@ -418,6 +418,87 @@ func TestRecordRuntimeMaterializationWritesDatedLatestAndPackArtifacts(t *testin
 	}
 }
 
+func TestRecordRuntimeMaterializationRejectsInstalledEntrypointRevisionSkew(t *testing.T) {
+	const (
+		source    = "installed-entrypoint://claude"
+		revisionA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		revisionB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	base := RuntimeMaterialization{
+		EffectiveContract: Compile(mkInput("control-plane"), DefaultPolicy(), fixedNow),
+		ContextPack:       Pack(mkInput("control-plane"), DefaultPolicy(), fixedNow),
+	}
+	tests := []struct {
+		name   string
+		mutate func(*RuntimeMaterialization)
+	}{
+		{
+			name: "contract binding missing",
+			mutate: func(runtime *RuntimeMaterialization) {
+				runtime.ContextPack.SourceRevisions = append(runtime.ContextPack.SourceRevisions, envelope.SourceRev{Source: source, Rev: revisionA})
+			},
+		},
+		{
+			name: "context pack binding missing",
+			mutate: func(runtime *RuntimeMaterialization) {
+				runtime.EffectiveContract.SourceRevisions = append(runtime.EffectiveContract.SourceRevisions, envelope.SourceRev{Source: source, Rev: revisionA})
+			},
+		},
+		{
+			name: "binding revisions differ",
+			mutate: func(runtime *RuntimeMaterialization) {
+				runtime.EffectiveContract.SourceRevisions = append(runtime.EffectiveContract.SourceRevisions, envelope.SourceRev{Source: source, Rev: revisionA})
+				runtime.ContextPack.SourceRevisions = append(runtime.ContextPack.SourceRevisions, envelope.SourceRev{Source: source, Rev: revisionB})
+			},
+		},
+		{
+			name: "binding revision empty",
+			mutate: func(runtime *RuntimeMaterialization) {
+				runtime.EffectiveContract.SourceRevisions = append(runtime.EffectiveContract.SourceRevisions, envelope.SourceRev{Source: source})
+				runtime.ContextPack.SourceRevisions = append(runtime.ContextPack.SourceRevisions, envelope.SourceRev{Source: source})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := base
+			runtime.EffectiveContract.SourceRevisions = append([]envelope.SourceRev(nil), base.EffectiveContract.SourceRevisions...)
+			runtime.ContextPack.SourceRevisions = append([]envelope.SourceRev(nil), base.ContextPack.SourceRevisions...)
+			test.mutate(&runtime)
+
+			if _, err := RecordRuntimeMaterialization(t.TempDir(), runtime); err == nil {
+				t.Fatal("installed entrypoint revision skew must fail pair persistence")
+			} else if !strings.Contains(err.Error(), "installed entrypoint revision parity") {
+				t.Fatalf("error = %q, want installed entrypoint revision parity failure", err)
+			}
+		})
+	}
+}
+
+func TestRecordRuntimeMaterializationAcceptsMatchingInstalledEntrypointRevision(t *testing.T) {
+	const (
+		source   = "installed-entrypoint://claude"
+		revision = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	runtime := RuntimeMaterialization{
+		EffectiveContract: Compile(mkInput("control-plane"), DefaultPolicy(), fixedNow),
+		ContextPack:       Pack(mkInput("control-plane"), DefaultPolicy(), fixedNow),
+	}
+	binding := envelope.SourceRev{Source: source, Rev: revision}
+	runtime.EffectiveContract.SourceRevisions = append(runtime.EffectiveContract.SourceRevisions, binding)
+	runtime.ContextPack.SourceRevisions = append(runtime.ContextPack.SourceRevisions, binding)
+
+	paths, err := RecordRuntimeMaterialization(t.TempDir(), runtime)
+	if err != nil {
+		t.Fatalf("matching installed entrypoint revisions must persist: %v", err)
+	}
+	for _, path := range []string{paths.ContractPath, paths.PackPath, paths.LatestPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("matching pair artifact %s missing: %v", path, err)
+		}
+	}
+}
+
 func TestRecordRuntimeMaterializationLeavesNoOrphanOnPackFailure(t *testing.T) {
 	homePath := t.TempDir()
 	in := mkInput("control-plane")
@@ -478,6 +559,121 @@ func TestRecordRuntimeMaterializationRestoresAllPreimagesWhenLatestCommitFails(t
 		if err != nil || len(matches) != 0 {
 			t.Fatalf("latest failure left temp files in %s: %v err=%v", dir, matches, err)
 		}
+	}
+}
+
+func TestRecordRuntimeMaterializationReportsRollbackFailures(t *testing.T) {
+	tests := []struct {
+		name               string
+		preservePreimages  bool
+		wantRollbackAction string
+	}{
+		{name: "restore preimage", preservePreimages: true, wantRollbackAction: "rollback restore"},
+		{name: "remove new artifact", preservePreimages: false, wantRollbackAction: "rollback remove"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			in := mkInput("control-plane")
+			runtime := RuntimeMaterialization{
+				EffectiveContract: Compile(in, DefaultPolicy(), fixedNow),
+				ContextPack:       Pack(in, DefaultPolicy(), fixedNow),
+			}
+			paths, err := RecordRuntimeMaterialization(homePath, runtime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !test.preservePreimages {
+				for _, path := range []string{paths.ContractPath, paths.PackPath, paths.LatestPath} {
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			contractPreimage, preimageErr := os.ReadFile(paths.ContractPath)
+			if test.preservePreimages && preimageErr != nil {
+				t.Fatal(preimageErr)
+			}
+			runtime.EffectiveContract.Unknowns = append(runtime.EffectiveContract.Unknowns, "changed")
+			runtime.ContextPack.SummaryMD += " changed"
+
+			fsOps := runtimeMaterializationFS{
+				createTemp: os.CreateTemp,
+				rename: func(oldPath, newPath string) error {
+					if newPath != paths.LatestPath {
+						return os.Rename(oldPath, newPath)
+					}
+					if err := os.Remove(paths.PackPath); err != nil {
+						t.Fatalf("remove committed pack before rollback injection: %v", err)
+					}
+					if err := os.Mkdir(paths.PackPath, 0o755); err != nil {
+						t.Fatalf("replace committed pack with rollback blocker: %v", err)
+					}
+					if !test.preservePreimages {
+						if err := os.WriteFile(filepath.Join(paths.PackPath, "blocker"), []byte("block"), 0o644); err != nil {
+							t.Fatalf("make rollback removal fail: %v", err)
+						}
+					}
+					return fmt.Errorf("injected latest commit failure")
+				},
+			}
+			_, err = recordRuntimeMaterializationWithFS(homePath, runtime, fsOps)
+			if err == nil {
+				t.Fatal("latest commit plus rollback failure must be reported")
+			}
+			for _, want := range []string{"injected latest commit failure", test.wantRollbackAction} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want it to include %q", err, want)
+				}
+			}
+			gotContract, readErr := os.ReadFile(paths.ContractPath)
+			if test.preservePreimages {
+				if readErr != nil || !bytes.Equal(gotContract, contractPreimage) {
+					t.Fatalf("later contract rollback did not continue after pack rollback failure: err=%v", readErr)
+				}
+			} else if !os.IsNotExist(readErr) {
+				t.Fatalf("later contract rollback did not remove new artifact after pack rollback failure: err=%v", readErr)
+			}
+		})
+	}
+}
+
+func TestRecordRuntimeMaterializationTreatsAlreadyAbsentRollbackTargetAsRestored(t *testing.T) {
+	homePath := t.TempDir()
+	in := mkInput("control-plane")
+	runtime := RuntimeMaterialization{
+		EffectiveContract: Compile(in, DefaultPolicy(), fixedNow),
+		ContextPack:       Pack(in, DefaultPolicy(), fixedNow),
+	}
+	paths, err := RecordRuntimeMaterialization(homePath, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.ContractPath, paths.PackPath, paths.LatestPath} {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime.EffectiveContract.Unknowns = append(runtime.EffectiveContract.Unknowns, "changed")
+	runtime.ContextPack.SummaryMD += " changed"
+	fsOps := runtimeMaterializationFS{
+		createTemp: os.CreateTemp,
+		rename: func(oldPath, newPath string) error {
+			if newPath != paths.LatestPath {
+				return os.Rename(oldPath, newPath)
+			}
+			if err := os.Remove(paths.ContractPath); err != nil {
+				t.Fatalf("make contract rollback target already absent: %v", err)
+			}
+			return fmt.Errorf("injected latest commit failure")
+		},
+	}
+	_, err = recordRuntimeMaterializationWithFS(homePath, runtime, fsOps)
+	if err == nil || !strings.Contains(err.Error(), "injected latest commit failure") {
+		t.Fatalf("error = %v, want injected commit failure", err)
+	}
+	if strings.Contains(err.Error(), "rollback remove") {
+		t.Fatalf("already absent rollback target must count as restored, got %q", err)
 	}
 }
 
