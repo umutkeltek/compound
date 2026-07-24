@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -98,6 +99,7 @@ func TestLiveHookConsumesLifecycleDeliveryWithoutReadingArtifactBody(t *testing.
 			CursorKey: "hook-session",
 			Recipient: hookplan.DeliveryRecipient{
 				Actor: "codex:receiver", WorkID: item.ID, RunAttemptID: runAttemptID,
+				PolicyRefs: []string{decision.ID},
 			},
 			Trigger: hookplan.DeliveryTriggerInterrupt,
 		},
@@ -259,9 +261,12 @@ func TestOverBudgetInterruptHoldsPreToolUseExecution(t *testing.T) {
 		Hook: "pre-tool-use", Harness: "codex", Live: true, WorkID: item.ID, Action: &toolAction,
 		CoordinationDelivery: &CoordinationDeliveryInput{
 			CursorKey: "interrupt-overflow",
-			Recipient: hookplan.DeliveryRecipient{Actor: actor, WorkID: item.ID, RunAttemptID: runAttemptID},
-			Trigger:   hookplan.DeliveryTriggerInterrupt,
-			Budget:    &hookplan.DeliveryBudget{MaxCards: 1, MaxBytes: 4096, MaxEstimatedTokens: 1, MaxItems: 1},
+			Recipient: hookplan.DeliveryRecipient{
+				Actor: actor, WorkID: item.ID, RunAttemptID: runAttemptID,
+				PolicyRefs: []string{decision.ID},
+			},
+			Trigger: hookplan.DeliveryTriggerInterrupt,
+			Budget:  &hookplan.DeliveryBudget{MaxCards: 1, MaxBytes: 4096, MaxEstimatedTokens: 1, MaxItems: 1},
 		},
 	}, Deps{
 		Registry: harness.DefaultRegistry(), HomePath: homePath, Store: store,
@@ -375,6 +380,105 @@ func TestHookDeliveryPublicationFaultsLeaveInterruptRetryableExactlyOnce(t *test
 	}
 }
 
+func TestCorruptCoordinationReplayHoldsPreToolUseUntilRepairThenDeliversOnce(t *testing.T) {
+	testCase := newHookInterruptCase(t, "corrupt-replay")
+	events, err := eventstore.Open(testCase.homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentinel := testCase.event
+	sentinel.ID = "wco_ffffffffffffffff"
+	sentinel.IdempotencyKey = "corrupt-replay-sentinel"
+	if _, err := events.PutJSON(sentinel.ID, sentinel, " "); err != nil {
+		t.Fatal(err)
+	}
+	segmentPath, original := eventSegmentContaining(t, testCase.homePath, testCase.event.ID)
+	corruptID := "wcx_" + strings.TrimPrefix(testCase.event.ID, "wco_")
+	corrupted := bytes.Replace(original, []byte(testCase.event.ID), []byte(corruptID), 1)
+	if bytes.Equal(corrupted, original) {
+		t.Fatal("test did not locate collaboration event in canonical segment")
+	}
+	if err := os.WriteFile(segmentPath, corrupted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	integrityHold, err := Run(testCase.fixture, Deps{
+		Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
+		Policy: policy.DefaultConfig(),
+	}, testCase.now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if integrityHold.Event.Status != "blocked" || integrityHold.CoordinationDelivery == nil ||
+		!integrityHold.CoordinationDelivery.FailedClosed ||
+		!integrityHold.CoordinationDelivery.ExecutionHeld ||
+		integrityHold.CoordinationDelivery.Native != nil ||
+		!strings.Contains(integrityHold.CoordinationDelivery.DegradedReason, "replay integrity") {
+		t.Fatalf("corrupt replay did not fail closed before mutation: event=%+v delivery=%+v",
+			integrityHold.Event, integrityHold.CoordinationDelivery)
+	}
+
+	if err := os.WriteFile(segmentPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := Run(testCase.fixture, Deps{
+		Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
+		Policy: policy.DefaultConfig(),
+	}, testCase.now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.Event.Status != "blocked" || retry.CoordinationDelivery == nil ||
+		retry.CoordinationDelivery.Native == nil ||
+		!strings.Contains(retry.ContextOutput, testCase.event.ID) {
+		t.Fatalf("repaired interrupt was not retried: event=%+v delivery=%+v",
+			retry.Event, retry.CoordinationDelivery)
+	}
+
+	onceMore, err := Run(testCase.fixture, Deps{
+		Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
+		Policy: policy.DefaultConfig(),
+	}, testCase.now.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onceMore.CoordinationDelivery == nil || onceMore.CoordinationDelivery.Native != nil ||
+		onceMore.CoordinationDelivery.DeliveredBytes != 0 {
+		t.Fatalf("repaired interrupt delivered more than once: %+v", onceMore.CoordinationDelivery)
+	}
+}
+
+func eventSegmentContaining(t *testing.T, homePath, eventID string) (string, []byte) {
+	t.Helper()
+	var foundPath string
+	var foundBody []byte
+	err := filepath.WalkDir(filepath.Join(homePath, "events", "segments"), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || foundPath != "" {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(body, []byte(eventID)) &&
+			bytes.Contains(body, []byte(work.CollaborationSchemaVersion)) {
+			foundPath = path
+			foundBody = append([]byte{}, body...)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if foundPath == "" {
+		t.Fatalf("canonical segment for %s not found", eventID)
+	}
+	return foundPath, foundBody
+}
+
 type hookInterruptCase struct {
 	homePath string
 	store    *work.Store
@@ -454,6 +558,7 @@ func newHookInterruptCase(t *testing.T, key string) hookInterruptCase {
 				CursorKey: "interrupt-" + key,
 				Recipient: hookplan.DeliveryRecipient{
 					Actor: actor, WorkID: item.ID, RunAttemptID: runAttemptID,
+					PolicyRefs: []string{decision.ID},
 				},
 				Trigger: hookplan.DeliveryTriggerInterrupt,
 			},

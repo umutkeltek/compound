@@ -17,6 +17,7 @@ import (
 	"compound/internal/hook"
 	"compound/internal/hookplan"
 	"compound/internal/policy"
+	"compound/internal/work"
 )
 
 const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude-code|claude-zai|codex|opencode> [--parity-log <dir>]"
@@ -109,12 +110,16 @@ type liveHookParityRecord struct {
 }
 
 func loadHookFixture(parsed hookCommandArgs, now time.Time) (hook.Fixture, error) {
+	return loadHookFixtureForHome(parsed, now, "")
+}
+
+func loadHookFixtureForHome(parsed hookCommandArgs, now time.Time, homePath string) (hook.Fixture, error) {
 	if parsed.Live {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return hook.Fixture{}, err
 		}
-		return liveHookFixture(parsed, data, now)
+		return liveHookFixtureForHome(parsed, data, now, homePath)
 	}
 	data, err := os.ReadFile(parsed.FixturePath)
 	if err != nil {
@@ -129,6 +134,10 @@ func loadHookFixture(parsed hookCommandArgs, now time.Time) (hook.Fixture, error
 }
 
 func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.Fixture, error) {
+	return liveHookFixtureForHome(parsed, data, now, "")
+}
+
+func liveHookFixtureForHome(parsed hookCommandArgs, data []byte, now time.Time, homePath string) (hook.Fixture, error) {
 	var in claudeLiveHookInput
 	if err := json.Unmarshal(data, &in); err != nil {
 		return hook.Fixture{}, fmt.Errorf("parse live hook stdin: %w", err)
@@ -147,7 +156,16 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 	if fx.Cwd == "" {
 		fx.Cwd = os.Getenv("CLAUDE_PROJECT_DIR")
 	}
-	fx.CoordinationDelivery = liveCoordinationDeliveryInput(fx.Harness, parsed.HookName, in)
+	coordination, err := resolveLiveCoordinationDelivery(homePath, fx.Harness, parsed.HookName, in)
+	if err != nil {
+		return hook.Fixture{}, err
+	}
+	if coordination != nil {
+		fx.CoordinationDelivery = coordination
+		fx.WorkID = coordination.Recipient.WorkID
+		in.WorkID = coordination.Recipient.WorkID
+		in.CompoundWorkID = ""
+	}
 	switch parsed.HookName {
 	case "pre-tool-use":
 		actions, err := liveActionIntents(fx.Harness, in, now)
@@ -185,12 +203,11 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 	return fx, nil
 }
 
-func liveCoordinationDeliveryInput(harnessName, hookName string, in claudeLiveHookInput) *hook.CoordinationDeliveryInput {
+func resolveLiveCoordinationDelivery(homePath, harnessName, hookName string, in claudeLiveHookInput) (*hook.CoordinationDeliveryInput, error) {
+	homePath = strings.TrimSpace(homePath)
 	sessionID := strings.TrimSpace(in.SessionID)
-	workID := firstNonEmpty(in.WorkID, in.CompoundWorkID)
-	runAttemptID := strings.TrimSpace(in.RunAttemptID)
-	if sessionID == "" && workID == "" {
-		return nil
+	if homePath == "" || sessionID == "" || strings.TrimSpace(in.Cwd) == "" {
+		return nil, nil
 	}
 	var trigger string
 	switch hookName {
@@ -199,30 +216,42 @@ func liveCoordinationDeliveryInput(harnessName, hookName string, in claudeLiveHo
 	case "pre-tool-use":
 		trigger = hookplan.DeliveryTriggerInterrupt
 	default:
-		return nil
+		return nil, nil
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	resolved, ok, err := store.ResolveCollaborationRecipient(work.CollaborationRecipientQuery{
+		Harness: harnessName, SessionID: sessionID, Cwd: in.Cwd,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
 	}
 	boundarySource := liveCoordinationBoundarySource(hookName, in.Source)
 	cursorKey := strings.Join([]string{
 		"harness=" + normalizeLiveHarness(harnessName),
 		"session=" + sessionID,
-		"work=" + workID,
-		"run_attempt=" + runAttemptID,
+		"work=" + resolved.WorkID,
 	}, "|")
 	return &hook.CoordinationDeliveryInput{
 		CursorKey: cursorKey,
 		Recipient: hookplan.DeliveryRecipient{
-			Actor:          firstNonEmpty(in.Actor, in.CompoundActor),
-			WorkID:         workID,
-			RunAttemptID:   runAttemptID,
-			ScopeRefs:      normalizeLiveRefs(in.ScopeRefs),
-			DependencyRefs: normalizeLiveRefs(in.DependencyRefs),
-			PolicyRefs:     normalizeLiveRefs(in.PolicyRefs),
-			BaseRevisions:  normalizeLiveRefs(in.BaseRevisions),
-			ResourceRefs:   normalizeLiveRefs(in.ResourceRefs),
+			Actor:          resolved.Actor,
+			WorkID:         resolved.WorkID,
+			RunAttemptID:   resolved.RunAttemptID,
+			ScopeRefs:      normalizeLiveRefs(resolved.ScopeRefs),
+			DependencyRefs: normalizeLiveRefs(resolved.DependencyRefs),
+			PolicyRefs:     normalizeLiveRefs(resolved.PolicyRefs),
+			BaseRevisions:  normalizeLiveRefs(resolved.BaseRevisions),
+			ResourceRefs:   normalizeLiveRefs(resolved.ResourceRefs),
 		},
 		Trigger:        trigger,
 		BoundarySource: boundarySource,
-	}
+	}, nil
 }
 
 func liveCoordinationBoundarySource(hookName, nativeSource string) string {

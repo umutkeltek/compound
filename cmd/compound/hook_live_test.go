@@ -1204,36 +1204,48 @@ func TestLiveCoordinationBoundaryMappingCarriesPromptResumeCompactAndPreToolUse(
 	tests := []struct {
 		name        string
 		hook        string
-		input       string
 		wantSource  string
 		wantTrigger string
 	}{
 		{
 			name: "prompt", hook: "user-prompt-submit",
-			input:      `{"session_id":"session-boundary","work_id":"work_boundary","prompt":"continue"}`,
 			wantSource: "prompt", wantTrigger: hookplan.DeliveryTriggerBoundary,
 		},
 		{
 			name: "resume", hook: "session-start",
-			input:      `{"session_id":"session-boundary","work_id":"work_boundary","source":"resume"}`,
 			wantSource: "resume", wantTrigger: hookplan.DeliveryTriggerBoundary,
 		},
 		{
 			name: "compact", hook: "session-start",
-			input:      `{"session_id":"session-boundary","work_id":"work_boundary","source":"compact"}`,
 			wantSource: "compact", wantTrigger: hookplan.DeliveryTriggerBoundary,
 		},
 		{
 			name: "pre_tool_use", hook: "pre-tool-use",
-			input:      `{"session_id":"session-boundary","work_id":"work_boundary","cwd":"/repo/project","tool_name":"Write","tool_input":{"file_path":"README.md"}}`,
 			wantSource: "pre_tool_use", wantTrigger: hookplan.DeliveryTriggerInterrupt,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fixture, err := liveHookFixture(hookCommandArgs{
+			testCase := newNativeCoordinationCase(t, "codex")
+			payload := fmt.Sprintf(
+				`{"session_id":"session-boundary","cwd":%q,"source":%q}`,
+				testCase.workspace, tt.wantSource,
+			)
+			switch tt.hook {
+			case "user-prompt-submit":
+				payload = fmt.Sprintf(
+					`{"session_id":"session-boundary","cwd":%q,"prompt":"continue"}`,
+					testCase.workspace,
+				)
+			case "pre-tool-use":
+				payload = fmt.Sprintf(
+					`{"session_id":"session-boundary","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q}}`,
+					testCase.workspace, filepath.Join(testCase.workspace, "README.md"),
+				)
+			}
+			fixture, err := liveHookFixtureForHome(hookCommandArgs{
 				HookName: tt.hook, Harness: "codex", Live: true,
-			}, []byte(tt.input), cliTestNow)
+			}, []byte(payload), cliTestNow, testCase.homePath)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1281,29 +1293,24 @@ func TestNativePreToolAdaptersDenyOrHoldEligibleCoordinationInterruptBeforeMutat
 }
 
 func TestLiveHookFixtureBuildsStableCoordinationDeliveryRecipient(t *testing.T) {
-	input := []byte(`{
-		"session_id":"session-delivery",
-		"work_id":"work_delivery",
-		"run_attempt_id":"ratt_20260724T120000Z_abcdef12",
-		"cwd":"/repo/project",
-		"tool_name":"Write",
-		"tool_input":{"file_path":"README.md"},
-		"actor":"codex:receiver",
-		"scope_refs":["scope:hookplan"],
-		"dependency_refs":["dependency:stream"],
-		"policy_refs":["policy:delivery"],
-		"base_revisions":["git:base"],
-		"resource_refs":["resource:proof-battery"]
-	}`)
-	boundary, err := liveHookFixture(hookCommandArgs{
+	testCase := newNativeCoordinationCase(t, "codex")
+	input := []byte(fmt.Sprintf(
+		`{"session_id":"session-delivery","cwd":%q,"prompt":"continue"}`,
+		testCase.workspace,
+	))
+	interruptInput := []byte(fmt.Sprintf(
+		`{"session_id":"session-delivery","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q}}`,
+		testCase.workspace, filepath.Join(testCase.workspace, "README.md"),
+	))
+	boundary, err := liveHookFixtureForHome(hookCommandArgs{
 		HookName: "user-prompt-submit", Harness: "codex", Live: true,
-	}, input, cliTestNow)
+	}, input, cliTestNow, testCase.homePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	interrupt, err := liveHookFixture(hookCommandArgs{
+	interrupt, err := liveHookFixtureForHome(hookCommandArgs{
 		HookName: "pre-tool-use", Harness: "codex", Live: true,
-	}, input, cliTestNow)
+	}, interruptInput, cliTestNow, testCase.homePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1312,19 +1319,18 @@ func TestLiveHookFixtureBuildsStableCoordinationDeliveryRecipient(t *testing.T) 
 	}
 	if boundary.CoordinationDelivery.CursorKey == "" ||
 		boundary.CoordinationDelivery.CursorKey != interrupt.CoordinationDelivery.CursorKey ||
-		!strings.Contains(boundary.CoordinationDelivery.CursorKey, "run_attempt=ratt_20260724T120000Z_abcdef12") ||
+		strings.Contains(boundary.CoordinationDelivery.CursorKey, "run_attempt=") ||
 		boundary.CoordinationDelivery.Trigger != hookplan.DeliveryTriggerBoundary ||
 		interrupt.CoordinationDelivery.Trigger != hookplan.DeliveryTriggerInterrupt {
 		t.Fatalf("delivery cursor/trigger boundary=%+v interrupt=%+v", boundary.CoordinationDelivery, interrupt.CoordinationDelivery)
 	}
 	got := boundary.CoordinationDelivery.Recipient
-	if got.Actor != "codex:receiver" || got.WorkID != "work_delivery" ||
-		got.RunAttemptID != "ratt_20260724T120000Z_abcdef12" ||
-		strings.Join(got.ScopeRefs, ",") != "scope:hookplan" ||
-		strings.Join(got.DependencyRefs, ",") != "dependency:stream" ||
-		strings.Join(got.PolicyRefs, ",") != "policy:delivery" ||
-		strings.Join(got.BaseRevisions, ",") != "git:base" ||
-		strings.Join(got.ResourceRefs, ",") != "resource:proof-battery" {
+	if got.Actor != testCase.receiver || got.WorkID != testCase.workID ||
+		got.RunAttemptID != testCase.attempt.ID ||
+		!strings.Contains(strings.Join(got.ScopeRefs, ","), "scope:hook-delivery") ||
+		!strings.Contains(strings.Join(got.DependencyRefs, ","), "dependency:stream") ||
+		!strings.Contains(strings.Join(got.PolicyRefs, ","), "pol_native_interrupt") ||
+		!strings.Contains(strings.Join(got.ResourceRefs, ","), "resource:proof") {
 		t.Fatalf("delivery recipient = %+v", got)
 	}
 }

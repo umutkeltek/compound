@@ -220,12 +220,14 @@ Governed collaboration delivery is one LifecyclePlan intention family, not a sec
 canonical collaboration replay stays in Compound custody. `internal/hookplan` evaluates each event against the
 receiving actor's work, claimed scope, dependency, policy, base revision, and reserved-resource refs, then records
 one of four dispositions: `silent_state`, `next_boundary`, `interrupt`, or `human_attention`. Relevant compatible
-events coalesce into one bounded structured card containing only state deltas and artifact refs. Per-recipient
-cursors and delivered-event state make retries idempotent; interrupt-class intentions bypass the next-boundary
-queue. Codex and Claude-family adapters compile the same card meaning into native presentation, while hooks merely
-pass recipient state and return the compiled bytes. Artifact bodies are fetched only by an explicit retrieval
-call. An acknowledgement is absent unless it would itself change governed state. Clocks may drive heartbeat,
-debounce, TTL, and stale sweeping, but never decide semantic relevance or delivery.
+`next_boundary` and `interrupt` events coalesce into one bounded structured agent card containing only state deltas
+and artifact refs. `human_attention` is operator-projection state only: a bounded, level-triggered, read-only fold
+returns current unresolved event/work/delta/authority/artifact refs and never compiles native model context.
+Per-recipient cursors and delivered semantic state make agent retries idempotent; interrupt-class intentions bypass
+the next-boundary queue. Codex and Claude-family adapters compile the same card meaning into native presentation,
+while hooks merely pass recipient state and return the compiled bytes. Artifact bodies are fetched only by an
+explicit retrieval call. An acknowledgement is absent unless it would itself change governed state. Clocks may
+drive heartbeat, debounce, TTL, and stale sweeping, but never decide semantic relevance or delivery.
 
 Compaction, resume, delegation, and harness replacement are normal lifecycle branches. The working object and
 remaining envelope are persisted before a lossy boundary, restored from owned refs afterward, and recompiled for

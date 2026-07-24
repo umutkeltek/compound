@@ -158,6 +158,63 @@ func LoadOperatorStateFromHome(homePath string) (OperatorState, error) {
 	return LoadOperatorState(OperatorStatePath(homePath))
 }
 
+// CurrentOperatorAuthorityUnresolved is the read seam for governed consumers
+// that need the operator-state owner's current answer for one exact policy
+// gate. Historical hold/deny decisions are immutable evidence; only a matching
+// row in the current blocked projection establishes that the authority question
+// remains unresolved now.
+func CurrentOperatorAuthorityUnresolved(homePath, workID, actionID, decisionID string) (bool, error) {
+	workID = strings.TrimSpace(workID)
+	actionID = strings.TrimSpace(actionID)
+	decisionID = strings.TrimSpace(decisionID)
+	if workID == "" || actionID == "" || decisionID == "" {
+		return false, fmt.Errorf("current operator authority requires exact work, action, and policy decision")
+	}
+	state, err := LoadOperatorStateFromHome(homePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, blocked := range state.Blocked {
+		if operatorStateString(blocked, "work_id") != workID ||
+			operatorStateString(blocked, "action_intent_id") != actionID ||
+			operatorStateString(blocked, "policy_decision_id") != decisionID {
+			continue
+		}
+		switch strings.ToLower(firstOperatorStateString(blocked, "state", "status", "resolution")) {
+		case "resolved", "cleared", "approved", "allowed", "completed", "dismissed":
+			return false, nil
+		default:
+			return true, nil
+		}
+	}
+	for _, ref := range state.NeedsMe {
+		if strings.TrimSpace(ref) == decisionID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func operatorStateString(row map[string]any, key string) string {
+	value, ok := row[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func firstOperatorStateString(row map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := operatorStateString(row, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func OperatorStatePath(homePath string) string {
 	return filepath.Join(homePath, "registries", operatorStateFile)
 }

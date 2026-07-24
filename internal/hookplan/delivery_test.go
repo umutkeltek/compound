@@ -2,9 +2,11 @@ package hookplan
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/home"
+	"compound/internal/policy"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -154,6 +157,23 @@ func (fixture *deliveryFixture) recordHumanAttentionEvidence(t *testing.T) strin
 		t.Fatal(err)
 	}
 	if _, err := events.PutJSON(decision.ID, decision, "  "); err != nil {
+		t.Fatal(err)
+	}
+	state := policy.OperatorState{
+		AutonomyLever: policy.OperatorAutonomyLever{Level: "L2"},
+		Blocked: []map[string]any{{
+			"work_id": fixture.work, "action_intent_id": action.ID,
+			"policy_decision_id": decision.ID, "state": "unresolved",
+		}},
+	}
+	body, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(policy.OperatorStatePath(fixture.home)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policy.OperatorStatePath(fixture.home), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return decision.ID
@@ -429,16 +449,19 @@ func TestLegacyEventIsSilentOnFreshCursor(t *testing.T) {
 
 func TestSemanticDedupSurvivesCursorReset(t *testing.T) {
 	fixture := newDeliveryFixture(t)
-	fixture.record(t, "cursor-reset", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{
+	event := fixture.record(t, "cursor-reset", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{
 		WorkIDs: []string{fixture.work},
 	})
 	request := DeliveryRequest{
 		HomePath:  fixture.home,
 		Harness:   "codex",
 		CursorKey: "cursor-reset-session",
-		Recipient: DeliveryRecipient{WorkID: fixture.work, RunAttemptID: fixture.runAttemptID},
-		Trigger:   DeliveryTriggerInterrupt,
-		Budget:    wideDeliveryBudget(),
+		Recipient: DeliveryRecipient{
+			WorkID: fixture.work, RunAttemptID: fixture.runAttemptID,
+			PolicyRefs: event.Affects.PolicyRefs,
+		},
+		Trigger: DeliveryTriggerInterrupt,
+		Budget:  wideDeliveryBudget(),
 	}
 	first, err := DeliverCoordination(request)
 	if err != nil {
@@ -535,6 +558,7 @@ func TestRecipientRevisionEvolutionReevaluatesScopeDependencyAndRun(t *testing.T
 			HomePath: fixture.home, Harness: "codex", CursorKey: "run-evolution",
 			Recipient: DeliveryRecipient{
 				Actor: fixture.actor, WorkID: fixture.work, RunAttemptID: fixture.runAttemptID,
+				PolicyRefs: event.Affects.PolicyRefs,
 			},
 			Trigger: DeliveryTriggerInterrupt, Budget: wideDeliveryBudget(),
 		}
@@ -564,9 +588,12 @@ func TestInterruptBypassesNextBoundaryQueue(t *testing.T) {
 		HomePath:  fixture.home,
 		Harness:   "codex",
 		CursorKey: "interrupt-session",
-		Recipient: DeliveryRecipient{WorkID: fixture.work, RunAttemptID: fixture.runAttemptID},
-		Trigger:   DeliveryTriggerInterrupt,
-		Budget:    wideDeliveryBudget(),
+		Recipient: DeliveryRecipient{
+			WorkID: fixture.work, RunAttemptID: fixture.runAttemptID,
+			PolicyRefs: interrupt.Affects.PolicyRefs,
+		},
+		Trigger: DeliveryTriggerInterrupt,
+		Budget:  wideDeliveryBudget(),
 	}
 
 	immediate, err := DeliverCoordination(request)
@@ -603,6 +630,7 @@ func TestInterruptCannotTerminalizeAtNextBoundaryBeforePreToolUse(t *testing.T) 
 		HomePath: fixture.home, Harness: "codex", CursorKey: "interrupt-pretool-only",
 		Recipient: DeliveryRecipient{
 			Actor: fixture.actor, WorkID: fixture.work, RunAttemptID: fixture.runAttemptID,
+			PolicyRefs: interrupt.Affects.PolicyRefs,
 		},
 		Trigger: DeliveryTriggerBoundary, Budget: wideDeliveryBudget(),
 	}
@@ -654,6 +682,7 @@ func TestDeliveryClassEscalationChangesSemanticRevisionAndHoldsInterrupt(t *test
 	interrupt := fixture.recordDelta(
 		t, "interrupt-after-escalation", work.CollaborationDeliveryInterrupt, delta, affects,
 	)
+	request.Recipient.PolicyRefs = interrupt.Affects.PolicyRefs
 	request.Trigger = DeliveryTriggerInterrupt
 	escalated, err := DeliverCoordination(request)
 	if err != nil {
@@ -679,7 +708,7 @@ func TestInterruptRequiresExactRecipientRunAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.record(t, "exact-attempt", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{
+	event := fixture.record(t, "exact-attempt", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{
 		WorkIDs: []string{fixture.work}, RunAttemptIDs: []string{addressed.ID},
 	})
 	base := DeliveryRequest{
@@ -690,6 +719,7 @@ func TestInterruptRequiresExactRecipientRunAttempt(t *testing.T) {
 	addressedRequest.CursorKey = "attempt-addressed"
 	addressedRequest.Recipient = DeliveryRecipient{
 		Actor: "codex:receiver", WorkID: fixture.work, RunAttemptID: addressed.ID,
+		PolicyRefs: event.Affects.PolicyRefs,
 	}
 	got, err := DeliverCoordination(addressedRequest)
 	if err != nil {
@@ -703,6 +733,7 @@ func TestInterruptRequiresExactRecipientRunAttempt(t *testing.T) {
 	otherRequest.CursorKey = "attempt-other"
 	otherRequest.Recipient = DeliveryRecipient{
 		Actor: "codex:receiver", WorkID: fixture.work, RunAttemptID: other.ID,
+		PolicyRefs: event.Affects.PolicyRefs,
 	}
 	notAddressed, err := DeliverCoordination(otherRequest)
 	if err != nil {
@@ -731,10 +762,63 @@ func TestActorMatchAloneDoesNotEstablishRelevance(t *testing.T) {
 	}
 }
 
-func TestSilentStateAndHumanAttentionHaveDistinctSemantics(t *testing.T) {
+func TestExplicitRelevanceDimensionsNarrowConjunctively(t *testing.T) {
+	event := work.CollaborationEvent{
+		WorkID:        "work_room",
+		TargetActor:   "codex:receiver",
+		DeliveryClass: work.CollaborationDeliveryNextBoundary,
+		Affects: &work.CollaborationAffects{
+			Actors:         []string{"codex:receiver"},
+			WorkIDs:        []string{"work_recipient"},
+			RunAttemptIDs:  []string{"ratt_20260724T120000Z_addressed"},
+			ScopeRefs:      []string{"scope:hookplan"},
+			DependencyRefs: []string{"dependency:stream"},
+			PolicyRefs:     []string{"policy:delivery"},
+			BaseRevisions:  []string{"git:base"},
+			ResourceRefs:   []string{"resource:proof"},
+		},
+	}
+	recipient := DeliveryRecipient{
+		Actor:          "codex:receiver",
+		WorkID:         "work_recipient",
+		RunAttemptID:   "ratt_20260724T120000Z_addressed",
+		ScopeRefs:      []string{"scope:hookplan"},
+		DependencyRefs: []string{"dependency:stream"},
+		PolicyRefs:     []string{"policy:delivery"},
+		BaseRevisions:  []string{"git:base"},
+		ResourceRefs:   []string{"resource:proof"},
+	}
+	if !deliveryRelevant(event, recipient) {
+		t.Fatal("recipient matching every explicit relevance dimension was rejected")
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*DeliveryRecipient)
+	}{
+		{name: "work", mutate: func(got *DeliveryRecipient) { got.WorkID = "work_sibling" }},
+		{name: "run_attempt", mutate: func(got *DeliveryRecipient) { got.RunAttemptID = "ratt_20260724T120000Z_sibling" }},
+		{name: "scope", mutate: func(got *DeliveryRecipient) { got.ScopeRefs = []string{"scope:other"} }},
+		{name: "dependency", mutate: func(got *DeliveryRecipient) { got.DependencyRefs = []string{"dependency:other"} }},
+		{name: "policy", mutate: func(got *DeliveryRecipient) { got.PolicyRefs = []string{"policy:other"} }},
+		{name: "base", mutate: func(got *DeliveryRecipient) { got.BaseRevisions = []string{"git:other"} }},
+		{name: "resource", mutate: func(got *DeliveryRecipient) { got.ResourceRefs = []string{"resource:other"} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := recipient
+			tt.mutate(&got)
+			if deliveryRelevant(event, got) {
+				t.Fatalf("same room/actor bypassed mismatched explicit %s dimension", tt.name)
+			}
+		})
+	}
+}
+
+func TestSilentStateAndHumanAttentionAreContextSilentForDistinctReasons(t *testing.T) {
 	fixture := newDeliveryFixture(t)
 	affects := work.CollaborationAffects{ResourceRefs: []string{"resource:proof-battery"}}
-	fixture.record(t, "silent", work.CollaborationDeliverySilentState, affects)
+	silent := fixture.record(t, "silent", work.CollaborationDeliverySilentState, affects)
 	human := fixture.record(t, "human", work.CollaborationDeliveryHumanAttention, affects)
 
 	report, err := DeliverCoordination(DeliveryRequest{
@@ -742,8 +826,7 @@ func TestSilentStateAndHumanAttentionHaveDistinctSemantics(t *testing.T) {
 		Harness:   "claude-code",
 		CursorKey: "class-session",
 		Recipient: DeliveryRecipient{
-			OperatorStateRef: "compound://registries/operator-state",
-			ResourceRefs:     []string{"resource:proof-battery"},
+			ResourceRefs: []string{"resource:proof-battery"},
 		},
 		Trigger: DeliveryTriggerInterrupt,
 		Budget:  wideDeliveryBudget(),
@@ -751,13 +834,17 @@ func TestSilentStateAndHumanAttentionHaveDistinctSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.SilentEvents != 1 || len(report.Cards) != 1 ||
-		len(report.Cards[0].Items) != 1 || report.Cards[0].Items[0].EventID != human.ID ||
-		!report.Cards[0].RequiresHuman || report.AcknowledgementMessages != 0 {
-		t.Fatalf("delivery classes collapsed: %+v", report)
+	if report.Native != nil || len(report.Cards) != 0 ||
+		report.DeliveredBytes != 0 || report.EstimatedDeliveredTokens != 0 ||
+		report.PendingEvents != 0 || report.AcknowledgementMessages != 0 {
+		t.Fatalf("context-silent delivery injected or queued model context: %+v", report)
 	}
-	if report.EstimatedDeliveredTokens > DeliveryClassBudgetHypotheses[work.CollaborationDeliveryHumanAttention].MaxEstimatedTokensPerCard {
-		t.Fatalf("human-attention card exceeded class hypothesis: %+v", report)
+	dispositions := map[string]string{}
+	for _, intention := range report.Plan.Intentions {
+		dispositions[intention.EventID] = intention.Disposition
+	}
+	if dispositions[silent.ID] != "silent_state" || dispositions[human.ID] != "operator_attention" {
+		t.Fatalf("context-silent classes lost their distinct semantic owners: %+v", report.Plan)
 	}
 }
 
@@ -779,6 +866,150 @@ func TestHumanAttentionDoesNotEnterOrdinaryAgentSteering(t *testing.T) {
 	}
 }
 
+func TestReadOperatorAttentionIsLevelTriggeredReferenceOnlyAndReadOnly(t *testing.T) {
+	fixture := newDeliveryFixture(t)
+	policyRef := fixture.recordHumanAttentionEvidence(t)
+	artifacts, err := home.NewArtifactStore(fixture.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyRef, err := artifacts.Put([]byte("targeted operator-only body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := fixture.store.RecordCollaboration(fixture.work, work.CollaborationInput{
+		Actor: fixture.actor, IdempotencyKey: "human-read-seam",
+		TargetActor: "claude:ordinary-agent", BodyRef: bodyRef,
+		DeliveryClass: work.CollaborationDeliveryHumanAttention,
+		Delta: work.CollaborationStateDelta{
+			Kind: "authority", SubjectRef: policyRef, Before: "pending", After: "unresolved",
+		},
+		Affects: work.CollaborationAffects{
+			WorkIDs:    []string{fixture.work},
+			PolicyRefs: []string{policyRef, policy.OperatorStateAuthorityRef},
+		},
+	}, fixture.now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	latestBodyRef, err := artifacts.Put([]byte("latest targeted operator-only body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := fixture.store.RecordCollaboration(fixture.work, work.CollaborationInput{
+		Actor: fixture.actor, IdempotencyKey: "human-read-seam-latest",
+		TargetActor: "codex:another-ordinary-agent", BodyRef: latestBodyRef,
+		DeliveryClass: work.CollaborationDeliveryHumanAttention,
+		Delta: work.CollaborationStateDelta{
+			Kind: "authority", SubjectRef: policyRef, Before: "pending", After: "unresolved",
+		},
+		Affects: work.CollaborationAffects{
+			WorkIDs:    []string{fixture.work},
+			PolicyRefs: []string{policyRef, policy.OperatorStateAuthorityRef},
+		},
+	}, fixture.now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := deliveryFileInventory(t, fixture.home)
+	projection, err := ReadOperatorAttention(OperatorAttentionRequest{
+		HomePath: fixture.home, MaxItems: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Items) != 1 ||
+		projection.Items[0].EventRef != recorded.Event.ID ||
+		projection.Items[0].EventRef == first.Event.ID ||
+		projection.Items[0].WorkRef != fixture.work ||
+		projection.Items[0].DeliveryClass != work.CollaborationDeliveryHumanAttention ||
+		!reflect.DeepEqual(projection.Items[0].Delta, work.CollaborationStateDelta{
+			Kind: "authority", SubjectRef: policyRef, Before: "pending", After: "unresolved",
+		}) ||
+		!reflect.DeepEqual(projection.Items[0].AuthorityRefs, []string{
+			policyRef, policy.OperatorStateAuthorityRef,
+		}) ||
+		!reflect.DeepEqual(projection.Items[0].ArtifactRefs, []string{latestBodyRef}) ||
+		projection.Items[0].SemanticRevision != collaborationStateRevision(recorded.Event) ||
+		projection.Items[0].CreatedAt == "" ||
+		projection.Total != 1 || projection.Truncated {
+		t.Fatalf("operator attention projection lost reference-only human meaning: %+v", projection)
+	}
+	repeated, err := ReadOperatorAttention(OperatorAttentionRequest{
+		HomePath: fixture.home, MaxItems: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(repeated, projection) {
+		t.Fatalf("level-triggered operator attention changed between reads:\nfirst=%+v\nsecond=%+v", projection, repeated)
+	}
+	after := deliveryFileInventory(t, fixture.home)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("operator attention read mutated Compound state:\nbefore=%v\nafter=%v", before, after)
+	}
+	body, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"native", "cursor", "session", "run_attempt", "actor",
+		"report_ref", "targeted operator-only body",
+	} {
+		if strings.Contains(strings.ToLower(string(body)), forbidden) {
+			t.Fatalf("operator projection exposed forbidden %q: %s", forbidden, body)
+		}
+	}
+
+	resolvedState := policy.OperatorState{
+		AutonomyLever: policy.OperatorAutonomyLever{Level: "L2"},
+		Blocked:       []map[string]any{},
+	}
+	resolvedBody, err := json.Marshal(resolvedState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policy.OperatorStatePath(fixture.home), resolvedBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ReadOperatorAttention(OperatorAttentionRequest{
+		HomePath: fixture.home, MaxItems: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved.Items) != 0 {
+		t.Fatalf("resolved operator authority remained in current projection: %+v", resolved)
+	}
+}
+
+func deliveryFileInventory(t *testing.T, homePath string) []string {
+	t.Helper()
+	var files []string
+	if err := filepath.WalkDir(homePath, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(homePath, path)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		files = append(files, fmt.Sprintf("%s:%d", rel, info.Size()))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(files)
+	return files
+}
+
 func TestArtifactBodiesAreRetrievedOnlyOnDemand(t *testing.T) {
 	fixture := newDeliveryFixture(t)
 	event := fixture.record(t, "artifact-demand", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{
@@ -798,9 +1029,12 @@ func TestArtifactBodiesAreRetrievedOnlyOnDemand(t *testing.T) {
 		HomePath:  fixture.home,
 		Harness:   "codex",
 		CursorKey: "artifact-session",
-		Recipient: DeliveryRecipient{WorkID: fixture.work, RunAttemptID: fixture.runAttemptID},
-		Trigger:   DeliveryTriggerInterrupt,
-		Budget:    wideDeliveryBudget(),
+		Recipient: DeliveryRecipient{
+			WorkID: fixture.work, RunAttemptID: fixture.runAttemptID,
+			PolicyRefs: event.Affects.PolicyRefs,
+		},
+		Trigger: DeliveryTriggerInterrupt,
+		Budget:  wideDeliveryBudget(),
 	})
 	if err != nil {
 		t.Fatalf("delivery eagerly retrieved artifact body: %v", err)
@@ -915,7 +1149,7 @@ func TestPerClassEstimatedTokenBudgetsAreExplicitHypotheses(t *testing.T) {
 		work.CollaborationDeliverySilentState:    {MaxEstimatedTokensPerItem: 0, MaxEstimatedTokensPerCard: 0},
 		work.CollaborationDeliveryNextBoundary:   {MaxEstimatedTokensPerItem: 120, MaxEstimatedTokensPerCard: 240},
 		work.CollaborationDeliveryInterrupt:      {MaxEstimatedTokensPerItem: 80, MaxEstimatedTokensPerCard: 80},
-		work.CollaborationDeliveryHumanAttention: {MaxEstimatedTokensPerItem: 180, MaxEstimatedTokensPerCard: 180},
+		work.CollaborationDeliveryHumanAttention: {MaxEstimatedTokensPerItem: 0, MaxEstimatedTokensPerCard: 0},
 	}
 	if !reflect.DeepEqual(DeliveryClassBudgetHypotheses, want) {
 		t.Fatalf("delivery class budget hypotheses = %+v, want %+v", DeliveryClassBudgetHypotheses, want)

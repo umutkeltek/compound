@@ -25,6 +25,7 @@ const (
 	DeliveryStateSchemaVersion       = "compound.coordination_delivery_state.v0.2"
 	DeliveryReportSchemaVersion      = "compound.coordination_delivery_report.v0.1"
 	DeliveryMeasurementSchemaVersion = "compound.coordination_delivery_measurement.v0.1"
+	OperatorAttentionSchemaVersion   = "compound.operator_attention_projection.v0.1"
 )
 
 const (
@@ -57,21 +58,20 @@ var DeliveryClassBudgetHypotheses = map[string]DeliveryClassBudget{
 	work.CollaborationDeliverySilentState:    {MaxEstimatedTokensPerItem: 0, MaxEstimatedTokensPerCard: 0},
 	work.CollaborationDeliveryNextBoundary:   {MaxEstimatedTokensPerItem: 120, MaxEstimatedTokensPerCard: 240},
 	work.CollaborationDeliveryInterrupt:      {MaxEstimatedTokensPerItem: 80, MaxEstimatedTokensPerCard: 80},
-	work.CollaborationDeliveryHumanAttention: {MaxEstimatedTokensPerItem: 180, MaxEstimatedTokensPerCard: 180},
+	work.CollaborationDeliveryHumanAttention: {MaxEstimatedTokensPerItem: 0, MaxEstimatedTokensPerCard: 0},
 }
 
 // DeliveryRecipient is the live context against which persisted event
 // relevance is evaluated. Every coordinate is reference-only.
 type DeliveryRecipient struct {
-	Actor            string   `json:"actor,omitempty"`
-	WorkID           string   `json:"work_id,omitempty"`
-	RunAttemptID     string   `json:"run_attempt_id,omitempty"`
-	OperatorStateRef string   `json:"operator_state_ref,omitempty"`
-	ScopeRefs        []string `json:"scope_refs,omitempty"`
-	DependencyRefs   []string `json:"dependency_refs,omitempty"`
-	PolicyRefs       []string `json:"policy_refs,omitempty"`
-	BaseRevisions    []string `json:"base_revisions,omitempty"`
-	ResourceRefs     []string `json:"resource_refs,omitempty"`
+	Actor          string   `json:"actor,omitempty"`
+	WorkID         string   `json:"work_id,omitempty"`
+	RunAttemptID   string   `json:"run_attempt_id,omitempty"`
+	ScopeRefs      []string `json:"scope_refs,omitempty"`
+	DependencyRefs []string `json:"dependency_refs,omitempty"`
+	PolicyRefs     []string `json:"policy_refs,omitempty"`
+	BaseRevisions  []string `json:"base_revisions,omitempty"`
+	ResourceRefs   []string `json:"resource_refs,omitempty"`
 }
 
 type DeliveryRequest struct {
@@ -84,6 +84,36 @@ type DeliveryRequest struct {
 	Budget              *DeliveryBudget
 	BeforeReportPersist func() error
 	BeforeStatePersist  func() error
+}
+
+// OperatorAttentionRequest is the bounded production read seam for current
+// operator-owned attention. It deliberately takes no native hook payload.
+type OperatorAttentionRequest struct {
+	HomePath string
+	MaxItems int
+}
+
+// OperatorAttentionProjection is bounded current operator state, not a native
+// agent delivery report.
+type OperatorAttentionProjection struct {
+	SchemaVersion string                  `json:"schema_version"`
+	Revision      string                  `json:"revision"`
+	Total         int                     `json:"total"`
+	Truncated     bool                    `json:"truncated,omitempty"`
+	Items         []OperatorAttentionItem `json:"items"`
+}
+
+// OperatorAttentionItem carries reference-only governed meaning; artifact
+// bodies remain behind the explicit collaboration body door.
+type OperatorAttentionItem struct {
+	EventRef         string                       `json:"event_ref"`
+	WorkRef          string                       `json:"work_ref"`
+	DeliveryClass    string                       `json:"delivery_class"`
+	Delta            work.CollaborationStateDelta `json:"delta"`
+	AuthorityRefs    []string                     `json:"authority_refs"`
+	ArtifactRefs     []string                     `json:"artifact_refs"`
+	SemanticRevision string                       `json:"semantic_revision"`
+	CreatedAt        string                       `json:"created_at"`
 }
 
 // LifecyclePlan is the semantic owner. Native hook presentation is compiled
@@ -197,6 +227,120 @@ func DeliverCoordinationWithPublisher(request DeliveryRequest, publish DeliveryP
 	return deliverCoordination(request, publish)
 }
 
+// ReadOperatorAttention folds current unresolved human_attention from replay
+// zero. It is level-triggered and read-only: no delivery cursor, report,
+// acknowledgement, or native context is created.
+func ReadOperatorAttention(request OperatorAttentionRequest) (OperatorAttentionProjection, error) {
+	request.HomePath = strings.TrimSpace(request.HomePath)
+	if request.HomePath == "" {
+		return OperatorAttentionProjection{}, fmt.Errorf("operator attention requires home")
+	}
+	if request.MaxItems < 0 {
+		return OperatorAttentionProjection{}, fmt.Errorf("operator attention max items cannot be negative")
+	}
+	const (
+		defaultMaxItems = 32
+		hardMaxItems    = 64
+	)
+	if request.MaxItems == 0 {
+		request.MaxItems = defaultMaxItems
+	}
+	if request.MaxItems > hardMaxItems {
+		request.MaxItems = hardMaxItems
+	}
+
+	frames, _, err := stream.ReadAvailable(request.HomePath, 0)
+	if err != nil {
+		return OperatorAttentionProjection{}, err
+	}
+	store, err := work.Open(request.HomePath)
+	if err != nil {
+		return OperatorAttentionProjection{}, err
+	}
+
+	current := map[string]OperatorAttentionItem{}
+	for _, frame := range frames {
+		if frame.Kind == stream.KindWarning {
+			return OperatorAttentionProjection{}, fmt.Errorf(
+				"operator attention replay integrity is unknown: %s",
+				strings.TrimSpace(frame.Message),
+			)
+		}
+		if frame.Kind != stream.KindCollaborationEvent || frame.Collaboration == nil {
+			continue
+		}
+		event := *frame.Collaboration
+		if event.SchemaVersion == work.CollaborationLegacySchemaVersion ||
+			collaborationDeliveryClass(event) != work.CollaborationDeliveryHumanAttention {
+			continue
+		}
+		if err := store.ValidateCollaborationDeliveryEvidence(event); err != nil {
+			if errors.Is(err, work.ErrCollaborationAuthorityResolved) {
+				continue
+			}
+			return OperatorAttentionProjection{}, fmt.Errorf(
+				"operator attention event %s ineligible: %w", event.ID, err,
+			)
+		}
+		delta := collaborationDelta(event)
+		key := event.WorkID + "|" + delta.Kind + "|" + delta.SubjectRef
+		current[key] = OperatorAttentionItem{
+			EventRef:         event.ID,
+			WorkRef:          event.WorkID,
+			DeliveryClass:    work.CollaborationDeliveryHumanAttention,
+			Delta:            delta,
+			AuthorityRefs:    operatorAttentionAuthorityRefs(collaborationAffects(event).PolicyRefs),
+			ArtifactRefs:     []string{event.BodyRef},
+			SemanticRevision: collaborationStateRevision(event),
+			CreatedAt:        event.CreatedAt,
+		}
+	}
+
+	keys := make([]string, 0, len(current))
+	for key := range current {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	all := make([]OperatorAttentionItem, 0, len(keys))
+	for _, key := range keys {
+		all = append(all, current[key])
+	}
+	projection := OperatorAttentionProjection{
+		SchemaVersion: OperatorAttentionSchemaVersion,
+		Total:         len(all),
+		Items:         all,
+	}
+	if len(projection.Items) > request.MaxItems {
+		projection.Items = projection.Items[:request.MaxItems]
+		projection.Truncated = true
+	}
+	projection.Revision = operatorAttentionProjectionRevision(all)
+	return projection, nil
+}
+
+func operatorAttentionAuthorityRefs(refs []string) []string {
+	var decisions []string
+	hasOwner := false
+	for _, ref := range normalizedDeliveryRefs(refs) {
+		switch {
+		case strings.HasPrefix(ref, "pol_"):
+			decisions = append(decisions, ref)
+		case ref == policy.OperatorStateAuthorityRef:
+			hasOwner = true
+		}
+	}
+	if hasOwner {
+		decisions = append(decisions, policy.OperatorStateAuthorityRef)
+	}
+	return decisions
+}
+
+func operatorAttentionProjectionRevision(items []OperatorAttentionItem) string {
+	body, _ := json.Marshal(items)
+	digest := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
 func deliverCoordination(request DeliveryRequest, publish DeliveryPublisher) (DeliveryReport, error) {
 	request.HomePath = strings.TrimSpace(request.HomePath)
 	request.Harness = normalizeDeliveryHarness(request.Harness)
@@ -231,11 +375,11 @@ func deliverCoordination(request DeliveryRequest, publish DeliveryPublisher) (De
 		if err != nil {
 			return err
 		}
-		frames, nextCursor, err := stream.ReadAvailable(request.HomePath, state.Cursor)
+		frames, _, err := stream.ReadAvailable(request.HomePath, state.Cursor)
 		if err != nil {
 			return err
 		}
-		state.Cursor = nextCursor
+		safeCursor := state.Cursor
 
 		intentions := map[string]LifecycleIntention{}
 		intentionOrder := []string{}
@@ -250,6 +394,19 @@ func deliverCoordination(request DeliveryRequest, publish DeliveryPublisher) (De
 		}
 
 		for _, frame := range frames {
+			if frame.Kind == stream.KindWarning {
+				report.FailedClosed = true
+				report.DegradedReason = "coordination replay integrity is unknown: " + strings.TrimSpace(frame.Message)
+				if request.Trigger == DeliveryTriggerInterrupt {
+					report.ExecutionHeld = true
+					report.HoldEvidenceRefs = appendUniqueRef(
+						report.HoldEvidenceRefs,
+						fmt.Sprintf("coordination-replay:cursor:%d", safeCursor),
+					)
+				}
+				break
+			}
+			safeCursor = frame.Cursor
 			if frame.Kind != stream.KindCollaborationEvent || frame.Collaboration == nil {
 				continue
 			}
@@ -261,6 +418,8 @@ func deliverCoordination(request DeliveryRequest, publish DeliveryPublisher) (De
 			}
 			class := collaborationDeliveryClass(event)
 			switch {
+			case class == work.CollaborationDeliveryHumanAttention:
+				setIntention(event.ID, class, "operator_attention", "available only through the current operator attention projection")
 			case !deliveryRelevant(event, request.Recipient):
 				report.IrrelevantEvents++
 				setIntention(event.ID, class, "irrelevant", "no receiving work coordinate intersects")
@@ -288,6 +447,7 @@ func deliverCoordination(request DeliveryRequest, publish DeliveryPublisher) (De
 				setIntention(event.ID, class, "deferred", deliveryDeferredReason(class, request.Trigger))
 			}
 		}
+		state.Cursor = safeCursor
 
 		pendingKeys := sortedPendingKeys(state.Pending)
 		pendingEvents := make([]work.CollaborationEvent, 0, len(pendingKeys))
@@ -296,7 +456,27 @@ func deliverCoordination(request DeliveryRequest, publish DeliveryPublisher) (De
 			pending := state.Pending[key]
 			event, err := loadCollaborationEvent(request.HomePath, pending.EventRef)
 			if err != nil {
+				if errors.Is(err, work.ErrCollaborationAuthorityResolved) {
+					delete(state.Pending, key)
+					setIntention(
+						pending.EventRef,
+						work.CollaborationDeliveryHumanAttention,
+						"resolved",
+						"operator authority is no longer unresolved",
+					)
+					continue
+				}
 				return err
+			}
+			if collaborationDeliveryClass(event) == work.CollaborationDeliveryHumanAttention {
+				delete(state.Pending, key)
+				setIntention(
+					event.ID,
+					work.CollaborationDeliveryHumanAttention,
+					"operator_attention",
+					"available only through the current operator attention projection",
+				)
+				continue
 			}
 			pendingEvents = append(pendingEvents, event)
 			eventKeys[event.ID] = key
@@ -456,25 +636,39 @@ func deliveryRelevant(event work.CollaborationEvent, recipient DeliveryRecipient
 	if len(affects.Actors) > 0 && !containsRef(affects.Actors, recipient.Actor) {
 		return false
 	}
+	recipientWorkIDs := []string{recipient.WorkID}
+	if len(affects.WorkIDs) > 0 && !intersects(affects.WorkIDs, recipientWorkIDs) {
+		return false
+	}
+	if len(affects.RunAttemptIDs) > 0 && !containsRef(affects.RunAttemptIDs, recipient.RunAttemptID) {
+		return false
+	}
+	if len(affects.ScopeRefs) > 0 && !intersects(recipient.ScopeRefs, affects.ScopeRefs) {
+		return false
+	}
+	if len(affects.DependencyRefs) > 0 && !intersects(recipient.DependencyRefs, affects.DependencyRefs) {
+		return false
+	}
+	if len(affects.PolicyRefs) > 0 && !intersects(recipient.PolicyRefs, affects.PolicyRefs) {
+		return false
+	}
+	if len(affects.BaseRevisions) > 0 && !intersects(recipient.BaseRevisions, affects.BaseRevisions) {
+		return false
+	}
+	if len(affects.ResourceRefs) > 0 && !intersects(recipient.ResourceRefs, affects.ResourceRefs) {
+		return false
+	}
 	switch collaborationDeliveryClass(event) {
 	case work.CollaborationDeliveryInterrupt:
 		return recipient.RunAttemptID != "" &&
 			containsRef(affects.RunAttemptIDs, recipient.RunAttemptID) &&
 			recipient.WorkID != "" &&
 			(recipient.WorkID == event.WorkID || containsRef(affects.WorkIDs, recipient.WorkID))
-	case work.CollaborationDeliveryHumanAttention:
-		if recipient.OperatorStateRef != policy.OperatorStateAuthorityRef {
-			return false
-		}
 	}
-	if strings.TrimSpace(recipient.WorkID) != "" &&
-		(recipient.WorkID == event.WorkID || containsRef(affects.WorkIDs, recipient.WorkID)) {
-		return true
-	}
-	if recipient.RunAttemptID != "" && containsRef(affects.RunAttemptIDs, recipient.RunAttemptID) {
-		return true
-	}
-	return intersects(recipient.ScopeRefs, affects.ScopeRefs) ||
+	return containsRef(recipientWorkIDs, event.WorkID) ||
+		intersects(recipientWorkIDs, affects.WorkIDs) ||
+		(recipient.RunAttemptID != "" && containsRef(affects.RunAttemptIDs, recipient.RunAttemptID)) ||
+		intersects(recipient.ScopeRefs, affects.ScopeRefs) ||
 		intersects(recipient.DependencyRefs, affects.DependencyRefs) ||
 		intersects(recipient.PolicyRefs, affects.PolicyRefs) ||
 		intersects(recipient.BaseRevisions, affects.BaseRevisions) ||
@@ -536,7 +730,6 @@ func normalizeDeliveryRecipient(recipient DeliveryRecipient) DeliveryRecipient {
 	recipient.Actor = strings.TrimSpace(recipient.Actor)
 	recipient.WorkID = strings.TrimSpace(recipient.WorkID)
 	recipient.RunAttemptID = strings.TrimSpace(recipient.RunAttemptID)
-	recipient.OperatorStateRef = strings.TrimSpace(recipient.OperatorStateRef)
 	recipient.ScopeRefs = normalizedDeliveryRefs(recipient.ScopeRefs)
 	recipient.DependencyRefs = normalizedDeliveryRefs(recipient.DependencyRefs)
 	recipient.PolicyRefs = normalizedDeliveryRefs(recipient.PolicyRefs)
@@ -587,7 +780,7 @@ func deliveryClassReady(class, trigger string) bool {
 	if trigger == DeliveryTriggerBoundary {
 		return class == work.CollaborationDeliveryNextBoundary
 	}
-	return class == work.CollaborationDeliveryInterrupt || class == work.CollaborationDeliveryHumanAttention
+	return class == work.CollaborationDeliveryInterrupt
 }
 
 func deliveryDeferredReason(class, trigger string) string {
@@ -632,9 +825,9 @@ func compileNativeDelivery(harnessName string, card DeliveryCard) NativeDelivery
 		delta := item.Delta
 		change := delta.After
 		if delta.Before != "" {
-			change = delta.Before + " -> " + delta.After
+			change = delta.Before + ">" + delta.After
 		}
-		lines = append(lines, fmt.Sprintf("- %s %s %s: %s event=%s artifact=%s",
+		lines = append(lines, fmt.Sprintf("- %s %s:%s %s event=%s ref=%s",
 			item.DeliveryClass, delta.Kind, delta.SubjectRef, change, item.EventID, item.ArtifactRefs[0]))
 	}
 	var context string
@@ -642,7 +835,7 @@ func compileNativeDelivery(harnessName string, card DeliveryCard) NativeDelivery
 	case "codex":
 		context = "## Compound coordination\nmeaning=" + card.MeaningDigest + "\n" + strings.Join(lines, "\n")
 	default:
-		context = "<compound-coordination meaning=\"" + card.MeaningDigest + "\">\n" + strings.Join(lines, "\n") + "\n</compound-coordination>"
+		context = "[Compound coordination]\nmeaning=" + card.MeaningDigest + "\n" + strings.Join(lines, "\n")
 	}
 	return NativeDelivery{
 		Harness: normalizeDeliveryHarness(harnessName), MeaningDigest: card.MeaningDigest,

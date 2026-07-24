@@ -4,7 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/home"
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -26,7 +29,49 @@ func TestReadAvailableProjectsGovernedCollaborationOnceByCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	const actor = "codex:delivery"
-	if _, err := store.Claim(item.ID, actor, now.Add(time.Second)); err != nil {
+	claimed, err := store.Claim(item.ID, actor, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runAttemptID := claimed.RunAttemptIDs[len(claimed.RunAttemptIDs)-1]
+	action := envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent, ID: "act_stream_interrupt",
+			CreatedAt: now.UTC().Format(time.RFC3339),
+			Producer:  envelope.Producer{Kind: "hook", Name: "compound"},
+			IDs:       envelope.IDs{WorkID: item.ID},
+			Authority: envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:   "private", Risk: "tier2", EvidenceRefs: []string{},
+			Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		Actor: actor, Capability: "work.execute", Action: "continue_run",
+		Target:        envelope.ActionTarget{Kind: "work", ID: item.ID},
+		MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "repo",
+	}
+	decision := envelope.PolicyDecision{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVPolicyDecision, ID: "pol_stream_interrupt",
+			CreatedAt: now.Add(time.Second).UTC().Format(time.RFC3339),
+			Producer:  envelope.Producer{Kind: "policy", Name: "compound"},
+			IDs:       envelope.IDs{WorkID: item.ID},
+			Authority: envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:   "private", Risk: "tier2", EvidenceRefs: []string{runAttemptID},
+			Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		ActionIntentID: action.ID, Outcome: "hold",
+		Reasons: []string{"active action invalidated"}, Obligations: []string{},
+	}
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(action.ID, action, " "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(decision.ID, decision, " "); err != nil {
+		t.Fatal(err)
+	}
+	if err := runattempt.Open(homePath).AttachActionIntent(runAttemptID, action.ID); err != nil {
 		t.Fatal(err)
 	}
 	artifacts, err := home.NewArtifactStore(homePath)
@@ -43,12 +88,15 @@ func TestReadAvailableProjectsGovernedCollaborationOnceByCursor(t *testing.T) {
 		BodyRef:        bodyRef,
 		DeliveryClass:  work.CollaborationDeliveryInterrupt,
 		Delta: work.CollaborationStateDelta{
-			Kind:       "work",
-			SubjectRef: item.ID,
-			Before:     "running",
-			After:      "held",
+			Kind:       "run_attempt",
+			SubjectRef: runAttemptID,
+			Before:     "active",
+			After:      "invalidated",
 		},
-		Affects: work.CollaborationAffects{WorkIDs: []string{item.ID}},
+		Affects: work.CollaborationAffects{
+			WorkIDs: []string{item.ID}, RunAttemptIDs: []string{runAttemptID},
+			PolicyRefs: []string{decision.ID},
+		},
 	}, now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)

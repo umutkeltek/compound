@@ -31,6 +31,10 @@ const (
 	CollaborationDeliveryHumanAttention = "human_attention"
 )
 
+// ErrCollaborationAuthorityResolved distinguishes current resolution from
+// malformed or missing governed evidence during replay.
+var ErrCollaborationAuthorityResolved = errors.New("collaboration operator authority is resolved")
+
 // CollaborationStateDelta is deliberately structural and bounded. Full prose
 // remains in BodyRef; delivery cards need only the changed coordinate.
 type CollaborationStateDelta struct {
@@ -610,6 +614,18 @@ func (s *Store) validateCollaborationClassEvidence(workID string, in Collaborati
 			(decision.Outcome != "hold" && decision.Outcome != "deny") ||
 			!collaborationRequiresOperatorAuthority(action) {
 			return fmt.Errorf("human_attention requires unresolved hold/deny for an operator-authority decision")
+		}
+		unresolved, err := policy.CurrentOperatorAuthorityUnresolved(
+			s.home, workID, action.ID, decision.ID,
+		)
+		if err != nil {
+			return fmt.Errorf("human_attention current operator authority: %w", err)
+		}
+		if !unresolved {
+			return fmt.Errorf(
+				"%w: human_attention policy %s is not currently unresolved in %s",
+				ErrCollaborationAuthorityResolved, decision.ID, policy.OperatorStateAuthorityRef,
+			)
 		}
 	}
 	return nil

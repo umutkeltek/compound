@@ -1607,12 +1607,6 @@ func runHookCommand(args []string) int {
 	}
 	now := time.Now()
 	homePath := ""
-	fx, err := loadHookFixture(parsed, now)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-
 	deps := hook.Deps{Registry: harness.DefaultRegistry(), Orient: orientPolicy(), Policy: policyConfig()}
 	if resolvedHome, err := home.Resolve(""); err == nil {
 		homePath = resolvedHome
@@ -1625,6 +1619,11 @@ func runHookCommand(args []string) int {
 		if restoreEngine, err := configureMemoryEngineFromHome(homePath, ""); err == nil {
 			defer restoreEngine()
 		}
+	}
+	fx, err := loadHookFixtureForHome(parsed, now, homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
 	}
 	stopOutcome, err := prepareLiveStopTriage(parsed, homePath, &fx, now)
 	if err != nil {

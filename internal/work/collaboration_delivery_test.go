@@ -2,6 +2,8 @@ package work
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -288,6 +290,7 @@ func TestRecordCollaborationAcceptsUnresolvedOperatorGatesBeyondIrreversibility(
 			if _, err := events.PutJSON(decision.ID, decision, "  "); err != nil {
 				t.Fatal(err)
 			}
+			writeCurrentOperatorAuthority(t, store.home, item.ID, action.ID, decision.ID)
 			_, err = store.RecordCollaboration(item.ID, CollaborationInput{
 				Actor: actor, IdempotencyKey: "human-" + tt.name,
 				BodyRef:       collaborationBodyRef(t, store, "operator gate "+tt.name),
@@ -304,6 +307,115 @@ func TestRecordCollaborationAcceptsUnresolvedOperatorGatesBeyondIrreversibility(
 				t.Fatalf("%s operator gate rejected: %v", tt.name, err)
 			}
 		})
+	}
+}
+
+func TestRecordCollaborationRejectsHumanAttentionAfterCurrentOperatorResolution(t *testing.T) {
+	store := newStore(t)
+	const actor = "codex:delivery"
+	item, err := store.Create(CreateInput{
+		Owner: actor, SuccessPredicate: "resolved authority cannot page the operator",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(item.ID, actor, fixedNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	action := envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent, ID: "act_human_resolution",
+			CreatedAt: fixedNow.Format(time.RFC3339),
+			Producer:  envelope.Producer{Kind: "hook", Name: "compound"},
+			IDs:       envelope.IDs{WorkID: item.ID},
+			Authority: envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:   "private", Risk: "tier2", EvidenceRefs: []string{},
+			Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		Actor: actor, Capability: "authority.change", Action: "authority_change",
+		Target:        envelope.ActionTarget{Kind: "authority", ID: item.ID},
+		MutationClass: "security", Reversibility: "hard", BlastRadius: "repo",
+	}
+	decision := envelope.PolicyDecision{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVPolicyDecision, ID: "pol_human_resolution",
+			CreatedAt: fixedNow.Add(time.Second).Format(time.RFC3339),
+			Producer:  envelope.Producer{Kind: "policy", Name: "compound"},
+			IDs:       envelope.IDs{WorkID: item.ID},
+			Authority: envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:   "private", Risk: "tier2",
+			EvidenceRefs: []string{policy.OperatorStateAuthorityRef},
+			Uncertainty:  envelope.Uncertainty{Level: "known"},
+		},
+		ActionIntentID: action.ID, Outcome: "hold",
+		Reasons: []string{"operator authority unresolved"}, Obligations: []string{},
+	}
+	events, err := eventstore.Open(store.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(action.ID, action, "  "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(decision.ID, decision, "  "); err != nil {
+		t.Fatal(err)
+	}
+	writeCurrentOperatorAuthority(t, store.home, item.ID, action.ID, decision.ID)
+	input := CollaborationInput{
+		Actor: actor, IdempotencyKey: "human-before-resolution",
+		BodyRef:       collaborationBodyRef(t, store, "operator decision body"),
+		DeliveryClass: CollaborationDeliveryHumanAttention,
+		Delta: CollaborationStateDelta{
+			Kind: "authority", SubjectRef: decision.ID, Before: "pending", After: "unresolved",
+		},
+		Affects: CollaborationAffects{
+			WorkIDs:    []string{item.ID},
+			PolicyRefs: []string{decision.ID, policy.OperatorStateAuthorityRef},
+		},
+	}
+	if _, err := store.RecordCollaboration(item.ID, input, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatalf("current unresolved authority was rejected: %v", err)
+	}
+
+	writeResolvedOperatorAuthority(t, store.home)
+	input.IdempotencyKey = "human-after-resolution"
+	if _, err := store.RecordCollaboration(item.ID, input, fixedNow.Add(3*time.Second)); err == nil ||
+		!strings.Contains(err.Error(), "currently unresolved") {
+		t.Fatalf("stale resolved human attention error = %v", err)
+	}
+}
+
+func writeCurrentOperatorAuthority(t *testing.T, homePath, workID, actionID, decisionID string) {
+	t.Helper()
+	state := policy.OperatorState{
+		AutonomyLever: policy.OperatorAutonomyLever{Level: "L2"},
+		Blocked: []map[string]any{{
+			"work_id": workID, "action_intent_id": actionID,
+			"policy_decision_id": decisionID, "state": "unresolved",
+		}},
+	}
+	writeOperatorAuthorityState(t, homePath, state)
+}
+
+func writeResolvedOperatorAuthority(t *testing.T, homePath string) {
+	t.Helper()
+	writeOperatorAuthorityState(t, homePath, policy.OperatorState{
+		AutonomyLever: policy.OperatorAutonomyLever{Level: "L2"},
+		Blocked:       []map[string]any{},
+	})
+}
+
+func writeOperatorAuthorityState(t *testing.T, homePath string, state policy.OperatorState) {
+	t.Helper()
+	body, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(policy.OperatorStatePath(homePath)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policy.OperatorStatePath(homePath), body, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
