@@ -88,16 +88,6 @@ func runWithSubprocess(
 	if err != nil {
 		return RunOutput{}, fmt.Errorf("%s: mint: %w", harnessName, err)
 	}
-	// F2: every subprocess-adapter mint is a real harness execution, never a
-	// claim-time placeholder or a post-hoc observation. Stamp immediately
-	// after Mint, before any other side effect, so F2 (supersede-at-attach,
-	// internal/work) can recognize it when it attaches to a work envelope.
-	if stamped, oErr := store.SetOrigin(ra.ID, runattempt.OriginHarnessExecution); oErr != nil {
-		return RunOutput{}, fmt.Errorf("%s: stamp origin: %w", harnessName, oErr)
-	} else {
-		ra = stamped
-	}
-
 	// transcriptPath is "" until the transcript file is created below; the
 	// failTerm closure reads it at call time so the reason is recorded
 	// inline when a transcript exists and as a proof_ref otherwise.
@@ -110,6 +100,10 @@ func runWithSubprocess(
 	// completes failed. Returns the RunOutput the caller returns alongside
 	// its wrapped error -- per the Adapter contract an infra failure
 	// returns BOTH the terminal RunAttempt AND an error.
+	//
+	// Defined BEFORE the SetOrigin stamp below so an origin-stamp failure
+	// terminalizes the same way every later infra failure does, instead of
+	// returning bare RunOutput{} and stranding a pending ratt_ record.
 	failTerm := func(reason string) RunOutput {
 		if transcriptPath != "" {
 			if f, ferr := os.OpenFile(transcriptPath, os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
@@ -124,6 +118,19 @@ func runWithSubprocess(
 			ra = t
 		}
 		return RunOutput{RunAttempt: ra, TranscriptPath: transcriptPath, ExitCode: -1}
+	}
+
+	// F2: every subprocess-adapter mint is a real harness execution, never a
+	// claim-time placeholder or a post-hoc observation. Stamp immediately
+	// after Mint, before any other side effect, so F2 (supersede-at-attach,
+	// internal/work) can recognize it when it attaches to a work envelope.
+	// A stamp failure is a genuine infra failure: terminalize the freshly
+	// minted attempt (never leave it pending) and return it alongside the
+	// error, exactly like the SetWorkspace/SetCommand/... failures below.
+	if stamped, oErr := store.SetOrigin(ra.ID, runattempt.OriginHarnessExecution); oErr != nil {
+		return failTerm("stamp origin: " + oErr.Error()), fmt.Errorf("%s: stamp origin: %w", harnessName, oErr)
+	} else {
+		ra = stamped
 	}
 
 	if _, err := store.SetWorkspace(ra.ID, in.Workspace); err != nil {
