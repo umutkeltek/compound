@@ -1,13 +1,20 @@
 package hook
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/envelope"
+	"compound/internal/eventstore"
 	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hookplan"
+	"compound/internal/policy"
+	"compound/internal/runattempt"
 	"compound/internal/work"
 )
 
@@ -29,7 +36,23 @@ func TestLiveHookConsumesLifecycleDeliveryWithoutReadingArtifactBody(t *testing.
 		t.Fatal(err)
 	}
 	const sender = "codex:sender"
-	if _, err := store.Claim(item.ID, sender, now.Add(time.Second)); err != nil {
+	claimed, err := store.Claim(item.ID, sender, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runAttemptID := claimed.RunAttemptIDs[len(claimed.RunAttemptIDs)-1]
+	action, decision := hookInterruptEvidence(item.ID, sender, runAttemptID, now)
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(action.ID, action, "  "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(decision.ID, decision, "  "); err != nil {
+		t.Fatal(err)
+	}
+	if err := runattempt.Open(homePath).AttachActionIntent(runAttemptID, action.ID); err != nil {
 		t.Fatal(err)
 	}
 	artifacts, err := home.NewArtifactStore(homePath)
@@ -47,27 +70,36 @@ func TestLiveHookConsumesLifecycleDeliveryWithoutReadingArtifactBody(t *testing.
 		BodyRef:        bodyRef,
 		DeliveryClass:  work.CollaborationDeliveryInterrupt,
 		Delta: work.CollaborationStateDelta{
-			Kind:       "policy",
-			SubjectRef: "policy:review",
-			Before:     "allow",
-			After:      "hold",
+			Kind:       "run_attempt",
+			SubjectRef: runAttemptID,
+			Before:     "active",
+			After:      "invalidated",
 		},
-		Affects: work.CollaborationAffects{WorkIDs: []string{item.ID}},
+		Affects: work.CollaborationAffects{
+			WorkIDs: []string{item.ID}, RunAttemptIDs: []string{runAttemptID},
+			PolicyRefs: []string{decision.ID},
+		},
 	}, now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	toolAction := action
+	toolAction.ID = "act_pretool_body_reference"
+	toolAction.Action = "write_file"
+	toolAction.Target = envelope.ActionTarget{Kind: "file", Path: "README.md"}
 	result, err := Run(Fixture{
-		Hook:    "post-tool-use",
+		Hook:    "pre-tool-use",
 		Harness: "codex",
 		Live:    true,
 		WorkID:  item.ID,
-		Tool:    "Bash",
+		Action:  &toolAction,
 		CoordinationDelivery: &CoordinationDeliveryInput{
 			CursorKey: "hook-session",
-			Recipient: hookplan.DeliveryRecipient{Actor: "codex:receiver", WorkID: item.ID},
-			Trigger:   hookplan.DeliveryTriggerInterrupt,
+			Recipient: hookplan.DeliveryRecipient{
+				Actor: "codex:receiver", WorkID: item.ID, RunAttemptID: runAttemptID,
+			},
+			Trigger: hookplan.DeliveryTriggerInterrupt,
 		},
 	}, Deps{
 		Registry: harness.DefaultRegistry(),
@@ -84,10 +116,378 @@ func TestLiveHookConsumesLifecycleDeliveryWithoutReadingArtifactBody(t *testing.
 		t.Fatalf("live hook delivery = %+v context=%q", result.CoordinationDelivery, result.ContextOutput)
 	}
 	if result.CoordinationDelivery.DeliveredBytes != len([]byte(result.CoordinationDelivery.Native.Context)) ||
-		result.CoordinationDelivery.DeliveredTokens == 0 ||
-		len(result.CoordinationDelivery.ActionDeltaRefs) != 1 ||
+		result.CoordinationDelivery.EstimatedDeliveredTokens == 0 ||
+		len(result.CoordinationDelivery.DeclaredStateDeltaRefs) != 1 ||
 		result.CoordinationDelivery.ReportRef == "" ||
 		!containsString(result.Event.SideEffects, result.CoordinationDelivery.ReportRef) {
 		t.Fatalf("delivery observability missing: report=%+v event=%+v", result.CoordinationDelivery, result.Event)
 	}
+}
+
+func TestHookPersistenceFailureLeavesCoordinationCardRetryableExactlyOnce(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 24, 13, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create(work.CreateInput{Owner: "delivery", SuccessPredicate: "hook and delivery commit together"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sender = "codex:sender"
+	if _, err := store.Claim(item.ID, sender, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyRef, err := artifacts.Put([]byte("retryable body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordCollaboration(item.ID, work.CollaborationInput{
+		Actor: sender, IdempotencyKey: "atomic-boundary", BodyRef: bodyRef,
+		DeliveryClass: work.CollaborationDeliveryNextBoundary,
+		Delta:         work.CollaborationStateDelta{Kind: "work", SubjectRef: item.ID, After: "changed"},
+		Affects:       work.CollaborationAffects{WorkIDs: []string{item.ID}},
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	fixture := Fixture{
+		Hook: "post-tool-use", Harness: "codex", Live: true, WorkID: item.ID, Tool: "Bash",
+		CoordinationDelivery: &CoordinationDeliveryInput{
+			CursorKey: "atomic-session", Recipient: hookplan.DeliveryRecipient{WorkID: item.ID},
+			Trigger: hookplan.DeliveryTriggerBoundary,
+		},
+	}
+	injected := errors.New("injected hook persistence failure")
+	_, err = Run(fixture, Deps{
+		Registry: harness.DefaultRegistry(), HomePath: homePath, Store: store,
+		BeforeHookEventPersist: func() error { return injected },
+	}, now.Add(3*time.Second))
+	if !errors.Is(err, injected) {
+		t.Fatalf("first hook error = %v, want injected failure", err)
+	}
+
+	retry, err := Run(fixture, Deps{
+		Registry: harness.DefaultRegistry(), HomePath: homePath, Store: store,
+	}, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.CoordinationDelivery == nil || retry.CoordinationDelivery.Native == nil ||
+		retry.CoordinationDelivery.DeliveredBytes == 0 {
+		t.Fatalf("failed hook persistence consumed delivery: %+v", retry.CoordinationDelivery)
+	}
+	onceMore, err := Run(fixture, Deps{
+		Registry: harness.DefaultRegistry(), HomePath: homePath, Store: store,
+	}, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onceMore.CoordinationDelivery == nil || onceMore.CoordinationDelivery.Native != nil ||
+		onceMore.CoordinationDelivery.DeliveredBytes != 0 {
+		t.Fatalf("retry emitted card more than once: %+v", onceMore.CoordinationDelivery)
+	}
+}
+
+func TestOverBudgetInterruptHoldsPreToolUseExecution(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 24, 14, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create(work.CreateInput{Owner: "delivery", SuccessPredicate: "interrupt overflow holds execution"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const actor = "codex:receiver"
+	claimed, err := store.Claim(item.ID, actor, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runAttemptID := claimed.RunAttemptIDs[len(claimed.RunAttemptIDs)-1]
+	action, decision := hookInterruptEvidence(item.ID, actor, runAttemptID, now)
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(action.ID, action, "  "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(decision.ID, decision, "  "); err != nil {
+		t.Fatal(err)
+	}
+	if err := runattempt.Open(homePath).AttachActionIntent(runAttemptID, action.ID); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyRef, err := artifacts.Put([]byte("interrupt evidence body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordCollaboration(item.ID, work.CollaborationInput{
+		Actor: actor, IdempotencyKey: "interrupt-overflow", BodyRef: bodyRef,
+		DeliveryClass: work.CollaborationDeliveryInterrupt,
+		Delta: work.CollaborationStateDelta{
+			Kind: "run_attempt", SubjectRef: runAttemptID, Before: "active", After: "invalidated",
+		},
+		Affects: work.CollaborationAffects{
+			WorkIDs: []string{item.ID}, RunAttemptIDs: []string{runAttemptID},
+			PolicyRefs: []string{decision.ID},
+		},
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	toolAction := action
+	toolAction.ID = "act_pretool_current"
+	toolAction.Action = "write_file"
+	toolAction.Target = envelope.ActionTarget{Kind: "file", Path: "README.md"}
+	result, err := Run(Fixture{
+		Hook: "pre-tool-use", Harness: "codex", Live: true, WorkID: item.ID, Action: &toolAction,
+		CoordinationDelivery: &CoordinationDeliveryInput{
+			CursorKey: "interrupt-overflow",
+			Recipient: hookplan.DeliveryRecipient{Actor: actor, WorkID: item.ID, RunAttemptID: runAttemptID},
+			Trigger:   hookplan.DeliveryTriggerInterrupt,
+			Budget:    &hookplan.DeliveryBudget{MaxCards: 1, MaxBytes: 4096, MaxEstimatedTokens: 1, MaxItems: 1},
+		},
+	}, Deps{
+		Registry: harness.DefaultRegistry(), HomePath: homePath, Store: store,
+		Policy: policy.DefaultConfig(),
+	}, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.Status != "blocked" || result.CoordinationDelivery == nil ||
+		!result.CoordinationDelivery.ExecutionHeld || result.CoordinationDelivery.PendingEvents != 1 {
+		t.Fatalf("interrupt overflow did not hold execution: event=%+v report=%+v", result.Event, result.CoordinationDelivery)
+	}
+	foundHold := false
+	for _, produced := range result.Produced {
+		if pd, ok := produced.(*envelope.PolicyDecision); ok && pd.Outcome == "hold" {
+			foundHold = true
+		}
+	}
+	if !foundHold {
+		t.Fatalf("interrupt overflow produced no governed hold: %+v", result.Produced)
+	}
+}
+
+func TestEligibleInterruptHoldsPreToolUseBeforeMutationWithinBudget(t *testing.T) {
+	testCase := newHookInterruptCase(t, "normal-interrupt")
+	result, err := Run(testCase.fixture, Deps{
+		Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
+		Policy: policy.DefaultConfig(),
+	}, testCase.now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event.Status != "blocked" || result.CoordinationDelivery == nil ||
+		result.CoordinationDelivery.Native == nil || !result.CoordinationDelivery.ExecutionHeld ||
+		result.CoordinationDelivery.PendingEvents != 0 ||
+		!strings.Contains(result.ContextOutput, testCase.event.ID) {
+		t.Fatalf("eligible interrupt did not block before mutation: event=%+v delivery=%+v",
+			result.Event, result.CoordinationDelivery)
+	}
+	foundHold := false
+	for _, produced := range result.Produced {
+		if decision, ok := produced.(*envelope.PolicyDecision); ok && decision.Outcome == "hold" &&
+			containsString(decision.EvidenceRefs, testCase.event.ID) {
+			foundHold = true
+		}
+	}
+	if !foundHold {
+		t.Fatalf("eligible interrupt produced no causal governed hold: %+v", result.Produced)
+	}
+}
+
+func TestHookDeliveryPublicationFaultsLeaveInterruptRetryableExactlyOnce(t *testing.T) {
+	tests := []struct {
+		name string
+		fail func(*Deps, error)
+	}{
+		{
+			name: "after_hook_event_before_report",
+			fail: func(deps *Deps, injected error) {
+				deps.BeforeDeliveryReportPersist = func() error { return injected }
+			},
+		},
+		{
+			name: "after_report_before_state",
+			fail: func(deps *Deps, injected error) {
+				deps.BeforeDeliveryStatePersist = func() error { return injected }
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testCase := newHookInterruptCase(t, tt.name)
+			injected := errors.New("injected " + tt.name)
+			deps := Deps{
+				Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
+				Policy: policy.DefaultConfig(),
+			}
+			tt.fail(&deps, injected)
+			if _, err := Run(testCase.fixture, deps, testCase.now.Add(3*time.Second)); !errors.Is(err, injected) {
+				t.Fatalf("fault error = %v, want %v", err, injected)
+			}
+
+			retry, err := Run(testCase.fixture, Deps{
+				Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
+				Policy: policy.DefaultConfig(),
+			}, testCase.now.Add(3*time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retry.Event.Status != "blocked" || retry.CoordinationDelivery == nil ||
+				retry.CoordinationDelivery.Native == nil || !retry.CoordinationDelivery.ExecutionHeld ||
+				!strings.Contains(retry.ContextOutput, testCase.event.ID) {
+				t.Fatalf("fault consumed interrupt: event=%+v delivery=%+v", retry.Event, retry.CoordinationDelivery)
+			}
+			if _, err := os.Stat(filepath.Join(testCase.homePath, retry.CoordinationDelivery.ReportRef)); err != nil {
+				t.Fatalf("retry left dangling delivery report ref: %v", err)
+			}
+
+			onceMore, err := Run(testCase.fixture, Deps{
+				Registry: harness.DefaultRegistry(), HomePath: testCase.homePath, Store: testCase.store,
+				Policy: policy.DefaultConfig(),
+			}, testCase.now.Add(4*time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if onceMore.CoordinationDelivery == nil || onceMore.CoordinationDelivery.Native != nil ||
+				onceMore.CoordinationDelivery.DeliveredBytes != 0 {
+				t.Fatalf("recovered interrupt delivered more than once: %+v", onceMore.CoordinationDelivery)
+			}
+		})
+	}
+}
+
+type hookInterruptCase struct {
+	homePath string
+	store    *work.Store
+	now      time.Time
+	event    work.CollaborationEvent
+	fixture  Fixture
+}
+
+func newHookInterruptCase(t *testing.T, key string) hookInterruptCase {
+	t.Helper()
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 24, 15, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const actor = "codex:receiver"
+	item, err := store.Create(work.CreateInput{
+		Owner: actor, SuccessPredicate: "eligible coordination interrupt blocks execution",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Claim(item.ID, actor, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runAttemptID := claimed.RunAttemptIDs[len(claimed.RunAttemptIDs)-1]
+	action, decision := hookInterruptEvidence(item.ID, actor, runAttemptID, now)
+	events, err := eventstore.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(action.ID, action, "  "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := events.PutJSON(decision.ID, decision, "  "); err != nil {
+		t.Fatal(err)
+	}
+	if err := runattempt.Open(homePath).AttachActionIntent(runAttemptID, action.ID); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyRef, err := artifacts.Put([]byte("interrupt evidence body " + key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := store.RecordCollaboration(item.ID, work.CollaborationInput{
+		Actor: actor, IdempotencyKey: key, BodyRef: bodyRef,
+		DeliveryClass: work.CollaborationDeliveryInterrupt,
+		Delta: work.CollaborationStateDelta{
+			Kind: "run_attempt", SubjectRef: runAttemptID, Before: "active", After: "invalidated",
+		},
+		Affects: work.CollaborationAffects{
+			WorkIDs: []string{item.ID}, RunAttemptIDs: []string{runAttemptID},
+			PolicyRefs: []string{decision.ID},
+		},
+	}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolAction := action
+	toolAction.ID = "act_pretool_" + strings.ReplaceAll(key, "-", "_")
+	toolAction.Action = "write_file"
+	toolAction.Target = envelope.ActionTarget{Kind: "file", Path: "README.md"}
+	return hookInterruptCase{
+		homePath: homePath, store: store, now: now, event: recorded.Event,
+		fixture: Fixture{
+			Hook: "pre-tool-use", Harness: "codex", Live: true, WorkID: item.ID, Action: &toolAction,
+			CoordinationDelivery: &CoordinationDeliveryInput{
+				CursorKey: "interrupt-" + key,
+				Recipient: hookplan.DeliveryRecipient{
+					Actor: actor, WorkID: item.ID, RunAttemptID: runAttemptID,
+				},
+				Trigger: hookplan.DeliveryTriggerInterrupt,
+			},
+		},
+	}
+}
+
+func hookInterruptEvidence(workID, actor, runAttemptID string, now time.Time) (envelope.ActionIntent, envelope.PolicyDecision) {
+	action := envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent, ID: "act_hook_interrupt_evidence",
+			CreatedAt: now.UTC().Format(time.RFC3339),
+			Producer:  envelope.Producer{Kind: "hook", Name: "compound"},
+			IDs:       envelope.IDs{WorkID: workID},
+			Authority: envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:   "private", Risk: "tier2", EvidenceRefs: []string{},
+			Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		Actor: actor, Capability: "work.execute", Action: "continue_run",
+		Target:        envelope.ActionTarget{Kind: "work", ID: workID},
+		MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "repo",
+	}
+	decision := envelope.PolicyDecision{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVPolicyDecision, ID: "pol_hook_interrupt_evidence",
+			CreatedAt: now.Add(time.Second).UTC().Format(time.RFC3339),
+			Producer:  envelope.Producer{Kind: "policy", Name: "compound"},
+			IDs:       envelope.IDs{WorkID: workID},
+			Authority: envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:   "private", Risk: "tier2", EvidenceRefs: []string{runAttemptID},
+			Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		ActionIntentID: action.ID, Outcome: "hold",
+		Reasons: []string{"active action invalidated"}, Obligations: []string{},
+	}
+	return action, decision
 }

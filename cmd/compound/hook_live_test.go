@@ -1200,10 +1200,94 @@ func TestLivePreToolResponseDoesNotDropCoordinationContext(t *testing.T) {
 	}
 }
 
+func TestLiveCoordinationBoundaryMappingCarriesPromptResumeCompactAndPreToolUse(t *testing.T) {
+	tests := []struct {
+		name        string
+		hook        string
+		input       string
+		wantSource  string
+		wantTrigger string
+	}{
+		{
+			name: "prompt", hook: "user-prompt-submit",
+			input:      `{"session_id":"session-boundary","work_id":"work_boundary","prompt":"continue"}`,
+			wantSource: "prompt", wantTrigger: hookplan.DeliveryTriggerBoundary,
+		},
+		{
+			name: "resume", hook: "session-start",
+			input:      `{"session_id":"session-boundary","work_id":"work_boundary","source":"resume"}`,
+			wantSource: "resume", wantTrigger: hookplan.DeliveryTriggerBoundary,
+		},
+		{
+			name: "compact", hook: "session-start",
+			input:      `{"session_id":"session-boundary","work_id":"work_boundary","source":"compact"}`,
+			wantSource: "compact", wantTrigger: hookplan.DeliveryTriggerBoundary,
+		},
+		{
+			name: "pre_tool_use", hook: "pre-tool-use",
+			input:      `{"session_id":"session-boundary","work_id":"work_boundary","cwd":"/repo/project","tool_name":"Write","tool_input":{"file_path":"README.md"}}`,
+			wantSource: "pre_tool_use", wantTrigger: hookplan.DeliveryTriggerInterrupt,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture, err := liveHookFixture(hookCommandArgs{
+				HookName: tt.hook, Harness: "codex", Live: true,
+			}, []byte(tt.input), cliTestNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fixture.CoordinationDelivery == nil ||
+				fixture.CoordinationDelivery.BoundarySource != tt.wantSource ||
+				fixture.CoordinationDelivery.Trigger != tt.wantTrigger {
+				t.Fatalf("%s boundary mapping = %+v", tt.name, fixture.CoordinationDelivery)
+			}
+		})
+	}
+}
+
+func TestNativePreToolAdaptersDenyOrHoldEligibleCoordinationInterruptBeforeMutation(t *testing.T) {
+	const card = "coordination-card: interrupt ratt_exact"
+	hold := &envelope.PolicyDecision{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVPolicyDecision,
+			ID:            "pol_coordination_pretool_hold",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "policy", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: "work_coordination_pretool"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier2",
+			EvidenceRefs:  []string{"wco_coordination_pretool"},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		ActionIntentID: "act_coordination_pretool", Outcome: "hold",
+		Reasons: []string{"exact active run invalidated"}, Obligations: []string{},
+	}
+	result := hook.Result{
+		Event:         envelope.HookEvent{Status: "blocked"},
+		Produced:      []envelope.Envelope{hold},
+		ContextOutput: card,
+	}
+	codex := liveHookResponse("codex", "pre-tool-use", result, nil).(claudeLiveHookResponse)
+	claude := liveHookResponse("claude-code", "pre-tool-use", result, nil).(claudeLiveHookResponse)
+	if codex.HookSpecificOutput.PermissionDecision != "deny" ||
+		claude.HookSpecificOutput.PermissionDecision != "ask" ||
+		codex.HookSpecificOutput.AdditionalContext != card ||
+		claude.HookSpecificOutput.AdditionalContext != card {
+		t.Fatalf("native interrupt gate diverged: codex=%+v claude=%+v",
+			codex.HookSpecificOutput, claude.HookSpecificOutput)
+	}
+}
+
 func TestLiveHookFixtureBuildsStableCoordinationDeliveryRecipient(t *testing.T) {
 	input := []byte(`{
 		"session_id":"session-delivery",
 		"work_id":"work_delivery",
+		"run_attempt_id":"ratt_20260724T120000Z_abcdef12",
+		"cwd":"/repo/project",
+		"tool_name":"Write",
+		"tool_input":{"file_path":"README.md"},
 		"actor":"codex:receiver",
 		"scope_refs":["scope:hookplan"],
 		"dependency_refs":["dependency:stream"],
@@ -1218,7 +1302,7 @@ func TestLiveHookFixtureBuildsStableCoordinationDeliveryRecipient(t *testing.T) 
 		t.Fatal(err)
 	}
 	interrupt, err := liveHookFixture(hookCommandArgs{
-		HookName: "post-tool-use", Harness: "codex", Live: true,
+		HookName: "pre-tool-use", Harness: "codex", Live: true,
 	}, input, cliTestNow)
 	if err != nil {
 		t.Fatal(err)
@@ -1228,12 +1312,14 @@ func TestLiveHookFixtureBuildsStableCoordinationDeliveryRecipient(t *testing.T) 
 	}
 	if boundary.CoordinationDelivery.CursorKey == "" ||
 		boundary.CoordinationDelivery.CursorKey != interrupt.CoordinationDelivery.CursorKey ||
+		!strings.Contains(boundary.CoordinationDelivery.CursorKey, "run_attempt=ratt_20260724T120000Z_abcdef12") ||
 		boundary.CoordinationDelivery.Trigger != hookplan.DeliveryTriggerBoundary ||
 		interrupt.CoordinationDelivery.Trigger != hookplan.DeliveryTriggerInterrupt {
 		t.Fatalf("delivery cursor/trigger boundary=%+v interrupt=%+v", boundary.CoordinationDelivery, interrupt.CoordinationDelivery)
 	}
 	got := boundary.CoordinationDelivery.Recipient
 	if got.Actor != "codex:receiver" || got.WorkID != "work_delivery" ||
+		got.RunAttemptID != "ratt_20260724T120000Z_abcdef12" ||
 		strings.Join(got.ScopeRefs, ",") != "scope:hookplan" ||
 		strings.Join(got.DependencyRefs, ",") != "dependency:stream" ||
 		strings.Join(got.PolicyRefs, ",") != "policy:delivery" ||

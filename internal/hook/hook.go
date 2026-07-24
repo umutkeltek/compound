@@ -107,10 +107,13 @@ type Deps struct {
 	Store    *work.Store // required only for session-end; may be nil otherwise
 	HomePath string      // optional; when present session-start persists context artifacts
 
-	Now                  func() time.Time
-	After                func(time.Duration) <-chan time.Time
-	BeforeContextBuild   func()
-	BeforeContextPersist func()
+	Now                         func() time.Time
+	After                       func(time.Duration) <-chan time.Time
+	BeforeContextBuild          func()
+	BeforeContextPersist        func()
+	BeforeHookEventPersist      func() error
+	BeforeDeliveryReportPersist func() error
+	BeforeDeliveryStatePersist  func() error
 }
 
 // InjectionArtifact records the exact harness-facing context text written under
@@ -144,10 +147,11 @@ type ContextObservation struct {
 // hookplan LifecyclePlan boundary. Hooks pass it through; hookplan owns
 // relevance, cursor, boundary, budget, and native compilation semantics.
 type CoordinationDeliveryInput struct {
-	CursorKey string
-	Recipient hookplan.DeliveryRecipient
-	Trigger   string
-	Budget    *hookplan.DeliveryBudget
+	CursorKey      string
+	Recipient      hookplan.DeliveryRecipient
+	Trigger        string
+	BoundarySource string
+	Budget         *hookplan.DeliveryBudget
 }
 
 // Result is what a hook produces: the normalized event, the typed objects, and the small
@@ -194,31 +198,59 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 		return res, err
 	}
 	if fx.CoordinationDelivery != nil {
-		delivery, err := hookplan.DeliverCoordination(hookplan.DeliveryRequest{
-			HomePath:  deps.HomePath,
-			Harness:   fx.Harness,
-			CursorKey: fx.CoordinationDelivery.CursorKey,
-			Recipient: fx.CoordinationDelivery.Recipient,
-			Trigger:   fx.CoordinationDelivery.Trigger,
-			Budget:    fx.CoordinationDelivery.Budget,
+		delivery, err := hookplan.DeliverCoordinationWithPublisher(hookplan.DeliveryRequest{
+			HomePath:            deps.HomePath,
+			Harness:             fx.Harness,
+			CursorKey:           fx.CoordinationDelivery.CursorKey,
+			Recipient:           fx.CoordinationDelivery.Recipient,
+			Trigger:             fx.CoordinationDelivery.Trigger,
+			BoundarySource:      fx.CoordinationDelivery.BoundarySource,
+			Budget:              fx.CoordinationDelivery.Budget,
+			BeforeReportPersist: deps.BeforeDeliveryReportPersist,
+			BeforeStatePersist:  deps.BeforeDeliveryStatePersist,
+		}, func(delivery hookplan.DeliveryReport) error {
+			if delivery.ExecutionHeld && name != "PreToolUse" {
+				return fmt.Errorf("coordination interrupt delivery requires PreToolUse before mutation")
+			}
+			res.CoordinationDelivery = &delivery
+			if delivery.Native != nil {
+				res.ContextOutput = appendContextOutput(res.ContextOutput, delivery.Native.Context)
+			}
+			if delivery.ReportRef != "" {
+				res.Event.SideEffects = mergeRefs(res.Event.SideEffects, []string{delivery.ReportRef})
+			}
+			if delivery.ExecutionHeld && name == "PreToolUse" {
+				if err := applyCoordinationExecutionHold(&res, deps, fx, delivery, now); err != nil {
+					return err
+				}
+			}
+			if err := validateHookResult(res); err != nil {
+				return err
+			}
+			if deps.BeforeHookEventPersist != nil {
+				if err := deps.BeforeHookEventPersist(); err != nil {
+					return err
+				}
+			}
+			if strings.TrimSpace(deps.HomePath) != "" {
+				if err := writeHookEvent(deps.HomePath, res.Event, res.BreakerTripped); err != nil {
+					return fmt.Errorf("persist hook event: %w", err)
+				}
+			}
+			return nil
 		})
 		if err != nil {
 			return res, fmt.Errorf("coordination delivery: %w", err)
 		}
 		res.CoordinationDelivery = &delivery
-		if delivery.Native != nil {
-			res.ContextOutput = appendContextOutput(res.ContextOutput, delivery.Native.Context)
-		}
-		if delivery.ReportRef != "" {
-			res.Event.SideEffects = mergeRefs(res.Event.SideEffects, []string{delivery.ReportRef})
-		}
+		return res, nil
 	}
-	if err := res.Event.Validate(); err != nil {
-		return res, fmt.Errorf("hook event invalid: %w", err)
+	if err := validateHookResult(res); err != nil {
+		return res, err
 	}
-	for _, e := range res.Produced {
-		if err := e.Validate(); err != nil {
-			return res, fmt.Errorf("produced %s invalid: %w", e.Kind(), err)
+	if deps.BeforeHookEventPersist != nil {
+		if err := deps.BeforeHookEventPersist(); err != nil {
+			return res, err
 		}
 	}
 	if strings.TrimSpace(deps.HomePath) != "" {
@@ -227,6 +259,60 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 		}
 	}
 	return res, nil
+}
+
+func validateHookResult(res Result) error {
+	if err := res.Event.Validate(); err != nil {
+		return fmt.Errorf("hook event invalid: %w", err)
+	}
+	for _, e := range res.Produced {
+		if err := e.Validate(); err != nil {
+			return fmt.Errorf("produced %s invalid: %w", e.Kind(), err)
+		}
+	}
+	return nil
+}
+
+func applyCoordinationExecutionHold(res *Result, deps Deps, fx Fixture, delivery hookplan.DeliveryReport, now time.Time) error {
+	if res == nil {
+		return fmt.Errorf("coordination execution hold requires hook result")
+	}
+	reason := strings.TrimSpace(delivery.DegradedReason)
+	if reason == "" {
+		reason = "relevant interrupt evidence requires execution hold"
+	}
+	var holds []envelope.Envelope
+	var sideEffects []string
+	for _, produced := range res.Produced {
+		action, ok := produced.(*envelope.ActionIntent)
+		if !ok {
+			continue
+		}
+		hold := policy.HoldForExecutionEvidence(*action, delivery.HoldEvidenceRefs, reason, now)
+		if err := hold.Validate(); err != nil {
+			return err
+		}
+		if strings.TrimSpace(deps.HomePath) != "" {
+			effects, err := writeGateArtifacts(deps.HomePath, *action, hold)
+			if err != nil {
+				return err
+			}
+			sideEffects = append(sideEffects, effects...)
+		}
+		holds = append(holds, &hold)
+	}
+	if len(holds) == 0 {
+		return fmt.Errorf("coordination interrupt hold has no PreToolUse action")
+	}
+	res.Produced = append(res.Produced, holds...)
+	res.Event.SideEffects = mergeRefs(res.Event.SideEffects, sideEffects)
+	res.Summary = appendContextOutput(res.Summary, "policy hold: "+reason)
+	if deps.Registry.Supports(fx.Harness, "PreToolUse") {
+		res.Event.Status = "blocked"
+	} else {
+		res.Event.Status = "fail_open"
+	}
+	return nil
 }
 
 func appendContextOutput(existing, addition string) string {

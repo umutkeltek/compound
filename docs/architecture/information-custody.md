@@ -52,7 +52,7 @@ $COMPOUND_HOME/
 | `inbox/` | untrusted observations and candidates awaiting reject, park, promote, or operationalize |
 | `work/` | WorkEnvelope lifecycle, leases, checkpoints, runs, and delivery proof |
 | `events/` | normalized raw runtime/hook/tool events; evidence, not automatically meaning |
-| `context/` | ContextRequests, frozen ContextPacks, inclusion/exclusion reasons, and exact injected text |
+| `context/` | ContextRequests, frozen ContextPacks, inclusion/exclusion reasons, exact injected text, and backup-preserved coordination-delivery cursors/reports/measurement receipts under `context/coordination-delivery/` |
 | `reviews/` | adjudication, owner writeback, contradiction, policy, and retirement review artifacts; versioned core reviews may carry append-only digest-bound `work-binding` companions whose historical digests remain immutable and whose exact-head supersessions preserve source provenance and select explicit active authority without rewriting the core |
 | `projections/` | rebuildable Markdown, dashboard, harness, timeline, and export views |
 | `indexes/` | disposable local or remote retrieval state and build manifests |

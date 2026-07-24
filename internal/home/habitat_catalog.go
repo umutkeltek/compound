@@ -121,6 +121,7 @@ func buildHabitatEntries() []HabitatEntry {
 		child("context.requests", "context/requests", HabitatClassOperational, true, true, false),
 		child("context.packs", "context/packs", HabitatClassOperational, true, true, false),
 		child("context.injections", "context/injections", HabitatClassOperational, true, true, false),
+		child("context.coordination-delivery", "context/coordination-delivery", HabitatClassOperational, true, true, false),
 		active("inbox", "inbox", HabitatClassOperational, true, true, false),
 		child("inbox.knowledge-extractions", "inbox/knowledge-extractions", HabitatClassOperational, true, true, false),
 		child("inbox.parked", "inbox/parked", HabitatClassOperational, true, true, false),

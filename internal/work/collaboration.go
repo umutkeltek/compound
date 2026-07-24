@@ -15,6 +15,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/policy"
+	"compound/internal/runattempt"
 )
 
 const (
@@ -45,6 +46,7 @@ type CollaborationStateDelta struct {
 type CollaborationAffects struct {
 	Actors         []string `json:"actors,omitempty"`
 	WorkIDs        []string `json:"work_ids,omitempty"`
+	RunAttemptIDs  []string `json:"run_attempt_ids,omitempty"`
 	ScopeRefs      []string `json:"scope_refs,omitempty"`
 	DependencyRefs []string `json:"dependency_refs,omitempty"`
 	PolicyRefs     []string `json:"policy_refs,omitempty"`
@@ -99,6 +101,21 @@ type CollaborationResult struct {
 	Created       bool                  `json:"created"`
 	Event         CollaborationEvent    `json:"event"`
 	Work          envelope.WorkEnvelope `json:"work"`
+}
+
+// CollaborationBodyRequest authorizes the explicit on-demand body door. The
+// event target, work, actor, and active run attempt must all agree.
+type CollaborationBodyRequest struct {
+	WorkID       string
+	EventID      string
+	Actor        string
+	RunAttemptID string
+}
+
+type CollaborationBodyResult struct {
+	EventID string `json:"event_id"`
+	BodyRef string `json:"body_ref"`
+	Body    []byte `json:"body"`
 }
 
 var appendCollaborationLifecycle = func(s *Store, event Event) error {
@@ -163,6 +180,9 @@ func (s *Store) recordCollaborationLocked(workID string, in CollaborationInput, 
 		if attempt.WorkID != workID {
 			return CollaborationResult{}, fmt.Errorf("collaboration run attempt %s belongs to work %s, not %s", in.RunAttemptID, attempt.WorkID, workID)
 		}
+	}
+	if err := s.validateCollaborationClassEvidence(workID, in); err != nil {
+		return CollaborationResult{}, err
 	}
 
 	eventID := collaborationEventID(workID, in.IdempotencyKey)
@@ -294,6 +314,7 @@ func normalizeCollaborationInput(in CollaborationInput) CollaborationInput {
 	in.Delta.After = strings.TrimSpace(in.Delta.After)
 	in.Affects.Actors = normalizeCollaborationRefs(in.Affects.Actors)
 	in.Affects.WorkIDs = normalizeCollaborationRefs(in.Affects.WorkIDs)
+	in.Affects.RunAttemptIDs = normalizeCollaborationRefs(in.Affects.RunAttemptIDs)
 	in.Affects.ScopeRefs = normalizeCollaborationRefs(in.Affects.ScopeRefs)
 	in.Affects.DependencyRefs = normalizeCollaborationRefs(in.Affects.DependencyRefs)
 	in.Affects.PolicyRefs = normalizeCollaborationRefs(in.Affects.PolicyRefs)
@@ -351,6 +372,7 @@ func validateCollaborationInput(in CollaborationInput) error {
 	}{
 		{name: "actors", values: in.Affects.Actors},
 		{name: "work_ids", values: in.Affects.WorkIDs},
+		{name: "run_attempt_ids", values: in.Affects.RunAttemptIDs},
 		{name: "scope_refs", values: in.Affects.ScopeRefs},
 		{name: "dependency_refs", values: in.Affects.DependencyRefs},
 		{name: "policy_refs", values: in.Affects.PolicyRefs},
@@ -361,6 +383,22 @@ func validateCollaborationInput(in CollaborationInput) error {
 			if !validCollaborationToken(value) {
 				return fmt.Errorf("collaboration affects.%s must contain bounded identifiers", item.name)
 			}
+		}
+	}
+	switch in.DeliveryClass {
+	case CollaborationDeliveryInterrupt:
+		if len(in.Affects.RunAttemptIDs) != 1 ||
+			in.Delta.Kind != "run_attempt" ||
+			in.Delta.SubjectRef != in.Affects.RunAttemptIDs[0] ||
+			in.Delta.After != "invalidated" ||
+			len(collaborationPolicyDecisionRefs(in.Affects.PolicyRefs)) != 1 {
+			return fmt.Errorf("interrupt requires one exact invalidated run_attempt and one governed policy decision")
+		}
+	case CollaborationDeliveryHumanAttention:
+		if in.Delta.Kind != "authority" || in.Delta.After != "unresolved" ||
+			!oneOf(policy.OperatorStateAuthorityRef, in.Affects.PolicyRefs) ||
+			len(collaborationPolicyDecisionRefs(in.Affects.PolicyRefs)) != 1 {
+			return fmt.Errorf("human_attention requires unresolved operator authority evidence routed to %s", policy.OperatorStateAuthorityRef)
 		}
 	}
 	return nil
@@ -521,6 +559,142 @@ func collaborationSemanticDigest(in CollaborationInput) string {
 	})
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
+}
+
+func collaborationPolicyDecisionRefs(refs []string) []string {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if strings.HasPrefix(ref, "pol_") {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+func (s *Store) validateCollaborationClassEvidence(workID string, in CollaborationInput) error {
+	switch in.DeliveryClass {
+	case CollaborationDeliveryInterrupt:
+		attemptID := in.Affects.RunAttemptIDs[0]
+		attempt, err := s.runAttempts().Get(attemptID)
+		if err != nil {
+			return fmt.Errorf("interrupt run attempt %s: %w", attemptID, err)
+		}
+		if attempt.WorkID != workID || runattempt.IsTerminal(attempt.Status) || attempt.ActionIntentID == "" {
+			return fmt.Errorf("interrupt requires exact active run/action evidence for %s", attemptID)
+		}
+		var action envelope.ActionIntent
+		if err := s.readEventJSON(attempt.ActionIntentID, &action); err != nil {
+			return fmt.Errorf("interrupt action evidence %s: %w", attempt.ActionIntentID, err)
+		}
+		var decision envelope.PolicyDecision
+		policyRef := collaborationPolicyDecisionRefs(in.Affects.PolicyRefs)[0]
+		if err := s.readEventJSON(policyRef, &decision); err != nil {
+			return fmt.Errorf("interrupt policy evidence %s: %w", policyRef, err)
+		}
+		if action.ID != attempt.ActionIntentID || action.IDs.WorkID != workID ||
+			decision.IDs.WorkID != workID || decision.ActionIntentID != action.ID ||
+			(decision.Outcome != "hold" && decision.Outcome != "deny") {
+			return fmt.Errorf("interrupt policy %s does not invalidate active action %s", decision.ID, action.ID)
+		}
+	case CollaborationDeliveryHumanAttention:
+		policyRef := collaborationPolicyDecisionRefs(in.Affects.PolicyRefs)[0]
+		var decision envelope.PolicyDecision
+		if err := s.readEventJSON(policyRef, &decision); err != nil {
+			return fmt.Errorf("human_attention policy evidence %s: %w", policyRef, err)
+		}
+		var action envelope.ActionIntent
+		if err := s.readEventJSON(decision.ActionIntentID, &action); err != nil {
+			return fmt.Errorf("human_attention action evidence %s: %w", decision.ActionIntentID, err)
+		}
+		if action.IDs.WorkID != workID || decision.IDs.WorkID != workID ||
+			(decision.Outcome != "hold" && decision.Outcome != "deny") ||
+			!collaborationRequiresOperatorAuthority(action) {
+			return fmt.Errorf("human_attention requires unresolved hold/deny for an operator-authority decision")
+		}
+	}
+	return nil
+}
+
+func collaborationRequiresOperatorAuthority(action envelope.ActionIntent) bool {
+	if oneOf(action.Reversibility, []string{"hard", "irreversible", "none"}) {
+		return true
+	}
+	if oneOf(action.MutationClass, []string{"public", "security", "financial", "destructive"}) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(action.Target.Kind), "authority") ||
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(action.Capability)), "authority.") ||
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(action.Action)), "authority_")
+}
+
+// ValidateCollaborationDeliveryEvidence rechecks class eligibility at replay
+// time, so a structurally valid but ungoverned event cannot become an interrupt
+// or human-attention card merely by appearing in event storage.
+func (s *Store) ValidateCollaborationDeliveryEvidence(event CollaborationEvent) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	if event.SchemaVersion == CollaborationLegacySchemaVersion {
+		return nil
+	}
+	return s.validateCollaborationClassEvidence(event.WorkID, CollaborationInput{
+		Actor:         event.Actor,
+		DeliveryClass: event.DeliveryClass,
+		Delta:         *event.Delta,
+		Affects:       *event.Affects,
+	})
+}
+
+// RetrieveCollaborationBody is the production on-demand body door. It performs
+// no lifecycle mutation and emits no acknowledgement or collaboration event.
+func (s *Store) RetrieveCollaborationBody(in CollaborationBodyRequest) (CollaborationBodyResult, error) {
+	in.WorkID = strings.TrimSpace(in.WorkID)
+	in.EventID = strings.TrimSpace(in.EventID)
+	in.Actor = strings.TrimSpace(in.Actor)
+	in.RunAttemptID = strings.TrimSpace(in.RunAttemptID)
+	if in.WorkID == "" || !strings.HasPrefix(in.EventID, "wco_") ||
+		in.Actor == "" || !runattempt.Valid(in.RunAttemptID) {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires work, event, actor, and ratt_ run attempt")
+	}
+	var event CollaborationEvent
+	if err := s.readEventJSON(in.EventID, &event); err != nil {
+		return CollaborationBodyResult{}, err
+	}
+	if err := event.Validate(); err != nil {
+		return CollaborationBodyResult{}, err
+	}
+	affects := collaborationAffectsValue(event)
+	if event.WorkID != in.WorkID || !oneOf(in.RunAttemptID, affects.RunAttemptIDs) ||
+		(event.TargetActor != "" && event.TargetActor != in.Actor) ||
+		(len(affects.Actors) > 0 && !oneOf(in.Actor, affects.Actors)) {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body request does not match event target work/actor/run attempt")
+	}
+	attempt, err := s.runAttempts().Get(in.RunAttemptID)
+	if err != nil {
+		return CollaborationBodyResult{}, err
+	}
+	if attempt.WorkID != in.WorkID || attempt.Actor != in.Actor || runattempt.IsTerminal(attempt.Status) {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body requires the exact active recipient run attempt")
+	}
+	artifacts, err := home.NewArtifactStore(s.home)
+	if err != nil {
+		return CollaborationBodyResult{}, err
+	}
+	if _, err := artifacts.Verify(event.BodyRef); err != nil {
+		return CollaborationBodyResult{}, fmt.Errorf("collaboration body reference verification: %w", err)
+	}
+	body, err := artifacts.Get(event.BodyRef)
+	if err != nil {
+		return CollaborationBodyResult{}, err
+	}
+	return CollaborationBodyResult{EventID: event.ID, BodyRef: event.BodyRef, Body: body}, nil
+}
+
+func collaborationAffectsValue(event CollaborationEvent) CollaborationAffects {
+	if event.Affects == nil {
+		return CollaborationAffects{}
+	}
+	return *event.Affects
 }
 
 func collaborationEventsEquivalent(a, b CollaborationEvent) bool {

@@ -10,6 +10,10 @@ import (
 )
 
 func runWorkCollaborate(store *work.Store, args []string, now time.Time) {
+	if len(args) > 0 && args[0] == "body" {
+		runWorkCollaborationBody(store, args[1:])
+		return
+	}
 	usage := workUsage("collaborate")
 	var (
 		workID          string
@@ -66,6 +70,8 @@ func runWorkCollaborate(store *work.Store, args []string, now time.Time) {
 			affects.Actors = append(affects.Actors, value("--affects-actor", &i))
 		case "--affects-work":
 			affects.WorkIDs = append(affects.WorkIDs, value("--affects-work", &i))
+		case "--affects-run-attempt":
+			affects.RunAttemptIDs = append(affects.RunAttemptIDs, value("--affects-run-attempt", &i))
 		case "--scope-ref":
 			affects.ScopeRefs = append(affects.ScopeRefs, value("--scope-ref", &i))
 		case "--dependency-ref":
@@ -109,4 +115,55 @@ func runWorkCollaborate(store *work.Store, args []string, now time.Time) {
 		return
 	}
 	fmt.Printf("%s collaboration=%s actor=%s created=%v body_ref=%s\n", result.Work.ID, result.Event.ID, result.Event.Actor, result.Created, result.Event.BodyRef)
+}
+
+func runWorkCollaborationBody(store *work.Store, args []string) {
+	usage := workUsage("collaborate")
+	var workID, eventID, actor, runAttemptID string
+	jsonOutput := false
+	value := func(i *int) string {
+		if *i+1 >= len(args) || strings.TrimSpace(args[*i+1]) == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		*i++
+		return strings.TrimSpace(args[*i])
+	}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--event":
+			eventID = value(&i)
+		case "--actor":
+			actor = value(&i)
+		case "--run-attempt":
+			runAttemptID = value(&i)
+		case "--json":
+			jsonOutput = true
+		default:
+			if strings.HasPrefix(args[i], "-") || workID != "" {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			workID = strings.TrimSpace(args[i])
+		}
+	}
+	if workID == "" || eventID == "" || actor == "" || runAttemptID == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	result, err := store.RetrieveCollaborationBody(work.CollaborationBodyRequest{
+		WorkID: workID, EventID: eventID, Actor: actor, RunAttemptID: runAttemptID,
+	})
+	die(err)
+	if jsonOutput {
+		printJSON(struct {
+			EventID   string `json:"event_id"`
+			BodyRef   string `json:"body_ref"`
+			BodyBase64 []byte `json:"body_base64"`
+		}{EventID: result.EventID, BodyRef: result.BodyRef, BodyBase64: result.Body})
+		return
+	}
+	if _, err := os.Stdout.Write(result.Body); err != nil {
+		die(err)
+	}
 }

@@ -208,6 +208,50 @@ func TestHabitatCatalogOwnsContentDraftInbox(t *testing.T) {
 	}
 }
 
+func TestHabitatCatalogOwnsCoordinationDeliveryUnderContext(t *testing.T) {
+	for _, relative := range []string{
+		"context/coordination-delivery",
+		"context/coordination-delivery/reports/drep_fixture.json",
+		"context/coordination-delivery/measurements/dmeasure_fixture.json",
+		"context/coordination-delivery/cursors/cursor_fixture.json",
+	} {
+		entry, ok := HabitatForPath(relative)
+		if !ok {
+			t.Fatalf("coordination delivery path is unknown: %s", relative)
+		}
+		if entry.ID != "context.coordination-delivery" ||
+			entry.Class != HabitatClassOperational || !entry.Backup || entry.Compact {
+			t.Fatalf("coordination delivery habitat for %s = %+v", relative, entry)
+		}
+	}
+	if _, ok := HabitatForPath("hook-delivery/report.json"); ok {
+		t.Fatal("legacy hook-delivery top-level root must not be blessed")
+	}
+
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(homePath, "local", archiveTestNow); err != nil {
+		t.Fatal(err)
+	}
+	writeHomeFile(t, homePath, "context/coordination-delivery/cursors/cursor.json", `{"semantic_revision":"sha256:fixture"}`)
+	writeHomeFile(t, homePath, "context/coordination-delivery/reports/report.json", `{"delivered_bytes":42}`)
+	archivePath := filepath.Join(t.TempDir(), "coordination-delivery.tar.gz")
+	if _, err := Backup(homePath, archivePath, archiveTestNow); err != nil {
+		t.Fatal(err)
+	}
+	restored := filepath.Join(t.TempDir(), ".compound-restored")
+	if _, err := RestoreArchive(archivePath, restored, archiveTestNow); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{
+		"context/coordination-delivery/cursors/cursor.json",
+		"context/coordination-delivery/reports/report.json",
+	} {
+		if _, err := os.Stat(filepath.Join(restored, filepath.FromSlash(relative))); err != nil {
+			t.Fatalf("coordination delivery backup/restore lost %s: %v", relative, err)
+		}
+	}
+}
+
 func TestHabitatCatalogOwnsCanonicalSourceManifestsAndNamesLegacyRetirement(t *testing.T) {
 	canonical, ok := HabitatForPath("sources/manifests/family.json")
 	if !ok || canonical.Prefix != "sources/manifests" || canonical.Status != HabitatStatusActive || canonical.Class != HabitatClassEvidence || !canonical.Backup || canonical.Compact || !canonical.PlacementAllowed {

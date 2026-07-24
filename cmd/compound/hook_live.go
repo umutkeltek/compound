@@ -33,6 +33,7 @@ type hookCommandArgs struct {
 type claudeLiveHookInput struct {
 	HookEventName  string          `json:"hook_event_name"`
 	SessionID      string          `json:"session_id"`
+	Source         string          `json:"source"`
 	Cwd            string          `json:"cwd"`
 	Prompt         string          `json:"prompt"`
 	ToolName       string          `json:"tool_name"`
@@ -45,6 +46,7 @@ type claudeLiveHookInput struct {
 	LastAssistant  string          `json:"last_assistant_message"`
 	WorkID         string          `json:"work_id"`
 	CompoundWorkID string          `json:"compound_work_id"`
+	RunAttemptID   string          `json:"run_attempt_id"`
 	Actor          string          `json:"actor"`
 	CompoundActor  string          `json:"compound_actor"`
 	ScopeRefs      []string        `json:"scope_refs"`
@@ -186,30 +188,57 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 func liveCoordinationDeliveryInput(harnessName, hookName string, in claudeLiveHookInput) *hook.CoordinationDeliveryInput {
 	sessionID := strings.TrimSpace(in.SessionID)
 	workID := firstNonEmpty(in.WorkID, in.CompoundWorkID)
+	runAttemptID := strings.TrimSpace(in.RunAttemptID)
 	if sessionID == "" && workID == "" {
 		return nil
 	}
-	trigger := hookplan.DeliveryTriggerInterrupt
-	if hookName == "session-start" || hookName == "user-prompt-submit" {
+	var trigger string
+	switch hookName {
+	case "session-start", "user-prompt-submit":
 		trigger = hookplan.DeliveryTriggerBoundary
+	case "pre-tool-use":
+		trigger = hookplan.DeliveryTriggerInterrupt
+	default:
+		return nil
 	}
+	boundarySource := liveCoordinationBoundarySource(hookName, in.Source)
 	cursorKey := strings.Join([]string{
 		"harness=" + normalizeLiveHarness(harnessName),
 		"session=" + sessionID,
 		"work=" + workID,
+		"run_attempt=" + runAttemptID,
 	}, "|")
 	return &hook.CoordinationDeliveryInput{
 		CursorKey: cursorKey,
 		Recipient: hookplan.DeliveryRecipient{
 			Actor:          firstNonEmpty(in.Actor, in.CompoundActor),
 			WorkID:         workID,
+			RunAttemptID:   runAttemptID,
 			ScopeRefs:      normalizeLiveRefs(in.ScopeRefs),
 			DependencyRefs: normalizeLiveRefs(in.DependencyRefs),
 			PolicyRefs:     normalizeLiveRefs(in.PolicyRefs),
 			BaseRevisions:  normalizeLiveRefs(in.BaseRevisions),
 			ResourceRefs:   normalizeLiveRefs(in.ResourceRefs),
 		},
-		Trigger: trigger,
+		Trigger:        trigger,
+		BoundarySource: boundarySource,
+	}
+}
+
+func liveCoordinationBoundarySource(hookName, nativeSource string) string {
+	switch hookName {
+	case "user-prompt-submit":
+		return "prompt"
+	case "pre-tool-use":
+		return "pre_tool_use"
+	case "session-start":
+		nativeSource = strings.ToLower(strings.TrimSpace(nativeSource))
+		if nativeSource == "" {
+			return "startup"
+		}
+		return nativeSource
+	default:
+		return strings.ReplaceAll(strings.TrimSpace(hookName), "-", "_")
 	}
 }
 
