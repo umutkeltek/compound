@@ -191,7 +191,7 @@ func tomlPermissionDrift(policy PermissionAuthority, render PermissionRender, re
 			report.Details = append(report.Details, fmt.Sprintf("%s missing (want %s)", k.Path, wantValue))
 			continue
 		}
-		gotValue := extractTOMLAssignmentValue(lineBody(lines[idx]), k.Key)
+		gotValue := extractTOMLAssignmentValue(tomlSyntacticLineBody(lines[idx], idx), k.Key)
 		if gotValue != wantValue {
 			report.Details = append(report.Details, fmt.Sprintf("%s is %s, want %s", k.Path, gotValue, wantValue))
 		}
@@ -222,6 +222,18 @@ func lineBody(raw string) string {
 		return raw[:len(raw)-1]
 	}
 	return raw
+}
+
+const tomlUTF8BOM = "\uFEFF"
+
+// tomlSyntacticLineBody removes the optional document marker from the first
+// line for matching while leaving the stored line bytes untouched.
+func tomlSyntacticLineBody(line string, lineIndex int) string {
+	body := lineBody(line)
+	if lineIndex == 0 {
+		return strings.TrimPrefix(body, tomlUTF8BOM)
+	}
+	return body
 }
 
 func lineTerminator(raw string) string {
@@ -270,7 +282,7 @@ func scanTOMLStructure(lines []string) tomlStructure {
 	inTripleDouble, inTripleSingle := false, false
 	arrayDepth := 0
 	for i, raw := range lines {
-		body := lineBody(raw)
+		body := tomlSyntacticLineBody(raw, i)
 		startedOpaque := inTripleDouble || inTripleSingle || arrayDepth > 0
 		structure.opaque[i] = startedOpaque
 		if !startedOpaque {
@@ -407,7 +419,7 @@ func locateOwnedTOMLKey(lines []string, structure tomlStructure, owned ownedTOML
 	matchCount := 0
 	ambiguous := false
 	for i, raw := range lines {
-		body := lineBody(raw)
+		body := tomlSyntacticLineBody(raw, i)
 		if spelling := alternateOwnedTOMLAssignment(body, structure, i, owned); spelling != "" {
 			return 0, false, fmt.Errorf("settings key %q uses an unsupported %s assignment spelling; refusing to edit", owned.Path, spelling)
 		}
@@ -514,6 +526,11 @@ func ensureTrailingTOMLNewline(lines []string, terminator string) []string {
 
 func insertTOMLLine(lines []string, idx int, newLine string) []string {
 	out := make([]string, 0, len(lines)+1)
+	if idx == 0 && len(lines) > 0 && strings.HasPrefix(lines[0], tomlUTF8BOM) {
+		out = append(out, tomlUTF8BOM+newLine, strings.TrimPrefix(lines[0], tomlUTF8BOM))
+		out = append(out, lines[1:]...)
+		return out
+	}
 	out = append(out, lines[:idx]...)
 	out = append(out, newLine)
 	out = append(out, lines[idx:]...)
@@ -538,15 +555,19 @@ func applyOwnedTOMLKeys(before []byte, owned []ownedTOMLKey) ([]byte, error) {
 		}
 		if found {
 			re := tomlAssignmentRegex(k.Key)
-			body := lineBody(lines[idx])
+			body := tomlSyntacticLineBody(lines[idx], idx)
 			m := re.FindStringSubmatch(body)
 			if stripTOMLInlineComment(m[2]) == value {
 				continue
 			}
+			prefix := ""
+			if idx == 0 && strings.HasPrefix(lineBody(lines[idx]), tomlUTF8BOM) {
+				prefix = tomlUTF8BOM
+			}
 			leading := m[1]
 			comment := tomlInlineCommentSuffix(m[2])
 			term := lineTerminator(lines[idx])
-			lines[idx] = leading + k.Key + " = " + value + comment + term
+			lines[idx] = prefix + leading + k.Key + " = " + value + comment + term
 			continue
 		}
 		if k.Table == "" {
