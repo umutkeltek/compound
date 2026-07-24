@@ -43,7 +43,7 @@ func TestRenderInstructionBlockCarriesStableAuthorityAndProjectRules(t *testing.
 			}
 			for _, want := range []string{
 				"Compound is the authority for durable meaning",
-				"gbrain and other retrieval engines are bridges/indexes",
+				"Retrieval engines and legacy vector/fact stores are bridges/indexes",
 				"rented executor",
 				"cheapest sufficient lane",
 				"AGENTS.md",
