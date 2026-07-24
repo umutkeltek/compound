@@ -84,8 +84,10 @@ func TestLargeToolOutputExternalizedAsObservedNotAmbient(t *testing.T) {
 	if found != 1 {
 		t.Fatalf("want exactly 1 observed tool-output candidate, got %d", found)
 	}
-	if cand.Derivation != "observed" || cand.State != "proposed" || cand.PromotionBasis != "" {
-		t.Fatalf("candidate not observed/proposed/no-basis: derivation=%q state=%q basis=%q", cand.Derivation, cand.State, cand.PromotionBasis)
+	// Pointer candidates are BORN no_promote (auto_file at admission): a bare-cid pointer can
+	// never be corroborated, so it must never enter the proposed/decay-park queue.
+	if cand.Derivation != "observed" || cand.State != "no_promote" || cand.PromotionBasis != "" {
+		t.Fatalf("candidate not observed/no_promote/no-basis: derivation=%q state=%q basis=%q", cand.Derivation, cand.State, cand.PromotionBasis)
 	}
 
 	// (c) Ledger byte-identical: capture added zero ledger bytes.
