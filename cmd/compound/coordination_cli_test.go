@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/hookplan"
 	"compound/internal/work"
 )
 
@@ -84,6 +85,77 @@ func TestCoordinationCLIJSONContract(t *testing.T) {
 	}
 	if len(report.Waits) == 0 {
 		t.Fatalf("waits empty; lane-x is blocked on %s", workID)
+	}
+}
+
+func TestCoordinationCLIJSONEmbedsPureOperatorProjection(t *testing.T) {
+	workID := coordinationCLIHome(t)
+	homePath := os.Getenv("COMPOUND_HOME")
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyRef, err := artifacts.Put([]byte("body sentinel must remain behind artifact custody"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := store.RecordCollaboration(workID, work.CollaborationInput{
+		Actor: "lane-x", IdempotencyKey: "coordination-cli-operator", BodyRef: bodyRef,
+		DeliveryClass: work.CollaborationDeliverySilentState,
+		Delta: work.CollaborationStateDelta{
+			Kind: "scope", SubjectRef: "scope:coordination-cli", Before: "open", After: "reserved",
+		},
+		Affects: work.CollaborationAffects{WorkIDs: []string{workID}},
+	}, cliTestNow.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before := snapshotTree(t, homePath)
+	first := captureCoordination(t, []string{"--json"})
+	second := captureCoordination(t, []string{"--json"})
+	after := snapshotTree(t, homePath)
+	if len(before) != len(after) {
+		t.Fatalf("coordination polls changed home file count: before=%d after=%d", len(before), len(after))
+	}
+	for path, body := range before {
+		if after[path] != body {
+			t.Fatalf("coordination polls mutated %s", path)
+		}
+	}
+
+	var payload struct {
+		work.CoordinationReport
+		OperatorCoordination hookplan.OperatorCoordinationProjection `json:"operator_coordination"`
+	}
+	if err := json.Unmarshal([]byte(first), &payload); err != nil {
+		t.Fatalf("first JSON: %v\n%s", err, first)
+	}
+	if payload.Me.Doing == nil || payload.Me.Doing.WorkID != workID {
+		t.Fatalf("existing coordination report changed: %+v", payload.CoordinationReport)
+	}
+	if payload.OperatorCoordination.Total != 1 || len(payload.OperatorCoordination.Items) != 1 ||
+		payload.OperatorCoordination.Items[0].EventRef != recorded.Event.ID {
+		t.Fatalf("operator coordination missing from JSON: %+v", payload.OperatorCoordination)
+	}
+	var repeated struct {
+		OperatorCoordination hookplan.OperatorCoordinationProjection `json:"operator_coordination"`
+	}
+	if err := json.Unmarshal([]byte(second), &repeated); err != nil {
+		t.Fatalf("second JSON: %v\n%s", err, second)
+	}
+	if payload.OperatorCoordination.Revision != repeated.OperatorCoordination.Revision {
+		t.Fatalf("level-triggered projection changed across polls: first=%+v second=%+v",
+			payload.OperatorCoordination, repeated.OperatorCoordination)
+	}
+	for _, forbidden := range []string{"body sentinel", "cursor", "report_ref", "acknowledgement"} {
+		if strings.Contains(strings.ToLower(first), forbidden) {
+			t.Fatalf("coordination JSON exposed forbidden %q: %s", forbidden, first)
+		}
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"compound/internal/activity"
 	"compound/internal/attention"
 	"compound/internal/home"
+	"compound/internal/hookplan"
 	"compound/internal/work"
 )
 
@@ -85,9 +86,23 @@ func cmdAttention(args []string) {
 		Activity:  activityAttentionInput(homePath, &workbench, now),
 	}, now)
 	if jsonOut {
+		operatorAttention, err := hookplan.ReadOperatorAttention(hookplan.OperatorAttentionRequest{
+			HomePath: homePath,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		payload := struct {
+			attention.Report
+			OperatorAttention hookplan.OperatorAttentionProjection `json:"operator_attention"`
+		}{
+			Report:            report,
+			OperatorAttention: operatorAttention,
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", " ")
-		if err := enc.Encode(report); err != nil {
+		if err := enc.Encode(payload); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}

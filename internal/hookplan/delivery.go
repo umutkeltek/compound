@@ -19,13 +19,14 @@ import (
 )
 
 const (
-	LifecyclePlanSchemaVersion       = "compound.lifecycle_plan.v0.1"
-	DeliveryCardSchemaVersion        = "compound.coordination_delivery_card.v0.1"
-	DeliveryStateSchemaVersion       = "compound.coordination_delivery_state.v0.3"
-	DeliveryReportSchemaVersion      = "compound.coordination_delivery_report.v0.1"
-	DeliveryMeasurementSchemaVersion = "compound.coordination_delivery_measurement.v0.1"
-	OperatorAttentionSchemaVersion   = "compound.operator_attention_projection.v0.1"
-	deliveryStatePreviousVersion     = "compound.coordination_delivery_state.v0.2"
+	LifecyclePlanSchemaVersion        = "compound.lifecycle_plan.v0.1"
+	DeliveryCardSchemaVersion         = "compound.coordination_delivery_card.v0.1"
+	DeliveryStateSchemaVersion        = "compound.coordination_delivery_state.v0.3"
+	DeliveryReportSchemaVersion       = "compound.coordination_delivery_report.v0.1"
+	DeliveryMeasurementSchemaVersion  = "compound.coordination_delivery_measurement.v0.1"
+	OperatorCoordinationSchemaVersion = "compound.operator_coordination_projection.v0.1"
+	OperatorAttentionSchemaVersion    = "compound.operator_attention_projection.v0.1"
+	deliveryStatePreviousVersion      = "compound.coordination_delivery_state.v0.2"
 )
 
 const (
@@ -86,26 +87,30 @@ type DeliveryRequest struct {
 	BeforeStatePersist  func() error
 }
 
-// OperatorAttentionRequest is the bounded production read seam for current
-// operator-owned attention. It deliberately takes no native hook payload.
-type OperatorAttentionRequest struct {
+// OperatorCoordinationRequest is the bounded production read seam for current
+// operator-owned coordination. It deliberately takes no native hook payload.
+type OperatorCoordinationRequest struct {
 	HomePath string
 	MaxItems int
 }
 
-// OperatorAttentionProjection is bounded current operator state, not a native
-// agent delivery report.
-type OperatorAttentionProjection struct {
-	SchemaVersion string                  `json:"schema_version"`
-	Revision      string                  `json:"revision"`
-	Total         int                     `json:"total"`
-	Truncated     bool                    `json:"truncated,omitempty"`
-	Items         []OperatorAttentionItem `json:"items"`
+type OperatorAttentionRequest = OperatorCoordinationRequest
+
+// OperatorCoordinationProjection is bounded current operator state, not a
+// native agent delivery report.
+type OperatorCoordinationProjection struct {
+	SchemaVersion string                     `json:"schema_version"`
+	Revision      string                     `json:"revision"`
+	Total         int                        `json:"total"`
+	Truncated     bool                       `json:"truncated,omitempty"`
+	Items         []OperatorCoordinationItem `json:"items"`
 }
 
-// OperatorAttentionItem carries reference-only governed meaning; artifact
+type OperatorAttentionProjection = OperatorCoordinationProjection
+
+// OperatorCoordinationItem carries reference-only governed meaning; artifact
 // bodies remain behind the explicit collaboration body door.
-type OperatorAttentionItem struct {
+type OperatorCoordinationItem struct {
 	EventRef         string                       `json:"event_ref"`
 	WorkRef          string                       `json:"work_ref"`
 	DeliveryClass    string                       `json:"delivery_class"`
@@ -113,6 +118,8 @@ type OperatorAttentionItem struct {
 	ArtifactRefs     []string                     `json:"artifact_refs"`
 	SemanticRevision string                       `json:"semantic_revision"`
 }
+
+type OperatorAttentionItem = OperatorCoordinationItem
 
 // LifecyclePlan is the semantic owner. Native hook presentation is compiled
 // from it after relevance and boundary disposition are decided.
@@ -226,16 +233,30 @@ func DeliverCoordinationWithPublisher(request DeliveryRequest, publish DeliveryP
 	return deliverCoordination(request, publish)
 }
 
-// ReadOperatorAttention folds current unresolved human_attention from replay
-// zero. It is level-triggered and read-only: no delivery cursor, report,
-// acknowledgement, or native context is created.
+// ReadOperatorCoordination folds current governed replay from zero. It is
+// level-triggered and read-only: no delivery cursor, report, acknowledgement,
+// or native context is created.
+func ReadOperatorCoordination(request OperatorCoordinationRequest) (OperatorCoordinationProjection, error) {
+	return readOperatorCoordination(request, "", OperatorCoordinationSchemaVersion)
+}
+
+// ReadOperatorAttention filters unresolved human_attention through the shared
+// operator coordination fold.
 func ReadOperatorAttention(request OperatorAttentionRequest) (OperatorAttentionProjection, error) {
+	return readOperatorCoordination(request, work.CollaborationDeliveryHumanAttention, OperatorAttentionSchemaVersion)
+}
+
+func readOperatorCoordination(
+	request OperatorCoordinationRequest,
+	classFilter string,
+	schemaVersion string,
+) (OperatorCoordinationProjection, error) {
 	request.HomePath = strings.TrimSpace(request.HomePath)
 	if request.HomePath == "" {
-		return OperatorAttentionProjection{}, fmt.Errorf("operator attention requires home")
+		return OperatorCoordinationProjection{}, fmt.Errorf("operator coordination requires home")
 	}
 	if request.MaxItems < 0 {
-		return OperatorAttentionProjection{}, fmt.Errorf("operator attention max items cannot be negative")
+		return OperatorCoordinationProjection{}, fmt.Errorf("operator coordination max items cannot be negative")
 	}
 	const hardMaxItems = 8
 	if request.MaxItems == 0 {
@@ -247,18 +268,18 @@ func ReadOperatorAttention(request OperatorAttentionRequest) (OperatorAttentionP
 
 	frames, _, err := stream.ReadAvailable(request.HomePath, 0)
 	if err != nil {
-		return OperatorAttentionProjection{}, err
+		return OperatorCoordinationProjection{}, err
 	}
 	store, err := work.Open(request.HomePath)
 	if err != nil {
-		return OperatorAttentionProjection{}, err
+		return OperatorCoordinationProjection{}, err
 	}
 
-	current := map[string]OperatorAttentionItem{}
+	current := map[string]OperatorCoordinationItem{}
 	for _, frame := range frames {
 		if frame.Kind == stream.KindWarning {
-			return OperatorAttentionProjection{}, fmt.Errorf(
-				"operator attention replay integrity is unknown: %s",
+			return OperatorCoordinationProjection{}, fmt.Errorf(
+				"operator coordination replay integrity is unknown: %s",
 				strings.TrimSpace(frame.Message),
 			)
 		}
@@ -266,27 +287,32 @@ func ReadOperatorAttention(request OperatorAttentionRequest) (OperatorAttentionP
 			continue
 		}
 		event := *frame.Collaboration
-		if event.SchemaVersion == work.CollaborationLegacySchemaVersion ||
-			collaborationDeliveryClass(event) != work.CollaborationDeliveryHumanAttention {
-			continue
+		class := collaborationDeliveryClass(event)
+		if event.SchemaVersion == work.CollaborationLegacySchemaVersion {
+			class = work.CollaborationDeliverySilentState
 		}
-		if err := store.ValidateCollaborationDeliveryEvidence(event); err != nil {
-			if errors.Is(err, work.ErrCollaborationAuthorityResolved) {
-				continue
-			}
-			return OperatorAttentionProjection{}, fmt.Errorf(
-				"operator attention event %s ineligible: %w", event.ID, err,
-			)
+		if classFilter != "" && class != classFilter {
+			continue
 		}
 		delta := collaborationDelta(event)
 		key := event.WorkID + "|" + delta.Kind + "|" + delta.SubjectRef
-		current[key] = OperatorAttentionItem{
+		if err := store.ValidateCollaborationDeliveryEvidence(event); err != nil {
+			if errors.Is(err, work.ErrCollaborationAuthorityResolved) ||
+				errors.Is(err, work.ErrCollaborationInterruptInactive) {
+				delete(current, key)
+				continue
+			}
+			return OperatorCoordinationProjection{}, fmt.Errorf(
+				"operator coordination event %s ineligible: %w", event.ID, err,
+			)
+		}
+		current[key] = OperatorCoordinationItem{
 			EventRef:         event.ID,
 			WorkRef:          event.WorkID,
-			DeliveryClass:    work.CollaborationDeliveryHumanAttention,
+			DeliveryClass:    class,
 			Delta:            delta,
 			ArtifactRefs:     []string{event.BodyRef},
-			SemanticRevision: collaborationStateRevision(event),
+			SemanticRevision: collaborationStateRevisionForClass(event, class),
 		}
 	}
 
@@ -295,12 +321,12 @@ func ReadOperatorAttention(request OperatorAttentionRequest) (OperatorAttentionP
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	all := make([]OperatorAttentionItem, 0, len(keys))
+	all := make([]OperatorCoordinationItem, 0, len(keys))
 	for _, key := range keys {
 		all = append(all, current[key])
 	}
-	projection := OperatorAttentionProjection{
-		SchemaVersion: OperatorAttentionSchemaVersion,
+	projection := OperatorCoordinationProjection{
+		SchemaVersion: schemaVersion,
 		Total:         len(all),
 		Items:         all,
 	}
@@ -308,11 +334,11 @@ func ReadOperatorAttention(request OperatorAttentionRequest) (OperatorAttentionP
 		projection.Items = projection.Items[:request.MaxItems]
 		projection.Truncated = true
 	}
-	projection.Revision = operatorAttentionProjectionRevision(all)
+	projection.Revision = operatorCoordinationProjectionRevision(all)
 	return projection, nil
 }
 
-func operatorAttentionProjectionRevision(items []OperatorAttentionItem) string {
+func operatorCoordinationProjectionRevision(items []OperatorCoordinationItem) string {
 	body, _ := json.Marshal(items)
 	digest := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(digest[:])
@@ -699,6 +725,10 @@ func collaborationSemanticKey(event work.CollaborationEvent) string {
 }
 
 func collaborationStateRevision(event work.CollaborationEvent) string {
+	return collaborationStateRevisionForClass(event, collaborationDeliveryClass(event))
+}
+
+func collaborationStateRevisionForClass(event work.CollaborationEvent, deliveryClass string) string {
 	delta := collaborationDelta(event)
 	effective := delta.After
 	if effective == "" {
@@ -711,7 +741,7 @@ func collaborationStateRevision(event work.CollaborationEvent) string {
 		DeliveryClass string `json:"delivery_class"`
 	}{
 		Kind: delta.Kind, SubjectRef: delta.SubjectRef, Effective: effective,
-		DeliveryClass: collaborationDeliveryClass(event),
+		DeliveryClass: deliveryClass,
 	})
 	digest := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(digest[:])

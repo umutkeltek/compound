@@ -1,4 +1,8 @@
 import { arr, num, runJson, runProjection, str, type Json, type ProjectionRead } from "@/lib/compound";
+import {
+  normalizeOperatorCoordination,
+  type OperatorCoordinationProjection,
+} from "@/lib/coordination-model";
 
 /**
  * The ONE operator-attention projection (`compound attention --json`,
@@ -81,6 +85,8 @@ export interface AttentionReport {
   top: AttentionGroup | null;
   /** Deterministically ranked, server-side; consume in order, never re-sort. */
   groups: AttentionGroup[];
+  /** Unresolved authority references; never folded into counts, top, or groups. */
+  operatorAttention: OperatorCoordinationProjection;
 }
 
 /* ---------- defensive normalizer (schemas evolve; never crash a surface) ---------- */
@@ -141,6 +147,7 @@ export function toAttentionReport(raw: Json | null): AttentionReport | null {
     },
     top: raw.top && typeof raw.top === "object" ? toGroup(raw.top) : null,
     groups: arr(raw.groups).map(toGroup),
+    operatorAttention: normalizeOperatorCoordination(raw.operator_attention, true),
   };
 }
 

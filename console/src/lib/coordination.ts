@@ -1,10 +1,12 @@
 import { arr, num, runProjection, str, type Json, type ProjectionStatus } from "@/lib/compound";
 import {
+  normalizeOperatorCoordination,
   type CoordinationActor,
   type CoordinationLane,
   type CoordinationDoing,
   type CoordinationView,
   type CoordinationWait,
+  type OperatorCoordinationProjection,
 } from "@/lib/coordination-model";
 
 /*
@@ -33,8 +35,9 @@ export type {
   CoordinationLane,
   CoordinationView,
   CoordinationWait,
+  OperatorCoordinationProjection,
 } from "@/lib/coordination-model";
-export { laneGated } from "@/lib/coordination-model";
+export { laneGated, normalizeOperatorCoordination } from "@/lib/coordination-model";
 
 export type CoordinationRead = {
   view: CoordinationView;
@@ -121,6 +124,7 @@ export function buildCoordinationView(value: Json | null): CoordinationView {
       me: EMPTY_ACTOR,
       others: [],
       waits: [],
+      operatorCoordination: normalizeOperatorCoordination(null),
       integrity: [],
       generatedAt: "",
     };
@@ -138,6 +142,7 @@ export function buildCoordinationView(value: Json | null): CoordinationView {
     me,
     others,
     waits,
+    operatorCoordination: normalizeOperatorCoordination(value.operator_coordination),
     integrity: arr(value.integrity).map(str).filter((s: string) => s !== ""),
     generatedAt: str(value.generated_at),
   };

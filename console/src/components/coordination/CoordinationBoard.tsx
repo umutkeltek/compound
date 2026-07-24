@@ -5,6 +5,7 @@ import { PulseIcon } from "@/components/kit/icons";
 import { laneGated, type CoordinationActor, type CoordinationLane, type CoordinationView } from "@/lib/coordination-model";
 import { useLiveFleet } from "@/lib/stream/useLiveFleet";
 import type { ProjectionStatus } from "@/lib/compound";
+import { OperatorCoordinationList } from "./OperatorCoordinationList";
 
 /*
  * Coordination view: Me / Others / Waiting-on. The reframe of the old fleet
@@ -278,6 +279,8 @@ export function CoordinationBoard({ view, doorStatus, doorError, execDetail, run
           </p>
         ) : null}
       </section>
+
+      <OperatorCoordinationList projection={view.operatorCoordination} />
 
       {/* ME — what I'm on, and what I'm waiting for. */}
       <section className="flex flex-col gap-2">

@@ -16,7 +16,7 @@ if (!process.versions.bun) {
 
 const [
   { default: ReviewsPage },
-  { getAttentionProjection },
+  { getAttentionProjection, toAttentionReport },
   { DecideList },
   { Headline },
   { decisionSelectionHref, initialDecideIndex, initialDecideKey },
@@ -80,6 +80,7 @@ assert.notEqual(
 const attention = attentionProjection.report;
 assert.ok(attention, "Attention projection returned no report");
 assert.equal(str(attention.schema_version), "compound.attention.v0.1", "unexpected attention schema");
+assert.ok(attention.operatorAttention, "operator_attention must remain separate from Attention groups");
 
 const attentionGroups = arr(attention.groups).filter((group) => str(group.band) === "needs_you");
 const attentionKeys = attentionGroups.map((group) => str(group.key));
@@ -112,6 +113,45 @@ assert.deepEqual(
 );
 
 assert.deepEqual(decideKeys, attentionKeys, "Decide must preserve Attention's global group order exactly");
+
+const syntheticAttention = toAttentionReport({
+  schema_version: "compound.attention.v0.1",
+  generated_at: "2026-07-24T12:00:00Z",
+  counts: { needs_you: 1, needs_you_groups: 1, actionable_now: 0, watching: 0, blocked_on_you: 1, fallback_groups: 0 },
+  top: { key: "decide-one", band: "needs_you" },
+  groups: [{ key: "decide-one", band: "needs_you" }],
+  operator_attention: {
+    schema_version: "compound.operator_attention_projection.v0.1",
+    revision: "sha256:attention",
+    total: 2,
+    items: [
+      {
+        event_ref: "wco_human",
+        work_ref: "work_human",
+        delivery_class: "human_attention",
+        delta: { kind: "authority", subject_ref: "pol_human", before: "pending", after: "unresolved" },
+        artifact_refs: ["artifact:sha256:human"],
+        semantic_revision: "sha256:human",
+      },
+      {
+        event_ref: "wco_silent",
+        work_ref: "work_silent",
+        delivery_class: "silent_state",
+        delta: { kind: "scope", subject_ref: "scope:silent", before: "open", after: "reserved" },
+        artifact_refs: ["artifact:sha256:silent"],
+        semantic_revision: "sha256:silent",
+      },
+    ],
+  },
+});
+assert.ok(syntheticAttention, "synthetic Attention report must normalize");
+assert.equal(syntheticAttention.counts.needs_you_groups, 1, "operator_attention must not change Decide counts");
+assert.deepEqual(syntheticAttention.groups.map((group) => group.key), ["decide-one"], "operator_attention must not duplicate Decide identity");
+assert.deepEqual(
+  syntheticAttention.operatorAttention.items.map((item) => item.eventRef),
+  ["wco_human"],
+  "Attention loader must human-filter operator_attention independently",
+);
 
 const briefing = DecideList({
   groups: attentionGroups,

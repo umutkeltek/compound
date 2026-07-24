@@ -6,7 +6,15 @@
  * actor, or re-targeted an explicit me. Run via scripts/coordination-smoke.mjs.
  */
 
-import { buildCoordinationView, buildWait, laneGated, type CoordinationActor } from "./coordination";
+import { renderToStaticMarkup } from "react-dom/server";
+import { OperatorCoordinationList } from "../components/coordination/OperatorCoordinationList";
+import {
+  buildCoordinationView,
+  buildWait,
+  laneGated,
+  normalizeOperatorCoordination,
+  type CoordinationActor,
+} from "./coordination";
 
 type Check = { name: string; ok: boolean; detail: string };
 
@@ -153,6 +161,117 @@ export function runCoordinationSelfTest(): { ok: boolean; details: string[] } {
       name: "ragged payload maps defensively",
       ok: !threw && view !== null && view.present === true && view.others.length === 3 && (other?.blockedOn.length ?? 1) === 0 && view.waits[0]?.actor === "",
       detail: `threw=${threw} others=${view?.others.length} waits=${JSON.stringify(view?.waits)}`,
+    });
+  }
+
+  // F6: operator coordination is a six-field, reference-only, bounded view.
+  {
+    const hostileItems = Array.from({ length: 10 }, (_, index) => ({
+      event_ref: `wco_safe_${index}`,
+      work_ref: `work_safe_${index}`,
+      delivery_class: index % 2 === 0 ? "human_attention" : "silent_state",
+      delta: {
+        kind: "scope",
+        subject_ref: `scope:safe:${index}`,
+        before: "open",
+        after: "reserved",
+        body: "body sentinel in hostile delta",
+        argv: ["compound", "steer"],
+      },
+      artifact_refs: [`artifact:sha256:${String(index).padStart(64, "0")}`],
+      semantic_revision: `sha256:${String(index + 10).padStart(64, "0")}`,
+      body: "body sentinel",
+      actor: "hostile-actor",
+      session_id: "hostile-session",
+      run_attempt_id: "ratt_hostile",
+      cursor: 99,
+      report_ref: "hostile-report",
+      native_context: "hostile-context",
+      argv: ["compound", "steer"],
+      acknowledgement: "acknowledge this",
+    }));
+    const projection = normalizeOperatorCoordination({
+      schema_version: "compound.operator_coordination_projection.v0.1",
+      revision: "sha256:projection",
+      total: 10,
+      truncated: true,
+      items: hostileItems,
+      body: "projection body sentinel",
+    });
+    const first = projection.items[0];
+    const itemKeys = Object.keys(first ?? {}).sort();
+    const deltaKeys = Object.keys(first?.delta ?? {}).sort();
+    const serialized = JSON.stringify(projection);
+    checks.push({
+      name: "operator projection caps eight and whitelists six item fields",
+      ok:
+        projection.items.length === 8 &&
+        projection.total === 10 &&
+        projection.truncated === true &&
+        JSON.stringify(itemKeys) ===
+          JSON.stringify(["artifactRefs", "deliveryClass", "delta", "eventRef", "semanticRevision", "workRef"]) &&
+        JSON.stringify(deltaKeys) === JSON.stringify(["after", "before", "kind", "subjectRef"]) &&
+        !serialized.includes("body sentinel") &&
+        !serialized.includes("hostile-actor") &&
+        !serialized.includes("hostile-session") &&
+        !serialized.includes("ratt_hostile") &&
+        !serialized.includes("acknowledge this"),
+      detail: `items=${projection.items.length} itemKeys=${itemKeys.join(",")} deltaKeys=${deltaKeys.join(",")}`,
+    });
+
+    const human = normalizeOperatorCoordination(
+      {
+        schema_version: "compound.operator_attention_projection.v0.1",
+        revision: "sha256:attention",
+        total: 10,
+        items: hostileItems,
+      },
+      true,
+    );
+    checks.push({
+      name: "human-only filter keeps only human_attention",
+      ok: human.items.length === 5 && human.items.every((item) => item.deliveryClass === "human_attention"),
+      detail: `items=${human.items.length} classes=${human.items.map((item) => item.deliveryClass).join(",")}`,
+    });
+
+    const view = buildCoordinationView(
+      mkReport({
+        operator_coordination: {
+          schema_version: "compound.operator_coordination_projection.v0.1",
+          revision: "sha256:view",
+          total: 1,
+          items: hostileItems.slice(0, 1),
+        },
+      }) as any,
+    );
+    checks.push({
+      name: "coordination loader maps operator_coordination separately",
+      ok: view.operatorCoordination.items.length === 1 && view.operatorCoordination.items[0]?.eventRef === "wco_safe_0",
+      detail: JSON.stringify(view.operatorCoordination),
+    });
+
+    const markup = renderToStaticMarkup(
+      OperatorCoordinationList({
+        projection: {
+          ...projection,
+          items: projection.items.slice(0, 1),
+          total: 1,
+          truncated: false,
+        },
+        label: "Recorded coordination",
+      }),
+    );
+    checks.push({
+      name: "operator renderer is static references and delta only",
+      ok:
+        markup.includes("wco_safe_0") &&
+        markup.includes("work_safe_0") &&
+        markup.includes("scope:safe:0") &&
+        markup.includes("artifact:sha256:") &&
+        !/<(?:form|button|select|input)\b/i.test(markup) &&
+        !/\b(?:ack|steer)\b/i.test(markup) &&
+        !markup.includes("body sentinel"),
+      detail: markup,
     });
   }
 

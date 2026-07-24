@@ -11,6 +11,7 @@ import { LatestMoment } from "@/components/briefing/LatestMoment";
 import { PipelineStrip } from "@/components/briefing/PipelineStrip";
 import { SectionLabel } from "@/components/briefing/primitives";
 import { SelfHealingPanel } from "@/components/briefing/SelfHealingPanel";
+import { OperatorCoordinationList } from "@/components/coordination/OperatorCoordinationList";
 import { FreshnessChip } from "@/components/kit";
 import { attentionNeedsYouGroups, getAttentionProjection, hasClassAGate } from "@/lib/attention";
 import {
@@ -144,6 +145,9 @@ export default async function Briefing() {
           total={needsYouGroupCount}
           read={{ status: attentionRead.status, lastGoodAt: attentionRead.lastGoodAt }}
         />
+        {attention ? (
+          <OperatorCoordinationList projection={attention.operatorAttention} label="Authority references" />
+        ) : null}
       </section>
 
       <div data-depth-min="understand"><KpiStrip

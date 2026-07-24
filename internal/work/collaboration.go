@@ -35,6 +35,11 @@ const (
 // malformed or missing governed evidence during replay.
 var ErrCollaborationAuthorityResolved = errors.New("collaboration operator authority is resolved")
 
+// ErrCollaborationInterruptInactive distinguishes a once-governed exact
+// interrupt whose run has since terminalized from malformed or missing
+// interrupt evidence during replay.
+var ErrCollaborationInterruptInactive = errors.New("collaboration interrupt run is inactive")
+
 // CollaborationStateDelta is deliberately structural and bounded. Full prose
 // remains in BodyRef; delivery cards need only the changed coordinate.
 type CollaborationStateDelta struct {
@@ -585,8 +590,11 @@ func (s *Store) validateCollaborationClassEvidence(workID string, in Collaborati
 		if err != nil {
 			return fmt.Errorf("interrupt run attempt %s: %w", attemptID, err)
 		}
-		if attempt.WorkID != workID || runattempt.IsTerminal(attempt.Status) || attempt.ActionIntentID == "" {
+		if attempt.WorkID != workID || attempt.ActionIntentID == "" {
 			return fmt.Errorf("interrupt requires exact active run/action evidence for %s", attemptID)
+		}
+		if runattempt.IsTerminal(attempt.Status) {
+			return fmt.Errorf("%w: %s", ErrCollaborationInterruptInactive, attemptID)
 		}
 		var action envelope.ActionIntent
 		if err := s.readEventJSON(attempt.ActionIntentID, &action); err != nil {

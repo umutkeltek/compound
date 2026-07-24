@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 
 	"compound/internal/attention"
 	"compound/internal/home"
+	"compound/internal/hookplan"
 	"compound/internal/work"
 )
 
@@ -283,6 +285,54 @@ func TestAttentionCLILiveProjectionSeparatesCanMoveFromNeedsOperator(t *testing.
 	}
 	if !foundCanMove || !foundHeld {
 		t.Fatalf("live projection missing required groups: can_move=%v held=%v groups=%+v", foundCanMove, foundHeld, report.Groups)
+	}
+}
+
+func TestAttentionCLIJSONEmbedsOperatorAttentionWithoutChangingGroups(t *testing.T) {
+	homePath, _, _ := initAttentionReceiptOnlyCLIHome(t)
+	before := snapshotTree(t, homePath)
+	first := captureStdout(t, func() {
+		cmdAttention([]string{"--json", "--home", homePath})
+	})
+	second := captureStdout(t, func() {
+		cmdAttention([]string{"--json", "--home", homePath})
+	})
+	after := snapshotTree(t, homePath)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("attention polls mutated home\nbefore=%v\nafter=%v", before, after)
+	}
+
+	var payload struct {
+		attention.Report
+		OperatorAttention hookplan.OperatorAttentionProjection `json:"operator_attention"`
+	}
+	if err := json.Unmarshal([]byte(first), &payload); err != nil {
+		t.Fatalf("parse attention envelope: %v\n%s", err, first)
+	}
+	var unchanged attention.Report
+	if err := json.Unmarshal([]byte(first), &unchanged); err != nil {
+		t.Fatalf("parse embedded attention report: %v\n%s", err, first)
+	}
+	if !reflect.DeepEqual(payload.Counts, unchanged.Counts) ||
+		!reflect.DeepEqual(payload.Groups, unchanged.Groups) ||
+		!reflect.DeepEqual(payload.Top, unchanged.Top) {
+		t.Fatalf("operator projection changed attention identity/counts:\nenvelope=%+v\nreport=%+v",
+			payload.Report, unchanged)
+	}
+	if payload.OperatorAttention.SchemaVersion != hookplan.OperatorAttentionSchemaVersion ||
+		payload.OperatorAttention.Total != 0 || len(payload.OperatorAttention.Items) != 0 {
+		t.Fatalf("operator attention was not embedded separately: %+v", payload.OperatorAttention)
+	}
+
+	var repeated struct {
+		OperatorAttention hookplan.OperatorAttentionProjection `json:"operator_attention"`
+	}
+	if err := json.Unmarshal([]byte(second), &repeated); err != nil {
+		t.Fatalf("parse repeated attention envelope: %v\n%s", err, second)
+	}
+	if !reflect.DeepEqual(payload.OperatorAttention, repeated.OperatorAttention) {
+		t.Fatalf("operator attention changed across polls:\nfirst=%+v\nsecond=%+v",
+			payload.OperatorAttention, repeated.OperatorAttention)
 	}
 }
 

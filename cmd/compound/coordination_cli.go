@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/hookplan"
 	"compound/internal/work"
 )
 
@@ -61,7 +62,21 @@ func cmdCoordination(args []string) {
 	}
 
 	if jsonOut {
-		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		operatorCoordination, err := hookplan.ReadOperatorCoordination(hookplan.OperatorCoordinationRequest{
+			HomePath: homePath,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		payload := struct {
+			work.CoordinationReport
+			OperatorCoordination hookplan.OperatorCoordinationProjection `json:"operator_coordination"`
+		}{
+			CoordinationReport:   report,
+			OperatorCoordination: operatorCoordination,
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(payload); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}

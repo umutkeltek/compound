@@ -1,6 +1,7 @@
 package hookplan
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1110,6 +1111,293 @@ func TestReadOperatorAttentionHardCapsEightItemsAndExposesExactDTO(t *testing.T)
 	if strings.Contains(string(body), "operator projection body remains in artifact custody") {
 		t.Fatalf("operator DTO exposed artifact body: %s", body)
 	}
+}
+
+func TestReadOperatorCoordinationFoldsCurrentStateWithoutMutatingHome(t *testing.T) {
+	fixture := newDeliveryFixture(t)
+	sharedDelta := work.CollaborationStateDelta{
+		Kind: "scope", SubjectRef: "scope:shared", Before: "open", After: "reserved",
+	}
+	fixture.recordDelta(t, "operator-silent", work.CollaborationDeliverySilentState, sharedDelta, work.CollaborationAffects{
+		WorkIDs: []string{fixture.work},
+	})
+	fixture.record(t, "operator-boundary", work.CollaborationDeliveryNextBoundary, work.CollaborationAffects{
+		WorkIDs: []string{fixture.work},
+	})
+	fixture.record(t, "operator-interrupt", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{
+		WorkIDs: []string{fixture.work},
+	})
+	fixture.record(t, "operator-human", work.CollaborationDeliveryHumanAttention, work.CollaborationAffects{
+		WorkIDs: []string{fixture.work},
+	})
+
+	other, err := fixture.store.Create(work.CreateInput{
+		Owner: "delivery", SuccessPredicate: "same semantic coordinate stays distinct across work",
+	}, fixture.now.Add(10*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.Claim(other.ID, "delivery", fixture.now.Add(10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(fixture.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyRef, err := artifacts.Put([]byte("other work body remains behind artifact custody"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.RecordCollaboration(other.ID, work.CollaborationInput{
+		Actor: "delivery", IdempotencyKey: "operator-other-work", BodyRef: bodyRef,
+		DeliveryClass: work.CollaborationDeliverySilentState, Delta: sharedDelta,
+		Affects: work.CollaborationAffects{WorkIDs: []string{other.ID}},
+	}, fixture.now.Add(11*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	before := operatorProjectionHomeHash(t, fixture.home)
+	projection, err := ReadOperatorCoordination(OperatorCoordinationRequest{
+		HomePath: fixture.home,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Total != 5 || len(projection.Items) != 5 || projection.Truncated {
+		t.Fatalf("operator coordination projection = %+v, want five current items", projection)
+	}
+	classes := map[string]int{}
+	sharedWorks := map[string]bool{}
+	for _, item := range projection.Items {
+		classes[item.DeliveryClass]++
+		if item.Delta.Kind == sharedDelta.Kind && item.Delta.SubjectRef == sharedDelta.SubjectRef {
+			sharedWorks[item.WorkRef] = true
+		}
+	}
+	for _, class := range []string{
+		work.CollaborationDeliverySilentState,
+		work.CollaborationDeliveryNextBoundary,
+		work.CollaborationDeliveryInterrupt,
+		work.CollaborationDeliveryHumanAttention,
+	} {
+		if classes[class] == 0 {
+			t.Fatalf("operator coordination dropped %s: %+v", class, projection)
+		}
+	}
+	if len(sharedWorks) != 2 {
+		t.Fatalf("same semantic coordinate collided across work: %+v", projection.Items)
+	}
+
+	repeated, err := ReadOperatorCoordination(OperatorCoordinationRequest{
+		HomePath: fixture.home, MaxItems: 64,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(repeated, projection) {
+		t.Fatalf("level-triggered read changed without governed state delta:\nfirst=%+v\nsecond=%+v", projection, repeated)
+	}
+	after := operatorProjectionHomeHash(t, fixture.home)
+	if before != after {
+		t.Fatalf("operator coordination read mutated home: before=%s after=%s", before, after)
+	}
+
+	attention, err := ReadOperatorAttention(OperatorAttentionRequest{
+		HomePath: fixture.home, MaxItems: 64,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attention.Total != 1 || len(attention.Items) != 1 ||
+		attention.Items[0].DeliveryClass != work.CollaborationDeliveryHumanAttention {
+		t.Fatalf("operator attention did not filter the shared fold: %+v", attention)
+	}
+
+	body, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	wantKeys := []string{
+		"artifact_refs", "delivery_class", "delta", "event_ref", "semantic_revision", "work_ref",
+	}
+	for index, item := range wire.Items {
+		gotKeys := make([]string, 0, len(item))
+		for key := range item {
+			gotKeys = append(gotKeys, key)
+		}
+		sort.Strings(gotKeys)
+		if !reflect.DeepEqual(gotKeys, wantKeys) {
+			t.Fatalf("operator DTO item %d keys = %v, want exactly %v", index, gotKeys, wantKeys)
+		}
+	}
+	for _, forbidden := range []string{
+		"body", "actor", "session", "cursor", "report", "context", "argv", "ack",
+	} {
+		if strings.Contains(strings.ToLower(string(body)), forbidden) {
+			t.Fatalf("operator projection exposed forbidden %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestReadOperatorCoordinationHardCapsAndReplacesSemanticState(t *testing.T) {
+	t.Run("hard cap", func(t *testing.T) {
+		fixture := newDeliveryFixture(t)
+		for index := 0; index < 10; index++ {
+			fixture.record(t, fmt.Sprintf("operator-cap-%02d", index), work.CollaborationDeliverySilentState, work.CollaborationAffects{
+				WorkIDs: []string{fixture.work},
+			})
+		}
+		for name, request := range map[string]OperatorCoordinationRequest{
+			"default": {HomePath: fixture.home},
+			"max-64":  {HomePath: fixture.home, MaxItems: 64},
+		} {
+			projection, err := ReadOperatorCoordination(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if projection.Total != 10 || len(projection.Items) != 8 || !projection.Truncated {
+				t.Fatalf("%s projection = %+v, want total=10 items=8 truncated", name, projection)
+			}
+		}
+	})
+
+	t.Run("latest clearance replaces suppression", func(t *testing.T) {
+		fixture := newDeliveryFixture(t)
+		interrupt := fixture.record(t, "operator-suppression", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{
+			WorkIDs: []string{fixture.work},
+		})
+		clearance := fixture.recordDelta(t, "operator-clearance", work.CollaborationDeliverySilentState, work.CollaborationStateDelta{
+			Kind: interrupt.Delta.Kind, SubjectRef: interrupt.Delta.SubjectRef,
+			Before: "invalidated", After: "cleared",
+		}, work.CollaborationAffects{WorkIDs: []string{fixture.work}})
+
+		projection, err := ReadOperatorCoordination(OperatorCoordinationRequest{HomePath: fixture.home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if projection.Total != 1 || len(projection.Items) != 1 ||
+			projection.Items[0].EventRef != clearance.ID ||
+			projection.Items[0].DeliveryClass != work.CollaborationDeliverySilentState {
+			t.Fatalf("clearance did not replace older suppression: %+v", projection)
+		}
+	})
+}
+
+func TestReadOperatorCoordinationDropsResolvedOrTerminalStateAndFailsClosed(t *testing.T) {
+	t.Run("resolved human authority disappears", func(t *testing.T) {
+		fixture := newDeliveryFixture(t)
+		fixture.record(t, "operator-resolved-human", work.CollaborationDeliveryHumanAttention, work.CollaborationAffects{
+			WorkIDs: []string{fixture.work},
+		})
+		resolvedState := policy.OperatorState{
+			AutonomyLever: policy.OperatorAutonomyLever{Level: "L2"},
+			Blocked:       []map[string]any{},
+		}
+		body, err := json.Marshal(resolvedState)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(policy.OperatorStatePath(fixture.home), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		projection, err := ReadOperatorCoordination(OperatorCoordinationRequest{HomePath: fixture.home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if projection.Total != 0 || len(projection.Items) != 0 {
+			t.Fatalf("resolved human authority remained operator-current: %+v", projection)
+		}
+	})
+
+	t.Run("terminal interrupt disappears", func(t *testing.T) {
+		fixture := newDeliveryFixture(t)
+		fixture.record(t, "operator-terminal-interrupt", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{
+			WorkIDs: []string{fixture.work},
+		})
+		if _, err := runattempt.Open(fixture.home).Complete(
+			fixture.runAttemptID, runattempt.StatusSucceeded, fixture.now.Add(20*time.Second),
+		); err != nil {
+			t.Fatal(err)
+		}
+		projection, err := ReadOperatorCoordination(OperatorCoordinationRequest{HomePath: fixture.home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if projection.Total != 0 || len(projection.Items) != 0 {
+			t.Fatalf("terminal exact interrupt remained operator-current: %+v", projection)
+		}
+	})
+
+	t.Run("legacy is silent state", func(t *testing.T) {
+		fixture := newDeliveryFixture(t)
+		legacy := fixture.appendLegacyEvent(t, "operator-legacy")
+		projection, err := ReadOperatorCoordination(OperatorCoordinationRequest{HomePath: fixture.home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if projection.Total != 1 || len(projection.Items) != 1 ||
+			projection.Items[0].EventRef != legacy.ID ||
+			projection.Items[0].DeliveryClass != work.CollaborationDeliverySilentState {
+			t.Fatalf("legacy collaboration was not ledger-only silent state: %+v", projection)
+		}
+	})
+
+	t.Run("malformed replay fails closed", func(t *testing.T) {
+		fixture := newDeliveryFixture(t)
+		fixture.record(t, "operator-before-corruption", work.CollaborationDeliverySilentState, work.CollaborationAffects{
+			WorkIDs: []string{fixture.work},
+		})
+		logPath := filepath.Join(fixture.home, "events", "work.jsonl")
+		file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteString("{malformed replay row}\n"); err != nil {
+			file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadOperatorCoordination(OperatorCoordinationRequest{HomePath: fixture.home}); err == nil {
+			t.Fatal("malformed replay returned a partial operator projection")
+		}
+	})
+}
+
+func operatorProjectionHomeHash(t *testing.T, homePath string) string {
+	t.Helper()
+	digest := sha256.New()
+	if err := filepath.WalkDir(homePath, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(homePath, path)
+		if err != nil {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, _ = digest.Write([]byte(rel))
+		_, _ = digest.Write([]byte{0})
+		_, _ = digest.Write(body)
+		_, _ = digest.Write([]byte{0})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%x", digest.Sum(nil))
 }
 
 func deliveryFileInventory(t *testing.T, homePath string) []string {
