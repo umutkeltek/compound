@@ -423,3 +423,164 @@ func TestTOMLEscapeBasicStringEscapesControlBytes(t *testing.T) {
 		t.Fatalf("tomlEscapeBasicString = %q, want %q", got, want)
 	}
 }
+
+// A trailing inline comment is operator-owned context even when the assignment
+// itself is owned. Correcting the value preserves that context, and a value
+// that is already correct remains a byte-identical no-op.
+func TestCodexTOMLInlineCommentSurvivesCorrectionAndNoOp(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		before      string
+		want        string
+		wantChanged bool
+	}{
+		{
+			name:        "correction preserves comment",
+			before:      "approval_policy = \"ask\"  # operator context\nunrelated = true\n",
+			want:        "approval_policy = \"never\"  # operator context\nunrelated = true\n",
+			wantChanged: true,
+		},
+		{
+			name:        "correct value is byte-identical no-op",
+			before:      "approval_policy=\"never\"\t# operator context\nunrelated = true\n",
+			want:        "approval_policy=\"never\"\t# operator context\nunrelated = true\n",
+			wantChanged: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			targetPath := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(targetPath, []byte(tc.before), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			settings := map[string]any{"approval_policy": "never"}
+			writePermissionFixture(t, homePath, targetPath, codexTOMLAuthorityFixture(settings))
+
+			applied, err := applyGovernedPermissions(t, homePath, "codex")
+			if err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			if applied.Changed != tc.wantChanged {
+				t.Fatalf("applied.Changed = %v, want %v", applied.Changed, tc.wantChanged)
+			}
+			after, err := os.ReadFile(targetPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != tc.want {
+				t.Fatalf("after apply:\n%s\nwant:\n%s", after, tc.want)
+			}
+		})
+	}
+}
+
+// An array-of-tables header starts a new scope. A missing key in an earlier
+// regular table must be inserted there, never matched inside the later array.
+func TestCodexTOMLArrayOfTablesHeaderKeepsOwnedTableScope(t *testing.T) {
+	homePath := t.TempDir()
+	targetPath := filepath.Join(t.TempDir(), "config.toml")
+	before := "[features]\n" +
+		"web_search_request = false\n" +
+		"\n" +
+		"[[profiles]]\n" +
+		"name = \"synthetic\"\n" +
+		"guardian_approval = true\n"
+	if err := os.WriteFile(targetPath, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{"features.guardian_approval": false}
+	writePermissionFixture(t, homePath, targetPath, codexTOMLAuthorityFixture(settings))
+
+	if _, err := applyGovernedPermissions(t, homePath, "codex"); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	after, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[features]\n" +
+		"guardian_approval = false\n" +
+		"web_search_request = false\n" +
+		"\n" +
+		"[[profiles]]\n" +
+		"name = \"synthetic\"\n" +
+		"guardian_approval = true\n"
+	if string(after) != want {
+		t.Fatalf("array-of-tables scope was not preserved; after:\n%s\nwant:\n%s", after, want)
+	}
+}
+
+// Alternate TOML spellings of an owned path are semantically the same key but
+// are outside this bare-key line editor's rewrite grammar. Detect and refuse
+// them rather than inserting a duplicate bare assignment.
+func TestCodexTOMLQuotedOrDottedOwnedKeyFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		before   string
+		settings map[string]any
+		key      string
+	}{
+		{
+			name:     "quoted key",
+			before:   "\"approval_policy\" = \"ask\"\nunrelated = true\n",
+			settings: map[string]any{"approval_policy": "never"},
+			key:      "approval_policy",
+		},
+		{
+			name:     "dotted key",
+			before:   "features.guardian_approval = true\nunrelated = true\n",
+			settings: map[string]any{"features.guardian_approval": false},
+			key:      "features.guardian_approval",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			targetPath := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(targetPath, []byte(tc.before), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			writePermissionFixture(t, homePath, targetPath, codexTOMLAuthorityFixture(tc.settings))
+
+			_, applyErr := applyGovernedPermissions(t, homePath, "codex")
+			if applyErr == nil || !strings.Contains(applyErr.Error(), tc.key) || !strings.Contains(strings.ToLower(applyErr.Error()), "refus") {
+				t.Errorf("apply error = %v, want refusal naming %s", applyErr, tc.key)
+			}
+			after, err := os.ReadFile(targetPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != tc.before {
+				t.Fatalf("refused alternate key spelling mutated target; after:\n%s\nwant:\n%s", after, tc.before)
+			}
+		})
+	}
+}
+
+// A UTF-8 BOM belongs at byte zero, but is not part of the first key's name.
+// The editor must recognize and update that key rather than duplicate it.
+func TestCodexTOMLBOMPrefixedFirstOwnedKeyIsRecognized(t *testing.T) {
+	homePath := t.TempDir()
+	targetPath := filepath.Join(t.TempDir(), "config.toml")
+	before := append([]byte{0xef, 0xbb, 0xbf}, []byte("approval_policy = \"ask\"\nunrelated = true\n")...)
+	if err := os.WriteFile(targetPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{"approval_policy": "never"}
+	writePermissionFixture(t, homePath, targetPath, codexTOMLAuthorityFixture(settings))
+
+	applied, err := applyGovernedPermissions(t, homePath, "codex")
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !applied.Changed {
+		t.Fatal("applied.Changed = false, want true")
+	}
+	after, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte{0xef, 0xbb, 0xbf}, []byte("approval_policy = \"never\"\nunrelated = true\n")...)
+	if !bytesEqual(after, want) {
+		t.Fatalf("BOM-prefixed target after apply = %q, want %q", after, want)
+	}
+}
