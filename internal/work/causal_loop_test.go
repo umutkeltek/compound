@@ -196,21 +196,15 @@ func recordDirectiveContextPack(t *testing.T, homePath string, now time.Time) en
 		RepoKindVia: "fixture",
 		Mode:        "execute",
 	}
-	ec, err := contract.CompileWithRuntime(in, contract.DefaultPolicy(), homePath, now)
+	runtime, err := contract.MaterializeRuntime(in, contract.DefaultPolicy(), homePath, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := contract.RecordEffectiveContract(homePath, ec); err != nil {
-		t.Fatal(err)
-	}
-	pack, err := contract.PackWithCapabilities(in, contract.DefaultPolicy(), homePath, now)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pack := runtime.ContextPack
 	if len(pack.ActivePositions) == 0 && len(pack.ActiveDecisions) == 0 {
 		t.Fatalf("context pack has no active positions or decisions: active_memory=%v summary=%s", pack.ActiveMemory, pack.SummaryMD)
 	}
-	if _, err := contract.RecordContextPack(homePath, pack); err != nil {
+	if _, err := contract.RecordRuntimeMaterialization(homePath, runtime); err != nil {
 		t.Fatal(err)
 	}
 	return pack

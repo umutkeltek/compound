@@ -71,6 +71,132 @@ func TestSessionStartProducesContract(t *testing.T) {
 	}
 }
 
+func TestSessionStartReturnsAndPersistsSameBoundInstalledEntrypointPair(t *testing.T) {
+	homePath := t.TempDir()
+	installedHome := t.TempDir()
+	entrypointPath := filepath.Join(installedHome, ".claude", "CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(entrypointPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entrypointPath, []byte("# installed claude entrypoint\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedHookInstalledHarnessHome(t, homePath, installedHome)
+	source, revision, found, err := authority.InstalledHarnessEntrypointBinding(homePath, "claude_code")
+	if err != nil || !found {
+		t.Fatalf("resolve installed entrypoint binding: found=%v err=%v", found, err)
+	}
+
+	deps := baseDeps()
+	deps.HomePath = homePath
+	res, err := Run(Fixture{
+		Hook: "session-start", Harness: "claude_code", Cwd: t.TempDir(),
+		Task: "return and persist one bound pair", RepoKind: "product",
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := res.Produced[1].(*envelope.EffectiveContract)
+	pack := res.Produced[2].(*envelope.ContextPack)
+	requireHookSourceRevision(t, effective.SourceRevisions, source, revision, "returned EffectiveContract")
+	requireHookSourceRevision(t, pack.SourceRevisions, source, revision, "returned ContextPack")
+	if res.Context == nil {
+		t.Fatal("hook result missing Context observation")
+	}
+	requireHookSourceRevision(t, res.Context.Pack.SourceRevisions, source, revision, "observed ContextPack")
+
+	var persistedEffective envelope.EffectiveContract
+	readHookJSON(t, res.Injection.ContractPath, &persistedEffective)
+	var persistedPack envelope.ContextPack
+	readHookJSON(t, res.Injection.ContextPackPath, &persistedPack)
+	requireHookJSONMatches(t, res.Injection.ContractPath, *effective, "EffectiveContract")
+	requireHookJSONMatches(t, res.Injection.ContextPackPath, *pack, "ContextPack")
+	requireHookSourceRevision(t, persistedEffective.SourceRevisions, source, revision, "persisted EffectiveContract")
+	requireHookSourceRevision(t, persistedPack.SourceRevisions, source, revision, "persisted ContextPack")
+}
+
+func seedHookInstalledHarnessHome(t *testing.T, homePath, installedHome string) {
+	t.Helper()
+	registryPath := filepath.Join(t.TempDir(), "os-path-authority.yaml")
+	body := []byte("version: 1\ncanonical_roots:\n  installed_harness_home:\n    path: " + installedHome + "\n    status: active\n")
+	if err := os.WriteFile(registryPath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, err := store.Entities()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, entities, facts, _, err := authority.ImportOSPathRegistry(registryPath, existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entity := range entities {
+		if _, err := store.RegisterEntity(entity, fixedNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	captured, err := store.Capture(facts, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range captured {
+		if _, err := store.Adjudicate(candidate.ID, "promote", "hook installed entrypoint fixture", fixedNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func requireHookSourceRevision(
+	t *testing.T,
+	revisions []envelope.SourceRev,
+	source, want, label string,
+) {
+	t.Helper()
+	for _, revision := range revisions {
+		if revision.Source == source {
+			if revision.Rev != want {
+				t.Fatalf("%s revision = %q, want %q", label, revision.Rev, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("%s missing source revision %s", label, source)
+}
+
+func readHookJSON(t *testing.T, path string, target any) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireHookJSONMatches(t *testing.T, path string, returned any, label string) {
+	t.Helper()
+	want, err := json.Marshal(returned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got bytes.Buffer
+	if err := json.Compact(&got, body); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Fatalf("returned %s JSON differs from persisted artifact:\nreturned=%s\npersisted=%s", label, want, got.Bytes())
+	}
+}
+
 func TestContextObservationExcludesArtifactPersistenceLatency(t *testing.T) {
 	deps := baseDeps()
 	deps.HomePath = t.TempDir()

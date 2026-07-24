@@ -24,6 +24,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"compound/internal/authority"
 	"compound/internal/breadth"
 	"compound/internal/capgraph"
 	decisionstate "compound/internal/decisions"
@@ -477,7 +478,8 @@ type runtimeSnapshot struct {
 
 // MaterializeRuntime loads runtime state once and projects the same snapshot
 // into the EffectiveContract and ContextPack. Pack-only contextual additions
-// remain on the ContextPack projection.
+// remain on the ContextPack projection; the descriptor-backed installed
+// entrypoint revision is then bound once into both artifacts.
 func MaterializeRuntime(in Input, pol OrientationPolicy, homePath string, now time.Time) (RuntimeMaterialization, error) {
 	result := RuntimeMaterialization{
 		EffectiveContract:     Compile(in, pol, now),
@@ -495,7 +497,33 @@ func MaterializeRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	result.EffectiveContract = projectRuntimeContract(result.EffectiveContract, snapshot)
 	result.ContextPack = projectRuntimePack(result.ContextPack, in, snapshot)
 	result.ContextPack, err = appendPackOnlyRuntime(result.ContextPack, in, homePath, now)
-	return result, err
+	if err != nil {
+		return result, err
+	}
+	return bindRuntimeInstalledHarnessEntrypointRevision(homePath, result)
+}
+
+func bindRuntimeInstalledHarnessEntrypointRevision(
+	homePath string,
+	runtime RuntimeMaterialization,
+) (RuntimeMaterialization, error) {
+	source, revision, found, err := authority.InstalledHarnessEntrypointBinding(
+		homePath,
+		runtime.EffectiveContract.Harness,
+	)
+	if err != nil || !found {
+		return runtime, err
+	}
+	binding := []envelope.SourceRev{{Source: source, Rev: revision}}
+	runtime.EffectiveContract.SourceRevisions = mergeSourceRevisions(
+		runtime.EffectiveContract.SourceRevisions,
+		binding,
+	)
+	runtime.ContextPack.SourceRevisions = mergeSourceRevisions(
+		runtime.ContextPack.SourceRevisions,
+		binding,
+	)
+	return runtime, nil
 }
 
 // CompileWithRuntime compiles the static contract and enriches it with runtime
@@ -969,15 +997,6 @@ func appendSnapshotOfferToPack(pack envelope.ContextPack, runtime runtimeOffer, 
 	return pack
 }
 
-type EffectiveContractArtifactPaths struct {
-	ContractPath string `json:"contract_path"`
-	LatestPath   string `json:"latest_path"`
-}
-
-type ContextPackArtifactPaths struct {
-	PackPath string `json:"pack_path"`
-}
-
 type RuntimeMaterializationArtifactPaths struct {
 	ContractPath string `json:"contract_path"`
 	LatestPath   string `json:"latest_path"`
@@ -1141,61 +1160,6 @@ func (lock *runtimeMaterializationLock) release() error {
 	unlockErr := syscall.Flock(int(lock.file.Fd()), syscall.LOCK_UN)
 	closeErr := lock.file.Close()
 	return errors.Join(unlockErr, closeErr)
-}
-
-func RecordEffectiveContract(homePath string, ec envelope.EffectiveContract) (EffectiveContractArtifactPaths, error) {
-	if strings.TrimSpace(homePath) == "" {
-		return EffectiveContractArtifactPaths{}, fmt.Errorf("compound home required")
-	}
-	if err := ec.Validate(); err != nil {
-		return EffectiveContractArtifactPaths{}, fmt.Errorf("effective contract invalid: %w", err)
-	}
-	createdAt, err := time.Parse(time.RFC3339, ec.CreatedAt)
-	if err != nil {
-		return EffectiveContractArtifactPaths{}, fmt.Errorf("effective contract created_at invalid: %w", err)
-	}
-	date := createdAt.UTC().Format("2006-01-02")
-	base := filepath.Join(homePath, "contracts", "effective")
-	contractPath := filepath.Join(base, date, ec.ID+".json")
-	latestPath := filepath.Join(base, "latest.json")
-	if err := os.MkdirAll(filepath.Dir(contractPath), 0o755); err != nil {
-		return EffectiveContractArtifactPaths{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(latestPath), 0o755); err != nil {
-		return EffectiveContractArtifactPaths{}, err
-	}
-	if err := writeContractJSON(contractPath, ec); err != nil {
-		return EffectiveContractArtifactPaths{}, err
-	}
-	if err := writeContractJSON(latestPath, ec); err != nil {
-		return EffectiveContractArtifactPaths{}, err
-	}
-	return EffectiveContractArtifactPaths{ContractPath: contractPath, LatestPath: latestPath}, nil
-}
-
-func writeContractJSON(path string, v any) error {
-	b, err := json.MarshalIndent(v, "", " ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
-}
-
-func RecordContextPack(homePath string, pack envelope.ContextPack) (ContextPackArtifactPaths, error) {
-	if strings.TrimSpace(homePath) == "" {
-		return ContextPackArtifactPaths{}, fmt.Errorf("compound home required")
-	}
-	if err := pack.Validate(); err != nil {
-		return ContextPackArtifactPaths{}, fmt.Errorf("context pack invalid: %w", err)
-	}
-	packPath := filepath.Join(homePath, "context", "packs", pack.ID+".json")
-	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
-		return ContextPackArtifactPaths{}, err
-	}
-	if err := writeContractJSON(packPath, pack); err != nil {
-		return ContextPackArtifactPaths{}, err
-	}
-	return ContextPackArtifactPaths{PackPath: packPath}, nil
 }
 
 // Pack assembles the ContextPack an agent orients from. Its EXCLUDED list — what was

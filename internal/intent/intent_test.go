@@ -187,21 +187,14 @@ func promoteDirective(t *testing.T, homePath, decisionID, directive string, now 
 func recordPack(t *testing.T, homePath string, now time.Time) envelope.ContextPack {
 	t.Helper()
 	in := contract.Input{Harness: "codex", Cwd: "/repo/expressive-fixture", Task: "shape expressive action directive after review", RepoKind: "control-plane", RepoKindVia: "fixture", Mode: "plan"}
-	ec, err := contract.CompileWithRuntime(in, contract.DefaultPolicy(), homePath, now)
+	runtime, err := contract.MaterializeRuntime(in, contract.DefaultPolicy(), homePath, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := contract.RecordEffectiveContract(homePath, ec); err != nil {
+	if _, err := contract.RecordRuntimeMaterialization(homePath, runtime); err != nil {
 		t.Fatal(err)
 	}
-	pack, err := contract.PackWithCapabilities(in, contract.DefaultPolicy(), homePath, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := contract.RecordContextPack(homePath, pack); err != nil {
-		t.Fatal(err)
-	}
-	return pack
+	return runtime.ContextPack
 }
 
 func requireNoPlansParksOrWork(t *testing.T, homePath string) {

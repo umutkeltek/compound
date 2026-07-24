@@ -19,6 +19,42 @@ import (
 	"compound/internal/projection"
 )
 
+func TestProductionHasNoSingleArtifactWriterDoor(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	forbidden := []string{"RecordEffectiveContract(", "RecordContextPack("}
+	var findings []string
+	for _, productionRoot := range []string{"cmd", "internal"} {
+		err := filepath.Walk(filepath.Join(repoRoot, productionRoot), func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if info.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for _, symbol := range forbidden {
+				if strings.Contains(string(body), symbol) {
+					rel, relErr := filepath.Rel(repoRoot, path)
+					if relErr != nil {
+						return relErr
+					}
+					findings = append(findings, rel+":"+symbol)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(findings) != 0 {
+		t.Fatalf("single-artifact writer door remains reachable from production: %v", findings)
+	}
+}
+
 func TestRecordRuntimeMaterializationSerializesConcurrentIdenticalCommits(t *testing.T) {
 	homePath := t.TempDir()
 	in := mkInput("control-plane")
@@ -321,26 +357,38 @@ func TestModeAffectsContractAndContextPackIDs(t *testing.T) {
 	}
 }
 
-func TestRecordEffectiveContractWritesDatedAndLatestArtifacts(t *testing.T) {
+func TestRecordRuntimeMaterializationWritesDatedLatestAndPackArtifacts(t *testing.T) {
 	homePath := t.TempDir()
-	ec := Compile(mkInput("control-plane"), DefaultPolicy(), fixedNow)
+	in := mkInput("control-plane")
+	ec := Compile(in, DefaultPolicy(), fixedNow)
+	pack := Pack(in, DefaultPolicy(), fixedNow)
 
-	paths, err := RecordEffectiveContract(homePath, ec)
+	paths, err := RecordRuntimeMaterialization(homePath, RuntimeMaterialization{
+		EffectiveContract: ec,
+		ContextPack:       pack,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	wantContractPath := filepath.Join(homePath, "contracts", "effective", "2026-06-28", ec.ID+".json")
 	wantLatestPath := filepath.Join(homePath, "contracts", "effective", "latest.json")
+	wantPackPath := filepath.Join(homePath, "context", "packs", pack.ID+".json")
 	if paths.ContractPath != wantContractPath {
 		t.Fatalf("contract path = %q, want %q", paths.ContractPath, wantContractPath)
 	}
 	if paths.LatestPath != wantLatestPath {
 		t.Fatalf("latest path = %q, want %q", paths.LatestPath, wantLatestPath)
 	}
+	if paths.PackPath != wantPackPath {
+		t.Fatalf("pack path = %q, want %q", paths.PackPath, wantPackPath)
+	}
 	invalid := ec
 	invalid.CreatedAt = "not-a-time"
-	if _, err := RecordEffectiveContract(homePath, invalid); err == nil {
+	if _, err := RecordRuntimeMaterialization(homePath, RuntimeMaterialization{
+		EffectiveContract: invalid,
+		ContextPack:       pack,
+	}); err == nil {
 		t.Fatal("expected invalid created_at to fail")
 	}
 
@@ -356,21 +404,6 @@ func TestRecordEffectiveContractWritesDatedAndLatestArtifacts(t *testing.T) {
 		if got.ID != ec.ID || got.Harness != ec.Harness {
 			t.Fatalf("artifact %s = id %q harness %q, want id %q harness %q", path, got.ID, got.Harness, ec.ID, ec.Harness)
 		}
-	}
-}
-
-func TestRecordContextPackWritesPackArtifact(t *testing.T) {
-	homePath := t.TempDir()
-	pack := Pack(mkInput("control-plane"), DefaultPolicy(), fixedNow)
-
-	paths, err := RecordContextPack(homePath, pack)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	wantPath := filepath.Join(homePath, "context", "packs", pack.ID+".json")
-	if paths.PackPath != wantPath {
-		t.Fatalf("pack path = %q, want %q", paths.PackPath, wantPath)
 	}
 	var got envelope.ContextPack
 	data, err := os.ReadFile(paths.PackPath)

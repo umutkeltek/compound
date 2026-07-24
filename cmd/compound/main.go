@@ -3292,10 +3292,11 @@ func cmdContract(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>] [--instructions [--check-instructions]]")
 			os.Exit(2)
 		}
-		ec, err := contract.CompileWithRuntime(in, orientPolicy(), homePath, time.Now())
+		runtime, err := contract.MaterializeRuntime(in, orientPolicy(), homePath, time.Now())
 		die(err)
-		_, err = contract.RecordEffectiveContract(homePath, ec)
+		_, err = contract.RecordRuntimeMaterialization(homePath, runtime)
 		die(err)
+		ec := runtime.EffectiveContract
 		if renderInstructions {
 			render, err := contract.RenderInstructionBlock(ec, in.Cwd)
 			die(err)

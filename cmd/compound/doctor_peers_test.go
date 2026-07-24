@@ -14,7 +14,7 @@ import (
 
 // writeRecordedEffectiveWithID records a minimal EffectiveContract carrying id + harness — the join
 // key the peers cell uses to attribute a recorded ContextPack (which carries no harness) back to a
-// harness. Mirrors the real RecordEffectiveContract dir conventions (contracts/effective/<date>/).
+// harness. Mirrors the paired runtime materializer's dated contract convention.
 func writeRecordedEffectiveWithID(t *testing.T, home, harness, id string, ts time.Time) {
 	t.Helper()
 	dir := filepath.Join(home, "contracts", "effective", ts.UTC().Format("2006-01-02"))

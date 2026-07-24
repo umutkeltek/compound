@@ -64,8 +64,8 @@ func ResolveInstalledHarnessHome(compoundHome string) (string, bool, error) {
 	return resolveDeclaredOSPath(compoundHome, installedHarnessHomeRef)
 }
 
-// InstalledHarnessEntrypointBinding returns the artifact revision that a
-// cmd-layer orient materialization must bind into both its ContextPack and
+// InstalledHarnessEntrypointBinding returns the artifact revision that
+// contract.MaterializeRuntime binds into both the ContextPack and
 // EffectiveContract. A public clone without an installed-harness marker has
 // no binding. Once the marker exists, supported harness entrypoints fail
 // closed when their exact installed file is missing, unreadable, or not a

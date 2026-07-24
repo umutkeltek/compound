@@ -1478,11 +1478,14 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 	if pack.IDs.ContractID != ec.ID {
 		return nil, fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID)
 	}
-	contractPaths, err := contract.RecordEffectiveContract(homePath, ec)
+	runtimePaths, err := contract.RecordRuntimeMaterialization(homePath, contract.RuntimeMaterialization{
+		EffectiveContract: ec,
+		ContextPack:       pack,
+	})
 	if err != nil {
 		return nil, err
 	}
-	contractRef, err := filepath.Rel(homePath, contractPaths.ContractPath)
+	contractRef, err := filepath.Rel(homePath, runtimePaths.ContractPath)
 	if err != nil {
 		return nil, err
 	}
@@ -1492,8 +1495,7 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 		return nil, err
 	}
 
-	packRef := filepath.Join("context", "packs", pack.Header.ID+".json")
-	packPaths, err := contract.RecordContextPack(homePath, pack)
+	packRef, err := filepath.Rel(homePath, runtimePaths.PackPath)
 	if err != nil {
 		return nil, err
 	}
@@ -1530,10 +1532,10 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 		ContextRequestPath: requestPath,
 		ContractID:         ec.ID,
 		ContractRef:        contractRef,
-		ContractPath:       contractPaths.ContractPath,
+		ContractPath:       runtimePaths.ContractPath,
 		ContextPackID:      pack.Header.ID,
 		ContextPackRef:     packRef,
-		ContextPackPath:    packPaths.PackPath,
+		ContextPackPath:    runtimePaths.PackPath,
 	}, nil
 }
 

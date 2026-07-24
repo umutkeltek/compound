@@ -154,21 +154,14 @@ func recordPossiblyEmptyDirectiveContextPack(t *testing.T, homePath string, now 
 		RepoKindVia: "fixture",
 		Mode:        "execute",
 	}
-	effective, err := contract.CompileWithRuntime(in, contract.DefaultPolicy(), homePath, now)
+	runtime, err := contract.MaterializeRuntime(in, contract.DefaultPolicy(), homePath, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := contract.RecordEffectiveContract(homePath, effective); err != nil {
+	if _, err := contract.RecordRuntimeMaterialization(homePath, runtime); err != nil {
 		t.Fatal(err)
 	}
-	pack, err := contract.PackWithCapabilities(in, contract.DefaultPolicy(), homePath, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := contract.RecordContextPack(homePath, pack); err != nil {
-		t.Fatal(err)
-	}
-	return pack
+	return runtime.ContextPack
 }
 
 func captureDirectiveWithStatus(t *testing.T, ms *mem.Store, decisionID, status, directive string, now time.Time) mem.Candidate {

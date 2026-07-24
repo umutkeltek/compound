@@ -73,8 +73,8 @@ func installedHooksManifestPath(homePath string) string {
 	return filepath.Join(homePath, "config", "installed-hooks.yaml")
 }
 
-// effectiveContractLatestPath mirrors contract.RecordEffectiveContract's
-// `contracts/effective/latest.json` write point. Same rationale as
+// effectiveContractLatestPath mirrors the paired runtime materializer's
+// `contracts/effective/latest.json` projection. Same rationale as
 // installedHooksManifestPath.
 func effectiveContractLatestPath(homePath string) string {
 	return filepath.Join(homePath, "contracts", "effective", "latest.json")

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -213,6 +214,133 @@ func TestMaterializeOrientContextPackFailsWhenInstalledEntrypointMissing(t *test
 	if err == nil || !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("promoted installed-harness marker must fail closed on missing exact entrypoint, got %v", err)
 	}
+}
+
+func TestContractCompilePersistsBoundInstalledEntrypointPair(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	source, wantRevision := seedCodexInstalledEntrypointRevision(t, homePath)
+	cwd := t.TempDir()
+	out := captureStdout(t, func() {
+		cmdContract([]string{
+			"compile",
+			"--harness", "codex",
+			"--cwd", cwd,
+			"--task", "compile one bound runtime pair",
+			"--repo-kind", "control-plane",
+		})
+	})
+	var rendered envelope.EffectiveContract
+	if err := json.Unmarshal([]byte(out), &rendered); err != nil {
+		t.Fatalf("parse contract compile output: %v\n%s", err, out)
+	}
+	effective, pack := readPersistedRuntimePair(t, homePath, rendered.ID)
+	if !reflect.DeepEqual(effective, rendered) {
+		t.Fatalf("rendered EffectiveContract differs from persisted artifact:\nrendered=%+v\npersisted=%+v", rendered, effective)
+	}
+	if got := orientSourceRevision(effective.SourceRevisions, source); got != wantRevision {
+		t.Fatalf("persisted EffectiveContract entrypoint revision = %q, want %q", got, wantRevision)
+	}
+	if got := orientSourceRevision(pack.SourceRevisions, source); got != wantRevision {
+		t.Fatalf("persisted ContextPack entrypoint revision = %q, want %q", got, wantRevision)
+	}
+}
+
+func TestHookLiveSessionStartPersistsBoundInstalledEntrypointPair(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	source, wantRevision := seedCodexInstalledEntrypointRevision(t, homePath)
+	cwd := t.TempDir()
+	inputBody, err := json.Marshal(map[string]string{
+		"hook_event_name": "SessionStart",
+		"session_id":      "sess_bound_pair",
+		"cwd":             cwd,
+		"source":          "startup",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	captureStdout(t, func() {
+		withStdin(t, string(inputBody), func() {
+			code = runHookCommand([]string{"session-start", "--live", "--harness", "codex"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("live session-start exit = %d", code)
+	}
+	effective, pack := readPersistedRuntimePair(t, homePath, "")
+	if got := orientSourceRevision(effective.SourceRevisions, source); got != wantRevision {
+		t.Fatalf("live-hook EffectiveContract entrypoint revision = %q, want %q", got, wantRevision)
+	}
+	if got := orientSourceRevision(pack.SourceRevisions, source); got != wantRevision {
+		t.Fatalf("live-hook ContextPack entrypoint revision = %q, want %q", got, wantRevision)
+	}
+}
+
+func seedCodexInstalledEntrypointRevision(t *testing.T, homePath string) (string, string) {
+	t.Helper()
+	installedHome := t.TempDir()
+	entrypointBody := []byte("# installed codex entrypoint\n")
+	entrypointPath := filepath.Join(installedHome, ".codex", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(entrypointPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entrypointPath, entrypointBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedOrientInstalledHarnessHome(t, homePath, installedHome)
+	return authority.InstalledHarnessEntrypointRevisionPrefix + "codex",
+		fmt.Sprintf("sha256:%x", sha256.Sum256(entrypointBody))
+}
+
+func readPersistedRuntimePair(
+	t *testing.T,
+	homePath, wantContractID string,
+) (envelope.EffectiveContract, envelope.ContextPack) {
+	t.Helper()
+	latestBody, err := os.ReadFile(filepath.Join(homePath, "contracts", "effective", "latest.json"))
+	if err != nil {
+		t.Fatalf("read latest EffectiveContract: %v", err)
+	}
+	var effective envelope.EffectiveContract
+	if err := json.Unmarshal(latestBody, &effective); err != nil {
+		t.Fatalf("parse latest EffectiveContract: %v", err)
+	}
+	if wantContractID != "" && effective.ID != wantContractID {
+		t.Fatalf("latest EffectiveContract id = %q, want %q", effective.ID, wantContractID)
+	}
+	entries, err := os.ReadDir(filepath.Join(homePath, "context", "packs"))
+	if err != nil {
+		t.Fatalf("read persisted ContextPacks: %v", err)
+	}
+	var matching []envelope.ContextPack
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(homePath, "context", "packs", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pack envelope.ContextPack
+		if err := json.Unmarshal(body, &pack); err != nil {
+			t.Fatalf("parse ContextPack %s: %v", entry.Name(), err)
+		}
+		if pack.IDs.ContractID == effective.ID {
+			matching = append(matching, pack)
+		}
+	}
+	if len(matching) != 1 {
+		t.Fatalf("persisted ContextPacks joined to contract %s = %d, want 1", effective.ID, len(matching))
+	}
+	return effective, matching[0]
 }
 
 func seedOrientInstalledHarnessHome(t *testing.T, homePath, installedHome string) {

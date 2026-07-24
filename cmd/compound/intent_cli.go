@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"compound/internal/authority"
 	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/home"
@@ -36,9 +35,9 @@ var materializeBodiesForOrient = func(homePath string, pack envelope.ContextPack
 }
 
 // materializeOrientContextPack is the one cmd-layer orientation path used by
-// both `compound orient` and expressive intent. It compiles and records the
-// EffectiveContract, assembles the task-scoped ContextPack through the existing
-// recall owner, optionally materializes bodies, then records that exact pack.
+// both `compound orient` and expressive intent. It materializes the shared
+// EffectiveContract/ContextPack runtime pair, optionally adds task-scoped
+// bodies to the pack, then atomically persists that exact pair.
 func materializeOrientContextPack(homePath string, in contract.Input, bodyBudget int, now time.Time) (envelope.ContextPack, error) {
 	restoreEngine, err := configureMemoryEngineFromHome(homePath, "")
 	if err != nil {
@@ -58,14 +57,6 @@ func materializeOrientContextPack(homePath string, in contract.Input, bodyBudget
 		return envelope.ContextPack{}, materializeErr
 	}
 	ec := runtime.EffectiveContract
-	entrypointSource, entrypointRevision, found, err := authority.InstalledHarnessEntrypointBinding(homePath, in.Harness)
-	if err != nil {
-		return envelope.ContextPack{}, err
-	}
-	if found {
-		pack.SourceRevisions = bindOrientSourceRevision(pack.SourceRevisions, entrypointSource, entrypointRevision)
-		ec.SourceRevisions = bindOrientSourceRevision(ec.SourceRevisions, entrypointSource, entrypointRevision)
-	}
 	if pack.IDs.ContractID != ec.ID {
 		return envelope.ContextPack{}, fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID)
 	}
@@ -82,17 +73,6 @@ func materializeOrientContextPack(homePath string, in contract.Input, bodyBudget
 		return envelope.ContextPack{}, err
 	}
 	return pack, nil
-}
-
-func bindOrientSourceRevision(revisions []envelope.SourceRev, source, revision string) []envelope.SourceRev {
-	bound := append([]envelope.SourceRev(nil), revisions...)
-	for i := range bound {
-		if bound[i].Source == source {
-			bound[i].Rev = revision
-			return bound
-		}
-	}
-	return append(bound, envelope.SourceRev{Source: source, Rev: revision})
 }
 
 func cmdIntent(args []string) {
