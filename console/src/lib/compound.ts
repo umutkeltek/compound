@@ -137,6 +137,8 @@ async function execRunJson(args: string[], timeoutMs: number): Promise<Json | nu
  *    caller. A caller with a longer deadline starts one replacement exec so a
  *    cheap 15s layout read cannot SIGTERM a 45s page projection. This still
  *    kills same-budget N+1 fan-outs (packets per work item, repeated stats).
+ *  - invalidation advances a generation; execs that started before it may
+ *    settle for their original caller but cannot repopulate the current cache.
  *
  * THE LAW (packet: console-honest-degradation, 2026-07-14 - the "clean seam"
  * bug): a failed or timed-out attempt NEVER overwrites a good cached value
@@ -176,6 +178,7 @@ type RunJsonInflightEntry = {
 
 const runJsonCache = new Map<string, RunJsonCacheEntry>();
 const runJsonInflight = new Map<string, RunJsonInflightEntry>();
+let runJsonCacheGeneration = 0;
 
 let binaryFreshnessCache:
   | {
@@ -192,12 +195,31 @@ function pruneRunJsonCache() {
   }
 }
 
+/** A completion discarded by invalidation may observe a newer entry, but it
+ * must never put its own pre-invalidation result back into the cache. */
+function runJsonEntryAfterDiscard(key: string): RunJsonCacheEntry {
+  return runJsonCache.get(key) ?? {
+    value: null,
+    storedAt: null,
+    revalidating: false,
+    lastError: null,
+    lastErrorAt: null,
+  };
+}
+
 /** A real success: the only path allowed to move `value`/`storedAt` forward. */
-function commitRunJsonSuccess(key: string, value: Json | null): RunJsonCacheEntry {
+function commitRunJsonSuccess(
+  key: string,
+  value: Json | null,
+  startedGeneration: number,
+): RunJsonCacheEntry {
+  if (startedGeneration !== runJsonCacheGeneration) return runJsonEntryAfterDiscard(key);
   // Exit 0 but no parseable JSON object in stdout is not a confirmed empty
   // result - bookkeep it as a failure so never-cache-null holds even when the
   // exec itself didn't reject.
-  if (value === null) return commitRunJsonFailure(key, "compound produced no parseable JSON output");
+  if (value === null) {
+    return commitRunJsonFailure(key, "compound produced no parseable JSON output", startedGeneration);
+  }
   // delete-then-set moves the key to the end of Map's iteration order, so the
   // eviction above naturally drops the least-recently-refreshed entry first.
   runJsonCache.delete(key);
@@ -209,7 +231,12 @@ function commitRunJsonSuccess(key: string, value: Json | null): RunJsonCacheEntr
 
 /** A failed (or parse-empty) attempt: NEVER touches `value`/`storedAt` - only
  * stamps the failure so status derivation can tell `stale` from `live`. */
-function commitRunJsonFailure(key: string, message: string): RunJsonCacheEntry {
+function commitRunJsonFailure(
+  key: string,
+  message: string,
+  startedGeneration: number,
+): RunJsonCacheEntry {
+  if (startedGeneration !== runJsonCacheGeneration) return runJsonEntryAfterDiscard(key);
   const prev = runJsonCache.get(key);
   runJsonCache.delete(key);
   const entry: RunJsonCacheEntry = {
@@ -233,9 +260,10 @@ function startRunJsonInflight(
   if (inflight && inflight.timeoutMs >= timeoutMs) return inflight.promise;
 
   const token = Symbol(key);
+  const startedGeneration = runJsonCacheGeneration;
   const promise = execRunJson(args, timeoutMs)
-    .then((value) => commitRunJsonSuccess(key, value))
-    .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message))
+    .then((value) => commitRunJsonSuccess(key, value, startedGeneration))
+    .catch((error) => commitRunJsonFailure(key, compoundFailure(error).message, startedGeneration))
     .finally(() => {
       if (runJsonInflight.get(key)?.token === token) runJsonInflight.delete(key);
     });
@@ -332,8 +360,10 @@ export async function runProjection(args: string[], opts?: { timeoutMs?: number 
   };
 }
 
-/** Mutations call this so the next read (router.refresh()) shows live truth. */
+/** Mutations advance the generation before clearing state so an exec already
+ * running for the old snapshot cannot repopulate this cache after refresh. */
 export function invalidateRunJsonCache(): void {
+  runJsonCacheGeneration += 1;
   runJsonCache.clear();
   runJsonInflight.clear();
   binaryFreshnessCache = null;
