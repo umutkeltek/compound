@@ -22,8 +22,9 @@ Hold the whole system as five places; each step below visits one:
 
 ## Prerequisites
 
-- **Go 1.22+** (to build the `compound` binary).
 - **Git** (Compound uses git for delivery proof).
+- **Go 1.22+** — only required if you build from source (the prebuilt binary
+  path needs no Go).
 - That's it. No cloud account, no API key, no external service.
 
 Optional (for the console): **Bun** and **Node 20+**.
@@ -31,6 +32,32 @@ Optional (for semantic memory): a local **Ollama** server — see
 [`memory-quickstart.md`](./memory-quickstart.md).
 
 ## 1. Install
+
+Pick one:
+
+### Option A — prebuilt binary (no Go required)
+
+Download a signed tarball from the [latest release](https://github.com/umutkeltek/compound/releases/latest)
+and run the installer. Defaults install to `~/.local/bin` and initialize
+`~/.compound`; override with `GOBIN` and `COMPOUND_HOME`.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/umutkeltek/compound/main/scripts/install-release.sh \
+  | sh
+```
+
+That one-liner downloads the right tarball for your OS/arch, verifies its
+SHA256 against the bundled `SHA256SUMS`, drops the binaries on your PATH, and
+runs `compound home init` + `home doctor`.
+
+Offline / air-gapped? Point the installer at a tarball you already have:
+
+```sh
+COMPOUND_RELEASE_TARBALL=/path/to/compound_0.1.0_<os>_<arch>.tar.gz \
+  sh scripts/install-release.sh
+```
+
+### Option B — build from source
 
 ```sh
 git clone https://github.com/umutkeltek/compound.git
