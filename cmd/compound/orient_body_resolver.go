@@ -61,10 +61,14 @@ func newOrientBodyResolver(homePath string, pack envelope.ContextPack, cwd strin
 }
 
 // Resolve implements contract.BodyResolver. The corpus half queries every configured
-// lane (IncludeText=true so the resolver returns the re-derived text along with the
-// suppressed/private status); the source-ref half reads files for non-private-overlay
-// Included refs. Corpus ranks above source refs; source refs rank by Included index
-// (lower index = higher rank). Ties broken by ref asc inside the materializer.
+// lane with the corpus query's privacy-safe DEFAULT: public snippets return their
+// re-derived text, while private (privacy=private) hits are suppressed at the corpus
+// layer — the resolver receives no private text, only a suppressed_private status the
+// materializer records as an omission. Admitting private body text would require an
+// explicit private-text opt-in, which orient never asks for. The source-ref half reads
+// files for non-private-overlay Included refs. Corpus ranks above source refs; source
+// refs rank by Included index (lower index = higher rank). Ties broken by ref asc
+// inside the materializer.
 func (r orientBodyResolver) Resolve(task string) ([]contract.BodyCandidate, error) {
 	corpusCands, minCorpusRank, err := r.resolveCorpus(task)
 	if err != nil {
@@ -97,7 +101,7 @@ func (r orientBodyResolver) resolveCorpus(task string) ([]contract.BodyCandidate
 		if err != nil {
 			return nil, 0, fmt.Errorf("body resolver: corpus lane %s embedder: %w", lane.Lane, err)
 		}
-		report, err := corpus.QueryWithOptions(context.Background(), r.homePath, lane, embedder, task, corpusQueryTopK, corpus.QueryOptions{IncludeText: true})
+		report, err := corpus.Query(context.Background(), r.homePath, lane, embedder, task, corpusQueryTopK)
 		if err != nil {
 			return nil, 0, fmt.Errorf("body resolver: corpus lane %s query: %w", lane.Lane, err)
 		}

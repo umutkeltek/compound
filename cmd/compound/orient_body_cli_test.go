@@ -1,14 +1,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"compound/internal/corpus"
 	"compound/internal/envelope"
 	"compound/internal/home"
+	"compound/internal/sourceobs"
+
+	"gopkg.in/yaml.v3"
 )
 
 // initBodyPackTestHome sets COMPOUND_HOME to a fresh temp dir + a tiny synthetic
@@ -178,6 +185,190 @@ func TestCmdOrientBodyBudgetIsAdditive(t *testing.T) {
 		if string(a) != string(b) {
 			t.Fatalf("additive: field %q differs\n no-budget=%s\n with-budget=%s", k, a, b)
 		}
+	}
+}
+
+// privateBodySecretMarker is a synthetic, unmistakable token planted inside the
+// private corpus body. It must NEVER appear anywhere in orient's emitted
+// ContextPack — its presence is a P0 privacy leak (private text admitted into a
+// body that would flow to a model provider).
+const privateBodySecretMarker = "SYNTHETIC-PRIVATE-BODY-CANARY-do-not-emit"
+
+// fakeCorpusEmbedServer stands up a local (127.0.0.1) OpenAI-compatible
+// /embeddings endpoint returning a fixed unit-length vector per input text. A
+// private corpus lane requires a LOCAL embedder, and httptest binds 127.0.0.1, so
+// this keeps the whole test hermetic (no network, no ollama) while still driving
+// the real production embedder wiring (newCorpusEmbedder → HTTP). The constant
+// vector makes every chunk cosine-match the query so the private hit is always
+// returned — which is exactly what must then be SUPPRESSED, not admitted.
+func fakeCorpusEmbedServer(t *testing.T, dims int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		n := len(req.Input)
+		if n == 0 {
+			n = 1
+		}
+		vec := make([]float64, dims)
+		for i := range vec {
+			vec[i] = 1
+		}
+		type datum struct {
+			Index     int       `json:"index"`
+			Embedding []float64 `json:"embedding"`
+		}
+		out := struct {
+			Data []datum `json:"data"`
+		}{}
+		for i := 0; i < n; i++ {
+			out.Data = append(out.Data, datum{Index: i, Embedding: vec})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// seedPrivateCorpusLane writes a private source body carrying the secret marker,
+// records a source manifest with privacy=private, configures a private corpus
+// lane in memory-engine.yaml, and indexes it through the production embedder path
+// (against the local fake embed server). Returns the lane so the caller can name
+// the private chunk id ("item_private#0").
+func seedPrivateCorpusLane(t *testing.T, homePath, embedBaseURL string, dims int) corpus.LaneConfig {
+	t.Helper()
+	family := "corpus_private_fixture"
+	bodyPath := filepath.Join(t.TempDir(), "private-source.md")
+	body := "User: describe the private fixture.\n\nAssistant: " + privateBodySecretMarker + " this is synthetic private text.\n"
+	if err := os.WriteFile(bodyPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write private source: %v", err)
+	}
+	manifest, err := sourceobs.BuildSourceManifest(family, []string{bodyPath}, cliTestNow)
+	if err != nil {
+		t.Fatalf("build source manifest: %v", err)
+	}
+	manifest.Items[0].ID = "item_private"
+	manifest.Items[0].SourceKind = "synthetic_dialogue"
+	manifest.Items[0].Privacy = "private"
+	if _, err := sourceobs.RecordSourceManifest(homePath, manifest); err != nil {
+		t.Fatalf("record source manifest: %v", err)
+	}
+
+	lane := corpus.LaneConfig{
+		Lane:         "private-fixture",
+		SourceFamily: family,
+		Privacy:      "private",
+		Embedder: corpus.EmbedderConfig{
+			Provider: "local",
+			Model:    "fake",
+			Dims:     dims,
+			Bits:     "f32",
+			BaseURL:  embedBaseURL,
+		},
+		Chunk: corpus.ChunkConfig{Unit: "runes", Size: 512, Overlap: 0, Boundary: "structure"},
+	}
+
+	cfg := memoryEngineConfig{
+		SchemaVersion: memoryEngineConfigSchemaVersion,
+		CorpusLanes:   []corpus.LaneConfig{lane},
+	}
+	raw, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal engine config: %v", err)
+	}
+	if err := os.WriteFile(memoryEngineConfigPath(homePath), raw, 0o644); err != nil {
+		t.Fatalf("write engine config: %v", err)
+	}
+
+	emb, err := newCorpusEmbedder(lane)
+	if err != nil {
+		t.Fatalf("build corpus embedder: %v", err)
+	}
+	if _, err := corpus.Index(context.Background(), homePath, lane, emb, corpus.IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("index private lane: %v", err)
+	}
+	return lane
+}
+
+// TestCmdOrientBodyBudgetSuppressesPrivateCorpusBody is the P0 privacy regression
+// guard: `compound orient --body-budget` must NOT admit a private corpus body into
+// the ContextPack without an explicit private-text grant. The corpus layer already
+// suppresses private text by default (corpus.ResolveChunkText gates on includeText);
+// the orient body resolver must therefore query with the privacy-safe default, not
+// a blanket IncludeText opt-in.
+//
+// Falsifier: with the resolver passing QueryOptions{IncludeText: true} (the base
+// defect), the private chunk's text is re-derived and packed into body_pack.bodies,
+// so the secret marker appears in the emitted JSON and this test is RED.
+func TestCmdOrientBodyBudgetSuppressesPrivateCorpusBody(t *testing.T) {
+	if testing.Short() {
+		t.Skip("indexes a corpus lane: skipped in -short mode")
+	}
+	homePath, cwd := initBodyPackTestHome(t)
+	const dims = 8
+	srv := fakeCorpusEmbedServer(t, dims)
+	seedPrivateCorpusLane(t, homePath, srv.URL, dims)
+
+	out := captureStdout(t, func() {
+		cmdOrient([]string{"--harness", "codex", "--cwd", cwd, "--task", "synthetic private canary lookup", "--body-budget", "4000"})
+	})
+
+	// Hardest assertion first: the secret must not appear ANYWHERE on the wire.
+	if strings.Contains(out, privateBodySecretMarker) {
+		t.Fatalf("PRIVACY LEAK: private corpus body text admitted into ContextPack:\n%s", out)
+	}
+
+	var pack envelope.ContextPack
+	if err := json.Unmarshal([]byte(out), &pack); err != nil {
+		t.Fatalf("parse orient output: %v\n%s", err, out)
+	}
+	if pack.BodyPack == nil {
+		t.Fatalf("body_pack must be present with --body-budget: %s", out)
+	}
+
+	const privateRef = "item_private#0"
+
+	// The private hit must never be an admitted body, and no body may carry the marker.
+	for _, b := range pack.BodyPack.Bodies {
+		if b.Ref == privateRef {
+			t.Fatalf("private corpus chunk admitted as body: %+v", b)
+		}
+		if strings.Contains(b.Text, privateBodySecretMarker) {
+			t.Fatalf("body carries private secret marker: %+v", b)
+		}
+	}
+
+	// The private hit must be accounted for in the omitted ledger as suppressed_private,
+	// with zero estimated tokens (no byte/token accounting can leak length either).
+	var found bool
+	for _, o := range pack.BodyPack.Omitted {
+		if o.Ref != privateRef {
+			continue
+		}
+		found = true
+		if o.Reason != "suppressed_private" {
+			t.Fatalf("private omission reason = %q, want suppressed_private: %+v", o.Reason, o)
+		}
+		if o.EstimatedTokens != 0 {
+			t.Fatalf("suppressed private omission must report 0 estimated tokens, got %d", o.EstimatedTokens)
+		}
+	}
+	if !found {
+		t.Fatalf("private chunk %q missing from omitted ledger: %+v", privateRef, pack.BodyPack.Omitted)
+	}
+
+	// Public path intact: source-ref bodies (e.g. AGENTS.md) still materialize.
+	var sawSourceRef bool
+	for _, b := range pack.BodyPack.Bodies {
+		if b.Source == "source-ref" && b.Status == "ok" && b.Text != "" {
+			sawSourceRef = true
+		}
+	}
+	if !sawSourceRef {
+		t.Fatalf("public source-ref body must still materialize (fix must not break public path): %+v", pack.BodyPack)
 	}
 }
 
