@@ -1408,7 +1408,7 @@ func appendPackOnlyRuntime(pack envelope.ContextPack, in Input, homePath string,
 	if len(records) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d projection freshness ref(s) included; generated views are context evidence, not truth.", len(records))
 	}
-	pack, err = appendNegatives(pack, homePath, in)
+	pack, err = appendNegatives(pack, homePath, in, now)
 	if err != nil {
 		return pack, err
 	}
@@ -1427,8 +1427,12 @@ func appendPackOnlyRuntime(pack envelope.ContextPack, in Input, homePath string,
 // never touches ActiveHooks/ActiveDecisions/RequiredChecks/MutationPolicy, and a
 // missing projection file fails open (zero cards, no error), mirroring
 // mem.LoadTemperatureLookup's degrade-gracefully contract.
-func appendNegatives(pack envelope.ContextPack, homePath string, in Input) (envelope.ContextPack, error) {
-	proj, ok, err := negatives.ReadProjection(homePath)
+// The `now` parameter is the PACK's clock, never time.Now(): negatives.ReadFresh
+// compares a persisted projection's age against negatives.StaleAfter, and a wall-clock
+// read here would age every fixed-date fixture past the window and red main days after
+// a green land (the failure mode AGENTS.md's "inject the clock" rule names).
+func appendNegatives(pack envelope.ContextPack, homePath string, in Input, now time.Time) (envelope.ContextPack, error) {
+	proj, ok, err := negatives.ReadFresh(homePath, now)
 	if err != nil {
 		return pack, err
 	}

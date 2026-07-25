@@ -299,3 +299,142 @@ func TestWriteReadProjectionRoundTrip(t *testing.T) {
 		t.Fatalf("round-tripped records differ: %+v vs %+v", built.Records, loaded.Records)
 	}
 }
+
+// TestReadFresh_StalePersistedProjectionRebuilds is the falsifier for the failure
+// this constant exists to prevent: nothing in-repo schedules a rebuild, so a
+// persisted projection can sit for weeks holding an empty view while real failure
+// patterns accumulate. A reader must not trust it past StaleAfter.
+func TestReadFresh_StalePersistedProjectionRebuilds(t *testing.T) {
+	home := t.TempDir()
+	// A persisted projection that is EMPTY and old — exactly the observed state.
+	stalePath, err := WriteProjection(home, Projection{
+		SchemaVersion: SchemaVersion,
+		ProjectionRef: ProjectionRef,
+		ComputedAt:    t0.Add(-15 * 24 * time.Hour).UTC().Format(time.RFC3339),
+		Records:       []Record{},
+	})
+	if err != nil {
+		t.Fatalf("WriteProjection: %v", err)
+	}
+	before, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Real evidence that landed in the inbox AFTER that build.
+	writeFailurePattern(t, home, "fp_stale", map[string]any{
+		"subject":       "single-signal-verdict",
+		"statement":     "agent sized a branch backlog from one signal that is blind to reimplementation",
+		"detail":        "single-signal-verdict",
+		"confidence":    0.95,
+		"evidence_refs": []string{"trace:stale-1"},
+		"verdict":       candidates.Park,
+	})
+
+	proj, ok, err := ReadFresh(home, t0)
+	if err != nil {
+		t.Fatalf("ReadFresh: %v", err)
+	}
+	if !ok {
+		t.Fatal("ReadFresh returned not-ok for a rebuildable home")
+	}
+	if _, found := findRecord(proj.Records, "fp_stale"); !found {
+		t.Fatalf("stale projection was trusted; inbox evidence never surfaced: %+v", proj.Records)
+	}
+	// Orient is a read path: ReadFresh must never persist.
+	after, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("ReadFresh persisted a rebuild; the read path must not write")
+	}
+}
+
+// TestReadFresh_FreshPersistedProjectionIsTrusted pins the other half: inside the
+// window the persisted body is used as-is, so the common case stays one read.
+func TestReadFresh_FreshPersistedProjectionIsTrusted(t *testing.T) {
+	home := t.TempDir()
+	if _, err := WriteProjection(home, Projection{
+		SchemaVersion: SchemaVersion,
+		ProjectionRef: ProjectionRef,
+		ComputedAt:    t0.Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+		Records:       []Record{{Source: SourceFailurePattern, RefID: "fp_persisted", ApproachKey: "persisted-only", Ref: "candidate://failure_pattern/fp_persisted"}},
+	}); err != nil {
+		t.Fatalf("WriteProjection: %v", err)
+	}
+	// Inbox evidence that a rebuild WOULD surface — proving we did not rebuild.
+	writeFailurePattern(t, home, "fp_unbuilt", map[string]any{
+		"subject":       "not-yet-built",
+		"statement":     "an approach that has not been folded into the projection yet",
+		"detail":        "not-yet-built",
+		"confidence":    0.8,
+		"evidence_refs": []string{"trace:unbuilt"},
+		"verdict":       candidates.Park,
+	})
+
+	proj, ok, err := ReadFresh(home, t0)
+	if err != nil || !ok {
+		t.Fatalf("ReadFresh: %v ok=%t", err, ok)
+	}
+	if _, found := findRecord(proj.Records, "fp_persisted"); !found {
+		t.Fatalf("fresh persisted projection was not used: %+v", proj.Records)
+	}
+	if _, found := findRecord(proj.Records, "fp_unbuilt"); found {
+		t.Fatal("ReadFresh rebuilt inside the freshness window")
+	}
+}
+
+// TestReadFresh_UndatedProjectionCountsAsStale — a body that cannot prove its own
+// age must never be trusted as fresh.
+func TestReadFresh_UndatedProjectionCountsAsStale(t *testing.T) {
+	home := t.TempDir()
+	if _, err := WriteProjection(home, Projection{
+		SchemaVersion: SchemaVersion,
+		ProjectionRef: ProjectionRef,
+		ComputedAt:    "",
+		Records:       []Record{},
+	}); err != nil {
+		t.Fatalf("WriteProjection: %v", err)
+	}
+	writeFailurePattern(t, home, "fp_undated", map[string]any{
+		"subject":       "undated-rebuild",
+		"statement":     "an approach that must surface when the projection cannot date itself",
+		"detail":        "undated-rebuild",
+		"confidence":    0.9,
+		"evidence_refs": []string{"trace:undated"},
+		"verdict":       candidates.Park,
+	})
+
+	proj, ok, err := ReadFresh(home, t0)
+	if err != nil || !ok {
+		t.Fatalf("ReadFresh: %v ok=%t", err, ok)
+	}
+	if _, found := findRecord(proj.Records, "fp_undated"); !found {
+		t.Fatalf("undated projection was trusted as fresh: %+v", proj.Records)
+	}
+}
+
+// TestReadFresh_MissingProjectionBuildsInMemory — a home that never ran `negatives
+// build` still gets its evidence, without the read path creating the file.
+func TestReadFresh_MissingProjectionBuildsInMemory(t *testing.T) {
+	home := t.TempDir()
+	writeFailurePattern(t, home, "fp_nofile", map[string]any{
+		"subject":       "no-projection-yet",
+		"statement":     "an approach recorded before any projection build ran",
+		"detail":        "no-projection-yet",
+		"confidence":    0.9,
+		"evidence_refs": []string{"trace:nofile"},
+		"verdict":       candidates.Park,
+	})
+
+	proj, ok, err := ReadFresh(home, t0)
+	if err != nil || !ok {
+		t.Fatalf("ReadFresh: %v ok=%t", err, ok)
+	}
+	if _, found := findRecord(proj.Records, "fp_nofile"); !found {
+		t.Fatalf("missing projection did not build in memory: %+v", proj.Records)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, filepath.FromSlash(RelPath))); statErr == nil {
+		t.Fatal("ReadFresh created the projection file; the read path must not write")
+	}
+}

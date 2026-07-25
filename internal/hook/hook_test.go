@@ -2277,3 +2277,27 @@ func findContextHookReadiness(readiness []envelope.HookReadiness, harness, hookN
 	}
 	return nil
 }
+
+// TestRenderInjectionLabelsForbiddenRecallScopesHonestly pins the label fix:
+// pack.Avoid carries mem.Forbidden (recall SCOPE names), not behaviors, so the
+// section must not be titled "Avoid" — a reader seeing "## Avoid / - none" would
+// conclude nothing is worth avoiding while real scope-matched negatives exist.
+func TestRenderInjectionLabelsForbiddenRecallScopesHonestly(t *testing.T) {
+	pack := envelope.ContextPack{
+		SummaryMD: "summary",
+		Avoid:     []string{"self-model", "personal-corpus"},
+	}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	if !strings.Contains(text, "## Forbidden Recall Scopes") {
+		t.Fatalf("injection missing forbidden-recall-scopes section:\n%s", text)
+	}
+	if strings.Contains(text, "## Avoid") {
+		t.Fatalf("injection still labels recall scopes as behavioral avoidance:\n%s", text)
+	}
+	for _, want := range []string{"self-model", "personal-corpus"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("injection dropped forbidden scope %q:\n%s", want, text)
+		}
+	}
+}

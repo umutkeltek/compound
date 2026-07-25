@@ -175,6 +175,58 @@ func ReadProjection(homePath string) (Projection, bool, error) {
 	return proj, true, nil
 }
 
+// StaleAfter bounds how old a PERSISTED projection may be before a reader must
+// rebuild rather than trust it. Nothing in-repo schedules `negatives build` (the
+// job roster is the operator's external cron registry, not a compound scheduler),
+// so without this bound the persisted file is only as fresh as the last manual
+// build — observed 2026-07-25: 15 days stale holding 0 records while two real
+// failure patterns sat in inbox/failure-patterns, which made every scope-matched
+// negative invisible to every session. Mirrors the 6h window
+// internal/routeevidence already uses for account-projection freshness.
+const StaleAfter = 6 * time.Hour
+
+// ReadFresh returns the projection a READER should use: the persisted body when it
+// is present and younger than StaleAfter, otherwise a fresh in-memory Build.
+//
+// It NEVER persists. Orient is a read path — a hidden write there would surprise
+// concurrent lanes and make a read-only projection a mutation. The cost of the
+// common (fresh) case is one file read plus a timestamp compare; the cost of the
+// stale case is Build's two small directory scans, which is strictly cheaper than
+// the failure it removes (silently serving an empty view of real evidence).
+//
+// The bool is false only when there is nothing to offer at all, preserving
+// ReadProjection's fail-open contract for callers.
+func ReadFresh(homePath string, now time.Time) (Projection, bool, error) {
+	proj, ok, err := ReadProjection(homePath)
+	if err != nil {
+		return Projection{}, false, err
+	}
+	if ok && !projectionStale(proj, now) {
+		return proj, true, nil
+	}
+	built, buildErr := Build(homePath, BuildOptions{Now: now})
+	if buildErr != nil {
+		// Fail open to whatever was persisted rather than failing orient: a stale
+		// view still beats no view, and a build error must not break the pack.
+		if ok {
+			return proj, true, nil
+		}
+		return Projection{}, false, nil
+	}
+	return built, true, nil
+}
+
+// projectionStale reports whether a persisted projection's ComputedAt is older than
+// StaleAfter. An unparseable or empty ComputedAt counts as stale: a body that cannot
+// prove its own age must never be trusted as fresh.
+func projectionStale(proj Projection, now time.Time) bool {
+	computed, err := time.Parse(time.RFC3339, strings.TrimSpace(proj.ComputedAt))
+	if err != nil {
+		return true
+	}
+	return now.UTC().Sub(computed.UTC()) > StaleAfter
+}
+
 // ScopeTokens tokenizes free text into the deterministic, no-LLM scope-match
 // vocabulary: lowercased content runs of length >= minScopeTokenLen. It mirrors
 // internal/contract's own memoryTextTokens tokenizer so callers reuse the same

@@ -1900,7 +1900,12 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 		writeStringList(section, "Required Checks", pack.RequiredChecks)
 	})
 	writeBudgetedInjectionSection(&b, maxInjectionAvoidChars, func(section *strings.Builder) {
-		writeStringList(section, "Avoid", pack.Avoid)
+		// pack.Avoid carries mem.Forbidden — RECALL SCOPE names ("self-model",
+		// "personal-corpus"), not behaviors to avoid. Labeling it "Avoid" promised
+		// behavioral steering and delivered scope config, so a reader saw "- none"
+		// and concluded nothing was worth avoiding. The scope-matched behavioral
+		// warning lives in "Already Tried And Failed" above.
+		writeStringList(section, "Forbidden Recall Scopes", pack.Avoid)
 	})
 	writeBudgetedInjectionSection(&b, maxInjectionCapabilityOfferChars, func(section *strings.Builder) {
 		writeCapabilityOfferList(section, pack.CapabilityOffers)
