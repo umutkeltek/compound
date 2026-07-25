@@ -634,6 +634,7 @@ func TestSourceInPlacePrivateItemInPublicLaneUnchanged(t *testing.T) {
 		t.Fatalf("source_in_place privacy=private in a public lane must remain indexed in this slice: %v", err)
 	}
 }
+
 // the seam widening source_in_place's contract: a body_policy=source_in_place
 // item must continue to read from its SourceRef (NOT from any artifact
 // store), and the existing source-loss + drift semantics must hold byte-for-byte.

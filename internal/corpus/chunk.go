@@ -324,13 +324,13 @@ type ResolvedChunkText struct {
 //  3. Schema gate: if the manifest's prefix_schema_version is not this binary's, the
 //     chunker has changed under the index — return ChunkTextStaleIndex with no text.
 //  4. Body source dispatch (the new seam):
-//       - body_policy=source_in_place: read the file at item.source_ref. The body lives
-//         OUTSIDE COMPOUND_HOME and can be moved/deleted; that is expected and degrades
-//         this hit to ChunkTextSourceUnavailable.
-//       - body_policy=owned_snapshot: read the artifact bytes via home.ArtifactStore.
-//         The artifact is the source — fall-back to SourceRef would hide custody
-//         corruption, so missing/corrupt/wrong-size/wrong-hash artifacts each fail
-//         closed (no text, never silent).
+//     - body_policy=source_in_place: read the file at item.source_ref. The body lives
+//     OUTSIDE COMPOUND_HOME and can be moved/deleted; that is expected and degrades
+//     this hit to ChunkTextSourceUnavailable.
+//     - body_policy=owned_snapshot: read the artifact bytes via home.ArtifactStore.
+//     The artifact is the source — fall-back to SourceRef would hide custody
+//     corruption, so missing/corrupt/wrong-size/wrong-hash artifacts each fail
+//     closed (no text, never silent).
 //  5. Drift gate: sha256 the resolved bytes and compare to item.file_hash. On mismatch,
 //     return ChunkTextStaleSource with no text.
 //  6. Re-chunk with the manifest's chunk config; bounds-check ordinal against the result.
