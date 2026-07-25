@@ -88,15 +88,15 @@ func preflightEventStore(homePath string) error {
 }
 
 // afterWriteFailure handles any failure that occurs AFTER a successful adapter.write: it attempts a
-// best-effort rollback to the captured pre-image, and if that ALSO fails records a durable
+// best-effort restore through the adapter's distinct pre-image path, and if that ALSO fails records a durable
 // act-recovery finding so an unreceipted, un-rolled-back mutation is never silent.
 //
-// The rollback is a DIRECT adapter.write of the pre-image inside THIS admitted action's failure
+// The rollback is a DIRECT restoreAdapterPreImage call inside THIS admitted action's failure
 // path. The original PolicyDecision that authorized the forward write already covers restoring that
 // write's own pre-image, so this is NOT a new governed act (it is deliberately not re-gated): it is
 // the obligation-bound cleanup of the mutation we just performed under that decision.
 func afterWriteFailure(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, preRef, postRef string, pre []byte, cause error, now time.Time) error {
-	if rbErr := adapter.write(ai.Target, pre); rbErr != nil {
+	if rbErr := restoreAdapterPreImage(adapter, ai.Target, pre); rbErr != nil {
 		return recordRecoveryFinding(store.Home(), ai, preRef, postRef, cause, rbErr, now)
 	}
 	return fmt.Errorf("act: %w — target rolled back to pre-image %s", cause, preRef)
@@ -153,6 +153,24 @@ type Result struct {
 // obligations for the granted path — emit a Receipt, record a rollback_plan, capture
 // the pre-image — are therefore satisfied by construction, not by prompt obedience.
 func Execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd envelope.PolicyDecision, newValue []byte, now time.Time) (Result, error) {
+	if strings.HasPrefix(strings.TrimSpace(ai.Action), "revert:") {
+		return Result{}, fmt.Errorf("act: revert intents require ExecuteRevert")
+	}
+	return execute(store, adapter, ai, pd, newValue, false, now)
+}
+
+// ExecuteRevert performs the governed restore of an adapter pre-image. Keeping
+// restore control bytes on a distinct entrypoint means a forward file write is
+// always opaque data, even when its bytes happen to match an adapter's encoded
+// pre-image schema.
+func ExecuteRevert(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd envelope.PolicyDecision, preImage []byte, now time.Time) (Result, error) {
+	if !strings.HasPrefix(strings.TrimSpace(ai.Action), "revert:") {
+		return Result{}, fmt.Errorf("act: ExecuteRevert requires a RevertIntent")
+	}
+	return execute(store, adapter, ai, pd, preImage, true, now)
+}
+
+func execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd envelope.PolicyDecision, newValue []byte, restore bool, now time.Time) (Result, error) {
 	if store == nil {
 		return Result{}, fmt.Errorf("act: artifact store required")
 	}
@@ -179,8 +197,14 @@ func Execute(store *ArtifactStore, adapter Adapter, ai envelope.ActionIntent, pd
 		return Result{}, fmt.Errorf("act: store pre-image: %w", err)
 	}
 
-	if err := adapter.write(ai.Target, newValue); err != nil {
-		return Result{}, fmt.Errorf("act: write: %w", err)
+	var writeErr error
+	if restore {
+		writeErr = restoreAdapterPreImage(adapter, ai.Target, newValue)
+	} else {
+		writeErr = adapter.write(ai.Target, newValue)
+	}
+	if writeErr != nil {
+		return Result{}, fmt.Errorf("act: write: %w", writeErr)
 	}
 
 	// From here the target is MUTATED. Every failure below is routed through afterWriteFailure, which
@@ -302,8 +326,8 @@ func receiptAndTransition(ai envelope.ActionIntent, preRef, postRef string, pre,
 }
 
 // RevertIntent builds the governed revert of a completed outbound write: the same
-// target, re-applying the captured pre-image. The caller writes it with the
-// pre-image bytes (store.Get(res.PreImageRef)) as the new value; policy re-gates it
+// target, restoring the captured pre-image through ExecuteRevert. The caller loads
+// the pre-image bytes from store.Get(res.PreImageRef); policy re-gates the restore
 // exactly like the forward write, so a rollback is itself a governed outbound write,
 // never a privileged bypass.
 func RevertIntent(orig envelope.ActionIntent, res Result, now time.Time) envelope.ActionIntent {

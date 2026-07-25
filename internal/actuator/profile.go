@@ -218,7 +218,7 @@ func routingIntent(p ProjectProfile, workID string, now time.Time) *envelope.Act
 	return &envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
-			ID:            intentIDFor(workID, "switchback_route", target.Path, target.ID, p.Routing.ConfigValue),
+			ID:            intentIDForInvocation(now, workID, "switchback_route", target.Path, target.ID, p.Routing.ConfigValue),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "actuator", Name: "compound"},
 			IDs:           envelope.IDs{WorkID: workID},

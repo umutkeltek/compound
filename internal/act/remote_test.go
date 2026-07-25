@@ -79,7 +79,7 @@ func (f *fakeRemoteRunner) countKind(kind string) int {
 }
 
 func testEndpoint() RemoteEndpoint {
-	return RemoteEndpoint{User: "root", Host: "example-router.internal", Port: 22}
+	return RemoteEndpoint{User: "root", Host: "example-router.invalid", Port: 22}
 }
 
 // mkRemoteIntent builds a valid external_side_effect / easy / local ActionIntent for a
@@ -141,20 +141,20 @@ func TestDNSRecordGovernedAppend(t *testing.T) {
 	runner := newFakeRunner()
 	path := "/etc/dnsmasq.d/compound.conf"
 	adapter := NewDNSRecordAdapter(runner, testEndpoint(), path, "")
-	ai := mkRemoteIntent(t, "work_dns", "outbound.dns_record.write", "dns_record", path, "example-host.internal")
+	ai := mkRemoteIntent(t, "work_dns", "outbound.dns_record.write", "dns_record", path, "example-host.invalid")
 	pd := policy.Evaluate(ai, remoteGrantConfig(ai), now)
 	if !policy.Allowed(pd) {
 		t.Fatalf("granted decision must allow, got %s", pd.Outcome)
 	}
 
-	res, err := Execute(store, adapter, ai, pd, DNSRecordForwardValue("example-host.internal", "192.0.2.10"), now)
+	res, err := Execute(store, adapter, ai, pd, DNSRecordForwardValue("example-host.invalid", "test-address.invalid"), now)
 	if err != nil {
 		t.Fatalf("governed dns write failed: %v", err)
 	}
 
 	// The additive record landed in the simulated remote file, exactly once.
 	got := string(runner.files[path])
-	if !strings.Contains(got, "address=/example-host.internal/192.0.2.10") {
+	if !strings.Contains(got, "address=/example-host.invalid/test-address.invalid") {
 		t.Fatalf("dns record not appended: %q", got)
 	}
 	if runner.countKind(RemoteOpApply) != 1 {
@@ -176,7 +176,7 @@ func TestDNSRecordGovernedAppend(t *testing.T) {
 	}
 	// The apply op carries the exact remote command (legible in receipts / audit).
 	applyCmd := runner.ops[firstApply].Command
-	if !strings.Contains(applyCmd, path) || !strings.Contains(applyCmd, "address=/example-host.internal/192.0.2.10") {
+	if !strings.Contains(applyCmd, path) || !strings.Contains(applyCmd, "address=/example-host.invalid/test-address.invalid") {
 		t.Fatalf("apply command missing path or record: %q", applyCmd)
 	}
 
@@ -209,19 +209,19 @@ func TestVhostGovernedAppend(t *testing.T) {
 	}
 	runner := newFakeRunner()
 	path := "/data/nginx/custom/compound.conf"
-	adapter := NewVhostAdapter(runner, RemoteEndpoint{User: "root", Host: "example-apps.internal", Port: 22}, path, "")
-	ai := mkRemoteIntent(t, "work_vhost", "outbound.vhost.write", "vhost", path, "example-app.internal")
+	adapter := NewVhostAdapter(runner, RemoteEndpoint{User: "root", Host: "example-apps.invalid", Port: 22}, path, "")
+	ai := mkRemoteIntent(t, "work_vhost", "outbound.vhost.write", "vhost", path, "example-app.invalid")
 	pd := policy.Evaluate(ai, remoteGrantConfig(ai), now)
 	if !policy.Allowed(pd) {
 		t.Fatalf("granted decision must allow, got %s", pd.Outcome)
 	}
 
-	res, err := Execute(store, adapter, ai, pd, VhostForwardValue("example-app.internal", "http://192.0.2.20:8080"), now)
+	res, err := Execute(store, adapter, ai, pd, VhostForwardValue("example-app.invalid", "https://upstream.invalid:8080"), now)
 	if err != nil {
 		t.Fatalf("governed vhost write failed: %v", err)
 	}
 	got := string(runner.files[path])
-	if !strings.Contains(got, "server_name example-app.internal;") || !strings.Contains(got, "http://192.0.2.20:8080") {
+	if !strings.Contains(got, "server_name example-app.invalid;") || !strings.Contains(got, "https://upstream.invalid:8080") {
 		t.Fatalf("vhost block not appended: %q", got)
 	}
 	if runner.countKind(RemoteOpApply) != 1 {
@@ -247,11 +247,11 @@ func TestRemoteAdapterEmptyRollbackPlanRefused(t *testing.T) {
 	runner := newFakeRunner()
 	path := "/etc/dnsmasq.d/compound.conf"
 	adapter := NewDNSRecordAdapter(runner, testEndpoint(), path, "")
-	ai := mkRemoteIntent(t, "work_norollback", "outbound.dns_record.write", "dns_record", path, "example-host.internal")
+	ai := mkRemoteIntent(t, "work_norollback", "outbound.dns_record.write", "dns_record", path, "example-host.invalid")
 	ai.RollbackPlan = "" // strip the plan the gate requires
 	pd := policy.Evaluate(ai, remoteGrantConfig(ai), now)
 
-	if _, err := Execute(store, adapter, ai, pd, DNSRecordForwardValue("example-host.internal", "192.0.2.10"), now); err == nil {
+	if _, err := Execute(store, adapter, ai, pd, DNSRecordForwardValue("example-host.invalid", "test-address.invalid"), now); err == nil {
 		t.Fatal("expected the gate to refuse an empty rollback_plan")
 	}
 	if len(runner.ops) != 0 {
@@ -271,12 +271,12 @@ func TestRemoteAdapterAlreadyExistsConflict(t *testing.T) {
 	runner := newFakeRunner()
 	path := "/etc/dnsmasq.d/compound.conf"
 	// The record for this host is already present on the remote.
-	runner.files[path] = []byte("address=/example-host.internal/10.10.10.9\n")
+	runner.files[path] = []byte("address=/example-host.invalid/legacy-address.invalid\n")
 	adapter := NewDNSRecordAdapter(runner, testEndpoint(), path, "")
-	ai := mkRemoteIntent(t, "work_conflict", "outbound.dns_record.write", "dns_record", path, "example-host.internal")
+	ai := mkRemoteIntent(t, "work_conflict", "outbound.dns_record.write", "dns_record", path, "example-host.invalid")
 	pd := policy.Evaluate(ai, remoteGrantConfig(ai), now)
 
-	_, err = Execute(store, adapter, ai, pd, DNSRecordForwardValue("example-host.internal", "192.0.2.10"), now)
+	_, err = Execute(store, adapter, ai, pd, DNSRecordForwardValue("example-host.invalid", "test-address.invalid"), now)
 	if err == nil {
 		t.Fatal("expected a conflict refusal when the record already exists")
 	}
@@ -287,7 +287,7 @@ func TestRemoteAdapterAlreadyExistsConflict(t *testing.T) {
 		t.Fatalf("no apply may run on a conflict; got %v", runner.opKinds())
 	}
 	// The remote file is byte-identical to before.
-	if string(runner.files[path]) != "address=/example-host.internal/10.10.10.9\n" {
+	if string(runner.files[path]) != "address=/example-host.invalid/legacy-address.invalid\n" {
 		t.Fatalf("remote file mutated on a refused conflict: %q", runner.files[path])
 	}
 }
@@ -308,10 +308,10 @@ func TestRemoteAdapterRollbackFindingOnWriteFailure(t *testing.T) {
 	runner.failRestore = true        // ...and the rollback restore fails too
 	path := "/etc/dnsmasq.d/compound.conf"
 	adapter := NewDNSRecordAdapter(runner, testEndpoint(), path, "")
-	ai := mkRemoteIntent(t, "work_recovery", "outbound.dns_record.write", "dns_record", path, "example-host.internal")
+	ai := mkRemoteIntent(t, "work_recovery", "outbound.dns_record.write", "dns_record", path, "example-host.invalid")
 	pd := policy.Evaluate(ai, remoteGrantConfig(ai), now)
 
-	_, err = Execute(store, adapter, ai, pd, DNSRecordForwardValue("example-host.internal", "192.0.2.10"), now)
+	_, err = Execute(store, adapter, ai, pd, DNSRecordForwardValue("example-host.invalid", "test-address.invalid"), now)
 	if err == nil {
 		t.Fatal("expected an error when both the post-write read and the rollback fail")
 	}
@@ -332,8 +332,8 @@ func TestRemoteAdapterRollbackFindingOnWriteFailure(t *testing.T) {
 }
 
 // A governed revert restores the exact pre-image bytes over the same target: Execute a
-// forward append, then re-run the adapter write with the captured pre-image (the
-// RevertIntent path) and prove the remote file returns to its prior content.
+// forward append, then invoke ExecuteRevert's distinct restore path with the captured
+// pre-image and prove the remote file returns to its prior content.
 func TestRemoteAdapterRevertRestoresPreImage(t *testing.T) {
 	now := fixedNow()
 	store, err := NewArtifactStore(t.TempDir())
@@ -342,13 +342,13 @@ func TestRemoteAdapterRevertRestoresPreImage(t *testing.T) {
 	}
 	runner := newFakeRunner()
 	path := "/etc/dnsmasq.d/compound.conf"
-	runner.files[path] = []byte("address=/example-existing.internal/10.10.10.1\n")
+	runner.files[path] = []byte("address=/example-existing.invalid/legacy-address.invalid\n")
 	before := append([]byte(nil), runner.files[path]...)
 	adapter := NewDNSRecordAdapter(runner, testEndpoint(), path, "")
-	ai := mkRemoteIntent(t, "work_revert", "outbound.dns_record.write", "dns_record", path, "example-host.internal")
+	ai := mkRemoteIntent(t, "work_revert", "outbound.dns_record.write", "dns_record", path, "example-host.invalid")
 	pd := policy.Evaluate(ai, remoteGrantConfig(ai), now)
 
-	res, err := Execute(store, adapter, ai, pd, DNSRecordForwardValue("example-host.internal", "192.0.2.10"), now)
+	res, err := Execute(store, adapter, ai, pd, DNSRecordForwardValue("example-host.invalid", "test-address.invalid"), now)
 	if err != nil {
 		t.Fatalf("forward write failed: %v", err)
 	}
@@ -356,14 +356,14 @@ func TestRemoteAdapterRevertRestoresPreImage(t *testing.T) {
 		t.Fatal("forward write did not change the remote file")
 	}
 
-	// The RevertIntent writes the captured pre-image bytes back through the same adapter.
+	// ExecuteRevert restores the captured pre-image bytes through the same governed adapter.
 	pre, err := store.Get(res.PreImageRef)
 	if err != nil {
 		t.Fatalf("get pre-image: %v", err)
 	}
 	revert := RevertIntent(ai, res, now)
 	revPD := policy.Evaluate(revert, remoteGrantConfig(revert), now)
-	if _, err := Execute(store, adapter, revert, revPD, pre, now); err != nil {
+	if _, err := ExecuteRevert(store, adapter, revert, revPD, pre, now); err != nil {
 		t.Fatalf("governed revert failed: %v", err)
 	}
 	if !bytes.Equal(runner.files[path], before) {
@@ -391,7 +391,7 @@ func TestRemoteAdapterRestoreDelimiterNeverCollidesWithContent(t *testing.T) {
 	runner := newFakeRunner()
 	path := "/etc/dnsmasq.d/compound.conf"
 	adapter := NewDNSRecordAdapter(runner, testEndpoint(), path, "")
-	ai := mkRemoteIntent(t, "work_injection", "outbound.dns_record.write", "dns_record", path, "example-host.internal")
+	ai := mkRemoteIntent(t, "work_injection", "outbound.dns_record.write", "dns_record", path, "example-host.invalid")
 	pd := policy.Evaluate(ai, remoteGrantConfig(ai), now)
 	if !policy.Allowed(pd) {
 		t.Fatalf("granted decision must allow, got %s", pd.Outcome)
@@ -400,11 +400,13 @@ func TestRemoteAdapterRestoreDelimiterNeverCollidesWithContent(t *testing.T) {
 	// A captured pre-image whose content contains, as its own line, the exact
 	// literal string restore() historically used as its heredoc terminator,
 	// followed by an injected command it would hand to the remote shell.
-	malicious := []byte("address=/existing.internal/10.10.10.1\n" +
+	malicious := []byte("address=/existing.invalid/legacy-address.invalid\n" +
 		"COMPOUND_RESTORE_EOF\n" +
 		"rm -rf / #injected-by-preimage\n")
 
-	if _, err := Execute(store, adapter, ai, pd, encodeRemotePreImage(malicious), now); err != nil {
+	revert := RevertIntent(ai, Result{}, now)
+	revertPD := policy.Evaluate(revert, remoteGrantConfig(revert), now)
+	if _, err := ExecuteRevert(store, adapter, revert, revertPD, encodeRemotePreImage(malicious), now); err != nil {
 		t.Fatalf("governed restore failed: %v", err)
 	}
 

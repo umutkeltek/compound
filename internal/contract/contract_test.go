@@ -19,6 +19,15 @@ import (
 	"compound/internal/projection"
 )
 
+func sealForRecord(t *testing.T, runtime RuntimeMaterialization) RuntimeMaterialization {
+	t.Helper()
+	sealed, err := SealRuntimeMaterialization(runtime)
+	if err != nil {
+		t.Fatalf("seal runtime materialization: %v", err)
+	}
+	return sealed
+}
+
 func TestProductionHasNoSingleArtifactWriterDoor(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	forbidden := []string{"RecordEffectiveContract(", "RecordContextPack("}
@@ -59,6 +68,7 @@ func TestRecordRuntimeMaterializationSerializesConcurrentIdenticalCommits(t *tes
 	homePath := t.TempDir()
 	in := mkInput("control-plane")
 	oldRuntime := RuntimeMaterialization{EffectiveContract: Compile(in, DefaultPolicy(), fixedNow), ContextPack: Pack(in, DefaultPolicy(), fixedNow)}
+	oldRuntime = sealForRecord(t, oldRuntime)
 	paths, err := RecordRuntimeMaterialization(homePath, oldRuntime)
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +76,12 @@ func TestRecordRuntimeMaterializationSerializesConcurrentIdenticalCommits(t *tes
 	next := oldRuntime
 	next.EffectiveContract.Unknowns = append(next.EffectiveContract.Unknowns, "new")
 	next.ContextPack.SummaryMD += " new"
+	sealedNext := sealForRecord(t, next)
+	nextPaths := RuntimeMaterializationArtifactPaths{
+		ContractPath: filepath.Join(homePath, "contracts", "effective", fixedNow.Format("2006-01-02"), sealedNext.EffectiveContract.ID+".json"),
+		LatestPath:   paths.LatestPath,
+		PackPath:     filepath.Join(homePath, "context", "packs", sealedNext.ContextPack.ID+".json"),
+	}
 
 	aAtPack := make(chan struct{})
 	releaseA := make(chan struct{})
@@ -84,10 +100,10 @@ func TestRecordRuntimeMaterializationSerializesConcurrentIdenticalCommits(t *tes
 		},
 		lockContended: func() { close(bLockContended) },
 		rename: func(oldPath, newPath string) error {
-			if newPath == paths.ContractPath && contractRenames.Add(1) == 2 {
+			if newPath == nextPaths.ContractPath && contractRenames.Add(1) == 2 {
 				close(bEnteredCommit)
 			}
-			if newPath == paths.PackPath && packRenames.Add(1) == 1 {
+			if newPath == nextPaths.PackPath && packRenames.Add(1) == 1 {
 				close(aAtPack)
 				<-releaseA
 				return fmt.Errorf("injected A pack failure")
@@ -99,12 +115,12 @@ func TestRecordRuntimeMaterializationSerializesConcurrentIdenticalCommits(t *tes
 	aDone := make(chan error, 1)
 	bDone := make(chan error, 1)
 	go func() {
-		_, err := recordRuntimeMaterializationWithFS(homePath, next, fsOps)
+		_, err := recordRuntimeMaterializationWithFS(homePath, sealedNext, fsOps)
 		aDone <- err
 	}()
 	<-aAtPack
 	go func() {
-		_, err := recordRuntimeMaterializationWithFS(homePath, next, fsOps)
+		_, err := recordRuntimeMaterializationWithFS(homePath, sealedNext, fsOps)
 		bDone <- err
 	}()
 	awaitContractSignal(t, bAtLockAttempt, "B pre-lock attempt")
@@ -122,9 +138,9 @@ func TestRecordRuntimeMaterializationSerializesConcurrentIdenticalCommits(t *tes
 		t.Fatalf("B must complete after A rolls back: %v", err)
 	}
 	for path, want := range map[string][]byte{
-		paths.ContractPath: mustRuntimeArtifactJSON(t, next.EffectiveContract),
-		paths.PackPath:     mustRuntimeArtifactJSON(t, next.ContextPack),
-		paths.LatestPath:   mustRuntimeArtifactJSON(t, next.EffectiveContract),
+		nextPaths.ContractPath: mustRuntimeArtifactJSON(t, sealedNext.EffectiveContract),
+		nextPaths.PackPath:     mustRuntimeArtifactJSON(t, sealedNext.ContextPack),
+		nextPaths.LatestPath:   mustRuntimeArtifactJSON(t, sealedNext.EffectiveContract),
 	} {
 		got, err := os.ReadFile(path)
 		if err != nil || !bytes.Equal(got, want) {
@@ -362,8 +378,7 @@ func TestRecordRuntimeMaterializationWritesDatedLatestAndPackArtifacts(t *testin
 	in := mkInput("control-plane")
 	ec := Compile(in, DefaultPolicy(), fixedNow)
 	pack := Pack(in, DefaultPolicy(), fixedNow)
-
-	paths, err := RecordRuntimeMaterialization(homePath, RuntimeMaterialization{
+	sealed, err := SealRuntimeMaterialization(RuntimeMaterialization{
 		EffectiveContract: ec,
 		ContextPack:       pack,
 	})
@@ -371,9 +386,14 @@ func TestRecordRuntimeMaterializationWritesDatedLatestAndPackArtifacts(t *testin
 		t.Fatal(err)
 	}
 
-	wantContractPath := filepath.Join(homePath, "contracts", "effective", "2026-06-28", ec.ID+".json")
+	paths, err := RecordRuntimeMaterialization(homePath, sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantContractPath := filepath.Join(homePath, "contracts", "effective", "2026-06-28", sealed.EffectiveContract.ID+".json")
 	wantLatestPath := filepath.Join(homePath, "contracts", "effective", "latest.json")
-	wantPackPath := filepath.Join(homePath, "context", "packs", pack.ID+".json")
+	wantPackPath := filepath.Join(homePath, "context", "packs", sealed.ContextPack.ID+".json")
 	if paths.ContractPath != wantContractPath {
 		t.Fatalf("contract path = %q, want %q", paths.ContractPath, wantContractPath)
 	}
@@ -385,10 +405,11 @@ func TestRecordRuntimeMaterializationWritesDatedLatestAndPackArtifacts(t *testin
 	}
 	invalid := ec
 	invalid.CreatedAt = "not-a-time"
-	if _, err := RecordRuntimeMaterialization(homePath, RuntimeMaterialization{
+	invalidRuntime := sealForRecord(t, RuntimeMaterialization{
 		EffectiveContract: invalid,
 		ContextPack:       pack,
-	}); err == nil {
+	})
+	if _, err := RecordRuntimeMaterialization(homePath, invalidRuntime); err == nil {
 		t.Fatal("expected invalid created_at to fail")
 	}
 
@@ -401,8 +422,8 @@ func TestRecordRuntimeMaterializationWritesDatedLatestAndPackArtifacts(t *testin
 		if err := json.Unmarshal(data, &got); err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
-		if got.ID != ec.ID || got.Harness != ec.Harness {
-			t.Fatalf("artifact %s = id %q harness %q, want id %q harness %q", path, got.ID, got.Harness, ec.ID, ec.Harness)
+		if got.ID != sealed.EffectiveContract.ID || got.Harness != ec.Harness {
+			t.Fatalf("artifact %s = id %q harness %q, want id %q harness %q", path, got.ID, got.Harness, sealed.EffectiveContract.ID, ec.Harness)
 		}
 	}
 	var got envelope.ContextPack
@@ -413,8 +434,71 @@ func TestRecordRuntimeMaterializationWritesDatedLatestAndPackArtifacts(t *testin
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("parse context pack artifact: %v", err)
 	}
-	if got.ID != pack.ID || got.IDs.ContractID != pack.IDs.ContractID {
-		t.Fatalf("artifact id/contract = %q/%q, want %q/%q", got.ID, got.IDs.ContractID, pack.ID, pack.IDs.ContractID)
+	if got.ID != sealed.ContextPack.ID || got.IDs.ContractID != sealed.ContextPack.IDs.ContractID {
+		t.Fatalf("artifact id/contract = %q/%q, want %q/%q", got.ID, got.IDs.ContractID, sealed.ContextPack.ID, sealed.ContextPack.IDs.ContractID)
+	}
+}
+
+func TestRecordRuntimeMaterializationRejectsUnsealedCallerState(t *testing.T) {
+	in := mkInput("control-plane")
+	runtime := RuntimeMaterialization{
+		EffectiveContract: Compile(in, DefaultPolicy(), fixedNow),
+		ContextPack:       Pack(in, DefaultPolicy(), fixedNow),
+	}
+	if _, err := RecordRuntimeMaterialization(t.TempDir(), runtime); err == nil {
+		t.Fatal("record accepted request-shaped ids that remain stale in caller state")
+	} else if !strings.Contains(err.Error(), "must be sealed before recording") {
+		t.Fatalf("error = %q, want explicit caller-visible seal requirement", err)
+	}
+}
+
+func TestRecordRuntimeMaterializationKeepsPriorProofRefsImmutable(t *testing.T) {
+	homePath := t.TempDir()
+	in := mkInput("control-plane")
+	first := RuntimeMaterialization{
+		EffectiveContract: Compile(in, DefaultPolicy(), fixedNow),
+		ContextPack:       Pack(in, DefaultPolicy(), fixedNow),
+	}
+	first = sealForRecord(t, first)
+	firstPaths, err := RecordRuntimeMaterialization(homePath, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstContractBytes, err := os.ReadFile(firstPaths.ContractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPackBytes, err := os.ReadFile(firstPaths.PackPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := first
+	second.EffectiveContract.CreatedAt = fixedNow.Add(time.Second).Format(time.RFC3339)
+	second.ContextPack.CreatedAt = fixedNow.Add(time.Second).Format(time.RFC3339)
+	second.EffectiveContract.SourceRevisions = append(
+		[]envelope.SourceRev(nil),
+		first.EffectiveContract.SourceRevisions...,
+	)
+	second.ContextPack.SourceRevisions = append(
+		[]envelope.SourceRev(nil),
+		first.ContextPack.SourceRevisions...,
+	)
+	second.EffectiveContract.SourceRevisions[0].Rev = "sha256:second"
+	second.ContextPack.SourceRevisions[0].Rev = "sha256:second"
+	second = sealForRecord(t, second)
+	secondPaths, err := RecordRuntimeMaterialization(homePath, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPaths.ContractPath == secondPaths.ContractPath || firstPaths.PackPath == secondPaths.PackPath {
+		t.Fatalf("distinct materializations reused proof paths:\nfirst=%+v\nsecond=%+v", firstPaths, secondPaths)
+	}
+	if got, err := os.ReadFile(firstPaths.ContractPath); err != nil || !bytes.Equal(got, firstContractBytes) {
+		t.Fatalf("prior effective-contract proof changed: err=%v", err)
+	}
+	if got, err := os.ReadFile(firstPaths.PackPath); err != nil || !bytes.Equal(got, firstPackBytes) {
+		t.Fatalf("prior context-pack proof changed: err=%v", err)
 	}
 }
 
@@ -465,6 +549,7 @@ func TestRecordRuntimeMaterializationRejectsInstalledEntrypointRevisionSkew(t *t
 			runtime.EffectiveContract.SourceRevisions = append([]envelope.SourceRev(nil), base.EffectiveContract.SourceRevisions...)
 			runtime.ContextPack.SourceRevisions = append([]envelope.SourceRev(nil), base.ContextPack.SourceRevisions...)
 			test.mutate(&runtime)
+			runtime = sealForRecord(t, runtime)
 
 			if _, err := RecordRuntimeMaterialization(t.TempDir(), runtime); err == nil {
 				t.Fatal("installed entrypoint revision skew must fail pair persistence")
@@ -487,6 +572,7 @@ func TestRecordRuntimeMaterializationAcceptsMatchingInstalledEntrypointRevision(
 	binding := envelope.SourceRev{Source: source, Rev: revision}
 	runtime.EffectiveContract.SourceRevisions = append(runtime.EffectiveContract.SourceRevisions, binding)
 	runtime.ContextPack.SourceRevisions = append(runtime.ContextPack.SourceRevisions, binding)
+	runtime = sealForRecord(t, runtime)
 
 	paths, err := RecordRuntimeMaterialization(t.TempDir(), runtime)
 	if err != nil {
@@ -506,14 +592,18 @@ func TestRecordRuntimeMaterializationLeavesNoOrphanOnPackFailure(t *testing.T) {
 		EffectiveContract: Compile(in, DefaultPolicy(), fixedNow),
 		ContextPack:       Pack(in, DefaultPolicy(), fixedNow),
 	}
-	blockedPack := filepath.Join(homePath, "context", "packs", runtime.ContextPack.ID+".json")
+	sealed, err := SealRuntimeMaterialization(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedPack := filepath.Join(homePath, "context", "packs", sealed.ContextPack.ID+".json")
 	if err := os.MkdirAll(blockedPack, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RecordRuntimeMaterialization(homePath, runtime); err == nil {
+	if _, err := RecordRuntimeMaterialization(homePath, sealed); err == nil {
 		t.Fatal("pack staging failure must fail the pair")
 	}
-	contractPath := filepath.Join(homePath, "contracts", "effective", fixedNow.Format("2006-01-02"), runtime.EffectiveContract.ID+".json")
+	contractPath := filepath.Join(homePath, "contracts", "effective", fixedNow.Format("2006-01-02"), sealed.EffectiveContract.ID+".json")
 	latestPath := filepath.Join(homePath, "contracts", "effective", "latest.json")
 	for _, path := range []string{contractPath, latestPath} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -526,6 +616,7 @@ func TestRecordRuntimeMaterializationRestoresAllPreimagesWhenLatestCommitFails(t
 	homePath := t.TempDir()
 	in := mkInput("control-plane")
 	runtime := RuntimeMaterialization{EffectiveContract: Compile(in, DefaultPolicy(), fixedNow), ContextPack: Pack(in, DefaultPolicy(), fixedNow)}
+	runtime = sealForRecord(t, runtime)
 	paths, err := RecordRuntimeMaterialization(homePath, runtime)
 	if err != nil {
 		t.Fatal(err)
@@ -539,19 +630,30 @@ func TestRecordRuntimeMaterializationRestoresAllPreimagesWhenLatestCommitFails(t
 	}
 	runtime.ContextPack.SummaryMD += " changed"
 	runtime.EffectiveContract.Unknowns = append(runtime.EffectiveContract.Unknowns, "changed")
+	changed := sealForRecord(t, runtime)
+	changedPaths := RuntimeMaterializationArtifactPaths{
+		ContractPath: filepath.Join(homePath, "contracts", "effective", fixedNow.Format("2006-01-02"), changed.EffectiveContract.ID+".json"),
+		LatestPath:   paths.LatestPath,
+		PackPath:     filepath.Join(homePath, "context", "packs", changed.ContextPack.ID+".json"),
+	}
 	fsOps := runtimeMaterializationFS{createTemp: os.CreateTemp, rename: func(oldPath, newPath string) error {
 		if newPath == paths.LatestPath {
 			return fmt.Errorf("injected latest commit failure")
 		}
 		return os.Rename(oldPath, newPath)
 	}}
-	if _, err := recordRuntimeMaterializationWithFS(homePath, runtime, fsOps); err == nil {
+	if _, err := recordRuntimeMaterializationWithFS(homePath, changed, fsOps); err == nil {
 		t.Fatal("latest commit injection must fail")
 	}
 	for path, want := range preimages {
 		got, err := os.ReadFile(path)
 		if err != nil || !bytes.Equal(got, want) {
 			t.Fatalf("preimage changed at %s: err=%v", path, err)
+		}
+	}
+	for _, path := range []string{changedPaths.ContractPath, changedPaths.PackPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("failed materialization left new immutable artifact %s: %v", path, err)
 		}
 	}
 	for _, dir := range []string{filepath.Dir(paths.ContractPath), filepath.Dir(paths.PackPath), filepath.Dir(paths.LatestPath)} {
@@ -563,78 +665,52 @@ func TestRecordRuntimeMaterializationRestoresAllPreimagesWhenLatestCommitFails(t
 }
 
 func TestRecordRuntimeMaterializationReportsRollbackFailures(t *testing.T) {
-	tests := []struct {
-		name               string
-		preservePreimages  bool
-		wantRollbackAction string
-	}{
-		{name: "restore preimage", preservePreimages: true, wantRollbackAction: "rollback restore"},
-		{name: "remove new artifact", preservePreimages: false, wantRollbackAction: "rollback remove"},
+	homePath := t.TempDir()
+	in := mkInput("control-plane")
+	runtime := RuntimeMaterialization{
+		EffectiveContract: Compile(in, DefaultPolicy(), fixedNow),
+		ContextPack:       Pack(in, DefaultPolicy(), fixedNow),
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			homePath := t.TempDir()
-			in := mkInput("control-plane")
-			runtime := RuntimeMaterialization{
-				EffectiveContract: Compile(in, DefaultPolicy(), fixedNow),
-				ContextPack:       Pack(in, DefaultPolicy(), fixedNow),
-			}
-			paths, err := RecordRuntimeMaterialization(homePath, runtime)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !test.preservePreimages {
-				for _, path := range []string{paths.ContractPath, paths.PackPath, paths.LatestPath} {
-					if err := os.Remove(path); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			contractPreimage, preimageErr := os.ReadFile(paths.ContractPath)
-			if test.preservePreimages && preimageErr != nil {
-				t.Fatal(preimageErr)
-			}
-			runtime.EffectiveContract.Unknowns = append(runtime.EffectiveContract.Unknowns, "changed")
-			runtime.ContextPack.SummaryMD += " changed"
+	runtime = sealForRecord(t, runtime)
+	paths, err := RecordRuntimeMaterialization(homePath, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.EffectiveContract.Unknowns = append(runtime.EffectiveContract.Unknowns, "changed")
+	runtime.ContextPack.SummaryMD += " changed"
+	changed := sealForRecord(t, runtime)
+	changedContractPath := filepath.Join(homePath, "contracts", "effective", fixedNow.Format("2006-01-02"), changed.EffectiveContract.ID+".json")
+	changedPackPath := filepath.Join(homePath, "context", "packs", changed.ContextPack.ID+".json")
 
-			fsOps := runtimeMaterializationFS{
-				createTemp: os.CreateTemp,
-				rename: func(oldPath, newPath string) error {
-					if newPath != paths.LatestPath {
-						return os.Rename(oldPath, newPath)
-					}
-					if err := os.Remove(paths.PackPath); err != nil {
-						t.Fatalf("remove committed pack before rollback injection: %v", err)
-					}
-					if err := os.Mkdir(paths.PackPath, 0o755); err != nil {
-						t.Fatalf("replace committed pack with rollback blocker: %v", err)
-					}
-					if !test.preservePreimages {
-						if err := os.WriteFile(filepath.Join(paths.PackPath, "blocker"), []byte("block"), 0o644); err != nil {
-							t.Fatalf("make rollback removal fail: %v", err)
-						}
-					}
-					return fmt.Errorf("injected latest commit failure")
-				},
+	fsOps := runtimeMaterializationFS{
+		createTemp: os.CreateTemp,
+		rename: func(oldPath, newPath string) error {
+			if newPath != paths.LatestPath {
+				return os.Rename(oldPath, newPath)
 			}
-			_, err = recordRuntimeMaterializationWithFS(homePath, runtime, fsOps)
-			if err == nil {
-				t.Fatal("latest commit plus rollback failure must be reported")
+			if err := os.Remove(changedPackPath); err != nil {
+				t.Fatalf("remove committed pack before rollback injection: %v", err)
 			}
-			for _, want := range []string{"injected latest commit failure", test.wantRollbackAction} {
-				if !strings.Contains(err.Error(), want) {
-					t.Fatalf("error = %q, want it to include %q", err, want)
-				}
+			if err := os.Mkdir(changedPackPath, 0o755); err != nil {
+				t.Fatalf("replace committed pack with rollback blocker: %v", err)
 			}
-			gotContract, readErr := os.ReadFile(paths.ContractPath)
-			if test.preservePreimages {
-				if readErr != nil || !bytes.Equal(gotContract, contractPreimage) {
-					t.Fatalf("later contract rollback did not continue after pack rollback failure: err=%v", readErr)
-				}
-			} else if !os.IsNotExist(readErr) {
-				t.Fatalf("later contract rollback did not remove new artifact after pack rollback failure: err=%v", readErr)
+			if err := os.WriteFile(filepath.Join(changedPackPath, "blocker"), []byte("block"), 0o644); err != nil {
+				t.Fatalf("make rollback removal fail: %v", err)
 			}
-		})
+			return fmt.Errorf("injected latest commit failure")
+		},
+	}
+	_, err = recordRuntimeMaterializationWithFS(homePath, changed, fsOps)
+	if err == nil {
+		t.Fatal("latest commit plus rollback failure must be reported")
+	}
+	for _, want := range []string{"injected latest commit failure", "rollback remove"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to include %q", err, want)
+		}
+	}
+	if _, readErr := os.Stat(changedContractPath); !os.IsNotExist(readErr) {
+		t.Fatalf("contract rollback did not continue after pack rollback failure: %v", readErr)
 	}
 }
 
@@ -645,6 +721,7 @@ func TestRecordRuntimeMaterializationTreatsAlreadyAbsentRollbackTargetAsRestored
 		EffectiveContract: Compile(in, DefaultPolicy(), fixedNow),
 		ContextPack:       Pack(in, DefaultPolicy(), fixedNow),
 	}
+	runtime = sealForRecord(t, runtime)
 	paths, err := RecordRuntimeMaterialization(homePath, runtime)
 	if err != nil {
 		t.Fatal(err)
@@ -656,19 +733,21 @@ func TestRecordRuntimeMaterializationTreatsAlreadyAbsentRollbackTargetAsRestored
 	}
 	runtime.EffectiveContract.Unknowns = append(runtime.EffectiveContract.Unknowns, "changed")
 	runtime.ContextPack.SummaryMD += " changed"
+	changed := sealForRecord(t, runtime)
+	changedContractPath := filepath.Join(homePath, "contracts", "effective", fixedNow.Format("2006-01-02"), changed.EffectiveContract.ID+".json")
 	fsOps := runtimeMaterializationFS{
 		createTemp: os.CreateTemp,
 		rename: func(oldPath, newPath string) error {
 			if newPath != paths.LatestPath {
 				return os.Rename(oldPath, newPath)
 			}
-			if err := os.Remove(paths.ContractPath); err != nil {
+			if err := os.Remove(changedContractPath); err != nil {
 				t.Fatalf("make contract rollback target already absent: %v", err)
 			}
 			return fmt.Errorf("injected latest commit failure")
 		},
 	}
-	_, err = recordRuntimeMaterializationWithFS(homePath, runtime, fsOps)
+	_, err = recordRuntimeMaterializationWithFS(homePath, changed, fsOps)
 	if err == nil || !strings.Contains(err.Error(), "injected latest commit failure") {
 		t.Fatalf("error = %v, want injected commit failure", err)
 	}
@@ -681,6 +760,7 @@ func TestRecordRuntimeMaterializationPackStageFailurePreservesAllPreimages(t *te
 	homePath := t.TempDir()
 	in := mkInput("control-plane")
 	runtime := RuntimeMaterialization{EffectiveContract: Compile(in, DefaultPolicy(), fixedNow), ContextPack: Pack(in, DefaultPolicy(), fixedNow)}
+	runtime = sealForRecord(t, runtime)
 	paths, err := RecordRuntimeMaterialization(homePath, runtime)
 	if err != nil {
 		t.Fatal(err)
@@ -692,6 +772,9 @@ func TestRecordRuntimeMaterializationPackStageFailurePreservesAllPreimages(t *te
 			t.Fatal(err)
 		}
 	}
+	runtime.EffectiveContract.Unknowns = append(runtime.EffectiveContract.Unknowns, "changed")
+	runtime.ContextPack.SummaryMD += " changed"
+	changed := sealForRecord(t, runtime)
 	calls := 0
 	fsOps := runtimeMaterializationFS{rename: os.Rename, createTemp: func(dir, pattern string) (*os.File, error) {
 		calls++
@@ -700,7 +783,7 @@ func TestRecordRuntimeMaterializationPackStageFailurePreservesAllPreimages(t *te
 		}
 		return os.CreateTemp(dir, pattern)
 	}}
-	if _, err := recordRuntimeMaterializationWithFS(homePath, runtime, fsOps); err == nil {
+	if _, err := recordRuntimeMaterializationWithFS(homePath, changed, fsOps); err == nil {
 		t.Fatal("pack stage injection must fail")
 	}
 	for path, want := range preimages {

@@ -509,7 +509,7 @@ func Revert(home string, policyCfg policy.Config, lane, workID string, now time.
 		return RevertOutcome{}, fmt.Errorf("load pre-image artifact for revert: %w", err)
 	}
 	pd := policy.Evaluate(revertAI, policyCfg, now)
-	revRes, execErr := act.Execute(store, adapter, revertAI, pd, preBytes, now)
+	revRes, execErr := act.ExecuteRevert(store, adapter, revertAI, pd, preBytes, now)
 	if execErr != nil {
 		return RevertOutcome{Lane: lane, Reverted: false, Reason: execErr.Error()}, nil
 	}
@@ -674,7 +674,7 @@ func preflightActionLedger(home string) error {
 func afterAppendFailure(home string, policyCfg policy.Config, store *act.ArtifactStore, adapter act.Adapter, ai envelope.ActionIntent, result act.Result, sig behaviorallens.InferredSignal, th Threshold, root string, appendErr error, now time.Time) (ModulationResult, error) {
 	revertAI := act.RevertIntent(ai, result, now)
 	revertPD := policy.Evaluate(revertAI, policyCfg, now)
-	revRes, revErr := act.Execute(store, adapter, revertAI, revertPD, result.PreImage, now)
+	revRes, revErr := act.ExecuteRevert(store, adapter, revertAI, revertPD, result.PreImage, now)
 	if revErr == nil {
 		// Best-effort: log the compensating revert to our own ledger too. Its failure is NOT fatal —
 		// the route store is already back at baseline, so a ledger with no row for this lane matches

@@ -218,7 +218,7 @@ func instructionIntent(p ProjectProfile, workID, filePath string, now time.Time)
 	return envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
-			ID:            intentIDFor(workID, "switchback_instructions", filePath),
+			ID:            intentIDForInvocation(now, workID, "switchback_instructions", filePath),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "actuator", Name: "compound"},
 			IDs:           envelope.IDs{WorkID: workID},
@@ -500,7 +500,7 @@ func runIntent(in RunInput, now time.Time) envelope.ActionIntent {
 	return envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
-			ID:            intentIDFor(in.WorkID, "harness_run", in.Harness, in.Workspace, preview),
+			ID:            intentIDForInvocation(now, in.WorkID, "harness_run", in.Harness, in.Workspace, preview),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "actuator", Name: "compound"},
 			IDs:           envelope.IDs{WorkID: in.WorkID},
@@ -533,6 +533,10 @@ func intentIDFor(parts ...string) string {
 		h.Write([]byte{0})
 	}
 	return "act_" + hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+func intentIDForInvocation(now time.Time, parts ...string) string {
+	return intentIDFor(append(parts, "invoked_at:"+now.UTC().Format(time.RFC3339Nano))...)
 }
 
 func truncate(s string, n int) string {

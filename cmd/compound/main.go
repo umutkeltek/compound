@@ -3310,6 +3310,8 @@ func cmdContract(args []string) {
 		}
 		runtime, err := contract.MaterializeRuntime(in, orientPolicy(), homePath, time.Now())
 		die(err)
+		runtime, err = contract.SealRuntimeMaterialization(runtime)
+		die(err)
 		_, err = contract.RecordRuntimeMaterialization(homePath, runtime)
 		die(err)
 		ec := runtime.EffectiveContract

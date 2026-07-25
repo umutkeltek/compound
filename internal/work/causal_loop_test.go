@@ -200,6 +200,10 @@ func recordDirectiveContextPack(t *testing.T, homePath string, now time.Time) en
 	if err != nil {
 		t.Fatal(err)
 	}
+	runtime, err = contract.SealRuntimeMaterialization(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pack := runtime.ContextPack
 	if len(pack.ActivePositions) == 0 && len(pack.ActiveDecisions) == 0 {
 		t.Fatalf("context pack has no active positions or decisions: active_memory=%v summary=%s", pack.ActiveMemory, pack.SummaryMD)

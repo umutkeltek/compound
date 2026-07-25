@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,11 @@ func coordinationCLIHome(t *testing.T) string {
 	t.Helper()
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
+	return seedCoordinationCLIHome(t, homePath, "lane-x")
+}
+
+func seedCoordinationCLIHome(t *testing.T, homePath, actor string) string {
+	t.Helper()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("home init: %v", err)
 	}
@@ -45,14 +51,14 @@ func coordinationCLIHome(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	w, err := store.Create(work.CreateInput{Owner: "lane-x", DesiredOutcome: "ship the parser", SuccessPredicate: "parser lands"}, cliTestNow)
+	w, err := store.Create(work.CreateInput{Owner: actor, DesiredOutcome: "ship the parser", SuccessPredicate: "parser lands"}, cliTestNow)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := store.Claim(w.ID, "lane-x", cliTestNow.Add(time.Minute)); err != nil {
+	if _, err := store.Claim(w.ID, actor, cliTestNow.Add(time.Minute)); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "lane-x", Note: "start"}, cliTestNow.Add(2*time.Minute)); err != nil {
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: actor, Note: "start"}, cliTestNow.Add(2*time.Minute)); err != nil {
 		t.Fatalf("advance: %v", err)
 	}
 	return w.ID
@@ -200,5 +206,97 @@ func TestCoordinationCLIUsage(t *testing.T) {
 	out := captureCoordination(t, []string{"--help"})
 	if !strings.Contains(out, "usage: compound coordination") {
 		t.Fatalf("usage output = %q", out)
+	}
+}
+
+func TestCoordinationCLIUsesExplicitHome(t *testing.T) {
+	if os.Getenv("COMPOUND_TEST_COORDINATION_EXPLICIT_HOME") == "1" {
+		cmdCoordination([]string{"--home", os.Getenv("COMPOUND_TEST_HOME"), "--json"})
+		return
+	}
+	homePath := t.TempDir()
+	workID := seedCoordinationCLIHome(t, homePath, "lane-explicit")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCoordinationCLIUsesExplicitHome$")
+	cmd.Env = append(os.Environ(),
+		"COMPOUND_TEST_COORDINATION_EXPLICIT_HOME=1",
+		"COMPOUND_TEST_HOME="+homePath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("coordination --home failed: %v\n%s", err, out)
+	}
+	var report work.CoordinationReport
+	if err := json.Unmarshal([]byte(strings.SplitN(string(out), "\n", 2)[0]), &report); err != nil {
+		t.Fatalf("parse explicit-home report: %v\n%s", err, out)
+	}
+	if report.Me.Actor != "lane-explicit" || report.Me.Doing == nil || report.Me.Doing.WorkID != workID {
+		t.Fatalf("explicit home was not consumed: %+v", report.Me)
+	}
+}
+
+func TestCoordinationMeasureCLIReportsObservedOutcome(t *testing.T) {
+	if os.Getenv("COMPOUND_TEST_COORDINATION_MEASURE") == "1" {
+		cmdCoordination([]string{
+			"measure",
+			"--report", os.Getenv("COMPOUND_TEST_DELIVERY_REPORT"),
+			"--home", os.Getenv("COMPOUND_TEST_HOME"),
+			"--json",
+		})
+		return
+	}
+	homePath := t.TempDir()
+	workID := seedCoordinationCLIHome(t, homePath, "lane-measure")
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyRef, err := artifacts.Put([]byte("bounded coordination body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordCollaboration(workID, work.CollaborationInput{
+		Actor:          "lane-measure",
+		IdempotencyKey: "measure-cli",
+		BodyRef:        bodyRef,
+		DeliveryClass:  work.CollaborationDeliveryNextBoundary,
+		Delta: work.CollaborationStateDelta{
+			Kind: "work", SubjectRef: workID, Before: "running", After: "reviewed",
+		},
+		Affects: work.CollaborationAffects{WorkIDs: []string{workID}},
+	}, cliTestNow.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := hookplan.DeliverCoordination(hookplan.DeliveryRequest{
+		HomePath: homePath, Harness: "codex", CursorKey: "measure-cli",
+		Recipient: hookplan.DeliveryRecipient{WorkID: workID},
+		Trigger:   hookplan.DeliveryTriggerBoundary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCoordinationMeasureCLIReportsObservedOutcome$")
+	cmd.Env = append(os.Environ(),
+		"COMPOUND_TEST_COORDINATION_MEASURE=1",
+		"COMPOUND_TEST_DELIVERY_REPORT="+delivery.ID,
+		"COMPOUND_TEST_HOME="+homePath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("coordination measure failed: %v\n%s", err, out)
+	}
+	var receipt hookplan.DeliveryMeasurementReceipt
+	if err := json.Unmarshal([]byte(strings.SplitN(string(out), "\n", 2)[0]), &receipt); err != nil {
+		t.Fatalf("parse measurement receipt: %v\n%s", err, out)
+	}
+	if receipt.DeliveryReportID != delivery.ID || receipt.ID == "" {
+		t.Fatalf("measurement does not identify delivery: %+v", receipt)
+	}
+	if len(receipt.CausedActionRefs) != 0 || len(receipt.ObservedActionRefs) != 0 ||
+		len(receipt.ObservedRunAttemptRefs) != 0 || len(receipt.ObservedWorkRefs) != 0 {
+		t.Fatalf("unchanged work measured a false outcome: %+v", receipt)
 	}
 }

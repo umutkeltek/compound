@@ -139,7 +139,7 @@ func TestFileArtifactCreateThenRevertRemovesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load pre-image artifact: %v", err)
 	}
-	if _, err := Execute(store, adapter, revert, revertPD, preImage, later); err != nil {
+	if _, err := ExecuteRevert(store, adapter, revert, revertPD, preImage, later); err != nil {
 		t.Fatalf("revert execute failed: %v", err)
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
@@ -183,7 +183,7 @@ func TestFileArtifactModifyThenRevertRestoresBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load pre-image: %v", err)
 	}
-	if _, err := Execute(store, adapter, revert, revertPD, preImage, later); err != nil {
+	if _, err := ExecuteRevert(store, adapter, revert, revertPD, preImage, later); err != nil {
 		t.Fatalf("revert failed: %v", err)
 	}
 	if got, _ := os.ReadFile(path); string(got) != "original bytes" {
@@ -216,5 +216,30 @@ func TestFileArtifactLegacyByteOnlyPreImageTreatedAsExists(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(path); string(got) != "legacy-restored" {
 		t.Fatalf("legacy byte-only value must be written as content, got %q", got)
+	}
+}
+
+func TestFileArtifactForwardWriteTreatsPreImageShapedJSONAsOpaqueData(t *testing.T) {
+	now := fixedNow()
+	home := t.TempDir()
+	store, err := NewArtifactStore(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "literal-preimage.json")
+	adapter := NewFileArtifactAdapter()
+	ai := mkFileIntent(t, "work_literal_preimage", path, now)
+	pd := policy.Evaluate(ai, fileGrant(ai), now)
+	literal := encodeFilePreImage(false, nil)
+
+	if _, err := Execute(store, adapter, ai, pd, literal, now); err != nil {
+		t.Fatalf("forward write failed: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("forward write silently treated data as delete control: %v", err)
+	}
+	if string(got) != string(literal) {
+		t.Fatalf("forward write changed opaque bytes:\ngot  %q\nwant %q", got, literal)
 	}
 }

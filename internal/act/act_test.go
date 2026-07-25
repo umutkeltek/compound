@@ -192,6 +192,36 @@ func TestExecuteRefusesUngranted(t *testing.T) {
 	}
 }
 
+func TestExecuteRejectsRevertIntentOnForwardPath(t *testing.T) {
+	now := fixedNow()
+	path := scratch(t, "switchback.yaml", "egress:\n  auto/judge: providerA\n")
+	store := newStore(t)
+	adapter := NewConfigKeyAdapter()
+	ai := mkIntent(t, "work_revert_boundary", "outbound.config_key.write", path, "egress.auto/judge", now)
+	cfg := grantConfig(ai)
+	pd := policy.Evaluate(ai, cfg, now)
+	res, err := Execute(store, adapter, ai, pd, []byte("providerB"), now)
+	if err != nil {
+		t.Fatalf("forward write failed: %v", err)
+	}
+	preImage, err := store.Get(res.PreImageRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revertAt := now.Add(time.Second)
+	revert := RevertIntent(ai, res, revertAt)
+	revertPD := policy.Evaluate(revert, cfg, revertAt)
+
+	if _, err := Execute(store, adapter, revert, revertPD, preImage, revertAt); err == nil {
+		t.Fatal("forward Execute accepted a revert intent instead of requiring ExecuteRevert")
+	} else if !strings.Contains(err.Error(), "ExecuteRevert") {
+		t.Fatalf("error = %q, want ExecuteRevert redirect", err)
+	}
+	if got := mustRead(t, adapter, ai.Target); got != "providerB" {
+		t.Fatalf("refused forward-path revert mutated target: %q", got)
+	}
+}
+
 // runGovernedRoundTrip exercises assertions 3 + 4 against one scratch config:
 // granted forward write flips A->B and emits a valid outward_delta receipt, then a
 // revert built from the pre-image restores A with its own valid outward_delta
@@ -253,7 +283,7 @@ func runGovernedRoundTrip(t *testing.T, path, key, from, to string) {
 	if string(preImage) != from {
 		t.Fatalf("pre-image artifact wrong: got %q want %q", preImage, from)
 	}
-	revRes, err := Execute(store, adapter, revert, revertPD, preImage, later)
+	revRes, err := ExecuteRevert(store, adapter, revert, revertPD, preImage, later)
 	if err != nil {
 		t.Fatalf("revert write failed: %v", err)
 	}

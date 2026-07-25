@@ -119,12 +119,20 @@ func TestLiveUserPromptIsWorkNeutralAndPersistsOpaqueExactContext(t *testing.T) 
 	if last.Context == nil || last.Context.Input.Task != ref || last.Context.Input.TaskContract.Intent != ref {
 		t.Fatalf("retrieval observation retained prompt: %+v", last.Context)
 	}
-	reproducedContract := contract.Compile(last.Context.Input, deps.Orient, fixedNow)
-	reproducedPack := contract.Pack(last.Context.Input, deps.Orient, fixedNow)
-	if ec.Header.ID != reproducedContract.Header.ID || pack.Header.ID != reproducedPack.Header.ID || pack.Header.IDs.ContractID != reproducedPack.Header.IDs.ContractID {
-		t.Fatalf("persisted prompt ids are not reproducible from sanitized input: contract=%q/%q pack=%q/%q pack_contract=%q/%q",
-			ec.Header.ID, reproducedContract.Header.ID, pack.Header.ID, reproducedPack.Header.ID,
-			pack.Header.IDs.ContractID, reproducedPack.Header.IDs.ContractID)
+	resealed, err := contract.SealRuntimeMaterialization(contract.RuntimeMaterialization{
+		EffectiveContract: *ec,
+		ContextPack:       *pack,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ec.Header.ID != resealed.EffectiveContract.Header.ID ||
+		pack.Header.ID != resealed.ContextPack.Header.ID ||
+		pack.Header.IDs.ContractID != resealed.ContextPack.Header.IDs.ContractID {
+		t.Fatalf("persisted prompt ids are not stable content-bound proof refs: contract=%q/%q pack=%q/%q pack_contract=%q/%q",
+			ec.Header.ID, resealed.EffectiveContract.Header.ID,
+			pack.Header.ID, resealed.ContextPack.Header.ID,
+			pack.Header.IDs.ContractID, resealed.ContextPack.Header.IDs.ContractID)
 	}
 	assertPromptSentinelAbsentFromTree(t, homePath, raw)
 }

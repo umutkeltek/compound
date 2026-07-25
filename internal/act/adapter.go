@@ -1,14 +1,13 @@
 // Package act is compound's ONE generic governed outbound-write seam: the single
 // execute-and-receipt wrapper that makes "no external mutation without a valid
 // PolicyDecision" true BY CONSTRUCTION. An Adapter is the only thing that touches the
-// outside world, and its mutating method (write) is UNEXPORTED — an unexported
-// interface method is package-scoped, so only types declared in package act can satisfy
-// Adapter and only package act can invoke write. No external package can reach an
-// adapter's write at all: Execute is the sole caller, and it refuses unless handed an
-// allowing PolicyDecision for that exact ActionIntent. The gate is therefore the ONLY
-// reachable path to a mutation, not merely the intended one. Every future outbound
-// system (a config repoint, a DNS record, an API toggle) is a new Adapter plus a
-// different ActionIntent.Target — never a new governance path.
+// outside world, and its mutating methods are UNEXPORTED — unexported interface methods
+// are package-scoped, so only types declared in package act can satisfy Adapter and only
+// package act can invoke forward writes or pre-image restores. No external package can
+// reach either mutation path: Execute and ExecuteRevert are the gated entrypoints. The
+// gate is therefore the ONLY reachable path to a mutation, not merely the intended one.
+// Every future outbound system (a config repoint, a DNS record, an API toggle) is a new
+// Adapter plus a different ActionIntent.Target — never a new governance path.
 // See docs/architecture/{runtime,transition}.md and internal/policy.
 package act
 
@@ -25,16 +24,26 @@ import (
 )
 
 // Adapter is a generic outbound target. ReadCurrent returns the current value at the
-// target (the pre-image); write replaces it with newValue. The mutating method is
-// UNEXPORTED on purpose: an unexported interface method is package-scoped, so only
-// types declared in package act can implement Adapter and only package act can call
-// write. That is the structural seal — an external package structurally cannot reach
-// an adapter's write, so the sole caller is Execute (act.go), which refuses without an
-// allowing PolicyDecision. Concrete adapters stay tiny and side-effect-only: all
-// governance lives in Execute, above them.
+// target (the pre-image); write replaces it with opaque forward data. The mutating
+// methods are UNEXPORTED on purpose: only package act can call write or an optional
+// restorePreImage implementation. That is the structural seal — external packages
+// hand adapters to Execute or ExecuteRevert, both of which refuse without an allowing
+// PolicyDecision. Concrete adapters stay tiny and side-effect-only: all governance
+// lives above them.
 type Adapter interface {
 	ReadCurrent(target envelope.ActionTarget) ([]byte, error)
 	write(target envelope.ActionTarget, newValue []byte) error
+}
+
+type preImageRestorer interface {
+	restorePreImage(target envelope.ActionTarget, preImage []byte) error
+}
+
+func restoreAdapterPreImage(adapter Adapter, target envelope.ActionTarget, preImage []byte) error {
+	if restorer, ok := adapter.(preImageRestorer); ok {
+		return restorer.restorePreImage(target, preImage)
+	}
+	return adapter.write(target, preImage)
 }
 
 // ConfigKeyAdapter reads and writes a single dotted key (Target.ID) inside a YAML
@@ -185,9 +194,9 @@ func marshalScalar(v any) ([]byte, error) {
 // reversible — e.g. a distribution post written to an outbox, or any artifact
 // a later step ships externally. It is NOT specific to any channel: a post
 // outbox file and an exported report differ only by Target.Path. Like
-// ConfigKeyAdapter it is reversible by nature — the pre-image is the file's
-// prior bytes (empty for a brand-new file), and a rollback is another write of
-// those captured bytes.
+// ConfigKeyAdapter it is reversible by nature — the pre-image records whether
+// the file existed plus its prior bytes, and the distinct restore path deletes
+// a newly created file or restores an existing file byte-for-byte.
 //
 // The mutating method is UNEXPORTED on purpose: only package act can call it,
 // so Execute's PolicyDecision gate is the sole reachable path to a write — no
@@ -254,17 +263,23 @@ func (FileArtifactAdapter) ReadCurrent(target envelope.ActionTarget) ([]byte, er
 	return encodeFilePreImage(true, data), nil
 }
 
-// write materializes newValue at Target.Path. newValue is decoded as a file
-// pre-image: restoring an ABSENT pre-image (exists=false) DELETES the target so a
-// rolled-back creation leaves no file (not an empty one); every other value
-// (exists=true, a legacy byte-only pre-image, or a raw forward-write body) writes its
-// content, creating parent directories as needed. UNEXPORTED: Execute is the only
-// caller, and only after an allowing PolicyDecision.
+// write materializes newValue at Target.Path as opaque bytes. Adapter control
+// data is never decoded on the forward path, so a legitimate file whose exact
+// content matches filePreImageSchema is still written byte-for-byte.
 func (FileArtifactAdapter) write(target envelope.ActionTarget, newValue []byte) error {
 	if strings.TrimSpace(target.Path) == "" {
 		return fmt.Errorf("file-artifact adapter requires target.path")
 	}
-	exists, content := decodeFilePreImage(newValue)
+	return writeFileArtifact(target.Path, newValue)
+}
+
+// restorePreImage is the distinct rollback path used by ExecuteRevert and
+// Execute's post-write failure cleanup.
+func (FileArtifactAdapter) restorePreImage(target envelope.ActionTarget, preImage []byte) error {
+	if strings.TrimSpace(target.Path) == "" {
+		return fmt.Errorf("file-artifact adapter requires target.path")
+	}
+	exists, content := decodeFilePreImage(preImage)
 	if !exists {
 		// Restoring an absent pre-image: remove the target. A missing target is
 		// already the desired state, so a not-exist removal is not an error.
@@ -273,10 +288,14 @@ func (FileArtifactAdapter) write(target envelope.ActionTarget, newValue []byte) 
 		}
 		return nil
 	}
-	if dir := filepath.Dir(target.Path); dir != "" && dir != "." {
+	return writeFileArtifact(target.Path, content)
+}
+
+func writeFileArtifact(path string, content []byte) error {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	return os.WriteFile(target.Path, content, 0o644)
+	return os.WriteFile(path, content, 0o644)
 }

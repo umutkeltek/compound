@@ -207,8 +207,8 @@ func encodeRemotePreImage(content []byte) []byte {
 }
 
 // ReadCurrent captures the whole remote file as a schema-tagged pre-image (empty content
-// when the managed file does not yet exist). The tag lets write distinguish a rollback
-// (restore whole file) from a forward append.
+// when the managed file does not yet exist). The tag is interpreted only by the distinct
+// restorePreImage path; forward append bytes never become rollback control data.
 func (a remoteManagedFileAdapter) ReadCurrent(target envelope.ActionTarget) ([]byte, error) {
 	content, err := a.readRemote()
 	if err != nil {
@@ -217,18 +217,21 @@ func (a remoteManagedFileAdapter) ReadCurrent(target envelope.ActionTarget) ([]b
 	return encodeRemotePreImage(content), nil
 }
 
-// write is UNEXPORTED — Execute is its only caller, and only after an allowing PolicyDecision.
-// It decodes newValue: a forward block spec APPENDS an additive block (refusing when the
-// record already exists — additive-only, OPEN #3 = refuse-as-conflict); a pre-image RESTORES
-// the whole file (the rollback / revert path). Any other shape is an explicit error.
+// write is the forward-only path: it accepts an additive block and never
+// interprets pre-image control bytes.
 func (a remoteManagedFileAdapter) write(target envelope.ActionTarget, newValue []byte) error {
 	if fwd, ok := decodeForward(newValue); ok {
 		return a.appendBlock(fwd.Name, fwd.Value)
 	}
-	if pre, ok := decodePreImage(newValue); ok {
-		return a.restore(pre.Content)
+	return fmt.Errorf("%s adapter: unrecognized forward write value", a.grammar.kind)
+}
+
+func (a remoteManagedFileAdapter) restorePreImage(_ envelope.ActionTarget, preImage []byte) error {
+	pre, ok := decodePreImage(preImage)
+	if !ok {
+		return fmt.Errorf("%s adapter: unrecognized captured pre-image", a.grammar.kind)
 	}
-	return fmt.Errorf("%s adapter: unrecognized write value (neither an additive record nor a captured pre-image)", a.grammar.kind)
+	return a.restore(pre.Content)
 }
 
 func decodeForward(b []byte) (remoteForward, bool) {

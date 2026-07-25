@@ -2615,8 +2615,32 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 	if err := json.Unmarshal([]byte(orientOut), &pack); err != nil {
 		t.Fatalf("parse orient pack: %v\n%s", err, orientOut)
 	}
-	if pack.IDs.ContractID != ec.ID {
-		t.Fatalf("orient contract_id = %q, want %q", pack.IDs.ContractID, ec.ID)
+	if pack.IDs.ContractID == "" {
+		t.Fatal("orient pack missing sealed contract_id")
+	}
+	orientUseHooksCreatedAt, err := time.Parse(time.RFC3339, pack.CreatedAt)
+	if err != nil {
+		t.Fatalf("parse orient created_at %q: %v", pack.CreatedAt, err)
+	}
+	orientUseHooksContractPath := filepath.Join(
+		homePath,
+		"contracts",
+		"effective",
+		orientUseHooksCreatedAt.UTC().Format("2006-01-02"),
+		pack.IDs.ContractID+".json",
+	)
+	orientUseHooksContractData, err := os.ReadFile(orientUseHooksContractPath)
+	if err != nil {
+		t.Fatalf("read orient effective contract artifact: %v", err)
+	}
+	var orientUseHooksContract envelope.EffectiveContract
+	if err := json.Unmarshal(orientUseHooksContractData, &orientUseHooksContract); err != nil {
+		t.Fatalf("parse orient effective contract artifact: %v", err)
+	}
+	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
+		if !stringSliceContains(orientUseHooksContract.ActiveHooks, want) {
+			t.Fatalf("orient contract active hooks = %v, want %s", orientUseHooksContract.ActiveHooks, want)
+		}
 	}
 	packPath := filepath.Join(homePath, "context", "packs", pack.ID+".json")
 	packData, err := os.ReadFile(packPath)
@@ -2627,8 +2651,9 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 	if err := json.Unmarshal(packData, &storedPack); err != nil {
 		t.Fatalf("parse orient context pack artifact: %v", err)
 	}
-	if storedPack.ID != pack.ID || storedPack.IDs.ContractID != ec.ID {
-		t.Fatalf("stored orient pack id/contract = %q/%q, want %q/%q", storedPack.ID, storedPack.IDs.ContractID, pack.ID, ec.ID)
+	if storedPack.ID != pack.ID || storedPack.IDs.ContractID != pack.IDs.ContractID {
+		t.Fatalf("stored orient pack id/contract = %q/%q, want %q/%q",
+			storedPack.ID, storedPack.IDs.ContractID, pack.ID, pack.IDs.ContractID)
 	}
 	orientOnlyOut := captureStdout(t, func() {
 		cmdOrient([]string{"--harness", "codex", "--cwd", cwd, "--task", "orient persists contract without precompile", "--repo-kind", "control-plane"})

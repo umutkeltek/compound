@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -52,6 +53,46 @@ func TestMaterializeOrientContextPackUsesOneSharedRuntimeSnapshot(t *testing.T) 
 	}
 	if got := orientSourceRevision(pack.SourceRevisions, authority.InstalledHarnessEntrypointRevisionPrefix+"codex"); got != "" {
 		t.Fatalf("public clone without installed-harness marker must omit entrypoint binding, got %q", got)
+	}
+}
+
+func TestMaterializeOrientContextPackReturnsImmutableMaterializationID(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	in := contract.Input{
+		Harness: "codex", Cwd: t.TempDir(), Task: "immutable orient materialization",
+		RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute",
+	}
+	prior := materializeRuntimeForOrient
+	materializeRuntimeForOrient = func(in contract.Input, pol contract.OrientationPolicy, _ string, now time.Time) (contract.RuntimeMaterialization, error) {
+		return contract.RuntimeMaterialization{
+			EffectiveContract: contract.Compile(in, pol, now),
+			ContextPack:       contract.Pack(in, pol, now),
+		}, nil
+	}
+	t.Cleanup(func() { materializeRuntimeForOrient = prior })
+
+	first, err := materializeOrientContextPack(homePath, in, 0, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPath := filepath.Join(homePath, "context", "packs", first.ID+".json")
+	firstBytes, err := os.ReadFile(firstPath)
+	if err != nil {
+		t.Fatalf("read first materialization %s: %v", first.ID, err)
+	}
+	second, err := materializeOrientContextPack(homePath, in, 0, cliTestNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || first.IDs.ContractID == second.IDs.ContractID {
+		t.Fatalf("distinct runtime snapshots reused proof ids: first=%s/%s second=%s/%s",
+			first.ID, first.IDs.ContractID, second.ID, second.IDs.ContractID)
+	}
+	if got, err := os.ReadFile(firstPath); err != nil || !bytes.Equal(got, firstBytes) {
+		t.Fatalf("first context proof changed after second materialization: err=%v", err)
 	}
 }
 

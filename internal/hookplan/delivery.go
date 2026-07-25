@@ -946,6 +946,10 @@ func holdCurrentInterruptExecution(
 			continue
 		}
 		if err := store.ValidateCollaborationDeliveryEvidence(event); err != nil {
+			if errors.Is(err, work.ErrCollaborationInterruptInactive) {
+				delete(state.ActiveInterrupts, key)
+				continue
+			}
 			return fmt.Errorf("coordination active interrupt %s ineligible: %w", event.ID, err)
 		}
 		holdInterruptExecution(report, []work.CollaborationEvent{event})

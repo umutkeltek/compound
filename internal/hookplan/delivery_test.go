@@ -702,6 +702,41 @@ func TestInterruptCannotTerminalizeAtNextBoundaryBeforePreToolUse(t *testing.T) 
 	}
 }
 
+func TestDeliveredInterruptStopsHoldingAfterRunTerminalizes(t *testing.T) {
+	fixture := newDeliveryFixture(t)
+	interrupt := fixture.record(t, "terminalized-after-delivery", work.CollaborationDeliveryInterrupt, work.CollaborationAffects{
+		WorkIDs: []string{fixture.work},
+	})
+	request := DeliveryRequest{
+		HomePath: fixture.home, Harness: "codex", CursorKey: "terminalized-after-delivery",
+		Recipient: DeliveryRecipient{
+			Actor: fixture.actor, WorkID: fixture.work, RunAttemptID: fixture.runAttemptID,
+			PolicyRefs: interrupt.Affects.PolicyRefs,
+		},
+		Trigger: DeliveryTriggerInterrupt, Budget: wideDeliveryBudget(),
+	}
+	delivered, err := DeliverCoordination(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivered.Native == nil || !delivered.ExecutionHeld {
+		t.Fatalf("active interrupt was not delivered and held: %+v", delivered)
+	}
+	if _, err := runattempt.Open(fixture.home).Complete(
+		fixture.runAttemptID, runattempt.StatusSucceeded, fixture.now.Add(20*time.Second),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	afterTerminal, err := DeliverCoordination(request)
+	if err != nil {
+		t.Fatalf("terminalized active interrupt must clear instead of failing delivery: %v", err)
+	}
+	if afterTerminal.ExecutionHeld || len(afterTerminal.HoldEvidenceRefs) != 0 {
+		t.Fatalf("terminalized interrupt still held execution: %+v", afterTerminal)
+	}
+}
+
 func TestDeliveryClassEscalationChangesSemanticRevisionAndHoldsInterrupt(t *testing.T) {
 	fixture := newDeliveryFixture(t)
 	delta := work.CollaborationStateDelta{

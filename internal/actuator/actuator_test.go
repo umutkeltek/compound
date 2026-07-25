@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/harness"
 	"compound/internal/policy"
@@ -324,6 +325,65 @@ func TestRunRejectsMissingWorkBeforeDispatch(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(filepath.Join(homePath, "run_attempts")); len(entries) != 0 {
 		t.Fatalf("missing work must not mint a RunAttempt; found %d entries", len(entries))
+	}
+}
+
+func TestActionIntentIdentityIncludesInvocationTime(t *testing.T) {
+	firstAt := testNow
+	secondAt := testNow.Add(time.Second)
+
+	tests := []struct {
+		name  string
+		first envelope.ActionIntent
+		next  envelope.ActionIntent
+	}{
+		{
+			name: "harness run",
+			first: runIntent(RunInput{
+				WorkID: "work_identity", Harness: "claude", PermissionMode: "plan",
+				Workspace: "/workspace", Prompt: "inspect",
+			}, firstAt),
+			next: runIntent(RunInput{
+				WorkID: "work_identity", Harness: "claude", PermissionMode: "plan",
+				Workspace: "/workspace", Prompt: "inspect",
+			}, secondAt),
+		},
+		{
+			name:  "instruction write",
+			first: instructionIntent(ProjectProfile{Slug: "demo"}, "work_identity", "/workspace/AGENTS.md", firstAt),
+			next:  instructionIntent(ProjectProfile{Slug: "demo"}, "work_identity", "/workspace/AGENTS.md", secondAt),
+		},
+		{
+			name: "routing repoint",
+			first: *routingIntent(ProjectProfile{
+				Slug: "demo", Routing: RoutingSpec{
+					Harness: "claude", ConfigPath: "/config.json", ConfigKey: "route", ConfigValue: "next",
+				},
+			}, "work_identity", firstAt),
+			next: *routingIntent(ProjectProfile{
+				Slug: "demo", Routing: RoutingSpec{
+					Harness: "claude", ConfigPath: "/config.json", ConfigKey: "route", ConfigValue: "next",
+				},
+			}, "work_identity", secondAt),
+		},
+		{
+			name: "distribution post",
+			first: postIntent(
+				PostInput{WorkID: "work_identity", ProductID: "product:demo", Content: "same"},
+				"distribution", "generic", "/outbox/post.json", firstAt,
+			),
+			next: postIntent(
+				PostInput{WorkID: "work_identity", ProductID: "product:demo", Content: "same"},
+				"distribution", "generic", "/outbox/post.json", secondAt,
+			),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.first.ID == test.next.ID {
+				t.Fatalf("repeated action attempts reused %s despite different invocation times", test.first.ID)
+			}
+		})
 	}
 }
 

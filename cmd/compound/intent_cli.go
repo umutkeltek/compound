@@ -66,10 +66,15 @@ func materializeOrientContextPack(homePath string, in contract.Input, bodyBudget
 			return envelope.ContextPack{}, err
 		}
 	}
-	if _, err := contract.RecordRuntimeMaterialization(homePath, contract.RuntimeMaterialization{
-		EffectiveContract: ec,
-		ContextPack:       pack,
-	}); err != nil {
+	runtime.EffectiveContract = ec
+	runtime.ContextPack = pack
+	runtime, err = contract.SealRuntimeMaterialization(runtime)
+	if err != nil {
+		return envelope.ContextPack{}, err
+	}
+	ec = runtime.EffectiveContract
+	pack = runtime.ContextPack
+	if _, err := contract.RecordRuntimeMaterialization(homePath, runtime); err != nil {
 		return envelope.ContextPack{}, err
 	}
 	return pack, nil

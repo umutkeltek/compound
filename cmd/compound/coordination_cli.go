@@ -12,7 +12,8 @@ import (
 	"compound/internal/work"
 )
 
-const coordinationUsage = "usage: compound coordination [--actor A] [--json]"
+const coordinationUsage = `usage: compound coordination [--home P] [--actor A] [--json]
+       compound coordination measure --report drep_... [--home P] [--json]`
 
 // cmdCoordination is the generic, READ-ONLY coordination surface: "I am
 // working on this, that actor is working on that, and I am waiting on it to
@@ -26,12 +27,24 @@ func cmdCoordination(args []string) {
 		fmt.Println(coordinationUsage)
 		return
 	}
+	if len(args) > 0 && args[0] == "measure" {
+		cmdCoordinationMeasure(args[1:])
+		return
+	}
 	jsonOut := false
 	actor := ""
+	homeArg := ""
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; arg {
 		case "--json":
 			jsonOut = true
+		case "--home":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				fmt.Fprintln(os.Stderr, coordinationUsage)
+				os.Exit(2)
+			}
+			homeArg = strings.TrimSpace(args[i])
 		case "--actor":
 			i++
 			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
@@ -45,7 +58,7 @@ func cmdCoordination(args []string) {
 		}
 	}
 
-	homePath, err := home.Resolve("")
+	homePath, err := home.Resolve(homeArg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
@@ -83,6 +96,68 @@ func cmdCoordination(args []string) {
 		return
 	}
 	printCoordination(report)
+}
+
+func cmdCoordinationMeasure(args []string) {
+	jsonOut := false
+	homeArg := ""
+	reportID := ""
+	for i := 0; i < len(args); i++ {
+		switch arg := args[i]; arg {
+		case "--json":
+			jsonOut = true
+		case "--home":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				fmt.Fprintln(os.Stderr, coordinationUsage)
+				os.Exit(2)
+			}
+			homeArg = strings.TrimSpace(args[i])
+		case "--report":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				fmt.Fprintln(os.Stderr, coordinationUsage)
+				os.Exit(2)
+			}
+			reportID = strings.TrimSpace(args[i])
+		default:
+			fmt.Fprintln(os.Stderr, coordinationUsage)
+			os.Exit(2)
+		}
+	}
+	if reportID == "" {
+		fmt.Fprintln(os.Stderr, coordinationUsage)
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve(homeArg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	receipt, err := hookplan.MeasureDeliveryOutcome(homePath, reportID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		if err := json.NewEncoder(os.Stdout).Encode(receipt); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Printf("coordination measurement %s report=%s\n", receipt.ID, receipt.DeliveryReportID)
+	fmt.Printf("- caused_action_refs: %s\n", coordinationRefs(receipt.CausedActionRefs))
+	fmt.Printf("- observed_action_refs: %s\n", coordinationRefs(receipt.ObservedActionRefs))
+	fmt.Printf("- observed_run_attempt_refs: %s\n", coordinationRefs(receipt.ObservedRunAttemptRefs))
+	fmt.Printf("- observed_work_refs: %s\n", coordinationRefs(receipt.ObservedWorkRefs))
+}
+
+func coordinationRefs(refs []string) string {
+	if len(refs) == 0 {
+		return "(none)"
+	}
+	return strings.Join(refs, ", ")
 }
 
 func printCoordination(report work.CoordinationReport) {

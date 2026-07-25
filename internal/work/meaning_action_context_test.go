@@ -158,6 +158,10 @@ func recordPossiblyEmptyDirectiveContextPack(t *testing.T, homePath string, now 
 	if err != nil {
 		t.Fatal(err)
 	}
+	runtime, err = contract.SealRuntimeMaterialization(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := contract.RecordRuntimeMaterialization(homePath, runtime); err != nil {
 		t.Fatal(err)
 	}

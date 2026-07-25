@@ -7,6 +7,7 @@
 package contract
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -443,6 +444,48 @@ type RuntimeMaterialization struct {
 	EffectiveContract     envelope.EffectiveContract
 	ContextPack           envelope.ContextPack
 	EngineDependencyTrace EngineDependencyTrace
+}
+
+// SealRuntimeMaterialization replaces the request-shaped semantic ids produced
+// by Compile and Pack with content-addressed ids for the exact runtime bodies
+// that will be persisted and cited as execution proof. latest.json remains the
+// mutable "what applies now" projection; the returned contract_* and ctx_* ids
+// are immutable materialization refs.
+func SealRuntimeMaterialization(runtime RuntimeMaterialization) (RuntimeMaterialization, error) {
+	ec, pack := runtime.EffectiveContract, runtime.ContextPack
+	if pack.IDs.ContractID != ec.ID {
+		return RuntimeMaterialization{}, fmt.Errorf(
+			"context pack contract_id %q does not match effective contract %q",
+			pack.IDs.ContractID,
+			ec.ID,
+		)
+	}
+
+	contractBody := ec
+	contractBody.ID = ""
+	contractDigest, err := json.Marshal(contractBody)
+	if err != nil {
+		return RuntimeMaterialization{}, err
+	}
+	ec.ID = runtimeMaterializationID("contract_", contractDigest)
+
+	pack.IDs.ContractID = ec.ID
+	packBody := pack
+	packBody.ID = ""
+	packDigest, err := json.Marshal(packBody)
+	if err != nil {
+		return RuntimeMaterialization{}, err
+	}
+	pack.ID = runtimeMaterializationID("ctx_", packDigest)
+
+	runtime.EffectiveContract = ec
+	runtime.ContextPack = pack
+	return runtime, nil
+}
+
+func runtimeMaterializationID(prefix string, body []byte) string {
+	digest := sha256.Sum256(body)
+	return prefix + hex.EncodeToString(digest[:])[:16]
 }
 
 type runtimeOffer struct {
@@ -1010,11 +1053,13 @@ type runtimeMaterializationFS struct {
 	lockContended func()
 }
 
-// RecordRuntimeMaterialization stages the dated contract and pack before
-// making either visible, publishes latest only after both dated artifacts,
-// and restores preimages on ordinary commit-phase errors. Any failed restore
-// is joined into the returned error instead of hiding a partial pair. A
-// process crash between filesystem renames can still leave a partial pair;
+// RecordRuntimeMaterialization requires a caller-visible sealed pair, stages
+// the dated contract and pack before making either visible, publishes latest
+// only after both dated artifacts, and restores preimages on ordinary
+// commit-phase errors. Refusing request-shaped ids prevents a caller from
+// retaining a stale semantic id for different persisted bytes. Any failed
+// restore is joined into the returned error instead of hiding a partial pair.
+// A process crash between filesystem renames can still leave a partial pair;
 // readers must continue joining artifacts by contract_id rather than treating
 // presence as atomic transaction proof.
 func RecordRuntimeMaterialization(homePath string, runtime RuntimeMaterialization) (RuntimeMaterializationArtifactPaths, error) {
@@ -1025,6 +1070,17 @@ func RecordRuntimeMaterialization(homePath string, runtime RuntimeMaterializatio
 }
 
 func recordRuntimeMaterializationWithFS(homePath string, runtime RuntimeMaterialization, fsOps runtimeMaterializationFS) (resultPaths RuntimeMaterializationArtifactPaths, resultErr error) {
+	sealed, err := SealRuntimeMaterialization(runtime)
+	if err != nil {
+		return RuntimeMaterializationArtifactPaths{}, err
+	}
+	if sealed.EffectiveContract.ID != runtime.EffectiveContract.ID ||
+		sealed.ContextPack.ID != runtime.ContextPack.ID ||
+		sealed.ContextPack.IDs.ContractID != runtime.ContextPack.IDs.ContractID {
+		return RuntimeMaterializationArtifactPaths{}, fmt.Errorf(
+			"runtime materialization must be sealed before recording",
+		)
+	}
 	ec, pack := runtime.EffectiveContract, runtime.ContextPack
 	if strings.TrimSpace(homePath) == "" {
 		return RuntimeMaterializationArtifactPaths{}, fmt.Errorf("compound home required")
@@ -1073,8 +1129,14 @@ func recordRuntimeMaterializationWithFS(homePath string, runtime RuntimeMaterial
 		body       []byte
 		old        []byte
 		existed    bool
+		immutable  bool
+		skip       bool
 	}
-	items := []staged{{path: paths.ContractPath, body: ecBytes}, {path: paths.PackPath, body: packBytes}, {path: paths.LatestPath, body: ecBytes}}
+	items := []staged{
+		{path: paths.ContractPath, body: ecBytes, immutable: true},
+		{path: paths.PackPath, body: packBytes, immutable: true},
+		{path: paths.LatestPath, body: ecBytes},
+	}
 	defer func() {
 		for _, item := range items {
 			if item.temp != "" {
@@ -1088,6 +1150,17 @@ func recordRuntimeMaterializationWithFS(homePath string, runtime RuntimeMaterial
 		}
 		if old, readErr := os.ReadFile(items[i].path); readErr == nil {
 			items[i].old, items[i].existed = old, true
+			if items[i].immutable {
+				want := append(append([]byte(nil), items[i].body...), '\n')
+				if !bytes.Equal(old, want) {
+					return RuntimeMaterializationArtifactPaths{}, fmt.Errorf(
+						"immutable runtime materialization collision at %q",
+						items[i].path,
+					)
+				}
+				items[i].skip = true
+				continue
+			}
 		} else if !os.IsNotExist(readErr) {
 			return RuntimeMaterializationArtifactPaths{}, readErr
 		}
@@ -1108,25 +1181,29 @@ func recordRuntimeMaterializationWithFS(homePath string, runtime RuntimeMaterial
 			return RuntimeMaterializationArtifactPaths{}, err
 		}
 	}
-	committed := 0
+	committed := []int{}
 	for i := range items {
+		if items[i].skip {
+			continue
+		}
 		if err := fsOps.rename(items[i].temp, items[i].path); err != nil {
 			commitErr := fmt.Errorf("commit runtime materialization %q: %w", items[i].path, err)
 			var rollbackErr error
-			for j := committed - 1; j >= 0; j-- {
-				if items[j].existed {
-					if restoreErr := os.WriteFile(items[j].path, items[j].old, 0o644); restoreErr != nil {
-						rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback restore %q: %w", items[j].path, restoreErr))
+			for j := len(committed) - 1; j >= 0; j-- {
+				itemIndex := committed[j]
+				if items[itemIndex].existed {
+					if restoreErr := os.WriteFile(items[itemIndex].path, items[itemIndex].old, 0o644); restoreErr != nil {
+						rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback restore %q: %w", items[itemIndex].path, restoreErr))
 					}
 				} else {
-					if removeErr := os.Remove(items[j].path); removeErr != nil && !os.IsNotExist(removeErr) {
-						rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback remove %q: %w", items[j].path, removeErr))
+					if removeErr := os.Remove(items[itemIndex].path); removeErr != nil && !os.IsNotExist(removeErr) {
+						rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback remove %q: %w", items[itemIndex].path, removeErr))
 					}
 				}
 			}
 			return RuntimeMaterializationArtifactPaths{}, errors.Join(commitErr, rollbackErr)
 		}
-		committed++
+		committed = append(committed, i)
 	}
 	return paths, nil
 }

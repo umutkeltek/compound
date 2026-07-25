@@ -191,6 +191,10 @@ func recordPack(t *testing.T, homePath string, now time.Time) envelope.ContextPa
 	if err != nil {
 		t.Fatal(err)
 	}
+	runtime, err = contract.SealRuntimeMaterialization(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := contract.RecordRuntimeMaterialization(homePath, runtime); err != nil {
 		t.Fatal(err)
 	}

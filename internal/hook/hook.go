@@ -467,6 +467,15 @@ func liveUserPrompt(name string, fx Fixture, deps Deps, now time.Time, mode stri
 	// only new/re-opened refs. Fail-open — an absent/corrupt/unwritable session state
 	// leaves the pack byte-for-byte identical to the full-injection path.
 	built.Pack = applyInjectionDelta(built.Pack, built.Input, deps.HomePath, fx.SessionID, now)
+	materialized, err := contract.SealRuntimeMaterialization(contract.RuntimeMaterialization{
+		EffectiveContract: built.Contract,
+		ContextPack:       built.Pack,
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	built.Contract = materialized.EffectiveContract
+	built.Pack = materialized.ContextPack
 
 	persistedFX := fx
 	persistedFX.Prompt = ""
@@ -532,6 +541,10 @@ func buildContextWithBreaker(name string, fx Fixture, deps Deps, mode string, no
 		var pack envelope.ContextPack
 		if strings.TrimSpace(deps.HomePath) != "" {
 			materialized, err := contract.MaterializeRuntime(in, deps.Orient, deps.HomePath, now)
+			if err != nil {
+				return contextBuild{}, err
+			}
+			materialized, err = contract.SealRuntimeMaterialization(materialized)
 			if err != nil {
 				return contextBuild{}, err
 			}

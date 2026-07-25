@@ -193,7 +193,7 @@ func postIntent(in PostInput, channel, surface, postPath string, now time.Time) 
 	return envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
-			ID:            intentIDFor(in.WorkID, "distribution_post", channel, surface, in.Content),
+			ID:            intentIDForInvocation(now, in.WorkID, "distribution_post", channel, surface, in.Content),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "actuator", Name: "compound"},
 			IDs:           envelope.IDs{WorkID: in.WorkID},

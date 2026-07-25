@@ -18,10 +18,16 @@ Default mode is for a ChatGPT Pro source audit:
   - always excludes .claude/ (harness session state and agent worktrees —
     the worktrees are duplicate checkouts of this same tree and were the
     reason snapshots ballooned past the source folder)
+  - always excludes .codex/, .agents/, /state/, .pytest_cache/ — same
+    rationale as .claude/ (harness/runtime state, duplicate checkouts, not
+    part of the audited source). Skipping these keeps rsync from walking
+    ~10 GB of agent worktrees on every run.
   - excludes dependency/build artifacts: node_modules, .next
   - removes Finder/system junk: .DS_Store, __MACOSX
-  - enforces a hard zip budget (--max-zip-mb, default 500): an oversized
-    zip is deleted and the run fails with the largest staged files listed
+  - enforces a hard zip budget (--max-zip-mb, default 480): an oversized
+    zip is deleted and the run fails with the largest staged files listed.
+    Default is 480 (not 500) to leave headroom under common 512 MB upload
+    caps used by ChatGPT Pro and similar services.
   - removes top-level memory/* external clones except names in the keep list
   - writes AUDIT-NOTES.md at the top of the staged copy so an auditor sees
     package-time HEAD/branch/dirty-state/ahead-behind before reading the tree
@@ -37,13 +43,13 @@ Options:
   --zip NAME               Zip filename. Default: compound.zip.
   --upload-safe            Produce the smaller public-audit bundle.
   --include-node-modules   Keep dependency/build artifacts in the local snapshot.
-  --include-private        With --upload-safe, keep private docs and .claude.
+  --include-private        With --upload-safe, keep private docs; harness/runtime directories remain excluded.
   --keep-memory NAME       Keep top-level memory/NAME. Can be repeated.
                            Default keep list: compound.
   --no-default-memory      Clear the default keep-memory list.
   --max-zip-mb N           Hard budget for the finished zip in MB. Over budget:
                            list largest staged files, delete the zip, exit 1.
-                           0 disables the check. Default: 500.
+                           0 disables the check. Default: 480.
   --dry-run                Print actions without deleting, copying, or zipping.
   -h, --help               Show this help.
 
@@ -83,7 +89,7 @@ upload_safe=0
 include_private=1
 include_node_modules=0
 dry_run=0
-max_zip_mb=500
+max_zip_mb=480
 
 keep_memory=()
 if [[ -n "${COMPOUND_KEEP_MEMORY_PROJECTS:-}" ]]; then
@@ -243,9 +249,9 @@ $ahead_behind_line
    NOT repo state. Judge modes against this note, not the extracted tree.
 2. Push/branch state advances after snapshot; "ahead N" above reflects
    package time only.
-3. .claude/ (harness session state, including agent worktrees that are
-   duplicate checkouts of this same tree) is always excluded. Its absence
-   is a packaging rule, not repo state.
+3. .claude/, .codex/, .agents/, state/, and .pytest_cache/ are always
+   excluded because they contain harness/runtime state, caches, or duplicate
+   agent checkouts. Their absence is a packaging rule, not repo state.
 
 Cross-check findings against this note before flagging repo hygiene.
 NOTES
@@ -257,6 +263,10 @@ rsync_args=(
   --exclude ".DS_Store"
   --exclude "__MACOSX/"
   --exclude "/.claude/"
+  --exclude "/.codex/"
+  --exclude "/.agents/"
+  --exclude "/state/"
+  --exclude "/.pytest_cache/"
   --filter "+ /memory/"
 )
 
@@ -323,7 +333,7 @@ if [[ "$dry_run" -eq 0 ]]; then
   if [[ "$max_zip_mb" -gt 0 && "$zip_bytes" -gt $((max_zip_mb * 1024 * 1024)) ]]; then
     printf 'desktop-compound-zip: zip is %s MB, over the %s MB budget. Largest staged files:\n' \
       "$((zip_bytes / 1024 / 1024))" "$max_zip_mb" >&2
-    find "$stage_path" -type f -size +1m -exec du -k {} + 2>/dev/null \
+    find "$stage_path" -type f -size +1024k -exec du -k {} + 2>/dev/null \
       | sort -rn | head -15 | awk '{printf "  %8.1f MB  %s\n", $1/1024, $2}' >&2
     rm -f -- "$zip_path"
     die "oversized zip deleted; exclude the offenders above (or raise --max-zip-mb) and re-run"
