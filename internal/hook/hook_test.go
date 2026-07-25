@@ -891,9 +891,12 @@ func TestRenderInjectionCapsIncludedSection(t *testing.T) {
 	}
 }
 
-func TestRenderInjectionCapsActiveDecisionsSection(t *testing.T) {
-	refs := make([]string, 0, maxInjectionActiveDecisionRefs+3)
-	for i := 0; i < maxInjectionActiveDecisionRefs+3; i++ {
+// TestRenderInjectionActiveDecisionsRenderCountNotBareIDs pins the demotion: the
+// section states how much law is in force and how to resolve it, and spends no budget
+// on unranked opaque `decision://…` ids.
+func TestRenderInjectionActiveDecisionsRenderCountNotBareIDs(t *testing.T) {
+	refs := make([]string, 0, 74)
+	for i := 0; i < 74; i++ {
 		refs = append(refs, fmt.Sprintf("decision://DEC-%04d", i))
 	}
 	pack := envelope.ContextPack{
@@ -905,21 +908,107 @@ func TestRenderInjectionCapsActiveDecisionsSection(t *testing.T) {
 	if !strings.Contains(text, "## Active Decisions") {
 		t.Fatalf("injection missing Active Decisions section:\n%s", text)
 	}
-	for _, want := range refs[:maxInjectionActiveDecisionRefs] {
-		if !strings.Contains(text, "`"+want+"`") {
-			t.Fatalf("injection missing active decision ref %q:\n%s", want, text)
-		}
+	if !strings.Contains(text, "74 active decision(s) in force") {
+		t.Fatalf("injection missing active decision count:\n%s", text)
 	}
-	for _, forbidden := range refs[maxInjectionActiveDecisionRefs:] {
+	if !strings.Contains(text, "compound decisions show <id>") {
+		t.Fatalf("injection missing decision resolution pointer:\n%s", text)
+	}
+	// The whole point of the demotion: NO bare id may reach the digest.
+	for _, forbidden := range refs {
 		if strings.Contains(text, forbidden) {
-			t.Fatalf("injection should cap active decision refs, got %q:\n%s", forbidden, text)
+			t.Fatalf("injection must not list bare decision ids, got %q:\n%s", forbidden, text)
 		}
 	}
-	if !strings.Contains(text, "3 more active decision ref(s) omitted digest budget") {
-		t.Fatalf("injection missing omission note for capped active decisions:\n%s", text)
-	}
-	if len(pack.ActiveDecisions) != maxInjectionActiveDecisionRefs+3 {
+	if len(pack.ActiveDecisions) != 74 {
 		t.Fatalf("render should not mutate ContextPack decisions, got %d", len(pack.ActiveDecisions))
+	}
+}
+
+// TestRenderInjectionEmptyActiveDecisions proves the empty case still renders the
+// section explicitly, so "no decisions in force" stays distinguishable from "the
+// section was dropped".
+func TestRenderInjectionEmptyActiveDecisions(t *testing.T) {
+	pack := envelope.ContextPack{SummaryMD: "summary"}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	if !strings.Contains(text, "## Active Decisions\n- none") {
+		t.Fatalf("injection should render an explicit empty decisions section:\n%s", text)
+	}
+}
+
+// TestRenderInjectionSurfacesNegatives is the falsifier for the bench-only gap this
+// slice closes: a ContextPack carrying scope-matched negative cards must reach the
+// harness digest with the content an executor needs to change its next move — the
+// approach key, why it failed, and a citable ref.
+func TestRenderInjectionSurfacesNegatives(t *testing.T) {
+	pack := envelope.ContextPack{
+		SummaryMD: "summary",
+		Negatives: []envelope.NegativeCard{{
+			Source:       "failure_pattern",
+			ApproachKey:  "single-signal-supersession-verdict",
+			WhatWasTried: "sized a branch backlog from git cherry alone",
+			WhyItFailed:  "blind to work that landed as a different implementation",
+			Ref:          "candidate://failure_pattern/cand_4fdb5dd8a009",
+			Confidence:   0.95,
+		}},
+	}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	if !strings.Contains(text, "## Already Tried And Failed") {
+		t.Fatalf("injection missing negatives section:\n%s", text)
+	}
+	for _, want := range []string{
+		"single-signal-supersession-verdict",
+		"sized a branch backlog from git cherry alone",
+		"blind to work that landed as a different implementation",
+		"candidate://failure_pattern/cand_4fdb5dd8a009",
+		"confidence=0.95",
+		"source=failure_pattern",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("injection missing negative detail %q:\n%s", want, text)
+		}
+	}
+}
+
+// TestRenderInjectionOmitsEmptyNegatives pins the silence contract: negatives are
+// scope-matched, so no-match is the common case and must cost zero budget — not a
+// "- none" line asserting the absence of evidence on every prompt.
+func TestRenderInjectionOmitsEmptyNegatives(t *testing.T) {
+	pack := envelope.ContextPack{SummaryMD: "summary"}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	if strings.Contains(text, "Already Tried And Failed") {
+		t.Fatalf("injection should omit the negatives section entirely when empty:\n%s", text)
+	}
+}
+
+// TestRenderInjectionCapsNegatives proves the digest carries its own bound rather than
+// trusting the orient-side cap, and reports what it dropped instead of silently
+// truncating.
+func TestRenderInjectionCapsNegatives(t *testing.T) {
+	cards := make([]envelope.NegativeCard, 0, maxInjectionNegativeCards+2)
+	for i := 0; i < maxInjectionNegativeCards+2; i++ {
+		cards = append(cards, envelope.NegativeCard{
+			Source:      "failure_pattern",
+			ApproachKey: fmt.Sprintf("approach-%02d", i),
+			Ref:         fmt.Sprintf("candidate://failure_pattern/cand_%02d", i),
+		})
+	}
+	pack := envelope.ContextPack{SummaryMD: "summary", Negatives: cards}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	for _, forbidden := range cards[maxInjectionNegativeCards:] {
+		if strings.Contains(text, forbidden.ApproachKey) {
+			t.Fatalf("injection should cap negative cards, got %q:\n%s", forbidden.ApproachKey, text)
+		}
+	}
+	if !strings.Contains(text, "2 more negative(s) omitted digest budget") {
+		t.Fatalf("injection missing negatives omission note:\n%s", text)
+	}
+	if len(pack.Negatives) != maxInjectionNegativeCards+2 {
+		t.Fatalf("render should not mutate ContextPack negatives, got %d", len(pack.Negatives))
 	}
 }
 

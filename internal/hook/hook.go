@@ -1729,18 +1729,24 @@ func writeJSON(path string, v any) error {
 // the pack keeps the full set — the digest is a budgeted surface, not the record.
 const maxInjectionActiveMemoryRefs = 8
 
-// maxInjectionActiveDecisionRefs caps the harness-facing decision list; the
-// ContextPack JSON keeps the full authoritative active_decisions set.
-const maxInjectionActiveDecisionRefs = 12
-
 // maxInjectionIncludedRefs caps generic provenance in the harness digest.
 // Dedicated sections render the high-signal subsets separately.
 const maxInjectionIncludedRefs = 24
 
+// maxInjectionNegativeCards caps the already-tried-and-failed cards a digest lists.
+// internal/contract already bounds the pack at maxContextNegativeCards (5) when it
+// joins the projection on task scope; this is the independent digest-side bound so a
+// future orient-side cap change cannot silently blow the injection budget.
+const maxInjectionNegativeCards = 5
+
 const (
-	maxInjectionHeaderChars            = 400
-	maxInjectionActiveMemoryChars      = 1600
-	maxInjectionActiveDecisionChars    = 700
+	maxInjectionHeaderChars       = 400
+	maxInjectionActiveMemoryChars = 1600
+	// maxInjectionNegativeChars is funded by the demoted Active Decisions section:
+	// bare `decision://…` ids carry no content an executor can act on, whereas a
+	// scope-matched prior failure changes the next move. See writeActiveDecisionsPointer.
+	maxInjectionNegativeChars          = 900
+	maxInjectionActiveDecisionChars    = 220
 	maxInjectionRequiredChecksChars    = 600
 	maxInjectionAvoidChars             = 450
 	maxInjectionCapabilityOfferChars   = 1000
@@ -1884,8 +1890,11 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 			}
 		})
 	}
+	writeBudgetedInjectionSection(&b, maxInjectionNegativeChars, func(section *strings.Builder) {
+		writeNegativesList(section, pack.Negatives)
+	})
 	writeBudgetedInjectionSection(&b, maxInjectionActiveDecisionChars, func(section *strings.Builder) {
-		writeCappedStringList(section, "Active Decisions", pack.ActiveDecisions, maxInjectionActiveDecisionRefs, "active decision ref(s)")
+		writeActiveDecisionsPointer(section, pack.ActiveDecisions)
 	})
 	writeBudgetedInjectionSection(&b, maxInjectionRequiredChecksChars, func(section *strings.Builder) {
 		writeStringList(section, "Required Checks", pack.RequiredChecks)
@@ -1951,6 +1960,67 @@ func capInjectionChars(text string) string {
 		limit = 0
 	}
 	return string(runes[:limit]) + marker
+}
+
+// writeNegativesList renders the scope-matched already-tried-and-failed cards the
+// ContextPack carries (envelope.NegativeCard — the compound.negatives.v0.1 projection
+// joined on task scope by internal/contract's appendNegatives).
+//
+// This is the LAST hop of the negatives chain: producer (distiller →
+// inbox/failure-patterns, internal/routeevidence → reviews/route-remorse) → projection
+// (internal/negatives) → scoped join at orient → *an executor actually reading it*.
+// Before this renderer the cards reached the ContextPack JSON and stopped there, so a
+// harness session — the only consumer that can still change its next move — never saw
+// them (AGENTS.md: "a capability with no live production consumer is bench-only").
+//
+// Display-only, exactly as envelope.NegativeCard specifies: a card warns, it never
+// routes, dispatches, or claims. An empty/absent set renders NOTHING (not "- none"):
+// negatives are scope-matched, so silence is the common correct case and a "- none"
+// line would spend budget asserting the absence of evidence on every prompt.
+func writeNegativesList(b *strings.Builder, cards []envelope.NegativeCard) {
+	if len(cards) == 0 {
+		return
+	}
+	shown := cards
+	if len(shown) > maxInjectionNegativeCards {
+		shown = shown[:maxInjectionNegativeCards]
+	}
+	b.WriteString("\n## Already Tried And Failed\n")
+	b.WriteString("- scope-matched prior failures; evidence that warns, never routing\n")
+	for _, card := range shown {
+		fmt.Fprintf(b, "- `%s` source=%s", safeMD(card.ApproachKey), safeMD(card.Source))
+		if tried := strings.TrimSpace(card.WhatWasTried); tried != "" {
+			fmt.Fprintf(b, " tried=%s", safeMD(tried))
+		}
+		if why := strings.TrimSpace(card.WhyItFailed); why != "" {
+			fmt.Fprintf(b, " failed=%s", safeMD(why))
+		}
+		if card.Confidence > 0 {
+			fmt.Fprintf(b, " confidence=%.2f", card.Confidence)
+		}
+		fmt.Fprintf(b, " ref=`%s`\n", safeMD(card.Ref))
+	}
+	if omitted := len(cards) - len(shown); omitted > 0 {
+		fmt.Fprintf(b, "- %d more negative(s) omitted digest budget\n", omitted)
+	}
+}
+
+// writeActiveDecisionsPointer renders the active-decision COUNT plus how to resolve
+// one, instead of a list of bare `decision://…` ids.
+//
+// The ids are not task-ranked (internal/contract assigns pack.ActiveDecisions the
+// snapshot order), so listing the first N surfaced N arbitrary opaque refs carrying no
+// content an executor could act on — while consuming the single largest fixed slice of
+// a 6000-char budget. The full authoritative set stays in the ContextPack JSON; this
+// line says how much law is in force and how to read any of it on demand.
+func writeActiveDecisionsPointer(b *strings.Builder, refs []string) {
+	b.WriteString("\n## Active Decisions\n")
+	if len(refs) == 0 {
+		b.WriteString("- none\n")
+		return
+	}
+	fmt.Fprintf(b, "- %d active decision(s) in force; ids are not task-ranked, so none are listed here\n", len(refs))
+	b.WriteString("- resolve any of them from the ContextPack JSON `active_decisions`, or `compound decisions show <id>`\n")
 }
 
 func writeCapabilityOfferList(b *strings.Builder, offers []envelope.CapabilityOffer) {
@@ -2091,24 +2161,6 @@ func writeStringList(b *strings.Builder, title string, xs []string) {
 	}
 	for _, x := range xs {
 		fmt.Fprintf(b, "- `%s`\n", safeMD(x))
-	}
-}
-
-func writeCappedStringList(b *strings.Builder, title string, xs []string, limit int, omittedLabel string) {
-	fmt.Fprintf(b, "\n## %s\n", title)
-	if len(xs) == 0 {
-		b.WriteString("- none\n")
-		return
-	}
-	shown := xs
-	if limit > 0 && len(shown) > limit {
-		shown = shown[:limit]
-	}
-	for _, x := range shown {
-		fmt.Fprintf(b, "- `%s`\n", safeMD(x))
-	}
-	if omitted := len(xs) - len(shown); omitted > 0 {
-		fmt.Fprintf(b, "- %d more %s omitted digest budget\n", omitted, safeMD(omittedLabel))
 	}
 }
 
