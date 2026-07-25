@@ -389,11 +389,11 @@ func ResolveChunkText(homePath string, manifest Manifest, chunkID string, includ
 // All owned-body consumers MUST enforce the same three-way invariant before
 // any byte reaches the embedder (index path) or the body resolver (query
 // path): BodyRef digest == sha256(bytes), sha256(bytes) == FileHash, and
-// len(bytes) == BodyBytes. The previous index path only checked the first
-// two, which let a BodyRef-valid artifact whose FileHash disagreed with the
-// actual bytes still produce chunk hashes that no manifest would later
-// recognize. FileHash is enforced here for both body_policies so the index
-// path and the query path share one gate.
+// BodyBytes <= 0 || len(bytes) == BodyBytes. The previous index path only
+// checked the first two, which let a BodyRef-valid artifact whose FileHash
+// disagreed with the actual bytes still produce chunk hashes that no
+// manifest would later recognize. FileHash is enforced here for both
+// body_policies so the index path and the query path share one gate.
 //
 // The status value returned here is what the caller (index or query) maps
 // onto its own failure surface — ChunkTextSourceUnavailable / ChunkTextStaleSource
