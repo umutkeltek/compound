@@ -323,10 +323,11 @@ type ResolvedChunkText struct {
 //  2. Find the manifest item by item_id.
 //  3. Schema gate: if the manifest's prefix_schema_version is not this binary's, the
 //     chunker has changed under the index — return ChunkTextStaleIndex with no text.
-//  4. Privacy gate: validate the item's privacy label before any body access.
-//     If privacy=="private" and includeText is false, return
-//     ChunkTextSuppressedPrivate without probing the body. Unknown labels fail
-//     closed instead of widening to public text.
+//  4. Owned-body privacy gate: validate owned_snapshot privacy before any body
+//     access. If privacy=="private" and includeText is false, return
+//     ChunkTextSuppressedPrivate without probing the artifact. Unknown labels
+//     fail closed instead of widening to public text. The legacy source_in_place
+//     path retains its historical availability-before-suppression ordering.
 //  5. Body source dispatch (the new seam):
 //     - body_policy=source_in_place: read the file at item.source_ref. The body lives
 //     OUTSIDE COMPOUND_HOME and can be moved/deleted; that is expected and degrades
@@ -358,15 +359,17 @@ func ResolveChunkText(homePath string, manifest Manifest, chunkID string, includ
 	if strings.TrimSpace(manifest.PrefixSchemaVersion) != PrefixSchemaVersion {
 		return ResolvedChunkText{Status: ChunkTextStaleIndex}, nil
 	}
-	switch strings.ToLower(strings.TrimSpace(item.Privacy)) {
-	case "private":
-		if !includeText {
-			return ResolvedChunkText{Status: ChunkTextSuppressedPrivate}, nil
+	if strings.EqualFold(strings.TrimSpace(item.BodyPolicy), "owned_snapshot") {
+		switch strings.ToLower(strings.TrimSpace(item.Privacy)) {
+		case "private":
+			if !includeText {
+				return ResolvedChunkText{Status: ChunkTextSuppressedPrivate}, nil
+			}
+		case "public":
+			// Public text may proceed to body integrity checks below.
+		default:
+			return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: item %q has malformed privacy field (must be public or private, got %q)", itemID, strings.TrimSpace(item.Privacy))
 		}
-	case "public":
-		// Public text may proceed to body integrity checks below.
-	default:
-		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: item %q has malformed privacy field (must be public or private, got %q)", itemID, strings.TrimSpace(item.Privacy))
 	}
 	raw, status, err := readItemBodyBytes(homePath, item)
 	if err != nil {
@@ -384,6 +387,11 @@ func ResolveChunkText(homePath string, manifest Manifest, chunkID string, includ
 	}
 	if ordinal < 0 || ordinal >= len(chunks) {
 		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: ordinal %d out of range for item %q (chunks=%d)", ordinal, itemID, len(chunks))
+	}
+	// Preserve the legacy source_in_place ordering and degradation contract:
+	// its body availability/integrity state is observed before suppression.
+	if strings.EqualFold(strings.TrimSpace(item.Privacy), "private") && !includeText {
+		return ResolvedChunkText{Status: ChunkTextSuppressedPrivate}, nil
 	}
 	return ResolvedChunkText{Status: ChunkTextOK, Text: chunks[ordinal].Text}, nil
 }

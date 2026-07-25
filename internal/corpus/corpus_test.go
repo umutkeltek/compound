@@ -172,6 +172,7 @@ type fakeEmbedder struct {
 	failOnCall int
 	calls      int
 	embedded   int
+	texts      []string
 }
 
 func (f *fakeEmbedder) Identity() string { return f.identity }
@@ -183,6 +184,7 @@ func (f *fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 		return nil, fmt.Errorf("fake embedder interrupted")
 	}
 	f.embedded += len(texts)
+	f.texts = append(f.texts, texts...)
 	out := make([][]float32, 0, len(texts))
 	for _, text := range texts {
 		sum := sha256.Sum256([]byte(text))

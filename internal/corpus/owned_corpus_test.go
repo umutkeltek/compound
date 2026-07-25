@@ -135,6 +135,13 @@ func TestIndexOwnedSnapshotAfterOriginalDeleted(t *testing.T) {
 	if manifest.SourceManifestRef != wantRef {
 		t.Fatalf("corpus manifest source_manifest_ref = %q, want %q", manifest.SourceManifestRef, wantRef)
 	}
+	identity, err := readIdentity(dir)
+	if err != nil {
+		t.Fatalf("read corpus identity: %v", err)
+	}
+	if identity.EmbedderIdentity != fixture.lane.Embedder.Identity() {
+		t.Fatalf("corpus identity embedder = %q, want %q", identity.EmbedderIdentity, fixture.lane.Embedder.Identity())
+	}
 
 	// Cross-check chunk hashes: re-chunk the owned body directly and compare.
 	sourceChunks, err := ChunkItem(fixture.manifest.Items[0], body, fixture.lane.Chunk)
@@ -144,8 +151,14 @@ func TestIndexOwnedSnapshotAfterOriginalDeleted(t *testing.T) {
 	if len(sourceChunks) != report.TotalChunks {
 		t.Fatalf("chunks = %d, want %d (owned bytes must equal original body)", report.TotalChunks, len(sourceChunks))
 	}
+	if len(embedder.texts) != len(sourceChunks) {
+		t.Fatalf("embedder texts = %d, want %d exact owned chunks", len(embedder.texts), len(sourceChunks))
+	}
 	hashes := manifestChunkHashes(manifest)
 	for i, chunk := range sourceChunks {
+		if embedder.texts[i] != chunk.EmbedText {
+			t.Fatalf("embedder text[%d] = %q, want exact owned embed text %q", i, embedder.texts[i], chunk.EmbedText)
+		}
 		want := hashes[chunk.ID]
 		if want == "" {
 			t.Fatalf("corpus manifest missing chunk %s", chunk.ID)
@@ -153,6 +166,48 @@ func TestIndexOwnedSnapshotAfterOriginalDeleted(t *testing.T) {
 		if want != chunk.ChunkHash {
 			t.Fatalf("chunk[%d] %s hash %s != direct-chunk hash %s (owned bytes diverged)", i, chunk.ID, want, chunk.ChunkHash)
 		}
+	}
+}
+
+// TestOwnedSnapshotIndexRefusesBodyBytesMismatch proves the positive-size
+// half of the owned-body invariant is enforced before the index calls its
+// rented embedder, not only when query later rehydrates text.
+func TestOwnedSnapshotIndexRefusesBodyBytesMismatch(t *testing.T) {
+	homePath := t.TempDir()
+	fixture := seedOwnedSnapshotLane(t, homePath, "User: owned-body chunk alpha")
+	removeOwnedSource(t, fixture)
+
+	fixture.manifest.Items[0].BodyBytes++
+	if _, err := sourceobs.RecordSourceManifest(homePath, fixture.manifest); err != nil {
+		t.Fatalf("re-record size-mismatched manifest: %v", err)
+	}
+	embedder := &fakeEmbedder{identity: fixture.lane.Embedder.Identity(), dim: fixture.lane.Embedder.Dims}
+	if _, err := Index(context.Background(), homePath, fixture.lane, embedder, IndexOptions{Rebuild: true}); err == nil {
+		t.Fatalf("indexing accepted positive BodyBytes mismatch")
+	}
+	if embedder.embedded != 0 {
+		t.Fatalf("BodyBytes-mismatch index embedded %d texts, want 0", embedder.embedded)
+	}
+}
+
+// TestOwnedSnapshotNonPositiveBodyBytesStaysCompatible pins the manifest
+// compatibility rule: older writers without a positive byte count still rely
+// on BodyRef and FileHash integrity and must remain indexable.
+func TestOwnedSnapshotNonPositiveBodyBytesStaysCompatible(t *testing.T) {
+	homePath := t.TempDir()
+	fixture := seedOwnedSnapshotLane(t, homePath, "User: owned-body chunk alpha")
+	removeOwnedSource(t, fixture)
+
+	fixture.manifest.Items[0].BodyBytes = 0
+	if _, err := sourceobs.RecordSourceManifest(homePath, fixture.manifest); err != nil {
+		t.Fatalf("re-record zero-size-compatible manifest: %v", err)
+	}
+	embedder := &fakeEmbedder{identity: fixture.lane.Embedder.Identity(), dim: fixture.lane.Embedder.Dims}
+	if _, err := Index(context.Background(), homePath, fixture.lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("index non-positive BodyBytes manifest: %v", err)
+	}
+	if embedder.embedded == 0 {
+		t.Fatalf("non-positive BodyBytes compatibility path embedded zero texts")
 	}
 }
 
