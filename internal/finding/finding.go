@@ -91,7 +91,8 @@ const (
 // RecordResult is the duplicate-aware return: Status tells the caller whether the publication
 // wrote a new file or whether the existing durable record was preserved unchanged. Finding is
 // always the durable record (the freshly-validated one on `recorded`, or the existing one on
-// `duplicate`); it is never the loser's proposed provenance.
+// `duplicate`); it is never the loser's proposed provenance. A duplicate directory-sync failure
+// returns this kept result alongside the error so callers can fail closed without losing identity.
 type RecordResult struct {
 	Status  string
 	Finding Finding
@@ -158,7 +159,7 @@ func RecordWithStatus(homePath string, f Finding, now time.Time) (RecordResult, 
 		if err := validateExistingFinding(kept, f.Topic, f.Body); err != nil {
 			return RecordResult{}, fmt.Errorf("finding %s existing record invariants violated: %w", f.ID, err)
 		}
-		return RecordResult{Status: StatusDuplicate, Finding: kept}, nil
+		return duplicateAfterDirectorySync(dir, kept)
 	} else if !os.IsNotExist(err) {
 		return RecordResult{}, err
 	}
@@ -220,7 +221,7 @@ func RecordWithStatus(homePath string, f Finding, now time.Time) (RecordResult, 
 			if verr := validateExistingFinding(kept, f.Topic, f.Body); verr != nil {
 				return RecordResult{}, fmt.Errorf("finding %s existing record invariants violated: %w", f.ID, verr)
 			}
-			return RecordResult{Status: StatusDuplicate, Finding: kept}, nil
+			return duplicateAfterDirectorySync(dir, kept)
 		}
 		return RecordResult{}, fmt.Errorf("publish finding: %w", err)
 	}
@@ -271,6 +272,14 @@ func applyClassificationDefaults(f *Finding) {
 	if strings.TrimSpace(f.Visibility) == "" {
 		f.Visibility = VisibilityOperational
 	}
+}
+
+func duplicateAfterDirectorySync(dir string, kept Finding) (RecordResult, error) {
+	result := RecordResult{Status: StatusDuplicate, Finding: kept}
+	if err := syncFindingDirectoryFunc(dir); err != nil {
+		return result, fmt.Errorf("sync finding directory for duplicate: %w", err)
+	}
+	return result, nil
 }
 
 // validateExistingFinding enforces the owned invariants an existing deterministic target must

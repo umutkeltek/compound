@@ -720,3 +720,332 @@ func TestRecordWithStatusTightensFindingDirectoryMode(t *testing.T) {
 		t.Fatalf("tightening directory permissions changed a pre-existing record")
 	}
 }
+
+func TestRecordWithStatusPreExistingDuplicateSyncsDirectoryBeforeSuccess(t *testing.T) {
+	home := t.TempDir()
+	first, err := RecordWithStatus(home, Finding{
+		Topic:      "ordinary-save-pre-existing-sync",
+		Body:       OrdinarySaveBodySentinel,
+		WorkID:     "work_first",
+		ProducedBy: "agent:first",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalSync := syncFindingDirectoryFunc
+	t.Cleanup(func() {
+		syncFindingDirectoryFunc = originalSync
+	})
+	syncCalls := 0
+	syncFindingDirectoryFunc = func(path string) error {
+		syncCalls++
+		return syncDir(path)
+	}
+
+	duplicate, err := RecordWithStatus(home, Finding{
+		Topic:      first.Finding.Topic,
+		Body:       first.Finding.Body,
+		WorkID:     "work_retry",
+		ProducedBy: "agent:retry",
+	}, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("pre-existing duplicate: %v", err)
+	}
+	if duplicate.Status != StatusDuplicate || duplicate.Finding.ID != first.Finding.ID {
+		t.Fatalf("duplicate result = %+v, want kept %s", duplicate, first.Finding.ID)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("pre-existing duplicate directory sync calls = %d, want 1 before success", syncCalls)
+	}
+}
+
+func TestRecordWithStatusPreExistingDuplicateSyncFailureReturnsKeptResult(t *testing.T) {
+	home := t.TempDir()
+	first, err := RecordWithStatus(home, Finding{
+		Topic:        "ordinary-save-pre-existing-sync-failure",
+		Body:         OrdinarySaveBodySentinel,
+		WorkID:       "work_first",
+		ProducedBy:   "agent:first",
+		EvidenceRefs: []string{OrdinarySaveEvidenceSentinel},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, Subdir, first.Finding.ID+".json")
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalSync := syncFindingDirectoryFunc
+	t.Cleanup(func() {
+		syncFindingDirectoryFunc = originalSync
+	})
+	syncErr := errors.New("injected pre-existing duplicate sync failure")
+	syncFindingDirectoryFunc = func(string) error {
+		return syncErr
+	}
+
+	duplicate, err := RecordWithStatus(home, Finding{
+		Topic:      first.Finding.Topic,
+		Body:       first.Finding.Body,
+		WorkID:     "work_retry",
+		ProducedBy: "agent:retry",
+	}, fixedNow.Add(time.Minute))
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("pre-existing duplicate sync error = %v, want injected failure", err)
+	}
+	if duplicate.Status != StatusDuplicate {
+		t.Fatalf("duplicate status on sync failure = %q, want %q", duplicate.Status, StatusDuplicate)
+	}
+	if duplicate.Finding.ID != first.Finding.ID ||
+		duplicate.Finding.WorkID != first.Finding.WorkID ||
+		duplicate.Finding.ProducedBy != first.Finding.ProducedBy {
+		t.Fatalf("sync failure did not retain kept finding: got %+v want %+v", duplicate.Finding, first.Finding)
+	}
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("duplicate sync failure changed first-writer bytes:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestRecordWithStatusConcurrentLoserSyncFailureReturnsKeptDuplicate(t *testing.T) {
+	home := t.TempDir()
+	originalLink := linkFindingFile
+	originalSync := syncFindingDirectoryFunc
+	t.Cleanup(func() {
+		linkFindingFile = originalLink
+		syncFindingDirectoryFunc = originalSync
+	})
+
+	linkPublished := make(chan struct{})
+	releaseWinner := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseWinner)
+		})
+	}
+	t.Cleanup(release)
+
+	linkFindingFile = func(tempPath, targetPath string) error {
+		if err := os.Link(tempPath, targetPath); err != nil {
+			return err
+		}
+		close(linkPublished)
+		<-releaseWinner
+		return nil
+	}
+	syncErr := errors.New("injected concurrent duplicate sync failure")
+	syncFindingDirectoryFunc = func(string) error {
+		return syncErr
+	}
+
+	type recordCall struct {
+		result RecordResult
+		err    error
+	}
+	winnerDone := make(chan recordCall, 1)
+	go func() {
+		result, err := RecordWithStatus(home, Finding{
+			Topic:      "ordinary-save-concurrent-duplicate-sync",
+			Body:       OrdinarySaveBodySentinel,
+			WorkID:     "work_winner",
+			ProducedBy: "agent:winner",
+		}, fixedNow)
+		winnerDone <- recordCall{result: result, err: err}
+	}()
+
+	select {
+	case <-linkPublished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("winner did not publish target before timeout")
+	}
+
+	loser, err := RecordWithStatus(home, Finding{
+		Topic:      "ordinary-save-concurrent-duplicate-sync",
+		Body:       OrdinarySaveBodySentinel,
+		WorkID:     "work_loser",
+		ProducedBy: "agent:loser",
+	}, fixedNow.Add(time.Minute))
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("concurrent loser sync error = %v, want injected failure", err)
+	}
+	if loser.Status != StatusDuplicate {
+		t.Fatalf("concurrent loser status = %q, want %q", loser.Status, StatusDuplicate)
+	}
+	if loser.Finding.WorkID != "work_winner" || loser.Finding.ProducedBy != "agent:winner" {
+		t.Fatalf("concurrent loser did not retain winner finding: %+v", loser.Finding)
+	}
+	target := filepath.Join(home, Subdir, loser.Finding.ID+".json")
+	targetBytes, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes, err := json.MarshalIndent(&loser.Finding, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes = append(wantBytes, '\n')
+	if string(targetBytes) != string(wantBytes) {
+		t.Fatalf("concurrent loser observed changed winner bytes:\ngot:\n%s\nwant:\n%s", targetBytes, wantBytes)
+	}
+
+	release()
+	select {
+	case winner := <-winnerDone:
+		if !errors.Is(winner.err, syncErr) || winner.result.Status != StatusRecorded {
+			t.Fatalf("winner completion = result:%+v err:%v, want recorded plus injected sync failure", winner.result, winner.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("winner did not complete after release")
+	}
+}
+
+func TestRecordWithStatusEEXISTDuplicateSyncsDirectoryBeforeSuccess(t *testing.T) {
+	home := t.TempDir()
+	originalLink := linkFindingFile
+	originalSync := syncFindingDirectoryFunc
+	t.Cleanup(func() {
+		linkFindingFile = originalLink
+		syncFindingDirectoryFunc = originalSync
+	})
+
+	linkFindingFile = func(tempPath, targetPath string) error {
+		if err := os.Link(tempPath, targetPath); err != nil {
+			return err
+		}
+		return os.ErrExist
+	}
+	syncCalls := 0
+	syncFindingDirectoryFunc = func(path string) error {
+		syncCalls++
+		return syncDir(path)
+	}
+
+	duplicate, err := RecordWithStatus(home, Finding{
+		Topic:      "ordinary-save-eexist-sync",
+		Body:       OrdinarySaveBodySentinel,
+		WorkID:     "work_winner",
+		ProducedBy: "agent:winner",
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("EEXIST duplicate: %v", err)
+	}
+	if duplicate.Status != StatusDuplicate {
+		t.Fatalf("EEXIST status = %q, want %q", duplicate.Status, StatusDuplicate)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("EEXIST duplicate directory sync calls = %d, want 1 before success", syncCalls)
+	}
+	dirInfo, err := os.Stat(filepath.Join(home, Subdir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("EEXIST finding directory mode = %04o, want 0700", got)
+	}
+	targetInfo, err := os.Stat(filepath.Join(home, Subdir, duplicate.Finding.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := targetInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("EEXIST finding mode = %04o, want 0600", got)
+	}
+}
+
+func TestRecordWithStatusEEXISTDuplicateSyncFailureReturnsKeptResult(t *testing.T) {
+	home := t.TempDir()
+	originalLink := linkFindingFile
+	originalSync := syncFindingDirectoryFunc
+	t.Cleanup(func() {
+		linkFindingFile = originalLink
+		syncFindingDirectoryFunc = originalSync
+	})
+
+	linkFindingFile = func(tempPath, targetPath string) error {
+		if err := os.Link(tempPath, targetPath); err != nil {
+			return err
+		}
+		return os.ErrExist
+	}
+	syncErr := errors.New("injected EEXIST duplicate sync failure")
+	syncFindingDirectoryFunc = func(string) error {
+		return syncErr
+	}
+
+	duplicate, err := RecordWithStatus(home, Finding{
+		Topic:        "ordinary-save-eexist-sync-failure",
+		Body:         OrdinarySaveBodySentinel,
+		WorkID:       "work_winner",
+		ProducedBy:   "agent:winner",
+		EvidenceRefs: []string{OrdinarySaveEvidenceSentinel},
+	}, fixedNow)
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("EEXIST duplicate sync error = %v, want injected failure", err)
+	}
+	if duplicate.Status != StatusDuplicate || duplicate.Finding.WorkID != "work_winner" {
+		t.Fatalf("EEXIST sync failure did not retain duplicate result: %+v", duplicate)
+	}
+	target := filepath.Join(home, Subdir, duplicate.Finding.ID+".json")
+	targetBytes, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes, err := json.MarshalIndent(&duplicate.Finding, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes = append(wantBytes, '\n')
+	if string(targetBytes) != string(wantBytes) {
+		t.Fatalf("EEXIST sync failure changed winner bytes:\ngot:\n%s\nwant:\n%s", targetBytes, wantBytes)
+	}
+}
+
+func TestRecordWithStatusEEXISTValidatesBeforeDirectorySync(t *testing.T) {
+	home := t.TempDir()
+	originalLink := linkFindingFile
+	originalSync := syncFindingDirectoryFunc
+	t.Cleanup(func() {
+		linkFindingFile = originalLink
+		syncFindingDirectoryFunc = originalSync
+	})
+
+	corrupt := []byte("{\"truncated\":")
+	linkFindingFile = func(tempPath, targetPath string) error {
+		if err := os.Link(tempPath, targetPath); err != nil {
+			return err
+		}
+		if err := os.WriteFile(targetPath, corrupt, 0o600); err != nil {
+			return err
+		}
+		return os.ErrExist
+	}
+	syncCalls := 0
+	syncFindingDirectoryFunc = func(string) error {
+		syncCalls++
+		return nil
+	}
+
+	if _, err := RecordWithStatus(home, Finding{
+		Topic: "ordinary-save-eexist-validate-first",
+		Body:  OrdinarySaveBodySentinel,
+	}, fixedNow); err == nil {
+		t.Fatal("corrupt EEXIST target must fail validation")
+	}
+	if syncCalls != 0 {
+		t.Fatalf("EEXIST corrupt target synced %d time(s), want validation failure before sync", syncCalls)
+	}
+	target := filepath.Join(home, Subdir, "find_"+digest12("ordinary-save-eexist-validate-first|"+OrdinarySaveBodySentinel)+".json")
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(corrupt) {
+		t.Fatalf("EEXIST validation failure changed corrupt target bytes: %q", after)
+	}
+}
