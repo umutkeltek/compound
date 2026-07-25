@@ -1,14 +1,23 @@
 package finding
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 var fixedNow = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// Ordinary-save-product packet sentinels — used in the red-first falsifiers so the
+// no-leak assertion cannot pass because a generic fixture accidentally lacks the body.
+const (
+	OrdinarySaveBodySentinel     = "BODY_SENTINEL_7f4d7b\nsecond line"
+	OrdinarySaveEvidenceSentinel = "EVIDENCE_SENTINEL_c91e2a"
+)
 
 func TestRecordShowRoundTrip(t *testing.T) {
 	home := t.TempDir()
@@ -115,4 +124,414 @@ func TestShowRejectsPathEscape(t *testing.T) {
 	if _, err := Show(home, "../../etc/passwd"); err == nil {
 		t.Fatal("Show must reject a path-shaped id")
 	}
+}
+
+// TestRecordWithStatusFirstWriteReturnsRecorded — falsifier 1: first write returns recorded.
+func TestRecordWithStatusFirstWriteReturnsRecorded(t *testing.T) {
+	home := t.TempDir()
+	res, err := RecordWithStatus(home, Finding{
+		Topic:        "ordinary-save-proof",
+		Body:         OrdinarySaveBodySentinel,
+		WorkID:       "work_first",
+		ProducedBy:   "agent:first",
+		EvidenceRefs: []string{OrdinarySaveEvidenceSentinel},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusRecorded {
+		t.Fatalf("first write status = %q, want %q", res.Status, StatusRecorded)
+	}
+	if !strings.HasPrefix(res.Finding.ID, "find_") {
+		t.Fatalf("id = %q, want find_ prefix", res.Finding.ID)
+	}
+	if res.Finding.CID != CID(OrdinarySaveBodySentinel) {
+		t.Fatalf("cid = %q, want %q", res.Finding.CID, CID(OrdinarySaveBodySentinel))
+	}
+	if res.Finding.SourceClass != "evidence" {
+		t.Fatalf("source_class = %q, want evidence", res.Finding.SourceClass)
+	}
+}
+
+// TestRecordWithStatusExactRetryReturnsDuplicate — falsifier 1: an exact retry returns duplicate.
+func TestRecordWithStatusExactRetryReturnsDuplicate(t *testing.T) {
+	home := t.TempDir()
+	first, err := RecordWithStatus(home, Finding{
+		Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel,
+		WorkID: "work_first", ProducedBy: "agent:first",
+		EvidenceRefs: []string{OrdinarySaveEvidenceSentinel},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := RecordWithStatus(home, Finding{
+		Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel,
+		WorkID: "work_second", ProducedBy: "agent:second",
+		EvidenceRefs: []string{"trace:second"},
+	}, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != StatusDuplicate {
+		t.Fatalf("retry status = %q, want %q", second.Status, StatusDuplicate)
+	}
+	if second.Finding.ID != first.Finding.ID {
+		t.Fatalf("retry must surface first-finding id %q, got %q", first.Finding.ID, second.Finding.ID)
+	}
+	if second.Finding.CID != first.Finding.CID {
+		t.Fatalf("retry must surface first-finding cid %q, got %q", first.Finding.CID, second.Finding.CID)
+	}
+}
+
+// TestRecordWithStatusDuplicatePreservesFirstProvenance — falsifier 2: an exact retry with
+// different producer, work ID, evidence, timestamp, and supersedes returns the original
+// record byte-for-byte and does not overwrite first provenance or creation time.
+func TestRecordWithStatusDuplicatePreservesFirstProvenance(t *testing.T) {
+	home := t.TempDir()
+	first, err := RecordWithStatus(home, Finding{
+		Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel,
+		WorkID: "work_first", ProducedBy: "agent:first",
+		EvidenceRefs: []string{OrdinarySaveEvidenceSentinel},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstBytes, err := os.ReadFile(filepath.Join(home, Subdir, first.Finding.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = RecordWithStatus(home, Finding{
+		Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel,
+		WorkID: "work_second", ProducedBy: "agent:second",
+		Supersedes:   "find_aaaaaaaaaaaa",
+		EvidenceRefs: []string{"trace:second", "trace:third"},
+	}, fixedNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBytes, err := os.ReadFile(filepath.Join(home, Subdir, first.Finding.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstBytes) != string(secondBytes) {
+		t.Fatalf("retry must leave the on-disk record byte-identical:\nfirst:\n%s\nsecond:\n%s", firstBytes, secondBytes)
+	}
+	// The durable record must carry the FIRST provenance, not the retry's.
+	var found Finding
+	if err := json.Unmarshal(secondBytes, &found); err != nil {
+		t.Fatal(err)
+	}
+	if found.ProducedBy != "agent:first" {
+		t.Fatalf("retry clobbered produced_by: %q", found.ProducedBy)
+	}
+	if found.WorkID != "work_first" {
+		t.Fatalf("retry clobbered work_id: %q", found.WorkID)
+	}
+	if found.CreatedAt != first.Finding.CreatedAt {
+		t.Fatalf("retry clobbered created_at: %q vs %q", found.CreatedAt, first.Finding.CreatedAt)
+	}
+	if len(found.EvidenceRefs) != 1 || found.EvidenceRefs[0] != OrdinarySaveEvidenceSentinel {
+		t.Fatalf("retry clobbered evidence_refs: %v", found.EvidenceRefs)
+	}
+}
+
+// TestRecordWithStatusDifferentTopicSameBody — falsifier 3: different topic creates a second record.
+func TestRecordWithStatusDifferentTopicSameBody(t *testing.T) {
+	home := t.TempDir()
+	a, err := RecordWithStatus(home, Finding{Topic: "topic-a", Body: OrdinarySaveBodySentinel}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := RecordWithStatus(home, Finding{Topic: "topic-b", Body: OrdinarySaveBodySentinel}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Finding.ID == b.Finding.ID {
+		t.Fatalf("different topic must yield distinct id: %q", a.Finding.ID)
+	}
+	if a.Finding.CID != b.Finding.CID {
+		t.Fatalf("same body must yield same cid: %q vs %q", a.Finding.CID, b.Finding.CID)
+	}
+}
+
+// TestRecordWithStatusSameTopicDifferentBody — falsifier 4: same topic with different body creates another record.
+func TestRecordWithStatusSameTopicDifferentBody(t *testing.T) {
+	home := t.TempDir()
+	a, err := RecordWithStatus(home, Finding{Topic: "ordinary-save-proof", Body: "first body"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := RecordWithStatus(home, Finding{Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Finding.ID == b.Finding.ID {
+		t.Fatalf("different body must yield distinct id: %q", a.Finding.ID)
+	}
+}
+
+// TestRecordWithStatusConcurrentPublishesOneRecord — falsifier 5: concurrent saves converge
+// on exactly one complete valid file with one recorded and every other result duplicate.
+func TestRecordWithStatusConcurrentPublishesOneRecord(t *testing.T) {
+	home := t.TempDir()
+	const concurrency = 8
+	var wg sync.WaitGroup
+	results := make([]RecordResult, concurrency)
+	errs := make([]error, concurrency)
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = RecordWithStatus(home, Finding{
+				Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel,
+				WorkID: "work_concurrent", ProducedBy: "agent:concurrent",
+			}, fixedNow)
+		}(i)
+	}
+	wg.Wait()
+	recorded := 0
+	duplicate := 0
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d returned error: %v", i, err)
+		}
+		switch results[i].Status {
+		case StatusRecorded:
+			recorded++
+		case StatusDuplicate:
+			duplicate++
+		default:
+			t.Fatalf("worker %d status = %q", i, results[i].Status)
+		}
+	}
+	if recorded != 1 || duplicate != concurrency-1 {
+		t.Fatalf("expected 1 recorded + %d duplicate, got %d/%d", concurrency-1, recorded, duplicate)
+	}
+	entries, err := os.ReadDir(filepath.Join(home, Subdir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			files++
+		}
+	}
+	if files != 1 {
+		t.Fatalf("expected exactly one finding file, got %d", files)
+	}
+}
+
+// TestRecordWithStatusMalformedExistingFailsClosed — falsifier 6: a malformed/truncated
+// existing deterministic target fails closed and remains byte-identical.
+func TestRecordWithStatusMalformedExistingFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, Subdir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Build a finding so we know its id, then write malformed bytes at that path.
+	res, err := RecordWithStatus(home, Finding{Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reshape so the dir only contains the malformed file (the prior call deleted the staged one).
+	corrupt := []byte("{\"id\":\"" + res.Finding.ID + "\",\"not\":\"a finding\"")
+	if err := os.WriteFile(filepath.Join(home, Subdir, res.Finding.ID+".json"), corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = RecordWithStatus(home, Finding{Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel}, fixedNow)
+	if err == nil {
+		t.Fatal("malformed existing target must fail closed")
+	}
+	// Byte-identical preservation.
+	now, err := os.ReadFile(filepath.Join(home, Subdir, res.Finding.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(now) != string(corrupt) {
+		t.Fatalf("malformed target was modified on validation failure")
+	}
+}
+
+// TestRecordWithStatusExistingTargetInvariantsFailClosed — falsifier 7: a target whose ID,
+// topic/body digest, CID, source_class, created_at, or topic/body disagrees with the owned
+// invariants fails closed and remains byte-identical. The probe writes each corruption at the
+// deterministic target so the validator must refuse — never overwrite, never repair.
+func TestRecordWithStatusExistingTargetInvariantsFailClosed(t *testing.T) {
+	type mutation struct {
+		name string
+		// apply mutates a fresh record in place before the corrupt bytes land at the
+		// deterministic target.
+		apply func(f *Finding)
+	}
+	mutations := []mutation{
+		{
+			name: "id-disagrees-with-deterministic-digest",
+			apply: func(f *Finding) {
+				f.ID = "find_000000000000"
+			},
+		},
+		{
+			name: "id-prefers-non-find-prefix",
+			apply: func(f *Finding) {
+				f.ID = "find_doesnotmatchdigest12"
+			},
+		},
+		{
+			name: "cid-mismatch",
+			apply: func(f *Finding) {
+				f.CID = CID("totally different body content for an unrelated cid value")
+			},
+		},
+		{
+			name: "source-class-not-evidence",
+			apply: func(f *Finding) {
+				f.SourceClass = "promoted-claim"
+			},
+		},
+		{
+			name: "missing-created-at",
+			apply: func(f *Finding) {
+				f.CreatedAt = ""
+			},
+		},
+		{
+			name: "invalid-created-at",
+			apply: func(f *Finding) {
+				f.CreatedAt = "yesterday at five-ish"
+			},
+		},
+		{
+			name: "topic-does-not-match-deterministic-input",
+			apply: func(f *Finding) {
+				f.Topic = "different-topic"
+			},
+		},
+		{
+			name: "body-does-not-match-deterministic-input",
+			apply: func(f *Finding) {
+				f.Body = "totally different body"
+			},
+		},
+	}
+
+	for _, m := range mutations {
+		m := m
+		t.Run(m.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(home, Subdir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// Build a record with the canonical (topic, body) to learn the deterministic id.
+			first, err := RecordWithStatus(home, Finding{Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel}, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Now corrupt the on-disk record with the chosen mutation.
+			corrupt := Finding{
+				ID:           first.Finding.ID,
+				CID:          first.Finding.CID,
+				Topic:        first.Finding.Topic,
+				Body:         first.Finding.Body,
+				SourceClass:  first.Finding.SourceClass,
+				CreatedAt:    first.Finding.CreatedAt,
+				ProducedBy:   first.Finding.ProducedBy,
+				WorkID:       first.Finding.WorkID,
+				EvidenceRefs: first.Finding.EvidenceRefs,
+				Supersedes:   first.Finding.Supersedes,
+			}
+			m.apply(&corrupt)
+			data, _ := json.MarshalIndent(&corrupt, "", "  ")
+			if err := os.WriteFile(filepath.Join(home, Subdir, first.Finding.ID+".json"), append(data, '\n'), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			corruptBytes, err := os.ReadFile(filepath.Join(home, Subdir, first.Finding.ID+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// The honest retry MUST fail closed (any of the invariants is now violated).
+			if _, err := RecordWithStatus(home, Finding{
+				Topic:        "ordinary-save-proof",
+				Body:         OrdinarySaveBodySentinel,
+				WorkID:       "work_first",
+				ProducedBy:   "agent:first",
+				EvidenceRefs: []string{OrdinarySaveEvidenceSentinel},
+			}, fixedNow); err == nil {
+				t.Fatalf("corruption %q: must fail closed", m.name)
+			}
+
+			// The target MUST remain byte-identical to the corrupt bytes we wrote.
+			now, err := os.ReadFile(filepath.Join(home, Subdir, first.Finding.ID+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(now) != string(corruptBytes) {
+				t.Fatalf("corruption %q: target was modified on validation failure\nwant=%s\ngot=%s", m.name, corruptBytes, now)
+			}
+		})
+	}
+}
+
+// TestRecordWithStatusNoWriteOutsideObservedFindings — falsifier 8: recording writes no file
+// outside observed/findings; the ledger tree/digest remains byte-identical.
+func TestRecordWithStatusNoWriteOutsideObservedFindings(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "ledger"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "ledger", "digest"), []byte("untouched"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := walkSnapshot(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordWithStatus(home, Finding{Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordWithStatus(home, Finding{Topic: "ordinary-save-proof", Body: OrdinarySaveBodySentinel}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	after, err := walkSnapshot(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalTree(before, after) {
+		t.Fatalf("tree outside observed/findings must remain byte-identical\nbefore=%v\nafter=%v", before, after)
+	}
+}
+
+func walkSnapshot(root string) (map[string]string, error) {
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasPrefix(filepath.ToSlash(p), filepath.ToSlash(filepath.Join(root, Subdir))+"/") {
+			rel, _ := filepath.Rel(root, p)
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			out[rel] = string(b)
+		}
+		return nil
+	})
+	return out, err
+}
+
+func equalTree(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }

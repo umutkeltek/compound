@@ -20,6 +20,17 @@ import (
 // FindingKind is the reserved kind naming the operational-finding direct-write home.
 const FindingKind = "operational-finding"
 
+// FindingRecordCommand is the canonical, copyable write-command template surfaced by the
+// operational-finding placement target. It is the single discovery facade for an ordinary agent
+// that wants to record a finding — including the body form, the required provenance flags, and
+// the typed acknowledgement flag. Bracketed placeholders are intentionally literal so the
+// string is trivially copy/mutable.
+const FindingRecordCommand = "compound finding record --topic <topic> --stdin --work-id <work_id> --produced-by agent:<id> --json"
+
+// FindingRecordConsumer is the consumer string emitted alongside the operational-finding
+// resolve. It names every verb an ordinary agent can drive against the finding home.
+const FindingRecordConsumer = "compound finding record/list/show"
+
 // ResolvedTarget is the read-facade answer to "where should a write of this kind/owner go?".
 type ResolvedTarget struct {
 	Query    string   `json:"query"`
@@ -29,6 +40,7 @@ type ResolvedTarget struct {
 	Target   string   `json:"target"` // canonical write location (COMPOUND_HOME-relative for home dirs)
 	Source   string   `json:"source"` // which registry answered
 	Consumer string   `json:"consumer,omitempty"`
+	Command  string   `json:"command,omitempty"` // copyable write-command template (operational-finding only)
 	Verdicts []string `json:"verdicts,omitempty"`
 }
 
@@ -47,7 +59,8 @@ func ResolveKind(kind string) (ResolvedTarget, error) {
 			Mode:     "direct_write",
 			Target:   finding.Subdir,
 			Source:   "finding-home",
-			Consumer: "compound finding list/show",
+			Consumer: FindingRecordConsumer,
+			Command:  FindingRecordCommand,
 		}, nil
 	}
 	if spec, ok := candidates.SpecFor(candidates.Kind(k)); ok {

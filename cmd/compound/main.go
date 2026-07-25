@@ -343,7 +343,7 @@ compound act repoint --target-path P --target-id KEY --value V --work W [--confi
 compound act dns-record --service S --host H --address A --remote-host RH --work W [--confirm] governed ADDITIVE DNS record on a router over an injectable ssh transport; external_side_effect held by default; preflight-resolves the service:* entity
 compound act vhost --service S --server-name N --upstream U --remote-host RH --work W [--confirm] governed ADDITIVE NPM vhost block on an apps host over the same seam; additive-only, held by default, pre/post images + receipt in $COMPOUND_HOME/events
 compound land-lease <acquire|release|status|steal> TTL-bounded single-holder landing mutex under $COMPOUND_HOME; steal records a reason + prior holder
-compound finding <record|list|show|doctor> direct-write home for durable operational findings (evidence-class, never ledger); doctor flags superseded/stale
+compound finding <record|list|show|doctor> direct-write home for durable operational findings (evidence-class, never ledger); record accepts --body / --body-file / --stdin and returns a body-free JSON ack with status=recorded|duplicate; doctor flags superseded/stale
 compound capture --source S [--text T] [--work W] | capture show <cid> gesture-fired capture front door: content-addressed body under observed/capture/ (never ledger), mints ONE observed-class proposed candidate (never auto-promotable); day-salted dedup
 compound intent <plan|review|apply> expressive utterance -> task-scoped ContextPack -> reviewable existing work create-plan; ambiguity parks and apply requires an explicit reviewer
 compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
@@ -2059,10 +2059,42 @@ func validateKnownFlags(args []string, valueFlags, boolFlags map[string]bool) er
 	return nil
 }
 
+// cmdFinding is the direct-write home for operational findings. It is the ordinary agent's
+// positive counterpart to the placement guard: governed place to drop an evidence-class note,
+// NEVER a ledger byte, NEVER auto-promoted to a Claim. Bare `compound finding` prints the
+// discoverable help an unfamiliar agent needs to land one finding — including the three body
+// forms and the evidence-only/no-promotion boundary.
 func cmdFinding(args []string) {
-	const usage = "usage: compound finding <record|list|show|doctor> ..."
+	const help = "" +
+		"usage: compound finding <record|list|show|doctor> ...\n" +
+		"\n" +
+		"Operational finding: a durable, evidence-class note written under\n" +
+		"  COMPOUND_HOME/observed/findings. It is the positive counterpart to the placement\n" +
+		"  guard and the direct-write door for a runbook fact an ordinary agent wants to remember.\n" +
+		"\n" +
+		"Verbs:\n" +
+		"  record  record one finding (--topic T with one of --body B | --body-file F | --stdin;\n" +
+		"          --work-id W, --produced-by P, repeatable --evidence REF optional; --json returns\n" +
+		"          body-free ack with status=recorded|duplicate)\n" +
+		"  list    list finding ids and topics\n" +
+		"  show    show one finding by id (JSON or human; the body IS printed on retrieval)\n" +
+		"  doctor  read-only lifecycle hygiene: superseded + stale (older than --stale-days)\n" +
+		"\n" +
+		"Boundary:\n" +
+		"  - First writer wins. An exact (topic, body) retry is a no-op duplicate, never an\n" +
+		"    overwrite of the first record's provenance or created_at.\n" +
+		"  - Evidence-only, never a promoted Claim: recording is not adjudication and never\n" +
+		"    appears in ambient recall. Promoting a durable finding happens through the SEPARATE\n" +
+		"    governed memory door.\n" +
+		"  - Never a ledger byte: the ledger tree and digest stay byte-identical across record.\n" +
+		"\n" +
+		"Discoverability:\n" +
+		"  compound placement target --kind operational-finding --json  (returns target,\n" +
+		"                                                                source=finding-home,\n" +
+		"                                                                consumer, and the\n" +
+		"                                                                canonical record command)"
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, usage)
+		fmt.Fprintln(os.Stderr, help)
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -2075,7 +2107,7 @@ func cmdFinding(args []string) {
 	case "doctor":
 		cmdFindingDoctor(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, usage)
+		fmt.Fprintln(os.Stderr, help)
 		os.Exit(2)
 	}
 }
@@ -2125,23 +2157,58 @@ func cmdFindingDoctor(args []string) {
 }
 
 func cmdFindingRecord(args []string) {
-	const usage = "usage: compound finding record --topic T (--body B | --body-file F) [--work-id W] [--produced-by P] [--supersedes ID] [--evidence REF]... [--json]"
-	topic := valueFlag(args, "--topic")
-	body := valueFlag(args, "--body")
-	bodyFile := valueFlag(args, "--body-file")
-	jsonOut := hasFlag(args, "--json")
-	if strings.TrimSpace(bodyFile) != "" {
-		data, err := os.ReadFile(bodyFile)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error: read --body-file:", err)
-			os.Exit(1)
-		}
-		body = string(data)
+	const usage = "usage: compound finding record --topic T (--body B | --body-file F | --stdin) [--work-id W] [--produced-by P] [--supersedes ID] [--evidence REF]... [--json]"
+	valueFlags := map[string]bool{
+		"--topic": true, "--body": true, "--body-file": true, "--work-id": true,
+		"--produced-by": true, "--supersedes": true, "--evidence": true,
 	}
-	if strings.TrimSpace(topic) == "" || strings.TrimSpace(body) == "" {
+	boolFlags := map[string]bool{
+		"--json": true, "--stdin": true,
+	}
+	if err := validateKnownFlags(args, valueFlags, boolFlags); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
+	if err := rejectFlagUsedAsValue(args, valueFlags); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if err := requireExactlyOneBodySource(args); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	for i, a := range args {
+		if a == "--body" || a == "--body-file" || a == "--stdin" {
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		// A bare argument is a positional argument only if it is NOT the value of a known
+		// value-flag. The previous arg, if it is a value-flag in our schema, "consumes" this
+		// token as its value.
+		if i > 0 && valueFlags[args[i-1]] {
+			continue
+		}
+		fmt.Fprintln(os.Stderr, "error: unexpected positional argument:", a)
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	topic := valueFlag(args, "--topic")
+	if strings.TrimSpace(topic) == "" {
+		fmt.Fprintln(os.Stderr, "error: --topic required")
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	body, err := resolveBodySource(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	jsonOut := hasFlag(args, "--json")
 	homePath, err := home.Resolve("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
@@ -2155,16 +2222,112 @@ func cmdFindingRecord(args []string) {
 		Supersedes: valueFlag(args, "--supersedes"),
 	}
 	f.EvidenceRefs = findingEvidenceRefs(args)
-	rec, err := finding.Record(homePath, f, time.Now().UTC())
+	res, err := finding.RecordWithStatus(homePath, f, time.Now().UTC())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 	if jsonOut {
-		printJSON(rec)
+		printJSON(findingRecordAck(res))
 		return
 	}
-	fmt.Printf("recorded finding %s (topic=%q cid=%s) -> observed/findings/%s.json\n", rec.ID, rec.Topic, rec.CID, rec.ID)
+	if res.Status == finding.StatusDuplicate {
+		fmt.Printf("duplicate finding %s (topic=%q cid=%s) — preserved first record at observed/findings/%s.json\n", res.Finding.ID, res.Finding.Topic, res.Finding.CID, res.Finding.ID)
+		return
+	}
+	fmt.Printf("recorded finding %s (topic=%q cid=%s) -> observed/findings/%s.json\n", res.Finding.ID, res.Finding.Topic, res.Finding.CID, res.Finding.ID)
+}
+
+// findingRecordAck is the body-free typed acknowledgement returned by `compound finding record
+// --json`. It tells the caller whether the call RECORDED a new record or DUPLICATED an existing
+// durable record, surfaces the FIRST record's provenance (never the loser's), and NEVER echoes
+// the private body or the evidence-ref values. Known consumers in the operating-system
+// repository read the top-level `id`, so the top-level `id` is preserved.
+func findingRecordAck(res finding.RecordResult) map[string]any {
+	ack := map[string]any{
+		"schema":             "compound.finding.record-ack.v1",
+		"status":             res.Status,
+		"id":                 res.Finding.ID, // top-level id — external parser compatibility
+		"cid":                res.Finding.CID,
+		"topic":              res.Finding.Topic,
+		"source_class":       res.Finding.SourceClass,
+		"path":               filepath.Join("observed/findings", res.Finding.ID+".json"),
+		"produced_by":        res.Finding.ProducedBy,
+		"work_id":            res.Finding.WorkID,
+		"created_at":         res.Finding.CreatedAt,
+		"evidence_ref_count": len(res.Finding.EvidenceRefs),
+		"promotion":          "none",
+		"ledger_mutated":     false,
+	}
+	if s := strings.TrimSpace(res.Finding.Supersedes); s != "" {
+		ack["supersedes"] = s
+	}
+	return ack
+}
+
+// rejectFlagUsedAsValue rejects the case where a value-flag's next token is itself a flag
+// (e.g. `--topic --stdin`). Treating a flag as another flag's value silently accepts nonsense
+// inputs, so this is a hard usage error.
+func rejectFlagUsedAsValue(args []string, valueFlags map[string]bool) error {
+	for i, a := range args {
+		if !valueFlags[a] {
+			continue
+		}
+		if i+1 >= len(args) {
+			// Trailing flag without value — let validateKnownFlags handle it (its error
+			// message names the specific flag).
+			continue
+		}
+		next := args[i+1]
+		if strings.HasPrefix(next, "-") {
+			return fmt.Errorf("flag %s requires a value, got another flag %q", a, next)
+		}
+	}
+	return nil
+}
+
+// requireExactlyOneBodySource enforces that exactly one of --body, --body-file, --stdin is
+// supplied. Missing any body source OR supplying more than one is a usage error.
+func requireExactlyOneBodySource(args []string) error {
+	seen := 0
+	for _, a := range args {
+		if a == "--body" || a == "--body-file" || a == "--stdin" {
+			seen++
+		}
+	}
+	switch {
+	case seen == 0:
+		return fmt.Errorf("one of --body, --body-file, or --stdin is required")
+	case seen > 1:
+		return fmt.Errorf("only one of --body, --body-file, or --stdin may be supplied")
+	}
+	return nil
+}
+
+// resolveBodySource reads the body from the single body source the caller supplied.
+func resolveBodySource(args []string) (string, error) {
+	if hasFlag(args, "--body") {
+		return valueFlag(args, "--body"), nil
+	}
+	if hasFlag(args, "--body-file") {
+		path := valueFlag(args, "--body-file")
+		if strings.TrimSpace(path) == "" {
+			return "", fmt.Errorf("--body-file requires a value")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read --body-file: %w", err)
+		}
+		return string(data), nil
+	}
+	if hasFlag(args, "--stdin") {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", fmt.Errorf("read --stdin: %w", err)
+		}
+		return string(data), nil
+	}
+	return "", fmt.Errorf("one of --body, --body-file, or --stdin is required")
 }
 
 func cmdFindingList(args []string) {
@@ -2408,6 +2571,9 @@ func cmdPlacementTarget(args []string) {
 		label = res.Owner
 	}
 	fmt.Printf("%s -> %s (mode=%s source=%s)\n", label, res.Target, res.Mode, res.Source)
+	if cmd := strings.TrimSpace(res.Command); cmd != "" {
+		fmt.Printf("  command: %s\n", cmd)
+	}
 }
 
 func cmdPlacementResolve(args []string) {

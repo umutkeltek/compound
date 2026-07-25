@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,17 +58,68 @@ func digest12(value string) string {
 }
 
 // Record writes a finding to observed/findings. It is idempotent on (topic, body): the same content
-// yields the same id and rewrites the identical record (never resetting anything). It writes ONLY
-// under observed/findings — NEVER a ledger byte.
+// yields the same id AND preserves the first record unchanged (retry is a no-op write, not an
+// overwrite). It writes ONLY under observed/findings — NEVER a ledger byte. New callers that
+// need to distinguish a fresh write from a duplicate replay should use RecordWithStatus.
 func Record(homePath string, f Finding, now time.Time) (Finding, error) {
+	res, err := RecordWithStatus(homePath, f, now)
+	if err != nil {
+		return Finding{}, err
+	}
+	return res.Finding, nil
+}
+
+// Status values returned by RecordWithStatus. They tell the caller whether the call actually
+// published the record or whether an existing, content-identical record was preserved.
+const (
+	StatusRecorded  = "recorded"
+	StatusDuplicate = "duplicate"
+)
+
+// RecordResult is the duplicate-aware return: Status tells the caller whether the publication
+// wrote a new file or whether the existing durable record was preserved unchanged. Finding is
+// always the durable record (the freshly-validated one on `recorded`, or the existing one on
+// `duplicate`); it is never the loser's proposed provenance.
+type RecordResult struct {
+	Status  string
+	Finding Finding
+}
+
+// RecordWithStatus writes a finding to observed/findings using the staged-file + hard-link
+// pattern AND validates any existing deterministic target against the owned invariants. It is
+// idempotent on (topic, body): a replay with the same content always returns the same id and
+// CID, and never overwrites the first record's provenance, work_id, evidence_refs, created_at,
+// or supersedes. A deliberately revised body must change Topic or Body (and is therefore a
+// different record) or be persisted with a new content identity; there is no in-place edit.
+//
+// Exposed surface:
+//   - Status="recorded"  — the staged file was published as the deterministic target.
+//   - Status="duplicate" — the deterministic target already existed and was validated against
+//     the owned invariants; the existing record (not the loser's provenance) is returned.
+//
+// Validation invariants for any pre-existing target:
+//   - filename / record ID equals the deterministic id for the proposed (topic, body);
+//   - record topic and body equal the proposed content;
+//   - record CID equals CID(record.Body);
+//   - record ID equals digest12(record.Topic + "|" + record.Body);
+//   - record source_class is exactly "evidence";
+//   - record created_at is present and parseable as RFC3339.
+//
+// A target that violates any of these is a hard error. The file is left byte-identical; it is
+// never overwritten, quarantined, or repaired silently.
+//
+// Concurrent writers of the same (topic, body) always converge on one complete valid file: one
+// returns Status="recorded", every other successful return is Status="duplicate" describing the
+// first record.
+func RecordWithStatus(homePath string, f Finding, now time.Time) (RecordResult, error) {
 	if strings.TrimSpace(homePath) == "" {
-		return Finding{}, fmt.Errorf("COMPOUND_HOME required")
+		return RecordResult{}, fmt.Errorf("COMPOUND_HOME required")
 	}
 	if strings.TrimSpace(f.Topic) == "" {
-		return Finding{}, fmt.Errorf("finding topic required")
+		return RecordResult{}, fmt.Errorf("finding topic required")
 	}
 	if strings.TrimSpace(f.Body) == "" {
-		return Finding{}, fmt.Errorf("finding body required")
+		return RecordResult{}, fmt.Errorf("finding body required")
 	}
 	f.ID = "find_" + digest12(f.Topic+"|"+f.Body)
 	f.CID = CID(f.Body)
@@ -78,16 +130,151 @@ func Record(homePath string, f Finding, now time.Time) (Finding, error) {
 	f.EvidenceRefs = dedupe(f.EvidenceRefs)
 	dir := filepath.Join(homePath, Subdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return Finding{}, err
+		return RecordResult{}, err
+	}
+	// If the deterministic target already exists, validate it against the owned invariants and
+	// return the existing record as a duplicate. We never overwrite an existing record; the
+	// staged-file + hard-link path below is the only publication channel.
+	target := filepath.Join(dir, f.ID+".json")
+	if existing, err := os.ReadFile(target); err == nil {
+		var kept Finding
+		if uerr := json.Unmarshal(existing, &kept); uerr != nil {
+			return RecordResult{}, fmt.Errorf("finding %s existing record is malformed: %w", f.ID, uerr)
+		}
+		if err := validateExistingFinding(kept, f.Topic, f.Body); err != nil {
+			return RecordResult{}, fmt.Errorf("finding %s existing record invariants violated: %w", f.ID, err)
+		}
+		return RecordResult{Status: StatusDuplicate, Finding: kept}, nil
+	} else if !os.IsNotExist(err) {
+		return RecordResult{}, err
 	}
 	data, err := json.MarshalIndent(&f, "", "  ")
 	if err != nil {
-		return Finding{}, err
+		return RecordResult{}, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, f.ID+".json"), append(data, '\n'), 0o644); err != nil {
-		return Finding{}, err
+	// Staged-file + hard-link publication: write to a unique temp file, fsync, then link it
+	// into the deterministic target. If the link races and another writer creates the target
+	// first, we re-validate and report duplicate (the existing record wins by construction).
+	tmp, err := os.CreateTemp(dir, ".finding-*.json.tmp")
+	if err != nil {
+		return RecordResult{}, err
 	}
-	return f, nil
+	tmpPath := tmp.Name()
+	keepTemp := true
+	defer func() {
+		if keepTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return RecordResult{}, err
+	}
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		return RecordResult{}, err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return RecordResult{}, err
+	}
+	if err := tmp.Close(); err != nil {
+		return RecordResult{}, err
+	}
+	if err := os.Link(tmpPath, target); err != nil {
+		// The link failed: best-effort inline cleanup of the staged file. If that also fails
+		// (and the file still exists), the deferred last-resort cleanup runs and we report
+		// the publish error so the caller does NOT observe a silent `recorded`.
+		removeErr := os.Remove(tmpPath)
+		if removeErr == nil || os.IsNotExist(removeErr) {
+			keepTemp = false
+		}
+		if removeErr != nil && !os.IsNotExist(removeErr) {
+			return RecordResult{}, errors.Join(fmt.Errorf("publish finding: %w", err), fmt.Errorf("remove staged finding: %w", removeErr))
+		}
+		if os.IsExist(err) {
+			// A concurrent writer won the race. Re-validate and report duplicate.
+			existing, rerr := os.ReadFile(target)
+			if rerr != nil {
+				return RecordResult{}, rerr
+			}
+			var kept Finding
+			if uerr := json.Unmarshal(existing, &kept); uerr != nil {
+				return RecordResult{}, fmt.Errorf("finding %s existing record is malformed: %w", f.ID, uerr)
+			}
+			if verr := validateExistingFinding(kept, f.Topic, f.Body); verr != nil {
+				return RecordResult{}, fmt.Errorf("finding %s existing record invariants violated: %w", f.ID, verr)
+			}
+			return RecordResult{Status: StatusDuplicate, Finding: kept}, nil
+		}
+		return RecordResult{}, fmt.Errorf("publish finding: %w", err)
+	}
+	// Publication succeeded: the deterministic target is now linked. Best-effort directory fsync
+	// so the name-to-inode link is durable across a crash, then let the deferred function clean
+	// up the staged file. We never silently claim `recorded` on a path that left a staged file
+	// behind — the deterministic target is the only authority, and the leftover (if any) does
+	// not match `find_*.json` and never reaches readers.
+	if err := syncDir(dir); err != nil {
+		return RecordResult{}, fmt.Errorf("sync finding directory: %w", err)
+	}
+	return RecordResult{Status: StatusRecorded, Finding: f}, nil
+}
+
+// syncDir dir.Sync so a successful Put means the name-to-inode link is durable across a
+// crash, not merely visible to this process.
+func syncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+// validateExistingFinding enforces the owned invariants an existing deterministic target must
+// satisfy to be considered a duplicate. A failing target is a hard error — never repaired,
+// quarantined, or silently accepted.
+func validateExistingFinding(kept Finding, wantTopic, wantBody string) error {
+	if strings.TrimSpace(kept.ID) == "" {
+		return fmt.Errorf("existing record missing id")
+	}
+	wantID := "find_" + digest12(wantTopic+"|"+wantBody)
+	if kept.ID != wantID {
+		return fmt.Errorf("existing record id %q does not match deterministic id %q", kept.ID, wantID)
+	}
+	if kept.Topic != wantTopic {
+		return fmt.Errorf("existing record topic %q does not match proposed %q", kept.Topic, wantTopic)
+	}
+	if kept.Body != wantBody {
+		return fmt.Errorf("existing record body does not match proposed body")
+	}
+	if kept.CID != CID(wantBody) {
+		return fmt.Errorf("existing record cid %q does not match CID(proposed body)", kept.CID)
+	}
+	wantDigest := digest12(kept.Topic + "|" + kept.Body)
+	if digestID(kept.ID) != wantDigest {
+		return fmt.Errorf("existing record id %q is not digest12(topic|body)", kept.ID)
+	}
+	if strings.TrimSpace(kept.SourceClass) != "evidence" {
+		return fmt.Errorf("existing record source_class %q is not evidence", kept.SourceClass)
+	}
+	if strings.TrimSpace(kept.CreatedAt) == "" {
+		return fmt.Errorf("existing record missing created_at")
+	}
+	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(kept.CreatedAt)); err != nil {
+		return fmt.Errorf("existing record created_at %q is not RFC3339", kept.CreatedAt)
+	}
+	return nil
+}
+
+// digestID returns the 12-hex digest portion of a find_<digest> id, or empty if the id is
+// not a well-formed finding identifier.
+func digestID(id string) string {
+	const prefix = "find_"
+	if !strings.HasPrefix(id, prefix) {
+		return ""
+	}
+	return strings.TrimPrefix(id, prefix)
 }
 
 // Show returns a finding by id. A missing id is an explicit error (never a silent zero value).

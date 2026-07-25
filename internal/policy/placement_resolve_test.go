@@ -2,6 +2,7 @@ package policy
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"compound/internal/candidates"
@@ -28,9 +29,36 @@ func TestResolveKindComposesFromRealOwners(t *testing.T) {
 	if f.Mode != "direct_write" || f.Source != "finding-home" || f.Target != "observed/findings" {
 		t.Fatalf("finding kind resolve wrong: %+v", f)
 	}
+	if !strings.Contains(f.Consumer, "record") {
+		t.Fatalf("Consumer must name the record verb for ordinary-agent discovery: %q", f.Consumer)
+	}
+	if f.Command == "" {
+		t.Fatalf("operational-finding kind must expose a copyable write command")
+	}
+	if !strings.Contains(f.Command, "finding record") {
+		t.Fatalf("Command must be the canonical finding record command: %q", f.Command)
+	}
 
 	if _, err := ResolveKind("nonsense-kind"); err == nil {
 		t.Fatal("unknown kind must be an explicit error")
+	}
+}
+
+// TestPlacementFindingCommandTemplateContract — falsifier 14: the placement-target JSON
+// includes the exact operational-finding write-command template and names record/list/show.
+func TestPlacementFindingCommandTemplateContract(t *testing.T) {
+	res, err := ResolveKind(FindingKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "compound finding record --topic <topic> --stdin --work-id <work_id> --produced-by agent:<id> --json"
+	if res.Command != want {
+		t.Fatalf("Command = %q, want %q", res.Command, want)
+	}
+	for _, v := range []string{"record", "list", "show"} {
+		if !strings.Contains(res.Consumer, v) {
+			t.Fatalf("Consumer must name %q verb: %q", v, res.Consumer)
+		}
 	}
 }
 
