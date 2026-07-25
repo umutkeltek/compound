@@ -219,7 +219,9 @@ func foldPositionRows(claims []Claim, superseded map[string]bool, asOf int64, fo
 		if entity != "" && c.Entity != entity {
 			continue
 		}
-		if len(topicSet) > 0 && !claimHasTopicRef(c, topicSet) {
+		// The canonical topic axis predates TopicRefs; both are valid subtree
+		// memberships so legacy promoted claims remain scopeable.
+		if len(topicSet) > 0 && !topicSet[c.Topic()] && !claimHasTopicRef(c, topicSet) {
 			continue
 		}
 		slot := ClaimSlotKey(c.Entity, c.Predicate, c.ClaimType, c.Qualifiers, c.ID)

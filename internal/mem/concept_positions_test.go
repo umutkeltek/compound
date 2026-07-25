@@ -247,6 +247,52 @@ func TestLegacyClaimRowsWithoutTopicRefsStillWork(t *testing.T) {
 	}
 }
 
+func TestPositionFoldTopicScopeIncludesLegacyCanonicalTopicAxis(t *testing.T) {
+	s := newStore(t)
+	_, err := s.ImportTopics([]byte(`{
+		"schema_version": "compound.memory_topics.v0.1",
+		"topics": [
+			{"slug": "standing-law", "narrows_to": ["candidate-governance"]},
+			{"slug": "candidate-governance", "part_of": ["standing-law"]}
+		]
+	}`), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := Claim{
+		ID:         "claim_legacy_canonical_topic",
+		Seq:        10,
+		Entity:     "candidate-inbox",
+		Predicate:  "authority_status",
+		Object:     "candidate inbox is evidence, not truth",
+		ValidFrom:  "2026-01-01T00:00:00Z",
+		Confidence: 0.9,
+		Derivation: "deterministic",
+		ClaimType:  "constraint",
+		Qualifiers: map[string]string{
+			"domain": "candidate-governance",
+		},
+		EvidenceRefs: []string{"trace_legacy_canonical_topic"},
+		Visibility:   "operational",
+		State:        ClaimStatePromoted,
+		CreatedAt:    rfc3339(t0),
+	}
+	if err := appendJSONL(s.claimsLog(), &legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.Position(legacy.Entity, PositionFoldOptions{Topic: "standing-law"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Positions) != 1 {
+		t.Fatalf("legacy canonical-topic claim under standing-law subtree produced %d positions, want 1: %+v", len(result.Positions), result.Positions)
+	}
+	if result.Positions[0].Position.ActiveClaimID != legacy.ID {
+		t.Fatalf("active claim = %q, want %q", result.Positions[0].Position.ActiveClaimID, legacy.ID)
+	}
+}
+
 func promoteTopicClaim(t *testing.T, s *Store, entity, predicate, object, topicRef, observed string, now time.Time) AdjudicateResult {
 	t.Helper()
 	c := cand(entity, predicate, object, observed)

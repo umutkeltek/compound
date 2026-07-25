@@ -198,6 +198,52 @@ func TestRenderHarnessDigestGroupsGatesAndOrdersDeterministically(t *testing.T) 
 	}
 }
 
+// TestRenderHarnessDigestIncludesLegacyCanonicalTopicAxis pins the real-home
+// compatibility shape: promoted claims that predate TopicRefs still belong to
+// a digest group through the Position topic axis.
+func TestRenderHarnessDigestIncludesLegacyCanonicalTopicAxis(t *testing.T) {
+	s := newStore(t)
+	_, err := s.ImportTopics([]byte(`{
+		"schema_version": "compound.memory_topics.v0.1",
+		"topics": [
+			{"slug": "standing-law", "narrows_to": ["candidate-governance"]},
+			{"slug": "candidate-governance", "part_of": ["standing-law"]}
+		]
+	}`), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digestFixtureClaim(t, s, Claim{
+		ID:        "clm_legacy_canonical_topic",
+		Seq:       10,
+		Entity:    "candidate-inbox",
+		Predicate: "authority_status",
+		Object:    "candidate inbox is evidence, not truth",
+		ClaimType: "constraint",
+		Qualifiers: map[string]string{
+			"domain": "candidate-governance",
+		},
+		Visibility: "operational",
+		State:      ClaimStatePromoted,
+		ValidFrom:  "2026-01-01T00:00:00Z",
+	})
+
+	report, body, err := s.RenderHarnessDigest(
+		HarnessDigestOptions{Harness: "claude-code"},
+		HarnessDigestMeta{},
+		t0,
+	)
+	if err != nil {
+		t.Fatalf("RenderHarnessDigest: %v", err)
+	}
+	if report.PositionCount != 1 || report.Groups[0].PositionCount != 1 {
+		t.Fatalf("legacy canonical-topic claim produced report %+v, want one standing-law position", report)
+	}
+	if !strings.Contains(string(body), "candidate-inbox") {
+		t.Fatalf("digest omitted legacy canonical-topic claim:\n%s", body)
+	}
+}
+
 // TestRenderHarnessDigestDifferentHarnessScopesIndependently pins that
 // harness:<name> really does scope by name — a codex render sees the codex
 // claim and NOT the claude-code one, the mirror image of the test above.
