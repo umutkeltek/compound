@@ -44,7 +44,7 @@ func TestCorpusFlagRevealsPrivateTextButIsNotNeededForPublic(t *testing.T) {
 	publicManifest, publicBody := corpusFlagManifest(t, "item_public", "public")
 
 	for _, args := range [][]string{{"--include-private-text"}, {"--include-text"}} {
-		resolved, err := corpus.ResolveChunkText(privateManifest, "item_private#0", corpusIncludePrivateText(args))
+		resolved, err := corpus.ResolveChunkText("", privateManifest, "item_private#0", corpusIncludePrivateText(args))
 		if err != nil {
 			t.Fatalf("resolve private chunk with %v: %v", args, err)
 		}
@@ -53,7 +53,7 @@ func TestCorpusFlagRevealsPrivateTextButIsNotNeededForPublic(t *testing.T) {
 		}
 	}
 
-	suppressed, err := corpus.ResolveChunkText(privateManifest, "item_private#0", corpusIncludePrivateText(nil))
+	suppressed, err := corpus.ResolveChunkText("", privateManifest, "item_private#0", corpusIncludePrivateText(nil))
 	if err != nil {
 		t.Fatalf("resolve private chunk without flag: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestCorpusFlagRevealsPrivateTextButIsNotNeededForPublic(t *testing.T) {
 		t.Fatalf("private text leaked without the flag: status=%q text=%q", suppressed.Status, suppressed.Text)
 	}
 
-	public, err := corpus.ResolveChunkText(publicManifest, "item_public#0", corpusIncludePrivateText(nil))
+	public, err := corpus.ResolveChunkText("", publicManifest, "item_public#0", corpusIncludePrivateText(nil))
 	if err != nil {
 		t.Fatalf("resolve public chunk without flag: %v", err)
 	}
@@ -97,6 +97,7 @@ func corpusFlagManifest(t *testing.T, itemID, privacy string) (corpus.Manifest, 
 		FileHash:   "sha256:" + hex.EncodeToString(sum[:]),
 		PageSlug:   "Flag Seam Fixture",
 		Privacy:    privacy,
+		BodyPolicy: "source_in_place",
 	}
 	manifest := corpus.Manifest{
 		SchemaVersion:       corpus.ManifestSchemaVersion,

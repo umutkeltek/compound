@@ -3,7 +3,9 @@ package corpus
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"compound/internal/home"
 	"compound/internal/sourceobs"
 )
 
@@ -320,14 +323,26 @@ type ResolvedChunkText struct {
 //  2. Find the manifest item by item_id.
 //  3. Schema gate: if the manifest's prefix_schema_version is not this binary's, the
 //     chunker has changed under the index — return ChunkTextStaleIndex with no text.
-//  4. Read the file at the item's source_ref.
-//  5. Drift gate: sha256 the live file and compare to item.file_hash. On mismatch,
+//  4. Body source dispatch (the new seam):
+//       - body_policy=source_in_place: read the file at item.source_ref. The body lives
+//         OUTSIDE COMPOUND_HOME and can be moved/deleted; that is expected and degrades
+//         this hit to ChunkTextSourceUnavailable.
+//       - body_policy=owned_snapshot: read the artifact bytes via home.ArtifactStore.
+//         The artifact is the source — fall-back to SourceRef would hide custody
+//         corruption, so missing/corrupt/wrong-size/wrong-hash artifacts each fail
+//         closed (no text, never silent).
+//  5. Drift gate: sha256 the resolved bytes and compare to item.file_hash. On mismatch,
 //     return ChunkTextStaleSource with no text.
 //  6. Re-chunk with the manifest's chunk config; bounds-check ordinal against the result.
 //  7. Privacy gate: the item's own privacy (not just the lane's) decides suppression —
 //     if privacy=="private" and includeText is false, return ChunkTextSuppressedPrivate
 //     with no text.
-func ResolveChunkText(manifest Manifest, chunkID string, includeText bool) (ResolvedChunkText, error) {
+//
+// homePath is the COMPOUND_HOME that owns the artifact store. It is REQUIRED for
+// body_policy=owned_snapshot (the resolver fails closed if it is empty); for
+// body_policy=source_in_place it is ignored, so legacy call sites that build a Manifest
+// directly (and have no home) keep working unchanged.
+func ResolveChunkText(homePath string, manifest Manifest, chunkID string, includeText bool) (ResolvedChunkText, error) {
 	itemID, ordinal, err := splitChunkID(chunkID)
 	if err != nil {
 		return ResolvedChunkText{}, err
@@ -342,15 +357,15 @@ func ResolveChunkText(manifest Manifest, chunkID string, includeText bool) (Reso
 	if strings.TrimSpace(manifest.PrefixSchemaVersion) != PrefixSchemaVersion {
 		return ResolvedChunkText{Status: ChunkTextStaleIndex}, nil
 	}
-	raw, err := os.ReadFile(item.SourceRef)
+	raw, status, err := readItemBodyBytes(homePath, item)
 	if err != nil {
-		// Degrade this hit, do not fail the query — see ChunkTextSourceUnavailable.
-		return ResolvedChunkText{Status: ChunkTextSourceUnavailable}, nil
+		return ResolvedChunkText{}, err
 	}
-	sum := sha256.Sum256(raw)
-	liveHash := "sha256:" + hex.EncodeToString(sum[:])
-	if expected := strings.TrimSpace(item.FileHash); liveHash != expected {
-		return ResolvedChunkText{Status: ChunkTextStaleSource}, nil
+	if status != ChunkTextOK {
+		// Degrade this hit, do not fail the query — see ChunkTextSourceUnavailable /
+		// ChunkTextStaleSource. The FileHash half of the three-way invariant was
+		// already enforced inside readItemBodyBytes (shared with the index path).
+		return ResolvedChunkText{Status: status}, nil
 	}
 	chunks, err := ChunkItem(item, string(raw), manifest.Chunk)
 	if err != nil {
@@ -363,6 +378,102 @@ func ResolveChunkText(manifest Manifest, chunkID string, includeText bool) (Reso
 		return ResolvedChunkText{Status: ChunkTextSuppressedPrivate}, nil
 	}
 	return ResolvedChunkText{Status: ChunkTextOK, Text: chunks[ordinal].Text}, nil
+}
+
+// readItemBodyBytes is the production body-resolution seam. It returns the
+// raw bytes (one source of truth for both indexing and query) plus a per-hit
+// refusal status when the body cannot be served verbatim. It never falls
+// back across body_policy: an owned_snapshot item never reads from SourceRef,
+// and a source_in_place item never reads from the artifact store.
+//
+// All owned-body consumers MUST enforce the same three-way invariant before
+// any byte reaches the embedder (index path) or the body resolver (query
+// path): BodyRef digest == sha256(bytes), sha256(bytes) == FileHash, and
+// len(bytes) == BodyBytes. The previous index path only checked the first
+// two, which let a BodyRef-valid artifact whose FileHash disagreed with the
+// actual bytes still produce chunk hashes that no manifest would later
+// recognize. FileHash is enforced here for both body_policies so the index
+// path and the query path share one gate.
+//
+// The status value returned here is what the caller (index or query) maps
+// onto its own failure surface — ChunkTextSourceUnavailable / ChunkTextStaleSource
+// for the corpus query path; an error for the index path, where missing body
+// bytes cannot be embedded.
+func readItemBodyBytes(homePath string, item sourceobs.SourceManifestItem) ([]byte, ChunkTextStatus, error) {
+	switch strings.TrimSpace(item.BodyPolicy) {
+	case "source_in_place":
+		if strings.TrimSpace(item.SourceRef) == "" {
+			return nil, ChunkTextSourceUnavailable, nil
+		}
+		raw, err := os.ReadFile(item.SourceRef)
+		if err != nil {
+			return nil, ChunkTextSourceUnavailable, nil
+		}
+		if status := matchRecordedBodyHash(item, raw); status != ChunkTextOK {
+			return nil, status, nil
+		}
+		return raw, ChunkTextOK, nil
+	case "owned_snapshot":
+		if strings.TrimSpace(item.BodyRef) == "" {
+			return nil, ChunkTextSourceUnavailable, fmt.Errorf("corpus owned body: item %s missing body_ref", item.ID)
+		}
+		if strings.TrimSpace(homePath) == "" {
+			return nil, ChunkTextSourceUnavailable, fmt.Errorf("corpus owned body: item %s requires COMPOUND_HOME", item.ID)
+		}
+		store, err := home.NewArtifactStore(homePath)
+		if err != nil {
+			return nil, ChunkTextSourceUnavailable, fmt.Errorf("corpus owned body: item %s artifact store: %w", item.ID, err)
+		}
+		raw, err := store.Get(item.BodyRef)
+		if err != nil {
+			// Map the artifact-store failure mode to the corpus failure surface:
+			//   - file gone at the artifact path → source_unavailable
+			//   - bytes at the path don't match the ref's claimed hash → stale_source
+			// Both close; neither widens to SourceRef. The "manifest is corrupt"
+			// gate is the sourceobs doctor's job; the resolver just refuses the hit.
+			if errors.Is(err, fs.ErrNotExist) || os.IsNotExist(err) {
+				return nil, ChunkTextSourceUnavailable, nil
+			}
+			return nil, ChunkTextStaleSource, nil
+		}
+		// BodyBytes, when present in the manifest, must match the artifact's
+		// exact byte length — the same invariant sourceobs's doctor enforces.
+		if item.BodyBytes > 0 && int64(len(raw)) != item.BodyBytes {
+			return nil, ChunkTextStaleSource, nil
+		}
+		if status := matchRecordedBodyHash(item, raw); status != ChunkTextOK {
+			return nil, status, nil
+		}
+		return raw, ChunkTextOK, nil
+	default:
+		return nil, ChunkTextSourceUnavailable, fmt.Errorf("corpus body: item %s unknown body_policy %q", item.ID, item.BodyPolicy)
+	}
+}
+
+// matchRecordedBodyHash enforces the FileHash half of the three-way
+// invariant shared by every owned-body consumer: sha256(bytes) must equal
+// the recorded FileHash. BodyRef digest is already verified upstream
+// (artifact store for owned_snapshot; nothing in source_in_place) and
+// BodyBytes is checked in the calling branch. This is the single gate the
+// index and query paths share — centralizing it here prevents a future
+// caller from forgetting one half and silently embedding drift.
+//
+// A blank/empty FileHash ALWAYS fails closed (stale_source). The corpus
+// layer never trusts a hashless manifest half — a missing hash either
+// signals a malformed manifest on the sourceobs side or a previously
+// trusted body policy that has since tightened. Either way the resolver
+// must refuse, never widen by accepting "no claim".
+func matchRecordedBodyHash(item sourceobs.SourceManifestItem, raw []byte) ChunkTextStatus {
+	expected := strings.TrimSpace(item.FileHash)
+	if expected == "" {
+		return ChunkTextStaleSource
+	}
+	sum := sha256.Sum256(raw)
+	live := "sha256:" + hex.EncodeToString(sum[:])
+	if live != expected {
+		return ChunkTextStaleSource
+	}
+	return ChunkTextOK
 }
 
 func splitChunkID(chunkID string) (string, int, error) {

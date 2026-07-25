@@ -211,7 +211,41 @@ func prepareIndex(homePath string, lane LaneConfig) (preparedIndex, error) {
 		if lane.Generation != "" && strings.TrimSpace(item.CorpusGeneration) != lane.Generation {
 			continue
 		}
-		body, err := readItemBody(item)
+		// Item-level privacy gate — owned_snapshot bodies ONLY. The legacy
+		// source_in_place path is left untouched in this slice: BuildSourceManifest
+		// defaults source_in_place items to private while the published quickstart
+		// uses public lanes, so applying the gate to both policies would silently
+		// break documented legacy behavior. Closing the source_in_place seam is
+		// an explicit follow-on evidence packet — it is not silently widened here.
+		//
+		// For owned_snapshot the gate is structural and ahead of every body
+		// read / embedder call. Rules, in priority order:
+		//
+		//   1. item.Privacy MUST be exactly "public" or "private". Anything
+		//      else — including a blank field — is a malformed manifest entry;
+		//      SourceManifest record validation does not enforce item fields,
+		//      so the corpus resolver refuses, NEVER defaulting to "public".
+		//   2. item.Privacy == "private" requires the lane posture to be
+		//      explicit privacy=private AND a local/loopback embedder
+		//      (ProviderIsLocal). Otherwise a private item would be sent to a
+		//      remote embedder — exactly the leak the gate exists to prevent.
+		//   3. item.Privacy == "public" enters any lane.
+		//
+		// There is no caller opt-in for a private owned_snapshot item in a
+		// public/remote lane.
+		if strings.EqualFold(strings.TrimSpace(item.BodyPolicy), "owned_snapshot") {
+			switch strings.ToLower(strings.TrimSpace(item.Privacy)) {
+			case "public":
+				// OK in any lane.
+			case "private":
+				if !laneIsPrivateLocal(lane) {
+					return preparedIndex{}, fmt.Errorf("corpus index: owned_snapshot item %q privacy=private refuses non-private lane (lane privacy=%q embedder=%s)", item.ID, strings.TrimSpace(lane.Privacy), lane.Embedder.Identity())
+				}
+			default:
+				return preparedIndex{}, fmt.Errorf("corpus index: owned_snapshot item %q has malformed privacy field (must be public or private, got %q)", item.ID, strings.TrimSpace(item.Privacy))
+			}
+		}
+		body, err := readItemBody(homePath, item)
 		if err != nil {
 			return preparedIndex{}, err
 		}
@@ -284,16 +318,22 @@ func refuseMixedIdentity(dir, expected string) error {
 	return nil
 }
 
-func readItemBody(item sourceobs.SourceManifestItem) (string, error) {
-	if item.BodyPolicy != "source_in_place" {
-		return "", fmt.Errorf("manifest item %s body_policy=%q has no source text for corpus indexing", item.ID, item.BodyPolicy)
-	}
-	if strings.TrimSpace(item.SourceRef) == "" {
-		return "", fmt.Errorf("manifest item %s source_ref required", item.ID)
-	}
-	raw, err := os.ReadFile(item.SourceRef)
+func readItemBody(homePath string, item sourceobs.SourceManifestItem) (string, error) {
+	raw, status, err := readItemBodyBytes(homePath, item)
 	if err != nil {
-		return "", fmt.Errorf("read manifest item %s source: %w", item.ID, err)
+		return "", fmt.Errorf("read manifest item %s: %w", item.ID, err)
+	}
+	// Indexing must surface missing/corrupt/wrong-size bodies as a hard error
+	// rather than a per-hit refusal: the embedder cannot chunk empty bytes,
+	// and a silent skip would leave a partial index behind. The corpus query
+	// path keeps using readItemBodyBytes' refusal statuses directly.
+	if status != ChunkTextOK {
+		switch item.BodyPolicy {
+		case "owned_snapshot":
+			return "", fmt.Errorf("read manifest item %s owned body %s: %s (artifact missing, corrupt, or size-mismatch)", item.ID, item.BodyRef, status)
+		default:
+			return "", fmt.Errorf("read manifest item %s source: %s", item.ID, status)
+		}
 	}
 	return string(raw), nil
 }
@@ -469,4 +509,21 @@ func normalizeVector(vec []float32) ([]float32, error) {
 		out[i] = float32(float64(v) * inv)
 	}
 	return out, nil
+}
+
+// laneIsPrivateLocal reports whether the configured lane posture is a
+// private-lane + local-embedder pair. It composes the existing
+// ProviderIsLocal helper (loopback host check) with the lane's privacy
+// string so no new config authority is introduced — the gate re-uses the
+// same predicate the lane-validator already relies on for private lanes.
+//
+// A "private" lane string is necessary but not sufficient — the embedder
+// must also resolve to a loopback/local provider so the bytes never leave
+// the host. This is the same posture ValidateLaneConfig requires for any
+// privacy=private lane to load at all.
+func laneIsPrivateLocal(lane LaneConfig) bool {
+	if !strings.EqualFold(strings.TrimSpace(lane.Privacy), "private") {
+		return false
+	}
+	return ProviderIsLocal(lane.Embedder.Provider, lane.Embedder.BaseURL)
 }

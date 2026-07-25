@@ -70,7 +70,7 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 	}
 	for _, hit := range hits {
 		info := meta[hit.ClaimID]
-		resolved, err := ResolveChunkText(manifest, hit.ClaimID, opts.IncludeText)
+		resolved, err := ResolveChunkText(homePath, manifest, hit.ClaimID, opts.IncludeText)
 		if err != nil {
 			return QueryReport{}, fmt.Errorf("resolve chunk text for %s: %w", hit.ClaimID, err)
 		}

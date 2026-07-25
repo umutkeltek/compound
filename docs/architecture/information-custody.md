@@ -160,6 +160,16 @@ declared recoverable body remains `custody_complete=false`. Database-native dump
 symlinks, xattrs, ACLs, and compound document packages require source-family adapters; a regular-file snapshot
 must not overclaim those semantics.
 
+An `owned_snapshot` body is resolved by the corpus ONLY through its hash- and size-verified `BodyRef` (the
+existing `home.ArtifactStore`). The corpus resolver enforces the same three-way invariant on every consumer —
+BodyRef digest equals `sha256(bytes)`, `sha256(bytes)` equals the recorded `FileHash`, and the byte length
+equals `BodyBytes` when `BodyBytes` is recorded as positive — and refuses to fall back to `SourceRef` if the
+artifact is missing, corrupt, size-mismatched, or hash-mismatched. A private `owned_snapshot` item additionally
+requires a private + local/loopback lane posture before any indexing body read or embedder call; a public lane
+carrying a private `owned_snapshot` item fails closed before the embedder interface is touched. Source-ref
+fallback is forbidden on purpose: completed custody means the owned body IS the source, and any silent
+bridge would hide custody corruption.
+
 The first database-export custody adapter uses `manifest-create --from-export ...
 --dump ...` accepts a dump only when its streamed SHA-256 equals the export's exact `dump_ref`, then records
 `dump_body_ref` and `dump_bytes` at family scope. A mismatch publishes no artifact. `manifest-doctor` keeps an
