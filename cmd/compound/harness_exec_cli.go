@@ -121,16 +121,39 @@ func cmdHarnessRun(args []string) {
 	r := harness.NewAdapterRegistry(store)
 	a, ok := r.AdapterByName(harnessName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "unknown harness %q; available: %v\n", harnessName, r.Names())
+		gateRefusal{
+			Command: "compound harness run",
+			Gate:    "adapter_resolution",
+			Refused: fmt.Sprintf("no adapter is registered for harness %q", harnessName),
+			Tried: []string{
+				fmt.Sprintf("--harness %s against the adapter registry: no match", harnessName),
+				"registered adapters: " + strings.Join(r.Names(), ", "),
+			},
+			DoThis: []string{
+				fmt.Sprintf("compound harness run --harness <name> --work %s", firstNonEmptyRefusalValue(workID, "<work-id>")),
+				fmt.Sprintf("compound work advance %s --execute --harness <name>   # the GOVERNED path; compound harness run records an ungoverned manual run", firstNonEmptyRefusalValue(workID, "<work-id>")),
+			},
+			Prevents: "an unrecoverable run: resolving the adapter after the side effect leaves a typo'd --harness with no RunAttempt to terminalize.",
+		}.writeTo(os.Stderr)
 		os.Exit(1)
 	}
 
 	// Resolve the execution workspace. Never default to COMPOUND_HOME --
 	// running a real code-editing harness (codex/claude) inside the
 	// state/config dir edits the wrong tree. See resolveExecuteWorkspace.
-	workspace := resolveExecuteWorkspace(args, wenv.GitDelivery)
+	workspace, workspaceTried := resolveExecuteWorkspace(args, wenv.GitDelivery)
 	if workspace == "" {
-		fmt.Fprintln(os.Stderr, "error: cannot determine execution workspace; pass --workspace <path>")
+		gateRefusal{
+			Command: "compound harness run",
+			Gate:    "workspace_resolution",
+			Refused: "no execution workspace could be resolved, so no RunAttempt was minted",
+			Tried:   workspaceTried,
+			DoThis: []string{
+				fmt.Sprintf("compound harness run --harness %s --work %s --workspace <project-path>", harnessName, firstNonEmptyRefusalValue(workID, "<work-id>")),
+				fmt.Sprintf("compound work show %s   # confirm git_delivery.target_worktree_root", firstNonEmptyRefusalValue(workID, "<work-id>")),
+			},
+			Prevents: "running a code-editing harness against COMPOUND_HOME. There is no home fallback by design: the harness would edit the state and config directory instead of the project, and the edits would look like successful work.",
+		}.writeTo(os.Stderr)
 		os.Exit(2)
 	}
 
@@ -213,17 +236,34 @@ func indexOf(haystack []string, needle string) int {
 // the wrong tree and pollutes COMPOUND_HOME. Returns "" only when none of
 // the three resolve (essentially: --workspace unset, no git delivery, and
 // os.Getwd fails) -- the caller then refuses rather than defaulting home.
-func resolveExecuteWorkspace(args []string, gd *envelope.GitDeliveryContract) string {
-	if ws := strings.TrimSpace(valueFlag(args, "--workspace")); ws != "" {
-		return ws
+//
+// The second return value is the per-step trace, in attempt order, with the
+// result each step observed. The refusal text quotes it verbatim: a ladder that
+// reports only its final verdict cannot be told apart from one that never ran,
+// and "pass --workspace" does not tell the reader which of the three steps
+// failed or why their invocation reached this gate at all.
+func resolveExecuteWorkspace(args []string, gd *envelope.GitDeliveryContract) (string, []string) {
+	tried := make([]string, 0, 3)
+
+	ws := strings.TrimSpace(valueFlag(args, "--workspace"))
+	if ws != "" {
+		return ws, append(tried, "--workspace flag: "+ws)
 	}
-	if gd != nil {
-		if root := strings.TrimSpace(gd.TargetWorktreeRoot); root != "" {
-			return root
-		}
+	tried = append(tried, "--workspace flag: not passed")
+
+	switch {
+	case gd == nil:
+		tried = append(tried, "work envelope git_delivery.target_worktree_root: no git delivery contract on this work item")
+	case strings.TrimSpace(gd.TargetWorktreeRoot) == "":
+		tried = append(tried, "work envelope git_delivery.target_worktree_root: git delivery contract present but target_worktree_root is empty")
+	default:
+		root := strings.TrimSpace(gd.TargetWorktreeRoot)
+		return root, append(tried, "work envelope git_delivery.target_worktree_root: "+root)
 	}
-	if cwd, err := os.Getwd(); err == nil {
-		return cwd
+
+	cwd, err := os.Getwd()
+	if err == nil {
+		return cwd, append(tried, "current working directory: "+cwd)
 	}
-	return ""
+	return "", append(tried, "current working directory: unavailable ("+err.Error()+")")
 }

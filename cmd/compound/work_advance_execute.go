@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"compound/internal/harness"
@@ -103,16 +104,39 @@ func runWorkAdvanceExecute(homePath string, store *work.Store, workID string, re
 	registry := harness.NewAdapterRegistry(runAttemptStore)
 	adapter, ok := registry.AdapterByName(harnessName)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "unknown harness %q; available: %v\n", harnessName, registry.Names())
+		gateRefusal{
+			Command: "compound work advance --execute",
+			Gate:    "adapter_resolution",
+			Refused: fmt.Sprintf("no adapter is registered for harness %q, so no RunAttempt was minted and the envelope was not advanced", harnessName),
+			Tried: []string{
+				fmt.Sprintf("--harness %s against the adapter registry: no match", harnessName),
+				"registered adapters: " + strings.Join(registry.Names(), ", "),
+			},
+			DoThis: []string{
+				fmt.Sprintf("compound work advance %s --execute --harness <name>", workID),
+				"compound executors --json   # which lanes are actually live, with their cost limits",
+			},
+			Prevents: "advancing the envelope to running before the adapter is known. Resolving second left a typo'd --harness stuck in running with no RunAttempt and no recovery path.",
+		}.writeTo(os.Stderr)
 		os.Exit(1)
 	}
 
 	// Resolve the execution workspace BEFORE advancing. Never default to
 	// COMPOUND_HOME -- running a real code-editing harness there edits the
 	// state/config dir, not the project. See resolveExecuteWorkspace.
-	workspace := resolveExecuteWorkspace(rest, wenv.GitDelivery)
+	workspace, workspaceTried := resolveExecuteWorkspace(rest, wenv.GitDelivery)
 	if workspace == "" {
-		fmt.Fprintln(os.Stderr, "error: cannot determine execution workspace; pass --workspace <path>")
+		gateRefusal{
+			Command: "compound work advance --execute",
+			Gate:    "workspace_resolution",
+			Refused: fmt.Sprintf("no execution workspace could be resolved for %s, so no RunAttempt was minted and the envelope was not advanced", workID),
+			Tried:   workspaceTried,
+			DoThis: []string{
+				fmt.Sprintf("compound work advance %s --execute --harness %s --workspace <project-path>", workID, harnessName),
+				fmt.Sprintf("compound work show %s   # confirm git_delivery.target_worktree_root if the work should carry its own workspace", workID),
+			},
+			Prevents: "running a code-editing harness against COMPOUND_HOME. There is no home fallback by design: the harness would edit the state and config directory instead of the project, and the edits would look like successful work.",
+		}.writeTo(os.Stderr)
 		os.Exit(2)
 	}
 

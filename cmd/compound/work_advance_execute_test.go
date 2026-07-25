@@ -207,8 +207,19 @@ func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected non-zero exit on unknown harness, got 0. output:\n%s", out)
 	}
-	if !strings.Contains(string(out), "unknown harness") {
-		t.Fatalf("expected 'unknown harness' in stderr, got:\n%s", out)
+	// The refusal must name the gate, the rejected harness, and what it protected --
+	// not just report a symptom. A bare "unknown harness: x" leaves the reader to
+	// guess whether the envelope advanced and which names are valid.
+	for _, want := range []string{
+		"gate adapter_resolution",
+		"no-such-harness",
+		"registered adapters:",
+		"tried in order:",
+		"prevents:",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("expected %q in the adapter-resolution refusal, got:\n%s", want, out)
+		}
 	}
 
 	// The work must NOT have advanced -- still "claimed". C1: Claim itself
