@@ -227,7 +227,6 @@ func seedCorpusLane(t *testing.T, homePath string, paragraphs, chunkSize, overla
 			Model:    "fake",
 			Dims:     3,
 			Bits:     "f32",
-			BaseURL:  "http://127.0.0.1:9999/v1",
 		},
 		Chunk: ChunkConfig{Unit: "runes", Size: chunkSize, Overlap: overlap, Boundary: "structure"},
 	}
