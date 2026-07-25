@@ -25,10 +25,20 @@ import (
 	"time"
 )
 
+var (
+	linkFindingFile          = os.Link
+	removeStagedFindingFile  = os.Remove
+	syncFindingDirectoryFunc = syncDir
+)
+
 // Subdir is the direct-write, content-addressed home for operational findings, relative to
 // COMPOUND_HOME. Exported so the placement resolver can compose it as the operational-finding target
 // without re-authoring the path (a read facade over the real owner).
-const Subdir = "observed/findings"
+const (
+	Subdir                = "observed/findings"
+	PrivacyPrivate        = "private"
+	VisibilityOperational = "operational"
+)
 
 // Finding is one agent-authored operational note. It is append-only with supersession (a revised
 // finding carries Supersedes = the prior id), mirroring the ledger's discipline without being in
@@ -43,6 +53,8 @@ type Finding struct {
 	SourceClass  string   `json:"source_class"`          // always "evidence" — never ambient truth
 	Supersedes   string   `json:"supersedes,omitempty"`  // prior finding id this revises
 	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	Privacy      string   `json:"privacy"`
+	Visibility   string   `json:"visibility"`
 	CreatedAt    string   `json:"created_at"`
 }
 
@@ -124,12 +136,13 @@ func RecordWithStatus(homePath string, f Finding, now time.Time) (RecordResult, 
 	f.ID = "find_" + digest12(f.Topic+"|"+f.Body)
 	f.CID = CID(f.Body)
 	f.SourceClass = "evidence" // findings are evidence, never promoted truth
+	applyClassificationDefaults(&f)
 	if strings.TrimSpace(f.CreatedAt) == "" {
 		f.CreatedAt = now.UTC().Format(time.RFC3339)
 	}
 	f.EvidenceRefs = dedupe(f.EvidenceRefs)
 	dir := filepath.Join(homePath, Subdir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensurePrivateDirectory(dir); err != nil {
 		return RecordResult{}, err
 	}
 	// If the deterministic target already exists, validate it against the owned invariants and
@@ -141,6 +154,7 @@ func RecordWithStatus(homePath string, f Finding, now time.Time) (RecordResult, 
 		if uerr := json.Unmarshal(existing, &kept); uerr != nil {
 			return RecordResult{}, fmt.Errorf("finding %s existing record is malformed: %w", f.ID, uerr)
 		}
+		applyClassificationDefaults(&kept)
 		if err := validateExistingFinding(kept, f.Topic, f.Body); err != nil {
 			return RecordResult{}, fmt.Errorf("finding %s existing record invariants violated: %w", f.ID, err)
 		}
@@ -166,7 +180,7 @@ func RecordWithStatus(homePath string, f Finding, now time.Time) (RecordResult, 
 			_ = os.Remove(tmpPath)
 		}
 	}()
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return RecordResult{}, err
 	}
@@ -181,11 +195,11 @@ func RecordWithStatus(homePath string, f Finding, now time.Time) (RecordResult, 
 	if err := tmp.Close(); err != nil {
 		return RecordResult{}, err
 	}
-	if err := os.Link(tmpPath, target); err != nil {
+	if err := linkFindingFile(tmpPath, target); err != nil {
 		// The link failed: best-effort inline cleanup of the staged file. If that also fails
 		// (and the file still exists), the deferred last-resort cleanup runs and we report
 		// the publish error so the caller does NOT observe a silent `recorded`.
-		removeErr := os.Remove(tmpPath)
+		removeErr := removeStagedFindingFile(tmpPath)
 		if removeErr == nil || os.IsNotExist(removeErr) {
 			keepTemp = false
 		}
@@ -202,6 +216,7 @@ func RecordWithStatus(homePath string, f Finding, now time.Time) (RecordResult, 
 			if uerr := json.Unmarshal(existing, &kept); uerr != nil {
 				return RecordResult{}, fmt.Errorf("finding %s existing record is malformed: %w", f.ID, uerr)
 			}
+			applyClassificationDefaults(&kept)
 			if verr := validateExistingFinding(kept, f.Topic, f.Body); verr != nil {
 				return RecordResult{}, fmt.Errorf("finding %s existing record invariants violated: %w", f.ID, verr)
 			}
@@ -209,15 +224,23 @@ func RecordWithStatus(homePath string, f Finding, now time.Time) (RecordResult, 
 		}
 		return RecordResult{}, fmt.Errorf("publish finding: %w", err)
 	}
-	// Publication succeeded: the deterministic target is now linked. Best-effort directory fsync
-	// so the name-to-inode link is durable across a crash, then let the deferred function clean
-	// up the staged file. We never silently claim `recorded` on a path that left a staged file
-	// behind — the deterministic target is the only authority, and the leftover (if any) does
-	// not match `find_*.json` and never reaches readers.
-	if err := syncDir(dir); err != nil {
-		return RecordResult{}, fmt.Errorf("sync finding directory: %w", err)
+	// Publication succeeded: the deterministic target is now linked and remains authoritative
+	// even if staging cleanup fails. Check that cleanup, then sync the directory after both name
+	// changes so the target link and staged-name removal share one durability boundary. A cleanup
+	// failure still reaches the caller, but never skips the sync that makes the published target
+	// durable; the result retains StatusRecorded because the hard link already succeeded.
+	result := RecordResult{Status: StatusRecorded, Finding: f}
+	var cleanupErr error
+	if err := removeStagedFindingFile(tmpPath); err != nil {
+		cleanupErr = fmt.Errorf("remove staged finding: %w", err)
+	} else {
+		keepTemp = false
 	}
-	return RecordResult{Status: StatusRecorded, Finding: f}, nil
+	var syncErr error
+	if err := syncFindingDirectoryFunc(dir); err != nil {
+		syncErr = fmt.Errorf("sync finding directory: %w", err)
+	}
+	return result, errors.Join(cleanupErr, syncErr)
 }
 
 // syncDir dir.Sync so a successful Put means the name-to-inode link is durable across a
@@ -229,6 +252,25 @@ func syncDir(path string) error {
 	}
 	defer d.Close()
 	return d.Sync()
+}
+
+func ensurePrivateDirectory(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return fmt.Errorf("tighten finding directory permissions: %w", err)
+	}
+	return nil
+}
+
+func applyClassificationDefaults(f *Finding) {
+	if strings.TrimSpace(f.Privacy) == "" {
+		f.Privacy = PrivacyPrivate
+	}
+	if strings.TrimSpace(f.Visibility) == "" {
+		f.Visibility = VisibilityOperational
+	}
 }
 
 // validateExistingFinding enforces the owned invariants an existing deterministic target must
@@ -293,6 +335,7 @@ func Show(homePath, id string) (Finding, error) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		return Finding{}, err
 	}
+	applyClassificationDefaults(&f)
 	return f, nil
 }
 
@@ -321,6 +364,7 @@ func List(homePath, filter string) ([]Finding, error) {
 		if err := json.Unmarshal(b, &f); err != nil {
 			return nil, err
 		}
+		applyClassificationDefaults(&f)
 		if needle != "" && !strings.Contains(strings.ToLower(f.Topic), needle) && !strings.Contains(strings.ToLower(f.Body), needle) {
 			continue
 		}

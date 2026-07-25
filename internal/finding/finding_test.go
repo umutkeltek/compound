@@ -2,6 +2,7 @@ package finding
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,6 +151,91 @@ func TestRecordWithStatusFirstWriteReturnsRecorded(t *testing.T) {
 	}
 	if res.Finding.SourceClass != "evidence" {
 		t.Fatalf("source_class = %q, want evidence", res.Finding.SourceClass)
+	}
+}
+
+func TestRecordWithStatusPostLinkCleanupFailureIsReportedAfterDirectorySync(t *testing.T) {
+	home := t.TempDir()
+	originalLink := linkFindingFile
+	originalRemove := removeStagedFindingFile
+	originalSync := syncFindingDirectoryFunc
+	t.Cleanup(func() {
+		linkFindingFile = originalLink
+		removeStagedFindingFile = originalRemove
+		syncFindingDirectoryFunc = originalSync
+	})
+
+	events := make([]string, 0, 3)
+	linkFindingFile = func(tempPath, targetPath string) error {
+		events = append(events, "link")
+		return os.Link(tempPath, targetPath)
+	}
+	cleanupErr := errors.New("injected post-link cleanup failure")
+	removeStagedFindingFile = func(string) error {
+		events = append(events, "remove")
+		return cleanupErr
+	}
+	syncFindingDirectoryFunc = func(path string) error {
+		events = append(events, "sync")
+		return syncDir(path)
+	}
+
+	first, err := RecordWithStatus(home, Finding{
+		Topic:        "ordinary-save-cleanup",
+		Body:         OrdinarySaveBodySentinel,
+		WorkID:       "work_cleanup_first",
+		ProducedBy:   "agent:first",
+		EvidenceRefs: []string{OrdinarySaveEvidenceSentinel},
+	}, fixedNow)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("post-link cleanup error = %v, want injected cleanup failure", err)
+	}
+	if first.Status != StatusRecorded {
+		t.Fatalf("successful hard link status = %q, want %q despite cleanup error", first.Status, StatusRecorded)
+	}
+	if got, want := strings.Join(events, ","), "link,remove,sync"; got != want {
+		t.Fatalf("publication syscall order = %q, want %q", got, want)
+	}
+
+	target := filepath.Join(home, Subdir, first.Finding.ID+".json")
+	targetBytes, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read authoritative target after cleanup error: %v", readErr)
+	}
+	wantBytes, marshalErr := json.MarshalIndent(&first.Finding, "", "  ")
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	wantBytes = append(wantBytes, '\n')
+	if string(targetBytes) != string(wantBytes) {
+		t.Fatalf("authoritative target differs from recorded finding:\ngot:\n%s\nwant:\n%s", targetBytes, wantBytes)
+	}
+	shown, showErr := Show(home, first.Finding.ID)
+	if showErr != nil {
+		t.Fatalf("show authoritative target after cleanup error: %v", showErr)
+	}
+	if shown.ID != first.Finding.ID || shown.CID != first.Finding.CID || shown.Body != OrdinarySaveBodySentinel {
+		t.Fatalf("authoritative target is not the linked finding: %+v", shown)
+	}
+
+	retry, retryErr := RecordWithStatus(home, Finding{
+		Topic:      "ordinary-save-cleanup",
+		Body:       OrdinarySaveBodySentinel,
+		WorkID:     "work_cleanup_retry",
+		ProducedBy: "agent:retry",
+	}, fixedNow.Add(time.Minute))
+	if retryErr != nil {
+		t.Fatalf("retry after linked cleanup error: %v", retryErr)
+	}
+	if retry.Status != StatusDuplicate {
+		t.Fatalf("retry status = %q, want %q", retry.Status, StatusDuplicate)
+	}
+	afterRetry, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(afterRetry) != string(targetBytes) {
+		t.Fatalf("retry changed authoritative bytes:\nbefore:\n%s\nafter:\n%s", targetBytes, afterRetry)
 	}
 }
 
@@ -534,4 +620,103 @@ func equalTree(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+func TestRecordWithStatusDefaultsPrivacyPrivate(t *testing.T) {
+	home := t.TempDir()
+	res, err := RecordWithStatus(home, Finding{
+		Topic: "ordinary-save-private-default",
+		Body:  OrdinarySaveBodySentinel,
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, Subdir, res.Finding.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if got := stored["privacy"]; got != "private" {
+		t.Fatalf("stored privacy = %v, want private\n%s", got, raw)
+	}
+}
+
+func TestRecordWithStatusDefaultsVisibilityOperational(t *testing.T) {
+	home := t.TempDir()
+	res, err := RecordWithStatus(home, Finding{
+		Topic: "ordinary-save-operational-default",
+		Body:  OrdinarySaveBodySentinel,
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, Subdir, res.Finding.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if got := stored["visibility"]; got != "operational" {
+		t.Fatalf("stored visibility = %v, want operational\n%s", got, raw)
+	}
+}
+
+func TestRecordWithStatusPersistsPrivateFileMode(t *testing.T) {
+	home := t.TempDir()
+	res, err := RecordWithStatus(home, Finding{
+		Topic: "ordinary-save-private-mode",
+		Body:  OrdinarySaveBodySentinel,
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(home, Subdir, res.Finding.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("stored finding mode = %04o, want 0600", got)
+	}
+}
+
+func TestRecordWithStatusTightensFindingDirectoryMode(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, Subdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(dir, "find_legacy.json")
+	legacyBytes := []byte("{\"legacy\":true}\n")
+	if err := os.WriteFile(legacyPath, legacyBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RecordWithStatus(home, Finding{
+		Topic: "ordinary-save-private-directory",
+		Body:  OrdinarySaveBodySentinel,
+	}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("existing finding directory mode = %04o, want tightened 0700", got)
+	}
+	keptLegacy, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(keptLegacy) != string(legacyBytes) {
+		t.Fatalf("tightening directory permissions changed a pre-existing record")
+	}
 }

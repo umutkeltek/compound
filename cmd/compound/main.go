@@ -343,7 +343,7 @@ compound act repoint --target-path P --target-id KEY --value V --work W [--confi
 compound act dns-record --service S --host H --address A --remote-host RH --work W [--confirm] governed ADDITIVE DNS record on a router over an injectable ssh transport; external_side_effect held by default; preflight-resolves the service:* entity
 compound act vhost --service S --server-name N --upstream U --remote-host RH --work W [--confirm] governed ADDITIVE NPM vhost block on an apps host over the same seam; additive-only, held by default, pre/post images + receipt in $COMPOUND_HOME/events
 compound land-lease <acquire|release|status|steal> TTL-bounded single-holder landing mutex under $COMPOUND_HOME; steal records a reason + prior holder
-compound finding <record|list|show|doctor> direct-write home for durable operational findings (evidence-class, never ledger); record accepts --body / --body-file / --stdin and returns a body-free JSON ack with status=recorded|duplicate; doctor flags superseded/stale
+compound finding <record|list|show|doctor> private direct-write home for durable operational findings (evidence-class, never ledger); record accepts bounded --body / --body-file / --stdin and returns a minimal body-free JSON ack with status=recorded|duplicate; doctor flags superseded/stale
 compound capture --source S [--text T] [--work W] | capture show <cid> gesture-fired capture front door: content-addressed body under observed/capture/ (never ledger), mints ONE observed-class proposed candidate (never auto-promotable); day-salted dedup
 compound intent <plan|review|apply> expressive utterance -> task-scoped ContextPack -> reviewable existing work create-plan; ambiguity parks and apply requires an explicit reviewer
 compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
@@ -2074,6 +2074,8 @@ func cmdFinding(args []string) {
 		"\n" +
 		"Verbs:\n" +
 		"  record  record one finding (--topic T with one of --body B | --body-file F | --stdin;\n" +
+		"          body input is bounded at 1 MiB; records default privacy=private and\n" +
+		"          visibility=operational;\n" +
 		"          --work-id W, --produced-by P, repeatable --evidence REF optional; --json returns\n" +
 		"          body-free ack with status=recorded|duplicate)\n" +
 		"  list    list finding ids and topics\n" +
@@ -2238,31 +2240,27 @@ func cmdFindingRecord(args []string) {
 	fmt.Printf("recorded finding %s (topic=%q cid=%s) -> observed/findings/%s.json\n", res.Finding.ID, res.Finding.Topic, res.Finding.CID, res.Finding.ID)
 }
 
-// findingRecordAck is the body-free typed acknowledgement returned by `compound finding record
-// --json`. It tells the caller whether the call RECORDED a new record or DUPLICATED an existing
-// durable record, surfaces the FIRST record's provenance (never the loser's), and NEVER echoes
-// the private body or the evidence-ref values. Known consumers in the operating-system
-// repository read the top-level `id`, so the top-level `id` is preserved.
+// findingRecordAck is the minimal, body-free typed acknowledgement returned by `compound finding
+// record --json`. Known consumers read the top-level id; the remaining fields expose only the
+// disposition, path, and safe classification defaults. Body-derived and provenance metadata stay
+// behind the explicit show surface.
 func findingRecordAck(res finding.RecordResult) map[string]any {
-	ack := map[string]any{
-		"schema":             "compound.finding.record-ack.v1",
-		"status":             res.Status,
-		"id":                 res.Finding.ID, // top-level id — external parser compatibility
-		"cid":                res.Finding.CID,
-		"topic":              res.Finding.Topic,
-		"source_class":       res.Finding.SourceClass,
-		"path":               filepath.Join("observed/findings", res.Finding.ID+".json"),
-		"produced_by":        res.Finding.ProducedBy,
-		"work_id":            res.Finding.WorkID,
-		"created_at":         res.Finding.CreatedAt,
-		"evidence_ref_count": len(res.Finding.EvidenceRefs),
-		"promotion":          "none",
-		"ledger_mutated":     false,
+	privacy := strings.TrimSpace(res.Finding.Privacy)
+	if privacy == "" {
+		privacy = finding.PrivacyPrivate
 	}
-	if s := strings.TrimSpace(res.Finding.Supersedes); s != "" {
-		ack["supersedes"] = s
+	visibility := strings.TrimSpace(res.Finding.Visibility)
+	if visibility == "" {
+		visibility = finding.VisibilityOperational
 	}
-	return ack
+	return map[string]any{
+		"schema":     "compound.finding.record-ack.v1",
+		"status":     res.Status,
+		"id":         res.Finding.ID,
+		"path":       filepath.Join("observed/findings", res.Finding.ID+".json"),
+		"privacy":    privacy,
+		"visibility": visibility,
+	}
 }
 
 // rejectFlagUsedAsValue rejects the case where a value-flag's next token is itself a flag
@@ -2307,27 +2305,36 @@ func requireExactlyOneBodySource(args []string) error {
 // resolveBodySource reads the body from the single body source the caller supplied.
 func resolveBodySource(args []string) (string, error) {
 	if hasFlag(args, "--body") {
-		return valueFlag(args, "--body"), nil
+		return readBoundedFindingBody(strings.NewReader(valueFlag(args, "--body")), "--body")
 	}
 	if hasFlag(args, "--body-file") {
 		path := valueFlag(args, "--body-file")
 		if strings.TrimSpace(path) == "" {
 			return "", fmt.Errorf("--body-file requires a value")
 		}
-		data, err := os.ReadFile(path)
+		file, err := os.Open(path)
 		if err != nil {
 			return "", fmt.Errorf("read --body-file: %w", err)
 		}
-		return string(data), nil
+		defer file.Close()
+		return readBoundedFindingBody(file, "--body-file")
 	}
 	if hasFlag(args, "--stdin") {
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return "", fmt.Errorf("read --stdin: %w", err)
-		}
-		return string(data), nil
+		return readBoundedFindingBody(os.Stdin, "--stdin")
 	}
 	return "", fmt.Errorf("one of --body, --body-file, or --stdin is required")
+}
+
+func readBoundedFindingBody(reader io.Reader, source string) (string, error) {
+	const maxBodyBytes = 1 << 20
+	data, err := io.ReadAll(io.LimitReader(reader, maxBodyBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", source, err)
+	}
+	if len(data) > maxBodyBytes {
+		return "", fmt.Errorf("%s exceeds the 1 MiB limit", source)
+	}
+	return string(data), nil
 }
 
 func cmdFindingList(args []string) {

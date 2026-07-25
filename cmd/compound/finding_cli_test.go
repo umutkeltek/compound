@@ -45,14 +45,12 @@ func runFindingStdinScenario(t *testing.T) {
 	}
 
 	type ack struct {
-		Schema   string `json:"schema"`
-		Status   string `json:"status"`
-		ID       string `json:"id"`
-		CID      string `json:"cid"`
-		Topic    string `json:"topic"`
-		Path     string `json:"path"`
-		Body     string `json:"body"`
-		Evidence int    `json:"evidence_ref_count"`
+		Schema     string `json:"schema"`
+		Status     string `json:"status"`
+		ID         string `json:"id"`
+		Path       string `json:"path"`
+		Privacy    string `json:"privacy"`
+		Visibility string `json:"visibility"`
 	}
 
 	withStdin(t, cliOrdinaryBodySentinel, func() {
@@ -76,14 +74,11 @@ func runFindingStdinScenario(t *testing.T) {
 		if a.ID == "" || !strings.HasPrefix(a.ID, "find_") {
 			t.Fatalf("first ack id = %q, want find_ prefix", a.ID)
 		}
-		if a.CID != finding.CID(cliOrdinaryBodySentinel) {
-			t.Fatalf("first ack cid = %q", a.CID)
-		}
 		if a.Path != filepath.Join("observed/findings", a.ID+".json") {
 			t.Fatalf("first ack path = %q", a.Path)
 		}
-		if a.Body != "" {
-			t.Fatalf("first ack must not echo body: %q", a.Body)
+		if a.Privacy != "private" || a.Visibility != "operational" {
+			t.Fatalf("first ack classification = privacy:%q visibility:%q", a.Privacy, a.Visibility)
 		}
 		if strings.Contains(out, cliOrdinaryBodySentinel) {
 			t.Fatalf("first ack JSON must not contain body sentinel:\n%s", out)
@@ -91,10 +86,6 @@ func runFindingStdinScenario(t *testing.T) {
 		if strings.Contains(out, cliOrdinaryEvidenceSentinel) {
 			t.Fatalf("first ack JSON must not contain evidence sentinel:\n%s", out)
 		}
-		if a.Evidence != 1 {
-			t.Fatalf("first ack evidence_ref_count = %d, want 1", a.Evidence)
-		}
-
 		// Confirm the body retrieved via show is byte-identical to what was fed in.
 		showOut := captureStdout(t, func() {
 			cmdFindingShow([]string{a.ID, "--json"})
@@ -234,8 +225,7 @@ func runFindingUsageScenario(t *testing.T) {
 
 // TestFindingRecordJSONDuplicateAcknowledgement — falsifiers 11, 12, 13: first-save JSON has
 // status=recorded; retry JSON has status=duplicate; ack retains top-level id and contains no
-// body, body marker, or evidence-ref value; duplicate ack reports the first record's
-// provenance/time, not the retry caller's.
+// body, body marker, evidence-ref value, topic, or provenance.
 func TestFindingRecordJSONDuplicateAcknowledgement(t *testing.T) {
 	if os.Getenv("COMPOUND_FINDING_DUP_CHILD") == "1" {
 		runFindingDuplicateScenario(t)
@@ -314,14 +304,13 @@ func runFindingDuplicateScenario(t *testing.T) {
 		if second["id"] == nil || second["id"] == "" {
 			t.Fatalf("second ack must retain top-level id, got %v", second["id"])
 		}
-		if second["produced_by"] != "agent:first" {
-			t.Fatalf("second ack must surface first producer, got %v", second["produced_by"])
+		if second["privacy"] != "private" || second["visibility"] != "operational" {
+			t.Fatalf("second ack classification = privacy:%v visibility:%v", second["privacy"], second["visibility"])
 		}
-		if second["work_id"] != "work_first" {
-			t.Fatalf("second ack must surface first work_id, got %v", second["work_id"])
-		}
-		if second["created_at"] == nil || second["created_at"] == "" {
-			t.Fatalf("second ack must surface first created_at, got %v", second["created_at"])
+		for _, forbidden := range []string{"topic", "produced_by", "work_id", "created_at", "cid", "evidence_ref_count"} {
+			if _, ok := second[forbidden]; ok {
+				t.Fatalf("second ack exposes forbidden key %q: %v", forbidden, second)
+			}
 		}
 		// The retry ack must NOT echo the retry caller's provenance or evidence.
 		if strings.Contains(secondOut, "agent:second") {
@@ -505,6 +494,7 @@ func TestFindingRecordTopLevelCommandHelpAndExit(t *testing.T) {
 		"--body",
 		"--body-file",
 		"--stdin",
+		"1 mib",
 		"evidence",
 		"never a ledger byte",
 		"claim", // explicit no-promotion boundary
@@ -582,5 +572,131 @@ func runFindingHumanScenario(t *testing.T) {
 	}
 	if strings.Contains(secondOut, cliOrdinaryBodySentinel) {
 		t.Fatalf("human retry output must not echo body:\n%s", secondOut)
+	}
+}
+
+func TestFindingRecordJSONAckIsMinimalAndClassificationExplicit(t *testing.T) {
+	ack := findingRecordAck(finding.RecordResult{
+		Status: finding.StatusRecorded,
+		Finding: finding.Finding{
+			ID:           "find_0123456789ab",
+			CID:          finding.CID(cliOrdinaryBodySentinel),
+			Topic:        "private-topic-sentinel",
+			Body:         cliOrdinaryBodySentinel,
+			ProducedBy:   "private-producer-sentinel",
+			WorkID:       "private-work-sentinel",
+			SourceClass:  "evidence",
+			EvidenceRefs: []string{cliOrdinaryEvidenceSentinel},
+			CreatedAt:    "2026-01-01T00:00:00Z",
+		},
+	})
+
+	want := map[string]any{
+		"schema":     "compound.finding.record-ack.v1",
+		"status":     finding.StatusRecorded,
+		"id":         "find_0123456789ab",
+		"path":       filepath.Join("observed/findings", "find_0123456789ab.json"),
+		"privacy":    "private",
+		"visibility": "operational",
+	}
+	if len(ack) != len(want) {
+		t.Fatalf("ack keys = %v, want exactly %v", ack, want)
+	}
+	for key, wantValue := range want {
+		if got := ack[key]; got != wantValue {
+			t.Fatalf("ack[%q] = %v, want %v", key, got, wantValue)
+		}
+	}
+	for _, forbidden := range []string{
+		"body", "cid", "topic", "produced_by", "work_id", "created_at",
+		"evidence_refs", "evidence_ref_count", "supersedes",
+	} {
+		if _, ok := ack[forbidden]; ok {
+			t.Fatalf("minimal ack exposes forbidden key %q: %v", forbidden, ack)
+		}
+	}
+}
+
+func TestResolveBodySourceBoundsStdinAtOneMiB(t *testing.T) {
+	const maxBytes = 1 << 20
+	for _, tc := range []struct {
+		name      string
+		size      int
+		wantError bool
+	}{
+		{name: "exact-bound-accepted", size: maxBytes},
+		{name: "one-byte-over-rejected", size: maxBytes + 1, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdinPath := filepath.Join(t.TempDir(), "stdin.txt")
+			stdinFile, err := os.Create(stdinPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stdinFile.WriteString(strings.Repeat("x", tc.size)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stdinFile.Seek(0, 0); err != nil {
+				t.Fatal(err)
+			}
+			oldStdin := os.Stdin
+			os.Stdin = stdinFile
+			t.Cleanup(func() {
+				os.Stdin = oldStdin
+				_ = stdinFile.Close()
+			})
+
+			body, err := resolveBodySource([]string{"--stdin"})
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("resolveBodySource accepted %d-byte stdin", tc.size)
+				}
+				if !strings.Contains(err.Error(), "1 MiB") {
+					t.Fatalf("oversize error = %v, want declared 1 MiB bound", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveBodySource exact bound: %v", err)
+			}
+			if len(body) != tc.size {
+				t.Fatalf("resolved bytes = %d, want %d", len(body), tc.size)
+			}
+		})
+	}
+}
+
+func TestResolveBodySourceBoundsBodyFileAtOneMiB(t *testing.T) {
+	const maxBytes = 1 << 20
+	for _, tc := range []struct {
+		name      string
+		size      int
+		wantError bool
+	}{
+		{name: "exact-bound-accepted", size: maxBytes},
+		{name: "one-byte-over-rejected", size: maxBytes + 1, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bodyPath := filepath.Join(t.TempDir(), "body.md")
+			if err := os.WriteFile(bodyPath, []byte(strings.Repeat("x", tc.size)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			body, err := resolveBodySource([]string{"--body-file", bodyPath})
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("resolveBodySource accepted %d-byte body file", tc.size)
+				}
+				if !strings.Contains(err.Error(), "1 MiB") {
+					t.Fatalf("oversize error = %v, want declared 1 MiB bound", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveBodySource exact bound: %v", err)
+			}
+			if len(body) != tc.size {
+				t.Fatalf("resolved bytes = %d, want %d", len(body), tc.size)
+			}
+		})
 	}
 }
