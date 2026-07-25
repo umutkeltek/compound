@@ -264,6 +264,84 @@ func TestBuild_PrivacyReducesPersonalFreeTextToStructuredForm(t *testing.T) {
 	}
 }
 
+// TestBuild_PrivacyReducesMachineScratchPaths is the regression for
+// find_7c177ad1dd32: a negative card is provider-bound (it renders into the harness
+// digest, so its content is sent to a model provider), and the privacy gate only
+// knew about home directories. macOS resolves temp paths under /private, outside the
+// home tree, so every scratch path walked straight through.
+//
+// Observed live, not hypothesized: a card shipped a
+// `tried=method:/private/tmp/<run-scratch-dir>/<file>` value into a real prompt
+// injection (find_7c177ad1dd32).
+//
+// Each case is a root a scratch path actually comes from on a platform this repo
+// runs on; a table so a newly-added root cannot be waved through as "similar to one
+// already covered". Paths are synthetic per the public/private boundary — the shape
+// is what matters, and a real observed path belongs to the private overlay.
+func TestBuild_PrivacyReducesMachineScratchPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		leaked   string
+		fragment string
+	}{
+		{"macos private tmp", "method:/private/tmp/compound-read-replay.Ab12Cd/clone-failure.txt", "/private/tmp/compound-read-replay.Ab12Cd"},
+		{"macos var folders", "cache under /private/var/folders/9x/T/compound-run-4821 was reused", "/private/var/folders/9x/T/compound-run-4821"},
+		{"bare var folders", "cache under /var/folders/9x/T/compound-run-4821 was reused", "/var/folders/9x/T/compound-run-4821"},
+		{"linux tmp", "wrote the replay to /tmp/compound-replay-7781/out.json first", "/tmp/compound-replay-7781"},
+		{"var tmp", "staged under /var/tmp/compound-stage-3312 before the run", "/var/tmp/compound-stage-3312"},
+		{"executor worktree", "ran inside /worktrees/example-lane-20260101 instead of the checkout", "example-lane-20260101"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			writeFailurePattern(t, home, "fp_scratch", map[string]any{
+				"subject":       "scratch-path-leak",
+				"statement":     tc.leaked,
+				"detail":        "external_runtime_evidence",
+				"confidence":    1.0,
+				"evidence_refs": []string{"trace:scratch-1"},
+				"verdict":       candidates.Park,
+			})
+			proj, err := Build(home, BuildOptions{Now: t0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec, ok := findRecord(proj.Records, "fp_scratch")
+			if !ok {
+				t.Fatalf("expected fp_scratch in projection")
+			}
+			// The dirty field is the statement, so that is the field that blanks.
+			if rec.WhatWasTried != "" {
+				t.Fatalf("statement carrying a scratch path must blank, got what=%q", rec.WhatWasTried)
+			}
+			// Redaction is per field: the clean detail survives, because one dirty
+			// field does not make the rest of the record unsafe.
+			if rec.WhyItFailed != "external_runtime_evidence" {
+				t.Fatalf("clean detail must survive redaction of a dirty statement, got why=%q", rec.WhyItFailed)
+			}
+			// The regression that per-field redaction exists to prevent: ApproachKey and
+			// TaskClass are the only inputs to inScope, so blanking them alongside the
+			// dirty field turns redaction into silent deletion — the card stays in the
+			// projection and can never match a task again.
+			if rec.ApproachKey != "scratch-path-leak" {
+				t.Fatalf("clean subject must still seed a matchable approach key, got %q (an opaque key can never match a task again)", rec.ApproachKey)
+			}
+			if rec.TaskClass != "external_runtime_evidence" {
+				t.Fatalf("clean detail must still seed the task class, got %q", rec.TaskClass)
+			}
+			if rec.Ref == "" {
+				t.Fatalf("expected ref to remain on a privacy-reduced record: %+v", rec)
+			}
+			raw, err := json.Marshal(proj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), tc.fragment) {
+				t.Fatalf("scratch path %q reached the projection JSON, which the digest renders to a provider: %s", tc.fragment, raw)
+			}
+		})
+	}
+}
+
 // Sanity: WriteProjection/ReadProjection round-trip, mirroring the mem/temperature.go
 // projection discipline (rebuilt from scratch, written only under projections/,
 // absent-projection reads fail open).

@@ -289,14 +289,52 @@ func MatchingRecords(records []Record, ownerTokens, taskTokens map[string]bool, 
 	return out
 }
 
-// personalPatterns is a minimal, deterministic "looks operator-personal" heuristic:
-// an email-like token or an absolute home-directory path. It is intentionally
-// narrow (no NLP, no model call) — good enough to catch a planted personal string
-// and reduce free text to structured form before it is ever persisted or displayed.
+// personalPatterns is a minimal, deterministic "belongs to the operator's machine,
+// not to the finding" heuristic: an email-like token, an absolute home-directory
+// path, or a scratch/temp root. It is intentionally narrow (no NLP, no model call) —
+// good enough to catch a planted personal string and reduce free text to structured
+// form before it is ever persisted or displayed.
+//
+// The scratch roots are here because a negative card is provider-bound: it renders
+// into the harness digest, so anything it carries is sent to a model provider.
+// Observed live before this gate existed (find_7c177ad1dd32): a card shipped a
+// `tried=method:/private/tmp/<run-scratch-dir>/<file>` value into a real prompt
+// injection, disclosing machine layout and a session-random directory name for a
+// path no reader can act on anyway. A home-path gate that stops at $HOME misses
+// every macOS temp path, because they resolve under /private, not the home tree.
+//
+// Fail closed: a prose mention of a scratch root blanks the field rather than
+// attempting to excise the path. A negative card with no `tried=` still warns; a
+// card that leaks the operator's filesystem cannot be unsent.
 var personalPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
 	regexp.MustCompile(`/Users/[A-Za-z0-9_.-]+`),
 	regexp.MustCompile(`(?i)/home/[A-Za-z0-9_.-]+`),
+	// macOS reports temp dirs under /private (/private/tmp, /private/var/folders/...);
+	// Linux and CI use /tmp and /var/tmp. Matched with or without the /private prefix.
+	regexp.MustCompile(`(?i)(/private)?/(tmp|var/tmp)(/|\b)`),
+	regexp.MustCompile(`(?i)(/private)?/var/folders(/|\b)`),
+	// Executor worktrees are per-lane scratch checkouts; their names carry lane and
+	// date identifiers that are machine state, not portable evidence.
+	regexp.MustCompile(`(?i)/worktrees/[A-Za-z0-9_.-]+`),
+}
+
+// cleanApproachKey returns a readable scope key from the first field that is safe to
+// slugify, or "" when neither is. Keeping a clean subject is what preserves the
+// card's ability to match a task at all; see the per-field redaction note in
+// loadFailurePatterns.
+func cleanApproachKey(raw failurePatternRaw, subjectPersonal, statementPersonal bool) string {
+	if !subjectPersonal {
+		if key := reviewartifact.Slugify(raw.Subject, 0); key != "" {
+			return key
+		}
+	}
+	if !statementPersonal {
+		if key := reviewartifact.Slugify(raw.Statement, maxApproachKeySlugLen); key != "" {
+			return key
+		}
+	}
+	return ""
 }
 
 func looksPersonal(values ...string) bool {
@@ -372,25 +410,34 @@ func readFailurePatternRecords(homePath string) ([]Record, error) {
 		if raw.Verdict == string(candidates.Reject) {
 			continue // dismissed: this was not a valid failure — drop, never surface
 		}
-		personal := looksPersonal(raw.Subject, raw.Statement, raw.Detail)
-		var approachKey string
-		if personal {
-			// A personal Subject/Statement must never leak a fragment into the
-			// approach key either (slugify only strips separators, it does not
-			// redact) — fall back to an opaque digest of the candidate id.
-			approachKey = "fp-" + reviewartifact.Digest12(raw.ID)
-		} else {
-			approachKey = reviewartifact.FirstNonEmpty(
-				reviewartifact.Slugify(raw.Subject, 0),
-				reviewartifact.Slugify(raw.Statement, maxApproachKeySlugLen),
-				"fp-"+reviewartifact.Digest12(raw.ID),
-			)
+		// Redact PER FIELD, not per record. A record is a mix of independent fields
+		// and one dirty field does not make the others unsafe. Blanking all three
+		// together also blanks ApproachKey and TaskClass, which are the ONLY inputs
+		// to inScope — so an all-or-nothing gate does not redact the card, it
+		// silently deletes it: the record survives in the projection but can never
+		// match a task again. Observed on a live record whose clean, matchable
+		// subject was discarded because its statement carried a scratch path.
+		//
+		// A personal Subject/Statement must still never seed the approach key, since
+		// Slugify only strips separators and does not redact — hence the per-source
+		// checks below rather than one slug of whichever field is non-empty.
+		subjectPersonal := looksPersonal(raw.Subject)
+		statementPersonal := looksPersonal(raw.Statement)
+		detailPersonal := looksPersonal(raw.Detail)
+
+		approachKey := "fp-" + reviewartifact.Digest12(raw.ID)
+		if candidate := cleanApproachKey(raw, subjectPersonal, statementPersonal); candidate != "" {
+			approachKey = candidate
 		}
+
 		whatTried := strings.TrimSpace(raw.Statement)
+		if statementPersonal {
+			whatTried = ""
+		}
 		whyFailed := reviewartifact.FirstNonEmpty(raw.Detail, "flagged as a recorded failure pattern")
 		taskClass := strings.TrimSpace(raw.Detail)
-		if personal {
-			whatTried, whyFailed, taskClass = "", "", ""
+		if detailPersonal {
+			whyFailed, taskClass = "", ""
 		}
 		out = append(out, Record{
 			Source:       SourceFailurePattern,
@@ -481,8 +528,15 @@ func readRouteRemorseRecords(homePath string) ([]Record, error) {
 		}
 		whatTried := strings.TrimSpace(fmt.Sprintf("routed to %s", reviewartifact.FirstNonEmpty(routeKey, raw.ID)))
 		whyFailed := reviewartifact.FirstNonEmpty(raw.Assessment.Rationale, raw.ReceiptOutcome, "route outcome flagged for policy review")
-		if looksPersonal(whatTried, whyFailed) {
-			whatTried, whyFailed = "", ""
+		// Per field, for the same reason as loadFailurePatterns: whatTried is built
+		// from registry names (provider/model/protocol) while whyFailed carries a
+		// free-text rationale, so the rationale is the field that can go dirty. One
+		// check over both blanked the clean route name along with it.
+		if looksPersonal(whatTried) {
+			whatTried = ""
+		}
+		if looksPersonal(whyFailed) {
+			whyFailed = ""
 		}
 		out = append(out, Record{
 			Source:       SourceRouteRemorse,
