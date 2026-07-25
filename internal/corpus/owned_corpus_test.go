@@ -543,6 +543,55 @@ func TestOwnedSnapshotPrivateTextSuppressedByDefault(t *testing.T) {
 	if !strings.Contains(optIn.Hits[0].Text, "owned private chunk alpha") {
 		t.Fatalf("opt-in text = %q, want body fragment", optIn.Hits[0].Text)
 	}
+
+	// Privacy suppression has precedence over body availability. Once a caller
+	// has not opted into private text, the resolver must not probe the artifact
+	// and reveal whether its bytes are present, missing, or corrupt.
+	dir := IndexDir(homePath, privateLane)
+	corpusManifest, err := readManifest(dir)
+	if err != nil {
+		t.Fatalf("read private corpus manifest: %v", err)
+	}
+	corpusManifest.Items[0].BodyRef = "artifact:sha256:" + strings.Repeat("0", 64)
+	writeJSON(t, filepath.Join(dir, "manifest.json"), corpusManifest)
+	suppressedMissing, err := Query(context.Background(), homePath, privateLane, fixture.embedder, "owned", 1)
+	if err != nil {
+		t.Fatalf("default query with missing private artifact: %v", err)
+	}
+	if len(suppressedMissing.Hits) != 1 {
+		t.Fatalf("default missing-artifact hits = %d, want 1", len(suppressedMissing.Hits))
+	}
+	if suppressedMissing.Hits[0].TextStatus != string(ChunkTextSuppressedPrivate) {
+		t.Fatalf("default missing-artifact text status = %q, want %q", suppressedMissing.Hits[0].TextStatus, ChunkTextSuppressedPrivate)
+	}
+	if suppressedMissing.Hits[0].Text != "" {
+		t.Fatalf("default missing-artifact hit leaked text: %q", suppressedMissing.Hits[0].Text)
+	}
+}
+
+// TestOwnedSnapshotQueryRejectsMalformedPrivacy proves persisted corpus
+// metadata cannot widen an owned body into public text. Index rejects malformed
+// labels at creation time; query must repeat that fail-closed check because the
+// rented projection can be corrupted or replaced after indexing.
+func TestOwnedSnapshotQueryRejectsMalformedPrivacy(t *testing.T) {
+	homePath := t.TempDir()
+	fixture := seedOwnedSnapshotLane(t, homePath, "User: owned public chunk alpha")
+	removeOwnedSource(t, fixture)
+
+	dir := IndexDir(homePath, fixture.lane)
+	corpusManifest, err := readManifest(dir)
+	if err != nil {
+		t.Fatalf("read corpus manifest: %v", err)
+	}
+	corpusManifest.Items[0].Privacy = ""
+	writeJSON(t, filepath.Join(dir, "manifest.json"), corpusManifest)
+
+	if _, err := Query(context.Background(), homePath, fixture.lane, fixture.embedder, "owned", 1); err == nil || !strings.Contains(err.Error(), "malformed privacy field") {
+		t.Fatalf("query malformed privacy error = %v, want fail-closed malformed privacy", err)
+	}
+	if _, err := QueryWithOptions(context.Background(), homePath, fixture.lane, fixture.embedder, "owned", 1, QueryOptions{IncludeText: true}); err == nil || !strings.Contains(err.Error(), "malformed privacy field") {
+		t.Fatalf("include-text query malformed privacy error = %v, want fail-closed malformed privacy", err)
+	}
 }
 
 // TestOwnedSnapshotPrivateItemInPublicLaneRefusesIndex is the load-bearing

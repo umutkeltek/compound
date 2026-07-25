@@ -323,7 +323,11 @@ type ResolvedChunkText struct {
 //  2. Find the manifest item by item_id.
 //  3. Schema gate: if the manifest's prefix_schema_version is not this binary's, the
 //     chunker has changed under the index — return ChunkTextStaleIndex with no text.
-//  4. Body source dispatch (the new seam):
+//  4. Privacy gate: validate the item's privacy label before any body access.
+//     If privacy=="private" and includeText is false, return
+//     ChunkTextSuppressedPrivate without probing the body. Unknown labels fail
+//     closed instead of widening to public text.
+//  5. Body source dispatch (the new seam):
 //     - body_policy=source_in_place: read the file at item.source_ref. The body lives
 //     OUTSIDE COMPOUND_HOME and can be moved/deleted; that is expected and degrades
 //     this hit to ChunkTextSourceUnavailable.
@@ -331,12 +335,9 @@ type ResolvedChunkText struct {
 //     The artifact is the source — fall-back to SourceRef would hide custody
 //     corruption, so missing/corrupt/wrong-size/wrong-hash artifacts each fail
 //     closed (no text, never silent).
-//  5. Drift gate: sha256 the resolved bytes and compare to item.file_hash. On mismatch,
+//  6. Drift gate: sha256 the resolved bytes and compare to item.file_hash. On mismatch,
 //     return ChunkTextStaleSource with no text.
-//  6. Re-chunk with the manifest's chunk config; bounds-check ordinal against the result.
-//  7. Privacy gate: the item's own privacy (not just the lane's) decides suppression —
-//     if privacy=="private" and includeText is false, return ChunkTextSuppressedPrivate
-//     with no text.
+//  7. Re-chunk with the manifest's chunk config; bounds-check ordinal against the result.
 //
 // homePath is the COMPOUND_HOME that owns the artifact store. It is REQUIRED for
 // body_policy=owned_snapshot (the resolver fails closed if it is empty); for
@@ -357,6 +358,16 @@ func ResolveChunkText(homePath string, manifest Manifest, chunkID string, includ
 	if strings.TrimSpace(manifest.PrefixSchemaVersion) != PrefixSchemaVersion {
 		return ResolvedChunkText{Status: ChunkTextStaleIndex}, nil
 	}
+	switch strings.ToLower(strings.TrimSpace(item.Privacy)) {
+	case "private":
+		if !includeText {
+			return ResolvedChunkText{Status: ChunkTextSuppressedPrivate}, nil
+		}
+	case "public":
+		// Public text may proceed to body integrity checks below.
+	default:
+		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: item %q has malformed privacy field (must be public or private, got %q)", itemID, strings.TrimSpace(item.Privacy))
+	}
 	raw, status, err := readItemBodyBytes(homePath, item)
 	if err != nil {
 		return ResolvedChunkText{}, err
@@ -373,9 +384,6 @@ func ResolveChunkText(homePath string, manifest Manifest, chunkID string, includ
 	}
 	if ordinal < 0 || ordinal >= len(chunks) {
 		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: ordinal %d out of range for item %q (chunks=%d)", ordinal, itemID, len(chunks))
-	}
-	if strings.EqualFold(strings.TrimSpace(item.Privacy), "private") && !includeText {
-		return ResolvedChunkText{Status: ChunkTextSuppressedPrivate}, nil
 	}
 	return ResolvedChunkText{Status: ChunkTextOK, Text: chunks[ordinal].Text}, nil
 }
