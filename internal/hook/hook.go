@@ -1739,19 +1739,49 @@ const maxInjectionIncludedRefs = 24
 // future orient-side cap change cannot silently blow the injection budget.
 const maxInjectionNegativeCards = 5
 
+// Section caps are a BUDGET, not decoration: their sum must stay within
+// MaxContextChars or the caps stop bounding anything and the sections rendered last
+// are amputated by capInjectionChars instead. TestInjectionSectionCapsFitBudget
+// enforces the sum; keep it green when tuning any figure below.
+//
+// Necessary, not sufficient: the sections after Active Instructions
+// (Active Hooks, Included, Excluded, Hook Gate Readiness, Hook Roster) are
+// UNBUDGETED, and Included alone runs ~900 runes at maxInjectionIncludedRefs. A
+// cap sum under MaxContextChars keeps this list honest; it does not by itself
+// leave the tail room to render. Splitting the stable orientation tail onto
+// SessionStart is the structural fix, and it is not landed yet.
 const (
 	maxInjectionHeaderChars       = 400
 	maxInjectionActiveMemoryChars = 1600
-	// maxInjectionNegativeChars is funded by the demoted Active Decisions section:
-	// bare `decision://…` ids carry no content an executor can act on, whereas a
-	// scope-matched prior failure changes the next move. See writeActiveDecisionsPointer.
-	maxInjectionNegativeChars          = 900
-	maxInjectionActiveDecisionChars    = 220
-	maxInjectionRequiredChecksChars    = 600
-	maxInjectionAvoidChars             = 450
-	maxInjectionCapabilityOfferChars   = 1000
-	maxInjectionSummaryChars           = 500
-	maxInjectionActiveInstructionChars = 650
+	// maxInjectionNegativeChars: a scope-matched prior failure changes the next move,
+	// where a bare `decision://…` id carries nothing an executor can act on — which
+	// is why this section outranks Active Decisions (see writeActiveDecisionsPointer).
+	// 900 holds the 5 cards internal/contract admits (maxInjectionNegativeCards) at
+	// the 150-350 runes a real card measures.
+	//
+	// The figure is unchanged from when it landed; the FUNDING is what was missing.
+	// It was documented as paid for by the 137 runes the Active Decisions demotion
+	// freed, which is 763 short and left the cap sum at 6320 against a 6000 budget.
+	// Required Checks and Active Instructions below now pay for it out of measured
+	// slack, so the claim and the arithmetic agree.
+	maxInjectionNegativeChars       = 900
+	maxInjectionActiveDecisionChars = 220
+	// maxInjectionRequiredChecksChars: a pre_write_gate row measures ~200 runes and
+	// 1077 uncapped digests never rendered more than 147 runes of this section. 350
+	// holds the worst observed case plus its heading; 600 reserved room no producer
+	// has ever asked for.
+	maxInjectionRequiredChecksChars = 350
+	// maxInjectionAvoidChars holds recall SCOPE names ("self-model",
+	// "personal-corpus"), not prose — a handful of short tokens, never a paragraph.
+	// Measured max 62 runes. 450 reserved paragraph room for a channel that has
+	// never rendered one.
+	maxInjectionAvoidChars           = 160
+	maxInjectionCapabilityOfferChars = 1000
+	maxInjectionSummaryChars         = 500
+	// maxInjectionActiveInstructionChars: measured max 205 runes across 1077 uncapped
+	// digests (the section is a short list of instruction refs, not their content).
+	// 650 was more than triple the worst observed case.
+	maxInjectionActiveInstructionChars = 300
 )
 
 // renderAndWriteInstructionPack renders and writes the harness-scoped
@@ -1905,15 +1935,20 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 		// behavioral steering and delivered scope config, so a reader saw "- none"
 		// and concluded nothing was worth avoiding. The scope-matched behavioral
 		// warning lives in "Already Tried And Failed" above.
-		writeStringList(section, "Forbidden Recall Scopes", pack.Avoid)
+		//
+		// Empty renders NOTHING, not "- none": with no forbidden scope configured
+		// the honest digest is silence. A rendered "- none" spends budget asserting
+		// the absence of a constraint on every prompt, which is how the retitled
+		// channel still read as a checked-and-clear gate.
+		writeStringListWhenPresent(section, "Forbidden Recall Scopes", pack.Avoid)
 	})
 	writeBudgetedInjectionSection(&b, maxInjectionCapabilityOfferChars, func(section *strings.Builder) {
 		writeCapabilityOfferList(section, pack.CapabilityOffers)
 	})
 	writeBudgetedInjectionSection(&b, maxInjectionSummaryChars, func(section *strings.Builder) {
-		section.WriteString("## Summary\n")
+		section.WriteString("\n## Summary\n")
 		section.WriteString(safeMD(pack.SummaryMD))
-		section.WriteString("\n\n")
+		section.WriteString("\n")
 	})
 	writeBudgetedInjectionSection(&b, maxInjectionActiveInstructionChars, func(section *strings.Builder) {
 		writeStringList(section, "Active Instructions", pack.ActiveInstructions)
@@ -2032,7 +2067,7 @@ func writeCapabilityOfferList(b *strings.Builder, offers []envelope.CapabilityOf
 	if len(offers) == 0 {
 		return
 	}
-	b.WriteString("## Capability Offers\n")
+	b.WriteString("\n## Capability Offers\n")
 	b.WriteString("- offers only; execution still requires WorkEnvelope, ActionIntent, PolicyDecision\n")
 	for _, offer := range offers {
 		fmt.Fprintf(b, "- `%s` kind=%s name=%s score=%.2f", safeMD(offer.Ref), safeMD(offer.Kind), safeMD(offer.Name), offer.Score)
@@ -2050,11 +2085,10 @@ func writeCapabilityOfferList(b *strings.Builder, offers []envelope.CapabilityOf
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 }
 
 func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef) {
-	b.WriteString("## Included\n")
+	b.WriteString("\n## Included\n")
 	if len(refs) == 0 {
 		b.WriteString("- none\n")
 		return
@@ -2167,6 +2201,16 @@ func writeStringList(b *strings.Builder, title string, xs []string) {
 	for _, x := range xs {
 		fmt.Fprintf(b, "- `%s`\n", safeMD(x))
 	}
+}
+
+// writeStringListWhenPresent is writeStringList for channels where absence is the
+// common correct case, so "- none" would be a false all-clear rather than
+// information: it renders the heading only when there is something under it.
+func writeStringListWhenPresent(b *strings.Builder, title string, xs []string) {
+	if len(xs) == 0 {
+		return
+	}
+	writeStringList(b, title, xs)
 }
 
 func writeHookReadinessList(b *strings.Builder, readiness []envelope.HookReadiness) {
