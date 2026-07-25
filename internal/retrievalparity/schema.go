@@ -21,10 +21,26 @@ import (
 )
 
 const (
-	FixtureSchemaVersion    = "compound.parity_fixture.v0.2"
-	ReportSchemaVersion     = "compound.parity_report.v0.2"
-	CheckpointSchemaVersion = "compound.parity_checkpoint.v0.2"
-	ReviewArea              = "retrieval-parity"
+	FixtureSchemaVersion    = "compound.parity_fixture.v0.3"
+	ReportSchemaVersion     = "compound.parity_report.v0.3"
+	CheckpointSchemaVersion = "compound.parity_checkpoint.v0.3"
+
+	// v0.2 remains readable: this method upgrade adds optional orient
+	// expectations and content-free orient evidence, both absent-normalizes to
+	// "not gated". A frozen v0.2 fixture/checkpoint/report is loaded unchanged.
+	FixtureSchemaVersionV02    = "compound.parity_fixture.v0.2"
+	ReportSchemaVersionV02     = "compound.parity_report.v0.2"
+	CheckpointSchemaVersionV02 = "compound.parity_checkpoint.v0.2"
+
+	ReviewArea = "retrieval-parity"
+
+	// orientCanaryMaxCount / orientCanaryMaxBytes bound the private canary fixture
+	// material an orient expectation may carry. Canaries are COMPOUND_HOME-local
+	// and never leave the fixture; the bounds keep a fixture from smuggling a large
+	// private blob through the expectation surface.
+	orientCanaryMaxCount     = 32
+	orientCanaryMaxBytes     = 4096
+	orientPrivateRefMaxCount = 64
 
 	EngineOutcomeNotAttempted = "not_attempted"
 	EngineOutcomeUsed         = "used"
@@ -51,11 +67,26 @@ type NegativeControl struct {
 }
 
 type FixtureRow struct {
-	Consumer        string           `json:"consumer"`
-	Query           string           `json:"query"`
-	OrientInput     *OrientInput     `json:"orient_input,omitempty"`
-	ExpectedRefs    []string         `json:"expected_refs"`
-	NegativeControl *NegativeControl `json:"negative_control,omitempty"`
+	Consumer        string              `json:"consumer"`
+	Query           string              `json:"query"`
+	OrientInput     *OrientInput        `json:"orient_input,omitempty"`
+	OrientExpect    *OrientExpectations `json:"orient_expectations,omitempty"`
+	ExpectedRefs    []string            `json:"expected_refs"`
+	NegativeControl *NegativeControl    `json:"negative_control,omitempty"`
+}
+
+// OrientExpectations is an optional, orient-only gate on the exact ContextPack a
+// replay materializes. Every field is content-free: a body budget, deterministic
+// latency/token ceilings, and COMPOUND_HOME-local private fixture material used
+// only to prove the wire carries zero private body bytes. Canaries and private
+// body refs never leave the fixture — they are matched against the serialized
+// pack and only hashes/counts/booleans are reported.
+type OrientExpectations struct {
+	BodyBudgetTokens int      `json:"body_budget_tokens,omitempty"`
+	MaxLatencyMS     float64  `json:"max_latency_ms,omitempty"`
+	MaxContextTokens int      `json:"max_context_tokens,omitempty"`
+	PrivateBodyRefs  []string `json:"private_body_refs,omitempty"`
+	PrivateCanaries  []string `json:"private_canaries,omitempty"`
 }
 
 type Fixture struct {
@@ -106,21 +137,54 @@ type ReplayRow struct {
 	// RuntimeGap records the exact replay-time failure classification for an
 	// unavailable row. Checkpoint coverage is derived from these row facts, so
 	// resumable state cannot claim an unexplained gap or lose a real one.
-	RuntimeGap      string                 `json:"runtime_gap,omitempty"`
-	NegativeControl *NegativeControlResult `json:"negative_control,omitempty"`
-	ParityPassed    bool                   `json:"parity_passed"`
-	privacySafe     bool
+	RuntimeGap       string                    `json:"runtime_gap,omitempty"`
+	NegativeControl  *NegativeControlResult    `json:"negative_control,omitempty"`
+	OrientConsumer   *OrientConsumerEvidence   `json:"orient_consumer,omitempty"`
+	ParityPassed     bool                      `json:"parity_passed"`
+	privacySafe      bool
+}
+
+// OrientConsumerEvidence is the content-free proof that a replay row executed the
+// exact sealed, persisted, body-budget-aware ContextPack materialization path a
+// live `compound orient` runs. It carries no raw query, private canary, or body
+// text — only the persisted pack ref, its full wire hash, deterministic byte and
+// token counts, and pass/fail booleans against the fixture's optional ceilings.
+//
+// The pass booleans are recomputable from the raw measurements plus the echoed
+// ceilings (MaxLatencyMS/MaxContextTokens/BodyBudgetTokens), so report validation
+// rejects a hand-edited green verdict. PrivateBytesPassed is always present for an
+// orient row and is true only when PrivateBodyBytes is exactly zero.
+type OrientConsumerEvidence struct {
+	ContextPackRef      string  `json:"context_pack_ref"`
+	WireSHA256          string  `json:"wire_sha256"`
+	SerializedBytes     int     `json:"serialized_bytes"`
+	EstimatedTokens     int     `json:"estimated_tokens"`
+	BodyBudgetTokens    int     `json:"body_budget_tokens"`
+	BodyUsedTokens      int     `json:"body_used_tokens"`
+	PrivateBodyBytes    int     `json:"private_body_bytes"`
+	MeasuredLatencyMS   float64 `json:"measured_latency_ms"`
+	MaxLatencyMS        float64 `json:"max_latency_ms,omitempty"`
+	MaxContextTokens    int     `json:"max_context_tokens,omitempty"`
+	LatencyPassed       *bool   `json:"latency_passed,omitempty"`
+	TokenPassed         *bool   `json:"token_passed,omitempty"`
+	BodyBudgetPassed    *bool   `json:"body_budget_passed,omitempty"`
+	PrivateBytesPassed  bool    `json:"private_bytes_passed"`
+	DegradationObserved bool    `json:"degradation_observed"`
 }
 
 type ClassSummary struct {
-	Consumer   string  `json:"consumer"`
-	QueryClass string  `json:"query_class"`
-	Rows       int     `json:"rows"`
-	Passed     int     `json:"passed"`
-	Failed     int     `json:"failed"`
-	LostHits   int     `json:"lost_hits"`
-	ExtraHits  int     `json:"extra_hits"`
-	LatencyMS  float64 `json:"latency_ms"`
+	Consumer          string  `json:"consumer"`
+	QueryClass        string  `json:"query_class"`
+	Rows              int     `json:"rows"`
+	Passed            int     `json:"passed"`
+	Failed            int     `json:"failed"`
+	LostHits          int     `json:"lost_hits"`
+	ExtraHits         int     `json:"extra_hits"`
+	FalseInclusions   int     `json:"false_inclusions"`
+	PrivateByteRows   int     `json:"private_byte_rows"`
+	LatencyBudgetFail int     `json:"latency_budget_fail"`
+	TokenBudgetFail   int     `json:"token_budget_fail"`
+	LatencyMS         float64 `json:"latency_ms"`
 }
 
 type Report struct {
@@ -185,7 +249,7 @@ func LoadFixture(path string) (Fixture, string, error) {
 }
 
 func ValidateFixture(fixture Fixture) error {
-	if fixture.SchemaVersion != FixtureSchemaVersion {
+	if !isAcceptedFixtureSchema(fixture.SchemaVersion) {
 		return fmt.Errorf("unsupported parity fixture schema %q", fixture.SchemaVersion)
 	}
 	if fixture.ClassifierVersion != ClassifierVersion {
@@ -276,6 +340,10 @@ func normalizeFixture(fixture Fixture) Fixture {
 		if fixture.Rows[i].OrientInput != nil {
 			normalized := normalizeOrientInput(*fixture.Rows[i].OrientInput)
 			fixture.Rows[i].OrientInput = &normalized
+		}
+		if fixture.Rows[i].OrientExpect != nil {
+			normalized := normalizeOrientExpectations(*fixture.Rows[i].OrientExpect)
+			fixture.Rows[i].OrientExpect = &normalized
 		}
 		fixture.Rows[i].ExpectedRefs = uniqueSorted(fixture.Rows[i].ExpectedRefs)
 		if fixture.Rows[i].NegativeControl != nil {
@@ -717,7 +785,7 @@ func validateReplayIdentity(identity ReplayIdentity) error {
 }
 
 func validateCheckpoint(checkpoint Checkpoint) error {
-	if checkpoint.SchemaVersion != CheckpointSchemaVersion {
+	if !isAcceptedCheckpointSchema(checkpoint.SchemaVersion) {
 		return fmt.Errorf("unsupported parity checkpoint schema %q", checkpoint.SchemaVersion)
 	}
 	if err := validateReplayIdentity(checkpoint.Identity); err != nil {
@@ -938,7 +1006,7 @@ func newReplayRow(row FixtureRow, resultRefs []string, latency time.Duration, en
 		LatencyMS:       float64(max(latency, 0)) / float64(time.Millisecond),
 		EngineAvailable: engineAvailable,
 		RuntimeGap:      runtimeGap,
-		ParityPassed:    engineAvailable && len(lost) == 0,
+		ParityPassed:    engineAvailable && len(lost) == 0 && len(extra) == 0,
 		privacySafe:     privacySafe,
 	}
 	if evidence != nil {
@@ -1016,7 +1084,7 @@ func BuildReportWithIdentity(identity ReplayIdentity, coverage Coverage, rows []
 }
 
 func WriteReport(homePath string, report Report) (string, error) {
-	if report.SchemaVersion != ReportSchemaVersion {
+	if !isAcceptedReportSchema(report.SchemaVersion) {
 		return "", fmt.Errorf("unsupported parity report schema %q", report.SchemaVersion)
 	}
 	if report.ID == "" {
@@ -1029,7 +1097,7 @@ func WriteReport(homePath string, report Report) (string, error) {
 }
 
 func validateReport(report Report) error {
-	if report.SchemaVersion != ReportSchemaVersion {
+	if !isAcceptedReportSchema(report.SchemaVersion) {
 		return fmt.Errorf("unsupported parity report schema %q", report.SchemaVersion)
 	}
 	if strings.TrimSpace(report.ID) == "" {
@@ -1166,7 +1234,19 @@ func validateReplayRowWithDependency(row ReplayRow, consumer, expectEngine, forb
 			return fmt.Errorf("dependency_passed requires engine evidence")
 		}
 	}
-	if row.ParityPassed != (row.EngineAvailable && len(row.LostHits) == 0 && dependencyPassed) {
+	orientPassed := true
+	if row.OrientConsumer != nil {
+		if row.Consumer != ConsumerOrient {
+			return fmt.Errorf("orient_consumer is only valid for orient consumer")
+		}
+		evidence, recompute, err := validateOrientConsumerEvidence(*row.OrientConsumer)
+		if err != nil {
+			return err
+		}
+		orientPassed = evidence
+		_ = recompute // recompute verifies row fields echo the recomputable form
+	}
+	if row.ParityPassed != (row.EngineAvailable && len(row.LostHits) == 0 && len(row.ExtraHits) == 0 && dependencyPassed && orientPassed) {
 		return fmt.Errorf("parity_passed does not match evidence")
 	}
 	if row.NegativeControl != nil {
@@ -1176,6 +1256,56 @@ func validateReplayRowWithDependency(row ReplayRow, consumer, expectEngine, forb
 		}
 	}
 	return nil
+}
+
+// validateOrientConsumerEvidence re-derives every pass boolean from the raw
+// measurements plus the echoed ceilings, then checks the row's stored booleans
+// are consistent. The recomputation makes a hand-edited green verdict visible:
+// the row cannot claim LatencyPassed=true while MeasuredLatencyMS exceeds
+// MaxLatencyMS. Privacy: PrivateBodyBytes is opaque byte count; no canary text
+// is loaded.
+func validateOrientConsumerEvidence(evidence OrientConsumerEvidence) (passed bool, ok bool, err error) {
+	if !validSHARef(evidence.WireSHA256) {
+		return false, false, fmt.Errorf("orient_consumer.wire_sha256 invalid")
+	}
+	if !strings.HasPrefix(evidence.ContextPackRef, "ctx_") || len(evidence.ContextPackRef) > 64 {
+		return false, false, fmt.Errorf("orient_consumer.context_pack_ref invalid")
+	}
+	if evidence.SerializedBytes <= 0 {
+		return false, false, fmt.Errorf("orient_consumer.serialized_bytes must be positive")
+	}
+	if evidence.EstimatedTokens != (evidence.SerializedBytes+3)/4 {
+		return false, false, fmt.Errorf("orient_consumer.estimated_tokens does not match serialized_bytes")
+	}
+	if evidence.BodyUsedTokens > evidence.BodyBudgetTokens {
+		return false, false, fmt.Errorf("orient_consumer.body_used_tokens exceeds body_budget_tokens")
+	}
+	if evidence.MeasuredLatencyMS < 0 {
+		return false, false, fmt.Errorf("orient_consumer.measured_latency_ms must be non-negative")
+	}
+	if !evidence.PrivateBytesPassed {
+		return false, false, fmt.Errorf("orient_consumer.private_bytes_passed must be true")
+	}
+	if evidence.PrivateBodyBytes != 0 {
+		return false, false, fmt.Errorf("orient_consumer.private_body_bytes must be zero")
+	}
+
+	wantLatencyPassed := evidence.MaxLatencyMS == 0 || evidence.MeasuredLatencyMS <= evidence.MaxLatencyMS
+	wantTokenPassed := evidence.MaxContextTokens == 0 || evidence.EstimatedTokens <= evidence.MaxContextTokens
+	wantBudgetPassed := evidence.BodyBudgetTokens == 0 || evidence.BodyUsedTokens <= evidence.BodyBudgetTokens
+
+	if evidence.LatencyPassed != nil && *evidence.LatencyPassed != wantLatencyPassed {
+		return false, false, fmt.Errorf("orient_consumer.latency_passed does not match measurement")
+	}
+	if evidence.TokenPassed != nil && *evidence.TokenPassed != wantTokenPassed {
+		return false, false, fmt.Errorf("orient_consumer.token_passed does not match measurement")
+	}
+	if evidence.BodyBudgetPassed != nil && *evidence.BodyBudgetPassed != wantBudgetPassed {
+		return false, false, fmt.Errorf("orient_consumer.body_budget_passed does not match measurement")
+	}
+
+	overall := evidence.PrivateBytesPassed && wantLatencyPassed && wantTokenPassed && wantBudgetPassed
+	return overall, true, nil
 }
 
 func validReplayRuntimeGap(consumer, gap string) bool {
@@ -1240,6 +1370,20 @@ func summarizeClasses(rows []ReplayRow) []ClassSummary {
 		}
 		summary.LostHits += len(row.LostHits)
 		summary.ExtraHits += len(row.ExtraHits)
+		if len(row.ExtraHits) > 0 {
+			summary.FalseInclusions++
+		}
+		if row.OrientConsumer != nil {
+			if row.OrientConsumer.PrivateBodyBytes > 0 {
+				summary.PrivateByteRows++
+			}
+			if row.OrientConsumer.LatencyPassed != nil && !*row.OrientConsumer.LatencyPassed {
+				summary.LatencyBudgetFail++
+			}
+			if row.OrientConsumer.TokenPassed != nil && !*row.OrientConsumer.TokenPassed {
+				summary.TokenBudgetFail++
+			}
+		}
 		summary.LatencyMS += row.LatencyMS
 	}
 	out := make([]ClassSummary, 0, len(byClass))
@@ -1584,4 +1728,231 @@ func contains(values []string, want string) bool {
 func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// isAcceptedFixtureSchema / isAcceptedReportSchema / isAcceptedCheckpointSchema
+// gate which frozen versions a load or write accepts. v0.2 is read-only: a writer
+// always emits the v0.3 schema; a v0.2 frozen artifact is loaded and round-tripped
+// without re-tagging the version, so a downstream tool can still inspect it.
+func isAcceptedFixtureSchema(version string) bool {
+	return version == FixtureSchemaVersion || version == FixtureSchemaVersionV02
+}
+
+func isAcceptedReportSchema(version string) bool {
+	return version == ReportSchemaVersion || version == ReportSchemaVersionV02
+}
+
+func isAcceptedCheckpointSchema(version string) bool {
+	return version == CheckpointSchemaVersion || version == CheckpointSchemaVersionV02
+}
+
+// validateOrientExpectations rejects fixture material that would smuggle raw
+// queries, large canaries, or invalid private refs through the orient expectation
+// surface. The values are content-free for reports: only counts, lengths, and
+// hashes leave the fixture, so a fixture must not be a covert channel.
+func validateOrientExpectations(expect OrientExpectations) error {
+	if expect.BodyBudgetTokens < 0 {
+		return fmt.Errorf("orient_expectations.body_budget_tokens must be non-negative")
+	}
+	if expect.MaxLatencyMS < 0 {
+		return fmt.Errorf("orient_expectations.max_latency_ms must be non-negative")
+	}
+	if expect.MaxContextTokens < 0 {
+		return fmt.Errorf("orient_expectations.max_context_tokens must be non-negative")
+	}
+	if len(expect.PrivateBodyRefs) > orientPrivateRefMaxCount {
+		return fmt.Errorf("orient_expectations.private_body_refs exceeds %d", orientPrivateRefMaxCount)
+	}
+	for i, ref := range expect.PrivateBodyRefs {
+		trimmed := strings.TrimSpace(ref)
+		if trimmed == "" {
+			return fmt.Errorf("orient_expectations.private_body_refs[%d] blank", i)
+		}
+		if len(trimmed) > 512 || containsControl(trimmed) {
+			return fmt.Errorf("orient_expectations.private_body_refs[%d] invalid", i)
+		}
+	}
+	if len(expect.PrivateCanaries) > orientCanaryMaxCount {
+		return fmt.Errorf("orient_expectations.private_canaries exceeds %d", orientCanaryMaxCount)
+	}
+	for i, canary := range expect.PrivateCanaries {
+		trimmed := strings.TrimSpace(canary)
+		if trimmed == "" {
+			return fmt.Errorf("orient_expectations.private_canaries[%d] blank", i)
+		}
+		if len(trimmed) > orientCanaryMaxBytes {
+			return fmt.Errorf("orient_expectations.private_canaries[%d] exceeds %d bytes", i, orientCanaryMaxBytes)
+		}
+		if containsControl(trimmed) {
+			return fmt.Errorf("orient_expectations.private_canaries[%d] contains control character", i)
+		}
+	}
+	return nil
+}
+
+// normalizeOrientExpectations sorts and dedupes expectation lists so a
+// canary/ref match in a fixture and its round-tripped form compare equal.
+func normalizeOrientExpectations(expect OrientExpectations) OrientExpectations {
+	expect.PrivateBodyRefs = uniqueSorted(expect.PrivateBodyRefs)
+	expect.PrivateCanaries = uniqueSorted(expect.PrivateCanaries)
+	return expect
+}
+
+// BuildOrientConsumerEvidence scans the exact serialized ContextPack returned
+// from a live materialization and emits the content-free evidence a replay row
+// needs. It is the single helper that JSON-marshals the pack once; the
+// helper scans that byte slice for private canary content and configured
+// private body refs. The boolean passed flags are recomputable from the raw
+// measurements plus the echoed ceilings — validation rejects a hand-edited
+// green verdict.
+//
+// Inputs:
+//   - wire: the persisted-pack bytes (MarshalIndent + '\n', matching what
+//     contract.RecordRuntimeMaterialization writes).
+//   - contextPackID: the ctx_... id of the sealed pack.
+//   - bodyBudgetTokens: the request budget; 0 if body materialization was off.
+//   - bodyUsedTokens: pack.BodyPack.EstimatedUsedTokens; 0 if no body pack.
+//   - latency: the measured materialization duration.
+//   - privateBodyRefs: the optional configured private ref set whose full body
+//     text is also a needle. Each ref's admitted body text is added to the
+//     needle set only if the ref is admitted with status ok. Empty text bodies
+//     contribute nothing (a needle of zero length would match everything).
+//   - privateCanaries: opaque COMPOUND_HOME-local strings that must never
+//     appear on the wire. Each becomes a needle.
+//   - degraded: a flag the resolver sets when it swallowed an optional-source
+//     failure (malformed config, lane embedder/query error). Always false for a
+//     healthy configured body source.
+//
+// Reports/checkpoints/stdout must carry the returned struct directly — never
+// the raw pack bytes.
+func BuildOrientConsumerEvidence(
+	wire []byte,
+	contextPackID string,
+	bodyBudgetTokens int,
+	bodyUsedTokens int,
+	latency time.Duration,
+	privateBodyRefs []string,
+	admittedBodyTexts map[string]string,
+	privateCanaries []string,
+	degraded bool,
+) OrientConsumerEvidence {
+	serialized := append([]byte(nil), wire...)
+	hash := hashBytes(serialized)
+	bytes := len(serialized)
+	estimated := (bytes + 3) / 4
+	measured := float64(max(latency, 0)) / float64(time.Millisecond)
+
+	needles := make([][]byte, 0, len(privateCanaries))
+	for _, canary := range privateCanaries {
+		trimmed := strings.TrimSpace(canary)
+		if trimmed == "" {
+			continue
+		}
+		needles = append(needles, []byte(trimmed))
+	}
+	for _, ref := range uniqueSorted(privateBodyRefs) {
+		text, ok := admittedBodyTexts[ref]
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		needles = append(needles, []byte(text))
+	}
+	privateBytes := countUniqueMatchedRanges(serialized, needles)
+
+	evidence := OrientConsumerEvidence{
+		ContextPackRef:     strings.TrimSpace(contextPackID),
+		WireSHA256:         hash,
+		SerializedBytes:    bytes,
+		EstimatedTokens:    estimated,
+		BodyBudgetTokens:   bodyBudgetTokens,
+		BodyUsedTokens:     bodyUsedTokens,
+		PrivateBodyBytes:   privateBytes,
+		MeasuredLatencyMS:  measured,
+		PrivateBytesPassed: privateBytes == 0,
+		DegradationObserved: degraded,
+	}
+	return evidence
+}
+
+// ApplyOrientExpectations re-derives the optional latency/token/budget pass
+// booleans against a fixture's expectations and stamps the echoed ceilings
+// onto the evidence so it remains self-validating on a round trip.
+func ApplyOrientExpectations(evidence *OrientConsumerEvidence, expect OrientExpectations) {
+	if evidence == nil {
+		return
+	}
+	evidence.MaxLatencyMS = expect.MaxLatencyMS
+	evidence.MaxContextTokens = expect.MaxContextTokens
+	latency := true
+	token := true
+	budget := true
+	if expect.MaxLatencyMS > 0 {
+		latency = evidence.MeasuredLatencyMS <= expect.MaxLatencyMS
+		evidence.LatencyPassed = &latency
+	} else {
+		evidence.LatencyPassed = nil
+	}
+	if expect.MaxContextTokens > 0 {
+		token = evidence.EstimatedTokens <= expect.MaxContextTokens
+		evidence.TokenPassed = &token
+	} else {
+		evidence.TokenPassed = nil
+	}
+	if expect.BodyBudgetTokens > 0 {
+		budget = evidence.BodyUsedTokens <= expect.BodyBudgetTokens
+		evidence.BodyBudgetPassed = &budget
+	} else {
+		evidence.BodyBudgetPassed = nil
+	}
+}
+
+// countUniqueMatchedRanges returns the byte length of the union of needle
+// occurrences in data, with overlapping ranges counted once. An empty needle
+// contributes nothing. The result is a content-free upper bound on the number
+// of private bytes the wire carries — no needle text leaves this package.
+func countUniqueMatchedRanges(data []byte, needles [][]byte) int {
+	if len(needles) == 0 || len(data) == 0 {
+		return 0
+	}
+	type span struct{ start, end int }
+	spans := make([]span, 0, len(needles))
+	for _, needle := range needles {
+		n := len(needle)
+		if n == 0 || n > len(data) {
+			continue
+		}
+		for i := 0; i+n <= len(data); i++ {
+			if bytes.Equal(data[i:i+n], needle) {
+				spans = append(spans, span{i, i + n})
+			}
+		}
+	}
+	if len(spans) == 0 {
+		return 0
+	}
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].start != spans[j].start {
+			return spans[i].start < spans[j].start
+		}
+		return spans[i].end < spans[j].end
+	})
+	merged := []span{spans[0]}
+	for _, s := range spans[1:] {
+		last := &merged[len(merged)-1]
+		if s.start <= last.end {
+			if s.end > last.end {
+				last.end = s.end
+			}
+		} else {
+			merged = append(merged, s)
+		}
+	}
+	total := 0
+	for _, s := range merged {
+		total += s.end - s.start
+	}
+	return total
 }

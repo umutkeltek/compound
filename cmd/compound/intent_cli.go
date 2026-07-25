@@ -26,58 +26,151 @@ var materializeBodiesForOrient = func(homePath string, pack envelope.ContextPack
 	if bodyBudget <= 0 {
 		return pack, nil
 	}
-	resolver := newOrientBodyResolver(homePath, pack, cwd)
+	resolver, err := newOrientBodyResolver(homePath, pack, cwd)
+	if err != nil {
+		return envelope.ContextPack{}, err
+	}
 	candidates, err := resolver.Resolve(task)
 	if err != nil {
 		return envelope.ContextPack{}, err
 	}
+	if resolver.Degraded() {
+		// Surface a single generic config-unavailable candidate so the materializer
+		// accounts for it in the omitted ledger rather than the resolver silently
+		// dropping the optional body source. The text is empty, the status is
+		// unresolvable, the materializer maps it to body_pack.omitted.reason=unresolvable.
+		candidates = append(candidates, contract.BodyCandidate{
+			Ref:    orientBodyConfigUnavailableRef,
+			Source: "corpus:configuration",
+			Rank:   0,
+			Status: contract.BodyStatusUnresolvable,
+		})
+	}
 	return contract.ApplyBodyPack(pack, contract.MaterializeBodyPack(candidates, pack, bodyBudget)), nil
 }
 
-// materializeOrientContextPack is the one cmd-layer orientation path used by
-// both `compound orient` and expressive intent. It materializes the shared
-// EffectiveContract/ContextPack runtime pair, optionally adds task-scoped
-// bodies to the pack, then atomically persists that exact pair.
-func materializeOrientContextPack(homePath string, in contract.Input, bodyBudget int, now time.Time) (envelope.ContextPack, error) {
+// orientMaterializationResult is the result of materializeOrientContextPackDetailed.
+// EngineDependency traces the exact rented breadth dependency the materializer
+// used (or "not_attempted" if the engine is disabled), BodyPackUsedTokens is the
+// body_pack.estimated_used_tokens of the returned pack (0 when no body pack),
+// Degraded reports whether the optional configured body source emitted any
+// degradation candidate during this materialization.
+type orientMaterializationResult struct {
+	Pack              envelope.ContextPack
+	EngineDependency  contract.EngineDependencyTrace
+	BodyPackUsedTokens int
+	Degraded          bool
+}
+
+// materializeOrientContextPackDetailed is the one cmd-layer orientation path
+// used by both `compound orient` and the parity replay. It performs the
+// shared runtime materialization, optional body materialization, sealing, and
+// atomic persistence. Parity replay consumes the result directly; orient uses
+// the compatibility wrapper materializeOrientContextPack that returns just the
+// pack.
+func materializeOrientContextPackDetailed(
+	homePath string,
+	in contract.Input,
+	bodyBudget int,
+	now time.Time,
+) (orientMaterializationResult, error) {
 	restoreEngine, err := configureMemoryEngineFromHome(homePath, "")
 	if err != nil {
-		return envelope.ContextPack{}, err
+		return orientMaterializationResult{}, err
 	}
 	defer restoreEngine()
 
 	orientationPolicy, _, err := contract.LoadPolicy(homePath)
 	if err != nil {
-		return envelope.ContextPack{}, err
+		return orientMaterializationResult{}, err
 	}
 	retrievalStarted := time.Now()
 	runtime, materializeErr := materializeRuntimeForOrient(in, orientationPolicy, homePath, now)
 	pack := runtime.ContextPack
 	retrievalparity.Record(homePath, retrievalparity.NewOrientRow(in.Task, parityOrientInput(in), pack.ActiveMemory, time.Since(retrievalStarted), materializeErr == nil, time.Now()))
 	if materializeErr != nil {
-		return envelope.ContextPack{}, materializeErr
+		return orientMaterializationResult{}, materializeErr
 	}
 	ec := runtime.EffectiveContract
 	if pack.IDs.ContractID != ec.ID {
-		return envelope.ContextPack{}, fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID)
+		return orientMaterializationResult{}, fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID)
 	}
+	degraded := false
 	if bodyBudget > 0 {
 		pack, err = materializeBodiesForOrient(homePath, pack, in.Cwd, in.Task, bodyBudget)
 		if err != nil {
-			return envelope.ContextPack{}, err
+			return orientMaterializationResult{}, err
 		}
+		// After materialization, scan the returned pack's body_pack omission ledger
+		// for any of the resolver's generic degradation refs. This is how the CLI
+		// learns whether the resolver degraded without coupling the parity
+		// evaluator to the resolver's ref shapes.
+		degraded = packReportsOrientBodyDegradation(pack)
 	}
 	runtime.EffectiveContract = ec
 	runtime.ContextPack = pack
 	runtime, err = contract.SealRuntimeMaterialization(runtime)
 	if err != nil {
-		return envelope.ContextPack{}, err
+		return orientMaterializationResult{}, err
 	}
 	ec = runtime.EffectiveContract
 	pack = runtime.ContextPack
 	if _, err := contract.RecordRuntimeMaterialization(homePath, runtime); err != nil {
+		return orientMaterializationResult{}, err
+	}
+	var usedTokens int
+	if pack.BodyPack != nil {
+		usedTokens = pack.BodyPack.EstimatedUsedTokens
+	}
+	return orientMaterializationResult{
+		Pack:               pack,
+		EngineDependency:   runtime.EngineDependencyTrace,
+		BodyPackUsedTokens: usedTokens,
+		Degraded:           degraded,
+	}, nil
+}
+
+// packReportsOrientBodyDegradation returns true if the body_pack omission
+// ledger contains any of the resolver's generic degradation refs. Kept local
+// to this file so the parity evaluator does not need to know the resolver's
+// internal ref shapes.
+func packReportsOrientBodyDegradation(pack envelope.ContextPack) bool {
+	if pack.BodyPack == nil {
+		return false
+	}
+	for _, o := range pack.BodyPack.Omitted {
+		if isOrientBodyDegradationRef(o.Ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// isOrientBodyDegradationRef returns true if ref is one of the resolver's
+// generic degradation refs. Kept here as a single source of truth for the
+// resolver's surface, used both by the live CLI and by tests asserting the
+// exact omission string.
+func isOrientBodyDegradationRef(ref string) bool {
+	trimmed := strings.TrimSpace(ref)
+	if trimmed == orientBodyConfigUnavailableRef {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "corpus://lane-unavailable/")
+}
+
+// materializeOrientContextPack is the one cmd-layer orientation path used by
+// both `compound orient` and expressive intent. It materializes the shared
+// EffectiveContract/ContextPack runtime pair, optionally adds task-scoped
+// bodies to the pack, then atomically persists that exact pair. It is the
+// compatibility wrapper around materializeOrientContextPackDetailed; the
+// detailed variant carries EngineDependency/Degraded for the parity replay
+// evidence path.
+func materializeOrientContextPack(homePath string, in contract.Input, bodyBudget int, now time.Time) (envelope.ContextPack, error) {
+	result, err := materializeOrientContextPackDetailed(homePath, in, bodyBudget, now)
+	if err != nil {
 		return envelope.ContextPack{}, err
 	}
-	return pack, nil
+	return result.Pack, nil
 }
 
 func cmdIntent(args []string) {

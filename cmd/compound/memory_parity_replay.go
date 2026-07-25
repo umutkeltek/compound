@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +12,7 @@ import (
 
 	"compound/internal/contract"
 	"compound/internal/corpus"
+	"compound/internal/envelope"
 	"compound/internal/mem"
 	"compound/internal/retrievalparity"
 )
@@ -111,6 +114,7 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 		runtimeGap := ""
 		latency := time.Duration(0)
 		var engineEvidence *retrievalparity.EngineDependencyEvidence
+		var orientEvidence *retrievalparity.OrientConsumerEvidence
 		switch consumer {
 		case retrievalparity.ConsumerOrient:
 			if fixtureRow.OrientInput == nil {
@@ -125,17 +129,39 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 				Mode:        fixtureRow.OrientInput.Mode,
 				Topic:       fixtureRow.OrientInput.Topic,
 			}
-			started := time.Now()
-			pack, trace, packErr := contract.PackWithCapabilitiesTraced(in, orientPolicy(), homePath, now)
-			latency = time.Since(started)
-			evidence := parityOrientEngineEvidence(trace)
+			budget := 0
+			if fixtureRow.OrientExpect != nil {
+				budget = fixtureRow.OrientExpect.BodyBudgetTokens
+			}
+			latency, orientResult, orientErr := parityReplayOrientMaterialize(homePath, in, budget, now)
+			evidence := parityOrientEngineEvidence(orientResult.EngineDependency)
 			engineEvidence = &evidence
-			if packErr != nil {
+			if orientErr != nil {
 				runtimeGap = "orient_retrieval_error"
 				break
 			}
-			resultRefs = append(resultRefs, pack.ActiveMemory...)
+			resultRefs = append(resultRefs, orientResult.Pack.ActiveMemory...)
 			engineAvailable = true
+			wire, err := parityOrientWireBytes(orientResult.Pack)
+			if err != nil {
+				return retrievalparity.Report{}, "", 1, fmt.Errorf("orient replay wire marshal: %w", err)
+			}
+			canaries, refs, admittedText := parityOrientFixtureCanaryMaterial(fixtureRow, orientResult.Pack)
+			evidenceOri := retrievalparity.BuildOrientConsumerEvidence(
+				wire,
+				orientResult.Pack.ID,
+				budget,
+				orientResult.BodyPackUsedTokens,
+				latency,
+				refs,
+				admittedText,
+				canaries,
+				orientResult.Degraded,
+			)
+			if fixtureRow.OrientExpect != nil {
+				retrievalparity.ApplyOrientExpectations(&evidenceOri, *fixtureRow.OrientExpect)
+			}
+			orientEvidence = &evidenceOri
 		case retrievalparity.ConsumerQuery:
 			started := time.Now()
 			claims, evidence, queryErr := parityQueryBreadthWithEvidence(store, fixtureRow.Query, k)
@@ -151,10 +177,17 @@ func runMemoryParityReplay(homePath string, store *mem.Store, args []string, now
 		if runtimeGap != "" {
 			coverage.KnownGaps = append(coverage.KnownGaps, runtimeGap)
 		}
-		if engineEvidence != nil {
+		switch {
+		case orientEvidence != nil && engineEvidence != nil:
+			row := retrievalparity.NewReplayRowWithEngineEvidence(fixtureRow, resultRefs, latency, engineAvailable, *engineEvidence, identity, runtimeGap)
+			row.OrientConsumer = orientEvidence
+			checkpoint.Rows = append(checkpoint.Rows, row)
+		case engineEvidence != nil:
 			checkpoint.Rows = append(checkpoint.Rows, retrievalparity.NewReplayRowWithEngineEvidence(fixtureRow, resultRefs, latency, engineAvailable, *engineEvidence, identity, runtimeGap))
-		} else {
-			checkpoint.Rows = append(checkpoint.Rows, retrievalparity.NewReplayRow(fixtureRow, resultRefs, latency, engineAvailable, runtimeGap))
+		default:
+			row := retrievalparity.NewReplayRow(fixtureRow, resultRefs, latency, engineAvailable, runtimeGap)
+			row.OrientConsumer = orientEvidence
+			checkpoint.Rows = append(checkpoint.Rows, row)
 		}
 		checkpoint.Completed = len(checkpoint.Rows)
 		checkpoint.Coverage = coverage
@@ -428,3 +461,66 @@ func parityOrientInput(in contract.Input) retrievalparity.OrientInput {
 		Topic:       in.Topic,
 	}
 }
+
+// parityReplayOrientMaterialize drives the one cmd-layer materialization path
+// the parity replay must use: shared runtime materialization, optional body
+// materialization, sealing, and atomic persistence. The latency wrapper
+// allows tests to inject a deterministic observed duration via
+// parityReplayLatencyOverride; in production the override is the real
+// time.Since(time.Now()).
+func parityReplayOrientMaterialize(homePath string, in contract.Input, bodyBudget int, now time.Time) (time.Duration, orientMaterializationResult, error) {
+	started := now
+	if parityReplayLatencyOverride != nil {
+		started = parityReplayLatencyOverride()
+	}
+	result, err := materializeOrientContextPackDetailed(homePath, in, bodyBudget, now)
+	elapsed := time.Since(started)
+	return elapsed, result, err
+}
+
+// parityReplayLatencyOverride is an injectable latency anchor for the orient
+// materializer. nil = use real time.Now. Tests must guard the override with
+// t.Cleanup and must not call t.Parallel (the override is process-wide).
+var parityReplayLatencyOverride func() time.Time
+
+// parityOrientWireBytes marshals the exact returned pack with the same
+// indentation + trailing newline that contract.RecordRuntimeMaterialization
+// uses to write it to disk. The wire hash matches the persisted file hash.
+func parityOrientWireBytes(pack envelope.ContextPack) ([]byte, error) {
+	body, err := json.MarshalIndent(pack, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, len(body)+1)
+	out = append(out, body...)
+	out = append(out, '\n')
+	return out, nil
+}
+
+// parityOrientFixtureCanaryMaterial returns the fixture's canary strings,
+// configured private body refs, and a map of admitted body text for each
+// ref. The canaries and refs come from the row's OrientExpectations; the
+// admitted text is read from the returned pack's body_pack.bodies. Reports
+// carry only counts/booleans — this function never returns the canary or
+// private text outside of the local variable.
+func parityOrientFixtureCanaryMaterial(row retrievalparity.FixtureRow, pack envelope.ContextPack) (canaries []string, refs []string, admittedText map[string]string) {
+	if row.OrientExpect != nil {
+		canaries = append(canaries, row.OrientExpect.PrivateCanaries...)
+		refs = append(refs, row.OrientExpect.PrivateBodyRefs...)
+	}
+	admittedText = map[string]string{}
+	if pack.BodyPack == nil {
+		return
+	}
+	for _, body := range pack.BodyPack.Bodies {
+		if body.Ref == "" {
+			continue
+		}
+		admittedText[body.Ref] = body.Text
+	}
+	return
+}
+
+// isBytesEqual is used by orient replay tests to verify the wire hash matches
+// the persisted file's bytes.
+func isBytesEqual(a, b []byte) bool { return bytes.Equal(a, b) }

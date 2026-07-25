@@ -15,13 +15,25 @@
 // here — the materializer-side law (contract.go:1262) is the load-bearing gate, but
 // the resolver filters at source too.
 //
+// Optional body-source degradation (resolver-side, generic refs only): a
+// malformed or unreadable memory-engine config contributes one candidate ref
+// `corpus://configuration-unavailable`; a per-lane embedder/query failure
+// contributes one opaque, deterministic ref derived from a hash of the lane id
+// (never the raw endpoint, query, or lane body). Both surface as
+// BodyStatusUnresolvable candidates; the materializer lands them in
+// body_pack.omitted with reason unresolvable. The materializer/CLI consumer
+// records degradation through OrientConsumerEvidence.DegradationObserved —
+// this file owns the ref shapes so the evaluator package stays free of runtime
+// resolver knowledge.
+//
 // This file is the ONLY place internal/corpus is imported by the body-materializer
 // surface (the dependency-inversion LAW: internal/contract stays corpus-free).
 package main
 
 import (
 	"context"
-	"fmt"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"strings"
 
@@ -35,29 +47,80 @@ import (
 // so the resolver returns up to this many hits per lane and lets the packer choose.
 const corpusQueryTopK = 10
 
+// orientBodyConfigUnavailableRef is the single generic degradation candidate a
+// malformed/unreadable memory-engine config contributes to the orient body
+// resolver. It carries no path, parse error, or config byte — only that the
+// optional configured body source was unavailable. The CLI surfaces this in
+// OrientConsumerEvidence.DegradationObserved; the retrievalparity evaluator
+// package has no knowledge of this string.
+const orientBodyConfigUnavailableRef = "corpus://configuration-unavailable"
+
+// orientBodyLaneUnavailableRef returns one opaque, deterministic per-lane
+// degradation ref derived from a hash of the lane id (never the raw endpoint,
+// query, or lane body). The 12-hex suffix keeps the wire footprint bounded and
+// stable across runs.
+func orientBodyLaneUnavailableRef(laneID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(laneID)))
+	return "corpus://lane-unavailable/" + hex.EncodeToString(sum[:])[:12]
+}
+
 // orientBodyResolver is the production body resolver for `compound orient`: corpus
 // hits (per configured lane) plus source-ref file bodies (per pack.Included order).
+//
+// Degradation is recorded as a per-resolver field, not a return value, because
+// the underlying contract.BodyResolver interface is fixed (returns candidates +
+// error). After Resolve returns, callers that need the flag read
+// `resolver.Degraded()`. The flag is false until Resolve is called.
 type orientBodyResolver struct {
 	homePath string
 	lanes    []corpus.LaneConfig
 	pack     envelope.ContextPack
 	cwd      string
+	degraded bool
 }
+
+// Degraded reports whether the optional configured body source emitted any
+// degradation candidate during the most recent Resolve call. False before any
+// Resolve call. The flag is a snapshot; it does not change after Resolve.
+func (r orientBodyResolver) Degraded() bool { return r.degraded }
 
 // newOrientBodyResolver constructs the production resolver from a pack + the memory
 // engine config's corpus lanes. The pack's Included ordering drives source-ref rank;
 // its Excluded list is honored by the materializer, not here.
-func newOrientBodyResolver(homePath string, pack envelope.ContextPack, cwd string) orientBodyResolver {
-	lanes := []corpus.LaneConfig{}
-	if strings.TrimSpace(homePath) != "" {
-		if cfg, _, err := loadMemoryEngineConfig(homePath); err == nil {
-			lanes = append(lanes, cfg.CorpusLanes...)
-		}
-		// A config read error is non-fatal for the body resolver: we degrade to
-		// source-refs-only and let orient continue. The corpus subsystem already
-		// reports its own doctor state elsewhere.
+//
+// A malformed or unreadable memory-engine config degrades the resolver to
+// source-refs-only: the caller receives the config-unavailable ref as one
+// candidate, the rest of the resolver proceeds normally. A missing config
+// (ENOENT) is the normal no-lanes case and is not degradation.
+//
+// Returns a pointer so the resolver's internal degraded flag (set by the
+// constructor and during corpus resolution) is shared with the caller.
+func newOrientBodyResolver(homePath string, pack envelope.ContextPack, cwd string) (*orientBodyResolver, error) {
+	r := &orientBodyResolver{homePath: homePath, pack: pack, cwd: cwd}
+	if strings.TrimSpace(homePath) == "" {
+		return r, nil
 	}
-	return orientBodyResolver{homePath: homePath, lanes: lanes, pack: pack, cwd: cwd}
+	cfg, _, err := loadMemoryEngineConfig(homePath)
+	if err == nil {
+		r.lanes = append(r.lanes, cfg.CorpusLanes...)
+		return r, nil
+	}
+	if isMissingMemoryEngineConfig(err) {
+		return r, nil
+	}
+	// Malformed/unreadable config: degrade to source-refs-only. Surface the
+	// config-unavailable ref during Resolve and set the degraded flag.
+	r.lanes = nil
+	r.degraded = true
+	return r, nil
+}
+
+// isMissingMemoryEngineConfig returns true when loadMemoryEngineConfig's error
+// indicates a missing file (not a parse/schema/lane error). loadMemoryEngineConfig
+// uses os.IsNotExist for that case; the other branches (parse, schema, lane
+// validation) are real degradation.
+func isMissingMemoryEngineConfig(err error) bool {
+	return err != nil && os.IsNotExist(err)
 }
 
 // Resolve implements contract.BodyResolver. The corpus half queries every configured
@@ -69,7 +132,12 @@ func newOrientBodyResolver(homePath string, pack envelope.ContextPack, cwd strin
 // files for non-private-overlay Included refs. Corpus ranks above source refs; source
 // refs rank by Included index (lower index = higher rank). Ties broken by ref asc
 // inside the materializer.
-func (r orientBodyResolver) Resolve(task string) ([]contract.BodyCandidate, error) {
+//
+// The optional configured body source's degradation (malformed config, embedder
+// construction, query failure) is reported via Degraded() — the interface
+// signature is fixed; the resolver struct carries the flag for callers that
+// need it.
+func (r *orientBodyResolver) Resolve(task string) ([]contract.BodyCandidate, error) {
 	corpusCands, minCorpusRank, err := r.resolveCorpus(task)
 	if err != nil {
 		return nil, err
@@ -86,10 +154,14 @@ func (r orientBodyResolver) Resolve(task string) ([]contract.BodyCandidate, erro
 
 // resolveCorpus queries each configured lane and emits one BodyCandidate per hit.
 // Returns the minimum hit score observed (used to anchor source-ref ranks BELOW all
-// corpus hits). Errors degrade: per the packet, the corpus lane is consulted
-// read-only — failures return an error so the caller can decide whether to proceed
-// source-refs-only or fail the orient.
-func (r orientBodyResolver) resolveCorpus(task string) ([]contract.BodyCandidate, float64, error) {
+// corpus hits). Per-lane embedder construction or query failures degrade to a
+// single opaque per-lane ref; other lanes continue. A nil task or zero lanes
+// short-circuits to an empty result. The configured corpus body source is
+// OPTIONAL — orient must succeed on a healthy public/source-ref path even when
+// every lane is unhealthy. The resolver's degraded flag is set when ANY lane
+// failed or when the constructor saw a malformed config; the caller reads
+// Degraded() after Resolve returns.
+func (r *orientBodyResolver) resolveCorpus(task string) ([]contract.BodyCandidate, float64, error) {
 	if strings.TrimSpace(task) == "" || len(r.lanes) == 0 {
 		return nil, 0, nil
 	}
@@ -99,11 +171,25 @@ func (r orientBodyResolver) resolveCorpus(task string) ([]contract.BodyCandidate
 	for _, lane := range r.lanes {
 		embedder, err := newCorpusEmbedder(lane)
 		if err != nil {
-			return nil, 0, fmt.Errorf("body resolver: corpus lane %s embedder: %w", lane.Lane, err)
+			r.degraded = true
+			out = append(out, contract.BodyCandidate{
+				Ref:    orientBodyLaneUnavailableRef(lane.Lane),
+				Source: "corpus:" + lane.Lane,
+				Rank:   0,
+				Status: contract.BodyStatusUnresolvable,
+			})
+			continue
 		}
 		report, err := corpus.Query(context.Background(), r.homePath, lane, embedder, task, corpusQueryTopK)
 		if err != nil {
-			return nil, 0, fmt.Errorf("body resolver: corpus lane %s query: %w", lane.Lane, err)
+			r.degraded = true
+			out = append(out, contract.BodyCandidate{
+				Ref:    orientBodyLaneUnavailableRef(lane.Lane),
+				Source: "corpus:" + lane.Lane,
+				Rank:   0,
+				Status: contract.BodyStatusUnresolvable,
+			})
+			continue
 		}
 		for _, hit := range report.Hits {
 			out = append(out, contract.BodyCandidate{
@@ -193,5 +279,5 @@ func readSourceRefBody(paths []string) (string, string) {
 	return b.String(), contract.BodyStatusOK
 }
 
-// compile-time assertion that orientBodyResolver satisfies the seam.
-var _ contract.BodyResolver = orientBodyResolver{}
+// compile-time assertion that *orientBodyResolver satisfies the seam.
+var _ contract.BodyResolver = (*orientBodyResolver)(nil)

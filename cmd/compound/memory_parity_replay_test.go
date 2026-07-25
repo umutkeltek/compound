@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -166,16 +167,6 @@ func TestParityReplayOrientMatchesProductionContextPack(t *testing.T) {
 	homePath := newParityTestHome(t, now)
 	wantRef := seedParityClaim(t, homePath, "token-disjoint expected marker", now)
 	query := "unrelated semantic probe"
-	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
-		SchemaVersion: retrievalparity.FixtureSchemaVersion,
-		Rows: []retrievalparity.FixtureRow{{
-			Consumer:     retrievalparity.ConsumerOrient,
-			Query:        query,
-			OrientInput:  parityTestOrientInput(t, homePath),
-			ExpectedRefs: []string{wantRef},
-		}},
-	})
-
 	t.Setenv(parityFakeSidecarEnv, "1")
 	t.Setenv(parityFakeSidecarHitID, strings.TrimPrefix(wantRef, "claim://"))
 	t.Setenv("COMPOUND_MEM_ENGINE_BIN", os.Args[0]+" -test.run="+parityFakeSidecarTestRun)
@@ -187,6 +178,17 @@ func TestParityReplayOrientMatchesProductionContextPack(t *testing.T) {
 	if _, err := store.FoldPositions(mem.PositionFoldOptions{}, now); err != nil {
 		t.Fatalf("fold positions for production-path parity: %v", err)
 	}
+	wantRefs := append([]string{wantRef}, parityFoldedPositionHashes(t, store)...)
+	sort.Strings(wantRefs)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion: retrievalparity.FixtureSchemaVersion,
+		Rows: []retrievalparity.FixtureRow{{
+			Consumer:     retrievalparity.ConsumerOrient,
+			Query:        query,
+			OrientInput:  parityTestOrientInput(t, homePath),
+			ExpectedRefs: wantRefs,
+		}},
+	})
 	report, _, code, err := runMemoryParityReplay(homePath, store, []string{
 		"--fixture", fixturePath,
 		"--consumer", retrievalparity.ConsumerOrient,
@@ -224,18 +226,23 @@ func TestParityReplayEngineAvailabilityFollowsConsumerFallback(t *testing.T) {
 	homePath := newParityTestHome(t, now)
 	query := "synthetic available engine marker"
 	wantRef := seedParityClaim(t, homePath, query, now)
-	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
-		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
-		ClassifierVersion: retrievalparity.ClassifierVersion,
-		Rows: []retrievalparity.FixtureRow{
-			{Consumer: retrievalparity.ConsumerOrient, Query: query, OrientInput: parityTestOrientInput(t, homePath), ExpectedRefs: []string{wantRef}},
-			{Consumer: retrievalparity.ConsumerQuery, Query: query, ExpectedRefs: []string{wantRef}},
-		},
-	})
 	store, err := mem.Open(homePath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.FoldPositions(mem.PositionFoldOptions{}, now); err != nil {
+		t.Fatalf("fold positions for fallback test: %v", err)
+	}
+	wantRefs := append([]string{wantRef}, parityFoldedPositionHashes(t, store)...)
+	sort.Strings(wantRefs)
+	fixturePath := writeParityFixture(t, homePath, retrievalparity.Fixture{
+		SchemaVersion:     retrievalparity.FixtureSchemaVersion,
+		ClassifierVersion: retrievalparity.ClassifierVersion,
+		Rows: []retrievalparity.FixtureRow{
+			{Consumer: retrievalparity.ConsumerOrient, Query: query, OrientInput: parityTestOrientInput(t, homePath), ExpectedRefs: wantRefs},
+			{Consumer: retrievalparity.ConsumerQuery, Query: query, ExpectedRefs: []string{wantRef}},
+		},
+	})
 
 	queryAvailable, _, code, err := runMemoryParityReplay(homePath, store, []string{
 		"--fixture", fixturePath,
@@ -2012,6 +2019,25 @@ func parityPersistedOrientRefs(refs []string) ([]string, bool) {
 		out = append(out, ref)
 	}
 	return out, hasPosition
+}
+
+// parityFoldedPositionHashes returns the persisted (sha256-hashed) refs of every
+// position the store has folded. Used by tests to keep ExpectedRefs in sync
+// with the production orient path, which includes folded positions in
+// ActiveMemory alongside the underlying claim. The fixture accepts the raw
+// position://<id>::slot-... form; persistedRefs converts it to the
+// sha256-hashed form for the row.
+func parityFoldedPositionHashes(t *testing.T, store *mem.Store) []string {
+	t.Helper()
+	positions, err := store.LoadFoldedPositions()
+	if err != nil {
+		t.Fatalf("load folded positions: %v", err)
+	}
+	out := make([]string, 0, len(positions))
+	for _, p := range positions {
+		out = append(out, "position://"+p.ID)
+	}
+	return out
 }
 
 func validParitySHA(ref string) bool {
