@@ -22,5 +22,5 @@ release-artifacts:
 		tar -C $(DIST) -czf $(DIST)/compound_$(VERSION)_$${os}_$${arch}.tar.gz compound_$(VERSION)_$${os}_$${arch}; \
 		rm -rf $$stage; \
 	done
-	( cd $(DIST) && shasum -a 256 compound_$(VERSION)_*.tar.gz > SHA256SUMS )
+	shasum -a 256 $(DIST)/compound_$(VERSION)_*.tar.gz > $(DIST)/SHA256SUMS
 	@echo "release-artifacts: wrote $(DIST)/compound_$(VERSION)_*.tar.gz + SHA256SUMS"

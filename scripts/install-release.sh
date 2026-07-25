@@ -66,7 +66,17 @@ fi
 # verify checksum (when SHA256SUMS is present)
 # SHA256SUMS may list other platforms; manually check only the tarball we have.
 if [ -f "$work_dir/SHA256SUMS" ]; then
-  expected=$(grep -E "^[0-9a-fA-F]+[[:space:]]+[*]?${tarball}\$" "$work_dir/SHA256SUMS" | head -n 1 | awk '{print $1}')
+  expected=$(awk -v tarball="$tarball" '
+    {
+      name = $2
+      sub(/^\*/, "", name)
+      count = split(name, parts, "/")
+      if (parts[count] == tarball) {
+        print $1
+        exit
+      }
+    }
+  ' "$work_dir/SHA256SUMS")
   if [ -z "$expected" ]; then
     die "no checksum entry for $tarball in SHA256SUMS"
   fi

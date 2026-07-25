@@ -37,7 +37,7 @@ Pick one:
 
 ### Option A — prebuilt binary (no Go required)
 
-Download a signed tarball from the [latest release](https://github.com/umutkeltek/compound/releases/latest)
+Download a checksummed tarball from the [latest release](https://github.com/umutkeltek/compound/releases/latest)
 and run the installer. Defaults install to `~/.local/bin` and initialize
 `~/.compound`; override with `GOBIN` and `COMPOUND_HOME`.
 
