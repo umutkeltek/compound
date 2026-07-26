@@ -680,6 +680,7 @@ func TestSessionStartInjectionUsesConfiguredBreadthEngine(t *testing.T) {
 	t.Setenv("COMPOUND_TEST_FAKE_BREADTH_SIDECAR", "1")
 	t.Setenv("COMPOUND_TEST_FAKE_BREADTH_HIT", ids["vector-index"])
 	t.Setenv("COMPOUND_MEM_ENGINE_BIN", os.Args[0]+" -test.run=TestFakeBreadthSidecar")
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "")
 
 	deps := baseDeps()
 	deps.HomePath = homePath
@@ -701,6 +702,9 @@ func TestSessionStartInjectionUsesConfiguredBreadthEngine(t *testing.T) {
 	if !containsString(pack.ActiveMemory, wantRef) {
 		t.Fatalf("hook ContextPack missing breadth-ranked memory %s: active=%v", wantRef, pack.ActiveMemory)
 	}
+	if pack.Retrieval == nil || pack.Retrieval.Level != envelope.RetrievalLevelUsed || pack.Retrieval.RequestedEngine != "protocol" || pack.Retrieval.ObservedEngine != "fake-hook-breadth" {
+		t.Fatalf("hook ContextPack retrieval posture = %+v, want used protocol/fake-hook-breadth", pack.Retrieval)
+	}
 	packBytes, err := os.ReadFile(res.Injection.ContextPackPath)
 	if err != nil {
 		t.Fatalf("read persisted context pack: %v", err)
@@ -712,6 +716,9 @@ func TestSessionStartInjectionUsesConfiguredBreadthEngine(t *testing.T) {
 	if !containsString(persisted.ActiveMemory, wantRef) {
 		t.Fatalf("persisted ContextPack missing breadth-ranked memory %s: active=%v", wantRef, persisted.ActiveMemory)
 	}
+	if !reflect.DeepEqual(persisted.Retrieval, pack.Retrieval) {
+		t.Fatalf("hook produced/persisted retrieval posture drift: produced=%+v persisted=%+v", pack.Retrieval, persisted.Retrieval)
+	}
 	injectionBytes, err := os.ReadFile(res.Injection.Path)
 	if err != nil {
 		t.Fatalf("read injection: %v", err)
@@ -719,6 +726,14 @@ func TestSessionStartInjectionUsesConfiguredBreadthEngine(t *testing.T) {
 	injection := string(injectionBytes)
 	if !strings.Contains(injection, "## Active Memory") || !strings.Contains(injection, wantRef) {
 		t.Fatalf("injection missing breadth-ranked memory %s:\n%s", wantRef, injection)
+	}
+	if got := len([]rune(injection)); got > MaxContextChars {
+		t.Fatalf("hook injection chars=%d, max=%d", got, MaxContextChars)
+	}
+	for _, postureOnly := range []string{"ledger_ranker", "compound_ledger", "requested_engine", "observed_engine", "error_class"} {
+		if strings.Contains(injection, postureOnly) {
+			t.Fatalf("hook added retrieval posture prose %q to bounded injection:\n%s", postureOnly, injection)
+		}
 	}
 }
 

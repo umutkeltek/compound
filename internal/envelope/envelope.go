@@ -81,9 +81,57 @@ const (
 	RouteDeviationTidy  = "tidy"
 )
 
+// ContextPack retrieval posture uses the same bounded outcome and error
+// vocabulary as the runtime breadth-dependency trace. Compound's ledger remains
+// authority in every state; the rented breadth dependency can only sharpen
+// ranking. Non-used outcomes therefore name the existing ledger ranker as the
+// fallback rather than suggesting a retry or a second retrieval path.
+const (
+	RetrievalLevelNotAttempted = "not_attempted"
+	RetrievalLevelUsed         = "used"
+	RetrievalLevelDegraded     = "degraded"
+	RetrievalLevelRefused      = "refused"
+
+	RetrievalErrorUnavailable      = "unavailable"
+	RetrievalErrorUnsupported      = "unsupported"
+	RetrievalErrorEmbedderMismatch = "embedder_mismatch"
+	RetrievalErrorProtocolVersion  = "protocol_version"
+	RetrievalErrorEngineAhead      = "engine_ahead"
+	RetrievalErrorUnownedClaim     = "unowned_claim"
+	RetrievalErrorRetrieval        = "retrieval_error"
+
+	RetrievalFallbackLedgerRanker    = "ledger_ranker"
+	RetrievalAuthorityCompoundLedger = "compound_ledger"
+)
+
+var (
+	retrievalLevels = []string{
+		RetrievalLevelNotAttempted,
+		RetrievalLevelUsed,
+		RetrievalLevelDegraded,
+		RetrievalLevelRefused,
+	}
+	retrievalDegradedErrorClasses = []string{
+		RetrievalErrorUnavailable,
+		RetrievalErrorUnsupported,
+		RetrievalErrorRetrieval,
+	}
+	retrievalRefusedErrorClasses = []string{
+		RetrievalErrorEmbedderMismatch,
+		RetrievalErrorProtocolVersion,
+		RetrievalErrorEngineAhead,
+		RetrievalErrorUnownedClaim,
+	}
+)
+
 // nextConsumerRe: a Transition cause's next_consumer is a consumer slug/ref
 // (component or surface id), never prose — no whitespace, lowercase start.
 var nextConsumerRe = regexp.MustCompile(`^[a-z][a-z0-9_.:/-]{0,63}$`)
+
+// Retrieval engine identities are opaque bounded slugs, not locations or
+// provider payloads. The first character cannot be punctuation; the remaining
+// grammar mirrors the runtime trace sanitizer.
+var retrievalEngineIdentityRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // branchSlugRe: an opens_branches branch is a single machine slug (no path
 // separators, no prose) — it names a future-branch handle other transitions
@@ -498,6 +546,18 @@ type PeerLaneCard struct {
 	Tendencies      []string `json:"tendencies"`
 }
 
+// RetrievalPosture is bounded, machine-readable observability for the single
+// breadth dependency used while assembling a ContextPack. It deliberately has
+// no room for queries, raw errors, provider payloads, endpoints, or retry advice.
+type RetrievalPosture struct {
+	Level           string `json:"level"`
+	Fallback        string `json:"fallback,omitempty"`
+	Authority       string `json:"authority"`
+	RequestedEngine string `json:"requested_engine,omitempty"`
+	ObservedEngine  string `json:"observed_engine,omitempty"`
+	ErrorClass      string `json:"error_class,omitempty"`
+}
+
 type ContextPack struct {
 	Header
 	SummaryMD          string            `json:"summary_md"`
@@ -518,6 +578,7 @@ type ContextPack struct {
 	RequiredChecks     []string          `json:"required_checks"`
 	Avoid              []string          `json:"avoid"`
 	BodyPack           *BodyPackSection  `json:"body_pack,omitempty"`
+	Retrieval          *RetrievalPosture `json:"retrieval,omitempty"`
 }
 
 func (e *ContextPack) Kind() string { return "context_pack" }
@@ -532,12 +593,66 @@ func (e *ContextPack) Validate() error {
 	}
 	validateCapabilityOffers(v, "capability_offers", e.CapabilityOffers)
 	validateUniqueSourceRevisions(v, e.SourceRevisions)
+	if e.Retrieval != nil {
+		validateRetrievalPosture(v, *e.Retrieval)
+	}
 	// the excluded list (what was NOT loaded, and why) is the whole point of replaceability;
 	// require its presence (may be empty) so it's never silently dropped.
 	if e.Excluded == nil {
 		v.addf("excluded must be present (record what was not loaded and why)")
 	}
 	return v.result(e.Kind())
+}
+
+func validateRetrievalPosture(v *verr, posture RetrievalPosture) {
+	v.enum("retrieval.level", posture.Level, retrievalLevels, true)
+	if posture.Authority != RetrievalAuthorityCompoundLedger {
+		v.addf("retrieval.authority must be %q", RetrievalAuthorityCompoundLedger)
+	}
+	if posture.RequestedEngine != "" && !retrievalEngineIdentityRe.MatchString(posture.RequestedEngine) {
+		v.addf("retrieval.requested_engine must be a 1-64 character lowercase engine identifier")
+	}
+	if posture.ObservedEngine != "" && !retrievalEngineIdentityRe.MatchString(posture.ObservedEngine) {
+		v.addf("retrieval.observed_engine must be a 1-64 character lowercase engine identifier")
+	}
+
+	requireLedgerFallback := func() {
+		if posture.Fallback != RetrievalFallbackLedgerRanker {
+			v.addf("retrieval.fallback must be %q for non-used outcomes", RetrievalFallbackLedgerRanker)
+		}
+	}
+
+	switch posture.Level {
+	case RetrievalLevelUsed:
+		v.req("retrieval.requested_engine", posture.RequestedEngine)
+		v.req("retrieval.observed_engine", posture.ObservedEngine)
+		if posture.Fallback != "" {
+			v.addf("retrieval level used must not carry fallback")
+		}
+		if posture.ErrorClass != "" {
+			v.addf("retrieval level used must not carry error_class")
+		}
+	case RetrievalLevelDegraded:
+		requireLedgerFallback()
+		v.req("retrieval.requested_engine", posture.RequestedEngine)
+		if !oneOf(posture.ErrorClass, retrievalDegradedErrorClasses) {
+			v.addf("retrieval level degraded requires a degradable error_class")
+		}
+	case RetrievalLevelRefused:
+		requireLedgerFallback()
+		v.req("retrieval.requested_engine", posture.RequestedEngine)
+		if !oneOf(posture.ErrorClass, retrievalRefusedErrorClasses) {
+			v.addf("retrieval level refused requires an integrity-refusal error_class")
+		}
+	case RetrievalLevelNotAttempted:
+		requireLedgerFallback()
+		if posture.RequestedEngine != "" || posture.ObservedEngine != "" {
+			v.addf("retrieval level not_attempted must not carry engine identities")
+		}
+		if posture.ErrorClass != "" {
+			v.addf("retrieval level not_attempted must not carry error_class")
+		}
+	}
 }
 
 func validateUniqueSourceRevisions(v *verr, revisions []SourceRev) {

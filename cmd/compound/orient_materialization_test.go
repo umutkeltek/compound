@@ -56,6 +56,45 @@ func TestMaterializeOrientContextPackUsesOneSharedRuntimeSnapshot(t *testing.T) 
 	}
 }
 
+func TestOrientPrintedAndPersistedRetrievalPostureMatch(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "")
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir()
+	out := captureStdout(t, func() {
+		cmdOrient([]string{
+			"--harness", "codex", "--cwd", cwd,
+			"--repo-kind", "control-plane", "--task", "offline retrieval posture parity",
+		})
+	})
+	var printed envelope.ContextPack
+	if err := json.Unmarshal([]byte(out), &printed); err != nil {
+		t.Fatalf("parse printed orient ContextPack: %v\n%s", err, out)
+	}
+	if printed.Retrieval == nil || printed.Retrieval.Level != envelope.RetrievalLevelNotAttempted {
+		t.Fatalf("printed retrieval = %+v, want not_attempted", printed.Retrieval)
+	}
+	body, err := os.ReadFile(filepath.Join(homePath, "context", "packs", printed.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted envelope.ContextPack
+	if err := json.Unmarshal(body, &persisted); err != nil {
+		t.Fatalf("parse persisted orient ContextPack: %v", err)
+	}
+	if !reflect.DeepEqual(printed.Retrieval, persisted.Retrieval) {
+		t.Fatalf("printed/persisted retrieval posture drift:\nprinted  %+v\npersisted %+v", printed.Retrieval, persisted.Retrieval)
+	}
+	if printed.ID != persisted.ID || printed.IDs.ContractID != persisted.IDs.ContractID {
+		t.Fatalf("printed/persisted pair identity drift: printed=%s/%s persisted=%s/%s",
+			printed.ID, printed.IDs.ContractID, persisted.ID, persisted.IDs.ContractID)
+	}
+}
+
 func TestMaterializeOrientContextPackReturnsImmutableMaterializationID(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {

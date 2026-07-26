@@ -11,6 +11,7 @@ import (
 	"compound/internal/breadth"
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/envelope"
 	"compound/internal/mem"
 )
 
@@ -76,6 +77,32 @@ func TestMaterializeRuntimeProjectsOneSharedSnapshot(t *testing.T) {
 	assertRuntimeJSONEqual(t, "context pack", got.ContextPack, wantPack)
 	if !reflect.DeepEqual(got.EngineDependencyTrace, wantTrace) {
 		t.Fatalf("engine trace drift:\ngot  %+v\nwant %+v", got.EngineDependencyTrace, wantTrace)
+	}
+	if got.ContextPack.Retrieval == nil || got.ContextPack.Retrieval.Level != envelope.RetrievalLevelUsed || got.ContextPack.Retrieval.ObservedEngine != "counting-runtime" {
+		t.Fatalf("shared materialization did not project its engine trace into ContextPack: trace=%+v retrieval=%+v", got.EngineDependencyTrace, got.ContextPack.Retrieval)
+	}
+
+	sealed, err := SealRuntimeMaterialization(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alternate := got
+	alternate.ContextPack.Retrieval = &envelope.RetrievalPosture{
+		Level:     envelope.RetrievalLevelNotAttempted,
+		Fallback:  envelope.RetrievalFallbackLedgerRanker,
+		Authority: envelope.RetrievalAuthorityCompoundLedger,
+	}
+	alternateSealed, err := SealRuntimeMaterialization(alternate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sealed.ContextPack.ID == alternateSealed.ContextPack.ID {
+		t.Fatalf("sealed ContextPack id did not bind exact retrieval posture: %s", sealed.ContextPack.ID)
+	}
+	if sealed.EffectiveContract.ID != alternateSealed.EffectiveContract.ID || sealed.ContextPack.IDs.ContractID != alternateSealed.ContextPack.IDs.ContractID {
+		t.Fatalf("posture-only change split shared contract pair: primary=%s/%s alternate=%s/%s",
+			sealed.EffectiveContract.ID, sealed.ContextPack.IDs.ContractID,
+			alternateSealed.EffectiveContract.ID, alternateSealed.ContextPack.IDs.ContractID)
 	}
 }
 

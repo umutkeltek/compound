@@ -38,18 +38,18 @@ import (
 )
 
 const (
-	EngineOutcomeNotAttempted = "not_attempted"
-	EngineOutcomeUsed         = "used"
-	EngineOutcomeDegraded     = "degraded"
-	EngineOutcomeRefused      = "refused"
+	EngineOutcomeNotAttempted = envelope.RetrievalLevelNotAttempted
+	EngineOutcomeUsed         = envelope.RetrievalLevelUsed
+	EngineOutcomeDegraded     = envelope.RetrievalLevelDegraded
+	EngineOutcomeRefused      = envelope.RetrievalLevelRefused
 
-	EngineErrorUnavailable      = "unavailable"
-	EngineErrorUnsupported      = "unsupported"
-	EngineErrorEmbedderMismatch = "embedder_mismatch"
-	EngineErrorProtocolVersion  = "protocol_version"
-	EngineErrorEngineAhead      = "engine_ahead"
-	EngineErrorUnownedClaim     = "unowned_claim"
-	EngineErrorRetrieval        = "retrieval_error"
+	EngineErrorUnavailable      = envelope.RetrievalErrorUnavailable
+	EngineErrorUnsupported      = envelope.RetrievalErrorUnsupported
+	EngineErrorEmbedderMismatch = envelope.RetrievalErrorEmbedderMismatch
+	EngineErrorProtocolVersion  = envelope.RetrievalErrorProtocolVersion
+	EngineErrorEngineAhead      = envelope.RetrievalErrorEngineAhead
+	EngineErrorUnownedClaim     = envelope.RetrievalErrorUnownedClaim
+	EngineErrorRetrieval        = envelope.RetrievalErrorRetrieval
 )
 
 // EngineDependencyTrace is bounded, privacy-safe evidence about the rented breadth
@@ -63,6 +63,37 @@ type EngineDependencyTrace struct {
 	CorpusGeneration int64
 	Outcome          string
 	ErrorClass       string
+}
+
+func retrievalPostureFromEngineTrace(trace EngineDependencyTrace) *envelope.RetrievalPosture {
+	level := trace.Outcome
+	if level == "" {
+		level = EngineOutcomeNotAttempted
+	}
+	posture := &envelope.RetrievalPosture{
+		Level:     level,
+		Authority: envelope.RetrievalAuthorityCompoundLedger,
+	}
+	switch level {
+	case EngineOutcomeUsed:
+		posture.RequestedEngine = trace.RequestedEngine
+		posture.ObservedEngine = trace.ObservedEngine
+		posture.ErrorClass = trace.ErrorClass
+	case EngineOutcomeDegraded, EngineOutcomeRefused:
+		posture.Fallback = envelope.RetrievalFallbackLedgerRanker
+		posture.RequestedEngine = trace.RequestedEngine
+		posture.ObservedEngine = trace.ObservedEngine
+		posture.ErrorClass = trace.ErrorClass
+	case EngineOutcomeNotAttempted:
+		posture.Fallback = envelope.RetrievalFallbackLedgerRanker
+	default:
+		// Preserve an impossible internal outcome so ContextPack validation fails
+		// closed instead of relabeling it as an offline dependency.
+		posture.RequestedEngine = trace.RequestedEngine
+		posture.ObservedEngine = trace.ObservedEngine
+		posture.ErrorClass = trace.ErrorClass
+	}
+	return posture
 }
 
 const (
@@ -539,6 +570,7 @@ func MaterializeRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	}
 	result.EffectiveContract = projectRuntimeContract(result.EffectiveContract, snapshot)
 	result.ContextPack = projectRuntimePack(result.ContextPack, in, snapshot)
+	result.ContextPack.Retrieval = retrievalPostureFromEngineTrace(result.EngineDependencyTrace)
 	result.ContextPack, err = appendPackOnlyRuntime(result.ContextPack, in, homePath, now)
 	if err != nil {
 		return result, err
@@ -1335,6 +1367,7 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 		SourceRevisions:    resolveSourceRevisions(revs, in.Cwd),
 		RequiredChecks:     []string{},
 		Avoid:              orEmpty(mem.Forbidden),
+		Retrieval:          retrievalPostureFromEngineTrace(EngineDependencyTrace{Outcome: EngineOutcomeNotAttempted}),
 	}
 }
 
@@ -1354,8 +1387,12 @@ func PackWithCapabilitiesTraced(in Input, pol OrientationPolicy, homePath string
 }
 
 func packWithCapabilities(in Input, pol OrientationPolicy, homePath string, now time.Time, trace *EngineDependencyTrace) (envelope.ContextPack, error) {
+	if trace == nil {
+		trace = &EngineDependencyTrace{Outcome: EngineOutcomeNotAttempted}
+	}
 	pack := Pack(in, pol, now)
 	if strings.TrimSpace(homePath) == "" {
+		pack.Retrieval = retrievalPostureFromEngineTrace(*trace)
 		return pack, nil
 	}
 	snapshot, err := loadRuntimeSnapshot(in, pol, homePath, trace)
@@ -1363,6 +1400,7 @@ func packWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		return pack, err
 	}
 	pack = projectRuntimePack(pack, in, snapshot)
+	pack.Retrieval = retrievalPostureFromEngineTrace(*trace)
 	return appendPackOnlyRuntime(pack, in, homePath, now)
 }
 
