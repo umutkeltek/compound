@@ -54,6 +54,66 @@ func TestRenderInstructionBlockCarriesStableAuthorityAndProjectRules(t *testing.
 					t.Fatalf("render missing %q:\n%s", want, render.Content)
 				}
 			}
+
+			// The precedence ladder is the block's conflict-resolution rule, and it is
+			// the one part a reader cannot reconstruct from the other bullets: without
+			// it, "Compound is the authority for durable meaning" and "verify before
+			// asserting" are both present with nothing saying which governs when a
+			// served claim and the code disagree. Each rung is pinned individually so a
+			// future edit cannot quietly drop one and leave a ladder that still reads
+			// like a ladder.
+			for _, rung := range []string{
+				"the operator's latest instruction in this session",
+				"verified current reality",
+				"served runtime state",
+				"tracked static contract, including this block",
+				"evidence, never a premise",
+			} {
+				if !strings.Contains(render.Content, rung) {
+					t.Errorf("precedence ladder missing rung %q:\n%s", rung, render.Content)
+				}
+			}
+
+			// Ordering is the content of the rule: the same five rungs in a different
+			// order is a different, and in one case inverted, policy.
+			ladder := []string{
+				"operator's latest instruction",
+				"verified current reality",
+				"served runtime state",
+				"tracked static contract",
+				"recall, injected reminders, mined history",
+			}
+			prev := -1
+			for _, rung := range ladder {
+				at := strings.Index(render.Content, rung)
+				if at < 0 {
+					continue // absence already reported above
+				}
+				if at < prev {
+					t.Errorf("precedence rung %q renders out of order; the ladder's order IS the policy", rung)
+				}
+				prev = at
+			}
+
+			// Self-demotion: the block must rank itself rather than claim supremacy.
+			// An instruction surface that omits its own rank reads as outranking
+			// everything that is not in it.
+			if !strings.Contains(render.Content, "This block is rung 4 and does not outrank rungs 1-3") {
+				t.Errorf("managed block does not state its own rank:\n%s", render.Content)
+			}
+
+			// Persistence-is-not-authority travels with the ladder: "keep going" is the
+			// instruction most likely to be read as widening what is permitted, and the
+			// ungoverned look-alike is the specific move it forbids.
+			for _, want := range []string{
+				"Persistence is not authority",
+				"never widens the set of authorized actions",
+				"never produce a similar-looking artifact by an ungoverned route",
+			} {
+				if !strings.Contains(render.Content, want) {
+					t.Errorf("render missing %q:\n%s", want, render.Content)
+				}
+			}
 		})
 	}
 }
