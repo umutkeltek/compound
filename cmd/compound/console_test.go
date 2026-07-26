@@ -202,13 +202,23 @@ func TestConsoleRuntimeStatusDistinguishesHealthyUnhealthyAndForeign(t *testing.
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	expectedHash := consoleHomeShortHash(homePath)
 
+	// The cold-start cases below scale the probe budget DOWN via the injectable client rather
+	// than sleeping for real against the 60s production default. The property under test is
+	// "a root response that arrives inside the probe budget still reads healthy, and one that
+	// arrives outside it does not" — that is a relationship between two durations, not a
+	// magnitude, so it is proven identically at 200ms/3s as at 5.2s/60s and costs 26x less.
+	//
+	// Deleting the delay entirely (the tempting "just make it 20ms" fix) would keep the test
+	// green while proving nothing: the subtest is named "within projection budget" precisely
+	// because the magnitude relative to the budget IS the assertion.
 	for _, tc := range []struct {
-		name      string
-		root      string
-		badAsset  string
-		rootDelay time.Duration
-		wantState string
-		wantKind  string
+		name         string
+		root         string
+		badAsset     string
+		rootDelay    time.Duration
+		probeTimeout time.Duration
+		wantState    string
+		wantKind     string
 	}{
 		{
 			name:      "healthy canonical console",
@@ -217,11 +227,21 @@ func TestConsoleRuntimeStatusDistinguishesHealthyUnhealthyAndForeign(t *testing.
 			wantKind:  "production",
 		},
 		{
-			name:      "cold canonical console within projection budget",
-			root:      `<html><body><span data-instance-home-hash="` + expectedHash + `" data-instance-explicit="1" data-instance-build-kind="production"></span><script src="/_next/static/chunks/app.js"></script></body></html>`,
-			rootDelay: 5200 * time.Millisecond,
-			wantState: "healthy",
-			wantKind:  "production",
+			name:         "cold canonical console within projection budget",
+			root:         `<html><body><span data-instance-home-hash="` + expectedHash + `" data-instance-explicit="1" data-instance-build-kind="production"></span><script src="/_next/static/chunks/app.js"></script></body></html>`,
+			rootDelay:    200 * time.Millisecond,
+			probeTimeout: 3 * time.Second,
+			wantState:    "healthy",
+			wantKind:     "production",
+		},
+		{
+			// The other side of the same boundary, which was never covered: a root that
+			// does NOT arrive inside the budget must not be reported healthy.
+			name:         "cold canonical console beyond projection budget",
+			root:         `<html><body><span data-instance-home-hash="` + expectedHash + `" data-instance-explicit="1" data-instance-build-kind="production"></span><script src="/_next/static/chunks/app.js"></script></body></html>`,
+			rootDelay:    600 * time.Millisecond,
+			probeTimeout: 80 * time.Millisecond,
+			wantState:    "unhealthy",
 		},
 		{
 			name:      "canonical console with broken assets",
@@ -253,7 +273,11 @@ func TestConsoleRuntimeStatusDistinguishesHealthyUnhealthyAndForeign(t *testing.
 			}))
 			defer server.Close()
 
-			status := inspectConsoleRuntimeAt(strings.TrimPrefix(server.URL, "http://"), homePath, nil)
+			var probe *http.Client
+			if tc.probeTimeout > 0 {
+				probe = &http.Client{Timeout: tc.probeTimeout}
+			}
+			status := inspectConsoleRuntimeAt(strings.TrimPrefix(server.URL, "http://"), homePath, probe)
 			if status.State != tc.wantState {
 				t.Fatalf("state = %q, want %q (detail=%q)", status.State, tc.wantState, status.Detail)
 			}
