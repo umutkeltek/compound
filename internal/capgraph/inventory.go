@@ -35,6 +35,13 @@ type CapabilityState struct {
 	FalseTriggered int  `json:"false_triggered,omitempty"`
 	Missed         int  `json:"missed,omitempty"`
 	Retired        bool `json:"retired,omitempty"`
+	// Health is the node's last observed operational state when it is not fine.
+	// A degraded capability is deliberately still LISTED -- that is the point of
+	// health being separate from retirement -- so this row is the only thing that
+	// distinguishes it from a working one. Without it, "reachable" reads as
+	// "usable" for a server that is currently down, which is the confident-wrong
+	// answer the whole split exists to avoid.
+	Health string `json:"health,omitempty"`
 }
 
 // CapabilityInventory builds the per-node view over the same joins Reachability
@@ -62,7 +69,7 @@ func (s *Store) CapabilityInventory() (CapabilityInventory, error) {
 		States:        make(map[string]CapabilityState, len(nodes)),
 	}
 	for _, n := range nodes {
-		st := CapabilityState{ID: n.ID, Kind: n.Kind, Name: n.Name, Retired: n.Retired}
+		st := CapabilityState{ID: n.ID, Kind: n.Kind, Name: n.Name, Retired: n.Retired, Health: n.Health}
 		if cs, ok := bySurface[n.ID]; ok {
 			// Same rule as the rollup: a surface with neither endpoint nor
 			// config path answers nothing, so it is not reachability.
@@ -163,8 +170,13 @@ func (st CapabilityState) Flags() string {
 		}
 		return "-"
 	}
+	// "D" for degraded sits alongside R, because reachable-and-degraded is the
+	// row an operator most needs to read correctly: the access facts are present
+	// and the thing still does not work. A degraded capability is listed by
+	// design, so if the glyphs cannot show it, being listed is a trap.
 	return glyph(st.Reachable, "R") + glyph(st.Unlockable, "K") +
-		glyph(len(st.Harnesses) > 0, "S") + glyph(st.FalseTriggered+st.Missed > 0, "!")
+		glyph(len(st.Harnesses) > 0, "S") + glyph(st.FalseTriggered+st.Missed > 0, "!") +
+		glyph(strings.TrimSpace(st.Health) != "", "D")
 }
 
 // Note appends the detail worth reading inline: which harnesses, and how many
@@ -185,6 +197,13 @@ func (st CapabilityState) Note() string {
 	}
 	if st.Retired {
 		parts = append(parts, "retired")
+	}
+	// The specific condition, not just that there is one: "offline" and
+	// "auth_required" call for completely different responses -- restart it
+	// versus authenticate -- and a bare "degraded" would send an operator
+	// looking for which.
+	if h := strings.TrimSpace(st.Health); h != "" {
+		parts = append(parts, "degraded: "+h)
 	}
 	return "  [" + strings.Join(parts, ", ") + "]"
 }

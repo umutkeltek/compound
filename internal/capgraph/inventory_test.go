@@ -106,15 +106,33 @@ func TestPlaceholderSurfaceIsNotShownAsReachable(t *testing.T) {
 func TestFlagsColumnStaysFixedWidth(t *testing.T) {
 	// The column is scanned vertically. A ragged one defeats the only reason it
 	// exists.
+	//
+	// The invariant is UNIFORMITY, not a particular number, so this measures every
+	// state against the empty one rather than a hardcoded width. Pinning the
+	// literal width made adding a legitimate flag look like a regression while
+	// still not catching the failure that matters: a new field whose glyph is
+	// emitted only when set, which shortens exactly the rows that carry it and is
+	// invisible in any sample set that omits that field.
+	//
+	// So each flag-bearing field gets its own case, and a new field belongs here
+	// the day it is added.
 	states := []CapabilityState{
 		{},
 		{Reachable: true},
-		{Reachable: true, Unlockable: true, Harnesses: []string{"harness:a"}, Missed: 2},
+		{Unlockable: true},
+		{Harnesses: []string{"harness:a"}},
 		{Missed: 1},
+		{FalseTriggered: 1},
+		{Health: "offline"},
+		{Reachable: true, Unlockable: true, Harnesses: []string{"harness:a"}, Missed: 2, Health: "error"},
+	}
+	want := len(CapabilityState{}.Flags())
+	if want == 0 {
+		t.Fatal("empty state rendered no flags at all; the column has no width to keep")
 	}
 	for _, st := range states {
-		if got := len(st.Flags()); got != 4 {
-			t.Fatalf("flags %q width %d, want 4", st.Flags(), got)
+		if got := len(st.Flags()); got != want {
+			t.Fatalf("flags %q width %d, want %d (ragged column)", st.Flags(), got, want)
 		}
 	}
 }
@@ -155,5 +173,51 @@ func TestCorrectionCountsUseTheCapabilityEnd(t *testing.T) {
 	}
 	if !strings.Contains(st.Flags(), "!") {
 		t.Fatalf("corrected capability not flagged: %q", st.Flags())
+	}
+}
+
+// FALSIFIER: a degraded capability is deliberately still LISTED -- that is the
+// whole point of health being separate from retirement -- so the row is the only
+// thing that can distinguish it from a working one. If the projection drops
+// Health, "reachable" reads as "usable" for a server that is currently down, and
+// being listed becomes a trap rather than a service. Drop Health from
+// CapabilityState (or from the Flags/Note renderers) and this goes red.
+func TestDegradedCapabilityIsListedWithItsCondition(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := s.Add(Node{ID: "mcp:down", Kind: "mcp", Name: "down", Weight: 1, Health: "offline"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := s.Add(Node{ID: "mcp:up", Kind: "mcp", Name: "up", Weight: 1}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	inv, err := s.CapabilityInventory()
+	if err != nil {
+		t.Fatalf("inventory: %v", err)
+	}
+
+	down := inv.State("mcp:down")
+	if down.Health != "offline" {
+		t.Errorf("degraded row Health = %q, want offline", down.Health)
+	}
+	if !strings.Contains(down.Flags(), "D") {
+		t.Errorf("degraded capability not flagged: %q", down.Flags())
+	}
+	// The specific condition, not merely that there is one: offline and
+	// auth_required call for different responses (restart vs authenticate).
+	if !strings.Contains(down.Note(), "offline") {
+		t.Errorf("note does not name the condition: %q", down.Note())
+	}
+	// It must still be RETURNED -- degraded is not hidden. Filtering it out here
+	// would reproduce retirement's bug through the list surface instead.
+	if down.ID == "" {
+		t.Error("degraded capability missing from the inventory entirely")
+	}
+
+	up := inv.State("mcp:up")
+	if up.Health != "" || strings.Contains(up.Flags(), "D") {
+		t.Errorf("healthy capability marked degraded: health=%q flags=%q", up.Health, up.Flags())
 	}
 }

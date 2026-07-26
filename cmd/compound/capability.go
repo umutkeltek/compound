@@ -1332,7 +1332,7 @@ func cmdCapability(args []string) {
 			shown++
 			fmt.Printf("%-30s %-16s %-9s %s%s\n", n.ID, n.Kind, st.Flags(), n.Name, st.Note())
 		}
-		fmt.Printf("\n%d of %d shown. flags: R=reachable  K=unlockable  S=harness-scoped  !=has routing corrections\n",
+		fmt.Printf("\n%d of %d shown. flags: R=reachable  K=unlockable  S=harness-scoped  !=has routing corrections  D=degraded (not offered until healthy)\n",
 			shown, len(nodes))
 		fmt.Println("filters: --harness <id>  --kind <k>  --unreachable  --corrected  --include-retired  --json")
 	case "graph":
