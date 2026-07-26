@@ -34,6 +34,20 @@ type LaneConfig struct {
 	Privacy      string         `json:"privacy" yaml:"privacy"`
 	Embedder     EmbedderConfig `json:"embedder" yaml:"embedder"`
 	Chunk        ChunkConfig    `json:"chunk" yaml:"chunk"`
+
+	// SourceInPlacePrivacyGate is an explicit opt-in that tightens the
+	// corpus resolver's body_policy=source_in_place seam in step with the
+	// owned_snapshot gate. Default false preserves the documented legacy
+	// behavior (BuildSourceManifest defaults source_in_place items to
+	// privacy=private while published quickstarts run public lanes — that
+	// contract is older than this gate). When true, a privacy=private
+	// source_in_place item is refused before any body read or embedder
+	// call unless the lane posture is private + local/loopback embedder,
+	// mirroring the owned_snapshot predicate. Public items and
+	// non-private lanes remain unaffected. There is no caller-side
+	// override: closing the seam is one shape — refuse, never
+	// widen.
+	SourceInPlacePrivacyGate bool `json:"source_in_place_privacy_gate,omitempty" yaml:"source_in_place_privacy_gate,omitempty"`
 }
 
 type EmbedderConfig struct {
@@ -140,6 +154,15 @@ func ValidateLaneConfig(lane LaneConfig) (LaneConfig, error) {
 		return LaneConfig{}, fmt.Errorf("corpus lane %q privacy=private refuses non-local embedder %s", lane.Lane, lane.Embedder.Identity())
 	}
 	return lane, nil
+}
+
+// SourceInPlacePrivacyGateEnabled reports whether the optional
+// body_policy=source_in_place privacy gate is engaged for a lane. The
+// check exists so callers (and tests) can phrase intent without poking
+// the struct field directly — keeps the off-by-default contract visible
+// at every seam.
+func SourceInPlacePrivacyGateEnabled(lane LaneConfig) bool {
+	return lane.SourceInPlacePrivacyGate
 }
 
 func ProviderIsLocal(provider, baseURL string) bool {

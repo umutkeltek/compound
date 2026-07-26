@@ -170,6 +170,21 @@ carrying a private `owned_snapshot` item fails closed before the embedder interf
 fallback is forbidden on purpose: completed custody means the owned body IS the source, and any silent
 bridge would hide custody corruption.
 
+The `body_policy=source_in_place` seam has a parallel opt-in gate exposed as
+`LaneConfig.SourceInPlacePrivacyGate`. Default off preserves the documented legacy behavior:
+`BuildSourceManifest` emits `source_in_place` items with `privacy=private` while the published
+quickstart runs public lanes — that contract is older than this gate and silently widening it
+would break a documented external surface. When the operator opts in, a `source_in_place` item
+whose `privacy=private` is refused before any body read or embedder call unless the lane posture
+is `privacy=private` plus a local/loopback embedder (the same `laneIsPrivateLocal` predicate the
+`owned_snapshot` gate uses). The refusal error names the item id, lane privacy, and embedder
+identity so operators can pinpoint the leak path without grepping production logs. There is no
+caller-side override: the gate is one shape — refuse, never widen — and `item.Privacy` values
+other than exactly `public` / `private` (case-insensitive, trimmed) fail closed with a malformed
+field error. The off-by-default posture is the load-bearing claim this evidence packet makes;
+enabling the gate is an explicit, audited `LaneConfig` mutation that should land in the same
+commit as the operator's privacy review, not be inferred from an ambient config knob.
+
 The first database-export custody adapter uses `manifest-create --from-export ...
 --dump ...` accepts a dump only when its streamed SHA-256 equals the export's exact `dump_ref`, then records
 `dump_body_ref` and `dump_bytes` at family scope. A mismatch publishes no artifact. `manifest-doctor` keeps an

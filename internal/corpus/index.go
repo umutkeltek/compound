@@ -245,6 +245,35 @@ func prepareIndex(homePath string, lane LaneConfig) (preparedIndex, error) {
 				return preparedIndex{}, fmt.Errorf("corpus index: owned_snapshot item %q has malformed privacy field (must be public or private, got %q)", item.ID, strings.TrimSpace(item.Privacy))
 			}
 		}
+
+		// Source-in-place privacy gate — explicit opt-in only. The default-off
+		// posture preserves the documented legacy behavior (BuildSourceManifest
+		// emits source_in_place items with privacy=private while the published
+		// quickstart runs public lanes; widening this gate silently would break
+		// that contract). When the operator opts in via
+		// lane.SourceInPlacePrivacyGate, the gate reuses the same predicate the
+		// owned_snapshot path uses so the two seams close in lockstep — and the
+		// refusal happens BEFORE readItemBody is called, which is the load-bearing
+		// claim this evidence packet makes: zero private source_in_place bytes
+		// reach the rented embedder. Rules mirror the owned_snapshot gate:
+		//
+		//   1. item.Privacy MUST be exactly "public" or "private" — malformed
+		//      labels fail closed, never widen to "public".
+		//   2. item.Privacy == "private" requires lane privacy=private AND a
+		//      local/loopback embedder. Anything else is refused.
+		//   3. item.Privacy == "public" enters any lane, unchanged.
+		if SourceInPlacePrivacyGateEnabled(lane) && strings.EqualFold(strings.TrimSpace(item.BodyPolicy), "source_in_place") {
+			switch strings.ToLower(strings.TrimSpace(item.Privacy)) {
+			case "public":
+				// OK in any lane.
+			case "private":
+				if !laneIsPrivateLocal(lane) {
+					return preparedIndex{}, fmt.Errorf("corpus index: source_in_place item %q privacy=private refuses non-private lane (lane privacy=%q embedder=%s)", item.ID, strings.TrimSpace(lane.Privacy), lane.Embedder.Identity())
+				}
+			default:
+				return preparedIndex{}, fmt.Errorf("corpus index: source_in_place item %q has malformed privacy field (must be public or private, got %q)", item.ID, strings.TrimSpace(item.Privacy))
+			}
+		}
 		body, err := readItemBody(homePath, item)
 		if err != nil {
 			return preparedIndex{}, err
