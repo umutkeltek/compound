@@ -42,12 +42,17 @@ type ProjectionFreshness struct {
 
 // projectionRebuildCommands maps a projection body to the command that rebuilds it.
 //
-// Only entries verified to exist as commands are listed. A projection written as a
-// side effect of some other flow (rather than by an explicit rebuild) is left out,
-// because "no command shown" is honest and a fabricated one is not.
+// Only entries verified to actually WRITE the projection are listed, and verified by
+// running them and re-reading the body's timestamp — not by reading the help text.
+// `compound memory temperature` without --rebuild prints a preview and leaves the
+// persisted body untouched, so listing the bare form here would have told the
+// operator to run a command that changes nothing and then report the row as
+// unfixable. A projection written only as a side effect of another flow is left
+// without a command at all, because "no command shown" is honest and a command that
+// does not do what the row claims will still be run.
 var projectionRebuildCommands = map[string]string{
 	"negatives.json":          "compound negatives build",
-	"memory-temperature.json": "compound memory temperature",
+	"memory-temperature.json": "compound memory temperature --rebuild",
 	"capability-usage.json":   "compound capability usage",
 }
 
@@ -57,9 +62,20 @@ var projectionRebuildCommands = map[string]string{
 // migration on bodies whose only problem is vocabulary.
 var projectionTimestampFields = []string{"computed_at", "generated_at", "imported_at", "updated_at"}
 
-// ProjectionFreshnessReport compares every projection body under
+// ProjectionFreshnessReport compares every REBUILDABLE projection body under
 // $COMPOUND_HOME/projections against a reference build time — normally the mtime
 // of the running binary — and reports which ones predate it.
+//
+// Rebuildable is the load-bearing word, and it is resolved from the habitat catalog
+// (HabitatForPath) rather than from the directory name. `projections/` is
+// HabitatClassRebuildable as a whole, but several children are carved out as
+// HabitatClassOperational because they are STATE, not derived caches:
+// orient-operator-last-seq.json is a cursor, narrate-thread-seen.json is a
+// seen-marker, account-projection.json is admission state. For those, age is
+// meaningful data — "the operator surface has not been used in 76h" — and not
+// staleness at all. Reporting them as unrebuilt caches was measured to produce
+// three false alarms out of five rows on a real home, which is precisely the
+// cry-wolf failure this check is supposed to avoid.
 //
 // WHY THIS EXISTS: a fix to a projection-backed surface is not live until the
 // projection is rebuilt, and every signal short of observing the real path can say
@@ -95,6 +111,14 @@ func ProjectionFreshnessReport(homePath string, codeBuiltAt, now time.Time) ([]P
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
+		rel := filepath.ToSlash(filepath.Join("projections", entry.Name()))
+		// Only derived caches are subject to a freshness claim. State, config and
+		// cursors that happen to live under projections/ are excluded by CLASS, from
+		// the catalog that already owns that distinction — not by a second list here
+		// that would drift away from it.
+		if habitat, ok := HabitatForPath(rel); ok && habitat.Class != HabitatClassRebuildable {
+			continue
+		}
 		path := filepath.Join(dir, entry.Name())
 		body, readErr := os.ReadFile(path)
 		if readErr != nil {
@@ -107,7 +131,7 @@ func ProjectionFreshnessReport(homePath string, codeBuiltAt, now time.Time) ([]P
 
 		row := ProjectionFreshness{
 			Name:           entry.Name(),
-			RelPath:        filepath.ToSlash(filepath.Join("projections", entry.Name())),
+			RelPath:        rel,
 			RebuildCommand: projectionRebuildCommands[entry.Name()],
 		}
 		field, stamp, ok := projectionComputedAt(doc)

@@ -140,6 +140,11 @@ func buildHabitatEntries() []HabitatEntry {
 		active("projections", "projections", HabitatClassRebuildable, true, false, true),
 		child("projections.account-admission", "projections/account-projection.json", HabitatClassOperational, false, true, false),
 		child("projections.narrate-thread-seen", "projections/narrate-thread-seen.json", HabitatClassOperational, false, true, false),
+		// Operator-authored lane-alias overrides. Config, not derived state: nothing
+		// rebuilds it, so it must be backed up and must never be treated as a
+		// rebuildable cache whose age means anything (see
+		// routeevidence.laneAliasesFile — "It is config, not a governed registry").
+		child("projections.lane-aliases", "projections/lane-aliases.json", HabitatClassConfig, false, true, false),
 		child("projections.orient-cursor", "projections/orient-operator-last-seq.json", HabitatClassOperational, false, true, false),
 		child("projections.director-runs", "projections/director/runs", HabitatClassEvidence, false, true, false),
 		child("projections.source-intake-records", "projections/source-intake/reports", HabitatClassEvidence, false, true, false),

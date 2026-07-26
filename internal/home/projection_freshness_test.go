@@ -86,7 +86,9 @@ func TestProjectionFreshnessClearsAProjectionBuiltByTheRunningCode(t *testing.T)
 // operator would start ignoring the section.
 func TestProjectionFreshnessTreatsUndatedAsUnprovable(t *testing.T) {
 	home := t.TempDir()
-	writeProjection(t, home, "lane-aliases.json", `{"aliases":{"a":"b"}}`)
+	// A REBUILDABLE body with no timestamp. Deliberately not lane-aliases.json, which
+	// the habitat catalog classifies as config and this check therefore skips.
+	writeProjection(t, home, "derived-cache.json", `{"rows":[{"a":"b"}]}`)
 
 	rows, err := ProjectionFreshnessReport(home, time.Now().UTC(), time.Now().UTC())
 	if err != nil {
@@ -175,5 +177,62 @@ func TestProjectionFreshnessNeverReportsAnAbsolutePath(t *testing.T) {
 		if got := row.RelPath; got != "projections/negatives.json" {
 			t.Errorf("RelPath = %q, want projections/negatives.json", got)
 		}
+	}
+}
+
+// TestProjectionFreshnessSkipsStateAndConfigNotJustCaches pins the classification
+// that keeps this check from crying wolf.
+//
+// `projections/` is HabitatClassRebuildable as a whole, but several children are
+// carved out as Operational or Config because they are STATE, not derived caches: a
+// cursor, a seen-marker, admission state, operator-authored aliases. For those, age
+// is meaningful data — "the operator surface has not been used in 76h" — and not
+// staleness at all.
+//
+// Measured on a real home before this filter existed: 5 flagged rows of which 3 were
+// these, i.e. a 60% false-alarm rate on the section whose entire value is being
+// believed. The classification was already in the habitat catalog; the check simply
+// was not asking it.
+func TestProjectionFreshnessSkipsStateAndConfigNotJustCaches(t *testing.T) {
+	home := t.TempDir()
+	ancient := `{"computed_at":"2026-01-01T00:00:00Z"}`
+	ancientImported := `{"imported_at":"2026-01-01T00:00:00Z"}`
+	ancientUpdated := `{"updated_at":"2026-01-01T00:00:00Z"}`
+
+	// Genuine derived caches: these must be checked.
+	writeProjection(t, home, "memory-temperature.json", ancient)
+	writeProjection(t, home, "capability-usage.json", `{"generated_at":"2026-01-01T00:00:00Z"}`)
+	// State / config living under the same directory: these must NOT be checked.
+	writeProjection(t, home, "orient-operator-last-seq.json", ancientUpdated)
+	writeProjection(t, home, "narrate-thread-seen.json", ancient)
+	writeProjection(t, home, "account-projection.json", ancientImported)
+	writeProjection(t, home, "lane-aliases.json", `{"aliases":{"a":"b"}}`)
+
+	rows, err := ProjectionFreshnessReport(home, time.Now().UTC(), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]bool{}
+	for _, row := range rows {
+		got[row.Name] = true
+	}
+	for _, want := range []string{"memory-temperature.json", "capability-usage.json"} {
+		if !got[want] {
+			t.Errorf("%s is a derived cache and must be freshness-checked", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"orient-operator-last-seq.json", // cursor
+		"narrate-thread-seen.json",      // seen-marker
+		"account-projection.json",       // admission state
+		"lane-aliases.json",             // operator-authored config
+	} {
+		if got[unwanted] {
+			t.Errorf("%s is state/config, not a rebuildable cache — flagging its age invents a defect", unwanted)
+		}
+	}
+	if len(rows) != 2 {
+		t.Errorf("expected exactly the 2 derived caches, got %d: %+v", len(rows), rows)
 	}
 }
