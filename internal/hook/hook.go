@@ -358,10 +358,22 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 		if deps.BeforeContextPersist != nil {
 			deps.BeforeContextPersist()
 		}
-		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack, renderInjection(ev.Header.ID, built.Pack))
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack, renderInjection(injectionRender{
+			HookID:  ev.Header.ID,
+			Pack:    built.Pack,
+			Surface: injectionSurfaceOrientation,
+		}))
 		if err != nil {
 			return Result{}, err
 		}
+		// Record AFTER the artifacts are durable: a marker written before the content
+		// would tell the next prompt that orientation was served when it was not.
+		//
+		// NON-FATAL, matching renderAndWriteInstructionPack's log-and-continue idiom:
+		// a failed marker must not fail the hook that already served the orientation
+		// successfully. The cost of losing it is that the per-prompt pointer falls
+		// back to its "cannot tell" wording, which is the correct degradation.
+		_ = recordSessionOrientationServed(deps.HomePath, fx.SessionID, ev.Header.ID, now)
 		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContractRef, injection.ContextPackRef, injection.Ref)
 		ev.OutputRef = injection.Ref
 	}
@@ -406,7 +418,12 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		if deps.BeforeContextPersist != nil {
 			deps.BeforeContextPersist()
 		}
-		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack, renderInjection(ev.Header.ID, built.Pack))
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack, renderInjection(injectionRender{
+			HookID:          ev.Header.ID,
+			Pack:            built.Pack,
+			Surface:         injectionSurfaceTask,
+			OrientationNote: orientationNoteForSession(deps.HomePath, fx.SessionID, fx.Harness),
+		}))
 		if err != nil {
 			return Result{}, err
 		}
@@ -486,7 +503,12 @@ func liveUserPrompt(name string, fx Fixture, deps Deps, now time.Time, mode stri
 
 	ev := newEvent(name, persistedFX, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), nil, now)
 	ev.IDs.ContextPackID = built.Pack.Header.ID
-	rendered := renderInjection(ev.Header.ID, built.Pack)
+	rendered := renderInjection(injectionRender{
+		HookID:          ev.Header.ID,
+		Pack:            built.Pack,
+		Surface:         injectionSurfaceTask,
+		OrientationNote: orientationNoteForSession(deps.HomePath, fx.SessionID, fx.Harness),
+	})
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
 		if deps.BeforeContextPersist != nil {
@@ -1197,6 +1219,81 @@ func promotePendingSessionMutation(homePath string, fx Fixture) (string, error) 
 	return writtenRelative, nil
 }
 
+// sessionOrientationRecord marks that a session's orientation surface was served.
+//
+// The session id is HASHED into the path, matching hook-session-writes: a session
+// id is operator-side state and this projection is not the place to hold it in
+// clear.
+type sessionOrientationRecord struct {
+	SchemaVersion string `json:"schema_version"`
+	SessionKey    string `json:"session_key"`
+	HookID        string `json:"hook_id"`
+	ServedAt      string `json:"served_at"`
+}
+
+const sessionOrientationSchemaVersion = "compound.hook_session_orientation.v0.1"
+
+func sessionOrientationPath(homePath, sessionID string) string {
+	return filepath.Join(homePath, "state", "runs", "hook-session-orientation", hashStr(strings.TrimSpace(sessionID))+".json")
+}
+
+// recordSessionOrientationServed persists the marker the task surface reads.
+//
+// NON-FATAL by design, like the instruction pack: failing to record that
+// orientation was served must never block serving it. A missing marker degrades the
+// pointer to its "cannot tell" wording, which is the honest fallback.
+func recordSessionOrientationServed(homePath, sessionID, hookID string, now time.Time) error {
+	if strings.TrimSpace(homePath) == "" || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	path := sessionOrientationPath(homePath, sessionID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(sessionOrientationRecord{
+		SchemaVersion: sessionOrientationSchemaVersion,
+		SessionKey:    hashStr(strings.TrimSpace(sessionID)),
+		HookID:        strings.TrimSpace(hookID),
+		ServedAt:      now.UTC().Format(time.RFC3339),
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, body, 0o644)
+}
+
+// orientationNoteForSession renders the task surface's pointer at the orientation
+// surface, in one of THREE states — the third is the point.
+//
+// A two-state pointer (served / not served) has to guess when it cannot observe the
+// session at all: with no home or no session id there is no marker to find, and
+// reporting "NOT served" there would manufacture an alarm from missing plumbing.
+// A false "orientation missing" is as corrosive as the silent gap the pointer
+// exists to prevent, so unprovable is its own state and says only what is true.
+func orientationNoteForSession(homePath, sessionID, harnessName string) string {
+	reserve := strings.TrimSpace(harnessName)
+	if reserve == "" {
+		reserve = "<harness>"
+	}
+	command := fmt.Sprintf("`compound orient --harness %s --task \"<task>\"`", reserve)
+
+	if strings.TrimSpace(homePath) == "" || strings.TrimSpace(sessionID) == "" {
+		return "- Orientation (scope, sources, hooks, constitution) is served on SessionStart; re-serve with " + command
+	}
+	body, err := os.ReadFile(sessionOrientationPath(homePath, sessionID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "- Orientation NOT served this session (no SessionStart record): run " + command
+		}
+		return "- Orientation (scope, sources, hooks, constitution) is served on SessionStart; re-serve with " + command
+	}
+	var record sessionOrientationRecord
+	if json.Unmarshal(body, &record) != nil || strings.TrimSpace(record.HookID) == "" {
+		return "- Orientation (scope, sources, hooks, constitution) is served on SessionStart; re-serve with " + command
+	}
+	return fmt.Sprintf("- Orientation served this session at `%s`; re-serve with %s", safeMD(record.HookID), command)
+}
+
 func readSessionWrittenPaths(homePath, sessionID string) ([]string, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, nil
@@ -1731,7 +1828,14 @@ const maxInjectionActiveMemoryRefs = 8
 
 // maxInjectionIncludedRefs caps generic provenance in the harness digest.
 // Dedicated sections render the high-signal subsets separately.
-const maxInjectionIncludedRefs = 24
+//
+// 8, not 24: the ref bound and the character bound have to agree, or the section
+// truncates mid-ref while the ref count reports success — observed at 10 refs, which
+// cut a ref in half and dropped the one after it. A real Included ref measures ~110
+// runes, so the character cap was always the true limit and the ref count was
+// decorative. At 8 the list fits maxOrientationIncludedChars and ends with a
+// countable "N more omitted" line instead of a severed ref.
+const maxInjectionIncludedRefs = 8
 
 // maxInjectionNegativeCards caps the already-tried-and-failed cards a digest lists.
 // internal/contract already bounds the pack at maxContextNegativeCards (5) when it
@@ -1739,17 +1843,16 @@ const maxInjectionIncludedRefs = 24
 // future orient-side cap change cannot silently blow the injection budget.
 const maxInjectionNegativeCards = 5
 
-// Section caps are a BUDGET, not decoration: their sum must stay within
-// MaxContextChars or the caps stop bounding anything and the sections rendered last
-// are amputated by capInjectionChars instead. TestInjectionSectionCapsFitBudget
-// enforces the sum; keep it green when tuning any figure below.
+// Section caps are a BUDGET, not decoration: each surface's caps must sum within
+// MaxContextChars, or the caps stop bounding anything and the sections rendered
+// last are amputated by capInjectionChars instead.
+// TestInjectionSectionCapsFitBudget enforces both sums; keep it green when tuning
+// any figure below.
 //
-// Necessary, not sufficient: the sections after Active Instructions
-// (Active Hooks, Included, Excluded, Hook Gate Readiness, Hook Roster) are
-// UNBUDGETED, and Included alone runs ~900 runes at maxInjectionIncludedRefs. A
-// cap sum under MaxContextChars keeps this list honest; it does not by itself
-// leave the tail room to render. Splitting the stable orientation tail onto
-// SessionStart is the structural fix, and it is not landed yet.
+// Every section is budgeted on both surfaces. Nothing is left unbudgeted: an
+// unbudgeted section does not get "whatever is left", it gets whatever is left
+// AFTER every capped section above it, which is how the orientation tail came to
+// be amputated in essentially every digest while every cap looked satisfied.
 const (
 	maxInjectionHeaderChars       = 400
 	maxInjectionActiveMemoryChars = 1600
@@ -1777,11 +1880,41 @@ const (
 	// never rendered one.
 	maxInjectionAvoidChars           = 160
 	maxInjectionCapabilityOfferChars = 1000
-	maxInjectionSummaryChars         = 500
-	// maxInjectionActiveInstructionChars: measured max 205 runes across 1077 uncapped
-	// digests (the section is a short list of instruction refs, not their content).
-	// 650 was more than triple the worst observed case.
-	maxInjectionActiveInstructionChars = 300
+	// maxInjectionOrientationNoteChars holds the task surface's one-line pointer at
+	// the orientation surface. Small on purpose: a pointer that grows into a summary
+	// re-creates the duplication the split removed.
+	maxInjectionOrientationNoteChars = 220
+)
+
+// Orientation-surface caps. Served once per session, so these buy delivery of
+// content the shared surface could never fit rather than competing with task state.
+const (
+	// maxOrientationSummaryChars is nearly 5x the 500 the shared surface allowed,
+	// because SummaryMD carries the Tier-0 constitution and measured true demand for
+	// this section is ~2343 runes median across 1077 uncapped digests. At 500 the
+	// constitution was cut inside Law 6 in every digest observed, so Laws 7-16 —
+	// "prove the change" among them — had never reached a live agent through the
+	// hook. This is the section the orientation surface exists to deliver, so it is
+	// funded to its median demand first and the rest of the surface is fitted around
+	// it.
+	maxOrientationSummaryChars = 2400
+	// Measured max 205 across 1077 uncapped digests.
+	maxOrientationActiveInstructionChars = 300
+	// Measured 127 runes.
+	maxOrientationActiveHookChars = 250
+	// Included is the one orientation section deliberately funded BELOW its demand.
+	// It is generic provenance — the same reason it was demoted below high-signal
+	// meaning in the first place — so when the surface has to give something up, it
+	// gives up provenance rather than the constitution. maxInjectionIncludedRefs is
+	// lowered to match, so the list ends with an honest "N more omitted" line instead
+	// of a mid-ref character cut.
+	maxOrientationIncludedChars = 1100
+	// Measured ~400 runes.
+	maxOrientationExcludedChars = 500
+	// Hook Gate Readiness plus Hook Roster share one budget: readiness measured 265
+	// runes, roster 528, so 900 holds both in full. Readiness has reached a live
+	// agent 3 times in 2714 digests; funding it to full width is the point.
+	maxOrientationHookReadinessChars = 900
 )
 
 // renderAndWriteInstructionPack renders and writes the harness-scoped
@@ -1890,15 +2023,50 @@ func harnessInstructionPackRel(homePath, harnessName string) string {
 	return filepath.ToSlash(rel)
 }
 
-func renderInjection(hookID string, pack envelope.ContextPack) string {
+// injectionSurface selects WHICH half of the digest an event renders.
+//
+// SessionStart and UserPromptSubmit used to render the same content under the same
+// MaxContextChars budget, which made the digest structurally unable to deliver its
+// own tail: true uncapped demand measures ~15800 runes against 6000, so the
+// sections rendered last (Included, Excluded, Hook Gate Readiness, Hook Roster)
+// were amputated in essentially every live digest, and the constitution inside
+// SummaryMD was cut mid-Law every time. No cap allocation closes a 2.6x
+// oversubscription; splitting the surfaces by how often the content CHANGES does.
+type injectionSurface string
+
+const (
+	// injectionSurfaceOrientation is the stable, once-per-session half: what this
+	// repo is, which sources are in and out of scope, which hooks are installed and
+	// ready, and the constitution. None of it varies with the prompt, so re-serving
+	// it on every turn spent the whole budget re-asserting the unchanged.
+	injectionSurfaceOrientation injectionSurface = "orientation"
+	// injectionSurfaceTask is the volatile, per-prompt half: scope-matched memory
+	// and negatives, decisions in force, gates outstanding, capability offers — each
+	// computed against THIS prompt — plus a pointer back to the orientation surface.
+	injectionSurfaceTask injectionSurface = "task"
+)
+
+// injectionRender is the input to renderInjection. A struct rather than a
+// parameter list because the surface and the orientation note are independent
+// knobs and a positional bool would read as noise at every call site.
+type injectionRender struct {
+	HookID  string
+	Pack    envelope.ContextPack
+	Surface injectionSurface
+	// OrientationNote is the task surface's pointer at the orientation surface.
+	// Ignored on the orientation surface itself.
+	OrientationNote string
+}
+
+func renderInjection(in injectionRender) string {
 	var header strings.Builder
 	header.WriteString("# Compound Context Injection\n\n")
-	fmt.Fprintf(&header, "- Hook event: `%s`\n", safeMD(hookID))
-	fmt.Fprintf(&header, "- Context pack: `%s`\n", safeMD(pack.Header.ID))
-	if strings.TrimSpace(pack.Header.Scope.Surface) != "" {
-		fmt.Fprintf(&header, "- Scope: `%s`\n", safeMD(pack.Header.Scope.Surface))
+	fmt.Fprintf(&header, "- Hook event: `%s`\n", safeMD(in.HookID))
+	fmt.Fprintf(&header, "- Context pack: `%s`\n", safeMD(in.Pack.Header.ID))
+	if strings.TrimSpace(in.Pack.Header.Scope.Surface) != "" {
+		fmt.Fprintf(&header, "- Scope: `%s`\n", safeMD(in.Pack.Header.Scope.Surface))
 	}
-	if line := instructionPackPointerLine(pack); line != "" {
+	if line := instructionPackPointerLine(in.Pack); line != "" {
 		fmt.Fprintf(&header, "%s\n", line)
 	}
 	header.WriteString("- Capability refs are offers only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision.\n\n")
@@ -1906,8 +2074,24 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	var b strings.Builder
 	b.WriteString(capInjectionSection(header.String(), maxInjectionHeaderChars))
 
+	if in.Surface == injectionSurfaceOrientation {
+		writeOrientationSections(&b, in.Pack)
+		return capInjectionChars(b.String())
+	}
+	writeTaskSections(&b, in.Pack, in.OrientationNote)
+	return capInjectionChars(b.String())
+}
+
+// writeTaskSections renders the per-prompt half: everything computed against THIS
+// prompt, and nothing that merely restates the session.
+func writeTaskSections(b *strings.Builder, pack envelope.ContextPack, orientationNote string) {
+	if note := strings.TrimSpace(orientationNote); note != "" {
+		writeBudgetedInjectionSection(b, maxInjectionOrientationNoteChars, func(section *strings.Builder) {
+			section.WriteString(note + "\n")
+		})
+	}
 	if len(pack.ActiveMemory) > 0 {
-		writeBudgetedInjectionSection(&b, maxInjectionActiveMemoryChars, func(section *strings.Builder) {
+		writeBudgetedInjectionSection(b, maxInjectionActiveMemoryChars, func(section *strings.Builder) {
 			shown := prioritizedActiveMemoryRefs(pack.ActiveMemory, pack.ActivePositions)
 			omitted := 0
 			if len(shown) > maxInjectionActiveMemoryRefs {
@@ -1920,16 +2104,16 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 			}
 		})
 	}
-	writeBudgetedInjectionSection(&b, maxInjectionNegativeChars, func(section *strings.Builder) {
+	writeBudgetedInjectionSection(b, maxInjectionNegativeChars, func(section *strings.Builder) {
 		writeNegativesList(section, pack.Negatives)
 	})
-	writeBudgetedInjectionSection(&b, maxInjectionActiveDecisionChars, func(section *strings.Builder) {
+	writeBudgetedInjectionSection(b, maxInjectionActiveDecisionChars, func(section *strings.Builder) {
 		writeActiveDecisionsPointer(section, pack.ActiveDecisions)
 	})
-	writeBudgetedInjectionSection(&b, maxInjectionRequiredChecksChars, func(section *strings.Builder) {
+	writeBudgetedInjectionSection(b, maxInjectionRequiredChecksChars, func(section *strings.Builder) {
 		writeStringList(section, "Required Checks", pack.RequiredChecks)
 	})
-	writeBudgetedInjectionSection(&b, maxInjectionAvoidChars, func(section *strings.Builder) {
+	writeBudgetedInjectionSection(b, maxInjectionAvoidChars, func(section *strings.Builder) {
 		// pack.Avoid carries mem.Forbidden — RECALL SCOPE names ("self-model",
 		// "personal-corpus"), not behaviors to avoid. Labeling it "Avoid" promised
 		// behavioral steering and delivered scope config, so a reader saw "- none"
@@ -1942,30 +2126,46 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 		// channel still read as a checked-and-clear gate.
 		writeStringListWhenPresent(section, "Forbidden Recall Scopes", pack.Avoid)
 	})
-	writeBudgetedInjectionSection(&b, maxInjectionCapabilityOfferChars, func(section *strings.Builder) {
+	writeBudgetedInjectionSection(b, maxInjectionCapabilityOfferChars, func(section *strings.Builder) {
 		writeCapabilityOfferList(section, pack.CapabilityOffers)
 	})
-	writeBudgetedInjectionSection(&b, maxInjectionSummaryChars, func(section *strings.Builder) {
+}
+
+// writeOrientationSections renders the once-per-session half.
+//
+// Summary gets a far larger allowance here than it ever had on the shared surface,
+// because the Tier-0 constitution is carried inside SummaryMD: under the old
+// 500-rune cap it was cut inside Law 6 in every digest measured, so Laws 7-16 —
+// including "prove the change" — had never reached a live agent through the hook.
+func writeOrientationSections(b *strings.Builder, pack envelope.ContextPack) {
+	writeBudgetedInjectionSection(b, maxOrientationSummaryChars, func(section *strings.Builder) {
 		section.WriteString("\n## Summary\n")
 		section.WriteString(safeMD(pack.SummaryMD))
 		section.WriteString("\n")
 	})
-	writeBudgetedInjectionSection(&b, maxInjectionActiveInstructionChars, func(section *strings.Builder) {
+	writeBudgetedInjectionSection(b, maxOrientationActiveInstructionChars, func(section *strings.Builder) {
 		writeStringList(section, "Active Instructions", pack.ActiveInstructions)
 	})
-	writeStringList(&b, "Active Hooks", pack.ActiveHooks)
-	writeIncludedList(&b, pack.Included)
-	b.WriteString("\n## Excluded\n")
-	if len(pack.Excluded) == 0 {
-		b.WriteString("- none\n")
-	} else {
-		for _, ref := range pack.Excluded {
-			fmt.Fprintf(&b, "- `%s` reason=%s\n", safeMD(ref.Ref), safeMD(ref.Reason))
+	writeBudgetedInjectionSection(b, maxOrientationActiveHookChars, func(section *strings.Builder) {
+		writeStringList(section, "Active Hooks", pack.ActiveHooks)
+	})
+	writeBudgetedInjectionSection(b, maxOrientationIncludedChars, func(section *strings.Builder) {
+		writeIncludedList(section, pack.Included)
+	})
+	writeBudgetedInjectionSection(b, maxOrientationExcludedChars, func(section *strings.Builder) {
+		section.WriteString("\n## Excluded\n")
+		if len(pack.Excluded) == 0 {
+			section.WriteString("- none\n")
+			return
 		}
-	}
-	writeHookReadinessList(&b, pack.HookReadiness)
-	writeHookRosterList(&b, pack.HookRoster)
-	return capInjectionChars(b.String())
+		for _, ref := range pack.Excluded {
+			fmt.Fprintf(section, "- `%s` reason=%s\n", safeMD(ref.Ref), safeMD(ref.Reason))
+		}
+	})
+	writeBudgetedInjectionSection(b, maxOrientationHookReadinessChars, func(section *strings.Builder) {
+		writeHookReadinessList(section, pack.HookReadiness)
+		writeHookRosterList(section, pack.HookRoster)
+	})
 }
 
 func writeBudgetedInjectionSection(dst *strings.Builder, limit int, render func(*strings.Builder)) {

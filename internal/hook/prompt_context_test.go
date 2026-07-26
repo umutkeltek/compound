@@ -177,7 +177,7 @@ func TestRenderInjectionPrioritizesMeaningWithinWholeContextBound(t *testing.T) 
 		}},
 	}
 	pack.Header.ID = "ctx_prompt_bound"
-	text := renderInjection("hook_prompt_bound", pack)
+	text := renderInjection(injectionRender{HookID: "hook_prompt_bound", Pack: pack, Surface: injectionSurfaceTask})
 	if got := utf8.RuneCountInString(text); got > MaxContextChars {
 		t.Fatalf("rendered injection chars=%d, max=%d", got, MaxContextChars)
 	}
@@ -197,8 +197,15 @@ func TestRenderInjectionPrioritizesMeaningWithinWholeContextBound(t *testing.T) 
 	if strings.Contains(text, "GENERIC_TAIL_SENTINEL_23") {
 		t.Fatalf("bounded injection retained late generic provenance:\n%s", text)
 	}
-	if high, generic := strings.Index(text, positionLine), strings.Index(text, "## Included"); high < 0 || generic < 0 || high > generic {
-		t.Fatalf("high-signal memory must precede generic provenance: high=%d generic=%d\n%s", high, generic, text)
+	// High-signal meaning must reach the per-prompt surface and generic provenance
+	// must not. This was an ordering assertion while both shared one budget; the
+	// surface split makes it a partition, so high-signal content can no longer be
+	// pushed out by provenance no matter how much provenance there is.
+	if !strings.Contains(text, positionLine) {
+		t.Fatalf("per-prompt surface dropped high-signal memory:\n%s", text)
+	}
+	if strings.Contains(text, "## Included") {
+		t.Fatalf("per-prompt surface must not carry generic provenance:\n%s", text)
 	}
 }
 
@@ -233,20 +240,40 @@ func TestRenderInjectionReservesBudgetAcrossPathologicalHighSignalSections(t *te
 		}},
 	}
 	pack.Header.ID = "ctx_pathological_budget"
-	text := renderInjection("hook_pathological_budget", pack)
-	if got := utf8.RuneCountInString(text); got > MaxContextChars {
-		t.Fatalf("pathological injection chars=%d, max=%d", got, MaxContextChars)
+
+	// Both surfaces are exercised: a per-section reservation only means something if
+	// it holds on the surface that renders the section, and an oversized section on
+	// one surface must not be able to starve anything on either.
+	text := renderInjection(injectionRender{HookID: "hook_pathological_budget", Pack: pack, Surface: injectionSurfaceTask})
+	orientation := renderInjection(injectionRender{HookID: "hook_pathological_orientation", Pack: pack, Surface: injectionSurfaceOrientation})
+
+	for name, rendered := range map[string]string{"task": text, "orientation": orientation} {
+		if got := utf8.RuneCountInString(rendered); got > MaxContextChars {
+			t.Fatalf("pathological %s injection chars=%d, max=%d", name, got, MaxContextChars)
+		}
 	}
+
 	for _, want := range []string{
 		"MEMORY_POSITION_REPRESENTATIVE",
 		"REQUIRED_REPRESENTATIVE",
 		"AVOID_REPRESENTATIVE",
 		"NEGATIVE_REPRESENTATIVE",
 		"CAPABILITY_REPRESENTATIVE",
-		"INSTRUCTION_REPRESENTATIVE",
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("pathological first section starved later high-signal marker %q:\n%s", want, text)
+			t.Fatalf("pathological first section starved later high-signal marker %q on the task surface:\n%s", want, text)
+		}
+	}
+	// Orientation sections reserve against each other the same way. SUMMARY is the
+	// first section on that surface and is deliberately the largest, so it is the one
+	// most able to starve what follows it — which is exactly what an oversized
+	// constitution would do if the caps below it were not reserved.
+	for _, want := range []string{
+		"SUMMARY_REPRESENTATIVE",
+		"INSTRUCTION_REPRESENTATIVE",
+	} {
+		if !strings.Contains(orientation, want) {
+			t.Fatalf("pathological summary starved later orientation marker %q:\n%s", want, orientation)
 		}
 	}
 	// The decisions section renders a count, not ref content, so its reservation is

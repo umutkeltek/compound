@@ -46,7 +46,7 @@ func TestRenderInjectionIgnoresBodyPackSection(t *testing.T) {
 		},
 	}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 
 	if strings.Contains(text, body) {
 		t.Fatalf("injection digest must NOT carry body_pack body text, but found the body marker:\n%s", text)

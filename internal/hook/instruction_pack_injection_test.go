@@ -120,7 +120,7 @@ func TestRenderInstructionPackPointer_F9_LineCitesOnDiskPack(t *testing.T) {
 			Harness: "claude_code", Hook: "session-start", Installed: true, Status: "ok",
 		}},
 	}
-	txt := renderInjection("hookev_pointer", pack)
+	txt := renderInjection(injectionRender{HookID: "hookev_pointer", Pack: pack, Surface: injectionSurfaceTask})
 
 	// Pointer line must cite the home-relative ref + first 12 sha chars.
 	if !strings.Contains(txt, "- Instruction pack: `context/instruction-packs/claude_code/latest.json`") {
@@ -148,7 +148,7 @@ func TestRenderInstructionPackPointer_F10_OmitsOnMultiHarness(t *testing.T) {
 			{Harness: "codex", Hook: "session-start", Installed: true, Status: "ok"},
 		},
 	}
-	txt := renderInjection("hookev_multi", pack)
+	txt := renderInjection(injectionRender{HookID: "hookev_multi", Pack: pack, Surface: injectionSurfaceTask})
 	if strings.Contains(txt, "- Instruction pack:") {
 		t.Fatalf("multi-harness injection must not pin a single harness:\n%s", txt)
 	}
@@ -169,7 +169,7 @@ func TestRenderInstructionPackPointer_F11_OmitsOnNoHome(t *testing.T) {
 			{Harness: "claude_code", Hook: "session-start", Installed: true, Status: "ok"},
 		},
 	}
-	txt := renderInjection("hookev_no_home", pack)
+	txt := renderInjection(injectionRender{HookID: "hookev_no_home", Pack: pack, Surface: injectionSurfaceTask})
 	if strings.Contains(txt, "- Instruction pack:") {
 		t.Fatalf("no-home injection must not emit a pointer line:\n%s", txt)
 	}

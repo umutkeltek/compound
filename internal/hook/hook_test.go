@@ -540,10 +540,12 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 		"installed=true",
 		"native_block=true",
 		"## Hook Roster",
-		"## Required Checks",
-		"capability://skill:codex-pricing",
-		"capability://skill:generic-pricing",
-		"[offer, not execution]",
+		// Required Checks and Capability Offers are deliberately NOT asserted on this
+		// surface: both are computed per prompt (Required Checks only for a
+		// write-mutation task), so a SessionStart digest carrying them would mean the
+		// split leaked task state back onto the orientation surface. The
+		// harness-FILTERING intent of this test is proven below, on the surface that
+		// actually renders offers.
 		"Capability refs are offers only",
 	} {
 		if !strings.Contains(text, want) {
@@ -563,6 +565,42 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	}
 	if res.Event.OutputRef != res.Injection.Ref {
 		t.Fatalf("output_ref = %q, want injection ref %q", res.Event.OutputRef, res.Injection.Ref)
+	}
+
+	// Harness filtering, proven on the surface that renders capability offers: codex
+	// sees its own and the generic offer, and never the claude-only one. This is the
+	// substantive claim of the test — that offers are scoped to the harness — and it
+	// must be asserted where a reader can actually act on them.
+	promptFX := fx
+	promptFX.Hook = "user-prompt-submit"
+	promptRes, err := Run(promptFX, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run prompt: %v", err)
+	}
+	if promptRes.Injection == nil {
+		t.Fatal("user-prompt-submit should persist injection with HomePath")
+	}
+	promptBody, err := os.ReadFile(promptRes.Injection.Path)
+	if err != nil {
+		t.Fatalf("read prompt injection: %v", err)
+	}
+	promptText := string(promptBody)
+	for _, want := range []string{
+		"## Capability Offers",
+		"capability://skill:codex-pricing",
+		"capability://skill:generic-pricing",
+		// The offer-not-execution guard travels with the offers themselves. On this
+		// surface it is the per-offer note, not the Included list's inline
+		// "[offer, not execution]" marker — an offer must never render without it,
+		// whichever surface carries it.
+		"note=offer only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision",
+	} {
+		if !strings.Contains(promptText, want) {
+			t.Fatalf("per-prompt injection missing %q:\n%s", want, promptText)
+		}
+	}
+	if strings.Contains(promptText, "capability://skill:claude-pricing") {
+		t.Fatalf("per-prompt injection leaked another harness's offer:\n%s", promptText)
 	}
 }
 
@@ -618,8 +656,33 @@ func TestSessionStartInjectionIncludesRelevantCompoundMemory(t *testing.T) {
 	if !strings.Contains(text, "claim://"+promoted.Claim.ID) {
 		t.Fatalf("injection missing claim ref claim://%s:\n%s", promoted.Claim.ID, text)
 	}
-	if !strings.Contains(text, "## Active Memory") {
-		t.Fatalf("injection missing Active Memory section:\n%s", text)
+	// The dedicated "## Active Memory" section is relevance-gated against a PROMPT,
+	// so it belongs to the per-prompt surface; SessionStart has no prompt to be
+	// relevant to. Memory still reaches the session here — asserted above by the
+	// ledger line and the claim ref, both of which survive on the orientation
+	// surface — so this checks that the section did not merely move to a place
+	// nothing renders it.
+	if strings.Contains(text, "## Active Memory") {
+		t.Fatalf("orientation surface must not carry the prompt-gated Active Memory section:\n%s", text)
+	}
+	promptFX := fx
+	promptFX.Hook = "user-prompt-submit"
+	promptRes, err := Run(promptFX, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run prompt: %v", err)
+	}
+	if promptRes.Injection == nil {
+		t.Fatal("user-prompt-submit should persist injection with HomePath")
+	}
+	promptBody, err := os.ReadFile(promptRes.Injection.Path)
+	if err != nil {
+		t.Fatalf("read prompt injection: %v", err)
+	}
+	if !strings.Contains(string(promptBody), "## Active Memory") {
+		t.Fatalf("per-prompt surface dropped the Active Memory section entirely:\n%s", promptBody)
+	}
+	if !strings.Contains(string(promptBody), "claim://"+promoted.Claim.ID) {
+		t.Fatalf("per-prompt surface dropped the promoted claim:\n%s", promptBody)
 	}
 }
 
@@ -724,8 +787,26 @@ func TestSessionStartInjectionUsesConfiguredBreadthEngine(t *testing.T) {
 		t.Fatalf("read injection: %v", err)
 	}
 	injection := string(injectionBytes)
-	if !strings.Contains(injection, "## Active Memory") || !strings.Contains(injection, wantRef) {
-		t.Fatalf("injection missing breadth-ranked memory %s:\n%s", wantRef, injection)
+	// The breadth-ranked claim must reach a RENDERED digest, not just the pack —
+	// pack-only delivery is the exact "capability with no live consumer" failure the
+	// negatives chain already hit. The Active Memory section is prompt-gated, so the
+	// rendering proof runs on the per-prompt surface while the retrieval posture
+	// above is proven on the session-start run that configured the engine.
+	promptFX := fx
+	promptFX.Hook = "user-prompt-submit"
+	promptRes, err := Run(promptFX, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run prompt: %v", err)
+	}
+	if promptRes.Injection == nil {
+		t.Fatal("user-prompt-submit should persist injection with HomePath")
+	}
+	promptInjectionBytes, err := os.ReadFile(promptRes.Injection.Path)
+	if err != nil {
+		t.Fatalf("read prompt injection: %v", err)
+	}
+	if promptInjection := string(promptInjectionBytes); !strings.Contains(promptInjection, "## Active Memory") || !strings.Contains(promptInjection, wantRef) {
+		t.Fatalf("per-prompt injection missing breadth-ranked memory %s:\n%s", wantRef, promptInjection)
 	}
 	if got := len([]rune(injection)); got > MaxContextChars {
 		t.Fatalf("hook injection chars=%d, max=%d", got, MaxContextChars)
@@ -804,7 +885,7 @@ func TestRenderInjectionEmitsActiveMemorySection(t *testing.T) {
 		}},
 	}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 	if !strings.Contains(text, "## Active Memory") {
 		t.Fatalf("injection missing Active Memory section:\n%s", text)
 	}
@@ -819,7 +900,7 @@ func TestRenderInjectionEmitsActiveMemorySection(t *testing.T) {
 
 	empty := envelope.ContextPack{SummaryMD: "summary"}
 	empty.Header.ID = "ctx_test"
-	if got := renderInjection("hookev_test", empty); strings.Contains(got, "## Active Memory") {
+	if got := renderInjection(injectionRender{HookID: "hookev_test", Pack: empty, Surface: injectionSurfaceTask}); strings.Contains(got, "## Active Memory") {
 		t.Fatalf("empty active memory should not emit a section header:\n%s", got)
 	}
 }
@@ -841,7 +922,7 @@ func TestRenderInjectionEmitsActivePositionLine(t *testing.T) {
 		}},
 	}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 	want := "`position://project:compound::memory_default_organ` - " + line
 	if !strings.Contains(text, want) {
 		t.Fatalf("injection missing active position line %q:\n%s", want, text)
@@ -855,7 +936,7 @@ func TestRenderInjectionCapsActiveMemorySection(t *testing.T) {
 	}
 	pack := envelope.ContextPack{SummaryMD: "summary", ActiveMemory: refs}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 	for _, want := range refs[:maxInjectionActiveMemoryRefs] {
 		if !strings.Contains(text, "`"+want+"`") {
 			t.Fatalf("injection missing active memory ref %q:\n%s", want, text)
@@ -887,7 +968,9 @@ func TestRenderInjectionCapsIncludedSection(t *testing.T) {
 		Included:  included,
 	}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	// Included is orientation content: it does not vary with the prompt, so it is
+	// served once per session rather than on every turn.
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceOrientation})
 	for _, want := range included[:maxInjectionIncludedRefs] {
 		if !strings.Contains(text, "`"+want.Ref+"`") {
 			t.Fatalf("injection missing included ref %q:\n%s", want.Ref, text)
@@ -919,7 +1002,7 @@ func TestRenderInjectionActiveDecisionsRenderCountNotBareIDs(t *testing.T) {
 		ActiveDecisions: refs,
 	}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 	if !strings.Contains(text, "## Active Decisions") {
 		t.Fatalf("injection missing Active Decisions section:\n%s", text)
 	}
@@ -946,7 +1029,7 @@ func TestRenderInjectionActiveDecisionsRenderCountNotBareIDs(t *testing.T) {
 func TestRenderInjectionEmptyActiveDecisions(t *testing.T) {
 	pack := envelope.ContextPack{SummaryMD: "summary"}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 	if !strings.Contains(text, "## Active Decisions\n- none") {
 		t.Fatalf("injection should render an explicit empty decisions section:\n%s", text)
 	}
@@ -969,7 +1052,7 @@ func TestRenderInjectionSurfacesNegatives(t *testing.T) {
 		}},
 	}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 	if !strings.Contains(text, "## Already Tried And Failed") {
 		t.Fatalf("injection missing negatives section:\n%s", text)
 	}
@@ -993,7 +1076,7 @@ func TestRenderInjectionSurfacesNegatives(t *testing.T) {
 func TestRenderInjectionOmitsEmptyNegatives(t *testing.T) {
 	pack := envelope.ContextPack{SummaryMD: "summary"}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 	if strings.Contains(text, "Already Tried And Failed") {
 		t.Fatalf("injection should omit the negatives section entirely when empty:\n%s", text)
 	}
@@ -1013,7 +1096,7 @@ func TestRenderInjectionCapsNegatives(t *testing.T) {
 	}
 	pack := envelope.ContextPack{SummaryMD: "summary", Negatives: cards}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 	for _, forbidden := range cards[maxInjectionNegativeCards:] {
 		if strings.Contains(text, forbidden.ApproachKey) {
 			t.Fatalf("injection should cap negative cards, got %q:\n%s", forbidden.ApproachKey, text)
@@ -1060,7 +1143,7 @@ func TestRenderInjectionShowsCapabilityOffers(t *testing.T) {
 		}},
 	}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 	for _, want := range []string{
 		"## Capability Offers",
 		"`capability://skill:mcp-builder` kind=skill name=mcp-builder score=1.80 why=trigger x weight",
@@ -1073,8 +1156,14 @@ func TestRenderInjectionShowsCapabilityOffers(t *testing.T) {
 			t.Fatalf("injection missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Index(text, "## Capability Offers") > strings.Index(text, "## Included") {
-		t.Fatalf("capability offers should render before long Included provenance:\n%s", text)
+	// Capability offers are task-scoped and must reach the per-prompt surface;
+	// Included is generic provenance and must NOT, or the offers are competing with
+	// it for budget again. This used to be an ordering assertion (offers before
+	// Included in one shared digest); the surface split makes it a partition, which
+	// is the stronger property — ordering only mattered because both were racing the
+	// same cap.
+	if strings.Contains(text, "## Included") {
+		t.Fatalf("per-prompt surface must not carry generic provenance:\n%s", text)
 	}
 }
 
@@ -2303,7 +2392,7 @@ func TestRenderInjectionLabelsForbiddenRecallScopesHonestly(t *testing.T) {
 		Avoid:     []string{"self-model", "personal-corpus"},
 	}
 	pack.Header.ID = "ctx_test"
-	text := renderInjection("hookev_test", pack)
+	text := renderInjection(injectionRender{HookID: "hookev_test", Pack: pack, Surface: injectionSurfaceTask})
 	if !strings.Contains(text, "## Forbidden Recall Scopes") {
 		t.Fatalf("injection missing forbidden-recall-scopes section:\n%s", text)
 	}
