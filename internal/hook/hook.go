@@ -1517,7 +1517,7 @@ func postToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, err
 	// idempotence outright (caught by TestLargeToolOutputExternalizedAsObservedNotAmbient).
 	// The rebuild's own evidence is the timestamp inside each projection, which
 	// `compound doctor` reads.
-	_ = refreshDerivedCaches(deps.HomePath, now)
+	_ = refreshDerivedCaches(deps.HomePath, fx.Live, now)
 	// C3: a tool body at or beyond the whole context budget must never flood the window. Externalize
 	// it to the rebuildable, content-addressed blob store and mint ONE observed-class candidate; only
 	// the compact pointer flows back into the summary — never the body. Below-threshold output and

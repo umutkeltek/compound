@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/home"
 	"compound/internal/mem"
+	"compound/internal/negatives"
 )
 
 // DerivedCacheStaleAfter is how old a derived cache may get before PostToolUse
@@ -48,11 +50,24 @@ const derivedCacheAttemptRetry = 30 * time.Minute
 //
 // NON-FATAL on every path. A refresh failure must never fail the tool event; the cost
 // of skipping is a stale cache, which is the status quo it is improving on.
-func refreshDerivedCaches(homePath string, now time.Time) []string {
-	if strings.TrimSpace(homePath) == "" {
+// LIVE ONLY. Fixture replay exists to replay a recorded event deterministically, and
+// rebuilding ambient caches during a replay is out of scope for it in both directions:
+// it makes the replay's cost depend on the temp home's state, and it makes the replay
+// mutate state the fixture never described. Measured at ~110ms per fresh home, which a
+// replay pays on every single invocation because a new home is always "never built".
+// That is a per-replay tax buying nothing — the maintenance this performs is for a real
+// session, not for a reconstruction of one.
+func refreshDerivedCaches(homePath string, live bool, now time.Time) []string {
+	if !live || strings.TrimSpace(homePath) == "" {
 		return nil
 	}
-	if !derivedCachesNeedRefresh(homePath, now) {
+	// Fail-open: if the running binary cannot be resolved, fall back to window-only
+	// staleness rather than refusing to refresh at all.
+	codeBuiltAt, codeErr := home.RunningBinaryBuiltAt()
+	if codeErr != nil {
+		codeBuiltAt = time.Time{}
+	}
+	if !derivedCachesNeedRefresh(homePath, codeBuiltAt, now) {
 		return nil
 	}
 	// Claim the attempt BEFORE building. Concurrent lanes all fire PostToolUse, and
@@ -80,21 +95,56 @@ func refreshDerivedCaches(homePath string, now time.Time) []string {
 			refs = append(refs, mem.TemperatureProjectionRef)
 		}
 	}
+	// negatives, independent of the chain above and measured at <10ms.
+	//
+	// Its READ path already self-refreshes (negatives.ReadFresh rebuilds in memory past
+	// StaleAfter), so its persisted staleness never reaches a reader — but doctor's
+	// criterion is "built by the running binary", which an in-memory rebuild cannot
+	// satisfy. Left out, it would sit in the doctor report permanently after every
+	// install, with no consequence and no automatic remedy: a standing row that teaches
+	// the reader to skip the section. Refreshing it here costs nothing and lets the
+	// section actually reach zero, which is what makes a non-zero reading mean something.
+	if built, buildErr := negatives.Build(homePath, negatives.BuildOptions{Now: now}); buildErr == nil {
+		if _, werr := negatives.WriteProjection(homePath, built); werr == nil {
+			refs = append(refs, negatives.ProjectionRef)
+		}
+	}
 	return refs
 }
 
-// derivedCachesNeedRefresh reports whether either stage is older than the window.
+// derivedCachesNeedRefresh reports whether either stage is older than the window, OR
+// predates the binary now running.
+//
+// The second criterion is what makes this agree with `compound doctor`, which asks
+// "was this body built by the code I am about to trust?" (home.ProjectionFreshnessReport).
+// Window-only staleness cannot answer that: right after installing a fix the bodies are
+// minutes old — comfortably inside 6h — while being the pre-fix output the fix was
+// supposed to replace. That is find_b27a3de99682 exactly, and it is the case where the
+// operator most needs the rebuild to be automatic. Without this, doctor reports a gap
+// that the refresh structurally cannot close, and the two guards contradict each other.
+//
+// Cost is bounded by how often a binary is installed, not by how often a tool runs: one
+// ~0.8s tool call per install, then the bodies are newer than the binary and both guards
+// go quiet.
 //
 // An UNREADABLE or undated body counts as needing a refresh, matching
 // negatives.projectionStale: a body that cannot prove its own age must never be
 // trusted as fresh.
-func derivedCachesNeedRefresh(homePath string, now time.Time) bool {
+// codeBuiltAt is INJECTED rather than read here, following the same rule as the clock:
+// a function that resolves its own os.Executable() cannot be tested against a fixture,
+// because the test binary is always newer than any fixture timestamp the test writes.
+// A zero codeBuiltAt disables the binary comparison and leaves window-only staleness.
+func derivedCachesNeedRefresh(homePath string, codeBuiltAt, now time.Time) bool {
 	for _, rel := range []string{
 		"projections/capability-usage.json",
 		"projections/memory-temperature.json",
+		"projections/negatives.json",
 	} {
 		stamp, ok := derivedCacheComputedAt(filepath.Join(homePath, filepath.FromSlash(rel)))
 		if !ok || now.UTC().Sub(stamp.UTC()) > DerivedCacheStaleAfter {
+			return true
+		}
+		if !codeBuiltAt.IsZero() && stamp.UTC().Before(codeBuiltAt.UTC()) {
 			return true
 		}
 	}

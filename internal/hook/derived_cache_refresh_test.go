@@ -44,7 +44,18 @@ func cacheStamp(t *testing.T, home, rel, field string) string {
 const (
 	usageRel = "projections/capability-usage.json"
 	tempRel  = "projections/memory-temperature.json"
+	negRel   = "projections/negatives.json"
 )
+
+// writeAllCacheBodies stamps every body the refresh gate inspects. Writing only some of
+// them makes the rest count as absent-and-therefore-stale, which silently turns a
+// "fresh chain" fixture into a stale one.
+func writeAllCacheBodies(t *testing.T, home, stamp string) {
+	t.Helper()
+	writeCacheBody(t, home, usageRel, "generated_at", stamp)
+	writeCacheBody(t, home, tempRel, "computed_at", stamp)
+	writeCacheBody(t, home, negRel, "computed_at", stamp)
+}
 
 // TestDerivedCachesNeedRefreshTreatsUndatedAndUnreadableAsStale pins the gate.
 //
@@ -57,10 +68,8 @@ func TestDerivedCachesNeedRefreshTreatsUndatedAndUnreadableAsStale(t *testing.T)
 
 	t.Run("both fresh means no refresh", func(t *testing.T) {
 		home := t.TempDir()
-		fresh := now.Add(-1 * time.Hour).Format(time.RFC3339)
-		writeCacheBody(t, home, usageRel, "generated_at", fresh)
-		writeCacheBody(t, home, tempRel, "computed_at", fresh)
-		if derivedCachesNeedRefresh(home, now) {
+		writeAllCacheBodies(t, home, now.Add(-1*time.Hour).Format(time.RFC3339))
+		if derivedCachesNeedRefresh(home, time.Time{}, now) {
 			t.Error("two bodies inside the window must not trigger a rebuild")
 		}
 	})
@@ -68,16 +77,14 @@ func TestDerivedCachesNeedRefreshTreatsUndatedAndUnreadableAsStale(t *testing.T)
 	t.Run("either one stale triggers the chain", func(t *testing.T) {
 		for _, stale := range []string{usageRel, tempRel} {
 			home := t.TempDir()
-			fresh := now.Add(-1 * time.Hour).Format(time.RFC3339)
 			old := now.Add(-400 * time.Hour).Format(time.RFC3339)
-			writeCacheBody(t, home, usageRel, "generated_at", fresh)
-			writeCacheBody(t, home, tempRel, "computed_at", fresh)
+			writeAllCacheBodies(t, home, now.Add(-1*time.Hour).Format(time.RFC3339))
 			field := "generated_at"
 			if stale == tempRel {
 				field = "computed_at"
 			}
 			writeCacheBody(t, home, stale, field, old)
-			if !derivedCachesNeedRefresh(home, now) {
+			if !derivedCachesNeedRefresh(home, time.Time{}, now) {
 				t.Errorf("%s stale must trigger the chain: the two stages are not independent", stale)
 			}
 		}
@@ -85,16 +92,16 @@ func TestDerivedCachesNeedRefreshTreatsUndatedAndUnreadableAsStale(t *testing.T)
 
 	t.Run("undated is stale", func(t *testing.T) {
 		home := t.TempDir()
+		writeAllCacheBodies(t, home, now.Format(time.RFC3339))
 		writeCacheBody(t, home, usageRel, "", "")
-		writeCacheBody(t, home, tempRel, "computed_at", now.Format(time.RFC3339))
-		if !derivedCachesNeedRefresh(home, now) {
+		if !derivedCachesNeedRefresh(home, time.Time{}, now) {
 			t.Error("a body that cannot date itself must not be trusted as fresh")
 		}
 	})
 
 	t.Run("absent is stale", func(t *testing.T) {
 		home := t.TempDir()
-		if !derivedCachesNeedRefresh(home, now) {
+		if !derivedCachesNeedRefresh(home, time.Time{}, now) {
 			t.Error("a never-built cache must be treated as needing a build")
 		}
 	})
@@ -153,10 +160,9 @@ func TestRefreshDerivedCachesRebuildsInDependencyOrder(t *testing.T) {
 	home := t.TempDir()
 	now := time.Now().UTC()
 	old := now.Add(-400 * time.Hour).Format(time.RFC3339)
-	writeCacheBody(t, home, usageRel, "generated_at", old)
-	writeCacheBody(t, home, tempRel, "computed_at", old)
+	writeAllCacheBodies(t, home, old)
 
-	refs := refreshDerivedCaches(home, now)
+	refs := refreshDerivedCaches(home, true, now)
 	if len(refs) == 0 {
 		t.Fatal("a stale chain must produce at least one rebuilt ref")
 	}
@@ -188,11 +194,12 @@ func TestRefreshDerivedCachesRebuildsInDependencyOrder(t *testing.T) {
 func TestRefreshDerivedCachesSkipsAFreshChain(t *testing.T) {
 	home := t.TempDir()
 	now := time.Now().UTC()
-	fresh := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	writeCacheBody(t, home, usageRel, "generated_at", fresh)
-	writeCacheBody(t, home, tempRel, "computed_at", fresh)
+	// Stamped NOW, not now-1h: refreshDerivedCaches also rebuilds anything predating
+	// the running binary, and the test binary is newer than any backdated fixture.
+	fresh := now.Format(time.RFC3339)
+	writeAllCacheBodies(t, home, fresh)
 
-	if refs := refreshDerivedCaches(home, now); len(refs) != 0 {
+	if refs := refreshDerivedCaches(home, true, now); len(refs) != 0 {
 		t.Errorf("a fresh chain must not rebuild, got %v", refs)
 	}
 	// And it must not have written an attempt marker either — nothing was attempted.
@@ -207,10 +214,10 @@ func TestRefreshDerivedCachesSkipsAFreshChain(t *testing.T) {
 // TestRefreshDerivedCachesIsANoOpWithoutAHome keeps the hook fail-open: a homeless
 // invocation must not error and must not touch the filesystem.
 func TestRefreshDerivedCachesIsANoOpWithoutAHome(t *testing.T) {
-	if refs := refreshDerivedCaches("", time.Now().UTC()); refs != nil {
+	if refs := refreshDerivedCaches("", true, time.Now().UTC()); refs != nil {
 		t.Errorf("homeless refresh must be a no-op, got %v", refs)
 	}
-	if refs := refreshDerivedCaches("   ", time.Now().UTC()); refs != nil {
+	if refs := refreshDerivedCaches("   ", true, time.Now().UTC()); refs != nil {
 		t.Errorf("blank home must be a no-op, got %v", refs)
 	}
 }
@@ -232,9 +239,11 @@ func TestPostToolUseEventStaysIdenticalWhetherARefreshFired(t *testing.T) {
 	deps := baseDeps()
 	deps.HomePath = home
 
+	// Live, because the refresh only runs on a live hook — a fixture replay would skip
+	// it and this test would pass without ever exercising the property it guards.
 	fx := Fixture{
 		Hook: "post-tool-use", Harness: "claude_code", Cwd: "/repo/x", Tool: "Bash",
-		WorkID: "work_1177cb550af3",
+		WorkID: "work_1177cb550af3", Live: true,
 	}
 
 	// First run: no projections exist, so the chain is stale and a refresh fires.
@@ -271,4 +280,38 @@ func derivedCacheAttemptClaimed(t *testing.T, home string) bool {
 	t.Helper()
 	_, err := os.Stat(derivedCacheAttemptPath(home))
 	return err == nil
+}
+
+// TestDerivedCachesRefreshWhenTheyPredateTheRunningBinary pins the criterion that makes
+// this agree with `compound doctor`.
+//
+// Window-only staleness cannot answer doctor's question — "was this body built by the
+// code I am about to trust?". Right after installing a fix the bodies are minutes old,
+// comfortably inside the 6h window, and are precisely the pre-fix output the fix was
+// meant to replace. That is find_b27a3de99682, and it is the case where the rebuild most
+// needs to be automatic. Without this criterion doctor reports a gap that the refresh
+// structurally cannot close, and an operator watching two guards contradict each other
+// learns to trust neither.
+func TestDerivedCachesRefreshWhenTheyPredateTheRunningBinary(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	// Well inside the 6h window: window-only staleness would say "fresh".
+	stamp := now.Add(-10 * time.Minute)
+	writeAllCacheBodies(t, home, stamp.Format(time.RFC3339))
+
+	if derivedCachesNeedRefresh(home, time.Time{}, now) {
+		t.Fatal("fixture should be fresh by window alone; the test cannot isolate the binary criterion otherwise")
+	}
+
+	// A binary installed AFTER the bodies were built must trigger the rebuild.
+	installedAfter := stamp.Add(5 * time.Minute)
+	if !derivedCachesNeedRefresh(home, installedAfter, now) {
+		t.Error("bodies predating the running binary must refresh: they are the pre-fix output")
+	}
+
+	// A binary installed BEFORE them must not: they already reflect this code.
+	installedBefore := stamp.Add(-5 * time.Minute)
+	if derivedCachesNeedRefresh(home, installedBefore, now) {
+		t.Error("bodies newer than the running binary must not refresh; the guard has to be able to go quiet")
+	}
 }
