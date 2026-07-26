@@ -110,6 +110,8 @@ func cmdSessions(args []string) {
 		cmdSessionsHarvest(args[1:])
 	case "backfill":
 		cmdSessionsBackfill(args[1:])
+	case "live":
+		cmdSessionsLive(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, sessionsUsage())
 		os.Exit(2)
@@ -120,7 +122,8 @@ func sessionsUsage() string {
 	return "usage:\n" +
 		"  compound sessions mine [--dry-run|--apply] [--since 24h] [--json]\n" +
 		"  compound sessions harvest --transcript <path> [--dry-run] [--json]\n" +
-		"  compound sessions backfill --ledger-dir <dir> [--dry-run|--apply] [--limit N] [--json]"
+		"  compound sessions backfill --ledger-dir <dir> [--dry-run|--apply] [--limit N] [--json]\n" +
+		"  compound sessions live [--json] [--ghosts-only]"
 }
 
 // cmdSessionsBackfill runs the ruling harvester BACKWARDS over the historical
