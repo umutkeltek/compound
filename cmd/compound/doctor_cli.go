@@ -86,6 +86,15 @@ type doctorReport struct {
 	Surfacing          []surfacingRow     `json:"surfacing"`
 	SurfacingNote      string             `json:"surfacing_note,omitempty"`
 	SurfacingInjection surfacingInjection `json:"surfacing_injection"`
+
+	// Projection freshness: which persisted projections predate the running binary.
+	// Answers "is a fix I just installed actually being served?" — see
+	// home.ProjectionFreshnessReport and find_b27a3de99682.
+	Projections        []home.ProjectionFreshness `json:"projections,omitempty"`
+	ProjectionsStale   int                        `json:"projections_stale"`
+	ProjectionsUndated int                        `json:"projections_undated"`
+	ProjectionsOldest  string                     `json:"projections_oldest,omitempty"`
+	ProjectionsNote    string                     `json:"projections_note,omitempty"`
 }
 
 // surfacingRow is one lane/harness × the communication surfaces it should see. Cell vocabulary
@@ -219,6 +228,22 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	// 6) Surfacing coverage — read-only lanes/harnesses × communication-surfaces matrix.
 	rep.Surfacing, rep.SurfacingNote, rep.SurfacingInjection = buildSurfacingCoverage(homePath, rep.Hooks, time.Now())
 
+	// 7) Projection freshness — which persisted projections predate the running
+	// binary, i.e. "is the fix I just installed actually being served?". Read-only:
+	// doctor reports the gap and never rebuilds, because a health command that
+	// mutates shared projections would both surprise concurrent lanes and destroy
+	// the evidence it is showing.
+	if codeBuiltAt, exeErr := home.RunningBinaryBuiltAt(); exeErr == nil {
+		if rows, projErr := home.ProjectionFreshnessReport(homePath, codeBuiltAt, time.Now()); projErr == nil {
+			rep.Projections = rows
+			rep.ProjectionsStale, rep.ProjectionsUndated, rep.ProjectionsOldest = home.StaleProjectionSummary(rows)
+		} else {
+			rep.ProjectionsNote = "projection freshness unavailable: " + projErr.Error()
+		}
+	} else {
+		rep.ProjectionsNote = "projection freshness unavailable: cannot resolve the running binary: " + exeErr.Error()
+	}
+
 	if hasFlag(args, "--json") {
 		if err := encodeJSON(stdout, rep); err != nil {
 			fmt.Fprintln(stderr, "error:", err)
@@ -276,8 +301,56 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 		fmt.Fprintf(stdout, "  note: %s\n", rep.PlacementNote)
 	}
 
+	printProjectionFreshness(stdout, rep)
 	printPermissionPosture(stdout, rep)
 	printSurfacing(stdout, rep)
+}
+
+// printProjectionFreshness renders which persisted projections were NOT built by the
+// code now installed.
+//
+// Deliberately worded as "not built by the running code" rather than "stale": the
+// body may be perfectly correct, and only matters when the change being trusted
+// touched that projection's producer — which doctor cannot know. Overstating it here
+// would train the operator to skip the section, which costs exactly what the silent
+// gap cost (find_b27a3de99682).
+func printProjectionFreshness(stdout io.Writer, rep doctorReport) {
+	fmt.Fprintln(stdout, "\n## projections (is an installed fix actually being served?)")
+	if rep.ProjectionsNote != "" {
+		fmt.Fprintf(stdout, "- %s\n", rep.ProjectionsNote)
+		return
+	}
+	if len(rep.Projections) == 0 {
+		fmt.Fprintln(stdout, "- (no persisted projections)")
+		return
+	}
+	if rep.ProjectionsStale == 0 {
+		fmt.Fprintf(stdout, "- all %d projection(s) built by the running binary or newer\n", len(rep.Projections))
+	} else {
+		// Conditional framing first, count second. Rebuilding the binary makes nearly
+		// every projection older than it, so a row here is normal and only matters
+		// when the change being trusted touched that projection's producer. Leading
+		// with alarm would make the section skippable, which is the failure this
+		// section exists to prevent.
+		fmt.Fprintf(stdout, "- %d of %d were not built by the running binary — harmless unless your change touched their producer\n",
+			rep.ProjectionsStale, len(rep.Projections))
+		for _, row := range rep.Projections {
+			if !row.OlderThanCode {
+				continue
+			}
+			line := fmt.Sprintf("  %-30s %s=%s (%.0fh old)", row.Name, row.TimestampField, row.ComputedAt, row.AgeHours)
+			if row.RebuildCommand != "" {
+				line += "  rebuild: " + row.RebuildCommand
+			}
+			fmt.Fprintln(stdout, line)
+		}
+		fmt.Fprintln(stdout, "  -> a fix to a projection's PRODUCER is not served until that projection is rebuilt;")
+		fmt.Fprintln(stdout, "     rebuild the affected one, then re-observe the REAL path (a test that rebuilds its")
+		fmt.Fprintln(stdout, "     own inputs cannot see a stale persisted input)")
+	}
+	if rep.ProjectionsUndated > 0 {
+		fmt.Fprintf(stdout, "- %d projection(s) record no build time, so freshness cannot be proven either way\n", rep.ProjectionsUndated)
+	}
 }
 
 // printPermissionPosture renders the per-harness permission-authority drift
