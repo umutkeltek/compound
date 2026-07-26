@@ -63,11 +63,17 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 	if err != nil {
 		return QueryReport{}, err
 	}
-	dir := IndexDir(homePath, lane)
-	meta, err := loadChunkMeta(dir)
-	if err != nil {
-		return QueryReport{}, err
-	}
+	// Metadata (and therefore QueryHit.Title) is derived from the manifest
+	// returned by validateQueryItemAccess, NOT from a fresh read of the
+	// indexed manifest on disk. The indexed privacy snapshot is stale by
+	// definition once the current SourceManifest is allowed to reclassify
+	// an item; loadChunkMeta(dir) would re-render chunkTitle against the
+	// stale indexed privacy and could publish a private basename on a hit
+	// whose body the same query correctly suppresses. The validated
+	// manifest already carries current privacy propagated across every
+	// governed item, so deriving meta here keeps title and body text in
+	// lock-step on the same privacy decision.
+	meta := metaFromManifest(manifest)
 	report := QueryReport{
 		SchemaVersion:    ManifestSchemaVersion,
 		Lane:             lane.Lane,
@@ -360,6 +366,16 @@ func loadChunkMeta(dir string) (map[string]chunkInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	return metaFromManifest(manifest), nil
+}
+
+// metaFromManifest projects a Manifest into per-chunk metadata, sharing the
+// same title rule as loadChunkMeta. QueryWithOptions uses this directly off
+// the validateQueryItemAccess result so chunkTitle sees the current privacy
+// classification rather than the stale indexed privacy snapshot. The
+// loadChunkMeta(dir) path remains for any callers that still need it from a
+// raw disk manifest.
+func metaFromManifest(manifest Manifest) map[string]chunkInfo {
 	out := map[string]chunkInfo{}
 	for _, item := range manifest.Items {
 		info := chunkInfo{
@@ -372,5 +388,5 @@ func loadChunkMeta(dir string) (map[string]chunkInfo, error) {
 			out[fmt.Sprintf("%s#%d", item.ID, chunk.Ordinal)] = info
 		}
 	}
-	return out, nil
+	return out
 }

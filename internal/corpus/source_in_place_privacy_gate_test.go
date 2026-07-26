@@ -652,3 +652,196 @@ func TestSourceInPlacePrivacyGateDefaultOffQueryWithoutCurrentManifest(t *testin
 		t.Fatalf("default-off source reads = %d, want 1 (legacy body-resolution path must still read)", sourceReads)
 	}
 }
+
+// TestSourceInPlacePrivacyGateQueryTitleRespectsCurrentPrivacy is the
+// regression for the residual title privacy leak. Body-suppression and
+// default-off/missing-manifest blockers are green, but the indexed
+// privacy snapshot was still flowing through loadChunkMeta after
+// validateQueryItemAccess had propagated the current SourceManifest
+// privacy — so a public item later reclassified private could still
+// publish its basename on the hit while the body beside it was
+// correctly suppressed. The fix derives QueryHit metadata from the
+// validated manifest, not from a fresh indexed-manifest re-read.
+//
+// Shape: indexed privacy=public, empty PageSlug, recognizable basename
+// in SourceRef, then current manifest reclassified private on a
+// permitted private/local lane with IncludeText=false. Assertions:
+//   * body text empty
+//   * zero source_in_place body reads
+//   * Title == privateChunkTitle (so an opaque private label travels)
+//   * basename AND its parent directory are NOT in the title
+//   * text status reports suppression, not ok
+//
+// Existing TestSourceInPlacePrivacyGateQueryPropagatesCurrentPrivacyToBodyResolution
+// proves the body half of the same shape, but the seed fixture forces
+// a non-empty PageSlug and never inspects Title — so the title leak
+// survives it. This test deliberately uses an empty PageSlug so
+// chunkTitle must reach the privacy branch.
+func TestSourceInPlacePrivacyGateQueryTitleRespectsCurrentPrivacy(t *testing.T) {
+	homePath := t.TempDir()
+	const recognizedBasename = "basename-leak-canary.md"
+	bodyPath := filepath.Join(t.TempDir(), recognizedBasename)
+	basenameDir := filepath.Dir(bodyPath)
+	if err := os.WriteFile(bodyPath, []byte("User: title-leak fixture body — must not leak basename."), 0o644); err != nil {
+		t.Fatalf("write gate source: %v", err)
+	}
+	family := "gate_title_reclassify"
+	manifest, err := sourceobs.BuildSourceManifest(family, []string{bodyPath}, time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("build source manifest: %v", err)
+	}
+	manifest.Items[0].ID = "item_title_gate"
+	manifest.Items[0].SourceKind = "synthetic_dialogue"
+	manifest.Items[0].PageSlug = "" // intentional: forces chunkTitle to reach privacy branch
+	manifest.Items[0].CorpusGeneration = "gate-title-gen"
+	manifest.Items[0].Privacy = "public" // indexed-time privacy — public
+	if _, err := sourceobs.RecordSourceManifest(homePath, manifest); err != nil {
+		t.Fatalf("record source manifest: %v", err)
+	}
+	lane := LaneConfig{
+		Lane:         "gate-title-" + family,
+		SourceFamily: family,
+		Generation:   "gate-title-gen",
+		Privacy:      "private", // allowed posture for the gate
+		Embedder: EmbedderConfig{
+			Provider: "local",
+			Model:    "synthetic-embedder",
+			Dims:     3,
+			Bits:     "f32",
+		},
+		Chunk:                    ChunkConfig{Unit: "runes", Size: 256, Overlap: 16, Boundary: "structure"},
+		SourceInPlacePrivacyGate: true,
+	}
+	embedder := &fakeEmbedder{identity: lane.Embedder.Identity(), dim: lane.Embedder.Dims}
+	if _, err := Index(context.Background(), homePath, lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("index public item: %v", err)
+	}
+	// Reclassify at the current authority: indexed snapshot stays public,
+	// but the SourceManifest now says private. The query path must use the
+	// current privacy for both body suppression AND title rendering.
+	current, err := sourceobs.LoadSourceManifest(homePath, lane.SourceFamily)
+	if err != nil {
+		t.Fatalf("load current manifest: %v", err)
+	}
+	current.Items[0].Privacy = "private"
+	current.Items[0].PageSlug = "" // keep empty even after reclassification
+	writeJSON(t, sourceobs.SourceManifestPath(homePath, lane.SourceFamily), current)
+
+	// Counter: prove suppression runs BEFORE any body read on the query path.
+	// (Engine + embedder must run — the query is legitimate, just the body
+	// is suppressed — so the strict zero canary belongs to the
+	// missing-current-manifest test below.)
+	sourceReads := 0
+	originalRead := readSourceInPlaceBody
+	readSourceInPlaceBody = func(path string) ([]byte, error) {
+		sourceReads++
+		return originalRead(path)
+	}
+	t.Cleanup(func() { readSourceInPlaceBody = originalRead })
+
+	report, err := QueryWithOptions(context.Background(), homePath, lane, embedder, "title", 1, QueryOptions{IncludeText: false})
+	if err != nil {
+		t.Fatalf("gated query under private/local lane: %v", err)
+	}
+	if len(report.Hits) != 1 {
+		t.Fatalf("hits = %d, want 1", len(report.Hits))
+	}
+	hit := report.Hits[0]
+	if hit.Text != "" {
+		t.Fatalf("hit text = %q, want empty (current privacy=private must suppress body text)", hit.Text)
+	}
+	if hit.TextStatus != string(ChunkTextSuppressedPrivate) {
+		t.Fatalf("hit text status = %q, want %q", hit.TextStatus, ChunkTextSuppressedPrivate)
+	}
+	if hit.Title != privateChunkTitle {
+		t.Fatalf("hit title = %q, want %q (current privacy=private must reach chunkTitle)", hit.Title, privateChunkTitle)
+	}
+	if strings.Contains(hit.Title, recognizedBasename) {
+		t.Fatalf("hit title leaked the indexed basename %q: %q", recognizedBasename, hit.Title)
+	}
+	if strings.Contains(hit.Title, basenameDir) {
+		t.Fatalf("hit title leaked the indexed directory %q: %q", basenameDir, hit.Title)
+	}
+	if strings.Contains(hit.Title, "/") || strings.Contains(hit.Title, string(filepath.Separator)) {
+		t.Fatalf("hit title carried a path separator: %q", hit.Title)
+	}
+	if sourceReads != 0 {
+		t.Fatalf("query read source_in_place body %d times, want zero (current privacy=private must suppress before any read)", sourceReads)
+	}
+}
+
+// TestSourceInPlacePrivacyGateMissingCurrentManifestZeroReads is the
+// dedicated counter canary for the gate=true missing-current-manifest
+// path. Other tests prove the body and title behavior when current
+// privacy is reachable; this one proves the gate fails closed BEFORE
+// any embedder, engine, or source read happens when the current
+// SourceManifest is absent. Every owned-consumption side effect must
+// remain at zero — a regression that lets the engine run would leak
+// vectors to a rented embedder before the manifest absence was caught.
+//
+// Shape: gate on, allowed private/local lane, current SourceManifest
+// removed from disk entirely. validateQueryItemAccess MUST refuse with
+// the missing-current-manifest error before any byte leaves the host.
+func TestSourceInPlacePrivacyGateMissingCurrentManifestZeroReads(t *testing.T) {
+	homePath := t.TempDir()
+	lane, embedder, _ := seedSourceInPlaceLaneForGate(t, homePath,
+		"User: zero-side-effect failure body.",
+		"gate_missing_current",
+		"public", // indexed-time privacy
+		"private",
+		"local",
+		"",
+		true, // gate enabled
+	)
+	if _, err := Index(context.Background(), homePath, lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("index public item: %v", err)
+	}
+	// Remove BOTH canonical paths so the loader returns os.ErrNotExist.
+	if err := os.Remove(sourceobs.SourceManifestPath(homePath, lane.SourceFamily)); err != nil {
+		t.Fatalf("remove current manifest: %v", err)
+	}
+	// Legacy path may not exist; tolerate absent so the test stays scoped
+	// to the canonical-path removal.
+	if _, err := os.Stat(sourceobs.LegacySourceManifestPath(homePath, lane.SourceFamily)); err == nil {
+		if err := os.Remove(sourceobs.LegacySourceManifestPath(homePath, lane.SourceFamily)); err != nil {
+			t.Fatalf("remove legacy manifest: %v", err)
+		}
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat legacy manifest: %v", err)
+	}
+
+	// Counter reset and full seam instrumentation.
+	embedder.calls = 0
+	embedder.embedded = 0
+	engineCalls := 0
+	originalQuery := runCorpusEngineQuery
+	runCorpusEngineQuery = func(_ *mem.ProtocolEngine, _ string, _ int) ([]mem.Hit, error) {
+		engineCalls++
+		return nil, nil
+	}
+	t.Cleanup(func() { runCorpusEngineQuery = originalQuery })
+	sourceReads := 0
+	originalRead := readSourceInPlaceBody
+	readSourceInPlaceBody = func(path string) ([]byte, error) {
+		sourceReads++
+		return originalRead(path)
+	}
+	t.Cleanup(func() { readSourceInPlaceBody = originalRead })
+
+	_, err := QueryWithOptions(context.Background(), homePath, lane, embedder, "zero", 1, QueryOptions{IncludeText: false})
+	if err == nil {
+		t.Fatalf("gated query with missing current manifest succeeded — gate let absent authority through")
+	}
+	if !strings.Contains(err.Error(), "load current source manifest") {
+		t.Fatalf("missing-current-manifest error = %q, want a load-current-source-manifest error", err.Error())
+	}
+	if engineCalls != 0 {
+		t.Fatalf("engine ran %d times before missing-current-manifest refusal, want zero", engineCalls)
+	}
+	if embedder.calls != 0 || embedder.embedded != 0 {
+		t.Fatalf("embedder calls=%d embedded=%d before missing-current-manifest refusal, want zero/zero", embedder.calls, embedder.embedded)
+	}
+	if sourceReads != 0 {
+		t.Fatalf("source reads = %d before missing-current-manifest refusal, want zero", sourceReads)
+	}
+}
