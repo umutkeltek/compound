@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -287,4 +288,230 @@ func TestOrientationNoteHasThreeStatesNotTwo(t *testing.T) {
 			t.Fatalf("session id must be hashed in the path too: %s", sessionOrientationPath(home, secret))
 		}
 	})
+}
+
+// TestCapabilityOfferDropsWholeFieldsWorstFirst pins the field priority.
+//
+// The failure being prevented is specific and was observed live: the section cap
+// truncated by rune count and cut INSIDE a `conflicts=` boundary list, so the offer
+// rendered carrying one partial conflict when it actually had several. A severed
+// constraint list does not read as a truncated offer — it reads as an offer with
+// fewer conditions than it has, which is a policy surface quietly weakening itself.
+// So truncation must drop WHOLE fields, worst-first, and say which.
+func TestCapabilityOfferDropsWholeFieldsWorstFirst(t *testing.T) {
+	long := func(prefix string, n int) []envelope.CapabilityOfferConstraint {
+		out := make([]envelope.CapabilityOfferConstraint, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, envelope.CapabilityOfferConstraint{
+				Kind: "boundary",
+				Ref:  fmt.Sprintf("boundary://%s-%02d", prefix, i),
+			})
+		}
+		return out
+	}
+	offer := envelope.CapabilityOffer{
+		Ref:       "capability://procedure:example",
+		Kind:      "procedure",
+		Name:      "Example",
+		Score:     7.8,
+		Why:       "trigger×weight=2.0",
+		Conflicts: long("must-not", 3),
+		Required:  long("needs", 3),
+		Evidence:  long("validated-by", 8),
+		Harnesses: long("surfaces-with", 3),
+	}
+
+	// A budget that cannot hold everything: something must go.
+	line, dropped := renderCapabilityOffer(offer, 300)
+
+	if len(dropped) == 0 {
+		t.Fatal("a budget too small for every field must report what it dropped")
+	}
+	// The head is identity — an offer without its ref is unactionable, so it is never
+	// what gets sacrificed.
+	if !strings.Contains(line, "capability://procedure:example") {
+		t.Errorf("offer head must always survive: %q", line)
+	}
+	// why and conflicts are what a reader acts on: why it was offered, and what it
+	// must not be used for.
+	for _, want := range []string{"why=", "conflicts="} {
+		if !strings.Contains(line, want) {
+			t.Errorf("%s must outrank droppable fields, got %q (dropped %v)", want, line, dropped)
+		}
+	}
+	// evidence and note repeat or merely justify; they go first.
+	if !containsString(dropped, "evidence") {
+		t.Errorf("evidence must be dropped before conflicts, dropped=%v", dropped)
+	}
+	if containsString(dropped, "conflicts") {
+		t.Errorf("conflicts must never be dropped while lower-priority fields remain, dropped=%v", dropped)
+	}
+
+	// No field may be emitted partially: every `label=` present must be whole.
+	// A half-rendered constraint list is the exact defect this replaces.
+	for _, label := range []string{"conflicts=", "required=", "evidence=", "harnesses="} {
+		if !strings.Contains(line, label) {
+			continue
+		}
+		seg := line[strings.Index(line, label)+len(label):]
+		if cut := strings.Index(seg, " "); cut >= 0 {
+			seg = seg[:cut]
+		}
+		if strings.HasSuffix(seg, ",") || strings.HasSuffix(seg, "boundary:") {
+			t.Errorf("field %s rendered partially (%q) — truncation must drop whole fields", label, seg)
+		}
+	}
+
+	// Budget is respected including the omission marker the caller appends.
+	if got := utf8.RuneCountInString(line); got > 300 {
+		t.Errorf("rendered offer exceeded its per-offer budget: %d > 300", got)
+	}
+}
+
+// TestCapabilityOfferSectionReportsOmittedOffers pins that offers dropped whole are
+// counted. Silently rendering 3 of 9 offers reads as "there are 3 offers".
+func TestCapabilityOfferSectionReportsOmittedOffers(t *testing.T) {
+	offers := make([]envelope.CapabilityOffer, 0, 40)
+	for i := 0; i < 40; i++ {
+		offers = append(offers, envelope.CapabilityOffer{
+			Ref:   fmt.Sprintf("capability://skill:example-%02d", i),
+			Kind:  "skill",
+			Name:  fmt.Sprintf("Example %02d", i),
+			Score: 1,
+			Why:   strings.Repeat("reason ", 20),
+		})
+	}
+	var b strings.Builder
+	writeCapabilityOfferList(&b, offers)
+	out := b.String()
+
+	shown := strings.Count(out, "- `capability://skill:example-")
+	if shown == len(offers) {
+		t.Skip("budget held every offer; nothing to report")
+	}
+	if !strings.Contains(out, "more offer(s) omitted from digest budget") {
+		t.Fatalf("dropped offers must be counted, not silently absent (showed %d of %d):\n%s", shown, len(offers), out)
+	}
+}
+
+// TestCapabilityOfferSectionNeverTruncatesMidField is the end-to-end guarantee.
+//
+// Built from the shape observed live: several verbose procedure offers whose
+// `conflicts=` lists are long enough that the old renderer cut one in half. The
+// section must stay inside its cap WITHOUT the generic section truncator ever having
+// to fire, because that truncator cuts by rune count and cannot respect a field
+// boundary.
+func TestCapabilityOfferSectionNeverTruncatesMidField(t *testing.T) {
+	boundaries := func(n int) []envelope.CapabilityOfferConstraint {
+		out := make([]envelope.CapabilityOfferConstraint, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, envelope.CapabilityOfferConstraint{
+				Kind:   "boundary",
+				Ref:    fmt.Sprintf("boundary://landed-not-working-exercise-real-flow-observe-behavior-%02d", i),
+				Detail: "landed is not working — exercise the real flow and observe behavior, not just tests",
+			})
+		}
+		return out
+	}
+	offers := make([]envelope.CapabilityOffer, 0, 6)
+	for i := 0; i < 6; i++ {
+		offers = append(offers, envelope.CapabilityOffer{
+			Ref:          fmt.Sprintf("capability://procedure:ceremony-%02d", i),
+			Kind:         "procedure",
+			Name:         "Compound Verify — prove a change is ALIVE (wired, fed, cut over) before calling it done",
+			Score:        7.8,
+			Why:          "trigger×weight=2.0 +semantic=0.64 +validated_by=5.0",
+			Conflicts:    boundaries(3),
+			Required:     boundaries(2),
+			Evidence:     boundaries(4),
+			CostRiskNote: "offer only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision",
+		})
+	}
+
+	var raw strings.Builder
+	writeCapabilityOfferList(&raw, offers)
+	section := raw.String()
+
+	// The renderer must fit its own cap unaided.
+	if got := utf8.RuneCountInString(section); got > maxInjectionCapabilityOfferChars {
+		t.Fatalf("offer section exceeded its cap unaided: %d > %d\n%s", got, maxInjectionCapabilityOfferChars, section)
+	}
+	// And therefore the generic truncator must have nothing to do.
+	if capped := capInjectionSection(section, maxInjectionCapabilityOfferChars); strings.Contains(capped, "Section truncated") {
+		t.Fatalf("offer section still needed rune-count truncation, which cuts inside fields:\n%s", capped)
+	}
+
+	// Every rendered field is whole: no line may end mid-constraint. A trailing comma
+	// or a bare "boundary:" is the signature of the severed list observed live.
+	for _, line := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(line, "- `capability://") {
+			continue
+		}
+		if strings.HasSuffix(line, ",") || strings.HasSuffix(line, "boundary:") || strings.HasSuffix(line, "=") {
+			t.Errorf("offer line ends mid-field: %q", line)
+		}
+	}
+	// Whatever was left out is stated, so the reader is not silently under-informed.
+	shown := strings.Count(section, "- `capability://procedure:ceremony-")
+	if shown < len(offers) && !strings.Contains(section, "more offer(s) omitted") {
+		t.Errorf("showed %d of %d offers without saying so:\n%s", shown, len(offers), section)
+	}
+	t.Logf("rendered %d of %d offers in %d runes (cap %d)", shown, len(offers), utf8.RuneCountInString(section), maxInjectionCapabilityOfferChars)
+}
+
+// TestCapabilityOfferKeepsAConstraintCountWhenTheContentCannotFit pins the safety
+// signal.
+//
+// With many offers sharing the section, no single offer can carry a long conflicts
+// list whole. The first version of this renderer then dropped conflicts entirely
+// while lower-priority fields survived (observed live: every offer rendered
+// `harnesses=` and reported `conflicts` omitted), because the packer skipped an
+// oversized field and kept filling with smaller ones. An offer whose conditions are
+// invisible reads as unconditional, which is the failure mode the whole change
+// exists to remove — so when the content cannot fit, the COUNT must survive.
+func TestCapabilityOfferKeepsAConstraintCountWhenTheContentCannotFit(t *testing.T) {
+	verbose := func(n int) []envelope.CapabilityOfferConstraint {
+		out := make([]envelope.CapabilityOfferConstraint, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, envelope.CapabilityOfferConstraint{
+				Kind:   "boundary",
+				Ref:    fmt.Sprintf("boundary://a-very-long-boundary-reference-that-will-not-fit-%02d", i),
+				Detail: "a long human-readable explanation of the boundary that pushes this field well past any per-offer budget",
+			})
+		}
+		return out
+	}
+	offer := envelope.CapabilityOffer{
+		Ref:       "capability://procedure:example",
+		Kind:      "procedure",
+		Name:      "Example",
+		Score:     7.8,
+		Why:       "trigger×weight=2.0",
+		Conflicts: verbose(3),
+		Required:  verbose(2),
+		Harnesses: []envelope.CapabilityOfferConstraint{{Kind: "surfaces_with", Ref: "harness:claude_code"}},
+	}
+
+	line, dropped := renderCapabilityOffer(offer, 260)
+
+	// The count form survives even though the content cannot.
+	if !strings.Contains(line, "conflicts=3(omitted)") {
+		t.Errorf("a conflicts list too long to render must still report its count, got %q (dropped %v)", line, dropped)
+	}
+	if !strings.Contains(line, "required=2(omitted)") {
+		t.Errorf("a required list too long to render must still report its count, got %q", line)
+	}
+	// And "conflicts" must NOT be reported as fully dropped, because it wasn't.
+	if containsString(dropped, "conflicts") {
+		t.Errorf("conflicts reported as dropped while its count rendered: %q dropped=%v", line, dropped)
+	}
+	if got := utf8.RuneCountInString(line); got > 260 {
+		t.Errorf("offer exceeded budget: %d > 260", got)
+	}
+
+	// Non-safety fields do not get a count form — they are genuinely droppable, and
+	// spending budget announcing their absence would crowd out the counts that matter.
+	if strings.Contains(line, "evidence=") || strings.Contains(line, "harnesses=1(omitted)") {
+		t.Errorf("non-safety fields must not consume budget on count forms: %q", line)
+	}
 }

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"compound/internal/authority"
 	"compound/internal/contract"
@@ -2276,24 +2277,161 @@ func writeCapabilityOfferList(b *strings.Builder, offers []envelope.CapabilityOf
 	if len(offers) == 0 {
 		return
 	}
-	b.WriteString("\n## Capability Offers\n")
-	b.WriteString("- offers only; execution still requires WorkEnvelope, ActionIntent, PolicyDecision\n")
-	for _, offer := range offers {
-		fmt.Fprintf(b, "- `%s` kind=%s name=%s score=%.2f", safeMD(offer.Ref), safeMD(offer.Kind), safeMD(offer.Name), offer.Score)
-		if strings.TrimSpace(offer.Why) != "" {
-			fmt.Fprintf(b, " why=%s", safeMD(offer.Why))
-		}
-		writeCapabilityConstraintSummary(b, "required", offer.Required)
-		writeCapabilityConstraintSummary(b, "harnesses", offer.Harnesses)
-		writeCapabilityConstraintSummary(b, "conflicts", offer.Conflicts)
-		writeCapabilityConstraintSummary(b, "missed_when", offer.KnownMissedWhen)
-		writeCapabilityConstraintSummary(b, "false_triggered_by", offer.KnownFalseTriggeredBy)
-		writeCapabilityConstraintSummary(b, "evidence", offer.Evidence)
-		if strings.TrimSpace(offer.CostRiskNote) != "" {
-			fmt.Fprintf(b, " note=%s", safeMD(offer.CostRiskNote))
-		}
-		b.WriteString("\n")
+	const heading = "\n## Capability Offers\n"
+	const preamble = "- offers only; execution still requires WorkEnvelope, ActionIntent, PolicyDecision\n"
+	b.WriteString(heading)
+	b.WriteString(preamble)
+
+	// Per-offer budget, so one verbose offer cannot consume the section and leave the
+	// rest severed. The section cap alone truncated by rune count, which cut INSIDE a
+	// field: observed live cutting a `conflicts=` boundary list partway through, so
+	// the offer rendered with one partial conflict when it carried several. That does
+	// not read as a truncated offer — it reads as an offer with fewer conditions than
+	// it has, which is a policy surface quietly weakening itself.
+	perOffer := maxInjectionCapabilityOfferChars / max(1, len(offers))
+	if perOffer < minCapabilityOfferChars {
+		perOffer = minCapabilityOfferChars
 	}
+
+	// The per-offer budget bounds one offer; the SECTION budget bounds the list. Both
+	// are needed: the per-offer floor means a long offer list would otherwise sum past
+	// the section cap, and capInjectionSection would then truncate by rune count and
+	// reintroduce the mid-field cut this renderer exists to remove. Stopping here, with
+	// a count, keeps every rendered offer whole.
+	// used counts the WHOLE section, heading and preamble included. Counting only the
+	// offer lines is how the first version of this overran its own cap by 50 runes:
+	// the prelude is part of what capInjectionSection would measure.
+	sectionRoom := maxInjectionCapabilityOfferChars - offerOmissionReserve
+	used := utf8.RuneCountInString(heading) + utf8.RuneCountInString(preamble)
+	rendered := 0
+	for _, offer := range offers {
+		line, dropped := renderCapabilityOffer(offer, perOffer)
+		if line == "" {
+			break // not even the head fits; report the remainder below
+		}
+		if len(dropped) > 0 {
+			line += fmt.Sprintf(" [%d field(s) omitted: %s]", len(dropped), strings.Join(dropped, ","))
+		}
+		cost := utf8.RuneCountInString(line) + 1 // +1 for the newline
+		if used+cost > sectionRoom {
+			break
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+		used += cost
+		rendered++
+	}
+	if omitted := len(offers) - rendered; omitted > 0 {
+		fmt.Fprintf(b, "- %d more offer(s) omitted from digest budget\n", omitted)
+	}
+}
+
+// offerOmissionReserve keeps room for the "N more offer(s) omitted" line, so the
+// sentence that reports the omission can never itself be the thing that gets cut.
+const offerOmissionReserve = 60
+
+// minCapabilityOfferChars floors the per-offer budget so a long offer list does not
+// divide the section into slices too small to carry an offer's identity.
+const minCapabilityOfferChars = 240
+
+// renderCapabilityOffer renders one offer within budget, dropping WHOLE fields
+// worst-first and naming what it dropped.
+//
+// The priority order is the point. `why` and `conflicts` outrank everything because
+// they are what a reader acts on: why this was offered, and what it must not be used
+// for. `note` ranks last because it repeats the section preamble verbatim, so losing
+// it costs nothing. Dropping in this order means the fields that survive are the ones
+// that change a decision, and a dropped field is REPORTED rather than silently
+// severed — a named omission keeps the reader accurate about what they were not told.
+//
+// Returns ("", nil) when not even the head fits, so the caller can count the offer as
+// omitted rather than emit a fragment.
+func renderCapabilityOffer(offer envelope.CapabilityOffer, budget int) (string, []string) {
+	head := fmt.Sprintf("- `%s` kind=%s name=%s score=%.2f",
+		safeMD(offer.Ref), safeMD(offer.Kind), safeMD(offer.Name), offer.Score)
+	if utf8.RuneCountInString(head) > budget {
+		return "", nil
+	}
+
+	type field struct {
+		name string
+		text string
+		// compact is a count-only form used when the full text will not fit. Set only
+		// for fields whose ABSENCE changes whether the capability should be used at
+		// all: a reader who cannot see "3 conflicts exist" reads the offer as
+		// unconditional. Costs ~20 runes and preserves the safety signal when the
+		// content itself cannot survive.
+		compact string
+	}
+	constraint := func(name string, values []envelope.CapabilityOfferConstraint, safetyCritical bool) field {
+		f := field{name: name, text: capabilityConstraintSummary(name, values)}
+		if safetyCritical && len(values) > 0 {
+			f.compact = fmt.Sprintf(" %s=%d(omitted)", name, len(values))
+		}
+		return f
+	}
+	fields := []field{
+		{name: "why"},
+		constraint("conflicts", offer.Conflicts, true),
+		constraint("required", offer.Required, true),
+		constraint("harnesses", offer.Harnesses, false),
+		constraint("missed_when", offer.KnownMissedWhen, false),
+		constraint("false_triggered_by", offer.KnownFalseTriggeredBy, false),
+		constraint("evidence", offer.Evidence, false),
+		{name: "note"},
+	}
+	if why := strings.TrimSpace(offer.Why); why != "" {
+		fields[0].text = " why=" + safeMD(why)
+	}
+	if note := strings.TrimSpace(offer.CostRiskNote); note != "" {
+		fields[len(fields)-1].text = " note=" + safeMD(note)
+	}
+
+	// Reserve the cheap safety counts up front, so a verbose optional field cannot
+	// crowd them out. Observed live before this reserve existed: an offer with a long
+	// `why` spent its whole budget there and dropped `conflicts` entirely, while
+	// offers with shorter `why` values kept their counts — the safety signal survived
+	// or not depending on how talkative an unrelated field happened to be.
+	reserve := 0
+	for _, f := range fields {
+		if f.text != "" && f.compact != "" {
+			reserve += utf8.RuneCountInString(f.compact)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(head)
+	used := utf8.RuneCountInString(head)
+	var dropped []string
+	for _, f := range fields {
+		if f.text == "" {
+			continue
+		}
+		// A safety-critical field spends its own reservation, so it is not competing
+		// against it; every other field must leave the remaining reservations intact.
+		own := 0
+		if f.compact != "" {
+			own = utf8.RuneCountInString(f.compact)
+		}
+		if size := utf8.RuneCountInString(f.text); used+size+reserve-own <= budget {
+			b.WriteString(f.text)
+			used += size
+			reserve -= own
+			continue
+		}
+		// Full text does not fit. For a safety-critical field, keep the count so the
+		// reader still knows conditions exist; otherwise report the omission by name.
+		if f.compact != "" {
+			if size := utf8.RuneCountInString(f.compact); used+size <= budget {
+				b.WriteString(f.compact)
+				used += size
+				reserve -= own
+				continue
+			}
+		}
+		dropped = append(dropped, f.name)
+	}
+	return b.String(), dropped
 }
 
 func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef) {
@@ -2320,8 +2458,15 @@ func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef) {
 }
 
 func writeCapabilityConstraintSummary(b *strings.Builder, label string, values []envelope.CapabilityOfferConstraint) {
+	b.WriteString(capabilityConstraintSummary(label, values))
+}
+
+// capabilityConstraintSummary renders one labelled constraint field, or "" when the
+// field is empty. Returned as a string rather than written directly so the offer
+// renderer can decide whether the WHOLE field fits before committing to it.
+func capabilityConstraintSummary(label string, values []envelope.CapabilityOfferConstraint) string {
 	if len(values) == 0 {
-		return
+		return ""
 	}
 	parts := make([]string, 0, len(values))
 	for _, value := range values {
@@ -2338,9 +2483,9 @@ func writeCapabilityConstraintSummary(b *strings.Builder, label string, values [
 		parts = append(parts, safeMD(part))
 	}
 	if len(parts) == 0 {
-		return
+		return ""
 	}
-	fmt.Fprintf(b, " %s=%s", label, strings.Join(parts, ","))
+	return fmt.Sprintf(" %s=%s", label, strings.Join(parts, ","))
 }
 
 func writeActiveMemoryList(b *strings.Builder, pack envelope.ContextPack, refs []string) {
