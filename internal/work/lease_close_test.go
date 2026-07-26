@@ -63,6 +63,20 @@ func TestCloseStealOverridesLeaseHolder(t *testing.T) {
 		t.Fatalf("empty-reason steal attempt must not mutate work: state=%q err=%v", got.State, err)
 	}
 
+	// The close-steal both TRANSFERS the lease and (since I1) releases it when the
+	// work lands terminal. Observing the transfer therefore requires looking inside
+	// the close, at the seam that runs after the terminal publish and immediately
+	// before the release — otherwise the strengthened post-condition below would
+	// silently pass even if recordLeaseSteal stopped writing the file at all.
+	var holderAtRelease string
+	var holderAtReleaseErr error
+	previousSeam := closeBeforeLeaseRelease
+	t.Cleanup(func() { closeBeforeLeaseRelease = previousSeam })
+	closeBeforeLeaseRelease = func() {
+		lease, err := s.readLease(w.ID)
+		holderAtRelease, holderAtReleaseErr = lease.By, err
+	}
+
 	res, err := s.Close(w.ID, CloseInput{
 		Outcome:     "cancelled",
 		MoveType:    "audit_only",
@@ -70,8 +84,15 @@ func TestCloseStealOverridesLeaseHolder(t *testing.T) {
 		Steal:       true,
 		StealReason: "actor-a's executor died mid-build",
 	}, fixedNow)
+	closeBeforeLeaseRelease = previousSeam
 	if err != nil {
 		t.Fatalf("expected steal with non-empty reason to succeed: %v", err)
+	}
+	if holderAtReleaseErr != nil {
+		t.Fatalf("read lease at the release seam: %v", holderAtReleaseErr)
+	}
+	if holderAtRelease != "actor-b" {
+		t.Fatalf("close-steal must rewrite the lease file's holder to the stealing actor: got %q, want %q", holderAtRelease, "actor-b")
 	}
 	if res.Work.State != "cancelled" {
 		t.Fatalf("stolen close should land the work terminal, got %q", res.Work.State)
