@@ -240,6 +240,8 @@ func main() {
 		cmdLocalModels(os.Args[2:])
 	case "lanebeliefs":
 		cmdLaneBeliefs(os.Args[2:])
+	case "mcp-transport":
+		cmdMCPTransport(os.Args[2:])
 	case "negatives":
 		cmdNegatives(os.Args[2:])
 	case "architecture":
