@@ -283,7 +283,7 @@ func routeUsage(sub string) string {
 	case "ev":
 		return routeEvUsage
 	default:
-		return "usage: compound route <execution-profile (--list|--profile ID) [--json]|evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight])|ev --capability-class C --deviation-lane L [--risk-grade gate|judge|tidy] [--class-bucket unknown] [--json]>"
+		return "usage: compound route <execution-profile (--list|--profile ID) [--json]|evidence-authority [--json] [--recent N]|lane-projection [--harness H] [--json]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|speed (observe [--from <probe.json>]|list) [--json]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive] [--latency-class interactive|batch|overnight])|ev --capability-class C --deviation-lane L [--risk-grade gate|judge|tidy] [--class-bucket unknown] [--json]>"
 	}
 }
 
@@ -352,7 +352,8 @@ compound finding <record|list|show|doctor> private direct-write home for durable
 compound capture --source S [--text T] [--work W] | capture show <cid> gesture-fired capture front door: content-addressed body under observed/capture/ (never ledger), mints ONE observed-class proposed candidate (never auto-promotable); day-salted dedup
 compound intent <plan|review|apply> expressive utterance -> task-scoped ContextPack -> reviewable existing work create-plan; ambiguity parks and apply requires an explicit reviewer
 compound placement <resolve|target> where a write belongs: positive canonical-target redirect for a blocked path (guidance, not a gate)
-compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hook install/drift, land-lease state, pending findings, placement guard mode; writes nothing
+compound doctor [--json] [--base DIR] [--binary PATH] one legible operator health surface: hooks, leases, findings, placement freshness, retention; writes nothing
+compound retention <classes|scan|plan> [--json]                 declare and inspect artifact retention; plans only, never reclaims
 compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] deterministic verification bundle; --dev is fast, cache-enabled, non-certifying feedback while canonical proof stays fresh
   compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
@@ -365,6 +366,7 @@ compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] determ
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]|drift|generate|permission-mode|instruction-pack>
   compound transition show <id>                                 inspect a Transition or envelope
+  compound route lane-projection [--harness H] [--json]          read-only executor lane input from Compound route authority
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
   compound route import-model-capabilities <model-capabilities.yaml> OS model router YAML -> Compound route authority
   compound route import-promotion-criteria <promotion-criteria.yaml> Promotion criteria YAML -> Compound route review authority

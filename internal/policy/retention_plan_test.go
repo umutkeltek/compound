@@ -20,7 +20,7 @@ func storageTarget(freeBytes int64) ReclaimTarget {
 	}
 }
 
-// At 114 GB free the absolute floor passes while the ratio-derived floor still fails.
+// With 114 units free the absolute floor passes while the ratio-derived floor still fails.
 func TestShortfallTakesTheStricterOfBytesAndRatio(t *testing.T) {
 	target := storageTarget(114 * gb)
 	short := target.ShortfallBytes()
