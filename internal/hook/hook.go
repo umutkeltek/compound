@@ -2662,6 +2662,13 @@ func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef, limit in
 		total += utf8.RuneCountInString(line)
 	}
 
+	if len(selected) == len(refs) && total <= limit {
+		for _, line := range lines {
+			b.WriteString(line)
+		}
+		return
+	}
+
 	// Pass 2: if the equal share would fall below a ref's identity floor, shed
 	// redundant tracked-source provenance first. The same sources are already
 	// named in Active Instructions, while session-specific runtime/memory refs
@@ -2669,7 +2676,9 @@ func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef, limit in
 	if total > sectionRoom {
 		for len(selected) > 1 &&
 			(sectionRoom-overhead)/len(selected) < minIncludedRefChars {
-			drop := len(selected) - 1
+			// Once redundant static refs are exhausted, preserve the newest
+			// session-specific tail and shed the oldest dynamic ref.
+			drop := 0
 			for i := len(selected) - 1; i >= 0; i-- {
 				if strings.TrimSpace(selected[i].SourceClass) == "source" {
 					drop = i

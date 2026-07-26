@@ -280,6 +280,47 @@ func TestIncludedWholeLineRepairKeepsTheExistingCap(t *testing.T) {
 	}
 }
 
+func TestIncludedListExactlyAtCapIsLossless(t *testing.T) {
+	refs := liveControlPlanePack()
+
+	var full strings.Builder
+	writeIncludedList(&full, refs, 10_000)
+	exactCap := utf8.RuneCountInString(full.String())
+
+	var exact strings.Builder
+	writeIncludedList(&exact, refs, exactCap)
+
+	if exact.String() != full.String() {
+		t.Fatalf(
+			"Included section that fits exactly at its cap must stay lossless (cap=%d):\nfull:\n%s\nexact:\n%s",
+			exactCap,
+			full.String(),
+			exact.String(),
+		)
+	}
+}
+
+func TestIncludedListPreservesDynamicTailWhenNoStaticRefCanBeShed(t *testing.T) {
+	refs := make([]envelope.IncludedRef, 0, maxInjectionIncludedRefs)
+	for i := 0; i < maxInjectionIncludedRefs; i++ {
+		refs = append(refs, envelope.IncludedRef{
+			Ref:         fmt.Sprintf("decision://runtime-%02d", i),
+			SourceClass: "runtime",
+			Reason:      strings.Repeat("session-specific evidence ", 8),
+			Confidence:  1,
+			Status:      "current",
+		})
+	}
+	tailRef := refs[len(refs)-1].Ref
+
+	var section strings.Builder
+	writeIncludedList(&section, refs, maxOrientationIncludedChars)
+
+	if !strings.Contains(section.String(), "`"+tailRef+"`") {
+		t.Fatalf("dynamic tail ref %q was shed before an older dynamic ref:\n%s", tailRef, section.String())
+	}
+}
+
 // TestIncludedListElidesReasonsRatherThanSeveringOrDroppingTheTail pins the repair, using an
 // explicit tight limit so it tests the renderer's property rather than today's cap value.
 //
@@ -288,11 +329,11 @@ func TestIncludedWholeLineRepairKeepsTheExistingCap(t *testing.T) {
 // mid-reason. Ref identity must survive; reason loss must be explicit.
 func TestIncludedListElidesReasonsRatherThanSeveringOrDroppingTheTail(t *testing.T) {
 	pack := liveControlPlanePack()
-	// Tight enough to force elision, but not below the identity floor. The served pack needs
-	// 1105 runes in full, so 1200 (minus the 96-rune omission reserve) cannot fit it and the
-	// elision path runs — while still leaving each of the 8 refs more than
-	// minIncludedRefChars, which is what identity costs. Below that floor refs MUST drop,
-	// and that is the backstop behaving correctly, not an identity guarantee.
+	pack[len(pack)-1].Reason += strings.Repeat(" durable evidence", 16)
+	// Tight enough to force elision, but not below the identity floor. The extended fixture
+	// exceeds 1200 runes in full, so the elision path runs while still leaving each of the
+	// 8 refs more than minIncludedRefChars, which is what identity costs. Below that floor
+	// refs MUST drop, and that is the backstop behaving correctly, not an identity guarantee.
 	const tight = 1200
 
 	var section strings.Builder
