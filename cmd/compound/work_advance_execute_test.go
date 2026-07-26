@@ -125,7 +125,7 @@ func TestWorkAdvanceExecuteFailedExit(t *testing.T) {
 	// non-zero (the operator contract); we don't assert on exit code
 	// here, just on the persisted state.
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
-	cmd := exec.Command("go", "run", "./cmd/compound", "work", "advance", w.ID,
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
 		"--to", "running", "--execute", "--harness", "os-harness-entrypoints",
 		"--", "false")
 	cmd.Dir = repoRoot
@@ -198,7 +198,7 @@ func TestWorkAdvanceExecuteUnknownHarnessNoStateChange(t *testing.T) {
 	}
 
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
-	cmd := exec.Command("go", "run", "./cmd/compound", "work", "advance", w.ID,
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
 		"--to", "running", "--execute", "--harness", "no-such-harness",
 		"--", "echo", "hi")
 	cmd.Dir = repoRoot
@@ -265,13 +265,7 @@ func TestWorkAdvanceExecuteMissingLaneTupleNoStateChange(t *testing.T) {
 	}
 
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
-	binary := filepath.Join(t.TempDir(), "compound-test")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/compound")
-	build.Dir = repoRoot
-	if buildOut, buildErr := build.CombinedOutput(); buildErr != nil {
-		t.Fatalf("build compound fixture: %v\n%s", buildErr, buildOut)
-	}
-	cmd := exec.Command(binary, "work", "advance", w.ID,
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
 		"--to", "running", "--execute", "--harness", "claude_minimax",
 		"--workspace", repoRoot, "--prompt", "execute fixture")
 	cmd.Dir = repoRoot
@@ -357,13 +351,7 @@ routing_defaults:
 	}
 
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
-	binary := filepath.Join(t.TempDir(), "compound-test")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/compound")
-	build.Dir = repoRoot
-	if buildOut, buildErr := build.CombinedOutput(); buildErr != nil {
-		t.Fatalf("build compound fixture: %v\n%s", buildErr, buildOut)
-	}
-	cmd := exec.Command(binary, "work", "advance", w.ID,
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
 		"--to", "running", "--execute", "--harness", "claude_minimax",
 		"--workspace", repoRoot, "--prompt", "execute fixture")
 	cmd.Dir = repoRoot
@@ -410,7 +398,7 @@ func TestWorkAdvanceExecuteAcceptsWorkspaceAndPermissionMode(t *testing.T) {
 	workspace := t.TempDir()
 
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
-	cmd := exec.Command("go", "run", "./cmd/compound", "work", "advance", w.ID,
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
 		"--to", "running", "--execute", "--harness", "os-harness-entrypoints",
 		"--workspace", workspace, "--permission-mode", "plan",
 		"--", "echo", "workspace-flag-smoke")
@@ -520,7 +508,7 @@ func TestWorkAdvanceExecuteRejectsNonRunningTo(t *testing.T) {
 	}
 
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
-	cmd := exec.Command("go", "run", "./cmd/compound", "work", "advance", w.ID,
+	cmd := exec.Command(compoundTestBinary(t), "work", "advance", w.ID,
 		"--to", "verifying", "--execute", "--harness", "os-harness-entrypoints",
 		"--", "echo", "hi")
 	cmd.Dir = repoRoot

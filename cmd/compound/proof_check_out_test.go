@@ -220,18 +220,7 @@ func TestProofCheckOutTruthfulExitOneOnRedBattery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the compound binary and runs a real go-test gate subprocess")
 	}
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	repoRoot := filepath.Clean(filepath.Join(wd, "..", ".."))
-	exe := filepath.Join(t.TempDir(), "compound-proofcheck-out-exe")
-	build := exec.Command("go", "build", "-o", exe, "./cmd/compound")
-	build.Dir = repoRoot
-	build.Env = append(os.Environ(), "GOTOOLCHAIN=local")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build compound: %v\n%s", err, out)
-	}
+	exe := compoundTestBinary(t)
 
 	fixture := t.TempDir()
 	if err := os.WriteFile(filepath.Join(fixture, "go.mod"), []byte("module proofcheck-red-fixture\n\ngo 1.23\n"), 0o644); err != nil {

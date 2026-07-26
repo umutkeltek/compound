@@ -42,7 +42,7 @@ func runCompound(t *testing.T, homePath string, args ...string) (string, error) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("go", append([]string{"run", "./cmd/compound"}, args...)...)
+	cmd := exec.Command(compoundTestBinary(t), args...)
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
 	out, runErr := cmd.CombinedOutput()

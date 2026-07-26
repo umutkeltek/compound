@@ -263,8 +263,8 @@ func runCompoundForBrainRecipe(t *testing.T, home string, args ...string) string
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmdArgs := append([]string{"run", "./cmd/compound"}, args...)
-	cmd := exec.Command("go", cmdArgs...)
+	bin := capgraphCompoundTestBinary(t)
+	cmd := exec.Command(bin, args...)
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(),
 		"COMPOUND_HOME="+home,
@@ -272,7 +272,7 @@ func runCompoundForBrainRecipe(t *testing.T, home string, args ...string) string
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("go %v failed: %v\n%s", cmdArgs, err, out)
+		t.Fatalf("%s %v failed: %v\n%s", bin, args, err, out)
 	}
 	return string(out)
 }

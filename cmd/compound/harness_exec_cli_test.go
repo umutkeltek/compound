@@ -155,7 +155,7 @@ func TestHarnessRunFailedExit(t *testing.T) {
 		SuccessPredicate: "harness run failed-exit path",
 	}, cliTestNow)
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
-	cmd := exec.Command("go", "run", "./cmd/compound", "harness", "run",
+	cmd := exec.Command(compoundTestBinary(t), "harness", "run",
 		"--harness", "os-harness-entrypoints", "--work", w.ID, "--", "false")
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
@@ -182,7 +182,7 @@ func TestHarnessRunJSON(t *testing.T) {
 		SuccessPredicate: "harness run json output",
 	}, cliTestNow)
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
-	cmd := exec.Command("go", "run", "./cmd/compound", "harness", "run",
+	cmd := exec.Command(compoundTestBinary(t), "harness", "run",
 		"--harness", "os-harness-entrypoints", "--work", w.ID, "--json",
 		"--", "echo", "json-smoke")
 	cmd.Dir = repoRoot
@@ -405,7 +405,7 @@ func TestHarnessRunJSONGovernedFalse(t *testing.T) {
 		SuccessPredicate: "harness run json governed false",
 	}, cliTestNow)
 	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
-	cmd := exec.Command("go", "run", "./cmd/compound", "harness", "run",
+	cmd := exec.Command(compoundTestBinary(t), "harness", "run",
 		"--harness", "os-harness-entrypoints", "--work", w.ID, "--json",
 		"--", "echo", "governed-smoke")
 	cmd.Dir = repoRoot

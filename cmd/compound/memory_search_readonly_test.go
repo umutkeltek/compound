@@ -26,7 +26,7 @@ func TestMemorySearchDoesNotMutateCompoundHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	homePath := filepath.Join(t.TempDir(), "absent-home")
-	cmd := exec.Command("go", "run", "./cmd/compound", "memory", "search", "--lane", "nonexistent", "query")
+	cmd := exec.Command(compoundTestBinary(t), "memory", "search", "--lane", "nonexistent", "query")
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
 	// The lane does not exist; the command is expected to exit non-zero. We

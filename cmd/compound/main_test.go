@@ -749,12 +749,7 @@ func TestProofCheckNativeGateDeniesUnownedWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := filepath.Clean(filepath.Join(wd, "..", ".."))
-	exe := filepath.Join(t.TempDir(), "compound-proofcheck-exe")
-	build := exec.Command("go", "build", "-o", exe, "./cmd/compound")
-	build.Dir = repo
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build compound: %v\n%s", err, out)
-	}
+	exe := compoundTestBinary(t)
 	step := proofCheckStep{
 		Name:     "codex-pretooluse-native-gate",
 		Command:  []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"},
@@ -11205,11 +11200,7 @@ func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bin := filepath.Join(t.TempDir(), "compound-mock-engine")
-	cmd := exec.Command("go", "build", "-o", bin, "../compound-mock-engine")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build mock engine: %v\n%s", err, out)
-	}
+	bin := compoundMockEngineTestBinary(t)
 	t.Setenv("COMPOUND_MEM_ENGINE_BIN", bin)
 	t.Setenv("COMPOUND_MEM_ENGINE_EMBEDDER", "reference:lexical:0:0")
 

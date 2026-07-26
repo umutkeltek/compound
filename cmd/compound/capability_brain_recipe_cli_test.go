@@ -15,7 +15,7 @@ func TestCapabilityImportBrainRecipeDryRunDoesNotCreateHome(t *testing.T) {
 	}
 	homePath := filepath.Join(t.TempDir(), "absent-home")
 	recipeDir := filepath.Join(repoRoot, "fixtures", "skills", "brain-recipe-tree")
-	cmd := exec.Command("go", "run", "./cmd/compound", "capability", "import-skills", "--brain-recipe-dir", recipeDir, "--dry-run")
+	cmd := exec.Command(compoundTestBinary(t), "capability", "import-skills", "--brain-recipe-dir", recipeDir, "--dry-run")
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+homePath)
 	out, err := cmd.CombinedOutput()
