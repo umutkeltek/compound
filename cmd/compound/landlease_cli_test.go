@@ -105,6 +105,75 @@ func TestLandLeaseCLIReleaseHolderScoped(t *testing.T) {
 	}
 }
 
+// The land-lease is advisory: nothing stops a lane that reads a refusal from merging anyway.
+// That makes the refusal text the actual enforcement, so each of the three gates must leave
+// the reader with the right next verb rather than a restatement of the rule.
+//
+// RED WITHOUT the conversion: all three printed `error: land-lease held by "lane-alpha" …`
+// (or `… steal requires a reason …`), so assertTeachingRefusal fails immediately on the gate
+// name; nothing in the old text named status, --wait, or the steal's --reason as commands.
+func TestLandLeaseCLIRefusalsTeachTheRecoveryLadder(t *testing.T) {
+	t.Run("contention names wait and steal without preferring the steal", func(t *testing.T) {
+		home := t.TempDir()
+		if _, errStr, code := runLandLeaseCLI(t, "acquire", "--holder", "lane-alpha", "--home", home); code != 0 {
+			t.Fatalf("A acquire exit=%d stderr=%s", code, errStr)
+		}
+		_, errStr, code := runLandLeaseCLI(t, "acquire", "--holder", "lane-beta", "--home", home)
+		if code == 0 {
+			t.Fatalf("B acquire over A's live lease must exit non-zero")
+		}
+		assertTeachingRefusal(t, errStr, "land_lease_contention",
+			"lane-alpha",
+			"compound land-lease status",
+			"--holder lane-beta --wait",
+			"--holder lane-beta --reason",
+		)
+		// A steal offered without its cost reads as the obvious fix. The refusal must
+		// carry the condition under which stealing is the WRONG move.
+		if !strings.Contains(errStr, "NOT mid-ceremony") {
+			t.Errorf("the steal rung must state when it is the wrong move, got:\n%s", errStr)
+		}
+	})
+
+	t.Run("non-holder release names the holder's own release", func(t *testing.T) {
+		home := t.TempDir()
+		if _, errStr, code := runLandLeaseCLI(t, "acquire", "--holder", "lane-alpha", "--home", home); code != 0 {
+			t.Fatalf("A acquire exit=%d stderr=%s", code, errStr)
+		}
+		_, errStr, code := runLandLeaseCLI(t, "release", "--holder", "lane-beta", "--home", home)
+		if code == 0 {
+			t.Fatalf("non-holder release must exit non-zero")
+		}
+		assertTeachingRefusal(t, errStr, "land_lease_holder",
+			// The remedy command must carry the ACTUAL holder, not the caller: a
+			// release suggestion echoing the refused holder is a command that fails
+			// exactly the same way.
+			"compound land-lease release --holder lane-alpha",
+			"compound land-lease steal --holder lane-beta",
+		)
+	})
+
+	t.Run("reasonless steal names acquire as the alternative", func(t *testing.T) {
+		home := t.TempDir()
+		if _, errStr, code := runLandLeaseCLI(t, "acquire", "--holder", "lane-alpha", "--home", home); code != 0 {
+			t.Fatalf("A acquire exit=%d stderr=%s", code, errStr)
+		}
+		_, errStr, code := runLandLeaseCLI(t, "steal", "--holder", "lane-beta", "--home", home)
+		if code == 0 {
+			t.Fatalf("steal without --reason must exit non-zero")
+		}
+		assertTeachingRefusal(t, errStr, "land_lease_steal_audit",
+			"lane-alpha",
+			"compound land-lease acquire --holder lane-beta",
+		)
+		// Teeth: the refusal must not be reachable by simply passing an empty reason,
+		// so the gate has to fire on the trimmed value.
+		if _, _, code := runLandLeaseCLI(t, "steal", "--holder", "lane-beta", "--reason", "   ", "--home", home); code == 0 {
+			t.Errorf("a whitespace-only --reason must not satisfy the steal audit gate")
+		}
+	})
+}
+
 func TestLandLeaseCLIUsage(t *testing.T) {
 	_, _, code := runLandLeaseCLI(t)
 	if code != 2 {
