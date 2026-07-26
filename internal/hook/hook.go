@@ -1925,30 +1925,21 @@ const (
 	maxOrientationSummaryChars = 2400
 	// Measured max 205 across 1077 uncapped digests.
 	maxOrientationActiveInstructionChars = 300
-	// Measured 127 runes; live control-plane digests use 23. 170 keeps 1.3x the
-	// measured worst case. Lowered from 250 to fund the Included raise below — the
-	// surface sum is fixed, so a raise is always somebody else's slack.
-	maxOrientationActiveHookChars = 170
+	// Measured 127 runes.
+	maxOrientationActiveHookChars = 250
 	// Included is the one orientation section deliberately funded BELOW its demand.
 	// It is generic provenance — the same reason it was demoted below high-signal
 	// meaning in the first place — so when the surface has to give something up, it
 	// gives up provenance rather than the constitution. writeIncludedList drops WHOLE
 	// refs to stay inside this, so the list ends with an honest "N more omitted" line
 	// instead of a mid-ref character cut.
-	//
-	// Raised 1100 -> 1210, funded by lowering Active Hooks (-80) and Excluded (-30);
-	// the surface sum is unchanged at 5850 and TestInjectionSectionCapsFitBudget still
-	// enforces it. 1100 was set when a ref measured ~110 runes and there was no trust
-	// legend above them; the legend costs 108, which put the live 8-ref control-plane
-	// pack at 1105 and truncated it on every session. The floor is arithmetic, not
-	// taste: heading 13 + legend 108 + 8 served refs 984 + includedOmissionReserve 96
-	// = 1201, so anything below that drops a ref the pack was built to carry — and the
-	// ref it drops is the tail, where the session-specific claim:// and decision:// refs
-	// sit, behind six lines of ambient boilerplate the agent already has from AGENTS.md.
-	maxOrientationIncludedChars = 1210
-	// Measured ~400 runes; live control-plane digests use 118. 470 keeps 1.17x the
-	// measured worst case.
-	maxOrientationExcludedChars = 470
+	// The 1100-rune cap is an existing contract, not a repair lever. If the trust
+	// legend and omission row make the list exceed it, the renderer elides reasons
+	// and drops redundant static-source provenance as whole lines while preserving
+	// session-specific runtime and memory refs.
+	maxOrientationIncludedChars = 1100
+	// Measured ~400 runes.
+	maxOrientationExcludedChars = 500
 	// Hook Gate Readiness plus Hook Roster share one budget: readiness measured 265
 	// runes, roster 528, so 900 holds both in full. Readiness has reached a live
 	// agent 3 times in 2714 digests; funding it to full width is the point.
@@ -2649,6 +2640,7 @@ func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef, limit in
 	if len(shown) > maxInjectionIncludedRefs {
 		shown = shown[:maxInjectionIncludedRefs]
 	}
+	selected := append([]envelope.IncludedRef(nil), shown...)
 	// The legend renders FIRST so it survives a section truncated at the tail, and it
 	// defines the grammar for harnesses whose own instruction file does not.
 	const legend = "- trust: unmarked = verify-first; `" + includedRefTrustMarker + "` = never a premise, re-derive it. Tiers only demote.\n"
@@ -2662,27 +2654,33 @@ func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef, limit in
 	// Pass 1: price every ref in full. The common case fits, and a pack that fits must
 	// render losslessly — an elision budget applied unconditionally would trim reasons
 	// nobody needed to lose.
-	lines := make([]string, 0, len(shown))
+	lines := make([]string, 0, len(selected))
 	total := overhead
-	for _, ref := range shown {
+	for _, ref := range selected {
 		line := renderIncludedRef(ref, 0)
 		lines = append(lines, line)
 		total += utf8.RuneCountInString(line)
 	}
 
-	// Pass 2: it does not fit, so every ref gets an equal share and over-long reasons are
-	// elided. Sharing the budget rather than dropping the tail is the point: the pack
-	// orders ambient boilerplate first and session-specific claim:// / decision:// refs
-	// last, so a tail-drop always eats the meaning and keeps the six lines the agent
-	// already has from AGENTS.md. Eliding a reason costs prose; dropping the tail ref
-	// costs the only thing in the list that was about THIS session.
+	// Pass 2: if the equal share would fall below a ref's identity floor, shed
+	// redundant tracked-source provenance first. The same sources are already
+	// named in Active Instructions, while session-specific runtime/memory refs
+	// have no equivalent exact-ref channel.
 	if total > sectionRoom {
-		perRef := (sectionRoom - overhead) / max(1, len(shown))
-		if perRef < minIncludedRefChars {
-			perRef = minIncludedRefChars
+		for len(selected) > 1 &&
+			(sectionRoom-overhead)/len(selected) < minIncludedRefChars {
+			drop := len(selected) - 1
+			for i := len(selected) - 1; i >= 0; i-- {
+				if strings.TrimSpace(selected[i].SourceClass) == "source" {
+					drop = i
+					break
+				}
+			}
+			selected = append(selected[:drop], selected[drop+1:]...)
 		}
+		perRef := (sectionRoom - overhead) / max(1, len(selected))
 		lines = lines[:0]
-		for _, ref := range shown {
+		for _, ref := range selected {
 			lines = append(lines, renderIncludedRef(ref, perRef))
 		}
 	}

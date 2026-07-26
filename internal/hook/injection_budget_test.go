@@ -193,31 +193,99 @@ func TestIncludedTrustTiersFitTheCapAtTheRefBound(t *testing.T) {
 	if !strings.Contains(tail, "`memory://relevance-gated` "+includedRefTrustMarker) {
 		t.Fatalf("the one demoted ref at the bound lost its marker, so it now reads as verify-first:\n%s", tail)
 	}
-	// Every ref that rendered must have rendered WHOLE — its reason ends the line.
+	// Every ref that rendered must be a complete line. A reason may be shortened
+	// only when the renderer marks the loss explicitly.
 	for _, ref := range atBound {
-		if !strings.Contains(tail, "`"+ref.Ref+"`") {
+		prefix := "- `" + ref.Ref + "`"
+		start := strings.Index(tail, prefix)
+		if start < 0 {
 			continue // dropped for budget, and the omission line below accounts for it
 		}
-		if !strings.Contains(tail, "reason="+ref.Reason+"\n") {
-			t.Fatalf("ref %q rendered with a severed reason — a partial ref reads as a complete one:\n%s", ref.Ref, tail)
+		rest := tail[start:]
+		end := strings.Index(rest, "\n")
+		if end < 0 {
+			t.Fatalf("ref %q rendered without a complete line:\n%s", ref.Ref, tail)
+		}
+		line := rest[:end]
+		if !strings.HasSuffix(line, "reason="+ref.Reason) &&
+			!strings.HasSuffix(line, "…[elided]") {
+			t.Fatalf("ref %q reason was silently severed instead of explicitly elided:\n%s", ref.Ref, tail)
 		}
 	}
 }
 
+// TestIncludedWholeLineRepairKeepsTheExistingCap pins that rendering changes
+// fit the existing section budget instead of taking budget from unrelated
+// orientation sections.
+func TestIncludedWholeLineRepairKeepsTheExistingCap(t *testing.T) {
+	const unchangedCap = 1100
+	if maxOrientationIncludedChars != unchangedCap {
+		t.Fatalf(
+			"whole-line repair raised Included cap: got=%d want=%d; fit whole refs inside the existing budget",
+			maxOrientationIncludedChars,
+			unchangedCap,
+		)
+	}
+
+	refs := liveControlPlanePack()
+	for i := len(refs); i < 109; i++ {
+		refs = append(refs, envelope.IncludedRef{
+			Ref:         fmt.Sprintf("decision://DEC-%04d", i),
+			SourceClass: "runtime",
+			Reason:      "accepted decision",
+			Confidence:  1,
+			Status:      "current",
+		})
+	}
+	pack := envelope.ContextPack{SummaryMD: "summary", Included: refs}
+	pack.Header.ID = "ctx_tier_existing_cap"
+	rendered := renderInjection(injectionRender{
+		HookID:  "hookev_tier_existing_cap",
+		Pack:    pack,
+		Surface: injectionSurfaceOrientation,
+	})
+	idx := strings.Index(rendered, "## Included")
+	if idx < 0 {
+		t.Fatalf("orientation digest lost Included section:\n%s", rendered)
+	}
+	section := rendered[idx:]
+	if cut := strings.Index(section, "\n## "); cut > 0 {
+		section = section[:cut]
+	}
+	if strings.Contains(section, "Section truncated") {
+		t.Fatalf("Included section used generic rune truncation:\n%s", section)
+	}
+	if got := utf8.RuneCountInString(section); got > unchangedCap {
+		t.Fatalf("Included section exceeded unchanged cap: got=%d want<=%d\n%s", got, unchangedCap, section)
+	}
+	if !strings.Contains(section, "`decision://DEC-0001`") {
+		t.Fatalf("budgeting dropped the session-specific tail ref before redundant source provenance:\n%s", section)
+	}
+	if strings.Contains(section, "reason=accepted decision\n") {
+		t.Fatalf("tail ref reason was silently severed instead of marked elided:\n%s", section)
+	}
+
+	displayed := 0
+	for _, line := range strings.Split(section, "\n") {
+		if strings.HasPrefix(line, "- `") {
+			displayed++
+		}
+	}
+	wantOmission := fmt.Sprintf(
+		"- %d more included ref(s) omitted digest budget; see ContextPack JSON for full provenance",
+		len(refs)-displayed,
+	)
+	if !strings.Contains(section, wantOmission) {
+		t.Fatalf("Included omission row is inaccurate; want %q:\n%s", wantOmission, section)
+	}
+}
+
 // TestIncludedListElidesReasonsRatherThanSeveringOrDroppingTheTail pins the repair, using an
-// explicit tight limit so it tests the RENDERER's property rather than today's cap value.
+// explicit tight limit so it tests the renderer's property rather than today's cap value.
 //
-// This is the regression test for a defect that was live on main. The trust legend pushed the
-// default control-plane pack from 977 to 1105 runes against a 1100 cap, so capInjectionSection
-// severed `decision://DEC-0001` mid-reason on every session that got a SessionStart. It
-// rendered as `... reason=accepted decision` — indistinguishable from a ref whose reason
-// genuinely IS "accepted decision". Silent, legible, and wrong.
-//
-// Two properties, and the second is why tail-dropping was not the answer: every ref keeps its
-// IDENTITY (ref string, trust marker, provenance fields), and no ref is lost merely for sitting
-// last. The pack orders ambient boilerplate first and session-specific refs last, so a renderer
-// that sheds the tail sheds exactly the refs that were about this session while faithfully
-// preserving six lines the agent already has from AGENTS.md.
+// The trust legend pushed the live control-plane pack from 977 to 1105 runes
+// against a 1100 cap, so the generic cap severed `decision://DEC-0001`
+// mid-reason. Ref identity must survive; reason loss must be explicit.
 func TestIncludedListElidesReasonsRatherThanSeveringOrDroppingTheTail(t *testing.T) {
 	pack := liveControlPlanePack()
 	// Tight enough to force elision, but not below the identity floor. The served pack needs
