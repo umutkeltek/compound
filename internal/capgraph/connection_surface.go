@@ -22,13 +22,20 @@ const ConnectionSurfaceSchemaVersion = "compound.capability_connection_surface.v
 // append-only sidecar (registries/capability-connection-surfaces.jsonl),
 // last-write-wins by NodeID on load, mirroring nodes/edges.
 type ConnectionSurface struct {
-	NodeID            string   `json:"node_id"`
-	ConfigPaths       []string `json:"config_paths,omitempty"`
-	Endpoint          string   `json:"endpoint,omitempty"`
-	AuthMode          string   `json:"auth_mode,omitempty"`
-	SettingsSchemaRef string   `json:"settings_schema_ref,omitempty"`
-	AssertingOwner    string   `json:"asserting_owner,omitempty"`
-	SourceRevision    string   `json:"source_revision,omitempty"`
+	NodeID      string   `json:"node_id"`
+	ConfigPaths []string `json:"config_paths,omitempty"`
+	Endpoint    string   `json:"endpoint,omitempty"`
+	// LaunchCommand is how you reach a capability that has no address because it
+	// does not exist until you start it -- a stdio MCP server, a CLI-backed tool.
+	// It is deliberately NOT folded into Endpoint: an endpoint is somewhere you
+	// connect, a launch command is something you run, and a consumer that cannot
+	// tell them apart will try to dial a command string. Keeping them separate is
+	// what lets a harness pick the right verb without guessing from syntax.
+	LaunchCommand     string `json:"launch_command,omitempty"`
+	AuthMode          string `json:"auth_mode,omitempty"`
+	SettingsSchemaRef string `json:"settings_schema_ref,omitempty"`
+	AssertingOwner    string `json:"asserting_owner,omitempty"`
+	SourceRevision    string `json:"source_revision,omitempty"`
 	// CredentialHandle answers "and what unlocks it" -- an address into whichever
 	// store already custodies the credential, never the credential itself.
 	// Embedded so the fields flatten into the same record: a surface that tells
@@ -141,6 +148,7 @@ func connectionSurfaceConstraints(cs ConnectionSurface) []SurfacingConstraint {
 		add("config_path", path, "connection surface config path")
 	}
 	add("endpoint", cs.Endpoint, "connection surface endpoint")
+	add("launch_command", cs.LaunchCommand, "command that starts this capability (run it; do not dial it)")
 	add("auth_mode", cs.AuthMode, "connection surface auth mode")
 	// Credential facts are addresses and mechanism, never values -- see
 	// ValidateCredentialHandle, which refuses value-shaped input at the write
