@@ -185,7 +185,7 @@ func TestCloseCrashBeforeLeaseReleaseLeavesSweepableResidueNeverALiveWorkWithNoL
 			}
 		}()
 		_, _ = store.Close(w.ID, CloseInput{
-			Outcome:  "completed",
+			Outcome:  "cancelled",
 			MoveType: "audit_only",
 			Summary:  "crash window",
 		}, now.Add(2*time.Minute))

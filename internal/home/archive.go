@@ -803,8 +803,16 @@ func terminalWorkCandidates(homePath string) ([]operationalCandidate, error) {
 // staleLeaseCandidates finds work/leases/*.json whose work_id no longer maps to
 // a live WorkEnvelope: the hot work is terminal, already archived, or missing
 // entirely (an orphan). Leases for live (non-terminal, hot) work are never
-// candidates. Claim leases are not otherwise swept on close or archive, so this
-// is the continuous cleanup path for the lease lifecycle.
+// candidates.
+//
+// This is the ORPHAN BACKSTOP, not the primary release path. internal/work's
+// Close releases a work's own lease inside the same terminal publish (see
+// Store.releaseLease), so an ordinary close leaves nothing here. What still
+// reaches this sweep is residue the owner cannot retire itself: a lease whose
+// work was archived or deleted out from under it, a home written before that
+// release existed, and a crash inside the close's release window. The candidate
+// predicates are unchanged — the set they select simply stops being fed by
+// every normal close.
 func staleLeaseCandidates(homePath string) ([]operationalCandidate, error) {
 	dir := filepath.Join(homePath, "work", "leases")
 	entries, err := os.ReadDir(dir)

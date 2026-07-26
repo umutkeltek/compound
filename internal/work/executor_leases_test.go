@@ -20,13 +20,15 @@ func TestExecutorsStaleLeaseResidueAndSweep(t *testing.T) {
 	store := newExecutorTestStore(t, now)
 	homePath := os.Getenv("COMPOUND_HOME")
 
-	// Terminal-work lease: claim creates the lease; closing lands the work
-	// terminal but leaves the claim lease behind as residue.
+	// Terminal-work lease residue. Since I1 a normal close releases its own lease,
+	// so this fixture writes the residue directly — see the helper for the two
+	// sources that still produce it.
 	terminalWork, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "terminal work with residual lease"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	closeWorkbenchTestWork(t, store, terminalWork.ID, now, "terminal work closed")
+	writeResidualLeaseForTerminalWork(t, store, terminalWork.ID, "codex", now)
 
 	// Live-work lease: claimed and still open.
 	liveWork, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "live claimed work"}, now)
@@ -97,6 +99,30 @@ func TestExecutorsStaleLeaseResidueAndSweep(t *testing.T) {
 	}
 	if after.Counts.StaleLeases != 0 || after.Counts.Leases != 1 {
 		t.Fatalf("post-sweep counts not clean: %+v", after.Counts)
+	}
+}
+
+// writeResidualLeaseForTerminalWork reproduces the lease residue a terminal work
+// can still carry AFTER I1. Close now releases its own lease inside the same
+// transaction, so a normal close no longer produces residue; the two remaining
+// sources are a pre-I1 home (leases accumulated before the release landed) and a
+// crash inside the release window (see
+// TestCloseCrashBeforeLeaseReleaseLeavesSweepableResidueNeverALiveWorkWithNoLease).
+// The stale-lease projection and the archive sweep are the orphan BACKSTOP for
+// exactly that residue, so they are still proven against it — just no longer
+// against a normal close, which is the invariant I1 added.
+func writeResidualLeaseForTerminalWork(t *testing.T, s *Store, workID, by string, at time.Time) {
+	t.Helper()
+	w, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !terminalStates[w.State] {
+		t.Fatalf("residual-lease fixture needs terminal work, %s is %q", workID, w.State)
+	}
+	lease := Lease{WorkID: workID, By: by, ClaimAt: ts(at)}
+	if err := s.writeJSON(s.leasePath(workID), &lease); err != nil {
+		t.Fatal(err)
 	}
 }
 

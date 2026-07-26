@@ -6,6 +6,7 @@ package work
 // was still mid-build on. These tests pin the falsifier list from that packet.
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -98,14 +99,18 @@ func TestCloseStealOverridesLeaseHolder(t *testing.T) {
 	if !strings.Contains(stealNote, "actor-a's executor died mid-build") {
 		t.Fatalf("steal event must carry the reason string: %q", stealNote)
 	}
-	// P0: a close-steal must transfer the lease file too (recordLeaseSteal is the one
-	// write path shared by both leaseHolderCloseGate and leaseHolderAdvanceGate).
-	lease, err := s.readLease(w.ID)
-	if err != nil {
-		t.Fatalf("read lease after steal: %v", err)
+	// P0: a close-steal must never leave a lease still naming the ORIGINAL holder —
+	// that is what let actor-a's next unguarded mutation pass leaseHolderStatusFor's
+	// holder==actor short-circuit as if the steal had never happened. The steal still
+	// transfers the file (recordLeaseSteal, the one write path shared by both gates,
+	// and the fail-closed point proven by TestAdvanceStealFailsClosedWhenLeaseTransferWriteFails);
+	// since I1, the terminal close then RELEASES that transferred lease, so the P0
+	// holds in its strongest form: no lease survives the close at all.
+	if _, err := s.readLease(w.ID); err == nil {
+		t.Fatal("a terminal close must release the lease it stole, leaving no residue behind")
 	}
-	if lease.By != "actor-b" {
-		t.Fatalf("close-steal must rewrite the lease file's holder to the stealing actor: got %q, want %q", lease.By, "actor-b")
+	if _, err := os.Stat(s.leasePath(w.ID)); !os.IsNotExist(err) {
+		t.Fatalf("stolen lease file must be gone after the terminal close: stat err = %v", err)
 	}
 }
 

@@ -169,6 +169,9 @@ func TestExecutorsProjectionRecordsStaleLeaseWorkIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeWorkbenchTestWork(t, store, terminalWork.ID, now, "terminal work closed")
+	// Since I1 close releases its own lease; the projection's stale-lease row is
+	// the backstop for pre-I1 / crash-window residue, written here directly.
+	writeResidualLeaseForTerminalWork(t, store, terminalWork.ID, "codex", now)
 
 	liveWork, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "live claimed work"}, now)
 	if err != nil {

@@ -2001,6 +2001,23 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		}
 		referenceTransactionFinished = true
 	}
+	// I1: a lease must not outlive its work's terminal state. Close is the ONLY
+	// path into a terminal state (Advance refuses one — terminalStateRequiresClose),
+	// so releasing here retires the whole lease lifetime rather than deferring it
+	// to a sweep that may not run for weeks.
+	//
+	// Ordering is the invariant, not an implementation detail. The release runs
+	// only AFTER the terminal WorkEnvelope, receipt, transition, lifecycle event
+	// and Git reference transaction are durable, mirroring abandonRunAttempts'
+	// posture below: at this point the close cannot be rolled back, so cleanup
+	// is best-effort and a failure is a doctor-visible gap, not a lost close.
+	// The reverse order would be a real regression — a crash after an early
+	// release would leave a still-live claimed work with no lease, silently
+	// disarming leaseHolderCloseGate/leaseHolderAdvanceGate for whoever runs
+	// next. The residue this ordering can leave (terminal work + lease) is
+	// exactly the pair internal/home's sweep already backstops.
+	closeBeforeLeaseRelease()
+	s.releaseLease(workID)
 	// A failed governed execution attaches its harness_execution attempt through
 	// Close rather than Advance. Retire any still-pending claim reservation only
 	// after the terminal work/event/ref transaction is durable, mirroring
@@ -2010,6 +2027,25 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 		s.supersedeClaimReservations(existingRunAttemptIDs, in.RunAttemptIDs, now)
 	}
 	return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
+}
+
+// releaseLease deletes workID's claim lease, if one is still held. Called only
+// from closeLocked, after the terminal state is durable (see the invariant
+// comment there).
+//
+// An absent lease is the normal no-op: close has always been legal for work
+// that was never claimed, and re-closing already-terminal work must stay
+// idempotent.
+//
+// The result is deliberately dropped rather than returned, mirroring
+// abandonRunAttempts: the close is already committed by the time this runs, so
+// surfacing a removal failure would report a close that actually succeeded as
+// failed. The failure is not silent — a lease that survives its terminal work
+// is exactly what home.OperationalHygiene counts in StaleLeases (doctor gate
+// hygiene:no-stale-leases) and what `home archive-history --kind lease` sweeps
+// as the orphan backstop.
+func (s *Store) releaseLease(workID string) {
+	_ = removeFileAndSyncDir(s.leasePath(workID))
 }
 
 func landCheckEvidenceRefs(refs []string) []string {
