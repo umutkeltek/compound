@@ -514,3 +514,141 @@ func TestSourceInPlacePrivacyGateSuppressesBeforeBodyRead(t *testing.T) {
 		t.Fatalf("suppression read source_in_place body %d times, want zero", sourceReads)
 	}
 }
+
+// TestSourceInPlacePrivacyGateQueryPropagatesCurrentPrivacyToBodyResolution
+// is the red-first falsifier for the residual privacy defect: an item
+// indexed while its privacy was public is reclassified to private in the
+// current SourceManifest after indexing. With the gate enabled, the
+// permitted private/local lane posture, and IncludeText=false, the very
+// next query must:
+//   - reflect the current (private) classification in its hit text status,
+//   - emit zero body text on the returned hit, and
+//   - never touch the on-disk source body.
+//
+// This test reaches the production-default path (QueryWithOptions) end to
+// end so the bug being pinned is "the indexed privacy snapshot is leaking
+// into body resolution", not "the per-call resolver is correctly gated
+// when fed a fresh manifest". A patched validateQueryItemAccess must
+// propagate the current privacy classification into the manifest the
+// resolver reads; otherwise the indexed item's stale privacy=public
+// would silently pass the governed switch and the source read would
+// proceed.
+func TestSourceInPlacePrivacyGateQueryPropagatesCurrentPrivacyToBodyResolution(t *testing.T) {
+	homePath := t.TempDir()
+	lane, embedder, _ := seedSourceInPlaceLaneForGate(t, homePath,
+		"indexed-as-public body that is now private at the authority",
+		"propagate_current_privacy",
+		"public", // indexed-time privacy
+		"private",
+		"local",
+		"",
+		true,
+	)
+	if _, err := Index(context.Background(), homePath, lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("index public item: %v", err)
+	}
+	current, err := sourceobs.LoadSourceManifest(homePath, lane.SourceFamily)
+	if err != nil {
+		t.Fatalf("load current manifest: %v", err)
+	}
+	current.Items[0].Privacy = "private"
+	writeJSON(t, sourceobs.SourceManifestPath(homePath, lane.SourceFamily), current)
+
+	embedder.calls = 0
+	embedder.embedded = 0
+	sourceReads := 0
+	originalRead := readSourceInPlaceBody
+	readSourceInPlaceBody = func(path string) ([]byte, error) {
+		sourceReads++
+		return originalRead(path)
+	}
+	t.Cleanup(func() { readSourceInPlaceBody = originalRead })
+
+	report, err := QueryWithOptions(context.Background(), homePath, lane, embedder, "current", 1, QueryOptions{IncludeText: false})
+	if err != nil {
+		t.Fatalf("propagated-privacy query error: %v", err)
+	}
+	if embedder.calls < 1 {
+		t.Fatalf("query embedder calls = %d, want >=1 (the production-default query vector)", embedder.calls)
+	}
+	if len(report.Hits) != 1 {
+		t.Fatalf("hits = %d, want 1", len(report.Hits))
+	}
+	hit := report.Hits[0]
+	if hit.TextStatus != string(ChunkTextSuppressedPrivate) {
+		t.Fatalf("hit text status = %q, want %q (current privacy=private must reach the resolver)", hit.TextStatus, ChunkTextSuppressedPrivate)
+	}
+	if hit.Text != "" {
+		t.Fatalf("hit text = %q, want empty (current privacy=private must suppress body text)", hit.Text)
+	}
+	if sourceReads != 0 {
+		t.Fatalf("query read source_in_place body %d times, want zero (current privacy=private must suppress before any read)", sourceReads)
+	}
+}
+
+// TestSourceInPlacePrivacyGateDefaultOffQueryWithoutCurrentManifest is
+// the regression for the residual compatibility defect: with the
+// source_in_place privacy gate disabled (the documented default), the
+// query path must not gain a new dependency on the current SourceManifest
+// being present at query time. A published quickstart running a public
+// lane indexes a privacy=private source_in_place item successfully, then
+// the canonical manifest file is removed (or never published), and the
+// same query still resolves with full body text. The body-read seam must
+// stay on the legacy path: read source, re-chunk, return text.
+func TestSourceInPlacePrivacyGateDefaultOffQueryWithoutCurrentManifest(t *testing.T) {
+	homePath := t.TempDir()
+	lane, embedder, _ := seedSourceInPlaceLaneForGate(t, homePath,
+		"legacy default-off body must still resolve with the current manifest absent",
+		"default_off_no_current",
+		"private", // legacy BuildSourceManifest default
+		"public",
+		"local",
+		"",
+		false,
+	)
+	if _, err := Index(context.Background(), homePath, lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("legacy index: %v", err)
+	}
+	// Remove BOTH the canonical and legacy compatibility paths so a refreshed
+	// loader returns os.ErrNotExist. Legacy quickstarts that never wrote a
+	// canonical manifest are exactly this shape.
+	currentPath := sourceobs.SourceManifestPath(homePath, lane.SourceFamily)
+	legacyPath := sourceobs.LegacySourceManifestPath(homePath, lane.SourceFamily)
+	for _, p := range []string{currentPath, legacyPath} {
+		if _, err := os.Stat(p); err == nil {
+			if err := os.Remove(p); err != nil {
+				t.Fatalf("remove %s: %v", p, err)
+			}
+		}
+	}
+
+	embedder.calls = 0
+	embedder.embedded = 0
+	sourceReads := 0
+	originalRead := readSourceInPlaceBody
+	readSourceInPlaceBody = func(path string) ([]byte, error) {
+		sourceReads++
+		return originalRead(path)
+	}
+	t.Cleanup(func() { readSourceInPlaceBody = originalRead })
+
+	report, err := QueryWithOptions(context.Background(), homePath, lane, embedder, "readable", 1, QueryOptions{IncludeText: true})
+	if err != nil {
+		t.Fatalf("default-off query without current manifest: %v", err)
+	}
+	if embedder.calls != 1 {
+		t.Fatalf("default-off query embedder calls = %d, want 1", embedder.calls)
+	}
+	if len(report.Hits) != 1 {
+		t.Fatalf("default-off hits = %d, want 1", len(report.Hits))
+	}
+	if report.Hits[0].Text == "" {
+		t.Fatalf("default-off hit text empty, want readable body")
+	}
+	if report.Hits[0].TextStatus != string(ChunkTextOK) {
+		t.Fatalf("default-off hit text status = %q, want %q", report.Hits[0].TextStatus, ChunkTextOK)
+	}
+	if sourceReads != 1 {
+		t.Fatalf("default-off source reads = %d, want 1 (legacy body-resolution path must still read)", sourceReads)
+	}
+}

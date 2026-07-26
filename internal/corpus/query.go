@@ -100,11 +100,56 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 // change) from becoming a bypass after the gate is enabled. Only index
 // metadata and source-manifest metadata are read here; source body bytes and
 // the query embedder remain behind the decision.
+//
+// The returned manifest carries the current privacy classification on every
+// item so that the downstream body-resolution seam (ResolveChunkText) sees
+// the authority's current stance, not the indexed snapshot. Body policy stays
+// sourced from the indexed item — a current body-policy edit cannot disguise a
+// legacy indexed source_in_place body and bypass its newly enabled gate.
+//
+// Projection-integrity guard: before the indexed privacy label is overwritten
+// by the current authority, every governed indexed item must already carry a
+// well-formed privacy value (public/private). A corrupted or replaced
+// projection cannot be widened back into a valid read posture just because
+// the current authority is benign — the fail-closed check runs on the input
+// the resolver would otherwise observe.
+//
+// Legacy default-off compatibility: the current SourceManifest is loaded only
+// when at least one indexed item is governed (owned_snapshot, or source_in_place
+// with the explicit gate enabled). A lane whose every indexed item is
+// source_in_place with gate=false never consults the canonical manifest, so a
+// published quickstart running a public lane does not gain a new dependency on
+// a current SourceManifest being present at query time.
 func validateQueryItemAccess(homePath string, lane LaneConfig) (Manifest, error) {
 	dir := IndexDir(homePath, lane)
 	indexed, err := readManifest(dir)
 	if err != nil {
 		return Manifest{}, err
+	}
+	// Indexed-projection well-formedness check runs first: it is independent of
+	// whether the current SourceManifest is reachable, and it prevents a
+	// malformed projection from being silently corrected by a benign current
+	// authority before the body read posture is decided.
+	for _, indexedItem := range indexed.Items {
+		if !itemAccessIsGoverned(lane, indexedItem) {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(indexedItem.Privacy)) {
+		case "public", "private":
+			// well-formed
+		default:
+			return Manifest{}, fmt.Errorf("%s item %q has malformed privacy field (must be public or private, got %q)", indexedItem.BodyPolicy, indexedItem.ID, strings.TrimSpace(indexedItem.Privacy))
+		}
+	}
+	needsCurrent := false
+	for _, indexedItem := range indexed.Items {
+		if itemAccessIsGoverned(lane, indexedItem) {
+			needsCurrent = true
+			break
+		}
+	}
+	if !needsCurrent {
+		return indexed, nil
 	}
 	current, err := sourceobs.LoadSourceManifest(homePath, lane.SourceFamily)
 	if err != nil {
@@ -114,7 +159,7 @@ func validateQueryItemAccess(homePath string, lane LaneConfig) (Manifest, error)
 	for _, item := range current.Items {
 		currentByID[item.ID] = item
 	}
-	for _, indexedItem := range indexed.Items {
+	for i, indexedItem := range indexed.Items {
 		currentItem, ok := currentByID[indexedItem.ID]
 		if !ok {
 			if itemAccessIsGoverned(lane, indexedItem) {
@@ -131,6 +176,12 @@ func validateQueryItemAccess(homePath string, lane LaneConfig) (Manifest, error)
 		if err := validateCurrentItemAccess(lane, accessItem); err != nil {
 			return Manifest{}, fmt.Errorf("corpus query: %w", err)
 		}
+		// Propagate the current privacy classification into the manifest that
+		// downstream body resolution will read. Indexed privacy can be stale;
+		// the body's read posture must reflect the authority's current
+		// stance, so an index-public item reclassified to private suppresses
+		// body text (and never reads source bytes) on the very next query.
+		indexed.Items[i].Privacy = currentItem.Privacy
 	}
 	return indexed, nil
 }
