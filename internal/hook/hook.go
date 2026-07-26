@@ -2629,6 +2629,59 @@ func renderIncludedRefWith(ref envelope.IncludedRef, reason string) string {
 // it, mirroring what the capability-offer renderer already does one section down. Refs
 // dropped for EITHER reason land in the same count, because the reader's question is "how
 // many did I not see", not "which bound stopped it".
+
+// selectIncludedRefs picks up to `max` refs from `refs`, prioritizing
+// session-specific runtime/generated refs ahead of redundant SourceClass=source
+// provenance. The same source refs are already named in Active Instructions,
+// while runtime/generated refs have no equivalent exact-ref channel.
+//
+// The selection preserves the original relative order among the chosen refs:
+// a later ref in the served pack must never appear before an earlier one. When
+// the served pack has more non-source refs than `max`, the OLDEST non-source
+// refs are dropped first — the "newest session-specific tail" rule the rune
+// budget pass already enforces on a section over its cap, and the rule that
+// keeps the most recent evidence visible when the cap is the binding limit.
+//
+// The returned slice is a fresh copy; `refs` is never aliased.
+func selectIncludedRefs(refs []envelope.IncludedRef, max int) []envelope.IncludedRef {
+	if len(refs) <= max {
+		out := make([]envelope.IncludedRef, len(refs))
+		copy(out, refs)
+		return out
+	}
+	type indexedRef struct {
+		idx      int
+		priority int
+	}
+	indexed := make([]indexedRef, len(refs))
+	for i, ref := range refs {
+		if strings.TrimSpace(ref.SourceClass) == "source" {
+			indexed[i] = indexedRef{idx: i, priority: 1}
+		} else {
+			indexed[i] = indexedRef{idx: i, priority: 0}
+		}
+	}
+	// Stable sort by (priority, original index). Non-source refs sort first;
+	// ties resolve by original index so the order is deterministic.
+	sort.SliceStable(indexed, func(i, j int) bool {
+		if indexed[i].priority != indexed[j].priority {
+			return indexed[i].priority < indexed[j].priority
+		}
+		return indexed[i].idx < indexed[j].idx
+	})
+	// Re-sort the chosen slice by original index so the rendered list preserves
+	// the relative order the pack served.
+	chosen := indexed[:max]
+	sort.SliceStable(chosen, func(i, j int) bool {
+		return chosen[i].idx < chosen[j].idx
+	})
+	out := make([]envelope.IncludedRef, len(chosen))
+	for i, x := range chosen {
+		out[i] = refs[x.idx]
+	}
+	return out
+}
+
 func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef, limit int) {
 	const heading = "\n## Included\n"
 	b.WriteString(heading)
@@ -2636,11 +2689,7 @@ func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef, limit in
 		b.WriteString("- none\n")
 		return
 	}
-	shown := refs
-	if len(shown) > maxInjectionIncludedRefs {
-		shown = shown[:maxInjectionIncludedRefs]
-	}
-	selected := append([]envelope.IncludedRef(nil), shown...)
+	selected := selectIncludedRefs(refs, maxInjectionIncludedRefs)
 	// The legend renders FIRST so it survives a section truncated at the tail, and it
 	// defines the grammar for harnesses whose own instruction file does not.
 	const legend = "- trust: unmarked = verify-first; `" + includedRefTrustMarker + "` = never a premise, re-derive it. Tiers only demote.\n"

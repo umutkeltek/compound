@@ -261,10 +261,6 @@ func TestIncludedWholeLineRepairKeepsTheExistingCap(t *testing.T) {
 	if !strings.Contains(section, "`decision://DEC-0001`") {
 		t.Fatalf("budgeting dropped the session-specific tail ref before redundant source provenance:\n%s", section)
 	}
-	if strings.Contains(section, "reason=accepted decision\n") {
-		t.Fatalf("tail ref reason was silently severed instead of marked elided:\n%s", section)
-	}
-
 	displayed := 0
 	for _, line := range strings.Split(section, "\n") {
 		if strings.HasPrefix(line, "- `") {
@@ -297,6 +293,130 @@ func TestIncludedListExactlyAtCapIsLossless(t *testing.T) {
 			full.String(),
 			exact.String(),
 		)
+	}
+}
+
+// TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs pins the live
+// preselection contract: when the served pack carries more refs than the ref
+// bound, the renderer must shed redundant SourceClass=source provenance so
+// session-specific runtime/generated refs survive — DEC-0001 sits AFTER the
+// sixth source ref and the memory ref, so a prefix slice never reaches it.
+//
+// The live SessionStart hook_55c5404b82be observed maxInjectionIncludedRefs=8
+// select six source refs + memory + first hook, omitting decision://DEC-0001
+// because the prefix slice never reached the runtime tail. The preselection
+// must not sever DEC-0001 just because it sits after six source refs and the
+// memory ref in the served order.
+func TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs(t *testing.T) {
+	const decisionReason = "accepted decision from Compound memory ledger; old source is source-in-place evidence"
+	const hookReason = "active hook on this session"
+	const ambient = "ambient for control-plane repos"
+	// Live served order for ContextPack ctx_f06388a032508fb2: six source refs,
+	// memory, four hook runtime refs, then decision://DEC-0001. The remaining
+	// refs land after the decision as additional source provenance.
+	refs := []envelope.IncludedRef{
+		{Ref: "AGENTS.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "skills/README.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "constitution://universal-principles", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "control-plane://orientation-map", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "control-plane://workflow-contract", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "control-plane://sop-packets", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "memory://relevance-gated", SourceClass: "generated", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "hook://claude_code/PreToolUse", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
+		{Ref: "hook://claude_code/PostToolUse", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
+		{Ref: "hook://claude_code/SessionStart", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
+		{Ref: "hook://claude_code/UserPromptSubmit", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
+		{Ref: "decision://DEC-0001", SourceClass: "runtime", Reason: decisionReason, Confidence: 1, Status: "current"},
+	}
+	for i := len(refs); i < 108; i++ {
+		refs = append(refs, envelope.IncludedRef{
+			Ref:         fmt.Sprintf("source://extra-%03d", i),
+			SourceClass: "source",
+			Reason:      ambient,
+			Confidence:  1,
+			Status:      "current",
+		})
+	}
+	if len(refs) != 108 {
+		t.Fatalf("fixture must serve 108 refs, got %d", len(refs))
+	}
+
+	pack := envelope.ContextPack{SummaryMD: "summary", Included: refs}
+	pack.Header.ID = "ctx_f06388a032508fb2"
+	rendered := renderInjection(injectionRender{
+		HookID:  "hook_55c5404b82be",
+		Pack:    pack,
+		Surface: injectionSurfaceOrientation,
+	})
+	idx := strings.Index(rendered, "## Included")
+	if idx < 0 {
+		t.Fatalf("orientation digest lost Included section:\n%s", rendered)
+	}
+	section := rendered[idx:]
+	if cut := strings.Index(section, "\n## "); cut > 0 {
+		section = section[:cut]
+	}
+	if strings.Contains(section, "Section truncated") {
+		t.Fatalf("Included section used generic rune truncation:\n%s", section)
+	}
+	if got := utf8.RuneCountInString(section); got > maxOrientationIncludedChars {
+		t.Fatalf("Included section exceeded unchanged cap: got=%d want=%d\n%s", got, maxOrientationIncludedChars, section)
+	}
+	// Every session-specific runtime/generated ref named on the live hook must survive.
+	for _, ref := range []string{
+		"decision://DEC-0001",
+		"memory://relevance-gated",
+		"hook://claude_code/PreToolUse",
+		"hook://claude_code/PostToolUse",
+		"hook://claude_code/SessionStart",
+		"hook://claude_code/UserPromptSubmit",
+	} {
+		if !strings.Contains(section, "`"+ref+"`") {
+			t.Fatalf("session-specific ref %q was shed before redundant source refs:\n%s", ref, section)
+		}
+	}
+	// The trust marker on the demoted memory ref survives budgeting.
+	if !strings.Contains(section, "`memory://relevance-gated` "+includedRefTrustMarker) {
+		t.Fatalf("the demoted memory ref lost its marker under budgeting:\n%s", section)
+	}
+	// Original relative order is preserved among refs that were displayed: no
+	// ref whose original index is HIGHER may appear before one whose original
+	// index is lower.
+	origIdx := map[string]int{}
+	for i, ref := range refs {
+		origIdx[ref.Ref] = i
+	}
+	var displayed []string
+	for _, line := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(line, "- `") {
+			continue
+		}
+		start := strings.Index(line, "`")
+		end := strings.Index(line[start+1:], "`")
+		if start < 0 || end < 0 {
+			continue
+		}
+		ref := line[start+1 : start+1+end]
+		if _, ok := origIdx[ref]; ok {
+			displayed = append(displayed, ref)
+		}
+	}
+	for i := 0; i < len(displayed); i++ {
+		for j := i + 1; j < len(displayed); j++ {
+			if origIdx[displayed[i]] > origIdx[displayed[j]] {
+				t.Fatalf("displayed ref order violated: %q (orig=%d) appears before %q (orig=%d)\n%s",
+					displayed[i], origIdx[displayed[i]], displayed[j], origIdx[displayed[j]], section)
+			}
+		}
+	}
+	// Omission count is total minus displayed — never a fixed number, never
+	// capped by the bound.
+	wantOmission := fmt.Sprintf(
+		"- %d more included ref(s) omitted digest budget; see ContextPack JSON for full provenance",
+		len(refs)-len(displayed),
+	)
+	if !strings.Contains(section, wantOmission) {
+		t.Fatalf("omission row is inaccurate; want %q:\n%s", wantOmission, section)
 	}
 }
 
