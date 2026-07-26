@@ -83,4 +83,8 @@ gap, loudly, in the receipt/close notes.
   branch recorded (who closes it, where).
 - `BROKEN` — battery red; evidence attached; do not close the work item.
 
+Under-verdicting is not the safe side: withholding `ALIVE` when you already read the new behavior in
+the consumer's output is the same class of error as declaring `ALIVE` from a grep hit — both send
+the next lane through a full re-verification round to find out which one it was.
+
 Report the verdict with its evidence verbatim — never soften `LANDED-NOT-LIVE` into "done".

@@ -11,6 +11,14 @@ LATEST-22..24). This skill replaces re-deriving that round pattern per session. 
 
 ## 0 · Resolve the work (what did the operator actually hand you?)
 
+**Orient before you resolve.** FIRES: any non-trivial task touching meaning, authority, or routing —
+`compound orient --harness claude_code --task "<task>"` before the first mutation. AMBIGUOUS: "tiny
+fix, but in a governed surface" → orient anyway; the ContextPack may carry a decision already in
+force. DOES-NOT-FIRE: a mechanical edit inside an already-oriented session's claimed scope. The
+failure it prevents: acting on a lane rule you remember instead of the one the runtime serves — a
+superseded routing rule misrouted execution for eleven days because nobody re-read the served
+surface.
+
 - A work id (`work_…`) → `compound work show <id>` — read predicate, state, owner, packet content
   (`work active-packet-proof` serves packet markdown to any reader).
 - A packet path (`docs_private/plan/packets/*.md`) → `compound work import-packet <path> --owner <lane>
@@ -111,6 +119,15 @@ worktrees don't contain docs_private).
 
 ## 4 · Dispatch (worktree discipline)
 
+**`work advance --execute` vs `harness run`.** FIRES: any governed mutation on an enveloped item —
+`compound work advance <id> --to running --execute --harness <name> -- <cmd>`, the only governed
+execution path. AMBIGUOUS: "let me just reproduce what the executor did, to check it" — still
+governed; observe the run you already have (`compound work observe-run <id> --trace <trace_id>`)
+instead of shadow-executing a second, unrecorded one. DOES-NOT-FIRE: a read-only probe with no side
+effect. `compound harness run` is NOT the fallback: it mints the RunAttempt, prints a warning, and
+reports `governed: false` — a manual record of a run, not an execution. When the governed path is
+blocked, stop and say so.
+
 In the dispatch prompt, always include: the packet ABSOLUTE path · the envelope id · "read
 AGENTS.md first" · commit incrementally, no push, no main, no install · the handoff report format.
 For source-controlled work, the exact target root/local ref/base/publication contract comes from
@@ -169,7 +186,9 @@ surface. A live proof must not mutate the real home on pattern-match: verify an 
 verb's semantics against the CURRENT home state first (lived 2026-07-17: `migrate --apply` on a
 completed home folded post-plan runtime records into the frozen migration manifest and drifted
 the plan digest — find_b642a87db247). Prefer read-only faces (preview/status) as live proof when
-the mutating path is grant-gated anyway.
+the mutating path is grant-gated anyway. Skipping a live proof when the change HAS a runtime surface
+is the same class of error as attaching a fabricated one — both make the Receipt assert a
+consumption nobody observed, and the omission is the one no gate catches.
 
 **Bridge envelopes close on `live:`/`evidence:` ONLY — never a `commit:` artifact** (law minted
 2026-07-19 from a permanent wedge). A *bridge envelope* lands wholly or partly in a repo that is

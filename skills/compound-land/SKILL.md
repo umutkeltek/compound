@@ -44,6 +44,14 @@ This skill replaces re-deriving the "standing session rules" from
 
 ## 1 · Pre-flight battery (all of it, every time)
 
+The ceremony has five gates, in force order: **scope-claim** (§0 — land-lease + worklog claim) ·
+**battery** (§1 — `proof-check --json --out`) · **fresh-SHA guard** (§3 — `MAIN_SHA` read this
+turn) · **redact** (§5 — unpiped, its own command) · **tree-identity** (§4 — containment proved
+before any removal). **A later gate cannot prove that an earlier gate passed: a green battery does
+not prove the scope claim, and a clean redact does not prove the battery ran.** Each is cleared only
+by reading ITS OWN verdict this turn — the `| tail` and `EXIT=$?` incidents below are one mistake
+repeated, trusting an adjacent command's exit for a gate's own result.
+
 During iteration, use `go run ./cmd/compound proof-check --dev --base main` for
 cache-enabled short feedback. It is explicitly non-certifying: it does not write
 the canonical installed-runtime proof artifact and never substitutes for either
