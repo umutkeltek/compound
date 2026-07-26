@@ -70,6 +70,15 @@ var (
 	// envelope keeps its OWN copy because internal/attention imports internal/envelope, so
 	// envelope importing attention back would cycle.
 	RouteDeviationRiskGrades = []string{RouteDeviationGate, RouteDeviationJudge, RouteDeviationTidy}
+	// PlanClasses is how much ALIGNMENT a work owes before it may run, in ascending depth:
+	// oneshot (the spec is the request), plan_doc (a written plan exists), phased (the work is
+	// decomposed and must show a design sketch first). It is a DEPTH dial, not a size estimate
+	// -- what scales with it is the review cost the work would otherwise incur downstream. The
+	// enforcement that binds today lives in internal/work's design-sketch gate, which refuses a
+	// `phased` work into `running` without an attached `design-sketch:` artifact; the other
+	// classes are declarative. EMPTY is legal and means oneshot, so every envelope written
+	// before this field keeps validating and nothing retroactively becomes gated.
+	PlanClasses = []string{"oneshot", "plan_doc", "phased"}
 )
 
 // Route-deviation admission grades mirror attention.RiskGrade{Gate,Judge,Tidy}. envelope carries a
@@ -778,6 +787,17 @@ type WorkEnvelope struct {
 	// validateRouteDeviation for the fail-closed rule (a judge-grade deviation stakes a Prediction
 	// or is refused). Declared LAST so the additive field never reorders existing marshaled bytes.
 	RouteDeviation *RouteDeviation `json:"route_deviation,omitempty"`
+	// PlanClass declares how much alignment this work owes before it may run: one of
+	// PlanClasses (oneshot | plan_doc | phased). It is OPTIONAL and additive -- EMPTY means
+	// oneshot, so every envelope that predates the field keeps validating and re-marshals
+	// byte-identically (nothing retroactively becomes gated, mirroring freeze's "absent means
+	// nothing gated"). Validate enforces the vocabulary so an unrecognized free string can
+	// never reach disk and become a silently ungated class. The only class that gates today is
+	// `phased`, refused into `running` by internal/work's design-sketch guard without an
+	// attached `design-sketch:` artifact. Declared LAST, after RouteDeviation, so the additive
+	// field never reorders existing marshaled bytes (see the workEnvelopeSHA256 discipline on
+	// ActionIntentIDs above).
+	PlanClass string `json:"plan_class,omitempty"`
 }
 
 // WorkPrediction is staked at create time and predicts the CLOSE outcome enum
@@ -833,6 +853,8 @@ func (e *WorkEnvelope) Validate() error {
 	e.Header.validate(v, SVWork, "work_")
 	v.enum("state", e.State, WorkStates, true)
 	v.enum("proof_medium", e.ProofMedium, ProofMedia, false)
+	// Optional: empty is legal and means oneshot (see PlanClasses / PlanClass).
+	v.enum("plan_class", e.PlanClass, PlanClasses, false)
 	v.req("owner", e.Owner)
 	v.req("success_predicate", e.SuccessPredicate)
 	if base := strings.TrimSpace(e.ExpectedBaseSHA); base != "" && !validFullGitObjectID(base) {

@@ -256,6 +256,12 @@ type CreateInput struct {
 	// the refusal is fail-closed in envelope.WorkEnvelope.Validate, which every create/admission
 	// path funnels through.
 	RouteDeviation *envelope.RouteDeviation
+	// PlanClass declares how much alignment this work owes before it may run (see
+	// envelope.PlanClasses). Copied VERBATIM onto the envelope -- empty stays empty rather than
+	// being defaulted to "oneshot", because the semantics "empty means oneshot" are enforced at
+	// the guard, not baked into stored bytes (mirroring freeze's "absent means nothing gated").
+	// An unrecognized value is refused by envelope.WorkEnvelope.Validate before persistence.
+	PlanClass string
 }
 
 // BuildWork constructs a WorkEnvelope WITHOUT persisting it — used both by Create (which
@@ -298,6 +304,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		MemoryCandidateIDs: []string{},
 		Prediction:         prediction,
 		RouteDeviation:     routeDeviation,
+		PlanClass:          in.PlanClass,
 	}
 	if strings.TrimSpace(in.Uncertainty.Level) != "" || strings.TrimSpace(in.Uncertainty.Reason) != "" {
 		w.Uncertainty = in.Uncertainty
@@ -1142,6 +1149,14 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	// seam too, unless that surface is actively whitelisted. The halt guard above runs first,
 	// so a halt wins; work without a target_surface is unaffected.
 	if err := s.editableSurfaceGuard(w, in.To, actor, now); err != nil {
+		return w, err
+	}
+	// Design-sketch gate (alignment depth scales with risk): a work that declared
+	// plan_class=phased may not ENTER running until the sketch it promised is attached
+	// to the envelope. Placed at this generic seam so every path into running -- plain
+	// advance, --execute, dispatch-claim auto-advance -- passes it; work of any other
+	// plan class (including empty, which means oneshot) is unaffected.
+	if err := s.designSketchGuard(&w, in.To, actor, now); err != nil {
 		return w, err
 	}
 	// Freeze (grants-as-gates, 2026-07-10), defense-in-depth: a system-originated
