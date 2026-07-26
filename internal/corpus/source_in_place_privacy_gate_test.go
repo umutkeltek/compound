@@ -666,11 +666,11 @@ func TestSourceInPlacePrivacyGateDefaultOffQueryWithoutCurrentManifest(t *testin
 // Shape: indexed privacy=public, empty PageSlug, recognizable basename
 // in SourceRef, then current manifest reclassified private on a
 // permitted private/local lane with IncludeText=false. Assertions:
-//   * body text empty
-//   * zero source_in_place body reads
-//   * Title == privateChunkTitle (so an opaque private label travels)
-//   * basename AND its parent directory are NOT in the title
-//   * text status reports suppression, not ok
+//   - body text empty
+//   - zero source_in_place body reads
+//   - Title == privateChunkTitle (so an opaque private label travels)
+//   - basename AND its parent directory are NOT in the title
+//   - text status reports suppression, not ok
 //
 // Existing TestSourceInPlacePrivacyGateQueryPropagatesCurrentPrivacyToBodyResolution
 // proves the body half of the same shape, but the seed fixture forces
