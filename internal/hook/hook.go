@@ -2449,6 +2449,99 @@ func renderCapabilityOffer(offer envelope.CapabilityOffer, budget int) (string, 
 	return b.String(), dropped
 }
 
+// trustTier is the reader-facing grade the digest attaches to an included ref.
+//
+// The Included list already rendered graded provenance (source_class, status,
+// confidence) and the reader collapsed all of it into one flat instruction, so a stale
+// generated view and the tracked constitution arrived carrying the same weight. The
+// tier states the grading in the vocabulary the reader acts on.
+//
+// There are exactly TWO tiers, and derivation may only ever DEMOTE from the default. A
+// third "act on this without verifying" tier is not missing here, it is refused:
+// status and confidence are SELF-ASSERTED by whatever produced the ref, so a verb that
+// authorized acting without verification would be forgeable by its own subject — the
+// reader would be trusting a claim of trustworthiness. Demote-only leaves every input
+// able to LOWER trust and none able to raise it, which is the only safe direction when
+// the grading input is producer-controlled.
+type trustTier string
+
+const (
+	// trustVerifyFirst is the default AND the ceiling: confirm the ref against real
+	// code or a command's real output before acting on it. Every ref starts here and
+	// nothing can rise above it.
+	trustVerifyFirst trustTier = "verify-first"
+	// trustEvidenceOnly is the demoted tier: cite it, re-derive it, never take it as a
+	// premise. It is the only tier a derivation is allowed to assign.
+	trustEvidenceOnly trustTier = "evidence-only"
+)
+
+// trustTierRank makes "nothing sits above the default" a checkable property instead of
+// a comment: verify-first is the ceiling, and an unrecognized tier ranks at the floor
+// rather than being read as more trusted than what it failed to match.
+func trustTierRank(t trustTier) int {
+	switch t {
+	case trustVerifyFirst:
+		return 1
+	case trustEvidenceOnly:
+		return 0
+	default:
+		return 0
+	}
+}
+
+// verifyFirstSourceClasses is an ALLOWLIST over envelope.SourceClasses, not a denylist.
+// A denylist would silently hand the default tier to every class added to the enum
+// later; an allowlist demotes the new class until someone decides otherwise, and
+// demotion is the safe direction.
+//
+//   - "source": a tracked body in the repo the reader can open and check.
+//   - "runtime": state compound itself serves (rung 3 of the precedence ladder).
+//
+// Every other member of the enum is evidence about the world rather than a checkable
+// body: "generated" (derived views, capability matches, memory relevance), "evidence",
+// "review", and "private_overlay" — whose body is deliberately never materialized into
+// the injection, so the reader is handed a ref it cannot read.
+var verifyFirstSourceClasses = map[string]bool{
+	"source":  true,
+	"runtime": true,
+}
+
+// includedRefConfidenceFloor is the confidence below which a ref is demoted even when
+// its class and status are clean.
+const includedRefConfidenceFloor = 0.6
+
+// includedRefTrustMarker is the ONLY trust token this renderer emits. verify-first is
+// left unmarked (it is the default), so the digest pays runes only where the grade
+// departs from it.
+const includedRefTrustMarker = "trust=evidence-only"
+
+// includedRefTrustTier derives the tier demote-only: it starts at the default and can
+// only fall. Absent/blank status and confidence read as worse-than-current, not as
+// clean — unknown provenance demotes.
+func includedRefTrustTier(ref envelope.IncludedRef) trustTier {
+	if strings.TrimSpace(ref.Status) != "current" {
+		return trustEvidenceOnly
+	}
+	if !verifyFirstSourceClasses[strings.TrimSpace(ref.SourceClass)] {
+		return trustEvidenceOnly
+	}
+	if ref.Confidence < includedRefConfidenceFloor {
+		return trustEvidenceOnly
+	}
+	return trustVerifyFirst
+}
+
+// safeIncludedField neutralizes a trust verb forged inside producer-controlled text.
+//
+// safeMD only defuses newlines and backticks, so a ref or reason carrying the literal
+// "trust=..." would render a verb the renderer never assigned — the same forgery the
+// two-tier ruling exists to prevent, arriving through the string fields instead of
+// through a third tier. Rewriting the "trust=" prefix is length-preserving, so the
+// defense costs no budget.
+func safeIncludedField(s string) string {
+	return strings.ReplaceAll(safeMD(s), "trust=", "trust_")
+}
+
 func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef) {
 	b.WriteString("\n## Included\n")
 	if len(refs) == 0 {
@@ -2459,9 +2552,21 @@ func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef) {
 	if len(shown) > maxInjectionIncludedRefs {
 		shown = shown[:maxInjectionIncludedRefs]
 	}
+	// The legend renders FIRST so it survives a section truncated at the tail, and it
+	// defines the grammar for harnesses whose own instruction file does not.
+	b.WriteString("- trust: unmarked = verify-first; `" + includedRefTrustMarker + "` = never a premise, re-derive it. Tiers only demote.\n")
 	for _, ref := range shown {
-		fmt.Fprintf(b, "- `%s` source=%s status=%s confidence=%.2f reason=%s",
-			safeMD(ref.Ref), safeMD(ref.SourceClass), safeMD(ref.Status), ref.Confidence, safeMD(ref.Reason))
+		// The marker precedes the provenance fields on purpose: capInjectionSection
+		// cuts on a rune index, not a line boundary, so a marker rendered at the end
+		// of a long line could be cut off a ref that IS demoted — and a missing marker
+		// reads as the default tier. Losing the reason to a cut is cheap; losing the
+		// demotion silently elevates.
+		fmt.Fprintf(b, "- `%s`", safeIncludedField(ref.Ref))
+		if includedRefTrustTier(ref) == trustEvidenceOnly {
+			b.WriteString(" " + includedRefTrustMarker)
+		}
+		fmt.Fprintf(b, " source=%s status=%s confidence=%.2f reason=%s",
+			safeIncludedField(ref.SourceClass), safeIncludedField(ref.Status), ref.Confidence, safeIncludedField(ref.Reason))
 		if strings.HasPrefix(ref.Ref, "capability://") {
 			b.WriteString(" [offer, not execution]")
 		}
