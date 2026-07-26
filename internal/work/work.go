@@ -1321,6 +1321,11 @@ func (s *Store) supersedeClaimReservations(existingIDs, incomingIDs []string, no
 // after the lifecycle event is durable and before the WorkEnvelope rename.
 var advanceBeforeWorkCommit = func() {}
 
+// closeBeforeLeaseRelease is a test synchronization seam for the crash window
+// after the terminal WorkEnvelope, receipt, transition and lifecycle event are
+// durable and before the claim lease is released (see releaseLease).
+var closeBeforeLeaseRelease = func() {}
+
 func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
 	workID := w.ID
 	if recovered, ok, err := s.recoverPendingAdvance(w, in.To); err != nil {
