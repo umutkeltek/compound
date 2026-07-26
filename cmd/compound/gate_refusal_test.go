@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -74,7 +75,13 @@ func TestGateRefusalSuggestedCommandsAreInvocable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	literal := regexp.MustCompile(`"([^"\\]{4,})"`)
+	// Escaped quotes are part of a literal, not the end of one: a refusal that suggests
+	// `--reason "<why>"` writes them, and an extractor that stopped at the backslash split
+	// that one command into fragments and reported the tail as a command missing its binary
+	// name. Matching whole Go string literals (then unquoting them) keeps the check on the
+	// command the operator actually reads — and stops the check from pressuring authors into
+	// unquoted, unrunnable suggestions to keep it green.
+	literal := regexp.MustCompile(`"((?:[^"\\]|\\.){4,})"`)
 	checked := 0
 
 	for _, path := range sources {
@@ -84,7 +91,10 @@ func TestGateRefusalSuggestedCommandsAreInvocable(t *testing.T) {
 		}
 		for _, block := range doThisBlocks(string(body)) {
 			for _, m := range literal.FindAllStringSubmatch(block, -1) {
-				cmd := m[1]
+				cmd, unquoteErr := strconv.Unquote(m[0])
+				if unquoteErr != nil {
+					cmd = m[1]
+				}
 				// Only the command-shaped literals; a bare flag name or a fragment
 				// interpolated by Sprintf is not a suggestion on its own.
 				if !strings.Contains(cmd, " ") || strings.HasPrefix(cmd, "#") {

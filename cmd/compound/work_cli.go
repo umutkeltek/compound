@@ -1225,7 +1225,17 @@ func cmdWork(args []string) {
 		}
 		// --lane optionally declares the lane: the ref must resolve to a canonical agent-lane
 		// node id (fail-closed) or the claim errors. Absent --lane is byte-identical to before.
-		w, err := store.ClaimWithLane(pos(claimFlags), flag("--by"), flag("--lane"), time.Now())
+		claimID := pos(claimFlags)
+		w, err := store.ClaimWithLane(claimID, flag("--by"), flag("--lane"), time.Now())
+		if err != nil {
+			// A live lease held by another actor is the ONE outcome here that is a gate
+			// rather than a fault, and it is decided by re-reading the lease -- an
+			// unresolvable --lane or a bad state keeps its own plain error.
+			if holder, conflicted := workLeaseConflict(store, claimID, flag("--by")); conflicted {
+				workLeaseHolderRefusal("claim", claimID, flag("--by"), holder, err).writeTo(os.Stderr)
+				os.Exit(1)
+			}
+		}
 		die(err)
 		fmt.Printf("%s claimed by %s (%s) policy=%s\n", w.ID, w.Authority.Owner, w.State, w.PolicyDecisionID)
 	case "advance-plan":
@@ -1727,10 +1737,13 @@ func cmdWork(args []string) {
 			fmt.Fprintln(os.Stderr, closeUsage)
 			os.Exit(2)
 		}
-		res, err := store.Close(pos(closeValueFlags), work.CloseInput{
+		closeID := pos(closeValueFlags)
+		closeActor := firstNonEmpty(flag("--by"), flag("--actor"))
+		closeProofRefs := flagCSVValues(rest, "--proof", "--proof-ref")
+		res, err := store.Close(closeID, work.CloseInput{
 			Outcome:          flag("--outcome"),
 			MoveType:         flag("--move-type"),
-			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
+			Actor:            closeActor,
 			Summary:          flag("--summary"),
 			Changed:          has("--changed"),
 			UsedCapabilities: splitCSV(flag("--used")),
@@ -1739,7 +1752,7 @@ func cmdWork(args []string) {
 			UsedDeclared:               has("--used"),
 			MissedCapabilities:         splitCSV(flag("--missed")),
 			FalseTriggeredCapabilities: splitCSV(flag("--false-triggered")),
-			ProofRefs:                  flagCSVValues(rest, "--proof", "--proof-ref"),
+			ProofRefs:                  closeProofRefs,
 			MemoryCandidates:           splitCSV(flag("--memory-candidate")),
 			MemoryPromoted:             splitCSV(flag("--memory-promoted")),
 			MemoryParked:               splitCSV(flag("--memory-parked")),
@@ -1750,6 +1763,20 @@ func cmdWork(args []string) {
 			StealReason:                flag("--reason"),
 			OpensBranches:              branchRefs,
 		}, time.Now())
+		if err != nil {
+			// Close has two fail-closed gates worth teaching. The lease gate is decided
+			// structurally (re-read the lease); the git-delivery proof gate is not typed by
+			// its enforcer, so it is matched at the seam documented in work_lease_refusal.go
+			// and pinned by a test that drives the real gate.
+			if holder, conflicted := workLeaseConflict(store, closeID, closeActor); conflicted {
+				workLeaseHolderRefusal("close", closeID, closeActor, holder, err).writeTo(os.Stderr)
+				os.Exit(1)
+			}
+			if isGitDeliveryProofRefusal(err) {
+				gitDeliveryProofRefusal(closeID, flag("--outcome"), closeProofRefs, err).writeTo(os.Stderr)
+				os.Exit(1)
+			}
+		}
 		die(err)
 		fmt.Printf("%s closed: %s  move_type=%s  policy=%s  receipt=%s  transition=%s\n",
 			res.Work.ID, res.Work.State, res.Receipt.MoveType, res.Work.PolicyDecisionID, res.Receipt.ID, res.Transition.ID)
