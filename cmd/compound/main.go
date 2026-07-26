@@ -330,6 +330,7 @@ compound home <init|doctor|where|backup|export|verify|restore|archive-history|re
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T] [--topic S]  ContextPack orient from records excluded; --topic narrows ambient recall
+  compound mcp-transport                                      stdio MCP server for initialized clients: bounded finding evidence + orient recall; no memory promotion/authority
   compound console [dev|build|serve] --operator                  own the canonical local console lifecycle on :3777
   compound console status [--json]                               verify console identity, HTTP, and static-asset health
 compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition

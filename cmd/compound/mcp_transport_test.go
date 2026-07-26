@@ -55,6 +55,16 @@ func runMCPTransport(t *testing.T, init func(homePath string), stdinLines []stri
 	return lines
 }
 
+func runReadyMCPTransport(t *testing.T, init func(homePath string), stdinLines []string, homePath string) []string {
+	t.Helper()
+	handshake := []string{
+		`{"jsonrpc":"2.0","id":"mcp-test-initialize","method":"initialize","params":{"protocolVersion":"` + mcpProtocolVersion + `","capabilities":{},"clientInfo":{"name":"compound-test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+	}
+	handshake = append(handshake, stdinLines...)
+	return runMCPTransport(t, init, handshake, homePath)
+}
+
 func rawResp(t *testing.T, lines []string, id interface{}) map[string]interface{} {
 	t.Helper()
 	for _, line := range lines {
@@ -91,7 +101,7 @@ func initMCPTestHome(t *testing.T) string {
 
 func TestMCPTransportInitializeReturnsServerInfoAndCapabilities(t *testing.T) {
 	homePath := initMCPTestHome(t)
-	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"probe","version":"0"}}}` + "\n"
+	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}` + "\n"
 	lines := runMCPTransport(t, nil, []string{req}, homePath)
 	if len(lines) != 1 {
 		t.Fatalf("initialize produced %d response lines, want 1", len(lines))
@@ -110,8 +120,8 @@ func TestMCPTransportInitializeReturnsServerInfoAndCapabilities(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing result: %+v", env)
 	}
-	if res["protocolVersion"] != mcpProtocolVersion {
-		t.Fatalf("protocolVersion = %v, want %q", res["protocolVersion"], mcpProtocolVersion)
+	if res["protocolVersion"] != mcpLegacyProtocolVersion {
+		t.Fatalf("protocolVersion = %v, want %q", res["protocolVersion"], mcpLegacyProtocolVersion)
 	}
 	srv, ok := res["serverInfo"].(map[string]interface{})
 	if !ok {
@@ -219,7 +229,7 @@ func TestMCPTransportPingReturnsEmptyResult(t *testing.T) {
 func TestMCPTransportToolsListReturnsExactlyTwoTools(t *testing.T) {
 	homePath := initMCPTestHome(t)
 	req := `{"jsonrpc":"2.0","id":7,"method":"tools/list"}` + "\n"
-	lines := runMCPTransport(t, nil, []string{req}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{req}, homePath)
 	env := rawResp(t, lines, 7)
 	res := env["result"].(map[string]interface{})
 	tools, ok := res["tools"].([]interface{})
@@ -255,10 +265,10 @@ func TestMCPTransportFindingRecordWritesToObservedFindingsAndReturnsBodyFreeAck(
 	homePath := initMCPTestHome(t)
 	beforeLedger := ledgerByteCount(t, homePath)
 	args := map[string]any{
-		"topic": "mcp-test-write",
-		"body":  "an MCP-transport-recorded body\nline two of body",
-		"work_id": "work_mcp_finding_record_test",
-		"produced_by": "mcp-transport-test",
+		"topic":         "mcp-test-write",
+		"body":          "an MCP-transport-recorded body\nline two of body",
+		"work_id":       "work_mcp_finding_record_test",
+		"produced_by":   "mcp-transport-test",
 		"evidence_refs": []string{"sha256:abc123", "git:1234567"},
 	}
 	argsBytes, _ := json.Marshal(args)
@@ -272,7 +282,7 @@ func TestMCPTransportFindingRecordWritesToObservedFindingsAndReturnsBodyFreeAck(
 		},
 	}
 	callBytes, _ := json.Marshal(call)
-	lines := runMCPTransport(t, nil, []string{string(callBytes) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(callBytes) + "\n"}, homePath)
 	env := rawResp(t, lines, 100)
 	if env["error"] != nil {
 		t.Fatalf("tool returned JSON-RPC error: %+v", env["error"])
@@ -355,7 +365,7 @@ func TestMCPTransportFindingRecordDuplicateReturnsStatusDuplicate(t *testing.T) 
 		"jsonrpc": "2.0", "id": 201, "method": "tools/call",
 		"params": map[string]any{"name": mcpFindingToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, first)) + "\n", string(mustJSON(t, second)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, first)) + "\n", string(mustJSON(t, second)) + "\n"}, homePath)
 	resFirst := rawResp(t, lines, 200)["result"].(map[string]interface{})
 	resSecond := rawResp(t, lines, 201)["result"].(map[string]interface{})
 	ack1 := decodeMCPStructuredContent(t, resFirst)
@@ -379,7 +389,7 @@ func TestMCPTransportFindingRecordRejectsMissingTopic(t *testing.T) {
 		"jsonrpc": "2.0", "id": 300, "method": "tools/call",
 		"params": map[string]any{"name": mcpFindingToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 300)
 	res := env["result"].(map[string]interface{})
 	if isErr, _ := res["isError"].(bool); !isErr {
@@ -395,7 +405,7 @@ func TestMCPTransportFindingRecordRejectsMissingBody(t *testing.T) {
 		"jsonrpc": "2.0", "id": 301, "method": "tools/call",
 		"params": map[string]any{"name": mcpFindingToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 301)
 	res := env["result"].(map[string]interface{})
 	if isErr, _ := res["isError"].(bool); !isErr {
@@ -411,7 +421,7 @@ func TestMCPTransportFindingRecordRejectsUnknownArgumentField(t *testing.T) {
 		"jsonrpc": "2.0", "id": 302, "method": "tools/call",
 		"params": map[string]any{"name": mcpFindingToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 302)
 	res := env["result"].(map[string]interface{})
 	if isErr, _ := res["isError"].(bool); !isErr {
@@ -421,14 +431,14 @@ func TestMCPTransportFindingRecordRejectsUnknownArgumentField(t *testing.T) {
 
 func TestMCPTransportFindingRecordRejectsBodyExceedingMax(t *testing.T) {
 	homePath := initMCPTestHome(t)
-	huge := strings.Repeat("z", mcpMaxBodyBytes+1)
+	huge := strings.Repeat("z", mcpMaxFindingBodyBytes+1)
 	args := map[string]any{"topic": "huge", "body": huge}
 	argsBytes, _ := json.Marshal(args)
 	call := map[string]any{
 		"jsonrpc": "2.0", "id": 303, "method": "tools/call",
 		"params": map[string]any{"name": mcpFindingToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 303)
 	res := env["result"].(map[string]interface{})
 	if isErr, _ := res["isError"].(bool); !isErr {
@@ -461,11 +471,11 @@ func TestMCPTransportOrientRecallPersistsSealedArtifactsAndReturnsBoundedAck(t *
 	}
 
 	args := map[string]any{
-		"task": "summarize local MCP transport round-trip",
-		"harness": "codex",
-		"cwd": t.TempDir(),
-		"repo_kind": "control-plane",
-		"mode": "execute",
+		"task":        "summarize local MCP transport round-trip",
+		"harness":     "codex",
+		"cwd":         t.TempDir(),
+		"repo_kind":   "control-plane",
+		"mode":        "execute",
 		"body_budget": 0,
 	}
 	argsBytes, _ := json.Marshal(args)
@@ -473,7 +483,7 @@ func TestMCPTransportOrientRecallPersistsSealedArtifactsAndReturnsBoundedAck(t *
 		"jsonrpc": "2.0", "id": 500, "method": "tools/call",
 		"params": map[string]any{"name": mcpOrientToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 500)
 	if env["error"] != nil {
 		t.Fatalf("orient_recall returned JSON-RPC error: %+v", env["error"])
@@ -514,14 +524,17 @@ func TestMCPTransportOrientRecallPersistsSealedArtifactsAndReturnsBoundedAck(t *
 		if p == "" {
 			t.Fatalf("persisted.%s_path empty", name)
 		}
-		if _, err := os.Stat(p); err != nil {
+		if filepath.IsAbs(p) {
+			t.Fatalf("persisted.%s_path is absolute: %s", name, p)
+		}
+		if _, err := os.Stat(filepath.Join(homePath, filepath.FromSlash(p))); err != nil {
 			t.Fatalf("persisted %s artifact missing on disk: %v\npath=%s", name, err, p)
 		}
 	}
-	// persisted paths must be under the test's COMPOUND_HOME, nowhere else.
+	// Persisted artifact refs are home-relative and contain no private temp path.
 	for _, p := range []string{ecPath, latestPath, packPath} {
-		if !strings.HasPrefix(p, homePath) {
-			t.Fatalf("persisted path escapes home: %s (home=%s)", p, homePath)
+		if strings.Contains(p, filepath.ToSlash(homePath)) || strings.HasPrefix(p, "../") {
+			t.Fatalf("persisted artifact ref is not safely home-relative: %s", p)
 		}
 	}
 }
@@ -534,7 +547,7 @@ func TestMCPTransportOrientRecallRejectsUnknownArgumentField(t *testing.T) {
 		"jsonrpc": "2.0", "id": 501, "method": "tools/call",
 		"params": map[string]any{"name": mcpOrientToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 501)
 	res := env["result"].(map[string]interface{})
 	if isErr, _ := res["isError"].(bool); !isErr {
@@ -557,41 +570,22 @@ func TestMCPTransportOrientRecallStaysWithinUninitializedHome(t *testing.T) {
 		"jsonrpc": "2.0", "id": 502, "method": "tools/call",
 		"params": map[string]any{"name": mcpOrientToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 502)
-	realHome, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("UserHomeDir: %v", err)
-	}
-	realCompound := filepath.Join(realHome, ".compound")
 	if res, ok := env["result"].(map[string]interface{}); ok {
-		// If orient_recall returned an ack, every persisted path MUST be
-		// under the test's tempdir (homePath). A successful run that wrote
-		// artifacts to ~/.compound (the global default) would be a leak.
-		if ackStruct, ok := res["structuredContent"].(map[string]interface{}); ok {
-			if persisted, ok := ackStruct["persisted_artifacts"].(map[string]interface{}); ok {
-				for _, key := range []string{"effective_contract_path", "latest_contract_path", "context_pack_path"} {
-					p, _ := persisted[key].(string)
-					if p == "" {
-						continue
-					}
-					if strings.HasPrefix(filepath.ToSlash(p), filepath.ToSlash(realCompound)) {
-						t.Fatalf("orient_recall persisted to the real COMPOUND_HOME %q: %s=%s", realCompound, key, p)
-					}
-					if !strings.HasPrefix(filepath.ToSlash(p), filepath.ToSlash(homePath)) {
-						t.Fatalf("orient_recall persisted path %s=%s escapes test home %q", key, p, homePath)
-					}
+		if isErr, _ := res["isError"].(bool); !isErr {
+			ack := decodeMCPStructuredContent(t, res)
+			persisted := ack["persisted_artifacts"].(map[string]interface{})
+			for _, key := range []string{"effective_contract_path", "latest_contract_path", "context_pack_path"} {
+				ref, _ := persisted[key].(string)
+				if ref == "" || filepath.IsAbs(ref) || strings.Contains(ref, homePath) {
+					t.Fatalf("persisted artifact %s is not home-relative: %q", key, ref)
+				}
+				if _, err := os.Stat(filepath.Join(homePath, filepath.FromSlash(ref))); err != nil {
+					t.Fatalf("persisted artifact %s is not in selected temp home: %v", key, err)
 				}
 			}
 		}
-	}
-	// Also walk the filesystem: orient_recall must not have authored any
-	// file in the real COMPOUND_HOME as a side-effect of the test.
-	if _, statErr := os.Stat(realCompound); statErr == nil {
-		// (real COMPOUND_HOME exists pre-test in this dev environment — we
-		// only check the orient_recall windows we observed.) Skip the diff
-		// when we lack a pre-snapshot; assert via persisted_artifacts above.
-		t.Logf("note: real COMPOUND_HOME present at %s; persisted_artifacts path check is the gate", realCompound)
 	}
 }
 
@@ -623,7 +617,7 @@ func TestMCPTransportOrientRecallClampsRecallRefsToBoundedCap(t *testing.T) {
 		"jsonrpc": "2.0", "id": 503, "method": "tools/call",
 		"params": map[string]any{"name": mcpOrientToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 503)
 	res := env["result"].(map[string]interface{})
 	if isErr, _ := res["isError"].(bool); isErr {
@@ -648,7 +642,7 @@ func TestMCPTransportUnknownToolReturnsToolUnavailable(t *testing.T) {
 		"jsonrpc": "2.0", "id": 600, "method": "tools/call",
 		"params": map[string]any{"name": "compound_bogus_tool"},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 600)
 	errObj := env["error"].(map[string]interface{})
 	if errObj["code"] != float64(rpcToolUnavailable) {
@@ -662,7 +656,7 @@ func TestMCPTransportToolCallMissingArgsReturnsToolError(t *testing.T) {
 		"jsonrpc": "2.0", "id": 601, "method": "tools/call",
 		"params": map[string]any{"name": mcpFindingToolName},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 601)
 	if env["error"] != nil {
 		t.Fatalf("missing arguments must NOT surface JSON-RPC error envelope, got %+v", env)
@@ -687,7 +681,7 @@ func TestMCPTransportFindingRecordTreatsShellMetacharsAsLiteralTopicBody(t *test
 		"jsonrpc": "2.0", "id": 700, "method": "tools/call",
 		"params": map[string]any{"name": mcpFindingToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 700)
 	res := env["result"].(map[string]interface{})
 	if isErr, _ := res["isError"].(bool); isErr {
@@ -736,7 +730,7 @@ func TestMCPTransportOrientRecallNeverAutoPromotes(t *testing.T) {
 		"jsonrpc": "2.0", "id": 800, "method": "tools/call",
 		"params": map[string]any{"name": mcpOrientToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 800)
 	if isErr, _ := env["result"].(map[string]interface{})["isError"].(bool); isErr {
 		t.Fatalf("orient_recall refused: %+v", env)
@@ -745,13 +739,13 @@ func TestMCPTransportOrientRecallNeverAutoPromotes(t *testing.T) {
 	// Forbidden side-effects: orient_recall MUST NOT promote any candidate or
 	// touch the ledger. New files in those surfaces are a contract violation.
 	forbiddenSubstrings := []string{
-		"/candidates/",        // candidate promotion surface
-		"/ledger/",            // ledger byte mutation surface
-		"/observed/claims/",   // any promoted-claim home
-		"/decisions/",         // operator-ruling surface
-		"/runtime/work_",      // work envelope promotion
-		"/works/",             // work side-effect
-		"/memory/canonical/",  // promotion to canonical memory
+		"/candidates/",       // candidate promotion surface
+		"/ledger/",           // ledger byte mutation surface
+		"/observed/claims/",  // any promoted-claim home
+		"/decisions/",        // operator-ruling surface
+		"/runtime/work_",     // work envelope promotion
+		"/works/",            // work side-effect
+		"/memory/canonical/", // promotion to canonical memory
 	}
 	for path := range after {
 		if before[path] {
@@ -815,11 +809,384 @@ func TestMCPTransportFindingRecordRejectsEvidenceOverCap(t *testing.T) {
 		"jsonrpc": "2.0", "id": 900, "method": "tools/call",
 		"params": map[string]any{"name": mcpFindingToolName, "arguments": json.RawMessage(argsBytes)},
 	}
-	lines := runMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
+	lines := runReadyMCPTransport(t, nil, []string{string(mustJSON(t, call)) + "\n"}, homePath)
 	env := rawResp(t, lines, 900)
 	if isErr, _ := env["result"].(map[string]interface{})["isError"].(bool); !isErr {
 		t.Fatalf("oversized evidence_refs must be rejected, got %+v", env)
 	}
+}
+
+func TestMCPTransportLifecycleRequiresInitializeThenInitialized(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	lines := runMCPTransport(t, nil, []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"compound_finding_record","arguments":{"topic":"blocked","body":"blocked"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/list"}`,
+	}, homePath)
+	for _, id := range []int{1, 2, 4, 6} {
+		errObj := rawResp(t, lines, id)["error"].(map[string]interface{})
+		if errObj["code"] != float64(rpcServerNotInitialized) {
+			t.Fatalf("id %d code = %v, want %d", id, errObj["code"], rpcServerNotInitialized)
+		}
+	}
+	if code := rawResp(t, lines, nil)["error"].(map[string]interface{})["code"]; code != float64(rpcMethodNotFound) {
+		t.Fatalf("id:null initialized request code = %v, want %d", code, rpcMethodNotFound)
+	}
+	if _, ok := rawResp(t, lines, 3)["result"]; !ok {
+		t.Fatalf("initialize did not succeed: %+v", rawResp(t, lines, 3))
+	}
+	if entries, err := os.ReadDir(filepath.Join(homePath, finding.Subdir)); err == nil && len(entries) != 0 {
+		t.Fatalf("pre-initialize tools/call wrote finding state: %v", entries)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read findings after blocked call: %v", err)
+	}
+	if _, ok := rawResp(t, lines, 5)["result"]; !ok {
+		t.Fatalf("tools/list did not become ready: %+v", rawResp(t, lines, 5))
+	}
+}
+
+func TestMCPTransportInitializeNegotiatesOnlyCompatibleVersions(t *testing.T) {
+	for _, version := range []string{mcpLegacyProtocolVersion, mcpProtocolVersion} {
+		t.Run(version, func(t *testing.T) {
+			homePath := initMCPTestHome(t)
+			req := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":%q,"capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}`, version)
+			res := rawResp(t, runMCPTransport(t, nil, []string{req}, homePath), 1)["result"].(map[string]interface{})
+			if res["protocolVersion"] != version {
+				t.Fatalf("negotiated version = %v, want %q", res["protocolVersion"], version)
+			}
+		})
+	}
+
+	homePath := initMCPTestHome(t)
+	lines := runMCPTransport(t, nil, []string{
+		`{"jsonrpc":"2.0","id":10,"method":"initialize","params":{"protocolVersion":"2099-01-01","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":11,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}`,
+	}, homePath)
+	if code := rawResp(t, lines, 10)["error"].(map[string]interface{})["code"]; code != float64(rpcInvalidParams) {
+		t.Fatalf("unsupported version code = %v", code)
+	}
+	if _, ok := rawResp(t, lines, 11)["result"]; !ok {
+		t.Fatalf("failed initialize must not consume lifecycle: %+v", rawResp(t, lines, 11))
+	}
+}
+
+func TestMCPTransportInitializeRequiresTypedParams(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	for i, params := range []string{
+		`{"protocolVersion":"2025-06-18","clientInfo":{"name":"probe","version":"1"}}`,
+		`{"protocolVersion":"2025-06-18","capabilities":[],"clientInfo":{"name":"probe","version":"1"}}`,
+		`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"","version":"1"}}`,
+		`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"},"_meta":[]}`,
+		`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1","title":"` + strings.Repeat("t", mcpMaxClientTitleBytes+1) + `"}}`,
+		`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"},"unknown":true}`,
+	} {
+		req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"initialize","params":%s}`, i+1, params)
+		code := rawResp(t, runMCPTransport(t, nil, []string{req}, homePath), i+1)["error"].(map[string]interface{})["code"]
+		if code != float64(rpcInvalidParams) {
+			t.Fatalf("case %d code = %v, want %d", i, code, rpcInvalidParams)
+		}
+	}
+}
+
+func TestMCPTransportPreservesNullLargeAndStringIDsExactly(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	large := "900719925474099312345678901234567890"
+	escaped := `"\u0063lient-id"`
+	lines := runMCPTransport(t, nil, []string{
+		`{"jsonrpc":"2.0","id":null,"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":` + large + `,"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":` + escaped + `,"method":"ping"}`,
+		`{"jsonrpc":"2.0","method":"ping"}`,
+	}, homePath)
+	if len(lines) != 3 {
+		t.Fatalf("responses = %d, want explicit-null/large/string only: %v", len(lines), lines)
+	}
+	for _, want := range []string{`"id":null`, `"id":` + large, `"id":` + escaped} {
+		found := false
+		for _, line := range lines {
+			if strings.Contains(line, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("response did not preserve raw ID %s: %v", want, lines)
+		}
+	}
+}
+
+func TestMCPTransportToolResultShapeMatchesAdvertisedCapabilities(t *testing.T) {
+	for _, version := range []string{mcpLegacyProtocolVersion, mcpProtocolVersion} {
+		t.Run(version, func(t *testing.T) {
+			homePath := initMCPTestHome(t)
+			lines := runMCPTransport(t, nil, []string{
+				fmt.Sprintf(`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":%q,"capabilities":{},"clientInfo":{"name":"shape-test","version":"1"}}}`, version),
+				`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+				`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+				`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"compound_finding_record","arguments":{"topic":"shape","body":"shape body"}}}`,
+			}, homePath)
+			tools := rawResp(t, lines, 1)["result"].(map[string]interface{})["tools"].([]interface{})
+			for _, raw := range tools {
+				if _, advertised := raw.(map[string]interface{})["outputSchema"]; advertised {
+					t.Fatalf("tool advertises outputSchema without structured output: %+v", raw)
+				}
+			}
+			result := rawResp(t, lines, 2)["result"].(map[string]interface{})
+			decodeMCPStructuredContent(t, result)
+		})
+	}
+}
+
+func TestMCPTransportFindingSchemaAndRuntimeBoundariesMatch(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	properties := mcpFindingRecordDescriptor().InputSchema["properties"].(map[string]interface{})
+	checks := map[string]int{
+		"topic": mcpMaxFindingTopicBytes, "body": mcpMaxFindingBodyBytes,
+		"work_id": mcpMaxFindingWorkIDBytes, "produced_by": mcpMaxFindingProducerBytes,
+		"supersedes": mcpMaxFindingSupersedesBytes,
+	}
+	for field, want := range checks {
+		got := properties[field].(map[string]interface{})["maxLength"]
+		if got != want {
+			t.Fatalf("schema %s maxLength = %v, want %d", field, got, want)
+		}
+	}
+	items := properties["evidence_refs"].(map[string]interface{})["items"].(map[string]interface{})
+	if items["maxLength"] != mcpMaxEvidenceRefBytes {
+		t.Fatalf("evidence ref maxLength = %v", items["maxLength"])
+	}
+
+	refsAtLimit := make([]string, mcpMaxEvidenceRefs)
+	for i := range refsAtLimit {
+		refsAtLimit[i] = fmt.Sprintf("git:%d", i)
+	}
+	valid := []map[string]any{
+		{"topic": strings.Repeat("t", mcpMaxFindingTopicBytes), "body": "topic boundary"},
+		{"topic": "body-boundary", "body": strings.Repeat("b", mcpMaxFindingBodyBytes)},
+		{"topic": "work-boundary", "body": "x", "work_id": "work_" + strings.Repeat("w", mcpMaxFindingWorkIDBytes-5)},
+		{"topic": "producer-boundary", "body": "x", "produced_by": "p" + strings.Repeat("a", mcpMaxFindingProducerBytes-1)},
+		{"topic": "supersedes-boundary", "body": "x", "supersedes": "find_0123456789ab"},
+		{"topic": "evidence-boundary", "body": "x", "evidence_refs": []string{"git:" + strings.Repeat("a", mcpMaxEvidenceRefBytes-4)}},
+		{"topic": "evidence-count-boundary", "body": "x", "evidence_refs": refsAtLimit},
+	}
+	for i, args := range valid {
+		result := mcpFindingResultMap(t, mcpCallFindingRecord(mustJSON(t, args)))
+		if isErr, _ := result["isError"].(bool); isErr {
+			t.Fatalf("valid boundary %d rejected: %+v", i, result)
+		}
+	}
+
+	invalid := []struct {
+		args map[string]any
+		code string
+	}{
+		{map[string]any{"topic": strings.Repeat("t", mcpMaxFindingTopicBytes+1), "body": "x"}, "invalid_topic"},
+		{map[string]any{"topic": " padded ", "body": "x"}, "invalid_topic"},
+		{map[string]any{"topic": "x", "body": strings.Repeat("b", mcpMaxFindingBodyBytes+1)}, "finding_body_budget_exceeded"},
+		{map[string]any{"topic": "x", "body": "x", "work_id": nil}, "invalid_work_id"},
+		{map[string]any{"topic": "x", "body": "x", "work_id": "job_wrong"}, "invalid_work_id"},
+		{map[string]any{"topic": "x", "body": "x", "work_id": "work_" + strings.Repeat("w", mcpMaxFindingWorkIDBytes)}, "invalid_work_id"},
+		{map[string]any{"topic": "x", "body": "x", "produced_by": nil}, "invalid_produced_by"},
+		{map[string]any{"topic": "x", "body": "x", "produced_by": "p" + strings.Repeat("a", mcpMaxFindingProducerBytes)}, "invalid_produced_by"},
+		{map[string]any{"topic": "x", "body": "x", "produced_by": "bad producer"}, "invalid_produced_by"},
+		{map[string]any{"topic": "x", "body": "x", "supersedes": nil}, "invalid_supersedes"},
+		{map[string]any{"topic": "x", "body": "x", "supersedes": "find_NOTHEX000000"}, "invalid_supersedes"},
+		{map[string]any{"topic": "x", "body": "x", "evidence_refs": nil}, "invalid_evidence_ref"},
+		{map[string]any{"topic": "x", "body": "x", "evidence_refs": []string{"not-a-ref"}}, "invalid_evidence_ref"},
+		{map[string]any{"topic": "x", "body": "x", "evidence_refs": []string{"git:" + strings.Repeat("a", mcpMaxEvidenceRefBytes)}}, "invalid_evidence_ref"},
+	}
+	for i, tc := range invalid {
+		result := mcpFindingResultMap(t, mcpCallFindingRecord(mustJSON(t, tc.args)))
+		if code := mcpToolResultErrorCode(t, result); code != tc.code {
+			t.Fatalf("invalid boundary %d code = %q, want %q", i, code, tc.code)
+		}
+	}
+	_ = homePath
+}
+
+func TestMCPTransportOrientSchemaAndRuntimeBoundariesMatch(t *testing.T) {
+	_ = initMCPTestHome(t)
+	properties := mcpOrientRecallDescriptor().InputSchema["properties"].(map[string]interface{})
+	limits := map[string]int{
+		"task": mcpMaxOrientTaskBytes, "harness": mcpMaxOrientHarnessBytes,
+		"cwd": mcpMaxOrientCwdBytes, "repo_kind": mcpMaxOrientRepoKindBytes,
+		"mode": mcpMaxOrientModeBytes, "topic": mcpMaxOrientTopicBytes,
+	}
+	for field, want := range limits {
+		if got := properties[field].(map[string]interface{})["maxLength"]; got != want {
+			t.Fatalf("schema %s maxLength = %v, want %d", field, got, want)
+		}
+	}
+	budgetSchema := properties["body_budget"].(map[string]interface{})
+	if budgetSchema["minimum"] != 0 || budgetSchema["maximum"] != mcpMaxBodyPackTokens {
+		t.Fatalf("body_budget schema = %+v", budgetSchema)
+	}
+
+	priorRuntime := materializeRuntimeForOrient
+	t.Cleanup(func() { materializeRuntimeForOrient = priorRuntime })
+	materializeRuntimeForOrient = func(in contract.Input, pol contract.OrientationPolicy, _ string, now time.Time) (contract.RuntimeMaterialization, error) {
+		ec := contract.Compile(in, pol, now)
+		pack := contract.Pack(in, pol, now)
+		return contract.RuntimeMaterialization{EffectiveContract: ec, ContextPack: pack}, nil
+	}
+	valid := map[string]any{
+		"task":        strings.Repeat("t", mcpMaxOrientTaskBytes),
+		"harness":     strings.Repeat("h", mcpMaxOrientHarnessBytes),
+		"cwd":         string(os.PathSeparator) + strings.Repeat("c", mcpMaxOrientCwdBytes-1),
+		"repo_kind":   strings.Repeat("r", mcpMaxOrientRepoKindBytes),
+		"mode":        "review",
+		"topic":       strings.Repeat("o", mcpMaxOrientTopicBytes),
+		"body_budget": 0,
+	}
+	if result := mcpFindingResultMap(t, mcpCallOrientRecall(mustJSON(t, valid))); result["isError"] == true {
+		t.Fatalf("valid orient boundaries rejected: %+v", result)
+	}
+
+	invalid := []struct {
+		field string
+		value any
+		code  string
+	}{
+		{"task", strings.Repeat("t", mcpMaxOrientTaskBytes+1), "invalid_task"},
+		{"task", "   ", "invalid_task"},
+		{"harness", nil, "invalid_harness"},
+		{"harness", strings.Repeat("h", mcpMaxOrientHarnessBytes+1), "invalid_harness"},
+		{"cwd", nil, "invalid_cwd"},
+		{"cwd", strings.Repeat("c", mcpMaxOrientCwdBytes+1), "invalid_cwd"},
+		{"repo_kind", nil, "invalid_repo_kind"},
+		{"repo_kind", strings.Repeat("r", mcpMaxOrientRepoKindBytes+1), "invalid_repo_kind"},
+		{"mode", nil, "invalid_mode"},
+		{"mode", "invalid", "invalid_mode"},
+		{"topic", nil, "invalid_topic"},
+		{"topic", strings.Repeat("o", mcpMaxOrientTopicBytes+1), "invalid_topic"},
+		{"body_budget", nil, "body_pack_token_budget_invalid"},
+		{"body_budget", -1, "body_pack_token_budget_invalid"},
+		{"body_budget", mcpMaxBodyPackTokens + 1, "body_pack_token_budget_invalid"},
+	}
+	for _, tc := range invalid {
+		args := map[string]any{"task": "boundary probe"}
+		args[tc.field] = tc.value
+		result := mcpFindingResultMap(t, mcpCallOrientRecall(mustJSON(t, args)))
+		if code := mcpToolResultErrorCode(t, result); code != tc.code {
+			t.Fatalf("%s invalid code = %q, want %q", tc.field, code, tc.code)
+		}
+	}
+}
+
+func TestMCPTransportBudgetSemanticsAndBoundedSafeOrientAck(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	priorRuntime, priorBodies := materializeRuntimeForOrient, materializeBodiesForOrient
+	t.Cleanup(func() { materializeRuntimeForOrient, materializeBodiesForOrient = priorRuntime, priorBodies })
+	privateRef := filepath.Join(string(os.PathSeparator), "synthetic", "private", "artifact")
+	materializeRuntimeForOrient = func(in contract.Input, pol contract.OrientationPolicy, _ string, now time.Time) (contract.RuntimeMaterialization, error) {
+		ec := contract.Compile(in, pol, now)
+		pack := contract.Pack(in, pol, now)
+		pack.SummaryMD = strings.Repeat("s", mcpMaxSummaryBytes+200)
+		pack.ActiveDecisions = []string{"decision:ok", privateRef, strings.Repeat("r", mcpMaxRecallRefBytes+1)}
+		pack.ActiveMemory = make([]string, mcpMaxRecallRefs+1)
+		for i := range pack.ActiveMemory {
+			pack.ActiveMemory[i] = fmt.Sprintf("claim:%03d", i)
+		}
+		return contract.RuntimeMaterialization{EffectiveContract: ec, ContextPack: pack}, nil
+	}
+	seenBudget := -1
+	materializeBodiesForOrient = func(_ string, pack envelope.ContextPack, _, _ string, budget int) (envelope.ContextPack, error) {
+		seenBudget = budget
+		return pack, nil
+	}
+	args := map[string]any{"task": "budget boundary", "body_budget": mcpMaxBodyPackTokens}
+	result := mcpFindingResultMap(t, mcpCallOrientRecall(mustJSON(t, args)))
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("max token budget rejected: %+v", result)
+	}
+	if seenBudget != mcpMaxBodyPackTokens {
+		t.Fatalf("body-pack token budget = %d, want %d", seenBudget, mcpMaxBodyPackTokens)
+	}
+	ack := decodeMCPStructuredContent(t, result)
+	if len(ack["summary_md"].(string)) > mcpMaxSummaryBytes {
+		t.Fatalf("summary exceeded cap")
+	}
+	encoded := string(mustJSON(t, ack))
+	if strings.Contains(encoded, privateRef) || strings.Contains(encoded, homePath) {
+		t.Fatalf("orient ack leaked private absolute path: %s", encoded)
+	}
+	if len(ack["active_memory"].([]interface{})) != mcpMaxRecallRefs {
+		t.Fatalf("active memory not capped: %+v", ack["active_memory"])
+	}
+	if code := mcpToolResultErrorCode(t, mcpFindingResultMap(t, mcpCallOrientRecall(mustJSON(t, map[string]any{
+		"task": "too many tokens", "body_budget": mcpMaxBodyPackTokens + 1,
+	})))); code != "body_pack_token_budget_invalid" {
+		t.Fatalf("over-token-budget code = %q", code)
+	}
+}
+
+func TestMCPTransportErrorsNeverLeakRawInternalTextOrPaths(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	findingArgs := map[string]any{"topic": "storage-error-probe", "body": "synthetic body sentinel"}
+	first := mcpFindingResultMap(t, mcpCallFindingRecord(mustJSON(t, findingArgs)))
+	findingAck := decodeMCPStructuredContent(t, first)
+	findingPath := filepath.Join(homePath, finding.Subdir, findingAck["id"].(string)+".json")
+	if err := os.WriteFile(findingPath, []byte("malformed synthetic record\n"), 0o600); err != nil {
+		t.Fatalf("corrupt synthetic finding: %v", err)
+	}
+	findingFailure := mcpFindingResultMap(t, mcpCallFindingRecord(mustJSON(t, findingArgs)))
+	findingWire := string(mustJSON(t, findingFailure))
+	if strings.Contains(findingWire, homePath) || strings.Contains(findingWire, "synthetic body sentinel") || strings.Contains(findingWire, "malformed") {
+		t.Fatalf("finding error leaked raw storage detail: %s", findingWire)
+	}
+	if code := mcpToolResultErrorCode(t, findingFailure); code != "finding_record_failed" {
+		t.Fatalf("finding error code = %q", code)
+	}
+
+	priorRuntime := materializeRuntimeForOrient
+	t.Cleanup(func() { materializeRuntimeForOrient = priorRuntime })
+	sentinel := filepath.Join(homePath, "synthetic-secret") + ": internal detail"
+	materializeRuntimeForOrient = func(contract.Input, contract.OrientationPolicy, string, time.Time) (contract.RuntimeMaterialization, error) {
+		return contract.RuntimeMaterialization{}, errors.New(sentinel)
+	}
+	result := mcpFindingResultMap(t, mcpCallOrientRecall(mustJSON(t, map[string]any{"task": "error probe"})))
+	encoded := string(mustJSON(t, result))
+	if strings.Contains(encoded, sentinel) || strings.Contains(encoded, homePath) || strings.Contains(encoded, "internal detail") {
+		t.Fatalf("tool error leaked raw internal text: %s", encoded)
+	}
+	if code := mcpToolResultErrorCode(t, result); code != "orient_materialization_failed" {
+		t.Fatalf("error code = %q", code)
+	}
+
+	lines := runMCPTransport(t, nil, []string{`{"jsonrpc":"2.0","id":9,"method":"private/` + sentinel + `"}`}, homePath)
+	wire := strings.Join(lines, "\n")
+	if strings.Contains(wire, sentinel) || strings.Contains(wire, homePath) {
+		t.Fatalf("JSON-RPC error leaked method/path: %s", wire)
+	}
+}
+
+func mcpFindingResultMap(t *testing.T, raw interface{}) map[string]interface{} {
+	t.Helper()
+	encoded := mustJSON(t, raw)
+	var result map[string]interface{}
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		t.Fatalf("decode tool result: %v", err)
+	}
+	return result
+}
+
+func mcpToolResultErrorCode(t *testing.T, result map[string]interface{}) string {
+	t.Helper()
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Fatalf("tool result is not an error: %+v", result)
+	}
+	payload := decodeMCPStructuredContent(t, result)
+	errorObj, ok := payload["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tool error payload missing: %+v", payload)
+	}
+	code, _ := errorObj["code"].(string)
+	return code
 }
 
 // ---------- Framing ----------
@@ -856,11 +1223,26 @@ func TestMCPTransportBlankLinesIgnoredBetweenEnvelopes(t *testing.T) {
 
 func decodeMCPStructuredContent(t *testing.T, result map[string]interface{}) map[string]interface{} {
 	t.Helper()
-	structObj, ok := result["structuredContent"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("result missing structuredContent: %+v", result)
+	if _, exists := result["structuredContent"]; exists {
+		t.Fatalf("result must not emit unadvertised structuredContent: %+v", result)
 	}
-	return structObj
+	content, ok := result["content"].([]interface{})
+	if !ok || len(content) != 1 {
+		t.Fatalf("result missing single content block: %+v", result)
+	}
+	block, ok := content[0].(map[string]interface{})
+	if !ok || block["type"] != "text" {
+		t.Fatalf("result content is not text: %+v", result)
+	}
+	text, ok := block["text"].(string)
+	if !ok {
+		t.Fatalf("result text missing: %+v", result)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("decode result text: %v", err)
+	}
+	return decoded
 }
 
 func mustJSON(t *testing.T, v interface{}) []byte {

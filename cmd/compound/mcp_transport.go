@@ -21,14 +21,17 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"compound/internal/contract"
 	"compound/internal/envelope"
@@ -40,20 +43,48 @@ const (
 	mcpFindingAckSchema = "compound.finding.record-ack.v1"
 	mcpOrientAckSchema  = "compound.mcp.orient-recall-ack.v1"
 	mcpServerName       = "compound-mcp-transport"
-	mcpServerVersion    = "0.1.0"
-	mcpProtocolVersion  = "2024-11-05"
-	mcpFindingToolName          = "compound_finding_record"
-	mcpOrientToolName           = "compound_orient_recall"
-	mcpMaxLineBytes             = 1 << 20
-	mcpMaxBodyBytes             = 64 << 10
-	mcpMaxRecallRefs            = 256
-	mcpMaxEvidenceRefs          = 32
-	mcpMaxOrientTaskBytes       = 4096
-	mcpMaxOrientHarnessBytes    = 64
-	mcpMaxOrientTopicBytes      = 256
-	mcpMaxOrientRepoKindBytes   = 64
-	mcpMaxOrientModeBytes       = 32
-	mcpMaxOrientCwdBytes        = 4096
+	mcpServerVersion    = "0.2.0"
+	// mcpProtocolVersion is the newest revision this server supports. Initialize
+	// negotiates an exact member of mcpSupportedProtocolVersions.
+	mcpProtocolVersion           = "2025-06-18"
+	mcpLegacyProtocolVersion     = "2024-11-05"
+	mcpFindingToolName           = "compound_finding_record"
+	mcpOrientToolName            = "compound_orient_recall"
+	mcpMaxLineBytes              = 1 << 20
+	mcpMaxFindingBodyBytes       = 64 << 10
+	mcpMaxBodyPackTokens         = 32 << 10
+	mcpMaxRecallRefs             = 256
+	mcpMaxRecallRefBytes         = 1024
+	mcpMaxSummaryBytes           = 4096
+	mcpMaxEvidenceRefs           = 32
+	mcpMaxFindingTopicBytes      = 1024
+	mcpMaxFindingWorkIDBytes     = 1024
+	mcpMaxFindingProducerBytes   = 256
+	mcpMaxFindingSupersedesBytes = 17
+	mcpMaxEvidenceRefBytes       = 1024
+	mcpMaxOrientTaskBytes        = 4096
+	mcpMaxOrientHarnessBytes     = 64
+	mcpMaxOrientTopicBytes       = 256
+	mcpMaxOrientRepoKindBytes    = 64
+	mcpMaxOrientModeBytes        = 32
+	mcpMaxOrientCwdBytes         = 4096
+	mcpMaxClientNameBytes        = 128
+	mcpMaxClientVersionBytes     = 128
+	mcpMaxClientTitleBytes       = 128
+)
+
+var (
+	mcpSupportedProtocolVersions = map[string]struct{}{
+		mcpProtocolVersion:       {},
+		mcpLegacyProtocolVersion: {},
+	}
+	mcpNonBlankPattern    = regexp.MustCompile(`(?s)^\S(?:.*\S)?$`)
+	mcpWorkIDPattern      = regexp.MustCompile(`^work_[A-Za-z0-9][A-Za-z0-9._:-]*$`)
+	mcpProducerPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*$`)
+	mcpFindingIDPattern   = regexp.MustCompile(`^find_[a-f0-9]{12}$`)
+	mcpEvidenceRefPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:\S+$`)
+	mcpModePattern        = regexp.MustCompile(`^(observe|plan|execute|review)$`)
+	mcpErrorCodePattern   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
 // toolSet is the closed alphabet of MCP-prefixed tool names this transport
@@ -71,11 +102,12 @@ var (
 	ioOut io.Writer = os.Stdout
 )
 
-// jsonRPCRequest is one JSON-RPC 2.0 envelope. Notifications omit ID; the
-// dispatcher treats a missing / null ID as fire-and-forget.
+// jsonRPCRequest is one JSON-RPC 2.0 envelope. A nil ID means the member was
+// absent (a notification); a non-nil RawMessage containing `null` is a request
+// whose ID must be echoed as JSON null.
 type jsonRPCRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
+	ID      json.RawMessage `json:"id"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
@@ -89,15 +121,31 @@ type jsonRPCError struct {
 }
 
 // mcpInitializeResult is the result of an MCP `initialize` request.
-type mcpInitializeResult struct {
-	ProtocolVersion string                 `json:"protocolVersion"`
-	Capabilities    map[string]interface{} `json:"capabilities"`
-	ServerInfo      mcpServerInfo          `json:"serverInfo"`
-}
-
-type mcpServerInfo struct {
+type mcpImplementation struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	Title   string `json:"title,omitempty"`
+}
+
+type mcpInitializeParams struct {
+	ProtocolVersion string            `json:"protocolVersion"`
+	Capabilities    json.RawMessage   `json:"capabilities"`
+	ClientInfo      mcpImplementation `json:"clientInfo"`
+	Meta            json.RawMessage   `json:"_meta,omitempty"`
+}
+
+type mcpToolsCapability struct {
+	ListChanged bool `json:"listChanged,omitempty"`
+}
+
+type mcpServerCapabilities struct {
+	Tools mcpToolsCapability `json:"tools"`
+}
+
+type mcpInitializeResult struct {
+	ProtocolVersion string                `json:"protocolVersion"`
+	Capabilities    mcpServerCapabilities `json:"capabilities"`
+	ServerInfo      mcpImplementation     `json:"serverInfo"`
 }
 
 // mcpToolDescriptor is one entry in `tools/list`. The JSON Schema field is
@@ -116,14 +164,13 @@ type mcpToolCallParams struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
-// mcpToolCallResult is the typed shape of a successful `tools/call` result.
-// structural content carries the typed ack (id/path/refs/...), content[0].text
-// mirrors it as a single text block so older MCP hosts that pre-date
-// structuredContent still get the body-free ack.
+// mcpToolCallResult uses the CallToolResult shape shared by both supported MCP
+// revisions. The typed acknowledgement is encoded in content[0].text; this
+// server does not advertise an outputSchema and therefore does not emit the
+// newer structuredContent extension.
 type mcpToolCallResult struct {
 	Content []mcpToolContent `json:"content"`
 	IsError bool             `json:"isError,omitempty"`
-	Struct  interface{}      `json:"structuredContent,omitempty"`
 }
 
 type mcpToolContent struct {
@@ -137,24 +184,23 @@ type mcpToolContent struct {
 type mcpFindingRecordInput struct {
 	Topic        string   `json:"topic"`
 	Body         string   `json:"body"`
-	WorkID       string   `json:"work_id,omitempty"`
-	ProducedBy   string   `json:"produced_by,omitempty"`
-	Supersedes   string   `json:"supersedes,omitempty"`
+	WorkID       *string  `json:"work_id,omitempty"`
+	ProducedBy   *string  `json:"produced_by,omitempty"`
+	Supersedes   *string  `json:"supersedes,omitempty"`
 	EvidenceRefs []string `json:"evidence_refs,omitempty"`
 }
 
 // mcpOrientRecallInput is the typed input for compound_orient_recall. task is
-// the recall key; harness defaults to "codex" if absent (same default the CLI
-// applies via firstNonEmpty). body_budget<=0 keeps the pack body-free — the
-// same semantics as `compound orient` without --body-budget.
+// the recall key; harness defaults to "codex" if absent. BodyBudget is an
+// estimated-token ceiling for ContextPack bodies, not a finding-body byte cap.
 type mcpOrientRecallInput struct {
-	Task       string `json:"task"`
-	Harness    string `json:"harness,omitempty"`
-	Cwd        string `json:"cwd,omitempty"`
-	RepoKind   string `json:"repo_kind,omitempty"`
-	Mode       string `json:"mode,omitempty"`
-	Topic      string `json:"topic,omitempty"`
-	BodyBudget int    `json:"body_budget,omitempty"`
+	Task       string  `json:"task"`
+	Harness    *string `json:"harness,omitempty"`
+	Cwd        *string `json:"cwd,omitempty"`
+	RepoKind   *string `json:"repo_kind,omitempty"`
+	Mode       *string `json:"mode,omitempty"`
+	Topic      *string `json:"topic,omitempty"`
+	BodyBudget int     `json:"body_budget,omitempty"`
 }
 
 // mcpFindingRecordAck mirrors the body-free exact acknowledgement the
@@ -198,13 +244,27 @@ type mcpOrientPersistedArtifacts struct {
 // JSON-RPC 2.0 standard error codes (spec §5.1) plus MCP-specific extension
 // codes for bounded domain errors.
 const (
-	rpcParseError      = -32700
-	rpcInvalidRequest  = -32600
-	rpcMethodNotFound  = -32601
-	rpcInvalidParams   = -32602
-	rpcInternalError   = -32603
-	rpcToolUnavailable = -32001
+	rpcParseError           = -32700
+	rpcInvalidRequest       = -32600
+	rpcMethodNotFound       = -32601
+	rpcInvalidParams        = -32602
+	rpcInternalError        = -32603
+	rpcToolUnavailable      = -32001
+	rpcServerNotInitialized = -32002
 )
+
+type mcpLifecycle uint8
+
+const (
+	mcpLifecycleNew mcpLifecycle = iota
+	mcpLifecycleAwaitingInitialized
+	mcpLifecycleReady
+)
+
+type mcpSession struct {
+	lifecycle       mcpLifecycle
+	protocolVersion string
+}
 
 // runMcpTransportLoop reads newline-delimited JSON-RPC 2.0 envelopes from
 // ioIn and writes responses to ioOut. A read error closes the loop without
@@ -212,6 +272,7 @@ const (
 func runMcpTransportLoop() error {
 	reader := bufio.NewReaderSize(ioIn, mcpMaxLineBytes)
 	writer := bufio.NewWriter(ioOut)
+	session := &mcpSession{}
 	for {
 		line, err := readBoundedJSONLine(reader, mcpMaxLineBytes)
 		if err != nil {
@@ -225,7 +286,7 @@ func runMcpTransportLoop() error {
 		if len(bytesTrim(line)) == 0 {
 			continue
 		}
-		resp := dispatchJSONRPC(line)
+		resp := dispatchJSONRPC(session, line)
 		if resp == nil {
 			continue
 		}
@@ -269,55 +330,98 @@ func readBoundedJSONLine(r *bufio.Reader, max int) ([]byte, error) {
 	}
 }
 
-// dispatchJSONRPC returns nil for notifications (no response required) or a
-// typed response envelope for requests. Unknown methods return -32601 per
-// JSON-RPC spec; unknown tools return -32001 per MCP convention.
-func dispatchJSONRPC(raw []byte) []byte {
+// dispatchJSONRPC returns nil only for a true notification (the id member is
+// absent). It owns the MCP initialize -> initialized -> ready lifecycle for one
+// stdio session.
+func dispatchJSONRPC(session *mcpSession, raw []byte) []byte {
 	var req jsonRPCRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return encodeResponse(nil, &jsonRPCError{Code: rpcParseError, Message: "parse error"})
 	}
+	isNotification := req.ID == nil
 	if strings.TrimSpace(req.JSONRPC) != "2.0" {
-		return respondToID(req.ID, &jsonRPCError{Code: rpcInvalidRequest, Message: "jsonrpc must be exactly \"2.0\""})
-	}
-	if strings.TrimSpace(req.Method) == "" {
-		return respondToID(req.ID, &jsonRPCError{Code: rpcInvalidRequest, Message: "method required"})
-	}
-	// Notifications carry no id and require no response.
-	if len(req.ID) == 0 || string(req.ID) == "null" {
-		switch req.Method {
-		case "notifications/initialized", "notifications/cancelled":
+		if isNotification {
 			return nil
 		}
-		// Unknown notification: silently ignore.
+		return respondToID(req.ID, &jsonRPCError{Code: rpcInvalidRequest, Message: "invalid request"})
+	}
+	if strings.TrimSpace(req.Method) == "" {
+		if isNotification {
+			return nil
+		}
+		return respondToID(req.ID, &jsonRPCError{Code: rpcInvalidRequest, Message: "invalid request"})
+	}
+	if !isNotification && !validJSONRPCID(req.ID) {
+		return encodeResponse(nil, &jsonRPCError{Code: rpcInvalidRequest, Message: "invalid request"})
+	}
+	if isNotification {
+		switch req.Method {
+		case "notifications/initialized":
+			if session.lifecycle == mcpLifecycleAwaitingInitialized {
+				session.lifecycle = mcpLifecycleReady
+			}
+		case "notifications/cancelled":
+			// Cancellation is advisory for this synchronous two-tool server.
+		}
 		return nil
 	}
+
 	switch req.Method {
 	case "initialize":
-		return respondToID(req.ID, mcpHandleInitialize(req))
+		return respondToID(req.ID, session.handleInitialize(req.Params))
 	case "ping":
-		return respondToID(req.ID, map[string]interface{}{})
+		return respondToID(req.ID, struct{}{})
 	case "tools/list":
+		if session.lifecycle != mcpLifecycleReady {
+			return respondToID(req.ID, &jsonRPCError{Code: rpcServerNotInitialized, Message: "server not initialized"})
+		}
 		return respondToID(req.ID, mcpHandleToolsList())
 	case "tools/call":
+		if session.lifecycle != mcpLifecycleReady {
+			return respondToID(req.ID, &jsonRPCError{Code: rpcServerNotInitialized, Message: "server not initialized"})
+		}
 		return respondToID(req.ID, mcpHandleToolsCall(req.Params))
 	default:
-		return respondToID(req.ID, &jsonRPCError{Code: rpcMethodNotFound, Message: "method not found: " + req.Method})
+		return respondToID(req.ID, &jsonRPCError{Code: rpcMethodNotFound, Message: "method not found"})
 	}
 }
 
-func mcpHandleInitialize(req jsonRPCRequest) interface{} {
-	// The protocolVersion is accepted but not consulted; this transport has
-	// fixed capabilities and the protocol-version negotiation is advisory only
-	// (the closed alphabet of two tools is the contract).
-	_ = req
-	return mcpInitializeResult{
-		ProtocolVersion: mcpProtocolVersion,
-		Capabilities: map[string]interface{}{
-			"tools": map[string]interface{}{},
-		},
-		ServerInfo: mcpServerInfo{Name: mcpServerName, Version: mcpServerVersion},
+func (session *mcpSession) handleInitialize(rawParams json.RawMessage) interface{} {
+	if session.lifecycle != mcpLifecycleNew {
+		return &jsonRPCError{Code: rpcInvalidRequest, Message: "already initialized"}
 	}
+	if len(rawParams) == 0 {
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid initialize params"}
+	}
+	var params mcpInitializeParams
+	if err := strictDecodeArgs(rawParams, &params); err != nil {
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid initialize params"}
+	}
+	if _, ok := mcpSupportedProtocolVersions[params.ProtocolVersion]; !ok {
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "unsupported protocol version"}
+	}
+	if !validJSONObject(params.Capabilities) ||
+		(len(params.Meta) > 0 && !validJSONObject(params.Meta)) ||
+		!validBoundedNonBlank(params.ClientInfo.Name, mcpMaxClientNameBytes, nil) ||
+		!validBoundedNonBlank(params.ClientInfo.Version, mcpMaxClientVersionBytes, nil) ||
+		(params.ClientInfo.Title != "" && !validBoundedNonBlank(params.ClientInfo.Title, mcpMaxClientTitleBytes, nil)) {
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid initialize params"}
+	}
+	session.protocolVersion = params.ProtocolVersion
+	session.lifecycle = mcpLifecycleAwaitingInitialized
+	return mcpInitializeResult{
+		ProtocolVersion: params.ProtocolVersion,
+		Capabilities:    mcpServerCapabilities{Tools: mcpToolsCapability{}},
+		ServerInfo:      mcpImplementation{Name: mcpServerName, Version: mcpServerVersion},
+	}
+}
+
+func validJSONObject(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(raw, &obj) == nil && obj != nil
 }
 
 func mcpHandleToolsList() interface{} {
@@ -335,10 +439,10 @@ func mcpHandleToolsCall(rawParams json.RawMessage) interface{} {
 	}
 	var params mcpToolCallParams
 	if err := strictDecodeArgs(rawParams, &params); err != nil {
-		return &jsonRPCError{Code: rpcInvalidParams, Message: "tools/call params invalid: " + err.Error()}
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid tools/call params"}
 	}
 	if _, ok := toolSet[params.Name]; !ok {
-		return &jsonRPCError{Code: rpcToolUnavailable, Message: "unknown tool: " + params.Name}
+		return &jsonRPCError{Code: rpcToolUnavailable, Message: "tool unavailable"}
 	}
 	switch params.Name {
 	case mcpFindingToolName:
@@ -354,51 +458,65 @@ func mcpHandleToolsCall(rawParams json.RawMessage) interface{} {
 
 func mcpCallFindingRecord(rawArgs json.RawMessage) interface{} {
 	if len(rawArgs) == 0 {
-		return toolErrorResult("missing arguments", map[string]any{"reason": "missing_arguments"})
+		return toolErrorResult("missing_arguments")
 	}
 	var in mcpFindingRecordInput
 	if err := strictDecodeArgs(rawArgs, &in); err != nil {
-		return toolErrorResult(err.Error(), map[string]any{"reason": "invalid_arguments"})
+		return toolErrorResult("invalid_arguments")
 	}
-	if strings.TrimSpace(in.Topic) == "" {
-		return toolErrorResult("topic required", map[string]any{"reason": "topic_empty"})
-	}
-	if len(in.Body) == 0 {
-		return toolErrorResult("body required", map[string]any{"reason": "body_empty"})
-	}
-	if len(in.Body) > mcpMaxBodyBytes {
-		return toolErrorResult(fmt.Sprintf("body exceeds %d bytes", mcpMaxBodyBytes),
-			map[string]any{"reason": "body_too_large", "limit_bytes": mcpMaxBodyBytes})
-	}
-	if len(in.EvidenceRefs) > mcpMaxEvidenceRefs {
-		return toolErrorResult(fmt.Sprintf("evidence_refs exceeds %d", mcpMaxEvidenceRefs),
-			map[string]any{"reason": "evidence_refs_too_many", "limit": mcpMaxEvidenceRefs})
-	}
-	for i, ref := range in.EvidenceRefs {
-		if strings.TrimSpace(ref) == "" {
-			return toolErrorResult("evidence_refs contains empty entry",
-				map[string]any{"reason": "evidence_ref_blank", "index": i})
+	for _, field := range []struct {
+		name string
+		code string
+	}{
+		{"work_id", "invalid_work_id"},
+		{"produced_by", "invalid_produced_by"},
+		{"supersedes", "invalid_supersedes"},
+		{"evidence_refs", "invalid_evidence_ref"},
+	} {
+		if explicitJSONNull(rawArgs, field.name) {
+			return toolErrorResult(field.code)
 		}
 	}
-	homePath, herr := home.Resolve("")
-	if herr != nil {
-		return toolErrorResult("compound home unresolved",
-			map[string]any{"reason": "home_uninitialized"})
+	if !validBoundedNonBlank(in.Topic, mcpMaxFindingTopicBytes, mcpNonBlankPattern) {
+		return toolErrorResult("invalid_topic")
+	}
+	if strings.TrimSpace(in.Body) == "" {
+		return toolErrorResult("invalid_body")
+	}
+	if len(in.Body) > mcpMaxFindingBodyBytes || utf8.RuneCountInString(in.Body) > mcpMaxFindingBodyBytes {
+		return toolErrorResult("finding_body_budget_exceeded")
+	}
+	if !validOptionalString(in.WorkID, mcpMaxFindingWorkIDBytes, mcpWorkIDPattern) {
+		return toolErrorResult("invalid_work_id")
+	}
+	if !validOptionalString(in.ProducedBy, mcpMaxFindingProducerBytes, mcpProducerPattern) {
+		return toolErrorResult("invalid_produced_by")
+	}
+	if !validOptionalString(in.Supersedes, mcpMaxFindingSupersedesBytes, mcpFindingIDPattern) {
+		return toolErrorResult("invalid_supersedes")
+	}
+	if len(in.EvidenceRefs) > mcpMaxEvidenceRefs {
+		return toolErrorResult("too_many_evidence_refs")
+	}
+	for _, ref := range in.EvidenceRefs {
+		if !validBoundedNonBlank(ref, mcpMaxEvidenceRefBytes, mcpEvidenceRefPattern) {
+			return toolErrorResult("invalid_evidence_ref")
+		}
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		return toolErrorResult("home_unavailable")
 	}
 	res, err := finding.RecordWithStatus(homePath, finding.Finding{
-		Topic:        strings.TrimSpace(in.Topic),
+		Topic:        in.Topic,
 		Body:         in.Body,
-		WorkID:       strings.TrimSpace(in.WorkID),
-		ProducedBy:   strings.TrimSpace(in.ProducedBy),
-		Supersedes:   strings.TrimSpace(in.Supersedes),
+		WorkID:       optionalString(in.WorkID),
+		ProducedBy:   optionalString(in.ProducedBy),
+		Supersedes:   optionalString(in.Supersedes),
 		EvidenceRefs: append([]string(nil), in.EvidenceRefs...),
 	}, time.Now().UTC())
 	if err != nil {
-		// Surface a bounded error: the underlying message is internal (governed
-		// storage refused the record) but never echoes the body, the body cid,
-		// or any private path inside the message.
-		return toolErrorResult(err.Error(),
-			map[string]any{"reason": "record_failed"})
+		return toolErrorResult("finding_record_failed")
 	}
 	ack := mcpFindingRecordAck{
 		Schema:     mcpFindingAckSchema,
@@ -409,162 +527,231 @@ func mcpCallFindingRecord(rawArgs json.RawMessage) interface{} {
 		Visibility: firstNonEmpty(res.Finding.Visibility, finding.VisibilityOperational),
 	}
 	text, _ := json.Marshal(ack)
-	return mcpToolCallResult{
-		Content: []mcpToolContent{{Type: "text", Text: string(text)}},
-		Struct:  ack,
-	}
+	return mcpToolCallResult{Content: []mcpToolContent{{Type: "text", Text: string(text)}}}
 }
 
 func mcpCallOrientRecall(rawArgs json.RawMessage) interface{} {
 	if len(rawArgs) == 0 {
-		return toolErrorResult("missing arguments", map[string]any{"reason": "missing_arguments"})
+		return toolErrorResult("missing_arguments")
 	}
 	var in mcpOrientRecallInput
 	if err := strictDecodeArgs(rawArgs, &in); err != nil {
-		return toolErrorResult(err.Error(), map[string]any{"reason": "invalid_arguments"})
+		return toolErrorResult("invalid_arguments")
 	}
-	if strings.TrimSpace(in.Task) == "" {
-		return toolErrorResult("task required", map[string]any{"reason": "task_empty"})
+	for _, field := range []struct {
+		name string
+		code string
+	}{
+		{"harness", "invalid_harness"},
+		{"cwd", "invalid_cwd"},
+		{"repo_kind", "invalid_repo_kind"},
+		{"mode", "invalid_mode"},
+		{"topic", "invalid_topic"},
+		{"body_budget", "body_pack_token_budget_invalid"},
+	} {
+		if explicitJSONNull(rawArgs, field.name) {
+			return toolErrorResult(field.code)
+		}
 	}
-	if len(in.Task) > mcpMaxOrientTaskBytes {
-		return toolErrorResult(fmt.Sprintf("task exceeds %d bytes", mcpMaxOrientTaskBytes),
-			map[string]any{"reason": "task_too_large", "limit_bytes": mcpMaxOrientTaskBytes})
+	if !validBoundedNonBlank(in.Task, mcpMaxOrientTaskBytes, mcpNonBlankPattern) {
+		return toolErrorResult("invalid_task")
 	}
-	if len(in.Harness) > mcpMaxOrientHarnessBytes {
-		return toolErrorResult(fmt.Sprintf("harness exceeds %d bytes", mcpMaxOrientHarnessBytes),
-			map[string]any{"reason": "harness_too_large", "limit_bytes": mcpMaxOrientHarnessBytes})
+	for _, field := range []struct {
+		value   *string
+		max     int
+		pattern *regexp.Regexp
+		code    string
+	}{
+		{in.Harness, mcpMaxOrientHarnessBytes, nil, "invalid_harness"},
+		{in.Cwd, mcpMaxOrientCwdBytes, nil, "invalid_cwd"},
+		{in.RepoKind, mcpMaxOrientRepoKindBytes, nil, "invalid_repo_kind"},
+		{in.Mode, mcpMaxOrientModeBytes, mcpModePattern, "invalid_mode"},
+		{in.Topic, mcpMaxOrientTopicBytes, nil, "invalid_topic"},
+	} {
+		if !validOptionalString(field.value, field.max, field.pattern) {
+			return toolErrorResult(field.code)
+		}
 	}
-	if len(in.Cwd) > mcpMaxOrientCwdBytes {
-		return toolErrorResult(fmt.Sprintf("cwd exceeds %d bytes", mcpMaxOrientCwdBytes),
-			map[string]any{"reason": "cwd_too_large", "limit_bytes": mcpMaxOrientCwdBytes})
+	if in.BodyBudget < 0 || in.BodyBudget > mcpMaxBodyPackTokens {
+		return toolErrorResult("body_pack_token_budget_invalid")
 	}
-	if len(in.RepoKind) > mcpMaxOrientRepoKindBytes {
-		return toolErrorResult(fmt.Sprintf("repo_kind exceeds %d bytes", mcpMaxOrientRepoKindBytes),
-			map[string]any{"reason": "repo_kind_too_large", "limit_bytes": mcpMaxOrientRepoKindBytes})
-	}
-	if len(in.Mode) > mcpMaxOrientModeBytes {
-		return toolErrorResult(fmt.Sprintf("mode exceeds %d bytes", mcpMaxOrientModeBytes),
-			map[string]any{"reason": "mode_too_large", "limit_bytes": mcpMaxOrientModeBytes})
-	}
-	if len(in.Topic) > mcpMaxOrientTopicBytes {
-		return toolErrorResult(fmt.Sprintf("topic exceeds %d bytes", mcpMaxOrientTopicBytes),
-			map[string]any{"reason": "topic_too_large", "limit_bytes": mcpMaxOrientTopicBytes})
-	}
-	if in.BodyBudget < 0 {
-		return toolErrorResult("body_budget must be >= 0", map[string]any{"reason": "body_budget_negative"})
-	}
-	if in.BodyBudget > mcpMaxBodyBytes {
-		return toolErrorResult(fmt.Sprintf("body_budget exceeds %d", mcpMaxBodyBytes),
-			map[string]any{"reason": "body_budget_too_large", "limit": mcpMaxBodyBytes})
-	}
-	homePath, herr := home.Resolve("")
-	if herr != nil {
-		return toolErrorResult("compound home unresolved",
-			map[string]any{"reason": "home_uninitialized"})
+	homePath, err := home.Resolve("")
+	if err != nil {
+		return toolErrorResult("home_unavailable")
 	}
 	restoreEngine, err := configureMemoryEngineFromHome(homePath, "")
 	if err != nil {
-		return toolErrorResult("configure memory engine: "+err.Error(),
-			map[string]any{"reason": "engine_configure_failed"})
+		return toolErrorResult("memory_engine_unavailable")
 	}
 	defer restoreEngine()
-	cwd := strings.TrimSpace(in.Cwd)
+	cwd := optionalString(in.Cwd)
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	kind, kindVia, kerr := contract.ResolveRepoKindWithHome(homePath, in.RepoKind, cwd)
-	if kerr != nil {
-		return toolErrorResult(kerr.Error(), map[string]any{"reason": "repo_kind_unresolved"})
+	kind, kindVia, err := contract.ResolveRepoKindWithHome(homePath, optionalString(in.RepoKind), cwd)
+	if err != nil {
+		return toolErrorResult("repo_kind_unavailable")
 	}
 	orient := contract.Input{
-		Harness:     firstNonEmpty(strings.TrimSpace(in.Harness), "codex"),
+		Harness:     firstNonEmpty(optionalString(in.Harness), "codex"),
 		Cwd:         cwd,
 		Task:        in.Task,
 		RepoKind:    kind,
 		RepoKindVia: kindVia,
-		Mode:        firstNonEmpty(strings.TrimSpace(in.Mode), "execute"),
-		Topic:       strings.TrimSpace(in.Topic),
+		Mode:        firstNonEmpty(optionalString(in.Mode), "execute"),
+		Topic:       optionalString(in.Topic),
 	}
-	now := time.Now()
-	pack, err := materializeOrientContextPack(homePath, orient, in.BodyBudget, now)
+	pack, err := materializeOrientContextPack(homePath, orient, in.BodyBudget, time.Now())
 	if err != nil {
-		return toolErrorResult(err.Error(), map[string]any{"reason": "materialize_failed"})
+		return toolErrorResult("orient_materialization_failed")
 	}
-	artifacts := computePersistedOrientArtifacts(homePath, pack)
+	artifacts := computePersistedOrientArtifacts(pack)
+	summary, summaryTruncated := boundedUTF8(pack.SummaryMD, mcpMaxSummaryBytes)
+	decisions, decisionsLimited := boundedRecallRefs(pack.ActiveDecisions, mcpMaxRecallRefs, mcpMaxRecallRefBytes)
+	memory, memoryLimited := boundedRecallRefs(pack.ActiveMemory, mcpMaxRecallRefs, mcpMaxRecallRefBytes)
+	warnings := make([]string, 0, 3)
+	if summaryTruncated {
+		warnings = append(warnings, "summary_truncated")
+	}
+	if decisionsLimited {
+		warnings = append(warnings, "active_decisions_limited")
+	}
+	if memoryLimited {
+		warnings = append(warnings, "active_memory_limited")
+	}
 	ack := mcpOrientRecallAck{
 		Schema:             mcpOrientAckSchema,
 		PackID:             pack.ID,
 		ContractID:         pack.IDs.ContractID,
-		SummaryMD:          pack.SummaryMD,
-		ActiveDecisions:    boundedRecallRefs(pack.ActiveDecisions, mcpMaxRecallRefs),
-		ActiveMemory:       boundedRecallRefs(pack.ActiveMemory, mcpMaxRecallRefs),
+		SummaryMD:          summary,
+		ActiveDecisions:    decisions,
+		ActiveMemory:       memory,
 		BodyPackPresent:    pack.BodyPack != nil,
 		PersistedArtifacts: artifacts,
+		Warnings:           warnings,
 	}
 	text, _ := json.Marshal(ack)
-	return mcpToolCallResult{
-		Content: []mcpToolContent{{Type: "text", Text: string(text)}},
-		Struct:  ack,
-	}
+	return mcpToolCallResult{Content: []mcpToolContent{{Type: "text", Text: string(text)}}}
 }
 
-// computePersistedOrientArtifacts reconstructs the deterministic artifact
-// paths the runtime materializer wrote. The materializer computes these from
-// (homePath, contractID, packID, contractCreatedAt) by the same convention as
-// contract.RecordRuntimeMaterialization; we mirror the convention here so the
-// path receipt is byte-identical to what `compound orient` produced.
-func computePersistedOrientArtifacts(homePath string, pack envelope.ContextPack) mcpOrientPersistedArtifacts {
-	if strings.TrimSpace(homePath) == "" || strings.TrimSpace(pack.ID) == "" || strings.TrimSpace(pack.IDs.ContractID) == "" {
+// computePersistedOrientArtifacts reconstructs the deterministic, home-relative
+// artifact refs the runtime materializer wrote. The materializer derives the
+// same paths from contractID, packID, and contractCreatedAt.
+func computePersistedOrientArtifacts(pack envelope.ContextPack) mcpOrientPersistedArtifacts {
+	if strings.TrimSpace(pack.ID) == "" || strings.TrimSpace(pack.IDs.ContractID) == "" {
 		return mcpOrientPersistedArtifacts{}
 	}
-	dateDir := ""
-	if t, err := time.Parse(time.RFC3339, pack.CreatedAt); err == nil {
-		dateDir = t.UTC().Format("2006-01-02")
+	createdAt, err := time.Parse(time.RFC3339, pack.CreatedAt)
+	if err != nil {
+		return mcpOrientPersistedArtifacts{}
 	}
-	if dateDir == "" {
-		// Fallback: today's UTC date keeps the path deterministic even when
-		// the header timestamp is unparseable. The materializer would have
-		// refused such a pack upstream, so this branch is a defensive last
-		// resort — it never widens the path to leak home internals.
-		dateDir = time.Now().UTC().Format("2006-01-02")
-	}
+	dateDir := createdAt.UTC().Format("2006-01-02")
 	return mcpOrientPersistedArtifacts{
-		EffectiveContractPath: filepath.ToSlash(filepath.Join(homePath, "contracts", "effective", dateDir, pack.IDs.ContractID+".json")),
-		LatestContractPath:    filepath.ToSlash(filepath.Join(homePath, "contracts", "effective", "latest.json")),
-		ContextPackPath:       filepath.ToSlash(filepath.Join(homePath, "context", "packs", pack.ID+".json")),
+		EffectiveContractPath: filepath.ToSlash(filepath.Join("contracts", "effective", dateDir, pack.IDs.ContractID+".json")),
+		LatestContractPath:    filepath.ToSlash(filepath.Join("contracts", "effective", "latest.json")),
+		ContextPackPath:       filepath.ToSlash(filepath.Join("context", "packs", pack.ID+".json")),
 	}
 }
 
 // ---------- Helpers: encoding, validation, IO ----------
 
-// toolErrorResult wraps an error message as an MCP tool result with
-// isError=true so the host sees the failure without leaking it as a JSON-RPC
-// error envelope (which would shift blame to the transport, not the tool).
-func toolErrorResult(message string, extra map[string]any) mcpToolCallResult {
-	payload := map[string]any{"error": message}
-	for k, v := range extra {
-		payload[k] = v
+// toolErrorResult returns one bounded stable code. Internal error text, input
+// bytes, and filesystem paths never cross the MCP boundary.
+func toolErrorResult(code string) mcpToolCallResult {
+	if !mcpErrorCodePattern.MatchString(code) {
+		code = "internal_error"
 	}
+	payload := struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}{}
+	payload.Error.Code = code
 	text, _ := json.Marshal(payload)
 	return mcpToolCallResult{
 		IsError: true,
 		Content: []mcpToolContent{{Type: "text", Text: string(text)}},
-		Struct:  payload,
 	}
 }
 
-// boundedRecallRefs caps any unbounded recall refs slice at the transport's
-// max, preserving order so callers observe exactly the same slices the
-// materializer emitted up to the cap.
-func boundedRecallRefs(refs []string, max int) []string {
-	if len(refs) <= max {
-		out := make([]string, len(refs))
-		copy(out, refs)
-		return out
+func explicitJSONNull(raw json.RawMessage, field string) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
 	}
-	out := make([]string, max)
-	copy(out, refs[:max])
-	return out
+	value, ok := fields[field]
+	return ok && bytes.Equal(bytes.TrimSpace(value), []byte("null"))
+}
+
+func optionalString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func validOptionalString(value *string, maxBytes int, pattern *regexp.Regexp) bool {
+	if value == nil {
+		return true
+	}
+	return validBoundedNonBlank(*value, maxBytes, pattern)
+}
+
+func validBoundedNonBlank(value string, maxBytes int, pattern *regexp.Regexp) bool {
+	if strings.TrimSpace(value) == "" || value != strings.TrimSpace(value) {
+		return false
+	}
+	if len(value) > maxBytes || utf8.RuneCountInString(value) > maxBytes {
+		return false
+	}
+	return pattern == nil || pattern.MatchString(value)
+}
+
+// boundedRecallRefs caps count and bytes, and filters absolute/file refs so a
+// private local path cannot become a transport response.
+func boundedRecallRefs(refs []string, maxCount, maxBytes int) ([]string, bool) {
+	out := make([]string, 0, minInt(len(refs), maxCount))
+	limited := false
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" || len(ref) > maxBytes || looksAbsoluteRef(ref) {
+			limited = true
+			continue
+		}
+		if len(out) == maxCount {
+			limited = true
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out, limited
+}
+
+func looksAbsoluteRef(ref string) bool {
+	lower := strings.ToLower(ref)
+	if filepath.IsAbs(ref) || strings.HasPrefix(lower, "file:") || strings.HasPrefix(ref, `\\`) {
+		return true
+	}
+	return len(ref) >= 3 && ((ref[0] >= 'A' && ref[0] <= 'Z') || (ref[0] >= 'a' && ref[0] <= 'z')) &&
+		ref[1] == ':' && (ref[2] == '/' || ref[2] == '\\')
+}
+
+func boundedUTF8(value string, maxBytes int) (string, bool) {
+	if len(value) <= maxBytes {
+		return value, false
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.ValidString(value[:cut]) {
+		cut--
+	}
+	return value[:cut], true
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // strictDecodeArgs decodes json arguments into the target Go struct and
@@ -573,15 +760,26 @@ func boundedRecallRefs(refs []string, max int) []string {
 // structural only, the typed contract is the JSON Schema side of the tool
 // descriptor.
 func strictDecodeArgs(raw json.RawMessage, target interface{}) error {
-	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(target); err != nil {
 		return err
 	}
-	if dec.More() {
-		return fmt.Errorf("arguments must decode to a single JSON object")
+	var trailing interface{}
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("multiple JSON values")
+		}
+		return err
 	}
 	return nil
+}
+
+func boundedNonBlankSchema(maxBytes int) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "string", "minLength": 1, "maxLength": maxBytes,
+		"pattern": `^\S(?:[\s\S]*\S)?$`, "x-maxBytes": maxBytes,
+	}
 }
 
 // mcpFindingRecordDescriptor is the typed schema for compound_finding_record.
@@ -589,23 +787,37 @@ func strictDecodeArgs(raw json.RawMessage, target interface{}) error {
 func mcpFindingRecordDescriptor() mcpToolDescriptor {
 	return mcpToolDescriptor{
 		Name: mcpFindingToolName,
-		Description: "Records one operational finding under COMPOUND_HOME/observed/findings via the same governed library `compound finding record` uses. " +
-			"Idempotent on (topic, body): a replay returns the same id and never overwrites the first record's provenance. " +
-			"Returns a body-free typed acknowledgement — the body remains retrievable only through the dedicated `compound finding show` surface.",
+		Description: "Records one private operational evidence finding under COMPOUND_HOME/observed/findings. " +
+			"It is idempotent on (topic, body), returns a body-free acknowledgement, and never writes memory authority.",
 		InputSchema: map[string]interface{}{
-			"type": "object",
-			"additionalProperties": false,
-			"required": []string{"topic", "body"},
+			"type": "object", "additionalProperties": false, "required": []string{"topic", "body"},
 			"properties": map[string]interface{}{
-				"topic":        map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 1024},
-				"body":         map[string]interface{}{"type": "string", "minLength": 1, "maxLength": mcpMaxBodyBytes},
-				"work_id":      map[string]interface{}{"type": "string", "maxLength": 1024},
-				"produced_by":  map[string]interface{}{"type": "string", "maxLength": 256},
-				"supersedes":   map[string]interface{}{"type": "string", "pattern": "^find_[a-f0-9]{12}$"},
+				"topic": map[string]interface{}{
+					"type": "string", "minLength": 1, "maxLength": mcpMaxFindingTopicBytes,
+					"pattern": `^\S(?:[\s\S]*\S)?$`, "x-maxBytes": mcpMaxFindingTopicBytes,
+				},
+				"body": map[string]interface{}{
+					"type": "string", "minLength": 1, "maxLength": mcpMaxFindingBodyBytes,
+					"pattern": `\S`, "x-maxBytes": mcpMaxFindingBodyBytes,
+				},
+				"work_id": map[string]interface{}{
+					"type": "string", "minLength": 6, "maxLength": mcpMaxFindingWorkIDBytes,
+					"pattern": `^work_[A-Za-z0-9][A-Za-z0-9._:-]*$`, "x-maxBytes": mcpMaxFindingWorkIDBytes,
+				},
+				"produced_by": map[string]interface{}{
+					"type": "string", "minLength": 1, "maxLength": mcpMaxFindingProducerBytes,
+					"pattern": `^[A-Za-z0-9][A-Za-z0-9._:/-]*$`, "x-maxBytes": mcpMaxFindingProducerBytes,
+				},
+				"supersedes": map[string]interface{}{
+					"type": "string", "minLength": mcpMaxFindingSupersedesBytes, "maxLength": mcpMaxFindingSupersedesBytes,
+					"pattern": `^find_[a-f0-9]{12}$`, "x-maxBytes": mcpMaxFindingSupersedesBytes,
+				},
 				"evidence_refs": map[string]interface{}{
-					"type":  "array",
-					"maxItems": mcpMaxEvidenceRefs,
-					"items": map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 1024},
+					"type": "array", "maxItems": mcpMaxEvidenceRefs,
+					"items": map[string]interface{}{
+						"type": "string", "minLength": 3, "maxLength": mcpMaxEvidenceRefBytes,
+						"pattern": `^[A-Za-z][A-Za-z0-9+.-]*:\S+$`, "x-maxBytes": mcpMaxEvidenceRefBytes,
+					},
 				},
 			},
 		},
@@ -624,17 +836,20 @@ func mcpOrientRecallDescriptor() mcpToolDescriptor {
 			"plus one ContextPack. Returns bounded task recall (active decisions + active memory) plus the deterministic persisted paths. " +
 			"body_budget > 0 enables a body_pack section; 0 keeps the pack body-free.",
 		InputSchema: map[string]interface{}{
-			"type": "object",
+			"type":                 "object",
 			"additionalProperties": false,
-			"required": []string{"task"},
+			"required":             []string{"task"},
 			"properties": map[string]interface{}{
-				"task":        map[string]interface{}{"type": "string", "minLength": 1, "maxLength": mcpMaxOrientTaskBytes},
-				"harness":     map[string]interface{}{"type": "string", "maxLength": mcpMaxOrientHarnessBytes},
-				"cwd":         map[string]interface{}{"type": "string", "maxLength": mcpMaxOrientCwdBytes},
-				"repo_kind":   map[string]interface{}{"type": "string", "maxLength": mcpMaxOrientRepoKindBytes},
-				"mode":        map[string]interface{}{"type": "string", "maxLength": mcpMaxOrientModeBytes},
-				"topic":       map[string]interface{}{"type": "string", "maxLength": mcpMaxOrientTopicBytes},
-				"body_budget": map[string]interface{}{"type": "integer", "minimum": 0, "maximum": mcpMaxBodyBytes},
+				"task":      boundedNonBlankSchema(mcpMaxOrientTaskBytes),
+				"harness":   boundedNonBlankSchema(mcpMaxOrientHarnessBytes),
+				"cwd":       boundedNonBlankSchema(mcpMaxOrientCwdBytes),
+				"repo_kind": boundedNonBlankSchema(mcpMaxOrientRepoKindBytes),
+				"mode": map[string]interface{}{
+					"type": "string", "enum": []string{"observe", "plan", "execute", "review"},
+					"maxLength": mcpMaxOrientModeBytes, "x-maxBytes": mcpMaxOrientModeBytes,
+				},
+				"topic":       boundedNonBlankSchema(mcpMaxOrientTopicBytes),
+				"body_budget": map[string]interface{}{"type": "integer", "minimum": 0, "maximum": mcpMaxBodyPackTokens},
 			},
 		},
 	}
@@ -651,57 +866,65 @@ func respondToID(id json.RawMessage, result interface{}) []byte {
 	case jsonRPCError:
 		return encodeResponse(id, &v)
 	case error:
-		return encodeResponse(id, &jsonRPCError{Code: rpcInternalError, Message: v.Error()})
+		return encodeResponse(id, &jsonRPCError{Code: rpcInternalError, Message: "internal error"})
 	default:
 		return encodeResponse(id, nil, result)
 	}
 }
 
-func encodeResponse(id json.RawMessage, err *jsonRPCError, result ...interface{}) []byte {
-	payload := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      idForResponse(id),
+func encodeResponse(id json.RawMessage, rpcErr *jsonRPCError, result ...interface{}) []byte {
+	responseID := id
+	if responseID == nil {
+		responseID = json.RawMessage("null")
+	}
+	var memberName string
+	var memberValue []byte
+	var err error
+	if rpcErr != nil {
+		memberName = "error"
+		memberValue, err = json.Marshal(rpcErr)
+	} else {
+		memberName = "result"
+		var value interface{}
+		if len(result) > 0 {
+			value = result[0]
+		}
+		memberValue, err = json.Marshal(value)
 	}
 	if err != nil {
-		payload["error"] = err
-	} else if len(result) > 0 {
-		payload["result"] = result[0]
-	}
-	encoded, mErr := json.Marshal(payload)
-	if mErr != nil {
-		// Marshal failure is the worst-case transport-fatal state. Return a
-		// parse-error response so the host at least sees a syntactically
-		// valid envelope on the same ID.
-		return mustEncode(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      nil,
-			"error":   &jsonRPCError{Code: rpcInternalError, Message: "encode failure"},
-		})
-	}
-	return encoded
-}
-
-func mustEncode(v interface{}) []byte {
-	b, err := json.Marshal(v)
-	if err != nil {
-		// Should be impossible for the types passed in here.
 		return []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"encode failure"}}`)
 	}
-	return b
+	out := make([]byte, 0, len(responseID)+len(memberValue)+48)
+	out = append(out, `{"jsonrpc":"2.0","id":`...)
+	out = append(out, responseID...)
+	out = append(out, `,"`...)
+	out = append(out, memberName...)
+	out = append(out, `":`...)
+	out = append(out, memberValue...)
+	out = append(out, '}')
+	return out
 }
 
-// idForResponse returns the JSON value to put in the response id slot. A
-// missing id in the request becomes an explicit JSON null (notification
-// responses are forbidden by JSON-RPC 2.0).
-func idForResponse(id json.RawMessage) interface{} {
-	if len(id) == 0 {
-		return nil
+func validJSONRPCID(id json.RawMessage) bool {
+	if id == nil {
+		return false
 	}
-	var v interface{}
-	if err := json.Unmarshal(id, &v); err != nil {
-		return nil
+	trimmed := bytes.TrimSpace(id)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return true
 	}
-	return v
+	var text string
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		return json.Unmarshal(trimmed, &text) == nil
+	}
+	var number json.Number
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	if err := dec.Decode(&number); err != nil {
+		return false
+	}
+	var trailing interface{}
+	return errors.Is(dec.Decode(&trailing), io.EOF)
 }
 
 // writeJSONLine writes one response to the buffered writer and flushes.

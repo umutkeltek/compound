@@ -395,6 +395,16 @@ compound receipt create  fixtures/receipt/state-delta.json
 compound transition create fixtures/transition/basic.json
 compound transition show <id>
 ```
+
+`compound mcp-transport` exposes a newline-delimited JSON-RPC 2.0 MCP server on stdio. A client must negotiate one
+of the server's exact supported protocol revisions with typed `initialize` parameters, then send the
+`notifications/initialized` notification before `tools/list` or `tools/call`. Its closed tool set is
+`compound_finding_record` and `compound_orient_recall`: the former invokes the existing private operational-finding
+evidence writer, and the latter invokes the existing sealed orient materializer. Tool results use the portable
+text-content `CallToolResult` shape shared by the advertised revisions. Inputs, summaries, and refs are bounded;
+artifact refs are relative to `COMPOUND_HOME`; errors expose stable codes rather than internal text or paths. The
+transport creates no Claim, candidate, promotion, adjudication path, or second memory authority.
+
 Proof: one stable `work_id` links context→action→policy→receipt→transition; **all** generated files under
 `.compound`; repo source unchanged except intentional source/test files. No legacy index, no model gateway, no memory
 ingestion yet — they all need this spine first.
