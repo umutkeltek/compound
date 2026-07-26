@@ -1297,15 +1297,35 @@ func cmdCapability(args []string) {
 			fmt.Printf("- %s  offered=%d\n", e.Ref, e.Count)
 		}
 	case "list":
+		// "What exists" was already answered here. "What can I actually use,
+		// from THIS harness, right now" was not -- and that second question is
+		// the one an executor and an operator both ask. The state flags below
+		// carry it without a second command to learn.
 		nodes, err := store.List()
 		die(err)
-		for _, n := range nodes {
-			tag := ""
-			if n.Retired {
-				tag = " [retired]"
-			}
-			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
+		inv, err := store.CapabilityInventory()
+		die(err)
+		harness := valueFlag(rest, "--harness")
+		kindFilter := valueFlag(rest, "--kind")
+		onlyUnreachable := hasFlag(rest, "--unreachable")
+		onlyCorrected := hasFlag(rest, "--corrected")
+		showRetired := hasFlag(rest, "--include-retired")
+		if hasFlag(rest, "--json") {
+			printJSON(inv.Filter(harness, kindFilter, onlyUnreachable, onlyCorrected, showRetired))
+			return
 		}
+		shown := 0
+		for _, n := range nodes {
+			st := inv.State(n.ID)
+			if !st.Visible(harness, kindFilter, onlyUnreachable, onlyCorrected, showRetired) {
+				continue
+			}
+			shown++
+			fmt.Printf("%-30s %-16s %-9s %s%s\n", n.ID, n.Kind, st.Flags(), n.Name, st.Note())
+		}
+		fmt.Printf("\n%d of %d shown. flags: R=reachable  K=unlockable  S=harness-scoped  !=has routing corrections\n",
+			shown, len(nodes))
+		fmt.Println("filters: --harness <id>  --kind <k>  --unreachable  --corrected  --include-retired  --json")
 	case "graph":
 		if len(rest) > 1 || (len(rest) == 1 && rest[0] != "--json") {
 			fmt.Fprintln(os.Stderr, "usage: compound capability graph [--json]")
