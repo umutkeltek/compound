@@ -1503,6 +1503,21 @@ func postToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, err
 	} else if effect != "" {
 		ev.SideEffects = append(ev.SideEffects, effect)
 	}
+	// Rebuild the capability-usage -> memory-temperature chain when it has gone stale.
+	// This hook is the affordable home for it: it builds no context and measures ~0.06s,
+	// where the prompt path already runs 0.88-1.46s against a 1500ms budget. Staleness-
+	// gated and attempt-throttled, so the ~0.8s cost lands on roughly one tool call per
+	// window rather than on every one. See refreshDerivedCaches.
+	//
+	// The rebuilt refs are deliberately NOT recorded on the event. A hook event's
+	// content must be a pure function of its INPUT — the event store keys on an input
+	// hash and rejects the same id arriving with different content — and whether a
+	// refresh fired depends on ambient cache age, not on this tool call. Recording it
+	// made an identical re-run produce different content and broke PostToolUse
+	// idempotence outright (caught by TestLargeToolOutputExternalizedAsObservedNotAmbient).
+	// The rebuild's own evidence is the timestamp inside each projection, which
+	// `compound doctor` reads.
+	_ = refreshDerivedCaches(deps.HomePath, now)
 	// C3: a tool body at or beyond the whole context budget must never flood the window. Externalize
 	// it to the rebuildable, content-addressed blob store and mint ONE observed-class candidate; only
 	// the compact pointer flows back into the summary — never the body. Below-threshold output and
