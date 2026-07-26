@@ -448,55 +448,75 @@ func (s *Store) Show(workID string) (envelope.WorkEnvelope, []Event, error) {
 }
 
 func (s *Store) List() ([]envelope.WorkEnvelope, error) {
-	return s.list(false)
+	out, _, err := s.list(false)
+	return out, err
 }
 
 func (s *Store) ListWithArchived() ([]envelope.WorkEnvelope, error) {
-	return s.list(true)
+	out, _, err := s.list(true)
+	return out, err
 }
 
-func (s *Store) list(includeArchived bool) ([]envelope.WorkEnvelope, error) {
+// list reads every work/work/<id>.json (plus archived entries when
+// includeArchived is set) and returns the parsed envelopes alongside one
+// integrity warning per item that failed to parse. A parse failure never
+// aborts the read (callers like Workbench build a degrade-and-report
+// projection over a directory of independently-written files, so one
+// corrupt item must not blank the rest) but it must not vanish either: the
+// old shape (`if s.readJSON(...) == nil { append }`) silently dropped
+// corrupt items from every downstream count with no trace. The warning
+// slice is the "we could not read N items" channel List/ListWithArchived
+// callers don't need; Workbench threads it into report.Integrity, the
+// existing degradation channel, rather than inventing a parallel one.
+func (s *Store) list(includeArchived bool) ([]envelope.WorkEnvelope, []string, error) {
 	dir := filepath.Join(s.home, "work/work")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var out []envelope.WorkEnvelope
+	var warnings []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		var w envelope.WorkEnvelope
-		if s.readJSON(filepath.Join(dir, e.Name()), &w) == nil {
-			out = append(out, w)
+		if err := s.readJSON(filepath.Join(dir, e.Name()), &w); err != nil {
+			warnings = append(warnings, fmt.Sprintf("work/work/%s unreadable: %s", e.Name(), err.Error()))
+			continue
 		}
+		out = append(out, w)
 	}
 	if includeArchived {
-		archived, err := s.archivedWorks()
+		archived, archivedWarnings, err := s.archivedWorks()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, archived...)
+		warnings = append(warnings, archivedWarnings...)
 	}
-	return out, nil
+	return out, warnings, nil
 }
 
-func (s *Store) archivedWorks() ([]envelope.WorkEnvelope, error) {
+func (s *Store) archivedWorks() ([]envelope.WorkEnvelope, []string, error) {
 	entries, err := home.LoadOperationalArchiveIndex(s.home)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var out []envelope.WorkEnvelope
+	var warnings []string
 	for _, entry := range entries {
 		if entry.Kind != "work" || !strings.HasPrefix(entry.OriginalPath, "work/work/") || !strings.HasSuffix(entry.OriginalPath, ".json") {
 			continue
 		}
 		var w envelope.WorkEnvelope
-		if err := s.readJSON(filepath.Join(s.home, filepath.FromSlash(entry.ArchivePath)), &w); err == nil {
-			out = append(out, w)
+		if err := s.readJSON(filepath.Join(s.home, filepath.FromSlash(entry.ArchivePath)), &w); err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s unreadable: %s", entry.OriginalPath, err.Error()))
+			continue
 		}
+		out = append(out, w)
 	}
-	return out, nil
+	return out, warnings, nil
 }
 
 func (s *Store) archivedWorkPath(workID string) (string, bool) {

@@ -87,6 +87,34 @@ func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 	}
 }
 
+// TestWorkbenchReportsCorruptWorkFileInIntegrity is the falsifier for the
+// silent-swallow bug in (*Store).list: a work/work/<id>.json that fails to
+// parse must be counted and surfaced through report.Integrity, not just
+// vanish from Counts.Total with no trace anywhere in the report.
+func TestWorkbenchReportsCorruptWorkFileInIntegrity(t *testing.T) {
+	s := newStore(t)
+	healthy, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "healthy work item stays visible"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corruptPath := filepath.Join(s.home, "work", "work", "wk_corrupt.json")
+	if err := os.WriteFile(corruptPath, []byte("{not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.Total != 1 {
+		t.Fatalf("want only the one parseable work item counted, got Counts.Total=%d", report.Counts.Total)
+	}
+	assertWorkbenchItem(t, report.Open, healthy.ID, "needs_claim", "claim before touching")
+	if !packetWarningContains(report.Integrity, "wk_corrupt.json") {
+		t.Fatalf("corrupt work item was dropped without being reported in Integrity: %+v", report.Integrity)
+	}
+}
+
 func TestWorkbenchOfferedPacketsSkipsMalformedHeaders(t *testing.T) {
 	s := newStore(t)
 	packetDir := filepath.Join(t.TempDir(), "packets")

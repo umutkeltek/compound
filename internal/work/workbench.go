@@ -309,16 +309,14 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 			report.OfferedPackets = &offered
 		}
 	}
-	var works []envelope.WorkEnvelope
-	var err error
-	if opts.IncludeArchived {
-		works, err = s.ListWithArchived()
-	} else {
-		works, err = s.List()
-	}
+	// list() (not List/ListWithArchived) so a work item that fails to parse is
+	// reported through report.Integrity instead of silently vanishing from
+	// every count built below.
+	works, listWarnings, err := s.list(opts.IncludeArchived)
 	if err != nil {
 		return report, err
 	}
+	report.Integrity = append(report.Integrity, listWarnings...)
 	// Loaded once and threaded through the rest of this build: every Get/
 	// archivedWorkPath lookup on the workbench path uses this snapshot instead
 	// of re-reading the archive index per work item. A malformed/missing index
