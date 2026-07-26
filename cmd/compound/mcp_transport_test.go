@@ -955,7 +955,11 @@ func TestMCPTransportPrivacyFilterEmbeddedLocalPaths(t *testing.T) {
 		{name: "windows", input: `path=C:\Users\synthetic\file.txt`, want: "path=[private-path]"},
 		{name: "quoted windows space", input: `path="C:\Users\synthetic name\file.txt"`, want: `path="[private-path]"`},
 		{name: "unc", input: `path=\\synthetic\share\file.txt`, want: "path=[private-path]"},
+		{name: "named home shorthand", input: "path=~synthetic/private/file.txt", want: "path=[private-path]"},
+		{name: "markdown table boundary", input: "|/private/My File.txt|", want: "|[private-path]|"},
+		{name: "markdown blockquote boundary", input: ">/private/file.txt", want: ">[private-path]"},
 		{name: "https unchanged", input: "url=https://example.invalid/private/file.txt", want: "url=https://example.invalid/private/file.txt"},
+		{name: "protocol relative url unchanged", input: "url=//cdn.example.invalid/private/file.txt", want: "url=//cdn.example.invalid/private/file.txt"},
 		{name: "file prose unchanged", input: "file: attached", want: "file: attached"},
 		{name: "mime unchanged", input: "format=text/plain", want: "format=text/plain"},
 	}

@@ -795,9 +795,12 @@ func localAbsolutePathEnd(value string, start int) (int, bool) {
 		strings.EqualFold(rest[:len("file:")], "file:") &&
 		!localPathTerminator(rest[len("file:")]):
 		pathStart = true
-	case len(rest) >= 2 && rest[0] == '~' && (rest[1] == '/' || rest[1] == '\\'):
+	case localHomeShorthand(rest):
 		pathStart = true
 	case rest[0] == '/':
+		if protocolRelativeNetworkURL(rest) {
+			return 0, false
+		}
 		// The first slash in https:// is preceded by ':' and followed by a
 		// second slash. A source:/tmp reference remains local and is blocked.
 		if start > 0 && value[start-1] == ':' && len(rest) >= 2 && rest[1] == '/' {
@@ -843,6 +846,8 @@ func localEnclosedPathEnd(value string, start int) (int, bool) {
 		closer = '>'
 	case '(':
 		closer = ')'
+	case '|':
+		closer = '|'
 	default:
 		return 0, false
 	}
@@ -884,20 +889,51 @@ func localPathBoundary(value string, start int) bool {
 	if previous == ' ' || previous == '\t' || previous == '\r' || previous == '\n' {
 		return true
 	}
-	return strings.ContainsRune("=([{<,;:'\"`", rune(previous))
+	return strings.ContainsRune("=([{<,;:'\"`|>", rune(previous))
 }
 
 func localPathTerminator(char byte) bool {
 	switch char {
-	case ' ', '\t', '\r', '\n', ')', ']', '}', '>', ',', ';', '\'', '"', '`':
+	case ' ', '\t', '\r', '\n', ')', ']', '}', '>', '|', ',', ';', '\'', '"', '`':
 		return true
 	default:
 		return false
 	}
 }
 
+func localHomeShorthand(value string) bool {
+	if len(value) < 2 || value[0] != '~' {
+		return false
+	}
+	if value[1] == '/' || value[1] == '\\' {
+		return true
+	}
+	separator := strings.IndexAny(value[1:], `/\`)
+	if separator <= 0 {
+		return false
+	}
+	for index := 1; index <= separator; index++ {
+		char := value[index]
+		if !isASCIIAlphaNum(char) && !strings.ContainsRune("._-+", rune(char)) {
+			return false
+		}
+	}
+	return true
+}
+
+func protocolRelativeNetworkURL(value string) bool {
+	if len(value) < 3 || value[0] != '/' || value[1] != '/' {
+		return false
+	}
+	return isASCIIAlphaNum(value[2]) || value[2] == '['
+}
+
 func isASCIIAlpha(char byte) bool {
 	return char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z'
+}
+
+func isASCIIAlphaNum(char byte) bool {
+	return isASCIIAlpha(char) || char >= '0' && char <= '9'
 }
 
 func boundedUTF8(value string, maxBytes int) (string, bool) {
