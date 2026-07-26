@@ -424,7 +424,9 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "profiles-check", Command: []string{exe, "profiles", "check", "--installed-only"}, ProofRef: "profiles-check-installed-only"},
 		{Name: "workbench-projection", Command: []string{exe, "workbench", "--json"}, ProofRef: "workbench-projection-refresh"},
 		{Name: "codex-pretooluse-native-gate", Command: []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"}, ProofRef: "codex-pretooluse-native-gate-proof"},
-		{Name: "memory-doctor", Command: []string{exe, "memory", "doctor"}, ProofRef: "memory-doctor", CIPortable: true},
+		// --json because the gate PARSES the report and requires named hops to be "ok";
+		// see proof_check_memory_gate.go for why a bare exit code is a vacuous pass here.
+		{Name: "memory-doctor", Command: []string{exe, "memory", "doctor", "--json"}, ProofRef: "memory-doctor", CIPortable: true},
 		{Name: "redact-public", Command: redactCommand, ProofRef: "redact-public-clean"},
 	}, nil
 }
@@ -494,6 +496,8 @@ func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCh
 		output, err = runProofCheckCodexPreToolUseNativeGate(repo, step)
 	} else if step.Name == "bun-tools-test" {
 		output, err = runProofCheckBunTools(repo)
+	} else if step.Name == "memory-doctor" {
+		output, err = runProofCheckMemoryDoctorGate(repo, step)
 	} else {
 		cmd := exec.Command(step.Command[0], step.Command[1:]...)
 		cmd.Dir = repo
