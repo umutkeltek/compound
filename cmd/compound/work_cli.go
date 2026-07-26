@@ -464,7 +464,16 @@ func cmdWork(args []string) {
 
 	switch sub {
 	case "delegate", "steer", "attach":
-		code := runWorkDelegateCLI(sub, rest, store, work.NewTmuxRunner(), productionDelegateAttach, time.Now(), os.Stdout, os.Stderr)
+		if sub == "delegate" {
+			// Collect the previous generation's dead attempts before
+			// starting a new one, so ghosts cannot accumulate silently.
+			sweepStaleRunAttemptsBestEffort(homePath, time.Now(), os.Stderr)
+		}
+		// Capture pane output. Without it a delegate's entire record dies
+		// with its tmux pane, which is how a 55-session burst on
+		// 2026-07-26 left zero artifacts and zero diagnosable cause.
+		runner := work.NewTmuxRunnerWithLogDir(filepath.Join(homePath, "observed", "delegate-logs"))
+		code := runWorkDelegateCLI(sub, rest, store, runner, productionDelegateAttach, time.Now(), os.Stdout, os.Stderr)
 		if code != 0 {
 			os.Exit(code)
 		}

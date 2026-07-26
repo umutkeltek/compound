@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -25,9 +27,44 @@ type TmuxRunner struct {
 	// (real launch-order assertion) or to inject command-level failures
 	// against a real tmux server (so production code is exercised).
 	tmuxCmd func(argv []string) *exec.Cmd
+	// logDir, when non-empty, makes Create mirror the pane's raw output
+	// into <logDir>/<session>.log via tmux pipe-pane. Empty means no
+	// capture (the historical behavior).
+	logDir string
 }
 
 func NewTmuxRunner() *TmuxRunner { return &TmuxRunner{} }
+
+// NewTmuxRunnerWithLogDir returns a runner that mirrors every pane's raw
+// output into dir/<session>.log.
+//
+// Why this exists: without it a delegate's output lives ONLY in tmux
+// scrollback, so a session that dies takes the entire record of what it
+// did (and why it stopped) with it. That is not hypothetical -- on
+// 2026-07-26 a 55-session burst vanished leaving zero artifacts and zero
+// diagnosable cause, because there was nothing to read after the panes
+// were gone.
+//
+// What it is NOT: a clean deliverable. The captured stream is the raw
+// pane byte stream, so a TUI harness writes ANSI escapes and redraws
+// into it. Treat the log as forensics -- "did it start, what did it
+// print, how did it die" -- and keep real deliverables in files the
+// task writes on purpose. The log is evidence-class and belongs under
+// COMPOUND_HOME/observed/, never in the eventstore: event payloads
+// never carry command stdout (privacy law of the packet).
+func NewTmuxRunnerWithLogDir(dir string) *TmuxRunner {
+	return &TmuxRunner{logDir: strings.TrimSpace(dir)}
+}
+
+// PaneLogPath reports where Create mirrors the named session's output,
+// or "" when this runner captures nothing.
+func (r *TmuxRunner) PaneLogPath(session string) string {
+	session = strings.TrimSpace(session)
+	if r.logDir == "" || session == "" {
+		return ""
+	}
+	return filepath.Join(r.logDir, session+".log")
+}
 
 // tmuxExec builds the *exec.Cmd for the next tmux invocation, applying
 // any test-only socketPrefix and tmuxCmd shims. Production callers see the
@@ -225,6 +262,22 @@ func (r *TmuxRunner) Create(name, dir, command string, args []string) error {
 		// opaque error is the entire contract.
 		return fmt.Errorf("tmux set-option remain-on-exit failed: %s", opaqueOneLiner(err))
 	}
+	// 2b. Install pane capture BEFORE the real command runs, so the very
+	//     first byte is recorded. Verified empirically: pipe-pane set
+	//     here survives the respawn-pane -k below (pane_pipe stays 1)
+	//     and captures post-respawn output, so ordering it here loses
+	//     nothing and gains the startup window -- which is exactly where
+	//     the expensive failures live (a wedged cwd killing the binary
+	//     before the harness runs, a trust prompt that never clears).
+	//
+	//     Fail closed, matching the remain-on-exit branch above: a spawn
+	//     that cannot be observed is the failure mode this whole change
+	//     exists to remove, so silently continuing without capture would
+	//     reintroduce it under a green result.
+	if err := r.startPaneCapture(name); err != nil {
+		// NO KILL: same contract as the set-option branch above.
+		return err
+	}
 	// 3. respawn-pane -k with the user's exact argv behind the sh
 	//    cd-guard (see the Create doc comment: -c alone is ignored by a
 	//    wedged server). $0 is the workspace, "$@" is the verbatim
@@ -238,6 +291,33 @@ func (r *TmuxRunner) Create(name, dir, command string, args []string) error {
 	if err := r.tmuxRunOpaque(respawnArgv...); err != nil {
 		// NO KILL: same contract as the set-option branch above.
 		return fmt.Errorf("tmux respawn-pane failed: %s", opaqueExitOnly(err))
+	}
+	return nil
+}
+
+// startPaneCapture points tmux pipe-pane at this session's log file. It
+// is a no-op for a runner built without a log directory, so the
+// historical no-capture behavior stays reachable and tests that do not
+// care are unaffected.
+//
+// The shell fragment handed to pipe-pane is built from the log path
+// only. Session names are validated by tmux itself and the path is
+// derived from an operator-configured directory plus that name, so no
+// caller argv ever reaches this string.
+func (r *TmuxRunner) startPaneCapture(session string) error {
+	logPath := r.PaneLogPath(session)
+	if logPath == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return fmt.Errorf("tmux pipe-pane log dir failed: %w", err)
+	}
+	// -o toggles the pipe on only when it is not already running; the
+	// single-quoted path guards spaces. Appending (>>) keeps a respawn
+	// of the same session name from truncating earlier evidence.
+	shellCmd := "cat >> '" + strings.ReplaceAll(logPath, "'", `'\''`) + "'"
+	if err := r.tmuxRunOpaque("pipe-pane", "-o", "-t", session, shellCmd); err != nil {
+		return fmt.Errorf("tmux pipe-pane failed: %s", opaqueOneLiner(err))
 	}
 	return nil
 }

@@ -132,6 +132,19 @@ func buildHabitatEntries() []HabitatEntry {
 		child("observed.tool-output", "observed/tool-output", HabitatClassRebuildable, true, false, true),
 		child("observed.findings", "observed/findings", HabitatClassEvidence, true, true, false),
 		child("observed.activity", "observed/activity", HabitatClassEvidence, true, true, false),
+		// Raw delegate pane capture. Transient class, not evidence: it is a
+		// byte-for-byte TUI stream (ANSI escapes and redraws included) kept
+		// so a session that dies still leaves a diagnosable trace. It is
+		// never authority, must not enter backups, and is safe to compact.
+		//
+		// scaffold=false on purpose. The capture writer MkdirAll's this on
+		// the first delegate spawn, so declaring it scaffolded would make
+		// `home doctor` report MISSING on every already-initialized home
+		// that simply has not delegated yet -- turning a green verdict red
+		// for a directory nothing is waiting on. Declaring it here is still
+		// required: an undeclared directory trips the unknown-entry check
+		// the moment the first log is written.
+		child("observed.delegate-logs", "observed/delegate-logs", HabitatClassTransient, false, false, true),
 		active("registries", "registries", HabitatClassAuthority, true, true, false),
 		active("artifacts", "artifacts", HabitatClassEvidence, true, true, false),
 		child("artifacts.sha256", "artifacts/sha256", HabitatClassEvidence, true, true, false),
