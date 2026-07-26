@@ -29,6 +29,12 @@ type ConnectionSurface struct {
 	SettingsSchemaRef string   `json:"settings_schema_ref,omitempty"`
 	AssertingOwner    string   `json:"asserting_owner,omitempty"`
 	SourceRevision    string   `json:"source_revision,omitempty"`
+	// CredentialHandle answers "and what unlocks it" -- an address into whichever
+	// store already custodies the credential, never the credential itself.
+	// Embedded so the fields flatten into the same record: a surface that tells
+	// you where to connect but not what authenticates you is half an answer, and
+	// the half that gets worked around by reading a wrapper script.
+	CredentialHandle
 }
 
 func (s *Store) connectionSurfacesLog() string {
@@ -43,6 +49,12 @@ func (s *Store) connectionSurfacesLog() string {
 func (s *Store) AddConnectionSurface(cs ConnectionSurface) (bool, error) {
 	if strings.TrimSpace(cs.NodeID) == "" {
 		return false, fmt.Errorf("connection surface needs a node id")
+	}
+	// Validate at the write door, not the read door. This log is append-only and
+	// is joined into orient offers, so a credential value accepted here reaches
+	// agent context and cannot be unwritten -- there is no later place to catch it.
+	if err := ValidateCredentialHandle(cs.CredentialHandle); err != nil {
+		return false, fmt.Errorf("connection surface %s: %w", cs.NodeID, err)
 	}
 	existing, err := s.loadConnectionSurfaces()
 	if err != nil {
@@ -130,6 +142,13 @@ func connectionSurfaceConstraints(cs ConnectionSurface) []SurfacingConstraint {
 	}
 	add("endpoint", cs.Endpoint, "connection surface endpoint")
 	add("auth_mode", cs.AuthMode, "connection surface auth mode")
+	// Credential facts are addresses and mechanism, never values -- see
+	// ValidateCredentialHandle, which refuses value-shaped input at the write
+	// door so nothing value-shaped can reach this render.
+	add("credential_ref", cs.CredentialHandle.Ref, "credential address (pointer, never a value)")
+	add("credential_custodian", cs.CredentialHandle.Custodian, "system that holds and rotates this credential")
+	add("credential_env_name", cs.CredentialHandle.EnvName, "environment variable the broker sets in the child")
+	add("broker_cmd", cs.CredentialHandle.Broker, "command that injects the credential into a child process")
 	add("settings_schema", cs.SettingsSchemaRef, "connection surface settings schema")
 	add("asserting_owner", cs.AssertingOwner, "connection surface asserting owner")
 	add("source_revision", cs.SourceRevision, "connection surface source revision")
