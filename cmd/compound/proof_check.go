@@ -473,6 +473,23 @@ func consoleBunSmokeCommand(script string) []string {
 	return []string{"bun", script}
 }
 
+// proofCheckHomeOwningGates are the gates that CREATE the COMPOUND_HOME they read, instead of
+// inheriting the operator's. Declared as a set rather than buried in the dispatch chain
+// because membership is the load-bearing fact: a gate that silently leaves this map goes back
+// to reading a live home, which makes it slower every day, non-deterministic, and — since an
+// empty projection is not a failing one — capable of passing while asserting nothing.
+//
+// Each runner owns its own fixture and its own assertions; see the per-gate files. The
+// dispatch above stays an if-chain for the gates whose signatures differ (redact needs a base
+// ref, gofmt and bun-tools take only the repo).
+var proofCheckHomeOwningGates = map[string]func(repo string, step proofCheckStep) ([]byte, error){
+	"codex-pretooluse-native-gate":        runProofCheckCodexPreToolUseNativeGate,
+	"memory-doctor":                       runProofCheckMemoryDoctorGate,
+	"workbench-projection":                runProofCheckWorkbenchGate,
+	"console-attention-consistency-smoke": runProofCheckConsoleAttentionGate,
+	"console-agents-consistency-smoke":    runProofCheckConsoleAgentsGate,
+}
+
 func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCheckStep {
 	start := time.Now()
 	result := step
@@ -496,14 +513,8 @@ func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCh
 		output, err = runProofCheckCodexPreToolUseNativeGate(repo, step)
 	} else if step.Name == "bun-tools-test" {
 		output, err = runProofCheckBunTools(repo)
-	} else if step.Name == "memory-doctor" {
-		output, err = runProofCheckMemoryDoctorGate(repo, step)
-	} else if step.Name == "workbench-projection" {
-		output, err = runProofCheckWorkbenchGate(repo, step)
-	} else if step.Name == "console-attention-consistency-smoke" {
-		output, err = runProofCheckConsoleAttentionGate(repo, step)
-	} else if step.Name == "console-agents-consistency-smoke" {
-		output, err = runProofCheckConsoleAgentsGate(repo, step)
+	} else if runner, owns := proofCheckHomeOwningGates[step.Name]; owns {
+		output, err = runner(repo, step)
 	} else {
 		cmd := exec.Command(step.Command[0], step.Command[1:]...)
 		cmd.Dir = repo
