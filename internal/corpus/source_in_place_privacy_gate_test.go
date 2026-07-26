@@ -653,6 +653,133 @@ func TestSourceInPlacePrivacyGateDefaultOffQueryWithoutCurrentManifest(t *testin
 	}
 }
 
+func TestSourceInPlacePrivacyGateDefaultOffMixedPolicyDoesNotWidenIndexedPrivateItem(t *testing.T) {
+	homePath := t.TempDir()
+	sourceDir := t.TempDir()
+	legacyPath := filepath.Join(sourceDir, "mixed-policy-private-canary.md")
+	ownedPath := filepath.Join(sourceDir, "mixed-policy-owned.md")
+	if err := os.WriteFile(legacyPath, []byte("legacy-private-canary body must remain suppressed"), 0o644); err != nil {
+		t.Fatalf("write legacy source: %v", err)
+	}
+	if err := os.WriteFile(ownedPath, []byte("owned public body forces current-authority validation"), 0o644); err != nil {
+		t.Fatalf("write owned source: %v", err)
+	}
+
+	const (
+		family     = "mixed_policy_default_off"
+		generation = "mixed-policy-gen"
+		legacyID   = "item_mixed_policy_legacy"
+		ownedID    = "item_mixed_policy_owned"
+	)
+	manifest, err := sourceobs.BuildOwnedSourceManifest(
+		homePath,
+		family,
+		[]string{legacyPath, ownedPath},
+		time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatalf("build mixed-policy manifest: %v", err)
+	}
+	manifest.Items[0].ID = legacyID
+	manifest.Items[0].SourceKind = "synthetic_dialogue"
+	manifest.Items[0].PageSlug = ""
+	manifest.Items[0].CorpusGeneration = generation
+	manifest.Items[0].Privacy = "private"
+	manifest.Items[0].BodyPolicy = "source_in_place"
+	manifest.Items[0].BodyRef = ""
+	manifest.Items[0].BodyBytes = 0
+	manifest.Items[1].ID = ownedID
+	manifest.Items[1].SourceKind = "synthetic_dialogue"
+	manifest.Items[1].PageSlug = "Owned public item"
+	manifest.Items[1].CorpusGeneration = generation
+	manifest.Items[1].Privacy = "public"
+	if _, err := sourceobs.RecordSourceManifest(homePath, manifest); err != nil {
+		t.Fatalf("record mixed-policy manifest: %v", err)
+	}
+
+	lane := LaneConfig{
+		Lane:         "mixed-policy-default-off",
+		SourceFamily: family,
+		Generation:   generation,
+		Privacy:      "public",
+		Embedder: EmbedderConfig{
+			Provider: "local",
+			Model:    "synthetic-embedder",
+			Dims:     3,
+			Bits:     "f32",
+		},
+		Chunk: ChunkConfig{Unit: "runes", Size: 256, Overlap: 16, Boundary: "structure"},
+		// SourceInPlacePrivacyGate intentionally remains false.
+	}
+	embedder := &fakeEmbedder{identity: lane.Embedder.Identity(), dim: lane.Embedder.Dims}
+	if _, err := Index(context.Background(), homePath, lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("index mixed-policy lane: %v", err)
+	}
+
+	current, err := sourceobs.LoadSourceManifest(homePath, lane.SourceFamily)
+	if err != nil {
+		t.Fatalf("load current manifest: %v", err)
+	}
+	foundLegacy := false
+	for i := range current.Items {
+		if current.Items[i].ID == legacyID {
+			current.Items[i].Privacy = ""
+			foundLegacy = true
+			break
+		}
+	}
+	if !foundLegacy {
+		t.Fatalf("current manifest missing legacy item %q", legacyID)
+	}
+	writeJSON(t, sourceobs.SourceManifestPath(homePath, lane.SourceFamily), current)
+
+	sourceReads := 0
+	originalRead := readSourceInPlaceBody
+	readSourceInPlaceBody = func(path string) ([]byte, error) {
+		sourceReads++
+		return originalRead(path)
+	}
+	t.Cleanup(func() { readSourceInPlaceBody = originalRead })
+
+	report, err := QueryWithOptions(
+		context.Background(),
+		homePath,
+		lane,
+		embedder,
+		"legacy-private-canary",
+		2,
+		QueryOptions{IncludeText: false},
+	)
+	if err != nil {
+		t.Fatalf("query mixed-policy lane: %v", err)
+	}
+	var legacyHit *QueryHit
+	for i := range report.Hits {
+		if report.Hits[i].ItemID == legacyID {
+			legacyHit = &report.Hits[i]
+			break
+		}
+	}
+	if legacyHit == nil {
+		t.Fatalf("query returned no hit for legacy item %q: %#v", legacyID, report.Hits)
+	}
+	if legacyHit.Text != "" {
+		t.Fatalf("legacy private text leaked after malformed current privacy: %q", legacyHit.Text)
+	}
+	if legacyHit.TextStatus != string(ChunkTextSuppressedPrivate) {
+		t.Fatalf("legacy private text status = %q, want %q", legacyHit.TextStatus, ChunkTextSuppressedPrivate)
+	}
+	if legacyHit.Title != privateChunkTitle {
+		t.Fatalf("legacy private title = %q, want %q", legacyHit.Title, privateChunkTitle)
+	}
+	if strings.Contains(legacyHit.Title, filepath.Base(legacyPath)) || strings.Contains(legacyHit.Title, sourceDir) {
+		t.Fatalf("legacy private title leaked source path: %q", legacyHit.Title)
+	}
+	if sourceReads != 1 {
+		t.Fatalf("legacy default-off source reads = %d, want 1 (preserve legacy read-before-suppress ordering)", sourceReads)
+	}
+}
+
 // TestSourceInPlacePrivacyGateQueryTitleRespectsCurrentPrivacy is the
 // regression for the residual title privacy leak. Body-suppression and
 // default-off/missing-manifest blockers are green, but the indexed

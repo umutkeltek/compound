@@ -166,11 +166,19 @@ func validateQueryItemAccess(homePath string, lane LaneConfig) (Manifest, error)
 		currentByID[item.ID] = item
 	}
 	for i, indexedItem := range indexed.Items {
+		governed := itemAccessIsGoverned(lane, indexedItem)
 		currentItem, ok := currentByID[indexedItem.ID]
 		if !ok {
-			if itemAccessIsGoverned(lane, indexedItem) {
+			if governed {
 				return Manifest{}, fmt.Errorf("corpus query: governed item %q is absent from current source manifest; privacy cannot be validated", indexedItem.ID)
 			}
+			continue
+		}
+		// A governed sibling can require loading current authority for the
+		// whole lane. That must not silently opt a legacy, gate-off
+		// source_in_place item into current-privacy semantics: preserving
+		// its indexed label is the documented default-off contract.
+		if !governed {
 			continue
 		}
 		accessItem := currentItem
