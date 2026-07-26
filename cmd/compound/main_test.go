@@ -2324,6 +2324,7 @@ func TestHomeOperationalHistoryArchiveCommandsHideAndRestoreHotHistory(t *testin
 	}, cliTestNow); err != nil {
 		t.Fatal(err)
 	}
+	writeResidualLeaseForTerminalWork(t, homePath, done.ID, "codex", cliTestNow)
 	if _, err := reviewartifact.Write(homePath, "panel-verdicts", "pv_cli_archive", map[string]any{
 		"id":     "pv_cli_archive",
 		"status": "recorded",
@@ -2476,6 +2477,33 @@ func TestHomeOperationalHistoryArchiveCommandsHideAndRestoreHotHistory(t *testin
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "reviews", "panel-verdicts", "pv_cli_archive.reviewed.json")); err != nil {
 		t.Fatalf("review sidecar should restore to hot store: %v", err)
+	}
+}
+
+// writeResidualLeaseForTerminalWork plants the stale-lease residue this test's dirty-home
+// fixture needs. Close now releases the claim lease in the same publish that terminalizes
+// the work, so closing no longer leaves residue behind and can no longer manufacture it.
+// The two sources that still produce it are reproduced here directly: a home written before
+// that change, and the crash window between the terminal publish and the release. Writing
+// the residue explicitly keeps this test pointed at its actual subject — archive-history
+// hiding and restoring stale-lease residue — instead of silently depending on close's
+// lease behavior, which is a different test's job (internal/work).
+func writeResidualLeaseForTerminalWork(t *testing.T, homePath, workID, by string, at time.Time) {
+	t.Helper()
+	blob, err := json.Marshal(&work.Lease{
+		WorkID:  workID,
+		By:      by,
+		ClaimAt: strconv.FormatInt(at.UTC().UnixNano(), 10),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(homePath, "work", "leases", workID+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, blob, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
