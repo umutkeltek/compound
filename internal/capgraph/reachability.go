@@ -94,6 +94,13 @@ type KindReachability struct {
 	// through a process Compound started. Operators auditing exposure want this
 	// small, and want it visible rather than inferred.
 	ValueTransiting int `json:"value_transiting"`
+	// Degraded counts nodes whose last observed health was not fine. They are
+	// still named, still offered, still reachable -- this is the number that used
+	// to be invisible, because degradation was expressed by retiring the node,
+	// and a retired node is excluded from this tally entirely. A capability that
+	// is down reads exactly like a capability that never existed, which is the
+	// one thing an operator most needs to tell apart.
+	Degraded int `json:"degraded"`
 }
 
 // ReachabilityGap names a kind whose access facts are materially missing, worst
@@ -141,6 +148,9 @@ func (s *Store) ComputeReachability() (Reachability, error) {
 			tally[kind] = k
 		}
 		k.Nodes++
+		if strings.TrimSpace(n.Health) != "" {
+			k.Degraded++
+		}
 		cs, has := byNode[n.ID]
 		if !has {
 			continue
@@ -168,6 +178,7 @@ func (s *Store) ComputeReachability() (Reachability, error) {
 		out.Total.Reachable += k.Reachable
 		out.Total.Unlockable += k.Unlockable
 		out.Total.ValueTransiting += k.ValueTransiting
+		out.Total.Degraded += k.Degraded
 	}
 	out.Total.Kind = "total"
 	// Worst coverage first, then largest, then name: the operator reads the top

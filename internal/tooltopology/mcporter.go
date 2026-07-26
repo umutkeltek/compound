@@ -66,7 +66,15 @@ func LoadMCPorterCatalog(path string, now time.Time) (Topology, error) {
 			Capabilities: limitTokens(mcporterToolNames(server.Tools), 40),
 			Constraints:  mcporterConstraints(server),
 			Weight:       mcporterWeight(status, false),
-			Retired:      status != "on_demand",
+			// NOT Retired. mcporter reports how a server responded to a probe, and
+			// a probe is a health observation -- a stdio server that was not running
+			// at that moment, a remote that timed out. Retiring on it made the graph
+			// forget a capability over a transient blip, and because retirement also
+			// removes the node from surfacing, nothing downstream could report the
+			// loss. Degradation is carried by Health (visible) and by the low weight
+			// mcporterWeight already assigns (it ranks down), which is the whole job
+			// retirement was wrongly doing.
+			Health:       mcporterHealth(status),
 			EvidenceRefs: []string{evidenceRef},
 			Connection:   serverConn,
 		})
@@ -86,7 +94,7 @@ func LoadMCPorterCatalog(path string, now time.Time) (Topology, error) {
 				Capabilities: limitTokens(normalizedTokens(toolName, tool.Description), 32),
 				Constraints:  append(mcporterConstraints(server), "mcp_server:"+slug(serverName)),
 				Weight:       mcporterWeight(status, true),
-				Retired:      status != "on_demand",
+				Health:       mcporterHealth(status),
 				EvidenceRefs: []string{evidenceRef},
 				// A tool is not reached the way its server is. You do not dial an
 				// individual tool, and you do not spawn the server yourself to use
@@ -246,6 +254,18 @@ func mcporterStatus(status string) string {
 	default:
 		return firstNonEmpty(strings.ToLower(strings.TrimSpace(status)), "unknown")
 	}
+}
+
+// mcporterHealth reports the observed operational state, empty when the server
+// is fine. "on_demand" is mcporter's healthy state for a server that is started
+// when needed -- it is the NORMAL condition for stdio servers, not a degradation,
+// which is precisely why treating anything-but-on_demand as retirement was wrong
+// in both directions.
+func mcporterHealth(status string) string {
+	if status == "on_demand" {
+		return ""
+	}
+	return status
 }
 
 func mcporterWeight(status string, tool bool) float64 {

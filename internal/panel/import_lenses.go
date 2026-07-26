@@ -262,8 +262,14 @@ func decodeLensManifest(data []byte) (lensManifest, error) {
 	return manifest, nil
 }
 
+// sameCapgraphNode is a hand-maintained field comparison, so every field added
+// to capgraph.Node must be added here too -- a field omitted is not a compile
+// error, it is a change this function reports as "no change", which means the
+// update is silently dropped. Health is compared for exactly that reason: a
+// server recovering from offline is a health transition and nothing else, so
+// omitting it here would make recovery invisible.
 func sameCapgraphNode(a, b capgraph.Node) bool {
-	return a.ID == b.ID && a.Kind == b.Kind && a.Name == b.Name && a.Weight == b.Weight && a.Retired == b.Retired && a.EvidenceOnly == b.EvidenceOnly && equalStrings(a.Triggers, b.Triggers)
+	return a.ID == b.ID && a.Kind == b.Kind && a.Name == b.Name && a.Weight == b.Weight && a.Retired == b.Retired && a.Health == b.Health && a.EvidenceOnly == b.EvidenceOnly && equalStrings(a.Triggers, b.Triggers)
 }
 
 func cleanStrings(values []string) []string {

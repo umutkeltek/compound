@@ -47,6 +47,11 @@ type Entry struct {
 	Constraints  []string `json:"constraints,omitempty" yaml:"constraints,omitempty"`
 	Weight       float64  `json:"weight,omitempty" yaml:"weight,omitempty"`
 	Retired      bool     `json:"retired,omitempty" yaml:"retired,omitempty"`
+	// Health is the observed operational state when it is not fine. It is kept
+	// apart from Retired because an adapter observing a source can only ever
+	// learn health -- whether something is WITHDRAWN is a decision the source
+	// makes explicitly, never something to infer from a failed probe.
+	Health       string   `json:"health,omitempty" yaml:"health,omitempty"`
 	EvidenceRefs []string `json:"evidence_refs,omitempty" yaml:"evidence_refs,omitempty"`
 	// Connection carries the access facts an adapter already read, so Apply can
 	// mint a capgraph ConnectionSurface instead of discarding them. Before this
@@ -168,7 +173,12 @@ func Apply(homePath string, topo Topology, now time.Time) (Report, error) {
 			Name:     e.Name,
 			Triggers: nodeTriggers(e),
 			Weight:   e.Weight,
-			Retired:  e.Retired || e.Status == "retired" || e.Status == "deprecated",
+			// Only genuinely withdrawn states retire a node. A transient health
+			// state must never reach this field: retirement removes the node from
+			// surfacing, and a capability deleted because a probe failed cannot
+			// report that it is missing.
+			Retired: e.Retired || e.Status == "retired" || e.Status == "deprecated",
+			Health:  e.Health,
 		}
 		if err := store.Add(n); err != nil {
 			return report, err

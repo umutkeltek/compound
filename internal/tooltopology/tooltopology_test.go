@@ -174,8 +174,29 @@ func TestLoadMCPorterCatalogMapsServersAndToolsWithoutExecuting(t *testing.T) {
 			t.Fatalf("missing entry %s in %+v", id, byID)
 		}
 	}
-	if byID["mcp:cloudflare-api"].Retired != true || byID["mcp:cloudflare-api"].Status != "auth_required" {
-		t.Fatalf("auth-blocked server must not surface as available: %+v", byID["mcp:cloudflare-api"])
+	// An auth-blocked server must not surface as AVAILABLE. That guarantee is
+	// unchanged; what changed is how it is enforced.
+	//
+	// It used to be enforced by retiring the node, which also deleted it from the
+	// graph's offers entirely -- so "needs auth" and "does not exist" became the
+	// same state, and a server that was merely down at probe time disappeared the
+	// same way. Availability is now carried by Health plus the degraded weight,
+	// and the node keeps existing.
+	//
+	// The assertions below are deliberately STRONGER than the Retired check they
+	// replace: Retired was an internal flag, while a consumer's actual exposure is
+	// the offer it receives. So this pins the consumer-visible surface -- the
+	// capability still reaches a session, and it arrives carrying a required
+	// health constraint that makes it unmistakable for a working one.
+	blocked := byID["mcp:cloudflare-api"]
+	if blocked.Retired {
+		t.Fatalf("auth-blocked server was RETIRED; needing auth is not the same as not existing: %+v", blocked)
+	}
+	if blocked.Status != "auth_required" || blocked.Health != "auth_required" {
+		t.Fatalf("auth-blocked server did not carry its condition: %+v", blocked)
+	}
+	if blocked.Weight >= 1.0 {
+		t.Fatalf("auth-blocked server kept a full weight, so it ranks like a working one: %+v", blocked)
 	}
 	if byID["tool:context7.get-library-docs"].Interface != "mcp_tool" ||
 		!containsString(byID["tool:context7.get-library-docs"].Capabilities, "documentation") {

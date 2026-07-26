@@ -64,12 +64,36 @@ type InstructionRoute struct {
 // strength (learned feedback adds/subtracts on top). InstructionRule nodes add Tier-1 rule
 // metadata but remain offers: they read/route/boundary context, never execute.
 type Node struct {
-	ID           string                `json:"id"`
-	Kind         string                `json:"kind"`
-	Name         string                `json:"name"`
-	Triggers     []string              `json:"triggers"`
-	Weight       float64               `json:"weight"`
-	Retired      bool                  `json:"retired,omitempty"`
+	ID       string   `json:"id"`
+	Kind     string   `json:"kind"`
+	Name     string   `json:"name"`
+	Triggers []string `json:"triggers"`
+	Weight   float64  `json:"weight"`
+	// Retired means WITHDRAWN: this capability is no longer part of the system.
+	// It is a lifecycle fact and it removes the node from surfacing entirely.
+	//
+	// It is NOT a health signal, and the difference is load-bearing. Health is
+	// transient and observed (a server was down when something probed it);
+	// retirement is durable and decided. Deriving one from the other means a
+	// capability stops existing because it was briefly unreachable -- and since
+	// retirement removes it from every offer, nothing afterwards can tell you it
+	// was ever there. Use Health for "not working right now".
+	Retired bool `json:"retired,omitempty"`
+	// Health is the last observed operational state when it is not simply fine:
+	// "offline", "error", "auth_required". Empty means healthy or unobserved.
+	//
+	// A degraded node stays NAMED -- counted in reachability, returned by list,
+	// carrying its access facts and its condition. It is NOT offered for a task
+	// while it is broken, because handing an agent a tool that cannot work burns
+	// a turn on discovering that.
+	//
+	// Named-but-not-offered is the whole distinction. Retirement collapsed the
+	// two: it withdrew the node from the tally as well as the offers, so a server
+	// that was down for a minute became indistinguishable from one that never
+	// existed, and stayed that way until something re-imported it. Health is
+	// re-observed every import, so the node returns to being offered the moment it
+	// is healthy, and no lifecycle claim was ever made about it.
+	Health       string                `json:"health,omitempty"`
 	EvidenceOnly bool                  `json:"evidence_only,omitempty"`
 	When         []InstructionRuleWhen `json:"when,omitempty"`
 	Read         []string              `json:"read,omitempty"`
@@ -540,6 +564,21 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 	var out []Surfaced
 	for _, n := range nodes {
 		if n.Retired || n.EvidenceOnly {
+			continue
+		}
+		// A capability that is not working is not offered. That was true before
+		// this field existed -- it was enforced by RETIRING the node -- and it
+		// stays true; an agent handed a broken tool burns a turn discovering it.
+		//
+		// What changed is everything OUTSIDE this loop. Retirement is a durable
+		// lifecycle claim: it removed the node from the reachability tally too, so
+		// a server that was briefly down became indistinguishable from one that had
+		// never existed, and it stayed that way until something re-imported it.
+		// Health is transient and re-observed on every import, so the node stays
+		// named, stays counted, stays listed WITH its condition, and returns to
+		// being offered the moment it is healthy again -- with no lifecycle claim
+		// ever having been made about it.
+		if strings.TrimSpace(n.Health) != "" {
 			continue
 		}
 		if harness != "" && len(harnesses[n.ID]) > 0 && !harnesses[n.ID][harness] {

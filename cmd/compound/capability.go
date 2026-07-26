@@ -410,16 +410,25 @@ func cmdCapability(args []string) {
 			}
 			return fmt.Sprintf("%5.1f%%", float64(have)/float64(total)*100)
 		}
-		fmt.Printf("%-18s %7s %10s %7s %11s %7s\n", "kind", "named", "reachable", "", "unlockable", "")
-		fmt.Println(strings.Repeat("-", 64))
-		for _, k := range report.Kinds {
-			fmt.Printf("%-18s %7d %10d %7s %11d %7s\n",
-				k.Kind, k.Nodes, k.Reachable, pct(k.Reachable, k.Nodes), k.Unlockable, pct(k.Unlockable, k.Nodes))
+		// A dash, not a 0: zero degraded and "this kind reports no health at all"
+		// are different states, and printing 0 for both would claim health data
+		// that was never collected.
+		degraded := func(n int) string {
+			if n == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%d", n)
 		}
-		fmt.Println(strings.Repeat("-", 64))
+		fmt.Printf("%-18s %7s %10s %7s %11s %7s %9s\n", "kind", "named", "reachable", "", "unlockable", "", "degraded")
+		fmt.Println(strings.Repeat("-", 74))
+		for _, k := range report.Kinds {
+			fmt.Printf("%-18s %7d %10d %7s %11d %7s %9s\n",
+				k.Kind, k.Nodes, k.Reachable, pct(k.Reachable, k.Nodes), k.Unlockable, pct(k.Unlockable, k.Nodes), degraded(k.Degraded))
+		}
+		fmt.Println(strings.Repeat("-", 74))
 		t := report.Total
-		fmt.Printf("%-18s %7d %10d %7s %11d %7s\n",
-			"TOTAL", t.Nodes, t.Reachable, pct(t.Reachable, t.Nodes), t.Unlockable, pct(t.Unlockable, t.Nodes))
+		fmt.Printf("%-18s %7d %10d %7s %11d %7s %9s\n",
+			"TOTAL", t.Nodes, t.Reachable, pct(t.Reachable, t.Nodes), t.Unlockable, pct(t.Unlockable, t.Nodes), degraded(t.Degraded))
 		if t.ValueTransiting > 0 {
 			// Worth its own line: these are the surfaces where a secret passes
 			// through a process Compound started, which is the exposure an
