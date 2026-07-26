@@ -394,6 +394,44 @@ func cmdCapability(args []string) {
 		report, err := capgraph.ImportAgentLaneProfiles(homePath, registryPath, overlayPath, now)
 		die(err)
 		printJSON(report)
+	case "reachability":
+		// Existence is already well served; access is not. This surfaces the
+		// difference so "my harnesses cannot find things smoothly" becomes a
+		// number with a named next door instead of a recurring impression.
+		report, err := store.ComputeReachability()
+		die(err)
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		pct := func(have, total int) string {
+			if total == 0 {
+				return "   n/a"
+			}
+			return fmt.Sprintf("%5.1f%%", float64(have)/float64(total)*100)
+		}
+		fmt.Printf("%-18s %7s %10s %7s %11s %7s\n", "kind", "named", "reachable", "", "unlockable", "")
+		fmt.Println(strings.Repeat("-", 64))
+		for _, k := range report.Kinds {
+			fmt.Printf("%-18s %7d %10d %7s %11d %7s\n",
+				k.Kind, k.Nodes, k.Reachable, pct(k.Reachable, k.Nodes), k.Unlockable, pct(k.Unlockable, k.Nodes))
+		}
+		fmt.Println(strings.Repeat("-", 64))
+		t := report.Total
+		fmt.Printf("%-18s %7d %10d %7s %11d %7s\n",
+			"TOTAL", t.Nodes, t.Reachable, pct(t.Reachable, t.Nodes), t.Unlockable, pct(t.Unlockable, t.Nodes))
+		if t.ValueTransiting > 0 {
+			// Worth its own line: these are the surfaces where a secret passes
+			// through a process Compound started, which is the exposure an
+			// operator would otherwise have to infer by reading mechanisms.
+			fmt.Printf("\n%d credential handle(s) pass a value through a Compound-started process.\n", t.ValueTransiting)
+		}
+		if len(report.Gaps) > 0 {
+			fmt.Println("\ngaps, worst first — each is one missing import door, not per-node data entry:")
+			for _, g := range report.Gaps {
+				fmt.Printf("  %-16s %4d of %4d unreachable — %s\n", g.Kind, g.Missing, g.Nodes, g.Consequence)
+			}
+		}
 	case "authority":
 		records, err := capgraph.LoadSourceAuthority(homePath)
 		die(err)
