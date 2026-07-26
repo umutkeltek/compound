@@ -32,7 +32,9 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/mem"
 	"compound/internal/sourceobs"
+	"gopkg.in/yaml.v3"
 )
 
 // seedSourceInPlaceLaneForGate builds a single-item corpus lane over a
@@ -327,5 +329,188 @@ func TestSourceInPlacePrivacyGateEnabledEmbedderNotCalledForRefused(t *testing.T
 	}
 	if embedder.calls != 0 || embedder.embedded != 0 {
 		t.Fatalf("embedder invoked despite refusal: calls=%d embedded=%d", embedder.calls, embedder.embedded)
+	}
+}
+
+// TestSourceInPlacePrivacyGateClosesLegacyIndexAtQuery is the red-first
+// falsifier for the review finding: an index built under the legacy default
+// cannot become a privacy bypass when the lane gate is enabled later.
+func TestSourceInPlacePrivacyGateClosesLegacyIndexAtQuery(t *testing.T) {
+	homePath := t.TempDir()
+	lane, embedder, _ := seedSourceInPlaceLaneForGate(t, homePath, "private legacy body", "legacy_then_gated", "private", "public", "local", "", false)
+	if _, err := Index(context.Background(), homePath, lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("legacy index: %v", err)
+	}
+	embedder.calls = 0
+	embedder.embedded = 0
+	engineCalls := 0
+	originalQuery := runCorpusEngineQuery
+	runCorpusEngineQuery = func(_ *mem.ProtocolEngine, _ string, _ int) ([]mem.Hit, error) {
+		engineCalls++
+		return nil, nil
+	}
+	t.Cleanup(func() { runCorpusEngineQuery = originalQuery })
+	sourceReads := 0
+	originalRead := readSourceInPlaceBody
+	readSourceInPlaceBody = func(path string) ([]byte, error) {
+		sourceReads++
+		return originalRead(path)
+	}
+	t.Cleanup(func() { readSourceInPlaceBody = originalRead })
+
+	lane.SourceInPlacePrivacyGate = true
+	_, err := QueryWithOptions(context.Background(), homePath, lane, embedder, "private", 1, QueryOptions{IncludeText: true})
+	if err == nil || !strings.Contains(err.Error(), "privacy=private refuses non-private lane") {
+		t.Fatalf("gated query error = %v, want privacy refusal", err)
+	}
+	if engineCalls != 0 || embedder.calls != 0 {
+		t.Fatalf("query calls: engine=%d embedder=%d, want zero/zero", engineCalls, embedder.calls)
+	}
+	if sourceReads != 0 {
+		t.Fatalf("query read source_in_place body %d times, want zero", sourceReads)
+	}
+
+	indexed, err := readManifest(IndexDir(homePath, lane))
+	if err != nil {
+		t.Fatalf("read indexed manifest: %v", err)
+	}
+	_, err = ResolveChunkText(homePath, indexed, indexed.Items[0].ID+"#0", true, lane)
+	if err == nil || !strings.Contains(err.Error(), "privacy=private refuses non-private lane") {
+		t.Fatalf("IncludeText resolver error = %v, want privacy refusal", err)
+	}
+	if sourceReads != 0 {
+		t.Fatalf("IncludeText resolver read source_in_place body %d times, want zero", sourceReads)
+	}
+}
+
+func TestSourceInPlacePrivacyGateQueryUsesCurrentManifestPrivacy(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		privacy string
+		want    string
+	}{
+		{name: "changed_to_private", privacy: "private", want: "privacy=private refuses non-private lane"},
+		{name: "malformed_fails_closed", privacy: "restricted", want: "malformed privacy field"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			lane, embedder, _ := seedSourceInPlaceLaneForGate(t, homePath, "current privacy body", "current_privacy_"+tc.name, "public", "public", "local", "", true)
+			if _, err := Index(context.Background(), homePath, lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+				t.Fatalf("index public item: %v", err)
+			}
+			current, err := sourceobs.LoadSourceManifest(homePath, lane.SourceFamily)
+			if err != nil {
+				t.Fatalf("load current manifest: %v", err)
+			}
+			current.Items[0].Privacy = tc.privacy
+			writeJSON(t, sourceobs.SourceManifestPath(homePath, lane.SourceFamily), current)
+
+			embedder.calls = 0
+			engineCalls := 0
+			originalQuery := runCorpusEngineQuery
+			runCorpusEngineQuery = func(_ *mem.ProtocolEngine, _ string, _ int) ([]mem.Hit, error) {
+				engineCalls++
+				return nil, nil
+			}
+			t.Cleanup(func() { runCorpusEngineQuery = originalQuery })
+			sourceReads := 0
+			originalRead := readSourceInPlaceBody
+			readSourceInPlaceBody = func(path string) ([]byte, error) {
+				sourceReads++
+				return originalRead(path)
+			}
+			t.Cleanup(func() { readSourceInPlaceBody = originalRead })
+
+			_, err = QueryWithOptions(context.Background(), homePath, lane, embedder, "current", 1, QueryOptions{IncludeText: true})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("query error = %v, want %q", err, tc.want)
+			}
+			if engineCalls != 0 || embedder.calls != 0 || sourceReads != 0 {
+				t.Fatalf("refused query calls: engine=%d embedder=%d source_reads=%d, want zero/zero/zero", engineCalls, embedder.calls, sourceReads)
+			}
+		})
+	}
+}
+
+func TestSourceInPlacePrivacyGateDefaultOffQueryCompatibility(t *testing.T) {
+	homePath := t.TempDir()
+	lane, embedder, _ := seedSourceInPlaceLaneForGate(t, homePath, "legacy readable body", "default_off_query", "private", "public", "local", "", false)
+	if _, err := Index(context.Background(), homePath, lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("legacy index: %v", err)
+	}
+	embedder.calls = 0
+	report, err := QueryWithOptions(context.Background(), homePath, lane, embedder, "readable", 1, QueryOptions{IncludeText: true})
+	if err != nil {
+		t.Fatalf("default-off legacy query: %v", err)
+	}
+	if embedder.calls != 1 {
+		t.Fatalf("default-off query embedder calls = %d, want 1", embedder.calls)
+	}
+	if len(report.Hits) != 1 || report.Hits[0].Text == "" {
+		t.Fatalf("default-off IncludeText report = %+v, want readable hit", report.Hits)
+	}
+}
+
+func TestSourceInPlacePrivacyGateYAMLRoundTrip(t *testing.T) {
+	base := LaneConfig{Lane: "yaml-lane", SourceFamily: "yaml-family", Privacy: "public"}
+	omitted, err := yaml.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal omitted gate: %v", err)
+	}
+	if strings.Contains(string(omitted), "source_in_place_privacy_gate") {
+		t.Fatalf("false gate was not omitted from YAML:\n%s", omitted)
+	}
+	var decoded LaneConfig
+	if err := yaml.Unmarshal(omitted, &decoded); err != nil {
+		t.Fatalf("unmarshal omitted gate: %v", err)
+	}
+	if decoded.SourceInPlacePrivacyGate {
+		t.Fatal("omitted YAML gate decoded enabled")
+	}
+
+	base.SourceInPlacePrivacyGate = true
+	enabled, err := yaml.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal enabled gate: %v", err)
+	}
+	if !strings.Contains(string(enabled), "source_in_place_privacy_gate: true") {
+		t.Fatalf("enabled gate absent from YAML:\n%s", enabled)
+	}
+	decoded = LaneConfig{}
+	if err := yaml.Unmarshal(enabled, &decoded); err != nil {
+		t.Fatalf("unmarshal enabled gate: %v", err)
+	}
+	if !decoded.SourceInPlacePrivacyGate {
+		t.Fatal("enabled YAML gate did not round-trip")
+	}
+}
+
+func TestSourceInPlacePrivacyGateSuppressesBeforeBodyRead(t *testing.T) {
+	homePath := t.TempDir()
+	lane, embedder, _ := seedSourceInPlaceLaneForGate(t, homePath, "locally permitted private body", "suppress_before_read", "private", "private", "local", "", true)
+	if _, err := Index(context.Background(), homePath, lane, embedder, IndexOptions{Rebuild: true}); err != nil {
+		t.Fatalf("index private local item: %v", err)
+	}
+	indexed, err := readManifest(IndexDir(homePath, lane))
+	if err != nil {
+		t.Fatalf("read indexed manifest: %v", err)
+	}
+	sourceReads := 0
+	originalRead := readSourceInPlaceBody
+	readSourceInPlaceBody = func(path string) ([]byte, error) {
+		sourceReads++
+		return originalRead(path)
+	}
+	t.Cleanup(func() { readSourceInPlaceBody = originalRead })
+
+	resolved, err := ResolveChunkText(homePath, indexed, indexed.Items[0].ID+"#0", false, lane)
+	if err != nil {
+		t.Fatalf("resolve suppressed text: %v", err)
+	}
+	if resolved.Status != ChunkTextSuppressedPrivate || resolved.Text != "" {
+		t.Fatalf("resolved = %+v, want suppressed without text", resolved)
+	}
+	if sourceReads != 0 {
+		t.Fatalf("suppression read source_in_place body %d times, want zero", sourceReads)
 	}
 }

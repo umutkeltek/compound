@@ -323,11 +323,10 @@ type ResolvedChunkText struct {
 //  2. Find the manifest item by item_id.
 //  3. Schema gate: if the manifest's prefix_schema_version is not this binary's, the
 //     chunker has changed under the index — return ChunkTextStaleIndex with no text.
-//  4. Owned-body privacy gate: validate owned_snapshot privacy before any body
-//     access. If privacy=="private" and includeText is false, return
-//     ChunkTextSuppressedPrivate without probing the artifact. Unknown labels
-//     fail closed instead of widening to public text. The legacy source_in_place
-//     path retains its historical availability-before-suppression ordering.
+//  4. Current-item privacy gate: when a lane is supplied, apply the same
+//     predicate used by index and query before any body access. Governed private
+//     text is suppressed before a read unless includeText is explicit; malformed
+//     labels fail closed. Omitted lane keeps the legacy source_in_place posture.
 //  5. Body source dispatch (the new seam):
 //     - body_policy=source_in_place: read the file at item.source_ref. The body lives
 //     OUTSIDE COMPOUND_HOME and can be moved/deleted; that is expected and degrades
@@ -344,7 +343,7 @@ type ResolvedChunkText struct {
 // body_policy=owned_snapshot (the resolver fails closed if it is empty); for
 // body_policy=source_in_place it is ignored, so legacy call sites that build a Manifest
 // directly (and have no home) keep working unchanged.
-func ResolveChunkText(homePath string, manifest Manifest, chunkID string, includeText bool) (ResolvedChunkText, error) {
+func ResolveChunkText(homePath string, manifest Manifest, chunkID string, includeText bool, lanes ...LaneConfig) (ResolvedChunkText, error) {
 	itemID, ordinal, err := splitChunkID(chunkID)
 	if err != nil {
 		return ResolvedChunkText{}, err
@@ -359,7 +358,21 @@ func ResolveChunkText(homePath string, manifest Manifest, chunkID string, includ
 	if strings.TrimSpace(manifest.PrefixSchemaVersion) != PrefixSchemaVersion {
 		return ResolvedChunkText{Status: ChunkTextStaleIndex}, nil
 	}
-	if strings.EqualFold(strings.TrimSpace(item.BodyPolicy), "owned_snapshot") {
+	if len(lanes) > 1 {
+		return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: at most one lane config may be supplied")
+	}
+	governed := strings.EqualFold(strings.TrimSpace(item.BodyPolicy), "owned_snapshot")
+	if len(lanes) == 1 {
+		lane, err := ValidateLaneConfig(lanes[0])
+		if err != nil {
+			return ResolvedChunkText{}, err
+		}
+		if err := validateCurrentItemAccess(lane, item); err != nil {
+			return ResolvedChunkText{}, fmt.Errorf("corpus chunk text: %w", err)
+		}
+		governed = itemAccessIsGoverned(lane, item)
+	}
+	if governed {
 		switch strings.ToLower(strings.TrimSpace(item.Privacy)) {
 		case "private":
 			if !includeText {
@@ -415,13 +428,18 @@ func ResolveChunkText(homePath string, manifest Manifest, chunkID string, includ
 // onto its own failure surface — ChunkTextSourceUnavailable / ChunkTextStaleSource
 // for the corpus query path; an error for the index path, where missing body
 // bytes cannot be embedded.
+// readSourceInPlaceBody is the narrow source-byte seam used by the resolver.
+// Keeping it distinct from artifact reads makes the privacy boundary directly
+// falsifiable without weakening artifact-store integrity checks.
+var readSourceInPlaceBody = os.ReadFile
+
 func readItemBodyBytes(homePath string, item sourceobs.SourceManifestItem) ([]byte, ChunkTextStatus, error) {
 	switch strings.TrimSpace(item.BodyPolicy) {
 	case "source_in_place":
 		if strings.TrimSpace(item.SourceRef) == "" {
 			return nil, ChunkTextSourceUnavailable, nil
 		}
-		raw, err := os.ReadFile(item.SourceRef)
+		raw, err := readSourceInPlaceBody(item.SourceRef)
 		if err != nil {
 			return nil, ChunkTextSourceUnavailable, nil
 		}

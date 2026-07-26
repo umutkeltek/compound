@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"compound/internal/sourceobs"
 )
 
 const (
@@ -163,6 +165,41 @@ func ValidateLaneConfig(lane LaneConfig) (LaneConfig, error) {
 // at every seam.
 func SourceInPlacePrivacyGateEnabled(lane LaneConfig) bool {
 	return lane.SourceInPlacePrivacyGate
+}
+
+// validateCurrentItemAccess is the single item-level privacy decision used by
+// indexing, querying an existing index, and body resolution. owned_snapshot is
+// always governed. source_in_place is governed only after the lane's explicit
+// compatibility gate is enabled; omission/false preserves legacy behavior.
+// Governed malformed labels fail closed, and private bodies require the same
+// private + local/loopback lane posture at every access point.
+func validateCurrentItemAccess(lane LaneConfig, item sourceobs.SourceManifestItem) error {
+	policy := strings.ToLower(strings.TrimSpace(item.BodyPolicy))
+	governed := policy == "owned_snapshot" || (policy == "source_in_place" && SourceInPlacePrivacyGateEnabled(lane))
+	if !governed {
+		return nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(item.Privacy)) {
+	case "public":
+		return nil
+	case "private":
+		if laneIsPrivateLocal(lane) {
+			return nil
+		}
+		return fmt.Errorf("%s item %q privacy=private refuses non-private lane (lane privacy=%q embedder=%s)", policy, item.ID, strings.TrimSpace(lane.Privacy), lane.Embedder.Identity())
+	default:
+		return fmt.Errorf("%s item %q has malformed privacy field (must be public or private, got %q)", policy, item.ID, strings.TrimSpace(item.Privacy))
+	}
+}
+
+// itemAccessIsGoverned reports whether absence from the current source
+// manifest must itself fail closed. It uses the indexed item only to identify
+// a seam whose current privacy must remain verifiable; the access decision is
+// always made from the current item when one exists.
+func itemAccessIsGoverned(lane LaneConfig, item sourceobs.SourceManifestItem) bool {
+	policy := strings.ToLower(strings.TrimSpace(item.BodyPolicy))
+	return policy == "owned_snapshot" || (policy == "source_in_place" && SourceInPlacePrivacyGateEnabled(lane))
 }
 
 func ProviderIsLocal(provider, baseURL string) bool {

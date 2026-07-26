@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"compound/internal/mem"
+	"compound/internal/sourceobs"
 )
 
 type QueryReport struct {
@@ -33,6 +34,12 @@ type QueryOptions struct {
 	IncludeText bool
 }
 
+// runCorpusEngineQuery is the narrow engine-call seam used to prove privacy
+// preflight happens before both ProtocolEngine.Query and its embedder work.
+var runCorpusEngineQuery = func(engine *mem.ProtocolEngine, text string, k int) ([]mem.Hit, error) {
+	return engine.Query(text, mem.GateAll, nil, k)
+}
+
 func Query(ctx context.Context, homePath string, lane LaneConfig, embedder Embedder, text string, k int) (QueryReport, error) {
 	return QueryWithOptions(ctx, homePath, lane, embedder, text, k, QueryOptions{})
 }
@@ -45,19 +52,19 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 	if err := validateEmbedder(lane, embedder); err != nil {
 		return QueryReport{}, err
 	}
+	manifest, err := validateQueryItemAccess(homePath, lane)
+	if err != nil {
+		return QueryReport{}, err
+	}
 	transport := NewIndexTransport(homePath, lane, embedder)
 	engine := mem.NewProtocolEngine(transport, lane.Embedder.Identity())
 	defer engine.Close()
-	hits, err := engine.Query(text, mem.GateAll, nil, k)
+	hits, err := runCorpusEngineQuery(engine, text, k)
 	if err != nil {
 		return QueryReport{}, err
 	}
 	dir := IndexDir(homePath, lane)
 	meta, err := loadChunkMeta(dir)
-	if err != nil {
-		return QueryReport{}, err
-	}
-	manifest, err := readManifest(dir)
 	if err != nil {
 		return QueryReport{}, err
 	}
@@ -70,7 +77,7 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 	}
 	for _, hit := range hits {
 		info := meta[hit.ClaimID]
-		resolved, err := ResolveChunkText(homePath, manifest, hit.ClaimID, opts.IncludeText)
+		resolved, err := ResolveChunkText(homePath, manifest, hit.ClaimID, opts.IncludeText, lane)
 		if err != nil {
 			return QueryReport{}, fmt.Errorf("resolve chunk text for %s: %w", hit.ClaimID, err)
 		}
@@ -85,6 +92,47 @@ func QueryWithOptions(ctx context.Context, homePath string, lane LaneConfig, emb
 		})
 	}
 	return report, nil
+}
+
+// validateQueryItemAccess refreshes item privacy from the current source
+// manifest before constructing/calling the query engine. This prevents an
+// index built while the source_in_place gate was off (or before a privacy
+// change) from becoming a bypass after the gate is enabled. Only index
+// metadata and source-manifest metadata are read here; source body bytes and
+// the query embedder remain behind the decision.
+func validateQueryItemAccess(homePath string, lane LaneConfig) (Manifest, error) {
+	dir := IndexDir(homePath, lane)
+	indexed, err := readManifest(dir)
+	if err != nil {
+		return Manifest{}, err
+	}
+	current, err := sourceobs.LoadSourceManifest(homePath, lane.SourceFamily)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("corpus query: load current source manifest: %w", err)
+	}
+	currentByID := make(map[string]sourceobs.SourceManifestItem, len(current.Items))
+	for _, item := range current.Items {
+		currentByID[item.ID] = item
+	}
+	for _, indexedItem := range indexed.Items {
+		currentItem, ok := currentByID[indexedItem.ID]
+		if !ok {
+			if itemAccessIsGoverned(lane, indexedItem) {
+				return Manifest{}, fmt.Errorf("corpus query: governed item %q is absent from current source manifest; privacy cannot be validated", indexedItem.ID)
+			}
+			continue
+		}
+		accessItem := currentItem
+		// The indexed body policy identifies the bytes this query could resolve;
+		// only mutable privacy metadata comes from the current authority item.
+		// A current body-policy edit therefore cannot disguise a legacy indexed
+		// source_in_place body and bypass its newly enabled gate.
+		accessItem.BodyPolicy = indexedItem.BodyPolicy
+		if err := validateCurrentItemAccess(lane, accessItem); err != nil {
+			return Manifest{}, fmt.Errorf("corpus query: %w", err)
+		}
+	}
+	return indexed, nil
 }
 
 type IndexTransport struct {
