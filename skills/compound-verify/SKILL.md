@@ -28,6 +28,36 @@ Verified instances from the audit — memorize the pattern, not the instance:
 A change is **alive** only when all four hold. Anything else is **landed-not-live** — say which
 gap, loudly, in the receipt/close notes.
 
+### The vacuous pass — a PROOF gap wearing a green check
+
+A gate that cannot fail is not a weaker gate, it is **not a gate**, and it is far harder to notice
+than a missing one because the suite is green. Two shapes, both lived 2026-07-27 (four gates at
+once, `fc4cd8e3`):
+
+- **Empty is not failing.** `mem.Report` only flips `OK` on a `"fail"` hop, so on a home with no
+  claims every hop reported `"empty"` and `memory doctor` exited 0 having asserted nothing.
+  `workbench --json` returned every count `0` with no error, and its gate read only the exit code.
+  Both console consistency smokes explicitly tolerate an empty projection. **Ask of any gate: what
+  does it do when its subject is absent rather than broken?**
+- **Isolation can CREATE the vacuum.** Removing a check's dependence on ambient state (a live home,
+  an installed binary, the clock) is usually right — it was worth ~109s/battery here — but the same
+  move can turn a slow real check into a fast fake one. A bare temp home made all four gates
+  *faster and more wrong* than the live home they replaced.
+
+**So when you cut a check off from ambient state, seed a fixture and assert its content, then prove
+the assertion is load-bearing:** neuter the assertion and confirm the unseeded-input control goes
+green. If a control cannot be made to fail, it is documentation, not proof.
+
+Two corollaries worth their own line:
+
+- **A function's tests do not test its wiring.** Per-gate tests that call the runner directly all
+  stay green when the one dispatch line is deleted — and the gate silently reverts to ambient state.
+  Assert the dispatch too (`proofCheckHomeOwningGates` + an absent `COMPOUND_HOME`).
+- **Some failure modes are unreachable through the public API, so a control must bypass the write
+  door — deliberately and with a comment saying why.** An unparsable ledger row and a
+  zero-provenance claim cannot be produced by `Adjudicate`; an unreadable work envelope cannot be
+  produced by `Create`. A control that respected the door could not prove those gates can go red.
+
 ## The battery (run in order; each step is checkable)
 
 1. **Never trust the checked-in binary.** `./compound` at repo root is a local build artifact and
@@ -45,6 +75,12 @@ gap, loudly, in the receipt/close notes.
    `architecture doctor --strict`, workbench projection, `memory doctor`, and the public redact
    scan of changed files all passed. Any red stops the close — fix or escalate, never weaken the
    check.
+
+   Since `fc4cd8e3` the home-reading gates (`memory doctor`, workbench projection, the attention
+   and agents console smokes) each seed and own a temp `COMPOUND_HOME` and assert its content, so
+   their verdict is about the diff rather than about your dev home's size — and they no longer get
+   slower every time you use Compound. They are listed in `proofCheckHomeOwningGates`; a gate that
+   leaves that map silently goes back to reading ambient state.
 
 3. **Temp-home end-to-end** (proves the slice works outside your polluted dev home):
    ```bash

@@ -24,6 +24,16 @@ This skill replaces re-deriving the "standing session rules" from
   proceed to §3's acquire; `held by <holder>` means another lane is mid-ceremony — coordinate, or
   let §3's `--wait` block for it; a holder with no matching live lane and a stale/expired lease is
   a candidate for `steal --reason` in §3, not a silent land on top of it.
+- **The holder string's trailing SHA names the ceremony — resolve it before calling a lease stale**
+  (lived 2026-07-27, gate-isolation land). A renewing lease looks identical to the known refresher
+  defect (`find_be9c4cc64732`): a 900s TTL whose `remaining_seconds` climbs back up, held for
+  20+ min, with the holder's daemons alive but no landing in sight. The discriminator is in the
+  holder itself — `<harness>:<session>:<work_id>:<sha>`: run `git log --oneline -1 <sha>` and
+  `git rev-list --left-right --count main...<sha>` in the holder's worktree. A holder whose SHA is
+  a real tip **ahead of main** is a live lane holding the lease across its own battery, which is the
+  sanctioned §3 pattern — queue on `--wait`, do NOT steal. Only a holder whose SHA resolves to
+  nothing, or to a commit already contained in main, is the stale case. Matching a symptom to a
+  filed defect is a hypothesis; the SHA is the evidence.
 - Claim a narrow scope (which packages/files you will touch) in the worklog if one is active.
   Do not parallel-edit the same `internal/` package as a live lane.
 - Queued work discipline: **proposed ≠ held** — dispatch consumes proposed work. If you intend
