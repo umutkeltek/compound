@@ -18,7 +18,12 @@ func TestMain(m *testing.M) {
 	if os.Getenv(childEnv) == "1" {
 		os.Exit(runPutChild())
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	// Removes the canonical post-completion-repair fixture tree (see
+	// post_completion_repair_test.go), the one directory this package builds
+	// outside any t.TempDir(), so it does not leak into the OS temp dir.
+	cleanupPostCompletionRepairFixtureSource()
+	os.Exit(code)
 }
 
 func runPutChild() int {

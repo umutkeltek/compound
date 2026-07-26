@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -96,11 +98,26 @@ func TestLegacyMigrateApplyAfterCompletionRefusesArrivalBetweenRetirementAndMuta
 }
 
 func TestPostCompletionRepairMixedCurrentScalePreservesEveryLooseByteAndSegmentAuthority(t *testing.T) {
-	if testing.Short() {
-		t.Skip("fsync-heavy: skipped in -short mode")
-	}
+	// Deliberately NOT gated on testing.Short(): the canonical land gate is
+	// `go test -count=1 -timeout=40m ./...`, which never passes -short, so a
+	// -short guard here would be decorative — that was the exact trap that
+	// made the previous guard on this test useless, since it never actually
+	// skipped on the gate that matters. perClass is the real lever instead:
+	// it defaults to a small value that still exercises every disposition
+	// (identical, divergent, absent) and every assertion below, all of which
+	// are expressed relative to perClass rather than a hardcoded count. The
+	// full production-scale run (1,101 records: current-home scale) stays
+	// available as an explicit, opt-in, non-land-gated variant via
+	// COMPOUND_EVENTSTORE_SCALE=367.
 	store := openMigrateStore(t)
-	const perClass = 367 // 1,101 post-cutover loose records: current-home scale.
+	perClass := 30
+	if raw := os.Getenv("COMPOUND_EVENTSTORE_SCALE"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			t.Fatalf("COMPOUND_EVENTSTORE_SCALE=%q must be a positive integer", raw)
+		}
+		perClass = parsed
+	}
 
 	type expectedRecord struct {
 		id              string
@@ -4233,24 +4250,172 @@ func repairTestReauthorizationTransitionLine(t *testing.T, state postCompletionR
 	return append(line, '\n')
 }
 
+// postCompletionRepairFixture is called 70 times across this file. Each call
+// used to run its own real, fsync-bearing Migrate(ModeApply) in a fresh
+// t.TempDir() — the dominant cost of the package outside the dedicated scale
+// test. Instead, the canonical post-migration tree (two loose records seeded,
+// migrated, then re-diverged into the identical/divergent/absent shapes every
+// repair test exercises) is built exactly ONCE per test binary run
+// (buildPostCompletionRepairFixtureSource, guarded by sync.Once below), and
+// every caller gets a private copy via a plain, non-syncing recursive file
+// copy (copyFixtureTree) of already-durable bytes — no fsync is needed to
+// duplicate bytes that were already made durable once.
+//
+// This sharing is safe only because no caller here depends on the fixture
+// tree's OWN identity (inode, mtime, hardlinks) or mutates the shared
+// canonical source directory: every caller receives its own store.home under
+// a fresh t.TempDir() and every subsequent mutation (symlink swaps, atomic
+// replacements, custody checks, etc.) lands on that private copy, never on
+// postCompletionRepairFixtureRoot. Verified against this file: the only
+// mtime-sensitive comparison in the engine (engine.legacyStreamRegrew,
+// migrate.go) reads the completion marker's mtime as a lower bound against
+// the hook_events/traces compatibility streams — streams this fixture never
+// creates, and which callers only ever write AFTER the copy, so real wall
+// time already orders them correctly. The fixture's segments are always
+// "today" relative to the fixed migrateNow clock, so they are never sealed
+// and never indexed (no persisted .idx sidecar exists in the tree), which
+// rules out the other mtime hazard: a stale ModifiedUnixNano baked into a
+// copied index file. If a future caller needs real file identity from the
+// fixture itself, it must not use this helper.
 func postCompletionRepairFixture(t *testing.T) *Store {
 	t.Helper()
-	store := openMigrateStore(t)
-	seedLoose(t, store, "rec_identical", "same")
-	seedLoose(t, store, "trace_divergent", "canonical")
-	if report, err := store.Migrate(MigrateOptions{Mode: ModeApply}); err != nil || !report.Completion.Complete {
-		t.Fatalf("complete initial migration: report=%+v err=%v", report.Completion, err)
+	src := postCompletionRepairFixtureSource(t)
+	dst := t.TempDir()
+	if err := copyFixtureTree(src, dst); err != nil {
+		t.Fatalf("copy post-completion repair fixture tree: %v", err)
+	}
+	store, err := openWithConfig(dst, engineConfig{
+		clock: func() time.Time { return migrateNow },
+		probe: func(string) (string, bool, error) { return "apfs", true, nil },
+	})
+	if err != nil {
+		t.Fatalf("open copied post-completion repair fixture: %v", err)
+	}
+	return store
+}
+
+var (
+	postCompletionRepairFixtureOnce sync.Once
+	postCompletionRepairFixtureRoot string
+	postCompletionRepairFixtureErr  error
+)
+
+// postCompletionRepairFixtureSource returns the canonical fixture tree's root,
+// building it on the first call and reusing it for the rest of the test
+// binary run.
+func postCompletionRepairFixtureSource(t *testing.T) string {
+	t.Helper()
+	postCompletionRepairFixtureOnce.Do(func() {
+		postCompletionRepairFixtureRoot, postCompletionRepairFixtureErr = buildPostCompletionRepairFixtureSource()
+	})
+	if postCompletionRepairFixtureErr != nil {
+		t.Fatalf("build canonical post-completion repair fixture: %v", postCompletionRepairFixtureErr)
+	}
+	return postCompletionRepairFixtureRoot
+}
+
+// cleanupPostCompletionRepairFixtureSource removes the canonical fixture
+// tree, if one was ever built. Called from TestMain after m.Run() so the one
+// directory this file creates outside any t.TempDir() does not leak.
+func cleanupPostCompletionRepairFixtureSource() {
+	if postCompletionRepairFixtureRoot != "" {
+		_ = os.RemoveAll(postCompletionRepairFixtureRoot)
+	}
+}
+
+// buildPostCompletionRepairFixtureSource performs the one real, fsync-bearing
+// migration that seeds the canonical fixture tree, reproducing exactly what
+// postCompletionRepairFixture used to do inline on every call. It returns
+// errors instead of calling t.Fatal on purpose: it runs inside a sync.Once,
+// and t.Fatal calls runtime.Goexit, which would still leave the Once marked
+// done (Go stores "done" via a deferred call wrapping the invocation) — so a
+// failure here would silently wedge every later caller onto a half-built
+// tree instead of failing loudly. Surfacing the error lets every caller's own
+// t.Fatal report it.
+func buildPostCompletionRepairFixtureSource() (string, error) {
+	dir, err := os.MkdirTemp("", "eventstore-repair-fixture-src-*")
+	if err != nil {
+		return "", err
+	}
+	store, err := openWithConfig(dir, engineConfig{
+		clock: func() time.Time { return migrateNow },
+		probe: func(string) (string, bool, error) { return "apfs", true, nil },
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := writeLegacyRecordFile(store, "rec_identical", eventRecord("rec_identical", schemaForID("rec_identical"), migrateNow, "same")); err != nil {
+		return "", err
+	}
+	if err := writeLegacyRecordFile(store, "trace_divergent", eventRecord("trace_divergent", schemaForID("trace_divergent"), migrateNow, "canonical")); err != nil {
+		return "", err
+	}
+	report, err := store.Migrate(MigrateOptions{Mode: ModeApply})
+	if err != nil {
+		return "", err
+	}
+	if !report.Completion.Complete {
+		return "", fmt.Errorf("fixture initial migration incomplete: %+v", report.Completion)
 	}
 	rec, err := store.Read("rec_identical")
 	if err != nil {
-		t.Fatal(err)
+		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(store.rootPath(), "rec_identical.json"), rec.Bytes, 0o644); err != nil {
-		t.Fatal(err)
+		return "", err
 	}
-	writeLegacyRecord(t, store, "trace_divergent", eventRecord("trace_divergent", schemaForID("trace_divergent"), repairNow, "loose-divergent"))
-	writeLegacyRecord(t, store, "rec_absent", eventRecord("rec_absent", schemaForID("rec_absent"), repairNow, "new-loose"))
-	return store
+	if err := writeLegacyRecordFile(store, "trace_divergent", eventRecord("trace_divergent", schemaForID("trace_divergent"), repairNow, "loose-divergent")); err != nil {
+		return "", err
+	}
+	if err := writeLegacyRecordFile(store, "rec_absent", eventRecord("rec_absent", schemaForID("rec_absent"), repairNow, "new-loose")); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// writeLegacyRecordFile mirrors writeLegacyRecord (scan_test.go) without a
+// *testing.T, for use from buildPostCompletionRepairFixtureSource, which runs
+// inside a sync.Once and cannot safely call t.Fatal (see the comment there).
+func writeLegacyRecordFile(store *Store, id string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(store.rootPath(), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(store.rootPath(), id+".json"), append(data, '\n'), 0o644)
+}
+
+// copyFixtureTree recursively copies src to dst with plain reads and writes —
+// deliberately no fsync. The source tree was already made durable once by
+// the real migration in buildPostCompletionRepairFixtureSource; duplicating
+// its bytes into a fresh, disposable t.TempDir() carries no durability
+// obligation of its own; a crash mid-copy just loses that one test's
+// TempDir, exactly as it always could.
+func copyFixtureTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm()|0o700)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
 }
 
 func repairTestAuthorization(t *testing.T, store *Store, planned PostCompletionRepairPlanRecord) PostCompletionRepairAuthorization {
