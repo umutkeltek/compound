@@ -667,7 +667,22 @@ func TestOSAbsorptionOSStatusProofRejectsFabricatedProvenanceMarker(t *testing.T
 // same public-clone skip the production proofs themselves report — and is
 // the one place this suite actually exercises the live parity probe against
 // production data rather than a fixture.
+//
+// Gated on COMPOUND_TEST_REAL_ENV=1, not testing.Short(): this is not a
+// "slow test" trimmed off a quick inner loop, it is a check that proves the
+// OPERATOR'S environment is healthy (shells out to the real `os skills` /
+// `os status` CLI and the real `compound` binary against the real, populated
+// COMPOUND_HOME, 4 subprocess invocations at a 20s timeout each) living
+// inside a suite that is supposed to prove a DIFF is correct — the same
+// defect this project fixes elsewhere. The canonical gate
+// (`go test -count=1 -timeout=40m ./...`) never passes -short, so a -short
+// guard here would be decorative, exactly like the neighbouring
+// TestOSAbsorption* real-environment checks in this package that already
+// carry one and still run on every default-path invocation.
 func TestOSAbsorptionOSWrapperProofsAgainstRealEnvironment(t *testing.T) {
+	if os.Getenv("COMPOUND_TEST_REAL_ENV") != "1" {
+		t.Skip("probes this machine's real installed `os`/`compound` binaries and real COMPOUND_HOME; set COMPOUND_TEST_REAL_ENV=1 to opt in")
+	}
 	if _, err := exec.LookPath("os"); err != nil {
 		t.Skip("real `os` binary not on PATH; skipping real-environment check")
 	}

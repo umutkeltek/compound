@@ -100,7 +100,7 @@ func (probe LSOFWorktreeInventoryLiveness) Snapshot(ctx context.Context, worktre
 		result, err = runWorktreeInventoryLSOFSnapshot(snapshotCtx)
 	}
 
-	activePaths, attributionComplete := attributeWorktreeInventoryLSOFPaths(snapshotCtx, result.Stdout, worktreeRoots)
+	activePaths, attributionComplete, _ := attributeWorktreeInventoryLSOFPaths(snapshotCtx, result.Stdout, worktreeRoots)
 	complete := err == nil &&
 		snapshotCtx.Err() == nil &&
 		result.ExitCode == 0 &&
@@ -187,12 +187,17 @@ func worktreeInventorySnapshotFailureEvidence(ctxErr, runErr error, result Workt
 	}
 }
 
+// attributeWorktreeInventoryLSOFPaths also returns how many lsof "n" records
+// it processed before returning. This lets a caller (namely the high-
+// cardinality budget test) assert deterministically that a context budget
+// cut attribution short instead of consuming every record — a fact wall-clock
+// timing could only approximate, and unreliably under machine contention.
 func attributeWorktreeInventoryLSOFPaths(
 	ctx context.Context,
 	stdout string,
 	worktreeRoots []string,
-) (map[string]string, bool) {
-	activePaths := make(map[string]string)
+) (activePaths map[string]string, complete bool, recordsProcessed int) {
+	activePaths = make(map[string]string)
 	cwdRecord := false
 	for _, line := range strings.Split(stdout, "\n") {
 		if len(line) < 2 {
@@ -202,6 +207,7 @@ func attributeWorktreeInventoryLSOFPaths(
 		case 'f':
 			cwdRecord = strings.EqualFold(strings.TrimSpace(line[1:]), "cwd")
 		case 'n':
+			recordsProcessed++
 			cwdPath := strings.TrimSuffix(line[1:], "\r")
 			if cwdRecord && filepath.IsAbs(cwdPath) {
 				cwdPath = filepath.Clean(cwdPath)
@@ -215,7 +221,7 @@ func attributeWorktreeInventoryLSOFPaths(
 			// Preserve the first completed record even when the process consumed
 			// the final budget tick. Anything not yet attributed stays unknown.
 			if ctx.Err() != nil {
-				return activePaths, false
+				return activePaths, false, recordsProcessed
 			}
 		default:
 			// A name is attributable only when it is paired with the immediately
@@ -223,7 +229,7 @@ func attributeWorktreeInventoryLSOFPaths(
 			cwdRecord = false
 		}
 	}
-	return activePaths, true
+	return activePaths, true, recordsProcessed
 }
 
 func longestWorktreeInventoryRoot(openPath string, worktreeRoots []string) (string, bool) {

@@ -629,9 +629,21 @@ func TestOSAbsorptionServedOrientationAuthorityProof(t *testing.T) {
 		},
 	}
 
+	// Build the fixture tree once and snapshot it, rather than paying the
+	// full install (file writes + registry seeding) 23 times. Every subtest
+	// gets an isolated tree by wiping root and restoring the snapshot in
+	// place before it mutates anything — see captureServedOrientationTreeSnapshot.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", root)
+	fixture := installServedOrientationFixtureAt(t, root)
+	golden := captureServedOrientationTreeSnapshot(t, root)
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fixture := installServedOrientationFixture(t)
+			restoreServedOrientationTreeSnapshot(t, root, golden)
 			if tt.mutate != nil {
 				tt.mutate(t, fixture)
 			}
@@ -719,6 +731,18 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", root)
+	return installServedOrientationFixtureAt(t, root)
+}
+
+// installServedOrientationFixtureAt builds the fixture tree under an
+// already-established root (HOME already pointed at it by the caller). It is
+// the reusable core behind installServedOrientationFixture, split out so a
+// caller that wants to build the scaffolding once and reuse the same root
+// across many subtests (see servedOrientationTreeSnapshot below) can call it
+// exactly once instead of paying its file-write and registry-seeding cost per
+// subtest.
+func installServedOrientationFixtureAt(t *testing.T, root string) servedOrientationFixture {
+	t.Helper()
 	compoundHome := filepath.Join(root, "compound-home")
 	codexPath := filepath.Join(root, ".codex", "AGENTS.md")
 	claudePath := filepath.Join(root, ".claude", "CLAUDE.md")
@@ -840,6 +864,109 @@ func installServedOrientationFixture(t *testing.T) servedOrientationFixture {
 		contractPaths:     contractPaths,
 		scopePath:         scopePath,
 		currentSourcePath: currentSourcePath,
+	}
+}
+
+// servedOrientationTreeEntry is one captured filesystem node (file, dir, or
+// symlink) under a servedOrientationFixture root, byte- and mtime-exact.
+type servedOrientationTreeEntry struct {
+	relPath    string
+	isDir      bool
+	isSymlink  bool
+	linkTarget string
+	mode       os.FileMode
+	modTime    time.Time
+	content    []byte
+}
+
+// captureServedOrientationTreeSnapshot walks root and records every node so
+// it can be restored byte-for-byte later. Every OSAbsorptionMatrixRow,
+// ContextPack, and EffectiveContract this fixture writes embeds absolute
+// paths derived from root (codexPath, compoundHome, ...), so a rebuild-heavy
+// per-subtest fixture cannot simply be relocated to a fresh t.TempDir(): the
+// embedded references would point at a directory that no longer exists. This
+// snapshot instead lets many subtests share ONE root path and reset its
+// on-disk content in place, which keeps every embedded absolute path valid.
+func captureServedOrientationTreeSnapshot(t *testing.T, root string) []servedOrientationTreeEntry {
+	t.Helper()
+	var entries []servedOrientationTreeEntry
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			entries = append(entries, servedOrientationTreeEntry{relPath: rel, isSymlink: true, linkTarget: target})
+			return nil
+		}
+		if info.IsDir() {
+			entries = append(entries, servedOrientationTreeEntry{relPath: rel, isDir: true, mode: info.Mode()})
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, servedOrientationTreeEntry{
+			relPath: rel, mode: info.Mode(), modTime: info.ModTime(), content: body,
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("capture served-orientation tree snapshot: %v", err)
+	}
+	return entries
+}
+
+// restoreServedOrientationTreeSnapshot wipes root and rewrites it from a
+// captured snapshot, including file mtimes. This gives each subtest an
+// isolated, freshly-built-equivalent tree without re-running the fixture's
+// file writes and registry seeding 23 times: the wipe is unconditional (a
+// prior subtest may have deleted or symlinked a fixture path), so a subtest
+// can never observe a mutation left behind by an earlier one.
+func restoreServedOrientationTreeSnapshot(t *testing.T, root string, entries []servedOrientationTreeEntry) {
+	t.Helper()
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("reset served-orientation tree: %v", err)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("recreate served-orientation root: %v", err)
+	}
+	for _, entry := range entries {
+		full := filepath.Join(root, entry.relPath)
+		switch {
+		case entry.isDir:
+			if err := os.MkdirAll(full, entry.mode); err != nil {
+				t.Fatalf("restore dir %s: %v", entry.relPath, err)
+			}
+		case entry.isSymlink:
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatalf("restore symlink parent %s: %v", entry.relPath, err)
+			}
+			if err := os.Symlink(entry.linkTarget, full); err != nil {
+				t.Fatalf("restore symlink %s: %v", entry.relPath, err)
+			}
+		default:
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatalf("restore file parent %s: %v", entry.relPath, err)
+			}
+			if err := os.WriteFile(full, entry.content, entry.mode); err != nil {
+				t.Fatalf("restore file %s: %v", entry.relPath, err)
+			}
+			if err := os.Chtimes(full, entry.modTime, entry.modTime); err != nil {
+				t.Fatalf("restore mtime %s: %v", entry.relPath, err)
+			}
+		}
 	}
 }
 

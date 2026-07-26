@@ -204,26 +204,42 @@ func TestLSOFWorktreeInventoryLivenessHighCardinalityAttributionHonorsContextBud
 	activePath := filepath.Join(roots[len(roots)-1], "active.go")
 	var stdout strings.Builder
 	stdout.WriteString("p1\nfcwd\nn" + activePath + "\n")
-	for i := 0; i < 50_000; i++ {
+	const syntheticRecords = 50_000
+	for i := 0; i < syntheticRecords; i++ {
 		stdout.WriteString("p2\nfcwd\nn/synthetic/outside/file-")
 		stdout.WriteString(strconv.Itoa(i))
 		stdout.WriteByte('\n')
 	}
-	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{Stdout: stdout.String()}}
+	stdoutText := stdout.String()
+	runner := &inventoryRecordingProcessRunner{result: WorktreeRetirementProcessResult{Stdout: stdoutText}}
 
-	started := time.Now()
 	observations := (LSOFWorktreeInventoryLiveness{Runner: runner, Timeout: time.Nanosecond}).Snapshot(
 		context.Background(), roots,
 	)
-	elapsed := time.Since(started)
-	if elapsed > 750*time.Millisecond {
-		t.Fatalf("expired high-cardinality snapshot took %s, want attribution to honor the context budget", elapsed)
-	}
 	if got := observations[roots[len(roots)-1]].State; got != WorktreeLivenessActive {
 		t.Fatalf("partial active evidence was lost while bounding attribution: state=%q observations=%+v", got, observations)
 	}
 	if got := observations[roots[0]].State; got != WorktreeLivenessUnknown {
 		t.Fatalf("unresolved root state=%q, want unknown after attribution budget expires", got)
+	}
+
+	// Deterministic replacement for the old wall-clock ("elapsed < 750ms")
+	// budget assertion: prove directly, via the record counter
+	// attributeWorktreeInventoryLSOFPaths reports, that an expired context
+	// makes attribution bail out long before it would consume all
+	// syntheticRecords+1 lsof entries. An already-cancelled context makes
+	// this exact (recordsProcessed == 1, since ctx.Err() is checked right
+	// after the very first record), but assert the weaker, still-conclusive
+	// bound so this doesn't silently start asserting timing-shaped behavior
+	// again if the attribution loop's per-record work changes.
+	expiredCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, complete, recordsProcessed := attributeWorktreeInventoryLSOFPaths(expiredCtx, stdoutText, roots)
+	if complete {
+		t.Fatal("attribution reported complete against an already-cancelled context")
+	}
+	if recordsProcessed >= syntheticRecords {
+		t.Fatalf("attribution processed %d records against an already-cancelled context, want it to bail long before consuming all %d records", recordsProcessed, syntheticRecords)
 	}
 }
 
