@@ -1854,8 +1854,12 @@ const maxInjectionNegativeCards = 5
 // AFTER every capped section above it, which is how the orientation tail came to
 // be amputated in essentially every digest while every cap looked satisfied.
 const (
-	maxInjectionHeaderChars       = 400
-	maxInjectionActiveMemoryChars = 1600
+	maxInjectionHeaderChars = 400
+	// maxInjectionActiveMemoryChars is funded to measured demand by the surface
+	// split: 2100 is the median uncapped size of this section across 1077 digests,
+	// and at 1600 it truncated on the live task surface every time. The 500 runes
+	// come from orientation content no longer competing for this budget.
+	maxInjectionActiveMemoryChars = 2100
 	// maxInjectionNegativeChars: a scope-matched prior failure changes the next move,
 	// where a bare `decision://…` id carries nothing an executor can act on — which
 	// is why this section outranks Active Decisions (see writeActiveDecisionsPointer).
@@ -1878,8 +1882,13 @@ const (
 	// "personal-corpus"), not prose — a handful of short tokens, never a paragraph.
 	// Measured max 62 runes. 450 reserved paragraph room for a channel that has
 	// never rendered one.
-	maxInjectionAvoidChars           = 160
-	maxInjectionCapabilityOfferChars = 1000
+	maxInjectionAvoidChars = 160
+	// maxInjectionCapabilityOfferChars: offers measured 794 median but 2681 max, and
+	// at 1000 the section truncated mid-offer on the live surface — cutting a
+	// constraint list in half, which reads as an offer with fewer conditions than it
+	// has. 1500 covers the common case with room; per-FIELD priority within an offer
+	// (why > conflicts > required > rest) is the remaining fix for the long tail.
+	maxInjectionCapabilityOfferChars = 1500
 	// maxInjectionOrientationNoteChars holds the task surface's one-line pointer at
 	// the orientation surface. Small on purpose: a pointer that grows into a summary
 	// re-creates the duplication the split removed.
