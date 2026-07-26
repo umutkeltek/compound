@@ -247,3 +247,65 @@ func TestActDNSRecordDryRunWritesNothing(t *testing.T) {
 		t.Fatalf("dry-run must make no remote call; got %d ops", len(fake.ops))
 	}
 }
+
+// A remote-outbound refusal must teach: the unresolved-service preflight and the
+// no-standing-grant policy gate both terminate the verb, and an operator who reads only the
+// refusal must be able to recover without guessing which resolver or which grant failed.
+//
+// RED WITHOUT the conversion: both sites printed a single `refused: <wrapped error>` line, so
+// assertTeachingRefusal fails at "refusal does not name gate" before it reaches the command
+// checks — there was no gate name, no tried-trace, and no suggested command at all.
+func TestActRemoteRefusalsTeach(t *testing.T) {
+	t.Run("unresolved service names the resolver and the register path", func(t *testing.T) {
+		home := t.TempDir()
+		registerInfraService(t, home, "example-router") // a DIFFERENT service exists
+		fake := newCLIFakeRunner()
+		withFakeRunner(t, fake)
+
+		var out, errOut bytes.Buffer
+		code := runActDNSRecord([]string{
+			"--service", "ghost-service", "--host", "example-host.internal", "--address", "192.0.2.10",
+			"--remote-host", "example-router.internal", "--remote-path", "/etc/dnsmasq.d/compound.conf",
+			"--work", "work_unresolved", "--confirm", "--home", home,
+		}, &out, &errOut)
+		if code == 0 {
+			t.Fatalf("expected preflight refusal for an unresolved service; stdout=%q", out.String())
+		}
+		assertTeachingRefusal(t, errOut.String(), "service_entity_resolution",
+			"ghost-service",
+			"compound memory entity resolve ghost-service",
+		)
+		if len(fake.ops) != 0 {
+			t.Fatalf("preflight must refuse before any remote op; got %d ops", len(fake.ops))
+		}
+	})
+
+	t.Run("no standing grant names the outcome and the grant commands", func(t *testing.T) {
+		home := t.TempDir()
+		registerInfraService(t, home, "example-router")
+		fake := newCLIFakeRunner()
+		withFakeRunner(t, fake)
+
+		var out, errOut bytes.Buffer
+		code := runActDNSRecord([]string{
+			"--service", "example-router", "--host", "example-host.internal", "--address", "192.0.2.10",
+			"--remote-host", "example-router.internal", "--remote-path", "/etc/dnsmasq.d/compound.conf",
+			"--work", "work_nogrant", "--confirm", "--home", home,
+		}, &out, &errOut)
+		if code == 0 {
+			t.Fatalf("expected refusal without a grant; stdout=%q", out.String())
+		}
+		assertTeachingRefusal(t, errOut.String(), "policy_decision",
+			"outbound.dns_record.write",
+			"compound policy standing-grants-authority --json",
+		)
+		// The refusal must report the decision it actually got, not a generic "blocked":
+		// hold and deny send the reader to different remedies.
+		if !strings.Contains(errOut.String(), "outcome hold") && !strings.Contains(errOut.String(), "outcome deny") {
+			t.Errorf("refusal must name the policy outcome it observed, got:\n%s", errOut.String())
+		}
+		if len(fake.ops) != 0 {
+			t.Fatalf("a policy-refused write may run no remote op; got %d ops", len(fake.ops))
+		}
+	})
+}

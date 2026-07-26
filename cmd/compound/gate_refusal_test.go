@@ -141,6 +141,108 @@ func doThisBlocks(src string) []string {
 	return out
 }
 
+// refusalSuggestedCommands extracts the commands a RENDERED refusal tells the reader to
+// run: the indented lines under "do this:", ending at the next section.
+//
+// It is the rendering-side twin of doThisBlocks above, which reads the SOURCE. Both are
+// needed: the source sweep proves every literal is invocable, and this one proves the text
+// an operator actually sees still carries a pasteable command after interpolation — a
+// Sprintf whose value came back empty produces a source literal that passes and a rendered
+// line that does not.
+func refusalSuggestedCommands(text string) []string {
+	var out []string
+	inBlock := false
+	for _, line := range strings.Split(text, "\n") {
+		switch {
+		case strings.HasPrefix(line, "  do this:"):
+			inBlock = true
+		case inBlock && strings.HasPrefix(line, "    "):
+			out = append(out, strings.TrimSpace(line))
+		case inBlock:
+			inBlock = false
+		}
+	}
+	return out
+}
+
+// assertTeachingRefusal is the shared per-site falsifier: it asserts that text is a refusal
+// rendered through gateRefusal at gate, that all four sections survived rendering, and that
+// every command it suggests is invocable as written.
+//
+// The vacuity guard matters more than the section checks: an assertion loop over zero
+// extracted commands passes while proving nothing, which is exactly how a site could be
+// reverted to a bare error without any test going red.
+func assertTeachingRefusal(t *testing.T, text, gate string, wantFragments ...string) {
+	t.Helper()
+
+	if !strings.Contains(text, "refused at gate "+gate) {
+		t.Fatalf("refusal does not name gate %q:\n%s", gate, text)
+	}
+	for _, section := range []string{"  refused: ", "  tried in order:", "  do this:", "  prevents: "} {
+		if !strings.Contains(text, section) {
+			t.Errorf("gate %s: refusal is missing the %q section:\n%s", gate, strings.TrimSpace(section), text)
+		}
+	}
+
+	commands := refusalSuggestedCommands(text)
+	if len(commands) == 0 {
+		t.Fatalf("gate %s: refusal suggests no command — the whole point of the form is the exact next command:\n%s", gate, text)
+	}
+	for _, cmd := range commands {
+		if !strings.HasPrefix(cmd, "compound ") {
+			t.Errorf("gate %s: suggested command is not invocable as written (missing the binary name): %q", gate, cmd)
+		}
+		if strings.Contains(cmd, "  #") {
+			// A trailing comment is fine; an EMPTY interpolation before it is not.
+			if head := strings.TrimSpace(strings.SplitN(cmd, "  #", 2)[0]); strings.Contains(head, "  ") {
+				t.Errorf("gate %s: suggested command has a gap where a value should be: %q", gate, cmd)
+			}
+		}
+	}
+
+	for _, want := range wantFragments {
+		if !strings.Contains(text, want) {
+			t.Errorf("gate %s: refusal missing %q:\n%s", gate, want, text)
+		}
+	}
+}
+
+// TestConvertedGateSitesStayConverted is the sweep the packet's falsifier asks for: each row
+// is a gate that was deliberately converted to the teaching form, and the row goes red the
+// moment an edit drops that gate's rendering back to a bare `error: ...` line.
+//
+// It reads the sources rather than driving each verb because the point is coverage of the
+// CONVERSION, not of the behaviour — the behaviour is pinned by the per-site tests named in
+// each row's reason. A row here with no matching per-site test would be ceremony.
+func TestConvertedGateSitesStayConverted(t *testing.T) {
+	converted := []struct {
+		file string
+		gate string
+		why  string
+	}{
+		{"harness_exec_cli.go", "adapter_resolution", "unknown --harness, ungoverned run record"},
+		{"harness_exec_cli.go", "workspace_resolution", "no workspace, never fall back to the home"},
+		{"work_advance_execute.go", "adapter_resolution", "unknown --harness before any state change"},
+		{"work_advance_execute.go", "workspace_resolution", "no workspace before any state change"},
+		{"act_cli.go", "service_entity_resolution", "governed infra write at an unknown service"},
+		{"act_cli.go", "policy_decision", "no standing grant allows the outbound write"},
+		{"landlease_cli.go", "land_lease_contention", "a live lease is held by another lane"},
+		{"landlease_cli.go", "land_lease_holder", "release/steal by a non-holder"},
+		{"main.go", "finding_body_bound", "a body larger than the direct-write bound"},
+		{"work_lease_refusal.go", "work_lease_holder", "claim/close against another actor's lease"},
+	}
+
+	for _, row := range converted {
+		body, err := os.ReadFile(row.file)
+		if err != nil {
+			t.Fatalf("%s: %v", row.file, err)
+		}
+		if !strings.Contains(string(body), `Gate:    "`+row.gate+`"`) && !strings.Contains(string(body), `Gate: "`+row.gate+`"`) {
+			t.Errorf("%s no longer renders gate %q through gateRefusal (%s) — a converted gate was reverted to a bare error", row.file, row.gate, row.why)
+		}
+	}
+}
+
 // TestResolveExecuteWorkspaceReportsWhichRungResolved pins the trace the refusal
 // quotes. A ladder that reports only its final verdict cannot be distinguished from
 // one that never ran, so each rung must name itself AND its observed result.

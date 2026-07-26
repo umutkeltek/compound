@@ -193,7 +193,20 @@ func runActRemote(spec remoteActSpec, args []string, stdout, stderr io.Writer) i
 	// BEFORE any intent is minted (no remote call happens here — it is a local ledger read).
 	slug, err := resolveInfraServiceSlug(homePath, service)
 	if err != nil {
-		fmt.Fprintln(stderr, "refused:", err)
+		gateRefusal{
+			Command: "compound act " + spec.verb,
+			Gate:    "service_entity_resolution",
+			Refused: fmt.Sprintf("--service %q does not name a service:* entity this home knows, so no ActionIntent was minted and no remote call was made", service),
+			Tried: []string{
+				fmt.Sprintf("--service %s against the ledger's entity resolver: %v", service, err),
+			},
+			DoThis: []string{
+				"compound memory entity list   # the entities this home knows, with their kinds and aliases",
+				fmt.Sprintf("compound memory entity resolve %s   # how this exact token resolves today", firstNonEmptyRefusalValue(service, "<service-token>")),
+				fmt.Sprintf("compound memory entity register service:%s service   # register it first if the service is real but unknown here", firstNonEmptyRefusalValue(service, "<name>")),
+			},
+			Prevents: "a governed infra write aimed at a service compound cannot name. Resolving the target after the write would let a typo'd --service mutate a real remote host with no entity to attribute the change to.",
+		}.writeTo(stderr)
 		return 1
 	}
 
@@ -230,6 +243,18 @@ func runActRemote(spec remoteActSpec, args []string, stdout, stderr io.Writer) i
 	}
 	ai := governedRemoteIntent(work, capability, spec.action, target, name, value, now)
 	pd := policy.Evaluate(ai, cfg, now)
+	// The policy rung of act's by-construction gate, rendered BEFORE act.Execute so the
+	// refusal can teach. act.Execute would refuse this same decision inside gate() before
+	// touching the adapter, so short-circuiting here is byte-identical in effect and only
+	// changes the sentence the operator reads.
+	if !policy.Allowed(pd) {
+		actPolicyGateRefusal("compound act "+spec.verb+" --confirm", capability, target, pd, []string{
+			"compound policy standing-grants-authority --json   # which capabilities already carry a standing grant in this home",
+			"compound policy import-standing-grants <grants.yaml>   # add one scoped to this capability, the external_side_effect class, and this remote path",
+			fmt.Sprintf("compound act %s --service %s %s %s %s %s --remote-host <host>   # without --confirm: dry-run preview, zero remote calls", spec.verb, firstNonEmptyRefusalValue(service, "<service>"), spec.nameFlag, firstNonEmptyRefusalValue(name, "<name>"), spec.valueFlag, firstNonEmptyRefusalValue(value, "<value>")),
+		}).writeTo(stderr)
+		return 1
+	}
 	res, execErr := act.Execute(store, adapter, ai, pd, spec.forwardValue(name, value), now)
 	if execErr != nil {
 		// No allowing PolicyDecision (hold/deny), a conflict, or a write failure => refused,
@@ -369,6 +394,16 @@ func runActRepoint(args []string, stdout, stderr io.Writer) int {
 	}
 	ai := governedRepointIntent(work, capability, target, value, now)
 	pd := policy.Evaluate(ai, cfg, now)
+	// Same policy rung as runActRemote: rendered here so the refusal names the grant the
+	// operator is missing instead of restating act's internal gate error.
+	if !policy.Allowed(pd) {
+		actPolicyGateRefusal("compound act repoint --confirm", capability, target, pd, []string{
+			"compound policy standing-grants-authority --json   # which capabilities already carry a standing grant in this home",
+			"compound policy import-standing-grants <grants.yaml>   # add one scoped to this capability, the external_side_effect class, and this --target-path",
+			fmt.Sprintf("compound act repoint --target-path %s --target-id %s --value <new-value> --work %s   # without --confirm: dry-run preview, writes nothing", firstNonEmptyRefusalValue(targetPath, "<config-path>"), firstNonEmptyRefusalValue(targetID, "<dotted.key>"), firstNonEmptyRefusalValue(work, "<work-id>")),
+		}).writeTo(stderr)
+		return 1
+	}
 	res, execErr := act.Execute(store, adapter, ai, pd, []byte(value), now)
 	if execErr != nil {
 		// No allowing PolicyDecision (hold/deny) => act refused, target byte-identical.
@@ -459,6 +494,30 @@ func printActResult(stdout io.Writer, target envelope.ActionTarget, res act.Resu
 	fmt.Fprintf(stdout, "- receipt=%s transition=%s move=%s\n", res.Receipt.ID, res.Transition.ID, res.Receipt.MoveType)
 	fmt.Fprintf(stdout, "- pre-image=%s post-image=%s (a revert restores the pre-image through the same act seam)\n", res.PreImageRef, res.PostImageRef)
 	return 0
+}
+
+// actPolicyGateRefusal renders the ONE policy rung every `act ... --confirm` verb shares:
+// an ActionIntent was minted and evaluated, and no standing grant allows it. The verb-specific
+// recovery ladder is the caller's, because the exact re-run command differs per verb; the
+// tried-trace and the prevented failure do not, so they live here rather than being restated
+// (and drifting) at each site.
+func actPolicyGateRefusal(command, capability string, target envelope.ActionTarget, pd envelope.PolicyDecision, doThis []string) gateRefusal {
+	outcome := firstNonEmptyRefusalValue(pd.Outcome, "<no outcome>")
+	reasons := "no reason recorded"
+	if joined := strings.TrimSpace(strings.Join(pd.Reasons, "; ")); joined != "" {
+		reasons = joined
+	}
+	return gateRefusal{
+		Command: command,
+		Gate:    "policy_decision",
+		Refused: fmt.Sprintf("no standing grant allows capability %q on %s %q, so %s is byte-identical and no receipt or transition was minted", capability, target.Kind, target.ID, firstNonEmptyRefusalValue(target.Path, "the target")),
+		Tried: []string{
+			fmt.Sprintf("mint ActionIntent for capability %s (class external_side_effect, blast local): minted", capability),
+			fmt.Sprintf("evaluate it against this home's standing grants: outcome %s (%s)", outcome, reasons),
+		},
+		DoThis:   doThis,
+		Prevents: "an ungoverned outbound write. Every act write is authorized by a PolicyDecision that names THIS intent; without one the seam refuses rather than mutating a real target that no receipt can later explain or revert.",
+	}
 }
 
 func actIDFor(prefix string, parts ...string) string {
