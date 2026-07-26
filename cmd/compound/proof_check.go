@@ -502,6 +502,8 @@ func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCh
 		output, err = runProofCheckWorkbenchGate(repo, step)
 	} else if step.Name == "console-attention-consistency-smoke" {
 		output, err = runProofCheckConsoleAttentionGate(repo, step)
+	} else if step.Name == "console-agents-consistency-smoke" {
+		output, err = runProofCheckConsoleAgentsGate(repo, step)
 	} else {
 		cmd := exec.Command(step.Command[0], step.Command[1:]...)
 		cmd.Dir = repo
