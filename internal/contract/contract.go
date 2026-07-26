@@ -27,6 +27,7 @@ import (
 
 	"compound/internal/authority"
 	"compound/internal/breadth"
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	decisionstate "compound/internal/decisions"
 	"compound/internal/envelope"
@@ -2909,15 +2910,17 @@ func memoryPolicyExclusionReason(claim mem.Claim, rule MemoryRule, relevanceRank
 	if contains(rule.ExplicitOnly, "self-model") && selfModelClaim(claim, selfEntities) {
 		return "memory policy requires explicit self-model handling; relevant claim left out of active_memory"
 	}
+	if contains(rule.ExplicitOnly, "personal-corpus") && personalMemoryClaim(claim, selfEntities) {
+		if claim.PromotionBasis != candidates.BasisExplicitConfirmation {
+			return "memory policy requires explicit personal-corpus handling; relevant claim left out of active_memory"
+		}
+	}
 	return ""
 }
 
 func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool, semanticScore float64, temps map[string]float64, selfEntities map[string]bool) float64 {
 	rank := memoryRelevanceRank(claim, entities, taskTokens, semanticScore, temps)
 	if memoryPolicyExclusionReason(claim, rule, rank, selfEntities) != "" {
-		return 0
-	}
-	if contains(rule.ExplicitOnly, "personal-corpus") && personalMemoryClaim(claim, selfEntities) && rank <= 0 {
 		return 0
 	}
 	return rank

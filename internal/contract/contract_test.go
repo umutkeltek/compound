@@ -3437,6 +3437,89 @@ func TestPackWithCapabilitiesIncludesExplicitPrivateChatGPTConversationClaim(t *
 	}
 }
 
+// TestPackWithCapabilitiesExcludesRelevantPersonalClaimWithoutExplicitConfirmation
+// proves the control-plane ExplicitOnly personal-corpus gate: a task-relevant
+// private/preference/corpus-qualified claim whose durable PromotionBasis is NOT
+// candidates.BasisExplicitConfirmation must be excluded from active_memory and
+// Included, with the canonical reason "requires explicit personal-corpus
+// handling". The existing explicitly-confirmed private-conversation test stays
+// green; this test isolates the gap — the prior policy leaked relevant
+// personal claims through the `rank <= 0` branch instead of consulting the
+// promotion basis.
+func TestPackWithCapabilitiesExcludesRelevantPersonalClaimWithoutExplicitConfirmation(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{
+		{
+			Entity:         "knowledge:corpus:journal",
+			Predicate:      "personal_cognition_runtime",
+			Object:         "An owned personal cognition runtime should answer next actions from goals, thinking patterns, and evidence.",
+			Confidence:     0.82,
+			Derivation:     "extracted",
+			ClaimType:      "preference",
+			PromotionBasis: candidates.BasisCuratedPage,
+			Qualifiers: map[string]string{
+				"source":        "knowledge_corpus",
+				"source_kind":   "notebook",
+				"extraction_id": "kx_private_corpus",
+			},
+			SourceTraceRef:  "ev_private_corpus",
+			SnippetHash:     "sha256:private-corpus",
+			Visibility:      "private",
+			ObservationDate: "2026-07-04",
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := store.Adjudicate(got[0].ID, "promote", "test", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Claim == nil {
+		t.Fatalf("promote returned nil claim: %+v", res)
+	}
+	if res.Claim.PromotionBasis == candidates.BasisExplicitConfirmation {
+		t.Fatalf("red test setup mistake: promoted basis = %q; need a non-explicit-confirmation basis", res.Claim.PromotionBasis)
+	}
+	ref := "claim://" + res.Claim.ID
+	matching := Input{
+		Harness:     "codex",
+		Cwd:         "/repo/compound",
+		Task:        "personal cognition runtime next actions from goals patterns evidence",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(matching, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(pack.ActiveMemory, ref) {
+		t.Fatalf("context pack active_memory = %v, want excluded non-explicit personal-corpus claim %s", pack.ActiveMemory, ref)
+	}
+	if _, ok := findIncludedRef(pack, ref); ok {
+		t.Fatalf("context pack Included refs must not smuggle non-explicit personal-corpus claim %s", ref)
+	}
+	reason := excludedRefReason(pack.Excluded, ref)
+	if !strings.Contains(reason, "requires explicit personal-corpus handling") {
+		t.Fatalf("context pack excluded reason for %s = %q, want reason containing %q", ref, reason, "requires explicit personal-corpus handling")
+	}
+	contract, err := CompileWithRuntime(matching, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(contract.ActiveMemory, ref) {
+		t.Fatalf("effective contract active_memory = %v, want excluded non-explicit personal-corpus claim %s", contract.ActiveMemory, ref)
+	}
+	if reason := excludedRefReason(contract.Excluded, ref); !strings.Contains(reason, "requires explicit personal-corpus handling") {
+		t.Fatalf("effective contract excluded reason for %s = %q, want reason containing %q", ref, reason, "requires explicit personal-corpus handling")
+	}
+}
+
 func TestPackWithCapabilitiesIgnoresStopwordOnlyTaskOverlap(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
