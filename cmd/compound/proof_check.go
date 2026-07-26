@@ -58,6 +58,12 @@ func cmdProofCheck(args []string) {
 		fmt.Println("                run by the CI console job, not the bare-clone --ci job)")
 		fmt.Println("  --out FILE    write the full JSON report to FILE and print a final 'battery: ok|FAILED' verdict")
 		fmt.Println("                line as the last stdout line; the process exit code stays truthful (0/1/2)")
+		fmt.Println("  --timings     report the recorded per-gate duration history instead of running the battery")
+		fmt.Println("                (--dev selects the development lane, --window N the sample depth)")
+		return
+	}
+	if hasFlag(args, "--timings") {
+		cmdProofCheckTimings(args)
 		return
 	}
 	if proofCheckDevelopmentRequested(args) {
@@ -83,20 +89,33 @@ func cmdProofCheck(args []string) {
 			os.Exit(2)
 		}
 	}
-	report, err := runProofCheck(repoPath, dryRun, baseRef, ciOnly, ciConsole, time.Now())
+	started := time.Now()
+	report, err := runProofCheck(repoPath, dryRun, baseRef, ciOnly, ciConsole, started)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
 		os.Exit(2)
 	}
-	if !dryRun && report.Status == "ok" {
-		homePath, err := home.Resolve("")
-		if err != nil {
-			report.Warnings = append(report.Warnings, "proof artifact not recorded: "+err.Error())
+	wall := time.Since(started)
+	if !dryRun {
+		homePath, homeErr := home.Resolve("")
+		if homeErr != nil {
+			report.Warnings = append(report.Warnings, "COMPOUND_HOME unresolved; proof artifact and timing history not recorded: "+homeErr.Error())
 		} else {
-			var recordErr error
-			report, recordErr = recordProofCheckRuntimeArtifact(homePath, report)
-			if recordErr != nil {
-				report.Warnings = append(report.Warnings, "proof artifact not recorded: "+recordErr.Error())
+			if proofCheckShouldRecordArtifact(dryRun, report.Status, ciOnly, ciConsole) {
+				var recordErr error
+				report, recordErr = recordProofCheckRuntimeArtifact(homePath, report)
+				if recordErr != nil {
+					report.Warnings = append(report.Warnings, "proof artifact not recorded: "+recordErr.Error())
+				}
+			}
+			// Recorded for EVERY executed run, red included. A failing battery's gate durations
+			// are as real as a passing one's, and folding only green runs into the baseline
+			// would bias it toward whatever happens to pass — precisely the blind spot that let
+			// the go-test budget drift 10m -> 20m -> 40m without anyone holding a distribution.
+			if warning, timingErr := recordProofCheckTimingHistory(homePath, report, wall, time.Now()); timingErr != nil {
+				report.Warnings = append(report.Warnings, "proof-check timing history not recorded: "+timingErr.Error())
+			} else if warning != "" {
+				report.Warnings = append(report.Warnings, warning)
 			}
 		}
 	}
@@ -120,6 +139,24 @@ func cmdProofCheck(args []string) {
 	if report.Status != "ok" && !dryRun {
 		os.Exit(1)
 	}
+}
+
+// proofCheckShouldRecordArtifact reports whether a finished run has earned the right to write the
+// certifying runtime artifact under COMPOUND_HOME/artifacts/refs/.
+//
+// The `!ciOnly && !ciConsole` clauses are a CORRECTNESS fix, not tidiness.
+// recordProofCheckRuntimeArtifact writes four hardcoded "adjacent Workbench action verified" lines
+// regardless of which gates actually ran, and Workbench's adjacent-action consumption then treats
+// those claims as satisfied. But `--ci` runs only the 7 fresh-clone-portable gates and
+// `--ci-console` only the console subset — neither includes `workbench-projection` or
+// `codex-pretooluse-native-gate`. So a green `--ci` was minting an artifact asserting that two
+// gates it never executed had passed: a proof that certifies work nobody did, which is worse than
+// no proof at all.
+//
+// Kept as a pure predicate so the rule can be falsified by a table test in microseconds instead of
+// by running a multi-minute battery — the decision is separable from the write it authorizes.
+func proofCheckShouldRecordArtifact(dryRun bool, status string, ciOnly, ciConsole bool) bool {
+	return !dryRun && status == "ok" && !ciOnly && !ciConsole
 }
 
 // proofCheckValidateOutPath proves --out's path is writable (create/truncate) before the

@@ -103,10 +103,21 @@ func cmdProofCheckDevelopment(args []string) {
 		}
 	}
 
-	report, err := runDevelopmentProofCheck(repoPath, dryRun, baseRef, time.Now())
+	started := time.Now()
+	report, err := runDevelopmentProofCheck(repoPath, dryRun, baseRef, started)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
 		os.Exit(2)
+	}
+	// The development lane records into the SAME history file but under its own ProfileKind, so
+	// the operator gets drift visibility on the fast lane too while its cached `-short` runs stay
+	// structurally unable to contaminate the certifying lane's baseline.
+	if !dryRun {
+		if homePath, homeErr := home.Resolve(""); homeErr == nil {
+			if warning, timingErr := recordProofCheckTimingHistory(homePath, report, time.Since(started), time.Now()); timingErr == nil && warning != "" {
+				report.Warnings = append(report.Warnings, warning)
+			}
+		}
 	}
 	if outPath != "" {
 		if err := proofCheckWriteDevelopmentReportFile(outPath, report); err != nil {
