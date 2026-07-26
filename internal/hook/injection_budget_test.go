@@ -79,6 +79,57 @@ func TestInjectionSectionCapsFitBudget(t *testing.T) {
 	}
 }
 
+// TestIncludedTrustTiersFitTheOrientationCap pins that the tier encoding is paid for
+// out of the Included section's EXISTING cap.
+//
+// The tiers were funded by choosing the cheaper encoding, not by raising a cap: one
+// legend line plus a marker on demoted refs only, with verify-first left implicit as
+// the default. Marking every ref would have cost a verb per ref for the tier the reader
+// already applies by default. This test measures the live shape — the 5-ref pack a real
+// `orient` serves this repo — against the unchanged cap, so a future edit that grows the
+// per-ref line has to notice it is spending someone else's budget.
+func TestIncludedTrustTiersFitTheOrientationCap(t *testing.T) {
+	// Exactly what `compound orient --harness claude_code` includes for this repo.
+	live := []envelope.IncludedRef{
+		{Ref: "AGENTS.md", SourceClass: "source", Reason: "ambient for product repos", Confidence: 1, Status: "current"},
+		{Ref: "skills/README.md", SourceClass: "source", Reason: "ambient for product repos", Confidence: 1, Status: "current"},
+		{Ref: "constitution://universal-principles", SourceClass: "source", Reason: "ambient for product repos", Confidence: 1, Status: "current"},
+		{Ref: "repo://docs", SourceClass: "source", Reason: "ambient for product repos", Confidence: 1, Status: "current"},
+		{Ref: "memory://relevance-gated", SourceClass: "generated", Reason: "ambient for product repos", Confidence: 1, Status: "current"},
+	}
+
+	var section strings.Builder
+	writeIncludedList(&section, live)
+	got := utf8.RuneCountInString(section.String())
+	if got > maxOrientationIncludedChars {
+		t.Fatalf("Included section with trust tiers is %d runes, over its %d cap (by %d).\n"+
+			"Fund it by making the encoding cheaper — never by raising the cap.\n%s",
+			got, maxOrientationIncludedChars, got-maxOrientationIncludedChars, section.String())
+	}
+	t.Logf("live 5-ref Included section with tiers: %d runes of cap %d (headroom %d)",
+		got, maxOrientationIncludedChars, maxOrientationIncludedChars-got)
+
+	// And the section must actually survive its own cap in the rendered digest: a
+	// truncation marker here would mean the tier grammar was defined and then cut.
+	pack := envelope.ContextPack{SummaryMD: "summary", Included: live}
+	pack.Header.ID = "ctx_tier_budget"
+	rendered := renderInjection(injectionRender{HookID: "hookev_tier_budget", Pack: pack, Surface: injectionSurfaceOrientation})
+	idx := strings.Index(rendered, "## Included")
+	if idx < 0 {
+		t.Fatalf("orientation digest lost the Included section:\n%s", rendered)
+	}
+	tail := rendered[idx:]
+	if cut := strings.Index(tail, "\n## "); cut > 0 {
+		tail = tail[:cut]
+	}
+	if strings.Contains(tail, "Section truncated") {
+		t.Fatalf("Included section truncated at the live pack size:\n%s", tail)
+	}
+	if !strings.Contains(tail, "- trust: unmarked = "+string(trustVerifyFirst)) {
+		t.Fatalf("Included section must define its tier vocabulary:\n%s", tail)
+	}
+}
+
 // TestInjectionSurfacesPartitionTheSectionsWithoutOverlap pins the property that
 // makes the split worth doing: each section is served by exactly ONE surface.
 //
