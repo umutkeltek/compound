@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -698,5 +699,49 @@ func TestResolveBodySourceBoundsBodyFileAtOneMiB(t *testing.T) {
 				t.Fatalf("resolved bytes = %d, want %d", len(body), tc.size)
 			}
 		})
+	}
+}
+
+// The body bound is a gate, not a size preference: past it, the content's home is an evidence
+// artifact the finding CITES. A bare "--stdin exceeds the 1 MiB limit" is read as "split it",
+// which produces two findings that each say less than one would have.
+//
+// RED WITHOUT the conversion: resolveBodySource returned a plain fmt.Errorf, so the CLI could
+// not tell an oversize body from an unreadable path, and the rendered text was one line with
+// no gate name and no command — assertTeachingRefusal fails on its first assertion.
+func TestFindingBodyBoundRefusalTeachesTheCiteShape(t *testing.T) {
+	oversize := strings.Repeat("x", finding.MaxBodyBytes+1)
+	_, err := resolveBodySource([]string{"--body", oversize})
+	if err == nil {
+		t.Fatal("resolveBodySource accepted a body one byte past the bound")
+	}
+
+	// Typed, so the CLI can route it to the gate rather than to the generic error line.
+	var bound *findingBodyBoundError
+	if !errors.As(err, &bound) {
+		t.Fatalf("oversize body error is not a *findingBodyBoundError (%T: %v) — the CLI cannot distinguish it from an unreadable path", err, err)
+	}
+	if bound.Bound != finding.MaxBodyBytes {
+		t.Errorf("refusal carries bound %d, want the constant it was checked against (%d)", bound.Bound, finding.MaxBodyBytes)
+	}
+	if bound.Got <= bound.Bound {
+		t.Errorf("refusal reports %d bytes observed, which does not exceed its own bound %d", bound.Got, bound.Bound)
+	}
+
+	text := findingBodyBoundRefusal(bound, "example-topic").String()
+	assertTeachingRefusal(t, text, "finding_body_bound",
+		"1 MiB",
+		"--topic example-topic",
+		"--evidence",
+	)
+	// "Cite it" is the fix; "split it" is the wrong lesson a bare size error teaches.
+	if !strings.Contains(text, "not the transcript") {
+		t.Errorf("refusal must name the cite-don't-inline shape of the fix, got:\n%s", text)
+	}
+
+	// Teeth on the drift the old hardcoded "1 MiB" string invited: the label is derived
+	// from the bound, so a raised bound cannot leave the refusal quoting the old number.
+	if got := findingBodyBoundLabel(4 << 20); got != "4 MiB" {
+		t.Errorf("bound label = %q for a 4 MiB bound, want %q — the message is not derived from the constant", got, "4 MiB")
 	}
 }

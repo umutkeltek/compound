@@ -2210,6 +2210,13 @@ func cmdFindingRecord(args []string) {
 	}
 	body, err := resolveBodySource(args)
 	if err != nil {
+		// The bound is a gate (this body belongs somewhere else); an unreadable path is a
+		// fault (fix the path). Selected by the error's type so the two never share a remedy.
+		var bound *findingBodyBoundError
+		if errors.As(err, &bound) {
+			findingBodyBoundRefusal(bound, topic).writeTo(os.Stderr)
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -2328,15 +2335,66 @@ func resolveBodySource(args []string) (string, error) {
 	return "", fmt.Errorf("one of --body, --body-file, or --stdin is required")
 }
 
+// findingBodyBoundError is the typed refusal of the direct-write finding home's body bound.
+// It is typed rather than a plain fmt.Errorf so the CLI can tell an oversize body (a gate:
+// the body belongs somewhere else) apart from an unreadable one (a fault: fix the path) and
+// render a different remedy for each, without matching error text.
+type findingBodyBoundError struct {
+	Source string // the flag that supplied the body: --body, --body-file, or --stdin
+	Bound  int    // finding.MaxBodyBytes, carried so the message cannot drift from the check
+	Got    int    // bytes observed before the read was cut off; >= Bound+1
+}
+
+func (e *findingBodyBoundError) Error() string {
+	return fmt.Sprintf("%s exceeds the %s limit", e.Source, findingBodyBoundLabel(e.Bound))
+}
+
+// findingBodyBoundLabel renders the bound in the unit it is declared in. Derived from the
+// constant rather than written out, so raising the bound cannot leave the refusal quoting
+// the old number -- the exact drift that makes a refusal untrustworthy.
+func findingBodyBoundLabel(bound int) string {
+	if bound >= 1<<20 && bound%(1<<20) == 0 {
+		return fmt.Sprintf("%d MiB", bound>>20)
+	}
+	return fmt.Sprintf("%d byte", bound)
+}
+
 func readBoundedFindingBody(reader io.Reader, source string) (string, error) {
 	data, err := io.ReadAll(io.LimitReader(reader, finding.MaxBodyBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", source, err)
 	}
 	if len(data) > finding.MaxBodyBytes {
-		return "", fmt.Errorf("%s exceeds the 1 MiB limit", source)
+		return "", &findingBodyBoundError{Source: source, Bound: finding.MaxBodyBytes, Got: len(data)}
 	}
 	return string(data), nil
+}
+
+// findingBodyBoundRefusal renders the body-bound gate.
+//
+// The bound is not an arbitrary size limit: the finding home is the DIRECT-WRITE home for
+// operational notes, and a body past the bound is nearly always a transcript, a log, or a
+// dump -- content whose home is an artifact the finding should CITE, not inline. So the
+// refusal has to name the shape of the fix ("cite it, do not paste it"), because the obvious
+// reading of a size error is "split it in half and record it twice", which produces two
+// findings that each say less than one.
+func findingBodyBoundRefusal(bound *findingBodyBoundError, topic string) gateRefusal {
+	label := findingBodyBoundLabel(bound.Bound)
+	return gateRefusal{
+		Command: "compound finding record",
+		Gate:    "finding_body_bound",
+		Refused: fmt.Sprintf("the body supplied via %s is larger than the %s bound, so nothing was recorded", bound.Source, label),
+		Tried: []string{
+			fmt.Sprintf("read %s: at least %d bytes, over the %s bound", bound.Source, bound.Got, label),
+			"record it anyway: not attempted — the bound is checked before the finding is minted, so no partial body was written",
+		},
+		DoThis: []string{
+			fmt.Sprintf("compound finding record --topic %s --body-file <path>   # a trimmed body: the finding is the OBSERVATION, not the transcript", firstNonEmptyRefusalValue(topic, "<topic>")),
+			fmt.Sprintf("compound finding record --topic %s --body \"<the observation>\" --evidence <ref>   # cite the bulk as evidence instead of inlining it", firstNonEmptyRefusalValue(topic, "<topic>")),
+			"compound placement resolve <path-to-the-large-file>   # if the bulk is really a file, ask where it is allowed to live",
+		},
+		Prevents: "the direct-write home turning into a log sink. A finding is read by an operator deciding what to do next; a body that large is a transcript, and inlining it makes the finding unreadable while leaving the real artifact with no home of its own.",
+	}
 }
 
 func cmdFindingList(args []string) {
