@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -300,6 +301,133 @@ func TestPercentileMSUsesNearestRank(t *testing.T) {
 				t.Fatalf("percentileMS(%v, %d) = %d, want %d", tc.values, tc.p, got, tc.want)
 			}
 		})
+	}
+}
+
+// The defect this fixes, reproduced: the landing ceremony mandates running the battery in a
+// rehearsal worktree, so grouping runs by worktree PATH excluded exactly the runs that matter.
+// Live symptom on the day it landed: `--timings` in the main tree reported runs=2, gates=[].
+func TestProofCheckTimingStatsFoldWorktreesOfOneRepoButSplitDifferentRepos(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+
+	// Same repository, two different worktrees — a rehearsal tree and the main tree.
+	sameRepoID := "/repo/.git"
+	for i, worktree := range []string{"/tmp/land-rehearsal", "/fixture/main-tree"} {
+		store, _, err := readProofCheckTimings(filepath.Join(homePath, proofCheckTimingsStateRelPath))
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		store.SchemaVersion = proofCheckTimingsSchemaVersion
+		store.Runs = append(store.Runs, proofCheckTimingRun{
+			GeneratedAt:  now.Add(time.Duration(i) * time.Hour).Format(time.RFC3339),
+			Repo:         worktree,
+			RepoIdentity: sameRepoID,
+			Status:       "ok",
+			Steps: []proofCheckTimingStep{
+				{Name: "go-test", ProofRef: "go-test-count-1-all", Status: "ok", DurationMS: 450_000},
+			},
+		})
+		// A run from an unrelated module must NOT fold in — this is the case the field exists for.
+		if i == 0 {
+			store.Runs = append(store.Runs, proofCheckTimingRun{
+				GeneratedAt:  now.Format(time.RFC3339),
+				Repo:         "/tmp/fixture-module",
+				RepoIdentity: "/tmp/fixture-module/.git",
+				Status:       "ok",
+				Steps: []proofCheckTimingStep{
+					{Name: "go-test", ProofRef: "go-test-count-1-all", Status: "ok", DurationMS: 441},
+				},
+			})
+		}
+		body, err := json.MarshalIndent(store, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(homePath, "state"), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(homePath, proofCheckTimingsStateRelPath), body, 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	store := readStoreForTest(t, homePath)
+	if len(store.Runs) != 3 {
+		t.Fatalf("fixture should hold 3 runs, got %d", len(store.Runs))
+	}
+
+	stats := proofCheckTimingStats(store, "", sameRepoID, 20)
+	if len(stats) != 1 {
+		t.Fatalf("want 1 gate, got %d", len(stats))
+	}
+	// Both worktrees of this repo contribute; the foreign module's 441ms does not.
+	if stats[0].Samples != 2 {
+		t.Fatalf("want 2 samples (both worktrees of the same repo), got %d", stats[0].Samples)
+	}
+	if stats[0].P50MS != 450_000 {
+		t.Fatalf("p50 = %d, want 450000 — a foreign repo's 441ms must not fold in", stats[0].P50MS)
+	}
+}
+
+// Records written before RepoIdentity existed carry only a path; they must not vanish silently.
+func TestProofCheckTimingStatsFallBackToPathForPreIdentityRecords(t *testing.T) {
+	store := proofCheckTimingsStore{
+		SchemaVersion: proofCheckTimingsSchemaVersion,
+		Runs: []proofCheckTimingRun{{
+			GeneratedAt: "2026-07-26T12:00:00Z",
+			Repo:        "/fixture/main-tree",
+			Status:      "ok",
+			Steps: []proofCheckTimingStep{
+				{Name: "go-test", ProofRef: "go-test-count-1-all", Status: "ok", DurationMS: 1234},
+			},
+		}},
+	}
+	if got := proofCheckTimingStats(store, "", "/fixture/main-tree", 20); len(got) != 1 || got[0].Samples != 1 {
+		t.Fatalf("a pre-identity record must still match on its path, got %+v", got)
+	}
+	if got := proofCheckTimingStats(store, "", "/somewhere/else", 20); len(got) != 0 {
+		t.Fatalf("a pre-identity record must not match a different path, got %+v", got)
+	}
+}
+
+// proofCheckRepoIdentity must return the SAME key for two real worktrees of one repository, and a
+// different key for an unrelated repository. Uses real git because that is the behaviour relied on.
+func TestProofCheckRepoIdentityIsSharedAcrossWorktreesOfOneRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	repoA := t.TempDir()
+	run(repoA, "init", "-q", ".")
+	run(repoA, "config", "user.email", "t@example.invalid")
+	run(repoA, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(repoA, "f.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(repoA, "add", "-A")
+	run(repoA, "commit", "-qm", "init")
+
+	worktree := filepath.Join(t.TempDir(), "wt")
+	run(repoA, "worktree", "add", "--detach", worktree)
+
+	idMain := proofCheckRepoIdentity(repoA)
+	idWorktree := proofCheckRepoIdentity(worktree)
+	if idMain == "" || idMain != idWorktree {
+		t.Fatalf("a worktree must share its repo's identity: main=%q worktree=%q", idMain, idWorktree)
+	}
+
+	repoB := t.TempDir()
+	run(repoB, "init", "-q", ".")
+	if idB := proofCheckRepoIdentity(repoB); idB == idMain {
+		t.Fatalf("an unrelated repository must not share identity %q", idB)
 	}
 }
 

@@ -6,12 +6,51 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 )
+
+// proofCheckRepoIdentity resolves a worktree path to its repository's common git dir — the one
+// path every worktree of a repository shares. Grouping runs by this rather than by worktree path
+// is what lets a rehearsal-worktree battery (which the landing ceremony mandates) contribute to
+// the same baseline as a main-tree run, while a genuinely different repository still separates.
+//
+// Degrades to the canonicalized input when git cannot answer: a non-repo fixture directory is a
+// legitimate measurement target and must still group with itself rather than with everything else.
+func proofCheckRepoIdentity(repoPath string) string {
+	repoPath = strings.TrimSpace(repoPath)
+	if repoPath == "" {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", repoPath, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return proofCheckCanonicalPath(repoPath)
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		return proofCheckCanonicalPath(repoPath)
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(repoPath, dir)
+	}
+	return proofCheckCanonicalPath(dir)
+}
+
+// proofCheckCanonicalPath makes a path stable enough to compare across processes: symlinks
+// resolved (macOS /tmp -> /private/tmp bites here) and absolute.
+func proofCheckCanonicalPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return path
+}
 
 // The battery's per-gate DurationMS has always been captured per run and thrown away, so every
 // budget in this repo was tuned from prose in a handoff note rather than from a distribution. The
@@ -45,12 +84,20 @@ type proofCheckTimingRun struct {
 	ProfileKind string `json:"profile_kind,omitempty"`
 	CIOnly      bool   `json:"ci_only,omitempty"`
 	CIConsole   bool   `json:"ci_console,omitempty"`
-	// Repo is the tree the battery measured. Without it the history silently mixes
-	// incomparable runs: a `--ci` against a one-test fixture module records go-test at ~441ms,
-	// which would sit in the same baseline as this repo's ~450s and drag any percentile derived
-	// from it toward nonsense. Found by exactly that accident during verification.
-	Repo   string `json:"repo,omitempty"`
-	Status string `json:"status"`
+	// Repo is the worktree the battery ran in — informational only, never the filter key.
+	Repo string `json:"repo,omitempty"`
+	// RepoIdentity is what runs are actually grouped by: the repository's common git dir,
+	// which every worktree of one repo shares.
+	//
+	// Keying on the worktree PATH instead was a real defect (found by using the feature the day
+	// it landed): compound-land mandates running the battery in a rehearsal worktree, so the
+	// runs that matter would each land under their own throwaway path and be excluded from the
+	// main tree's baseline — `--timings` reported runs=2, gates=[]. The field exists to separate
+	// genuinely different repositories (a `--ci` against a one-test fixture module records
+	// go-test at ~441ms, which must never sit in the same baseline as this repo's ~450s), and
+	// the common git dir does that while still folding a repo's worktrees together.
+	RepoIdentity string `json:"repo_identity,omitempty"`
+	Status       string `json:"status"`
 	// WallMS is the real elapsed time of the whole battery. StepsTotalMS is the sum of the
 	// individual gate durations. They are equal only while gates run sequentially; once the
 	// non-go-test gates run concurrently the gap between them IS the concurrency win, which is
@@ -85,13 +132,14 @@ func recordProofCheckTimingHistory(homePath string, report proofCheckReport, wal
 	}
 
 	run := proofCheckTimingRun{
-		GeneratedAt: now.UTC().Format(time.RFC3339),
-		ProfileKind: report.ProfileKind,
-		CIOnly:      report.CIOnly,
-		CIConsole:   report.CIConsole,
-		Repo:        report.Repo,
-		Status:      report.Status,
-		WallMS:      wall.Milliseconds(),
+		GeneratedAt:  now.UTC().Format(time.RFC3339),
+		ProfileKind:  report.ProfileKind,
+		CIOnly:       report.CIOnly,
+		CIConsole:    report.CIConsole,
+		Repo:         report.Repo,
+		RepoIdentity: proofCheckRepoIdentity(report.Repo),
+		Status:       report.Status,
+		WallMS:       wall.Milliseconds(),
 	}
 	for _, step := range report.Steps {
 		// Only executed gates carry a timing signal. A skipped gate (bun absent) or a gate that
@@ -218,10 +266,17 @@ func proofCheckTimingStats(store proofCheckTimingsStore, profileKind, repo strin
 		if run.ProfileKind != profileKind {
 			continue
 		}
-		// A run against a different tree is not a sample of THIS tree's cost. Mixing them is
-		// how a baseline quietly becomes fiction.
-		if repo != "" && run.Repo != "" && run.Repo != repo {
-			continue
+		// A run against a different REPOSITORY is not a sample of this one's cost; a run from
+		// a different WORKTREE of the same repository is. Records written before RepoIdentity
+		// existed carry only a path, so fall back to it rather than dropping them silently.
+		if repo != "" {
+			key := run.RepoIdentity
+			if key == "" {
+				key = run.Repo
+			}
+			if key != "" && key != repo {
+				continue
+			}
 		}
 		matched = append(matched, run)
 	}
@@ -318,7 +373,7 @@ func cmdProofCheckTimings(args []string) {
 	repo := ""
 	if !hasFlag(args, "--all-repos") {
 		if resolved, resolveErr := resolveProofCheckRepo(flagValue(args, "--repo")); resolveErr == nil {
-			repo = resolved
+			repo = proofCheckRepoIdentity(resolved)
 		}
 	}
 	stats := proofCheckTimingStats(store, profileKind, repo, proofCheckTimingsWindow(args))
