@@ -28,6 +28,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	homepkg "compound/internal/home"
 )
 
 const (
@@ -211,7 +213,10 @@ func WriteTemperature(homePath string, proj TemperatureProjection) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+	// Atomic: the orient path reads this body on every prompt and fail-opens on a
+	// parse error, so a torn write would silently disable temperature ranking rather
+	// than raise anything. See home.WriteFileAtomic.
+	if err := homepkg.WriteFileAtomic(path, append(b, '\n'), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil

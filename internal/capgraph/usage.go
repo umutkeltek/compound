@@ -32,6 +32,7 @@ import (
 
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
+	"compound/internal/home"
 )
 
 const (
@@ -383,7 +384,9 @@ func WriteCapabilityUsage(homePath string, proj CapabilityUsageProjection) (stri
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+	// Atomic: BuildTemperature reads this body, and that chain terminates on the live
+	// orient path. See home.WriteFileAtomic.
+	if err := home.WriteFileAtomic(path, append(b, '\n'), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil
