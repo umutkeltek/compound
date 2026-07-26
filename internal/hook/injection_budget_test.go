@@ -130,6 +130,73 @@ func TestIncludedTrustTiersFitTheOrientationCap(t *testing.T) {
 	}
 }
 
+// TestIncludedTrustTiersFitTheCapAtTheRefBound measures the tier encoding at the size
+// the renderer actually permits — maxInjectionIncludedRefs — instead of a pack that
+// happens to be smaller.
+//
+// The 5-ref measurement above is real but comfortable, and a cap test whose fixture is
+// half the permitted size reports headroom the live surface does not have: at the bound
+// this section renders 1075 of 1100 runes, so the true margin is ~25 runes, not the ~450
+// the 5-ref pack suggests. That gap is the whole failure mode — capInjectionSection cuts
+// on a rune index, so the first edit to spend those 25 runes does not error, it silently
+// amputates the tail of the list and every test asserting "the section is present" stays
+// green. Pinning the bound makes the next 25-rune edit fail here, loudly, with the number.
+//
+// The refs are the first eight a real `compound orient --harness claude_code` serves this
+// control-plane repo, in served order, including the one generated ref that demotes — so
+// the fixture drifts only when the actual served shape drifts.
+func TestIncludedTrustTiersFitTheCapAtTheRefBound(t *testing.T) {
+	const ambient = "ambient for control-plane repos"
+	atBound := []envelope.IncludedRef{
+		{Ref: "AGENTS.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "skills/README.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "constitution://universal-principles", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "control-plane://orientation-map", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "control-plane://workflow-contract", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "control-plane://sop-packets", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "memory://relevance-gated", SourceClass: "generated", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "hook://claude_code/PostToolUse", SourceClass: "runtime", Reason: "installed hook selected for harness and task", Confidence: 1, Status: "current"},
+	}
+	if len(atBound) != maxInjectionIncludedRefs {
+		t.Fatalf("fixture must sit exactly at the ref bound: have %d refs, maxInjectionIncludedRefs=%d.\n"+
+			"If the bound moved, re-measure the section at the NEW bound — a cap proven at the old one proves nothing.",
+			len(atBound), maxInjectionIncludedRefs)
+	}
+
+	var section strings.Builder
+	writeIncludedList(&section, atBound)
+	got := utf8.RuneCountInString(section.String())
+	if got > maxOrientationIncludedChars {
+		t.Fatalf("Included section at the %d-ref bound is %d runes, over its %d cap (by %d).\n"+
+			"This section does not error when it overruns — it truncates on a rune index and drops the tail.\n"+
+			"Make the encoding cheaper or drop whole refs with an 'N more omitted' line. Do NOT raise the cap:\n"+
+			"the orientation caps already sum near MaxContextChars, so a raise here amputates a later section instead.",
+			maxInjectionIncludedRefs, got, maxOrientationIncludedChars, got-maxOrientationIncludedChars)
+	}
+	t.Logf("Included at the %d-ref bound with tiers: %d runes of cap %d (headroom %d)",
+		maxInjectionIncludedRefs, got, maxOrientationIncludedChars, maxOrientationIncludedChars-got)
+
+	// The demoted ref must survive to the rendered digest. A marker lost to a cut reads as
+	// the default tier, which is the one direction the demote-only rule must never allow.
+	pack := envelope.ContextPack{SummaryMD: "summary", Included: atBound}
+	pack.Header.ID = "ctx_tier_bound"
+	rendered := renderInjection(injectionRender{HookID: "hookev_tier_bound", Pack: pack, Surface: injectionSurfaceOrientation})
+	idx := strings.Index(rendered, "## Included")
+	if idx < 0 {
+		t.Fatalf("orientation digest lost the Included section at the ref bound:\n%s", rendered)
+	}
+	tail := rendered[idx:]
+	if cut := strings.Index(tail, "\n## "); cut > 0 {
+		tail = tail[:cut]
+	}
+	if strings.Contains(tail, "Section truncated") {
+		t.Fatalf("Included section truncated at the ref bound — the served shape does not fit:\n%s", tail)
+	}
+	if !strings.Contains(tail, "`memory://relevance-gated` "+includedRefTrustMarker) {
+		t.Fatalf("the one demoted ref at the bound lost its marker, so it now reads as verify-first:\n%s", tail)
+	}
+}
+
 // TestInjectionSurfacesPartitionTheSectionsWithoutOverlap pins the property that
 // makes the split worth doing: each section is served by exactly ONE surface.
 //
