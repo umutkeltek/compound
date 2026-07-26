@@ -550,6 +550,9 @@ func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, ext
 	if err := s.validateContextPackRef(w.IDs.ContextPackID); err != nil {
 		return w, err
 	}
+	if err := s.validateReworkOfRef(w); err != nil {
+		return w, err
+	}
 	actionContextRef, err := s.recordActionContextSnapshot(plan)
 	if err != nil {
 		return w, err

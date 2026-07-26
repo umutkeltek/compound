@@ -798,6 +798,28 @@ type WorkEnvelope struct {
 	// field never reorders existing marshaled bytes (see the workEnvelopeSHA256 discipline on
 	// ActionIntentIDs above).
 	PlanClass string `json:"plan_class,omitempty"`
+	// ReworkOfWorkID records the LINEAGE EDGE "this work exists because an earlier landed work
+	// broke something" -- the input a rework-rate fold (per class / lane / plan_class) is
+	// computed from later. It is OPTIONAL and additive: empty means "not a rework", every
+	// envelope that predates the field re-marshals byte-identically, and no schema version
+	// moves.
+	//
+	// Set at CREATE time only and immutable thereafter: immutability comes from "set once",
+	// like a content-addressed finding, not from a guard on a mutation path -- there is no
+	// attach-at-advance route to police. A later need to attach post-create is a separate
+	// change mirroring runattempt.SetPredecessor's append-only / refuse-different semantics.
+	//
+	// NAMING: this is deliberately NOT `caused_by`. Transition.Cause.CausedByRefs is an
+	// unrelated, shipped canon-evolution mechanism with its own consumer (internal/mem's cause
+	// consumption); reusing that name here would collapse two different meanings into one
+	// searchable term.
+	//
+	// Validate enforces the shape (work_ prefix, single path element, not the work_live_
+	// namespace, not self); internal/work's admission additionally proves the target RESOLVES
+	// in the store, so the edge can never point at a phantom. Declared LAST, after PlanClass,
+	// so the additive field never reorders existing marshaled bytes (see the workEnvelopeSHA256
+	// discipline on ActionIntentIDs above).
+	ReworkOfWorkID string `json:"rework_of_work_id,omitempty"`
 }
 
 // WorkPrediction is staked at create time and predicts the CLOSE outcome enum
@@ -870,7 +892,38 @@ func (e *WorkEnvelope) Validate() error {
 		validateRouteDeviation(v, *e.RouteDeviation, e.Prediction)
 	}
 	validateRunAttemptIDs(v, e.RunAttemptIDs)
+	validateReworkOfWorkID(v, e.ReworkOfWorkID, e.ID)
 	return v.result(e.Kind())
+}
+
+// validateReworkOfWorkID enforces the shape of the rework lineage edge (see
+// WorkEnvelope.ReworkOfWorkID). Empty is legal and means "not a rework".
+//
+// The shape rule is deliberately the LOOSE work-id check already used across the tree (see
+// reviewartifact.validDurableWorkID), not a strict `work_<12hex>` regex: `work create --work-id`
+// admits arbitrary shapes, so a strict rule here would refuse edges to ids the store itself
+// accepts and holds on disk. What it does refuse is anything that cannot be a durable work id --
+// a value with no `work_` prefix, a bare prefix with no body, the ephemeral `work_live_`
+// namespace, and any value that is not a single path element (a phantom edge that reads as data
+// is worse than no edge, and an id carrying a separator is also a path-traversal shape once a
+// caller joins it onto a store directory).
+//
+// Self-reference is refused here rather than at the store, because this is the only place both
+// ids are visible at once -- and because at create time the work being created does not exist
+// yet, so the store's existence check would refuse a self-edge for the wrong reason and would
+// silently accept one if an id were ever reused.
+func validateReworkOfWorkID(v *verr, reworkOf, selfID string) {
+	if reworkOf == "" {
+		return
+	}
+	if !strings.HasPrefix(reworkOf, "work_") || len(reworkOf) <= len("work_") ||
+		strings.HasPrefix(reworkOf, "work_live_") || filepath.Base(reworkOf) != reworkOf {
+		v.addf("rework_of_work_id %q must be a durable work id (a single path element starting with %q, outside the %q namespace)", reworkOf, "work_", "work_live_")
+		return
+	}
+	if reworkOf == selfID {
+		v.addf("rework_of_work_id %q must not point at itself: a work cannot be its own rework", reworkOf)
+	}
 }
 
 // validateRunAttemptIDs enforces two rules on the reserved run slot:

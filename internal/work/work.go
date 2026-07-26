@@ -262,6 +262,12 @@ type CreateInput struct {
 	// the guard, not baked into stored bytes (mirroring freeze's "absent means nothing gated").
 	// An unrecognized value is refused by envelope.WorkEnvelope.Validate before persistence.
 	PlanClass string
+	// ReworkOfWorkID records that this work exists because an earlier landed work broke
+	// something (see envelope.WorkEnvelope.ReworkOfWorkID). Copied VERBATIM onto the envelope.
+	// A malformed or self-referential value is refused by envelope.WorkEnvelope.Validate, and a
+	// value that does not resolve in this store is refused by validateReworkOfRef at admission
+	// -- both BEFORE anything persists.
+	ReworkOfWorkID string
 }
 
 // BuildWork constructs a WorkEnvelope WITHOUT persisting it — used both by Create (which
@@ -305,6 +311,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		Prediction:         prediction,
 		RouteDeviation:     routeDeviation,
 		PlanClass:          in.PlanClass,
+		ReworkOfWorkID:     strings.TrimSpace(in.ReworkOfWorkID),
 	}
 	if strings.TrimSpace(in.Uncertainty.Level) != "" || strings.TrimSpace(in.Uncertainty.Reason) != "" {
 		w.Uncertainty = in.Uncertainty
@@ -348,6 +355,30 @@ func (s *Store) validateContextPackRef(contextPackID string) error {
 	}
 	if err := s.validateContextPackContractRef(contextPackID, pack.IDs.ContractID); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateReworkOfRef proves the rework lineage edge RESOLVES in this store -- no phantom links,
+// mirroring runattempt.SetPredecessor. The envelope validator already fixed the SHAPE (and
+// refused self-reference); this is the existence half, and it is fail-closed at admission: an
+// edge to a work id that does not resolve refuses the create BEFORE anything persists, because a
+// rework-rate fold that counts edges to works that never existed reports a number nobody can
+// trace back.
+//
+// The check is intentionally NOT transitive: the target being itself a rework is fine, and no
+// cycle walk is needed -- the edge is create-time-only against an already-existing target, so a
+// cycle would require an id collision the store already refuses.
+func (s *Store) validateReworkOfRef(w envelope.WorkEnvelope) error {
+	reworkOf := strings.TrimSpace(w.ReworkOfWorkID)
+	if reworkOf == "" {
+		return nil
+	}
+	if _, err := s.Get(reworkOf); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("rework_of_work_id %q does not resolve to an existing work", reworkOf)
+		}
+		return fmt.Errorf("read rework_of_work_id %q: %w", reworkOf, err)
 	}
 	return nil
 }

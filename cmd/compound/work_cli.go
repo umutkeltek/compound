@@ -96,7 +96,7 @@ var workVerbHelpByName = map[string]workVerbHelp{
 		Example: "compound work review-card-plan --card wrc_abc123 --json",
 	},
 	"create": {
-		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--plan-class oneshot|plan_doc|phased]",
+		Usage:   "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--target-worktree-root /abs/repo --target-local-ref refs/heads/main --expected-base-sha SHA (--publication-ref refs/remotes/origin/main|--local-only)] [--predicted-outcome completed|failed|cancelled --predicted-move-type type --prediction-note N] [--deviation-lane L [--deviation-class C] [--deviation-card REF] [--deviation-risk gate|judge|tidy]] [--plan-class oneshot|plan_doc|phased] [--rework-of work_id]",
 		Example: "compound work create --owner codex --predicate \"tests pass\"",
 	},
 	"import-packet": {
@@ -605,7 +605,7 @@ func cmdWork(args []string) {
 			"--target-worktree-root": true, "--target-local-ref": true, "--expected-base-sha": true, "--publication-ref": true,
 			"--predicted-outcome": true, "--predicted-move-type": true, "--prediction-note": true,
 			"--deviation-lane": true, "--deviation-card": true, "--deviation-class": true, "--deviation-risk": true,
-			"--plan-class": true,
+			"--plan-class": true, "--rework-of": true,
 		}, map[string]bool{"--local-only": true}, 0); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, usage)
@@ -641,6 +641,7 @@ func cmdWork(args []string) {
 			Prediction:       prediction,
 			RouteDeviation:   routeDeviation,
 			PlanClass:        flag("--plan-class"),
+			ReworkOfWorkID:   flag("--rework-of"),
 		}, now)
 		die(err)
 		if requestedState == "running" {
