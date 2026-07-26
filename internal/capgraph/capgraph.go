@@ -565,7 +565,17 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		if semanticMatched {
 			semanticBonus = semanticWeight * (sem - semanticFloor) / (1 - semanticFloor) * n.Weight
 		}
-		score := base*n.Weight + semanticBonus + validatedAdd[n.ID] + missedAdd[n.ID] + evidenceBonus[n.ID] - sub[n.ID]
+		// validated_by REORDERS things that already fit; it must never promote
+		// something that fits nothing. Measured before this gate, skill:sora
+		// (video generation) tied with skill:diagnosing-bugs for "fix the flaky
+		// swift test" on track record alone, having matched zero task tokens.
+		// A reputation is evidence about ranking among candidates, not evidence
+		// of being a candidate.
+		reputation := validatedAdd[n.ID]
+		if base <= 0 && !semanticMatched && missedAdd[n.ID] <= 0 {
+			reputation = 0
+		}
+		score := base*n.Weight + semanticBonus + reputation + missedAdd[n.ID] + evidenceBonus[n.ID] - sub[n.ID]
 		if score <= 0 {
 			continue
 		}
@@ -573,8 +583,8 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		if semanticBonus > 0 {
 			why += fmt.Sprintf(" +semantic=%.2f", sem)
 		}
-		if validatedAdd[n.ID] > 0 {
-			why += fmt.Sprintf(" +validated_by=%.1f", validatedAdd[n.ID])
+		if reputation > 0 {
+			why += fmt.Sprintf(" +validated_by=%.1f", reputation)
 		}
 		if missedAdd[n.ID] > 0 {
 			why += fmt.Sprintf(" +missed_when=%.1f", missedAdd[n.ID])
@@ -1263,7 +1273,7 @@ func surfaceTriggerScore(taskTokens map[string]bool, n Node) (float64, []string)
 			if tok == "go" && taskTokens["golang"] && !triggerSet["golang"] && !hasAnyToken(triggerSet, goEngineeringContextTokens) {
 				continue
 			}
-			if taskTokens[tok] {
+			if taskTokenMatches(taskTokens, tok) {
 				matched[tok] = true
 			}
 		}

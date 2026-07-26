@@ -333,13 +333,23 @@ func TestReceiptScannersPreserveMalformedRecordPolicies(t *testing.T) {
 func TestConsumeReceiptsValidatedSkillRaisesFutureSurfacing(t *testing.T) {
 	home, s := newStore(t)
 	const nodeID = "skill:capability-writeback"
-	if err := s.Add(Node{ID: nodeID, Kind: "skill", Name: "Capability Writeback", Triggers: []string{"unrelated"}}); err != nil {
+	// Matches the task on purpose: this test measures that validation RAISES an
+	// already-relevant capability, which is what reputation is for. It is no
+	// longer able to surface an irrelevant one from nothing.
+	if err := s.Add(Node{ID: nodeID, Kind: "skill", Name: "Capability Writeback", Triggers: []string{"writeback"}}); err != nil {
 		t.Fatal(err)
 	}
 	task := "capability writeback edge follow-up"
 	before := surfaced(s, task)[nodeID]
-	if before != 0 {
-		t.Fatalf("precondition: used skill should not surface before receipts, got score %.1f", before)
+	// The claim this test makes is in its name: validation RAISES surfacing.
+	// It used to assert the node scored ZERO beforehand, which quietly depended
+	// on reputation being able to surface an irrelevant capability from nothing.
+	// That is the behavior that put a video-generation skill on a "fix the flaky
+	// swift test" list, so it was removed; the node must now be relevant first
+	// and validation lifts it from there. The strict comparison below is what
+	// actually guards the feature, and it is unchanged.
+	if before <= 0 {
+		t.Fatalf("precondition: a relevant skill should surface before receipts, got score %.1f", before)
 	}
 
 	rec1 := testReceipt("rec_validate_one", "completed", true, []string{"capability://" + nodeID}, nil, nil)
@@ -386,7 +396,12 @@ func TestValidatedByContributionIsBoundedNotLifetimeEdgeCount(t *testing.T) {
 
 	scoreAfterNValidations := func(n int) float64 {
 		_, s := newStore(t)
-		if err := s.Add(Node{ID: nodeID, Kind: "skill", Name: "Overvalidated", Triggers: []string{"unrelated-trigger-nobody-typed"}, Weight: 1}); err != nil {
+		// The trigger MATCHES the task on purpose. This test measures that a
+		// large validated_by history is capped, not that reputation alone can
+		// surface an irrelevant capability -- reputation is now gated on some
+		// relevance, because ungated it put a video-generation skill on a
+		// "fix the flaky swift test" list at the same score as the right answer.
+		if err := s.Add(Node{ID: nodeID, Kind: "skill", Name: "Overvalidated", Triggers: []string{"pricing"}, Weight: 1}); err != nil {
 			t.Fatal(err)
 		}
 		for i := 0; i < n; i++ {
