@@ -1330,7 +1330,7 @@ func (s *Store) supersedeClaimReservations(existingIDs, incomingIDs []string, no
 		if runattempt.IsTerminal(ra.Status) {
 			continue // already terminal
 		}
-		_, _ = store.CompleteWithReason(id, runattempt.StatusAbandoned, reason, now)
+		_, _ = store.CompleteWithReason(id, runattempt.StatusSuperseded, reason, now)
 	}
 }
 

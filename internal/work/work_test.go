@@ -527,8 +527,8 @@ func TestAdvanceSupersedesClaimReservationOnHarnessExecutionAttach(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimRA.Status != runattempt.StatusAbandoned {
-		t.Fatalf("claim-mint attempt status = %q, want abandoned", claimRA.Status)
+	if claimRA.Status != "superseded" {
+		t.Fatalf("claim-mint attempt status = %q, want superseded", claimRA.Status)
 	}
 	if !strings.Contains(claimRA.SweepReason, execAttempt.ID) {
 		t.Fatalf("supersede reason must name the exec attempt %q, got %q", execAttempt.ID, claimRA.SweepReason)
@@ -1185,8 +1185,8 @@ func TestCloseSupersedesClaimReservationOnHarnessExecutionAttach(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimAttempt.Status != runattempt.StatusAbandoned {
-		t.Fatalf("claim reservation status = %q, want abandoned", claimAttempt.Status)
+	if claimAttempt.Status != "superseded" {
+		t.Fatalf("claim reservation status = %q, want superseded", claimAttempt.Status)
 	}
 	if !strings.Contains(claimAttempt.SweepReason, execution.ID) {
 		t.Fatalf("claim reservation supersede reason %q must name execution %s", claimAttempt.SweepReason, execution.ID)
@@ -1197,5 +1197,86 @@ func TestCloseSupersedesClaimReservationOnHarnessExecutionAttach(t *testing.T) {
 	}
 	if failedExecution.Status != runattempt.StatusFailed {
 		t.Fatalf("execution status changed during supersede: got %q, want failed", failedExecution.Status)
+	}
+}
+
+// A superseded reservation and a run that actually died must never share a
+// status. They did: "abandoned" carried both, and on a live home the benign
+// meaning outnumbered the real one ~10:1 (330 superseded placeholders vs 38
+// dead harness_execution attempts in a 400-sample). At that ratio the label
+// stops being read, which is how a dead controller held 183 leases unnoticed.
+//
+// Assertions pin the WIRE VALUE, not the constant, so this test compiles against
+// pre-change source and goes red on BEHAVIOUR rather than a missing identifier.
+func TestSupersededReservationIsNotConfusableWithAnAbandonedRun(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{
+		Owner:            "execution-rail",
+		SuccessPredicate: "a superseded placeholder is distinguishable from a dead run",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(w.ID, "agent_a", fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservationID := claimed.RunAttemptIDs[0]
+
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "agent_a"}, fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	attempts := runattempt.Open(s.home)
+	execution, err := attempts.Mint(w.ID, "agent_a", "claude", fixedNow.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attempts.SetOrigin(execution.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{
+		To:            "verifying",
+		Actor:         "agent_a",
+		RunAttemptIDs: []string{execution.ID},
+	}, fixedNow.Add(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	reservation, err := attempts.Get(reservationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation.Status == "abandoned" {
+		t.Fatalf("a reservation replaced by a real execution is the SUCCESS path of the " +
+			"reservation protocol; labelling it \"abandoned\" is what made 83%% of the ledger read as failure")
+	}
+	if reservation.Status != "superseded" {
+		t.Fatalf("reservation status = %q, want \"superseded\"", reservation.Status)
+	}
+	if !runattempt.IsTerminal(reservation.Status) {
+		t.Fatal("superseded must be terminal, else the sweep re-terminalizes it as abandoned")
+	}
+
+	// The distinction must survive a real death on the same envelope: a
+	// harness_execution that dies stays abandoned and is not recoloured.
+	dead, err := attempts.Mint(w.ID, "agent_b", "claude", fixedNow.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attempts.SetOrigin(dead.ID, runattempt.OriginHarnessExecution); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attempts.Complete(dead.ID, "abandoned", fixedNow.Add(6*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	deadAttempt, err := attempts.Get(dead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deadAttempt.Status != "abandoned" {
+		t.Fatalf("a dead harness_execution must stay abandoned, got %q", deadAttempt.Status)
+	}
+	if deadAttempt.Status == reservation.Status {
+		t.Fatal("dead run and superseded reservation share a status again — the collision is back")
 	}
 }

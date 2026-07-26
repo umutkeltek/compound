@@ -25,6 +25,17 @@ const (
 	StatusSucceeded = "succeeded"
 	StatusFailed    = "failed"
 	StatusAbandoned = "abandoned"
+	// StatusSuperseded is the terminal status of a claim_reservation placeholder
+	// that a real harness_execution replaced (F2, supersede-at-attach). It is NOT
+	// a failure: it is the ordinary success path of the reservation protocol.
+	//
+	// It exists because "abandoned" was carrying both meanings, and the benign one
+	// is ~10x more common: on a live home 330 of 400 sampled abandoned attempts
+	// were superseded placeholders and only 38 were harness_execution attempts
+	// that actually died. A ledger that is 83% benign-labelled-as-failure trains
+	// its readers to ignore the label, which is how a genuinely dead controller
+	// sat unnoticed holding 183 leases.
+	StatusSuperseded = "superseded"
 )
 
 // Origin records which of the three RunAttempt producers created this record:
@@ -310,7 +321,8 @@ func (s *Store) Get(id string) (RunAttempt, error) {
 // (succeeded, failed, or abandoned). Terminal attempts cannot be mutated,
 // re-completed, or re-entered.
 func IsTerminal(status string) bool {
-	return status == StatusSucceeded || status == StatusFailed || status == StatusAbandoned
+	return status == StatusSucceeded || status == StatusFailed ||
+		status == StatusAbandoned || status == StatusSuperseded
 }
 
 // Complete transitions a RunAttempt to terminal status (succeeded, failed, or
