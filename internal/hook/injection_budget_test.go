@@ -302,18 +302,18 @@ func TestIncludedListExactlyAtCapIsLossless(t *testing.T) {
 // session-specific runtime/generated refs survive — DEC-0001 sits AFTER the
 // sixth source ref and the memory ref, so a prefix slice never reaches it.
 //
-// The live SessionStart hook_55c5404b82be observed maxInjectionIncludedRefs=8
-// select six source refs + memory + first hook, omitting decision://DEC-0001
-// because the prefix slice never reached the runtime tail. The preselection
-// must not sever DEC-0001 just because it sits after six source refs and the
-// memory ref in the served order.
+// A live SessionStart pack observed maxInjectionIncludedRefs=8 select six
+// source refs + memory + first hook, omitting decision://DEC-0001 because the
+// prefix slice never reached the runtime tail. The preselection must not sever
+// DEC-0001 just because it sits after six source refs and the memory ref in the
+// served order.
 func TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs(t *testing.T) {
 	const decisionReason = "accepted decision from Compound memory ledger; old source is source-in-place evidence"
 	const hookReason = "active hook on this session"
 	const ambient = "ambient for control-plane repos"
-	// Live served order for ContextPack ctx_f06388a032508fb2: six source refs,
-	// memory, four hook runtime refs, then decision://DEC-0001. The remaining
-	// refs land after the decision as additional source provenance.
+	// Captured live served shape: six source refs, memory, four hook runtime
+	// refs, then decision://DEC-0001. The remaining refs land after the
+	// decision as additional source provenance.
 	refs := []envelope.IncludedRef{
 		{Ref: "AGENTS.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
 		{Ref: "skills/README.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
@@ -322,10 +322,10 @@ func TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs(t *testing.T) {
 		{Ref: "control-plane://workflow-contract", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
 		{Ref: "control-plane://sop-packets", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
 		{Ref: "memory://relevance-gated", SourceClass: "generated", Reason: ambient, Confidence: 1, Status: "current"},
-		{Ref: "hook://claude_code/PreToolUse", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
-		{Ref: "hook://claude_code/PostToolUse", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
-		{Ref: "hook://claude_code/SessionStart", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
-		{Ref: "hook://claude_code/UserPromptSubmit", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
+		{Ref: "hook://codex/PreToolUse", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
+		{Ref: "hook://codex/PostToolUse", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
+		{Ref: "hook://codex/SessionStart", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
+		{Ref: "hook://codex/UserPromptSubmit", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
 		{Ref: "decision://DEC-0001", SourceClass: "runtime", Reason: decisionReason, Confidence: 1, Status: "current"},
 	}
 	for i := len(refs); i < 108; i++ {
@@ -342,9 +342,9 @@ func TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs(t *testing.T) {
 	}
 
 	pack := envelope.ContextPack{SummaryMD: "summary", Included: refs}
-	pack.Header.ID = "ctx_f06388a032508fb2"
+	pack.Header.ID = "ctx_live_ref_selection"
 	rendered := renderInjection(injectionRender{
-		HookID:  "hook_55c5404b82be",
+		HookID:  "hookev_live_ref_selection",
 		Pack:    pack,
 		Surface: injectionSurfaceOrientation,
 	})
@@ -366,10 +366,10 @@ func TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs(t *testing.T) {
 	for _, ref := range []string{
 		"decision://DEC-0001",
 		"memory://relevance-gated",
-		"hook://claude_code/PreToolUse",
-		"hook://claude_code/PostToolUse",
-		"hook://claude_code/SessionStart",
-		"hook://claude_code/UserPromptSubmit",
+		"hook://codex/PreToolUse",
+		"hook://codex/PostToolUse",
+		"hook://codex/SessionStart",
+		"hook://codex/UserPromptSubmit",
 	} {
 		if !strings.Contains(section, "`"+ref+"`") {
 			t.Fatalf("session-specific ref %q was shed before redundant source refs:\n%s", ref, section)

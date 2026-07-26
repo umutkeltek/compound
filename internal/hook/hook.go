@@ -2637,10 +2637,10 @@ func renderIncludedRefWith(ref envelope.IncludedRef, reason string) string {
 //
 // The selection preserves the original relative order among the chosen refs:
 // a later ref in the served pack must never appear before an earlier one. When
-// the served pack has more non-source refs than `max`, the OLDEST non-source
-// refs are dropped first — the "newest session-specific tail" rule the rune
-// budget pass already enforces on a section over its cap, and the rule that
-// keeps the most recent evidence visible when the cap is the binding limit.
+// the served pack has more non-source refs than `max`, the earliest non-source
+// refs win. Served order is already the pack's precedence order; the selector
+// changes only source-vs-non-source priority and does not invent a second
+// freshness ranking.
 //
 // The returned slice is a fresh copy; `refs` is never aliased.
 func selectIncludedRefs(refs []envelope.IncludedRef, max int) []envelope.IncludedRef {
