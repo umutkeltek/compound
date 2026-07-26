@@ -498,6 +498,8 @@ func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCh
 		output, err = runProofCheckBunTools(repo)
 	} else if step.Name == "memory-doctor" {
 		output, err = runProofCheckMemoryDoctorGate(repo, step)
+	} else if step.Name == "workbench-projection" {
+		output, err = runProofCheckWorkbenchGate(repo, step)
 	} else {
 		cmd := exec.Command(step.Command[0], step.Command[1:]...)
 		cmd.Dir = repo
