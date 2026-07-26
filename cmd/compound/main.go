@@ -176,6 +176,8 @@ func main() {
 		cmdProofCheck(os.Args[2:])
 	case "doctor":
 		cmdDoctor(os.Args[2:])
+	case "retention":
+		cmdRetention(os.Args[2:])
 	case "run-attempt":
 		cmdRunAttempt(os.Args[2:])
 	case "experiential-smoke":
@@ -1038,6 +1040,38 @@ func cmdRoute(args []string) {
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		return
+	}
+	if args[0] == "lane-projection" {
+		harnessFilter := valueFlag(args[1:], "--harness")
+		projection, err := routeevidence.LaneProjectionFromHome(homePath, harnessFilter)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route lane-projection:", err)
+			os.Exit(1)
+		}
+		if hasFlag(args[1:], "--json") {
+			printJSON(projection)
+			return
+		}
+		fmt.Println("# route lane-projection")
+		fmt.Printf("- authority: %s\n", projection.AuthorityRef)
+		fmt.Printf("- source_revision: %s\n", projection.SourceRevision)
+		if projection.HarnessFilter != "" {
+			fmt.Printf("- harness_filter: %s\n", projection.HarnessFilter)
+		}
+		fmt.Printf("- lanes: %d\n", projection.LaneCount)
+		fmt.Printf("- executor_owned (NOT emitted): %s\n", strings.Join(projection.ExecutorOwned, ", "))
+		for _, lane := range projection.Lanes {
+			effort, route := lane.NativeEffort, lane.Route
+			if effort == "" {
+				effort = "-"
+			}
+			if route == "" {
+				route = "-"
+			}
+			fmt.Printf("  %-22s harness=%-14s effort=%-7s route=%s\n",
+				lane.Lane, lane.Harness, effort, route)
+		}
 		return
 	}
 	if args[0] == "import-model-capabilities" {

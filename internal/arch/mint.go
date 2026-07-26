@@ -155,6 +155,12 @@ var mintHomes = map[string]MintHome{
 	// work_0ccf9361f136): both are evidence, not enforcement — they inform the
 	// os-absorption doctor's infra_registry_authority proof mode and future
 	// runtime/status projections, never block a policy decision themselves.
+	// retention-classes is enforcement, not a catalogue. Its teeth are two refusals: the doctor
+	// FAILS on any accumulator no class claims (so a new way to fill the disk cannot appear
+	// unowned), and the reclaim planner REFUSES to hand an operator-gated, non-rebuildable, or
+	// currently-in-use instance to an unattended reclaimer. It decides what may be deleted
+	// without a human, which is a gate rather than an observation.
+	"registry:retention-classes": {Class: MintEnforcement},
 	"registry:data-sources": {
 		Class:    MintEvidence,
 		Purpose:  "infra-os database/data-authority registry (database.yaml) installed verbatim under COMPOUND_HOME with source hash + revision recorded",

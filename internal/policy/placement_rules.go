@@ -486,3 +486,9 @@ func digestHex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
+// DigestHex exposes the exact hash import uses to stamp SourceRevision, so a reader
+// (doctor) can recompute a source view's revision and compare it to what was imported.
+// Exported deliberately rather than duplicated: a second implementation that drifted
+// from this one would report false drift, which is worse than not checking at all.
+func DigestHex(data []byte) string { return digestHex(data) }

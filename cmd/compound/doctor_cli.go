@@ -70,6 +70,13 @@ type doctorReport struct {
 	PlacementMode      string       `json:"placement_guard_mode"`
 	PlacementNote      string       `json:"placement_note,omitempty"`
 
+	// Placement source freshness — for each imported source view, whether the bytes
+	// Compound ENFORCES still match the bytes that view renders today.
+	PlacementSources []doctorPlacementSource `json:"placement_sources,omitempty"`
+
+	// Retention — what is accumulating on disk, and whether any class owns it.
+	Retention *policy.RetentionScanReport `json:"retention,omitempty"`
+
 	// Permission posture: one row per configured harness-permission authority
 	// (config/harness-permissions/*.yaml), read-only via harness.PermissionDrift.
 	PermissionPosture []doctorPermissionPosture `json:"permission_posture,omitempty"`
@@ -219,6 +226,17 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 			rep.PlacementNote = "observe = record-only (a mis-placed write is NOT blocked); set to block to enforce"
 		}
 	}
+	rep.PlacementSources = buildPlacementSourceFreshness(homePath)
+
+	// 4b) Retention — scan the repo this doctor runs against for accumulators, and check them
+	// against the declared classes. Scoped to the resolved repo root rather than the whole
+	// home: a recursive home sweep inside a health command would be slow enough that people
+	// stop running it, and a check nobody runs protects nothing. The report names what it
+	// scanned so "clean" is never confused with "did not look".
+	if repoRoot := resolveRetentionScanRoot(); repoRoot != "" {
+		scan := policy.ScanRetention([]string{repoRoot})
+		rep.Retention = &scan
+	}
 
 	// 5) Permission posture — per-harness authority drift, read-only (harness.PermissionDrift
 	// only reads; it never renders/applies). Emission of an observation batch stays exclusively
@@ -300,10 +318,202 @@ func printDoctor(stdout io.Writer, rep doctorReport) {
 	if rep.PlacementNote != "" {
 		fmt.Fprintf(stdout, "  note: %s\n", rep.PlacementNote)
 	}
+	printPlacementSourceFreshness(stdout, rep)
+	printRetention(stdout, rep)
 
 	printProjectionFreshness(stdout, rep)
 	printPermissionPosture(stdout, rep)
 	printSurfacing(stdout, rep)
+}
+
+// doctorPlacementSource is one imported placement source view and whether the bytes
+// Compound enforces still match the bytes that view renders today.
+type doctorPlacementSource struct {
+	SourcePath string `json:"source_path"`
+	// ImportedAt/ImportedRevision come from the NEWEST import for this path.
+	ImportedAt       string `json:"imported_at,omitempty"`
+	ImportedRevision string `json:"imported_revision,omitempty"`
+	LiveRevision     string `json:"live_revision,omitempty"`
+	// State: "current" | "stale" | "source-missing" | "source-unreadable".
+	State string `json:"state"`
+}
+
+// buildPlacementSourceFreshness answers a question no other surface answers: are the
+// placement rules Compound ENFORCES still the rules their source view renders?
+//
+// Compound holds both halves — the append-only import history and the source path it
+// imported from — so the comparison belongs here rather than in the repo that renders
+// the view. That repo can prove it WROTE the file; only Compound knows what it imported.
+//
+// Reported, never repaired: doctor writes nothing, and re-importing is a policy
+// mutation that must go through `compound policy import-placement-rules`.
+//
+// A stale row is not automatically a defect — the source may have been regenerated with
+// changes that were deliberately not adopted yet. It is a question the operator can
+// otherwise only answer by hand-diffing a sha256.
+func buildPlacementSourceFreshness(homePath string) []doctorPlacementSource {
+	records, err := policy.LoadPlacementSourceAuthority(homePath)
+	if err != nil || len(records) == 0 {
+		return nil
+	}
+
+	// The history is append-only and one path appears once PER IMPORT, so collapse to the
+	// newest record per path. Taking the first match would compare today's file against a
+	// months-old import and report drift on a correctly-enforced source.
+	newest := map[string]policy.PlacementSourceAuthorityRecord{}
+	for _, rec := range records {
+		if rec.SourcePath == "" {
+			continue
+		}
+		prev, seen := newest[rec.SourcePath]
+		if !seen || rec.CreatedAt >= prev.CreatedAt {
+			newest[rec.SourcePath] = rec
+		}
+	}
+
+	paths := make([]string, 0, len(newest))
+	for path := range newest {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	rows := make([]doctorPlacementSource, 0, len(paths))
+	for _, path := range paths {
+		rec := newest[path]
+		row := doctorPlacementSource{
+			SourcePath:       path,
+			ImportedAt:       rec.CreatedAt,
+			ImportedRevision: rec.SourceRevision,
+		}
+		data, readErr := os.ReadFile(path)
+		switch {
+		case os.IsNotExist(readErr):
+			row.State = "source-missing"
+		case readErr != nil:
+			row.State = "source-unreadable"
+		default:
+			row.LiveRevision = "sha256:" + policy.DigestHex(data)
+			if row.LiveRevision == rec.SourceRevision {
+				row.State = "current"
+			} else {
+				row.State = "stale"
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// printPlacementSourceFreshness stays quiet when every imported source is current: a
+// health surface that prints a wall of green trains the operator to skip it.
+func printPlacementSourceFreshness(stdout io.Writer, rep doctorReport) {
+	if len(rep.PlacementSources) == 0 {
+		return
+	}
+	notCurrent := make([]doctorPlacementSource, 0, len(rep.PlacementSources))
+	for _, row := range rep.PlacementSources {
+		if row.State != "current" {
+			notCurrent = append(notCurrent, row)
+		}
+	}
+	if len(notCurrent) == 0 {
+		fmt.Fprintf(stdout, "- sources: %d imported, all current with what Compound enforces\n", len(rep.PlacementSources))
+		return
+	}
+	for _, row := range notCurrent {
+		switch row.State {
+		case "stale":
+			fmt.Fprintf(stdout, "- source drift: %s\n", row.SourcePath)
+			fmt.Fprintf(stdout, "  enforcing %s (imported %s), source now renders %s\n",
+				row.ImportedRevision, row.ImportedAt, row.LiveRevision)
+			fmt.Fprintln(stdout, "  -> `compound policy import-placement-rules <path>` to adopt, or leave if the change is not meant to be in force")
+		case "source-missing":
+			fmt.Fprintf(stdout, "- source missing: %s (still enforcing %s from %s)\n",
+				row.SourcePath, row.ImportedRevision, row.ImportedAt)
+		default:
+			fmt.Fprintf(stdout, "- source unreadable: %s\n", row.SourcePath)
+		}
+	}
+}
+
+// resolveRetentionScanRoot returns the repository root to scan for accumulators.
+//
+// Walks up from cwd to the enclosing git root. Returns "" rather than guessing when there is
+// no repo: scanning an arbitrary directory would produce findings the operator cannot act on.
+func resolveRetentionScanRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for dir := cwd; ; dir = filepath.Dir(dir) {
+		if info, statErr := os.Stat(filepath.Join(dir, ".git")); statErr == nil && (info.IsDir() || info.Mode().IsRegular()) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+	}
+}
+
+// printRetention renders what is accumulating and whether anything owns it.
+//
+// The section leads with UNDECLARED accumulators because that is the only part that represents
+// a gap in the system rather than a number to watch: a class nothing claims is a new way to
+// fill the disk that no owner is tracking. Declared-and-rebuildable bytes are reported as an
+// opportunity, not an alarm — they are supposed to exist, and knowing the figure is what lets
+// a reclaimer act before pressure rather than after.
+func printRetention(stdout io.Writer, rep doctorReport) {
+	if rep.Retention == nil {
+		return
+	}
+	scan := rep.Retention
+	fmt.Fprintln(stdout, "\n## retention (what accumulates, and who owns it)")
+	if len(scan.Scanned) == 0 {
+		fmt.Fprintln(stdout, "- no repository root resolved; nothing scanned")
+		return
+	}
+
+	if len(scan.Undeclared) > 0 {
+		fmt.Fprintf(stdout, "- UNDECLARED accumulators: %d — no retention class claims these\n", len(scan.Undeclared))
+		for _, item := range scan.Undeclared {
+			prefix := " "
+			if item.Truncated {
+				prefix = "\u2265" // budget-truncated: a lower bound, never presented as exact
+			}
+			fmt.Fprintf(stdout, "    %s%8s  %s\n", prefix, humanBytes(item.Bytes), item.Path)
+		}
+		fmt.Fprintln(stdout, "  -> declare each in internal/policy/retention.go, or they will accumulate unowned")
+	} else {
+		fmt.Fprintln(stdout, "- every accumulator found is claimed by a declared class")
+	}
+
+	if scan.ReclaimableBytes > 0 {
+		fmt.Fprintf(stdout, "- reclaimable now (rebuildable, zero risk): %s across %d instance(s)\n",
+			humanBytes(scan.ReclaimableBytes), len(scan.Declared))
+	}
+	if len(scan.ClassesWithoutMechanism) > 0 {
+		// A declared class without a mechanism is operationally incomplete.
+		fmt.Fprintf(stdout, "- declared but no reclaim mechanism exists: %s\n",
+			strings.Join(scan.ClassesWithoutMechanism, ", "))
+	}
+	fmt.Fprintf(stdout, "  scanned: %s\n", strings.Join(scan.Scanned, ", "))
+}
+
+// humanBytes formats a byte count for operator output.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for size := n / unit; size >= unit; size /= unit {
+		div *= unit
+		exp++
+	}
+	// KiB/MiB/GiB, not KB/MB/GB: the divisor is 1024. Mislabelling these understates a
+	// threshold by ~7% at GiB scale, and this output exists to reason about thresholds.
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // printProjectionFreshness renders which persisted projections were NOT built by the
