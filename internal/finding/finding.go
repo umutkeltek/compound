@@ -38,6 +38,7 @@ const (
 	Subdir                = "observed/findings"
 	PrivacyPrivate        = "private"
 	VisibilityOperational = "operational"
+	MaxBodyBytes          = 1 << 20
 )
 
 // Finding is one agent-authored operational note. It is append-only with supersession (a revised
@@ -133,6 +134,9 @@ func RecordWithStatus(homePath string, f Finding, now time.Time) (RecordResult, 
 	}
 	if strings.TrimSpace(f.Body) == "" {
 		return RecordResult{}, fmt.Errorf("finding body required")
+	}
+	if len(f.Body) > MaxBodyBytes {
+		return RecordResult{}, fmt.Errorf("finding body exceeds the 1 MiB limit")
 	}
 	f.ID = "find_" + digest12(f.Topic+"|"+f.Body)
 	f.CID = CID(f.Body)

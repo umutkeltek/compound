@@ -618,7 +618,7 @@ func TestFindingRecordJSONAckIsMinimalAndClassificationExplicit(t *testing.T) {
 }
 
 func TestResolveBodySourceBoundsStdinAtOneMiB(t *testing.T) {
-	const maxBytes = 1 << 20
+	const maxBytes = finding.MaxBodyBytes
 	for _, tc := range []struct {
 		name      string
 		size      int
@@ -667,7 +667,7 @@ func TestResolveBodySourceBoundsStdinAtOneMiB(t *testing.T) {
 }
 
 func TestResolveBodySourceBoundsBodyFileAtOneMiB(t *testing.T) {
-	const maxBytes = 1 << 20
+	const maxBytes = finding.MaxBodyBytes
 	for _, tc := range []struct {
 		name      string
 		size      int

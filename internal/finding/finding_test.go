@@ -128,6 +128,31 @@ func TestShowRejectsPathEscape(t *testing.T) {
 }
 
 // TestRecordWithStatusFirstWriteReturnsRecorded — falsifier 1: first write returns recorded.
+func TestRecordWithStatusRejectsOversizeBodyBeforeCreatingFindingHome(t *testing.T) {
+	const maxBodyBytes = MaxBodyBytes
+
+	exactHome := t.TempDir()
+	if _, err := RecordWithStatus(exactHome, Finding{
+		Topic: "exact-bound",
+		Body:  strings.Repeat("x", maxBodyBytes),
+	}, fixedNow); err != nil {
+		t.Fatalf("exact-bound body rejected: %v", err)
+	}
+
+	oversizeHome := filepath.Join(t.TempDir(), "not-created")
+	if _, err := RecordWithStatus(oversizeHome, Finding{
+		Topic: "one-byte-over",
+		Body:  strings.Repeat("x", maxBodyBytes+1),
+	}, fixedNow); err == nil {
+		t.Fatal("RecordWithStatus accepted a body one byte over the 1 MiB invariant")
+	} else if !strings.Contains(err.Error(), "1 MiB") {
+		t.Fatalf("oversize error = %q, want declared 1 MiB limit", err)
+	}
+	if _, err := os.Stat(oversizeHome); !os.IsNotExist(err) {
+		t.Fatalf("oversize rejection created finding home: stat err=%v", err)
+	}
+}
+
 func TestRecordWithStatusFirstWriteReturnsRecorded(t *testing.T) {
 	home := t.TempDir()
 	res, err := RecordWithStatus(home, Finding{

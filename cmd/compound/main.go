@@ -2326,12 +2326,11 @@ func resolveBodySource(args []string) (string, error) {
 }
 
 func readBoundedFindingBody(reader io.Reader, source string) (string, error) {
-	const maxBodyBytes = 1 << 20
-	data, err := io.ReadAll(io.LimitReader(reader, maxBodyBytes+1))
+	data, err := io.ReadAll(io.LimitReader(reader, finding.MaxBodyBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", source, err)
 	}
-	if len(data) > maxBodyBytes {
+	if len(data) > finding.MaxBodyBytes {
 		return "", fmt.Errorf("%s exceeds the 1 MiB limit", source)
 	}
 	return string(data), nil
