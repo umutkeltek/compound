@@ -1925,17 +1925,30 @@ const (
 	maxOrientationSummaryChars = 2400
 	// Measured max 205 across 1077 uncapped digests.
 	maxOrientationActiveInstructionChars = 300
-	// Measured 127 runes.
-	maxOrientationActiveHookChars = 250
+	// Measured 127 runes; live control-plane digests use 23. 170 keeps 1.3x the
+	// measured worst case. Lowered from 250 to fund the Included raise below — the
+	// surface sum is fixed, so a raise is always somebody else's slack.
+	maxOrientationActiveHookChars = 170
 	// Included is the one orientation section deliberately funded BELOW its demand.
 	// It is generic provenance — the same reason it was demoted below high-signal
 	// meaning in the first place — so when the surface has to give something up, it
-	// gives up provenance rather than the constitution. maxInjectionIncludedRefs is
-	// lowered to match, so the list ends with an honest "N more omitted" line instead
-	// of a mid-ref character cut.
-	maxOrientationIncludedChars = 1100
-	// Measured ~400 runes.
-	maxOrientationExcludedChars = 500
+	// gives up provenance rather than the constitution. writeIncludedList drops WHOLE
+	// refs to stay inside this, so the list ends with an honest "N more omitted" line
+	// instead of a mid-ref character cut.
+	//
+	// Raised 1100 -> 1210, funded by lowering Active Hooks (-80) and Excluded (-30);
+	// the surface sum is unchanged at 5850 and TestInjectionSectionCapsFitBudget still
+	// enforces it. 1100 was set when a ref measured ~110 runes and there was no trust
+	// legend above them; the legend costs 108, which put the live 8-ref control-plane
+	// pack at 1105 and truncated it on every session. The floor is arithmetic, not
+	// taste: heading 13 + legend 108 + 8 served refs 984 + includedOmissionReserve 96
+	// = 1201, so anything below that drops a ref the pack was built to carry — and the
+	// ref it drops is the tail, where the session-specific claim:// and decision:// refs
+	// sit, behind six lines of ambient boilerplate the agent already has from AGENTS.md.
+	maxOrientationIncludedChars = 1210
+	// Measured ~400 runes; live control-plane digests use 118. 470 keeps 1.17x the
+	// measured worst case.
+	maxOrientationExcludedChars = 470
 	// Hook Gate Readiness plus Hook Roster share one budget: readiness measured 265
 	// runes, roster 528, so 900 holds both in full. Readiness has reached a live
 	// agent 3 times in 2714 digests; funding it to full width is the point.
@@ -2175,7 +2188,7 @@ func writeOrientationSections(b *strings.Builder, pack envelope.ContextPack) {
 		writeStringList(section, "Active Hooks", pack.ActiveHooks)
 	})
 	writeBudgetedInjectionSection(b, maxOrientationIncludedChars, func(section *strings.Builder) {
-		writeIncludedList(section, pack.Included)
+		writeIncludedList(section, pack.Included, maxOrientationIncludedChars)
 	})
 	writeBudgetedInjectionSection(b, maxOrientationExcludedChars, func(section *strings.Builder) {
 		section.WriteString("\n## Excluded\n")
@@ -2542,8 +2555,92 @@ func safeIncludedField(s string) string {
 	return strings.ReplaceAll(safeMD(s), "trust=", "trust_")
 }
 
-func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef) {
-	b.WriteString("\n## Included\n")
+// includedOmissionReserve keeps room for the "N more included ref(s) omitted" line, so
+// the sentence reporting the omission can never itself be the thing that gets cut. Sized
+// for a 3-digit count, since a control-plane pack routinely carries 100+ refs.
+const includedOmissionReserve = 96
+
+// minIncludedRefChars floors the per-ref budget so a long ref list cannot divide the
+// section into slices too small to carry a ref's identity. A ref's identity is its ref
+// string plus the trust marker and provenance fields; only the reason is elidable.
+const minIncludedRefChars = 120
+
+// elideIncludedReason trims a reason to fit `room` runes and says so.
+//
+// The reason is the ONLY elidable part of a ref line. The ref string, the trust marker and
+// the provenance fields are identity: a ref rendered without them is a different claim, not
+// a shorter one. The elision is marked because an unmarked trim reads as a complete reason
+// that simply says less — the same failure as the severed ref this renderer exists to stop.
+func elideIncludedReason(reason string, room int) string {
+	const marker = "…[elided]"
+	if room <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(reason) <= room {
+		return reason
+	}
+	markerLen := utf8.RuneCountInString(marker)
+	if room <= markerLen {
+		return marker[:0] + "…"
+	}
+	runes := []rune(reason)
+	return string(runes[:room-markerLen]) + marker
+}
+
+// renderIncludedRef renders ONE ref as a whole line, newline included.
+//
+// Split out from the list so the caller can price a line BEFORE committing it to the
+// section. budget <= 0 means unbudgeted (render in full); otherwise the reason is elided
+// so the line fits, because identity must survive even when prose cannot.
+func renderIncludedRef(ref envelope.IncludedRef, budget int) string {
+	if budget > 0 {
+		// Price everything except the reason, then give the reason what is left.
+		skeleton := renderIncludedRefWith(ref, "")
+		room := budget - utf8.RuneCountInString(skeleton)
+		return renderIncludedRefWith(ref, elideIncludedReason(safeIncludedField(ref.Reason), room))
+	}
+	return renderIncludedRefWith(ref, safeIncludedField(ref.Reason))
+}
+
+func renderIncludedRefWith(ref envelope.IncludedRef, reason string) string {
+	var line strings.Builder
+	// The marker precedes the provenance fields on purpose: capInjectionSection
+	// cuts on a rune index, not a line boundary, so a marker rendered at the end
+	// of a long line could be cut off a ref that IS demoted — and a missing marker
+	// reads as the default tier. Losing the reason to a cut is cheap; losing the
+	// demotion silently elevates.
+	fmt.Fprintf(&line, "- `%s`", safeIncludedField(ref.Ref))
+	if includedRefTrustTier(ref) == trustEvidenceOnly {
+		line.WriteString(" " + includedRefTrustMarker)
+	}
+	fmt.Fprintf(&line, " source=%s status=%s confidence=%.2f reason=%s",
+		safeIncludedField(ref.SourceClass), safeIncludedField(ref.Status), ref.Confidence, reason)
+	if strings.HasPrefix(ref.Ref, "capability://") {
+		line.WriteString(" [offer, not execution]")
+	}
+	line.WriteString("\n")
+	return line.String()
+}
+
+// writeIncludedList renders the Included section within `limit` runes, dropping WHOLE
+// refs rather than letting the section cap sever one.
+//
+// The ref bound alone was never the true limit. maxInjectionIncludedRefs was set to 8 on
+// the measurement that "a real Included ref measures ~110 runes", so 8 refs plus the
+// heading fit 1100 — correct when written, and invalidated the moment the 108-rune trust
+// legend landed above them. The live control-plane pack then needed 1105 runes, and since
+// nothing enforced the character bound, capInjectionSection rune-cut the tail: the 8th ref
+// rendered as `decision://DEC-0001 ... reason=accepted decision`, which does not read as a
+// truncated ref, it reads as a ref whose reason IS "accepted decision". A severed ref is
+// worse than an absent one because it is still legible, so the reader never doubts it.
+//
+// So the character bound is authoritative here and the ref count is a ceiling on top of
+// it, mirroring what the capability-offer renderer already does one section down. Refs
+// dropped for EITHER reason land in the same count, because the reader's question is "how
+// many did I not see", not "which bound stopped it".
+func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef, limit int) {
+	const heading = "\n## Included\n"
+	b.WriteString(heading)
 	if len(refs) == 0 {
 		b.WriteString("- none\n")
 		return
@@ -2554,25 +2651,57 @@ func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef) {
 	}
 	// The legend renders FIRST so it survives a section truncated at the tail, and it
 	// defines the grammar for harnesses whose own instruction file does not.
-	b.WriteString("- trust: unmarked = verify-first; `" + includedRefTrustMarker + "` = never a premise, re-derive it. Tiers only demote.\n")
+	const legend = "- trust: unmarked = verify-first; `" + includedRefTrustMarker + "` = never a premise, re-derive it. Tiers only demote.\n"
+	b.WriteString(legend)
+
+	// used counts the WHOLE section, heading and legend included — counting only the ref
+	// lines is how the offer renderer first overran its own cap by 50 runes.
+	sectionRoom := limit - includedOmissionReserve
+	overhead := utf8.RuneCountInString(heading) + utf8.RuneCountInString(legend)
+
+	// Pass 1: price every ref in full. The common case fits, and a pack that fits must
+	// render losslessly — an elision budget applied unconditionally would trim reasons
+	// nobody needed to lose.
+	lines := make([]string, 0, len(shown))
+	total := overhead
 	for _, ref := range shown {
-		// The marker precedes the provenance fields on purpose: capInjectionSection
-		// cuts on a rune index, not a line boundary, so a marker rendered at the end
-		// of a long line could be cut off a ref that IS demoted — and a missing marker
-		// reads as the default tier. Losing the reason to a cut is cheap; losing the
-		// demotion silently elevates.
-		fmt.Fprintf(b, "- `%s`", safeIncludedField(ref.Ref))
-		if includedRefTrustTier(ref) == trustEvidenceOnly {
-			b.WriteString(" " + includedRefTrustMarker)
-		}
-		fmt.Fprintf(b, " source=%s status=%s confidence=%.2f reason=%s",
-			safeIncludedField(ref.SourceClass), safeIncludedField(ref.Status), ref.Confidence, safeIncludedField(ref.Reason))
-		if strings.HasPrefix(ref.Ref, "capability://") {
-			b.WriteString(" [offer, not execution]")
-		}
-		b.WriteString("\n")
+		line := renderIncludedRef(ref, 0)
+		lines = append(lines, line)
+		total += utf8.RuneCountInString(line)
 	}
-	if omitted := len(refs) - len(shown); omitted > 0 {
+
+	// Pass 2: it does not fit, so every ref gets an equal share and over-long reasons are
+	// elided. Sharing the budget rather than dropping the tail is the point: the pack
+	// orders ambient boilerplate first and session-specific claim:// / decision:// refs
+	// last, so a tail-drop always eats the meaning and keeps the six lines the agent
+	// already has from AGENTS.md. Eliding a reason costs prose; dropping the tail ref
+	// costs the only thing in the list that was about THIS session.
+	if total > sectionRoom {
+		perRef := (sectionRoom - overhead) / max(1, len(shown))
+		if perRef < minIncludedRefChars {
+			perRef = minIncludedRefChars
+		}
+		lines = lines[:0]
+		for _, ref := range shown {
+			lines = append(lines, renderIncludedRef(ref, perRef))
+		}
+	}
+
+	// Emit whatever still fits, whole lines only. With an equal share this drops nothing
+	// in practice; it is the backstop for a pack so large that even the floored per-ref
+	// budget oversubscribes the section.
+	used := overhead
+	rendered := 0
+	for _, line := range lines {
+		cost := utf8.RuneCountInString(line)
+		if used+cost > sectionRoom {
+			break
+		}
+		b.WriteString(line)
+		used += cost
+		rendered++
+	}
+	if omitted := len(refs) - rendered; omitted > 0 {
 		fmt.Fprintf(b, "- %d more included ref(s) omitted digest budget; see ContextPack JSON for full provenance\n", omitted)
 	}
 }

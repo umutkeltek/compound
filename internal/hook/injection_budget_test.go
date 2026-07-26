@@ -99,7 +99,7 @@ func TestIncludedTrustTiersFitTheOrientationCap(t *testing.T) {
 	}
 
 	var section strings.Builder
-	writeIncludedList(&section, live)
+	writeIncludedList(&section, live, maxOrientationIncludedChars)
 	got := utf8.RuneCountInString(section.String())
 	if got > maxOrientationIncludedChars {
 		t.Fatalf("Included section with trust tiers is %d runes, over its %d cap (by %d).\n"+
@@ -130,24 +130,20 @@ func TestIncludedTrustTiersFitTheOrientationCap(t *testing.T) {
 	}
 }
 
-// TestIncludedTrustTiersFitTheCapAtTheRefBound measures the tier encoding at the size
-// the renderer actually permits — maxInjectionIncludedRefs — instead of a pack that
-// happens to be smaller.
+// liveControlPlanePack is the pack a real `compound orient --harness claude_code` serves
+// this repo, verbatim, in served order — captured from the rendered SessionStart digest at
+// COMPOUND_HOME/context/injections/, not hand-composed.
 //
-// The 5-ref measurement above is real but comfortable, and a cap test whose fixture is
-// half the permitted size reports headroom the live surface does not have: at the bound
-// this section renders 1075 of 1100 runes, so the true margin is ~25 runes, not the ~450
-// the 5-ref pack suggests. That gap is the whole failure mode — capInjectionSection cuts
-// on a rune index, so the first edit to spend those 25 runes does not error, it silently
-// amputates the tail of the list and every test asserting "the section is present" stays
-// green. Pinning the bound makes the next 25-rune edit fail here, loudly, with the number.
-//
-// The refs are the first eight a real `compound orient --harness claude_code` serves this
-// control-plane repo, in served order, including the one generated ref that demotes — so
-// the fixture drifts only when the actual served shape drifts.
-func TestIncludedTrustTiersFitTheCapAtTheRefBound(t *testing.T) {
+// Ref 8 is the one that matters and the one two previous fixtures got wrong. It is
+// `decision://DEC-0001`, whose 84-rune reason is nearly double the cheap refs above it. An
+// earlier fixture put `hook://claude_code/PostToolUse` (44-rune reason) in that slot and
+// measured the section at 1075 of 1100 — "fits, 25 to spare" — while the served pack needed
+// 1105 and truncated by 5 on every session. Thirty runes of fixture optimism inverted the
+// verdict. Keep the EXPENSIVE tail ref here: a cap fixture is only as true as its worst line.
+func liveControlPlanePack() []envelope.IncludedRef {
 	const ambient = "ambient for control-plane repos"
-	atBound := []envelope.IncludedRef{
+	const decisionReason = "accepted decision from Compound memory ledger; old source is source-in-place evidence"
+	return []envelope.IncludedRef{
 		{Ref: "AGENTS.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
 		{Ref: "skills/README.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
 		{Ref: "constitution://universal-principles", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
@@ -155,8 +151,12 @@ func TestIncludedTrustTiersFitTheCapAtTheRefBound(t *testing.T) {
 		{Ref: "control-plane://workflow-contract", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
 		{Ref: "control-plane://sop-packets", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
 		{Ref: "memory://relevance-gated", SourceClass: "generated", Reason: ambient, Confidence: 1, Status: "current"},
-		{Ref: "hook://claude_code/PostToolUse", SourceClass: "runtime", Reason: "installed hook selected for harness and task", Confidence: 1, Status: "current"},
+		{Ref: "decision://DEC-0001", SourceClass: "runtime", Reason: decisionReason, Confidence: 1, Status: "current"},
 	}
+}
+
+func TestIncludedTrustTiersFitTheCapAtTheRefBound(t *testing.T) {
+	atBound := liveControlPlanePack()
 	if len(atBound) != maxInjectionIncludedRefs {
 		t.Fatalf("fixture must sit exactly at the ref bound: have %d refs, maxInjectionIncludedRefs=%d.\n"+
 			"If the bound moved, re-measure the section at the NEW bound — a cap proven at the old one proves nothing.",
@@ -164,20 +164,16 @@ func TestIncludedTrustTiersFitTheCapAtTheRefBound(t *testing.T) {
 	}
 
 	var section strings.Builder
-	writeIncludedList(&section, atBound)
+	writeIncludedList(&section, atBound, maxOrientationIncludedChars)
 	got := utf8.RuneCountInString(section.String())
 	if got > maxOrientationIncludedChars {
 		t.Fatalf("Included section at the %d-ref bound is %d runes, over its %d cap (by %d).\n"+
-			"This section does not error when it overruns — it truncates on a rune index and drops the tail.\n"+
-			"Make the encoding cheaper or drop whole refs with an 'N more omitted' line. Do NOT raise the cap:\n"+
-			"the orientation caps already sum near MaxContextChars, so a raise here amputates a later section instead.",
+			"The renderer is supposed to drop WHOLE refs to fit; if it is over, the drop loop is not working.",
 			maxInjectionIncludedRefs, got, maxOrientationIncludedChars, got-maxOrientationIncludedChars)
 	}
 	t.Logf("Included at the %d-ref bound with tiers: %d runes of cap %d (headroom %d)",
 		maxInjectionIncludedRefs, got, maxOrientationIncludedChars, maxOrientationIncludedChars-got)
 
-	// The demoted ref must survive to the rendered digest. A marker lost to a cut reads as
-	// the default tier, which is the one direction the demote-only rule must never allow.
 	pack := envelope.ContextPack{SummaryMD: "summary", Included: atBound}
 	pack.Header.ID = "ctx_tier_bound"
 	rendered := renderInjection(injectionRender{HookID: "hookev_tier_bound", Pack: pack, Surface: injectionSurfaceOrientation})
@@ -189,11 +185,74 @@ func TestIncludedTrustTiersFitTheCapAtTheRefBound(t *testing.T) {
 	if cut := strings.Index(tail, "\n## "); cut > 0 {
 		tail = tail[:cut]
 	}
+	// The whole point of the drop loop: the section must never hand the reader a severed
+	// ref. A truncation marker here means the rune-cut path ran after all.
 	if strings.Contains(tail, "Section truncated") {
-		t.Fatalf("Included section truncated at the ref bound — the served shape does not fit:\n%s", tail)
+		t.Fatalf("Included section truncated at the served pack — refs must be DROPPED whole, not cut:\n%s", tail)
 	}
 	if !strings.Contains(tail, "`memory://relevance-gated` "+includedRefTrustMarker) {
 		t.Fatalf("the one demoted ref at the bound lost its marker, so it now reads as verify-first:\n%s", tail)
+	}
+	// Every ref that rendered must have rendered WHOLE — its reason ends the line.
+	for _, ref := range atBound {
+		if !strings.Contains(tail, "`"+ref.Ref+"`") {
+			continue // dropped for budget, and the omission line below accounts for it
+		}
+		if !strings.Contains(tail, "reason="+ref.Reason+"\n") {
+			t.Fatalf("ref %q rendered with a severed reason — a partial ref reads as a complete one:\n%s", ref.Ref, tail)
+		}
+	}
+}
+
+// TestIncludedListElidesReasonsRatherThanSeveringOrDroppingTheTail pins the repair, using an
+// explicit tight limit so it tests the RENDERER's property rather than today's cap value.
+//
+// This is the regression test for a defect that was live on main. The trust legend pushed the
+// default control-plane pack from 977 to 1105 runes against a 1100 cap, so capInjectionSection
+// severed `decision://DEC-0001` mid-reason on every session that got a SessionStart. It
+// rendered as `... reason=accepted decision` — indistinguishable from a ref whose reason
+// genuinely IS "accepted decision". Silent, legible, and wrong.
+//
+// Two properties, and the second is why tail-dropping was not the answer: every ref keeps its
+// IDENTITY (ref string, trust marker, provenance fields), and no ref is lost merely for sitting
+// last. The pack orders ambient boilerplate first and session-specific refs last, so a renderer
+// that sheds the tail sheds exactly the refs that were about this session while faithfully
+// preserving six lines the agent already has from AGENTS.md.
+func TestIncludedListElidesReasonsRatherThanSeveringOrDroppingTheTail(t *testing.T) {
+	pack := liveControlPlanePack()
+	// Tight enough to force elision, but not below the identity floor. The served pack needs
+	// 1105 runes in full, so 1200 (minus the 96-rune omission reserve) cannot fit it and the
+	// elision path runs — while still leaving each of the 8 refs more than
+	// minIncludedRefChars, which is what identity costs. Below that floor refs MUST drop,
+	// and that is the backstop behaving correctly, not an identity guarantee.
+	const tight = 1200
+
+	var section strings.Builder
+	writeIncludedList(&section, pack, tight)
+	out := section.String()
+
+	if n := utf8.RuneCountInString(out); n > tight {
+		t.Fatalf("section is %d runes against a %d limit — the budget loop failed to bound it:\n%s", n, tight, out)
+	}
+	// No severed reason: the live defect rendered DEC-0001's reason cut mid-phrase with
+	// nothing marking the cut.
+	if strings.Contains(out, "reason=accepted decision\n") {
+		t.Fatalf("`decision://DEC-0001` rendered with a silently severed reason — the exact live defect:\n%s", out)
+	}
+	// Every ref keeps its identity, including the tail ref that a drop-the-tail renderer
+	// would have discarded.
+	for _, ref := range pack {
+		if !strings.Contains(out, "`"+ref.Ref+"`") {
+			t.Fatalf("ref %q lost its identity under budget; refs may lose PROSE, never presence:\n%s", ref.Ref, out)
+		}
+	}
+	// The demotion survives budgeting — losing a marker silently elevates a ref.
+	if !strings.Contains(out, "`memory://relevance-gated` "+includedRefTrustMarker) {
+		t.Fatalf("the demoted ref lost its marker under budget, so it now reads as verify-first:\n%s", out)
+	}
+	// Anything trimmed is ANNOUNCED. An unmarked trim reads as a complete-but-terser reason.
+	if !strings.Contains(out, "…[elided]") {
+		t.Fatalf("the pack cannot fit %d runes in full, so something was trimmed without saying so:\n%s", tight, out)
 	}
 }
 
