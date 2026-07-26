@@ -2,6 +2,8 @@ package work
 
 import (
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,9 +21,7 @@ func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
 	t.Run("ready then landed", func(t *testing.T) {
-		repo, base := initLandingRepo(t)
-		candidate := landingFeatureCommit(t, repo)
-		landingGit(t, repo, "switch", "main")
+		repo, base, candidate := sharedLandingReadyRepo(t)
 
 		store, err := Open(t.TempDir())
 		if err != nil {
@@ -72,9 +72,7 @@ func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
 	})
 
 	t.Run("main moved", func(t *testing.T) {
-		repo, base := initLandingRepo(t)
-		candidate := landingFeatureCommit(t, repo)
-		landingGit(t, repo, "switch", "main")
+		repo, base, candidate := sharedLandingReadyRepo(t)
 		writeLandingFile(t, filepath.Join(repo, "main.txt"), "main moved\n")
 		landingGit(t, repo, "add", "main.txt")
 		landingGit(t, repo, "commit", "-m", "main moved")
@@ -100,9 +98,7 @@ func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
 
 func TestLandCheckFailsClosedForDirtyTargetAndMovedSnapshot(t *testing.T) {
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
+	repo, base, candidate := sharedLandingReadyRepo(t)
 
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -152,9 +148,7 @@ func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
+	repo, base, candidate := sharedLandingReadyRepo(t)
 
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -218,10 +212,7 @@ func TestCompletedCodeWorkRevalidatesContainedLandingProofAtClose(t *testing.T) 
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
-	landingGit(t, repo, "merge", "--ff-only", candidate)
+	repo, base, candidate := sharedLandingLandedRepo(t)
 
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -273,10 +264,7 @@ func TestCompletedCodeWorkRevalidatesContainedLandingProofAtClose(t *testing.T) 
 // overriding the immutable containment result.
 func TestLandCheckReportsTruthfulContainmentUnderUnrelatedDirt(t *testing.T) {
 	now := time.Date(2026, 7, 16, 20, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
-	landingGit(t, repo, "merge", "--ff-only", candidate)
+	repo, base, candidate := sharedLandingLandedRepo(t)
 
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -322,7 +310,7 @@ func TestLandCheckReportsTruthfulContainmentUnderUnrelatedDirt(t *testing.T) {
 
 func TestLandCheckPublishedContainmentOutranksOwnedPathDirt(t *testing.T) {
 	now := time.Date(2026, 7, 18, 9, 30, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
 	landingGit(t, repo, "remote", "add", "origin", remote)
@@ -370,7 +358,7 @@ func TestCompletedRequiredPublicationWorkClosesOverLaterOwnedPathDirt(t *testing
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
 	now := time.Date(2026, 7, 18, 9, 45, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
 	landingGit(t, repo, "remote", "add", "origin", remote)
@@ -450,7 +438,7 @@ func TestCompletedRequiredPublicationWorkClosesOverLaterOwnedPathDirt(t *testing
 
 func TestLandCheckPublishedContainmentReportsForeignDirt(t *testing.T) {
 	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
 	landingGit(t, repo, "remote", "add", "origin", remote)
@@ -507,7 +495,7 @@ func TestLandCheckPublishedContainmentReportsForeignDirt(t *testing.T) {
 
 func TestLandCheckTargetContainmentStillAwaitsPublicationUnderForeignDirt(t *testing.T) {
 	now := time.Date(2026, 7, 18, 10, 30, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
 	landingGit(t, repo, "remote", "add", "origin", remote)
@@ -548,7 +536,7 @@ func TestLandCheckTargetContainmentStillAwaitsPublicationUnderForeignDirt(t *tes
 
 func TestLandCheckMissingRequiredPublicationRefAwaitsPublication(t *testing.T) {
 	now := time.Date(2026, 7, 18, 11, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
 	landingGit(t, repo, "remote", "add", "origin", remote)
@@ -587,7 +575,7 @@ func TestLandCheckMissingRequiredPublicationRefAwaitsPublication(t *testing.T) {
 
 func TestLandCheckRejectsGitInvalidPublicationRefThatLooksMissing(t *testing.T) {
 	now := time.Date(2026, 7, 18, 11, 15, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
 	landingGit(t, repo, "remote", "add", "origin", remote)
@@ -632,10 +620,7 @@ func TestLandCheckRejectsGitInvalidPublicationRefThatLooksMissing(t *testing.T) 
 
 func TestLandCheckLocalOnlyPreservationNamesOnlyTargetAuthority(t *testing.T) {
 	now := time.Date(2026, 7, 18, 11, 30, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
-	landingGit(t, repo, "merge", "--ff-only", candidate)
+	repo, base, candidate := sharedLandingLandedRepo(t)
 
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -673,10 +658,7 @@ func TestCompletedCodeWorkClosesOverPreservedUnrelatedDirt(t *testing.T) {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
 	now := time.Date(2026, 7, 16, 20, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
-	landingGit(t, repo, "merge", "--ff-only", candidate)
+	repo, base, candidate := sharedLandingLandedRepo(t)
 
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -721,7 +703,7 @@ func TestLandCheckRecordsMissingTipAndInvalidLineage(t *testing.T) {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	landingGit(t, repo, "switch", "--orphan", "unrelated")
 	if err := os.Remove(filepath.Join(repo, "README.md")); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
@@ -779,9 +761,7 @@ func TestLandCheckRequiresLatestAttachedCommitArtifact(t *testing.T) {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
+	repo, base, candidate := sharedLandingReadyRepo(t)
 
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -948,9 +928,7 @@ func TestLandCheckV04FieldSetRequiresSchemaBump(t *testing.T) {
 
 func TestLandCheckRecordDoesNotAcceptTamperedExistingContent(t *testing.T) {
 	now := time.Date(2026, 7, 13, 20, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
+	repo, base, candidate := sharedLandingReadyRepo(t)
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -992,7 +970,7 @@ func TestLandingCloseGateLeavesLegacyAndFailedWorkCompatible(t *testing.T) {
 		t.Fatalf("legacy completion should not require landing proof: %v", err)
 	}
 
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	code, err := store.Create(CreateInput{Owner: "codex", SuccessPredicate: "failed code work reports failure", GitDelivery: localGitDelivery(repo, base)}, now.Add(4*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -1052,9 +1030,7 @@ func TestCompletedCommitProofWithoutGitDeliveryContractFailsClosed(t *testing.T)
 
 func TestLandCheckRejectsWrongRepoSecondCloneAndWrongBranch(t *testing.T) {
 	now := time.Date(2026, 7, 13, 22, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
+	repo, base, candidate := sharedLandingReadyRepo(t)
 	secondClone := filepath.Join(t.TempDir(), "second-clone")
 	landingGit(t, filepath.Dir(secondClone), "clone", repo, secondClone)
 
@@ -1102,7 +1078,7 @@ func TestLandCheckRejectsSamePathRepositoryReplacement(t *testing.T) {
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
 	now := time.Date(2026, 7, 14, 2, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	landingGit(t, repo, "remote", "add", "origin", "https://source.example.invalid/acme/product.git")
 	candidate := landingFeatureCommit(t, repo)
 	landingGit(t, repo, "switch", "main")
@@ -1152,7 +1128,7 @@ func TestPublicationProofIsAttachedDiscoverableAndRequiredForDispatchClose(t *te
 		t.Skip("fsync-heavy: skipped in -short mode")
 	}
 	now := time.Date(2026, 7, 13, 22, 0, 0, 0, time.UTC)
-	repo, base := initLandingRepo(t)
+	repo, base := sharedLandingBaseRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	landingGit(t, filepath.Dir(remote), "init", "--bare", remote)
 	landingGit(t, repo, "remote", "add", "origin", remote)
@@ -1267,10 +1243,7 @@ type landingProofFixture struct {
 
 func newLandingProofFixture(t *testing.T, now time.Time) landingProofFixture {
 	t.Helper()
-	repo, base := initLandingRepo(t)
-	candidate := landingFeatureCommit(t, repo)
-	landingGit(t, repo, "switch", "main")
-	landingGit(t, repo, "merge", "--ff-only", candidate)
+	repo, base, candidate := sharedLandingLandedRepo(t)
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1305,6 +1278,229 @@ func attachLandingArtifact(t *testing.T, store *Store, workID, artifact string, 
 	if _, err := store.Advance(workID, AdvanceInput{To: w.State, Actor: "codex", ArtifactID: artifact}, now); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// landingGoldenFixture holds three prebuilt git repositories that this file's
+// tests would otherwise reconstruct from scratch via repeated `git
+// init`/`commit`/`switch`/`merge` subprocess chains (initLandingRepo alone is
+// 6 subprocess spawns; the full init+feature+switch+merge chain is 12).
+// dispatch_plan_test.go's TestMain builds this once per test binary process,
+// before any test runs, and tears it down after m.Run() returns. Each test
+// that needs a repo copies the relevant golden tree into its own
+// t.TempDir() via one of the shared*Repo helpers below, so the copy is a
+// fully independent repository: whatever git commands the test runs
+// afterward mutate only its own copy, never the shared golden trees.
+type landingGoldenFixture struct {
+	baseDir string // init + README "base" commit on main
+	baseSHA string
+
+	readyDir          string // baseDir + "feature" branch/commit, HEAD back on main (unmerged)
+	readyCandidateSHA string
+
+	landedDir          string // readyDir fast-forward merged into main
+	landedCandidateSHA string
+}
+
+var landingGolden *landingGoldenFixture
+
+// setupLandingGoldenFixtures builds the shared landing-repo fixtures under a
+// fresh temp root and returns that root (for later os.RemoveAll cleanup) plus
+// any construction error. It must run once, before any test in this package
+// executes; TestMain in dispatch_plan_test.go calls it ahead of m.Run().
+func setupLandingGoldenFixtures() (string, error) {
+	root, err := os.MkdirTemp("", "compound-work-landing-golden-*")
+	if err != nil {
+		return "", err
+	}
+	g, err := buildLandingGoldenFixture(root)
+	if err != nil {
+		os.RemoveAll(root)
+		return "", err
+	}
+	landingGolden = g
+	return root, nil
+}
+
+func buildLandingGoldenFixture(root string) (*landingGoldenFixture, error) {
+	g := &landingGoldenFixture{
+		baseDir:   filepath.Join(root, "base"),
+		readyDir:  filepath.Join(root, "ready"),
+		landedDir: filepath.Join(root, "landed"),
+	}
+
+	if err := os.MkdirAll(g.baseDir, 0o755); err != nil {
+		return nil, err
+	}
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@example.invalid"},
+		{"config", "user.name", "Compound Test"},
+	} {
+		if err := landingGoldenGit(g.baseDir, args...); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(g.baseDir, "README.md"), []byte("base\n"), 0o644); err != nil {
+		return nil, err
+	}
+	if err := landingGoldenGit(g.baseDir, "add", "README.md"); err != nil {
+		return nil, err
+	}
+	if err := landingGoldenGit(g.baseDir, "commit", "-m", "base"); err != nil {
+		return nil, err
+	}
+	baseSHA, err := landingGoldenGitOutput(g.baseDir, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	g.baseSHA = baseSHA
+
+	// ready = baseDir copied forward, then a feature branch/commit, then back on main (unmerged).
+	if err := copyLandingTree(g.baseDir, g.readyDir); err != nil {
+		return nil, err
+	}
+	if err := landingGoldenGit(g.readyDir, "switch", "-c", "feature"); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(g.readyDir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		return nil, err
+	}
+	if err := landingGoldenGit(g.readyDir, "add", "feature.txt"); err != nil {
+		return nil, err
+	}
+	if err := landingGoldenGit(g.readyDir, "commit", "-m", "feature"); err != nil {
+		return nil, err
+	}
+	candidateSHA, err := landingGoldenGitOutput(g.readyDir, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	if err := landingGoldenGit(g.readyDir, "switch", "main"); err != nil {
+		return nil, err
+	}
+	g.readyCandidateSHA = candidateSHA
+
+	// landed = readyDir copied forward, then fast-forward merged into main.
+	if err := copyLandingTree(g.readyDir, g.landedDir); err != nil {
+		return nil, err
+	}
+	if err := landingGoldenGit(g.landedDir, "merge", "--ff-only", candidateSHA); err != nil {
+		return nil, err
+	}
+	g.landedCandidateSHA = candidateSHA
+
+	return g, nil
+}
+
+// sharedLandingBaseRepo copies the prebuilt "init + base commit" fixture into
+// a fresh t.TempDir(). It is behaviorally equivalent to calling
+// initLandingRepo(t) directly: the returned repo is an independent git
+// repository the test is free to mutate with further git commands.
+func sharedLandingBaseRepo(t *testing.T) (string, string) {
+	t.Helper()
+	if landingGolden == nil {
+		t.Fatal("landing golden fixtures not initialized (TestMain must build them before tests run)")
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := copyLandingTree(landingGolden.baseDir, repo); err != nil {
+		t.Fatalf("copy landing base fixture: %v", err)
+	}
+	return repo, landingGolden.baseSHA
+}
+
+// sharedLandingReadyRepo copies the prebuilt "init + feature commit + switch
+// main" fixture (unmerged) into a fresh t.TempDir(). It is behaviorally
+// equivalent to calling initLandingRepo(t), then landingFeatureCommit(t,
+// repo), then landingGit(t, repo, "switch", "main").
+func sharedLandingReadyRepo(t *testing.T) (string, string, string) {
+	t.Helper()
+	if landingGolden == nil {
+		t.Fatal("landing golden fixtures not initialized (TestMain must build them before tests run)")
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := copyLandingTree(landingGolden.readyDir, repo); err != nil {
+		t.Fatalf("copy landing ready fixture: %v", err)
+	}
+	return repo, landingGolden.baseSHA, landingGolden.readyCandidateSHA
+}
+
+// sharedLandingLandedRepo copies the prebuilt "init + feature commit + switch
+// main + merge --ff-only" fixture into a fresh t.TempDir(). It is
+// behaviorally equivalent to calling initLandingRepo(t), then
+// landingFeatureCommit(t, repo), then landingGit(t, repo, "switch", "main"),
+// then landingGit(t, repo, "merge", "--ff-only", candidate).
+func sharedLandingLandedRepo(t *testing.T) (string, string, string) {
+	t.Helper()
+	if landingGolden == nil {
+		t.Fatal("landing golden fixtures not initialized (TestMain must build them before tests run)")
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := copyLandingTree(landingGolden.landedDir, repo); err != nil {
+		t.Fatalf("copy landing landed fixture: %v", err)
+	}
+	return repo, landingGolden.baseSHA, landingGolden.landedCandidateSHA
+}
+
+// copyLandingTree recursively copies a git repository directory (including
+// .git) into a new location so the destination is a fully independent
+// repository the caller may mutate freely without affecting src.
+func copyLandingTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		switch {
+		case d.IsDir():
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			return os.MkdirAll(target, info.Mode().Perm()|0o700)
+		case d.Type()&os.ModeSymlink != 0:
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(linkTarget, target)
+		default:
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(target, data, info.Mode().Perm())
+		}
+	})
+}
+
+// landingGoldenGit and landingGoldenGitOutput are error-returning
+// counterparts of landingGit/landingGitOutput for use while building the
+// golden fixtures in TestMain, before any *testing.T exists. (Production
+// code already owns a similarly named runLandingGitOutput in land_check.go;
+// these are test-fixture-construction only and intentionally distinct.)
+func landingGoldenGit(dir string, args ...string) error {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, string(out))
+	}
+	return nil
+}
+
+func landingGoldenGitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, string(out))
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func initLandingRepo(t *testing.T) (string, string) {

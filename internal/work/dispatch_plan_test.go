@@ -3,6 +3,7 @@ package work
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -24,7 +25,19 @@ func TestMain(m *testing.M) {
 	// injected temp paths.
 	LaneCapacityGuard = nil
 	DelegateHarnessResolver = nil
-	os.Exit(m.Run())
+
+	// land_check_test.go's tests share three prebuilt git repositories rather
+	// than each reconstructing one via ~6-12 git subprocess spawns. Build them
+	// once here, before any test runs, and tear them down after m.Run(); every
+	// test copies its own independent working tree out of these golden roots.
+	landingGoldenRoot, err := setupLandingGoldenFixtures()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "landing golden fixtures: %v\n", err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	os.RemoveAll(landingGoldenRoot)
+	os.Exit(code)
 }
 
 func TestDispatchPlanSelectsReadyWorkWithoutClaiming(t *testing.T) {
