@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"compound/internal/contract"
 	"compound/internal/envelope"
@@ -866,13 +867,10 @@ func TestMCPTransportInitializeNegotiatesOnlyCompatibleVersions(t *testing.T) {
 	homePath := initMCPTestHome(t)
 	lines := runMCPTransport(t, nil, []string{
 		`{"jsonrpc":"2.0","id":10,"method":"initialize","params":{"protocolVersion":"2099-01-01","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}`,
-		`{"jsonrpc":"2.0","id":11,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}`,
 	}, homePath)
-	if code := rawResp(t, lines, 10)["error"].(map[string]interface{})["code"]; code != float64(rpcInvalidParams) {
-		t.Fatalf("unsupported version code = %v", code)
-	}
-	if _, ok := rawResp(t, lines, 11)["result"]; !ok {
-		t.Fatalf("failed initialize must not consume lifecycle: %+v", rawResp(t, lines, 11))
+	res := rawResp(t, lines, 10)["result"].(map[string]interface{})
+	if got := res["protocolVersion"]; got != mcpProtocolVersion {
+		t.Fatalf("unsupported client version negotiated %v, want latest supported %q", got, mcpProtocolVersion)
 	}
 }
 
@@ -883,7 +881,7 @@ func TestMCPTransportInitializeRequiresTypedParams(t *testing.T) {
 		`{"protocolVersion":"2025-06-18","capabilities":[],"clientInfo":{"name":"probe","version":"1"}}`,
 		`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"","version":"1"}}`,
 		`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"},"_meta":[]}`,
-		`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1","title":"` + strings.Repeat("t", mcpMaxClientTitleBytes+1) + `"}}`,
+		`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1","title":"` + strings.Repeat("t", mcpMaxClientTitleChars+1) + `"}}`,
 		`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"},"unknown":true}`,
 	} {
 		req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"initialize","params":%s}`, i+1, params)
@@ -907,16 +905,66 @@ func TestMCPTransportPreservesNullLargeAndStringIDsExactly(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("responses = %d, want explicit-null/large/string only: %v", len(lines), lines)
 	}
-	for _, want := range []string{`"id":null`, `"id":` + large, `"id":` + escaped} {
-		found := false
-		for _, line := range lines {
-			if strings.Contains(line, want) {
-				found = true
+	wants := []string{
+		`{"jsonrpc":"2.0","id":null,"result":{}}`,
+		`{"jsonrpc":"2.0","id":` + large + `,"result":{}}`,
+		`{"jsonrpc":"2.0","id":` + escaped + `,"result":{}}`,
+	}
+	for i, want := range wants {
+		if lines[i] != want {
+			t.Fatalf("response %d = %q, want exact %q", i, lines[i], want)
+		}
+	}
+}
+
+func TestMCPTransportRejectsStructuredAndBooleanIDsExactly(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	lines := runMCPTransport(t, nil, []string{
+		`{"jsonrpc":"2.0","id":{},"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":[],"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":true,"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":false,"method":"ping"}`,
+	}, homePath)
+	want := `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid request"}}`
+	if len(lines) != 4 {
+		t.Fatalf("responses = %d, want 4: %v", len(lines), lines)
+	}
+	for i, line := range lines {
+		if line != want {
+			t.Fatalf("response %d = %q, want exact %q", i, line, want)
+		}
+	}
+}
+
+func TestMCPTransportPrivacyFilterEmbeddedLocalPaths(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "bare", input: "artifact /private/file.txt ready", want: "artifact [private-path] ready"},
+		{name: "assignment", input: "path=/private/file.txt", want: "path=[private-path]"},
+		{name: "markdown", input: "[artifact](/private/file.txt)", want: "[artifact]([private-path])"},
+		{name: "markdown angle space", input: "[artifact](</private/My File.txt>)", want: "[artifact](<[private-path]>)"},
+		{name: "markdown balanced parentheses", input: "[artifact](/private/file(name).txt)", want: "[artifact]([private-path])"},
+		{name: "double quoted assignment space", input: `path="/private/My File.txt"`, want: `path="[private-path]"`},
+		{name: "single quoted assignment space", input: `path='/private/My File.txt'`, want: `path='[private-path]'`},
+		{name: "truncated quote fails closed", input: `path="/private/My File.txt`, want: `path="[private-path]`},
+		{name: "truncated angle fails closed", input: `[artifact](</private/My File.txt`, want: `[artifact](<[private-path]`},
+		{name: "file uri", input: "uri=file:///private/My%20File.txt", want: "uri=[private-path]"},
+		{name: "windows", input: `path=C:\Users\synthetic\file.txt`, want: "path=[private-path]"},
+		{name: "quoted windows space", input: `path="C:\Users\synthetic name\file.txt"`, want: `path="[private-path]"`},
+		{name: "unc", input: `path=\\synthetic\share\file.txt`, want: "path=[private-path]"},
+		{name: "https unchanged", input: "url=https://example.invalid/private/file.txt", want: "url=https://example.invalid/private/file.txt"},
+		{name: "file prose unchanged", input: "file: attached", want: "file: attached"},
+		{name: "mime unchanged", input: "format=text/plain", want: "format=text/plain"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := privacyFilterMCPString(tc.input); got != tc.want {
+				t.Fatalf("privacyFilterMCPString(%q) = %q, want %q", tc.input, got, tc.want)
 			}
-		}
-		if !found {
-			t.Fatalf("response did not preserve raw ID %s: %v", want, lines)
-		}
+		})
 	}
 }
 
@@ -946,19 +994,23 @@ func TestMCPTransportFindingSchemaAndRuntimeBoundariesMatch(t *testing.T) {
 	homePath := initMCPTestHome(t)
 	properties := mcpFindingRecordDescriptor().InputSchema["properties"].(map[string]interface{})
 	checks := map[string]int{
-		"topic": mcpMaxFindingTopicBytes, "body": mcpMaxFindingBodyBytes,
-		"work_id": mcpMaxFindingWorkIDBytes, "produced_by": mcpMaxFindingProducerBytes,
-		"supersedes": mcpMaxFindingSupersedesBytes,
+		"topic": mcpMaxFindingTopicChars, "body": mcpMaxFindingBodyChars,
+		"work_id": mcpMaxFindingWorkIDChars, "produced_by": mcpMaxFindingProducerChars,
+		"supersedes": mcpMaxFindingSupersedesChars,
 	}
 	for field, want := range checks {
-		got := properties[field].(map[string]interface{})["maxLength"]
-		if got != want {
+		schema := properties[field].(map[string]interface{})
+		if got := schema["maxLength"]; got != want {
 			t.Fatalf("schema %s maxLength = %v, want %d", field, got, want)
 		}
 	}
 	items := properties["evidence_refs"].(map[string]interface{})["items"].(map[string]interface{})
-	if items["maxLength"] != mcpMaxEvidenceRefBytes {
-		t.Fatalf("evidence ref maxLength = %v", items["maxLength"])
+	if got := items["maxLength"]; got != mcpMaxEvidenceRefChars {
+		t.Fatalf("evidence ref maxLength = %v, want %d", got, mcpMaxEvidenceRefChars)
+	}
+	bodySchema := properties["body"].(map[string]interface{})
+	if got := bodySchema["x-maxBytes"]; got != mcpMaxFindingBodyBytes {
+		t.Fatalf("body x-maxBytes = %v, want %d", got, mcpMaxFindingBodyBytes)
 	}
 
 	refsAtLimit := make([]string, mcpMaxEvidenceRefs)
@@ -966,12 +1018,13 @@ func TestMCPTransportFindingSchemaAndRuntimeBoundariesMatch(t *testing.T) {
 		refsAtLimit[i] = fmt.Sprintf("git:%d", i)
 	}
 	valid := []map[string]any{
-		{"topic": strings.Repeat("t", mcpMaxFindingTopicBytes), "body": "topic boundary"},
-		{"topic": "body-boundary", "body": strings.Repeat("b", mcpMaxFindingBodyBytes)},
-		{"topic": "work-boundary", "body": "x", "work_id": "work_" + strings.Repeat("w", mcpMaxFindingWorkIDBytes-5)},
-		{"topic": "producer-boundary", "body": "x", "produced_by": "p" + strings.Repeat("a", mcpMaxFindingProducerBytes-1)},
+		{"topic": strings.Repeat("t", mcpMaxFindingTopicChars), "body": "topic boundary"},
+		{"topic": strings.Repeat("é", mcpMaxFindingTopicChars), "body": "multibyte topic boundary"},
+		{"topic": "body-boundary", "body": strings.Repeat("b", mcpMaxFindingBodyChars)},
+		{"topic": "work-boundary", "body": "x", "work_id": "work_" + strings.Repeat("w", mcpMaxFindingWorkIDChars-5)},
+		{"topic": "producer-boundary", "body": "x", "produced_by": "p" + strings.Repeat("a", mcpMaxFindingProducerChars-1)},
 		{"topic": "supersedes-boundary", "body": "x", "supersedes": "find_0123456789ab"},
-		{"topic": "evidence-boundary", "body": "x", "evidence_refs": []string{"git:" + strings.Repeat("a", mcpMaxEvidenceRefBytes-4)}},
+		{"topic": "evidence-boundary", "body": "x", "evidence_refs": []string{"git:" + strings.Repeat("a", mcpMaxEvidenceRefChars-4)}},
 		{"topic": "evidence-count-boundary", "body": "x", "evidence_refs": refsAtLimit},
 	}
 	for i, args := range valid {
@@ -981,24 +1034,39 @@ func TestMCPTransportFindingSchemaAndRuntimeBoundariesMatch(t *testing.T) {
 		}
 	}
 
+	byteBoundedBody := strings.Repeat("é", mcpMaxFindingBodyBytes/2+1)
+	if utf8.RuneCountInString(byteBoundedBody) >= mcpMaxFindingBodyChars ||
+		len(byteBoundedBody) <= mcpMaxFindingBodyBytes {
+		t.Fatalf("bad independent byte-budget fixture: runes=%d bytes=%d",
+			utf8.RuneCountInString(byteBoundedBody), len(byteBoundedBody))
+	}
+	byteBoundedResult := mcpFindingResultMap(t, mcpCallFindingRecord(mustJSON(t, map[string]any{
+		"topic": "independent-byte-budget",
+		"body":  byteBoundedBody,
+	})))
+	if code := mcpToolResultErrorCode(t, byteBoundedResult); code != "finding_body_budget_exceeded" {
+		t.Fatalf("independent byte budget code = %q, want finding_body_budget_exceeded", code)
+	}
+
 	invalid := []struct {
 		args map[string]any
 		code string
 	}{
-		{map[string]any{"topic": strings.Repeat("t", mcpMaxFindingTopicBytes+1), "body": "x"}, "invalid_topic"},
+		{map[string]any{"topic": strings.Repeat("t", mcpMaxFindingTopicChars+1), "body": "x"}, "invalid_topic"},
+		{map[string]any{"topic": strings.Repeat("é", mcpMaxFindingTopicChars+1), "body": "x"}, "invalid_topic"},
 		{map[string]any{"topic": " padded ", "body": "x"}, "invalid_topic"},
-		{map[string]any{"topic": "x", "body": strings.Repeat("b", mcpMaxFindingBodyBytes+1)}, "finding_body_budget_exceeded"},
+		{map[string]any{"topic": "x", "body": strings.Repeat("b", mcpMaxFindingBodyChars+1)}, "finding_body_budget_exceeded"},
 		{map[string]any{"topic": "x", "body": "x", "work_id": nil}, "invalid_work_id"},
 		{map[string]any{"topic": "x", "body": "x", "work_id": "job_wrong"}, "invalid_work_id"},
-		{map[string]any{"topic": "x", "body": "x", "work_id": "work_" + strings.Repeat("w", mcpMaxFindingWorkIDBytes)}, "invalid_work_id"},
+		{map[string]any{"topic": "x", "body": "x", "work_id": "work_" + strings.Repeat("w", mcpMaxFindingWorkIDChars)}, "invalid_work_id"},
 		{map[string]any{"topic": "x", "body": "x", "produced_by": nil}, "invalid_produced_by"},
-		{map[string]any{"topic": "x", "body": "x", "produced_by": "p" + strings.Repeat("a", mcpMaxFindingProducerBytes)}, "invalid_produced_by"},
+		{map[string]any{"topic": "x", "body": "x", "produced_by": "p" + strings.Repeat("a", mcpMaxFindingProducerChars)}, "invalid_produced_by"},
 		{map[string]any{"topic": "x", "body": "x", "produced_by": "bad producer"}, "invalid_produced_by"},
 		{map[string]any{"topic": "x", "body": "x", "supersedes": nil}, "invalid_supersedes"},
 		{map[string]any{"topic": "x", "body": "x", "supersedes": "find_NOTHEX000000"}, "invalid_supersedes"},
 		{map[string]any{"topic": "x", "body": "x", "evidence_refs": nil}, "invalid_evidence_ref"},
 		{map[string]any{"topic": "x", "body": "x", "evidence_refs": []string{"not-a-ref"}}, "invalid_evidence_ref"},
-		{map[string]any{"topic": "x", "body": "x", "evidence_refs": []string{"git:" + strings.Repeat("a", mcpMaxEvidenceRefBytes)}}, "invalid_evidence_ref"},
+		{map[string]any{"topic": "x", "body": "x", "evidence_refs": []string{"git:" + strings.Repeat("a", mcpMaxEvidenceRefChars)}}, "invalid_evidence_ref"},
 	}
 	for i, tc := range invalid {
 		result := mcpFindingResultMap(t, mcpCallFindingRecord(mustJSON(t, tc.args)))
@@ -1013,12 +1081,13 @@ func TestMCPTransportOrientSchemaAndRuntimeBoundariesMatch(t *testing.T) {
 	_ = initMCPTestHome(t)
 	properties := mcpOrientRecallDescriptor().InputSchema["properties"].(map[string]interface{})
 	limits := map[string]int{
-		"task": mcpMaxOrientTaskBytes, "harness": mcpMaxOrientHarnessBytes,
-		"cwd": mcpMaxOrientCwdBytes, "repo_kind": mcpMaxOrientRepoKindBytes,
-		"mode": mcpMaxOrientModeBytes, "topic": mcpMaxOrientTopicBytes,
+		"task": mcpMaxOrientTaskChars, "harness": mcpMaxOrientHarnessChars,
+		"cwd": mcpMaxOrientCwdChars, "repo_kind": mcpMaxOrientRepoKindChars,
+		"mode": mcpMaxOrientModeChars, "topic": mcpMaxOrientTopicChars,
 	}
 	for field, want := range limits {
-		if got := properties[field].(map[string]interface{})["maxLength"]; got != want {
+		schema := properties[field].(map[string]interface{})
+		if got := schema["maxLength"]; got != want {
 			t.Fatalf("schema %s maxLength = %v, want %d", field, got, want)
 		}
 	}
@@ -1035,12 +1104,12 @@ func TestMCPTransportOrientSchemaAndRuntimeBoundariesMatch(t *testing.T) {
 		return contract.RuntimeMaterialization{EffectiveContract: ec, ContextPack: pack}, nil
 	}
 	valid := map[string]any{
-		"task":        strings.Repeat("t", mcpMaxOrientTaskBytes),
-		"harness":     strings.Repeat("h", mcpMaxOrientHarnessBytes),
-		"cwd":         string(os.PathSeparator) + strings.Repeat("c", mcpMaxOrientCwdBytes-1),
-		"repo_kind":   strings.Repeat("r", mcpMaxOrientRepoKindBytes),
+		"task":        strings.Repeat("界", mcpMaxOrientTaskChars),
+		"harness":     strings.Repeat("h", mcpMaxOrientHarnessChars),
+		"cwd":         string(os.PathSeparator) + strings.Repeat("c", mcpMaxOrientCwdChars-1),
+		"repo_kind":   strings.Repeat("r", mcpMaxOrientRepoKindChars),
 		"mode":        "review",
-		"topic":       strings.Repeat("o", mcpMaxOrientTopicBytes),
+		"topic":       strings.Repeat("o", mcpMaxOrientTopicChars),
 		"body_budget": 0,
 	}
 	if result := mcpFindingResultMap(t, mcpCallOrientRecall(mustJSON(t, valid))); result["isError"] == true {
@@ -1052,18 +1121,19 @@ func TestMCPTransportOrientSchemaAndRuntimeBoundariesMatch(t *testing.T) {
 		value any
 		code  string
 	}{
-		{"task", strings.Repeat("t", mcpMaxOrientTaskBytes+1), "invalid_task"},
+		{"task", strings.Repeat("t", mcpMaxOrientTaskChars+1), "invalid_task"},
+		{"task", strings.Repeat("界", mcpMaxOrientTaskChars+1), "invalid_task"},
 		{"task", "   ", "invalid_task"},
 		{"harness", nil, "invalid_harness"},
-		{"harness", strings.Repeat("h", mcpMaxOrientHarnessBytes+1), "invalid_harness"},
+		{"harness", strings.Repeat("h", mcpMaxOrientHarnessChars+1), "invalid_harness"},
 		{"cwd", nil, "invalid_cwd"},
-		{"cwd", strings.Repeat("c", mcpMaxOrientCwdBytes+1), "invalid_cwd"},
+		{"cwd", strings.Repeat("c", mcpMaxOrientCwdChars+1), "invalid_cwd"},
 		{"repo_kind", nil, "invalid_repo_kind"},
-		{"repo_kind", strings.Repeat("r", mcpMaxOrientRepoKindBytes+1), "invalid_repo_kind"},
+		{"repo_kind", strings.Repeat("r", mcpMaxOrientRepoKindChars+1), "invalid_repo_kind"},
 		{"mode", nil, "invalid_mode"},
 		{"mode", "invalid", "invalid_mode"},
 		{"topic", nil, "invalid_topic"},
-		{"topic", strings.Repeat("o", mcpMaxOrientTopicBytes+1), "invalid_topic"},
+		{"topic", strings.Repeat("o", mcpMaxOrientTopicChars+1), "invalid_topic"},
 		{"body_budget", nil, "body_pack_token_budget_invalid"},
 		{"body_budget", -1, "body_pack_token_budget_invalid"},
 		{"body_budget", mcpMaxBodyPackTokens + 1, "body_pack_token_budget_invalid"},
@@ -1086,7 +1156,7 @@ func TestMCPTransportBudgetSemanticsAndBoundedSafeOrientAck(t *testing.T) {
 	materializeRuntimeForOrient = func(in contract.Input, pol contract.OrientationPolicy, _ string, now time.Time) (contract.RuntimeMaterialization, error) {
 		ec := contract.Compile(in, pol, now)
 		pack := contract.Pack(in, pol, now)
-		pack.SummaryMD = strings.Repeat("s", mcpMaxSummaryBytes+200)
+		pack.SummaryMD = "safe prefix /private/recognizable-summary-secret/file.txt " + strings.Repeat("s", mcpMaxSummaryBytes+200)
 		pack.ActiveDecisions = []string{"decision:ok", privateRef, strings.Repeat("r", mcpMaxRecallRefBytes+1)}
 		pack.ActiveMemory = make([]string, mcpMaxRecallRefs+1)
 		for i := range pack.ActiveMemory {
@@ -1112,8 +1182,12 @@ func TestMCPTransportBudgetSemanticsAndBoundedSafeOrientAck(t *testing.T) {
 		t.Fatalf("summary exceeded cap")
 	}
 	encoded := string(mustJSON(t, ack))
-	if strings.Contains(encoded, privateRef) || strings.Contains(encoded, homePath) {
+	if strings.Contains(encoded, privateRef) || strings.Contains(encoded, homePath) ||
+		strings.Contains(encoded, "recognizable-summary-secret") {
 		t.Fatalf("orient ack leaked private absolute path: %s", encoded)
+	}
+	if !strings.Contains(encoded, "summary_truncated") {
+		t.Fatalf("orient ack omitted combined summary truncation warning: %s", encoded)
 	}
 	if len(ack["active_memory"].([]interface{})) != mcpMaxRecallRefs {
 		t.Fatalf("active memory not capped: %+v", ack["active_memory"])

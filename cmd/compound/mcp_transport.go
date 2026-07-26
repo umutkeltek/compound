@@ -46,31 +46,42 @@ const (
 	mcpServerVersion    = "0.2.0"
 	// mcpProtocolVersion is the newest revision this server supports. Initialize
 	// negotiates an exact member of mcpSupportedProtocolVersions.
-	mcpProtocolVersion           = "2025-06-18"
-	mcpLegacyProtocolVersion     = "2024-11-05"
-	mcpFindingToolName           = "compound_finding_record"
-	mcpOrientToolName            = "compound_orient_recall"
-	mcpMaxLineBytes              = 1 << 20
-	mcpMaxFindingBodyBytes       = 64 << 10
-	mcpMaxBodyPackTokens         = 32 << 10
-	mcpMaxRecallRefs             = 256
-	mcpMaxRecallRefBytes         = 1024
-	mcpMaxSummaryBytes           = 4096
-	mcpMaxEvidenceRefs           = 32
-	mcpMaxFindingTopicBytes      = 1024
-	mcpMaxFindingWorkIDBytes     = 1024
-	mcpMaxFindingProducerBytes   = 256
-	mcpMaxFindingSupersedesBytes = 17
-	mcpMaxEvidenceRefBytes       = 1024
-	mcpMaxOrientTaskBytes        = 4096
-	mcpMaxOrientHarnessBytes     = 64
-	mcpMaxOrientTopicBytes       = 256
-	mcpMaxOrientRepoKindBytes    = 64
-	mcpMaxOrientModeBytes        = 32
-	mcpMaxOrientCwdBytes         = 4096
-	mcpMaxClientNameBytes        = 128
-	mcpMaxClientVersionBytes     = 128
-	mcpMaxClientTitleBytes       = 128
+	mcpProtocolVersion       = "2025-06-18"
+	mcpLegacyProtocolVersion = "2024-11-05"
+	mcpFindingToolName       = "compound_finding_record"
+	mcpOrientToolName        = "compound_orient_recall"
+	// mcpMaxLineBytes is the request-line byte budget enforced at the framing
+	// layer. It is intentionally separate from the finding-body byte budget
+	// and the per-field character caps below.
+	mcpMaxLineBytes = 1 << 20
+	// mcpMaxFindingBodyBytes limits the persisted body payload independently
+	// of both request framing and JSON Schema's character-counting maxLength.
+	mcpMaxFindingBodyBytes = 64 << 10
+	// mcpMaxBodyPackTokens is the body_pack token budget surfaced to callers.
+	mcpMaxBodyPackTokens = 32 << 10
+	mcpMaxRecallRefs     = 256
+	mcpMaxRecallRefBytes = 1024
+	mcpMaxSummaryBytes   = 4096
+	mcpMaxEvidenceRefs   = 32
+	// The *Chars caps below are per-field character caps (runes) surfaced to
+	// ordinary validators via the standard JSON Schema `maxLength` keyword.
+	// Runtime enforcement uses utf8.RuneCountInString. The framing and finding
+	// body byte budgets remain independent.
+	mcpMaxFindingTopicChars      = 1024
+	mcpMaxFindingBodyChars       = 64 << 10
+	mcpMaxFindingWorkIDChars     = 1024
+	mcpMaxFindingProducerChars   = 256
+	mcpMaxFindingSupersedesChars = 17
+	mcpMaxEvidenceRefChars       = 1024
+	mcpMaxOrientTaskChars        = 4096
+	mcpMaxOrientHarnessChars     = 64
+	mcpMaxOrientTopicChars       = 256
+	mcpMaxOrientRepoKindChars    = 64
+	mcpMaxOrientModeChars        = 32
+	mcpMaxOrientCwdChars         = 4096
+	mcpMaxClientNameChars        = 128
+	mcpMaxClientVersionChars     = 128
+	mcpMaxClientTitleChars       = 128
 )
 
 var (
@@ -397,20 +408,23 @@ func (session *mcpSession) handleInitialize(rawParams json.RawMessage) interface
 	if err := strictDecodeArgs(rawParams, &params); err != nil {
 		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid initialize params"}
 	}
-	if _, ok := mcpSupportedProtocolVersions[params.ProtocolVersion]; !ok {
-		return &jsonRPCError{Code: rpcInvalidParams, Message: "unsupported protocol version"}
+	negotiatedVersion := params.ProtocolVersion
+	if _, ok := mcpSupportedProtocolVersions[negotiatedVersion]; !ok {
+		// MCP lifecycle negotiation requires the server to return a version it
+		// supports when the client's proposed version is unsupported.
+		negotiatedVersion = mcpProtocolVersion
 	}
 	if !validJSONObject(params.Capabilities) ||
 		(len(params.Meta) > 0 && !validJSONObject(params.Meta)) ||
-		!validBoundedNonBlank(params.ClientInfo.Name, mcpMaxClientNameBytes, nil) ||
-		!validBoundedNonBlank(params.ClientInfo.Version, mcpMaxClientVersionBytes, nil) ||
-		(params.ClientInfo.Title != "" && !validBoundedNonBlank(params.ClientInfo.Title, mcpMaxClientTitleBytes, nil)) {
+		!validBoundedNonBlank(params.ClientInfo.Name, mcpMaxClientNameChars, nil) ||
+		!validBoundedNonBlank(params.ClientInfo.Version, mcpMaxClientVersionChars, nil) ||
+		(params.ClientInfo.Title != "" && !validBoundedNonBlank(params.ClientInfo.Title, mcpMaxClientTitleChars, nil)) {
 		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid initialize params"}
 	}
-	session.protocolVersion = params.ProtocolVersion
+	session.protocolVersion = negotiatedVersion
 	session.lifecycle = mcpLifecycleAwaitingInitialized
 	return mcpInitializeResult{
-		ProtocolVersion: params.ProtocolVersion,
+		ProtocolVersion: negotiatedVersion,
 		Capabilities:    mcpServerCapabilities{Tools: mcpToolsCapability{}},
 		ServerInfo:      mcpImplementation{Name: mcpServerName, Version: mcpServerVersion},
 	}
@@ -477,29 +491,32 @@ func mcpCallFindingRecord(rawArgs json.RawMessage) interface{} {
 			return toolErrorResult(field.code)
 		}
 	}
-	if !validBoundedNonBlank(in.Topic, mcpMaxFindingTopicBytes, mcpNonBlankPattern) {
+	if !validBoundedNonBlank(in.Topic, mcpMaxFindingTopicChars, mcpNonBlankPattern) {
 		return toolErrorResult("invalid_topic")
 	}
 	if strings.TrimSpace(in.Body) == "" {
 		return toolErrorResult("invalid_body")
 	}
-	if len(in.Body) > mcpMaxFindingBodyBytes || utf8.RuneCountInString(in.Body) > mcpMaxFindingBodyBytes {
+	if utf8.RuneCountInString(in.Body) > mcpMaxFindingBodyChars {
 		return toolErrorResult("finding_body_budget_exceeded")
 	}
-	if !validOptionalString(in.WorkID, mcpMaxFindingWorkIDBytes, mcpWorkIDPattern) {
+	if len(in.Body) > mcpMaxFindingBodyBytes {
+		return toolErrorResult("finding_body_budget_exceeded")
+	}
+	if !validOptionalString(in.WorkID, mcpMaxFindingWorkIDChars, mcpWorkIDPattern) {
 		return toolErrorResult("invalid_work_id")
 	}
-	if !validOptionalString(in.ProducedBy, mcpMaxFindingProducerBytes, mcpProducerPattern) {
+	if !validOptionalString(in.ProducedBy, mcpMaxFindingProducerChars, mcpProducerPattern) {
 		return toolErrorResult("invalid_produced_by")
 	}
-	if !validOptionalString(in.Supersedes, mcpMaxFindingSupersedesBytes, mcpFindingIDPattern) {
+	if !validOptionalString(in.Supersedes, mcpMaxFindingSupersedesChars, mcpFindingIDPattern) {
 		return toolErrorResult("invalid_supersedes")
 	}
 	if len(in.EvidenceRefs) > mcpMaxEvidenceRefs {
 		return toolErrorResult("too_many_evidence_refs")
 	}
 	for _, ref := range in.EvidenceRefs {
-		if !validBoundedNonBlank(ref, mcpMaxEvidenceRefBytes, mcpEvidenceRefPattern) {
+		if !validBoundedNonBlank(ref, mcpMaxEvidenceRefChars, mcpEvidenceRefPattern) {
 			return toolErrorResult("invalid_evidence_ref")
 		}
 	}
@@ -553,7 +570,7 @@ func mcpCallOrientRecall(rawArgs json.RawMessage) interface{} {
 			return toolErrorResult(field.code)
 		}
 	}
-	if !validBoundedNonBlank(in.Task, mcpMaxOrientTaskBytes, mcpNonBlankPattern) {
+	if !validBoundedNonBlank(in.Task, mcpMaxOrientTaskChars, mcpNonBlankPattern) {
 		return toolErrorResult("invalid_task")
 	}
 	for _, field := range []struct {
@@ -562,11 +579,11 @@ func mcpCallOrientRecall(rawArgs json.RawMessage) interface{} {
 		pattern *regexp.Regexp
 		code    string
 	}{
-		{in.Harness, mcpMaxOrientHarnessBytes, nil, "invalid_harness"},
-		{in.Cwd, mcpMaxOrientCwdBytes, nil, "invalid_cwd"},
-		{in.RepoKind, mcpMaxOrientRepoKindBytes, nil, "invalid_repo_kind"},
-		{in.Mode, mcpMaxOrientModeBytes, mcpModePattern, "invalid_mode"},
-		{in.Topic, mcpMaxOrientTopicBytes, nil, "invalid_topic"},
+		{in.Harness, mcpMaxOrientHarnessChars, nil, "invalid_harness"},
+		{in.Cwd, mcpMaxOrientCwdChars, nil, "invalid_cwd"},
+		{in.RepoKind, mcpMaxOrientRepoKindChars, nil, "invalid_repo_kind"},
+		{in.Mode, mcpMaxOrientModeChars, mcpModePattern, "invalid_mode"},
+		{in.Topic, mcpMaxOrientTopicChars, nil, "invalid_topic"},
 	} {
 		if !validOptionalString(field.value, field.max, field.pattern) {
 			return toolErrorResult(field.code)
@@ -606,7 +623,10 @@ func mcpCallOrientRecall(rawArgs json.RawMessage) interface{} {
 		return toolErrorResult("orient_materialization_failed")
 	}
 	artifacts := computePersistedOrientArtifacts(pack)
-	summary, summaryTruncated := boundedUTF8(pack.SummaryMD, mcpMaxSummaryBytes)
+	boundedSummary, sourceTruncated := boundedUTF8(pack.SummaryMD, mcpMaxSummaryBytes)
+	privacyFilteredSummary := privacyFilterMCPString(boundedSummary)
+	summary, sanitizedTruncated := boundedUTF8(privacyFilteredSummary, mcpMaxSummaryBytes)
+	summaryTruncated := sourceTruncated || sanitizedTruncated
 	decisions, decisionsLimited := boundedRecallRefs(pack.ActiveDecisions, mcpMaxRecallRefs, mcpMaxRecallRefBytes)
 	memory, memoryLimited := boundedRecallRefs(pack.ActiveMemory, mcpMaxRecallRefs, mcpMaxRecallRefBytes)
 	warnings := make([]string, 0, 3)
@@ -690,31 +710,31 @@ func optionalString(value *string) string {
 	return *value
 }
 
-func validOptionalString(value *string, maxBytes int, pattern *regexp.Regexp) bool {
+func validOptionalString(value *string, maxChars int, pattern *regexp.Regexp) bool {
 	if value == nil {
 		return true
 	}
-	return validBoundedNonBlank(*value, maxBytes, pattern)
+	return validBoundedNonBlank(*value, maxChars, pattern)
 }
 
-func validBoundedNonBlank(value string, maxBytes int, pattern *regexp.Regexp) bool {
+func validBoundedNonBlank(value string, maxChars int, pattern *regexp.Regexp) bool {
 	if strings.TrimSpace(value) == "" || value != strings.TrimSpace(value) {
 		return false
 	}
-	if len(value) > maxBytes || utf8.RuneCountInString(value) > maxBytes {
+	if utf8.RuneCountInString(value) > maxChars {
 		return false
 	}
 	return pattern == nil || pattern.MatchString(value)
 }
 
-// boundedRecallRefs caps count and bytes, and filters absolute/file refs so a
-// private local path cannot become a transport response.
+// boundedRecallRefs caps count and bytes, and rejects refs containing local
+// absolute paths even when a path is embedded in Markdown or an assignment.
 func boundedRecallRefs(refs []string, maxCount, maxBytes int) ([]string, bool) {
 	out := make([]string, 0, minInt(len(refs), maxCount))
 	limited := false
 	for _, ref := range refs {
 		ref = strings.TrimSpace(ref)
-		if ref == "" || len(ref) > maxBytes || looksAbsoluteRef(ref) {
+		if ref == "" || len(ref) > maxBytes || containsLocalAbsolutePath(ref) {
 			limited = true
 			continue
 		}
@@ -727,13 +747,157 @@ func boundedRecallRefs(refs []string, maxCount, maxBytes int) ([]string, bool) {
 	return out, limited
 }
 
-func looksAbsoluteRef(ref string) bool {
-	lower := strings.ToLower(ref)
-	if filepath.IsAbs(ref) || strings.HasPrefix(lower, "file:") || strings.HasPrefix(ref, `\\`) {
+func containsLocalAbsolutePath(value string) bool {
+	_, _, ok := nextLocalAbsolutePath(value, 0)
+	return ok
+}
+
+// privacyFilterMCPString sanitizes local machine paths while preserving the
+// surrounding prose. It recognizes bare paths, file URIs, home shorthand,
+// Windows paths, Markdown destinations, and assignment values. Network URLs
+// are left intact.
+func privacyFilterMCPString(value string) string {
+	var filtered strings.Builder
+	cursor := 0
+	for {
+		start, end, ok := nextLocalAbsolutePath(value, cursor)
+		if !ok {
+			if cursor == 0 {
+				return value
+			}
+			filtered.WriteString(value[cursor:])
+			return filtered.String()
+		}
+		filtered.WriteString(value[cursor:start])
+		filtered.WriteString("[private-path]")
+		cursor = end
+	}
+}
+
+func nextLocalAbsolutePath(value string, from int) (int, int, bool) {
+	for start := from; start < len(value); start++ {
+		if end, ok := localAbsolutePathEnd(value, start); ok {
+			return start, end, true
+		}
+	}
+	return 0, 0, false
+}
+
+func localAbsolutePathEnd(value string, start int) (int, bool) {
+	if start < 0 || start >= len(value) || !localPathBoundary(value, start) {
+		return 0, false
+	}
+
+	rest := value[start:]
+	pathStart := false
+	switch {
+	case len(rest) > len("file:") &&
+		strings.EqualFold(rest[:len("file:")], "file:") &&
+		!localPathTerminator(rest[len("file:")]):
+		pathStart = true
+	case len(rest) >= 2 && rest[0] == '~' && (rest[1] == '/' || rest[1] == '\\'):
+		pathStart = true
+	case rest[0] == '/':
+		// The first slash in https:// is preceded by ':' and followed by a
+		// second slash. A source:/tmp reference remains local and is blocked.
+		if start > 0 && value[start-1] == ':' && len(rest) >= 2 && rest[1] == '/' {
+			return 0, false
+		}
+		pathStart = true
+	case len(rest) >= 2 && rest[0] == '\\' && rest[1] == '\\':
+		pathStart = true
+	case len(rest) >= 3 && isASCIIAlpha(rest[0]) && rest[1] == ':' && (rest[2] == '/' || rest[2] == '\\'):
+		pathStart = true
+	}
+	if !pathStart {
+		return 0, false
+	}
+
+	if end, ok := localEnclosedPathEnd(value, start); ok {
+		return end, true
+	}
+	end := start
+	for end < len(value) && !localPathTerminator(value[end]) {
+		end++
+	}
+	if end == start {
+		return 0, false
+	}
+	return end, true
+}
+
+// localEnclosedPathEnd permits spaces and balanced parentheses inside quoted
+// assignments and Markdown destinations. The returned end excludes a closing
+// delimiter so privacyFilterMCPString preserves surrounding syntax. A missing
+// closer consumes the bounded remainder rather than exposing a path suffix.
+func localEnclosedPathEnd(value string, start int) (int, bool) {
+	if start == 0 {
+		return 0, false
+	}
+	opener := value[start-1]
+	var closer byte
+	switch opener {
+	case '"', '\'':
+		closer = opener
+	case '<':
+		closer = '>'
+	case '(':
+		closer = ')'
+	default:
+		return 0, false
+	}
+
+	depth := 1
+	for index := start; index < len(value); index++ {
+		if localDelimiterEscaped(value, index) {
+			continue
+		}
+		char := value[index]
+		if opener == '(' && char == '(' {
+			depth++
+			continue
+		}
+		if char != closer {
+			continue
+		}
+		depth--
+		if depth == 0 {
+			return index, true
+		}
+	}
+	return len(value), true
+}
+
+func localDelimiterEscaped(value string, index int) bool {
+	backslashes := 0
+	for index--; index >= 0 && value[index] == '\\'; index-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
+}
+
+func localPathBoundary(value string, start int) bool {
+	if start == 0 {
 		return true
 	}
-	return len(ref) >= 3 && ((ref[0] >= 'A' && ref[0] <= 'Z') || (ref[0] >= 'a' && ref[0] <= 'z')) &&
-		ref[1] == ':' && (ref[2] == '/' || ref[2] == '\\')
+	previous := value[start-1]
+	if previous == ' ' || previous == '\t' || previous == '\r' || previous == '\n' {
+		return true
+	}
+	return strings.ContainsRune("=([{<,;:'\"`", rune(previous))
+}
+
+func localPathTerminator(char byte) bool {
+	switch char {
+	case ' ', '\t', '\r', '\n', ')', ']', '}', '>', ',', ';', '\'', '"', '`':
+		return true
+	default:
+		return false
+	}
+}
+
+func isASCIIAlpha(char byte) bool {
+	return char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z'
 }
 
 func boundedUTF8(value string, maxBytes int) (string, bool) {
@@ -775,10 +939,10 @@ func strictDecodeArgs(raw json.RawMessage, target interface{}) error {
 	return nil
 }
 
-func boundedNonBlankSchema(maxBytes int) map[string]interface{} {
+func boundedNonBlankSchema(maxChars int) map[string]interface{} {
 	return map[string]interface{}{
-		"type": "string", "minLength": 1, "maxLength": maxBytes,
-		"pattern": `^\S(?:[\s\S]*\S)?$`, "x-maxBytes": maxBytes,
+		"type": "string", "minLength": 1, "maxLength": maxChars,
+		"pattern": `^\S(?:[\s\S]*\S)?$`,
 	}
 }
 
@@ -793,30 +957,30 @@ func mcpFindingRecordDescriptor() mcpToolDescriptor {
 			"type": "object", "additionalProperties": false, "required": []string{"topic", "body"},
 			"properties": map[string]interface{}{
 				"topic": map[string]interface{}{
-					"type": "string", "minLength": 1, "maxLength": mcpMaxFindingTopicBytes,
-					"pattern": `^\S(?:[\s\S]*\S)?$`, "x-maxBytes": mcpMaxFindingTopicBytes,
+					"type": "string", "minLength": 1, "maxLength": mcpMaxFindingTopicChars,
+					"pattern": `^\S(?:[\s\S]*\S)?$`,
 				},
 				"body": map[string]interface{}{
-					"type": "string", "minLength": 1, "maxLength": mcpMaxFindingBodyBytes,
+					"type": "string", "minLength": 1, "maxLength": mcpMaxFindingBodyChars,
 					"pattern": `\S`, "x-maxBytes": mcpMaxFindingBodyBytes,
 				},
 				"work_id": map[string]interface{}{
-					"type": "string", "minLength": 6, "maxLength": mcpMaxFindingWorkIDBytes,
-					"pattern": `^work_[A-Za-z0-9][A-Za-z0-9._:-]*$`, "x-maxBytes": mcpMaxFindingWorkIDBytes,
+					"type": "string", "minLength": 6, "maxLength": mcpMaxFindingWorkIDChars,
+					"pattern": `^work_[A-Za-z0-9][A-Za-z0-9._:-]*$`,
 				},
 				"produced_by": map[string]interface{}{
-					"type": "string", "minLength": 1, "maxLength": mcpMaxFindingProducerBytes,
-					"pattern": `^[A-Za-z0-9][A-Za-z0-9._:/-]*$`, "x-maxBytes": mcpMaxFindingProducerBytes,
+					"type": "string", "minLength": 1, "maxLength": mcpMaxFindingProducerChars,
+					"pattern": `^[A-Za-z0-9][A-Za-z0-9._:/-]*$`,
 				},
 				"supersedes": map[string]interface{}{
-					"type": "string", "minLength": mcpMaxFindingSupersedesBytes, "maxLength": mcpMaxFindingSupersedesBytes,
-					"pattern": `^find_[a-f0-9]{12}$`, "x-maxBytes": mcpMaxFindingSupersedesBytes,
+					"type": "string", "minLength": mcpMaxFindingSupersedesChars, "maxLength": mcpMaxFindingSupersedesChars,
+					"pattern": `^find_[a-f0-9]{12}$`,
 				},
 				"evidence_refs": map[string]interface{}{
 					"type": "array", "maxItems": mcpMaxEvidenceRefs,
 					"items": map[string]interface{}{
-						"type": "string", "minLength": 3, "maxLength": mcpMaxEvidenceRefBytes,
-						"pattern": `^[A-Za-z][A-Za-z0-9+.-]*:\S+$`, "x-maxBytes": mcpMaxEvidenceRefBytes,
+						"type": "string", "minLength": 3, "maxLength": mcpMaxEvidenceRefChars,
+						"pattern": `^[A-Za-z][A-Za-z0-9+.-]*:\S+$`,
 					},
 				},
 			},
@@ -840,15 +1004,15 @@ func mcpOrientRecallDescriptor() mcpToolDescriptor {
 			"additionalProperties": false,
 			"required":             []string{"task"},
 			"properties": map[string]interface{}{
-				"task":      boundedNonBlankSchema(mcpMaxOrientTaskBytes),
-				"harness":   boundedNonBlankSchema(mcpMaxOrientHarnessBytes),
-				"cwd":       boundedNonBlankSchema(mcpMaxOrientCwdBytes),
-				"repo_kind": boundedNonBlankSchema(mcpMaxOrientRepoKindBytes),
+				"task":      boundedNonBlankSchema(mcpMaxOrientTaskChars),
+				"harness":   boundedNonBlankSchema(mcpMaxOrientHarnessChars),
+				"cwd":       boundedNonBlankSchema(mcpMaxOrientCwdChars),
+				"repo_kind": boundedNonBlankSchema(mcpMaxOrientRepoKindChars),
 				"mode": map[string]interface{}{
 					"type": "string", "enum": []string{"observe", "plan", "execute", "review"},
-					"maxLength": mcpMaxOrientModeBytes, "x-maxBytes": mcpMaxOrientModeBytes,
+					"maxLength": mcpMaxOrientModeChars,
 				},
-				"topic":       boundedNonBlankSchema(mcpMaxOrientTopicBytes),
+				"topic":       boundedNonBlankSchema(mcpMaxOrientTopicChars),
 				"body_budget": map[string]interface{}{"type": "integer", "minimum": 0, "maximum": mcpMaxBodyPackTokens},
 			},
 		},
