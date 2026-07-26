@@ -85,6 +85,60 @@ func newPrivateTmuxServer(t *testing.T) string {
 	return sock
 }
 
+// hostCanRespawnPanes probes whether this HOST can respawn a tmux pane at all right
+// now, driving tmux directly rather than the code under test.
+//
+// It exists to separate two failures that produce the identical error string.
+// TmuxRunner.Create reports `tmux respawn-pane failed: exit 1` with tmux's stderr
+// deliberately withheld (opaqueExitOnly, for privacy), so "the host cannot give us a
+// pane" and "our respawn argv is wrong" are indistinguishable from the error alone.
+// Skipping on the message would therefore hide a real Create regression, and failing
+// on it reds the suite for unrelated host load.
+//
+// Observed 2026-07-25 (find_4a206b688909): a full-suite run failed here with
+// `create /usr/bin/true: tmux respawn-pane failed: exit 1` on a host running 163
+// tmux sessions from other lanes. The same test passed alone and the package passed
+// on re-run, with no code change — the result was a property of the host, not the
+// code. A test that reds for reasons unrelated to the code teaches the reader that
+// red runs are noise, and then the next real red gets waved off too.
+//
+// Probe succeeds + our Create fails => our bug, fail loudly.
+// Probe fails                       => the host cannot host the test, skip with why.
+func hostCanRespawnPanes(sock string) bool {
+	const probe = "probe-host-can-respawn"
+	_ = runTmux(sock, "kill-session", "-t", probe)
+	if err := runTmux(sock, "new-session", "-d", "-s", probe, "/bin/sh", "-c", "sleep 30"); err != nil {
+		return false
+	}
+	defer func() { _ = runTmux(sock, "kill-session", "-t", probe) }()
+	if err := runTmux(sock, "set-option", "-t", probe, "remain-on-exit", "on"); err != nil {
+		return false
+	}
+	return runTmux(sock, "respawn-pane", "-k", "-t", probe, "--", "/bin/sh", "-c", "exit 0") == nil
+}
+
+// createForStatusTest creates a session for an exit-observation test, absorbing a
+// transient host failure and skipping only when the host provably cannot host panes.
+func createForStatusTest(t *testing.T, r *TmuxRunner, sock, name, dir, command string) {
+	t.Helper()
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := r.Create(name, dir, command, nil); err == nil {
+			return
+		} else {
+			lastErr = err
+		}
+		// Create is documented NOT to kill a half-created session, so the retry has to
+		// clear it or the next new-session collides with the leftover.
+		_ = r.Kill(name)
+		time.Sleep(time.Duration(attempt) * 150 * time.Millisecond)
+	}
+	if !hostCanRespawnPanes(sock) {
+		t.Skipf("host cannot respawn a tmux pane right now (tmux-side, not this code): create %s: %v", command, lastErr)
+	}
+	t.Fatalf("create %s: %v (host CAN respawn panes, so this is a Create regression)", command, lastErr)
+}
+
 func sessionExistsOnSock(t *testing.T, sock, name string) bool {
 	t.Helper()
 	return runTmux(sock, "has-session", "-t", name) == nil
@@ -342,9 +396,7 @@ func TestTmuxRunnerSessionStatusTrueAndFalseExit(t *testing.T) {
 	}
 
 	dir1 := t.TempDir()
-	if err := r.Create("sess-true", dir1, truePath, nil); err != nil {
-		t.Fatalf("create %s: %v", truePath, err)
-	}
+	createForStatusTest(t, r, sock, "sess-true", dir1, truePath)
 	t.Cleanup(func() { _ = r.Kill("sess-true") })
 	waitPaneDead(t, sock, "sess-true")
 	stTrue, err := r.SessionStatus("sess-true")
@@ -359,9 +411,7 @@ func TestTmuxRunnerSessionStatusTrueAndFalseExit(t *testing.T) {
 	}
 
 	dir2 := t.TempDir()
-	if err := r.Create("sess-false", dir2, falsePath, nil); err != nil {
-		t.Fatalf("create %s: %v", falsePath, err)
-	}
+	createForStatusTest(t, r, sock, "sess-false", dir2, falsePath)
 	t.Cleanup(func() { _ = r.Kill("sess-false") })
 	waitPaneDead(t, sock, "sess-false")
 	stFalse, err := r.SessionStatus("sess-false")
