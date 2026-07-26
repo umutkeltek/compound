@@ -426,6 +426,21 @@ func cmdCapability(args []string) {
 			// operator would otherwise have to infer by reading mechanisms.
 			fmt.Printf("\n%d credential handle(s) pass a value through a Compound-started process.\n", t.ValueTransiting)
 		}
+		if len(report.Harnesses) > 0 {
+			fmt.Println("\nper harness — 'generic' is offered to EVERY harness, runnable or not:")
+			for _, h := range report.Harnesses {
+				fmt.Printf("  %-24s scoped-to-it %4d   generic %4d   curated %5.1f%%\n",
+					h.Harness, h.Bound, h.Generic, h.ScopedShare*100)
+			}
+		}
+		if c := report.Corrections; c.Observations > 0 {
+			fmt.Printf("\nrouting corrections already recorded: %d observation(s) over %d wrongly-fired and %d missed capability(ies).\n",
+				c.Observations, c.FalseTriggeredNodes, c.MissedNodes)
+			if c.UnscopedWithCorrections > 0 {
+				fmt.Printf("  %d of those capabilities still carry NO harness scope — the correction was recorded but changed nothing,\n"+
+					"  so the same misroute stays available and the operator keeps making it by hand.\n", c.UnscopedWithCorrections)
+			}
+		}
 		if len(report.Gaps) > 0 {
 			fmt.Println("\ngaps, worst first — each is one missing import door, not per-node data entry:")
 			for _, g := range report.Gaps {

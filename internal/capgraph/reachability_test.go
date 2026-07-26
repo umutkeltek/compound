@@ -1,6 +1,9 @@
 package capgraph
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func addNode(t *testing.T, s *Store, id, kind string, retired bool) {
 	t.Helper()
@@ -185,6 +188,112 @@ func TestEveryGapExplainsWhatItCostsAtThePointOfUse(t *testing.T) {
 	for _, g := range r.Gaps {
 		if g.Consequence == "" {
 			t.Fatalf("gap for %q carries no consequence", g.Kind)
+		}
+	}
+}
+
+func addEdge(t *testing.T, s *Store, kind, from, to string) {
+	t.Helper()
+	if err := s.AddEdge(Edge{Kind: kind, From: from, To: to, Confidence: 1}, time.Now()); err != nil {
+		t.Fatalf("add edge %s %s->%s: %v", kind, from, to, err)
+	}
+}
+
+func TestUnscopedCapabilitiesCountAsGenericForEveryHarness(t *testing.T) {
+	// This is the failure that hurts. An unscoped node is not hidden from an
+	// executor -- it is offered to ALL of them. So a mostly-unscoped graph hands
+	// every harness the same pile, including entries it cannot run, and the
+	// operator filters by hand. If Generic ever stops counting toward each
+	// harness, this report would call that pile "well scoped".
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	addNode(t, s, "harness:alpha", "harness", false)
+	addNode(t, s, "harness:beta", "harness", false)
+	addNode(t, s, "tool:scoped", "tool", false)
+	addNode(t, s, "tool:loose-a", "tool", false)
+	addNode(t, s, "tool:loose-b", "tool", false)
+	addEdge(t, s, EdSurfacesWith, "tool:scoped", "harness:alpha")
+
+	r, err := s.ComputeReachability()
+	if err != nil {
+		t.Fatalf("compute: %v", err)
+	}
+	if len(r.Harnesses) != 1 {
+		t.Fatalf("expected only harnesses that appear as a scope target, got %+v", r.Harnesses)
+	}
+	h := r.Harnesses[0]
+	if h.Harness != "harness:alpha" || h.Bound != 1 {
+		t.Fatalf("harness row = %+v, want harness:alpha bound=1", h)
+	}
+	// 5 live nodes, 1 scoped => 4 generic, offered to everyone.
+	if h.Generic != 4 {
+		t.Fatalf("generic = %d, want 4; unscoped nodes must count as offered-to-all", h.Generic)
+	}
+	if h.ScopedShare >= 0.5 {
+		t.Fatalf("scoped share %.2f suggests a curated list when the pool is mostly generic", h.ScopedShare)
+	}
+}
+
+func TestOperatorCorrectionsAreCountedAndTiedToScoping(t *testing.T) {
+	// false_triggered_by and missed_when are the recorded residue of "use this,
+	// not that". A corrected capability that is STILL unscoped is a mistake the
+	// graph was told about and has not been taught to avoid, so it stays free to
+	// repeat -- which is exactly why the operator repeats themselves.
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	addNode(t, s, "harness:alpha", "harness", false)
+	addNode(t, s, "tool:overeager", "tool", false)
+	addNode(t, s, "tool:overlooked", "tool", false)
+	addNode(t, s, "tool:taught", "tool", false)
+	addNode(t, s, "lens:situation", "lens", false)
+
+	addEdge(t, s, EdFalseTriggeredBy, "context:situation", "tool:overeager")
+	addEdge(t, s, EdMissedWhen, "context:situation", "tool:overlooked")
+	addEdge(t, s, EdFalseTriggeredBy, "context:situation", "tool:taught")
+	addEdge(t, s, EdSurfacesWith, "tool:taught", "harness:alpha")
+
+	r, err := s.ComputeReachability()
+	if err != nil {
+		t.Fatalf("compute: %v", err)
+	}
+	c := r.Corrections
+	if c.FalseTriggeredNodes != 2 || c.MissedNodes != 1 || c.Observations != 3 {
+		t.Fatalf("corrections = %+v, want 2 false-triggered / 1 missed / 3 observations", c)
+	}
+	// Two of the three corrected nodes learned nothing: no harness scope.
+	if c.UnscopedWithCorrections != 2 {
+		t.Fatalf("unscoped-with-corrections = %d, want 2; a correction that changed no scope is a lesson not taken",
+			c.UnscopedWithCorrections)
+	}
+}
+
+func TestRetiredNodesDoNotPolluteScopingOrCorrections(t *testing.T) {
+	// Same trust argument as the coverage numbers: a retired capability's old
+	// mistakes are not an outstanding routing debt.
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	addNode(t, s, "harness:alpha", "harness", false)
+	addNode(t, s, "tool:dead", "tool", true)
+	addNode(t, s, "lens:situation", "lens", false)
+	addEdge(t, s, EdFalseTriggeredBy, "context:situation", "tool:dead")
+	addEdge(t, s, EdSurfacesWith, "tool:dead", "harness:alpha")
+
+	r, err := s.ComputeReachability()
+	if err != nil {
+		t.Fatalf("compute: %v", err)
+	}
+	if r.Corrections.Observations != 0 || r.Corrections.FalseTriggeredNodes != 0 {
+		t.Fatalf("retired node contributed corrections: %+v", r.Corrections)
+	}
+	for _, h := range r.Harnesses {
+		if h.Bound != 0 {
+			t.Fatalf("retired node counted as bound capability for %s", h.Harness)
 		}
 	}
 }

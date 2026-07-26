@@ -25,6 +25,56 @@ type Reachability struct {
 	Kinds         []KindReachability `json:"kinds"`
 	Total         KindReachability   `json:"total"`
 	Gaps          []ReachabilityGap  `json:"gaps,omitempty"`
+	// Harnesses reports what each executor can actually see. Scoping is the
+	// half of this problem that is invisible in the totals above.
+	Harnesses []HarnessReachability `json:"harnesses,omitempty"`
+	// Corrections is the operator-correction signal already sitting in the
+	// graph. It is the cheapest available evidence of where routing is worst.
+	Corrections CorrectionSignal `json:"corrections"`
+}
+
+// HarnessReachability reports the pool one executor is offered.
+//
+// The important number is Generic, not Bound. A node with no surfaces_with edge
+// is not hidden from a harness -- it is offered to EVERY harness, because
+// unscoped means generic. So a graph that is mostly unscoped does not fail by
+// showing an executor too little; it fails by showing every executor the same
+// undifferentiated pile, including entries it cannot run. The operator then
+// does the filtering by hand, one "use this, not that" at a time, and that
+// instruction is the routing decision the graph should have made.
+type HarnessReachability struct {
+	Harness string `json:"harness"`
+	// Bound counts capabilities explicitly scoped to this harness.
+	Bound int `json:"bound"`
+	// Generic counts unscoped capabilities, which this harness is offered by
+	// default along with every other harness.
+	Generic int `json:"generic"`
+	// ScopedShare is Bound / (Bound + Generic): how much of what this executor
+	// sees was actually chosen for it. Low means the offer list is a pile.
+	ScopedShare float64 `json:"scoped_share"`
+}
+
+// CorrectionSignal counts the graph edges that record routing having gone wrong
+// -- a capability that fired when it should not have, or that should have fired
+// and did not.
+//
+// These edges are the accumulated residue of an operator saying "use this, not
+// that". The signal already exists; nothing consumes it as a routing input. It
+// is surfaced here because an unread signal and an absent one are the same
+// thing at the point of use, and this one is already paid for.
+type CorrectionSignal struct {
+	// FalseTriggeredNodes carried at least one false_triggered_by edge: they
+	// fired in a situation where they were wrong.
+	FalseTriggeredNodes int `json:"false_triggered_nodes"`
+	// MissedNodes carried at least one missed_when edge: they should have fired
+	// and did not.
+	MissedNodes int `json:"missed_nodes"`
+	// Observations is the raw edge count behind those nodes.
+	Observations int `json:"observations"`
+	// UnscopedWithCorrections counts corrected capabilities that STILL carry no
+	// harness scope. Each one is a recorded routing mistake that the graph has
+	// not been taught to avoid, so it remains free to repeat.
+	UnscopedWithCorrections int `json:"unscoped_with_corrections"`
 }
 
 // KindReachability is the per-kind tally. Named counts rather than percentages
@@ -143,6 +193,81 @@ func (s *Store) ComputeReachability() (Reachability, error) {
 			Kind: k.Kind, Nodes: k.Nodes, Missing: missing,
 			Consequence: gapConsequence(k.Kind),
 		})
+	}
+
+	edges, err := s.loadEdges()
+	if err != nil {
+		return Reachability{}, err
+	}
+	// Indexed once: the edge log is thousands of rows and a linear scan per
+	// edge turns a read-only report into something nobody runs.
+	liveByID := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		liveByID[n.ID] = !n.Retired
+	}
+	live := func(id string) bool { return liveByID[id] }
+	scopedTo := map[string]map[string]bool{} // node -> harnesses
+	corrected := map[string]bool{}
+	var observations int
+	falseTriggered, missed := map[string]bool{}, map[string]bool{}
+	harnessNames := map[string]bool{}
+	for _, e := range edges {
+		switch e.Kind {
+		case EdSurfacesWith:
+			if !strings.HasPrefix(e.To, "harness:") || !live(e.From) {
+				continue
+			}
+			if scopedTo[e.From] == nil {
+				scopedTo[e.From] = map[string]bool{}
+			}
+			scopedTo[e.From][e.To] = true
+			harnessNames[e.To] = true
+		case EdFalseTriggeredBy, EdMissedWhen:
+			// Direction matters and is the opposite of the intuitive reading:
+			// these edges run SITUATION -> CAPABILITY ("in this context, that
+			// capability triggered wrongly / should have triggered"). Reading From as
+			// the capability silently yields zero corrections on a real home,
+			// which looks like "nothing to learn from" rather than a bug.
+			if !live(e.To) {
+				continue
+			}
+			if e.Kind == EdFalseTriggeredBy {
+				falseTriggered[e.To] = true
+			} else {
+				missed[e.To] = true
+			}
+			corrected[e.To] = true
+			observations++
+		}
+	}
+	genericCount := out.Total.Nodes - len(scopedTo)
+	for name := range harnessNames {
+		h := HarnessReachability{Harness: name, Generic: genericCount}
+		for _, scopes := range scopedTo {
+			if scopes[name] {
+				h.Bound++
+			}
+		}
+		if seen := h.Bound + h.Generic; seen > 0 {
+			h.ScopedShare = float64(h.Bound) / float64(seen)
+		}
+		out.Harnesses = append(out.Harnesses, h)
+	}
+	sort.Slice(out.Harnesses, func(i, j int) bool {
+		if out.Harnesses[i].Bound != out.Harnesses[j].Bound {
+			return out.Harnesses[i].Bound > out.Harnesses[j].Bound
+		}
+		return out.Harnesses[i].Harness < out.Harnesses[j].Harness
+	})
+	out.Corrections = CorrectionSignal{
+		FalseTriggeredNodes: len(falseTriggered),
+		MissedNodes:         len(missed),
+		Observations:        observations,
+	}
+	for id := range corrected {
+		if len(scopedTo[id]) == 0 {
+			out.Corrections.UnscopedWithCorrections++
+		}
 	}
 	return out, nil
 }
