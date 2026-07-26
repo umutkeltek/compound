@@ -686,3 +686,117 @@ func requireWorkActionContext(t *testing.T, label string, got, want *WorkActionC
 		t.Fatalf("%s action context mismatch:\ngot:  %+v\nwant: %+v", label, got, want)
 	}
 }
+
+// TestCreateRejectsMissingReworkOf pins the fail-closed half of the rework lineage edge: a
+// --rework-of pointing at a work id that does not resolve in THIS store refuses the create before
+// anything persists. A phantom edge is the failure mode that matters -- a rework-rate fold that
+// counts edges to works that never existed reports a number nobody can trace back, and unlike a
+// missing edge it looks like data. Mirrors TestCreateRejectsMissingContextPack (same admission
+// slot, same "nothing persisted" assertion) and runattempt.SetPredecessor's "no phantom links".
+//
+// Falsifier: removing the validateReworkOfRef call from admitWorkLocked turns this RED -- the
+// create succeeds and List() returns one work.
+func TestCreateRejectsMissingReworkOf(t *testing.T) {
+	s := newStore(t)
+	_, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "create refuses a phantom rework edge",
+		ReworkOfWorkID:   "work_missing123",
+	}, fixedNow)
+	if err == nil || !strings.Contains(err.Error(), `rework_of_work_id "work_missing123"`) {
+		t.Fatalf("expected missing rework target error, got %v", err)
+	}
+	works, listErr := s.List()
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(works) != 0 {
+		t.Fatalf("missing rework target create must not persist work: %+v", works)
+	}
+}
+
+// TestCreateAcceptsExistingReworkOfAndPersistsIt is the positive half: an edge to a work that DOES
+// resolve is admitted, persisted, and readable back off disk -- which is what makes the edge
+// foldable later. Re-loading through Get (rather than trusting the returned value) is the load-
+// bearing part: it proves the field survived the marshal/write/read round-trip, not just the
+// in-memory struct copy.
+//
+// Falsifier: dropping the ReworkOfWorkID copy in BuildWork turns this RED on the reloaded value.
+func TestCreateAcceptsExistingReworkOfAndPersistsIt(t *testing.T) {
+	s := newStore(t)
+	earlier, err := s.Create(CreateInput{
+		WorkID:           "work_earlier000",
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "the earlier work whose breakage is being reworked",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "create accepts a resolvable rework edge",
+		ReworkOfWorkID:   earlier.ID,
+	}, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("create with a resolvable rework target must succeed: %v", err)
+	}
+	if created.ReworkOfWorkID != earlier.ID {
+		t.Fatalf("created rework_of_work_id = %q, want %q", created.ReworkOfWorkID, earlier.ID)
+	}
+	reloaded, err := s.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ReworkOfWorkID != earlier.ID {
+		t.Fatalf("persisted rework_of_work_id = %q, want %q", reloaded.ReworkOfWorkID, earlier.ID)
+	}
+	// The target being a plain work (not itself a rework) is the common case; an edge to a work
+	// that is ITSELF a rework is explicitly fine -- no transitive validation, no cycle walk.
+	chained, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "rework of a rework is admitted",
+		ReworkOfWorkID:   created.ID,
+	}, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("rework of a rework must be admitted: %v", err)
+	}
+	if chained.ReworkOfWorkID != created.ID {
+		t.Fatalf("chained rework_of_work_id = %q, want %q", chained.ReworkOfWorkID, created.ID)
+	}
+}
+
+// TestCreateRejectsSelfReworkOf pins the one shape the existence check alone cannot catch: with an
+// explicit --work-id, a caller can point the edge at the id being created. The target does not
+// exist yet, so the store lookup would refuse it for the WRONG reason today and would silently
+// ACCEPT it the moment an id were reused -- the envelope-level self check is what makes the
+// refusal about self-reference rather than about ordering.
+//
+// Falsifier: removing the self comparison from validateReworkOfWorkID turns this RED with a
+// missing-target error instead of a self-reference error.
+func TestCreateRejectsSelfReworkOf(t *testing.T) {
+	s := newStore(t)
+	_, err := s.Create(CreateInput{
+		WorkID:           "work_selfref000",
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "create refuses a self-referential rework edge",
+		ReworkOfWorkID:   "work_selfref000",
+	}, fixedNow)
+	if err == nil {
+		t.Fatal("self-referential rework edge must be refused")
+	}
+	if !strings.Contains(err.Error(), "rework_of_work_id") || !strings.Contains(err.Error(), "itself") {
+		t.Fatalf("self-reference refusal must name the field and the reason, got: %v", err)
+	}
+	works, listErr := s.List()
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(works) != 0 {
+		t.Fatalf("self-referential rework create must not persist work: %+v", works)
+	}
+}
