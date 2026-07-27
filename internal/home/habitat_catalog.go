@@ -161,6 +161,7 @@ func buildHabitatEntries() []HabitatEntry {
 		child("projections.orient-cursor", "projections/orient-operator-last-seq.json", HabitatClassOperational, false, true, false),
 		child("projections.director-runs", "projections/director/runs", HabitatClassEvidence, false, true, false),
 		child("projections.source-intake-records", "projections/source-intake/reports", HabitatClassEvidence, false, true, false),
+		child("projections.sessions-mine", "projections/sessions-mine", HabitatClassOperational, false, true, false),
 		active("reviews", "reviews", HabitatClassEvidence, true, true, false),
 		active("archives", "archives", HabitatClassEvidence, true, true, false),
 		active("exports", "exports", HabitatClassExport, true, false, false),

@@ -17,6 +17,85 @@ import (
 	"compound/internal/work"
 )
 
+func TestSessionsMineJobRunRebuildsMalformedCheckpoint(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	ev := sessionMiningTestEvent("hook_rebuild", "sess_rebuild", "work_rebuild", "SessionEnd", "lane:rebuild")
+	ev.CreatedAt = now.Add(-time.Hour).Format(time.RFC3339)
+	writeSessionHookEvents(t, homePath, []sessionHookEvent{ev})
+	path := sessionMiningCheckpointPath(homePath, sessionMiningJobID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := buildSessionMiningJobReport(homePath, "24h", "codex", sessionMiningJobID, now)
+	if err != nil {
+		t.Fatalf("malformed cache should rebuild, got: %v", err)
+	}
+	if report.HookEventCount != 1 || report.HookEventScanMode != "full" {
+		t.Fatalf("rebuild report = %+v", report)
+	}
+	if !stringSliceContains(report.NextCommand, "--job-run") {
+		t.Fatalf("job next command lost job mode: %+v", report.NextCommand)
+	}
+}
+
+func TestSessionsMineJobRunResumesAndPreservesCrossRunPatterns(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	first := sessionMiningTestEvent("hook_job_first", "sess_job_first", "work_job_first", "UserPromptSubmit", "operator_correction:prefer reversible edits")
+	first.CreatedAt = now.Add(-time.Hour).Format(time.RFC3339)
+	writeSessionHookEvents(t, homePath, []sessionHookEvent{first})
+	// Close the migration gate so ScanFrom can issue a stable segment cursor.
+	migrationDir := filepath.Join(homePath, "events", "migration")
+	if err := os.MkdirAll(migrationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(migrationDir, "completion.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	initial, err := buildSessionMiningJobReport(homePath, "24h", "codex", sessionMiningJobID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.HookEventScanMode != "full" || initial.HookEventsScanned != 1 || initial.HookEventCount != 1 {
+		t.Fatalf("initial job report = mode:%s scanned:%d events:%d", initial.HookEventScanMode, initial.HookEventsScanned, initial.HookEventCount)
+	}
+	if len(initial.PreferencesFound) != 0 {
+		t.Fatalf("one occurrence unexpectedly formed a repeated preference: %+v", initial.PreferencesFound)
+	}
+
+	second := sessionMiningTestEvent("hook_job_second", "sess_job_second", "work_job_second", "SessionEnd", "operator_correction:prefer reversible edits")
+	second.CreatedAt = now.Add(30 * time.Minute).Format(time.RFC3339)
+	writeSessionHookEvents(t, homePath, []sessionHookEvent{second})
+	resumed, err := buildSessionMiningJobReport(homePath, "24h", "codex", sessionMiningJobID, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.HookEventScanMode != "incremental" || resumed.HookEventsScanned != 1 || resumed.HookEventCount != 2 {
+		t.Fatalf("resumed job report = mode:%s scanned:%d events:%d, want incremental/1/2", resumed.HookEventScanMode, resumed.HookEventsScanned, resumed.HookEventCount)
+	}
+	if len(resumed.PreferencesFound) != 1 {
+		t.Fatalf("rolling aggregate lost cross-run repeated preference: %+v", resumed.PreferencesFound)
+	}
+	checkpoint, ok, err := loadSessionMiningCheckpoint(homePath, sessionMiningJobID, "24h", "codex")
+	if err != nil || !ok || len(checkpoint.Events) != 2 || checkpoint.Cursor == "" {
+		t.Fatalf("checkpoint = ok:%t err:%v value:%+v", ok, err, checkpoint)
+	}
+}
+
 func TestSessionsMineFiltersHarnessAndCountsDistinctSessions(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -258,7 +337,7 @@ func TestSessionsMineDailyDryRunDigestJobRosterFixture(t *testing.T) {
 	if job.JobID != "sessions-mine-daily-dry-run" || job.State != "pending_operator_scheduling" || job.Enabled {
 		t.Fatalf("sessions mine digest job should be registered but unloaded: %+v", job)
 	}
-	if !strings.Contains(job.Script, "sessions mine --since 24h --dry-run --json") {
+	if !strings.Contains(job.Script, "sessions mine --since 24h --dry-run --job-run sessions-mine-daily-dry-run --json") {
 		t.Fatalf("unexpected job script: %+v", job)
 	}
 }

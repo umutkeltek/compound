@@ -9,7 +9,7 @@
       "state": "pending_operator_scheduling",
       "schedule": "daily",
       "deliver": "review_queue",
-      "script": "compound sessions mine --since 24h --dry-run --json",
+      "script": "compound sessions mine --since 24h --dry-run --job-run sessions-mine-daily-dry-run --json",
       "no_agent": true,
       "lane": "local_dry_run",
       "last_status": "pending",

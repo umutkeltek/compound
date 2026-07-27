@@ -4,10 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/candidates"
@@ -24,6 +27,18 @@ import (
 
 const sessionMiningReportSchemaVersion = "compound.sessions_mine_report.v0.1"
 const sessionMiningApplyReportSchemaVersion = "compound.sessions_mine_apply_report.v0.1"
+const sessionMiningCheckpointSchemaVersion = "compound.sessions_mine_checkpoint.v0.1"
+const sessionMiningJobID = "sessions-mine-daily-dry-run"
+
+type sessionMiningCheckpoint struct {
+	SchemaVersion string             `json:"schema_version"`
+	JobID         string             `json:"job_id"`
+	Since         string             `json:"since"`
+	Harness       string             `json:"harness,omitempty"`
+	Cursor        string             `json:"cursor"`
+	UpdatedAt     string             `json:"updated_at"`
+	Events        []sessionHookEvent `json:"events"`
+}
 
 type sessionMiningSettings struct {
 	HarnessActor        string `json:"harness_actor"`
@@ -47,6 +62,7 @@ type sessionMiningReport struct {
 	HookEventCount        int                       `json:"hook_event_count"`
 	HookEventsScanned     int                       `json:"hook_events_scanned"`
 	HookEventScanMode     string                    `json:"hook_event_scan_mode"`
+	JobID                 string                    `json:"job_id,omitempty"`
 	EffectiveSettings     sessionMiningSettings     `json:"effective_settings"`
 	HarnessCounts         map[string]int            `json:"harness_counts"`
 	HookCounts            map[string]int            `json:"hook_counts"`
@@ -121,7 +137,7 @@ func cmdSessions(args []string) {
 
 func sessionsUsage() string {
 	return "usage:\n" +
-		"  compound sessions mine [--dry-run|--apply] [--since 24h] [--harness codex] [--json]\n" +
+		"  compound sessions mine [--dry-run|--apply] [--since 24h] [--harness codex] [--job-run ID] [--json]\n" +
 		"  compound sessions harvest --transcript <path> [--dry-run] [--json]\n" +
 		"  compound sessions backfill --ledger-dir <dir> [--dry-run|--apply] [--limit N] [--json]\n" +
 		"  compound sessions live [--json] [--ghosts-only]"
@@ -312,6 +328,7 @@ func cmdSessionsMine(args []string) {
 	dryRun := false
 	apply := false
 	harnessName := ""
+	jobID := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--since":
@@ -328,6 +345,13 @@ func cmdSessionsMine(args []string) {
 			}
 			harnessName = strings.TrimSpace(args[i+1])
 			i++
+		case "--job-run":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, sessionsUsage())
+				os.Exit(2)
+			}
+			jobID = strings.TrimSpace(args[i+1])
+			i++
 		case "--dry-run":
 			dryRun = true
 		case "--apply":
@@ -343,12 +367,25 @@ func cmdSessionsMine(args []string) {
 		fmt.Fprintln(os.Stderr, "sessions mine: choose --dry-run or --apply")
 		os.Exit(2)
 	}
+	if jobID != "" && (apply || !dryRun) {
+		fmt.Fprintln(os.Stderr, "sessions mine: --job-run requires --dry-run and cannot apply")
+		os.Exit(2)
+	}
+	if jobID != "" && jobID != sessionMiningJobID {
+		fmt.Fprintf(os.Stderr, "sessions mine: unknown job id %q\n", jobID)
+		os.Exit(2)
+	}
 	homePath, err := home.Resolve("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	report, err := buildSessionMiningReport(homePath, since, harnessName, time.Now())
+	var report sessionMiningReport
+	if jobID != "" {
+		report, err = buildSessionMiningJobReport(homePath, since, harnessName, jobID, time.Now())
+	} else {
+		report, err = buildSessionMiningReport(homePath, since, harnessName, time.Now())
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sessions mine:", err)
 		os.Exit(1)
@@ -402,9 +439,22 @@ func cmdSessionsMine(args []string) {
 }
 
 func buildSessionMiningReport(homePath, since, harnessName string, now time.Time) (sessionMiningReport, error) {
+	window, err := parseSessionMiningSince(since)
+	if err != nil {
+		return sessionMiningReport{}, err
+	}
 	if now.IsZero() {
 		now = time.Now()
 	}
+	cutoff := now.Add(-window)
+	events, scan, warnings, err := loadRecentSessionHookEvents(homePath, cutoff, harnessName)
+	if err != nil {
+		return sessionMiningReport{}, err
+	}
+	return assembleSessionMiningReport(homePath, since, harnessName, now, events, scan, warnings)
+}
+
+func assembleSessionMiningReport(homePath, since, harnessName string, now time.Time, events []sessionHookEvent, scan sessionHookScan, warnings []string) (sessionMiningReport, error) {
 	window, err := parseSessionMiningSince(since)
 	if err != nil {
 		return sessionMiningReport{}, err
@@ -433,10 +483,6 @@ func buildSessionMiningReport(homePath, since, harnessName string, now time.Time
 		},
 	}
 
-	events, scan, warnings, err := loadRecentSessionHookEvents(homePath, cutoff, harnessName)
-	if err != nil {
-		return report, err
-	}
 	report.HookEventCount = len(events)
 	report.HookEventsScanned = scan.Scanned
 	report.HookEventScanMode = scan.Mode
@@ -492,6 +538,166 @@ func buildSessionMiningReport(homePath, since, harnessName string, now time.Time
 	report.RulesToRetire = sessionMiningRulesToRetire(workbench)
 	report.PreferencesFound = sessionMiningPreferences(events, workbench)
 	return report, nil
+}
+
+func sessionMiningCheckpointPath(homePath, jobID string) string {
+	return filepath.Join(homePath, "projections", "sessions-mine", jobID+".json")
+}
+
+func sessionMiningJobLockPath(homePath, jobID string) string {
+	return filepath.Join(homePath, "lock", jobID+".lock")
+}
+
+func buildSessionMiningJobReport(homePath, since, harnessName, jobID string, now time.Time) (report sessionMiningReport, resultErr error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	window, err := parseSessionMiningSince(since)
+	if err != nil {
+		return sessionMiningReport{}, err
+	}
+	lockPath := sessionMiningJobLockPath(homePath, jobID)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return sessionMiningReport{}, err
+	}
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return sessionMiningReport{}, fmt.Errorf("open session mining job lock: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, lock.Close()) }()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return sessionMiningReport{}, fmt.Errorf("session mining job %s is already running: %w", jobID, err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)) }()
+
+	checkpoint, checkpointOK, err := loadSessionMiningCheckpoint(homePath, jobID, since, harnessName)
+	if err != nil {
+		return sessionMiningReport{}, err
+	}
+	store, err := eventstore.Open(homePath)
+	if err != nil {
+		return sessionMiningReport{}, err
+	}
+	page, err := store.ScanFrom(eventstore.ScanOptions{Prefixes: []string{"hook_"}, RegularOnly: true, Cursor: checkpoint.Cursor})
+	if err != nil {
+		if os.IsNotExist(err) {
+			page = eventstore.ScanPage{}
+		} else {
+			return sessionMiningReport{}, fmt.Errorf("scan session mining job events: %w", err)
+		}
+	}
+	cutoff := now.Add(-window)
+	base := checkpoint.Events
+	mode := "incremental"
+	if !checkpointOK || !page.Resumed {
+		base = nil
+		mode = "full"
+	}
+	events, warnings, err := foldSessionMiningEvents(base, page.Entries, cutoff, harnessName)
+	if err != nil {
+		return sessionMiningReport{}, err
+	}
+	scan := sessionHookScan{Mode: mode, Scanned: len(page.Entries)}
+	report, err = assembleSessionMiningReport(homePath, since, harnessName, now, events, scan, warnings)
+	if err != nil {
+		return sessionMiningReport{}, err
+	}
+	report.JobID = jobID
+	report.NextCommand = []string{"compound", "sessions", "mine", "--since", since}
+	if harnessName != "" {
+		report.NextCommand = append(report.NextCommand, "--harness", harnessName)
+	}
+	report.NextCommand = append(report.NextCommand, "--dry-run", "--job-run", jobID, "--json")
+	if page.Cursor != "" {
+		report.EffectiveSettings.IncrementalSafe = true
+		report.EffectiveSettings.IncrementalLimiting = ""
+	} else {
+		report.EffectiveSettings.IncrementalSafe = false
+		report.EffectiveSettings.IncrementalLimiting = "event store is still in legacy-fallback mode, so ScanFrom cannot issue a stable byte cursor"
+	}
+
+	next := sessionMiningCheckpoint{
+		SchemaVersion: sessionMiningCheckpointSchemaVersion,
+		JobID:         jobID,
+		Since:         since,
+		Harness:       harnessName,
+		Cursor:        page.Cursor,
+		UpdatedAt:     now.UTC().Format(time.RFC3339),
+		Events:        events,
+	}
+	body, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		return sessionMiningReport{}, err
+	}
+	if err := home.WriteFileAtomic(sessionMiningCheckpointPath(homePath, jobID), append(body, '\n'), 0o600); err != nil {
+		return sessionMiningReport{}, fmt.Errorf("write session mining checkpoint: %w", err)
+	}
+	return report, nil
+}
+
+func loadSessionMiningCheckpoint(homePath, jobID, since, harnessName string) (sessionMiningCheckpoint, bool, error) {
+	path := sessionMiningCheckpointPath(homePath, jobID)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return sessionMiningCheckpoint{}, false, nil
+	}
+	if err != nil {
+		return sessionMiningCheckpoint{}, false, fmt.Errorf("read session mining checkpoint: %w", err)
+	}
+	var checkpoint sessionMiningCheckpoint
+	if err := json.Unmarshal(data, &checkpoint); err != nil {
+		// The checkpoint is a cache, never authority. A malformed body must recover
+		// through ScanFrom's full-rescan path rather than taking the scheduled job
+		// down permanently.
+		return sessionMiningCheckpoint{}, false, nil
+	}
+	if checkpoint.SchemaVersion != sessionMiningCheckpointSchemaVersion || checkpoint.JobID != jobID || checkpoint.Since != since || checkpoint.Harness != harnessName {
+		return sessionMiningCheckpoint{}, false, nil
+	}
+	return checkpoint, true, nil
+}
+
+func foldSessionMiningEvents(base []sessionHookEvent, entries []eventstore.Entry, cutoff time.Time, harnessName string) ([]sessionHookEvent, []string, error) {
+	byID := make(map[string]sessionHookEvent, len(base)+len(entries))
+	for _, ev := range base {
+		created, err := time.Parse(time.RFC3339, ev.CreatedAt)
+		if err == nil && !created.Before(cutoff) && (harnessName == "" || ev.Harness == harnessName) {
+			byID[ev.ID] = ev
+		}
+	}
+	var warnings []string
+	for _, entry := range entries {
+		rec, err := entry.Read()
+		if err != nil {
+			return nil, nil, fmt.Errorf("read hook event %s: %w", entry.ID, err)
+		}
+		var ev sessionHookEvent
+		if err := json.Unmarshal(rec.Bytes, &ev); err != nil {
+			warnings = append(warnings, fmt.Sprintf("record %s unreadable", entry.ID))
+			continue
+		}
+		created, err := time.Parse(time.RFC3339, ev.CreatedAt)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("record %s missing created_at", entry.ID))
+			continue
+		}
+		if created.Before(cutoff) || (harnessName != "" && ev.Harness != harnessName) {
+			delete(byID, ev.ID)
+			continue
+		}
+		byID[ev.ID] = ev
+	}
+	out := make([]sessionHookEvent, 0, len(byID))
+	for _, ev := range byID {
+		out = append(out, ev)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt < out[j].CreatedAt
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, warnings, nil
 }
 
 func parseSessionMiningSince(value string) (time.Duration, error) {
