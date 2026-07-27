@@ -137,11 +137,11 @@ type ReplayRow struct {
 	// RuntimeGap records the exact replay-time failure classification for an
 	// unavailable row. Checkpoint coverage is derived from these row facts, so
 	// resumable state cannot claim an unexplained gap or lose a real one.
-	RuntimeGap       string                    `json:"runtime_gap,omitempty"`
-	NegativeControl  *NegativeControlResult    `json:"negative_control,omitempty"`
-	OrientConsumer   *OrientConsumerEvidence   `json:"orient_consumer,omitempty"`
-	ParityPassed     bool                      `json:"parity_passed"`
-	privacySafe      bool
+	RuntimeGap      string                  `json:"runtime_gap,omitempty"`
+	NegativeControl *NegativeControlResult  `json:"negative_control,omitempty"`
+	OrientConsumer  *OrientConsumerEvidence `json:"orient_consumer,omitempty"`
+	ParityPassed    bool                    `json:"parity_passed"`
+	privacySafe     bool
 }
 
 // OrientConsumerEvidence is the content-free proof that a replay row executed the
@@ -1863,15 +1863,15 @@ func BuildOrientConsumerEvidence(
 	privateBytes := countUniqueMatchedRanges(serialized, needles)
 
 	evidence := OrientConsumerEvidence{
-		ContextPackRef:     strings.TrimSpace(contextPackID),
-		WireSHA256:         hash,
-		SerializedBytes:    bytes,
-		EstimatedTokens:    estimated,
-		BodyBudgetTokens:   bodyBudgetTokens,
-		BodyUsedTokens:     bodyUsedTokens,
-		PrivateBodyBytes:   privateBytes,
-		MeasuredLatencyMS:  measured,
-		PrivateBytesPassed: privateBytes == 0,
+		ContextPackRef:      strings.TrimSpace(contextPackID),
+		WireSHA256:          hash,
+		SerializedBytes:     bytes,
+		EstimatedTokens:     estimated,
+		BodyBudgetTokens:    bodyBudgetTokens,
+		BodyUsedTokens:      bodyUsedTokens,
+		PrivateBodyBytes:    privateBytes,
+		MeasuredLatencyMS:   measured,
+		PrivateBytesPassed:  privateBytes == 0,
 		DegradationObserved: degraded,
 	}
 	return evidence

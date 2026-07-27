@@ -56,10 +56,10 @@ var materializeBodiesForOrient = func(homePath string, pack envelope.ContextPack
 // Degraded reports whether the optional configured body source emitted any
 // degradation candidate during this materialization.
 type orientMaterializationResult struct {
-	Pack              envelope.ContextPack
-	EngineDependency  contract.EngineDependencyTrace
+	Pack               envelope.ContextPack
+	EngineDependency   contract.EngineDependencyTrace
 	BodyPackUsedTokens int
-	Degraded          bool
+	Degraded           bool
 }
 
 // materializeOrientContextPackDetailed is the one cmd-layer orientation path
