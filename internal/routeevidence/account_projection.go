@@ -203,11 +203,17 @@ func normalizeAdminAccounts(doc adminAccountsDoc, now time.Time) AccountProjecti
 	for _, acct := range doc.Accounts {
 		id := strings.TrimSpace(acct.ID)
 		provider := strings.TrimSpace(acct.Provider)
-		if id == "" || provider == "" {
+		enrolled := strings.EqualFold(strings.TrimSpace(acct.State), "enrolled")
+		// The source authority retains parked/superseded history, but this projection is
+		// specifically the CURRENT account-admission surface. Counting historical rows as
+		// accounts made two enrolled OpenAI subscriptions appear as 1,292 accounts. Exclude
+		// non-enrolled records from both totals and capacity summaries; Switchback remains the
+		// owner of their historical lifecycle.
+		if id == "" || provider == "" || !enrolled {
 			continue
 		}
 		accountProvider[id] = provider
-		accountEnrolled[id] = strings.EqualFold(strings.TrimSpace(acct.State), "enrolled")
+		accountEnrolled[id] = true
 	}
 
 	accountWalled := make(map[string]bool, len(doc.Capacity))

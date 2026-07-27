@@ -156,6 +156,39 @@ func TestImportAccountProjectionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAccountProjectionExcludesParkedAccountHistoryFromTotals(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(t.TempDir(), "admin-accounts.json")
+	body := `{
+	  "schema":"switchback/admin-accounts@1",
+	  "authority_revision":97,
+	  "accounts":[
+	    {"id":"openai-current-a","provider":"openai","state":"enrolled"},
+	    {"id":"openai-current-b","provider":"openai","state":"enrolled"},
+	    {"id":"openai-old-a","provider":"openai","state":"parked"},
+	    {"id":"openai-old-b","provider":"openai","state":"parked"}
+	  ],
+	  "capacity":[
+	    {"account_id":"openai-current-a","sampled_at":"2026-07-27T18:00:00Z","windows":[]},
+	    {"account_id":"openai-old-a","sampled_at":"2026-07-27T18:00:00Z","windows":[{"window_kind":"week","used":{"kind":"percent","used_percent":100}}]}
+	  ]
+	}`
+	if err := os.WriteFile(src, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportAccountProjectionFile(home, src, t0); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	projection, ok, err := LoadAccountProjection(home)
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	openai := projection.Providers["openai"]
+	if openai.TotalAccountCount != 2 || openai.HealthyAccountCount != 2 {
+		t.Fatalf("parked account history entered current totals: %+v", openai)
+	}
+}
+
 // (F2) projection with provider codex zero-healthy -> codex-harness lanes land in plan.Omitted with
 // reason; other lanes (claude healthy, switchback ungated) unaffected.
 func TestAccountAdmissionGateOmitsZeroHealthyProvider(t *testing.T) {
