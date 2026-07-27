@@ -1815,7 +1815,7 @@ func workbenchDispatchNext(report WorkbenchReport, actor string) WorkbenchDispat
 	}
 	out := WorkbenchDispatchNext{Actor: actor}
 	for _, item := range report.Open {
-		if item.State == "verifying" && hasCloseProofEvidence(item) {
+		if item.State == "verifying" && hasCloseProofEvidence(item) && !dispatchLeaseHeldByOther(item, actor) {
 			out.CanRun = true
 			out.Action = "close"
 			out.Reason = "proof_ready_close"

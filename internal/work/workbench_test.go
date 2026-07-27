@@ -1331,6 +1331,50 @@ func TestWorkbenchDispatchNextPrefersProofReadyClose(t *testing.T) {
 	}
 }
 
+func TestWorkbenchDispatchNextSkipsProofReadyCloseHeldByOtherActor(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready work remains available to the requesting actor"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "proof-ready work remains with its lease holder"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(foreign.ID, "hermes:minimax-12h-controller", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(foreign.ID, AdvanceInput{To: "running", Actor: "hermes:minimax-12h-controller"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	verifying, err := s.Advance(foreign.ID, AdvanceInput{
+		To:             "verifying",
+		Actor:          "hermes:minimax-12h-controller",
+		VerificationID: "ver_foreign_proof_ready",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10, Actor: "codex:root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := report.DispatchNext
+	if !next.CanRun || next.Action != "claim" || next.WorkID != ready.ID || next.WorkID == verifying.ID {
+		t.Fatalf("requesting actor dispatch suggestion = %+v", next)
+	}
+
+	report, err = s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10, Actor: "hermes:minimax-12h-controller"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next = report.DispatchNext
+	if !next.CanRun || next.Action != "close" || next.WorkID != verifying.ID {
+		t.Fatalf("lease holder dispatch suggestion = %+v", next)
+	}
+}
+
 func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "cancelled work is terminal without completion proof"}, fixedNow)
