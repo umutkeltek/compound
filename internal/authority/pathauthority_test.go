@@ -283,10 +283,66 @@ func TestImportOSPathRegistryNormalizesActiveAndStaleRoots(t *testing.T) {
 	}
 }
 
+// TestImportOSPathRegistryPrefersResolverOverProcessHOME is the environment-INDEPENDENT
+// half of the HOME-spoofing guarantee: `~` must expand through the account-home resolver,
+// never through $HOME. It injects the resolver through the existing seam, so it needs no
+// OS account and runs everywhere — including the CI container, where the sibling test
+// below cannot run at all.
+//
+// This split exists because the two properties were fused in one test that required an
+// account, which made the WHOLE guarantee unobservable in CI. The valuable half — that
+// import consults the resolver rather than the environment — never needed an account.
+//
+// Falsifier: make importOSPathRegistryWithAccountHome expand `~` from os.Getenv("HOME")
+// and this goes RED, because the spoofed HOME would win over the resolver.
+func TestImportOSPathRegistryPrefersResolverOverProcessHOME(t *testing.T) {
+	// Compare against the CANONICAL forms: import resolves symlinks, so on macOS a
+	// /var/folders temp dir is recorded as /private/var/folders. Asserting the raw
+	// t.TempDir() string fails on a path the import handled correctly.
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	spoofed, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", spoofed)
+
+	path := filepath.Join(t.TempDir(), "path-authority.yaml")
+	body := "version: 1\ncanonical_roots:\n  account_home_probe:\n    path: \"~\"\n    status: active\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, facts, _, importErr := importOSPathRegistryWithAccountHome(path, nil, func() (string, error) {
+		return resolved, nil
+	})
+	if importErr != nil {
+		t.Fatalf("import: %v", importErr)
+	}
+	if !hasCandidate(facts, "source:account-home-probe", "current_path", resolved) {
+		t.Fatalf("`~` must expand through the resolver (%q), not $HOME (%q); facts=%+v", resolved, spoofed, facts)
+	}
+	if hasCandidate(facts, "source:account-home-probe", "current_path", spoofed) {
+		t.Fatalf("spoofed $HOME %q leaked into the imported path; facts=%+v", spoofed, facts)
+	}
+}
+
+// TestImportOSPathRegistryUsesAccountHomeWhenProcessHOMEIsSpoofed covers the remaining,
+// environment-DEPENDENT half: that the REAL resolver reads the OS account rather than the
+// environment. It needs an actual account, so it skips where there is none.
+//
+// The skip is not a weakened gate — it is an absent precondition. `user.Current()` fails
+// in a container whose running uid has no /etc/passwd entry (the CI runner executes this
+// step as 1000:1000), and "the account home differs from $HOME" is not a claim that can be
+// made when there is no account. Note what is deliberately NOT done here: giving
+// currentAccountHome a $HOME fallback would make this pass everywhere and destroy the
+// guarantee, since the function exists precisely because $HOME is spoofable.
 func TestImportOSPathRegistryUsesAccountHomeWhenProcessHOMEIsSpoofed(t *testing.T) {
 	account, err := user.Current()
 	if err != nil {
-		t.Fatalf("current account: %v", err)
+		t.Skipf("no OS account for this uid (%v); the resolver-vs-$HOME half is covered by TestImportOSPathRegistryPrefersResolverOverProcessHOME", err)
 	}
 	want, err := filepath.EvalSymlinks(account.HomeDir)
 	if err != nil {

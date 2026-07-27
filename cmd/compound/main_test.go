@@ -6197,9 +6197,14 @@ func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 func TestAuthorityPathRegistryImportsOSRegistryAndResolvesMovedPaths(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
+	// Skips where the running uid has no /etc/passwd entry (the CI runner executes as
+	// 1000:1000): this test builds its fixture FROM the real account home, so without an
+	// account there is no fixture to build. Absent precondition, not a weakened gate — the
+	// resolver-vs-$HOME guarantee itself is covered environment-independently by
+	// internal/authority's TestImportOSPathRegistryPrefersResolverOverProcessHOME.
 	account, err := user.Current()
 	if err != nil {
-		t.Fatalf("current account: %v", err)
+		t.Skipf("no OS account for this uid (%v); path-authority import needs a real account home", err)
 	}
 	accountHome, err := filepath.EvalSymlinks(account.HomeDir)
 	if err != nil {
