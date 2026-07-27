@@ -59,6 +59,16 @@ func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t
 		}
 	})
 
+	mkdirCommand := "mkdir -p docs_private"
+	t.Run("governed/"+mkdirCommand, func(t *testing.T) {
+		classification := ClassifyToolAction(monitorRequest("Bash", map[string]any{"command": mkdirCommand}))
+		if !classification.Known || classification.Operation != "governed_command" ||
+			classification.MutationClass != "local_reversible" ||
+			classification.TargetKind != "path" || classification.Destination != "docs_private" {
+			t.Fatalf("workspace mkdir must be governed and path-scoped: %+v", classification)
+		}
+	})
+
 	for _, command := range []string{
 		"./install.sh",
 		"make install",
@@ -86,6 +96,10 @@ func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t
 		"cp -R -c -n /tmp/source /tmp/destination",
 		"cp -R -c -n /tmp/source ../destination",
 		"cp -R -c -n /tmp/source .",
+		"mkdir docs_private",
+		"mkdir -p /tmp/destination",
+		"mkdir -p ../destination",
+		"mkdir -p .",
 	} {
 		t.Run("unknown/"+command, func(t *testing.T) {
 			monitored := MonitorToolAction(

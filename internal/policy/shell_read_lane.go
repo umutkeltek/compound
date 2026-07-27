@@ -195,6 +195,12 @@ func classifyShellAction(classification ActionClassification, command string) Ac
 			classification.Destination = destination
 			return classification
 		}
+		if destination, ok := shellWorkspaceMkdirDestination(segments[0]); ok {
+			classification = shellClassificationFor(classification, shellClassGoverned)
+			classification.TargetKind = "path"
+			classification.Destination = destination
+			return classification
+		}
 	}
 	worst := shellClassRead
 	for _, segment := range segments {
@@ -242,7 +248,22 @@ func shellNoClobberWorkspaceCopyDestination(segment shellSegment) (string, bool)
 	if !recursive || !clone || !noClobber || len(operands) < 2 {
 		return "", false
 	}
-	destination := operands[len(operands)-1]
+	return shellWorkspaceRelativeDestination(operands[len(operands)-1])
+}
+
+func shellWorkspaceMkdirDestination(segment shellSegment) (string, bool) {
+	if segment.obfuscated || segment.writes || len(segment.words) != 3 ||
+		shellVerbName(segment.words[0]) != "mkdir" ||
+		(segment.words[1] != "-p" && segment.words[1] != "--parents") {
+		return "", false
+	}
+	return shellWorkspaceRelativeDestination(segment.words[2])
+}
+
+func shellWorkspaceRelativeDestination(destination string) (string, bool) {
+	if strings.Contains(destination, shellSubstitutionPlaceholder) {
+		return "", false
+	}
 	clean := filepath.Clean(destination)
 	if filepath.IsAbs(clean) || clean == "." || clean == ".." ||
 		strings.HasPrefix(clean, ".."+string(filepath.Separator)) ||
