@@ -29,6 +29,7 @@ import "strings"
 
 const (
 	shellClassRead        = "read"
+	shellClassGoverned    = "governed"
 	shellClassInstall     = "install"
 	shellClassUnknown     = "unknown"
 	shellClassNetwork     = "network"
@@ -39,10 +40,11 @@ const (
 // worst segment decides the whole command.
 var shellClassSeverity = map[string]int{
 	shellClassRead:        0,
-	shellClassInstall:     1,
-	shellClassUnknown:     2,
-	shellClassNetwork:     3,
-	shellClassDestructive: 4,
+	shellClassGoverned:    1,
+	shellClassInstall:     2,
+	shellClassUnknown:     3,
+	shellClassNetwork:     4,
+	shellClassDestructive: 5,
 }
 
 // shellSubstitutionPlaceholder stands in for a command substitution body in the
@@ -91,19 +93,42 @@ var shellNetworkVerbs = map[string]bool{
 // A verb absent here leaves the routine lane, which is why governed execution
 // (`compound work advance --execute`) still reaches the operator.
 var shellNestedReadVerbs = map[string]map[string][]string{
-	"compound": {
-		"version":    nil,
-		"orient":     nil,
-		"status":     nil,
-		"executors":  nil,
-		"route":      nil,
-		"decisions":  {"show", "list"},
-		"work":       {"list", "show"},
-		"capability": {"authority", "show", "list"},
-	},
 	"mcporter": {
 		"list": nil,
 	},
+}
+
+// compoundReadSubcommands and compoundGovernedSubcommands classify the
+// first-party control CLI without treating every `compound` invocation as
+// trusted. The outer monitor recognizes only these exact command shapes; each
+// governed verb still performs its own ActionIntent/PolicyDecision checks.
+// Anything absent from both maps remains unknown and hits the security floor.
+var compoundReadSubcommands = map[string][]string{
+	"version":      nil,
+	"orient":       nil,
+	"status":       nil,
+	"executors":    nil,
+	"route":        nil,
+	"coordination": nil,
+	"workbench":    nil,
+	"attention":    nil,
+	"decisions":    {"show", "list"},
+	"work":         {"list", "show"},
+	"capability":   {"authority", "show", "list"},
+	"land-lease":   {"status"},
+}
+
+var compoundGovernedSubcommands = map[string][]string{
+	"proof-check": nil,
+	"work": {
+		"create",
+		"claim",
+		"advance",
+		"close-plan",
+		"land-check",
+		"close",
+	},
+	"land-lease": {"acquire", "release"},
 }
 
 var gitReadSubcommands = map[string]bool{
@@ -172,6 +197,11 @@ func shellClassificationFor(classification ActionClassification, class string) A
 	switch class {
 	case shellClassRead:
 		classification.Operation = "local_command"
+		classification.MutationClass = "local_reversible"
+		classification.Reversibility = "easy"
+		classification.BlastRadius = "local"
+	case shellClassGoverned:
+		classification.Operation = "governed_command"
 		classification.MutationClass = "local_reversible"
 		classification.Reversibility = "easy"
 		classification.BlastRadius = "local"
@@ -622,6 +652,8 @@ func shellVerbClass(verb string, args []string) string {
 	switch verb {
 	case "":
 		return shellClassUnknown
+	case "compound":
+		return shellCompoundClass(args)
 	case "git":
 		return shellGitClass(args)
 	case "go":
@@ -665,6 +697,34 @@ func shellVerbClass(verb string, args []string) string {
 		return shellClassRead
 	}
 	return shellClassUnknown
+}
+
+func shellCompoundClass(args []string) string {
+	sub, rest := shellFirstOperand(args, nil)
+	if shellNestedCommandAllowed(compoundReadSubcommands, sub, rest) {
+		return shellClassRead
+	}
+	if shellNestedCommandAllowed(compoundGovernedSubcommands, sub, rest) {
+		return shellClassGoverned
+	}
+	return shellClassUnknown
+}
+
+func shellNestedCommandAllowed(commands map[string][]string, sub string, rest []string) bool {
+	allowed, ok := commands[sub]
+	if !ok {
+		return false
+	}
+	if allowed == nil {
+		return true
+	}
+	next, _ := shellFirstOperand(rest, nil)
+	for _, candidate := range allowed {
+		if next == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func shellNestedClass(subcommands map[string][]string, args []string) string {
@@ -726,6 +786,10 @@ func shellGitClass(args []string) string {
 		switch next {
 		case "list", "show":
 			return shellClassRead
+		case "add":
+			if sub == "worktree" {
+				return shellClassGoverned
+			}
 		case "remove", "drop", "clear", "prune":
 			return shellClassDestructive
 		}

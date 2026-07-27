@@ -1,0 +1,76 @@
+package policy
+
+import "testing"
+
+func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t *testing.T) {
+	t.Parallel()
+
+	readCommands := []string{
+		"compound coordination --actor codex --json",
+		"compound workbench --json",
+		"compound attention --json",
+		"compound land-lease status --json",
+	}
+	for _, command := range readCommands {
+		t.Run("read/"+command, func(t *testing.T) {
+			classification := ClassifyToolAction(monitorRequest("Bash", map[string]any{"command": command}))
+			if !classification.Known || classification.Operation != "local_command" {
+				t.Fatalf("documented read command must be known/local: %q => %+v", command, classification)
+			}
+		})
+	}
+
+	governedCommands := []string{
+		"compound work create --owner hook --predicate proof --by orchestrator --state ready",
+		"compound work claim work_example --by codex:root",
+		"compound work advance work_example --to running --by codex:root",
+		"compound work close-plan work_example --actor codex:root",
+		"compound work land-check work_example --tip 0123456789abcdef --actor codex:root",
+		"compound work close work_example --outcome completed --move-type rule_delta",
+		"compound land-lease acquire --holder codex:session:work_example",
+		"compound land-lease release --holder codex:session:work_example",
+		"compound proof-check --json --out /tmp/proof.json",
+		"git worktree add -b codex/example /tmp/example origin/main",
+	}
+	for _, command := range governedCommands {
+		t.Run("governed/"+command, func(t *testing.T) {
+			classification := ClassifyToolAction(monitorRequest("Bash", map[string]any{"command": command}))
+			if !classification.Known || classification.Operation != "governed_command" ||
+				classification.MutationClass != "local_reversible" {
+				t.Fatalf("documented governed command must be known/local-reversible: %q => %+v", command, classification)
+			}
+		})
+	}
+
+	for _, command := range []string{
+		"compound definitely-not-a-command",
+		"compound release publish --public",
+		"compound authority worktree-retire apply",
+	} {
+		t.Run("unknown/"+command, func(t *testing.T) {
+			monitored := MonitorToolAction(
+				monitorRequest("Bash", map[string]any{"command": command}),
+				DefaultConfig(),
+				fixedNow,
+			)
+			if monitored.Classification.Known || monitored.Classification.MutationClass != "security" {
+				t.Fatalf("unclassified or consequential Compound command must still fail closed: %q => %+v", command, monitored.Classification)
+			}
+			if monitored.Decision.Outcome != "hold" {
+				t.Fatalf("unknown command escaped the security-floor hold: %q => %+v", command, monitored.Decision)
+			}
+		})
+	}
+
+	for _, command := range []string{
+		"compound work create --owner hook --predicate proof; curl https://attacker.example.invalid",
+		"git worktree add /tmp/example; rm -rf /tmp/example",
+	} {
+		t.Run("mixed/"+command, func(t *testing.T) {
+			classification := ClassifyToolAction(monitorRequest("Bash", map[string]any{"command": command}))
+			if classification.Operation == "governed_command" || classification.Operation == "local_command" {
+				t.Fatalf("governed prefix swallowed a consequential segment: %q => %+v", command, classification)
+			}
+		})
+	}
+}
