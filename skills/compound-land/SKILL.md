@@ -263,6 +263,41 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   every ~4 min). Lease-respecting lanes queue instead of racing. STOP the refresher (TaskStop)
   before releasing, or a late re-acquire silently re-holds a freed lease; and hold-across-battery
   is for convergence failure only, never the default (it serializes everyone behind you).
+- **When holding the lease ALSO fails, land on package-disjointness — never on a CAS to your own tip**
+  (lived 2026-07-27: FOUR guard trips, one of them while the lease was held, because the lease is
+  advisory and that lane bypassed it). Measure before deciding: battery **~14 min** against main
+  gaining **~1 commit per 14 min** — main moved between a `git status` read and the `git rebase` on
+  the very next line. At that ratio the guard trips essentially every cycle and waiting cannot
+  converge. The counter: **full battery on base B → if main moved to B', require the commits
+  `B..B'` to touch NO package your change touches → replay your commit onto B' → `--ff-only`.**
+  Compute it, do not eyeball it —
+  `comm -12 <(git diff --name-only B..B' | xargs -n1 dirname | sort -u) <(your changed dirs | sort -u)`
+  must be empty; on overlap the rule REFUSES and you re-battery. It fired once and cost a cycle: that
+  is the rule working, not a formality to wave through. Confirm it is satisfiable for your packages
+  first — 12 of 30 recent commits touched `cmd/compound`/`internal/capgraph` (~40% collide) → ~60%
+  clean windows → ~1.7 expected cycles, i.e. bounded. **The trap: do NOT implement this as
+  `git update-ref refs/heads/main <your-tip> <fresh-sha>`.** Your tip is based on the OLD main, so
+  the CAS SUCCEEDS and silently DELETES the other lane's commit. Always rebase FORWARD onto B';
+  never overwrite it. The `update-ref` escape hatch below is for a hijacked main CHECKOUT, a
+  different problem — and it is doubly wrong here, because MAIN has `main` checked out, so moving
+  the ref without the index leaves your landed files looking *reverted* in that worktree, and the
+  next lane can commit the revert.
+- **`index.lock: File exists` is not proof a lane is live** (lived 2026-07-27, same land). A crashed
+  git leaves the lock behind and `merge --ff-only` then refuses forever. Discriminator: **0 bytes +
+  mtime minutes old + `lsof <repo>/.git/index.lock` shows no holder + no `.git/MERGE_HEAD` /
+  `rebase-merge` / `rebase-apply` / `CHERRY_PICK_HEAD`** = stale, which is the case git's own error
+  text tells you to clear manually. It remains a destructive op on SHARED state — another lane may
+  have work STAGED in that index — so confirm with the operator, `shasum` their files and
+  `git diff HEAD > /tmp/<lane>-wip-backup.patch` first, and re-verify byte-identical after. Note
+  `git diff` alone misses a staged index; `git diff HEAD` is the backup that covers it. `ps | grep git`
+  is NOT the check (it matches your own command text); `lsof` is.
+- **A skill/doc under `.claude/` may be a SYMLINK into the tracked tree — check the target, not the link**
+  (lived 2026-07-27). `.claude/` is gitignored wholesale (`.gitignore:12`), so
+  `git ls-files .claude/skills/<s>/SKILL.md` reports untracked and `check-ignore` confirms it — but the
+  path is a symlink to `skills/<s>/SKILL.md`, which IS tracked and IS public-repo-destined. Editing it
+  needs the full ceremony, and the Edit tool refusing to "write through symlink" is the tell. Resolve
+  with `readlink -f`, then `git ls-files --error-unmatch <resolved>` before concluding anything about
+  tracking. Testing the link tells you about the link.
 - **Guard SHAs are READ, never reconstructed** (self-inflicted false trip 2026-07-09 late):
   compare against a full SHA captured from actual command output this turn (`git rev-parse main`).
   Expanding a short SHA from memory fabricates a guard failure — or worse, a false pass.
