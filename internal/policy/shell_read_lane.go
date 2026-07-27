@@ -189,6 +189,12 @@ func classifyShellAction(classification ActionClassification, command string) Ac
 		return shellClassificationFor(classification, shellClassUnknown)
 	}
 	if len(segments) == 1 {
+		if shellExistingRemotePush(segments[0]) {
+			classification = shellClassificationFor(classification, shellClassNetwork)
+			classification.Operation = "git_push_existing_remote"
+			classification.Destination = "git-remote:existing"
+			return classification
+		}
 		if destination, ok := shellNoClobberWorkspaceCopyDestination(segments[0]); ok {
 			classification = shellClassificationFor(classification, shellClassGoverned)
 			classification.TargetKind = "path"
@@ -210,6 +216,37 @@ func classifyShellAction(classification ActionClassification, command string) Ac
 		}
 	}
 	return shellClassificationFor(classification, worst)
+}
+
+// shellExistingRemotePush recognizes only the narrow standing-grant shape:
+// the conventional existing "origin" remote with exactly one simple source
+// ref. An omitted ref can consume force/delete refspecs from repository config,
+// so even `git push origin` stays held. Force/delete/mirror/bulk/config-changing
+// flags, URL/path destinations, refspecs, alternate remotes, git global flags,
+// wrappers, and composed commands likewise stay in the generic network lane.
+func shellExistingRemotePush(segment shellSegment) bool {
+	if segment.writes || segment.obfuscated || len(segment.words) < 2 ||
+		shellVerbName(segment.words[0]) != "git" || segment.words[1] != "push" {
+		return false
+	}
+
+	args := segment.words[2:]
+	return len(args) == 2 && args[0] == "origin" && shellSimplePushSource(args[1])
+}
+
+func shellSimplePushSource(source string) bool {
+	if source == "" || strings.HasPrefix(source, "-") ||
+		strings.HasPrefix(source, "+") || strings.HasPrefix(source, ":") {
+		return false
+	}
+	for _, r := range source {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '/' || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func shellNoClobberWorkspaceCopyDestination(segment shellSegment) (string, bool) {

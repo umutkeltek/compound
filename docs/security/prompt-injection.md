@@ -126,6 +126,15 @@ operation, arguments, destination, source refs, tool schema and policy
 revision, expires within fifteen minutes, and cannot override a deny or
 security floor. Retrying does not change global permissions.
 
+The normal-push standing grant is intentionally narrower than the generic
+network-command lane. Only `git push origin <simple-source-ref>` classifies as
+`shell.git_push_existing_remote` with destination `git-remote:existing`.
+Omitted refspecs, alternate remotes, URL/path destinations, force/delete/mirror
+or bulk flags, explicit refspec mappings, Git global flags, wrappers, and
+composed commands remain generic network actions and hold. The capability still
+requires an imported standing grant; classification alone never authorizes it.
+The separate clean-`redact` publication gate remains mandatory.
+
 ## Supply-chain admission
 
 Compound's existing source-manifest/canon owner now recognizes:
