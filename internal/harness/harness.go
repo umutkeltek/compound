@@ -129,10 +129,19 @@ func DefaultRegistry() Registry {
 		},
 		"claude_zai": {
 			Name:                 "claude_zai",
-			InstructionMechanism: "isolated Claude profile settings + hooks + repo CLAUDE.md + linked global CLAUDE.md",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// Unlike the `_providers` lanes, this one is a FULL Claude profile with
+			// hooks genuinely installed: its settings register SessionStart,
+			// UserPromptSubmit, PreToolUse and PostToolUse. Stop and SessionEnd are
+			// NOT registered, so they stay false -- the previous entry claimed all
+			// six and over-claimed exactly those two.
+			//
+			// `compound harness capability-drift` cannot yet verify this lane (it
+			// publishes no launch profile to read), so these four flags rest on a
+			// direct reading of the profile settings rather than on the check.
 			Capabilities: Capabilities{
-				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
-				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
+				SessionStartContext: true, UserPromptContext: true,
+				PreToolUseBlock: true, PostToolUseEvent: true,
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{
@@ -145,11 +154,20 @@ func DefaultRegistry() Registry {
 		},
 		"claude_minimax": {
 			Name:                 "claude_minimax",
-			InstructionMechanism: "isolated Claude profile settings + hooks + repo CLAUDE.md + linked global CLAUDE.md",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// A lane declaration is a conservative FLOOR, not an aspiration. Every
+			// hook flag here was true while the lane's settings registered no hooks
+			// at all -- the "separate hook installation" limitation below describes
+			// a step that had never been performed, so the registry described the
+			// intended end state and routing believed it. Work went to an executor
+			// that could not report back, and the failure looked like silence.
+			//
+			// Skills and MCP are off because this lane's launcher disables them.
+			// Verify any change here with `compound harness capability-drift`: an
+			// over-claim fails, and once hooks really are installed the check
+			// reports a (non-fatal) under-claim, which is the signal to raise this.
 			Capabilities: Capabilities{
-				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
-				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
-				NativeSkills: true, MCP: true,
+				NativeSkills: false, MCP: false,
 			},
 			Limitations: []string{
 				"profile-local settings and history require separate hook installation",
@@ -162,10 +180,11 @@ func DefaultRegistry() Registry {
 		},
 		"claude_qwen": {
 			Name:                 "claude_qwen",
-			InstructionMechanism: "isolated Claude profile settings + hooks + repo CLAUDE.md + linked global CLAUDE.md",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// Hook flags dropped to the observed floor: this lane's settings register
+			// no hooks. Skills and MCP stay true -- its launcher does not disable
+			// them. See claude_minimax for why a floor beats an aspiration here.
 			Capabilities: Capabilities{
-				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
-				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{
@@ -179,10 +198,10 @@ func DefaultRegistry() Registry {
 		},
 		"claude_zai_full": {
 			Name:                 "claude_zai_full",
-			InstructionMechanism: "isolated Claude profile settings + hooks + repo CLAUDE.md + linked global CLAUDE.md",
+			InstructionMechanism: "isolated Claude profile settings + repo CLAUDE.md + linked global CLAUDE.md",
+			// Hook flags dropped to the observed floor: no hooks registered in this
+			// lane's settings. Skills and MCP stay true; its launcher keeps them.
 			Capabilities: Capabilities{
-				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
-				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{

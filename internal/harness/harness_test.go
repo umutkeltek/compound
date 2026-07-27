@@ -101,9 +101,19 @@ func TestClaudeZaiCapabilitiesAreExplicitAndKeepDistinctIdentity(t *testing.T) {
 	if !found || zai.Fallback || zai.Name != "claude_zai" {
 		t.Fatalf("claude_zai registry row = %+v found=%v, want explicit distinct non-fallback", zai, found)
 	}
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"} {
+	// These four are the events the profile's settings actually register. Stop and
+	// SessionEnd are NOT registered there, and this test used to require all six --
+	// asserting a capability the profile on disk contradicts. Claiming an event the
+	// harness never fires routes work to an executor that cannot report back, so
+	// the absent two are pinned absent rather than left to drift back in.
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
 		if !r.Supports("claude_zai", event) {
 			t.Errorf("claude_zai should support %s through its isolated Claude Code profile", event)
+		}
+	}
+	for _, event := range []string{"Stop", "SessionEnd"} {
+		if r.Supports("claude_zai", event) {
+			t.Errorf("claude_zai claims %s, but its profile settings do not register that hook", event)
 		}
 	}
 	if zai.InstructionMechanism == DefaultRegistry().Harnesses["claude_code"].InstructionMechanism {
@@ -338,13 +348,28 @@ func TestNewClaudeLaneHarnessesEnrolledWithExpectedLimitations(t *testing.T) {
 			if r.InjectionBudgetMS(tc.name) < 1500 {
 				t.Fatalf("Registry.InjectionBudgetMS(%q) = %d, want >= 1500", tc.name, r.InjectionBudgetMS(tc.name))
 			}
-			wantCaps := Capabilities{
-				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
-				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
-				NativeSkills: true, MCP: true,
+			// This assertion used to require every hook flag true for every lane,
+			// which is how the over-claim survived: it pinned the registry against
+			// itself rather than against the lane, so it passed while the lanes
+			// registered no hooks at all. A declaration is only meaningful when
+			// something outside it can disagree -- that is
+			// `compound harness capability-drift`, which reads the lane's real
+			// settings and launcher.
+			//
+			// What this test now pins is the invariant that matters: a lane whose
+			// hooks were never installed must NOT claim hook capabilities. If you
+			// install them, capability-drift reports a (non-fatal) under-claim --
+			// raise the declaration then, and only then.
+			if h.Capabilities.SessionStartContext || h.Capabilities.UserPromptContext ||
+				h.Capabilities.PreToolUseBlock || h.Capabilities.PostToolUseEvent ||
+				h.Capabilities.StopFeedback || h.Capabilities.SessionEndReceipt {
+				t.Fatalf(
+					"harness %q claims hook capabilities without installed hooks: %+v",
+					tc.name, h.Capabilities,
+				)
 			}
-			if h.Capabilities != wantCaps {
-				t.Fatalf("harness %q Capabilities = %+v, want %+v", tc.name, h.Capabilities, wantCaps)
+			if !hasString(h.Limitations, "profile-local settings and history require separate hook installation") {
+				t.Fatalf("harness %q must keep the un-performed hook-installation limitation", tc.name)
 			}
 			if !hasString(h.Limitations, tc.extraLimitation) {
 				t.Fatalf("harness %q Limitations = %v, missing %q", tc.name, h.Limitations, tc.extraLimitation)
