@@ -38,6 +38,20 @@ func TestInstalledHookRuntimeSupportIncludesCodexStop(t *testing.T) {
 	t.Fatal("Codex Stop is live but absent from hook runtime authority")
 }
 
+func TestInstalledHookRuntimeSupportIncludesCodexPostToolUse(t *testing.T) {
+	for _, support := range installedHookRuntimeSupport() {
+		if support.Harness != "codex" || support.Hook != "PostToolUse" {
+			continue
+		}
+		if !support.FixturePresent || support.FixtureRef != "fixtures/hooks/post-tool-use.codex.json" || !support.LiveAdapter ||
+			support.LiveCommand != "compound hook post-tool-use --live --harness codex" {
+			t.Fatalf("Codex PostToolUse runtime support incomplete: %+v", support)
+		}
+		return
+	}
+	t.Fatal("Codex PostToolUse is live but absent from hook runtime authority")
+}
+
 func TestHookLiveCodexStopCoveredAskPersistsCanonicalResume(t *testing.T) {
 	homePath := t.TempDir()
 	userHome := t.TempDir()
