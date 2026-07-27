@@ -338,6 +338,16 @@ type proofResourceCompletionPending struct {
 	LifecycleEvent  Event                   `json:"lifecycle_event"`
 }
 
+type proofResourceCompletionExpectation struct {
+	InputDigest     string
+	ResultStatus    string
+	ReportStatus    string
+	OwnedReport     bool
+	VerificationRef string
+	TerminalStatus  string
+	TerminalReason  string
+}
+
 var proofResourceWriteEventRecord = func(s *Store, stage, id string, value any) error {
 	return s.writeEventJSON(id, value)
 }
@@ -1249,7 +1259,23 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 		if pending.WorkID != workID || pending.ReservationID != reservation.ID || pending.InputDigest != inputDigest {
 			return ProofResourceCompleteResult{}, fmt.Errorf("proof completion pending transaction conflicts with requested input")
 		}
-		ra, pending, err = s.proofRunAttemptForCompletionRetry(&w, reservation, pending, pendingPath, workID, in.Actor, now)
+		ra, pending, err = s.proofRunAttemptForCompletionRetry(
+			&w,
+			reservation,
+			pending,
+			pendingPath,
+			in,
+			proofResourceCompletionExpectation{
+				InputDigest:     inputDigest,
+				ResultStatus:    status,
+				ReportStatus:    reportStatus,
+				OwnedReport:     ownedReport,
+				VerificationRef: verificationRef,
+				TerminalStatus:  terminalStatus,
+				TerminalReason:  completionReason(status, in.FailureReason),
+			},
+			now,
+		)
 		if err != nil {
 			return ProofResourceCompleteResult{}, err
 		}
@@ -1523,14 +1549,233 @@ func (s *Store) clearProofResourceCompletionPending(path string, expected proofR
 	return syncReceiptedActionDir(filepath.Dir(path))
 }
 
+func (s *Store) validateAndNormalizeProofResourceCompletionPending(
+	w envelope.WorkEnvelope,
+	reservation ProofResourceReservation,
+	pending proofResourceCompletionPending,
+	ra runattempt.RunAttempt,
+	in ProofResourceCompleteInput,
+	expect proofResourceCompletionExpectation,
+) (proofResourceCompletionPending, bool, error) {
+	fail := func(reason string) (proofResourceCompletionPending, bool, error) {
+		return pending, false, fmt.Errorf("proof completion pending identity is corrupt: %s", reason)
+	}
+	workID := w.ID
+	if pending.SchemaVersion != proofResourceCompletionPendingSchemaVersion ||
+		pending.WorkID != workID ||
+		pending.ReservationID != reservation.ID ||
+		pending.InputDigest != expect.InputDigest {
+		return fail("work, reservation, input, or schema binding changed")
+	}
+	if reservation.WorkID != workID ||
+		reservation.Actor != in.Actor ||
+		reservation.Status != ProofResourceAcquired {
+		return fail("current reservation is not the acquired same-work actor binding")
+	}
+	if err := pending.Action.Validate(); err != nil {
+		return fail("completion ActionIntent is invalid: " + err.Error())
+	}
+	if pending.Action.IDs.WorkID != workID ||
+		pending.Action.IDs.ContextPackID != w.IDs.ContextPackID ||
+		pending.Action.Actor != in.Actor ||
+		pending.Action.Capability != "proof.resource" ||
+		pending.Action.Action != "complete_full_proof_resource" ||
+		pending.Action.Target.Kind != "work" ||
+		pending.Action.Target.ID != workID ||
+		pending.Action.Target.Path != s.workPath(workID) ||
+		pending.Action.MutationClass != "local_reversible" ||
+		pending.Action.Reversibility != "easy" ||
+		pending.Action.BlastRadius != "local" {
+		return fail("completion ActionIntent does not have the expected work, actor, target, or mutation shape")
+	}
+	if err := pending.Decision.Validate(); err != nil {
+		return fail("completion PolicyDecision is invalid: " + err.Error())
+	}
+	if pending.Decision.IDs.WorkID != workID ||
+		pending.Decision.IDs.ContextPackID != w.IDs.ContextPackID ||
+		pending.Decision.ActionIntentID != pending.Action.ID ||
+		!policy.Allowed(pending.Decision) {
+		return fail("completion PolicyDecision is not the allowing decision for the exact ActionIntent")
+	}
+	if ra.WorkID != workID ||
+		ra.Actor != in.Actor ||
+		ra.Harness != proofResourceHarness ||
+		ra.Origin != runattempt.OriginHarnessExecution ||
+		(ra.ActionIntentID != reservation.ActionIntentID && ra.ActionIntentID != pending.Action.ID) ||
+		ra.Workspace != reservation.Workspace ||
+		ra.Command != reservation.Command {
+		return fail("pending RunAttempt is not the reserved same-work execution")
+	}
+
+	expectedResultID := idFor(
+		"pfrs_",
+		workID,
+		reservation.ID,
+		in.ReportArtifactRef,
+		in.FailureReason,
+	)
+	retry := ra.ID != reservation.RunAttemptID
+	if retry {
+		expectedResultID = idFor(
+			"pfrs_",
+			workID,
+			reservation.ID,
+			in.ReportArtifactRef,
+			in.FailureReason,
+			ra.ID,
+		)
+		if ra.PredecessorID == "" {
+			return fail("retry RunAttempt has no predecessor")
+		}
+	}
+	expectedVerificationRef := expect.VerificationRef
+	if retry && expectedVerificationRef != "" {
+		expectedVerificationRef = "proof-check:" + expectedResultID
+	}
+	expectedCompletionID := idFor("pfrc_", workID, reservation.ID, expectedResultID)
+	if pending.Result.SchemaVersion != ProofResourceResultSchemaVersion ||
+		pending.Result.ID != expectedResultID ||
+		pending.Result.Kind != "work.proof_resource.result" ||
+		pending.Result.WorkID != workID ||
+		pending.Result.Actor != in.Actor ||
+		pending.Result.Resource != ProofResourceName ||
+		pending.Result.ReservationID != reservation.ID ||
+		pending.Result.RunAttemptID != ra.ID ||
+		pending.Result.ReportArtifactRef != in.ReportArtifactRef ||
+		pending.Result.ReportStatus != expect.ReportStatus ||
+		pending.Result.OwnedReport != expect.OwnedReport ||
+		pending.Result.ProducerExitKnown != in.ProducerExitKnown ||
+		pending.Result.ProducerExitCode != in.ProducerExitCode ||
+		pending.Result.FailureReason != in.FailureReason ||
+		pending.Result.Status != expect.ResultStatus ||
+		pending.Result.CompletionID != expectedCompletionID ||
+		pending.Result.ActionIntentID != pending.Action.ID ||
+		pending.Result.PolicyDecisionID != pending.Decision.ID {
+		return fail("ProofResourceResult immutable fields or cross-object references changed")
+	}
+	if pending.TerminalStatus != expect.TerminalStatus ||
+		pending.TerminalReason != expect.TerminalReason ||
+		pending.VerificationRef != expectedVerificationRef ||
+		(pending.Result.Status == ProofResourceVerified) != (pending.VerificationRef != "") ||
+		(pending.TerminalStatus == runattempt.StatusSucceeded) != (pending.VerificationRef != "") {
+		return fail("terminal status, reason, result status, or verification reference is inconsistent")
+	}
+	if pending.Completion.SchemaVersion != ProofResourceCompletionSchemaVersion ||
+		pending.Completion.ID != expectedCompletionID ||
+		pending.Completion.Kind != "work.proof_resource.completion" ||
+		pending.Completion.WorkID != workID ||
+		pending.Completion.Actor != in.Actor ||
+		pending.Completion.ReservationID != reservation.ID ||
+		pending.Completion.ResultID != pending.Result.ID ||
+		pending.Completion.RunAttemptID != ra.ID ||
+		pending.Completion.RunAttemptStatus != pending.TerminalStatus ||
+		pending.Completion.VerificationRef != pending.VerificationRef ||
+		pending.Completion.ActionIntentID != pending.Action.ID ||
+		pending.Completion.PolicyDecisionID != pending.Decision.ID {
+		return fail("ProofResourceCompletion immutable fields or cross-object references changed")
+	}
+	if pending.CreatedAt == "" ||
+		pending.Result.CreatedAt != pending.CreatedAt ||
+		pending.Completion.CreatedAt != pending.CreatedAt {
+		return fail("pending, result, and completion creation identity changed")
+	}
+
+	expectedProofRefs := []string{reservation.ID, pending.Result.ID, pending.Completion.ID}
+	if in.ReportArtifactRef != "" {
+		expectedProofRefs = append(expectedProofRefs, in.ReportArtifactRef)
+	}
+	if pending.VerificationRef != "" {
+		expectedProofRefs = append(expectedProofRefs, pending.VerificationRef)
+	}
+	if !reflect.DeepEqual(pending.ProofRefs, expectedProofRefs) {
+		return fail("proof references changed")
+	}
+	expectedNote := "proof resource finalizer committed; verification publishes after terminal RunAttempt"
+	expectedAttached := append(
+		[]string{
+			pending.Action.ID,
+			pending.Decision.ID,
+			reservation.ID,
+			pending.Result.ID,
+			pending.Completion.ID,
+			ra.ID,
+		},
+		expectedProofRefs[3:]...,
+	)
+	if retry {
+		expectedNote = "proof resource finalizer retry committed; verification publishes after terminal RunAttempt"
+		expectedAttached = append(
+			[]string{
+				pending.Action.ID,
+				pending.Decision.ID,
+				reservation.ID,
+				pending.Result.ID,
+				pending.Completion.ID,
+				ra.PredecessorID,
+				ra.ID,
+			},
+			expectedProofRefs[3:]...,
+		)
+	}
+	if pending.LifecycleEvent.TS == "" ||
+		pending.LifecycleEvent.WorkID != workID ||
+		pending.LifecycleEvent.From != w.State ||
+		pending.LifecycleEvent.To != w.State ||
+		pending.LifecycleEvent.By != in.Actor ||
+		pending.LifecycleEvent.Note != expectedNote ||
+		!reflect.DeepEqual(pending.LifecycleEvent.Attached, expectedAttached) {
+		return fail("lifecycle event identity or attachments changed")
+	}
+
+	exactResultProjection := pending.Result.RunAttemptStatus == pending.TerminalStatus &&
+		pending.Result.VerificationRef == pending.VerificationRef
+	legacyResultProjection := pending.Result.RunAttemptStatus == runattempt.StatusRunning &&
+		pending.Result.VerificationRef == ""
+	switch {
+	case exactResultProjection:
+		return pending, false, nil
+	case legacyResultProjection:
+		normalized := pending
+		normalized.Result.RunAttemptStatus = normalized.TerminalStatus
+		normalized.Result.VerificationRef = normalized.VerificationRef
+		return normalized, true, nil
+	default:
+		return fail("ProofResourceResult terminal projection is neither exact nor the known v0.1 running/empty shape")
+	}
+}
+
 func (s *Store) proofRunAttemptForCompletionRetry(
 	w *envelope.WorkEnvelope,
 	reservation ProofResourceReservation,
 	pending proofResourceCompletionPending,
-	pendingPath, workID, actor string,
+	pendingPath string,
+	in ProofResourceCompleteInput,
+	expect proofResourceCompletionExpectation,
 	now time.Time,
 ) (runattempt.RunAttempt, proofResourceCompletionPending, error) {
-	var err error
+	workID := w.ID
+	actor := in.Actor
+	ra, err := s.runAttempts().Get(pending.Result.RunAttemptID)
+	if err != nil {
+		return runattempt.RunAttempt{}, pending, err
+	}
+	normalizedPending, migrated, err := s.validateAndNormalizeProofResourceCompletionPending(
+		*w,
+		reservation,
+		pending,
+		ra,
+		in,
+		expect,
+	)
+	if err != nil {
+		return runattempt.RunAttempt{}, pending, err
+	}
+	if migrated {
+		if err := s.writeProofResourceCompletionPending(pendingPath, normalizedPending); err != nil {
+			return runattempt.RunAttempt{}, pending, fmt.Errorf("normalize legacy proof completion retry journal: %w", err)
+		}
+		pending = normalizedPending
+	}
 	pending, err = s.adoptProofCompletionRetryDescendant(
 		w,
 		reservation,
@@ -1543,7 +1788,7 @@ func (s *Store) proofRunAttemptForCompletionRetry(
 	if err != nil {
 		return runattempt.RunAttempt{}, pending, err
 	}
-	ra, err := s.runAttempts().Get(pending.Result.RunAttemptID)
+	ra, err = s.runAttempts().Get(pending.Result.RunAttemptID)
 	if err != nil {
 		return runattempt.RunAttempt{}, pending, err
 	}
@@ -1561,15 +1806,6 @@ func (s *Store) proofRunAttemptForCompletionRetry(
 		pending.Decision.ActionIntentID != pending.Action.ID ||
 		!policy.Allowed(pending.Decision) {
 		return runattempt.RunAttempt{}, pending, fmt.Errorf("proof completion retry is not bound to the reserved same-work RunAttempt and allowing decision")
-	}
-	normalizedPending := pending
-	normalizedPending.Result.RunAttemptStatus = normalizedPending.TerminalStatus
-	normalizedPending.Result.VerificationRef = normalizedPending.VerificationRef
-	if !reflect.DeepEqual(normalizedPending, pending) {
-		if err := s.writeProofResourceCompletionPending(pendingPath, normalizedPending); err != nil {
-			return runattempt.RunAttempt{}, pending, fmt.Errorf("normalize legacy proof completion retry journal: %w", err)
-		}
-		pending = normalizedPending
 	}
 	if ra.ID != reservation.RunAttemptID {
 		if err := s.persistProofCompletionRetryReachability(w, pending, ra, now); err != nil {

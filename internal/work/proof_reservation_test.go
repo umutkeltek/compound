@@ -1857,6 +1857,165 @@ func TestProofResourceCompletionRetryNormalizesLegacyPendingResultProjection(t *
 	}
 }
 
+func TestProofResourceCompletionRetryRejectsForeignPendingBeforeDescendantAdoption(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "reject foreign pending before retry adoption", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       time.Minute,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(validOwnedProofReportJSON("ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     acquired.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}
+	originalWriteEvent := proofResourceWriteEventRecord
+	proofResourceWriteEventRecord = func(store *Store, stage, id string, value any) error {
+		if stage == "result" {
+			return errors.New("injected initial result persistence fault")
+		}
+		return originalWriteEvent(store, stage, id, value)
+	}
+	_, firstErr := s.CompleteProofResource(w.ID, input, fixedNow.Add(3*time.Second))
+	proofResourceWriteEventRecord = originalWriteEvent
+	if firstErr == nil {
+		t.Fatal("initial completion unexpectedly crossed result persistence fault")
+	}
+
+	pending, present, pendingPath, err := s.readProofResourceCompletionPending(acquired.Reservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !present {
+		t.Fatal("initial fault did not retain pending completion")
+	}
+	currentWork, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descendant, err := s.prepareProofRunAttempt(currentWork, pending.Action.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		Workspace: acquired.Reservation.Workspace,
+		Command:   acquired.Reservation.Command,
+	}, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descendant.PredecessorID != pending.Result.RunAttemptID {
+		t.Fatalf("retry descendant predecessor = %q, want %q", descendant.PredecessorID, pending.Result.RunAttemptID)
+	}
+	pending.Action.IDs.WorkID = "work_foreign"
+	if err := s.writeProofResourceCompletionPending(pendingPath, pending); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.CompleteProofResource(w.ID, input, fixedNow.Add(5*time.Second)); err == nil {
+		t.Fatal("foreign pending completion unexpectedly reached descendant adoption")
+	}
+	after, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("foreign pending completion mutated its journal before rejection")
+	}
+	afterDescendant, err := s.runAttempts().Get(descendant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterDescendant.Status != runattempt.StatusPending {
+		t.Fatalf("foreign pending completion adopted/terminalized descendant as %q", afterDescendant.Status)
+	}
+}
+
+func TestProofResourceCompletionRetryRejectsNonLegacyResultProjectionByteIdentical(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "reject nonlegacy pending result projection", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       time.Minute,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(validOwnedProofReportJSON("ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     acquired.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}
+	originalWriteEvent := proofResourceWriteEventRecord
+	proofResourceWriteEventRecord = func(store *Store, stage, id string, value any) error {
+		if stage == "completion" {
+			return errors.New("injected post-terminal completion persistence fault")
+		}
+		return originalWriteEvent(store, stage, id, value)
+	}
+	_, firstErr := s.CompleteProofResource(w.ID, input, fixedNow.Add(3*time.Second))
+	proofResourceWriteEventRecord = originalWriteEvent
+	if firstErr == nil {
+		t.Fatal("completion unexpectedly crossed post-terminal persistence fault")
+	}
+
+	pending, present, pendingPath, err := s.readProofResourceCompletionPending(acquired.Reservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !present {
+		t.Fatal("completion fault did not retain pending journal")
+	}
+	pending.Result.RunAttemptStatus = runattempt.StatusFailed
+	pending.Result.VerificationRef = "proof-check:foreign"
+	if err := s.writeProofResourceCompletionPending(pendingPath, pending); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.CompleteProofResource(w.ID, input, fixedNow.Add(4*time.Second)); err == nil {
+		t.Fatal("nonlegacy pending result mismatch unexpectedly normalized")
+	}
+	after, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("nonlegacy pending result mismatch mutated its journal before rejection")
+	}
+}
+
 func TestProofResourceCompletionFaultsAreAtomicAndRetryable(t *testing.T) {
 	tests := []struct {
 		name          string
