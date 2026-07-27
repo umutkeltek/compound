@@ -1,6 +1,9 @@
 package policy
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // The routine-read lane for shell commands.
 //
@@ -185,6 +188,14 @@ func classifyShellAction(classification ActionClassification, command string) Ac
 	if !ok || len(segments) == 0 {
 		return shellClassificationFor(classification, shellClassUnknown)
 	}
+	if len(segments) == 1 {
+		if destination, ok := shellNoClobberWorkspaceCopyDestination(segments[0]); ok {
+			classification = shellClassificationFor(classification, shellClassGoverned)
+			classification.TargetKind = "path"
+			classification.Destination = destination
+			return classification
+		}
+	}
 	worst := shellClassRead
 	for _, segment := range segments {
 		class := shellSegmentClass(segment)
@@ -193,6 +204,52 @@ func classifyShellAction(classification ActionClassification, command string) Ac
 		}
 	}
 	return shellClassificationFor(classification, worst)
+}
+
+func shellNoClobberWorkspaceCopyDestination(segment shellSegment) (string, bool) {
+	if segment.obfuscated || segment.writes || len(segment.words) < 3 ||
+		shellVerbName(segment.words[0]) != "cp" {
+		return "", false
+	}
+	recursive, clone, noClobber := false, false, false
+	operands := make([]string, 0, len(segment.words)-1)
+	flagsDone := false
+	for _, word := range segment.words[1:] {
+		if !flagsDone && word == "--" {
+			flagsDone = true
+			continue
+		}
+		if !flagsDone && strings.HasPrefix(word, "-") {
+			switch word {
+			case "-R", "-r":
+				recursive = true
+			case "-c":
+				clone = true
+			case "-n":
+				noClobber = true
+			case "-p":
+			default:
+				return "", false
+			}
+			continue
+		}
+		flagsDone = true
+		if strings.Contains(word, shellSubstitutionPlaceholder) {
+			return "", false
+		}
+		operands = append(operands, word)
+	}
+	if !recursive || !clone || !noClobber || len(operands) < 2 {
+		return "", false
+	}
+	destination := operands[len(operands)-1]
+	clean := filepath.Clean(destination)
+	if filepath.IsAbs(clean) || clean == "." || clean == ".." ||
+		strings.HasPrefix(clean, ".."+string(filepath.Separator)) ||
+		strings.HasPrefix(destination, "~") {
+		return "", false
+	}
+	return clean, true
 }
 
 func shellClassificationFor(classification ActionClassification, class string) ActionClassification {

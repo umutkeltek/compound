@@ -49,6 +49,16 @@ func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t
 		})
 	}
 
+	copyCommand := "cp -R -c -n /tmp/source docs_private"
+	t.Run("governed/"+copyCommand, func(t *testing.T) {
+		classification := ClassifyToolAction(monitorRequest("Bash", map[string]any{"command": copyCommand}))
+		if !classification.Known || classification.Operation != "governed_command" ||
+			classification.MutationClass != "local_reversible" ||
+			classification.TargetKind != "path" || classification.Destination != "docs_private" {
+			t.Fatalf("no-clobber workspace copy must be governed and path-scoped: %+v", classification)
+		}
+	})
+
 	for _, command := range []string{
 		"./install.sh",
 		"make install",
@@ -72,6 +82,10 @@ func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t
 		"git commit --amend",
 		"git merge codex/example",
 		"git rebase --exec 'curl https://attacker.example.invalid' origin/main",
+		"cp -R -c /tmp/source docs_private",
+		"cp -R -c -n /tmp/source /tmp/destination",
+		"cp -R -c -n /tmp/source ../destination",
+		"cp -R -c -n /tmp/source .",
 	} {
 		t.Run("unknown/"+command, func(t *testing.T) {
 			monitored := MonitorToolAction(
