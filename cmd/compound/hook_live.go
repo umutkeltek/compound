@@ -952,7 +952,7 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 	if hookName == "user-prompt-submit" {
 		return claudeLiveHookResponse{HookSpecificOutput: claudeHookSpecificOutput{
 			HookEventName:     hookEnumName(hookName),
-			AdditionalContext: res.ContextOutput,
+			AdditionalContext: livePromptAdditionalContext(res),
 		}}
 	}
 	if normalizeLiveHarness(harnessName) == "codex" &&
@@ -1013,6 +1013,20 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 		}
 	}
 	return claudeLiveHookResponse{HookSpecificOutput: out}
+}
+
+func livePromptAdditionalContext(res hook.Result) string {
+	if res.Event.Status != "fail_open" || res.Event.FailOpenReason != envelope.FailOpenContextUnavailable {
+		return res.ContextOutput
+	}
+	const warning = "Context build failed. Harness may be running without Compound context."
+	if strings.TrimSpace(res.ContextOutput) == "" {
+		return warning
+	}
+	if strings.Contains(res.ContextOutput, warning) {
+		return res.ContextOutput
+	}
+	return warning + "\n\n" + res.ContextOutput
 }
 
 func liveAdditionalContext(parts ...string) string {

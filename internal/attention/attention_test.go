@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/reviewartifact"
 	"compound/internal/work"
 )
@@ -93,6 +94,61 @@ func TestExecutorProjectionKeepsIndependentDeadExecutorBurden(t *testing.T) {
 	}
 	if report.Counts.NeedsYou != 2 || report.Counts.NeedsYouGroups != 2 {
 		t.Fatalf("independent workbench and executor burdens must both remain visible: %+v", report.Counts)
+	}
+}
+
+func TestContextUnavailableHookEventNeedsOperatorAttention(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	report := Build(Inputs{Executors: &work.ExecutorsProjection{
+		GeneratedAt: now.Format(time.RFC3339),
+		Executors: []work.ExecutorRow{
+			{
+				ID:    "codex",
+				Label: "Codex",
+				LastHookEvent: &work.ExecutorHookEventRef{
+					CreatedAt:      now.Add(-time.Minute).Format(time.RFC3339),
+					Hook:           "UserPromptSubmit",
+					Status:         "fail_open",
+					FailOpenReason: envelope.FailOpenContextUnavailable,
+				},
+			},
+			{
+				ID:    "claude",
+				Label: "Claude",
+				LastHookEvent: &work.ExecutorHookEventRef{
+					CreatedAt:      now.Add(-time.Minute).Format(time.RFC3339),
+					Hook:           "SessionEnd",
+					Status:         "fail_open",
+					FailOpenReason: envelope.FailOpenCapabilityAbsent,
+				},
+			},
+			{
+				ID:    "legacy",
+				Label: "Legacy",
+				LastHookEvent: &work.ExecutorHookEventRef{
+					CreatedAt: now.Add(-time.Minute).Format(time.RFC3339),
+					Hook:      "UserPromptSubmit",
+					Status:    "fail_open",
+				},
+			},
+		},
+	}}, now)
+
+	if len(report.Groups) != 1 {
+		t.Fatalf("only exact context_unavailable should surface, got %+v", report.Groups)
+	}
+	group := groupByKey(t, report, "executor-context:codex")
+	if group.Band != BandNeedsYou || group.Source != SourceExecutor || group.Kind != KindJobHealth {
+		t.Fatalf("context failure group shape = %+v", group)
+	}
+	const warning = "Context build failed. Harness may be running without Compound context."
+	if group.OperatorSummary != warning || group.OperatorUnlock == "" || group.TerminalReason != warning {
+		t.Fatalf("context failure copy is not operator-actionable: %+v", group)
+	}
+	if report.Counts.NeedsYou != 1 || report.Counts.NeedsYouGroups != 1 || report.Counts.BlockedOnYou != 1 {
+		t.Fatalf("context failure counts = %+v, want one needs-you group", report.Counts)
 	}
 }
 

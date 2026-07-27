@@ -116,6 +116,7 @@ var compoundReadSubcommands = map[string][]string{
 	"work":         {"list", "show"},
 	"capability":   {"authority", "show", "list"},
 	"land-lease":   {"status"},
+	"authority":    {"git"},
 }
 
 var compoundGovernedSubcommands = map[string][]string{
@@ -129,6 +130,7 @@ var compoundGovernedSubcommands = map[string][]string{
 		"close",
 	},
 	"land-lease": {"acquire", "release"},
+	"authority":  {"dirty-plan", "dirty-review"},
 }
 
 var gitReadSubcommands = map[string]bool{
@@ -665,6 +667,14 @@ func shellVerbClass(verb string, args []string) string {
 			return shellClassRead
 		}
 		return shellClassUnknown
+	case "install.sh":
+		return shellClassInstall
+	case "make":
+		sub, _ := shellFirstOperand(args, nil)
+		if sub == "install" {
+			return shellClassInstall
+		}
+		return shellClassUnknown
 	case "sed":
 		if shellSedIsReadOnly(args) {
 			return shellClassRead
@@ -772,6 +782,23 @@ func shellGitClass(args []string) string {
 		return shellClassDestructive
 	case sub == "branch" && !shellFlagAbsent(rest, "-d", "-D", "--delete"):
 		return shellClassDestructive
+	case sub == "add":
+		return shellClassGoverned
+	case sub == "commit":
+		if !shellFlagAbsent(rest, "--amend") {
+			return shellClassUnknown
+		}
+		return shellClassGoverned
+	case sub == "rebase":
+		if !shellFlagAbsent(rest, "-x", "--exec") {
+			return shellClassUnknown
+		}
+		return shellClassGoverned
+	case sub == "merge":
+		if !shellFlagAbsent(rest, "--ff-only") {
+			return shellClassGoverned
+		}
+		return shellClassUnknown
 	case gitNetworkSubcommands[sub]:
 		return shellClassNetwork
 	case gitReadSubcommands[sub]:

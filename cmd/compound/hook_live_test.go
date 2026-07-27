@@ -450,7 +450,7 @@ func TestHookLiveCodexUserPromptSubmitEmitsNativeContext(t *testing.T) {
 	}
 }
 
-func TestHookLiveCodexUserPromptSubmitBreakerReturnsNativeEmptyContext(t *testing.T) {
+func TestHookLiveCodexUserPromptSubmitBreakerReturnsNativeContextWarning(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -469,8 +469,9 @@ func TestHookLiveCodexUserPromptSubmitBreakerReturnsNativeEmptyContext(t *testin
 	if code != 0 {
 		t.Fatalf("breaker exit=%d, want fail-open 0\n%s", code, out)
 	}
-	if context := parseNativePromptContext(t, out, "UserPromptSubmit"); context != "" {
-		t.Fatalf("breaker context=%q, want empty", context)
+	const warning = "Context build failed. Harness may be running without Compound context."
+	if context := parseNativePromptContext(t, out, "UserPromptSubmit"); context != warning {
+		t.Fatalf("breaker context=%q, want %q", context, warning)
 	}
 	store, err := work.Open(homePath)
 	if err != nil {
@@ -1707,6 +1708,38 @@ func TestLivePreToolResponseDoesNotDropCoordinationContext(t *testing.T) {
 		if response.HookSpecificOutput.AdditionalContext != card {
 			t.Fatalf("%s pre-tool context = %q", harnessName, response.HookSpecificOutput.AdditionalContext)
 		}
+	}
+}
+
+func TestLivePromptResponseWarnsWhenCompoundContextIsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	const warning = "Context build failed. Harness may be running without Compound context."
+	for _, harnessName := range []string{"codex", "claude-code"} {
+		t.Run(harnessName, func(t *testing.T) {
+			result := hook.Result{Event: envelope.HookEvent{
+				Status:         "fail_open",
+				FailOpenReason: envelope.FailOpenContextUnavailable,
+			}}
+			response, ok := liveHookResponse(harnessName, "user-prompt-submit", result, nil).(claudeLiveHookResponse)
+			if !ok {
+				t.Fatalf("response type = %T", liveHookResponse(harnessName, "user-prompt-submit", result, nil))
+			}
+			if !strings.Contains(response.HookSpecificOutput.AdditionalContext, warning) {
+				t.Fatalf("context-unavailable response omitted operator/model warning: %q",
+					response.HookSpecificOutput.AdditionalContext)
+			}
+		})
+	}
+
+	benign := hook.Result{Event: envelope.HookEvent{
+		Status:         "fail_open",
+		FailOpenReason: envelope.FailOpenCapabilityAbsent,
+	}}
+	response := liveHookResponse("codex", "user-prompt-submit", benign, nil).(claudeLiveHookResponse)
+	if strings.Contains(response.HookSpecificOutput.AdditionalContext, warning) {
+		t.Fatalf("capability absence was mislabeled as context failure: %q",
+			response.HookSpecificOutput.AdditionalContext)
 	}
 }
 

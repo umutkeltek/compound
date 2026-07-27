@@ -64,9 +64,10 @@ func TestFailOpenDistinguishesContextFailureFromAbsentCapability(t *testing.T) {
 	if st != "fail_open" {
 		t.Fatalf("precondition: unsupported hook must fail open, got %q", st)
 	}
-	absent := newEvent("SessionEnd", fxA, st, "h", nil, now)
-	if absent.FailOpenReason == envelope.FailOpenContextUnavailable {
-		t.Errorf("an absent native capability must NOT be reported as a context failure: %q", absent.FailOpenReason)
+	absent := newCapabilityEvent("SessionEnd", fxA, fxA.Harness, deps, "h", nil, now)
+	if absent.FailOpenReason != envelope.FailOpenCapabilityAbsent {
+		t.Errorf("an absent native capability must state its exact reason: got %q, want %q",
+			absent.FailOpenReason, envelope.FailOpenCapabilityAbsent)
 	}
 
 	if breaker.Event.FailOpenReason == absent.FailOpenReason {

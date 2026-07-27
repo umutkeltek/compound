@@ -325,6 +325,9 @@ func groupsFromExecutors(report work.ExecutorsProjection, now time.Time) []Group
 		out = append(out, *group)
 	}
 	for _, row := range report.Executors {
+		if group := executorContextUnavailableGroup(row, freshness); group != nil {
+			out = append(out, *group)
+		}
 		count, itemIDs := executorOwnedBurden(row)
 		if count <= 0 {
 			continue
@@ -355,6 +358,31 @@ func groupsFromExecutors(report work.ExecutorsProjection, now time.Time) []Group
 		})
 	}
 	return out
+}
+
+func executorContextUnavailableGroup(row work.ExecutorRow, freshness Freshness) *Group {
+	event := row.LastHookEvent
+	if event == nil || event.Status != "fail_open" || event.FailOpenReason != envelope.FailOpenContextUnavailable {
+		return nil
+	}
+	id := firstNonEmpty(row.ID, row.Label, "unknown")
+	const warning = "Context build failed. Harness may be running without Compound context."
+	return &Group{
+		Key:             "executor-context:" + id,
+		Area:            "job-health",
+		Band:            BandNeedsYou,
+		Source:          SourceExecutor,
+		Kind:            KindJobHealth,
+		Count:           1,
+		OperatorSummary: warning,
+		OperatorUnlock:  "Inspect or rebuild Compound context before continuing this harness.",
+		OldestCreatedAt: firstNonEmpty(event.CreatedAt, freshness.GeneratedAt),
+		TerminalReason:  warning,
+		ItemIDs: compactStrings([]string{
+			"executor-context:" + id + ":" + event.Hook + ":" + event.CreatedAt,
+		}),
+		Freshness: freshness,
+	}
 }
 
 // groupsFromActivity builds AT MOST ONE watching-band group per day from the operator's Tier-0
