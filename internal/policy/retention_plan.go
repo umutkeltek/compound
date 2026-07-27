@@ -10,6 +10,7 @@ package policy
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // ReclaimTarget is what a consumer needs, in its own terms.
@@ -48,7 +49,11 @@ type ReclaimStep struct {
 	ClassID string `json:"class_id"`
 	Path    string `json:"path"`
 	Bytes   int64  `json:"bytes"`
+	// Command is a safely quoted compatibility/display rendering.
 	Command string `json:"command"`
+	// CommandArgv is the canonical executable form. Executors must use argv
+	// directly rather than reparsing Command through a shell.
+	CommandArgv []string `json:"command_argv,omitempty"`
 	// CumulativeBytes is the running total after this step, so an executor can stop as soon as
 	// the target is met rather than reclaiming everything available.
 	CumulativeBytes int64 `json:"cumulative_bytes"`
@@ -97,10 +102,14 @@ func PlanReclaim(scan RetentionScanReport, target ReclaimTarget) ReclaimPlan {
 			continue
 		}
 		step := ReclaimStep{
-			ClassID: item.ClassID,
-			Path:    item.Path,
-			Bytes:   item.Bytes,
-			Command: class.ReclaimCommand,
+			ClassID:     item.ClassID,
+			Path:        item.Path,
+			Bytes:       item.Bytes,
+			Command:     class.ReclaimCommand,
+			CommandArgv: renderReclaimCommandArgv(class.ReclaimCommandArgv, item),
+		}
+		if len(step.CommandArgv) > 0 {
+			step.Command = renderReclaimCommand(step.CommandArgv)
 		}
 		if item.RecentlyActive {
 			// In use right now. Report it so the operator sees the bytes exist, but never hand
@@ -108,9 +117,10 @@ func PlanReclaim(scan RetentionScanReport, target ReclaimTarget) ReclaimPlan {
 			plan.OperatorGated = append(plan.OperatorGated, step)
 			continue
 		}
-		if class.Mode != ReclaimAutomatic || !class.Rebuildable {
+		if class.Mode != ReclaimAutomatic || !class.Rebuildable || len(step.CommandArgv) == 0 {
 			// Detect and report, never execute. A worktree is not rebuildable and can hold
-			// uncommitted work; reclaiming one unattended is how a lane loses a day.
+			// uncommitted work; reclaiming one unattended is how a lane loses a day. An
+			// automatic class without concrete argv is equally non-executable and stays gated.
 			plan.OperatorGated = append(plan.OperatorGated, step)
 			continue
 		}
@@ -139,4 +149,46 @@ func PlanReclaim(scan RetentionScanReport, target ReclaimTarget) ReclaimPlan {
 			target.Consumer, plan.ShortfallBytes-running)
 	}
 	return plan
+}
+
+func renderReclaimCommandArgv(template []string, item RetentionInstance) []string {
+	if len(template) == 0 {
+		return nil
+	}
+	argv := make([]string, 0, len(template))
+	for _, arg := range template {
+		switch arg {
+		case "<path>":
+			if strings.TrimSpace(item.Path) == "" {
+				return nil
+			}
+			argv = append(argv, item.Path)
+		default:
+			if strings.HasPrefix(arg, "<") && strings.HasSuffix(arg, ">") {
+				return nil
+			}
+			argv = append(argv, arg)
+		}
+	}
+	return argv
+}
+
+func renderReclaimCommand(argv []string) string {
+	quoted := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		quoted = append(quoted, quoteReclaimArg(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func quoteReclaimArg(arg string) string {
+	if arg != "" && strings.IndexFunc(arg, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') &&
+			!(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') &&
+			!strings.ContainsRune("-_./:", r)
+	}) == -1 {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
 }

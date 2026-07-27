@@ -15,6 +15,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/finding"
 	"compound/internal/hookplan"
+	"compound/internal/policy"
 )
 
 // surfacingRowByHarness finds the matrix row whose aliased harness matches (claude|codex|…).
@@ -49,6 +50,16 @@ func writeSyntheticOrient(t *testing.T, home, harness string, ts time.Time) {
 		envelope.SVEffectiveContract, harness, ts.UTC().Format(time.RFC3339))
 	if err := os.WriteFile(filepath.Join(dir, "orient-"+harness+".json"), []byte(body+"\n"), 0o644); err != nil {
 		t.Fatalf("write synthetic orient: %v", err)
+	}
+}
+
+func TestPrintRetentionDisclosesFixedPathCacheScope(t *testing.T) {
+	var out bytes.Buffer
+	printRetention(&out, doctorReport{Retention: &policy.RetentionScanReport{
+		Scanned: []string{"/synthetic/repo"},
+	}})
+	if !strings.Contains(out.String(), "fixed-path caches: skipped") {
+		t.Fatalf("doctor must distinguish a repo-only scan from a fixed-cache scan:\n%s", out.String())
 	}
 }
 

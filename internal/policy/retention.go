@@ -35,6 +35,10 @@ type ArtifactClass struct {
 	// ReclaimCommand is how an instance is reclaimed. Empty means no mechanism exists yet —
 	// which is itself a finding worth surfacing, not a reason to omit the class.
 	ReclaimCommand string `json:"reclaim_command,omitempty"`
+	// ReclaimCommandArgv is the executable template owned by this class. The
+	// planner replaces the exact <path> token with an instance path; it never
+	// reparses ReclaimCommand.
+	ReclaimCommandArgv []string `json:"reclaim_command_argv,omitempty"`
 	// Mode is ReclaimAutomatic or ReclaimOperatorGated.
 	Mode string `json:"mode"`
 	// ReclaimTargetRef names the consumer whose threshold governs reclamation, when one
@@ -48,24 +52,26 @@ type ArtifactClass struct {
 // retentionClasses is the compiled-in declaration set for public-core artifact shapes.
 var retentionClasses = []ArtifactClass{
 	{
-		ID:               "go-build-cache",
-		Owner:            "go toolchain",
-		Description:      "Shared Go build cache at the path reported by `go env GOCACHE`.",
-		Retention:        "Reclaim under disk pressure; the toolchain rebuilds on demand.",
-		ReclaimCommand:   "go clean -cache",
-		Mode:             ReclaimAutomatic,
-		ReclaimTargetRef: "consumer:published-threshold",
-		Rebuildable:      true,
+		ID:                 "go-build-cache",
+		Owner:              "go toolchain",
+		Description:        "Shared Go build cache at the path reported by `go env GOCACHE`.",
+		Retention:          "Reclaim under disk pressure; the toolchain rebuilds on demand.",
+		ReclaimCommand:     "go clean -cache",
+		ReclaimCommandArgv: []string{"go", "clean", "-cache"},
+		Mode:               ReclaimAutomatic,
+		ReclaimTargetRef:   "consumer:published-threshold",
+		Rebuildable:        true,
 	},
 	{
-		ID:               "worktree-build-cache",
-		Owner:            "agent worktrees",
-		Description:      "Regenerated build output inside a repository or agent worktree.",
-		Retention:        "Reclaim when inactive; source, branches, and commits remain unaffected.",
-		ReclaimCommand:   "rm -rf -- <path>",
-		Mode:             ReclaimAutomatic,
-		ReclaimTargetRef: "consumer:published-threshold",
-		Rebuildable:      true,
+		ID:                 "worktree-build-cache",
+		Owner:              "agent worktrees",
+		Description:        "Regenerated build output inside a repository or agent worktree.",
+		Retention:          "Reclaim when inactive; source, branches, and commits remain unaffected.",
+		ReclaimCommand:     "rm -rf -- <path>",
+		ReclaimCommandArgv: []string{"rm", "-rf", "--", "<path>"},
+		Mode:               ReclaimAutomatic,
+		ReclaimTargetRef:   "consumer:published-threshold",
+		Rebuildable:        true,
 	},
 	{
 		ID:    "agent-worktree",
@@ -106,14 +112,15 @@ var retentionClasses = []ArtifactClass{
 		Rebuildable: false,
 	},
 	{
-		ID:               "stuck-run-attempt",
-		Owner:            "compound execution spine",
-		Description:      "RunAttempt rows left pending/running by a crashed lane.",
-		Retention:        "Terminalize once the owning lane is provably gone.",
-		ReclaimCommand:   "compound run-attempt sweep",
-		Mode:             ReclaimAutomatic,
-		ReclaimTargetRef: "",
-		Rebuildable:      false,
+		ID:                 "stuck-run-attempt",
+		Owner:              "compound execution spine",
+		Description:        "RunAttempt rows left pending/running by a crashed lane.",
+		Retention:          "Terminalize once the owning lane is provably gone.",
+		ReclaimCommand:     "compound run-attempt sweep",
+		ReclaimCommandArgv: []string{"compound", "run-attempt", "sweep"},
+		Mode:               ReclaimAutomatic,
+		ReclaimTargetRef:   "",
+		Rebuildable:        false,
 	},
 }
 

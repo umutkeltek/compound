@@ -65,6 +65,10 @@ type RetentionScanReport struct {
 	// Undeclared holds accumulators nothing claims. NON-EMPTY IS A FAILURE: it means the
 	// system grew a new way to fill the disk and no owner noticed.
 	Undeclared []RetentionInstance `json:"undeclared,omitempty"`
+	// FixedPathCachesIncluded says whether toolchain-owned caches outside Scanned
+	// roots were requested. False is an explicit scope disclosure, not a green
+	// claim about caches the caller did not inspect.
+	FixedPathCachesIncluded bool `json:"fixed_path_caches_included"`
 	// ReclaimableBytes totals the declared, rebuildable instances — the bytes a reclaimer
 	// could recover today at zero risk.
 	ReclaimableBytes int64 `json:"reclaimable_bytes"`
@@ -96,7 +100,10 @@ func ScanRetention(roots []string) RetentionScanReport {
 // Roots are repository or worktree directories. For each, it finds build-cache directories at
 // the top level and inside any nested worktrees, sizes them, and classifies them.
 func ScanRetentionWithOptions(roots []string, options RetentionScanOptions) RetentionScanReport {
-	report := RetentionScanReport{AuthorityRef: RetentionAuthorityRef}
+	report := RetentionScanReport{
+		AuthorityRef:            RetentionAuthorityRef,
+		FixedPathCachesIncluded: options.FixedPathCaches,
+	}
 	seen := map[string]bool{}
 
 	for _, root := range roots {

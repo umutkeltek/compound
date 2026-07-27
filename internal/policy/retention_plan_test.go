@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -132,17 +133,25 @@ func TestPlanIsANoOpWhenAlreadySatisfied(t *testing.T) {
 	}
 }
 
-// Every planned step must carry a runnable command, or the executor has nothing to do and the
-// plan is decoration.
-func TestPlannedStepsCarryACommand(t *testing.T) {
+// Every planned step must carry concrete argv, not a template an executor has to interpolate.
+// The path is deliberately space-bearing so a joined shell string cannot masquerade as safe
+// execution data.
+func TestPlannedStepsCarryConcreteCommandArgv(t *testing.T) {
 	scan := scanWith(
-		RetentionInstance{ClassID: "worktree-build-cache", Path: "/a", Bytes: 40 * gb, Rebuildable: true},
+		RetentionInstance{ClassID: "worktree-build-cache", Path: "/a/cache target", Bytes: 40 * gb, Rebuildable: true},
 	)
 	plan := PlanReclaim(scan, storageTarget(100*gb))
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, step := range plan.Steps {
-		if step.Command == "" {
-			t.Fatalf("step has no command: %+v", step)
+		if step.Command == "" || strings.Contains(step.Command, "<path>") {
+			t.Fatalf("step command is not concrete: %+v", step)
 		}
+	}
+	if !strings.Contains(string(data), `"command_argv":["rm","-rf","--","/a/cache target"]`) {
+		t.Fatalf("plan JSON lacks executable argv for exact instance path: %s", data)
 	}
 }
 

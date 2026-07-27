@@ -497,6 +497,11 @@ func printRetention(stdout io.Writer, rep doctorReport) {
 		fmt.Fprintf(stdout, "- declared but no reclaim mechanism exists: %s\n",
 			strings.Join(scan.ClassesWithoutMechanism, ", "))
 	}
+	fixedCacheScope := "skipped"
+	if scan.FixedPathCachesIncluded {
+		fixedCacheScope = "included"
+	}
+	fmt.Fprintf(stdout, "  fixed-path caches: %s\n", fixedCacheScope)
 	fmt.Fprintf(stdout, "  scanned: %s\n", strings.Join(scan.Scanned, ", "))
 }
 

@@ -34,6 +34,11 @@ func cmdRetention(args []string) {
 		os.Exit(2)
 	}
 	asJSON := hasFlag(args, "--json")
+	if err := validateRetentionFlags(args[0], args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "retention %s: %v\n", args[0], err)
+		fmt.Fprintln(os.Stderr, retentionUsage())
+		os.Exit(2)
+	}
 
 	switch args[0] {
 	case "classes":
@@ -82,6 +87,9 @@ func cmdRetention(args []string) {
 		plan := policy.PlanReclaim(scan, target)
 		if asJSON {
 			printJSON(plan)
+			if !plan.Sufficient {
+				os.Exit(1)
+			}
 			return
 		}
 		fmt.Println("# retention plan")
@@ -109,6 +117,30 @@ func cmdRetention(args []string) {
 
 	fmt.Fprintln(os.Stderr, retentionUsage())
 	os.Exit(2)
+}
+
+func validateRetentionFlags(subcommand string, args []string) error {
+	boolFlags := map[string]bool{"--json": true}
+	valueFlags := map[string]bool{}
+	switch subcommand {
+	case "classes":
+	case "scan":
+		valueFlags["--root"] = true
+	case "plan":
+		for _, flag := range []string{
+			"--root",
+			"--consumer",
+			"--free-bytes",
+			"--capacity-bytes",
+			"--required-bytes",
+			"--required-bps",
+		} {
+			valueFlags[flag] = true
+		}
+	default:
+		return nil
+	}
+	return validateKnownFlags(args, valueFlags, boolFlags)
 }
 
 // resolveReclaimTarget requires the caller to pass the consumer's observed capacity and

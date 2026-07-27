@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -146,6 +148,18 @@ func TestScanRecordsWhatItScanned(t *testing.T) {
 	}
 }
 
+func TestScanDisclosesWhetherFixedPathCachesWereIncluded(t *testing.T) {
+	repoOnly := ScanRetentionWithOptions(nil, RetentionScanOptions{})
+	if repoOnly.FixedPathCachesIncluded {
+		t.Fatal("repo-only scan reported fixed caches included")
+	}
+
+	withFixed := ScanRetentionWithOptions(nil, RetentionScanOptions{FixedPathCaches: true})
+	if !withFixed.FixedPathCachesIncluded {
+		t.Fatal("fixed-cache scan did not disclose its expanded scope")
+	}
+}
+
 func TestScanDoesNotFollowSymlinks(t *testing.T) {
 	root := newScanRepo(t, "target/\n")
 	outside := t.TempDir()
@@ -193,6 +207,21 @@ func TestAutomaticClassesHaveAReclaimCommand(t *testing.T) {
 	for _, class := range RetentionClasses() {
 		if class.Mode == ReclaimAutomatic && class.ReclaimCommand == "" {
 			t.Fatalf("class %q is automatic but has no reclaim command", class.ID)
+		}
+	}
+}
+
+func TestAutomaticClassesOwnStructuredReclaimArgv(t *testing.T) {
+	for _, class := range RetentionClasses() {
+		if class.Mode != ReclaimAutomatic {
+			continue
+		}
+		data, err := json.Marshal(class)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(data, []byte(`"reclaim_command_argv"`)) {
+			t.Fatalf("automatic class %q has no structured argv owned by the registry: %s", class.ID, data)
 		}
 	}
 }

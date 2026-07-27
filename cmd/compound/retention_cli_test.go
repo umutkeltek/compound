@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -40,6 +42,38 @@ func TestChangedCommandsAreDiscoverable(t *testing.T) {
 	}
 	if got := retentionUsage(); !containsAll(got, "classes", "scan", "plan", "never reclaims") {
 		t.Fatalf("retention usage is incomplete: %s", got)
+	}
+}
+
+func TestRetentionPlanJSONInsufficiencyExitsNonZero(t *testing.T) {
+	out, err := runCLIFlagSeam(
+		t,
+		t.TempDir(),
+		"retention", "plan",
+		"--consumer", "fixture",
+		"--root", t.TempDir(),
+		"--free-bytes", "0",
+		"--capacity-bytes", "0",
+		"--required-bytes", "9223372036854775807",
+		"--json",
+	)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("insufficient JSON plan exit = %v, want 1; output:\n%s", err, out)
+	}
+	if !strings.Contains(string(out), `"sufficient": false`) {
+		t.Fatalf("insufficient JSON plan lost its machine-readable verdict:\n%s", out)
+	}
+}
+
+func TestRetentionRejectsUnknownFlagsAsUsage(t *testing.T) {
+	out, err := runCLIFlagSeam(t, t.TempDir(), "retention", "plan", "--required-byte", "123")
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+		t.Fatalf("unknown retention flag exit = %v, want 2; output:\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "unknown flag --required-byte") {
+		t.Fatalf("unknown retention flag was not named:\n%s", out)
 	}
 }
 
