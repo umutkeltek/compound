@@ -932,17 +932,21 @@ func TestLivePreToolUseConsumesPersistedExactApprovalWithoutChangingGlobalPermis
 		t.Fatalf("consequential browser submit unexpectedly ran without grant: %+v", first.HookSpecificOutput)
 	}
 	action := readActionForWork(t, homePath, workID)
-	binding := policy.ActionBindingForIntent(action, policy.DefaultConfig())
-	approval, err := policy.NewExactActionApproval(
-		"approval_live_retry_fixture",
-		"operator:fixture",
-		binding,
-		time.Now().UTC().Add(5*time.Minute),
-	)
+	// Mint the approval through the operator door, with the home-loaded config
+	// the live hook itself evaluates under. A hand-built approval carrying
+	// DefaultConfig's policy revision produces a different binding digest than
+	// the runtime computes, so it can never match and the retry below would
+	// assert nothing.
+	cfg, _, err := policy.LoadConfig(homePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := policy.NewExactActionApprovalStore(homePath).Save(approval); err != nil {
+	approvals := policy.NewExactActionApprovalStore(homePath)
+	plan, _, err := approvals.Plan(action.ID, cfg, 5*time.Minute, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := approvals.Approve(plan.ID, "operator:fixture", cfg, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 
