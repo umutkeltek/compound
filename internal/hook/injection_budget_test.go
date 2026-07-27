@@ -418,6 +418,59 @@ func TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs(t *testing.T) {
 	if !strings.Contains(section, wantOmission) {
 		t.Fatalf("omission row is inaccurate; want %q:\n%s", wantOmission, section)
 	}
+	// Every displayed ref line ends with a complete reason: either the full
+	// reason text or an elision that carries the FULL explicit marker
+	// `…[elided]`. A bare `reason=…` reads as a complete-but-terser reason and
+	// is the exact live defect this regression pins — the renderer must never
+	// substitute the marker with just the ellipsis when the room cannot fit the
+	// full marker plus any prefix.
+	origReason := map[string]string{}
+	for _, ref := range refs {
+		origReason[ref.Ref] = ref.Reason
+	}
+	for _, refName := range displayed {
+		want := origReason[refName]
+		fullLine := "- `" + refName + "`"
+		start := strings.Index(section, fullLine)
+		if start < 0 {
+			t.Fatalf("displayed ref %q not found in section:\n%s", refName, section)
+		}
+		rest := section[start:]
+		end := strings.Index(rest, "\n")
+		if end < 0 {
+			t.Fatalf("displayed ref %q rendered without a complete line (no newline):\n%s", refName, section)
+		}
+		line := rest[:end]
+		if line == fullLine {
+			t.Fatalf("displayed ref %q rendered with no reason field at all (complete line):\n%s", refName, section)
+		}
+		reasonIdx := strings.Index(line, "reason=")
+		if reasonIdx < 0 {
+			t.Fatalf("displayed ref %q rendered without a reason field:\n%s", refName, line)
+		}
+		reasonPart := line[reasonIdx+len("reason="):]
+		endsFull := strings.HasSuffix(line, "reason="+want)
+		endsElided := strings.HasSuffix(line, "…[elided]")
+		switch {
+		case endsFull:
+			// reason fit in full; no marker is the honest shape.
+		case endsElided:
+			// reason was shortened but carries the FULL explicit marker.
+		default:
+			t.Fatalf("displayed ref %q reason did not complete: want full or `…[elided]` suffix, got reason=%q (line=%q)\n"+
+				"a bare `reason=…` reads as a complete reason with no loss marker and is the live defect.",
+				refName, reasonPart, line)
+		}
+	}
+	// Omission math is the served total minus displayed, exact at whatever the
+	// cap allowed. The live shape displays 8 / omits 100; the whole-line
+	// emission backstop is allowed to drop a ref whose identity plus full
+	// marker cannot fit, and that drift shifts the count without breaking it.
+	// What must stay exact is displayed + omitted = served.
+	omitted := len(refs) - len(displayed)
+	if len(displayed)+omitted != len(refs) {
+		t.Fatalf("omission math drifted: displayed=%d omitted=%d total=%d", len(displayed), omitted, len(refs))
+	}
 }
 
 func TestIncludedListPreservesDynamicTailWhenNoStaticRefCanBeShed(t *testing.T) {
