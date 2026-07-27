@@ -472,9 +472,10 @@ func acquireWait(home, holder string, ttl time.Duration, clk Clock, timeout, pol
 	}
 }
 
-// Release frees the lease ONLY when holder currently holds it. A release by a NON-holder is refused
-// with an error (someone else's live lease is never silently dropped); a release when nothing is held
-// is an idempotent Freed=false no-op. A held lease is removed (Status then shows nothing held).
+// Release frees the lease ONLY when holder currently holds it and its execution barrier is no longer
+// pending. A release by a NON-holder is refused with an error (someone else's live lease is never
+// silently dropped); a release when nothing is held is an idempotent Freed=false no-op. A held lease
+// is removed (Status then shows nothing held).
 func Release(home, holder string, now time.Time) (ReleaseResult, error) {
 	holder = strings.TrimSpace(holder)
 	if holder == "" {
@@ -496,6 +497,13 @@ func Release(home, holder string, now time.Time) (ReleaseResult, error) {
 		}
 		if current.Holder != holder {
 			return fmt.Errorf("land-lease held by %q, not %q — refusing to release someone else's lease", current.Holder, holder)
+		}
+		pending, err := executionBarrierPending(home, current.Holder)
+		if err != nil {
+			return err
+		}
+		if pending {
+			return &ExecutionPendingError{Holder: current.Holder}
 		}
 		if err := os.Remove(statePath); err != nil {
 			return err

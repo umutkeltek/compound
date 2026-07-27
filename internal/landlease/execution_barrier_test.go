@@ -66,6 +66,81 @@ func TestExecutionBarrierBlocksExpiredAcquireAndStealUntilAllHoldersExit(t *test
 	}
 }
 
+func TestReleaseRefusesProofHolderUntilExecutionTerminationIsAttested(t *testing.T) {
+	t.Run("active execution barrier keeps lease held", func(t *testing.T) {
+		homePath := t.TempDir()
+		holder := "proof:pfr_release:ratt_20260102T030405Z_eeeeeeee:work_release:codex-release"
+		_, barrier, err := AcquireWithExecutionBarrierPrepared(
+			homePath,
+			holder,
+			time.Second,
+			baseNow,
+			func(AcquireOutcome) error { return nil },
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = barrier.Close() })
+
+		expiredAt := baseNow.Add(2 * time.Second)
+		released, err := Release(homePath, holder, expiredAt)
+		if err == nil {
+			t.Fatalf("plain release bypassed active proof execution barrier: %+v", released)
+		}
+		var pending *ExecutionPendingError
+		if !errors.As(err, &pending) {
+			t.Fatalf("release error = %v, want ExecutionPendingError", err)
+		}
+		if released.Freed {
+			t.Fatalf("refused release reported Freed: %+v", released)
+		}
+		if _, err := Acquire(homePath, laneBeta, time.Minute, expiredAt); err == nil {
+			t.Fatal("successor acquired after refused proof release")
+		} else if !errors.As(err, &pending) {
+			t.Fatalf("successor acquire error = %v, want ExecutionPendingError", err)
+		}
+
+		if err := barrier.Close(); err != nil {
+			t.Fatal(err)
+		}
+		released, err = Release(homePath, holder, expiredAt)
+		if err != nil {
+			t.Fatalf("plain release after execution termination: %v", err)
+		}
+		if !released.Freed {
+			t.Fatalf("plain release after execution termination = %+v, want Freed", released)
+		}
+		if _, err := Acquire(homePath, laneBeta, time.Minute, expiredAt); err != nil {
+			t.Fatalf("successor after attested release: %v", err)
+		}
+	})
+
+	t.Run("legacy proof lease without barrier fails closed", func(t *testing.T) {
+		homePath := t.TempDir()
+		holder := "proof:pfr_release_legacy:ratt_20260102T030405Z_ffffffff:work_release_legacy:codex-release-legacy"
+		if _, err := Acquire(homePath, holder, time.Second, baseNow); err != nil {
+			t.Fatal(err)
+		}
+
+		released, err := Release(homePath, holder, baseNow.Add(2*time.Second))
+		if err == nil {
+			t.Fatalf("plain release bypassed unattested proof holder: %+v", released)
+		}
+		var unattested *ExecutionUnattestedError
+		if !errors.As(err, &unattested) {
+			t.Fatalf("release error = %v, want ExecutionUnattestedError", err)
+		}
+		if released.Freed {
+			t.Fatalf("refused unattested release reported Freed: %+v", released)
+		}
+		if _, err := Acquire(homePath, laneBeta, time.Minute, baseNow.Add(2*time.Second)); err == nil {
+			t.Fatal("successor acquired after refused unattested proof release")
+		} else if !errors.As(err, &unattested) {
+			t.Fatalf("successor acquire error = %v, want ExecutionUnattestedError", err)
+		}
+	})
+}
+
 func TestExecutionBarrierCanBeInheritedByRealProcess(t *testing.T) {
 	if os.Getenv("COMPOUND_LANDLEASE_BARRIER_CHILD") == "1" {
 		file := os.NewFile(3, "compound-landlease-execution-barrier")
