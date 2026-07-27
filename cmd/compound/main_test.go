@@ -26,6 +26,7 @@ import (
 	"compound/internal/distiller"
 	"compound/internal/envelope"
 	"compound/internal/eventsource"
+	"compound/internal/finding"
 	"compound/internal/home"
 	"compound/internal/hook"
 	"compound/internal/knowledge"
@@ -14212,5 +14213,154 @@ func TestMemoryEngineNoEmbedBlockLeavesLaneOff(t *testing.T) {
 	defer restore()
 	if got := os.Getenv("COMPOUND_BREADTH_EMBED_MODEL"); got != "" {
 		t.Fatalf("no embed block must leave lane OFF (no silent default), got model=%q", got)
+	}
+}
+
+// TestDistillerRequestFromFindingCLIRecordsPrivateBodyReferenceOnly is the public CLI seam red
+// test for the finding→distiller bridge. `compound distiller request --finding <id>` must
+// accept the new flag, set source_privacy to private, embed finding:<id> and work:<id> in
+// source_refs, produce a ref-only artifact under reviews/distiller-requests/ that omits the
+// finding body, and not write any ledger byte.
+func TestDistillerRequestFromFindingCLIRecordsPrivateBodyReferenceOnly(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	var recorded struct {
+		ID     string `json:"id"`
+		CID    string `json:"cid"`
+		WorkID string `json:"work_id"`
+	}
+	out := captureStdout(t, func() {
+		cmdFinding([]string{"record", "--topic", "bridge-cli", "--body", "body-must-not-appear-in-cli-request", "--work-id", "work_bridge_cli", "--produced-by", "agent:codex", "--json"})
+	})
+	if err := json.Unmarshal([]byte(out), &recorded); err != nil {
+		t.Fatalf("parse finding record: %v\n%s", err, out)
+	}
+	if !strings.HasPrefix(recorded.ID, "find_") {
+		t.Fatalf("finding record = %+v", recorded)
+	}
+	// `finding record --json` returns the body-free record-ack (id/path/status/privacy/
+	// visibility only); cid and work_id are provenance metadata that live behind the explicit
+	// show surface. Read them from there rather than widening the ack.
+	showOut := captureStdout(t, func() {
+		cmdFinding([]string{"show", recorded.ID, "--json"})
+	})
+	if err := json.Unmarshal([]byte(showOut), &recorded); err != nil {
+		t.Fatalf("parse finding show: %v\n%s", err, showOut)
+	}
+	if !strings.HasPrefix(recorded.CID, "sha256:") || recorded.WorkID != "work_bridge_cli" {
+		t.Fatalf("finding show = %+v", recorded)
+	}
+
+	reqJSON := captureStdout(t, func() {
+		cmdDistiller([]string{"request", "--trace-ref", "trace_bridge_cli", "--finding", recorded.ID, "--record"})
+	})
+	var req distiller.LLMExtractionRequest
+	if err := json.Unmarshal([]byte(reqJSON), &req); err != nil {
+		t.Fatalf("parse distiller request: %v\n%s", err, reqJSON)
+	}
+	if req.SourcePrivacy != "private" {
+		t.Fatalf("source_privacy = %q, want private", req.SourcePrivacy)
+	}
+	if !containsString(req.SourceRefs, "finding:"+recorded.ID) {
+		t.Fatalf("source_refs missing finding ref: %+v", req.SourceRefs)
+	}
+	if !containsString(req.SourceRefs, "work:"+recorded.WorkID) {
+		t.Fatalf("source_refs missing work ref: %+v", req.SourceRefs)
+	}
+	if len(req.FindingRefs) != 1 || req.FindingRefs[0].ID != recorded.ID || req.FindingRefs[0].CID != recorded.CID {
+		t.Fatalf("finding_refs = %+v, want one entry id=%s cid=%s", req.FindingRefs, recorded.ID, recorded.CID)
+	}
+	if req.RawTrace != "" {
+		t.Fatalf("stored request RawTrace must be empty, got %q", req.RawTrace)
+	}
+
+	recordedPath := filepath.Join(homePath, "reviews", "distiller-requests")
+	entries, err := os.ReadDir(recordedPath)
+	if err != nil {
+		t.Fatalf("read distiller-requests dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("distiller-requests entries = %d, want 1", len(entries))
+	}
+	body, err := os.ReadFile(filepath.Join(recordedPath, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read recorded request: %v", err)
+	}
+	if strings.Contains(string(body), "body-must-not-appear-in-cli-request") {
+		t.Fatalf("stored request leaked finding body: %s", body)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("distiller request must never touch ledger/claims.jsonl, stat err=%v", err)
+	}
+}
+
+// TestDistillerRequestFromFindingCLIDerivesTraceRef proves that with --finding and no explicit
+// --trace-ref, the trace_ref defaults to `finding:<id>`; --trace-ref still wins when provided.
+func TestDistillerRequestFromFindingCLIDerivesTraceRef(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	recJSON := captureStdout(t, func() {
+		cmdFinding([]string{"record", "--topic", "trace-derived", "--body", "trace-derived-body", "--work-id", "work_trace_derived", "--produced-by", "agent:codex", "--json"})
+	})
+	var rec finding.Finding
+	if err := json.Unmarshal([]byte(recJSON), &rec); err != nil {
+		t.Fatalf("parse finding record: %v\n%s", err, recJSON)
+	}
+
+	// no --trace-ref → derive `finding:<id>`
+	derivedJSON := captureStdout(t, func() {
+		cmdDistiller([]string{"request", "--finding", rec.ID})
+	})
+	var derived distiller.LLMExtractionRequest
+	if err := json.Unmarshal([]byte(derivedJSON), &derived); err != nil {
+		t.Fatalf("parse derived request: %v\n%s", err, derivedJSON)
+	}
+	if derived.TraceRef != "finding:"+rec.ID {
+		t.Fatalf("derived trace_ref = %q, want finding:%s", derived.TraceRef, rec.ID)
+	}
+
+	// explicit --trace-ref still wins.
+	explicitJSON := captureStdout(t, func() {
+		cmdDistiller([]string{"request", "--trace-ref", "trace_explicit", "--finding", rec.ID})
+	})
+	var explicit distiller.LLMExtractionRequest
+	if err := json.Unmarshal([]byte(explicitJSON), &explicit); err != nil {
+		t.Fatalf("parse explicit request: %v\n%s", err, explicitJSON)
+	}
+	if explicit.TraceRef != "trace_explicit" {
+		t.Fatalf("explicit trace_ref = %q, want trace_explicit", explicit.TraceRef)
+	}
+}
+
+// TestDistillerRequestFromFindingCLIIdempotentReplay proves same finding + unchanged prior
+// state records the same request artifact id (packet's idempotence invariant).
+func TestDistillerRequestFromFindingCLIIdempotentReplay(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	var rec finding.Finding
+	out := captureStdout(t, func() {
+		cmdFinding([]string{"record", "--topic", "bridge-cli-idem", "--body", "idem-body", "--work-id", "work_bridge_cli_idem", "--produced-by", "agent:codex", "--json"})
+	})
+	if err := json.Unmarshal([]byte(out), &rec); err != nil {
+		t.Fatalf("parse finding record: %v\n%s", err, out)
+	}
+
+	first := captureStdout(t, func() {
+		cmdDistiller([]string{"request", "--trace-ref", "trace_bridge_cli_idem", "--finding", rec.ID, "--record"})
+	})
+	second := captureStdout(t, func() {
+		cmdDistiller([]string{"request", "--trace-ref", "trace_bridge_cli_idem", "--finding", rec.ID, "--record"})
+	})
+	if first != second {
+		t.Fatalf("idempotent replay must produce identical request JSON\nfirst=%s\nsecond=%s", first, second)
 	}
 }

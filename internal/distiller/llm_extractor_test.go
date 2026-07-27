@@ -1,10 +1,14 @@
 package distiller
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"compound/internal/envelope"
+	"compound/internal/finding"
 )
 
 func TestLLMExtractorNormalizesProviderResponse(t *testing.T) {
@@ -461,4 +465,332 @@ func llmTestHeader(schemaVersion, id, workID, contextPackID string) envelope.Hea
 		EvidenceRefs:  []string{},
 		Uncertainty:   envelope.Uncertainty{Level: "known"},
 	}
+}
+
+// TestDistillerRequestFromFindingRecordsPrivateBodyReferenceOnly is the ref-only invariant:
+// a request built from a finding ID never persists the body in the request artifact. Bodies
+// are materialized only into the hydrated in-memory copy (via RawTrace); the stored request
+// is ref-only and source_privacy always reads `private`.
+func TestDistillerRequestFromFindingRecordsPrivateBodyReferenceOnly(t *testing.T) {
+	home := t.TempDir()
+	rec, err := finding.Record(home, finding.Finding{Topic: "bridge-test", Body: "body-must-not-appear-in-request", WorkID: "work_bridge"}, t0)
+	if err != nil {
+		t.Fatalf("record finding: %v", err)
+	}
+
+	req, err := BuildLLMExtractionRequestFromFindings(home, "trace_bridge_test", []string{rec.ID}, DefaultPolicy(), PriorState{})
+	if err != nil {
+		t.Fatalf("build request from finding: %v", err)
+	}
+	if req.SourcePrivacy != "private" {
+		t.Fatalf("source_privacy = %q, want private", req.SourcePrivacy)
+	}
+	if !findingSrcRefHasID(req.SourceRefs, rec.ID) {
+		t.Fatalf("source_refs missing finding ref: %+v", req.SourceRefs)
+	}
+	if !containsString(req.SourceRefs, "work:"+rec.WorkID) {
+		t.Fatalf("source_refs missing work ref: %+v", req.SourceRefs)
+	}
+	if len(req.FindingRefs) != 1 {
+		t.Fatalf("finding_refs = %+v, want exactly one entry", req.FindingRefs)
+	}
+	if req.FindingRefs[0].ID != rec.ID || req.FindingRefs[0].CID != rec.CID {
+		t.Fatalf("finding_ref mismatch: %+v", req.FindingRefs[0])
+	}
+	if req.RawTrace != "" {
+		t.Fatalf("stored request RawTrace must be empty, got %q", req.RawTrace)
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	raw := string(data)
+	if strings.Contains(raw, "body-must-not-appear-in-request") {
+		t.Fatalf("request artifact must not contain the finding body: %s", raw)
+	}
+}
+
+// TestFindingRequestHydratesOnlyForModelExecutionAndValidatesCID proves the body is materialized
+// only in RawTrace on the in-memory copy returned to the model — the recorded request stays
+// bodyless; CID mismatches fail closed.
+func TestFindingRequestHydratesOnlyForModelExecutionAndValidatesCID(t *testing.T) {
+	home := t.TempDir()
+	rec, err := finding.Record(home, finding.Finding{Topic: "hydrate-test", Body: "hydrate-payload", WorkID: "work_hydrate"}, t0)
+	if err != nil {
+		t.Fatalf("record finding: %v", err)
+	}
+
+	req, err := BuildLLMExtractionRequestFromFindings(home, "trace_hydrate_test", []string{rec.ID}, DefaultPolicy(), PriorState{})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if req.RawTrace != "" {
+		t.Fatalf("stored request RawTrace must be empty, got %q", req.RawTrace)
+	}
+
+	hydrated, err := HydrateLLMExtractionRequest(home, req)
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+	if !strings.Contains(hydrated.RawTrace, "hydrate-payload") {
+		t.Fatalf("hydrated RawTrace must contain finding body, got %q", hydrated.RawTrace)
+	}
+	if !strings.Contains(hydrated.RawTrace, "[finding:"+rec.ID) {
+		t.Fatalf("hydrated RawTrace must label finding: %q", hydrated.RawTrace)
+	}
+	if req.RawTrace != "" {
+		t.Fatalf("hydrate must not mutate input request's RawTrace")
+	}
+
+	empty := req
+	empty.FindingRefs = nil
+	if _, err := HydrateLLMExtractionRequest(home, empty); err == nil {
+		t.Fatalf("missing finding refs must fail closed")
+	}
+
+	missing := req
+	missing.FindingRefs = []FindingRef{{ID: "find_does_not_exist", CID: "sha256:" + strings.Repeat("0", 64)}}
+	if _, err := HydrateLLMExtractionRequest(home, missing); err == nil {
+		t.Fatalf("nonexistent finding id must fail closed")
+	}
+
+	bcid := req
+	bcid.FindingRefs = []FindingRef{{ID: rec.ID, CID: "sha256:" + strings.Repeat("f", 64)}}
+	if _, err := HydrateLLMExtractionRequest(home, bcid); err == nil || !strings.Contains(err.Error(), "requested CID") {
+		t.Fatalf("CID mismatch must fail closed: %v", err)
+	}
+
+	unsupported := req
+	unsupported.FindingRefs = []FindingRef{{ID: "trace_xyz", CID: "sha256:" + strings.Repeat("a", 64)}}
+	if _, err := HydrateLLMExtractionRequest(home, unsupported); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("unsupported ref kind must fail closed: %v", err)
+	}
+}
+
+// TestFindingRequestReplayParksCandidateWithoutClaim proves replay of a stored request through a
+// model citation of `finding:<id>` produces a parked candidate, never a Claim — the live
+// distiller policy blocks promotion.
+func TestFindingRequestReplayParksCandidateWithoutClaim(t *testing.T) {
+	home, store := setup(t)
+	rec, err := finding.Record(home, finding.Finding{Topic: "replay-park", Body: "replay-park-payload", WorkID: "work_replay_park"}, t0)
+	if err != nil {
+		t.Fatalf("record finding: %v", err)
+	}
+	req, err := BuildLLMExtractionRequestFromFindings(home, "trace_replay_park", []string{rec.ID}, DefaultPolicy(), PriorState{})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	recorded, err := RecordLLMExtractionRequest(home, req)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	loaded, err := LoadLLMExtractionRequest(home, recorded.Ref)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	hydration, err := HydrateLLMExtractionRequest(home, loaded)
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+
+	raw := []byte(`{
+		"schema_version":"` + LLMExtractionSchemaVersion + `",
+		"trace_ref":"` + loaded.TraceRef + `",
+		"source_refs":["finding:` + rec.ID + `"],
+		"candidates":[{"kind":"memory","entity":"work_replay_park","predicate":"observes","object":"replay-park observation","confidence":0.9,"evidence_refs":["finding:` + rec.ID + `"]}]
+	}`)
+
+	res, err := Run(home, store, raw, DefaultPolicy(), NewGroundedLLMExtractor(hydration), t0)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(res.Decisions) != 1 {
+		t.Fatalf("decisions = %d, want exactly 1", len(res.Decisions))
+	}
+	dec := res.Decisions[0]
+	if dec.ClaimID != "" {
+		t.Fatalf("live distiller policy must not promote finding-grounded memory; got claim %s", dec.ClaimID)
+	}
+	if dec.Verdict != Park {
+		t.Fatalf("finding-grounded memory must park, got verdict=%s", dec.Verdict)
+	}
+}
+
+// TestFindingRequestRejectsInventedEvidenceRef proves a model citing a `finding:` ref it did
+// not receive closes fast.
+func TestFindingRequestRejectsInventedEvidenceRef(t *testing.T) {
+	home := t.TempDir()
+	rec, err := finding.Record(home, finding.Finding{Topic: "reject-invented", Body: "allowed-payload", WorkID: "work_reject"}, t0)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	req, err := BuildLLMExtractionRequestFromFindings(home, "trace_reject_invented", []string{rec.ID}, DefaultPolicy(), PriorState{})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	badResponse := []byte(`{
+		"schema_version":"` + LLMExtractionSchemaVersion + `",
+		"trace_ref":"` + req.TraceRef + `",
+		"source_refs":["finding:` + rec.ID + `"],
+		"candidates":[{"kind":"memory","entity":"work_reject","predicate":"observes","object":"fabricated finding reference","confidence":0.9,"evidence_refs":["finding:find_does_not_exist"]}]
+	}`)
+	_, err = NewGroundedLLMExtractor(req).Extract(badResponse, DefaultPolicy())
+	if err == nil || !strings.Contains(err.Error(), "evidence_ref") {
+		t.Fatalf("invented evidence ref must fail closed, got %v", err)
+	}
+}
+
+// TestDistillerRequestFromFindingPreservesProducerEvidenceRefs asserts BuildLLMExtractionRequestFromFindings
+// preserves every finding.EvidenceRefs entry into request.SourceRefs (producer's chain), not
+// only the synthesised finding:/work: refs.
+func TestDistillerRequestFromFindingPreservesProducerEvidenceRefs(t *testing.T) {
+	home := t.TempDir()
+	rec, err := finding.Record(home, finding.Finding{
+		Topic:        "preserve-evidence",
+		Body:         "preserve-evidence-body",
+		WorkID:       "work_preserve",
+		EvidenceRefs: []string{"receipt:abc123", "context_pack:cp_xyz", "finding:" + recGeneratedEvidenceID()},
+	}, t0)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	req, err := BuildLLMExtractionRequestFromFindings(home, "trace_preserve", []string{rec.ID}, DefaultPolicy(), PriorState{})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	for _, want := range []string{"finding:" + rec.ID, "work:" + "work_preserve", "receipt:abc123", "context_pack:cp_xyz"} {
+		if !containsString(req.SourceRefs, want) {
+			t.Fatalf("source_refs missing %q: %+v", want, req.SourceRefs)
+		}
+	}
+}
+
+// TestFindingRequestRejectsTamperedFindingFile is the CID-integrity falsifier: a finding file
+// whose on-disk CID no longer matches the body must fail closed at hydration time, even if
+// the request's recorded ref CID still matches the on-disk CID (the hydrate path always
+// recomputes via finding.CID(body)).
+func TestFindingRequestRejectsTamperedFindingFile(t *testing.T) {
+	home := t.TempDir()
+	rec, err := finding.Record(home, finding.Finding{Topic: "tamper", Body: "original-body", WorkID: "work_tamper"}, t0)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	req, err := BuildLLMExtractionRequestFromFindings(home, "trace_tamper", []string{rec.ID}, DefaultPolicy(), PriorState{})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	// Tamper the file: overwrite body and the persisted CID to remain internally
+	// consistent, but the recompute-and-compare path must still fail closed because the
+	// request-ref CID agrees with the on-disk CID but disagrees with the recomputed actual.
+	path := filepath.Join(home, finding.Subdir, rec.ID+".json")
+	tampered := `{
+		"id": "` + rec.ID + `",
+		"cid": "sha256:` + strings.Repeat("c", 64) + `",
+		"topic": "` + rec.Topic + `",
+		"body": "tampered-body",
+		"work_id": "work_tamper",
+		"source_class": "evidence",
+		"created_at": "` + rec.CreatedAt + `"
+	}`
+	if err := os.WriteFile(path, []byte(tampered), 0o644); err != nil {
+		t.Fatalf("write tampered: %v", err)
+	}
+	if _, err := HydrateLLMExtractionRequest(home, req); err == nil || !strings.Contains(err.Error(), "tampered") {
+		t.Fatalf("tampered body must fail closed at hydrate, got %v", err)
+	}
+}
+
+// TestDistillerExtractKeepsStoredRequestRefOnlySeesHydratedModel is the audit invariant:
+// BuildExecutionRouteEvidence MUST be constructed from the ref-only storedReq — its
+// SourceRefs stay free of bodies — while the hydrated `req` is what flows to the provider.
+// Since cmdDistillerExtract shells through ExtractWithOpenAICompatible which would actually
+// call the network, we exercise the same seam via BuildExecutionRouteEvidence directly so we
+// can prove it sees the stored-only refs.
+func TestDistillerExtractKeepsStoredRequestRefOnlySeesHydratedModel(t *testing.T) {
+	home := t.TempDir()
+	rec, err := finding.Record(home, finding.Finding{Topic: "route-sep", Body: "route-sep-body", WorkID: "work_route_sep"}, t0)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	storedReq, err := BuildLLMExtractionRequestFromFindings(home, "trace_route_sep", []string{rec.ID}, DefaultPolicy(), PriorState{})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	hydratedReq, err := HydrateLLMExtractionRequest(home, storedReq)
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+
+	// The hydrated copy carries the body in RawTrace; the stored form must not.
+	if hydratedReq.RawTrace == "" || !strings.Contains(hydratedReq.RawTrace, "route-sep-body") {
+		t.Fatalf("hydrated RawTrace missing body: %q", hydratedReq.RawTrace)
+	}
+	if storedReq.RawTrace != "" {
+		t.Fatalf("storedReq must stay ref-only (RawTrace empty), got %q", storedReq.RawTrace)
+	}
+
+	report := LiveExtractionReport{
+		SchemaVersion: LiveExtractionSchemaVersion,
+		Provider:      "openai-compatible",
+		Model:         "fixture",
+		Called:        true,
+	}
+	routeStored, err := BuildExecutionRouteEvidence(storedReq, report, t0)
+	if err != nil {
+		t.Fatalf("build stored route: %v", err)
+	}
+	routeHydrated, err := BuildExecutionRouteEvidence(hydratedReq, report, t0)
+	if err != nil {
+		t.Fatalf("build hydrated route: %v", err)
+	}
+	if len(routeStored.EvidenceRefs) != len(routeHydrated.EvidenceRefs) {
+		t.Fatalf("route evidence len differs: stored=%+v hydrated=%+v", routeStored.EvidenceRefs, routeHydrated.EvidenceRefs)
+	}
+	for i := range routeStored.EvidenceRefs {
+		if routeStored.EvidenceRefs[i] != routeHydrated.EvidenceRefs[i] {
+			t.Fatalf("route evidence refs diverge (route/ref-only sees bodies?): stored=%+v hydrated=%+v", routeStored.EvidenceRefs, routeHydrated.EvidenceRefs)
+		}
+	}
+}
+
+func recGeneratedEvidenceID() string {
+	return "find_evidence" + strings.Repeat("0", 8)
+}
+
+// TestHydrateRequiresCIDFalsifier is the missing-CID falsifier: a FindingRef with an empty
+// CID must fail closed at hydrate even though the requested ref CID is technically
+// present-but-empty (BuildLLMExtractionRequestFromFindings always populates it, so an
+// empty fr.CID indicates a request that was constructed outside the build path and must
+// not be materialised).
+func TestHydrateRequiresCIDFalsifier(t *testing.T) {
+	home := t.TempDir()
+	rec, err := finding.Record(home, finding.Finding{Topic: "missing-cid", Body: "missing-cid-body", WorkID: "work_missing_cid"}, t0)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	req := LLMExtractionRequest{
+		SchemaVersion: LLMExtractionSchemaVersion,
+		TraceRef:      "trace_missing_cid",
+		FindingRefs:   []FindingRef{{ID: rec.ID, CID: ""}},
+	}
+	if _, err := HydrateLLMExtractionRequest(home, req); err == nil || !strings.Contains(err.Error(), "CID is empty") {
+		t.Fatalf("missing requested CID must fail closed: %v", err)
+	}
+}
+
+// keep the import of filepath referenced from the tampered-body test: it is used above to
+// construct the path of the on-disk finding file we tamper with.
+var _ = filepath.Separator
+
+func findingSrcRefHasID(set []string, id string) bool {
+	want := "finding:" + id
+	for _, s := range set {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }

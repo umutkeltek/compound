@@ -32,6 +32,19 @@ import (
 	"compound/internal/sourceobs"
 )
 
+// findingIDsFromArgs collects every --finding occurrence (repeatable) so callers can pass
+// one or more finding ids without a separate separator. Empty / whitespace-only values are
+// dropped; duplicates are not de-duplicated here (the builder de-dups and resolves).
+func findingIDsFromArgs(args []string) []string {
+	var ids []string
+	for _, id := range valuesFlag(args, "--finding") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func cmdDistiller(args []string) {
 	if len(args) == 1 && args[0] == "prior-state" {
 		homePath, err := home.Resolve("")
@@ -546,7 +559,7 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--record] | extract --request <request.json|distiller_request:id> --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | import-session-lenses <multi-lens.json> | run [--llm-response response.json [--request <request.json|distiller_request:id>]|trace.json] | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--finding ID]... [--record] | extract --request <request.json|distiller_request:id> --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | import-session-lenses <multi-lens.json> | run [--llm-response response.json [--request <request.json|distiller_request:id>]|trace.json] | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 
@@ -668,8 +681,14 @@ func printDistillerEvalCorpus(report distiller.EvalCorpusReport) {
 
 func cmdDistillerRequest(args []string) {
 	traceRef := valueFlag(args, "--trace-ref")
+	findingIDs := findingIDsFromArgs(args)
+	// Default the trace_ref to `finding:<first-id>` BEFORE the required-trace check so the
+	// operator does not have to repeat themselves. An explicit --trace-ref still wins.
+	if strings.TrimSpace(traceRef) == "" && len(findingIDs) > 0 {
+		traceRef = distiller.FindingSourcePrefix + findingIDs[0]
+	}
 	if traceRef == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--record]")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--finding ID]... [--record]")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -686,6 +705,34 @@ func cmdDistillerRequest(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "distiller request prior-state:", err)
 		os.Exit(1)
+	}
+	// When --finding is supplied, derive a ref-only extraction request from the finding ids.
+	if len(findingIDs) > 0 {
+		if valueFlag(args, "--raw") != "" || valueFlag(args, "--work-id") != "" || valueFlag(args, "--context-pack") != "" || valueFlag(args, "--work") != "" || valueFlag(args, "--receipt") != "" || valueFlag(args, "--envelope") != "" || hasFlag(args, "--event-trace") {
+			fmt.Fprintln(os.Stderr, "distiller request: --finding cannot be combined with --raw/--work-id/--context-pack/--work/--receipt/--envelope/--event-trace")
+			os.Exit(2)
+		}
+		req, err := distiller.BuildLLMExtractionRequestFromFindings(homePath, traceRef, findingIDs, distiller.DefaultPolicy(), prior)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller request findings:", err)
+			os.Exit(1)
+		}
+		out, err := json.MarshalIndent(req, "", " ")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller request encode:", err)
+			os.Exit(1)
+		}
+		if hasFlag(args, "--record") {
+			record, err := distiller.RecordLLMExtractionRequest(homePath, req)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "distiller request record:", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "- request_ref: %s\n", record.Ref)
+			fmt.Fprintf(os.Stderr, "- request: %s\n", record.Path)
+		}
+		fmt.Println(string(out))
+		return
 	}
 	src := distiller.LLMExtractionSources{}
 	if workID := valueFlag(args, "--work-id"); workID != "" {
@@ -794,6 +841,18 @@ func cmdDistillerExtract(args []string) {
 	req, err := distiller.LoadLLMExtractionRequest(homePath, requestPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "distiller extract request:", err)
+		os.Exit(1)
+	}
+	// Privacy-sensitive route admission for finding-grounded extract is BLOCKED on a missing
+	// governed local endpoint/execution adapter (route lanes carry ProviderRoute IDs like
+	// `local/mac-fast`; cmdDistillerExtract takes an HTTP baseURL, and there is no existing
+	// structured field that maps them). Until that lands, refuse to call the provider for a
+	// finding-grounded request — a caller-controlled --openai-compatible-url on a private
+	// (source_privacy=private) request would otherwise leak finding bodies to an uncontrolled
+	// endpoint. The ref-only builder/hydrator in internal/distiller remain as branch evidence
+	// for the later synthetic certifier step.
+	if len(req.FindingRefs) > 0 {
+		fmt.Fprintln(os.Stderr, "distiller extract: refusal — privacy-sensitive route admission for finding-grounded requests is gated on a missing governed local endpoint/execution adapter; refusing to send to a caller-controlled --openai-compatible-url.")
 		os.Exit(1)
 	}
 	now := time.Now()

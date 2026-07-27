@@ -7,9 +7,30 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"compound/internal/finding"
 )
 
 const LLMExtractionSchemaVersion = "compound.distiller.llm_extraction.v0.1"
+
+// FindingSourcePrefix is the evidence-ref kind we accept when looking for finding refs in
+// source_refs. Anything else (and any other FindingRef.ID prefix) fails closed at hydrate time.
+const FindingSourcePrefix = "finding:"
+
+// WorkEvidencePrefix is the evidence-ref kind used to mark the work_id the producer of the
+// finding recorded (when present), and that gets preserved into SourceRefs.
+const WorkEvidencePrefix = "work:"
+
+// FindingRef is the deferred-body reference to a finding stored in COMPOUND_HOME/observed/findings.
+// It carries id+cid+work_id on disk and over the wire; the body is materialized separately
+// into RawTrace by the hydrator at model-execution time. The ref-only shape keeps the request
+// artifact free of finding bodies while still letting the model see them through the existing
+// RawTrace field — the bodies flow to the model ONLY through the in-memory hydrated request,
+// not through what is recorded or routed as evidence.
+type FindingRef struct {
+	ID     string `json:"id"`
+	CID    string `json:"cid"`
+	WorkID string `json:"work_id,omitempty"`
+}
 
 // LLMExtractionRequest is the provider-neutral packet sent to a model lane.
 // It is data, not a live client: callers can route it through Switchback, a local
@@ -23,6 +44,7 @@ type LLMExtractionRequest struct {
 	PriorSignals       []LLMPriorSignal        `json:"prior_signals,omitempty"`
 	RawTrace           string                  `json:"raw_trace,omitempty"`
 	SourceRefs         []string                `json:"source_refs,omitempty"`
+	FindingRefs        []FindingRef            `json:"finding_refs,omitempty"`
 	Work               *LLMWork                `json:"work,omitempty"`
 	Context            *LLMContext             `json:"context,omitempty"`
 	Receipt            *LLMReceipt             `json:"receipt,omitempty"`
@@ -624,4 +646,125 @@ func addSourceRef(req *LLMExtractionRequest, ref string) {
 		}
 	}
 	req.SourceRefs = append(req.SourceRefs, ref)
+}
+
+// BuildLLMExtractionRequestFromFindings constructs a ref-only LLMExtractionRequest whose
+// FindingRefs section defers body hydration until model-execution time. Each supplied id is
+// resolved through finding.Show exactly once; the resolved record is used to capture
+// (id, cid, work_id, EvidenceRefs) atomically — the recorded request carries id+cid+work_id
+// only and SourceRefs is primed with finding:<id>, work:<work_id> (when present), AND every
+// evidence ref the finding itself recorded (the producer's evidence chain is preserved into
+// route/request evidence without a second pass and the TOCTOU window it would otherwise
+// open). SourcePrivacy is forced to "private" so the route/request evidence is properly
+// classified. The artifact is replay-equivalent by construction: same finding content →
+// same request id.
+func BuildLLMExtractionRequestFromFindings(homePath, traceRef string, findingIDs []string, policy Policy, prior PriorState) (LLMExtractionRequest, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return LLMExtractionRequest{}, fmt.Errorf("COMPOUND_HOME required to build finding-grounded request")
+	}
+	if strings.TrimSpace(traceRef) == "" {
+		return LLMExtractionRequest{}, fmt.Errorf("trace_ref is required")
+	}
+	seen := map[string]bool{}
+	refs := make([]FindingRef, 0, len(findingIDs))
+	producerEvidence := make([][]string, 0, len(findingIDs))
+	for _, id := range findingIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if !strings.HasPrefix(id, "find_") {
+			return LLMExtractionRequest{}, fmt.Errorf("finding id %q must start with find_", id)
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		f, err := finding.Show(homePath, id)
+		if err != nil {
+			return LLMExtractionRequest{}, fmt.Errorf("resolve finding %q: %w", id, err)
+		}
+		// The loaded finding's ID must match what was requested — id fabrication by the
+		// store layer must fail closed.
+		if strings.TrimSpace(f.ID) != id {
+			return LLMExtractionRequest{}, fmt.Errorf("finding id mismatch: requested %q, store returned %q", id, f.ID)
+		}
+		if strings.TrimSpace(f.CID) == "" {
+			return LLMExtractionRequest{}, fmt.Errorf("finding %q missing CID", id)
+		}
+		refs = append(refs, FindingRef{ID: f.ID, CID: f.CID, WorkID: strings.TrimSpace(f.WorkID)})
+		producerEvidence = append(producerEvidence, append([]string(nil), f.EvidenceRefs...))
+	}
+	if len(refs) == 0 {
+		return LLMExtractionRequest{}, fmt.Errorf("at least one finding id is required")
+	}
+	req, err := BuildLLMExtractionRequestFromSources(traceRef, LLMExtractionSources{}, policy, prior)
+	if err != nil {
+		return LLMExtractionRequest{}, err
+	}
+	req.SourcePrivacy = "private" // finding bodies are operator-private by construction
+	req.FindingRefs = refs
+	for i, fr := range refs {
+		addSourceRef(&req, FindingSourcePrefix+fr.ID)
+		if strings.TrimSpace(fr.WorkID) != "" {
+			addSourceRef(&req, WorkEvidencePrefix+fr.WorkID)
+		}
+		for _, ev := range producerEvidence[i] {
+			addSourceRef(&req, strings.TrimSpace(ev))
+		}
+	}
+	return req, nil
+}
+
+// HydrateLLMExtractionRequest returns an independent copy of req whose FindingRef entries
+// have been verified against finding.Show (CID integrity is enforced by recomputing
+// finding.CID(body) and comparing BOTH the persisted record's f.CID AND the requested ref
+// fr.CID against it — finding.Show alone does not validate body/CID integrity, so a tampered
+// finding file must fail closed) and whose bodies are materialized into RawTrace so the
+// model prompt can carry them. The stored/ref-only request is left untouched: the
+// recorded/routed path always sees RawTrace empty when sourced from a finding-grounded build.
+func HydrateLLMExtractionRequest(homePath string, req LLMExtractionRequest) (LLMExtractionRequest, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return LLMExtractionRequest{}, fmt.Errorf("COMPOUND_HOME required to hydrate finding-grounded request")
+	}
+	out := req
+	out.FindingRefs = make([]FindingRef, len(req.FindingRefs))
+	copy(out.FindingRefs, req.FindingRefs)
+	if len(out.FindingRefs) == 0 {
+		return LLMExtractionRequest{}, fmt.Errorf("finding-grounded request has no FindingRefs to hydrate")
+	}
+	var b strings.Builder
+	for i, fr := range out.FindingRefs {
+		id := strings.TrimSpace(fr.ID)
+		if id == "" || !strings.HasPrefix(id, "find_") {
+			return LLMExtractionRequest{}, fmt.Errorf("finding_ref[%d] %q: unsupported non-finding ref", i, id)
+		}
+		// The requested ref must carry a non-empty CID; every build path through
+		// BuildLLMExtractionRequestFromFindings populates it, so an empty fr.CID is evidence
+		// the request came through an unauthorised path.
+		if strings.TrimSpace(fr.CID) == "" {
+			return LLMExtractionRequest{}, fmt.Errorf("finding_ref[%d] %q: requested CID is empty (every build path populates it; refuse to materialise without it)", i, id)
+		}
+		f, err := finding.Show(homePath, id)
+		if err != nil {
+			return LLMExtractionRequest{}, fmt.Errorf("finding_ref[%d] %q: %w", i, id, err)
+		}
+		// Loaded ID must match the requested one — refuse id substitution.
+		if strings.TrimSpace(f.ID) != id {
+			return LLMExtractionRequest{}, fmt.Errorf("finding_ref[%d] %q: store returned mismatched id %q", i, id, f.ID)
+		}
+		// Recompute the actual CID from the on-disk body; this catches a tampered file even
+		// when the persisted f.CID was also rewritten to remain internally consistent.
+		actualCID := finding.CID(f.Body)
+		if !strings.EqualFold(f.CID, actualCID) {
+			return LLMExtractionRequest{}, fmt.Errorf("finding_ref[%d] %q: tampered body — persisted CID %q does not match recomputed CID %q", i, id, f.CID, actualCID)
+		}
+		if !strings.EqualFold(fr.CID, actualCID) {
+			return LLMExtractionRequest{}, fmt.Errorf("finding_ref[%d] %q: requested CID %q does not match actual CID %q", i, id, fr.CID, actualCID)
+		}
+		out.FindingRefs[i] = FindingRef{ID: f.ID, CID: f.CID, WorkID: strings.TrimSpace(f.WorkID)}
+		fmt.Fprintf(&b, "[finding:%s cid=%s work=%s]\n%s\n", f.ID, f.CID, f.WorkID, f.Body)
+	}
+	out.RawTrace = b.String()
+	return out, nil
 }
