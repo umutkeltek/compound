@@ -22,6 +22,78 @@ import (
 
 const proofCheckOutCLISubEnv = "COMPOUND_PROOFCHECK_OUT_SUB"
 
+func TestProofCheckGoRunInvocationsUseStableGateIdentity(t *testing.T) {
+	repoPath, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func() proofCheckReport {
+		t.Helper()
+		cmd := exec.Command(
+			"go", "run", "./cmd/compound",
+			"proof-check", "--dry-run", "--json", "--repo", repoPath,
+		)
+		cmd.Dir = repoPath
+		body, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("go run proof-check: %v", err)
+		}
+		var report proofCheckReport
+		if err := json.Unmarshal(body, &report); err != nil {
+			t.Fatalf("decode go-run report: %v\n%s", err, body)
+		}
+		return report
+	}
+	first := run()
+	second := run()
+	if len(first.Steps) != len(second.Steps) {
+		t.Fatalf("go-run gate count changed: %d vs %d", len(first.Steps), len(second.Steps))
+	}
+	for i := range first.Steps {
+		if !reflect.DeepEqual(first.Steps[i].Command, second.Steps[i].Command) {
+			t.Fatalf(
+				"go-run gate %q identity changed across invocations: %q vs %q",
+				first.Steps[i].Name,
+				first.Steps[i].Command,
+				second.Steps[i].Command,
+			)
+		}
+		if len(first.Steps[i].Command) > 0 &&
+			strings.Contains(first.Steps[i].Command[0], "go-build") {
+			t.Fatalf("gate %q exposed temporary go-run executable identity %q", first.Steps[i].Name, first.Steps[i].Command[0])
+		}
+	}
+}
+
+func TestProofCheckInvocationIdentityIsLossless(t *testing.T) {
+	withSpace, err := proofCheckInvocationIdentity([]string{"--repo", "/synthetic/repo with space", "--out", "/synthetic/report.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	split, err := proofCheckInvocationIdentity([]string{"--repo", "/synthetic/repo", "with", "space", "--out", "/synthetic/report.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withSpace == split {
+		t.Fatalf("lossy command identity collapsed distinct argv: %q", withSpace)
+	}
+}
+
+func TestProofCheckInvocationIdentityBindsResolvedReportPath(t *testing.T) {
+	args := []string{"--repo", "/synthetic/repo", "--out", "proof.json"}
+	first, err := proofCheckInvocationIdentity(proofCheckArgsWithResolvedOut(args, "/synthetic/one/proof.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := proofCheckInvocationIdentity(proofCheckArgsWithResolvedOut(args, "/synthetic/two/proof.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("report-path binding collapsed different resolved targets: %q", first)
+	}
+}
+
 // F1: a failed-report verdict line names the FIRST failed gate and says FAILED with
 // honest passed, skipped, failed, and total counts.
 func TestProofCheckVerdictLineFailedNamesFirstFailedGate(t *testing.T) {
@@ -110,6 +182,46 @@ func TestProofCheckWriteReportFileRoundTrips(t *testing.T) {
 	}
 	if strings.TrimSpace(string(raw)) != string(wantJSON) {
 		t.Fatalf("file content != MarshalIndent(report):\nfile: %s\nwant: %s", raw, wantJSON)
+	}
+}
+
+func TestProofCheckWriteReportFilePreservesExistingOnPublicationFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.json")
+	previous := []byte("previous complete proof report\n")
+	if err := os.WriteFile(path, previous, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o755)
+
+	err := proofCheckWriteReportFile(path, proofCheckReport{
+		SchemaVersion: proofCheckSchemaVersion,
+		Status:        "ok",
+		GeneratedAt:   cliTestNow.UTC().Format(time.RFC3339),
+		Repo:          "/repo",
+		Steps: []proofCheckStep{
+			{Name: "go-test", Command: []string{"go", "test", "./..."}, ProofRef: "go-test-count-1-all", Status: "ok"},
+		},
+	})
+	if err == nil {
+		t.Fatal("report publication unexpectedly succeeded in a non-writable parent")
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !reflect.DeepEqual(got, previous) {
+		t.Fatalf("failed report publication changed prior bytes: got=%q want=%q", got, previous)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".report.json.tmp-*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("failed publication leaked sibling temp files: %v", matches)
 	}
 }
 

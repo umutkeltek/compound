@@ -353,7 +353,10 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("parse proof-check report: %v\n%s", err, out)
 	}
-	if report.SchemaVersion != proofCheckSchemaVersion || report.Status != "ok" || !report.DryRun {
+	if report.SchemaVersion != proofCheckSchemaVersion ||
+		report.ProfileKind != work.ProofResourceProfileCanonicalFull ||
+		report.Status != "ok" ||
+		!report.DryRun {
 		t.Fatalf("bad proof-check report: %+v", report)
 	}
 	wantProofs := []string{

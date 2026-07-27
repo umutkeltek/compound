@@ -281,6 +281,75 @@ tampered plan, inactive owner work, or legacy count-only review keeps the normal
 
 ---
 
+### Scarce full-proof admission
+
+Full local proof extends the existing `work` and `landlease` owners. Before the canonical runner
+enters its first subprocess, `work` records an allowing reservation ActionIntent/PolicyDecision,
+mints and durably links one same-work `ratt_*`, then acquires the existing TTL lease with a
+`canonical_full` digest over profile kind, repo, base ref, and the ordered inventory supplied by
+`proofCheckSteps`. A live conflict is terminalized and attached as refused evidence before runner
+entry. The public and adapter boundaries reject custom TTLs below three seconds before reservation;
+accepted TTLs refresh at `min(TTL/3, 5s)` and continuously monitor the exact holder. Expiry or an
+exceptional steal cancels the active gate process group, and successor admission waits for the
+predecessor RunAttempt to confirm termination. Expiry itself never terminalizes a predecessor.
+Recovery dynamically follows every immediate reservation holder to the oldest nonterminal
+RunAttempt; ambiguous or cyclic chains fail closed, so a P→A→B steal cannot certify A's synthetic
+terminal label while P remains live. Every gate subprocess inherits a kernel execution barrier
+owned by `landlease`; generic landing acquire/steal and `run-attempt sweep` consult the same barrier,
+so expiry or a synthetic terminal label cannot admit a successor while any descendant lives. A
+governed live-steal request leaves the holder intact, asks its supervisor to cancel and wait for the
+whole process group, and requires an exact retry after the predecessor releases. Externally
+terminated or crashed predecessors use `--steal --reason ... --terminated-run <ratt_*>`. That
+distinct `security`/manual/repo ActionIntent binds exact grant authority, prior holder, reason, and
+non-reusable RunAttempt identity; Compound's barrier probe is the trusted termination-evidence
+producer, so caller JSON and bare/reused PIDs never authorize transfer. Governance and
+Work/RunAttempt reachability precede lease publication, while the exact reservation event is
+published only after the lease write succeeds; the encoded holder tuple recovers the narrow crash
+window without false `acquired` evidence.
+
+Refresh governance is durably Work-linked before the lease is extended; only the later `pfrh_*`
+record can extend the certifying window, so a crash cannot turn an unaudited heartbeat into proof.
+Completion accepts only an exact owned `canonical_full` report generated inside the continuous
+evidenced window with direct producer exit. An `ok` report requires every reserved gate `ok` and
+publishes `proof-check:pfrs_*` only after result, Work, lifecycle, completion, and terminal
+RunAttempt persistence succeed inside `landlease.ReleaseAfter`. Only after that green commit has
+released does the command publish the installed-runtime artifact consumed by Workbench; candidate,
+release-pending, failed, invalid, dry-run, and CI reports cannot suppress the action. A post-release
+publication fault emits a final non-green post-report verdict and exit 2. Installed-runtime
+publication uses a synced same-directory atomic rename and a required completion footer, so partial
+prefixes are never consumed. Gate identity uses the stable logical `compound` executable while
+runtime dispatch resolves the current binary, keeping exact recovery stable across separate
+`go run` temporary paths. A complete
+`failed` report requires
+every reserved gate terminal `ok|failed` with at least one failure and zero skips; it records
+non-certifying failed result/RunAttempt evidence, releases under the same finalizer, preserves the
+full report, prints one `battery: FAILED` verdict, and exits 1 without a VerificationID. A
+persistence fault retains the holder, terminalizes the returning attempt, and keeps an exact retry
+journal; retry
+mints a governed predecessor-linked attempt when the prior terminal state cannot finish the same
+transaction. The journal advances to the retry before its lifecycle publication and can adopt a
+valid same-work descendant after an interrupted older ordering. A newly minted completion retry
+stays pending until journal plus Work/lifecycle reachability are durable; if the process dies after
+mint but before that publication, the next exact retry discovers and adopts the fully bound
+same-work descendant from the existing RunAttempt owner instead of minting around it. Every retry
+therefore remains recoverable, terminal, and Work-reachable. The final Work preserves the
+completion ActionIntent/PolicyDecision. Retry descendant discovery requires exactly zero or one
+matching child at each lineage hop; multiple matching children are made Work-reachable,
+terminalized, and rejected as ambiguous. If an authoritative green or red result commits but lease
+removal fails, completion returns the committed result
+plus a typed release-pending error and retains the exact holder/journal. Because a report exists,
+the first command preserves `--out`, emits one final `battery: FAILED release_pending=true` stdout
+verdict, and exits nonzero. Every other error after a byte-identical complete `--out` report also
+emits exactly one final `battery: FAILED post_report_error=true` verdict; pre-report usage/admission
+errors emit no fabricated battery. The public
+command checks that journal before reservation: an exact work/actor/workspace/command/profile match resumes the
+owned completion, atomically restores and byte-verifies `--out` from the immutable Compound artifact
+while the lease is still held, returns its prior report, and releases idempotently without a
+heartbeat, new RunAttempt, holder, or gate subprocess. Publication failure retains the journal and
+lease and cannot print green. A mismatch fails closed. Journal cleanup
+happens only after verification publication and lease release have committed. Reservation state may be exposed by UI/read models,
+but is not ContextPack/model context. Dry-run and CI subsets stay outside this certifying path.
+
 ## 3. Hooks are clients, not brains
 
 > Hooks are clients. compound is authority.

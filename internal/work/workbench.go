@@ -2132,6 +2132,10 @@ func (s *Store) adjacentActionProofRefs(actionID string) ([]string, []string) {
 		if !strings.Contains(body, "verified") && !strings.Contains(body, "do not rerun") {
 			continue
 		}
+		if strings.Contains(body, "proof-check-installed-runtime") &&
+			!strings.Contains(body, "publication_complete: true") {
+			continue
+		}
 		refs = append(refs, "artifact:"+filepath.ToSlash(filepath.Join("artifacts", "refs", entry.Name())))
 	}
 	sort.Strings(refs)

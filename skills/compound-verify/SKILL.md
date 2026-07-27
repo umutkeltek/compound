@@ -69,8 +69,37 @@ Two corollaries worth their own line:
 
 2. **Deterministic bundle:**
    ```bash
-   go run ./cmd/compound proof-check --json
+   go run ./cmd/compound proof-check --work <work_id> --actor "<harness>:<lane>" \
+     --out <absolute-report.json>
    ```
+   The actor must already hold the named WorkEnvelope lease. Run the canonical full profile
+   unpiped from a real terminal/PTY with stdout direct; pipes/redirections are refused before
+   reservation or any gate subprocess. Custom `--ttl` values below 3s are likewise refused before
+   admission; accepted windows refresh at `min(TTL/3, 5s)` and monitor holder loss continuously.
+   Each gate inherits the shared land-lease kernel execution barrier. Lease loss, SIGINT/SIGTERM,
+   and governed steal requests cancel and wait the whole gate process group; generic landing
+   acquire, expiry, and `run-attempt sweep` cannot bypass a live descendant. A first live-steal
+   request may refuse while it asks the predecessor to stop; retry the exact command after release.
+   A stale already-dead predecessor uses
+   `--steal --reason "<why>" --terminated-run <ratt_*>`; Compound's barrier probe produces the
+   immutable termination evidence, so caller JSON and bare/reused PIDs are not proof. `--out` receives the full report and
+   stdout ends with the truthful battery verdict. Dry-run/CI subsets are lightweight diagnostics and cannot mint
+   governed verification. `canonical_full` requires every reserved gate to be `ok`—zero skips—to
+   certify. A complete canonical red battery requires every gate `ok|failed` with at least one
+   failure; it finalizes non-certifying evidence, releases the resource, preserves the full report,
+   prints one `battery: FAILED` verdict, exits 1, and creates no VerificationID. Refusal does not
+   create or alter `--out`; successful publication is an atomic synced rename.
+   Installed-runtime publication is likewise atomic and completion-marked; a partial prefix is
+   ignored, and a post-release publication fault emits a final non-green verdict with exit 2.
+   Any error after a complete durable report prints exactly one final non-green battery verdict;
+   pre-report errors print none. A committed green or red result with a retained lease is not a green command: it returns an explicit
+   release-pending error. The exact retry resumes the prior owned report before reservation and
+   atomically restores and byte-verifies `--out` from Compound custody before it releases, without
+   rerunning gates or minting a new RunAttempt. Restore failure retains exclusivity and cannot
+   print green. The first command preserves `--out`, ends stdout with
+   `battery: FAILED release_pending=true`, and exits nonzero. The installed-runtime Workbench
+   artifact is published only after green governed completion and release; candidate,
+   release-pending, failed, invalid, dry-run, and CI reports cannot consume that action.
    Green means: `go test -count=1 ./...`, `go vet ./...`, `go build ./...`, `git diff --check`,
    `architecture doctor --strict`, workbench projection, `memory doctor`, and the public redact
    scan of changed files all passed. Any red stops the close — fix or escalate, never weaken the

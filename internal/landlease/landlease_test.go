@@ -105,6 +105,99 @@ func TestExpiredLeaseAllowsCleanAcquire(t *testing.T) {
 	}
 }
 
+// A scarce-resource consumer must be able to distinguish an ordinary free acquire from safe
+// stale-owner recovery without racing Status against Acquire. The predecessor is returned from
+// the same locked read-modify-write that installs the successor, while the persisted successor
+// remains a clean acquire (expiry is not exceptional stealing).
+func TestAcquireWithOutcomeReturnsExpiredPredecessorAtomically(t *testing.T) {
+	home := t.TempDir()
+	ttl := 30 * time.Second
+
+	if _, err := Acquire(home, laneAlpha, ttl, baseNow); err != nil {
+		t.Fatalf("alpha acquire: %v", err)
+	}
+
+	outcome, err := AcquireWithOutcome(home, laneBeta, ttl, baseNow.Add(31*time.Second))
+	if err != nil {
+		t.Fatalf("beta acquire after expiry: %v", err)
+	}
+	if outcome.Lease.Holder != laneBeta {
+		t.Fatalf("successor holder = %q, want %q", outcome.Lease.Holder, laneBeta)
+	}
+	if outcome.ExpiredPredecessor == nil {
+		t.Fatal("expired predecessor missing; stale recovery would be unauditable")
+	}
+	if outcome.ExpiredPredecessor.Holder != laneAlpha {
+		t.Fatalf("expired predecessor holder = %q, want %q", outcome.ExpiredPredecessor.Holder, laneAlpha)
+	}
+	if outcome.Lease.PriorHolder != "" || outcome.Lease.StealReason != "" || outcome.Lease.StolenAt != "" {
+		t.Fatalf("expiry recovery must remain a clean acquire, got %+v", outcome.Lease)
+	}
+}
+
+func TestPreparedAcquireAndStealPublishOnlyAfterDurabilityBarrier(t *testing.T) {
+	t.Run("acquire prepare failure preserves expired predecessor", func(t *testing.T) {
+		home := t.TempDir()
+		if _, err := Acquire(home, laneAlpha, 30*time.Second, baseNow); err != nil {
+			t.Fatal(err)
+		}
+		prepareErr := errors.New("synthetic reservation persistence fault")
+		_, err := AcquireWithOutcomePrepared(
+			home,
+			laneBeta,
+			30*time.Second,
+			baseNow.Add(31*time.Second),
+			func(outcome AcquireOutcome) error {
+				if outcome.ExpiredPredecessor == nil || outcome.ExpiredPredecessor.Holder != laneAlpha {
+					t.Fatalf("prepare did not observe exact expired predecessor: %+v", outcome)
+				}
+				return prepareErr
+			},
+		)
+		if !errors.Is(err, prepareErr) {
+			t.Fatalf("prepared acquire error = %v, want %v", err, prepareErr)
+		}
+		status, err := Status(home, baseNow.Add(31*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Holder != laneAlpha || !status.IsExpired {
+			t.Fatalf("prepare failure published successor lease: %+v", status)
+		}
+	})
+
+	t.Run("steal prepare failure preserves exact live holder", func(t *testing.T) {
+		home := t.TempDir()
+		if _, err := Acquire(home, laneAlpha, time.Minute, baseNow); err != nil {
+			t.Fatal(err)
+		}
+		prepareErr := errors.New("synthetic governed transfer persistence fault")
+		_, err := StealExpectedPrepared(
+			home,
+			laneBeta,
+			laneAlpha,
+			"test governed transfer",
+			baseNow.Add(time.Second),
+			func(lease Lease) error {
+				if lease.PriorHolder != laneAlpha || lease.Holder != laneBeta {
+					t.Fatalf("prepare did not observe exact transfer: %+v", lease)
+				}
+				return prepareErr
+			},
+		)
+		if !errors.Is(err, prepareErr) {
+			t.Fatalf("prepared steal error = %v, want %v", err, prepareErr)
+		}
+		status, err := Status(home, baseNow.Add(time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !status.Held || status.Holder != laneAlpha {
+			t.Fatalf("prepare failure published stolen lease: %+v", status)
+		}
+	})
+}
+
 // Falsifier 3: Steal is recorded and gated. A plain Acquire never transfers A's LIVE lease; only Steal
 // does, only with a reason, and it records prior_holder + reason + stolen_at.
 func TestStealIsRecordedAndPlainAcquireNeverTransfers(t *testing.T) {
@@ -212,6 +305,52 @@ func TestReleaseIsHolderScoped(t *testing.T) {
 	}
 	if res2.Freed {
 		t.Fatalf("release on empty lease must not report Freed")
+	}
+}
+
+// A governed proof must persist its terminal evidence while it still owns the scarce resource.
+// If that finalizer fails, ReleaseAfter leaves the exact lease in place, so no successor can begin
+// against a partially-persisted result.
+func TestReleaseAfterKeepsLeaseWhenFinalizerFails(t *testing.T) {
+	home := t.TempDir()
+	ttl := 60 * time.Second
+
+	if _, err := Acquire(home, laneAlpha, ttl, baseNow); err != nil {
+		t.Fatalf("A acquire: %v", err)
+	}
+	finalizeErr := errors.New("persist proof result")
+	called := false
+	if _, err := ReleaseAfter(home, laneAlpha, baseNow.Add(time.Second), func() error {
+		called = true
+		return finalizeErr
+	}); !errors.Is(err, finalizeErr) {
+		t.Fatalf("ReleaseAfter error = %v, want %v", err, finalizeErr)
+	}
+	if !called {
+		t.Fatal("ReleaseAfter did not invoke finalizer")
+	}
+	status, err := Status(home, baseNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Held || status.Holder != laneAlpha {
+		t.Fatalf("failed finalizer released or transferred lease: %+v", status)
+	}
+	if _, err := Acquire(home, laneBeta, ttl, baseNow.Add(2*time.Second)); err == nil {
+		t.Fatal("successor acquired after failed finalizer")
+	}
+
+	released, err := ReleaseAfter(home, laneAlpha, baseNow.Add(3*time.Second), func() error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("successful ReleaseAfter: %v", err)
+	}
+	if !released.Freed {
+		t.Fatalf("successful ReleaseAfter = %+v, want Freed", released)
+	}
+	if _, err := Acquire(home, laneBeta, ttl, baseNow.Add(4*time.Second)); err != nil {
+		t.Fatalf("successor after finalized release: %v", err)
 	}
 }
 

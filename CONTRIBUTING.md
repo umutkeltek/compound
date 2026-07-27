@@ -41,8 +41,12 @@ go test ./internal/work/ -count=1 -timeout 5m
 go run ./cmd/compound architecture doctor --strict
 
 # Full proof bundle (tests + vet + build + gofmt + doctors):
-go run ./cmd/compound proof-check --json
+go run ./cmd/compound proof-check --work <claimed-work-id> --actor <lease-holder> \
+  --out <absolute-report.json>
 ```
+
+Run the full profile unpiped from a real terminal/PTY. All canonical gates must
+finish `ok`—a skipped gate is diagnostic evidence, not certifying proof.
 
 **Note:** some packages (`internal/work`, `internal/authority`,
 `internal/eventstore`) have slow tests (2-5 min each). Use `-p 2` to limit
@@ -122,8 +126,11 @@ skills/                   Agent ceremony definitions
    installed-runtime proof evidence or satisfy pre-land or post-land proof.
 
    ```sh
-   go run ./cmd/compound proof-check --json
+   go run ./cmd/compound proof-check --work <claimed-work-id> --actor <lease-holder> \
+     --out <absolute-report.json>
    ```
+   The command atomically replaces `--out` only after the complete report is
+   synced; admission or transport refusal never creates or changes the target.
 4. **One logical change per PR.** If your change teaches something about the
    architecture, update the docs/contracts/tests in the same change.
 5. **CI runs automatically** on push/PR: `proof-check --ci` (Go gates) +

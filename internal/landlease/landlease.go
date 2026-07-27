@@ -1,8 +1,9 @@
-// Package landlease is a single-holder, TTL-bounded, steal-with-reason MUTEX on the ACT of landing to
-// main — distinct from the per-work leases in internal/work. Concurrent executor lanes (multiple
-// Claude/Codex harnesses driving ONE repo) consult it to serialize the fast-forward-merge window
-// instead of colliding and retrying. It is a COORDINATION HINT layer: it never mutates repo state and
-// emits no PolicyDecision/Receipt — it only records WHO currently holds the right to land.
+// Package landlease is a single-holder, TTL-bounded, steal-with-reason MUTEX for scarce repo-wide
+// proof/landing resources — distinct from the per-work leases in internal/work. Concurrent executor
+// lanes (multiple Claude/Codex harnesses driving ONE repo) consult it to serialize full proof
+// batteries and the fast-forward-merge window instead of contending and producing ambiguous proof.
+// It is a coordination primitive, not meaning authority: it never emits a PolicyDecision/Receipt.
+// Governed consumers wrap its holder transitions in their own ActionIntent/PolicyDecision evidence.
 //
 // The lease is a JSON file at $COMPOUND_HOME/state/land-lease.json guarded by an exclusive OS advisory
 // lock ($COMPOUND_HOME/lock/land-lease.lock, syscall.Flock LOCK_EX) so every read-modify-write is
@@ -25,6 +26,7 @@
 package landlease
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +36,82 @@ import (
 	"syscall"
 	"time"
 )
+
+// ExecutionPendingError means lease time expired or a steal was requested,
+// but at least one process still owns the predecessor's inherited execution
+// barrier. Callers must not begin scarce work while this error is returned.
+type ExecutionPendingError struct {
+	Holder string
+}
+
+func (e *ExecutionPendingError) Error() string {
+	return fmt.Sprintf("land-lease holder %q still has a live execution tree", e.Holder)
+}
+
+// ExecutionUnattestedError rejects state-only recovery of a proof holder
+// created before the inherited barrier protocol. Expiry is not termination.
+type ExecutionUnattestedError struct {
+	Holder string
+}
+
+func (e *ExecutionUnattestedError) Error() string {
+	return fmt.Sprintf("land-lease proof holder %q has no trusted execution termination barrier", e.Holder)
+}
+
+type ExecutionTerminationAttestation struct {
+	BarrierID string `json:"barrier_id"`
+	Holder    string `json:"holder"`
+	Producer  string `json:"producer"`
+}
+
+// ExecutionBarrier is an advisory lock whose descriptor is inherited by every
+// scarce subprocess. The kernel releases it only after the final duplicate
+// exits or closes, so liveness does not rely on a reusable PID or RunAttempt
+// status label.
+type ExecutionBarrier struct {
+	id   string
+	file *os.File
+}
+
+func (b *ExecutionBarrier) ID() string {
+	if b == nil {
+		return ""
+	}
+	return b.id
+}
+
+func (b *ExecutionBarrier) DuplicateForChild() (*os.File, error) {
+	if b == nil || b.file == nil {
+		return nil, fmt.Errorf("land-lease execution barrier is closed")
+	}
+	fd, err := syscall.Dup(int(b.file.Fd()))
+	if err != nil {
+		return nil, fmt.Errorf("duplicate land-lease execution barrier: %w", err)
+	}
+	return os.NewFile(uintptr(fd), b.file.Name()), nil
+}
+
+// InheritableFile returns the owned descriptor for exec.Cmd.ExtraFiles.
+// os/exec duplicates it into the child; the caller must not close this file
+// separately from Close.
+func (b *ExecutionBarrier) InheritableFile() *os.File {
+	if b == nil {
+		return nil
+	}
+	return b.file
+}
+
+func (b *ExecutionBarrier) Close() error {
+	if b == nil || b.file == nil {
+		return nil
+	}
+	file := b.file
+	b.file = nil
+	// Do not issue LOCK_UN: duplicates inherited by child processes share the
+	// same open-file description, and an explicit unlock here would release
+	// their protection too. Closing the final descriptor releases the lock.
+	return file.Close()
+}
 
 const (
 	// SchemaVersion of the persisted lease record.
@@ -47,21 +125,25 @@ const (
 // relative paths beneath COMPOUND_HOME (this organ owns creating both dirs — generated runtime state
 // lives under the home, never the repo source tree).
 const (
-	lockRelPath  = "lock/land-lease.lock"
-	stateRelPath = "state/land-lease.json"
+	lockRelPath             = "lock/land-lease.lock"
+	stateRelPath            = "state/land-lease.json"
+	executionBarrierRelPath = "lock/land-lease-execution"
 )
 
 // Lease is the persisted land-lease record. The steal-audit fields (PriorHolder/StealReason/StolenAt)
 // are set ONLY on a lease produced by Steal; a plain Acquire always leaves them empty.
 type Lease struct {
-	SchemaVersion string `json:"schema_version"`
-	Holder        string `json:"holder"`
-	AcquiredAt    string `json:"acquired_at"` // RFC3339 (UTC)
-	TTLSeconds    int64  `json:"ttl_seconds"`
-	ExpiresAt     string `json:"expires_at"` // RFC3339 (UTC)
-	PriorHolder   string `json:"prior_holder,omitempty"`
-	StealReason   string `json:"steal_reason,omitempty"`
-	StolenAt      string `json:"stolen_at,omitempty"`
+	TerminationRequestedBy   string `json:"termination_requested_by,omitempty"`
+	TerminationRequestReason string `json:"termination_request_reason,omitempty"`
+	TerminationRequestedAt   string `json:"termination_requested_at,omitempty"`
+	SchemaVersion            string `json:"schema_version"`
+	Holder                   string `json:"holder"`
+	AcquiredAt               string `json:"acquired_at"` // RFC3339 (UTC)
+	TTLSeconds               int64  `json:"ttl_seconds"`
+	ExpiresAt                string `json:"expires_at"` // RFC3339 (UTC)
+	PriorHolder              string `json:"prior_holder,omitempty"`
+	StealReason              string `json:"steal_reason,omitempty"`
+	StolenAt                 string `json:"stolen_at,omitempty"`
 }
 
 // live reports whether the lease is still held at now (now strictly before expiry). An unparseable
@@ -113,17 +195,29 @@ type ReleaseResult struct {
 // lease; the record's fields (Holder/AcquiredAt/ExpiresAt + any steal audit) are surfaced even when
 // expired so an operator can see what just aged out.
 type StatusResult struct {
-	SchemaVersion    string `json:"schema_version"`
-	Held             bool   `json:"held"`
-	Holder           string `json:"holder,omitempty"`
-	AcquiredAt       string `json:"acquired_at,omitempty"`
-	ExpiresAt        string `json:"expires_at,omitempty"`
-	TTLSeconds       int64  `json:"ttl_seconds,omitempty"`
-	RemainingSeconds int64  `json:"remaining_seconds"`
-	IsExpired        bool   `json:"is_expired"`
-	PriorHolder      string `json:"prior_holder,omitempty"`
-	StealReason      string `json:"steal_reason,omitempty"`
-	StolenAt         string `json:"stolen_at,omitempty"`
+	TerminationRequestedBy   string `json:"termination_requested_by,omitempty"`
+	TerminationRequestReason string `json:"termination_request_reason,omitempty"`
+	TerminationRequestedAt   string `json:"termination_requested_at,omitempty"`
+	SchemaVersion            string `json:"schema_version"`
+	Held                     bool   `json:"held"`
+	Holder                   string `json:"holder,omitempty"`
+	AcquiredAt               string `json:"acquired_at,omitempty"`
+	ExpiresAt                string `json:"expires_at,omitempty"`
+	TTLSeconds               int64  `json:"ttl_seconds,omitempty"`
+	RemainingSeconds         int64  `json:"remaining_seconds"`
+	IsExpired                bool   `json:"is_expired"`
+	PriorHolder              string `json:"prior_holder,omitempty"`
+	StealReason              string `json:"steal_reason,omitempty"`
+	StolenAt                 string `json:"stolen_at,omitempty"`
+}
+
+// AcquireOutcome exposes the predecessor observed inside the same advisory-lock transaction that
+// installs Lease. ExpiredPredecessor is non-nil only when an existing non-live record was replaced;
+// consumers can therefore record stale-owner recovery without a racy Status-before-Acquire read.
+// The installed Lease remains a clean acquire: expiry recovery is not exceptional stealing.
+type AcquireOutcome struct {
+	Lease              Lease  `json:"lease"`
+	ExpiredPredecessor *Lease `json:"expired_predecessor,omitempty"`
 }
 
 // Clock is the injected time source for the polling wait loop. The single-shot ops take a plain
@@ -147,15 +241,48 @@ func (RealClock) Sleep(d time.Duration) { time.Sleep(d) }
 // lease — a plain Acquire never silently transfers a live lease (only Steal does). The write is atomic
 // under the exclusive flock, and always produces a CLEAN record (steal-audit fields empty).
 func Acquire(home, holder string, ttl time.Duration, now time.Time) (Lease, error) {
+	outcome, err := AcquireWithOutcome(home, holder, ttl, now)
+	return outcome.Lease, err
+}
+
+// AcquireWithOutcome has Acquire's exact mutual-exclusion semantics and additionally returns the
+// expired/stale predecessor, when one existed, from inside the locked read-modify-write. This is
+// the auditable stale-recovery seam for consumers that need to bind lease recovery to governed
+// work evidence. Ordinary callers should keep using Acquire.
+func AcquireWithOutcome(home, holder string, ttl time.Duration, now time.Time) (AcquireOutcome, error) {
+	return acquireWithOutcomePrepared(home, holder, ttl, now, nil)
+}
+
+// AcquireWithOutcomePrepared is AcquireWithOutcome plus a pre-publication durability barrier.
+// prepare runs under the same land-lease lock after the exact outcome is known and before the new
+// lease is published. A prepare failure leaves the prior lease byte-identical.
+func AcquireWithOutcomePrepared(
+	home, holder string,
+	ttl time.Duration,
+	now time.Time,
+	prepare func(AcquireOutcome) error,
+) (AcquireOutcome, error) {
+	if prepare == nil {
+		return AcquireOutcome{}, fmt.Errorf("land-lease acquire prepare callback required")
+	}
+	return acquireWithOutcomePrepared(home, holder, ttl, now, prepare)
+}
+
+func acquireWithOutcomePrepared(
+	home, holder string,
+	ttl time.Duration,
+	now time.Time,
+	prepare func(AcquireOutcome) error,
+) (AcquireOutcome, error) {
 	holder = strings.TrimSpace(holder)
 	if holder == "" {
-		return Lease{}, fmt.Errorf("land-lease holder required")
+		return AcquireOutcome{}, fmt.Errorf("land-lease holder required")
 	}
 	ttlSecs := int64(ttl / time.Second)
 	if ttlSecs <= 0 {
-		return Lease{}, fmt.Errorf("land-lease ttl must be at least one second")
+		return AcquireOutcome{}, fmt.Errorf("land-lease ttl must be at least one second")
 	}
-	var acquired Lease
+	var outcome AcquireOutcome
 	err := withLock(home, func() error {
 		statePath, sErr := statePath(home)
 		if sErr != nil {
@@ -172,13 +299,71 @@ func Acquire(home, holder string, ttl time.Duration, now time.Time) (Lease, erro
 				Remaining: current.remainingSeconds(now),
 			}
 		}
-		acquired = newLease(holder, ttlSecs, now)
-		return writeLeaseAtomic(statePath, acquired)
+		if exists && current.Holder != holder {
+			pending, err := executionBarrierPending(home, current.Holder)
+			if err != nil {
+				return err
+			}
+			if pending {
+				return &ExecutionPendingError{Holder: current.Holder}
+			}
+		}
+		if exists && !current.live(now) {
+			expired := *current
+			outcome.ExpiredPredecessor = &expired
+		}
+		outcome.Lease = newLease(holder, ttlSecs, now)
+		if prepare != nil {
+			if err := prepare(outcome); err != nil {
+				return err
+			}
+		}
+		return writeLeaseAtomic(statePath, outcome.Lease)
+	})
+	if err != nil {
+		return AcquireOutcome{}, err
+	}
+	return outcome, nil
+}
+
+// Refresh extends only an exact, still-LIVE holder. Unlike Acquire it never resurrects an expired
+// record, so a proof heartbeat that arrives after its TTL cannot reopen an exclusive window that a
+// successor was already entitled to take.
+func Refresh(home, holder string, ttl time.Duration, now time.Time) (Lease, error) {
+	holder = strings.TrimSpace(holder)
+	if holder == "" {
+		return Lease{}, fmt.Errorf("land-lease holder required")
+	}
+	ttlSecs := int64(ttl / time.Second)
+	if ttlSecs <= 0 {
+		return Lease{}, fmt.Errorf("land-lease ttl must be at least one second")
+	}
+	var refreshed Lease
+	err := withLock(home, func() error {
+		statePath, sErr := statePath(home)
+		if sErr != nil {
+			return sErr
+		}
+		current, exists, rErr := readLease(statePath)
+		if rErr != nil {
+			return rErr
+		}
+		if !exists {
+			return fmt.Errorf("land-lease not held; refusing refresh for %q", holder)
+		}
+		if current.Holder != holder {
+			return fmt.Errorf("land-lease held by %q, not %q — refusing refresh", current.Holder, holder)
+		}
+		if !current.live(now) {
+			return fmt.Errorf("land-lease for %q expired at %s; refusing refresh", holder, current.ExpiresAt)
+		}
+		refreshed = newLease(holder, ttlSecs, now)
+		return writeLeaseAtomic(statePath, refreshed)
 	})
 	if err != nil {
 		return Lease{}, err
 	}
-	return acquired, nil
+	return refreshed, nil
 }
 
 // errWatchUnsupported is returned by newLeaseWatcher on a platform with no supported file-event
@@ -315,7 +500,63 @@ func Release(home, holder string, now time.Time) (ReleaseResult, error) {
 		if err := os.Remove(statePath); err != nil {
 			return err
 		}
+		if err := syncDirectory(filepath.Dir(statePath)); err != nil {
+			return err
+		}
 		result = ReleaseResult{Freed: true, Holder: holder, Message: "land-lease released"}
+		return nil
+	})
+	if err != nil {
+		return ReleaseResult{}, err
+	}
+	return result, nil
+}
+
+// ReleaseAfter runs finalize while holder is still the exact current LIVE lease holder, and removes
+// the lease only when finalize succeeds. The finalizer therefore persists authoritative proof/work
+// evidence inside the exclusive window: a failed finalizer leaves the lease untouched and prevents a
+// successor from starting against a partially-persisted result.
+//
+// ReleaseAfter is deliberately stricter than Release: a missing or expired lease is an error, because
+// a governed proof completion cannot become valid merely because its old record still names holder.
+// Callers must not recursively call landlease operations from finalize; the advisory flock is held.
+func ReleaseAfter(home, holder string, now time.Time, finalize func() error) (ReleaseResult, error) {
+	holder = strings.TrimSpace(holder)
+	if holder == "" {
+		return ReleaseResult{}, fmt.Errorf("land-lease holder required")
+	}
+	if finalize == nil {
+		return ReleaseResult{}, fmt.Errorf("land-lease release finalizer required")
+	}
+	var result ReleaseResult
+	err := withLock(home, func() error {
+		statePath, sErr := statePath(home)
+		if sErr != nil {
+			return sErr
+		}
+		current, exists, rErr := readLease(statePath)
+		if rErr != nil {
+			return rErr
+		}
+		if !exists {
+			return fmt.Errorf("land-lease not held; refusing finalized release for %q", holder)
+		}
+		if current.Holder != holder {
+			return fmt.Errorf("land-lease held by %q, not %q — refusing to finalize or release someone else's lease", current.Holder, holder)
+		}
+		if !current.live(now) {
+			return fmt.Errorf("land-lease for %q expired at %s; refusing late finalized release", holder, current.ExpiresAt)
+		}
+		if err := finalize(); err != nil {
+			return err
+		}
+		if err := os.Remove(statePath); err != nil {
+			return err
+		}
+		if err := syncDirectory(filepath.Dir(statePath)); err != nil {
+			return err
+		}
+		result = ReleaseResult{Freed: true, Holder: holder, Message: "land-lease finalized and released"}
 		return nil
 	})
 	if err != nil {
@@ -329,6 +570,44 @@ func Release(home, holder string, now time.Time) (ReleaseResult, error) {
 // (which never transfers a live lease). The stolen lease inherits the prior record's TTL (or the
 // package default when there is no prior record), timed from now.
 func Steal(home, newHolder, reason string, now time.Time) (Lease, error) {
+	return stealExpected(home, newHolder, "", reason, now, false, nil)
+}
+
+// StealExpected has Steal's transfer semantics but refuses unless the current holder exactly matches
+// expectedPriorHolder. A governed caller can therefore read the prior holder, include it and the
+// exceptional reason in its ActionIntent/PolicyDecision, then perform the transfer without a
+// time-of-check/time-of-use substitution.
+func StealExpected(home, newHolder, expectedPriorHolder, reason string, now time.Time) (Lease, error) {
+	expectedPriorHolder = strings.TrimSpace(expectedPriorHolder)
+	if expectedPriorHolder == "" {
+		return Lease{}, fmt.Errorf("land-lease expected prior holder required")
+	}
+	return stealExpected(home, newHolder, expectedPriorHolder, reason, now, true, nil)
+}
+
+// StealExpectedPrepared is StealExpected plus a pre-publication durability barrier. prepare sees
+// the exact audited transfer while the expected-holder check is still protected by the lease lock.
+func StealExpectedPrepared(
+	home, newHolder, expectedPriorHolder, reason string,
+	now time.Time,
+	prepare func(Lease) error,
+) (Lease, error) {
+	expectedPriorHolder = strings.TrimSpace(expectedPriorHolder)
+	if expectedPriorHolder == "" {
+		return Lease{}, fmt.Errorf("land-lease expected prior holder required")
+	}
+	if prepare == nil {
+		return Lease{}, fmt.Errorf("land-lease steal prepare callback required")
+	}
+	return stealExpected(home, newHolder, expectedPriorHolder, reason, now, true, prepare)
+}
+
+func stealExpected(
+	home, newHolder, expectedPriorHolder, reason string,
+	now time.Time,
+	requireExpected bool,
+	prepare func(Lease) error,
+) (Lease, error) {
 	newHolder = strings.TrimSpace(newHolder)
 	if newHolder == "" {
 		return Lease{}, fmt.Errorf("land-lease steal requires a holder")
@@ -347,6 +626,23 @@ func Steal(home, newHolder, reason string, now time.Time) (Lease, error) {
 		if rErr != nil {
 			return rErr
 		}
+		if requireExpected {
+			if !exists {
+				return fmt.Errorf("land-lease expected holder %q, but no lease exists", expectedPriorHolder)
+			}
+			if current.Holder != expectedPriorHolder {
+				return fmt.Errorf("land-lease holder changed from expected %q to %q; refusing governed steal", expectedPriorHolder, current.Holder)
+			}
+		}
+		if exists {
+			pending, err := executionBarrierPending(home, current.Holder)
+			if err != nil {
+				return err
+			}
+			if pending {
+				return &ExecutionPendingError{Holder: current.Holder}
+			}
+		}
 		ttlSecs := int64(DefaultTTLSeconds)
 		priorHolder := ""
 		if exists {
@@ -359,6 +655,11 @@ func Steal(home, newHolder, reason string, now time.Time) (Lease, error) {
 		stolen.PriorHolder = priorHolder
 		stolen.StealReason = reason
 		stolen.StolenAt = now.UTC().Format(time.RFC3339)
+		if prepare != nil {
+			if err := prepare(stolen); err != nil {
+				return err
+			}
+		}
 		return writeLeaseAtomic(statePath, stolen)
 	})
 	if err != nil {
@@ -389,6 +690,9 @@ func Status(home string, now time.Time) (StatusResult, error) {
 		result.PriorHolder = current.PriorHolder
 		result.StealReason = current.StealReason
 		result.StolenAt = current.StolenAt
+		result.TerminationRequestedBy = current.TerminationRequestedBy
+		result.TerminationRequestReason = current.TerminationRequestReason
+		result.TerminationRequestedAt = current.TerminationRequestedAt
 		result.RemainingSeconds = current.remainingSeconds(now)
 		result.Held = current.live(now)
 		result.IsExpired = exists && !current.live(now)
@@ -495,5 +799,233 @@ func writeLeaseAtomic(statePath string, lease Lease) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, statePath)
+	if err := os.Rename(tmpName, statePath); err != nil {
+		return err
+	}
+	return syncDirectory(dir)
+}
+
+// AcquireWithExecutionBarrierPrepared is AcquireWithOutcomePrepared plus an
+// inherited process-tree barrier. Ordinary acquire and steal consult the same
+// barrier before replacing this holder.
+func AcquireWithExecutionBarrierPrepared(
+	home, holder string,
+	ttl time.Duration,
+	now time.Time,
+	prepare func(AcquireOutcome) error,
+) (AcquireOutcome, *ExecutionBarrier, error) {
+	if prepare == nil {
+		return AcquireOutcome{}, nil, fmt.Errorf("land-lease acquire prepare callback required")
+	}
+	var barrier *ExecutionBarrier
+	outcome, err := acquireWithOutcomePrepared(
+		home,
+		holder,
+		ttl,
+		now,
+		func(outcome AcquireOutcome) error {
+			var err error
+			barrier, err = lockExecutionBarrier(home, holder)
+			if err != nil {
+				return err
+			}
+			return prepare(outcome)
+		},
+	)
+	if err != nil {
+		if barrier != nil {
+			_ = barrier.Close()
+		}
+		return AcquireOutcome{}, nil, err
+	}
+	return outcome, barrier, nil
+}
+
+// StealExpectedWithExecutionBarrierPrepared performs an exact governed steal
+// only after the predecessor execution barrier is released, and installs a
+// new inherited barrier before the successor lease becomes visible.
+func StealExpectedWithExecutionBarrierPrepared(
+	home, newHolder, expectedPriorHolder, reason string,
+	now time.Time,
+	prepare func(Lease) error,
+) (Lease, *ExecutionBarrier, error) {
+	newHolder = strings.TrimSpace(newHolder)
+	expectedPriorHolder = strings.TrimSpace(expectedPriorHolder)
+	reason = strings.TrimSpace(reason)
+	if newHolder == "" || expectedPriorHolder == "" || reason == "" || prepare == nil {
+		return Lease{}, nil, fmt.Errorf("land-lease governed barrier steal requires holder, expected prior holder, reason, and prepare callback")
+	}
+	var stolen Lease
+	var barrier *ExecutionBarrier
+	err := withLock(home, func() error {
+		statePath, err := statePath(home)
+		if err != nil {
+			return err
+		}
+		current, exists, err := readLease(statePath)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("land-lease expected holder %q, but no lease exists", expectedPriorHolder)
+		}
+		if current.Holder != expectedPriorHolder {
+			return fmt.Errorf("land-lease holder changed from expected %q to %q; refusing governed steal", expectedPriorHolder, current.Holder)
+		}
+		pending, err := executionBarrierPending(home, current.Holder)
+		if err != nil {
+			return err
+		}
+		if pending {
+			return &ExecutionPendingError{Holder: current.Holder}
+		}
+		ttlSecs := current.TTLSeconds
+		if ttlSecs <= 0 {
+			ttlSecs = DefaultTTLSeconds
+		}
+		stolen = newLease(newHolder, ttlSecs, now)
+		stolen.PriorHolder = current.Holder
+		stolen.StealReason = reason
+		stolen.StolenAt = now.UTC().Format(time.RFC3339)
+		barrier, err = lockExecutionBarrier(home, newHolder)
+		if err != nil {
+			return err
+		}
+		if err := prepare(stolen); err != nil {
+			return err
+		}
+		return writeLeaseAtomic(statePath, stolen)
+	})
+	if err != nil {
+		if barrier != nil {
+			_ = barrier.Close()
+		}
+		return Lease{}, nil, err
+	}
+	return stolen, barrier, nil
+}
+
+func lockExecutionBarrier(home, holder string) (*ExecutionBarrier, error) {
+	id := executionBarrierID(holder)
+	dir := filepath.Join(home, executionBarrierRelPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, id+".lock")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("lock land-lease execution barrier %s: %w", id, err)
+	}
+	return &ExecutionBarrier{id: id, file: file}, nil
+}
+
+func executionBarrierID(holder string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(holder)))
+	return fmt.Sprintf("lleb_%x", sum[:12])
+}
+
+func executionBarrierPending(home, holder string) (bool, error) {
+	holder = strings.TrimSpace(holder)
+	if holder == "" {
+		return false, nil
+	}
+	path := filepath.Join(home, executionBarrierRelPath, executionBarrierID(holder)+".lock")
+	file, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if errors.Is(err, os.ErrNotExist) {
+		if strings.HasPrefix(holder, "proof:") {
+			return false, &ExecutionUnattestedError{Holder: holder}
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return true, nil
+		}
+		return false, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_UN); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// AttestExecutionTerminated is the trusted production evidence producer. It
+// succeeds only for an installed exact barrier after the kernel permits an
+// exclusive nonblocking lock, which means the final inherited descriptor has
+// closed.
+func AttestExecutionTerminated(home, holder string) (ExecutionTerminationAttestation, error) {
+	pending, err := executionBarrierPending(home, holder)
+	if err != nil {
+		return ExecutionTerminationAttestation{}, err
+	}
+	if pending {
+		return ExecutionTerminationAttestation{}, &ExecutionPendingError{Holder: holder}
+	}
+	return ExecutionTerminationAttestation{
+		BarrierID: executionBarrierID(holder),
+		Holder:    strings.TrimSpace(holder),
+		Producer:  "compound.landlease.execution-barrier",
+	}, nil
+}
+
+// RequestExecutionTermination records an auditable cancellation request while
+// leaving the current holder and its barrier intact. A cooperative proof
+// supervisor observes the request, cancels and waits for its process group,
+// and only then can the requester retry the governed transfer.
+func RequestExecutionTermination(
+	home, expectedHolder, requestedBy, reason string,
+	now time.Time,
+) (Lease, error) {
+	expectedHolder = strings.TrimSpace(expectedHolder)
+	requestedBy = strings.TrimSpace(requestedBy)
+	reason = strings.TrimSpace(reason)
+	if expectedHolder == "" || requestedBy == "" || reason == "" {
+		return Lease{}, fmt.Errorf("land-lease termination request requires expected holder, requester, and reason")
+	}
+	var updated Lease
+	err := withLock(home, func() error {
+		statePath, err := statePath(home)
+		if err != nil {
+			return err
+		}
+		current, exists, err := readLease(statePath)
+		if err != nil {
+			return err
+		}
+		if !exists || current.Holder != expectedHolder {
+			return fmt.Errorf("land-lease holder changed while requesting termination of %q", expectedHolder)
+		}
+		current.TerminationRequestedBy = requestedBy
+		current.TerminationRequestReason = reason
+		current.TerminationRequestedAt = now.UTC().Format(time.RFC3339Nano)
+		updated = *current
+		return writeLeaseAtomic(statePath, updated)
+	})
+	return updated, err
+}
+
+// ExecutionPending exposes the shared read-only process-tree barrier probe to
+// sweep and UI projections. It never changes lease or barrier state.
+func ExecutionPending(home, holder string) (bool, error) {
+	return executionBarrierPending(home, holder)
+}
+
+func syncDirectory(dir string) error {
+	file, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := file.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
+		return err
+	}
+	return nil
 }

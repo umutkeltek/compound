@@ -70,12 +70,43 @@ the pre-land or post-land full proof below.
 Run the `compound-verify` skill. Minimum bar before any commit to main:
 
 ```bash
-go run ./cmd/compound proof-check --json --out <file>   # tests, vet, build, diff-check, console
-                                                         # smokes, doctor --strict, workbench,
-                                                         # memory doctor, redact
+go run ./cmd/compound proof-check --work <work_id> --actor "<harness>:<lane>" \
+  --out <absolute-report.json>   # tests, vet, build, diff-check, console smokes,
+                                # doctor --strict, workbench, memory doctor, redact
 ```
 
-- Exit contract: `0` ok · `1` a gate FAILED · `2` usage. Never "fix" a red gate by weakening
+- The actor must already hold the named WorkEnvelope's work lease. Full local proof is a
+  `canonical_full` profile: Compound reserves the existing scarce land-lease resource and binds it
+  to that `work_id`, exact `ratt_*`, repo/base, and gate digest before the first subprocess. A
+  conflicting run is refused before execution. Custom `--ttl` values below 3s are refused before
+  reservation; accepted values refresh at `min(TTL/3, 5s)` and monitor holder loss continuously.
+  Each gate inherits the shared land-lease kernel execution barrier. Lease loss, SIGINT/SIGTERM, or
+  a governed steal request cancels and waits the whole gate process group; generic landing acquire,
+  expiry, and `run-attempt sweep` cannot bypass a live descendant. A first live-steal request may
+  refuse while it asks the predecessor to stop; retry the exact command after that audited release.
+  For a stale already-dead predecessor use
+  `--steal --reason "<why>" --terminated-run <ratt_*>`; Compound's barrier probe produces the
+  immutable Work-reachable termination evidence. Caller JSON and bare/reused PIDs are not proof.
+  Run from a real terminal/PTY with stdout direct;
+  pipe or redirect stdout and admission fails. Every reserved gate must finish `ok` to certify;
+  `skipped` is non-certifying. A complete canonical red battery (every gate `ok|failed`, at least
+  one failed) finalizes as non-certifying evidence, releases the resource, preserves the full
+  report, ends stdout with one `battery: FAILED`, and exits 1. Refusal leaves `--out` absent or
+  byte-identical, and successful publication syncs a sibling temp before atomic rename. A committed
+  green or red result whose lease removal remains pending exits non-green with an explicit recovery
+  error; retry the exact command to release the retained holder before treating the battery as
+  available to a successor. That retry resumes the prior owned report before reservation,
+  atomically restores and byte-verifies `--out` from Compound custody while the lease remains held,
+  and does not rerun the gates or mint a new `ratt_*`. Restore failure retains exclusivity and
+  cannot print green. The
+  first release-pending command preserves `--out` and ends stdout with
+  `battery: FAILED release_pending=true`, never `battery: ok`. Any other error after a complete
+  durable report also ends stdout with exactly one non-green battery verdict; pre-report
+  usage/admission errors print none. Publish the installed-runtime Workbench artifact only after a
+  green governed completion has released—never from candidate, failed, invalid, release-pending,
+  dry-run, or CI output.
+- Exit contract: `0` ok · `1` a gate FAILED · `2` usage/admission/publication/finalization error.
+  Never "fix" a red gate by weakening
   the gate, deleting the test, or raising a budget — that is the one unforgivable move here.
 - **Remove executor build caches (`.gocache/`, `.cache/`) from the worktree before the battery** —
   the redact gate scans untracked files; build-cache blobs carry 16-digit runs that false-positive
@@ -86,7 +117,7 @@ go run ./cmd/compound proof-check --json --out <file>   # tests, vet, build, dif
   unpiped, foreground or backgrounded.
 - **`--out <file>` is the sanctioned invocation now; the `> out.json 2>&1; echo "EXIT=$?"` wrapper
   is RETIRED.** `proof-check` owns its own output contract: `--out FILE` writes the FULL report to
-  FILE itself (a write/close failure is its own exit-2, even if every gate passed), and prints one
+  FILE itself (a prepare/publication failure is its own exit-2, even if every gate passed), and prints one
   `battery: ok gates=N/M out=FILE` or `battery: FAILED gates=N/M first_failed=NAME out=FILE` line as
   the LAST stdout line — with a truthful process exit code (`0`/`1`/`2`) throughout. There is no
   wrapper shell exit left to lie. Foreground: read the verdict line (or just check `$?`). Backgrounded:
@@ -258,8 +289,9 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   releasing with nothing held is an idempotent no-op — safe to run even if acquire never happened
   (e.g. a trivial single-commit land that skipped §3). `steal --reason` (§3) remains the escape
   hatch if a DIFFERENT lane needs to take over a lease this one abandoned without releasing.
-- Re-run `go run ./cmd/compound proof-check` on landed main (cheap insurance against a
-  rehearsal/main divergence).
+- Re-run `go run ./cmd/compound proof-check --work <work_id> --actor "<harness>:<lane>"
+  --out <absolute-report.json>` unpiped from a real terminal on landed main (cheap insurance
+  against a rehearsal/main divergence).
 - **If the land touched `cmd/compound` or `internal/{hook,harness,contract,mem,breadth}`: run
   `./install.sh`** — hooks and external consumers use the installed binary, which self-reports its
   build SHA since 9b5736b (`compound version`; arch doctor warns fresh/stale/missing). A stale

@@ -22,9 +22,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/landlease"
 	"compound/internal/runattempt"
 	"compound/internal/work"
 )
@@ -236,6 +238,20 @@ func buildDelegateLivenessProbeWithRunner(homePath string, runner work.SessionRu
 		}
 	}
 	return func(ra runattempt.RunAttempt) (bool, error) {
+		status, statusErr := landlease.Status(homePath, time.Now().UTC())
+		if statusErr != nil {
+			return false, statusErr
+		}
+		parts := strings.SplitN(status.Holder, ":", 5)
+		if len(parts) == 5 && parts[0] == "proof" && parts[2] == ra.ID {
+			pending, pendingErr := landlease.ExecutionPending(homePath, status.Holder)
+			if pendingErr != nil {
+				return false, pendingErr
+			}
+			if pending {
+				return true, nil
+			}
+		}
 		binding, _, rerr := wstore.RecoverBoundSession(ra.WorkID)
 		if rerr != nil {
 			return false, rerr

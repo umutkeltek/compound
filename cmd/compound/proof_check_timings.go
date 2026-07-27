@@ -2,6 +2,7 @@ package main
 
 import (
 	"compound/internal/home"
+	"compound/internal/work"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -263,7 +264,7 @@ func proofCheckTimingStats(store proofCheckTimingsStore, profileKind, repo strin
 	repo = strings.TrimSpace(repo)
 	matched := make([]proofCheckTimingRun, 0, len(store.Runs))
 	for _, run := range store.Runs {
-		if run.ProfileKind != profileKind {
+		if !proofCheckTimingProfileMatches(run.ProfileKind, profileKind) {
 			continue
 		}
 		// A run against a different REPOSITORY is not a sample of this one's cost; a run from
@@ -364,9 +365,9 @@ func cmdProofCheckTimings(args []string) {
 		fmt.Fprintln(os.Stderr, "proof-check --timings:", err)
 		os.Exit(2)
 	}
-	profileKind := ""
+	profileKind := work.ProofResourceProfileCanonicalFull
 	if hasFlag(args, "--dev") {
-		profileKind = "development"
+		profileKind = proofCheckProfileDevelopment
 	}
 	// Default to the tree the operator is standing in. Reporting a budget derived from a
 	// different repo's runs would be worse than reporting nothing.
@@ -407,8 +408,20 @@ func cmdProofCheckTimings(args []string) {
 	}
 }
 
+// proofCheckTimingProfileMatches decides whether a recorded run belongs to the queried lane.
+// The certifying battery now stamps profile_kind="canonical_full" because admission refuses to
+// certify a report without it, but every run recorded before that carries "". Both are the
+// certifying lane: matching only the new label would silently restart the budget distribution
+// from zero samples while still printing a confident number.
+func proofCheckTimingProfileMatches(runKind, queryKind string) bool {
+	if queryKind == work.ProofResourceProfileCanonicalFull {
+		return runKind == "" || runKind == work.ProofResourceProfileCanonicalFull
+	}
+	return runKind == queryKind
+}
+
 func laneLabel(profileKind string) string {
-	if profileKind == "" {
+	if profileKind == "" || profileKind == work.ProofResourceProfileCanonicalFull {
 		return "certifying"
 	}
 	return profileKind

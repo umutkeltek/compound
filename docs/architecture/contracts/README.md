@@ -190,6 +190,69 @@ Packet-sourced WorkEnvelopes may carry optional `proof_medium` from a `Proof-med
 intent→context→action→policy→run→receipt→transition replaces scattered packet/run/provider/receipt/slug ids.
 Governance is enforced at adapters: **a mutating adapter rejects a mutation lacking a valid `PolicyDecision`**.
 
+### Full-proof reservation contract
+
+Full-proof reservation is additive WorkEnvelope evidence over the existing `landlease`, not a
+scheduler or second coordination authority. The canonical command names the claimed `work_id`,
+actor, and `--out`; direct-terminal transport is validated before reservation or runner entry.
+Custom TTLs below three seconds are rejected as usage at both public and admission boundaries;
+accepted TTLs refresh at `min(TTL/3, 5s)` and continuously monitor holder identity. Lease loss
+cancels the active process group, and a recovery/steal does not admit its runner until the
+oldest nonterminal predecessor RunAttempt confirms termination. Expiry never synthesizes that
+confirmation. Recovery traverses the complete reservation-holder lineage dynamically; ambiguity or
+a cycle fails closed. A failed termination handshake leaves a terminal, Work-reachable successor
+attempt behind a non-executable lease barrier that preserves the original blocking RunAttempt for
+the next recovery; chained steals never open a free-resource gap.
+Reservation `pfr_*`, refresh `pfrh_*`, result `pfrs_*`, completion, and exact `ratt_*` refs stay
+reachable from the Work lifecycle. Only profiles whose reservation and report kinds are both
+`canonical_full` can certify, and every reserved canonical gate must report `ok` (zero skips).
+A complete canonical `failed` report is valid non-certifying evidence only when every reserved gate
+is terminal `ok|failed`, at least one gate failed, successful proof refs match exactly, and no gate
+skipped. It finalizes the failed result and RunAttempt under the held lease, releases the resource,
+preserves the full report, emits one truthful FAILED verdict, exits 1, and never enters
+VerificationIDs.
+The digest also binds repo, base ref, and ordered gate identities;
+completion rechecks report inventory, commands, proof refs, and the continuously evidenced lease
+window. The command owner single-sources the inventory in `proofCheckSteps`; `work` validates kind
+and digest rather than owning a duplicate gate list.
+
+Ordinary reserve/refresh/complete actions use the normal policy path. Exceptional live stealing is
+a separate `security` action with prior holder/reason and requires stricter grant authority.
+External stale-owner recovery uses an even more explicit steal ActionIntent:
+`--steal --reason ... --terminated-run <ratt_*>` must identify the exact oldest nonterminal
+RunAttempt. The land-lease owner probes its inherited kernel execution barrier and Compound itself
+produces the immutable termination receipt; caller-authored JSON and bare/reused PIDs are never
+authority. The governed termination record and artifact remain reachable from Work.
+Reserve and refresh governance plus Work/RunAttempt reachability are durable before their scarce
+lease mutation. The lease holder encodes the exact reservation/RunAttempt/work tuple and the
+process tree inherits its kernel barrier before publication; the reservation event is promoted only
+after lease publication succeeds, so a callback-success/lease-write failure cannot leave false
+`acquired` evidence. An interrupted reserve is recovered from the exact holder-bound RunAttempt and
+trusted released-barrier evidence, while an
+interrupted refresh cannot extend the certifying window without its final `pfrh_*` evidence.
+Authoritative result, Work, lifecycle, completion, and RunAttempt persistence finalizes under the
+lease; release follows only a successful finalizer, and the exact pending journal makes faults
+retryable through terminal predecessor-linked attempts without exposing valid verification or
+admitting a successor. Retry journal evolution precedes retry lifecycle publication and can adopt
+exactly one valid same-work descendant after an interrupted write order; multiple matching children
+are made Work-reachable, terminalized, and rejected as ambiguous. A new retry remains pending until
+its journal and Work/lifecycle reachability are durable; a hard crash after mint is recovered by
+discovering and adopting the fully bound same-work descendant from the RunAttempt owner, keeping
+every attempt terminal and Work-reachable. Journal cleanup is post-commit: a cleanup fault cannot
+return an error after VerificationIDs become visible. Lease release is stricter: if removal fails after the authoritative
+commit, the green or red result remains visible but completion returns a typed release-pending error and retains
+the exact journal/holder; the report remains in `--out` and the command ends stdout with an explicit
+FAILED/release-pending verdict plus nonzero exit. Any other error after a complete byte-identical
+`--out` emits exactly one final non-green battery verdict; pre-report errors emit none. A green
+installed-runtime artifact is published only after governed release, never from a candidate,
+failed, invalid, release-pending, dry-run, or CI report. Before ordinary reservation, the public proof
+command matches the live holder and pending journal against the exact work, actor, workspace, opaque command, canonical
+profile, and completion-input digest; a match returns the prior owned report and releases through
+the existing governed completion without runner entry or a new RunAttempt, but only after `--out`
+is atomically restored and byte-verified against the immutable Compound artifact while exclusivity
+is still held. Restore failure retains the lease/journal and cannot return green. Dry-run, CI, and future
+development profiles are non-certifying.
+
 ## Knowledge / domain contracts
 
 `compound work active-packet-proof [--surface S] [--source-packet packet.md]` is the read-only proof owner for active packet serving. It filters WorkEnvelopes by canonical surface and reports `ok` only when the WorkEnvelope, ContextPack, Receipt, and Transition chain all match; when a source packet is supplied, it also checks that the current packet hash/evidence ref matches the proof chain before serving terminal proof. OS/dashboard readers consume this command before falling back to packet markdown or brain pointers as source evidence.

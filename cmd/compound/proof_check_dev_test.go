@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compound/internal/work"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -43,15 +44,19 @@ func TestProofCheckCanonicalReportOmitsDevelopmentProfileKind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonical dry-run: %v", err)
 	}
-	if report.SchemaVersion != proofCheckSchemaVersion || report.ProfileKind != "" {
-		t.Fatalf("canonical report schema/profile = %q/%q, want %q/empty", report.SchemaVersion, report.ProfileKind, proofCheckSchemaVersion)
+	// The certifying battery stamps canonical_full: admission refuses to certify a report whose
+	// profile_kind is not exactly that (internal/work/proof_reservation.go). What must never
+	// happen is a canonical report wearing the DEVELOPMENT label, which would let non-certifying
+	// evidence pass as proof.
+	if report.SchemaVersion != proofCheckSchemaVersion || report.ProfileKind != work.ProofResourceProfileCanonicalFull {
+		t.Fatalf("canonical report schema/profile = %q/%q, want %q/%q", report.SchemaVersion, report.ProfileKind, proofCheckSchemaVersion, work.ProofResourceProfileCanonicalFull)
 	}
 	data, err := json.Marshal(report)
 	if err != nil {
 		t.Fatalf("marshal canonical report: %v", err)
 	}
-	if strings.Contains(string(data), `"profile_kind"`) {
-		t.Fatalf("canonical JSON gained development-only field: %s", data)
+	if strings.Contains(string(data), proofCheckProfileDevelopment) {
+		t.Fatalf("canonical JSON carries the development profile label: %s", data)
 	}
 }
 

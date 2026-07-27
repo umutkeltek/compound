@@ -3,18 +3,24 @@ package main
 import (
 	"bytes"
 	"compound/internal/home"
+	"compound/internal/landlease"
 	"compound/internal/policy"
+	"compound/internal/work"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
-const proofCheckSchemaVersion = "compound.proof_check_report.v0.1"
+const proofCheckSchemaVersion = "compound.proof_check_report.v0.2"
 
 type proofCheckReport struct {
 	SchemaVersion string           `json:"schema_version"`
@@ -49,9 +55,12 @@ type proofCheckStep struct {
 	CIPortable bool `json:"-"`
 }
 
+var proofCheckCanonicalRunner = runProofCheckContext
+var proofCheckRuntimeArtifactRecorder = recordProofCheckRuntimeArtifact
+
 func cmdProofCheck(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--dev|--ci|--ci-console] [--repo P] [--base REF] [--out FILE]")
+		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--dev|--ci|--ci-console] [--repo P] [--base REF] [--out FILE] [--work ID --actor ACTOR]")
 		fmt.Println("  --dev         fast, cache-enabled, non-certifying developer feedback")
 		fmt.Println("  --ci          run only the fresh-clone-portable gate subset (bare Go gates; what CI runs on push/PR)")
 		fmt.Println("  --ci-console  run only the console/TypeScript gate subset (needs bun + console/node_modules;")
@@ -60,6 +69,11 @@ func cmdProofCheck(args []string) {
 		fmt.Println("                line as the last stdout line; the process exit code stays truthful (0/1/2)")
 		fmt.Println("  --timings     report the recorded per-gate duration history instead of running the battery")
 		fmt.Println("                (--dev selects the development lane, --window N the sample depth)")
+		fmt.Println("  --work ID --actor ACTOR  required for a full local battery; reserves the scarce proof resource")
+		fmt.Println("  --ttl DURATION            reservation TTL (minimum 3s, default 45m; renewed by RunAttempt heartbeat)")
+		fmt.Println("  --steal --reason TEXT     exceptional audited transfer of a live proof/land resource")
+		fmt.Println("  --terminated-run RATT_ID --termination-evidence ARTIFACT_REF")
+		fmt.Println("                governed proof that the oldest stopped predecessor was terminated and waited")
 		return
 	}
 	if hasFlag(args, "--timings") {
@@ -81,50 +95,140 @@ func cmdProofCheck(args []string) {
 	repoPath := flagValue(args, "--repo")
 	baseRef := flagValue(args, "--base")
 	outPath := strings.TrimSpace(flagValue(args, "--out"))
+	workID := strings.TrimSpace(flagValue(args, "--work"))
+	actor := strings.TrimSpace(flagValue(args, "--actor"))
+	steal := hasFlag(args, "--steal")
+	stealReason := strings.TrimSpace(flagValue(args, "--reason"))
+	terminatedRunAttemptID := strings.TrimSpace(flagValue(args, "--terminated-run"))
+	terminationEvidenceRef := strings.TrimSpace(flagValue(args, "--termination-evidence"))
 	if outPath != "" {
-		// Fail-closed BEFORE the (potentially 5-minute) battery runs: an --out path that
-		// cannot be opened for writing must not waste the run.
+		var outErr error
+		outPath, outErr = filepath.Abs(outPath)
+		if outErr != nil {
+			fmt.Fprintln(os.Stderr, "proof-check: resolve --out path:", outErr)
+			os.Exit(2)
+		}
+		// Fail-closed BEFORE the battery runs, without truncating an existing report: a
+		// conflicting request must not damage the active holder's --out bytes before admission.
 		if err := proofCheckValidateOutPath(outPath); err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check: --out path not writable:", err)
 			os.Exit(2)
 		}
 	}
 	started := time.Now()
-	report, err := runProofCheck(repoPath, dryRun, baseRef, ciOnly, ciConsole, started)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "proof-check:", err)
-		os.Exit(2)
-	}
-	wall := time.Since(started)
-	if !dryRun {
-		homePath, homeErr := home.Resolve("")
-		if homeErr != nil {
-			report.Warnings = append(report.Warnings, "COMPOUND_HOME unresolved; proof artifact and timing history not recorded: "+homeErr.Error())
-		} else {
-			if proofCheckShouldRecordArtifact(dryRun, report.Status, ciOnly, ciConsole) {
-				var recordErr error
-				report, recordErr = recordProofCheckRuntimeArtifact(homePath, report)
-				if recordErr != nil {
-					report.Warnings = append(report.Warnings, "proof artifact not recorded: "+recordErr.Error())
-				}
+
+	var report proofCheckReport
+	governedFullProof := proofCheckNeedsAdmission(dryRun, ciOnly, ciConsole)
+	if governedFullProof {
+		if workID == "" || actor == "" || outPath == "" {
+			fmt.Fprintln(os.Stderr, "proof-check: a full local battery requires --work ID, --actor ACTOR, and --out FILE before any gate subprocess")
+			os.Exit(2)
+		}
+		ttl := defaultProofCheckReservationTTL
+		if rawTTL := strings.TrimSpace(flagValue(args, "--ttl")); rawTTL != "" {
+			parsed, parseErr := time.ParseDuration(rawTTL)
+			if parseErr != nil || parsed < minimumProofCheckReservationTTL {
+				fmt.Fprintf(os.Stderr, "proof-check: --ttl must be a duration of at least %s\n", minimumProofCheckReservationTTL)
+				os.Exit(2)
 			}
-			// Recorded for EVERY executed run, red included. A failing battery's gate durations
-			// are as real as a passing one's, and folding only green runs into the baseline
-			// would bias it toward whatever happens to pass — precisely the blind spot that let
-			// the go-test budget drift 10m -> 20m -> 40m without anyone holding a distribution.
-			if warning, timingErr := recordProofCheckTimingHistory(homePath, report, wall, time.Now()); timingErr != nil {
-				report.Warnings = append(report.Warnings, "proof-check timing history not recorded: "+timingErr.Error())
-			} else if warning != "" {
-				report.Warnings = append(report.Warnings, warning)
+			ttl = parsed
+		}
+		resolvedRepo, err := resolveProofCheckRepo(repoPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		profile, err := proofCheckAdmissionProfile(resolvedRepo, baseRef)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		commandIdentity, err := proofCheckInvocationIdentity(proofCheckArgsWithResolvedOut(args, outPath))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		var completed work.ProofResourceCompleteResult
+		signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopSignals()
+		report, completed, err = runProofCheckWithAdmissionContext(proofCheckAdmissionInput{
+			Context:                signalContext,
+			HomePath:               homePath,
+			WorkID:                 workID,
+			Actor:                  actor,
+			Workspace:              resolvedRepo,
+			Command:                commandIdentity,
+			Profile:                profile,
+			ReportPath:             outPath,
+			TTL:                    ttl,
+			Steal:                  steal,
+			StealReason:            stealReason,
+			TerminatedRunAttemptID: terminatedRunAttemptID,
+			TerminationEvidenceRef: terminationEvidenceRef,
+			Now:                    time.Now,
+		}, func(ctx context.Context) (proofCheckReport, error) {
+			produced, runErr := proofCheckCanonicalRunner(ctx, resolvedRepo, false, baseRef, false, false, time.Now())
+			if runErr != nil {
+				return produced, runErr
+			}
+			// The authoritative report file is durable before completion can attach verification.
+			if writeErr := proofCheckWriteReportFile(outPath, produced); writeErr != nil {
+				return produced, fmt.Errorf("writing --out file: %w", writeErr)
+			}
+			return produced, nil
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			if verdict, ok := proofCheckPostReportErrorVerdict(report, outPath, err); ok {
+				fmt.Println(verdict)
+			}
+			os.Exit(2)
+		}
+		if report.Status == "ok" &&
+			completed.VerificationRef != "" &&
+			completed.ResourceReleased &&
+			!completed.RecoveryJournalRetained {
+			if _, recordErr := proofCheckRuntimeArtifactRecorder(homePath, report); recordErr != nil {
+				fmt.Fprintln(os.Stderr, "proof-check: installed-runtime proof publication:", recordErr)
+				if verdict, ok := proofCheckPostReportErrorVerdict(report, outPath, recordErr); ok {
+					fmt.Println(verdict)
+				}
+				os.Exit(2)
+			}
+		}
+	} else {
+		var err error
+		report, err = runProofCheck(repoPath, dryRun, baseRef, ciOnly, ciConsole, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		if outPath != "" {
+			// A battery whose evidence file failed to write is not green, even if every gate
+			// passed: this exit-2 must win over the normal ok/failed (0/1) exit below.
+			if err := proofCheckWriteReportFile(outPath, report); err != nil {
+				fmt.Fprintln(os.Stderr, "proof-check: writing --out file:", err)
+				os.Exit(2)
 			}
 		}
 	}
-	if outPath != "" {
-		// A battery whose evidence file failed to write is not green, even if every gate
-		// passed: this exit-2 must win over the normal ok/failed (0/1) exit below.
-		if err := proofCheckWriteReportFile(outPath, report); err != nil {
-			fmt.Fprintln(os.Stderr, "proof-check: writing --out file:", err)
-			os.Exit(2)
+	if !dryRun {
+		// Recorded for EVERY executed run, red included, on the governed and the ci path
+		// alike. A failing battery's gate durations are as real as a passing one's, and
+		// folding only green runs into the baseline would bias it toward whatever happens to
+		// pass — precisely the blind spot that let the go-test budget drift 10m -> 20m -> 40m
+		// without anyone holding a distribution.
+		if homePath, homeErr := home.Resolve(""); homeErr != nil {
+			report.Warnings = append(report.Warnings, "COMPOUND_HOME unresolved; proof-check timing history not recorded: "+homeErr.Error())
+		} else if warning, timingErr := recordProofCheckTimingHistory(homePath, report, time.Since(started), time.Now()); timingErr != nil {
+			report.Warnings = append(report.Warnings, "proof-check timing history not recorded: "+timingErr.Error())
+		} else if warning != "" {
+			report.Warnings = append(report.Warnings, warning)
 		}
 	}
 	if jsonOut {
@@ -159,34 +263,136 @@ func proofCheckShouldRecordArtifact(dryRun bool, status string, ciOnly, ciConsol
 	return !dryRun && status == "ok" && !ciOnly && !ciConsole
 }
 
-// proofCheckValidateOutPath proves --out's path is writable (create/truncate) before the
-// battery runs, so an unwritable path fails fast instead of after a multi-minute run.
+func proofCheckAdmissionProfile(repo, baseRef string) (work.ProofResourceProfile, error) {
+	steps, err := proofCheckSteps(baseRef)
+	if err != nil {
+		return work.ProofResourceProfile{}, err
+	}
+	gates := make([]work.ProofResourceGateProfile, 0, len(steps))
+	for _, step := range steps {
+		gates = append(gates, work.ProofResourceGateProfile{
+			Name:          step.Name,
+			Command:       append([]string(nil), step.Command...),
+			Dir:           step.Dir,
+			SkipIfMissing: step.SkipIfMissing,
+			ProofRef:      step.ProofRef,
+		})
+	}
+	return work.NewProofResourceProfile(work.ProofResourceProfileCanonicalFull, repo, baseRef, gates)
+}
+
+func proofCheckInvocationIdentity(args []string) (string, error) {
+	argv := append([]string{"compound", "proof-check"}, args...)
+	body, err := json.Marshal(argv)
+	if err != nil {
+		return "", err
+	}
+	return "argv-json:" + string(body), nil
+}
+
+func proofCheckArgsWithResolvedOut(args []string, resolvedOut string) []string {
+	out := append([]string(nil), args...)
+	for i := range out {
+		switch {
+		case out[i] == "--out" && i+1 < len(out):
+			out[i+1] = resolvedOut
+			return out
+		case strings.HasPrefix(out[i], "--out="):
+			out[i] = "--out=" + resolvedOut
+			return out
+		}
+	}
+	return out
+}
+
+// proofCheckValidateOutPath proves --out's path is writable without creating or changing
+// the target before admission. A sibling probe validates a nonexistent target's parent.
 func proofCheckValidateOutPath(path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if _, err := os.Lstat(path); err == nil {
+		f, openErr := os.OpenFile(path, os.O_WRONLY, 0)
+		if openErr != nil {
+			return openErr
+		}
+		return f.Close()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	probe, err := os.CreateTemp(dir, "."+filepath.Base(path)+".preflight-*")
 	if err != nil {
 		return err
 	}
-	return f.Close()
+	probePath := probe.Name()
+	if closeErr := probe.Close(); closeErr != nil {
+		_ = os.Remove(probePath)
+		return closeErr
+	}
+	if err := os.Remove(probePath); err != nil {
+		return err
+	}
+	return proofCheckSyncDirectory(dir)
 }
 
 // proofCheckWriteReportFile writes the full report as indented JSON to path — the same
-// shape as --json stdout, regardless of whether --json was passed. Any open/write/close
-// error is returned so the caller can fail closed (exit 2).
+// shape as --json stdout, regardless of whether --json was passed. Publication uses a
+// synced sibling temp and atomic rename, so a failed preparation never truncates the
+// previous complete report.
 func proofCheckWriteReportFile(path string, report proofCheckReport) error {
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	return proofCheckWriteReportBytes(path, data)
+}
+
+func proofCheckWriteReportBytes(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	if _, writeErr := f.Write(data); writeErr != nil {
-		f.Close()
-		return writeErr
+	tempPath := temp.Name()
+	defer func() {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+	}()
+	if err := temp.Chmod(0o644); err != nil {
+		return err
 	}
-	return f.Close()
+	for remaining := data; len(remaining) > 0; {
+		n, writeErr := temp.Write(remaining)
+		if writeErr != nil {
+			return writeErr
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		remaining = remaining[n:]
+	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	return proofCheckSyncDirectory(dir)
+}
+
+func proofCheckSyncDirectory(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := f.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
+		return err
+	}
+	return nil
 }
 
 // proofCheckVerdictLine renders the single final stdout line printed when --out is
@@ -234,7 +440,80 @@ func proofCheckVerdictLine(report proofCheckReport, path string) string {
 	return fmt.Sprintf("battery: FAILED passed=%d skipped=%d failed=%d total=%d first_failed=%s out=%s", passed, skipped, failed, total, firstFailed, path)
 }
 
+func proofCheckReleasePendingVerdictLine(report proofCheckReport, path string) string {
+	total := len(report.Steps)
+	passed := 0
+	skipped := 0
+	failed := 0
+	for _, step := range report.Steps {
+		switch step.Status {
+		case "ok":
+			passed++
+		case "skipped":
+			skipped++
+		case "failed":
+			failed++
+		}
+	}
+	return fmt.Sprintf(
+		"battery: FAILED release_pending=true passed=%d skipped=%d failed=%d total=%d out=%s",
+		passed,
+		skipped,
+		failed,
+		total,
+		path,
+	)
+}
+
+func proofCheckPostReportErrorVerdict(report proofCheckReport, path string, cause error) (string, bool) {
+	if report.SchemaVersion == "" || strings.TrimSpace(path) == "" {
+		return "", false
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	expected, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return "", false
+	}
+	expected = append(expected, '\n')
+	if !bytes.Equal(body, expected) {
+		return "", false
+	}
+	var releasePending *work.ProofResourceReleasePendingError
+	if errors.As(cause, &releasePending) {
+		return proofCheckReleasePendingVerdictLine(report, path), true
+	}
+	total := len(report.Steps)
+	passed := 0
+	skipped := 0
+	failed := 0
+	for _, step := range report.Steps {
+		switch step.Status {
+		case "ok":
+			passed++
+		case "skipped":
+			skipped++
+		case "failed":
+			failed++
+		}
+	}
+	return fmt.Sprintf(
+		"battery: FAILED post_report_error=true passed=%d skipped=%d failed=%d total=%d out=%s",
+		passed,
+		skipped,
+		failed,
+		total,
+		path,
+	), true
+}
+
 func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, ciConsole bool, now time.Time) (proofCheckReport, error) {
+	return runProofCheckContext(context.Background(), repoPath, dryRun, baseRef, ciOnly, ciConsole, now)
+}
+
+func runProofCheckContext(ctx context.Context, repoPath string, dryRun bool, baseRef string, ciOnly bool, ciConsole bool, now time.Time) (proofCheckReport, error) {
 	repo, err := resolveProofCheckRepo(repoPath)
 	if err != nil {
 		return proofCheckReport{}, err
@@ -251,6 +530,7 @@ func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, ci
 	}
 	report := proofCheckReport{
 		SchemaVersion: proofCheckSchemaVersion,
+		ProfileKind:   work.ProofResourceProfileCanonicalFull,
 		Status:        "ok",
 		GeneratedAt:   now.UTC().Format(time.RFC3339),
 		Repo:          repo,
@@ -265,7 +545,7 @@ func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, ci
 		if dryRun {
 			result.Status = "planned"
 		} else {
-			result = runProofCheckStep(repo, step, baseRef)
+			result = runProofCheckStepContext(ctx, repo, step, baseRef)
 			if result.Status == "failed" {
 				report.Status = "failed"
 			}
@@ -311,7 +591,8 @@ func recordProofCheckRuntimeArtifact(homePath string, report proofCheckReport) (
 	for _, step := range report.Steps {
 		fmt.Fprintf(&b, "- step: %s proof_ref=%s status=%s\n", step.Name, step.ProofRef, step.Status)
 	}
-	if err := os.WriteFile(filepath.Join(refsDir, name), []byte(b.String()), 0o644); err != nil {
+	fmt.Fprintln(&b, "- publication_complete: true")
+	if err := proofCheckWriteReportBytes(filepath.Join(refsDir, name), []byte(b.String())); err != nil {
 		return report, err
 	}
 	report.ArtifactRef = ref
@@ -341,10 +622,7 @@ func resolveProofCheckRepo(repoPath string) (string, error) {
 }
 
 func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
+	exe := "compound"
 	redactCommand := []string{"redact", "--repo-visibility", "public", "--from-file", "<changed files>"}
 	if strings.TrimSpace(baseRef) != "" {
 		redactCommand = []string{"redact", "--repo-visibility", "public", "--from-file", "<files changed in " + strings.TrimSpace(baseRef) + "...HEAD>"}
@@ -491,6 +769,10 @@ var proofCheckHomeOwningGates = map[string]func(repo string, step proofCheckStep
 }
 
 func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCheckStep {
+	return runProofCheckStepContext(context.Background(), repo, step, baseRef)
+}
+
+func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckStep, baseRef string) proofCheckStep {
 	start := time.Now()
 	result := step
 	result.Status = "ok"
@@ -506,17 +788,24 @@ func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCh
 		}
 	}
 	if step.Name == "redact-public" {
-		output, err = runProofCheckRedact(repo, baseRef)
+		output, err = runProofCheckRedactContext(ctx, repo, baseRef)
 	} else if step.Name == "gofmt" {
-		output, err = runProofCheckGofmt(repo)
+		output, err = runProofCheckGofmtContext(ctx, repo)
 	} else if step.Name == "codex-pretooluse-native-gate" {
-		output, err = runProofCheckCodexPreToolUseNativeGate(repo, step)
+		output, err = runProofCheckCodexPreToolUseNativeGateContext(ctx, repo, step)
 	} else if step.Name == "bun-tools-test" {
-		output, err = runProofCheckBunTools(repo)
+		output, err = runProofCheckBunTools(ctx, repo)
 	} else if runner, owns := proofCheckHomeOwningGates[step.Name]; owns {
 		output, err = runner(repo, step)
 	} else {
-		cmd := exec.Command(step.Command[0], step.Command[1:]...)
+		executable, executableErr := proofCheckRuntimeExecutable(step.Command[0])
+		if executableErr != nil {
+			result.Status = "failed"
+			result.OutputTail = executableErr.Error()
+			result.ExitCode = 1
+			return result
+		}
+		cmd := proofCheckCommandContext(ctx, executable, step.Command[1:]...)
 		cmd.Dir = repo
 		if step.Dir != "" {
 			cmd.Dir = filepath.Join(repo, step.Dir)
@@ -537,6 +826,10 @@ func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCh
 }
 
 func runProofCheckCodexPreToolUseNativeGate(repo string, step proofCheckStep) ([]byte, error) {
+	return runProofCheckCodexPreToolUseNativeGateContext(context.Background(), repo, step)
+}
+
+func runProofCheckCodexPreToolUseNativeGateContext(ctx context.Context, repo string, step proofCheckStep) ([]byte, error) {
 	tmpHome, err := os.MkdirTemp("", "compound-proofcheck-home-*")
 	if err != nil {
 		return nil, err
@@ -590,7 +883,11 @@ func runProofCheckCodexPreToolUseNativeGate(repo string, step proofCheckStep) ([
 
 	runPatch := func(sessionID, patch string) (claudeLiveHookResponse, []byte, error) {
 		input := fmt.Sprintf(`{"hook_event_name":"PreToolUse","session_id":%q,"cwd":%q,"tool_name":"apply_patch","tool_input":{"command":%q}}`, sessionID, tmpRepo, patch)
-		cmd := exec.Command(step.Command[0], step.Command[1:]...)
+		executable, err := proofCheckRuntimeExecutable(step.Command[0])
+		if err != nil {
+			return claudeLiveHookResponse{}, nil, err
+		}
+		cmd := proofCheckCommandContext(ctx, executable, step.Command[1:]...)
 		cmd.Dir = repo
 		cmd.Env = append(os.Environ(), "COMPOUND_HOME="+tmpHome, "HOME="+tmpRepo, "PLACEMENT_GUARD_MODE=block")
 		cmd.Stdin = strings.NewReader(input)
@@ -644,7 +941,7 @@ func runProofCheckCodexPreToolUseNativeGate(repo string, step proofCheckStep) ([
 	return combined, nil
 }
 
-func runProofCheckBunTools(repo string) ([]byte, error) {
+func runProofCheckBunTools(ctx context.Context, repo string) ([]byte, error) {
 	matches, err := filepath.Glob(filepath.Join(repo, "tools", "*.test.ts"))
 	if err != nil {
 		return nil, err
@@ -660,14 +957,18 @@ func runProofCheckBunTools(repo string) ([]byte, error) {
 		}
 		args = append(args, "."+string(filepath.Separator)+rel)
 	}
-	cmd := exec.Command("bun", args...)
+	cmd := proofCheckCommandContext(ctx, "bun", args...)
 	cmd.Dir = repo
 	cmd.Env = os.Environ()
 	return cmd.CombinedOutput()
 }
 
 func runProofCheckGofmt(repo string) ([]byte, error) {
-	files, err := proofCheckGitNULList(repo, "ls-files", "*.go", "-z")
+	return runProofCheckGofmtContext(context.Background(), repo)
+}
+
+func runProofCheckGofmtContext(ctx context.Context, repo string) ([]byte, error) {
+	files, err := proofCheckGitNULListContext(ctx, repo, "ls-files", "*.go", "-z")
 	if err != nil {
 		return nil, err
 	}
@@ -675,7 +976,7 @@ func runProofCheckGofmt(repo string) ([]byte, error) {
 		return []byte("no tracked Go files\n"), nil
 	}
 	args := append([]string{"-l"}, files...)
-	cmd := exec.Command("gofmt", args...)
+	cmd := proofCheckCommandContext(ctx, "gofmt", args...)
 	cmd.Dir = repo
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -691,6 +992,13 @@ func proofCheckUsesGo(step proofCheckStep) bool {
 	return len(step.Command) > 0 && step.Command[0] == "go"
 }
 
+func proofCheckRuntimeExecutable(logical string) (string, error) {
+	if logical == "compound" {
+		return os.Executable()
+	}
+	return logical, nil
+}
+
 func proofCheckExitCode(err error) int {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -700,13 +1008,17 @@ func proofCheckExitCode(err error) int {
 }
 
 func runProofCheckRedact(repo, baseRef string) ([]byte, error) {
-	files, err := proofCheckChangedFiles(repo, baseRef)
+	return runProofCheckRedactContext(context.Background(), repo, baseRef)
+}
+
+func runProofCheckRedactContext(ctx context.Context, repo, baseRef string) ([]byte, error) {
+	files, err := proofCheckChangedFilesContext(ctx, repo, baseRef)
 	if err != nil {
 		return nil, err
 	}
 	var combined bytes.Buffer
 	for _, file := range files {
-		cmd := exec.Command("redact", "--repo-visibility", "public", "--from-file", file)
+		cmd := proofCheckCommandContext(ctx, "redact", "--repo-visibility", "public", "--from-file", file)
 		cmd.Dir = repo
 		out, err := cmd.CombinedOutput()
 		combined.Write(out)
@@ -725,10 +1037,14 @@ func runProofCheckRedact(repo, baseRef string) ([]byte, error) {
 }
 
 func proofCheckChangedFiles(repo, baseRef string) ([]string, error) {
+	return proofCheckChangedFilesContext(context.Background(), repo, baseRef)
+}
+
+func proofCheckChangedFilesContext(ctx context.Context, repo, baseRef string) ([]string, error) {
 	// Redact scans only bodies that still exist. With rename detection disabled,
 	// a rename is represented as delete+add: ACM retains the new body while the
 	// deleted source is excluded.
-	paths, err := proofCheckChangedPaths(repo, baseRef, "ACM")
+	paths, err := proofCheckChangedPathsContext(ctx, repo, baseRef, "ACM")
 	if err != nil {
 		return nil, err
 	}
@@ -746,6 +1062,10 @@ func proofCheckChangedFiles(repo, baseRef string) ([]string, error) {
 }
 
 func proofCheckChangedPaths(repo, baseRef, diffFilter string) ([]string, error) {
+	return proofCheckChangedPathsContext(context.Background(), repo, baseRef, diffFilter)
+}
+
+func proofCheckChangedPathsContext(ctx context.Context, repo, baseRef, diffFilter string) ([]string, error) {
 	seen := map[string]bool{}
 	var files []string
 	add := func(paths []string) {
@@ -759,7 +1079,7 @@ func proofCheckChangedPaths(repo, baseRef, diffFilter string) ([]string, error) 
 		}
 	}
 	if baseRef = strings.TrimSpace(baseRef); baseRef != "" {
-		paths, err := proofCheckGitNULList(repo, "diff", "--no-renames", "--name-only", "--diff-filter="+diffFilter, "-z", baseRef+"...HEAD")
+		paths, err := proofCheckGitNULListContext(ctx, repo, "diff", "--no-renames", "--name-only", "--diff-filter="+diffFilter, "-z", baseRef+"...HEAD")
 		if err != nil {
 			return nil, err
 		}
@@ -770,7 +1090,7 @@ func proofCheckChangedPaths(repo, baseRef, diffFilter string) ([]string, error) 
 		{"diff", "--cached", "--no-renames", "--name-only", "--diff-filter=" + diffFilter, "-z"},
 		{"ls-files", "--others", "--exclude-standard", "-z"},
 	} {
-		paths, err := proofCheckGitNULList(repo, args...)
+		paths, err := proofCheckGitNULListContext(ctx, repo, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -780,7 +1100,11 @@ func proofCheckChangedPaths(repo, baseRef, diffFilter string) ([]string, error) 
 }
 
 func proofCheckGitNULList(repo string, args ...string) ([]string, error) {
-	cmd := exec.Command("git", args...)
+	return proofCheckGitNULListContext(context.Background(), repo, args...)
+}
+
+func proofCheckGitNULListContext(ctx context.Context, repo string, args ...string) ([]string, error) {
+	cmd := proofCheckCommandContext(ctx, "git", args...)
 	cmd.Dir = repo
 	out, err := cmd.Output()
 	if err != nil {
@@ -795,6 +1119,40 @@ func proofCheckGitNULList(repo string, args ...string) ([]string, error) {
 		paths = append(paths, string(part))
 	}
 	return paths, nil
+}
+
+func proofCheckCommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if barrier, ok := ctx.Value(proofCheckExecutionBarrierContextKey{}).(*landlease.ExecutionBarrier); ok {
+		if file := barrier.InheritableFile(); file != nil {
+			cmd.ExtraFiles = append(cmd.ExtraFiles, file)
+		}
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	cmd.WaitDelay = 2 * time.Second
+	return cmd
+}
+
+type proofCheckExecutionBarrierContextKey struct{}
+
+func proofCheckContextWithExecutionBarrier(ctx context.Context, barrier *landlease.ExecutionBarrier) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if barrier == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, proofCheckExecutionBarrierContextKey{}, barrier)
 }
 
 func proofCheckTail(output []byte, max int) string {

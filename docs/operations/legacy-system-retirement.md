@@ -136,7 +136,7 @@ compound memory doctor --json
 compound memory engine-compare <frozen-query>
 compound source manifest-doctor <family> --json
 compound authority os-absorption-doctor --json   # private dogfood matrix when installed
-compound proof-check --json
+compound proof-check --work <work_id> --actor <lease-holder> --out <absolute-report.json>
 ```
 
 For a database export with native-dump support, physical custody is the bounded sequence below. The export's `dump_ref` must
