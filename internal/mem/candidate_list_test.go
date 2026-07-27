@@ -551,3 +551,53 @@ func writeRawCandidate(t *testing.T, s *Store, c Candidate) {
 		t.Fatal(err)
 	}
 }
+
+// TestListCandidatesLimitReportsTrueMatchCount pins the separation between "how many
+// matched" and "how many were returned". The regression it guards is a listing that
+// stopped counting at Limit: over a large inbox that made Counts.Matched describe the
+// page, so a caller filtering Items downstream read a bounded listing as proof the
+// candidates did not exist — when they were on disk, just past the limit in iteration
+// order. A confident wrong zero is worse than a slow answer.
+func TestListCandidatesLimitReportsTrueMatchCount(t *testing.T) {
+	s := newStore(t)
+
+	// Distinct objects: Capture is content-addressed on entity|predicate|object, so
+	// identical rows collapse to one and would never bind the limit.
+	seed := make([]Candidate, 0, 6)
+	for _, obj := range []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot"} {
+		seed = append(seed, cand("entity:bulk", "status", obj, ""))
+	}
+	if _, err := s.Capture(seed, t0); err != nil {
+		t.Fatal(err)
+	}
+
+	full, err := s.ListCandidates(t0, CandidateListOptions{State: "proposed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Counts.Truncated || full.Counts.Matched != full.Counts.Returned {
+		t.Fatalf("unbounded listing must not report truncation: %+v", full.Counts)
+	}
+	total := full.Counts.Matched
+	if total < 2 {
+		t.Fatalf("fixture needs >=2 proposed candidates to bind a limit, got %d", total)
+	}
+
+	limited, err := s.ListCandidates(t0, CandidateListOptions{State: "proposed", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The load-bearing assertion: Matched counts the SET even though only one item
+	// was projected. Before the fix this equalled 1 and the set size was unknowable.
+	if limited.Counts.Matched != total {
+		t.Fatalf("Matched = %d under Limit 1, want the true match count %d; counts=%+v",
+			limited.Counts.Matched, total, limited.Counts)
+	}
+	if limited.Counts.Returned != 1 || len(limited.Items) != 1 {
+		t.Fatalf("Returned = %d / items = %d, want 1; counts=%+v",
+			limited.Counts.Returned, len(limited.Items), limited.Counts)
+	}
+	if !limited.Counts.Truncated {
+		t.Fatalf("Truncated must be set when Matched > Returned: %+v", limited.Counts)
+	}
+}

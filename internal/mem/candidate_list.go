@@ -29,10 +29,17 @@ type CandidateListReport struct {
 	Filters       map[string]interface{} `json:"filters,omitempty"`
 }
 
+// CandidateListCounts separates "how many matched the filter" from "how many are in
+// Items". Matched describes the CANDIDATE SET; Returned describes the page. They differ
+// whenever Limit binds, and Truncated says so explicitly — a bounded listing must never
+// read as a complete one.
 type CandidateListCounts struct {
-	Total   int            `json:"total"`
-	Matched int            `json:"matched"`
-	ByState map[string]int `json:"by_state"`
+	Total   int `json:"total"`
+	Matched int `json:"matched"`
+	// Returned is len(Items). Truncated is Matched > Returned.
+	Returned  int            `json:"returned"`
+	Truncated bool           `json:"truncated,omitempty"`
+	ByState   map[string]int `json:"by_state"`
 }
 
 type CandidateListItem struct {
@@ -162,6 +169,7 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 	// and never written back to the inbox JSON.
 	signals := candidateReadinessSignals(cands)
 
+	matched := 0
 	for _, c := range cands {
 		reviewState := reviewByCandidate[c.ID]
 		rawKind := rawKinds[c.ID]
@@ -177,6 +185,16 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 		if kind != "" && rawKind != kind && c.ClaimType != kind {
 			continue
 		}
+		// Count the match BEFORE the limit gate. Stopping the scan at Limit made
+		// Counts.Matched describe the page instead of the set, so a bounded listing
+		// over a large inbox reported a confident `matched: N` that a caller filtering
+		// the items downstream read as proof of absence — the rows were on disk, just
+		// past the limit in iteration order. Counting is cheap; only item projection
+		// (which may read evidence) is gated.
+		matched++
+		if opts.Limit > 0 && len(report.Items) >= opts.Limit {
+			continue
+		}
 		item, err := s.candidateListItem(c, reviewState, rawKind, opts.IncludeEvidence)
 		if err != nil {
 			return report, err
@@ -186,11 +204,10 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 			item.ConfidenceTrend = sig.ConfidenceTrend
 		}
 		report.Items = append(report.Items, item)
-		if opts.Limit > 0 && len(report.Items) >= opts.Limit {
-			break
-		}
 	}
-	report.Counts.Matched = len(report.Items)
+	report.Counts.Matched = matched
+	report.Counts.Returned = len(report.Items)
+	report.Counts.Truncated = matched > len(report.Items)
 	return report, nil
 }
 

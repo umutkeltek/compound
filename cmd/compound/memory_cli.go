@@ -223,6 +223,10 @@ func cmdMemory(args []string) {
 			return
 		}
 		fmt.Printf("# memory candidates %d/%d\n", report.Counts.Matched, report.Counts.Total)
+		if report.Counts.Truncated {
+			fmt.Printf("# showing %d of %d matched (--limit %d); raise --limit to see the rest\n",
+				report.Counts.Returned, report.Counts.Matched, limit)
+		}
 		for _, item := range report.Items {
 			line := fmt.Sprintf("%s %s %s.%s = %s", item.ID, item.State, item.Entity, item.Predicate, item.Object)
 			if item.ReviewState != "" {
