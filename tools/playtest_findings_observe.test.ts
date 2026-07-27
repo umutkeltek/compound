@@ -6,6 +6,19 @@ import { spawnSync } from "node:child_process";
 
 import { buildPlaytestBatch, emitPlaytestObservations } from "./playtest_findings_observe.ts";
 
+// Built once per test process rather than via `go run` per invocation: `go run` puts a compile and
+// link inside the per-test timeout, so the budget ends up measuring machine load instead of the
+// observe-batch behaviour under test. See the same helper in chatgpt_conversation_edge.test.ts.
+function buildCompound(): string {
+  const bin = join(mkdtempSync(join(tmpdir(), "compound-playtest-observe-bin-")), "compound");
+  const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], { encoding: "utf8" });
+  if (build.status !== 0) throw new Error(build.stderr || build.stdout);
+  return bin;
+}
+
+// Built at module scope, not inside a test — see chatgpt_conversation_edge.test.ts.
+const COMPOUND_BIN = buildCompound();
+
 const SAMPLE_RUN = "fixtures/playtest/run-sample";
 const UNKNOWN_TYPE_RUN = "fixtures/playtest/run-unknown-type";
 const CAPTURED_AT = "2026-07-13T00:00:00Z";
@@ -66,8 +79,8 @@ describe("playtest_findings_observe — falsifier 1: run dir to routed source ob
 
     // Real intake door: dry-run must route both observations to source observations, 0 errors.
     const dry = spawnSync(
-      "go",
-      ["run", "./cmd/compound", "source", "observe-batch", report.batchPath!, "--dry-run", "--json"],
+      COMPOUND_BIN,
+      ["source", "observe-batch", report.batchPath!, "--dry-run", "--json"],
       { cwd: process.cwd(), env: { ...process.env, COMPOUND_HOME: homePath }, encoding: "utf8" },
     );
     expect(dry.stderr).toBe("");

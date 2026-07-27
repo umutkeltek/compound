@@ -257,10 +257,27 @@ describe("chatgpt_conversation_edge", () => {
   });
 });
 
+// `go run` recompiles and relinks cmd/compound on every invocation, inside the per-test timeout.
+// That makes the timeout an assertion about machine load rather than about the import: on a busy
+// host the compile alone outruns the budget and the test fails having proved nothing. Build once
+// per test process instead — the same shape the other tools tests already use — so what the
+// timeout measures is the import, not the toolchain. Widening the budget would only move the
+// threshold; taking the compile out of the measured window removes the dependency.
+function buildCompound(): string {
+  const bin = join(mkdtempSync(join(tmpdir(), "compound-chatgpt-edge-bin-")), "compound");
+  const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], { encoding: "utf8" });
+  if (build.status !== 0) throw new Error(build.stderr || build.stdout);
+  return bin;
+}
+
+// Built at module scope, not inside a test: bun evaluates the module before any per-test timeout
+// applies, so the toolchain never competes with the assertion for the budget.
+const COMPOUND_BIN = buildCompound();
+
 function runKnowledgeImport(homePath: string, exportPath: string) {
   const result = spawnSync(
-    "go",
-    ["run", "./cmd/compound", "knowledge", "import", exportPath, "--json"],
+    COMPOUND_BIN,
+    ["knowledge", "import", exportPath, "--json"],
     {
       cwd: process.cwd(),
       env: { ...process.env, COMPOUND_HOME: homePath },
