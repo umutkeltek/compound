@@ -2735,14 +2735,17 @@ func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef, limit in
 	if total > sectionRoom {
 		for len(selected) > 1 &&
 			(sectionRoom-overhead)/len(selected) < minIncludedRefChars {
-			// Once redundant static refs are exhausted, preserve the newest
-			// session-specific tail and shed the oldest dynamic ref.
-			drop := 0
+			// Once redundant static refs are exhausted, preserve every remaining
+			// session-specific ref in served order rather than dropping its head.
+			drop := -1
 			for i := len(selected) - 1; i >= 0; i-- {
 				if strings.TrimSpace(selected[i].SourceClass) == "source" {
 					drop = i
 					break
 				}
+			}
+			if drop < 0 {
+				break
 			}
 			selected = append(selected[:drop], selected[drop+1:]...)
 		}

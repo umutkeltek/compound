@@ -144,7 +144,7 @@ func liveControlPlanePack() []envelope.IncludedRef {
 	const ambient = "ambient for control-plane repos"
 	const decisionReason = "accepted decision from Compound memory ledger; old source is source-in-place evidence"
 	return []envelope.IncludedRef{
-		{Ref: "AGENTS.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "AGENTS.md", SourceClass: "source", Reason: "ambient for control-plane repos", Confidence: 1, Status: "current"},
 		{Ref: "skills/README.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
 		{Ref: "constitution://universal-principles", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
 		{Ref: "control-plane://orientation-map", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
@@ -308,20 +308,20 @@ func TestIncludedListExactlyAtCapIsLossless(t *testing.T) {
 // DEC-0001 just because it sits after six source refs and the memory ref in the
 // served order.
 func TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs(t *testing.T) {
-	const decisionReason = "accepted decision from Compound memory ledger; old source is source-in-place evidence"
-	const hookReason = "active hook on this session"
-	const ambient = "ambient for control-plane repos"
+	const decisionReason = "accepted decision from Compound memory ledger; old source is source-in-place evidence and the governed control-plane precedence remains authoritative; decision evidence is retained for the active harness and task despite redundant source provenance"
+	const hookReason = "installed hook selected for harness and task; runtime authority is served for this active session and task"
+	const memoryReason = "relevance-gated memory candidate retained as evidence-only context for this task; verify and re-derive before relying on it"
 	// Captured live served shape: six source refs, memory, four hook runtime
 	// refs, then decision://DEC-0001. The remaining refs land after the
 	// decision as additional source provenance.
 	refs := []envelope.IncludedRef{
-		{Ref: "AGENTS.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
-		{Ref: "skills/README.md", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
-		{Ref: "constitution://universal-principles", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
-		{Ref: "control-plane://orientation-map", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
-		{Ref: "control-plane://workflow-contract", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
-		{Ref: "control-plane://sop-packets", SourceClass: "source", Reason: ambient, Confidence: 1, Status: "current"},
-		{Ref: "memory://relevance-gated", SourceClass: "generated", Reason: ambient, Confidence: 1, Status: "current"},
+		{Ref: "AGENTS.md", SourceClass: "source", Reason: "ambient for control-plane repos", Confidence: 1, Status: "current"},
+		{Ref: "skills/README.md", SourceClass: "source", Reason: "ambient for control-plane repos", Confidence: 1, Status: "current"},
+		{Ref: "constitution://universal-principles", SourceClass: "source", Reason: "ambient for control-plane repos", Confidence: 1, Status: "current"},
+		{Ref: "control-plane://orientation-map", SourceClass: "source", Reason: "ambient for control-plane repos", Confidence: 1, Status: "current"},
+		{Ref: "control-plane://workflow-contract", SourceClass: "source", Reason: "ambient for control-plane repos", Confidence: 1, Status: "current"},
+		{Ref: "control-plane://sop-packets", SourceClass: "source", Reason: "ambient for control-plane repos", Confidence: 1, Status: "current"},
+		{Ref: "memory://relevance-gated", SourceClass: "generated", Reason: memoryReason, Confidence: 1, Status: "current"},
 		{Ref: "hook://codex/PreToolUse", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
 		{Ref: "hook://codex/PostToolUse", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
 		{Ref: "hook://codex/SessionStart", SourceClass: "runtime", Reason: hookReason, Confidence: 1, Status: "current"},
@@ -332,7 +332,7 @@ func TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs(t *testing.T) {
 		refs = append(refs, envelope.IncludedRef{
 			Ref:         fmt.Sprintf("source://extra-%03d", i),
 			SourceClass: "source",
-			Reason:      ambient,
+			Reason:      "ambient for control-plane repos",
 			Confidence:  1,
 			Status:      "current",
 		})
