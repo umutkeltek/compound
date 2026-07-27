@@ -68,6 +68,31 @@ func TestPlacementSourceFreshnessCurrentWhenRevisionMatches(t *testing.T) {
 	}
 }
 
+func TestPlacementImportKeepsFreshnessStableAcrossWorkingDirectories(t *testing.T) {
+	home := t.TempDir()
+	sourceDir := t.TempDir()
+	sourceName := "placement-rules.json"
+	sourcePath := filepath.Join(sourceDir, sourceName)
+	if err := os.WriteFile(sourcePath, []byte(`{"owners":[{"id":"fixture"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(sourceDir)
+	report, err := policy.ImportPlacementRules(home, sourceName, cliTestNow)
+	if err != nil {
+		t.Fatalf("import relative placement source: %v", err)
+	}
+	if report.SourceAuthority.SourcePath != sourcePath {
+		t.Fatalf("stored source path = %q, want stable absolute path %q", report.SourceAuthority.SourcePath, sourcePath)
+	}
+
+	t.Chdir(t.TempDir())
+	rows := buildPlacementSourceFreshness(home)
+	if len(rows) != 1 || rows[0].State != "current" {
+		t.Fatalf("freshness from another cwd = %+v, want one current source", rows)
+	}
+}
+
 // REGRESSION: the authority file is an append-only history — one entry PER IMPORT, so a
 // a single source path can appear many times.
 // Selecting the first entry compares today's file against the OLDEST import and reports

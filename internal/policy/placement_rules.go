@@ -138,6 +138,11 @@ func ImportPlacementRules(homePath, sourcePath string, now time.Time) (Placement
 	if strings.TrimSpace(sourcePath) == "" {
 		return PlacementRulesImportReport{}, fmt.Errorf("source path required")
 	}
+	sourcePath, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return PlacementRulesImportReport{}, fmt.Errorf("resolve placement rules source path: %w", err)
+	}
+	sourcePath = filepath.Clean(sourcePath)
 	data, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return PlacementRulesImportReport{}, err
