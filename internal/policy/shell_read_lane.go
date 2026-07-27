@@ -60,7 +60,7 @@ var shellReadVerbs = map[string]bool{
 	"uname": true, "arch": true, "printenv": true, "which": true, "id": true, "groups": true,
 	"sw_vers": true, "vm_stat": true, "ps": true, "lsof": true, "nproc": true,
 	// Emit and format.
-	"echo": true, "printf": true, "true": true, "false": true, "gofmt": true,
+	"echo": true, "printf": true, "true": true, "false": true,
 	// Read and transform text.
 	"cat": true, "bat": true, "head": true, "tail": true, "wc": true, "nl": true,
 	"sort": true, "uniq": true, "cut": true, "tr": true, "column": true, "rev": true,
@@ -167,7 +167,7 @@ var gitRefQueryFlagsWithValue = map[string]bool{
 
 var goReadSubcommands = map[string]bool{
 	"test": true, "vet": true, "build": true, "list": true, "env": true,
-	"doc": true, "version": true, "fmt": true,
+	"doc": true, "version": true,
 }
 
 func classifyShellAction(classification ActionClassification, command string) ActionClassification {
@@ -658,6 +658,13 @@ func shellVerbClass(verb string, args []string) string {
 		return shellGitClass(args)
 	case "go":
 		return shellGoClass(args)
+	case "gofmt":
+		// gofmt writes formatted source when -w is present. Its stdout/diff/list
+		// modes remain routine reads, but source mutation must leave this lane.
+		if shellFlagAbsent(args, "-w") {
+			return shellClassRead
+		}
+		return shellClassUnknown
 	case "sed":
 		if shellSedIsReadOnly(args) {
 			return shellClassRead
@@ -672,7 +679,11 @@ func shellVerbClass(verb string, args []string) string {
 		return shellClassUnknown
 	case "awk", "gawk", "nawk":
 		for _, arg := range args {
-			if strings.Contains(arg, "system(") || strings.Contains(arg, "close(") {
+			// AWK's `print > file` and `printf >> file` write from inside the
+			// program, beyond shell-level redirection detection. Without an AWK
+			// parser, any `>` in the program fails closed; comparisons may be
+			// held, but a file write must never enter the routine-read lane.
+			if strings.Contains(arg, "system(") || strings.Contains(arg, "close(") || strings.Contains(arg, ">") {
 				return shellClassUnknown
 			}
 		}

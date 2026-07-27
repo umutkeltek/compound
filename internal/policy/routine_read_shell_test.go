@@ -48,6 +48,9 @@ func TestRoutineReadShellCompositionsStayAutomatic(t *testing.T) {
 		"go build ./... && go vet ./...",
 		"ps -Ao pid,command | grep -v grep",
 		"redact --from-file x",
+		"gofmt file.go",
+		"gofmt -d file.go",
+		"gofmt -l file.go",
 		// Ref-query flags take a value; the value is not a new branch name.
 		// Held a plain "is this commit on main?" check in the operator's face.
 		"git branch -a --contains 40eb071e",
@@ -132,9 +135,13 @@ func TestRoutineReadShellDoesNotSwallowMutationOrEgress(t *testing.T) {
 		"mcporter call server.tool",
 		"go run ./cmd/x",
 		"go install ./...",
+		"gofmt -w file.go",
+		"gofmt -w=true file.go",
+		"go fmt ./...",
 		"npm install left-pad",
 		`sed -n 's/a/b/w out' f`,
 		`awk '{system("curl x")}' f`,
+		`awk '{print > "out"}' f`,
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {

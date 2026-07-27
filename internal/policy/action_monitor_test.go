@@ -175,7 +175,7 @@ func TestRoutineShellClassifierRejectsCommandCompositionAndObfuscation(t *testin
 
 	for _, command := range []string{
 		"go test ./... && git diff --check",
-		"gofmt -w internal/policy/action_monitor.go\n go test ./internal/policy",
+		"gofmt -d internal/policy/action_monitor.go\n go test ./internal/policy",
 	} {
 		classification := ClassifyToolAction(monitorRequest("Bash", map[string]any{"command": command}))
 		if !classification.Known || classification.Operation != "local_command" {
