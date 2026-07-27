@@ -1295,6 +1295,13 @@ func cmdHarness(args []string) {
 	// Slice C.4: the AdapterRegistry-backed subcommands (run, executors)
 	// live in harness_exec_cli.go and dispatch before the capabilities
 	// registry is loaded -- they don't need it.
+	if target == "capability-drift" {
+		// Compares the DECLARED registry against the lane's real files. Dispatches
+		// before the capabilities registry load below for the same reason run and
+		// executors do: it reads the declaration itself, it is not a consumer of it.
+		cmdHarnessCapabilityDrift(args[1:])
+		return
+	}
 	if target == "run" {
 		cmdHarnessRun(args[1:])
 		return

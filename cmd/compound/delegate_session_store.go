@@ -58,14 +58,17 @@ func laneProfileCandidates(harness, lane string) []string {
 	return out
 }
 
-func resolveLaneSessionStore(harness, lane string) (string, error) {
+// resolveLaneArtifacts asks the lane owner what it publishes for a harness and
+// returns artifact kind -> path. One query serves every consumer that needs a
+// lane's real files, so no caller has to learn the profile-id conventions twice.
+func resolveLaneArtifacts(harness, lane string) (map[string]string, error) {
 	bin, err := exec.LookPath("sb")
 	if err != nil {
-		return "", fmt.Errorf("%w: lane profile owner (sb) not on PATH", work.ErrSessionStoreRootUnknown)
+		return nil, fmt.Errorf("%w: lane profile owner (sb) not on PATH", work.ErrSessionStoreRootUnknown)
 	}
 	candidates := laneProfileCandidates(harness, lane)
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("%w: binding names neither a lane nor a harness", work.ErrSessionStoreRootUnknown)
+		return nil, fmt.Errorf("%w: names neither a lane nor a harness", work.ErrSessionStoreRootUnknown)
 	}
 	for _, profile := range candidates {
 		out, runErr := exec.Command(bin, "profile", "plan", profile, "--json").Output()
@@ -76,19 +79,30 @@ func resolveLaneSessionStore(harness, lane string) (string, error) {
 		if json.Unmarshal(out, &plan) != nil {
 			continue
 		}
+		artifacts := make(map[string]string, len(plan.Artifacts))
 		for _, a := range plan.Artifacts {
-			if a.Kind != laneSettingsArtifactKind || strings.TrimSpace(a.Path) == "" {
-				continue
+			if p := strings.TrimSpace(a.Path); p != "" {
+				artifacts[a.Kind] = p
 			}
-			// The artifact is the settings FILE; the profile home is its parent,
-			// which is what holds `projects/`.
-			return filepath.Dir(a.Path), nil
+		}
+		if _, ok := artifacts[laneSettingsArtifactKind]; ok {
+			return artifacts, nil
 		}
 	}
-	return "", fmt.Errorf(
+	return nil, fmt.Errorf(
 		"%w: no launch profile among [%s] published a %s artifact",
 		work.ErrSessionStoreRootUnknown, strings.Join(candidates, ", "), laneSettingsArtifactKind,
 	)
+}
+
+func resolveLaneSessionStore(harness, lane string) (string, error) {
+	artifacts, err := resolveLaneArtifacts(harness, lane)
+	if err != nil {
+		return "", err
+	}
+	// The artifact is the settings FILE; the profile home is its parent, which is
+	// what holds `projects/`.
+	return filepath.Dir(artifacts[laneSettingsArtifactKind]), nil
 }
 
 func init() {
