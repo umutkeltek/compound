@@ -3556,8 +3556,23 @@ func findMatchingDelimited(text string, start int, open, close byte) (int, error
 	depth := 0
 	var quote byte
 	escaped := false
+	lineComment := false
+	blockComment := false
 	for i := start; i < len(text); i++ {
 		c := text[i]
+		if lineComment {
+			if c == '\n' {
+				lineComment = false
+			}
+			continue
+		}
+		if blockComment {
+			if c == '*' && i+1 < len(text) && text[i+1] == '/' {
+				blockComment = false
+				i++
+			}
+			continue
+		}
 		if quote != 0 {
 			if escaped {
 				escaped = false
@@ -3571,6 +3586,18 @@ func findMatchingDelimited(text string, start int, open, close byte) (int, error
 				quote = 0
 			}
 			continue
+		}
+		if c == '/' && i+1 < len(text) {
+			switch text[i+1] {
+			case '/':
+				lineComment = true
+				i++
+				continue
+			case '*':
+				blockComment = true
+				i++
+				continue
+			}
 		}
 		switch c {
 		case '\'', '"', '`':
