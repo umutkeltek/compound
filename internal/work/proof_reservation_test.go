@@ -84,6 +84,20 @@ func TestProofResourceReservationExclusiveUntilReleaseAndGovernedResultReachable
 	if completed.VerificationRef == "" || completed.Result.Status != ProofResourceVerified {
 		t.Fatalf("completed result = %+v, want governed verification", completed)
 	}
+	var persistedResult ProofResourceResult
+	if err := s.readEventJSON(completed.Result.ID, &persistedResult); err != nil {
+		t.Fatal(err)
+	}
+	if persistedResult.RunAttemptStatus != runattempt.StatusSucceeded ||
+		persistedResult.VerificationRef != completed.VerificationRef {
+		t.Fatalf(
+			"persisted result run status/ref = %q/%q, want %q/%q",
+			persistedResult.RunAttemptStatus,
+			persistedResult.VerificationRef,
+			runattempt.StatusSucceeded,
+			completed.VerificationRef,
+		)
+	}
 	assertProofRunAttempt(t, s, acquired.Reservation, runattempt.StatusSucceeded)
 	afterFirst, err := s.Get(first.ID)
 	if err != nil {
@@ -155,6 +169,19 @@ func TestProofResourceCompleteCanonicalFailedReportReleasesWithoutVerification(t
 		!completed.ResourceReleased {
 		t.Fatalf("failed completion = %+v, want owned non-certifying result and released resource", completed)
 	}
+	var persistedResult ProofResourceResult
+	if err := s.readEventJSON(completed.Result.ID, &persistedResult); err != nil {
+		t.Fatal(err)
+	}
+	if persistedResult.RunAttemptStatus != runattempt.StatusFailed ||
+		persistedResult.VerificationRef != "" {
+		t.Fatalf(
+			"persisted failed result run status/ref = %q/%q, want %q/empty",
+			persistedResult.RunAttemptStatus,
+			persistedResult.VerificationRef,
+			runattempt.StatusFailed,
+		)
+	}
 	assertProofRunAttempt(t, s, acquired.Reservation, runattempt.StatusFailed)
 	after, err := s.Get(first.ID)
 	if err != nil {
@@ -192,7 +219,7 @@ func TestProofResourceReservationExpiryRetainsBarrierUntilTerminationIsGoverned(
 	predecessor := startStoppedProofProcess(t)
 	writeProofResourceStealGrant(t, s.home)
 
-	acquired, err := reserveProofResource(t, s, first.ID, ProofResourceReserveInput{
+	acquired, err := reserveProofResourceWithLiveBarrier(t, s, first.ID, ProofResourceReserveInput{
 		Actor:     proofActorAlpha,
 		TTL:       30 * time.Second,
 		Workspace: "/synthetic/repo-alpha",
@@ -284,7 +311,7 @@ func TestProofResourceChainedStealWaitsForOldestNonterminalPredecessor(t *testin
 	predecessor := startStoppedProofProcess(t)
 	writeProofResourceStealGrant(t, s.home)
 
-	acquired, err := reserveProofResource(t, s, first.ID, ProofResourceReserveInput{
+	acquired, err := reserveProofResourceWithLiveBarrier(t, s, first.ID, ProofResourceReserveInput{
 		Actor:     proofActorAlpha,
 		TTL:       30 * time.Second,
 		Workspace: "/synthetic/repo-alpha",
@@ -439,7 +466,7 @@ func TestProofResourceTerminationEvidenceMustBindExactRunAttempt(t *testing.T) {
 	first := claimedProofWork(t, s, "termination evidence target", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "termination evidence verifier", proofActorBeta, fixedNow.Add(time.Second))
 	writeProofResourceStealGrant(t, s.home)
-	acquired, err := reserveProofResource(t, s, first.ID, ProofResourceReserveInput{
+	acquired, err := reserveProofResourceWithLiveBarrier(t, s, first.ID, ProofResourceReserveInput{
 		Actor:     proofActorAlpha,
 		TTL:       time.Minute,
 		Workspace: "/synthetic/repo-alpha",
@@ -519,7 +546,7 @@ func TestProofResourceProducesTrustedTerminationEvidenceFromReleasedBarrier(t *t
 	first := claimedProofWork(t, s, "trusted termination predecessor", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "trusted termination successor", proofActorBeta, fixedNow.Add(time.Second))
 	writeProofResourceStealGrant(t, s.home)
-	acquired, err := reserveProofResource(t, s, first.ID, ProofResourceReserveInput{
+	acquired, err := reserveProofResourceWithLiveBarrier(t, s, first.ID, ProofResourceReserveInput{
 		Actor:     proofActorAlpha,
 		TTL:       time.Minute,
 		Workspace: "/synthetic/repo-alpha",
@@ -569,7 +596,7 @@ func TestProofResourceTerminationEvidencePublicationRequiresPolicyAllow(t *testi
 	s := newStore(t)
 	first := claimedProofWork(t, s, "governed termination evidence predecessor", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "governed termination evidence successor", proofActorBeta, fixedNow.Add(time.Second))
-	acquired, err := reserveProofResource(t, s, first.ID, ProofResourceReserveInput{
+	acquired, err := reserveProofResourceWithLiveBarrier(t, s, first.ID, ProofResourceReserveInput{
 		Actor:     proofActorAlpha,
 		TTL:       time.Minute,
 		Workspace: "/synthetic/repo-alpha",
@@ -695,7 +722,7 @@ func TestProofResourceReservationExceptionalStealIsExplicitAndAudited(t *testing
 	first := claimedProofWork(t, s, "steal source proof", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "steal successor proof", proofActorBeta, fixedNow.Add(time.Second))
 
-	acquired, err := reserveProofResource(t, s, first.ID, ProofResourceReserveInput{
+	acquired, err := reserveProofResourceWithLiveBarrier(t, s, first.ID, ProofResourceReserveInput{
 		Actor:     proofActorAlpha,
 		TTL:       5 * time.Minute,
 		Workspace: "/synthetic/repo-alpha",
@@ -855,7 +882,7 @@ func TestProofResourceFailedStealRetainsTerminationBarrierAcrossExpiry(t *testin
 	first := claimedProofWork(t, s, "active proof ignores takeover", proofActorAlpha, fixedNow)
 	second := claimedProofWork(t, s, "failed takeover barrier", proofActorBeta, fixedNow.Add(time.Second))
 	third := claimedProofWork(t, s, "contender after barrier expiry", "codex:proof-gamma", fixedNow.Add(2*time.Second))
-	acquired, err := reserveProofResource(t, s, first.ID, ProofResourceReserveInput{
+	acquired, err := reserveProofResourceWithLiveBarrier(t, s, first.ID, ProofResourceReserveInput{
 		Actor:     proofActorAlpha,
 		TTL:       5 * time.Minute,
 		Workspace: "/synthetic/repo-alpha",
@@ -1677,6 +1704,156 @@ func TestProofResourceCompletionPersistenceFailureKeepsSuccessorOut(t *testing.T
 	}
 	if retryAttempt.PredecessorID != acquired.Reservation.RunAttemptID {
 		t.Fatalf("retry predecessor = %q, want %q", retryAttempt.PredecessorID, acquired.Reservation.RunAttemptID)
+	}
+}
+
+func TestProofResourceFailedCompletionRetryMintsPredecessorAfterPrecommitFault(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "retry failed proof after precommit fault", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       time.Minute,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(validOwnedProofReportJSON("failed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     acquired.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  1,
+	}
+
+	originalWriteEvent := proofResourceWriteEventRecord
+	proofResourceWriteEventRecord = func(store *Store, stage, id string, value any) error {
+		if stage == "result" {
+			return errors.New("injected failed-result persistence fault")
+		}
+		return originalWriteEvent(store, stage, id, value)
+	}
+	_, firstErr := s.CompleteProofResource(w.ID, input, fixedNow.Add(3*time.Second))
+	proofResourceWriteEventRecord = originalWriteEvent
+	if firstErr == nil {
+		t.Fatal("failed completion unexpectedly crossed pre-authoritative-commit fault")
+	}
+	predecessor, err := s.runAttempts().Get(acquired.Reservation.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if predecessor.Status != runattempt.StatusFailed {
+		t.Fatalf("predecessor status = %q, want failed terminal error record", predecessor.Status)
+	}
+
+	retried, err := s.CompleteProofResource(w.ID, input, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("exact failed completion retry remained wedged: %v", err)
+	}
+	if retried.Result.Status != ProofResourceFailed ||
+		retried.Result.RunAttemptStatus != runattempt.StatusFailed ||
+		retried.VerificationRef != "" ||
+		!retried.ResourceReleased {
+		t.Fatalf("retried failed completion = %+v, want terminal non-certifying release", retried)
+	}
+	if retried.Result.RunAttemptID == predecessor.ID {
+		t.Fatalf("failed completion retry reused mismatched terminal predecessor %s", predecessor.ID)
+	}
+	retryAttempt, err := s.runAttempts().Get(retried.Result.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryAttempt.PredecessorID != predecessor.ID {
+		t.Fatalf("retry predecessor = %q, want %q", retryAttempt.PredecessorID, predecessor.ID)
+	}
+}
+
+func TestProofResourceCompletionRetryNormalizesLegacyPendingResultProjection(t *testing.T) {
+	s := newStore(t)
+	w := claimedProofWork(t, s, "normalize legacy pending proof result", proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       time.Minute,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(validOwnedProofReportJSON("ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     acquired.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}
+
+	originalWriteEvent := proofResourceWriteEventRecord
+	proofResourceWriteEventRecord = func(store *Store, stage, id string, value any) error {
+		if stage == "completion" {
+			return errors.New("injected post-terminal completion persistence fault")
+		}
+		return originalWriteEvent(store, stage, id, value)
+	}
+	_, firstErr := s.CompleteProofResource(w.ID, input, fixedNow.Add(3*time.Second))
+	proofResourceWriteEventRecord = originalWriteEvent
+	if firstErr == nil {
+		t.Fatal("completion unexpectedly crossed post-terminal persistence fault")
+	}
+
+	pending, present, pendingPath, err := s.readProofResourceCompletionPending(acquired.Reservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !present {
+		t.Fatal("completion fault did not retain pending journal")
+	}
+	pending.Result.RunAttemptStatus = runattempt.StatusRunning
+	pending.Result.VerificationRef = ""
+	if err := s.writeProofResourceCompletionPending(pendingPath, pending); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := s.CompleteProofResource(w.ID, input, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("legacy pending completion retry remained wedged: %v", err)
+	}
+	if !recovered.ResourceReleased || recovered.VerificationRef == "" {
+		t.Fatalf("legacy pending completion recovery = %+v", recovered)
+	}
+	var persistedResult ProofResourceResult
+	if err := s.readEventJSON(recovered.Result.ID, &persistedResult); err != nil {
+		t.Fatal(err)
+	}
+	if persistedResult.RunAttemptStatus != runattempt.StatusSucceeded ||
+		persistedResult.VerificationRef != recovered.VerificationRef {
+		t.Fatalf(
+			"persisted recovered result status/ref = %q/%q, want %q/%q",
+			persistedResult.RunAttemptStatus,
+			persistedResult.VerificationRef,
+			runattempt.StatusSucceeded,
+			recovered.VerificationRef,
+		)
+	}
+	if _, err := os.Stat(pendingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy pending journal not cleared after recovery: %v", err)
 	}
 }
 
@@ -2533,6 +2710,27 @@ func writeTestProofRecoveryNode(
 }
 
 func reserveProofResource(
+	t *testing.T,
+	s *Store,
+	workID string,
+	in ProofResourceReserveInput,
+	now time.Time,
+) (ProofResourceReserveResult, error) {
+	t.Helper()
+	result, err := reserveProofResourceWithLiveBarrier(t, s, workID, in, now)
+	if err != nil {
+		return result, err
+	}
+	if result.ExecutionBarrier == nil {
+		t.Fatal("successful proof reservation omitted execution barrier")
+	}
+	if err := result.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return result, nil
+}
+
+func reserveProofResourceWithLiveBarrier(
 	t *testing.T,
 	s *Store,
 	workID string,

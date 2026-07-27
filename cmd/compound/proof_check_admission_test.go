@@ -1897,6 +1897,80 @@ func TestProofCheckAdmissionAdmitsNonTerminalStdoutForAgentInvocation(t *testing
 	}
 }
 
+func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *testing.T) {
+	homePath := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "proof-report.json")
+	now := time.Date(2026, 7, 24, 14, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "proof-orphan-descendant-test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := createClaimedProofWork(t, store, "background descendants must exit before proof completion", "codex:orphan-descendant", now)
+	input := proofCheckAdmissionInput{
+		HomePath:   homePath,
+		WorkID:     item.ID,
+		Actor:      "codex:orphan-descendant",
+		Workspace:  "/synthetic/repo-alpha",
+		Command:    "compound proof-check --out " + outPath,
+		Profile:    syntheticAdmissionProfile(t, "/synthetic/repo-alpha"),
+		ReportPath: outPath,
+		TTL:        time.Minute,
+		Now:        func() time.Time { return now.Add(time.Second) },
+	}
+
+	var runnerStarts atomic.Int32
+	var gate *exec.Cmd
+	report, completed, firstErr := runProofCheckWithAdmissionContext(input, func(ctx context.Context) (proofCheckReport, error) {
+		runnerStarts.Add(1)
+		// The gate process exits cleanly after spawning a background descendant.
+		// exec.Cmd has finished waiting, so later context cancellation cannot kill
+		// that descendant; only the inherited barrier can prove it is still alive.
+		gate = proofCheckCommandContext(ctx, "sh", "-c", "sleep 0.75 &")
+		if err := gate.Run(); err != nil {
+			return proofCheckReport{}, err
+		}
+		report := successfulProofCheckReport()
+		report.GeneratedAt = now.Add(2 * time.Second).Format(time.RFC3339)
+		if err := proofCheckWriteReportFile(outPath, report); err != nil {
+			return proofCheckReport{}, err
+		}
+		return report, nil
+	})
+	if firstErr == nil {
+		t.Fatalf("proof completion released while descendant still held the execution barrier: completed=%+v report=%+v", completed, report)
+	}
+	t.Logf("first completion retained holder: %v", firstErr)
+	status, err := landlease.Status(homePath, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Held {
+		t.Fatalf("failed-closed completion did not retain the proof holder: %+v", status)
+	}
+	if gate == nil || gate.Process == nil {
+		t.Fatal("runner did not start the gate process")
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-gate.Process.Pid, syscall.SIGKILL) })
+	time.Sleep(time.Second)
+
+	resumedReport, resumed, retryErr := runProofCheckWithAdmissionContext(input, func(context.Context) (proofCheckReport, error) {
+		runnerStarts.Add(1)
+		return proofCheckReport{}, errors.New("exact completion retry reran proof gates")
+	})
+	if retryErr != nil {
+		t.Fatalf("exact retry after descendant exit did not complete: %v", retryErr)
+	}
+	if runnerStarts.Load() != 1 {
+		t.Fatalf("runner starts = %d, want one across retained-result recovery", runnerStarts.Load())
+	}
+	if resumedReport.Status != "ok" || resumed.VerificationRef == "" || !resumed.ResourceReleased {
+		t.Fatalf("resumed completion = report:%+v result:%+v", resumedReport, resumed)
+	}
+}
+
 func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
 	first, firstOK := proofCheckGoCache(t.TempDir())
 	second, secondOK := proofCheckGoCache(t.TempDir())

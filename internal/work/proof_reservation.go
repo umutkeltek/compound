@@ -1278,13 +1278,14 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 			Resource:          ProofResourceName,
 			ReservationID:     reservation.ID,
 			RunAttemptID:      ra.ID,
-			RunAttemptStatus:  ra.Status,
+			RunAttemptStatus:  terminalStatus,
 			ReportArtifactRef: in.ReportArtifactRef,
 			ReportStatus:      reportStatus,
 			OwnedReport:       ownedReport,
 			ProducerExitKnown: in.ProducerExitKnown,
 			ProducerExitCode:  in.ProducerExitCode,
 			FailureReason:     in.FailureReason,
+			VerificationRef:   verificationRef,
 			CompletionID:      completionID,
 			ActionIntentID:    action.ID,
 			PolicyDecisionID:  decision.ID,
@@ -1343,6 +1344,9 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 	finalWork := w
 	var terminal runattempt.RunAttempt
 	released, releaseErr := landlease.ReleaseAfter(s.home, reservation.Holder, now, func() error {
+		if _, err := landlease.AttestExecutionTerminated(s.home, reservation.Holder); err != nil {
+			return fmt.Errorf("attest proof execution terminated: %w", err)
+		}
 		if err := s.persistPreparedProofCompletion(&finalWork, pending); err != nil {
 			return err
 		}
@@ -1422,6 +1426,8 @@ func (s *Store) visibleProofCompletionCommit(
 		result.WorkID != workID ||
 		result.ReservationID != pending.ReservationID ||
 		result.RunAttemptID != terminal.ID ||
+		result.RunAttemptStatus != pending.TerminalStatus ||
+		result.VerificationRef != pending.VerificationRef ||
 		result.CompletionID != pending.Completion.ID ||
 		result.ActionIntentID != pending.Action.ID ||
 		result.PolicyDecisionID != pending.Decision.ID ||
@@ -1556,6 +1562,15 @@ func (s *Store) proofRunAttemptForCompletionRetry(
 		!policy.Allowed(pending.Decision) {
 		return runattempt.RunAttempt{}, pending, fmt.Errorf("proof completion retry is not bound to the reserved same-work RunAttempt and allowing decision")
 	}
+	normalizedPending := pending
+	normalizedPending.Result.RunAttemptStatus = normalizedPending.TerminalStatus
+	normalizedPending.Result.VerificationRef = normalizedPending.VerificationRef
+	if !reflect.DeepEqual(normalizedPending, pending) {
+		if err := s.writeProofResourceCompletionPending(pendingPath, normalizedPending); err != nil {
+			return runattempt.RunAttempt{}, pending, fmt.Errorf("normalize legacy proof completion retry journal: %w", err)
+		}
+		pending = normalizedPending
+	}
 	if ra.ID != reservation.RunAttemptID {
 		if err := s.persistProofCompletionRetryReachability(w, pending, ra, now); err != nil {
 			return runattempt.RunAttempt{}, pending, err
@@ -1567,7 +1582,7 @@ func (s *Store) proofRunAttemptForCompletionRetry(
 			}
 		}
 	}
-	if runattempt.IsTerminal(ra.Status) && ra.Status == pending.TerminalStatus {
+	if proofRunAttemptMatchesPreparedCompletion(ra, pending) {
 		return ra, pending, nil
 	}
 	if ra.Status == runattempt.StatusRunning {
@@ -1768,8 +1783,8 @@ func reseedProofResourceCompletionPending(
 	pending.Result.ID = resultID
 	pending.Result.CreatedAt = pending.CreatedAt
 	pending.Result.RunAttemptID = retry.ID
-	pending.Result.RunAttemptStatus = retry.Status
-	pending.Result.VerificationRef = ""
+	pending.Result.RunAttemptStatus = pending.TerminalStatus
+	pending.Result.VerificationRef = verificationRef
 	pending.Result.CompletionID = completionID
 	pending.Completion.ID = completionID
 	pending.Completion.CreatedAt = pending.CreatedAt
@@ -1838,9 +1853,7 @@ func (s *Store) terminalizePreparedProofCompletion(
 	now time.Time,
 ) (runattempt.RunAttempt, error) {
 	if runattempt.IsTerminal(ra.Status) {
-		if ra.Status != pending.TerminalStatus ||
-			ra.SweepReason != pending.TerminalReason ||
-			!reflect.DeepEqual(ra.ProofRefs, pending.ProofRefs) {
+		if !proofRunAttemptMatchesPreparedCompletion(ra, pending) {
 			return runattempt.RunAttempt{}, fmt.Errorf("terminal proof RunAttempt conflicts with pending completion")
 		}
 		return ra, nil
@@ -1853,6 +1866,16 @@ func (s *Store) terminalizePreparedProofCompletion(
 		return runattempt.RunAttempt{}, fmt.Errorf("persist terminal RunAttempt: %w", err)
 	}
 	return terminal, nil
+}
+
+func proofRunAttemptMatchesPreparedCompletion(
+	ra runattempt.RunAttempt,
+	pending proofResourceCompletionPending,
+) bool {
+	return runattempt.IsTerminal(ra.Status) &&
+		ra.Status == pending.TerminalStatus &&
+		ra.SweepReason == pending.TerminalReason &&
+		reflect.DeepEqual(ra.ProofRefs, pending.ProofRefs)
 }
 
 func (s *Store) activeProofRunAttempt(reservation ProofResourceReservation, workID, actor string) (runattempt.RunAttempt, error) {

@@ -214,6 +214,17 @@ func runProofCheckWithAdmissionContext(
 			runErr = errors.Join(runErr, fmt.Errorf("proof resource heartbeat: %w", hbErr))
 		}
 	}
+	// The supervisor's descriptor must close before governed completion starts.
+	// Any background descendant that escaped its gate process still owns an
+	// inherited copy, so the Work finalizer can attest the whole process tree
+	// terminated while the exact lease holder remains authoritative.
+	if barrierErr := reserved.ExecutionBarrier.Close(); barrierErr != nil {
+		if runErr == nil {
+			runErr = fmt.Errorf("close proof execution barrier: %w", barrierErr)
+		} else {
+			runErr = errors.Join(runErr, fmt.Errorf("close proof execution barrier: %w", barrierErr))
+		}
+	}
 	if runErr != nil {
 		completed, completeErr := store.CompleteProofResource(in.WorkID, work.ProofResourceCompleteInput{
 			Actor:         in.Actor,
