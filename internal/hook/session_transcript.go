@@ -325,9 +325,15 @@ func scanSessionTranscript(path string) (sessionTranscriptSummary, error) {
 			lineNo++
 			trimmed := strings.TrimSpace(string(line))
 			if trimmed != "" {
-				for _, skill := range skillsFromLine(trimmed) {
-					skills[skill] = true
-				}
+				// Skill detection deliberately does NOT scan this raw line. The line
+				// carries assistant PROSE as well as tool calls, so a scan here counted
+				// "the model mentioned /skills/x/SKILL.md" as "the model used skill x" --
+				// and Skills.Used is the consumed signal capgraph scores capabilities by
+				// (probe_group_usage.go, injection_observation.go), so talking about a
+				// skill raised its score and made it likelier to be offered next. The
+				// signal the raw scan was reaching for (a skill loaded by READING its
+				// SKILL.md, which emits no Skill block) is preserved in applyEntry, where
+				// tool-call inputs are available and prose is not.
 				entry, parseErr := parseTranscriptEntry([]byte(trimmed))
 				if parseErr != nil {
 					return sessionTranscriptSummary{}, parseErr
@@ -403,6 +409,14 @@ func (s *sessionTranscriptSummary) applyEntry(entry transcriptEntry, files, skil
 			if skill := skillFromInput(block.Input); skill != "" {
 				skills[skill] = true
 			}
+		}
+		// A skill can also be loaded WITHOUT a Skill block -- by reading or catting its
+		// SKILL.md. That is genuine use and must still count, so scan this tool call's
+		// INPUT for a skill path. Scoped to the input (not the surrounding prose, and only
+		// under the assistant-role guard above) so that naming a skill is never mistaken
+		// for invoking one. Pinned by TestSkillsFiredCountsToolUseNotProse.
+		for _, skill := range skillsFromLine(fmt.Sprint(block.Input)) {
+			skills[skill] = true
 		}
 		if mutatingTranscriptTools[block.Name] {
 			if path := toolInputPath(block.Input); path != "" {

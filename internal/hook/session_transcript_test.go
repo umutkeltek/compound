@@ -21,7 +21,12 @@ func TestSessionEndWorklessTranscriptProducesContentFreeReceipt(t *testing.T) {
 	const lastAssistant = "Implemented the workless receipt path and verified it privately."
 	path := writeTranscript(t, transcriptHome, strings.Join([]string{
 		`{"type":"user","timestamp":"2026-07-10T01:00:00Z","message":{"role":"user","content":[{"type":"text","text":"` + firstUser + `"}]}}`,
-		`{"type":"assistant","timestamp":"2026-07-10T01:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Loaded /repo/skills/golang-testing/SKILL.md for this fix."},{"type":"tool_use","name":"Write","input":{"file_path":"internal/hook/session_transcript.go"}},{"type":"tool_use","name":"Edit","input":{"file_path":"internal/hook/hook.go"}},{"type":"tool_use","name":"MultiEdit","input":{"file_path":"internal/hook/consumption.go"}},{"type":"tool_use","name":"Bash","input":{"command":"go test ./internal/hook"}}]}}`,
+		// The `Skill` block is load-bearing: this fixture's skills-used assertion below
+		// used to pass on the PROSE alone ("Loaded /repo/skills/golang-testing/SKILL.md"),
+		// because detection scanned raw line text. It no longer does — talking about a
+		// skill is not using one (TestSkillsFiredCountsToolUseNotProse). The prose is kept
+		// because real transcripts contain it, and the invocation is now explicit.
+		`{"type":"assistant","timestamp":"2026-07-10T01:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Loaded /repo/skills/golang-testing/SKILL.md for this fix."},{"type":"tool_use","name":"Skill","input":{"skill":"golang-testing"}},{"type":"tool_use","name":"Write","input":{"file_path":"internal/hook/session_transcript.go"}},{"type":"tool_use","name":"Edit","input":{"file_path":"internal/hook/hook.go"}},{"type":"tool_use","name":"MultiEdit","input":{"file_path":"internal/hook/consumption.go"}},{"type":"tool_use","name":"Bash","input":{"command":"go test ./internal/hook"}}]}}`,
 		`{"type":"assistant","timestamp":"2026-07-10T01:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"` + lastAssistant + `"}]}}`,
 	}, "\n")+"\n")
 
@@ -55,7 +60,7 @@ func TestSessionEndWorklessTranscriptProducesContentFreeReceipt(t *testing.T) {
 			t.Fatalf("summary missing content-free ref %q: %q", want, rec.StateDelta.Summary)
 		}
 	}
-	if !strings.Contains(rec.StateDelta.Summary, "tool_calls: 4 (bash: 1)") {
+	if !strings.Contains(rec.StateDelta.Summary, "tool_calls: 5 (bash: 1)") {
 		t.Fatalf("summary missing tool/bash counts: %q", rec.StateDelta.Summary)
 	}
 	assertStringSet(t, rec.StateDelta.FilesChanged, []string{
