@@ -21,10 +21,12 @@ import (
 // per-executor splits must sum to each door's count, and the rendered band count must equal an
 // independent recompute from raw lease ages. On an empty home every one of those is 0 == 0.
 //
-// The workbench fixture happens to be an ideal input here, and not by luck: claiming two
-// envelopes and closing one leaves exactly one ACTIVE lease and one RESIDUE lease (a lease
-// whose work is terminal), which is precisely the disjoint-populations split the smoke
-// reconciles. That also makes the fixture home's `home doctor` report operational_hygiene.ok
+// The workbench fixture supplies exactly the disjoint-populations split the smoke reconciles:
+// one ACTIVE lease (claimed, still running) and one RESIDUE lease (a lease whose work is
+// terminal). The residue half used to fall out of closing a claimed envelope; since I1 a close
+// releases its own lease in the same publish, so the fixture plants it deliberately
+// (WriteResidualLeaseForTerminalWork) instead of inheriting it from a behavior that no longer
+// exists. That also makes the fixture home's `home doctor` report operational_hygiene.ok
 // = false — correct, and not something this gate asserts on.
 func runProofCheckConsoleAgentsGate(repo string, step proofCheckStep) ([]byte, error) {
 	exe, err := os.Executable()

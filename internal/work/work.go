@@ -2048,6 +2048,33 @@ func (s *Store) releaseLease(workID string) {
 	_ = removeFileAndSyncDir(s.leasePath(workID))
 }
 
+// WriteResidualLeaseForTerminalWork plants the lease residue a terminal work can
+// still carry after I1, for callers that need to construct that state rather than
+// wait for it to occur.
+//
+// It exists because I1 made the state unreachable through the public API: Advance
+// refuses terminal states (terminalStateRequiresClose) and Close now releases the
+// lease in the same publish, so no ordinary sequence leaves a terminal work holding
+// one. The residue is still REAL — a home written before that release existed, a
+// crash inside the close's release window, and work archived out from under its
+// lease all produce it — and the sweep and the proof-check agents gate both have to
+// exercise a non-empty residue population to assert anything at all. Without this,
+// a fixture that used to get residue from a plain close silently gets an empty set,
+// and the gates compare nothing.
+//
+// The lease layout stays owned here; callers pass intent, not paths.
+func (s *Store) WriteResidualLeaseForTerminalWork(workID, by string, at time.Time) error {
+	w, err := s.Get(workID)
+	if err != nil {
+		return err
+	}
+	if !terminalStates[w.State] {
+		return fmt.Errorf("residual-lease fixture needs terminal work, %s is %q", workID, w.State)
+	}
+	lease := Lease{WorkID: workID, By: by, ClaimAt: ts(at)}
+	return s.writeJSON(s.leasePath(workID), &lease)
+}
+
 func landCheckEvidenceRefs(refs []string) []string {
 	out := make([]string, 0, len(refs))
 	for _, ref := range refs {

@@ -111,17 +111,12 @@ func TestExecutorsStaleLeaseResidueAndSweep(t *testing.T) {
 // The stale-lease projection and the archive sweep are the orphan BACKSTOP for
 // exactly that residue, so they are still proven against it — just no longer
 // against a normal close, which is the invariant I1 added.
+// The construction itself lives on Store as WriteResidualLeaseForTerminalWork: the
+// proof-check agents gate needs the same state from outside this package, and one
+// owner for the lease layout beats two copies that drift.
 func writeResidualLeaseForTerminalWork(t *testing.T, s *Store, workID, by string, at time.Time) {
 	t.Helper()
-	w, err := s.Get(workID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !terminalStates[w.State] {
-		t.Fatalf("residual-lease fixture needs terminal work, %s is %q", workID, w.State)
-	}
-	lease := Lease{WorkID: workID, By: by, ClaimAt: ts(at)}
-	if err := s.writeJSON(s.leasePath(workID), &lease); err != nil {
+	if err := s.WriteResidualLeaseForTerminalWork(workID, by, at); err != nil {
 		t.Fatal(err)
 	}
 }

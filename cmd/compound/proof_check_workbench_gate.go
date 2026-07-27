@@ -104,6 +104,12 @@ func seedProofCheckWorkbenchHome(homePath string, now time.Time) error {
 	}, now); err != nil {
 		return fmt.Errorf("close terminal envelope: %w", err)
 	}
+	// Residue: a lease whose work is terminal. Since I1 the close above releases its
+	// own lease, so this population is no longer a side effect of closing and has to
+	// be planted, or the agents gate reconciles two doors that are both empty.
+	if err := store.WriteResidualLeaseForTerminalWork(done.ID, proofCheckWorkbenchActor, now); err != nil {
+		return fmt.Errorf("plant terminal-work lease residue: %w", err)
+	}
 	return nil
 }
 
