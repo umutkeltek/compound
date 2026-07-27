@@ -577,7 +577,7 @@ func summarizeEnvelope(e envelope.Envelope) LLMEnvelope {
 			ContextPackID: v.IDs.ContextPackID,
 			EvidenceRefs:  append([]string(nil), v.EvidenceRefs...),
 			OutputRef:     v.OutputRef,
-			Summary:       strings.TrimSpace(v.HookName + " " + v.Status + " " + v.OutputRef),
+			Summary:       strings.TrimSpace(strings.TrimSpace(v.HookName+" "+v.Status+" "+v.FailOpenReason) + " " + v.OutputRef),
 		}
 	case *envelope.Transition:
 		return LLMEnvelope{

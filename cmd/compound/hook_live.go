@@ -80,6 +80,7 @@ type codexLiveHookResponse struct {
 	HookName           string `json:"hook_name"`
 	EventID            string `json:"event_id"`
 	Status             string `json:"status"`
+	FailOpenReason     string `json:"fail_open_reason,omitempty"`
 	AdditionalContext  string `json:"additional_context,omitempty"`
 	PermissionDecision string `json:"permission_decision,omitempty"`
 	PermissionReason   string `json:"permission_reason,omitempty"`
@@ -101,6 +102,7 @@ type liveHookParityRecord struct {
 	Harness           string   `json:"harness"`
 	EventID           string   `json:"event_id"`
 	Status            string   `json:"status"`
+	FailOpenReason    string   `json:"fail_open_reason,omitempty"`
 	InputHash         string   `json:"input_hash,omitempty"`
 	SummaryHash       string   `json:"summary_hash,omitempty"`
 	ProducedKinds     []string `json:"produced_kinds"`
@@ -968,10 +970,11 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 			return claudeLiveHookResponse{HookSpecificOutput: out}
 		}
 		out := codexLiveHookResponse{
-			SchemaVersion: "compound.codex_live_hook_response.v0.1",
-			HookName:      hookEnumName(hookName),
-			EventID:       res.Event.Header.ID,
-			Status:        res.Event.Status,
+			SchemaVersion:  "compound.codex_live_hook_response.v0.1",
+			HookName:       hookEnumName(hookName),
+			EventID:        res.Event.Header.ID,
+			Status:         res.Event.Status,
+			FailOpenReason: res.Event.FailOpenReason,
 		}
 		if strings.TrimSpace(res.ContextOutput) != "" {
 			out.AdditionalContext = res.ContextOutput
@@ -1049,12 +1052,13 @@ func writeLiveHookParityLog(dir string, res hook.Result, now time.Time) error {
 		return nil
 	}
 	record := liveHookParityRecord{
-		SchemaVersion: "compound.hook_live_parity.v0.1",
-		HookName:      res.Event.HookName,
-		Harness:       res.Event.Harness,
-		EventID:       res.Event.Header.ID,
-		Status:        res.Event.Status,
-		InputHash:     res.Event.InputHash,
+		SchemaVersion:  "compound.hook_live_parity.v0.1",
+		HookName:       res.Event.HookName,
+		Harness:        res.Event.Harness,
+		EventID:        res.Event.Header.ID,
+		Status:         res.Event.Status,
+		FailOpenReason: res.Event.FailOpenReason,
+		InputHash:      res.Event.InputHash,
 		SummaryHash:   shortHash(res.Summary),
 		ProducedKinds: liveProducedKinds(res.Produced),
 		WorkID:        res.Event.IDs.WorkID,

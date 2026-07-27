@@ -17,6 +17,68 @@ import (
 	"compound/internal/work"
 )
 
+func TestSessionsMineFiltersHarnessAndCountsDistinctSessions(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+
+	codexPrompt := sessionMiningTestEvent("hook_codex_prompt", "sess_codex", "work_codex", "UserPromptSubmit", "operator_correction:prefer reversible edits")
+	codexEnd := sessionMiningTestEvent("hook_codex_end", "sess_codex", "work_codex", "SessionEnd", "lane:local")
+	claude := sessionMiningTestEvent("hook_claude", "sess_claude", "work_claude", "SessionEnd", "lane:local")
+	claude.Harness = "claude_code"
+	old := sessionMiningTestEvent("hook_old", "sess_old", "work_old", "SessionEnd", "lane:old")
+	for _, ev := range []*sessionHookEvent{&codexPrompt, &codexEnd, &claude} {
+		ev.CreatedAt = now.Add(-time.Hour).Format(time.RFC3339)
+	}
+	old.CreatedAt = now.Add(-48 * time.Hour).Format(time.RFC3339)
+	writeSessionHookEvents(t, homePath, []sessionHookEvent{codexPrompt, codexEnd, claude, old})
+
+	report, err := buildSessionMiningReport(homePath, "24h", "codex", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Harness != "codex" || report.SessionCount != 1 || report.HookEventCount != 2 {
+		t.Fatalf("filtered report = %+v, want harness=codex sessions=1 hook_events=2", report)
+	}
+	if report.HookEventsScanned != 4 || report.HookEventScanMode != "full" {
+		t.Fatalf("scan observability = scanned:%d mode:%q, want 4/full", report.HookEventsScanned, report.HookEventScanMode)
+	}
+	if len(report.HarnessCounts) != 1 || report.HarnessCounts["codex"] != 2 {
+		t.Fatalf("harness counts leaked another harness: %+v", report.HarnessCounts)
+	}
+	if report.HookCounts["UserPromptSubmit"] != 1 || report.HookCounts["SessionEnd"] != 1 {
+		t.Fatalf("hook counts = %+v, want one codex event of each kind", report.HookCounts)
+	}
+}
+
+func TestSessionsMineWithoutHarnessCountsDistinctSessionsAcrossHarnesses(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	one := sessionMiningTestEvent("hook_one", "sess_shared", "work_one", "UserPromptSubmit", "lane:one")
+	two := sessionMiningTestEvent("hook_two", "sess_shared", "work_one", "SessionEnd", "lane:two")
+	three := sessionMiningTestEvent("hook_three", "sess_other", "work_two", "SessionEnd", "lane:three")
+	three.Harness = "claude_code"
+	for _, ev := range []*sessionHookEvent{&one, &two, &three} {
+		ev.CreatedAt = now.Add(-time.Hour).Format(time.RFC3339)
+	}
+	writeSessionHookEvents(t, homePath, []sessionHookEvent{one, two, three})
+
+	report, err := buildSessionMiningReport(homePath, "24h", "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SessionCount != 2 || report.HookEventCount != 3 {
+		t.Fatalf("report counts = sessions:%d hook_events:%d, want 2/3", report.SessionCount, report.HookEventCount)
+	}
+}
+
 func TestSessionsMineApplyRoutesSyntheticFindingsProposeOnly(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

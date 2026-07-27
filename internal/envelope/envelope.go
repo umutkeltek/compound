@@ -58,6 +58,9 @@ var (
 	ProjectionRoles = []string{"offered", "used", "missed", "false_triggered", "validated", "candidate", "promoted", "parked", "rejected", "proof"}
 	HookNames       = []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd", "Stop"}
 	HookStatuses    = []string{"ok", "fail_open", "blocked", "error"}
+	// FailOpenReasons name WHY a hook failed open. Empty is always legal (pre-existing
+	// events state no reason); a non-empty value must be one of these.
+	FailOpenReasons = []string{FailOpenCapabilityAbsent, FailOpenContextUnavailable}
 	ReceiptOutcomes = []string{"completed", "blocked", "failed", "no_op"}
 	RequestedModes  = []string{"observe", "plan", "execute", "review"}
 	// CloseOutcomes is the CLOSE outcome enum (CloseInput.Outcome in internal/work): the state a
@@ -1162,7 +1165,29 @@ type HookEvent struct {
 	OutputRef      string   `json:"output_ref,omitempty"`
 	DurationMS     int      `json:"duration_ms"`
 	Status         string   `json:"status"`
+	// FailOpenReason disambiguates the two meanings of Status=="fail_open". The status
+	// itself cannot: three writers use it for an ABSENT NATIVE CAPABILITY (an expected,
+	// static property of the harness — the honest "an adapter must enforce this") and one
+	// uses it for a CONTEXT BUILD FAILURE, where construction errored or blew its budget
+	// and the model received nothing. Only the second is alarming, and a consumer reading
+	// persisted events could not tell them apart: the breaker's in-memory signal
+	// (Result.BreakerTripped) never reaches the event.
+	//
+	// OPTIONAL and additive, declared LAST: absent means "not stated", every pre-existing
+	// event re-marshals byte-identically, and no reader is required to consult it. Values
+	// are FailOpenReasons; empty stays legal so this can never fail a stored event.
+	FailOpenReason string `json:"fail_open_reason,omitempty"`
 }
+
+// The two meanings of Status=="fail_open". See HookEvent.FailOpenReason.
+const (
+	// FailOpenCapabilityAbsent: the harness has no native hook, so enforcement or
+	// delivery is delegated to an adapter. Expected, static, not alarming.
+	FailOpenCapabilityAbsent = "capability_absent"
+	// FailOpenContextUnavailable: context construction errored or exceeded its budget,
+	// so NO context reached the model. A runtime failure, and the alarming one.
+	FailOpenContextUnavailable = "context_unavailable"
+)
 
 func (e *HookEvent) Kind() string { return "hook_event" }
 func (e *HookEvent) Validate() error {
@@ -1171,6 +1196,10 @@ func (e *HookEvent) Validate() error {
 	v.req("harness", e.Harness)
 	v.enum("hook_name", e.HookName, HookNames, true)
 	v.enum("status", e.Status, HookStatuses, true)
+	// Optional: empty is legal so every pre-existing event still validates. A stated
+	// reason must be a known one, so an unrecognized free string can never reach disk and
+	// become a silently unreadable signal.
+	v.enum("fail_open_reason", e.FailOpenReason, FailOpenReasons, false)
 	return v.result(e.Kind())
 }
 

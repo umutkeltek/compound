@@ -121,9 +121,10 @@ type ExecutorStalledJobRef struct {
 }
 
 type ExecutorHookEventRef struct {
-	CreatedAt string `json:"created_at"`
-	Hook      string `json:"hook"`
-	Status    string `json:"status"`
+	CreatedAt      string `json:"created_at"`
+	Hook           string `json:"hook"`
+	Status         string `json:"status"`
+	FailOpenReason string `json:"fail_open_reason,omitempty"`
 }
 
 type ExecutorsProjectionOptions struct {
@@ -388,11 +389,12 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 }
 
 type executorHookEventLine struct {
-	CreatedAt string `json:"created_at"`
-	Harness   string `json:"harness"`
-	HookName  string `json:"hook_name"`
-	Hook      string `json:"hook"`
-	Status    string `json:"status"`
+	CreatedAt      string `json:"created_at"`
+	Harness        string `json:"harness"`
+	HookName       string `json:"hook_name"`
+	Hook           string `json:"hook"`
+	Status         string `json:"status"`
+	FailOpenReason string `json:"fail_open_reason,omitempty"`
 }
 
 // loadExecutorHookEvents reads the authoritative hook_ records through the Scan
@@ -450,9 +452,10 @@ func applyExecutorHookEvents(rows map[string]*ExecutorRow, events []executorHook
 			continue
 		}
 		row.LastHookEvent = &ExecutorHookEventRef{
-			CreatedAt: ev.CreatedAt,
-			Hook:      hook,
-			Status:    ev.Status,
+			CreatedAt:      ev.CreatedAt,
+			Hook:           hook,
+			Status:         ev.Status,
+			FailOpenReason: ev.FailOpenReason,
 		}
 	}
 }

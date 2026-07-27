@@ -312,6 +312,7 @@ func applyCoordinationExecutionHold(res *Result, deps Deps, fx Fixture, delivery
 		res.Event.Status = "blocked"
 	} else {
 		res.Event.Status = "fail_open"
+		res.Event.FailOpenReason = envelope.FailOpenCapabilityAbsent
 	}
 	return nil
 }
@@ -351,7 +352,7 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 		return Result{}, err
 	}
 	req := buildContextRequest(name, fx, built.Contract, built.Pack, mode, now)
-	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
+	ev := newCapabilityEvent(name, fx, fx.Harness, deps, contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
 	ev.IDs.ContextPackID = built.Pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
@@ -412,7 +413,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		pred = "address: " + fx.Task
 	}
 	req := buildContextRequest(name, fx, built.Contract, built.Pack, mode, now)
-	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
+	ev := newCapabilityEvent(name, fx, fx.Harness, deps, contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
 	ev.IDs.ContextPackID = built.Pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
@@ -502,7 +503,7 @@ func liveUserPrompt(name string, fx Fixture, deps Deps, now time.Time, mode stri
 	req := buildContextRequest(name, persistedFX, built.Contract, built.Pack, mode, now)
 	req.IntentTextRef = intentRef
 
-	ev := newEvent(name, persistedFX, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
+	ev := newCapabilityEvent(name, persistedFX, fx.Harness, deps, contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
 	ev.IDs.ContextPackID = built.Pack.Header.ID
 	rendered := renderInjection(injectionRender{
 		HookID:          ev.Header.ID,
@@ -617,6 +618,13 @@ func nonNegativeDuration(duration time.Duration) time.Duration {
 
 func contextBreakerResult(name string, fx Fixture, deps Deps, mode string, now time.Time) Result {
 	ev := newEvent(name, fx, "fail_open", contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
+	// Name the meaning ON THE EVENT. BreakerTripped below says the same thing, but it
+	// lives on the Result and dies with the process: every consumer that reads the
+	// persisted event back — event store, projections, an operator audit — saw a bare
+	// `fail_open` and could not tell "the model received NO context" from "this harness
+	// has no native hook". Pinned by
+	// TestFailOpenDistinguishesContextFailureFromAbsentCapability.
+	ev.FailOpenReason = envelope.FailOpenContextUnavailable
 	return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "", BreakerTripped: true}
 }
 
@@ -784,6 +792,9 @@ func evaluatePreparedPreToolUse(name string, fx Fixture, deps Deps, prepared pre
 		}
 	}
 	ev := newEvent(name, fx, st, hashStr(ai.ID), sideEffects, now)
+	if st == "fail_open" {
+		ev.FailOpenReason = envelope.FailOpenCapabilityAbsent
+	}
 	ev.IDs.WorkID = ai.IDs.WorkID
 	summary := fmt.Sprintf("policy %s for %s%s", pd.Outcome, ai.Action, warn)
 	if reviewWorkID != "" {
@@ -797,6 +808,7 @@ func preToolUseBatch(name string, fx Fixture, deps Deps, now time.Time) (Result,
 	sideEffects := append([]string(nil), fx.AdapterSideEffects...)
 	actionIDs := make([]string, 0, len(fx.Actions))
 	status := "ok"
+	failOpenReason := ""
 	summary := ""
 	workID := fx.WorkID
 	prepared := make([]preparedPreToolAction, 0, len(fx.Actions))
@@ -831,6 +843,11 @@ func preToolUseBatch(name string, fx Fixture, deps Deps, now time.Time) (Result,
 		}
 		if hookStatusRank(res.Event.Status) > hookStatusRank(status) {
 			status = res.Event.Status
+			// Carry the reason with the status it belongs to. Promoting a child's
+			// status without its reason would rebuild the exact ambiguity this field
+			// exists to remove: the batch event would say `fail_open` while the WHY
+			// stayed behind on the child.
+			failOpenReason = res.Event.FailOpenReason
 			summary = res.Summary
 		} else if summary == "" {
 			summary = res.Summary
@@ -838,6 +855,7 @@ func preToolUseBatch(name string, fx Fixture, deps Deps, now time.Time) (Result,
 	}
 
 	ev := newEvent(name, fx, status, hashStr(strings.Join(actionIDs, "\x00")), uniqueStrings(sideEffects), now)
+	ev.FailOpenReason = failOpenReason
 	ev.IDs.WorkID = workID
 	return Result{
 		Event:    ev,
@@ -1570,12 +1588,12 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		if fx.WorkID == "" {
 			parts = []string{name, fx.SessionID, fx.TurnID, fx.Cwd, fx.Summary, fx.TranscriptPath}
 		}
-		ev := newEvent(name, fx, st, hashStr(strings.Join(parts, "\x00")), fx.AdapterSideEffects, now)
+		ev := newCapabilityEvent(name, fx, fx.Harness, deps, hashStr(strings.Join(parts, "\x00")), fx.AdapterSideEffects, now)
 		return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "recorded handled Stop event without replaying a session receipt"}, nil
 	}
 	if fx.WorkID == "" {
 		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.TurnID, fx.Cwd, fx.Summary, fx.TranscriptPath}, "\x00"))
-		ev := newEvent(name, fx, st, inputHash, fx.AdapterSideEffects, now)
+		ev := newCapabilityEvent(name, fx, fx.Harness, deps, inputHash, fx.AdapterSideEffects, now)
 		summary := fmt.Sprintf("recorded %s receipt event for session %s%s", name, fx.SessionID, warn)
 		rec, err := buildWorklessSessionReceipt(name, fx, now)
 		if err != nil || rec == nil {
@@ -1602,7 +1620,7 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	moveType := strings.TrimSpace(fx.MoveType)
 	if outcome == "" || moveType == "" {
 		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.TurnID, fx.WorkID, fx.Cwd, fx.Summary, outcome, moveType}, "\x00"))
-		ev := newEvent(name, fx, st, inputHash, fx.AdapterSideEffects, now)
+		ev := newCapabilityEvent(name, fx, fx.Harness, deps, inputHash, fx.AdapterSideEffects, now)
 		summary := fmt.Sprintf("recorded %s receipt event for work %s; explicit outcome and move_type required to close work%s", name, fx.WorkID, warn)
 		return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 	}
@@ -1636,7 +1654,7 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if err != nil {
 		return Result{}, err
 	}
-	ev := newEvent(name, fx, st, hashStr(fx.WorkID), mergeRefs(fx.AdapterSideEffects, []string{receiptRef.String(), transitionRef.String()}), now)
+	ev := newCapabilityEvent(name, fx, fx.Harness, deps, hashStr(fx.WorkID), mergeRefs(fx.AdapterSideEffects, []string{receiptRef.String(), transitionRef.String()}), now)
 	ev.IDs.ContextPackID = res.Work.IDs.ContextPackID
 	summary := fmt.Sprintf("closed %s: %s, receipt %s, transition %s%s", res.Work.ID, res.Work.State, res.Receipt.ID, res.Transition.ID, warn)
 	return Result{Event: ev, Produced: []envelope.Envelope{&res.Receipt, &res.Transition}, Summary: summary}, nil
@@ -1651,6 +1669,27 @@ func status(deps Deps, harnessName, hookName string) string {
 		return "ok"
 	}
 	return "fail_open"
+}
+
+// newCapabilityEvent builds an event whose status came from the harness capability
+// registry and stamps the matching fail-open reason.
+//
+// It exists so the pairing has ONE owner. Every `fail_open` produced from `status` means
+// exactly one thing — the harness has no native hook — and writing that rule at each call
+// site is a rule in four places, which is a rule that drifts. The reason is stated
+// explicitly rather than inferred from an EMPTY field, because "no reason recorded"
+// must keep meaning "not stated", never "assumed benign": that inference is the same
+// shape as the defect this field exists to fix.
+//
+// evFX is the fixture the event is built from (a caller may persist a redacted variant),
+// while harnessName is the harness whose capability is being read.
+func newCapabilityEvent(name string, evFX Fixture, harnessName string, deps Deps, inputHash string, sideEffects []string, now time.Time) envelope.HookEvent {
+	st := status(deps, harnessName, name)
+	ev := newEvent(name, evFX, st, inputHash, sideEffects, now)
+	if st == "fail_open" {
+		ev.FailOpenReason = envelope.FailOpenCapabilityAbsent
+	}
+	return ev
 }
 
 func newEvent(name string, fx Fixture, st, inputHash string, sideEffects []string, now time.Time) envelope.HookEvent {

@@ -1718,7 +1718,11 @@ func runHookCommand(args []string) int {
 	if parsed.HookName == "session-end" {
 		autoConsumeCapabilityFeedback(homePath)
 	}
-	fmt.Fprintf(os.Stderr, "[%s/%s] %s — %s\n", fx.Harness, res.Event.Status, res.Event.HookName, res.Summary)
+	fmt.Fprintf(os.Stderr, "[%s/%s] %s", fx.Harness, res.Event.Status, res.Event.HookName)
+	if res.Event.FailOpenReason != "" {
+		fmt.Fprintf(os.Stderr, " (%s)", res.Event.FailOpenReason)
+	}
+	fmt.Fprintf(os.Stderr, " — %s\n", res.Summary)
 	if parsed.Enforce {
 		return hookEnforceExit(parsed.HookName, res)
 	}
@@ -1802,7 +1806,13 @@ func hookEnforceExit(hookName string, res hook.Result) int {
 			return gateExit(*pd)
 		}
 	}
-	if res.Event.Status == "blocked" || res.Event.Status == "fail_open" {
+	if res.Event.Status == "blocked" {
+		return 1
+	}
+	if res.Event.Status == "fail_open" {
+		if res.Event.FailOpenReason == envelope.FailOpenContextUnavailable {
+			return 4
+		}
 		return 1
 	}
 	return 0

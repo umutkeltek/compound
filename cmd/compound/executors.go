@@ -205,7 +205,11 @@ func printExecutorsProjection(projection executorsProjectionOutput) {
 			fmt.Printf("- wait_reason: %s\n", executor.WaitReason)
 		}
 		if executor.LastHookEvent != nil {
-			fmt.Printf("- last_hook_event: %s hook=%s status=%s\n", executor.LastHookEvent.CreatedAt, executor.LastHookEvent.Hook, executor.LastHookEvent.Status)
+			fmt.Printf("- last_hook_event: %s hook=%s status=%s", executor.LastHookEvent.CreatedAt, executor.LastHookEvent.Hook, executor.LastHookEvent.Status)
+			if executor.LastHookEvent.FailOpenReason != "" {
+				fmt.Printf(" (%s)", executor.LastHookEvent.FailOpenReason)
+			}
+			fmt.Println()
 		}
 		if executor.RouteEvidencePresent || executor.RouteEvidenceCount > 0 {
 			fmt.Printf("- route_evidence: present=%t count=%d\n", executor.RouteEvidencePresent, executor.RouteEvidenceCount)

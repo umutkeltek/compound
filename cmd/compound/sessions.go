@@ -13,6 +13,7 @@ import (
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/distiller"
+	"compound/internal/envelope"
 	"compound/internal/eventstore"
 	"compound/internal/harvest"
 	"compound/internal/home"
@@ -24,14 +25,29 @@ import (
 const sessionMiningReportSchemaVersion = "compound.sessions_mine_report.v0.1"
 const sessionMiningApplyReportSchemaVersion = "compound.sessions_mine_apply_report.v0.1"
 
+type sessionMiningSettings struct {
+	HarnessActor        string `json:"harness_actor"`
+	HarnessFilter       string `json:"harness_filter,omitempty"`
+	RecentWorkLimit     int    `json:"recent_work_limit"`
+	HookEventWindow     string `json:"hook_event_window"`
+	HookEventScanMode   string `json:"hook_event_scan_mode"`
+	IncrementalSafe     bool   `json:"incremental_safe"`
+	IncrementalLimiting string `json:"incremental_limiting,omitempty"`
+}
+
 type sessionMiningReport struct {
 	SchemaVersion         string                    `json:"schema_version"`
 	Status                string                    `json:"status"`
 	GeneratedAt           string                    `json:"generated_at"`
 	Since                 string                    `json:"since"`
 	SinceCutoff           string                    `json:"since_cutoff"`
+	Harness               string                    `json:"harness,omitempty"`
 	DryRun                bool                      `json:"dry_run"`
 	SessionCount          int                       `json:"session_count"`
+	HookEventCount        int                       `json:"hook_event_count"`
+	HookEventsScanned     int                       `json:"hook_events_scanned"`
+	HookEventScanMode     string                    `json:"hook_event_scan_mode"`
+	EffectiveSettings     sessionMiningSettings     `json:"effective_settings"`
 	HarnessCounts         map[string]int            `json:"harness_counts"`
 	HookCounts            map[string]int            `json:"hook_counts"`
 	PreferencesFound      []sessionMiningFinding    `json:"preferences_found"`
@@ -81,22 +97,7 @@ type sessionMiningRoutedArtifact struct {
 	EvidenceRefs   []string `json:"evidence_refs"`
 }
 
-type sessionHookEvent struct {
-	ID             string   `json:"id"`
-	CreatedAt      string   `json:"created_at"`
-	Harness        string   `json:"harness"`
-	HookName       string   `json:"hook_name"`
-	HookCapability string   `json:"hook_capability,omitempty"`
-	InputHash      string   `json:"input_hash,omitempty"`
-	SideEffects    []string `json:"side_effects,omitempty"`
-	OutputRef      string   `json:"output_ref,omitempty"`
-	Status         string   `json:"status"`
-	EvidenceRefs   []string `json:"evidence_refs,omitempty"`
-	IDs            struct {
-		SessionID string `json:"session_id"`
-		WorkID    string `json:"work_id"`
-	} `json:"ids"`
-}
+type sessionHookEvent = envelope.HookEvent
 
 func cmdSessions(args []string) {
 	if len(args) == 0 {
@@ -120,7 +121,7 @@ func cmdSessions(args []string) {
 
 func sessionsUsage() string {
 	return "usage:\n" +
-		"  compound sessions mine [--dry-run|--apply] [--since 24h] [--json]\n" +
+		"  compound sessions mine [--dry-run|--apply] [--since 24h] [--harness codex] [--json]\n" +
 		"  compound sessions harvest --transcript <path> [--dry-run] [--json]\n" +
 		"  compound sessions backfill --ledger-dir <dir> [--dry-run|--apply] [--limit N] [--json]\n" +
 		"  compound sessions live [--json] [--ghosts-only]"
@@ -310,6 +311,7 @@ func cmdSessionsMine(args []string) {
 	jsonOut := false
 	dryRun := false
 	apply := false
+	harnessName := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--since":
@@ -318,6 +320,13 @@ func cmdSessionsMine(args []string) {
 				os.Exit(2)
 			}
 			since = args[i+1]
+			i++
+		case "--harness":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, sessionsUsage())
+				os.Exit(2)
+			}
+			harnessName = strings.TrimSpace(args[i+1])
 			i++
 		case "--dry-run":
 			dryRun = true
@@ -339,7 +348,7 @@ func cmdSessionsMine(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	report, err := buildSessionMiningReport(homePath, since, time.Now())
+	report, err := buildSessionMiningReport(homePath, since, harnessName, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sessions mine:", err)
 		os.Exit(1)
@@ -355,7 +364,12 @@ func cmdSessionsMine(args []string) {
 		report.Status = applyReport.Status
 		report.NextCommand = []string{"compound", "reviews", "--json"}
 	} else if !dryRun {
-		report.NextCommand = []string{"compound", "sessions", "mine", "--since", since, "--apply", "--json"}
+		next := []string{"compound", "sessions", "mine", "--since", since}
+		if harnessName != "" {
+			next = append(next, "--harness", harnessName)
+		}
+		next = append(next, "--apply", "--json")
+		report.NextCommand = next
 	}
 	if jsonOut {
 		printJSON(report)
@@ -368,7 +382,11 @@ func cmdSessionsMine(args []string) {
 	}
 	fmt.Printf("- status: %s\n", report.Status)
 	fmt.Printf("- since: %s\n", report.Since)
+	if report.Harness != "" {
+		fmt.Printf("- harness: %s\n", report.Harness)
+	}
 	fmt.Printf("- sessions: %d\n", report.SessionCount)
+	fmt.Printf("- hook_events: %d (scanned=%d mode=%s)\n", report.HookEventCount, report.HookEventsScanned, report.HookEventScanMode)
 	fmt.Printf("- stuck_points: %d\n", len(report.StuckPoints))
 	fmt.Printf("- memory_candidates: %d\n", len(report.MemoryCandidates))
 	fmt.Printf("- skill_updates: %d\n", len(report.CandidateSkillUpdates))
@@ -383,7 +401,7 @@ func cmdSessionsMine(args []string) {
 	}
 }
 
-func buildSessionMiningReport(homePath, since string, now time.Time) (sessionMiningReport, error) {
+func buildSessionMiningReport(homePath, since, harnessName string, now time.Time) (sessionMiningReport, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -392,16 +410,22 @@ func buildSessionMiningReport(homePath, since string, now time.Time) (sessionMin
 		return sessionMiningReport{}, err
 	}
 	cutoff := now.Add(-window)
+	initNext := []string{"compound", "sessions", "mine", "--since", since}
+	if harnessName != "" {
+		initNext = append(initNext, "--harness", harnessName)
+	}
+	initNext = append(initNext, "--dry-run", "--json")
 	report := sessionMiningReport{
 		SchemaVersion: sessionMiningReportSchemaVersion,
 		Status:        "ok",
 		GeneratedAt:   now.UTC().Format(time.RFC3339),
 		Since:         since,
 		SinceCutoff:   cutoff.UTC().Format(time.RFC3339),
+		Harness:       harnessName,
 		DryRun:        true,
 		HarnessCounts: map[string]int{},
 		HookCounts:    map[string]int{},
-		NextCommand:   []string{"compound", "sessions", "mine", "--since", since, "--dry-run", "--json"},
+		NextCommand:   initNext,
 		ProofRequired: []string{
 			"dry-run only; no session import, no memory promotion, no skill promotion",
 			"every candidate must keep evidence refs before review",
@@ -409,12 +433,27 @@ func buildSessionMiningReport(homePath, since string, now time.Time) (sessionMin
 		},
 	}
 
-	events, warnings, err := loadRecentSessionHookEvents(homePath, cutoff)
+	events, scan, warnings, err := loadRecentSessionHookEvents(homePath, cutoff, harnessName)
 	if err != nil {
 		return report, err
 	}
-	report.SessionCount = len(events)
+	report.HookEventCount = len(events)
+	report.HookEventsScanned = scan.Scanned
+	report.HookEventScanMode = scan.Mode
+	report.EffectiveSettings = sessionMiningSettings{
+		HarnessActor:        firstNonEmpty(harnessName, "codex"),
+		HarnessFilter:       harnessName,
+		RecentWorkLimit:     10,
+		HookEventWindow:     since,
+		HookEventScanMode:   scan.Mode,
+		IncrementalSafe:     false,
+		IncrementalLimiting: "windowed pattern detection requires a persisted rolling aggregate; a byte cursor alone can split a repeated pattern across runs",
+	}
+	sessions := map[string]struct{}{}
 	for _, ev := range events {
+		if ev.IDs.SessionID != "" {
+			sessions[ev.IDs.SessionID] = struct{}{}
+		}
 		if ev.Harness != "" {
 			report.HarnessCounts[ev.Harness]++
 		}
@@ -422,11 +461,17 @@ func buildSessionMiningReport(homePath, since string, now time.Time) (sessionMin
 			report.HookCounts[ev.HookName]++
 		}
 	}
+	report.SessionCount = len(sessions)
 	if len(events) == 0 {
 		report.Checks = append(report.Checks, sessionMiningCheck{Name: "recent_session_events", Status: "warn", Detail: "no hook events in window"})
 	} else {
-		report.Checks = append(report.Checks, sessionMiningCheck{Name: "recent_session_events", Status: "ok", Detail: fmt.Sprintf("%d events", len(events))})
+		report.Checks = append(report.Checks, sessionMiningCheck{Name: "recent_session_events", Status: "ok", Detail: fmt.Sprintf("%d sessions / %d hook events", report.SessionCount, report.HookEventCount)})
 	}
+	report.Checks = append(report.Checks, sessionMiningCheck{
+		Name:   "hook_event_scan",
+		Status: "ok",
+		Detail: fmt.Sprintf("mode=%s scanned=%d selected=%d", report.HookEventScanMode, report.HookEventsScanned, report.HookEventCount),
+	})
 	for _, warning := range warnings {
 		report.Checks = append(report.Checks, sessionMiningCheck{Name: "hook_event_warning", Status: "warn", Detail: warning})
 	}
@@ -435,7 +480,8 @@ func buildSessionMiningReport(homePath, since string, now time.Time) (sessionMin
 	if err != nil {
 		return report, err
 	}
-	workbench, err := store.Workbench(now, work.WorkbenchOptions{RecentLimit: 10, Actor: "codex"})
+	actor := report.EffectiveSettings.HarnessActor
+	workbench, err := store.Workbench(now, work.WorkbenchOptions{RecentLimit: report.EffectiveSettings.RecentWorkLimit, Actor: actor})
 	if err != nil {
 		return report, err
 	}
@@ -468,29 +514,35 @@ func parseSessionMiningSince(value string) (time.Duration, error) {
 	return d, nil
 }
 
-func loadRecentSessionHookEvents(homePath string, cutoff time.Time) ([]sessionHookEvent, []string, error) {
+type sessionHookScan struct {
+	Mode    string
+	Scanned int
+}
+
+func loadRecentSessionHookEvents(homePath string, cutoff time.Time, harnessName string) ([]sessionHookEvent, sessionHookScan, []string, error) {
 	store, err := eventstore.Open(homePath)
 	if err != nil {
-		return nil, nil, err
+		return nil, sessionHookScan{}, nil, err
 	}
-	// Read authoritative hook_ records via the Scan seam (hook-events.ndjson is
-	// frozen post-migration). Session mining groups by harness / preference signal
-	// and accumulates evidence refs in event order, so records are sorted
-	// deterministically by (created_at, id) below — reproducing the prior append
-	// order on a clean home while staying stable across the deduped store.
+	// This is deliberately reported as a full scan: hook IDs are hashes rather
+	// than time-sortable keys, and window mining needs every event in the window
+	// to detect repeated patterns. A byte cursor alone would miss patterns split
+	// across runs; a future incremental implementation must persist a rolling
+	// aggregate alongside its cursor.
 	entries, err := store.Scan(eventstore.ScanOptions{Prefixes: []string{"hook_"}, RegularOnly: true})
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, nil
+			return nil, sessionHookScan{Mode: "full"}, nil, nil
 		}
-		return nil, nil, fmt.Errorf("read hook events: %w", err)
+		return nil, sessionHookScan{}, nil, fmt.Errorf("read hook events: %w", err)
 	}
+	scan := sessionHookScan{Mode: "full", Scanned: len(entries)}
 	var out []sessionHookEvent
 	var warnings []string
 	for _, entry := range entries {
 		rec, err := entry.Read()
 		if err != nil {
-			return nil, nil, fmt.Errorf("read hook events: %w", err)
+			return nil, scan, nil, fmt.Errorf("read hook events: %w", err)
 		}
 		var ev sessionHookEvent
 		if err := json.Unmarshal(rec.Bytes, &ev); err != nil {
@@ -502,7 +554,7 @@ func loadRecentSessionHookEvents(homePath string, cutoff time.Time) ([]sessionHo
 			warnings = append(warnings, fmt.Sprintf("record %s missing created_at", entry.ID))
 			continue
 		}
-		if created.Before(cutoff) {
+		if created.Before(cutoff) || (harnessName != "" && ev.Harness != harnessName) {
 			continue
 		}
 		out = append(out, ev)
@@ -513,7 +565,7 @@ func loadRecentSessionHookEvents(homePath string, cutoff time.Time) ([]sessionHo
 		}
 		return out[i].ID < out[j].ID
 	})
-	return out, warnings, nil
+	return out, scan, warnings, nil
 }
 
 func sessionMiningStuckPoints(workbench work.WorkbenchReport) []sessionMiningFinding {
