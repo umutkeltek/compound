@@ -828,6 +828,20 @@ func runSourceCanonObserve(args []string, stdout, stderr io.Writer, now time.Tim
 		fmt.Fprintln(stderr, "source canon-observe:", err)
 		return 1
 	}
+	if len(drift.AdmissionHolds) > 0 {
+		for _, hold := range drift.AdmissionHolds {
+			fmt.Fprintf(
+				stderr,
+				"source canon-observe: instruction supply-chain admission hold: %s surface=%s reason=%s prior=%s live=%s\n",
+				hold.SourceRef,
+				hold.Surface,
+				hold.Reason,
+				hold.PriorSchema,
+				hold.LiveSchema,
+			)
+		}
+		return 1
+	}
 
 	observationOnly := len(causedBy) == 0 // D4 guarantees no partial cause flags reach here
 	var evolution capgraph.CanonEvolutionReport

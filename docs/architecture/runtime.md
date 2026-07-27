@@ -307,6 +307,19 @@ arbitration. (Hooks sit at high-gravity points — a tiny SessionStart nudge ben
 them thin.)
 
 Commands: `compound hook {session-start, user-prompt-submit, pre-tool-use, post-tool-use, session-end, stop}`.
+
+Prompt-injection boundary: live `UserPromptSubmit` and `PostToolUse` hooks mint
+content-addressed `SourceEnvelope` records and maintain a bounded per-session
+lineage projection. `PreToolUse` loads that projection, classifies every tool
+domain, binds exact arguments/destination/source refs/tool schema/policy
+revision, then applies the security floor after standing grants. Routine
+reads/local verification/reversible in-envelope work remain automatic.
+Unknown tools, missing schema/destination, source/sink violations and
+consequential out-of-grant effects hold or deny. Exact approvals are durable,
+expiring and one-use; they cannot override a deny or security floor. Compaction
+and subagent transformations preserve parent lineage and cannot raise trust.
+The full input/model map and migration plan is
+[`docs/security/prompt-injection.md`](../security/prompt-injection.md).
 `compound contract hooks-authority` reports `hook_readiness[]` from installed-hook authority, checked fixture coverage, and live-adapter support, plus `pre_tool_use_readiness[]` from installed hooks and harness native-block facts. With `--observe-live`, it exposes desired `hook_plan`, read-only `installation_observation`, and deterministic `reconciliation` separately; observed extras remain evidence and never enter desired authority. `compound hook pre-tool-use --enforce <fixture.json>` returns the same gate exit codes as `policy evaluate` for non-blocking adapter fallbacks.
 The repo-owned opencode adapter registers only SessionStart, UserPromptSubmit, and PostToolUse with
 status non_blocking. It injects through the stable chat.message message.system field, records completed

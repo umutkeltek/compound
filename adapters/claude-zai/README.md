@@ -6,7 +6,7 @@ EffectiveContracts, receipts, and doctor rows retain the lane identity instead o
 to native `claude_code`.
 
 The installer no-clobber merges SessionStart, UserPromptSubmit, PreToolUse, and PostToolUse into the
-profile's `settings.json`. Both tool hooks use `Write|Edit|MultiEdit`; PostToolUse is the
+profile's `settings.json`. Both tool hooks use the universal `*` matcher; PostToolUse is the
 session-ownership signal that lets the next PreToolUse distinguish this session's dirt from foreign
 dirt. It also links the profile's `CLAUDE.md` to the global Claude steering source. Repository
 `CLAUDE.md` files are already discovered from the shared working directory, so only global steering

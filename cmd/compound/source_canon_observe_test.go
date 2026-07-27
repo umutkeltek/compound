@@ -260,3 +260,36 @@ func TestCanonObserveHappyPathMintsCommitsThenRerunClean(t *testing.T) {
 		t.Fatalf("rerun with no change must mint nothing new, got %d transition event(s)", n)
 	}
 }
+
+func TestCanonObserveInstructionSchemaDriftHoldsWithoutAdvancingBaseline(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("COMPOUND_HOME", home)
+	sourcePath := filepath.Join(t.TempDir(), "AGENTS.md")
+	writeCanonObsFile(t, sourcePath, "# Contract\n\nRoutine guidance.\n")
+	baselineCanonObsFamily(
+		t,
+		home,
+		"instruction-canon",
+		[]sourceobs.CanonPathNode{{Path: sourcePath, NodeRef: "harness:codex"}},
+		canonObsNow,
+	)
+	baselineHash := canonObsManifestHash(t, home, "instruction-canon", sourcePath)
+	writeCanonObsFile(t, sourcePath, "# Contract\n\n## New authority surface\n\nRoutine guidance.\n")
+
+	var stdout, stderr bytes.Buffer
+	code := runSourceCanonObserve(
+		[]string{"--family", "instruction-canon", "--json"},
+		&stdout,
+		&stderr,
+		canonObsNow.Add(time.Hour),
+	)
+	if code != 1 {
+		t.Fatalf("instruction schema drift exit = %d, want 1; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "instruction supply-chain admission hold") {
+		t.Fatalf("missing admission hold diagnostic: %s", stderr.String())
+	}
+	if got := canonObsManifestHash(t, home, "instruction-canon", sourcePath); got != baselineHash {
+		t.Fatalf("held instruction schema drift advanced baseline: got %s want %s", got, baselineHash)
+	}
+}

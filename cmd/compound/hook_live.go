@@ -8,10 +8,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/harvest"
 	"compound/internal/hook"
@@ -32,29 +34,34 @@ type hookCommandArgs struct {
 }
 
 type claudeLiveHookInput struct {
-	HookEventName  string          `json:"hook_event_name"`
-	SessionID      string          `json:"session_id"`
-	Source         string          `json:"source"`
-	Cwd            string          `json:"cwd"`
-	Prompt         string          `json:"prompt"`
-	ToolName       string          `json:"tool_name"`
-	ToolInput      map[string]any  `json:"tool_input"`
-	ToolResponse   json.RawMessage `json:"tool_response"` // post-tool-use: the tool's output body; large bodies are externalized (C3)
-	Matcher        string          `json:"matcher"`
-	TranscriptPath string          `json:"transcript_path"`
-	TurnID         string          `json:"turn_id"`
-	StopHookActive bool            `json:"stop_hook_active"`
-	LastAssistant  string          `json:"last_assistant_message"`
-	WorkID         string          `json:"work_id"`
-	CompoundWorkID string          `json:"compound_work_id"`
-	RunAttemptID   string          `json:"run_attempt_id"`
-	Actor          string          `json:"actor"`
-	CompoundActor  string          `json:"compound_actor"`
-	ScopeRefs      []string        `json:"scope_refs"`
-	DependencyRefs []string        `json:"dependency_refs"`
-	PolicyRefs     []string        `json:"policy_refs"`
-	BaseRevisions  []string        `json:"base_revisions"`
-	ResourceRefs   []string        `json:"resource_refs"`
+	HookEventName      string                    `json:"hook_event_name"`
+	SessionID          string                    `json:"session_id"`
+	Source             string                    `json:"source"`
+	Model              string                    `json:"model"`
+	Trigger            string                    `json:"trigger"`
+	Cwd                string                    `json:"cwd"`
+	Prompt             string                    `json:"prompt"`
+	ToolName           string                    `json:"tool_name"`
+	ToolInput          map[string]any            `json:"tool_input"`
+	ToolSchemaRevision string                    `json:"tool_schema_revision"`
+	SourceEnvelopes    []envelope.SourceEnvelope `json:"source_envelopes"`
+	ClassifierRisk     string                    `json:"classifier_risk"`
+	ToolResponse       json.RawMessage           `json:"tool_response"` // post-tool-use: the tool's output body; large bodies are externalized (C3)
+	Matcher            string                    `json:"matcher"`
+	TranscriptPath     string                    `json:"transcript_path"`
+	TurnID             string                    `json:"turn_id"`
+	StopHookActive     bool                      `json:"stop_hook_active"`
+	LastAssistant      string                    `json:"last_assistant_message"`
+	WorkID             string                    `json:"work_id"`
+	CompoundWorkID     string                    `json:"compound_work_id"`
+	RunAttemptID       string                    `json:"run_attempt_id"`
+	Actor              string                    `json:"actor"`
+	CompoundActor      string                    `json:"compound_actor"`
+	ScopeRefs          []string                  `json:"scope_refs"`
+	DependencyRefs     []string                  `json:"dependency_refs"`
+	PolicyRefs         []string                  `json:"policy_refs"`
+	BaseRevisions      []string                  `json:"base_revisions"`
+	ResourceRefs       []string                  `json:"resource_refs"`
 }
 
 type claudeHookSpecificOutput struct {
@@ -142,16 +149,22 @@ func liveHookFixtureForHome(parsed hookCommandArgs, data []byte, now time.Time, 
 	if err := json.Unmarshal(data, &in); err != nil {
 		return hook.Fixture{}, fmt.Errorf("parse live hook stdin: %w", err)
 	}
+	activeSources, sourceEffects, err := liveIngressSourcesForHome(homePath, parsed.Harness, parsed.HookName, in, now)
+	if err != nil {
+		return hook.Fixture{}, err
+	}
+	in.SourceEnvelopes = mergeLiveSourceEnvelopes(activeSources, in.SourceEnvelopes)
 	fx := hook.Fixture{
-		Hook:      parsed.HookName,
-		Harness:   normalizeLiveHarness(parsed.Harness),
-		Live:      parsed.Live,
-		Cwd:       in.Cwd,
-		SessionID: strings.TrimSpace(in.SessionID),
-		Prompt:    in.Prompt,
-		Task:      liveTask(in),
-		Tool:      in.ToolName,
-		WorkID:    firstNonEmpty(in.WorkID, in.CompoundWorkID),
+		Hook:               parsed.HookName,
+		Harness:            normalizeLiveHarness(parsed.Harness),
+		Live:               parsed.Live,
+		Cwd:                in.Cwd,
+		SessionID:          strings.TrimSpace(in.SessionID),
+		Prompt:             in.Prompt,
+		Task:               liveTask(in),
+		Tool:               in.ToolName,
+		WorkID:             firstNonEmpty(in.WorkID, in.CompoundWorkID),
+		AdapterSideEffects: append([]string(nil), sourceEffects...),
 	}
 	if fx.Cwd == "" {
 		fx.Cwd = os.Getenv("CLAUDE_PROJECT_DIR")
@@ -168,7 +181,7 @@ func liveHookFixtureForHome(parsed hookCommandArgs, data []byte, now time.Time, 
 	}
 	switch parsed.HookName {
 	case "pre-tool-use":
-		actions, err := liveActionIntents(fx.Harness, in, now)
+		actions, err := liveActionIntentsForHome(homePath, fx.Harness, in, now)
 		if err != nil {
 			return hook.Fixture{}, err
 		}
@@ -201,6 +214,342 @@ func liveHookFixtureForHome(parsed hookCommandArgs, data []byte, now time.Time, 
 		fx.Summary = "session-end receipt from live hook event " + firstNonEmpty(fx.SessionID, fx.WorkID, "unknown-session")
 	}
 	return fx, nil
+}
+
+func liveIngressSourcesForHome(
+	homePath, harnessName, hookName string,
+	in claudeLiveHookInput,
+	now time.Time,
+) ([]envelope.SourceEnvelope, []string, error) {
+	if strings.TrimSpace(homePath) == "" || strings.TrimSpace(in.SessionID) == "" {
+		return nil, nil, nil
+	}
+	store := policy.NewSessionSourceStore(homePath)
+	switch hookName {
+	case "user-prompt-submit":
+		if strings.TrimSpace(in.Prompt) == "" {
+			active, err := store.Active(in.SessionID)
+			return active, nil, err
+		}
+		source := liveOperatorPromptSource(harnessName, in, now)
+		ref, err := store.Record(in.SessionID, source, policy.SourceRecordReset, now)
+		if err != nil {
+			return nil, nil, fmt.Errorf("record operator prompt source: %w", err)
+		}
+		return []envelope.SourceEnvelope{source}, []string{ref}, nil
+	case "post-tool-use":
+		active, err := store.Active(in.SessionID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load post-tool source lineage: %w", err)
+		}
+		body := []byte(liveToolOutput(in.ToolResponse))
+		if len(body) == 0 {
+			return active, nil, nil
+		}
+		source, err := liveToolResultSource(harnessName, in, body, active, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		ref, err := store.Record(in.SessionID, source, policy.SourceRecordAppend, now)
+		if err != nil {
+			return nil, nil, fmt.Errorf("record tool result source: %w", err)
+		}
+		return append(active, source), []string{ref}, nil
+	case "session-start":
+		active, err := store.Active(in.SessionID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load session-start source lineage: %w", err)
+		}
+		if !strings.Contains(strings.ToLower(strings.TrimSpace(in.Source)), "compact") || len(active) == 0 {
+			return active, nil, nil
+		}
+		content := liveCompactionContent(in, active)
+		source, err := envelope.DeriveSourceEnvelope(
+			liveSourceHeader(in, "compaction", content, now),
+			envelope.SourceOrigin{
+				Kind:    "compaction",
+				Locator: normalizeLiveHarness(harnessName) + ":session-start",
+			},
+			envelope.SourceTransformation{
+				Kind:     "compaction",
+				Producer: normalizeLiveHarness(harnessName),
+				Model:    strings.TrimSpace(in.Model),
+			},
+			content,
+			active...,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("derive compaction source: %w", err)
+		}
+		ref, err := store.Record(in.SessionID, source, policy.SourceRecordReplace, now)
+		if err != nil {
+			return nil, nil, fmt.Errorf("record compaction source: %w", err)
+		}
+		return []envelope.SourceEnvelope{source}, []string{ref}, nil
+	default:
+		active, err := store.Active(in.SessionID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load active source lineage: %w", err)
+		}
+		return active, nil, nil
+	}
+}
+
+func liveCompactionContent(in claudeLiveHookInput, sources []envelope.SourceEnvelope) []byte {
+	refs := make([]string, 0, len(sources))
+	for _, source := range sources {
+		refs = append(refs, source.ID+"@"+source.ContentHash)
+	}
+	sort.Strings(refs)
+	body, _ := json.Marshal(struct {
+		SessionID string   `json:"session_id"`
+		Model     string   `json:"model,omitempty"`
+		Trigger   string   `json:"trigger,omitempty"`
+		Parents   []string `json:"parents"`
+	}{
+		SessionID: strings.TrimSpace(in.SessionID),
+		Model:     strings.TrimSpace(in.Model),
+		Trigger:   firstNonEmpty(strings.TrimSpace(in.Trigger), strings.TrimSpace(in.Source)),
+		Parents:   refs,
+	})
+	return body
+}
+
+func liveOperatorPromptSource(harnessName string, in claudeLiveHookInput, now time.Time) envelope.SourceEnvelope {
+	content := []byte(in.Prompt)
+	return envelope.NewSourceEnvelope(
+		liveSourceHeader(in, "operator-prompt", content, now),
+		envelope.SourceOrigin{
+			Kind:          "operator",
+			Locator:       normalizeLiveHarness(harnessName) + ":user-prompt-submit",
+			Principal:     "operator:local-harness",
+			Authenticated: true,
+		},
+		content,
+		envelope.SourceTrustAuthenticatedOperator,
+		envelope.ConfidentialityInternal,
+		liveOperatorAllowedSinks(),
+	)
+}
+
+func liveToolResultSource(
+	harnessName string,
+	in claudeLiveHookInput,
+	content []byte,
+	parents []envelope.SourceEnvelope,
+	now time.Time,
+) (envelope.SourceEnvelope, error) {
+	classification := policy.ClassifyToolAction(policy.ToolActionRequest{
+		Tool:      in.ToolName,
+		Arguments: in.ToolInput,
+	})
+	origin, trust, confidentiality, sinks := liveToolSourcePolicy(classification)
+	transformationKind := liveToolTransformationKind(in.ToolName)
+	if transformationKind == "subagent_result" {
+		origin.Kind = "subagent"
+	}
+	origin.Locator = strings.TrimSpace(in.ToolName)
+	header := liveSourceHeader(in, "tool-result", content, now)
+	if len(parents) == 0 {
+		source := envelope.NewSourceEnvelope(header, origin, content, trust, confidentiality, sinks)
+		if err := source.Validate(); err != nil {
+			return envelope.SourceEnvelope{}, fmt.Errorf("tool result source: %w", err)
+		}
+		return source, nil
+	}
+	source, err := envelope.DeriveSourceEnvelopeWithPolicy(
+		header,
+		origin,
+		envelope.SourceTransformation{
+			Kind:     transformationKind,
+			Producer: normalizeLiveHarness(harnessName),
+			Tool:     strings.TrimSpace(in.ToolName),
+		},
+		content,
+		envelope.SourceDerivationPolicy{
+			MaximumTrust:           trust,
+			MinimumConfidentiality: confidentiality,
+			AllowedSinks:           sinks,
+		},
+		parents...,
+	)
+	if err != nil {
+		return envelope.SourceEnvelope{}, fmt.Errorf("derive tool result source: %w", err)
+	}
+	return source, nil
+}
+
+func liveSourceHeader(in claudeLiveHookInput, kind string, content []byte, now time.Time) envelope.Header {
+	return envelope.Header{
+		SchemaVersion: envelope.SVSourceEnvelope,
+		ID: "src_live_" + shortHash(
+			strings.TrimSpace(in.SessionID),
+			kind,
+			strings.TrimSpace(in.ToolName),
+			shortHash(string(content)),
+			now.UTC().Format(time.RFC3339Nano),
+		),
+		CreatedAt: now.UTC().Format(time.RFC3339Nano),
+		Producer:  envelope.Producer{Kind: "hook", Name: "compound"},
+		IDs: envelope.IDs{
+			WorkID:    firstNonEmpty(in.WorkID, in.CompoundWorkID),
+			SessionID: strings.TrimSpace(in.SessionID),
+		},
+		Authority:    envelope.Authority{SourceClass: "runtime", Status: "current"},
+		Privacy:      "private",
+		Risk:         "tier1",
+		EvidenceRefs: []string{},
+		Uncertainty:  envelope.Uncertainty{Level: "known"},
+	}
+}
+
+func liveToolSourcePolicy(classification policy.ActionClassification) (
+	envelope.SourceOrigin,
+	string,
+	string,
+	[]string,
+) {
+	switch classification.Domain {
+	case policy.ActionDomainNetwork, policy.ActionDomainBrowser:
+		return envelope.SourceOrigin{Kind: "web"},
+			envelope.SourceTrustUntrusted,
+			envelope.ConfidentialityPublic,
+			livePublicDataSinks()
+	case policy.ActionDomainMessaging:
+		return envelope.SourceOrigin{Kind: "message"},
+			envelope.SourceTrustUntrusted,
+			envelope.ConfidentialityConfidential,
+			liveConfidentialDataSinks()
+	case policy.ActionDomainConnector:
+		return envelope.SourceOrigin{Kind: "connector"},
+			envelope.SourceTrustUntrusted,
+			envelope.ConfidentialityConfidential,
+			liveConfidentialDataSinks()
+	case policy.ActionDomainSecrets:
+		return envelope.SourceOrigin{Kind: "secret"},
+			envelope.SourceTrustMixed,
+			envelope.ConfidentialitySecret,
+			[]string{"operator_display", "reader", "secrets"}
+	case policy.ActionDomainFilesystem:
+		return envelope.SourceOrigin{Kind: "file"},
+			envelope.SourceTrustMixed,
+			envelope.ConfidentialityInternal,
+			liveInternalDataSinks()
+	case policy.ActionDomainMemory:
+		return envelope.SourceOrigin{Kind: "memory"},
+			envelope.SourceTrustMixed,
+			envelope.ConfidentialityInternal,
+			liveInternalDataSinks()
+	case policy.ActionDomainControl:
+		return envelope.SourceOrigin{Kind: "control"},
+			envelope.SourceTrustMixed,
+			envelope.ConfidentialityInternal,
+			liveInternalDataSinks()
+	default:
+		return envelope.SourceOrigin{Kind: "tool"},
+			envelope.SourceTrustMixed,
+			envelope.ConfidentialityInternal,
+			liveInternalDataSinks()
+	}
+}
+
+func liveOperatorAllowedSinks() []string {
+	return []string{
+		"browser", "connector", "control", "deploy", "filesystem", "install",
+		"memory_authority", "memory_candidate", "messaging", "network",
+		"operator_display", "reader", "secrets", "shell",
+	}
+}
+
+func livePublicDataSinks() []string {
+	return []string{
+		"browser", "connector", "control", "deploy", "filesystem", "install",
+		"memory_candidate", "messaging", "network", "operator_display", "reader", "shell",
+	}
+}
+
+func liveInternalDataSinks() []string {
+	return []string{
+		"browser", "control", "filesystem", "memory_candidate", "network",
+		"operator_display", "reader", "shell",
+	}
+}
+
+func liveConfidentialDataSinks() []string {
+	return []string{
+		"browser", "connector", "control", "filesystem", "memory_candidate",
+		"messaging", "network", "operator_display", "reader", "shell",
+	}
+}
+
+func liveToolTransformationKind(toolName string) string {
+	normalized := strings.ToLower(strings.TrimSpace(toolName))
+	if strings.Contains(normalized, "agent") || strings.Contains(normalized, "subagent") ||
+		strings.Contains(normalized, "task") {
+		return "subagent_result"
+	}
+	return "tool_result"
+}
+
+func mergeLiveSourceEnvelopes(groups ...[]envelope.SourceEnvelope) []envelope.SourceEnvelope {
+	seen := map[string]bool{}
+	var merged []envelope.SourceEnvelope
+	for _, group := range groups {
+		for _, source := range group {
+			key := source.ID + "@" + source.ContentHash
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			merged = append(merged, source)
+		}
+	}
+	return merged
+}
+
+func leastLiveSourceTrust(left, right string) string {
+	leftRank := liveEnumRank(left, envelope.SourceTrustClasses)
+	rightRank := liveEnumRank(right, envelope.SourceTrustClasses)
+	if leftRank < 0 {
+		return right
+	}
+	if rightRank < 0 || leftRank <= rightRank {
+		return left
+	}
+	return right
+}
+
+func mostRestrictiveLiveConfidentiality(left, right string) string {
+	leftRank := liveEnumRank(left, envelope.ConfidentialityClasses)
+	rightRank := liveEnumRank(right, envelope.ConfidentialityClasses)
+	if leftRank >= rightRank {
+		return left
+	}
+	return right
+}
+
+func liveEnumRank(value string, values []string) int {
+	for i := range values {
+		if values[i] == value {
+			return i
+		}
+	}
+	return -1
+}
+
+func intersectLiveSourceSinks(left, right []string) []string {
+	allowed := make(map[string]bool, len(right))
+	for _, sink := range right {
+		allowed[sink] = true
+	}
+	var intersection []string
+	for _, sink := range left {
+		if allowed[sink] {
+			intersection = append(intersection, sink)
+		}
+	}
+	sort.Strings(intersection)
+	return intersection
 }
 
 func resolveLiveCoordinationDelivery(homePath, harnessName, hookName string, in claudeLiveHookInput) (*hook.CoordinationDeliveryInput, error) {
@@ -316,11 +665,30 @@ func liveTask(in claudeLiveHookInput) string {
 }
 
 func liveActionIntents(harnessName string, in claudeLiveHookInput, now time.Time) ([]envelope.ActionIntent, error) {
+	return liveActionIntentsForHome("", harnessName, in, now)
+}
+
+func liveActionIntentsForHome(homePath, harnessName string, in claudeLiveHookInput, now time.Time) ([]envelope.ActionIntent, error) {
 	toolName := strings.TrimSpace(in.ToolName)
 	if toolName == "" {
 		return nil, fmt.Errorf("pre-tool-use live stdin needs tool_name")
 	}
 	targetPaths := liveToolPaths(toolName, in.ToolInput)
+	workID := firstNonEmpty(in.WorkID, in.CompoundWorkID)
+	if workID == "" {
+		workID = "work_live_" + shortHash(in.SessionID, in.Cwd)
+	}
+	schemaRevision := strings.TrimSpace(in.ToolSchemaRevision)
+	if schemaRevision == "" && !strings.HasPrefix(strings.ToLower(toolName), "mcp__") {
+		schemaRevision = "builtin:" + strings.ToLower(toolName)
+	}
+	if schemaRevision == "" {
+		schemaRevision = liveCapabilitySchemaRevision(homePath, toolName)
+	}
+	if len(targetPaths) == 0 && toolName != "apply_patch" {
+		monitored := liveMonitoredAction(harnessName, in, workID, schemaRevision, in.ToolInput, now)
+		return []envelope.ActionIntent{monitored.Intent}, nil
+	}
 	mutationClass := "local_reversible"
 	unparsedPatch := false
 	if len(targetPaths) == 0 {
@@ -355,13 +723,19 @@ func liveActionIntents(harnessName string, in claudeLiveHookInput, now time.Time
 			action = "unparsed_apply_patch"
 		}
 	}
-	workID := firstNonEmpty(in.WorkID, in.CompoundWorkID)
-	if workID == "" {
-		workID = "work_live_" + shortHash(in.SessionID, in.Cwd)
-	}
 	mutationInputRef := liveMutationInputReference(harnessName, in, targetPaths)
 	actions := make([]envelope.ActionIntent, 0, len(targetPaths))
 	for _, targetPath := range targetPaths {
+		// apply_patch carries its targets inside the patch body rather than a
+		// file_path field. Bind each emitted intent to the exact parsed target
+		// before monitoring so a valid local edit is not mislabeled as an
+		// unresolved-destination action.
+		monitorArguments := make(map[string]any, len(in.ToolInput)+1)
+		for key, value := range in.ToolInput {
+			monitorArguments[key] = value
+		}
+		monitorArguments["path"] = targetPath
+		monitored := liveMonitoredAction(harnessName, in, workID, schemaRevision, monitorArguments, now)
 		id := "act_live_" + shortHash(toolName, targetPath, in.SessionID, now.UTC().Format(time.RFC3339Nano))
 		actions = append(actions, envelope.ActionIntent{
 			Header: envelope.Header{
@@ -376,16 +750,116 @@ func liveActionIntents(harnessName string, in claudeLiveHookInput, now time.Time
 				EvidenceRefs:  []string{mutationInputRef},
 				Uncertainty:   envelope.Uncertainty{Level: "known"},
 			},
-			Actor:         normalizeLiveHarness(harnessName),
-			Capability:    capability,
-			Action:        action,
-			Target:        envelope.ActionTarget{Kind: "file", Path: targetPath},
-			MutationClass: mutationClass,
-			Reversibility: "easy",
-			BlastRadius:   "repo",
+			Actor:                normalizeLiveHarness(harnessName),
+			Capability:           capability,
+			Action:               action,
+			Target:               envelope.ActionTarget{Kind: "file", Path: targetPath},
+			Destination:          targetPath,
+			ArgumentsHash:        monitored.Intent.ArgumentsHash,
+			InputSources:         append([]envelope.SourceBinding{}, monitored.Intent.InputSources...),
+			SchemaRevision:       schemaRevision,
+			SecurityFloorOutcome: monitored.Intent.SecurityFloorOutcome,
+			SecurityReasons:      append([]string{}, monitored.Intent.SecurityReasons...),
+			MutationClass:        mutationClass,
+			Reversibility:        "easy",
+			BlastRadius:          "repo",
 		})
 	}
 	return actions, nil
+}
+
+func liveCapabilitySchemaRevision(homePath, toolName string) string {
+	if strings.TrimSpace(homePath) == "" || !capgraph.Exists(homePath) {
+		return ""
+	}
+	store, err := capgraph.OpenReadOnly(homePath)
+	if err != nil {
+		return ""
+	}
+	nodes, err := store.List()
+	if err != nil {
+		return ""
+	}
+	toolKey, serverKey := liveCapabilityToolKeys(toolName)
+	var matched capgraph.Node
+	for _, node := range nodes {
+		if node.Retired {
+			continue
+		}
+		if node.Kind == "tool" &&
+			(liveCapabilityKey(node.Name) == toolKey ||
+				liveCapabilityKey(strings.TrimPrefix(node.ID, "tool:")) == toolKey) {
+			matched = node
+			break
+		}
+	}
+	if matched.ID == "" && serverKey != "" {
+		for _, node := range nodes {
+			if !node.Retired && node.Kind == "mcp" &&
+				liveCapabilityKey(strings.TrimPrefix(node.ID, "mcp:")) == serverKey {
+				matched = node
+				break
+			}
+		}
+	}
+	if matched.ID == "" {
+		return ""
+	}
+	records, err := capgraph.LoadSourceAuthority(homePath)
+	if err != nil {
+		return ""
+	}
+	var sourceRevision string
+	for _, record := range records {
+		if slices.Contains(record.NodeIDs, matched.ID) && strings.TrimSpace(record.SourceRevision) != "" {
+			sourceRevision = strings.TrimSpace(record.SourceRevision)
+		}
+	}
+	if sourceRevision == "" {
+		return ""
+	}
+	return "capgraph:" + matched.ID + "@" + sourceRevision
+}
+
+func liveCapabilityToolKeys(toolName string) (toolKey, serverKey string) {
+	normalized := strings.ToLower(strings.TrimSpace(toolName))
+	if strings.HasPrefix(normalized, "mcp__") {
+		parts := strings.SplitN(strings.TrimPrefix(normalized, "mcp__"), "__", 2)
+		if len(parts) == 2 {
+			return liveCapabilityKey(parts[0] + "." + parts[1]), liveCapabilityKey(parts[0])
+		}
+	}
+	return liveCapabilityKey(normalized), ""
+}
+
+func liveCapabilityKey(value string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(value)) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func liveMonitoredAction(
+	harnessName string,
+	in claudeLiveHookInput,
+	workID string,
+	schemaRevision string,
+	arguments map[string]any,
+	now time.Time,
+) policy.MonitoredAction {
+	return policy.MonitorToolAction(policy.ToolActionRequest{
+		WorkID:             workID,
+		Actor:              firstNonEmpty(in.Actor, in.CompoundActor, normalizeLiveHarness(harnessName)),
+		Harness:            normalizeLiveHarness(harnessName),
+		Tool:               strings.TrimSpace(in.ToolName),
+		Arguments:          arguments,
+		ToolSchemaRevision: schemaRevision,
+		Sources:            append([]envelope.SourceEnvelope{}, in.SourceEnvelopes...),
+		ClassifierRisk:     in.ClassifierRisk,
+	}, policy.DefaultConfig(), now)
 }
 
 // liveMutationInputReference stores no patch/body content. Its digest binds the

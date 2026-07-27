@@ -166,8 +166,11 @@ func TestCmdOrientBodyBudgetIsAdditive(t *testing.T) {
 		delete(m, "id")
 		delete(m, "created_at")
 		delete(m, "body_pack")
-		// ids.context_pack_id derives from pack id (volatile); strip it too.
+		// ids.contract_id is a content-addressed runtime snapshot reference and
+		// therefore changes when the two CLI calls cross a wall-clock second.
+		// Both runtime ids are orthogonal to whether body_pack is requested.
 		if ids, ok := m["ids"].(map[string]any); ok {
+			delete(ids, "contract_id")
 			delete(ids, "context_pack_id")
 		}
 	}

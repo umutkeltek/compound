@@ -15,6 +15,9 @@
 //
 // Subcommand surface (all in cmdPolicy's switch):
 //   - evaluate
+//   - action-plan
+//   - action-approve
+//   - action-check
 //   - import-placement-rules
 //   - placement-authority
 //   - import-standing-grants
@@ -47,10 +50,14 @@ import (
 
 func cmdPolicy(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt|editable-surfaces> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|action-plan|action-approve|action-check|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt|editable-surfaces> ...")
 		os.Exit(2)
 	}
 	switch args[0] {
+	case "action-plan", "action-approve", "action-check":
+		if code := runPolicyActionApprovalCommand(args, os.Stdout, os.Stderr, time.Now()); code != 0 {
+			os.Exit(code)
+		}
 	case "evaluate":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound policy evaluate <action-intent.json>")
@@ -670,7 +677,7 @@ func cmdPolicy(args []string) {
 			fmt.Printf("  ! validation_error: %s\n", ve)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt|editable-surfaces> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|action-plan|action-approve|action-check|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt|editable-surfaces> ...")
 		os.Exit(2)
 	}
 }

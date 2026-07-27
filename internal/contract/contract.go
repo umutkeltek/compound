@@ -4390,7 +4390,11 @@ func missingWriteGateReason(harness string, availableHarnesses []string) string 
 }
 
 func installedHookExcludedForTask(hook InstalledHook, in Input) bool {
-	return readOnlyTask(in) && writeScopedHook(hook)
+	// A universal PreToolUse gate must stay active on read-shaped tasks:
+	// secret reads, network egress, browser interactions, connector calls, and
+	// unknown tools are prompt-injection sinks too. Only legacy write-only
+	// matchers may be omitted from a genuinely read-only contract.
+	return readOnlyTask(in) && writeOnlyHook(hook)
 }
 
 func writeScopedHook(hook InstalledHook) bool {
@@ -4400,8 +4404,21 @@ func writeScopedHook(hook InstalledHook) bool {
 	if event != "pretooluse" {
 		return false
 	}
-	if matcher == "" {
+	if matcher == "" || matcher == "*" {
 		return true
+	}
+	return strings.Contains(matcher, "write") ||
+		strings.Contains(matcher, "edit") ||
+		strings.Contains(matcher, "multiedit") ||
+		strings.Contains(ref, "placementguard")
+}
+
+func writeOnlyHook(hook InstalledHook) bool {
+	event := strings.ToLower(strings.TrimSpace(firstNonEmpty(hook.Event, hook.Name)))
+	matcher := strings.ToLower(strings.TrimSpace(hook.Matcher))
+	ref := strings.ToLower(strings.TrimSpace(hook.Ref))
+	if event != "pretooluse" || matcher == "" || matcher == "*" {
+		return false
 	}
 	return strings.Contains(matcher, "write") ||
 		strings.Contains(matcher, "edit") ||

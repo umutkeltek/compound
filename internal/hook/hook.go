@@ -351,7 +351,7 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 		return Result{}, err
 	}
 	req := buildContextRequest(name, fx, built.Contract, built.Pack, mode, now)
-	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), nil, now)
+	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
 	ev.IDs.ContextPackID = built.Pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
@@ -412,7 +412,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		pred = "address: " + fx.Task
 	}
 	req := buildContextRequest(name, fx, built.Contract, built.Pack, mode, now)
-	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), nil, now)
+	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
 	ev.IDs.ContextPackID = built.Pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
@@ -502,7 +502,7 @@ func liveUserPrompt(name string, fx Fixture, deps Deps, now time.Time, mode stri
 	req := buildContextRequest(name, persistedFX, built.Contract, built.Pack, mode, now)
 	req.IntentTextRef = intentRef
 
-	ev := newEvent(name, persistedFX, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), nil, now)
+	ev := newEvent(name, persistedFX, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
 	ev.IDs.ContextPackID = built.Pack.Header.ID
 	rendered := renderInjection(injectionRender{
 		HookID:          ev.Header.ID,
@@ -616,7 +616,7 @@ func nonNegativeDuration(duration time.Duration) time.Duration {
 }
 
 func contextBreakerResult(name string, fx Fixture, deps Deps, mode string, now time.Time) Result {
-	ev := newEvent(name, fx, "fail_open", contextHookInputHash(name, fx, mode), nil, now)
+	ev := newEvent(name, fx, "fail_open", contextHookInputHash(name, fx, mode), fx.AdapterSideEffects, now)
 	return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "", BreakerTripped: true}
 }
 
@@ -738,8 +738,18 @@ func evaluatePreparedPreToolUse(name string, fx Fixture, deps Deps, prepared pre
 		sourceControl = &copy
 		evalCtx.SourceControl = sourceControl
 	}
-	sideEffects := append([]string(nil), prepared.sourceEffects...)
+	sideEffects := mergeRefs(fx.AdapterSideEffects, prepared.sourceEffects)
 	pd := policy.EvaluateWithContext(ai, deps.Policy, evalCtx, now)
+	if deps.HomePath != "" && !policy.Allowed(pd) {
+		approved, matched, approvalErr := policy.NewExactActionApprovalStore(deps.HomePath).
+			ApplyMatching(ai, deps.Policy, pd, now)
+		if matched && approvalErr == nil {
+			pd = approved
+			sideEffects = mergeRefs(sideEffects, approved.EvidenceRefs)
+		} else if matched {
+			pd.Reasons = append(pd.Reasons, "exact approval unavailable: "+approvalErr.Error())
+		}
+	}
 	if deps.HomePath != "" {
 		effects, err := writeGateArtifacts(deps.HomePath, ai, pd)
 		if err != nil {
@@ -784,7 +794,7 @@ func evaluatePreparedPreToolUse(name string, fx Fixture, deps Deps, prepared pre
 
 func preToolUseBatch(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
 	produced := make([]envelope.Envelope, 0, len(fx.Actions)*2)
-	sideEffects := []string(nil)
+	sideEffects := append([]string(nil), fx.AdapterSideEffects...)
 	actionIDs := make([]string, 0, len(fx.Actions))
 	status := "ok"
 	summary := ""
@@ -1496,7 +1506,7 @@ func openGateReviewExists(store *work.Store, sc policy.SourceControlContext) (bo
 }
 
 func postToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
-	ev := newEvent(name, fx, "ok", hashStr(fx.Tool), []string{fx.Tool}, now)
+	ev := newEvent(name, fx, "ok", hashStr(fx.Tool), mergeRefs(fx.AdapterSideEffects, []string{fx.Tool}), now)
 	summary := "recorded tool event: " + orDash(fx.Tool) + " (ToolEvent/ArtifactRef land at P6+)"
 	if effect, err := promotePendingSessionMutation(deps.HomePath, fx); err != nil {
 		return Result{}, err

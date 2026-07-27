@@ -699,6 +699,12 @@ func buildSourceManifestItem(sourceFamily, sourcePath string) (SourceManifestIte
 	if err != nil {
 		return SourceManifestItem{}, fmt.Errorf("read source %s: %w", sourcePath, err)
 	}
+	overlays := structureOverlays(sourcePath, data)
+	instructionOverlays, err := instructionSupplyChainOverlays(sourcePath, data)
+	if err != nil {
+		return SourceManifestItem{}, err
+	}
+	overlays = append(overlays, instructionOverlays...)
 	item := SourceManifestItem{
 		ID:                 idFor("srcitem_", sourceFamily, sourcePath),
 		SourceKind:         inferSourceKind(sourcePath),
@@ -709,7 +715,7 @@ func buildSourceManifestItem(sourceFamily, sourcePath string) (SourceManifestIte
 		Privacy:            "private",
 		BodyPolicy:         "source_in_place",
 		FileMode:           fmt.Sprintf("%04o", info.Mode().Perm()),
-		StructureOverlays:  structureOverlays(sourcePath, data),
+		StructureOverlays:  overlays,
 		CompoundEntityRefs: inferCompoundEntityRefs(sourcePath),
 		EvidenceRefs:       []string{"source:" + sourcePath, hash},
 	}

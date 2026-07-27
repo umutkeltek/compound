@@ -2,6 +2,7 @@ package sourceobs
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"compound/internal/candidates"
@@ -12,11 +13,12 @@ import (
 // candidate/decision ids parked for the drift, and the manifest path whose baseline the caller
 // commits (via CommitCanonBaseline) once the drift has been recorded.
 type CanonDriftReport struct {
-	ChangedRefs  []string `json:"changed_refs"`
-	NodeRefs     []string `json:"node_refs"`
-	CandidateIDs []string `json:"candidate_ids"`
-	NoPromoteIDs []string `json:"no_promote_ids,omitempty"`
-	ManifestPath string   `json:"manifest_path"`
+	ChangedRefs    []string             `json:"changed_refs"`
+	NodeRefs       []string             `json:"node_refs"`
+	CandidateIDs   []string             `json:"candidate_ids"`
+	NoPromoteIDs   []string             `json:"no_promote_ids,omitempty"`
+	AdmissionHolds []CanonAdmissionHold `json:"admission_holds,omitempty"`
+	ManifestPath   string               `json:"manifest_path"`
 }
 
 // ObserveCanonDrift is the harness-canon Importer — the first half of a two-phase drift observation.
@@ -45,6 +47,22 @@ func ObserveCanonDrift(homePath, family string, now time.Time) (CanonDriftReport
 		item := &manifest.Items[i]
 		liveHash, herr := hashFile(item.SourceRef)
 		if herr != nil {
+			if surface := instructionSupplyChainSurface(item.StructureOverlays); surface != "" {
+				report.AdmissionHolds = append(report.AdmissionHolds, CanonAdmissionHold{
+					SourceRef:   item.SourceRef,
+					Surface:     surface,
+					Reason:      "instruction surface unavailable",
+					PriorSchema: instructionSupplyChainSchema(item.StructureOverlays),
+				})
+				report.ChangedRefs = append(report.ChangedRefs, item.SourceRef)
+				for _, ref := range item.CompoundEntityRefs {
+					if ref == "" || seenNode[ref] {
+						continue
+					}
+					seenNode[ref] = true
+					report.NodeRefs = append(report.NodeRefs, ref)
+				}
+			}
 			// An unreadable canon file is not counted as drift in v1 (a transient read error must
 			// not fabricate a candidate); the baseline stays and doctor surfaces staleness instead.
 			continue
@@ -52,6 +70,20 @@ func ObserveCanonDrift(homePath, family string, now time.Time) (CanonDriftReport
 		if liveHash == item.FileHash {
 			continue
 		}
+		liveData, liveReadErr := os.ReadFile(item.SourceRef)
+		var liveOverlays []SourceStructureOverlay
+		var liveStructureErr error
+		if liveReadErr != nil {
+			liveStructureErr = liveReadErr
+		} else {
+			liveOverlays, liveStructureErr = instructionSupplyChainOverlays(item.SourceRef, liveData)
+		}
+		admissionHold := compareInstructionSupplyChainStructure(
+			item.SourceRef,
+			item.StructureOverlays,
+			liveOverlays,
+			liveStructureErr,
+		)
 		obs := canonDriftObservation(family, *item, item.FileHash, liveHash, now)
 		applied, err := Apply(homePath, obs, now)
 		if err != nil {
@@ -67,9 +99,25 @@ func ObserveCanonDrift(homePath, family string, now time.Time) (CanonDriftReport
 			seenNode[ref] = true
 			report.NodeRefs = append(report.NodeRefs, ref)
 		}
+		if admissionHold != nil {
+			report.AdmissionHolds = append(report.AdmissionHolds, *admissionHold)
+			continue
+		}
 		item.FileHash = liveHash
 		item.SnapshotTime = now.UTC().Format(time.RFC3339)
 		item.EvidenceRefs = []string{"source:" + item.SourceRef, liveHash}
+		if instructionSupplyChainSurface(item.StructureOverlays) != "" {
+			retained := make([]SourceStructureOverlay, 0, len(item.StructureOverlays)+len(liveOverlays))
+			for _, overlay := range item.StructureOverlays {
+				if overlay.Kind == instructionSupplyChainSurfaceOverlay ||
+					overlay.Kind == instructionSupplyChainSchemaOverlay ||
+					overlay.Kind == instructionSupplyChainSchemaRevisionOverlay {
+					continue
+				}
+				retained = append(retained, overlay)
+			}
+			item.StructureOverlays = append(retained, liveOverlays...)
+		}
 	}
 	return report, manifest, nil
 }

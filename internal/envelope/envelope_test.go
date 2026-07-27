@@ -101,6 +101,17 @@ func TestAllKindsValidateAndRoundTrip(t *testing.T) {
 			Excluded: []ExcludedRef{},
 		},
 		&WorkEnvelope{Header: hdr(SVWork, "work_1"), Owner: "compound", State: "ready", SuccessPredicate: "a state delta exists"},
+		func() Envelope {
+			source := NewSourceEnvelope(
+				hdr(SVSourceEnvelope, "src_1"),
+				SourceOrigin{Kind: "web", Locator: "https://docs.example.invalid/fixture"},
+				[]byte("fixture"),
+				SourceTrustUntrusted,
+				ConfidentialityPublic,
+				[]string{"reader"},
+			)
+			return &source
+		}(),
 		&ActionIntent{
 			Header:        withWork(hdr(SVActionIntent, "act_1"), "work_1"),
 			Capability:    "filesystem.write",

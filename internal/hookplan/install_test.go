@@ -77,17 +77,19 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 			t.Fatalf("%s action = %q, want installed", e.Harness, e.Action)
 		}
 	}
-	// Claude gets MultiEdit; Codex does not.
+	// Universal enforcement is intentionally matcher-wide. Tool-specific
+	// authorization belongs in Compound's deterministic action monitor, not in
+	// harness config where new tools could bypass the gate.
 	claude := readJSON(t, filepath.Join(base, ".claude", "settings.json"))
-	if got := firstMatcher(t, claude); got != "Write|Edit|MultiEdit" {
+	if got := firstMatcher(t, claude); got != "*" {
 		t.Fatalf("claude matcher = %q", got)
 	}
 	zai := readJSON(t, filepath.Join(ClaudeZaiProfileDir(base), "settings.json"))
-	if got := firstMatcher(t, zai); got != "Write|Edit|MultiEdit" {
+	if got := firstMatcher(t, zai); got != "*" {
 		t.Fatalf("claude-zai matcher = %q", got)
 	}
 	codex := readJSON(t, filepath.Join(base, ".codex", "hooks.json"))
-	if got := firstMatcher(t, codex); got != "Write|Edit" {
+	if got := firstMatcher(t, codex); got != "*" {
 		t.Fatalf("codex matcher = %q", got)
 	}
 }
@@ -233,10 +235,10 @@ func TestInstallClaudeZaiProfileFullRosterNoClobberAndIdempotent(t *testing.T) {
 			t.Fatalf("claude-zai %s missing command %q: %#v", event, wantCommand, groups)
 		}
 	}
-	if got := matcherForEvent(t, hooks, "PreToolUse"); got != "Write|Edit|MultiEdit" {
+	if got := matcherForEvent(t, hooks, "PreToolUse"); got != "*" {
 		t.Fatalf("claude-zai PreToolUse matcher = %q", got)
 	}
-	if got := matcherForEvent(t, hooks, "PostToolUse"); got != "Write|Edit|MultiEdit" {
+	if got := matcherForEvent(t, hooks, "PostToolUse"); got != "*" {
 		t.Fatalf("claude-zai PostToolUse matcher = %q", got)
 	}
 

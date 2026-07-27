@@ -1907,7 +1907,7 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	if len(manifest.Hooks) != 3 {
 		t.Fatalf("installed hooks = %+v", manifest.Hooks)
 	}
-	if !installedHookHasMatcher(manifest, "codex", "PreToolUse", "Write|Edit") {
+	if !installedHookHasMatcher(manifest, "codex", "PreToolUse", "*") {
 		t.Fatalf("Codex hook import lost the native PreToolUse matcher: %+v", manifest.Hooks)
 	}
 	if gate := findInstalledHook(manifest, "codex", "PreToolUse"); gate == nil || !strings.HasSuffix(gate.Ref, "/.local/bin/compound") || !strings.HasPrefix(gate.InvocationRevision, "sha256:") {
@@ -2051,10 +2051,10 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load installed hooks manifest: %v", err)
 	}
-	if !installedHookHasMatcher(manifest, "claude_code", "PreToolUse", "Write|Edit|MultiEdit") {
+	if !installedHookHasMatcher(manifest, "claude_code", "PreToolUse", "*") {
 		t.Fatalf("imported hook registration should preserve PreToolUse matcher: %+v", manifest.Hooks)
 	}
-	if !installedHookHasMatcher(manifest, "codex", "PreToolUse", "Write|Edit") {
+	if !installedHookHasMatcher(manifest, "codex", "PreToolUse", "*") {
 		t.Fatalf("imported hook registration should preserve Codex PreToolUse matcher: %+v", manifest.Hooks)
 	}
 	if gate := findInstalledHook(manifest, "codex", "PreToolUse"); gate == nil || !strings.HasSuffix(gate.Ref, "/.local/bin/compound") || !strings.HasPrefix(gate.InvocationRevision, "sha256:") {
@@ -2083,15 +2083,15 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if contains(readOnlyEC.ActiveHooks, "hook://claude_code/PreToolUse") {
-		t.Fatalf("read-only effective contract should exclude write-scoped PreToolUse hook: %v", readOnlyEC.ActiveHooks)
+	if !contains(readOnlyEC.ActiveHooks, "hook://claude_code/PreToolUse") {
+		t.Fatalf("read-only effective contract must keep universal PreToolUse hook active: %v", readOnlyEC.ActiveHooks)
 	}
 	readOnlyPack, err := PackWithCapabilities(readOnlyInput, DefaultPolicy(), home, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if contains(readOnlyPack.ActiveHooks, "hook://claude_code/PreToolUse") || !hasExcluded(readOnlyPack, "hook://claude_code/PreToolUse") {
-		t.Fatalf("read-only context pack active=%v excluded=%v", readOnlyPack.ActiveHooks, readOnlyPack.Excluded)
+	if !contains(readOnlyPack.ActiveHooks, "hook://claude_code/PreToolUse") || hasExcluded(readOnlyPack, "hook://claude_code/PreToolUse") {
+		t.Fatalf("read-only context pack must retain universal gate active=%v excluded=%v", readOnlyPack.ActiveHooks, readOnlyPack.Excluded)
 	}
 
 	codexInput := Input{Harness: "codex", Cwd: t.TempDir(), Task: "edit source file with hooks", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
@@ -2393,7 +2393,7 @@ hooks:
   - harness: claude_code
     name: PreToolUse
     event: PreToolUse
-    matcher: Write|Edit|MultiEdit
+    matcher: "*"
     ref: /tmp/claude-placement-guard.hook.ts
     status: current
 `
@@ -2413,7 +2413,7 @@ hooks:
 		t.Fatal(err)
 	}
 	preToolUse := findEnvelopeHookRoster(ec.HookRoster, "hook://claude_code/PreToolUse")
-	if preToolUse == nil || preToolUse.Status != "active" || preToolUse.Matcher != "Write|Edit|MultiEdit" {
+	if preToolUse == nil || preToolUse.Status != "active" || preToolUse.Matcher != "*" {
 		t.Fatalf("effective contract hook roster = %+v, want active scoped PreToolUse row", ec.HookRoster)
 	}
 	if !strings.Contains(preToolUse.Reason, "mutation task") {
@@ -2442,15 +2442,15 @@ hooks:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if contains(readOnlyContract.ActiveHooks, "hook://claude_code/PreToolUse") {
-		t.Fatalf("read-only contract active hooks should exclude write scoped hook: %+v", readOnlyContract.ActiveHooks)
+	if !contains(readOnlyContract.ActiveHooks, "hook://claude_code/PreToolUse") {
+		t.Fatalf("read-only contract must keep universal PreToolUse active: %+v", readOnlyContract.ActiveHooks)
 	}
-	excludedPreToolUse := findEnvelopeHookRoster(readOnlyContract.HookRoster, "hook://claude_code/PreToolUse")
-	if excludedPreToolUse == nil || excludedPreToolUse.Status != "excluded_read_only" {
-		t.Fatalf("read-only contract hook roster = %+v, want excluded PreToolUse row", readOnlyContract.HookRoster)
+	activePreToolUse := findEnvelopeHookRoster(readOnlyContract.HookRoster, "hook://claude_code/PreToolUse")
+	if activePreToolUse == nil || activePreToolUse.Status != "active" {
+		t.Fatalf("read-only contract hook roster = %+v, want active universal PreToolUse row", readOnlyContract.HookRoster)
 	}
-	if !strings.Contains(excludedPreToolUse.Reason, "read-only task") {
-		t.Fatalf("read-only PreToolUse reason = %q, want read-only exclusion reason", excludedPreToolUse.Reason)
+	if strings.Contains(activePreToolUse.Reason, "read-only task") {
+		t.Fatalf("read-only universal PreToolUse reason = %q, must not claim exclusion", activePreToolUse.Reason)
 	}
 }
 

@@ -26,12 +26,12 @@ type desiredHookBinding struct {
 	Command string
 }
 
-// HarnessMatcher is the tool matcher for each harness — Claude has MultiEdit; Codex does not.
+// HarnessMatcher deliberately covers every tool. Authorization lives in
+// Compound's deterministic action monitor; a write-only matcher lets shell,
+// browser, connector, messaging, secret, install, deploy, and newly-added tools
+// route around that monitor.
 func HarnessMatcher(harness string) string {
-	if harness == "codex" {
-		return "Write|Edit"
-	}
-	return "Write|Edit|MultiEdit"
+	return "*"
 }
 
 // ConfigRel is the harness config path (relative to the base dir) the reconciler reads. Claude Code

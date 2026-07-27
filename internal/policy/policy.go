@@ -43,6 +43,7 @@ type StandingGrant struct {
 	TargetPath           string   `yaml:"target_path,omitempty" json:"target_path,omitempty"`
 	MaxUSD               *float64 `yaml:"max_usd,omitempty" json:"max_usd,omitempty"`
 	MaxTokens            *int     `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+	Destination          string   `yaml:"destination,omitempty" json:"destination,omitempty"`
 	ExpiresAt            string   `yaml:"expires_at" json:"expires_at"` // RFC3339; empty = no expiry
 }
 
@@ -196,6 +197,7 @@ func Evaluate(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.Poli
 // decision.
 func EvaluateWithContext(ai envelope.ActionIntent, cfg Config, ctx EvaluationContext, now time.Time) envelope.PolicyDecision {
 	pd := evaluateBase(ai, cfg, now)
+	pd = applyActionSecurityFloor(pd, ai, now)
 	if ctx.SourceControl != nil {
 		pd = applySourceControlContext(pd, ai, *ctx.SourceControl, now)
 	}
@@ -204,6 +206,26 @@ func EvaluateWithContext(ai envelope.ActionIntent, cfg Config, ctx EvaluationCon
 	}
 	if ctx.Authority != nil {
 		pd = applyAuthorityContext(pd, ai, cfg, *ctx.Authority, now)
+	}
+	return pd
+}
+
+func applyActionSecurityFloor(pd envelope.PolicyDecision, ai envelope.ActionIntent, now time.Time) envelope.PolicyDecision {
+	floor := strings.TrimSpace(ai.SecurityFloorOutcome)
+	if floor != "hold" && floor != "deny" {
+		return pd
+	}
+	for _, reason := range ai.SecurityReasons {
+		if reason = strings.TrimSpace(reason); reason != "" {
+			pd.Reasons = append(pd.Reasons, "action security floor: "+reason)
+		}
+	}
+	if severity[pd.Outcome] < severity[floor] {
+		pd.Outcome = floor
+		pd.Obligations = nil
+		pd.StandingGrantID = ""
+		pd.ExpiresAt = ""
+		pd.ID = idFor("pol_", ai.ID, floor, "action-security-floor", ts(now))
 	}
 	return pd
 }
@@ -609,6 +631,9 @@ func grantEnvelopeMisses(g StandingGrant, ai envelope.ActionIntent, cfg Config) 
 		} else if _, ok := matchForbidden([]string{g.TargetPath}, ai.Target.Path); !ok {
 			reasons = append(reasons, fmt.Sprintf("standing grant %q target path %q outside target_path %q", id, ai.Target.Path, g.TargetPath))
 		}
+	}
+	if g.Destination != "" && strings.TrimSpace(ai.Destination) != strings.TrimSpace(g.Destination) {
+		reasons = append(reasons, fmt.Sprintf("standing grant %q covers destination %q, not %q", id, g.Destination, ai.Destination))
 	}
 	if ai.EstimatedCost.USD != nil {
 		if g.MaxUSD == nil {

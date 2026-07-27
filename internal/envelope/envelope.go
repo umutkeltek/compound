@@ -22,6 +22,7 @@ const (
 	SVContextRequest    = "compound.context_request.v0.1"
 	SVContextPack       = "compound.context_pack.v0.1"
 	SVWork              = "compound.work.v0.1"
+	SVSourceEnvelope    = "compound.source_envelope.v0.1"
 	SVActionIntent      = "compound.action_intent.v0.1"
 	SVPolicyDecision    = "compound.policy_decision.v0.1"
 	SVHookEvent         = "compound.hook_event.v0.1"
@@ -253,7 +254,7 @@ type Envelope interface {
 	Validate() error
 }
 
-// --- The nine envelopes ---
+// --- Typed envelopes ---
 
 type MemoryPolicy struct {
 	Ambient      []string `json:"ambient"`
@@ -1086,16 +1087,22 @@ type EstimatedCost struct {
 }
 type ActionIntent struct {
 	Header
-	Actor         string        `json:"actor"`
-	Capability    string        `json:"capability"`
-	Action        string        `json:"action"`
-	Target        ActionTarget  `json:"target"`
-	MutationClass string        `json:"mutation_class"`
-	Reversibility string        `json:"reversibility"`
-	BlastRadius   string        `json:"blast_radius,omitempty"`
-	EstimatedCost EstimatedCost `json:"estimated_cost"`
-	Preview       string        `json:"preview,omitempty"`
-	RollbackPlan  string        `json:"rollback_plan,omitempty"`
+	Actor                string          `json:"actor"`
+	Capability           string          `json:"capability"`
+	Action               string          `json:"action"`
+	Target               ActionTarget    `json:"target"`
+	Destination          string          `json:"destination,omitempty"`
+	ArgumentsHash        string          `json:"arguments_hash,omitempty"`
+	InputSources         []SourceBinding `json:"input_sources,omitempty"`
+	SchemaRevision       string          `json:"schema_revision,omitempty"`
+	SecurityFloorOutcome string          `json:"security_floor_outcome,omitempty"`
+	SecurityReasons      []string        `json:"security_reasons,omitempty"`
+	MutationClass        string          `json:"mutation_class"`
+	Reversibility        string          `json:"reversibility"`
+	BlastRadius          string          `json:"blast_radius,omitempty"`
+	EstimatedCost        EstimatedCost   `json:"estimated_cost"`
+	Preview              string          `json:"preview,omitempty"`
+	RollbackPlan         string          `json:"rollback_plan,omitempty"`
 }
 
 func (e *ActionIntent) Kind() string { return "action_intent" }
@@ -1105,6 +1112,12 @@ func (e *ActionIntent) Validate() error {
 	v.req("capability", e.Capability)
 	v.enum("mutation_class", e.MutationClass, MutationClasses, true)
 	v.enum("reversibility", e.Reversibility, Reversibilities, true)
+	if e.SecurityFloorOutcome != "" {
+		v.enum("security_floor_outcome", e.SecurityFloorOutcome, []string{"hold", "deny"}, true)
+		if len(e.SecurityReasons) == 0 {
+			v.addf("security_floor_outcome requires security_reasons")
+		}
+	}
 	if e.MutationClass != "" && e.MutationClass != "read" {
 		v.req("target.kind", e.Target.Kind)
 		if strings.TrimSpace(e.Target.ID) == "" && strings.TrimSpace(e.Target.Path) == "" {
@@ -1471,6 +1484,7 @@ var registry = map[string]func() Envelope{
 	SVContextRequest:    func() Envelope { return &ContextRequest{} },
 	SVContextPack:       func() Envelope { return &ContextPack{} },
 	SVWork:              func() Envelope { return &WorkEnvelope{} },
+	SVSourceEnvelope:    func() Envelope { return &SourceEnvelope{} },
 	SVActionIntent:      func() Envelope { return &ActionIntent{} },
 	SVPolicyDecision:    func() Envelope { return &PolicyDecision{} },
 	SVHookEvent:         func() Envelope { return &HookEvent{} },
