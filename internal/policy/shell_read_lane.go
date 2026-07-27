@@ -129,6 +129,17 @@ var gitGlobalFlagsWithValue = map[string]bool{
 	"--namespace": true, "--exec-path": true,
 }
 
+// gitRefQueryFlagsWithValue take a separate argument on the ref-listing
+// subcommands, where the presence of a bare operand is what distinguishes
+// listing from creating. Without these, `git branch -a --contains <sha>` reads
+// the SHA as a new branch name and a plain listing gets held.
+var gitRefQueryFlagsWithValue = map[string]bool{
+	"--contains": true, "--no-contains": true,
+	"--merged": true, "--no-merged": true,
+	"--points-at": true, "--sort": true, "--format": true,
+	"--color": true, "--abbrev": true, "-n": true,
+}
+
 var goReadSubcommands = map[string]bool{
 	"test": true, "vet": true, "build": true, "list": true, "env": true,
 	"doc": true, "version": true, "fmt": true,
@@ -695,8 +706,9 @@ func shellGitClass(args []string) string {
 	case gitReadSubcommands[sub]:
 		return shellClassRead
 	case sub == "branch":
-		// Listing is a read; naming an operand creates or renames a ref.
-		if operand, _ := shellFirstOperand(rest, nil); operand != "" {
+		// Listing is a read; naming an operand creates or renames a ref. Query
+		// flags take a value, and that value is not an operand.
+		if operand, _ := shellFirstOperand(rest, gitRefQueryFlagsWithValue); operand != "" {
 			return shellClassUnknown
 		}
 		if shellFlagAbsent(rest, "-m", "-M", "-c", "-C", "--move", "--copy",
@@ -705,7 +717,7 @@ func shellGitClass(args []string) string {
 		}
 		return shellClassUnknown
 	case sub == "tag":
-		if operand, _ := shellFirstOperand(rest, nil); operand != "" {
+		if operand, _ := shellFirstOperand(rest, gitRefQueryFlagsWithValue); operand != "" {
 			return shellClassUnknown
 		}
 		return shellClassRead

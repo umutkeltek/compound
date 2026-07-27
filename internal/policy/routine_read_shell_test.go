@@ -48,6 +48,15 @@ func TestRoutineReadShellCompositionsStayAutomatic(t *testing.T) {
 		"go build ./... && go vet ./...",
 		"ps -Ao pid,command | grep -v grep",
 		"redact --from-file x",
+		// Ref-query flags take a value; the value is not a new branch name.
+		// Held a plain "is this commit on main?" check in the operator's face.
+		"git branch -a --contains 40eb071e",
+		"git branch --merged main",
+		"git branch --no-merged main -vv",
+		"git branch --sort committerdate",
+		"git tag --contains 40eb071e",
+		"git log --oneline -1 40eb071e 2>&1; git branch -a --contains 40eb071e | head -20",
+		"git merge-base --is-ancestor 40eb071e main && echo YES || echo NO",
 	}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
@@ -112,6 +121,11 @@ func TestRoutineReadShellDoesNotSwallowMutationOrEgress(t *testing.T) {
 		"git reset --hard origin/main",
 		"git config user.email x",
 		"git worktree add /tmp/w",
+		// A query flag's value is not an operand, but a real operand still is.
+		"git branch newfeature",
+		"git branch --contains 40eb071e newfeature",
+		"git branch -m oldname newname",
+		"git tag v1.2.3",
 		"git -C /repo push",
 		"compound work advance --execute",
 		"compound memory promote x",
