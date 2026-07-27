@@ -813,6 +813,9 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		cmd.Env = os.Environ()
 		if proofCheckUsesGo(step) {
 			cmd.Env = append(cmd.Env, "GOTOOLCHAIN=local")
+			if cache, ok := proofCheckGoCache(repo); ok {
+				cmd.Env = append(cmd.Env, "GOCACHE="+cache)
+			}
 		}
 		output, err = cmd.CombinedOutput()
 	}

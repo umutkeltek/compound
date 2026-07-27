@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +46,33 @@ type proofCheckContextRunner func(context.Context) (proofCheckReport, error)
 
 func proofCheckNeedsAdmission(dryRun, ciOnly, ciConsole bool) bool {
 	return !dryRun && !ciOnly && !ciConsole
+}
+
+// proofCheckGoCache gives each worktree a stable cache outside the repository. Sibling
+// certifying lanes otherwise share the host Go cache and can evict entries while another
+// battery is reading them. Per-run isolation would fix the race but make every battery cold;
+// the worktree is the stable execution-lane identity that needs isolation.
+func proofCheckGoCache(repo string) (string, bool) {
+	if strings.TrimSpace(os.Getenv("COMPOUND_PROOF_SHARED_GOCACHE")) != "" {
+		return "", false
+	}
+	if strings.TrimSpace(repo) == "" {
+		return "", false
+	}
+	resolved, err := filepath.Abs(repo)
+	if err != nil {
+		return "", false
+	}
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256([]byte(resolved))
+	dir := filepath.Join(base, "compound-proof-gocache", hex.EncodeToString(sum[:8]))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", false
+	}
+	return dir, true
 }
 
 // runProofCheckWithAdmission is the canonical full-battery process boundary. ReserveProofResource

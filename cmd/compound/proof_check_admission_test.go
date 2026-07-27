@@ -1896,3 +1896,82 @@ func TestProofCheckAdmissionAdmitsNonTerminalStdoutForAgentInvocation(t *testing
 		t.Fatal("completed verification ref is empty; custody is the proof and must be recorded")
 	}
 }
+
+func TestProofCheckGoCacheIsPerWorktree(t *testing.T) {
+	first, firstOK := proofCheckGoCache(t.TempDir())
+	second, secondOK := proofCheckGoCache(t.TempDir())
+	t.Cleanup(func() {
+		_ = os.RemoveAll(first)
+		_ = os.RemoveAll(second)
+	})
+	if !firstOK || !secondOK {
+		t.Fatal("no cache chosen for a real worktree")
+	}
+	if first == second {
+		t.Fatalf("two worktrees share one cache (%s); sibling lanes can still evict each other", first)
+	}
+}
+
+func TestProofCheckGoCacheIsStableForOneWorktree(t *testing.T) {
+	worktree := t.TempDir()
+	first, firstOK := proofCheckGoCache(worktree)
+	second, secondOK := proofCheckGoCache(worktree)
+	t.Cleanup(func() { _ = os.RemoveAll(first) })
+	if !firstOK || !secondOK {
+		t.Fatal("no cache chosen for a real worktree")
+	}
+	if first != second {
+		t.Fatalf("same worktree got two caches (%s vs %s); repeated batteries would start cold", first, second)
+	}
+}
+
+func TestProofCheckGoCacheLivesOutsideWorktree(t *testing.T) {
+	worktree := t.TempDir()
+	cache, ok := proofCheckGoCache(worktree)
+	t.Cleanup(func() { _ = os.RemoveAll(cache) })
+	if !ok {
+		t.Fatal("no cache chosen for a real worktree")
+	}
+	relative, err := filepath.Rel(worktree, cache)
+	if err == nil && !strings.HasPrefix(relative, "..") {
+		t.Fatalf("cache %s is inside worktree %s; the public redact gate will scan it", cache, worktree)
+	}
+}
+
+func TestProofCheckGoCacheHonorsSharedOptOut(t *testing.T) {
+	t.Setenv("COMPOUND_PROOF_SHARED_GOCACHE", "1")
+	if _, ok := proofCheckGoCache(t.TempDir()); ok {
+		t.Fatal("shared-cache opt-out ignored")
+	}
+}
+
+// Path selection is insufficient proof: this fails if runProofCheckStep stops injecting the
+// per-worktree cache even while every proofCheckGoCache unit test remains green.
+func TestRunProofCheckStepInjectsWorktreeGoCache(t *testing.T) {
+	repo := t.TempDir()
+	want, ok := proofCheckGoCache(repo)
+	if !ok {
+		t.Fatal("no cache chosen for a real worktree")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(want) })
+
+	binDir := t.TempDir()
+	fakeGo := filepath.Join(binDir, "go")
+	if err := os.WriteFile(fakeGo, []byte("#!/bin/sh\nprintf '%s\\n' \"$GOCACHE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GOCACHE", "shared-parent-cache")
+
+	got := runProofCheckStep(repo, proofCheckStep{
+		Name:     "go-cache-wiring",
+		Command:  []string{"go"},
+		ProofRef: "go-cache-wiring",
+	}, "")
+	if got.Status != "ok" {
+		t.Fatalf("fake Go gate failed: %+v", got)
+	}
+	if strings.TrimSpace(got.OutputTail) != want {
+		t.Fatalf("Go gate saw GOCACHE %q, want per-worktree cache %q", got.OutputTail, want)
+	}
+}
