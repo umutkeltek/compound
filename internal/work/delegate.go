@@ -1283,6 +1283,27 @@ func (s *Store) DelegateStatus(workID string, runner SessionRunner) (DelegateSta
 			return out, fmt.Errorf("delegate status: load run attempt %s: %w", b.RunAttemptID, gerr)
 		}
 		out.RunAttemptStatus = ra.Status
+		out.Workspace = ra.Workspace
+		// Resolve where this run's transcript lives while we already hold the
+		// binding and the workspace. Without this the operator is left to guess
+		// which profile home holds it, and a wrong guess reports a completed run
+		// as having produced nothing.
+		if DelegateSessionStoreResolver != nil {
+			root, rErr := DelegateSessionStoreResolver(b.Harness, b.Lane)
+			if rErr != nil {
+				out.TranscriptError = rErr.Error()
+			} else {
+				dir, files, exists, tErr := TranscriptsFor(root, ra.Workspace)
+				out.TranscriptDir = dir
+				out.Transcripts = files
+				out.TranscriptDirExists = exists
+				if tErr != nil {
+					out.TranscriptError = tErr.Error()
+				}
+			}
+		} else {
+			out.TranscriptError = ErrSessionStoreRootUnknown.Error() + " (no resolver installed)"
+		}
 	}
 	return out, nil
 }
@@ -1299,6 +1320,18 @@ type DelegateStatusObservation struct {
 	RunAttemptStatus string        `json:"run_attempt_status,omitempty"`
 	PaneStatus       SessionStatus `json:"pane_status"`
 	ProbeError       string        `json:"probe_error,omitempty"`
+	// Workspace is the filesystem root the run used; it is also what keys the
+	// harness's per-project transcript directory.
+	Workspace string `json:"workspace,omitempty"`
+	// TranscriptDir / Transcripts answer "where did this delegated run's output
+	// go" as a lookup. TranscriptDirExists separates "ran and wrote nothing"
+	// from "we are looking in the wrong place"; TranscriptError carries the
+	// reason when the lane's profile home cannot be named, because guessing one
+	// misreports a completed run as empty.
+	TranscriptDir       string   `json:"transcript_dir,omitempty"`
+	Transcripts         []string `json:"transcripts,omitempty"`
+	TranscriptDirExists bool     `json:"transcript_dir_exists"`
+	TranscriptError     string   `json:"transcript_error,omitempty"`
 }
 
 // DelegateProgressResult is the content-free progress receipt returned after
