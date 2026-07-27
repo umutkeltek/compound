@@ -10,6 +10,44 @@ import (
 	"time"
 )
 
+func TestScanRetainsDecodedSegmentBytesButKeepsLooseEntriesLazy(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})
+	writeLegacyRecord(t, store, "rec_loose", eventRecord("rec_loose", "compound.receipt.v0.1", now, "loose"))
+	appendFile(t,
+		segmentPath(store.engine.segRoot, "receipt", ingestionDay(now), 0),
+		encodedRecordFrame(t, "rec_segment", "compound.receipt.v0.1", now, "segment"),
+	)
+
+	entries, err := store.Scan(ScanOptions{Prefixes: []string{"rec_"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Entry{}
+	for _, entry := range entries {
+		byID[entry.ID] = entry
+	}
+	if byID["rec_segment"].cachedBytes == nil {
+		t.Fatal("segment scan discarded bytes it had already decoded")
+	}
+	if byID["rec_loose"].cachedBytes != nil {
+		t.Fatal("legacy loose entry must stay lazy so unreadable files surface on Entry.Read")
+	}
+
+	// A segment entry reads the immutable snapshot Scan already validated; it must
+	// not need a second point lookup through the segment engine.
+	if err := os.RemoveAll(store.engine.segRoot); err != nil {
+		t.Fatal(err)
+	}
+	record, err := byID["rec_segment"].Read()
+	if err != nil {
+		t.Fatalf("read cached segment entry after segment removal: %v", err)
+	}
+	if !strings.Contains(string(record.Bytes), "segment") {
+		t.Fatalf("cached record = %s", record.Bytes)
+	}
+}
+
 func TestGetAndScanUnionSegmentsBeforeLegacyLooseFiles(t *testing.T) {
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 	store := openConfiguredStore(t, engineConfig{clock: func() time.Time { return now }})

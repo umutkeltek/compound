@@ -68,12 +68,17 @@ type ScanOptions struct {
 	Cursor string
 }
 
-// Entry is a lazily readable event discovered by Scan.
+// Entry is an event discovered by Scan. Segment scans already decode each
+// record while validating frame truth, so Entry retains those bytes and Read
+// does not perform a second point lookup. Legacy loose entries remain lazy: a
+// matching unreadable loose file is still surfaced only when Read is called.
 type Entry struct {
-	ID        string
-	Name      string
-	Reference Reference
-	store     *Store
+	ID             string
+	Name           string
+	Reference      Reference
+	cachedBytes    []byte
+	diagnosticPath string
+	store          *Store
 }
 
 func Open(homePath string) (*Store, error) {
@@ -304,11 +309,14 @@ func (s *Store) Scan(opts ScanOptions) ([]Entry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid event scan entry %q: %w", id, err)
 		}
+		stored := records[id]
 		entries = append(entries, Entry{
-			ID:        id,
-			Name:      id + ".json",
-			Reference: ref,
-			store:     s,
+			ID:             id,
+			Name:           id + ".json",
+			Reference:      ref,
+			cachedBytes:    stored.bytes,
+			diagnosticPath: stored.diagnosticPath,
+			store:          s,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
@@ -363,7 +371,15 @@ func (s *Store) ScanFrom(opts ScanOptions) (ScanPage, error) {
 		if err != nil {
 			return ScanPage{}, fmt.Errorf("invalid event scan entry %q: %w", id, err)
 		}
-		entries = append(entries, Entry{ID: id, Name: id + ".json", Reference: ref, store: s})
+		stored := records[id]
+		entries = append(entries, Entry{
+			ID:             id,
+			Name:           id + ".json",
+			Reference:      ref,
+			cachedBytes:    stored.bytes,
+			diagnosticPath: stored.diagnosticPath,
+			store:          s,
+		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return ScanPage{Entries: entries, Cursor: cursor, Resumed: resumed}, nil
@@ -384,6 +400,14 @@ func matchesPrefix(id string, prefixes []string) bool {
 func (e Entry) Read() (Record, error) {
 	if e.store == nil {
 		return Record{}, fmt.Errorf("event scan entry has no store")
+	}
+	if e.cachedBytes != nil {
+		return Record{
+			ID:             e.ID,
+			Reference:      e.Reference,
+			Bytes:          append([]byte(nil), e.cachedBytes...),
+			DiagnosticPath: e.diagnosticPath,
+		}, nil
 	}
 	return e.store.Read(e.ID)
 }
