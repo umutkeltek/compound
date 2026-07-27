@@ -359,6 +359,116 @@ func TestReleaseAfterKeepsLeaseWhenFinalizerFails(t *testing.T) {
 // path deterministically (a nil factory ⇒ no OS watch, pure clock-driven poll) — the same path a platform
 // with no supported watcher, or a failed watcher build, degrades to. The real watch fast path is proven by
 // TestAcquireWaitWatchWakesInstantly* below.
+func TestRearmExpiredExactRequiresUnchangedHolderAndTerminatedExecution(t *testing.T) {
+	t.Run("exact expired holder", func(t *testing.T) {
+		home := t.TempDir()
+		acquired, barrier, err := AcquireWithExecutionBarrierPrepared(
+			home,
+			laneAlpha,
+			time.Second,
+			baseNow,
+			func(AcquireOutcome) error { return nil },
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := Status(home, baseNow.Add(2*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !status.IsExpired || status.Holder != acquired.Lease.Holder {
+			t.Fatalf("expired status = %+v", status)
+		}
+		if _, err := RearmExpiredExact(home, status, baseNow.Add(2*time.Second)); err == nil {
+			t.Fatal("rearmed expired holder while execution barrier was still pending")
+		}
+		if err := barrier.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		rearmed, err := RearmExpiredExact(home, status, baseNow.Add(2*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rearmed.Holder != laneAlpha || !rearmed.live(baseNow.Add(2*time.Second)) {
+			t.Fatalf("rearmed lease = %+v", rearmed)
+		}
+	})
+
+	t.Run("replacement refused", func(t *testing.T) {
+		home := t.TempDir()
+		if _, err := Acquire(home, laneAlpha, time.Second, baseNow); err != nil {
+			t.Fatal(err)
+		}
+		expired, err := Status(home, baseNow.Add(2*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Acquire(home, laneBeta, time.Minute, baseNow.Add(2*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := RearmExpiredExact(home, expired, baseNow.Add(2*time.Second)); err == nil {
+			t.Fatal("rearmed replaced expired holder")
+		}
+		current, err := Status(home, baseNow.Add(2*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !current.Held || current.Holder != laneBeta {
+			t.Fatalf("replacement changed after refused rearm: %+v", current)
+		}
+	})
+
+	t.Run("status snapshot mutations refused", func(t *testing.T) {
+		home := t.TempDir()
+		if _, err := Acquire(home, laneAlpha, time.Second, baseNow); err != nil {
+			t.Fatal(err)
+		}
+		expiredAt := baseNow.Add(2 * time.Second)
+		expected, err := Status(home, expiredAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mutations := []struct {
+			name   string
+			mutate func(*StatusResult)
+		}{
+			{name: "schema", mutate: func(s *StatusResult) { s.SchemaVersion = "changed" }},
+			{name: "holder", mutate: func(s *StatusResult) { s.Holder = laneGamma }},
+			{name: "acquired", mutate: func(s *StatusResult) { s.AcquiredAt = baseNow.Add(time.Second).Format(time.RFC3339) }},
+			{name: "expires", mutate: func(s *StatusResult) { s.ExpiresAt = baseNow.Add(3 * time.Second).Format(time.RFC3339) }},
+			{name: "ttl", mutate: func(s *StatusResult) { s.TTLSeconds++ }},
+			{name: "prior holder", mutate: func(s *StatusResult) { s.PriorHolder = laneBeta }},
+			{name: "steal reason", mutate: func(s *StatusResult) { s.StealReason = "changed" }},
+			{name: "stolen at", mutate: func(s *StatusResult) { s.StolenAt = baseNow.Format(time.RFC3339) }},
+			{name: "termination requester", mutate: func(s *StatusResult) { s.TerminationRequestedBy = laneBeta }},
+			{name: "termination reason", mutate: func(s *StatusResult) { s.TerminationRequestReason = "changed" }},
+			{name: "termination time", mutate: func(s *StatusResult) { s.TerminationRequestedAt = baseNow.Format(time.RFC3339Nano) }},
+			{name: "held", mutate: func(s *StatusResult) { s.Held = true }},
+			{name: "expired", mutate: func(s *StatusResult) { s.IsExpired = false }},
+			{name: "remaining", mutate: func(s *StatusResult) { s.RemainingSeconds = 1 }},
+		}
+		for _, tc := range mutations {
+			t.Run(tc.name, func(t *testing.T) {
+				changed := expected
+				tc.mutate(&changed)
+				if _, err := RearmExpiredExact(home, changed, expiredAt); err == nil {
+					t.Fatal("rearmed from changed status snapshot")
+				}
+				current, err := Status(home, expiredAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, _ := json.Marshal(expected)
+				got, _ := json.Marshal(current)
+				if string(got) != string(want) {
+					t.Fatalf("refused rearm mutated lease: got %s want %s", got, want)
+				}
+			})
+		}
+	})
+}
+
 func TestAcquireWaitAcquiresAfterHolderExpires(t *testing.T) {
 	home := t.TempDir()
 	ttl := 10 * time.Second

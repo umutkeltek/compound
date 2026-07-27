@@ -366,6 +366,74 @@ func Refresh(home, holder string, ttl time.Duration, now time.Time) (Lease, erro
 	return refreshed, nil
 }
 
+// RearmExpiredExact reopens a short exclusive window for one retained finalizer after its
+// execution has terminated. It is deliberately narrower than Refresh or Acquire: the caller must
+// supply the full expired Status snapshot, the persisted record must still match it exactly under
+// the lease lock, and the holder's execution barrier must attest clear. A successor, refresh,
+// termination request, or any other record change therefore makes recovery fail closed.
+func RearmExpiredExact(home string, expected StatusResult, now time.Time) (Lease, error) {
+	if expected.Held || !expected.IsExpired || strings.TrimSpace(expected.Holder) == "" {
+		return Lease{}, fmt.Errorf("land-lease exact expired status required for finalizer recovery")
+	}
+	var rearmed Lease
+	err := withLock(home, func() error {
+		statePath, err := statePath(home)
+		if err != nil {
+			return err
+		}
+		current, exists, err := readLease(statePath)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("land-lease expected expired holder %q, but no lease exists", expected.Holder)
+		}
+		if !leaseMatchesStatus(*current, expected, now) {
+			return fmt.Errorf("land-lease record changed after expired holder %q was validated", expected.Holder)
+		}
+		if current.live(now) {
+			return fmt.Errorf("land-lease for %q is not expired at recovery time", expected.Holder)
+		}
+		pending, err := executionBarrierPending(home, current.Holder)
+		if err != nil {
+			return err
+		}
+		if pending {
+			return &ExecutionPendingError{Holder: current.Holder}
+		}
+		ttlSecs := current.TTLSeconds
+		if ttlSecs <= 0 {
+			ttlSecs = DefaultTTLSeconds
+		}
+		rearmed = *current
+		rearmed.AcquiredAt = now.UTC().Format(time.RFC3339)
+		rearmed.TTLSeconds = ttlSecs
+		rearmed.ExpiresAt = now.UTC().Add(time.Duration(ttlSecs) * time.Second).Format(time.RFC3339)
+		return writeLeaseAtomic(statePath, rearmed)
+	})
+	if err != nil {
+		return Lease{}, err
+	}
+	return rearmed, nil
+}
+
+func leaseMatchesStatus(lease Lease, status StatusResult, now time.Time) bool {
+	return lease.SchemaVersion == status.SchemaVersion &&
+		lease.Holder == status.Holder &&
+		lease.AcquiredAt == status.AcquiredAt &&
+		lease.ExpiresAt == status.ExpiresAt &&
+		lease.TTLSeconds == status.TTLSeconds &&
+		lease.PriorHolder == status.PriorHolder &&
+		lease.StealReason == status.StealReason &&
+		lease.StolenAt == status.StolenAt &&
+		lease.TerminationRequestedBy == status.TerminationRequestedBy &&
+		lease.TerminationRequestReason == status.TerminationRequestReason &&
+		lease.TerminationRequestedAt == status.TerminationRequestedAt &&
+		lease.live(now) == status.Held &&
+		(!lease.live(now)) == status.IsExpired &&
+		lease.remainingSeconds(now) == status.RemainingSeconds
+}
+
 // errWatchUnsupported is returned by newLeaseWatcher on a platform with no supported file-event
 // primitive (compound targets Darwin/kqueue and Linux/inotify). A waiter that cannot build a watcher
 // degrades cleanly to the clock-driven bounded poll — the watch is a fast path, never the sole liveness.
