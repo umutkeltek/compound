@@ -17,42 +17,42 @@ import (
 )
 
 const (
-	sessionSchedulerPlanSchemaVersion  = "compound.session_scheduler_plan.v0.1"
+	sessionSchedulerPlanSchemaVersion   = "compound.session_scheduler_plan.v0.1"
 	sessionSchedulerReviewSchemaVersion = "compound.session_scheduler_review.v0.1"
 	sessionSchedulerReviewArea          = "session-job-scheduler"
 )
 
 type sessionSchedulerPlan struct {
-	SchemaVersion        string          `json:"schema_version"`
-	ID                   string          `json:"id"`
-	CreatedAt            string          `json:"created_at"`
-	Status               string          `json:"status"`
-	JobID                string          `json:"job_id"`
-	HomePath             string          `json:"home_path"`
-	Command              string          `json:"command"`
-	Schedule             string          `json:"schedule"`
-	TargetPath           string          `json:"target_path"`
-	TargetContent        string          `json:"target_content"`
-	TargetHash           string          `json:"target_hash"`
-	OS                   string          `json:"os"`
-	User                 string          `json:"user"`
-	EvidenceRefs         []string        `json:"evidence_refs"`
-	OperatorCard         json.RawMessage `json:"__operator_card,omitempty"`
-	OperatorCardExt      json.RawMessage `json:"__operator_card_ext,omitempty"`
+	SchemaVersion   string          `json:"schema_version"`
+	ID              string          `json:"id"`
+	CreatedAt       string          `json:"created_at"`
+	Status          string          `json:"status"`
+	JobID           string          `json:"job_id"`
+	HomePath        string          `json:"home_path"`
+	Command         string          `json:"command"`
+	Schedule        string          `json:"schedule"`
+	TargetPath      string          `json:"target_path"`
+	TargetContent   string          `json:"target_content"`
+	TargetHash      string          `json:"target_hash"`
+	OS              string          `json:"os"`
+	User            string          `json:"user"`
+	EvidenceRefs    []string        `json:"evidence_refs"`
+	OperatorCard    json.RawMessage `json:"__operator_card,omitempty"`
+	OperatorCardExt json.RawMessage `json:"__operator_card_ext,omitempty"`
 }
 
 type sessionSchedulerReview struct {
-	SchemaVersion    string   `json:"schema_version"`
-	PlanID           string   `json:"plan_id"`
-	Decision         string   `json:"decision"`
-	Rationale        string   `json:"rationale"`
-	Confidence       *float64 `json:"confidence,omitempty"`
-	NextAction       string   `json:"next_action"`
-	EvidenceRefs     []string `json:"evidence_refs"`
-	ReviewedBy       string   `json:"reviewed_by,omitempty"`
-	ReviewedAt       string   `json:"reviewed_at"`
-	SchedulerState   string   `json:"scheduler_state,omitempty"`
-	ProbeNote        string   `json:"probe_note,omitempty"`
+	SchemaVersion  string   `json:"schema_version"`
+	PlanID         string   `json:"plan_id"`
+	Decision       string   `json:"decision"`
+	Rationale      string   `json:"rationale"`
+	Confidence     *float64 `json:"confidence,omitempty"`
+	NextAction     string   `json:"next_action"`
+	EvidenceRefs   []string `json:"evidence_refs"`
+	ReviewedBy     string   `json:"reviewed_by,omitempty"`
+	ReviewedAt     string   `json:"reviewed_at"`
+	SchedulerState string   `json:"scheduler_state,omitempty"`
+	ProbeNote      string   `json:"probe_note,omitempty"`
 }
 
 func cmdSessionsJobPlan(args []string) {
