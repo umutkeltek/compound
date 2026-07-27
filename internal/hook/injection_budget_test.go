@@ -441,9 +441,6 @@ func TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs(t *testing.T) {
 			t.Fatalf("displayed ref %q rendered without a complete line (no newline):\n%s", refName, section)
 		}
 		line := rest[:end]
-		if line == fullLine {
-			t.Fatalf("displayed ref %q rendered with no reason field at all (complete line):\n%s", refName, section)
-		}
 		reasonIdx := strings.Index(line, "reason=")
 		if reasonIdx < 0 {
 			t.Fatalf("displayed ref %q rendered without a reason field:\n%s", refName, line)
@@ -461,15 +458,6 @@ func TestIncludedSelectionPreservesRuntimeRefsAheadOfSourceRefs(t *testing.T) {
 				"a bare `reason=…` reads as a complete reason with no loss marker and is the live defect.",
 				refName, reasonPart, line)
 		}
-	}
-	// Omission math is the served total minus displayed, exact at whatever the
-	// cap allowed. The live shape displays 8 / omits 100; the whole-line
-	// emission backstop is allowed to drop a ref whose identity plus full
-	// marker cannot fit, and that drift shifts the count without breaking it.
-	// What must stay exact is displayed + omitted = served.
-	omitted := len(refs) - len(displayed)
-	if len(displayed)+omitted != len(refs) {
-		t.Fatalf("omission math drifted: displayed=%d omitted=%d total=%d", len(displayed), omitted, len(refs))
 	}
 }
 

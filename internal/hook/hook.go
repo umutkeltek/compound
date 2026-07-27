@@ -2574,15 +2574,18 @@ const minIncludedRefChars = 120
 // that simply says less — the same failure as the severed ref this renderer exists to stop.
 func elideIncludedReason(reason string, room int) string {
 	const marker = "…[elided]"
-	if room <= 0 {
+	if reason == "" {
 		return ""
+	}
+	if room <= 0 {
+		return marker
 	}
 	if utf8.RuneCountInString(reason) <= room {
 		return reason
 	}
 	markerLen := utf8.RuneCountInString(marker)
 	if room <= markerLen {
-		return marker[:0] + "…"
+		return marker
 	}
 	runes := []rune(reason)
 	return string(runes[:room-markerLen]) + marker
@@ -2592,7 +2595,8 @@ func elideIncludedReason(reason string, room int) string {
 //
 // Split out from the list so the caller can price a line BEFORE committing it to the
 // section. budget <= 0 means unbudgeted (render in full); otherwise the reason is elided
-// so the line fits, because identity must survive even when prose cannot.
+// toward that share. The explicit marker may exceed an ultra-tight per-ref share; the
+// caller prices the complete line and omits it if the section itself cannot fit.
 func renderIncludedRef(ref envelope.IncludedRef, budget int) string {
 	if budget > 0 {
 		// Price everything except the reason, then give the reason what is left.
