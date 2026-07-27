@@ -612,6 +612,7 @@ func isControlTool(tool string) bool {
 		tool == "request_user_input" ||
 		tool == "get_goal" ||
 		tool == "tool_search" ||
+		tool == "skill" ||
 		strings.HasPrefix(tool, "collaboration.") ||
 		strings.HasPrefix(tool, "collaboration_") ||
 		strings.HasPrefix(tool, "list_mcp_resource") ||
@@ -626,7 +627,10 @@ func classifyControlAction(classification ActionClassification, tool string) Act
 	classification.RequiredSink = "control"
 	classification.BlastRadius = "local"
 	switch {
-	case actionLooksReadOnly(operation) || containsAnyMonitor(operation, "wait", "get_goal", "tool_search"):
+	// A skill invocation loads local instructions. Every action the skill then
+	// takes is classified on its own, so holding the invocation adds an operator
+	// prompt without adding a boundary.
+	case actionLooksReadOnly(operation) || containsAnyMonitor(operation, "wait", "get_goal", "tool_search", "skill"):
 		classification.MutationClass = "read"
 		classification.Reversibility = "none"
 		classification.NeedsDestination = false
@@ -642,95 +646,8 @@ func classifyControlAction(classification ActionClassification, tool string) Act
 	return classification
 }
 
-func classifyShellAction(classification ActionClassification, command string) ActionClassification {
-	normalized := strings.ToLower(strings.TrimSpace(command))
-	switch {
-	case normalized == "":
-		classification.Known = false
-		classification.Operation = "unknown"
-		classification.MutationClass = "security"
-		classification.Reversibility = "hard"
-		classification.BlastRadius = "host"
-	case containsAnyMonitor(normalized,
-		"curl ", "wget ", "nc ", "netcat ", "scp ", "ssh ",
-		"git push", "gh pr create", "gh issue create",
-	):
-		classification.Operation = "network_command"
-		classification.RequiredSink = "network"
-		classification.MutationClass = "external_side_effect"
-		classification.Reversibility = "hard"
-		classification.BlastRadius = "internet"
-	case containsAnyMonitor(normalized,
-		"rm -", "dd ", "mkfs", "diskutil ", "shred ", "git reset --hard",
-	):
-		classification.Operation = "destructive_command"
-		classification.MutationClass = "destructive"
-		classification.Reversibility = "irreversible"
-		classification.BlastRadius = "host"
-	case containsAnyMonitor(normalized,
-		"npm install", "npm i ", "bun add", "pnpm add", "yarn add", "brew install", "pip install",
-	):
-		classification.Operation = "install_command"
-		classification.RequiredSink = "install"
-		classification.MutationClass = "security"
-		classification.Reversibility = "manual"
-		classification.BlastRadius = "host"
-	case shellCommandIsRoutineLocal(normalized):
-		classification.Operation = "local_command"
-		classification.MutationClass = "local_reversible"
-		classification.Reversibility = "easy"
-		classification.BlastRadius = "local"
-	default:
-		classification.Known = false
-		classification.Operation = "unknown_command"
-		classification.MutationClass = "security"
-		classification.Reversibility = "hard"
-		classification.BlastRadius = "host"
-	}
-	return classification
-}
-
-func shellCommandIsRoutineLocal(command string) bool {
-	// The routine lane supports simple sequences of known local commands only.
-	// Expansions, pipelines, redirects, backgrounding, and semicolon composition
-	// can turn an innocent-looking prefix into arbitrary execution.
-	if containsAnyMonitor(command, ";", "|", ">", "<", "`", "$(", "${", "\x00") {
-		return false
-	}
-	if strings.Contains(command, "&") && !strings.Contains(command, "&&") {
-		return false
-	}
-	segments := []string{}
-	for _, line := range strings.Split(strings.ReplaceAll(command, "\r\n", "\n"), "\n") {
-		segments = append(segments, strings.Split(line, "&&")...)
-	}
-	seen := false
-	for _, segment := range segments {
-		segment = strings.TrimSpace(segment)
-		if segment == "" {
-			continue
-		}
-		seen = true
-		if !shellCommandSegmentIsRoutineLocal(segment) {
-			return false
-		}
-	}
-	return seen
-}
-
-func shellCommandSegmentIsRoutineLocal(command string) bool {
-	for _, prefix := range []string{
-		"go test ", "go test", "go vet ", "go vet", "go build ", "go build",
-		"gofmt ", "bun test", "bun run test", "bun run lint", "npm test",
-		"git status", "git diff", "git log", "git show", "git rev-parse",
-		"rg ", "sed ", "ls ", "pwd", "wc ", "stat ", "jq ", "printf ",
-	} {
-		if command == prefix || strings.HasPrefix(command, prefix) {
-			return true
-		}
-	}
-	return false
-}
+// classifyShellAction lives in shell_read_lane.go, which owns the verb-level
+// decomposition every shell and PTY action is classified by.
 
 func connectorMutationClass(operation string) string {
 	if actionLooksReadOnly(operation) {
