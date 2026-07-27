@@ -33,7 +33,10 @@ package main
 // itself, not wait to be remembered.
 
 import (
+	"bytes"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -50,6 +53,12 @@ var zshSpecialAssignmentRe = regexp.MustCompile(
 	`(^|[;&|(){}[:space:]])(local[[:space:]]+|typeset[[:space:]]+|declare[[:space:]]+|export[[:space:]]+)?(path|status)=`,
 )
 
+type zshAssignmentHit struct {
+	file string
+	line int
+	text string
+}
+
 // isZshScript reports whether a file is interpreted by zsh: a `.zsh` extension, or a
 // shebang naming zsh. Bash treats `path` as an ordinary name, so a bash script assigning
 // it is not a defect and must not be reported.
@@ -60,65 +69,18 @@ func isZshScript(name string, firstLine string) bool {
 	return strings.HasPrefix(firstLine, "#!") && strings.Contains(firstLine, "zsh")
 }
 
-// TestZshScriptsDoNotAssignSpecialParameters walks every zsh script under the repo and
-// fails on an assignment to a fatal special parameter, naming file:line and the fix.
+// TestZshScriptsDoNotAssignSpecialParameters scans every tracked zsh script and fails on an
+// assignment to a fatal special parameter, naming file:line and the fix.
 //
-// Falsifier: add `local path=/tmp/x` to any zsh script in the repo and this goes RED
-// naming that file:line; remove it and this goes GREEN. Deliberately phrased against "any
-// zsh script" rather than a specific one, so the falsifier is reproducible in a fresh
-// clone instead of depending on a file that may not be present.
+// Falsifier: add `local path=/tmp/x` to any tracked zsh script and this goes RED naming that
+// file:line; remove it and this goes GREEN. Runtime/private/untracked scripts are deliberately
+// outside this source invariant.
 func TestZshScriptsDoNotAssignSpecialParameters(t *testing.T) {
 	repoRoot := filepath.Join("..", "..")
 
-	type hit struct {
-		file string
-		line int
-		text string
-	}
-	var hits []hit
-
-	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			// An unreadable subtree is not this guard's business; skip rather than fail.
-			return nil //nolint:nilerr
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", "node_modules", "worktrees":
-				// `worktrees` holds full copies of this repo -- scanning them would
-				// report every hit a second time under a path that is not the source.
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if ext := filepath.Ext(path); ext != ".sh" && ext != ".zsh" {
-			return nil
-		}
-		body, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return nil
-		}
-		lines := strings.Split(string(body), "\n")
-		if len(lines) == 0 || !isZshScript(path, lines[0]) {
-			return nil
-		}
-		for i, line := range lines {
-			code := line
-			if idx := strings.Index(code, "#"); idx >= 0 {
-				code = code[:idx] // a comment naming the trap is not the trap
-			}
-			if zshSpecialAssignmentRe.MatchString(code) {
-				rel, relErr := filepath.Rel(repoRoot, path)
-				if relErr != nil {
-					rel = path
-				}
-				hits = append(hits, hit{file: rel, line: i + 1, text: strings.TrimSpace(line)})
-			}
-		}
-		return nil
-	})
+	hits, err := zshSpecialAssignmentHits(repoRoot)
 	if err != nil {
-		t.Fatalf("walk repo: %v", err)
+		t.Fatalf("scan repo: %v", err)
 	}
 
 	for _, h := range hits {
@@ -130,6 +92,47 @@ func TestZshScriptsDoNotAssignSpecialParameters(t *testing.T) {
 			h.file, h.line, h.text,
 		)
 	}
+}
+
+func zshSpecialAssignmentHits(repoRoot string) ([]zshAssignmentHit, error) {
+	var hits []zshAssignmentHit
+	cmd := exec.Command("git", "-C", repoRoot, "ls-files", "-z", "--", "*.sh", "*.zsh")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("list tracked shell scripts: %w", err)
+	}
+	for _, rawPath := range bytes.Split(output, []byte{0}) {
+		if len(rawPath) == 0 {
+			continue
+		}
+		rel := filepath.Clean(filepath.FromSlash(string(rawPath)))
+		if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("git returned shell script outside repository: %q", rel)
+		}
+		path := filepath.Join(repoRoot, rel)
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			// A tracked file deleted in the working tree cannot contain an assignment.
+			if os.IsNotExist(readErr) {
+				continue
+			}
+			return nil, fmt.Errorf("read tracked shell script %s: %w", rel, readErr)
+		}
+		lines := strings.Split(string(body), "\n")
+		if len(lines) == 0 || !isZshScript(path, lines[0]) {
+			continue
+		}
+		for i, line := range lines {
+			code := line
+			if idx := strings.Index(code, "#"); idx >= 0 {
+				code = code[:idx] // a comment naming the trap is not the trap
+			}
+			if zshSpecialAssignmentRe.MatchString(code) {
+				hits = append(hits, zshAssignmentHit{file: rel, line: i + 1, text: strings.TrimSpace(line)})
+			}
+		}
+	}
+	return hits, nil
 }
 
 // TestZshSpecialAssignmentDetector pins the detector itself, because a guard that
@@ -165,5 +168,48 @@ func TestZshSpecialAssignmentDetector(t *testing.T) {
 				t.Errorf("MatchString(%q) = %v, want %v", tc.line, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestZshSpecialAssignmentGuardScansTrackedScriptsOnly(t *testing.T) {
+	repoRoot := t.TempDir()
+	runZshGuardGit(t, repoRoot, "init", "--quiet")
+
+	trackedPath := filepath.Join(repoRoot, "tracked.zsh")
+	if err := os.WriteFile(trackedPath, []byte("#!/bin/zsh\nlocal cite_path=/tmp/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runZshGuardGit(t, repoRoot, "add", "tracked.zsh")
+
+	untrackedPath := filepath.Join(repoRoot, "runtime.zsh")
+	if err := os.WriteFile(untrackedPath, []byte("#!/bin/zsh\nlocal path=/tmp/runtime\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := zshSpecialAssignmentHits(repoRoot)
+	if err != nil {
+		t.Fatalf("scan with untracked runtime script: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("untracked/runtime script must be outside the source guard, got %+v", hits)
+	}
+
+	if err := os.WriteFile(trackedPath, []byte("#!/bin/zsh\nlocal path=/tmp/source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hits, err = zshSpecialAssignmentHits(repoRoot)
+	if err != nil {
+		t.Fatalf("scan tracked source script: %v", err)
+	}
+	if len(hits) != 1 || hits[0].file != "tracked.zsh" {
+		t.Fatalf("tracked source defect must be caught exactly once, got %+v", hits)
+	}
+}
+
+func runZshGuardGit(t *testing.T, repoRoot string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repoRoot}, args...)...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 }
