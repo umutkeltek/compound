@@ -198,6 +198,7 @@ func attributeWorktreeInventoryLSOFPaths(
 	worktreeRoots []string,
 ) (activePaths map[string]string, complete bool, recordsProcessed int) {
 	activePaths = make(map[string]string)
+	matcher := newWorktreeInventoryRootMatcher(worktreeRoots)
 	cwdRecord := false
 	for _, line := range strings.Split(stdout, "\n") {
 		if len(line) < 2 {
@@ -211,7 +212,7 @@ func attributeWorktreeInventoryLSOFPaths(
 			cwdPath := strings.TrimSuffix(line[1:], "\r")
 			if cwdRecord && filepath.IsAbs(cwdPath) {
 				cwdPath = filepath.Clean(cwdPath)
-				if root, ok := longestWorktreeInventoryRoot(cwdPath, worktreeRoots); ok {
+				if root, ok := matcher.longest(cwdPath); ok {
 					if prior := activePaths[root]; prior == "" || cwdPath < prior {
 						activePaths[root] = cwdPath
 					}
@@ -232,34 +233,72 @@ func attributeWorktreeInventoryLSOFPaths(
 	return activePaths, true, recordsProcessed
 }
 
-func longestWorktreeInventoryRoot(openPath string, worktreeRoots []string) (string, bool) {
+// worktreeInventoryEvalSymlinks is a package var so a test can count how many
+// filesystem resolutions attribution performs. Attribution must stay
+// O(roots + records); resolving per (root, record) PAIR is what silently
+// disabled the whole inventory once the repo accumulated a few hundred
+// worktrees — see worktreeInventoryRootMatcher.
+var worktreeInventoryEvalSymlinks = filepath.EvalSymlinks
+
+// worktreeInventoryRootMatcher attributes an open cwd path to the most specific
+// registered root. It resolves each root's canonical form ONCE at construction
+// and each candidate's ONCE per candidate.
+//
+// The pair-wise version this replaces called filepath.EvalSymlinks twice for
+// every (root, candidate) combination whose string comparison missed — which is
+// nearly every combination. At 390 roots and ~1.5k open cwd records that is
+// ~1.2M path resolutions, it measured 5.07s against the 5s advisory budget, and
+// every row therefore degraded to `unknown`: `landed_clean` and
+// `scratch_worktree_debt` were pinned at 0, so the sweep that exists to retire
+// this debt could never fire. The cost grew with the worktree count, so the
+// metric went blind precisely as the debt it measures got worse.
+type worktreeInventoryRootMatcher struct {
+	raw       []string
+	clean     []string
+	canonical []string // "" when the root cannot be resolved
+}
+
+func newWorktreeInventoryRootMatcher(worktreeRoots []string) *worktreeInventoryRootMatcher {
+	matcher := &worktreeInventoryRootMatcher{
+		raw:       worktreeRoots,
+		clean:     make([]string, len(worktreeRoots)),
+		canonical: make([]string, len(worktreeRoots)),
+	}
+	for i, root := range worktreeRoots {
+		cleanRoot := filepath.Clean(root)
+		matcher.clean[i] = cleanRoot
+		if canonicalRoot, err := worktreeInventoryEvalSymlinks(cleanRoot); err == nil {
+			matcher.canonical[i] = canonicalRoot
+		}
+	}
+	return matcher
+}
+
+// longest returns the raw input root that most specifically contains candidate.
+// The candidate is canonicalized unconditionally rather than only when the
+// string pass misses: a string match against a shorter ANCESTOR root must not
+// win over a canonical match against the more specific child, or a live child
+// worktree would be reported unused while its parent absorbed the handle.
+func (matcher *worktreeInventoryRootMatcher) longest(candidate string) (string, bool) {
+	cleanCandidate := filepath.Clean(candidate)
+	canonicalCandidate, candidateErr := worktreeInventoryEvalSymlinks(cleanCandidate)
 	bestRoot := ""
 	bestLength := -1
-	for _, root := range worktreeRoots {
-		matchLength, matches := worktreeInventoryRootMatchLength(root, openPath)
-		if !matches {
-			continue
+	for i := range matcher.raw {
+		matchLength := -1
+		switch {
+		case worktreeInventoryPathWithinRoot(matcher.clean[i], cleanCandidate):
+			matchLength = len(matcher.clean[i])
+		case candidateErr == nil && matcher.canonical[i] != "" &&
+			worktreeInventoryPathWithinRoot(matcher.canonical[i], canonicalCandidate):
+			matchLength = len(matcher.canonical[i])
 		}
 		if matchLength > bestLength {
-			bestRoot = root
+			bestRoot = matcher.raw[i]
 			bestLength = matchLength
 		}
 	}
 	return bestRoot, bestLength >= 0
-}
-
-func worktreeInventoryRootMatchLength(root, candidate string) (int, bool) {
-	cleanRoot := filepath.Clean(root)
-	cleanCandidate := filepath.Clean(candidate)
-	if worktreeInventoryPathWithinRoot(cleanRoot, cleanCandidate) {
-		return len(cleanRoot), true
-	}
-	canonicalRoot, rootErr := filepath.EvalSymlinks(cleanRoot)
-	canonicalCandidate, candidateErr := filepath.EvalSymlinks(cleanCandidate)
-	if rootErr == nil && candidateErr == nil && worktreeInventoryPathWithinRoot(canonicalRoot, canonicalCandidate) {
-		return len(canonicalRoot), true
-	}
-	return -1, false
 }
 
 func worktreeInventoryPathWithinRoot(root, candidate string) bool {
