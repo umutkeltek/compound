@@ -94,6 +94,17 @@ func TestSessionsMineJobRunResumesAndPreservesCrossRunPatterns(t *testing.T) {
 	if err != nil || !ok || len(checkpoint.Events) != 2 || checkpoint.Cursor == "" {
 		t.Fatalf("checkpoint = ok:%t err:%v value:%+v", ok, err, checkpoint)
 	}
+	receipt, ok, err := loadLatestSessionMiningReceipt(homePath, sessionMiningJobID)
+	if err != nil || !ok {
+		t.Fatalf("latest run receipt = ok:%t err:%v", ok, err)
+	}
+	if receipt.Status != "succeeded" || receipt.ScanMode != "incremental" || receipt.EventsScanned != 1 || receipt.EventsRetained != 2 || receipt.SessionsSeen != 2 {
+		t.Fatalf("latest receipt = %+v", receipt)
+	}
+	files, err := sessionMiningReceiptFiles(homePath, sessionMiningJobID)
+	if err != nil || len(files) != 2 {
+		t.Fatalf("immutable run receipts = %v err=%v, want 2", files, err)
+	}
 }
 
 func TestSessionsMineFiltersHarnessAndCountsDistinctSessions(t *testing.T) {
@@ -520,5 +531,81 @@ func readJSONFile(t *testing.T, path string, target any) {
 	data := readTestPath(t, path)
 	if err := json.Unmarshal(data, target); err != nil {
 		t.Fatalf("parse %s: %v", path, err)
+	}
+}
+
+func TestSessionsMineJobStatusReconcilesDeclarationReceiptAndLiveness(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	status, err := buildSessionMiningJobStatus(homePath, sessionMiningJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Status != "not_declared" || status.Declared {
+		t.Fatalf("undeclared job status = %+v", status)
+	}
+
+	source := "../../fixtures/authority/job-roster-sessions-mine-digest.json"
+	if _, err := authority.ImportJobRoster(homePath, source, now); err != nil {
+		t.Fatal(err)
+	}
+	status, err = buildSessionMiningJobStatus(homePath, sessionMiningJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Declared || status.Status == "not_declared" {
+		t.Fatalf("declared job status = %+v", status)
+	}
+	if status.SchedulerObserved {
+		t.Fatal("declaration without probe must not report scheduler observed")
+	}
+
+	if _, err := authority.RefreshJobRosterFromObservations(homePath, "test-probe", []authority.JobRosterObservation{
+		{JobID: sessionMiningJobID, Alive: true, Source: "test"},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	status, err = buildSessionMiningJobStatus(homePath, sessionMiningJobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.SchedulerObserved || status.SchedulerState != "alive" {
+		t.Fatalf("probed-alive job status = %+v", status)
+	}
+}
+
+func TestSessionsMineJobStatusSurfaceShowsDryRunUsage(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(homePath, "projections", "sessions-mine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "projections", "sessions-mine", sessionMiningJobID+".json"), []byte(`{
+  "schema_version": "`+sessionMiningCheckpointSchemaVersion+`",
+  "job_id": "`+sessionMiningJobID+`",
+  "since": "24h",
+  "cursor": "ZmFrZS1ieXRlLWN1cnNvcg",
+  "updated_at": "`+now.Format(time.RFC3339)+`",
+  "events": [{"id":"h1","created_at":"`+now.Add(-time.Hour).Format(time.RFC3339)+`","harness":"codex","hook_name":"UserPromptSubmit","status":"ok","side_effects":[],"evidence_refs":[],"ids":{"session_id":"s1","work_id":"w1"}}]
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdSessions([]string{"job", "status"})
+	})
+	if !strings.Contains(out, "incremental_ready=true") {
+		t.Fatalf("status text missing incremental readiness: %s", out)
+	}
+	if !strings.Contains(out, "checkpoint: present=true events=1") {
+		t.Fatalf("status text missing checkpoint detail: %s", out)
 	}
 }

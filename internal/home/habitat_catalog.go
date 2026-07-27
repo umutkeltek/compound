@@ -131,6 +131,7 @@ func buildHabitatEntries() []HabitatEntry {
 		active("observed", "observed", HabitatClassEvidence, true, true, false),
 		child("observed.tool-output", "observed/tool-output", HabitatClassRebuildable, true, false, true),
 		child("observed.findings", "observed/findings", HabitatClassEvidence, true, true, false),
+		child("observed.jobs", "observed/jobs", HabitatClassEvidence, false, true, false),
 		child("observed.activity", "observed/activity", HabitatClassEvidence, true, true, false),
 		// Raw delegate pane capture. Transient class, not evidence: it is a
 		// byte-for-byte TUI stream (ANSI escapes and redraws included) kept

@@ -129,6 +129,8 @@ func cmdSessions(args []string) {
 		cmdSessionsBackfill(args[1:])
 	case "live":
 		cmdSessionsLive(args[1:])
+	case "job":
+		cmdSessionsJob(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, sessionsUsage())
 		os.Exit(2)
@@ -138,6 +140,7 @@ func cmdSessions(args []string) {
 func sessionsUsage() string {
 	return "usage:\n" +
 		"  compound sessions mine [--dry-run|--apply] [--since 24h] [--harness codex] [--job-run ID] [--json]\n" +
+		"  compound sessions job status [--json]\n" +
 		"  compound sessions harvest --transcript <path> [--dry-run] [--json]\n" +
 		"  compound sessions backfill --ledger-dir <dir> [--dry-run|--apply] [--limit N] [--json]\n" +
 		"  compound sessions live [--json] [--ghosts-only]"
@@ -552,6 +555,40 @@ func buildSessionMiningJobReport(homePath, since, harnessName, jobID string, now
 	if now.IsZero() {
 		now = time.Now()
 	}
+	started := now
+	receiptEnabled := false
+	defer func() {
+		if !receiptEnabled {
+			return
+		}
+		finished := time.Now().UTC()
+		if finished.Before(started) {
+			finished = started
+		}
+		receipt := sessionMiningRunReceipt{
+			SchemaVersion:     sessionMiningRunReceiptSchemaVersion,
+			ID:                sessionMiningRunReceiptID(jobID, started),
+			JobID:             jobID,
+			StartedAt:         started.UTC().Format(time.RFC3339Nano),
+			FinishedAt:        finished.Format(time.RFC3339Nano),
+			DurationMS:        finished.Sub(started).Milliseconds(),
+			Status:            "succeeded",
+			ScanMode:          report.HookEventScanMode,
+			EventsScanned:     report.HookEventsScanned,
+			EventsRetained:    report.HookEventCount,
+			SessionsSeen:      report.SessionCount,
+			Findings:          sessionMiningFindingCount(report),
+			EffectiveSettings: report.EffectiveSettings,
+			CheckpointPath:    sessionMiningCheckpointPath(homePath, jobID),
+		}
+		if resultErr != nil {
+			receipt.Status = "failed"
+			receipt.Error = resultErr.Error()
+		}
+		if err := writeSessionMiningRunReceipt(homePath, receipt); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("record session mining run receipt: %w", err))
+		}
+	}()
 	window, err := parseSessionMiningSince(since)
 	if err != nil {
 		return sessionMiningReport{}, err
@@ -568,6 +605,7 @@ func buildSessionMiningJobReport(homePath, since, harnessName, jobID string, now
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return sessionMiningReport{}, fmt.Errorf("session mining job %s is already running: %w", jobID, err)
 	}
+	receiptEnabled = true
 	defer func() { resultErr = errors.Join(resultErr, syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)) }()
 
 	checkpoint, checkpointOK, err := loadSessionMiningCheckpoint(homePath, jobID, since, harnessName)
