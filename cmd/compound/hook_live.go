@@ -955,7 +955,8 @@ func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome
 			AdditionalContext: res.ContextOutput,
 		}}
 	}
-	if normalizeLiveHarness(harnessName) == "codex" {
+	if normalizeLiveHarness(harnessName) == "codex" &&
+		hookName != "session-start" && hookName != "post-tool-use" {
 		if hookName == "pre-tool-use" {
 			out := claudeHookSpecificOutput{
 				HookEventName:     hookEnumName(hookName),

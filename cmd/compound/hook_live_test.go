@@ -153,16 +153,57 @@ func TestHookLiveCodexSessionStartEmitsCodexContext(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("codex live session-start exit = %d\n%s", code, out)
 	}
-	var resp codexLiveHookResponse
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatalf("parse codex live response: %v\n%s", err, out)
+	var resp claudeLiveHookResponse
+	decoder := json.NewDecoder(strings.NewReader(out))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&resp); err != nil {
+		t.Fatalf("Codex rejected SessionStart stdout as non-native JSON: %v\n%s", err, out)
 	}
-	if resp.SchemaVersion != "compound.codex_live_hook_response.v0.1" ||
-		resp.HookName != "SessionStart" ||
-		resp.Status != "ok" ||
-		resp.EventID == "" ||
-		strings.TrimSpace(resp.AdditionalContext) == "" {
+	if resp.HookSpecificOutput.HookEventName != "SessionStart" ||
+		strings.TrimSpace(resp.HookSpecificOutput.AdditionalContext) == "" ||
+		strings.Contains(out, `"schema_version"`) ||
+		strings.Contains(out, `"event_id"`) {
 		t.Fatalf("codex live session-start response = %+v", resp)
+	}
+}
+
+func TestHookLiveCodexPostToolUseEmitsNativeWireShape(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	input := `{"hook_event_name":"PostToolUse","session_id":"sess_codex_post","turn_id":"turn_codex_post","cwd":"/repo/control","model":"gpt-test","permission_mode":"default","tool_name":"Read","tool_input":{"file_path":"README.md"},"tool_response":{"type":"text","content":"ok"},"tool_use_id":"tool_codex_post","transcript_path":null}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"post-tool-use", "--live", "--harness", "codex"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("codex live post-tool-use exit = %d\n%s", code, out)
+	}
+
+	var response struct {
+		Continue           *bool  `json:"continue,omitempty"`
+		Decision           string `json:"decision,omitempty"`
+		HookSpecificOutput struct {
+			HookEventName        string          `json:"hookEventName"`
+			AdditionalContext    string          `json:"additionalContext,omitempty"`
+			UpdatedMCPToolOutput json.RawMessage `json:"updatedMCPToolOutput,omitempty"`
+		} `json:"hookSpecificOutput"`
+		Reason         string `json:"reason,omitempty"`
+		StopReason     string `json:"stopReason,omitempty"`
+		SuppressOutput *bool  `json:"suppressOutput,omitempty"`
+		SystemMessage  string `json:"systemMessage,omitempty"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(out))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&response); err != nil {
+		t.Fatalf("Codex rejected PostToolUse stdout as non-native JSON: %v\n%s", err, out)
+	}
+	if response.HookSpecificOutput.HookEventName != "PostToolUse" {
+		t.Fatalf("hookEventName = %q, want PostToolUse", response.HookSpecificOutput.HookEventName)
 	}
 }
 
@@ -1642,7 +1683,7 @@ func TestLiveHookResponseCarriesInterruptContextForCodexAndClaude(t *testing.T) 
 	const card = "coordination-card: interrupt policy:review-needed artifact:sha256:0123456789abcdef"
 	result := hook.Result{ContextOutput: card}
 
-	codex, ok := liveHookResponse("codex", "post-tool-use", result, nil).(codexLiveHookResponse)
+	codex, ok := liveHookResponse("codex", "post-tool-use", result, nil).(claudeLiveHookResponse)
 	if !ok {
 		t.Fatalf("codex response type = %T", liveHookResponse("codex", "post-tool-use", result, nil))
 	}
@@ -1650,8 +1691,8 @@ func TestLiveHookResponseCarriesInterruptContextForCodexAndClaude(t *testing.T) 
 	if !ok {
 		t.Fatalf("claude response type = %T", liveHookResponse("claude-code", "post-tool-use", result, nil))
 	}
-	if codex.AdditionalContext != card || claude.HookSpecificOutput.AdditionalContext != card {
-		t.Fatalf("interrupt context meaning diverged: codex=%q claude=%q", codex.AdditionalContext, claude.HookSpecificOutput.AdditionalContext)
+	if codex.HookSpecificOutput.AdditionalContext != card || claude.HookSpecificOutput.AdditionalContext != card {
+		t.Fatalf("interrupt context meaning diverged: codex=%q claude=%q", codex.HookSpecificOutput.AdditionalContext, claude.HookSpecificOutput.AdditionalContext)
 	}
 }
 
