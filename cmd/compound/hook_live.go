@@ -1060,11 +1060,11 @@ func writeLiveHookParityLog(dir string, res hook.Result, now time.Time) error {
 		Status:         res.Event.Status,
 		FailOpenReason: res.Event.FailOpenReason,
 		InputHash:      res.Event.InputHash,
-		SummaryHash:   shortHash(res.Summary),
-		ProducedKinds: liveProducedKinds(res.Produced),
-		WorkID:        res.Event.IDs.WorkID,
-		SessionID:     res.Event.IDs.SessionID,
-		CreatedAt:     now.UTC().Format(time.RFC3339),
+		SummaryHash:    shortHash(res.Summary),
+		ProducedKinds:  liveProducedKinds(res.Produced),
+		WorkID:         res.Event.IDs.WorkID,
+		SessionID:      res.Event.IDs.SessionID,
+		CreatedAt:      now.UTC().Format(time.RFC3339),
 	}
 	if res.Injection != nil {
 		record.ContextRequestID = res.Injection.ContextRequestID
