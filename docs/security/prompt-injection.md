@@ -57,14 +57,14 @@ certification run must record the exact resolved provider/model revision.
 | Codex interactive | GPT-5.6 Sol, xhigh | Full local/network tool surface; generated Compound hooks now monitor every tool action |
 | Claude Code native | `opus[1m]` alias | Full Claude tool surface with bypass permissions; universal generated Pre/PostToolUse matchers |
 | Claude alternate profiles | Z.ai, MiniMax, Qwen, GPT-5.6 profile | Same action monitor where the Compound profile adapter is installed; installation parity remains a required proof |
-| Hermes main/fallback | GPT-5.6, GPT-5.5/5.4, Nemotron, DeepSeek lanes | Existing command/cron checks, but not yet complete Compound source/sink coverage |
-| OpenClaw main | GPT-5.5 through Codex app-server | Unsandboxed/full-tool reachability was the most exposed audited path; not yet fully enrolled |
-| OpenClaw compaction | GPT-5.3 Codex Spark with GPT-5.5 fallback | Derived transformation; native lineage enforcement remains future work |
-| Compound distiller | Switchback `auto/extract` | Strict JSON and candidate/no-promote; no direct authority-memory promotion |
-| Compound judge/panel | Switchback `auto/judge` | Advisory only; model verdict cannot grant |
-| gbrain retrieval | Deterministic retrieval, then caller model | Provenance is preserved; retrieved content remains data |
-| gbrain model work | DeepSeek subagent lane; OpenAI embeddings | Probabilistic extraction cannot raise trust |
-| Oracle | ChatGPT Pro browser lane | Advisory, no local action authority; provider confidentiality still matters |
+| Credential-bearing chat executor | GPT-5.6 with several fallback lanes | Existing command/cron checks, but not yet complete Compound source/sink coverage |
+| Unsandboxed chat runtime | GPT-5.5 through an app-server | Full-tool reachability was the most exposed audited path; not yet fully enrolled |
+| Chat-runtime compaction | GPT-5.3 with GPT-5.5 fallback | Derived transformation; native lineage enforcement remains future work |
+| Compound distiller | Routing-gateway extraction alias | Strict JSON and candidate/no-promote; no direct authority-memory promotion |
+| Compound judge/panel | Routing-gateway judge alias | Advisory only; model verdict cannot grant |
+| Retrieval index | Deterministic retrieval, then caller model | Provenance is preserved; retrieved content remains data |
+| Retrieval model work | Subagent lane plus embeddings | Probabilistic extraction cannot raise trust |
+| Browser second-opinion lane | Browser-hosted frontier model | Advisory, no local action authority; provider confidentiality still matters |
 
 ## Input map
 
@@ -77,18 +77,18 @@ certification run must record the exact resolved provider/model revision.
 | Local files/repo docs | Main model or subagent | PostToolUse source envelope; later actions carry active lineage | A mixed context can still steer answers, though not governed action authority |
 | Shell/test/build/git output | Main model | Tool result source plus universal next-action monitor | Unmanaged subprocesses can expose sensitive bodies before a broker exists |
 | Web/search/browser DOM | Main/browser model | Born untrusted; reads/snapshots automatic; submits/uploads consequential | Authenticated browsing needs isolated reader and scoped executor |
-| Screenshot/image/PDF/OCR/video | Vision-capable caller/Oracle | Treated as untrusted result lineage | No dedicated no-secret multimodal reader yet |
+| Screenshot/image/PDF/OCR/video | Vision-capable caller or browser second-opinion lane | Treated as untrusted result lineage | No dedicated no-secret multimodal reader yet |
 | Email/calendar/Drive/docs/sheets | Caller through `gog`/MCP | Connector schema/destination/source binding; reads distinct from mutations | Every direct CLI path still needs executor enrollment |
 | GitHub/issues/PR/logs | Caller/GitHub connector | External result lineage; read/create/update actions classified separately | Account-scoped credential broker remains future work |
 | Other SaaS MCPs | Caller model | Unknown/missing schema fails closed; known actions bind exact operation | Schemas and credentials must be admitted and scoped per connector |
 | Secret/env/keychain/browser profile | Tool-capable model | Secret confidentiality and allowed sinks; secret → network is denied | Credentials can still enter raw tool output without a secret broker |
 | Curated brain | Recall/Compound → caller | Promoted provenance; authority writes require adjudicated sources | Staleness and earlier poisoned canon require re-adjudication on drift |
-| Raw gbrain corpus | Recall caller | Evidence, not canon; active source lineage | Reader/planner separation is not complete |
+| Raw retrieval corpus | Recall caller | Evidence, not canon; active source lineage | Reader/planner separation is not complete |
 | ContextPack/findings/decisions | Codex/Claude hooks | Control/result source with hashes and lineage; cannot itself authorize action | Prompt-role mixing can still steer prose |
 | Compaction | Harness compactor | `SessionStart source=compact` collapses lineage without raising trust or losing parent refs | Native PreCompact capture is not yet registered |
 | Subagent result | Parent model | Explicit `subagent_result` transformation born untrusted | Non-tool-native child lifecycle events are not all enrolled |
 | Critic/provider output | Parent/merger | Advisory derived source | Can mislead planning; cannot relax monitor |
-| Chat/Telegram/scheduled prompt | Hermes/OpenClaw/routed model | Partial local controls | Highest residual exposure until those harnesses use the same monitor |
+| Chat/Telegram/scheduled prompt | Credential-bearing chat executor or routed model | Partial local controls | Highest residual exposure until those harnesses use the same monitor |
 | Package/install/build supply chain | Model plus host process | Install and unknown command classes hold; instruction manifests attested | Isolated build/install executor remains future work |
 
 ## Enforced action path
@@ -176,8 +176,9 @@ Exact package, wheel, Git-tree, and model pins live in
 
 ### Next: enroll every executor
 
-- Route Hermes, OpenClaw, `mcporter`, `gog`, browser, GitHub, deploy, install,
-  and provider CLI mutations through the same monitor.
+- Route credential-bearing chat, unsandboxed app-server, connector gateway,
+  account CLI, browser, GitHub, deploy, install, and provider CLI mutations
+  through the same monitor.
 - Remove direct credential-bearing subprocess paths or wrap them in scoped
   executors.
 - Add native PreCompact and native child-result lifecycle capture where the
@@ -216,7 +217,8 @@ The current change materially reduces the chance that a successful injection
 becomes a host/account action, but it does not make hostile content safe to
 mix. The largest remaining risks are:
 
-1. Hermes/OpenClaw and direct CLI paths outside the universal monitor;
+1. credential-bearing chat and unsandboxed app-server CLI paths outside the
+   universal monitor;
 2. raw secrets appearing in model-visible tool output;
 3. authenticated browser/email/GitHub work without an isolated reader/executor;
 4. native compaction and child-event paths not yet captured before loss;
