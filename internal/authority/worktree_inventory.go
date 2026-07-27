@@ -403,6 +403,20 @@ type WorktreeInventoryRow struct {
 	Kept           bool   `json:"kept,omitempty"`
 	KeepDecisionID string `json:"keep_decision_id,omitempty"`
 	KeepRevisit    string `json:"keep_revisit,omitempty"`
+	// Locked + LockReason carry `git worktree lock`, the runtime's own
+	// leave-alone claim. Like Kept it is an annotation, never a
+	// reclassification: the Git facts stay true (a locked worktree can be
+	// perfectly contained and clean), but nothing may offer it for retirement.
+	//
+	// This is load-bearing. A governed delegate fleet locks its 66 worktrees
+	// with a reason while they are contained and clean, so they classify
+	// landed_clean; before this was read, they were counted as debt and emitted
+	// into the sweep list. `git worktree remove` refuses a locked tree, so the
+	// obvious way to make an automated sweep "work" is `remove -f -f` — which
+	// would delete an active fleet's checkouts. The lock has to be visible in
+	// the projection, not just enforced by git.
+	Locked     bool   `json:"locked,omitempty"`
+	LockReason string `json:"lock_reason,omitempty"`
 	// DebtEligible annotates a landed_clean row whose age exceeds
 	// ScratchWorktreeDebtThreshold: the branch is contained in main, the working
 	// tree is clean, and the checkout has been idle long enough to be surface-area
@@ -582,7 +596,7 @@ func annotateScratchWorktreeDebt(rows []WorktreeInventoryRow, sweepOut *[]string
 	debt := 0
 	for i := range rows {
 		row := &rows[i]
-		if row.Class != WorktreeClassLandedClean || row.Kept || row.AgeSeconds == nil {
+		if row.Class != WorktreeClassLandedClean || row.Kept || row.Locked || row.AgeSeconds == nil {
 			continue
 		}
 		age := time.Duration(*row.AgeSeconds) * time.Second
@@ -750,11 +764,13 @@ func annotateWorktreeKeeps(rows []WorktreeInventoryRow, keeps map[string]Worktre
 func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDependencies, root, mainTip string, rec retirementWorktreeRecord, liveness WorktreeLivenessObservation, isMain bool, now time.Time, window time.Duration) WorktreeInventoryRow {
 	branchRef := strings.TrimSpace(rec.BranchRef)
 	row := WorktreeInventoryRow{
-		Path:      rec.Path,
-		Head:      rec.Head,
-		BranchRef: branchRef,
-		Branch:    shortWorktreeBranch(branchRef),
-		Detached:  branchRef == "",
+		Path:       rec.Path,
+		Head:       rec.Head,
+		BranchRef:  branchRef,
+		Branch:     shortWorktreeBranch(branchRef),
+		Detached:   branchRef == "",
+		Locked:     rec.Locked,
+		LockReason: strings.TrimSpace(rec.LockReason),
 	}
 	// Liveness + activity are observed first: a live lane must never fall
 	// through to a retire-eligible class no matter what the Git facts say.
@@ -846,7 +862,20 @@ func classifyWorktreeInventoryRow(ctx context.Context, deps WorktreeInventoryDep
 		row.Reason = "inconsistent ground truth — not contained in main yet reports zero unique commits"
 		row.NextAction = "facts unreadable — inspect this worktree manually before any cleanup"
 	}
+	// A git lock outranks every retire-eligible next_action: the holder claimed
+	// this checkout, and the Git facts cannot tell us why. Annotation only — the
+	// class above stays the ground truth.
+	if row.Locked {
+		row.NextAction = "leave alone — git worktree lock held" + lockReasonSuffix(row.LockReason)
+	}
 	return row
+}
+
+func lockReasonSuffix(reason string) string {
+	if strings.TrimSpace(reason) == "" {
+		return " (no reason recorded)"
+	}
+	return ": " + reason
 }
 
 func worktreeAheadCount(ctx context.Context, git WorktreeRetirementGit, root, mainTip, head string) (int, error) {
