@@ -62,7 +62,9 @@ GitHub-hosted Actions minutes. It enforces the fresh-clone-portable subset of `c
 (run via `proof-check --ci`, single-sourced from `cmd/compound/proof_check.go` — go test/vet/build,
 gofmt, `git diff --check`, `architecture doctor --strict` including the armed doc-leak gate, and
 `memory doctor`) plus the console subset (`proof-check --ci-console`) and a `gitleaks` secret scan
-(config `.gitleaks.toml`). The armed doc-leak gate enforces generic identity-leak classes
+(config `.gitleaks.toml`). The Go step mounts repository-scoped named build and module caches; test
+results remain uncached (`go test -count=1`), the source checkout and `COMPOUND_HOME` stay outside
+those volumes, and another repository must use different cache names. The armed doc-leak gate enforces generic identity-leak classes
 (non-RFC2606 email shapes; boundary-guarded absolute /Users|/home path shapes) over every tracked
 text file — root files, docs, skills, and source alike — with no operator overlay required. The
 `redact` public-push floor is the richer, local gate (it also detects PII, private paths, and

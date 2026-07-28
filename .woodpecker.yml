@@ -20,9 +20,12 @@ steps:
     depends_on:
       - prepare-bun
     environment:
-      GOCACHE: /tmp/compound-go-cache
-      GOMODCACHE: /tmp/compound-go-mod
+      GOCACHE: /cache/go-build
+      GOMODCACHE: /cache/go-mod
       HOME: /tmp/compound-ci-home
+    volumes:
+      - compound-go-build-cache:/cache/go-build
+      - compound-go-mod-cache:/cache/go-mod
     backend_options:
       docker:
         user: "1000:1000"
