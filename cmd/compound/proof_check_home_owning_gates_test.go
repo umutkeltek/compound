@@ -199,7 +199,11 @@ func proofCheckGateCancellationScript(t *testing.T) (started, survivor, script s
 	started = filepath.Join(dir, "started")
 	survivor = filepath.Join(dir, "survivor")
 	script = filepath.Join(dir, "gate")
-	body := "#!/bin/sh\nprintf started > \"$PROOF_CHECK_GATE_STARTED\"\n( sleep 0.35; printf survivor > \"$PROOF_CHECK_GATE_SURVIVOR\" ) &\nwhile :; do sleep 1; done\n"
+	// The descendant heartbeats its marker forever instead of writing once after
+	// a fixed delay: a one-shot write races kill delivery under load (a 0.35s
+	// timer vs >0.35s signal latency reads as a phantom survivor), while a marker
+	// that reappears after the group wait has returned can only be a live process.
+	body := "#!/bin/sh\nprintf started > \"$PROOF_CHECK_GATE_STARTED\"\n( while :; do printf survivor > \"$PROOF_CHECK_GATE_SURVIVOR\"; sleep 0.1; done ) &\nwhile :; do sleep 1; done\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +214,9 @@ func proofCheckGateCancellationScript(t *testing.T) (started, survivor, script s
 
 func proofCheckWaitForFile(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	// Generous on purpose: spawn latency under a loaded machine (the full-suite
+	// battery is itself the load generator) is not the property under test.
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(path); err == nil {
 			return
@@ -222,11 +228,21 @@ func proofCheckWaitForFile(t *testing.T, path string) {
 
 func proofCheckAssertNoSurvivor(t *testing.T, path string) {
 	t.Helper()
-	time.Sleep(450 * time.Millisecond)
-	if _, err := os.Stat(path); err == nil {
-		t.Fatalf("cancelled gate left a descendant survivor marker at %s", path)
-	} else if !os.IsNotExist(err) {
+	// Callers reach here only after the group wait has returned, so a marker on
+	// disk may be a pre-death heartbeat, not a survivor. Erase it and require it
+	// to STAY absent: only a live descendant (heartbeating every 100ms) can bring
+	// it back, and it gets 1.2s of chances to do so.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
+	}
+	deadline := time.Now().Add(1200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			t.Fatalf("cancelled gate left a live descendant heartbeating at %s", path)
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
