@@ -17,6 +17,34 @@ var staleProofTerminalDoctrine = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(?:refus|unsupported|admission fails?)[^\n]{0,100}\b(?:pipes?|redirections?)\b`),
 }
 
+type proofCeremonySemanticRule struct {
+	name   string
+	groups [][]string
+}
+
+var proofCeremonySemanticRules = []proofCeremonySemanticRule{
+	{
+		name: "rebase or replay invalidates prior proof and requires a fresh battery",
+		groups: [][]string{
+			{"rebase", "replay", "new head", "new candidate tip", "changed head"},
+			{"invalidates", "requires", "needs", "must"},
+			{"fresh battery", "new battery", "new proof", "re-run", "rerun"},
+		},
+	},
+	{
+		name: "land-check candidate tip binds proof HEAD, attached commit, and close",
+		groups: [][]string{
+			{"land-check"},
+			{"candidate tip", "land tip", "landing tip"},
+			{"proof head", "proved head", "sealed head"},
+			{"attached commit", "commit candidate", "attached candidate"},
+			{"equal", "match", "identical", "bind", "same"},
+			{"close"},
+			{"refus", "reject", "block", "non-certifying", "cannot close"},
+		},
+	},
+}
+
 func TestProofCeremonyDoctrineContract(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -58,18 +86,43 @@ func TestProofCeremonyDoctrineContract(t *testing.T) {
 		})
 	}
 
-	combined := strings.ToLower(strings.Join([]string{
-		docs["CONTRIBUTING.md"],
-		docs["skills/compound-land/SKILL.md"],
-		docs["skills/compound-verify/SKILL.md"],
-	}, "\n"))
-	requireSemanticRelation(t, combined, "rebase or replay invalidates prior proof",
-		`(?s)\b(?:rebase|replay|new head|new candidate tip)\b.{0,240}\b(?:new battery|fresh battery|new proof|re-run)\b`,
-	)
-	requireSemanticRelation(t, combined, "landing binds proof HEAD to candidate tip and close",
-		`(?s)\bland-check\b.{0,160}\bcandidate tip\b.{0,240}\battached commit\b.{0,240}\bproof head\b.{0,400}\bclose refuses\b`,
-		`(?s)\bland-check\b.{0,160}\bcandidate tip\b.{0,240}\bproof head\b.{0,240}\battached commit\b.{0,400}\bclose refuses\b`,
-	)
+	for surface, findings := range proofCeremonySemanticFindings(docs) {
+		for _, finding := range findings {
+			t.Errorf("%s: %s", surface, finding)
+		}
+	}
+}
+
+func TestProofCeremonySemanticGuardRejectsOneDriftedSurface(t *testing.T) {
+	const complete = `
+A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
+The land-check candidate tip must equal the stored proof HEAD and attached commit;
+close refuses a mismatch.
+`
+	docs := map[string]string{
+		"complete.md": complete,
+		"drifted.md":  "Certifying proof is important, but this surface omits its identity rules.",
+	}
+
+	findings := proofCeremonySemanticFindings(docs)
+	if got := len(findings["drifted.md"]); got != len(proofCeremonySemanticRules) {
+		t.Fatalf("drifted surface findings = %v, want all %d semantic rules; one complete document must not mask another", findings, len(proofCeremonySemanticRules))
+	}
+	if got := findings["complete.md"]; len(got) != 0 {
+		t.Fatalf("complete surface findings = %v, want none", got)
+	}
+}
+
+func TestProofCeremonySemanticGuardAllowsNaturalWordingVariants(t *testing.T) {
+	const variant = `
+After a replay, the new proof must be rerun before certification.
+
+The sealed HEAD, commit candidate, and landing tip in land-check bind to one identity;
+close is blocked when they diverge.
+`
+	if findings := missingProofCeremonySemantics(variant); len(findings) != 0 {
+		t.Fatalf("natural doctrine variant findings = %v, want none", findings)
+	}
 }
 
 func certifyingProofCommands(markdown string) []string {
@@ -98,12 +151,46 @@ func certifyingProofCommands(markdown string) []string {
 	return commands
 }
 
-func requireSemanticRelation(t *testing.T, body, doctrine string, alternatives ...string) {
-	t.Helper()
-	for _, expression := range alternatives {
-		if regexp.MustCompile(expression).MatchString(body) {
-			return
+func proofCeremonySemanticFindings(docs map[string]string) map[string][]string {
+	findings := make(map[string][]string)
+	for name, body := range docs {
+		if missing := missingProofCeremonySemantics(body); len(missing) > 0 {
+			findings[name] = missing
 		}
 	}
-	t.Errorf("served proof doctrine must state a local semantic relation: %s", doctrine)
+	return findings
+}
+
+func missingProofCeremonySemantics(body string) []string {
+	var missing []string
+	for _, rule := range proofCeremonySemanticRules {
+		if !proofCeremonyParagraphMatches(body, rule.groups) {
+			missing = append(missing, rule.name)
+		}
+	}
+	return missing
+}
+
+func proofCeremonyParagraphMatches(body string, groups [][]string) bool {
+	for _, paragraph := range strings.Split(strings.ToLower(body), "\n\n") {
+		paragraph = strings.ReplaceAll(paragraph, "\n", " ")
+		matches := true
+		for _, alternatives := range groups {
+			found := false
+			for _, term := range alternatives {
+				if strings.Contains(paragraph, term) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
 }
