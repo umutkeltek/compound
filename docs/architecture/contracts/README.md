@@ -190,6 +190,8 @@ Packet-sourced WorkEnvelopes may carry optional `proof_medium` from a `Proof-med
 intent→context→action→policy→run→receipt→transition replaces scattered packet/run/provider/receipt/slug ids.
 Governance is enforced at adapters: **a mutating adapter rejects a mutation lacking a valid `PolicyDecision`**.
 
+Current source-delivery close rule (superseding the earlier v0.4 migration wording in the WorkEnvelope row): only a revalidated `landed` `compound.work_land_check.v0.5` report is current close evidence. It binds the candidate tip to the latest attached, owned, content-addressed `proof-check:pfrs_*` source snapshot when one exists. Historical v0.3 and v0.4 reports remain readable stale evidence and require a fresh v0.5 check; v0.3 predates repository identity and v0.4 predates sealed proof source identity.
+
 ### Full-proof reservation contract
 
 Full-proof reservation is additive WorkEnvelope evidence over the existing `landlease`, not a

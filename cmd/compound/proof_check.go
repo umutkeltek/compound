@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compound/internal/authority/gitrepository"
 	"compound/internal/home"
 	"compound/internal/landlease"
 	"compound/internal/policy"
@@ -20,22 +21,23 @@ import (
 	"time"
 )
 
-const proofCheckSchemaVersion = "compound.proof_check_report.v0.2"
+const proofCheckSchemaVersion = "compound.proof_check_report.v0.3"
 
 type proofCheckReport struct {
-	SchemaVersion string           `json:"schema_version"`
-	ProfileKind   string           `json:"profile_kind,omitempty"`
-	Status        string           `json:"status"`
-	GeneratedAt   string           `json:"generated_at"`
-	Repo          string           `json:"repo"`
-	BaseRef       string           `json:"base_ref,omitempty"`
-	DryRun        bool             `json:"dry_run"`
-	CIOnly        bool             `json:"ci_only,omitempty"`
-	CIConsole     bool             `json:"ci_console,omitempty"`
-	ArtifactRef   string           `json:"artifact_ref,omitempty"`
-	Warnings      []string         `json:"warnings,omitempty"`
-	ProofRefs     []string         `json:"proof_refs"`
-	Steps         []proofCheckStep `json:"steps"`
+	SchemaVersion  string                  `json:"schema_version"`
+	ProfileKind    string                  `json:"profile_kind,omitempty"`
+	Status         string                  `json:"status"`
+	GeneratedAt    string                  `json:"generated_at"`
+	Repo           string                  `json:"repo"`
+	BaseRef        string                  `json:"base_ref,omitempty"`
+	SourceSnapshot *gitrepository.Snapshot `json:"source_snapshot,omitempty"`
+	DryRun         bool                    `json:"dry_run"`
+	CIOnly         bool                    `json:"ci_only,omitempty"`
+	CIConsole      bool                    `json:"ci_console,omitempty"`
+	ArtifactRef    string                  `json:"artifact_ref,omitempty"`
+	Warnings       []string                `json:"warnings,omitempty"`
+	ProofRefs      []string                `json:"proof_refs"`
+	Steps          []proofCheckStep        `json:"steps"`
 }
 
 type proofCheckStep struct {
@@ -55,7 +57,7 @@ type proofCheckStep struct {
 	CIPortable bool `json:"-"`
 }
 
-var proofCheckCanonicalRunner = runProofCheckContext
+var proofCheckCanonicalRunner = runProofCheckSnapshotContext
 var proofCheckRuntimeArtifactRecorder = recordProofCheckRuntimeArtifact
 
 func cmdProofCheck(args []string) {
@@ -101,6 +103,11 @@ func cmdProofCheck(args []string) {
 	stealReason := strings.TrimSpace(flagValue(args, "--reason"))
 	terminatedRunAttemptID := strings.TrimSpace(flagValue(args, "--terminated-run"))
 	terminationEvidenceRef := strings.TrimSpace(flagValue(args, "--termination-evidence"))
+	governedFullProof := proofCheckNeedsAdmission(dryRun, ciOnly, ciConsole)
+	if governedFullProof && strings.TrimSpace(baseRef) == "" {
+		fmt.Fprintln(os.Stderr, "proof-check: certifying proof-check requires explicit --base")
+		os.Exit(2)
+	}
 	if outPath != "" {
 		var outErr error
 		outPath, outErr = filepath.Abs(outPath)
@@ -118,7 +125,6 @@ func cmdProofCheck(args []string) {
 	started := time.Now()
 
 	var report proofCheckReport
-	governedFullProof := proofCheckNeedsAdmission(dryRun, ciOnly, ciConsole)
 	if governedFullProof {
 		if workID == "" || actor == "" || outPath == "" {
 			fmt.Fprintln(os.Stderr, "proof-check: a full local battery requires --work ID, --actor ACTOR, and --out FILE before any gate subprocess")
@@ -138,7 +144,12 @@ func cmdProofCheck(args []string) {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
-		profile, err := proofCheckAdmissionProfile(resolvedRepo, baseRef)
+		sourceSnapshot, err := gitrepository.CaptureCleanSnapshot(resolvedRepo, baseRef)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		profile, err := proofCheckAdmissionProfile(resolvedRepo, sourceSnapshot)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
@@ -172,7 +183,7 @@ func cmdProofCheck(args []string) {
 			TerminationEvidenceRef: terminationEvidenceRef,
 			Now:                    time.Now,
 		}, func(ctx context.Context) (proofCheckReport, error) {
-			produced, runErr := proofCheckCanonicalRunner(ctx, resolvedRepo, false, baseRef, false, false, time.Now())
+			produced, runErr := proofCheckCanonicalRunner(ctx, resolvedRepo, false, sourceSnapshot, false, false, time.Now())
 			if runErr != nil {
 				return produced, runErr
 			}
@@ -263,8 +274,8 @@ func proofCheckShouldRecordArtifact(dryRun bool, status string, ciOnly, ciConsol
 	return !dryRun && status == "ok" && !ciOnly && !ciConsole
 }
 
-func proofCheckAdmissionProfile(repo, baseRef string) (work.ProofResourceProfile, error) {
-	steps, err := proofCheckSteps(baseRef)
+func proofCheckAdmissionProfile(repo string, source gitrepository.Snapshot) (work.ProofResourceProfile, error) {
+	steps, err := proofCheckSteps(source.BaseSHA, source.HeadSHA)
 	if err != nil {
 		return work.ProofResourceProfile{}, err
 	}
@@ -278,7 +289,7 @@ func proofCheckAdmissionProfile(repo, baseRef string) (work.ProofResourceProfile
 			ProofRef:      step.ProofRef,
 		})
 	}
-	return work.NewProofResourceProfile(work.ProofResourceProfileCanonicalFull, repo, baseRef, gates)
+	return work.NewProofResourceProfileWithSource(work.ProofResourceProfileCanonicalFull, repo, source, gates)
 }
 
 func proofCheckInvocationIdentity(args []string) (string, error) {
@@ -514,12 +525,48 @@ func runProofCheck(repoPath string, dryRun bool, baseRef string, ciOnly bool, ci
 }
 
 func runProofCheckContext(ctx context.Context, repoPath string, dryRun bool, baseRef string, ciOnly bool, ciConsole bool, now time.Time) (proofCheckReport, error) {
+	return runProofCheckWithRangeContext(ctx, repoPath, dryRun, strings.TrimSpace(baseRef), "", nil, ciOnly, ciConsole, now)
+}
+
+func runProofCheckSnapshotContext(
+	ctx context.Context,
+	repoPath string,
+	dryRun bool,
+	source gitrepository.Snapshot,
+	ciOnly bool,
+	ciConsole bool,
+	now time.Time,
+) (proofCheckReport, error) {
+	return runProofCheckWithRangeContext(
+		ctx,
+		repoPath,
+		dryRun,
+		source.BaseSHA,
+		source.HeadSHA,
+		&source,
+		ciOnly,
+		ciConsole,
+		now,
+	)
+}
+
+func runProofCheckWithRangeContext(
+	ctx context.Context,
+	repoPath string,
+	dryRun bool,
+	baseRef string,
+	headRef string,
+	source *gitrepository.Snapshot,
+	ciOnly bool,
+	ciConsole bool,
+	now time.Time,
+) (proofCheckReport, error) {
 	repo, err := resolveProofCheckRepo(repoPath)
 	if err != nil {
 		return proofCheckReport{}, err
 	}
 	baseRef = strings.TrimSpace(baseRef)
-	steps, err := proofCheckSteps(baseRef)
+	steps, err := proofCheckSteps(baseRef, headRef)
 	if err != nil {
 		return proofCheckReport{}, err
 	}
@@ -529,23 +576,24 @@ func runProofCheckContext(ctx context.Context, repoPath string, dryRun bool, bas
 		steps = ciPortableSteps(steps)
 	}
 	report := proofCheckReport{
-		SchemaVersion: proofCheckSchemaVersion,
-		ProfileKind:   work.ProofResourceProfileCanonicalFull,
-		Status:        "ok",
-		GeneratedAt:   now.UTC().Format(time.RFC3339),
-		Repo:          repo,
-		BaseRef:       baseRef,
-		DryRun:        dryRun,
-		CIOnly:        ciOnly,
-		CIConsole:     ciConsole,
-		Steps:         make([]proofCheckStep, 0, len(steps)),
+		SchemaVersion:  proofCheckSchemaVersion,
+		ProfileKind:    work.ProofResourceProfileCanonicalFull,
+		Status:         "ok",
+		GeneratedAt:    now.UTC().Format(time.RFC3339),
+		Repo:           repo,
+		BaseRef:        baseRef,
+		SourceSnapshot: source,
+		DryRun:         dryRun,
+		CIOnly:         ciOnly,
+		CIConsole:      ciConsole,
+		Steps:          make([]proofCheckStep, 0, len(steps)),
 	}
 	for _, step := range steps {
 		result := step
 		if dryRun {
 			result.Status = "planned"
 		} else {
-			result = runProofCheckStepContext(ctx, repo, step, baseRef)
+			result = runProofCheckStepContext(ctx, repo, step, baseRef, headRef)
 			if result.Status == "failed" {
 				report.Status = "failed"
 			}
@@ -621,11 +669,19 @@ func resolveProofCheckRepo(repoPath string) (string, error) {
 	return abs, nil
 }
 
-func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
+func proofCheckSteps(baseRef string, headRefs ...string) ([]proofCheckStep, error) {
 	exe := "compound"
-	redactCommand := []string{"redact", "--repo-visibility", "public", "--from-file", "<changed files>"}
+	headRef := "HEAD"
+	if len(headRefs) > 0 && strings.TrimSpace(headRefs[0]) != "" {
+		headRef = strings.TrimSpace(headRefs[0])
+	}
+	diffRange := ""
 	if strings.TrimSpace(baseRef) != "" {
-		redactCommand = []string{"redact", "--repo-visibility", "public", "--from-file", "<files changed in " + strings.TrimSpace(baseRef) + "...HEAD>"}
+		diffRange = strings.TrimSpace(baseRef) + "..." + headRef
+	}
+	redactCommand := []string{"redact", "--repo-visibility", "public", "--from-file", "<changed files>"}
+	if diffRange != "" {
+		redactCommand = []string{"redact", "--repo-visibility", "public", "<committed blobs changed in " + diffRange + ">"}
 	}
 	return []proofCheckStep{
 		// -timeout=40m is a DELIBERATE budget, not a tuning knob: the heaviest suite runs
@@ -639,7 +695,7 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "go-vet", Command: []string{"go", "vet", "./..."}, ProofRef: "go-vet-all", CIPortable: true},
 		{Name: "go-build", Command: []string{"go", "build", "./..."}, ProofRef: "go-build-all", CIPortable: true},
 		{Name: "gofmt", Command: []string{"gofmt", "-l", "<tracked *.go>"}, ProofRef: "gofmt-check", CIPortable: true},
-		{Name: "diff-check", Command: []string{"git", "diff", "--check"}, ProofRef: "diff-check", CIPortable: true},
+		{Name: "diff-check", Command: append([]string{"git", "diff", "--check"}, diffRangeArgs(diffRange)...), ProofRef: "diff-check", CIPortable: true},
 		{Name: "console-tsc", Command: []string{"./node_modules/.bin/tsc", "--noEmit"}, Dir: "console", ProofRef: "console-tsc-noemit"},
 		{Name: "console-smoke", Command: consoleSmokeCommand("scripts/smoke.mjs"), Dir: "console", ProofRef: "console-smoke"},
 		{Name: "console-projection-timeout-smoke", Command: consoleBunSmokeCommand("scripts/projection-timeout-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-projection-timeout-smoke"},
@@ -714,6 +770,13 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 // no COMPOUND_HOME body or bun/node console runner. `proof-check --ci` runs exactly these
 // so the CI gate set is single-sourced from proofCheckSteps and cannot drift from a
 // separately-maintained workflow list.
+func diffRangeArgs(diffRange string) []string {
+	if strings.TrimSpace(diffRange) == "" {
+		return nil
+	}
+	return []string{diffRange}
+}
+
 func ciPortableSteps(steps []proofCheckStep) []proofCheckStep {
 	out := make([]proofCheckStep, 0, len(steps))
 	for _, s := range steps {
@@ -774,7 +837,7 @@ func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCh
 	return runProofCheckStepContext(context.Background(), repo, step, baseRef)
 }
 
-func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckStep, baseRef string) proofCheckStep {
+func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckStep, baseRef string, headRefs ...string) proofCheckStep {
 	start := time.Now()
 	result := step
 	result.Status = "ok"
@@ -790,7 +853,7 @@ func runProofCheckStepContext(ctx context.Context, repo string, step proofCheckS
 		}
 	}
 	if step.Name == "redact-public" {
-		output, err = runProofCheckRedactContext(ctx, repo, baseRef)
+		output, err = runProofCheckRedactContext(ctx, repo, baseRef, headRefs...)
 	} else if step.Name == "gofmt" {
 		output, err = runProofCheckGofmtContext(ctx, repo)
 	} else if step.Name == "bun-tools-test" {
@@ -1016,8 +1079,34 @@ func runProofCheckRedact(repo, baseRef string) ([]byte, error) {
 	return runProofCheckRedactContext(context.Background(), repo, baseRef)
 }
 
-func runProofCheckRedactContext(ctx context.Context, repo, baseRef string) ([]byte, error) {
-	files, err := proofCheckChangedFilesContext(ctx, repo, baseRef)
+func runProofCheckRedactContext(ctx context.Context, repo, baseRef string, headRefs ...string) ([]byte, error) {
+	if len(headRefs) > 0 && strings.TrimSpace(headRefs[0]) != "" {
+		source := gitrepository.Snapshot{
+			BaseSHA: strings.TrimSpace(baseRef),
+			HeadSHA: strings.TrimSpace(headRefs[0]),
+		}
+		inputs, err := proofCheckRedactInputsAtSnapshotContext(ctx, repo, source)
+		if err != nil {
+			return nil, err
+		}
+		var combined bytes.Buffer
+		for _, input := range inputs {
+			cmd := proofCheckCommandContext(ctx, "redact", "--repo-visibility", "public")
+			cmd.Dir = repo
+			cmd.Stdin = bytes.NewReader(input.Body)
+			out, err := cmd.CombinedOutput()
+			combined.WriteString(input.Path + ":\n")
+			combined.Write(out)
+			if err != nil {
+				return combined.Bytes(), err
+			}
+		}
+		if len(inputs) == 0 {
+			combined.WriteString("redact scan skipped: no files changed in " + source.BaseSHA + "..." + source.HeadSHA + "\n")
+		}
+		return combined.Bytes(), nil
+	}
+	files, err := proofCheckChangedFilesContext(ctx, repo, baseRef, headRefs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1033,7 +1122,11 @@ func runProofCheckRedactContext(ctx context.Context, repo, baseRef string) ([]by
 	}
 	if len(files) == 0 {
 		if strings.TrimSpace(baseRef) != "" {
-			combined.WriteString("redact scan skipped: no files changed in " + strings.TrimSpace(baseRef) + "...HEAD and no dirty files\n")
+			headRef := "HEAD"
+			if len(headRefs) > 0 && strings.TrimSpace(headRefs[0]) != "" {
+				headRef = strings.TrimSpace(headRefs[0])
+			}
+			combined.WriteString("redact scan skipped: no files changed in " + strings.TrimSpace(baseRef) + "..." + headRef + " and no dirty files\n")
 		} else {
 			combined.WriteString("redact scan skipped: no changed files\n")
 		}
@@ -1045,13 +1138,16 @@ func proofCheckChangedFiles(repo, baseRef string) ([]string, error) {
 	return proofCheckChangedFilesContext(context.Background(), repo, baseRef)
 }
 
-func proofCheckChangedFilesContext(ctx context.Context, repo, baseRef string) ([]string, error) {
+func proofCheckChangedFilesContext(ctx context.Context, repo, baseRef string, headRefs ...string) ([]string, error) {
 	// Redact scans only bodies that still exist. With rename detection disabled,
 	// a rename is represented as delete+add: ACM retains the new body while the
 	// deleted source is excluded.
-	paths, err := proofCheckChangedPathsContext(ctx, repo, baseRef, "ACM")
+	paths, err := proofCheckChangedPathsContext(ctx, repo, baseRef, "ACM", headRefs...)
 	if err != nil {
 		return nil, err
+	}
+	if len(headRefs) > 0 && strings.TrimSpace(headRefs[0]) != "" {
+		return paths, nil
 	}
 	files := paths[:0]
 	for _, path := range paths {
@@ -1066,11 +1162,46 @@ func proofCheckChangedFilesContext(ctx context.Context, repo, baseRef string) ([
 	return files, nil
 }
 
+func proofCheckChangedFilesAtSnapshot(repo string, source gitrepository.Snapshot) ([]string, error) {
+	return proofCheckChangedFilesContext(context.Background(), repo, source.BaseSHA, source.HeadSHA)
+}
+
+type proofCheckRedactInput struct {
+	Path string
+	Body []byte
+}
+
+func proofCheckRedactInputsAtSnapshot(repo string, source gitrepository.Snapshot) ([]proofCheckRedactInput, error) {
+	return proofCheckRedactInputsAtSnapshotContext(context.Background(), repo, source)
+}
+
+func proofCheckRedactInputsAtSnapshotContext(
+	ctx context.Context,
+	repo string,
+	source gitrepository.Snapshot,
+) ([]proofCheckRedactInput, error) {
+	files, err := proofCheckChangedFilesContext(ctx, repo, source.BaseSHA, source.HeadSHA)
+	if err != nil {
+		return nil, err
+	}
+	inputs := make([]proofCheckRedactInput, 0, len(files))
+	for _, path := range files {
+		cmd := proofCheckCommandContext(ctx, "git", "show", source.HeadSHA+":"+filepath.ToSlash(path))
+		cmd.Dir = repo
+		body, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("read committed redact input %q at %s: %w", path, source.HeadSHA, err)
+		}
+		inputs = append(inputs, proofCheckRedactInput{Path: path, Body: body})
+	}
+	return inputs, nil
+}
+
 func proofCheckChangedPaths(repo, baseRef, diffFilter string) ([]string, error) {
 	return proofCheckChangedPathsContext(context.Background(), repo, baseRef, diffFilter)
 }
 
-func proofCheckChangedPathsContext(ctx context.Context, repo, baseRef, diffFilter string) ([]string, error) {
+func proofCheckChangedPathsContext(ctx context.Context, repo, baseRef, diffFilter string, headRefs ...string) ([]string, error) {
 	seen := map[string]bool{}
 	var files []string
 	add := func(paths []string) {
@@ -1083,12 +1214,20 @@ func proofCheckChangedPathsContext(ctx context.Context, repo, baseRef, diffFilte
 			files = append(files, path)
 		}
 	}
+	headRef := "HEAD"
+	exactCommittedRange := len(headRefs) > 0 && strings.TrimSpace(headRefs[0]) != ""
+	if exactCommittedRange {
+		headRef = strings.TrimSpace(headRefs[0])
+	}
 	if baseRef = strings.TrimSpace(baseRef); baseRef != "" {
-		paths, err := proofCheckGitNULListContext(ctx, repo, "diff", "--no-renames", "--name-only", "--diff-filter="+diffFilter, "-z", baseRef+"...HEAD")
+		paths, err := proofCheckGitNULListContext(ctx, repo, "diff", "--no-renames", "--name-only", "--diff-filter="+diffFilter, "-z", baseRef+"..."+headRef)
 		if err != nil {
 			return nil, err
 		}
 		add(paths)
+	}
+	if exactCommittedRange {
+		return files, nil
 	}
 	for _, args := range [][]string{
 		{"diff", "--no-renames", "--name-only", "--diff-filter=" + diffFilter, "-z"},

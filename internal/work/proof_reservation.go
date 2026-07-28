@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/authority/gitrepository"
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/landlease"
@@ -79,20 +80,40 @@ type ProofResourceGateProfile struct {
 // ProofResourceProfile binds admission to a typed proof inventory. Only canonical_full may later
 // become governed verification. Digest covers Kind, Repo, BaseRef, and the ordered gate identities.
 type ProofResourceProfile struct {
-	Kind    string                     `json:"kind"`
-	Repo    string                     `json:"repo"`
-	BaseRef string                     `json:"base_ref,omitempty"`
-	Gates   []ProofResourceGateProfile `json:"gates"`
-	Digest  string                     `json:"digest"`
+	Kind           string                     `json:"kind"`
+	Repo           string                     `json:"repo"`
+	BaseRef        string                     `json:"base_ref,omitempty"`
+	SourceSnapshot *gitrepository.Snapshot    `json:"source_snapshot,omitempty"`
+	Gates          []ProofResourceGateProfile `json:"gates"`
+	Digest         string                     `json:"digest"`
 }
 
 // NewProofResourceProfile validates and seals one typed proof inventory.
 func NewProofResourceProfile(kind, repo, baseRef string, gates []ProofResourceGateProfile) (ProofResourceProfile, error) {
+	return newProofResourceProfile(kind, repo, baseRef, nil, gates)
+}
+
+// NewProofResourceProfileWithSource validates and seals one certifying proof
+// inventory against its immutable repository source identity.
+func NewProofResourceProfileWithSource(
+	kind, repo string,
+	source gitrepository.Snapshot,
+	gates []ProofResourceGateProfile,
+) (ProofResourceProfile, error) {
+	return newProofResourceProfile(kind, repo, source.BaseSHA, &source, gates)
+}
+
+func newProofResourceProfile(
+	kind, repo, baseRef string,
+	source *gitrepository.Snapshot,
+	gates []ProofResourceGateProfile,
+) (ProofResourceProfile, error) {
 	profile := ProofResourceProfile{
-		Kind:    strings.TrimSpace(kind),
-		Repo:    strings.TrimSpace(repo),
-		BaseRef: strings.TrimSpace(baseRef),
-		Gates:   append([]ProofResourceGateProfile(nil), gates...),
+		Kind:           strings.TrimSpace(kind),
+		Repo:           strings.TrimSpace(repo),
+		BaseRef:        strings.TrimSpace(baseRef),
+		SourceSnapshot: source,
+		Gates:          append([]ProofResourceGateProfile(nil), gates...),
 	}
 	for i := range profile.Gates {
 		profile.Gates[i].Name = strings.TrimSpace(profile.Gates[i].Name)
@@ -110,6 +131,16 @@ func NewProofResourceProfile(kind, repo, baseRef string, gates []ProofResourceGa
 	}
 	profile.Digest = digest
 	return profile, nil
+}
+
+func normalizeProofResourceProfile(profile ProofResourceProfile) (ProofResourceProfile, error) {
+	return newProofResourceProfile(
+		profile.Kind,
+		profile.Repo,
+		profile.BaseRef,
+		profile.SourceSnapshot,
+		profile.Gates,
+	)
 }
 
 // ProofResourceReservation is work-owned evidence around the existing landlease mutex. It creates
@@ -245,27 +276,28 @@ type ProofResourceCompleteInput struct {
 }
 
 type ProofResourceResult struct {
-	SchemaVersion     string `json:"schema_version"`
-	ID                string `json:"id"`
-	Kind              string `json:"kind"`
-	Status            string `json:"status"`
-	CreatedAt         string `json:"created_at"`
-	WorkID            string `json:"work_id"`
-	Actor             string `json:"actor"`
-	Resource          string `json:"resource"`
-	ReservationID     string `json:"reservation_id"`
-	RunAttemptID      string `json:"run_attempt_id"`
-	RunAttemptStatus  string `json:"run_attempt_status"`
-	ReportArtifactRef string `json:"report_artifact_ref,omitempty"`
-	ReportStatus      string `json:"report_status,omitempty"`
-	OwnedReport       bool   `json:"owned_report"`
-	ProducerExitKnown bool   `json:"producer_exit_known"`
-	ProducerExitCode  int    `json:"producer_exit_code,omitempty"`
-	FailureReason     string `json:"failure_reason,omitempty"`
-	VerificationRef   string `json:"verification_ref,omitempty"`
-	CompletionID      string `json:"completion_id"`
-	ActionIntentID    string `json:"action_intent_id"`
-	PolicyDecisionID  string `json:"policy_decision_id"`
+	SchemaVersion     string                  `json:"schema_version"`
+	ID                string                  `json:"id"`
+	Kind              string                  `json:"kind"`
+	Status            string                  `json:"status"`
+	CreatedAt         string                  `json:"created_at"`
+	WorkID            string                  `json:"work_id"`
+	Actor             string                  `json:"actor"`
+	Resource          string                  `json:"resource"`
+	ReservationID     string                  `json:"reservation_id"`
+	RunAttemptID      string                  `json:"run_attempt_id"`
+	RunAttemptStatus  string                  `json:"run_attempt_status"`
+	ReportArtifactRef string                  `json:"report_artifact_ref,omitempty"`
+	ReportStatus      string                  `json:"report_status,omitempty"`
+	OwnedReport       bool                    `json:"owned_report"`
+	SourceSnapshot    *gitrepository.Snapshot `json:"source_snapshot,omitempty"`
+	ProducerExitKnown bool                    `json:"producer_exit_known"`
+	ProducerExitCode  int                     `json:"producer_exit_code,omitempty"`
+	FailureReason     string                  `json:"failure_reason,omitempty"`
+	VerificationRef   string                  `json:"verification_ref,omitempty"`
+	CompletionID      string                  `json:"completion_id"`
+	ActionIntentID    string                  `json:"action_intent_id"`
+	PolicyDecisionID  string                  `json:"policy_decision_id"`
 }
 
 // ProofResourceCompletion is the authoritative finalizer marker. A prepared result record is
@@ -344,6 +376,7 @@ type proofResourceCompletionExpectation struct {
 	ResultStatus    string
 	ReportStatus    string
 	OwnedReport     bool
+	SourceSnapshot  *gitrepository.Snapshot
 	VerificationRef string
 	TerminalStatus  string
 	TerminalReason  string
@@ -387,17 +420,18 @@ var proofResourceWriteCompletionRetryJournal = func(
 var proofResourceAfterCompletionRetryJournal = func(runattempt.RunAttempt, proofResourceCompletionPending) {}
 
 type ownedProofReport struct {
-	SchemaVersion string   `json:"schema_version"`
-	ProfileKind   string   `json:"profile_kind"`
-	Status        string   `json:"status"`
-	GeneratedAt   string   `json:"generated_at"`
-	Repo          string   `json:"repo"`
-	BaseRef       string   `json:"base_ref,omitempty"`
-	DryRun        bool     `json:"dry_run"`
-	CIOnly        bool     `json:"ci_only,omitempty"`
-	CIConsole     bool     `json:"ci_console,omitempty"`
-	ProofRefs     []string `json:"proof_refs"`
-	Steps         []struct {
+	SchemaVersion  string                  `json:"schema_version"`
+	ProfileKind    string                  `json:"profile_kind"`
+	Status         string                  `json:"status"`
+	GeneratedAt    string                  `json:"generated_at"`
+	Repo           string                  `json:"repo"`
+	BaseRef        string                  `json:"base_ref,omitempty"`
+	SourceSnapshot *gitrepository.Snapshot `json:"source_snapshot,omitempty"`
+	DryRun         bool                    `json:"dry_run"`
+	CIOnly         bool                    `json:"ci_only,omitempty"`
+	CIConsole      bool                    `json:"ci_console,omitempty"`
+	ProofRefs      []string                `json:"proof_refs"`
+	Steps          []struct {
 		Name          string   `json:"name"`
 		Command       []string `json:"command"`
 		Dir           string   `json:"dir,omitempty"`
@@ -554,7 +588,7 @@ func (s *Store) ResumeProofResourceCompletion(
 	if !present {
 		return ProofResourceCompleteResult{}, false, nil
 	}
-	profile, profileErr := NewProofResourceProfile(in.Profile.Kind, in.Profile.Repo, in.Profile.BaseRef, in.Profile.Gates)
+	profile, profileErr := normalizeProofResourceProfile(in.Profile)
 	if profileErr == nil && strings.TrimSpace(in.Profile.Digest) != "" && in.Profile.Digest != profile.Digest {
 		profileErr = fmt.Errorf("proof resource profile digest %q does not match canonical %q", in.Profile.Digest, profile.Digest)
 	}
@@ -639,6 +673,7 @@ func (s *Store) deriveProofResourceCompletionExpectation(
 	}
 	reportStatus := ""
 	ownedReport := false
+	var sourceSnapshot *gitrepository.Snapshot
 	if in.ReportArtifactRef != "" {
 		artifacts, err := home.NewArtifactStore(s.home)
 		if err != nil {
@@ -657,6 +692,7 @@ func (s *Store) deriveProofResourceCompletionExpectation(
 		}
 		reportStatus = report.Status
 		ownedReport = true
+		sourceSnapshot = report.SourceSnapshot
 	}
 	resultID := idFor("pfrs_", workID, reservation.ID, in.ReportArtifactRef, in.FailureReason)
 	resultStatus := ProofResourceFailed
@@ -681,6 +717,7 @@ func (s *Store) deriveProofResourceCompletionExpectation(
 		ResultStatus:    resultStatus,
 		ReportStatus:    reportStatus,
 		OwnedReport:     ownedReport,
+		SourceSnapshot:  sourceSnapshot,
 		VerificationRef: verificationRef,
 		TerminalStatus:  terminalStatus,
 		TerminalReason:  completionReason(resultStatus, in.FailureReason),
@@ -958,7 +995,7 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 	in.StealReason = strings.TrimSpace(in.StealReason)
 	in.TerminatedRunAttemptID = strings.TrimSpace(in.TerminatedRunAttemptID)
 	in.TerminationEvidenceRef = strings.TrimSpace(in.TerminationEvidenceRef)
-	profile, profileErr := NewProofResourceProfile(in.Profile.Kind, in.Profile.Repo, in.Profile.BaseRef, in.Profile.Gates)
+	profile, profileErr := normalizeProofResourceProfile(in.Profile)
 	if profileErr == nil && strings.TrimSpace(in.Profile.Digest) != "" && in.Profile.Digest != profile.Digest {
 		profileErr = fmt.Errorf("proof resource profile digest %q does not match canonical %q", in.Profile.Digest, profile.Digest)
 	}
@@ -993,6 +1030,20 @@ func (s *Store) reserveProofResourceLocked(workID string, in ProofResourceReserv
 	w, err := s.recoverPendingClaimBeforeMutation(workID)
 	if err != nil {
 		return ProofResourceReserveResult{}, err
+	}
+	if w.GitDelivery != nil {
+		if in.Profile.SourceSnapshot == nil {
+			return ProofResourceReserveResult{}, fmt.Errorf("source-controlled proof requires sealed source snapshot")
+		}
+		wantFingerprint := strings.TrimSpace(w.GitDelivery.RepositoryFingerprint)
+		gotFingerprint := strings.TrimSpace(in.Profile.SourceSnapshot.RepositoryFingerprint)
+		if gotFingerprint != wantFingerprint {
+			return ProofResourceReserveResult{}, fmt.Errorf(
+				"proof repository fingerprint %s does not match WorkEnvelope git_delivery repository fingerprint %s",
+				gotFingerprint,
+				wantFingerprint,
+			)
+		}
 	}
 	if terminalStates[w.State] {
 		return ProofResourceReserveResult{}, fmt.Errorf("work %s %s (terminal); cannot reserve proof resource", workID, w.State)
@@ -1628,6 +1679,7 @@ func (s *Store) completeProofResourceLocked(workID string, in ProofResourceCompl
 			ReportArtifactRef: in.ReportArtifactRef,
 			ReportStatus:      reportStatus,
 			OwnedReport:       ownedReport,
+			SourceSnapshot:    expect.SourceSnapshot,
 			ProducerExitKnown: in.ProducerExitKnown,
 			ProducerExitCode:  in.ProducerExitCode,
 			FailureReason:     in.FailureReason,
@@ -2027,6 +2079,7 @@ func (s *Store) validateAndNormalizeProofResourceCompletionPending(
 		pending.Result.ReportArtifactRef != in.ReportArtifactRef ||
 		pending.Result.ReportStatus != expect.ReportStatus ||
 		pending.Result.OwnedReport != expect.OwnedReport ||
+		!reflect.DeepEqual(pending.Result.SourceSnapshot, expect.SourceSnapshot) ||
 		pending.Result.ProducerExitKnown != in.ProducerExitKnown ||
 		pending.Result.ProducerExitCode != in.ProducerExitCode ||
 		pending.Result.FailureReason != in.FailureReason ||
@@ -2528,8 +2581,19 @@ func decodeOwnedProofReport(body []byte) (ownedProofReport, error) {
 		return ownedProofReport{}, err
 	}
 	if report.SchemaVersion != "compound.proof_check_report.v0.1" &&
-		report.SchemaVersion != "compound.proof_check_report.v0.2" {
+		report.SchemaVersion != "compound.proof_check_report.v0.2" &&
+		report.SchemaVersion != "compound.proof_check_report.v0.3" {
 		return ownedProofReport{}, fmt.Errorf("unsupported schema_version %q", report.SchemaVersion)
+	}
+	if report.SchemaVersion == "compound.proof_check_report.v0.3" {
+		if report.SourceSnapshot != nil {
+			if err := gitrepository.ValidateSnapshotShape(*report.SourceSnapshot); err != nil {
+				return ownedProofReport{}, fmt.Errorf("source_snapshot: %w", err)
+			}
+			if !report.SourceSnapshot.Clean {
+				return ownedProofReport{}, fmt.Errorf("source_snapshot must be clean")
+			}
+		}
 	}
 	if report.Status != "ok" && report.Status != "failed" {
 		return ownedProofReport{}, fmt.Errorf("status must be ok or failed")
@@ -2581,6 +2645,17 @@ func validateProofResourceProfileShape(profile ProofResourceProfile) error {
 	if profile.Repo == "" {
 		return fmt.Errorf("repo required")
 	}
+	if profile.SourceSnapshot != nil {
+		if err := gitrepository.ValidateSnapshotShape(*profile.SourceSnapshot); err != nil {
+			return fmt.Errorf("source_snapshot: %w", err)
+		}
+		if !profile.SourceSnapshot.Clean {
+			return fmt.Errorf("source_snapshot must be clean")
+		}
+		if profile.BaseRef != profile.SourceSnapshot.BaseSHA {
+			return fmt.Errorf("base_ref must equal source_snapshot.base_sha")
+		}
+	}
 	if len(profile.Gates) == 0 {
 		return fmt.Errorf("full gate inventory required")
 	}
@@ -2624,7 +2699,7 @@ func proofResourceProfileDigest(profile ProofResourceProfile) (string, error) {
 }
 
 func validateOwnedProofReportAgainstReservation(report ownedProofReport, reservation ProofResourceReservation) error {
-	profile, err := NewProofResourceProfile(reservation.Profile.Kind, reservation.Profile.Repo, reservation.Profile.BaseRef, reservation.Profile.Gates)
+	profile, err := normalizeProofResourceProfile(reservation.Profile)
 	if err != nil {
 		return fmt.Errorf("reservation profile invalid: %w", err)
 	}
@@ -2642,6 +2717,12 @@ func validateOwnedProofReportAgainstReservation(report ownedProofReport, reserva
 	}
 	if strings.TrimSpace(report.BaseRef) != profile.BaseRef {
 		return fmt.Errorf("base_ref mismatch: report=%q profile=%q", report.BaseRef, profile.BaseRef)
+	}
+	if !reflect.DeepEqual(report.SourceSnapshot, profile.SourceSnapshot) {
+		return fmt.Errorf("source_snapshot mismatch between report and reservation profile")
+	}
+	if profile.SourceSnapshot != nil && report.SchemaVersion != "compound.proof_check_report.v0.3" {
+		return fmt.Errorf("source-bound proof requires compound.proof_check_report.v0.3")
 	}
 	if len(report.Steps) != len(profile.Gates) {
 		return fmt.Errorf("gate inventory mismatch: report=%d profile=%d", len(report.Steps), len(profile.Gates))

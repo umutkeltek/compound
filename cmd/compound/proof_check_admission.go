@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"compound/internal/authority/gitrepository"
 	"compound/internal/home"
 	"compound/internal/landlease"
 	"compound/internal/work"
@@ -120,6 +121,11 @@ func runProofCheckWithAdmissionContext(
 			in.TTL,
 			minimumProofCheckReservationTTL,
 		)
+	}
+	if in.Profile.SourceSnapshot != nil {
+		if err := gitrepository.RevalidateSnapshot(in.Workspace, *in.Profile.SourceSnapshot); err != nil {
+			return proofCheckReport{}, work.ProofResourceCompleteResult{}, err
+		}
 	}
 	store, err := work.Open(in.HomePath)
 	if err != nil {
@@ -234,6 +240,15 @@ func runProofCheckWithAdmissionContext(
 			runErr = errors.Join(runErr, fmt.Errorf("close proof execution barrier: %w", barrierErr))
 		}
 	}
+	if in.Profile.SourceSnapshot != nil {
+		if sourceErr := gitrepository.RevalidateSnapshot(in.Workspace, *in.Profile.SourceSnapshot); sourceErr != nil {
+			if runErr == nil {
+				runErr = sourceErr
+			} else {
+				runErr = errors.Join(runErr, sourceErr)
+			}
+		}
+	}
 	if runErr != nil {
 		completed, completeErr := store.CompleteProofResource(in.WorkID, work.ProofResourceCompleteInput{
 			Actor:         in.Actor,
@@ -344,9 +359,11 @@ func decodeOwnedProofCheckReport(body []byte) (proofCheckReport, error) {
 	if err := json.Unmarshal(body, &report); err != nil {
 		return proofCheckReport{}, fmt.Errorf("decode retained proof report: %w", err)
 	}
-	if report.SchemaVersion != proofCheckSchemaVersion {
+	if report.SchemaVersion != "compound.proof_check_report.v0.1" &&
+		report.SchemaVersion != "compound.proof_check_report.v0.2" &&
+		report.SchemaVersion != proofCheckSchemaVersion {
 		return proofCheckReport{}, fmt.Errorf(
-			"retained proof report schema_version %q, want %q",
+			"retained proof report schema_version %q is unsupported (current %q)",
 			report.SchemaVersion,
 			proofCheckSchemaVersion,
 		)

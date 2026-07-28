@@ -890,7 +890,7 @@ func TestLegacyLandCheckV03RequiresFreshCheckWithoutTamperAccusation(t *testing.
 		t.Fatal("legacy v0.3 land-check unexpectedly satisfied current close proof")
 	}
 	message := err.Error()
-	if !strings.Contains(message, "legacy") || !strings.Contains(message, "fresh") || !strings.Contains(message, "v0.4") {
+	if !strings.Contains(message, "legacy") || !strings.Contains(message, "fresh") || !strings.Contains(message, "v0.5") {
 		t.Fatalf("legacy land-check classification = %v", err)
 	}
 	if strings.Contains(message, "content digest") || strings.Contains(message, "modified after recording") || strings.Contains(message, "tamper") {
@@ -898,18 +898,47 @@ func TestLegacyLandCheckV03RequiresFreshCheckWithoutTamperAccusation(t *testing.
 	}
 }
 
-func TestRepositoryFingerprintLandCheckUsesV04Schema(t *testing.T) {
-	fixture := newLandingProofFixture(t, time.Date(2026, 7, 14, 6, 0, 0, 0, time.UTC))
-	if fixture.proof.SchemaVersion != "compound.work_land_check.v0.4" {
-		t.Fatalf("repository fingerprint changed sealed land-check content without a schema bump: %s", fixture.proof.SchemaVersion)
+func TestPreviousLandCheckV04RequiresFreshSourceBoundCheck(t *testing.T) {
+	report := LandCheckReport{
+		SchemaVersion: PreviousLandCheckSchemaVersion,
+		ID:            "landcheck_previous",
 	}
-	if fixture.proof.RepositoryFingerprint == "" {
-		t.Fatal("v0.4 land-check did not seal repository fingerprint")
+	err := validateRecordedLandCheck(
+		envelope.WorkEnvelope{},
+		"land-check:landcheck_previous",
+		report.ID,
+		"/compound/home/work/land-checks/landcheck_previous.json",
+		report,
+	)
+	if err == nil {
+		t.Fatal("v0.4 land-check unexpectedly satisfied source-bound close proof")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "legacy/stale") ||
+		!strings.Contains(message, PreviousLandCheckSchemaVersion) ||
+		!strings.Contains(message, "sealed proof source identity") ||
+		!strings.Contains(message, LandCheckSchemaVersion) {
+		t.Fatalf("v0.4 land-check classification = %v", err)
+	}
+	if strings.Contains(message, "content digest") ||
+		strings.Contains(message, "modified after recording") ||
+		strings.Contains(message, "tamper") {
+		t.Fatalf("historical v0.4 receipt was mislabeled as tampered: %v", err)
 	}
 }
 
-func TestLandCheckV04FieldSetRequiresSchemaBump(t *testing.T) {
-	if LandCheckSchemaVersion != "compound.work_land_check.v0.4" {
+func TestSourceBoundLandCheckUsesV05Schema(t *testing.T) {
+	fixture := newLandingProofFixture(t, time.Date(2026, 7, 14, 6, 0, 0, 0, time.UTC))
+	if fixture.proof.SchemaVersion != "compound.work_land_check.v0.5" {
+		t.Fatalf("repository fingerprint changed sealed land-check content without a schema bump: %s", fixture.proof.SchemaVersion)
+	}
+	if fixture.proof.RepositoryFingerprint == "" {
+		t.Fatal("v0.5 land-check did not seal repository fingerprint")
+	}
+}
+
+func TestLandCheckV05FieldSetRequiresSchemaBump(t *testing.T) {
+	if LandCheckSchemaVersion != "compound.work_land_check.v0.5" {
 		t.Fatalf("update the sealed field-set fixture for new schema %s", LandCheckSchemaVersion)
 	}
 	typeOfReport := reflect.TypeOf(LandCheckReport{})
@@ -921,8 +950,12 @@ func TestLandCheckV04FieldSetRequiresSchemaBump(t *testing.T) {
 		}
 	}
 	const v04Fields = "schema_version,id,generated_at,work_id,status,repo_path,candidate_tip_sha,candidate_artifact_ref,attached_candidate_tip_sha,expected_base_sha,repository_fingerprint,target_ref,target_branch_ref,expected_main_sha,target_sha,publication_mode,publication_ref,publication_sha,candidate_exists,expected_base_exists,clean_target,target_branch_worktree,expected_base_ancestor_of_candidate,target_ancestor_of_candidate,candidate_contained_in_target,candidate_contained_in_publication,next_action,content_sha256,recorded,evidence_ref,proof_path"
-	if got := strings.Join(fields, ","); got != v04Fields {
-		t.Fatalf("LandCheckReport field set changed under sealed v0.4; bump schema and add a previous-version fixture:\n got: %s\nwant: %s", got, v04Fields)
+	const v05Fields = "schema_version,id,generated_at,work_id,status,repo_path,candidate_tip_sha,candidate_artifact_ref,attached_candidate_tip_sha,expected_base_sha,repository_fingerprint,proof_verification_ref,proof_head_sha,target_ref,target_branch_ref,expected_main_sha,target_sha,publication_mode,publication_ref,publication_sha,candidate_exists,expected_base_exists,clean_target,target_branch_worktree,expected_base_ancestor_of_candidate,target_ancestor_of_candidate,candidate_contained_in_target,candidate_contained_in_publication,next_action,content_sha256,recorded,evidence_ref,proof_path"
+	if v04Fields == v05Fields {
+		t.Fatal("v0.5 schema did not add source-bound proof identity")
+	}
+	if got := strings.Join(fields, ","); got != v05Fields {
+		t.Fatalf("LandCheckReport field set changed under sealed v0.5; bump schema and add a previous-version fixture:\n got: %s\nwant: %s", got, v05Fields)
 	}
 }
 

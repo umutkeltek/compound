@@ -1,0 +1,125 @@
+package gitrepository
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestCaptureCleanSnapshotResolvesSymbolicBaseOnce(t *testing.T) {
+	repo := initSnapshotRepo(t)
+	baseSHA := snapshotGitOutput(t, repo, "rev-parse", "HEAD")
+	snapshotRunGit(t, repo, "switch", "-c", "candidate")
+	writeSnapshotFile(t, repo, "candidate.txt", "candidate\n")
+	snapshotRunGit(t, repo, "add", "candidate.txt")
+	snapshotRunGit(t, repo, "commit", "-m", "candidate")
+
+	got, err := CaptureCleanSnapshot(repo, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseSHA != baseSHA {
+		t.Fatalf("base_sha = %q, want %q", got.BaseSHA, baseSHA)
+	}
+	if got.HeadSHA != snapshotGitOutput(t, repo, "rev-parse", "HEAD") {
+		t.Fatalf("head_sha = %q, want current committed HEAD", got.HeadSHA)
+	}
+	if got.TreeSHA != snapshotGitOutput(t, repo, "rev-parse", "HEAD^{tree}") {
+		t.Fatalf("tree_sha = %q, want HEAD tree", got.TreeSHA)
+	}
+	if got.RepositoryFingerprint == "" || !got.Clean {
+		t.Fatalf("snapshot = %+v, want fingerprinted clean source", got)
+	}
+
+	// The caller supplied a moving ref, but the captured snapshot sealed its
+	// resolved commit. Moving the symbolic ref after capture cannot change the
+	// range or invalidate the already-started battery.
+	snapshotRunGit(t, repo, "branch", "-f", "main", got.HeadSHA)
+	if err := RevalidateSnapshot(repo, got); err != nil {
+		t.Fatalf("moving symbolic base changed sealed identity: %v", err)
+	}
+}
+
+func TestCaptureCleanSnapshotRejectsDirtyCandidate(t *testing.T) {
+	repo := initSnapshotRepo(t)
+	writeSnapshotFile(t, repo, "uncommitted.txt", "not committed\n")
+
+	_, err := CaptureCleanSnapshot(repo, "refs/heads/main")
+	if err == nil || !strings.Contains(err.Error(), "clean committed") {
+		t.Fatalf("dirty capture error = %v, want clean committed refusal", err)
+	}
+}
+
+func TestRevalidateSnapshotRejectsHeadTreeAndDirtyMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, repo string)
+	}{
+		{
+			name: "head and tree",
+			mutate: func(t *testing.T, repo string) {
+				writeSnapshotFile(t, repo, "later.txt", "later\n")
+				snapshotRunGit(t, repo, "add", "later.txt")
+				snapshotRunGit(t, repo, "commit", "-m", "later")
+			},
+		},
+		{
+			name: "dirty",
+			mutate: func(t *testing.T, repo string) {
+				writeSnapshotFile(t, repo, "dirty.txt", "dirty\n")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initSnapshotRepo(t)
+			sealed, err := CaptureCleanSnapshot(repo, "refs/heads/main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(t, repo)
+			if err := RevalidateSnapshot(repo, sealed); err == nil {
+				t.Fatal("mutated repository revalidated against sealed source snapshot")
+			}
+		})
+	}
+}
+
+func initSnapshotRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	snapshotRunGit(t, repo, "init", "-b", "main")
+	snapshotRunGit(t, repo, "config", "user.email", "test@example.invalid")
+	snapshotRunGit(t, repo, "config", "user.name", "Compound Test")
+	snapshotRunGit(t, repo, "remote", "add", "origin", "https://example.invalid/compound/synthetic.git")
+	writeSnapshotFile(t, repo, "seed.txt", "seed\n")
+	snapshotRunGit(t, repo, "add", "seed.txt")
+	snapshotRunGit(t, repo, "commit", "-m", "seed")
+	return repo
+}
+
+func writeSnapshotFile(t *testing.T, repo, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func snapshotRunGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+func snapshotGitOutput(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}

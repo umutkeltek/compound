@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/authority/gitrepository"
 	"compound/internal/home"
 	"compound/internal/landlease"
 	"compound/internal/runattempt"
@@ -32,6 +33,66 @@ const proofCheckMinimumTTLCLISubEnv = "COMPOUND_PROOF_MINIMUM_TTL_CLI_SUB"
 const proofCheckBarrierChildSubEnv = "COMPOUND_PROOF_BARRIER_CHILD_SUB"
 const proofCheckArtifactPublishFailureSubEnv = "COMPOUND_PROOF_ARTIFACT_PUBLISH_FAILURE_SUB"
 const proofCheckSignalForwardSubEnv = "COMPOUND_PROOF_SIGNAL_FORWARD_SUB"
+const proofCheckMissingBaseSubEnv = "COMPOUND_PROOF_MISSING_BASE_SUB"
+
+func TestProofCheckCommandMissingBaseFailsBeforeReportOrRunner(t *testing.T) {
+	if os.Getenv(proofCheckMissingBaseSubEnv) == "1" {
+		proofCheckCanonicalRunner = func(
+			context.Context,
+			string,
+			bool,
+			gitrepository.Snapshot,
+			bool,
+			bool,
+			time.Time,
+		) (proofCheckReport, error) {
+			if err := os.WriteFile(os.Getenv("COMPOUND_PROOF_MISSING_BASE_MARKER"), []byte("started\n"), 0o644); err != nil {
+				return proofCheckReport{}, err
+			}
+			return proofCheckReport{}, errors.New("runner must not start")
+		}
+		cmdProofCheck([]string{
+			"--repo", os.Getenv("COMPOUND_PROOF_MISSING_BASE_REPO"),
+			"--work", "work_synthetic_missing_base",
+			"--actor", "codex:missing-base",
+			"--out", os.Getenv("COMPOUND_PROOF_MISSING_BASE_OUT"),
+		})
+		os.Exit(0)
+	}
+
+	outPath := filepath.Join(t.TempDir(), "proof.json")
+	const prior = "prior report must survive\n"
+	if err := os.WriteFile(outPath, []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "runner-started")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProofCheckCommandMissingBaseFailsBeforeReportOrRunner$")
+	cmd.Env = append(
+		os.Environ(),
+		proofCheckMissingBaseSubEnv+"=1",
+		"COMPOUND_PROOF_MISSING_BASE_REPO="+t.TempDir(),
+		"COMPOUND_PROOF_MISSING_BASE_OUT="+outPath,
+		"COMPOUND_PROOF_MISSING_BASE_MARKER="+marker,
+	)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+		t.Fatalf("missing-base exit = %v, want 2; output=%s", err, out)
+	}
+	if !strings.Contains(string(out), "certifying proof-check requires explicit --base") {
+		t.Fatalf("missing-base output = %q", out)
+	}
+	body, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != prior {
+		t.Fatalf("missing-base command changed prior report: %q", body)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing-base command started runner: %v", err)
+	}
+}
 
 func TestProofCheckCommandSignalCancelsAndWaitsForWholeGateGroup(t *testing.T) {
 	if os.Getenv(proofCheckSignalForwardSubEnv) == "1" {
@@ -39,7 +100,7 @@ func TestProofCheckCommandSignalCancelsAndWaitsForWholeGateGroup(t *testing.T) {
 			ctx context.Context,
 			repoPath string,
 			dryRun bool,
-			baseRef string,
+			source gitrepository.Snapshot,
 			ciOnly bool,
 			ciConsole bool,
 			now time.Time,
@@ -55,6 +116,7 @@ func TestProofCheckCommandSignalCancelsAndWaitsForWholeGateGroup(t *testing.T) {
 		}
 		cmdProofCheck([]string{
 			"--repo", os.Getenv("COMPOUND_PROOF_SIGNAL_REPO"),
+			"--base", "HEAD",
 			"--work", os.Getenv("COMPOUND_PROOF_SIGNAL_WORK"),
 			"--actor", "codex:signal-forward",
 			"--out", os.Getenv("COMPOUND_PROOF_SIGNAL_OUT"),
@@ -72,7 +134,7 @@ func TestProofCheckCommandSignalCancelsAndWaitsForWholeGateGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := createClaimedProofWork(t, store, "signal cancels proof group", "codex:signal-forward", now)
-	repoPath := t.TempDir()
+	repoPath := initCompoundCommandGitRepo(t)
 	outPath := filepath.Join(t.TempDir(), "proof.json")
 	pidPath := filepath.Join(t.TempDir(), "gate-child.pid")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestProofCheckCommandSignalCancelsAndWaitsForWholeGateGroup$")
@@ -136,18 +198,21 @@ func TestProofCheckCommandInstalledRuntimePublicationFailureIsNonGreen(t *testin
 			ctx context.Context,
 			repoPath string,
 			dryRun bool,
-			baseRef string,
+			source gitrepository.Snapshot,
 			ciOnly bool,
 			ciConsole bool,
 			now time.Time,
 		) (proofCheckReport, error) {
-			return injectedCanonicalProofCheckReport(repoPath, baseRef, now)
+			report, err := injectedCanonicalProofCheckReport(repoPath, source.BaseSHA, now)
+			report.SourceSnapshot = &source
+			return report, err
 		}
 		proofCheckRuntimeArtifactRecorder = func(string, proofCheckReport) (proofCheckReport, error) {
 			return proofCheckReport{}, errors.New("synthetic installed-runtime publication fault")
 		}
 		cmdProofCheck([]string{
 			"--repo", os.Getenv("COMPOUND_PROOF_ARTIFACT_FAILURE_REPO"),
+			"--base", "HEAD",
 			"--work", os.Getenv("COMPOUND_PROOF_ARTIFACT_FAILURE_WORK"),
 			"--actor", "codex:artifact-publication",
 			"--out", os.Getenv("COMPOUND_PROOF_ARTIFACT_FAILURE_OUT"),
@@ -165,7 +230,7 @@ func TestProofCheckCommandInstalledRuntimePublicationFailureIsNonGreen(t *testin
 		t.Fatal(err)
 	}
 	w := createClaimedProofWork(t, store, "runtime artifact publication failure", "codex:artifact-publication", now)
-	repoPath := t.TempDir()
+	repoPath := initCompoundCommandGitRepo(t)
 	outPath := filepath.Join(t.TempDir(), "proof.json")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestProofCheckCommandInstalledRuntimePublicationFailureIsNonGreen$")
 	cmd.Env = append(
@@ -934,7 +999,7 @@ func TestProofCheckAdmissionSurfacesCommittedButRetainedLease(t *testing.T) {
 
 func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 	if os.Getenv(proofCheckReleasePendingCLISubEnv) == "1" {
-		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, baseRef string, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
+		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
 			marker, err := os.OpenFile(os.Getenv("COMPOUND_PROOF_RELEASE_PENDING_RUNS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 			if err != nil {
 				return proofCheckReport{}, err
@@ -946,7 +1011,8 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 			if err := marker.Close(); err != nil {
 				return proofCheckReport{}, err
 			}
-			report, err := injectedCanonicalProofCheckReport(repoPath, baseRef, now)
+			report, err := injectedCanonicalProofCheckReport(repoPath, source.BaseSHA, now)
+			report.SourceSnapshot = &source
 			if err != nil {
 				return proofCheckReport{}, err
 			}
@@ -957,6 +1023,7 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 		}
 		cmdProofCheck([]string{
 			"--repo", os.Getenv("COMPOUND_PROOF_RELEASE_PENDING_REPO"),
+			"--base", os.Getenv("COMPOUND_PROOF_RELEASE_PENDING_BASE"),
 			"--work", os.Getenv("COMPOUND_PROOF_RELEASE_PENDING_WORK"),
 			"--actor", "codex:release-pending-cli",
 			"--out", os.Getenv("COMPOUND_PROOF_RELEASE_PENDING_OUT"),
@@ -974,7 +1041,15 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := createClaimedProofWork(t, store, "real CLI release-pending recovery", "codex:release-pending-cli", now)
-	repo := t.TempDir()
+	repo := initCompoundCommandGitRepo(t)
+	proofBaseSHA := proofSourceGitOutput(t, repo, "rev-parse", "HEAD")
+	const proofBaseRef = "refs/heads/proof-base"
+	runCommandGit(t, repo, "branch", "proof-base", proofBaseSHA)
+	if err := os.WriteFile(filepath.Join(repo, "candidate.txt"), []byte("candidate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCommandGit(t, repo, "add", "candidate.txt")
+	runCommandGit(t, repo, "commit", "-m", "candidate")
 	outPath := filepath.Join(t.TempDir(), "proof.json")
 	runnerMarker := filepath.Join(t.TempDir(), "runner.log")
 	stateDir := filepath.Join(homePath, "state")
@@ -986,6 +1061,7 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 			proofCheckReleasePendingCLISubEnv+"=1",
 			"COMPOUND_HOME="+homePath,
 			"COMPOUND_PROOF_RELEASE_PENDING_REPO="+repo,
+			"COMPOUND_PROOF_RELEASE_PENDING_BASE="+proofBaseRef,
 			"COMPOUND_PROOF_RELEASE_PENDING_WORK="+w.ID,
 			"COMPOUND_PROOF_RELEASE_PENDING_OUT="+outPath,
 			"COMPOUND_PROOF_RELEASE_PENDING_RUNS="+runnerMarker,
@@ -1041,6 +1117,26 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	runCommandGit(t, repo, "branch", "-f", "proof-base", "HEAD")
+	mismatchStdout, mismatchStderr, mismatchErr := runCommand()
+	if mismatchErr == nil {
+		t.Fatalf("moved proof base reused retained battery; stdout=%q stderr=%q", mismatchStdout, mismatchStderr)
+	}
+	runsAfterMismatch, err := os.ReadFile(runnerMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(runsAfterMismatch), "runner-started"); got != 1 {
+		t.Fatalf("moved proof base restarted prior runner; starts=%d marker=%q", got, runsAfterMismatch)
+	}
+	afterMismatchOut, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterMismatchOut, firstOut) {
+		t.Fatal("moved proof base rewrote retained owned report")
+	}
+	runCommandGit(t, repo, "branch", "-f", "proof-base", proofBaseSHA)
 	secondStdout, secondStderr, secondErr := runCommand()
 	if secondErr != nil {
 		t.Fatalf("exact CLI recovery failed: %v; stdout=%q stderr=%q", secondErr, secondStdout, secondStderr)
@@ -1146,7 +1242,7 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 				t.Fatal(err)
 			}
 			w := createClaimedProofWork(t, store, "restore retained proof output", "codex:release-pending-cli", now)
-			repo := t.TempDir()
+			repo := initCompoundCommandGitRepo(t)
 			outPath := filepath.Join(t.TempDir(), "proof.json")
 			runnerMarker := filepath.Join(t.TempDir(), "runner.log")
 			stateDir := filepath.Join(homePath, "state")
@@ -1159,6 +1255,7 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 					proofCheckReleasePendingCLISubEnv+"=1",
 					"COMPOUND_HOME="+homePath,
 					"COMPOUND_PROOF_RELEASE_PENDING_REPO="+repo,
+					"COMPOUND_PROOF_RELEASE_PENDING_BASE=HEAD",
 					"COMPOUND_PROOF_RELEASE_PENDING_WORK="+w.ID,
 					"COMPOUND_PROOF_RELEASE_PENDING_OUT="+outPath,
 					"COMPOUND_PROOF_RELEASE_PENDING_RUNS="+runnerMarker,
@@ -1226,8 +1323,9 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 
 func TestProofCheckCommandCanonicalFailedBatteryReleasesAdmission(t *testing.T) {
 	if os.Getenv(proofCheckFailedCanonicalCLISubEnv) == "1" {
-		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, baseRef string, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
-			report, err := injectedCanonicalProofCheckReport(repoPath, baseRef, now)
+		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
+			report, err := injectedCanonicalProofCheckReport(repoPath, source.BaseSHA, now)
+			report.SourceSnapshot = &source
 			if err != nil {
 				return proofCheckReport{}, err
 			}
@@ -1240,6 +1338,7 @@ func TestProofCheckCommandCanonicalFailedBatteryReleasesAdmission(t *testing.T) 
 		}
 		cmdProofCheck([]string{
 			"--repo", os.Getenv("COMPOUND_PROOF_FAILED_CANONICAL_REPO"),
+			"--base", "HEAD",
 			"--work", os.Getenv("COMPOUND_PROOF_FAILED_CANONICAL_WORK"),
 			"--actor", "codex:failed-canonical-cli",
 			"--out", os.Getenv("COMPOUND_PROOF_FAILED_CANONICAL_OUT"),
@@ -1258,7 +1357,7 @@ func TestProofCheckCommandCanonicalFailedBatteryReleasesAdmission(t *testing.T) 
 	}
 	w := createClaimedProofWork(t, store, "real CLI complete failed proof", "codex:failed-canonical-cli", now)
 	successorWork := createClaimedProofWork(t, store, "proof after real CLI failure", "codex:successor", now.Add(time.Second))
-	repo := t.TempDir()
+	repo := initCompoundCommandGitRepo(t)
 	outPath := filepath.Join(t.TempDir(), "proof.json")
 
 	command := exec.Command(os.Args[0], "-test.run=^TestProofCheckCommandCanonicalFailedBatteryReleasesAdmission$")
@@ -1372,7 +1471,7 @@ func TestProofCheckCommandCanonicalFailedBatteryReleasesAdmission(t *testing.T) 
 
 func TestProofCheckCommandFailedBatteryReleasePendingAndExactRecovery(t *testing.T) {
 	if os.Getenv(proofCheckFailedReleaseCLISubEnv) == "1" {
-		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, baseRef string, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
+		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
 			marker, err := os.OpenFile(os.Getenv("COMPOUND_PROOF_FAILED_RELEASE_RUNS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 			if err != nil {
 				return proofCheckReport{}, err
@@ -1384,7 +1483,8 @@ func TestProofCheckCommandFailedBatteryReleasePendingAndExactRecovery(t *testing
 			if err := marker.Close(); err != nil {
 				return proofCheckReport{}, err
 			}
-			report, err := injectedCanonicalProofCheckReport(repoPath, baseRef, now)
+			report, err := injectedCanonicalProofCheckReport(repoPath, source.BaseSHA, now)
+			report.SourceSnapshot = &source
 			if err != nil {
 				return proofCheckReport{}, err
 			}
@@ -1400,6 +1500,7 @@ func TestProofCheckCommandFailedBatteryReleasePendingAndExactRecovery(t *testing
 		}
 		cmdProofCheck([]string{
 			"--repo", os.Getenv("COMPOUND_PROOF_FAILED_RELEASE_REPO"),
+			"--base", "HEAD",
 			"--work", os.Getenv("COMPOUND_PROOF_FAILED_RELEASE_WORK"),
 			"--actor", "codex:failed-release-cli",
 			"--out", os.Getenv("COMPOUND_PROOF_FAILED_RELEASE_OUT"),
@@ -1417,7 +1518,7 @@ func TestProofCheckCommandFailedBatteryReleasePendingAndExactRecovery(t *testing
 		t.Fatal(err)
 	}
 	w := createClaimedProofWork(t, store, "failed battery retained release", "codex:failed-release-cli", now)
-	repo := t.TempDir()
+	repo := initCompoundCommandGitRepo(t)
 	outPath := filepath.Join(t.TempDir(), "proof.json")
 	runnerMarker := filepath.Join(t.TempDir(), "runner.log")
 	stateDir := filepath.Join(homePath, "state")
@@ -1530,8 +1631,9 @@ func TestProofCheckCommandFailedBatteryReleasePendingAndExactRecovery(t *testing
 
 func TestProofCheckCommandPostReportFailuresAlwaysPrintFailedVerdict(t *testing.T) {
 	if os.Getenv(proofCheckPostReportErrorCLISubEnv) == "1" {
-		proofCheckCanonicalRunner = func(ctx context.Context, repoPath string, _ bool, baseRef string, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
-			report, err := injectedCanonicalProofCheckReport(repoPath, baseRef, now)
+		proofCheckCanonicalRunner = func(ctx context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
+			report, err := injectedCanonicalProofCheckReport(repoPath, source.BaseSHA, now)
+			report.SourceSnapshot = &source
 			if err != nil {
 				return proofCheckReport{}, err
 			}
@@ -1554,6 +1656,7 @@ func TestProofCheckCommandPostReportFailuresAlwaysPrintFailedVerdict(t *testing.
 		}
 		cmdProofCheck([]string{
 			"--repo", os.Getenv("COMPOUND_PROOF_POST_REPORT_ERROR_REPO"),
+			"--base", "HEAD",
 			"--work", os.Getenv("COMPOUND_PROOF_POST_REPORT_ERROR_WORK"),
 			"--actor", "codex:post-report-error-cli",
 			"--out", os.Getenv("COMPOUND_PROOF_POST_REPORT_ERROR_OUT"),
@@ -1574,7 +1677,7 @@ func TestProofCheckCommandPostReportFailuresAlwaysPrintFailedVerdict(t *testing.
 				t.Fatal(err)
 			}
 			w := createClaimedProofWork(t, store, "post-report error verdict", "codex:post-report-error-cli", now)
-			repo := t.TempDir()
+			repo := initCompoundCommandGitRepo(t)
 			outPath := filepath.Join(t.TempDir(), "proof.json")
 			stateDir := filepath.Join(homePath, "state")
 			t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
@@ -1621,14 +1724,17 @@ func TestProofCheckCommandPostReportFailuresAlwaysPrintFailedVerdict(t *testing.
 
 func TestProofCheckCommandRejectsUnsafeTTLBeforeAdmission(t *testing.T) {
 	if os.Getenv(proofCheckUnsafeTTLCLISubEnv) == "1" {
-		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, baseRef string, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
+		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
 			if err := os.WriteFile(os.Getenv("COMPOUND_PROOF_UNSAFE_TTL_RUNNER"), []byte("runner-started\n"), 0o644); err != nil {
 				return proofCheckReport{}, err
 			}
-			return injectedCanonicalProofCheckReport(repoPath, baseRef, now)
+			report, err := injectedCanonicalProofCheckReport(repoPath, source.BaseSHA, now)
+			report.SourceSnapshot = &source
+			return report, err
 		}
 		cmdProofCheck([]string{
 			"--repo", os.Getenv("COMPOUND_PROOF_UNSAFE_TTL_REPO"),
+			"--base", "HEAD",
 			"--work", os.Getenv("COMPOUND_PROOF_UNSAFE_TTL_WORK"),
 			"--actor", "codex:unsafe-ttl-cli",
 			"--out", os.Getenv("COMPOUND_PROOF_UNSAFE_TTL_OUT"),
@@ -1651,7 +1757,7 @@ func TestProofCheckCommandRejectsUnsafeTTLBeforeAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := t.TempDir()
+	repo := initCompoundCommandGitRepo(t)
 	outPath := filepath.Join(t.TempDir(), "proof.json")
 	runnerMarker := filepath.Join(t.TempDir(), "runner.log")
 	command := exec.Command(os.Args[0], "-test.run=^TestProofCheckCommandRejectsUnsafeTTLBeforeAdmission$")
@@ -1690,7 +1796,7 @@ func TestProofCheckCommandRejectsUnsafeTTLBeforeAdmission(t *testing.T) {
 func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing.T) {
 	if os.Getenv(proofCheckMinimumTTLCLISubEnv) == "1" {
 		role := os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_ROLE")
-		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, baseRef string, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
+		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
 			if role == "first" {
 				if err := os.WriteFile(os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_FIRST_RUNNER"), []byte("runner-started\n"), 0o644); err != nil {
 					return proofCheckReport{}, err
@@ -1709,10 +1815,13 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 					return proofCheckReport{}, err
 				}
 			}
-			return injectedCanonicalProofCheckReport(repoPath, baseRef, now)
+			report, err := injectedCanonicalProofCheckReport(repoPath, source.BaseSHA, now)
+			report.SourceSnapshot = &source
+			return report, err
 		}
 		cmdProofCheck([]string{
 			"--repo", os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_REPO"),
+			"--base", "HEAD",
 			"--work", os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_WORK"),
 			"--actor", os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_ACTOR"),
 			"--out", os.Getenv("COMPOUND_PROOF_MINIMUM_TTL_OUT"),
@@ -1732,7 +1841,7 @@ func TestProofCheckCommandMinimumTTLHeartbeatPreventsConcurrentRunner(t *testing
 	}
 	firstWork := createClaimedProofWork(t, store, "minimum TTL slow proof", "codex:min-ttl-first", now)
 	secondWork := createClaimedProofWork(t, store, "minimum TTL competitor", "codex:min-ttl-second", now.Add(time.Second))
-	repo := t.TempDir()
+	repo := initCompoundCommandGitRepo(t)
 	firstOut := filepath.Join(t.TempDir(), "first-proof.json")
 	secondOut := filepath.Join(t.TempDir(), "second-proof.json")
 	firstMarker := filepath.Join(t.TempDir(), "first-runner.log")
@@ -1869,7 +1978,12 @@ func successfulProofCheckReport() proofCheckReport {
 }
 
 func injectedCanonicalProofCheckReport(repo, baseRef string, now time.Time) (proofCheckReport, error) {
-	steps, err := proofCheckSteps(baseRef)
+	headRef := ""
+	headCmd := exec.Command("git", "-C", repo, "rev-parse", "--verify", "HEAD^{commit}")
+	if out, headErr := headCmd.Output(); headErr == nil {
+		headRef = strings.TrimSpace(string(out))
+	}
+	steps, err := proofCheckSteps(baseRef, headRef)
 	if err != nil {
 		return proofCheckReport{}, err
 	}
@@ -2120,7 +2234,7 @@ func TestProofCheckGoCacheHonorsSharedOptOut(t *testing.T) {
 // Path selection is insufficient proof: this fails if runProofCheckStep stops injecting the
 // per-worktree cache even while every proofCheckGoCache unit test remains green.
 func TestRunProofCheckStepInjectsWorktreeGoCache(t *testing.T) {
-	repo := t.TempDir()
+	repo := initCompoundCommandGitRepo(t)
 	want, ok := proofCheckGoCache(repo)
 	if !ok {
 		t.Fatal("no cache chosen for a real worktree")

@@ -12,14 +12,17 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/authority/gitrepository"
 	"compound/internal/envelope"
+	"compound/internal/home"
 )
 
 const (
-	LegacyLandCheckSchemaVersion = "compound.work_land_check.v0.3"
-	LandCheckSchemaVersion       = "compound.work_land_check.v0.4"
-	landCheckEvidencePrefix      = "land-check:"
-	landCheckIDPrefix            = "landcheck_"
+	LegacyLandCheckSchemaVersion   = "compound.work_land_check.v0.3"
+	PreviousLandCheckSchemaVersion = "compound.work_land_check.v0.4"
+	LandCheckSchemaVersion         = "compound.work_land_check.v0.5"
+	landCheckEvidencePrefix        = "land-check:"
+	landCheckIDPrefix              = "landcheck_"
 )
 
 // LandCheckOptions names every source-control input explicitly. In particular,
@@ -57,6 +60,8 @@ type LandCheckReport struct {
 	AttachedCandidateTipSHA         string `json:"attached_candidate_tip_sha,omitempty"`
 	ExpectedBaseSHA                 string `json:"expected_base_sha,omitempty"`
 	RepositoryFingerprint           string `json:"repository_fingerprint"`
+	ProofVerificationRef            string `json:"proof_verification_ref,omitempty"`
+	ProofHeadSHA                    string `json:"proof_head_sha,omitempty"`
 	TargetRef                       string `json:"target_ref"`
 	TargetBranchRef                 string `json:"target_branch_ref"`
 	ExpectedMainSHA                 string `json:"expected_main_sha,omitempty"`
@@ -264,6 +269,24 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		report.NextAction = fmt.Sprintf("candidate %s does not match latest attached artifact commit:%s; use that verified tip, or attach commit:%s if the provided tip is the newer final work output", candidate, attachedTip, candidate)
 		return report, nil
 	}
+	proofResult, proofFound, err := s.latestSourceBoundProofResult(w)
+	if err != nil {
+		return report, err
+	}
+	if proofFound {
+		report.ProofVerificationRef = proofResult.VerificationRef
+		report.ProofHeadSHA = proofResult.SourceSnapshot.HeadSHA
+		if proofResult.SourceSnapshot.RepositoryFingerprint != contract.RepositoryFingerprint {
+			report.Status = "proof_repository_mismatch"
+			report.NextAction = "run a new certifying proof battery in the WorkEnvelope repository"
+			return report, nil
+		}
+		if report.ProofHeadSHA != candidate {
+			report.Status = "proof_candidate_tip_mismatch"
+			report.NextAction = fmt.Sprintf("candidate %s differs from sealed proof tip %s; run a new certifying battery after replay/rebase", candidate, report.ProofHeadSHA)
+			return report, nil
+		}
+	}
 	if !report.TargetBranchWorktree {
 		report.Status = "wrong_target_worktree"
 		report.NextAction = fmt.Sprintf("check out %s in the explicit target worktree, then rerun land-check", targetRef)
@@ -452,6 +475,62 @@ func landingContainedDirtyDiagnostic(targetRef string, dirtyPaths []string, publ
 	return fmt.Sprintf("candidate is already contained in the %s; preserve later uncommitted changes in the %s worktree (%s)", authority, targetRef, strings.Join(dirtyPaths, ", "))
 }
 
+func (s *Store) latestSourceBoundProofResult(w envelope.WorkEnvelope) (ProofResourceResult, bool, error) {
+	for i := len(w.VerificationIDs) - 1; i >= 0; i-- {
+		ref := strings.TrimSpace(w.VerificationIDs[i])
+		if !strings.HasPrefix(ref, "proof-check:") {
+			continue
+		}
+		id := strings.TrimPrefix(ref, "proof-check:")
+		if !strings.HasPrefix(id, "pfrs_") {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %q has invalid result identity", ref)
+		}
+		var result ProofResourceResult
+		if err := s.readEventJSON(id, &result); err != nil {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s result: %w", ref, err)
+		}
+		if result.SchemaVersion != ProofResourceResultSchemaVersion ||
+			result.ID != id ||
+			result.WorkID != w.ID ||
+			result.Status != ProofResourceVerified ||
+			result.VerificationRef != ref ||
+			!result.OwnedReport {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s is not an owned verified result for work %s", ref, w.ID)
+		}
+		if strings.TrimSpace(result.ReportArtifactRef) == "" {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s has no content-addressed report", ref)
+		}
+		artifacts, err := home.NewArtifactStore(s.home)
+		if err != nil {
+			return ProofResourceResult{}, true, err
+		}
+		body, err := artifacts.Get(result.ReportArtifactRef)
+		if err != nil {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s report artifact: %w", ref, err)
+		}
+		report, err := decodeOwnedProofReport(body)
+		if err != nil {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s report: %w", ref, err)
+		}
+		if result.SourceSnapshot == nil {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s predates sealed source identity; run a new battery", ref)
+		}
+		if err := gitrepository.ValidateSnapshotShape(*result.SourceSnapshot); err != nil {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s source snapshot: %w", ref, err)
+		}
+		if !result.SourceSnapshot.Clean {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s source snapshot is not clean", ref)
+		}
+		if report.Status != "ok" ||
+			report.SourceSnapshot == nil ||
+			*report.SourceSnapshot != *result.SourceSnapshot {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s source does not match content-addressed report", ref)
+		}
+		return result, true, nil
+	}
+	return ProofResourceResult{}, false, nil
+}
+
 func latestCommitArtifact(artifactIDs []string) (ref, sha string, found, valid bool) {
 	for i := len(artifactIDs) - 1; i >= 0; i-- {
 		candidate := artifactIDs[i]
@@ -554,6 +633,10 @@ func (s *Store) recordedLandedProofForClose(w envelope.WorkEnvelope, proofRefs [
 			failures = append(failures, fmt.Sprintf("recorded land-check %s is not landed (status %s)", id, report.Status))
 			continue
 		}
+		if err := s.validateRecordedLandCheckProofResult(w, report); err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
 		return report, nil
 	}
 	if !seen {
@@ -566,6 +649,8 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 	switch report.SchemaVersion {
 	case LegacyLandCheckSchemaVersion:
 		return fmt.Errorf("recorded land-check %s uses legacy/stale schema %s that predates repository identity; record a fresh %s land-check", id, LegacyLandCheckSchemaVersion, LandCheckSchemaVersion)
+	case PreviousLandCheckSchemaVersion:
+		return fmt.Errorf("recorded land-check %s uses legacy/stale schema %s predates sealed proof source identity; record fresh %s land-check", id, PreviousLandCheckSchemaVersion, LandCheckSchemaVersion)
 	case LandCheckSchemaVersion:
 		// Current sealed content is verified below.
 	default:
@@ -611,11 +696,44 @@ func validateRecordedLandCheck(w envelope.WorkEnvelope, evidenceRef, id, proofPa
 	if !validLandingObjectID(report.CandidateTipSHA) || strings.TrimSpace(report.RepoPath) == "" || strings.TrimSpace(report.TargetRef) == "" {
 		return fmt.Errorf("recorded land-check %s is missing exact repository, candidate, or target identity", id)
 	}
+	switch {
+	case report.ProofVerificationRef == "" && report.ProofHeadSHA != "":
+		return fmt.Errorf("recorded land-check %s has proof head without verification identity", id)
+	case report.ProofVerificationRef != "" && !strings.HasPrefix(report.ProofVerificationRef, "proof-check:pfrs_"):
+		return fmt.Errorf("recorded land-check %s has invalid proof verification identity", id)
+	case report.ProofVerificationRef != "" && report.ProofHeadSHA != report.CandidateTipSHA:
+		return fmt.Errorf("recorded land-check %s proof tip differs from candidate tip", id)
+	}
 	if report.Status == "landed" && !report.CandidateContainedInTarget {
 		return fmt.Errorf("recorded land-check %s does not prove containment in bound target ref %s", id, contract.TargetLocalRef)
 	}
 	if report.Status == "landed" && contract.PublicationMode == "required" && (!report.CandidateContainedInPublication || strings.TrimSpace(report.PublicationSHA) == "") {
 		return fmt.Errorf("recorded land-check %s does not prove containment in bound publication ref %s", id, contract.PublicationRef)
+	}
+	return nil
+}
+
+func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, report LandCheckReport) error {
+	result, found, err := s.latestSourceBoundProofResult(w)
+	if err != nil {
+		return err
+	}
+	if !found {
+		if report.ProofVerificationRef != "" || report.ProofHeadSHA != "" {
+			return fmt.Errorf("recorded land-check %s cites proof verification no longer attached to work %s", report.ID, w.ID)
+		}
+		return nil
+	}
+	if report.ProofVerificationRef != result.VerificationRef ||
+		report.ProofHeadSHA != result.SourceSnapshot.HeadSHA ||
+		report.CandidateTipSHA != result.SourceSnapshot.HeadSHA {
+		return fmt.Errorf(
+			"recorded land-check %s proof tip %s does not match current stored proof %s tip %s",
+			report.ID,
+			report.ProofHeadSHA,
+			result.VerificationRef,
+			result.SourceSnapshot.HeadSHA,
+		)
 	}
 	return nil
 }
