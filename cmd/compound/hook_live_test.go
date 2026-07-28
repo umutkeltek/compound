@@ -1457,6 +1457,74 @@ func TestHookLiveSessionDirtyOwnership(t *testing.T) {
 	})
 }
 
+func TestHookLiveCodexPreToolUseTrustsExactClaimedWorktreeProvenance(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := initCompoundCommandGitRepo(t)
+	snapshot, err := authority.ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const branch = "codex/claimed-inherited-hook"
+	worktree := filepath.Join(t.TempDir(), "claimed")
+	runCommandGit(t, repo, "worktree", "add", "-b", branch, worktree)
+
+	item, err := store.Create(work.CreateInput{
+		WorkID:           "work_claimed_inherited_hook",
+		Owner:            "control-plane",
+		SuccessPredicate: "continue the exact claimed branch worktree",
+		GitDelivery: &envelope.GitDeliveryContract{
+			TargetWorktreeRoot: repo,
+			TargetLocalRef:     "refs/heads/main",
+			ExpectedBaseSHA:    snapshot.Head,
+			PublicationMode:    "local_only",
+		},
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const actor = "codex:root-claimed-inherited"
+	if _, err := store.Claim(item.ID, actor, cliTestNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(item.ID, work.AdvanceInput{
+		To:         "running",
+		Actor:      actor,
+		ArtifactID: "worktree-branch:refs/heads/" + branch,
+	}, cliTestNow.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("inherited dirty change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	foreign := runClaudePreToolUse(t, liveWriteInput(
+		"PreToolUse", "sess_foreign_claimed_worktree", worktree,
+		filepath.Join(worktree, "README.md"), "foreign continuation\n",
+	))
+	if got := foreign.HookSpecificOutput.PermissionDecision; got != "ask" {
+		t.Fatalf("other harness over Codex-claimed worktree decision = %q reason=%q, want ask",
+			got, foreign.HookSpecificOutput.PermissionDecisionReason)
+	}
+
+	patch := "*** Begin Patch\n*** Update File: README.md\n@@\n-inherited dirty change\n+continued claimed change\n*** End Patch"
+	response := runCodexPreToolUse(t, codexApplyPatchInput("sess_claimed_inherited_hook", worktree, patch))
+	if got := response.HookSpecificOutput.PermissionDecision; got != "" {
+		t.Fatalf("claimed worktree follow-up decision = %q reason=%q, want allow",
+			got, response.HookSpecificOutput.PermissionDecisionReason)
+	}
+	if !livePolicyReasonExists(t, homePath, "claimed WorkEnvelope "+item.ID) {
+		t.Fatalf("allow did not record claimed-worktree provenance for %s", item.ID)
+	}
+}
+
 func initLiveOwnershipTest(t *testing.T) (string, string) {
 	t.Helper()
 	homePath := t.TempDir()

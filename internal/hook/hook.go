@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"compound/internal/authority"
+	"compound/internal/authority/gitrepository"
 	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/eventstore"
@@ -717,7 +718,7 @@ func preparePreToolUseAction(fx Fixture, deps Deps, action envelope.ActionIntent
 		}
 	}
 	if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
-		sourceControl, targetGitRoot, effects, err := sourceControlContextForAction(deps.HomePath, ai.Target.Path, fx.SessionID, fx.Live, now)
+		sourceControl, targetGitRoot, effects, err := sourceControlContextForAction(deps.HomePath, ai.Target.Path, fx.SessionID, ai.Actor, fx.Live, now)
 		if err != nil {
 			return preparedPreToolAction{}, err
 		}
@@ -1092,12 +1093,13 @@ func writeGateArtifacts(homePath string, ai envelope.ActionIntent, pd envelope.P
 	return []string{action.Reference.String(), decision.Reference.String()}, nil
 }
 
-func sourceControlContextForAction(homePath, targetPath, sessionID string, live bool, now time.Time) (*policy.SourceControlContext, string, []string, error) {
+func sourceControlContextForAction(homePath, targetPath, sessionID, actor string, live bool, now time.Time) (*policy.SourceControlContext, string, []string, error) {
 	snapshot, err := authority.ReadGitSnapshot(targetPath)
 	if err != nil {
 		return nil, "", nil, nil
 	}
 	ownedChangedPaths, foreignChangedPaths := 0, 0
+	claimedWorkID := ""
 	if live && snapshot.Status == "dirty" {
 		changedPaths, changedErr := readSourceControlChangedPaths(snapshot.GitRoot)
 		if changedErr != nil {
@@ -1121,6 +1123,14 @@ func sourceControlContextForAction(homePath, targetPath, sessionID string, live 
 		if len(changedPaths) == 0 && snapshot.ChangedPaths > 0 {
 			foreignChangedPaths = snapshot.ChangedPaths
 		}
+		claimedWorkID, err = claimedWorktreeOwner(homePath, snapshot.GitRoot, actor)
+		if err != nil {
+			return nil, "", nil, err
+		}
+	}
+	evidenceRefs := []string{snapshot.EvidenceReference()}
+	if claimedWorkID != "" {
+		evidenceRefs = append(evidenceRefs, "work:"+claimedWorkID)
 	}
 	return &policy.SourceControlContext{
 		EntityRef:                  snapshot.RepoID,
@@ -1137,9 +1147,104 @@ func sourceControlContextForAction(homePath, targetPath, sessionID string, live 
 		SessionOwnershipKnown:      live,
 		SessionOwnedChangedPaths:   ownedChangedPaths,
 		SessionForeignChangedPaths: foreignChangedPaths,
+		ClaimedWorkID:              claimedWorkID,
 		ChangedStateFingerprint:    snapshot.ChangedStateFingerprint,
-		EvidenceRefs:               []string{snapshot.EvidenceReference()},
-	}, snapshot.GitRoot, []string{snapshot.EvidenceReference()}, nil
+		EvidenceRefs:               evidenceRefs,
+	}, snapshot.GitRoot, evidenceRefs, nil
+}
+
+func claimedWorktreeOwner(homePath, gitRoot, actor string) (string, error) {
+	actor = strings.TrimSpace(actor)
+	if strings.TrimSpace(homePath) == "" || strings.TrimSpace(gitRoot) == "" || actor == "" {
+		return "", nil
+	}
+	branchRef := currentWorktreeBranchRef(gitRoot)
+	if branchRef == "" {
+		return "", nil
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		return "", err
+	}
+	items, err := store.List()
+	if err != nil {
+		return "", err
+	}
+	leases, err := store.ListLeases()
+	if err != nil {
+		return "", err
+	}
+	holders := make(map[string]string, len(leases))
+	for _, lease := range leases {
+		holders[lease.WorkID] = strings.TrimSpace(lease.By)
+	}
+	matches := make([]string, 0, 1)
+	for _, item := range items {
+		if !claimedWorktreeState(item.State) || item.GitDelivery == nil {
+			continue
+		}
+		holder := holders[item.ID]
+		if holder == "" || holder != strings.TrimSpace(item.Authority.Owner) || !actorOwnsClaim(actor, holder) {
+			continue
+		}
+		direct := filepath.Clean(item.GitDelivery.TargetWorktreeRoot) == filepath.Clean(gitRoot) &&
+			strings.TrimSpace(item.GitDelivery.TargetLocalRef) == branchRef
+		branched := containsWorktreeBranchArtifact(item.ArtifactIDs, branchRef)
+		if !direct && !branched {
+			continue
+		}
+		identity, identityErr := gitrepository.ReadIdentity(gitRoot, item.GitDelivery.ExpectedBaseSHA)
+		if identityErr != nil || identity.Fingerprint != item.GitDelivery.RepositoryFingerprint {
+			continue
+		}
+		matches = append(matches, item.ID)
+		if len(matches) > 1 {
+			return "", nil
+		}
+	}
+	if len(matches) != 1 {
+		return "", nil
+	}
+	return matches[0], nil
+}
+
+func currentWorktreeBranchRef(gitRoot string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "git", "-C", gitRoot, "symbolic-ref", "--quiet", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	ref := strings.TrimSpace(string(output))
+	if !strings.HasPrefix(ref, "refs/heads/") || strings.TrimSpace(strings.TrimPrefix(ref, "refs/heads/")) == "" {
+		return ""
+	}
+	return ref
+}
+
+func claimedWorktreeState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "claimed", "running", "verifying":
+		return true
+	default:
+		return false
+	}
+}
+
+func actorOwnsClaim(actor, holder string) bool {
+	actor = strings.TrimSpace(actor)
+	holder = strings.TrimSpace(holder)
+	return actor != "" && (holder == actor || strings.HasPrefix(holder, actor+":"))
+}
+
+func containsWorktreeBranchArtifact(artifacts []string, branchRef string) bool {
+	want := "worktree-branch:" + strings.TrimSpace(branchRef)
+	for _, artifact := range artifacts {
+		if strings.TrimSpace(artifact) == want {
+			return true
+		}
+	}
+	return false
 }
 
 const sessionMutationStateSchemaVersion = "compound.hook_session_mutation.v0.1"

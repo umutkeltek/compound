@@ -91,6 +91,7 @@ type SourceControlContext struct {
 	SessionOwnershipKnown      bool                           `json:"session_ownership_known,omitempty"`
 	SessionOwnedChangedPaths   int                            `json:"session_owned_changed_paths,omitempty"`
 	SessionForeignChangedPaths int                            `json:"session_foreign_changed_paths,omitempty"`
+	ClaimedWorkID              string                         `json:"claimed_work_id,omitempty"`
 	ChangedStateFingerprint    string                         `json:"changed_state_fingerprint,omitempty"`
 	ReviewedMutation           *ReviewedSourceControlMutation `json:"reviewed_mutation,omitempty"`
 	EvidenceRefs               []string                       `json:"evidence_refs,omitempty"`
@@ -339,6 +340,10 @@ func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionInt
 		return pd
 	}
 	targetStatus := sourceControlTargetStatus(ai, sc)
+	if claimedWorkID := strings.TrimSpace(sc.ClaimedWorkID); claimedWorkID != "" {
+		pd.Reasons = append(pd.Reasons, fmt.Sprintf("all %d dirty source-control path(s) attributed to claimed WorkEnvelope %s through exact Git-delivery worktree provenance; dirty escalation not added", sc.ChangedPaths, claimedWorkID))
+		return pd
+	}
 	if sc.SessionOwnershipKnown && sc.SessionOwnedChangedPaths > 0 && sc.SessionForeignChangedPaths == 0 {
 		pd.Reasons = append(pd.Reasons, fmt.Sprintf("all %d dirty source-control path(s) are attributed to the current governed session; dirty escalation not added", sc.SessionOwnedChangedPaths))
 		return pd
