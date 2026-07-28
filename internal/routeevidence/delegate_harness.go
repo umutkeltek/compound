@@ -35,8 +35,11 @@ func resolveDelegateHarness(req work.DelegateHarnessResolveRequest) (work.Delega
 		LaneID:                 strings.TrimSpace(tuple.Harness),
 		RequestedModelID:       modelID,
 		RequestedProviderRoute: strings.TrimSpace(tuple.ProviderRoute),
-		CapacityLane:           strings.TrimSpace(tuple.ProviderRoute),
-		TupleBacked:            true,
+		// Transport is executor-owned in the lane projection. Keep it unknown
+		// until the selected executor returns an owner-attested profile plan.
+		SelectedTransportID: "",
+		CapacityLane:        strings.TrimSpace(tuple.ProviderRoute),
+		TupleBacked:         true,
 	}
 	if tuple.CapacitySource != nil {
 		resolution.CapacitySource = &work.LaneCapacitySource{

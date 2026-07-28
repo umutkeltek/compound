@@ -48,14 +48,25 @@ Governed `compound work delegate` can select an existing profile with `--executi
 role/capability/harness/transport/route/model/effort/orchestration/privacy selectors narrow that profile and are
 refused when no profile is selected. The existing `--harness` flag still selects the exact Compound model-router
 `LaneTuple`. The route-evidence owner resolves one bounded canonical plan snapshot and attests compatibility
-against the selected harness and lane; `internal/work` does not maintain harness-family tables or name-prefix
-heuristics. Admission validates the snapshot's size, JSON, schema, required identity, and exact attestation before
-readiness, capacity, event persistence, RunAttempt mint, or process creation. A typed execution-profile readiness
+against the selected harness, lane, model ID, provider route, and owner-attested transport; `internal/work` does
+not maintain harness-family, model, route-alias, or transport compatibility tables. Admission validates the
+snapshot's size, JSON, schema, required identity, and exact attestation before readiness, capacity, event
+persistence, RunAttempt mint, or process creation. A typed execution-profile readiness
 proof carries that exact snapshot plus its reference and digest; the proof is hashed into the canonical
 `snapshot_revision` and persisted on the delegate binding. The exact RunAttempt stores the plan ID plus requested
 client-harness, transport, and native-effort identity fields before spawn—not the full plan. Observed
 model/provider fields remain empty until route evidence attests them. Gateway client-profile/account/credential
 selection remains gateway-owned and is not stored here.
+
+Profile compatibility binds the selected canonical tuple rather than trusting selectors in isolation. After
+route-owner normalization, a nonempty model constraint must equal the selected model ID; a nonempty route alias
+must equal the selected provider route or selected route identity; and the plan transport must equal a nonempty
+transport attested by its owner.
+`LaneTuple` resolution deliberately leaves selected transport empty because the lane projection declares
+`transport` executor-owned. Therefore current real `--execution-profile` delegation fails closed before readiness
+until the executor-owned profile-plan cutover supplies transport evidence; Compound never infers Switchback
+transport from a route name or requested profile. Delegation without `--execution-profile` retains its legacy
+behavior.
 
 Harness and transport are independent selectors: for example, Claude Code may run over native transport or an
 observed gateway transport without becoming a different harness. Selecting a transport does not let Compound
@@ -194,10 +205,10 @@ tmux creation, or a `harness_execution` RunAttempt mint. A missing readiness che
 The admitted evidence rows plus the full lane-capacity verdict are canonicalized into one
 `snapshot_revision`. Immediately before mint, the lifecycle-admission lock re-reads the exact WorkEnvelope hash
 and lease, re-resolves the execution profile, revalidates the compatibility attestation against the exact selected
-harness/lane and canonical plan identity, re-runs harness readiness and capacity with the same captured inputs,
-and requires the same snapshot revision. Any changed authority or capacity returns `authority_changed` with no
-mint, refusal-event persistence, or spawn. A successful activation carries the revision-bearing snapshot,
-including the typed canonical execution-profile proof, in its returned result and persisted
+harness/lane/model/provider-route/transport tuple and canonical plan identity, re-runs harness readiness and
+capacity with the same captured inputs, and requires the same snapshot revision. Any changed authority or capacity
+returns `authority_changed` with no mint, refusal-event persistence, or spawn. A successful activation carries the
+revision-bearing snapshot, including the typed canonical execution-profile proof, in its returned result and persisted
 `work.delegate.spawned` binding. Recovery revalidates the plan projection, proof body, reference, digest, and
 aggregate readiness revision, so it can name what admitted the run without trusting mutable current
 configuration.

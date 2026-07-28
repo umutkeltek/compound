@@ -31,17 +31,40 @@ func testDelegateExecutionProfilePlan() *DelegateExecutionProfilePlan {
 		Budget:                  json.RawMessage(`{"max_requests":40}`),
 		Checkpoint:              json.RawMessage(`{"required":false}`),
 		Warnings:                []string{"fixture warning"},
-		Snapshot:                json.RawMessage(`{"budget":{"max_requests":40},"client_harness_id":"claude-code","id":"epplan_test1234","native_effort":{"disposition":"translated","reason":"mapped through selected client","requested":"xhigh"},"profile_id":"coding-implementation","schema_version":"compound.execution_profile_plan.v0.1","transport_id":"switchback","warnings":["fixture warning"]}`),
+		Snapshot:                json.RawMessage(`{"budget":{"max_requests":40},"client_harness_id":"claude-code","id":"epplan_test1234","model_constraint":"fixture/model","native_effort":{"disposition":"translated","reason":"mapped through selected client","requested":"xhigh"},"profile_id":"coding-implementation","route_alias":"auto/build","schema_version":"compound.execution_profile_plan.v0.1","transport_id":"switchback","warnings":["fixture warning"]}`),
 	}
 }
 
 func testDelegateExecutionProfileResolution(plan *DelegateExecutionProfilePlan, selectedHarness, selectedLane, disposition string) *DelegateExecutionProfileResolution {
+	return testDelegateExecutionProfileResolutionForTuple(
+		plan,
+		selectedHarness,
+		selectedLane,
+		"fixture/model",
+		"auto/build",
+		"switchback",
+		disposition,
+	)
+}
+
+func testDelegateExecutionProfileResolutionForTuple(
+	plan *DelegateExecutionProfilePlan,
+	selectedHarness string,
+	selectedLane string,
+	selectedModelID string,
+	selectedProviderRoute string,
+	selectedTransportID string,
+	disposition string,
+) *DelegateExecutionProfileResolution {
 	return &DelegateExecutionProfileResolution{
 		Snapshot: append(json.RawMessage(nil), plan.Snapshot...),
 		Compatibility: DelegateExecutionProfileCompatibility{
 			Disposition:           disposition,
 			SelectedHarness:       selectedHarness,
 			SelectedLaneID:        selectedLane,
+			SelectedModelID:       selectedModelID,
+			SelectedProviderRoute: selectedProviderRoute,
+			SelectedTransportID:   selectedTransportID,
 			PlanID:                plan.ID,
 			ClientHarnessID:       plan.ClientHarnessID,
 			TransportID:           plan.TransportID,
@@ -54,7 +77,33 @@ func testCompatibleDelegateExecutionProfileResolution(plan *DelegateExecutionPro
 	return testDelegateExecutionProfileResolution(plan, "claude_code", "claude_code", DelegateExecutionProfileCompatible)
 }
 
+func installTestDelegateExecutionProfileHarness(t *testing.T) {
+	t.Helper()
+	installTestDelegateExecutionProfileHarnessTuple(t, "fixture/model", "auto/build", "switchback")
+}
+
+func installTestDelegateExecutionProfileHarnessTuple(t *testing.T, modelID, providerRoute, transportID string) {
+	t.Helper()
+	original := DelegateHarnessResolver
+	DelegateHarnessResolver = func(req DelegateHarnessResolveRequest) (DelegateHarnessResolution, error) {
+		return DelegateHarnessResolution{
+			Harness:                strings.TrimSpace(req.Harness),
+			Command:                strings.TrimSpace(req.CommandOverride),
+			LaneID:                 strings.TrimSpace(req.Harness),
+			RequestedModelID:       modelID,
+			RequestedProviderRoute: providerRoute,
+			SelectedTransportID:    transportID,
+			CapacityLane:           strings.TrimSpace(req.Harness),
+			TupleBacked:            true,
+		}, nil
+	}
+	t.Cleanup(func() {
+		DelegateHarnessResolver = original
+	})
+}
+
 func TestDelegateExecutionProfileRefusesUnknownBeforeReadinessCapacityMintOrCreate(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
 	originalProfileResolver := DelegateExecutionProfileResolver
 	originalReadiness := DelegateHarnessReadiness
 	originalCapacity := LaneCapacityGuard
@@ -113,6 +162,7 @@ func TestDelegateExecutionProfileRefusesUnknownBeforeReadinessCapacityMintOrCrea
 }
 
 func TestDelegateExecutionProfileRejectsNonCanonicalSnapshotBeforeReadinessOrMutation(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
 	for _, tc := range []struct {
 		name     string
 		snapshot json.RawMessage
@@ -187,7 +237,127 @@ func TestDelegateExecutionProfileRejectsNonCanonicalSnapshotBeforeReadinessOrMut
 	}
 }
 
+func TestDelegateExecutionProfileRejectsIncompatibleSelectedTupleBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		selectedModelID       string
+		selectedProviderRoute string
+		selectedTransportID   string
+	}{
+		{
+			name:                  "model mismatch",
+			selectedModelID:       "fixture/other",
+			selectedProviderRoute: "auto/build",
+			selectedTransportID:   "switchback",
+		},
+		{
+			name:                  "provider route mismatch",
+			selectedModelID:       "fixture/model",
+			selectedProviderRoute: "auto/judge",
+			selectedTransportID:   "switchback",
+		},
+		{
+			name:                  "transport mismatch",
+			selectedModelID:       "fixture/model",
+			selectedProviderRoute: "auto/build",
+			selectedTransportID:   "native",
+		},
+		{
+			name:                  "missing transport",
+			selectedModelID:       "fixture/model",
+			selectedProviderRoute: "auto/build",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installTestDelegateExecutionProfileHarnessTuple(
+				t,
+				tc.selectedModelID,
+				tc.selectedProviderRoute,
+				tc.selectedTransportID,
+			)
+			originalProfileResolver := DelegateExecutionProfileResolver
+			originalReadiness := DelegateHarnessReadiness
+			originalCapacity := LaneCapacityGuard
+			defer func() {
+				DelegateExecutionProfileResolver = originalProfileResolver
+				DelegateHarnessReadiness = originalReadiness
+				LaneCapacityGuard = originalCapacity
+			}()
+
+			plan := testDelegateExecutionProfilePlan()
+			DelegateExecutionProfileResolver = func(req DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfileResolution, error) {
+				if req.SelectedModelID != tc.selectedModelID ||
+					req.SelectedProviderRoute != tc.selectedProviderRoute ||
+					req.SelectedTransportID != tc.selectedTransportID {
+					t.Fatalf("resolver request lost selected tuple: got %+v", req)
+				}
+				return testDelegateExecutionProfileResolutionForTuple(
+					plan,
+					req.SelectedHarness,
+					req.SelectedLaneID,
+					req.SelectedModelID,
+					req.SelectedProviderRoute,
+					req.SelectedTransportID,
+					DelegateExecutionProfileIncompatible,
+				), nil
+			}
+			readinessCalls := 0
+			capacityCalls := 0
+			DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
+				readinessCalls++
+				return DelegateHarnessReadinessResult{Ready: true}, nil
+			}
+			LaneCapacityGuard = func(LaneCapacityGuardRequest) (LaneCapacityGuardResult, error) {
+				capacityCalls++
+				return LaneCapacityGuardResult{Capacity: DispatchLaneCapacity{State: "available"}}, nil
+			}
+
+			store := newStore(t)
+			workID := prepareClaimedWork(t, store, "codex", "", "")
+			before, err := runattempt.Open(store.home).List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := newFakeRunner()
+			result, err := store.Delegate(DelegateOptions{
+				WorkID:    workID,
+				Harness:   "claude_code",
+				Command:   "claude",
+				Workspace: t.TempDir(),
+				ExecutionProfile: DelegateExecutionProfileIntent{
+					ProfileID: plan.ProfileID,
+				},
+				Now: fixedNow,
+			}, runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Refusal == nil || result.Refusal.Reason != "execution_profile_incompatible" {
+				t.Fatalf("unexpected refusal: %+v", result)
+			}
+			after, err := runattempt.Open(store.home).List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if readinessCalls != 0 || capacityCalls != 0 || len(runner.creates) != 0 || len(after) != len(before) {
+				t.Fatalf(
+					"incompatible selected tuple crossed activation boundary: readiness=%d capacity=%d creates=%d attempts=%d->%d",
+					readinessCalls,
+					capacityCalls,
+					len(runner.creates),
+					len(before),
+					len(after),
+				)
+			}
+			if events := capturedDelegateEvents(t, store); len(events) != 0 {
+				t.Fatalf("incompatible selected tuple persisted delegate events: %+v", events)
+			}
+		})
+	}
+}
+
 func TestDelegateExecutionProfileRejectsHarnessFamilyMismatchBeforeMutation(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
 	originalProfileResolver := DelegateExecutionProfileResolver
 	originalReadiness := DelegateHarnessReadiness
 	originalCapacity := LaneCapacityGuard
@@ -249,6 +419,7 @@ func TestDelegateExecutionProfileRejectsHarnessFamilyMismatchBeforeMutation(t *t
 }
 
 func TestDelegateExecutionProfileRejectsUnknownCodexLookalikeBeforeMutation(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
 	originalProfileResolver := DelegateExecutionProfileResolver
 	originalReadiness := DelegateHarnessReadiness
 	originalCapacity := LaneCapacityGuard
@@ -310,6 +481,7 @@ func TestDelegateExecutionProfileRejectsUnknownCodexLookalikeBeforeMutation(t *t
 }
 
 func TestDelegateExecutionProfileAuthorityDriftRefusesBeforeMintCreateOrPersistence(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
 	originalProfileResolver := DelegateExecutionProfileResolver
 	originalReadiness := DelegateHarnessReadiness
 	originalCapacity := LaneCapacityGuard
@@ -381,15 +553,35 @@ func TestDelegateExecutionProfileAuthorityDriftRefusesBeforeMintCreateOrPersiste
 }
 
 func TestDelegateExecutionProfileUnchangedSnapshotWithDTOIdentityDriftRefusesBeforeMint(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
 	for _, tc := range []struct {
 		name   string
-		mutate func(*DelegateExecutionProfilePlan)
+		mutate func(*DelegateExecutionProfileResolution)
 	}{
-		{name: "plan id", mutate: func(plan *DelegateExecutionProfilePlan) { plan.ID = "epplan_tampered" }},
-		{name: "plan id surrounding whitespace", mutate: func(plan *DelegateExecutionProfilePlan) { plan.ID = " " + plan.ID + " " }},
-		{name: "client harness", mutate: func(plan *DelegateExecutionProfilePlan) { plan.ClientHarnessID = "codex" }},
-		{name: "transport", mutate: func(plan *DelegateExecutionProfilePlan) { plan.TransportID = "native" }},
-		{name: "native effort", mutate: func(plan *DelegateExecutionProfilePlan) { plan.RequestedNativeEffort = "low" }},
+		{name: "plan id", mutate: func(resolution *DelegateExecutionProfileResolution) {
+			resolution.Compatibility.PlanID = "epplan_tampered"
+		}},
+		{name: "plan id surrounding whitespace", mutate: func(resolution *DelegateExecutionProfileResolution) {
+			resolution.Compatibility.PlanID = " " + resolution.Compatibility.PlanID + " "
+		}},
+		{name: "selected model", mutate: func(resolution *DelegateExecutionProfileResolution) {
+			resolution.Compatibility.SelectedModelID = "fixture/other"
+		}},
+		{name: "selected provider route", mutate: func(resolution *DelegateExecutionProfileResolution) {
+			resolution.Compatibility.SelectedProviderRoute = "auto/judge"
+		}},
+		{name: "selected transport", mutate: func(resolution *DelegateExecutionProfileResolution) {
+			resolution.Compatibility.SelectedTransportID = "native"
+		}},
+		{name: "client harness", mutate: func(resolution *DelegateExecutionProfileResolution) {
+			resolution.Compatibility.ClientHarnessID = "codex"
+		}},
+		{name: "canonical transport", mutate: func(resolution *DelegateExecutionProfileResolution) {
+			resolution.Compatibility.TransportID = "native"
+		}},
+		{name: "native effort", mutate: func(resolution *DelegateExecutionProfileResolution) {
+			resolution.Compatibility.RequestedNativeEffort = "low"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			originalProfileResolver := DelegateExecutionProfileResolver
@@ -402,15 +594,15 @@ func TestDelegateExecutionProfileUnchangedSnapshotWithDTOIdentityDriftRefusesBef
 			}()
 
 			admittedPlan := testDelegateExecutionProfilePlan()
-			driftedPlan := cloneDelegateExecutionProfilePlan(admittedPlan)
-			tc.mutate(driftedPlan)
 			resolverCalls := 0
 			DelegateExecutionProfileResolver = func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfileResolution, error) {
 				resolverCalls++
 				if resolverCalls == 1 {
 					return testCompatibleDelegateExecutionProfileResolution(admittedPlan), nil
 				}
-				return testCompatibleDelegateExecutionProfileResolution(driftedPlan), nil
+				drifted := testCompatibleDelegateExecutionProfileResolution(admittedPlan)
+				tc.mutate(drifted)
+				return drifted, nil
 			}
 			DelegateHarnessReadiness = func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error) {
 				return DelegateHarnessReadinessResult{Ready: true}, nil
@@ -453,6 +645,7 @@ func TestDelegateExecutionProfileUnchangedSnapshotWithDTOIdentityDriftRefusesBef
 }
 
 func TestDelegateExecutionProfileRoundTripsBindingReadinessAndRunAttempt(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
 	originalProfileResolver := DelegateExecutionProfileResolver
 	originalReadiness := DelegateHarnessReadiness
 	originalCapacity := LaneCapacityGuard
@@ -470,7 +663,10 @@ func TestDelegateExecutionProfileRoundTripsBindingReadinessAndRunAttempt(t *test
 			req.Intent.RouteAlias != "auto/build" ||
 			req.Intent.NativeEffort != "xhigh" ||
 			req.SelectedHarness != "claude_code" ||
-			req.SelectedLaneID != "claude_code" {
+			req.SelectedLaneID != "claude_code" ||
+			req.SelectedModelID != "fixture/model" ||
+			req.SelectedProviderRoute != "auto/build" ||
+			req.SelectedTransportID != "switchback" {
 			t.Fatalf("resolver request lost selectors: %+v", req)
 		}
 		return testCompatibleDelegateExecutionProfileResolution(plan), nil
@@ -559,6 +755,7 @@ func TestDelegateExecutionProfileRoundTripsBindingReadinessAndRunAttempt(t *test
 }
 
 func TestRecoverBoundSessionRejectsTamperedExecutionProfileProof(t *testing.T) {
+	installTestDelegateExecutionProfileHarness(t)
 	for _, tc := range []struct {
 		name   string
 		mutate func(*delegateEvent)

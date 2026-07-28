@@ -3,6 +3,7 @@ package routeevidence
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"compound/internal/work"
 )
@@ -29,7 +30,10 @@ func resolveDelegateExecutionProfile(req work.DelegateExecutionProfileResolveReq
 		return nil, fmt.Errorf("marshal execution profile plan snapshot: %w", err)
 	}
 	disposition := work.DelegateExecutionProfileIncompatible
-	if delegateExecutionProfileHarnessesCompatible(req.SelectedHarness, req.SelectedLaneID, plan.ClientHarnessID) {
+	if delegateExecutionProfileHarnessesCompatible(req.SelectedHarness, req.SelectedLaneID, plan.ClientHarnessID) &&
+		delegateExecutionProfileModelCompatible(plan.ModelConstraint, req.SelectedModelID) &&
+		delegateExecutionProfileRouteCompatible(plan.RouteAlias, req.SelectedProviderRoute, req.SelectedModelID) &&
+		delegateExecutionProfileTransportCompatible(plan.TransportID, req.SelectedTransportID) {
 		disposition = work.DelegateExecutionProfileCompatible
 	}
 	return &work.DelegateExecutionProfileResolution{
@@ -38,12 +42,39 @@ func resolveDelegateExecutionProfile(req work.DelegateExecutionProfileResolveReq
 			Disposition:           disposition,
 			SelectedHarness:       req.SelectedHarness,
 			SelectedLaneID:        req.SelectedLaneID,
+			SelectedModelID:       req.SelectedModelID,
+			SelectedProviderRoute: req.SelectedProviderRoute,
+			SelectedTransportID:   req.SelectedTransportID,
 			PlanID:                plan.ID,
 			ClientHarnessID:       plan.ClientHarnessID,
 			TransportID:           plan.TransportID,
 			RequestedNativeEffort: plan.NativeEffort.Requested,
 		},
 	}, nil
+}
+
+func delegateExecutionProfileModelCompatible(modelConstraint, selectedModelID string) bool {
+	if strings.TrimSpace(modelConstraint) == "" {
+		return true
+	}
+	return delegateExecutionProfileTupleIdentityEqual(modelConstraint, selectedModelID)
+}
+
+func delegateExecutionProfileRouteCompatible(routeAlias, selectedProviderRoute, selectedRouteIdentity string) bool {
+	if strings.TrimSpace(routeAlias) == "" {
+		return true
+	}
+	return delegateExecutionProfileTupleIdentityEqual(routeAlias, selectedProviderRoute) ||
+		delegateExecutionProfileTupleIdentityEqual(routeAlias, selectedRouteIdentity)
+}
+
+func delegateExecutionProfileTransportCompatible(planTransportID, selectedTransportID string) bool {
+	return strings.TrimSpace(selectedTransportID) != "" &&
+		delegateExecutionProfileTupleIdentityEqual(planTransportID, selectedTransportID)
+}
+
+func delegateExecutionProfileTupleIdentityEqual(left, right string) bool {
+	return normalizeModelCapabilitySelector(left) == normalizeModelCapabilitySelector(right)
 }
 
 // delegateExecutionProfileHarnessesCompatible keeps client-family ownership

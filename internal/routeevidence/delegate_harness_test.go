@@ -43,7 +43,11 @@ func TestResolveDelegateHarnessRawCommandOverridesExecutableOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolution.Command != "raw-worker-tool" || resolution.RequestedModelID != "fixture-qwen" || resolution.RequestedProviderRoute != "qwen" || !resolution.TupleBacked {
+	if resolution.Command != "raw-worker-tool" ||
+		resolution.RequestedModelID != "fixture-qwen" ||
+		resolution.RequestedProviderRoute != "qwen" ||
+		resolution.SelectedTransportID != "" ||
+		!resolution.TupleBacked {
 		t.Fatalf("raw override lost tuple identity: %+v", resolution)
 	}
 }

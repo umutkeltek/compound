@@ -9,8 +9,11 @@ import (
 
 func TestResolveDelegateExecutionProfileUsesCanonicalOwnerAndLosslessSnapshot(t *testing.T) {
 	resolved, err := resolveDelegateExecutionProfile(work.DelegateExecutionProfileResolveRequest{
-		SelectedHarness: "codex",
-		SelectedLaneID:  "codex",
+		SelectedHarness:       "codex",
+		SelectedLaneID:        "codex",
+		SelectedModelID:       "fixture/model",
+		SelectedProviderRoute: "auto/build",
+		SelectedTransportID:   "switchback",
 		Intent: work.DelegateExecutionProfileIntent{
 			ProfileID:       "coding-implementation",
 			ClientHarnessID: "codex",
@@ -27,7 +30,10 @@ func TestResolveDelegateExecutionProfileUsesCanonicalOwnerAndLosslessSnapshot(t 
 	}
 	if resolved.Compatibility.Disposition != work.DelegateExecutionProfileCompatible ||
 		resolved.Compatibility.SelectedHarness != "codex" ||
-		resolved.Compatibility.SelectedLaneID != "codex" {
+		resolved.Compatibility.SelectedLaneID != "codex" ||
+		resolved.Compatibility.SelectedModelID != "fixture/model" ||
+		resolved.Compatibility.SelectedProviderRoute != "auto/build" ||
+		resolved.Compatibility.SelectedTransportID != "switchback" {
 		t.Fatalf("resolver lost owner compatibility attestation: %+v", resolved)
 	}
 	var canonical ExecutionProfilePlan
@@ -67,8 +73,9 @@ func TestResolveDelegateExecutionProfileAttestsOnlyExactRegisteredHarnessFamilie
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resolved, err := resolveDelegateExecutionProfile(work.DelegateExecutionProfileResolveRequest{
-				SelectedHarness: tc.selected,
-				SelectedLaneID:  tc.lane,
+				SelectedHarness:     tc.selected,
+				SelectedLaneID:      tc.lane,
+				SelectedTransportID: "switchback",
 				Intent: work.DelegateExecutionProfileIntent{
 					ProfileID:       "coding-implementation",
 					ClientHarnessID: tc.clientHarness,
@@ -83,6 +90,99 @@ func TestResolveDelegateExecutionProfileAttestsOnlyExactRegisteredHarnessFamilie
 			}
 			if resolved.Compatibility.Disposition != tc.want {
 				t.Fatalf("compatibility for %q = %+v, want %q", tc.selected, resolved.Compatibility, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveDelegateExecutionProfileBindsSelectedCanonicalTuple(t *testing.T) {
+	base := work.DelegateExecutionProfileResolveRequest{
+		SelectedHarness:       "codex",
+		SelectedLaneID:        "codex",
+		SelectedModelID:       "fixture/model",
+		SelectedProviderRoute: "auto/build",
+		SelectedTransportID:   "switchback",
+		Intent: work.DelegateExecutionProfileIntent{
+			ProfileID:       "coding-implementation",
+			ClientHarnessID: "codex",
+			TransportID:     "switchback",
+			RouteAlias:      "auto/build",
+			ModelConstraint: "fixture/model",
+			SemanticEffort:  "deep",
+			NativeEffort:    "xhigh",
+			PrivacyCeiling:  "private",
+		},
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*work.DelegateExecutionProfileResolveRequest)
+		want   string
+	}{
+		{name: "matching tuple", want: work.DelegateExecutionProfileCompatible},
+		{
+			name: "matching normalized tuple identities",
+			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
+				req.Intent.ModelConstraint = "fixture/model-name"
+				req.SelectedModelID = " FIXTURE/MODEL_NAME "
+				req.SelectedProviderRoute = " AUTO/BUILD "
+				req.SelectedTransportID = " SWITCHBACK "
+			},
+			want: work.DelegateExecutionProfileCompatible,
+		},
+		{
+			name: "route alias matches selected route identity",
+			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
+				req.Intent.ModelConstraint = ""
+				req.SelectedModelID = "auto/build"
+				req.SelectedProviderRoute = "provider/physical-model"
+			},
+			want: work.DelegateExecutionProfileCompatible,
+		},
+		{
+			name: "model mismatch",
+			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
+				req.SelectedModelID = "fixture/other"
+			},
+			want: work.DelegateExecutionProfileIncompatible,
+		},
+		{
+			name: "provider route mismatch",
+			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
+				req.SelectedProviderRoute = "auto/judge"
+			},
+			want: work.DelegateExecutionProfileIncompatible,
+		},
+		{
+			name: "transport mismatch",
+			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
+				req.SelectedTransportID = "native"
+			},
+			want: work.DelegateExecutionProfileIncompatible,
+		},
+		{
+			name: "missing transport",
+			mutate: func(req *work.DelegateExecutionProfileResolveRequest) {
+				req.SelectedTransportID = ""
+			},
+			want: work.DelegateExecutionProfileIncompatible,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := base
+			if tc.mutate != nil {
+				tc.mutate(&req)
+			}
+			resolved, err := resolveDelegateExecutionProfile(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.Compatibility.Disposition != tc.want {
+				t.Fatalf("compatibility = %+v, want disposition %q", resolved.Compatibility, tc.want)
+			}
+			if resolved.Compatibility.SelectedModelID != req.SelectedModelID ||
+				resolved.Compatibility.SelectedProviderRoute != req.SelectedProviderRoute ||
+				resolved.Compatibility.SelectedTransportID != req.SelectedTransportID {
+				t.Fatalf("selected tuple attestation drifted: request=%+v compatibility=%+v", req, resolved.Compatibility)
 			}
 		})
 	}

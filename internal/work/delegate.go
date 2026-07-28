@@ -134,6 +134,7 @@ type DelegateHarnessResolution struct {
 	LaneID                 string
 	RequestedModelID       string
 	RequestedProviderRoute string
+	SelectedTransportID    string
 	CapacityLane           string
 	TupleBacked            bool
 	CapacitySource         *LaneCapacitySource
@@ -201,15 +202,21 @@ type DelegateExecutionProfilePlan struct {
 }
 
 type DelegateExecutionProfileResolveRequest struct {
-	Intent          DelegateExecutionProfileIntent
-	SelectedHarness string
-	SelectedLaneID  string
+	Intent                DelegateExecutionProfileIntent
+	SelectedHarness       string
+	SelectedLaneID        string
+	SelectedModelID       string
+	SelectedProviderRoute string
+	SelectedTransportID   string
 }
 
 type DelegateExecutionProfileCompatibility struct {
 	Disposition           string `json:"disposition"`
 	SelectedHarness       string `json:"selected_harness"`
 	SelectedLaneID        string `json:"selected_lane_id"`
+	SelectedModelID       string `json:"selected_model_id"`
+	SelectedProviderRoute string `json:"selected_provider_route"`
+	SelectedTransportID   string `json:"selected_transport_id"`
 	PlanID                string `json:"plan_id"`
 	ClientHarnessID       string `json:"client_harness_id"`
 	TransportID           string `json:"transport_id"`
@@ -732,6 +739,9 @@ func validateDelegateExecutionProfileResolution(
 	resolution *DelegateExecutionProfileResolution,
 	selectedHarness string,
 	selectedLaneID string,
+	selectedModelID string,
+	selectedProviderRoute string,
+	selectedTransportID string,
 ) (*DelegateExecutionProfilePlan, error) {
 	if resolution == nil {
 		return nil, errors.New("execution profile resolver returned no resolution")
@@ -752,6 +762,9 @@ func validateDelegateExecutionProfileResolution(
 		got  string
 		want string
 	}{
+		{name: "selected_model_id", got: compatibility.SelectedModelID, want: selectedModelID},
+		{name: "selected_provider_route", got: compatibility.SelectedProviderRoute, want: selectedProviderRoute},
+		{name: "selected_transport_id", got: compatibility.SelectedTransportID, want: selectedTransportID},
 		{name: "plan_id", got: compatibility.PlanID, want: plan.ID},
 		{name: "client_harness_id", got: compatibility.ClientHarnessID, want: plan.ClientHarnessID},
 		{name: "transport_id", got: compatibility.TransportID, want: plan.TransportID},
@@ -766,7 +779,7 @@ func validateDelegateExecutionProfileResolution(
 		return plan, nil
 	case DelegateExecutionProfileIncompatible:
 		return nil, &delegateExecutionProfileIncompatibleError{
-			detail: fmt.Sprintf("selected harness %q is not compatible with requested client harness %q", selectedHarness, plan.ClientHarnessID),
+			detail: fmt.Sprintf("selected harness/model/route/transport tuple is not compatible with execution profile %q", plan.ID),
 		}
 	default:
 		return nil, fmt.Errorf("compatibility disposition = %q", compatibility.Disposition)
@@ -879,6 +892,9 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	resolvedHarness := strings.TrimSpace(resolution.Harness)
 	command := strings.TrimSpace(resolution.Command)
 	laneForGuard := strings.TrimSpace(resolution.CapacityLane)
+	selectedModelID := strings.TrimSpace(resolution.RequestedModelID)
+	selectedProviderRoute := strings.TrimSpace(resolution.RequestedProviderRoute)
+	selectedTransportID := strings.TrimSpace(resolution.SelectedTransportID)
 	if laneForGuard == "" {
 		laneForGuard = strings.TrimSpace(resolution.LaneID)
 	}
@@ -911,9 +927,12 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			return out, nil
 		}
 		resolvedProfile, profileErr := executionProfileResolver(DelegateExecutionProfileResolveRequest{
-			Intent:          opts.ExecutionProfile,
-			SelectedHarness: resolvedHarness,
-			SelectedLaneID:  out.Lane,
+			Intent:                opts.ExecutionProfile,
+			SelectedHarness:       resolvedHarness,
+			SelectedLaneID:        out.Lane,
+			SelectedModelID:       selectedModelID,
+			SelectedProviderRoute: selectedProviderRoute,
+			SelectedTransportID:   selectedTransportID,
 		})
 		if profileErr != nil {
 			out.Refusal = &DelegateRefusal{
@@ -922,7 +941,14 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			}
 			return out, nil
 		}
-		executionProfile, profileErr = validateDelegateExecutionProfileResolution(resolvedProfile, resolvedHarness, out.Lane)
+		executionProfile, profileErr = validateDelegateExecutionProfileResolution(
+			resolvedProfile,
+			resolvedHarness,
+			out.Lane,
+			selectedModelID,
+			selectedProviderRoute,
+			selectedTransportID,
+		)
 		var incompatible *delegateExecutionProfileIncompatibleError
 		if errors.As(profileErr, &incompatible) {
 			out.Refusal = &DelegateRefusal{
@@ -1209,14 +1235,24 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		revalidatedExecutionProfile := executionProfile
 		if executionProfile != nil {
 			currentProfile, profileErr := executionProfileResolver(DelegateExecutionProfileResolveRequest{
-				Intent:          opts.ExecutionProfile,
-				SelectedHarness: resolvedHarness,
-				SelectedLaneID:  out.Lane,
+				Intent:                opts.ExecutionProfile,
+				SelectedHarness:       resolvedHarness,
+				SelectedLaneID:        out.Lane,
+				SelectedModelID:       selectedModelID,
+				SelectedProviderRoute: selectedProviderRoute,
+				SelectedTransportID:   selectedTransportID,
 			})
 			if profileErr != nil {
 				return &delegateAuthorityChangedError{detail: "execution profile revalidation failed"}
 			}
-			revalidatedExecutionProfile, profileErr = validateDelegateExecutionProfileResolution(currentProfile, resolvedHarness, out.Lane)
+			revalidatedExecutionProfile, profileErr = validateDelegateExecutionProfileResolution(
+				currentProfile,
+				resolvedHarness,
+				out.Lane,
+				selectedModelID,
+				selectedProviderRoute,
+				selectedTransportID,
+			)
 			if profileErr != nil {
 				return &delegateAuthorityChangedError{detail: "execution profile revalidation failed: " + profileErr.Error()}
 			}
