@@ -732,8 +732,8 @@ func TestProofReservationWithLatestRefreshIgnoresHistoricalReservationLineage(t 
 		t.Fatal(err)
 	}
 
-	// A work item may contain refresh evidence from an older reservation. It was
-	// validated when that reservation was active and is outside this lineage.
+	// A work item may contain refresh evidence from an older reservation.
+	// Select the current lineage before applying its strict validation.
 	historical := ProofResourceRefresh{
 		SchemaVersion:    ProofResourceRefreshSchemaVersion,
 		ID:               "pfrh_historical_reservation",
