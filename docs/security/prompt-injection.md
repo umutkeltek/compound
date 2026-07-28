@@ -121,6 +121,12 @@ active projection, but it cannot erase parents or raise trust.
 | Connector read with exact schema | Instruction/MCP/plugin schema or lineage drift | Untrusted authority-memory promotion |
 | Any exact standing-grant action | Suspicious classifier result | Malicious classifier result |
 
+For `compound ...` shell actions, the executable command registry supplies the
+outer classification and admission posture. The policy package does not keep a
+second subcommand allowlist. A registered `governed` command enters the local,
+reversible lane and must still enforce its own ActionIntent/PolicyDecision;
+an absent command or a registry row marked `hold` hits the security floor.
+
 A held action can use a durable, exact, one-use approval. The approval binds
 operation, arguments, destination, source refs, tool schema and policy
 revision, expires within fifteen minutes, and cannot override a deny or

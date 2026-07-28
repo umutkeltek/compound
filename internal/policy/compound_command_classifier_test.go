@@ -9,8 +9,6 @@ func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t
 		"compound coordination --actor codex --json",
 		"compound workbench --json",
 		"compound attention --json",
-		"compound land-lease status --json",
-		"compound authority git /tmp/example --json",
 	}
 	for _, command := range readCommands {
 		t.Run("read/"+command, func(t *testing.T) {
@@ -28,9 +26,12 @@ func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t
 		"compound work close-plan work_example --actor codex:root",
 		"compound work land-check work_example --tip 0123456789abcdef --actor codex:root",
 		"compound work close work_example --outcome completed --move-type rule_delta",
+		"compound work delegate work_example --harness codex --dry-run",
+		"compound land-lease status --json",
 		"compound land-lease acquire --holder codex:session:work_example",
 		"compound land-lease release --holder codex:session:work_example",
 		"compound proof-check --json --out /tmp/proof.json",
+		"compound authority git /tmp/example --json",
 		"compound authority dirty-plan /tmp/example --work-id work_example --action-intent act_example --json",
 		"compound authority dirty-review /tmp/example.review.yaml --json",
 		"git worktree add -b codex/example /tmp/example origin/main",
@@ -85,8 +86,6 @@ func TestDocumentedCompoundControlCommandsAreKnownWithoutWeakeningUnknownFloor(t
 	for _, command := range []string{
 		"compound definitely-not-a-command",
 		"compound release publish --public",
-		"compound authority worktree-retire apply",
-		"compound authority definitely-not-a-command",
 		"make publish",
 		"./mystery.sh",
 		"git commit --amend",

@@ -342,8 +342,9 @@ func liveToolResultSource(
 	now time.Time,
 ) (envelope.SourceEnvelope, error) {
 	classification := policy.ClassifyToolAction(policy.ToolActionRequest{
-		Tool:      in.ToolName,
-		Arguments: in.ToolInput,
+		Tool:               in.ToolName,
+		Arguments:          in.ToolInput,
+		FirstPartyCommands: firstPartyCommandCatalog(),
 	})
 	origin, trust, confidentiality, sinks := liveToolSourcePolicy(classification)
 	transformationKind := liveToolTransformationKind(in.ToolName)
@@ -861,6 +862,7 @@ func liveMonitoredAction(
 		ToolSchemaRevision: schemaRevision,
 		Sources:            append([]envelope.SourceEnvelope{}, in.SourceEnvelopes...),
 		ClassifierRisk:     in.ClassifierRisk,
+		FirstPartyCommands: firstPartyCommandCatalog(),
 	}, policy.DefaultConfig(), now)
 }
 

@@ -18,10 +18,28 @@ test("installer backs up and registers the local plugin without clobbering other
     "}\n"
   await writeFile(configPath, original)
   const imports: string[] = []
+  const posturePlans: string[] = []
+  const compilePosture = async (binary: string, harness: string) => {
+    posturePlans.push([binary, harness].join("|"))
+    return {
+      mutation_ready: false,
+      intentions: [
+        { intention: "prepare_context", disposition: "native", native_events: ["chat.message"] },
+        {
+          intention: "guard_mutation",
+          disposition: "unsupported",
+          native_events: [],
+          reason: "tool.execute.before cannot deny execution",
+        },
+        { intention: "observe_outcome", disposition: "native", native_events: ["tool.execute.after"] },
+      ],
+    }
+  }
 
   const first = await installOpenCode({
     home,
     compoundBinary: "/fixture/compound",
+    compilePosture,
     importAuthority: async (binary, registration, importHome) => {
       imports.push([binary, registration, importHome].join("|"))
       return { hook_count: 3 }
@@ -37,10 +55,12 @@ test("installer backs up and registers the local plugin without clobbering other
   expect(config.theme).toBe("fixture")
   expect(config.plugin).toEqual(["existing-plugin", "./plugins/compound.ts"])
   expect(first.authority_import).toEqual({ hook_count: 3 })
+  expect(posturePlans).toEqual(["/fixture/compound|opencode"])
 
   await installOpenCode({
     home,
     compoundBinary: "/fixture/compound",
+    compilePosture,
     importAuthority: async () => ({ hook_count: 3 }),
   })
   const secondConfig = Bun.JSONC.parse(await readFile(configPath, "utf8")) as {
@@ -48,4 +68,31 @@ test("installer backs up and registers the local plugin without clobbering other
   }
   expect(secondConfig.plugin).toEqual(["existing-plugin", "./plugins/compound.ts"])
   expect(imports).toHaveLength(1)
+  expect(posturePlans).toHaveLength(2)
+})
+
+test("installer refuses adapter drift before writing config", async () => {
+  const home = await mkdtemp(join(tmpdir(), "compound-opencode-posture-drift-"))
+  const configPath = join(home, ".config", "opencode", "opencode.jsonc")
+
+  await expect(
+    installOpenCode({
+      home,
+      compoundBinary: "/fixture/compound",
+      compilePosture: async () => ({
+        mutation_ready: true,
+        intentions: [
+          { intention: "prepare_context", disposition: "native", native_events: ["chat.message"] },
+          {
+            intention: "guard_mutation",
+            disposition: "native",
+            native_events: ["tool.execute.before"],
+          },
+          { intention: "observe_outcome", disposition: "native", native_events: ["tool.execute.after"] },
+        ],
+      }),
+      importAuthority: async () => ({ hook_count: 3 }),
+    }),
+  ).rejects.toThrow("does not match the installed adapter contract")
+  await expect(readFile(configPath, "utf8")).rejects.toThrow()
 })

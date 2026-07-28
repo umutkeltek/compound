@@ -20,6 +20,31 @@ session-end       → Receipt + Transition (what was learned, what changed)
 The harness calls Compound; Compound never calls the harness. This is
 **hooks-as-clients**: the harness is the client, Compound is the authority.
 
+## One semantic front door
+
+Choose the posture in Compound terms, not in vendor event names:
+
+```sh
+compound harness posture-plan --harness claude-code
+compound harness posture-plan --harness claude-zai
+compound harness posture-plan --harness codex
+compound harness posture-plan --harness opencode
+```
+
+The stable intentions are `prepare_context`, `guard_mutation`, and
+`observe_outcome`. The selected adapter owns native events, settings schema,
+matchers, and limitations. Every compiled intention says `native`, `fallback`,
+`degraded`, or `unsupported` and cites the harness attestation revision.
+
+Claude-family and Codex `compound hook install` consume this projection when
+they write managed hooks. The OpenCode installer asks Compound for the same
+projection and refuses adapter drift before writing its config/plugin. OpenCode
+currently reports `guard_mutation=unsupported`; its before-tool callback cannot
+deny, so Compound will not call it mutation-ready.
+
+The vendor-shaped examples below are adapter evidence and troubleshooting
+fallbacks. They are not the operator contract.
+
 ## Claude Code
 
 Claude Code supports hooks in `.claude/settings.json` (project-level) or
@@ -66,27 +91,15 @@ manifest.
 
 ## Codex
 
-Codex supports a `hooks.json` in the project root:
-
-```json
-{
-  "session_start": {
-    "command": "compound hook session-start --live --harness codex"
-  },
-  "pre_tool_use": {
-    "command": "compound hook pre-tool-use --enforce --live --harness codex"
-  },
-  "session_end": {
-    "command": "compound hook session-end --live --harness codex"
-  }
-}
-```
-
-Or import it:
-
 ```sh
-compound contract import-hooks --codex-hooks-json hooks.json
+compound harness posture-plan --harness codex
+compound hook install --harness codex --scope global
+compound hook install --harness codex --scope global --check --json
 ```
+
+The Codex adapter compiles the stable intentions into the current native
+`hooks.json` event schema and no-clobber merges Compound's bindings. Operators
+do not maintain that schema directly.
 
 ## OpenCode / any CLI harness
 

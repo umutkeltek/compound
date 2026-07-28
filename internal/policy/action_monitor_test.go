@@ -491,6 +491,18 @@ func monitorRequest(tool string, args map[string]any) ToolActionRequest {
 		Tool:               tool,
 		Arguments:          args,
 		ToolSchemaRevision: "schema:fixture-v1",
+		FirstPartyCommands: NewFirstPartyCommandCatalog(map[string]FirstPartyCommandAdmission{
+			"version":      FirstPartyCommandRead,
+			"orient":       FirstPartyCommandRead,
+			"coordination": FirstPartyCommandRead,
+			"workbench":    FirstPartyCommandRead,
+			"attention":    FirstPartyCommandRead,
+			"work":         FirstPartyCommandGoverned,
+			"land-lease":   FirstPartyCommandGoverned,
+			"authority":    FirstPartyCommandGoverned,
+			"proof-check":  FirstPartyCommandGoverned,
+			"route":        FirstPartyCommandRead,
+		}),
 	}
 }
 

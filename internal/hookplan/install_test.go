@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -91,6 +92,37 @@ func TestInstallHooksAllHarnesses(t *testing.T) {
 	codex := readJSON(t, filepath.Join(base, ".codex", "hooks.json"))
 	if got := firstMatcher(t, codex); got != "*" {
 		t.Fatalf("codex matcher = %q", got)
+	}
+	for harnessName, cfg := range map[string]map[string]any{
+		"claude-code": claude,
+		"claude-zai":  zai,
+		"codex":       codex,
+	} {
+		for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"} {
+			if !hasHookCommand(cfg, event, HookCommandForEvent("/usr/local/bin/compound", harnessName, event)) {
+				t.Fatalf("%s install did not consume semantic %s binding", harnessName, event)
+			}
+		}
+	}
+}
+
+func TestClaudeZaiInstallBindingsComeFromSemanticPosture(t *testing.T) {
+	t.Parallel()
+
+	bindings, compiled, err := compiledManagedHookBindings("/fixture/compound", claudeZaiHarness, "global")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !compiled.MutationReady {
+		t.Fatalf("attested claude-zai posture is not mutation ready: %+v", compiled)
+	}
+	gotEvents := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		gotEvents = append(gotEvents, binding.Event)
+	}
+	wantEvents := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
+	if !slices.Equal(gotEvents, wantEvents) {
+		t.Fatalf("installed native events = %v, want compiled %v", gotEvents, wantEvents)
 	}
 }
 
@@ -303,4 +335,15 @@ func firstCommand(entry any) string {
 		}
 	}
 	return ""
+}
+
+func hasHookCommand(cfg map[string]any, event, command string) bool {
+	hooks, _ := cfg["hooks"].(map[string]any)
+	groups, _ := hooks[event].([]any)
+	for _, group := range groups {
+		if firstCommand(group) == command {
+			return true
+		}
+	}
+	return false
 }

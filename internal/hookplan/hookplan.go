@@ -35,25 +35,30 @@ const (
 // HookPlan is desired authority. It is intentionally a different type from
 // InstallationSnapshot so observations cannot be promoted by assignment.
 type HookPlan struct {
-	SchemaVersion     string    `json:"schema_version" yaml:"schema_version"`
-	ID                string    `json:"id" yaml:"id"`
-	AuthorityRef      string    `json:"authority_ref,omitempty" yaml:"authority_ref,omitempty"`
-	Revision          string    `json:"revision" yaml:"revision"`
-	Bindings          []Binding `json:"bindings" yaml:"bindings"`
-	PreservedBindings []Binding `json:"preserved_bindings,omitempty" yaml:"preserved_bindings,omitempty"`
+	SchemaVersion     string              `json:"schema_version" yaml:"schema_version"`
+	ID                string              `json:"id" yaml:"id"`
+	AuthorityRef      string              `json:"authority_ref,omitempty" yaml:"authority_ref,omitempty"`
+	Revision          string              `json:"revision" yaml:"revision"`
+	CompiledFrom      *CompilationContext `json:"compiled_from,omitempty" yaml:"compiled_from,omitempty"`
+	Intentions        []CompiledIntention `json:"intentions,omitempty" yaml:"intentions,omitempty"`
+	Bindings          []Binding           `json:"bindings" yaml:"bindings"`
+	PreservedBindings []Binding           `json:"preserved_bindings,omitempty" yaml:"preserved_bindings,omitempty"`
 }
 
 // Binding is one desired harness event binding.
 type Binding struct {
-	ID                 string `json:"id" yaml:"id"`
-	Harness            string `json:"harness" yaml:"harness"`
-	Event              string `json:"event" yaml:"event"`
-	Matcher            string `json:"matcher,omitempty" yaml:"matcher,omitempty"`
-	HandlerRef         string `json:"handler_ref" yaml:"handler_ref"`
-	InvocationRevision string `json:"invocation_revision,omitempty" yaml:"invocation_revision,omitempty"`
-	HandlerRevision    string `json:"handler_revision,omitempty" yaml:"handler_revision,omitempty"`
-	Activation         string `json:"activation,omitempty" yaml:"activation,omitempty"`
-	Blocking           bool   `json:"blocking,omitempty" yaml:"blocking,omitempty"`
+	ID                  string           `json:"id" yaml:"id"`
+	Harness             string           `json:"harness" yaml:"harness"`
+	Event               string           `json:"event" yaml:"event"`
+	Matcher             string           `json:"matcher,omitempty" yaml:"matcher,omitempty"`
+	HandlerRef          string           `json:"handler_ref" yaml:"handler_ref"`
+	InvocationRevision  string           `json:"invocation_revision,omitempty" yaml:"invocation_revision,omitempty"`
+	HandlerRevision     string           `json:"handler_revision,omitempty" yaml:"handler_revision,omitempty"`
+	Intention           HarnessIntention `json:"intention,omitempty" yaml:"intention,omitempty"`
+	Disposition         Disposition      `json:"disposition,omitempty" yaml:"disposition,omitempty"`
+	EnforcementStrength string           `json:"enforcement_strength,omitempty" yaml:"enforcement_strength,omitempty"`
+	Activation          string           `json:"activation,omitempty" yaml:"activation,omitempty"`
+	Blocking            bool             `json:"blocking,omitempty" yaml:"blocking,omitempty"`
 }
 
 // InstallationSnapshot is observed evidence from harness-owned config files.

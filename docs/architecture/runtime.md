@@ -370,6 +370,14 @@ intention: `native`, `fallback`, `degraded`, or `unsupported`. This replaces Hoo
 add a peer lifecycle or hook system. The full ownership and compaction/resume flow is in
 [`information-custody.md` §5](./information-custody.md#5-recall-context-injection-and-hooks).
 
+`compound harness posture-plan --harness <name>` is the operator-facing
+compiler door. It accepts the stable default intentions (`prepare_context`,
+`guard_mutation`, `observe_outcome`) and returns the adapter-native projection
+plus its attestation revision. The executable CLI registry supplies first-party
+shell admission to the hook monitor at runtime; the policy package has no
+parallel Compound subcommand allowlist. Unknown registry names and commands
+whose registry disposition is `hold` retain the security-floor refusal.
+
 A plan is immutable for the work/session and cites the harness family, surface, version, feature/trust state,
 config scope, handler revision, and fallback revision it was compiled against. Installation observation is
 separate evidence. “Installed” therefore cannot imply “ready,” and an unknown harness cannot inherit optimistic
@@ -401,7 +409,9 @@ The repo-owned opencode adapter registers only SessionStart, UserPromptSubmit, a
 status non_blocking. It injects through the stable chat.message message.system field, records completed
 tools through tool.execute.after, and fails open on every callback. It does not register
 tool.execute.before because that callback cannot deny a tool call. These installed rows provide context
-and observation only; they never satisfy pre-tool mutation readiness.
+and observation only; they never satisfy pre-tool mutation readiness. Its
+installer consumes the compiled semantic posture and refuses a native-event or
+mutation-readiness mismatch before writing `opencode.jsonc` or the plugin.
 Reconciliation reports an active command match as `registered`; it reports `ready` only when desired and
 observed handler-content revisions also match. Invocation arguments have a separate privacy-safe digest, so
 argument drift remains detectable without treating configuration bytes as handler-content proof.

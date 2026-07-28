@@ -8,11 +8,23 @@ const registrationSource = join(adapterDir, "hook-registration.ts")
 const pluginRegistration = "./plugins/compound.ts"
 
 type ImportAuthority = (binary: string, registration: string, home: string) => Promise<unknown>
+type CompiledIntention = {
+  intention: string
+  disposition: string
+  native_events?: string[]
+  reason?: string
+}
+type CompiledPosture = {
+  mutation_ready: boolean
+  intentions: CompiledIntention[]
+}
+type CompilePosture = (binary: string, harness: string) => Promise<CompiledPosture>
 
 export type InstallOptions = {
   home: string
   compoundBinary: string
   importAuthority?: ImportAuthority
+  compilePosture?: CompilePosture
 }
 
 export type InstallReport = {
@@ -20,6 +32,7 @@ export type InstallReport = {
   plugin_path: string
   backups: string[]
   plugin_registration: string
+  posture_plan: CompiledPosture
   authority_import: unknown
 }
 
@@ -80,10 +93,56 @@ export const runAuthorityImport: ImportAuthority = async (binary, registration, 
   return JSON.parse(stdout) as unknown
 }
 
+export const runPostureCompile: CompilePosture = async (binary, harness) => {
+  const proc = Bun.spawn(
+    [binary, "harness", "posture-plan", "--harness", harness, "--json"],
+    { stdout: "pipe", stderr: "pipe" },
+  )
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
+  if (exitCode !== 0) {
+    throw new Error(
+      `harness posture-plan exited ${exitCode}: ${stderr.replace(/\s+/g, " ").trim()}`,
+    )
+  }
+  return JSON.parse(stdout) as CompiledPosture
+}
+
+function intention(plan: CompiledPosture, name: string): CompiledIntention {
+  const found = plan.intentions.find((item) => item.intention === name)
+  if (!found) throw new Error(`compiled posture missing ${name}`)
+  return found
+}
+
+export function validateOpenCodePosture(plan: CompiledPosture): void {
+  const prepare = intention(plan, "prepare_context")
+  const guard = intention(plan, "guard_mutation")
+  const observe = intention(plan, "observe_outcome")
+  if (
+    plan.mutation_ready ||
+    prepare.disposition !== "native" ||
+    !prepare.native_events?.includes("chat.message") ||
+    guard.disposition !== "unsupported" ||
+    guard.native_events?.includes("tool.execute.before") ||
+    observe.disposition !== "native" ||
+    !observe.native_events?.includes("tool.execute.after")
+  ) {
+    throw new Error("compiled OpenCode posture does not match the installed adapter contract")
+  }
+}
+
 export async function installOpenCode(options: InstallOptions): Promise<InstallReport> {
   const configDir = join(options.home, ".config", "opencode")
   const configPath = join(configDir, "opencode.jsonc")
   const pluginPath = join(configDir, "plugins", "compound.ts")
+  const posturePlan = await (options.compilePosture ?? runPostureCompile)(
+    options.compoundBinary,
+    "opencode",
+  )
+  validateOpenCodePosture(posturePlan)
   const backups = (
     await Promise.all([backupOnce(configPath), backupOnce(pluginPath)])
   ).filter((path): path is string => Boolean(path))
@@ -111,6 +170,7 @@ export async function installOpenCode(options: InstallOptions): Promise<InstallR
     plugin_path: pluginPath,
     backups,
     plugin_registration: pluginRegistration,
+    posture_plan: posturePlan,
     authority_import: authorityImport,
   }
 }

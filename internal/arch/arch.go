@@ -4494,9 +4494,9 @@ func checkEpistemicsDoctrine(repoRoot string) []Finding {
 	if len(rows) < 7 {
 		return []Finding{{"epistemics-doctrine", Fail, "docs/architecture/epistemics.md has " + itoa(len(rows)) + " doctrine row(s); want at least 7 machine-parseable rows"}}
 	}
-	commandCases, err := compoundCommandCases(repoRoot)
+	registeredCommands, err := compoundRegisteredCommands(repoRoot)
 	if err != nil {
-		return []Finding{{"epistemics-doctrine", Fail, "could not inspect cmd/compound/main.go command cases: " + err.Error()}}
+		return []Finding{{"epistemics-doctrine", Fail, "could not inspect cmd/compound/command_registry.go commands: " + err.Error()}}
 	}
 	var problems []string
 	for _, row := range rows {
@@ -4514,8 +4514,8 @@ func checkEpistemicsDoctrine(repoRoot string) []Finding {
 			problems = append(problems, "row "+row.N+" proof_command "+strconv(row.ProofCommand)+" has no compound verb")
 			continue
 		}
-		if !commandCases[verb] {
-			problems = append(problems, "row "+row.N+" proof_command verb "+strconv(verb)+" has no case in cmd/compound/main.go")
+		if !registeredCommands[verb] {
+			problems = append(problems, "row "+row.N+" proof_command verb "+strconv(verb)+" is absent from cmd/compound/command_registry.go")
 		}
 	}
 	if len(problems) > 0 {
@@ -4613,12 +4613,12 @@ func epistemicsProofVerb(command string) string {
 	return parts[1]
 }
 
-func compoundCommandCases(repoRoot string) (map[string]bool, error) {
-	b, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "main.go"))
+func compoundRegisteredCommands(repoRoot string) (map[string]bool, error) {
+	b, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "command_registry.go"))
 	if err != nil {
 		return nil, err
 	}
-	re := regexp.MustCompile(`(?m)^\s*case\s+"([^"]+)"\s*:`)
+	re := regexp.MustCompile(`(?m)^\s*"([^"]+)"\s*:`)
 	out := map[string]bool{}
 	for _, match := range re.FindAllStringSubmatch(string(b), -1) {
 		if len(match) == 2 {

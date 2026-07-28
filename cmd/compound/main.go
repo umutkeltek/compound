@@ -113,145 +113,12 @@ func main() {
 		os.Exit(2)
 	}
 	os.Args = append([]string{os.Args[0]}, args...)
-	switch os.Args[1] {
-	case "version", "--version", "-v":
-		fmt.Println(versionString())
-	case "distill", "scope", "promote", "build", "reconcile", "timeline", "recall", "pack", "ledger":
-		cmdRetiredGen1(os.Args[1])
-	case "authority":
-		cmdAuthority(os.Args[2:])
-	case "decisions":
-		cmdDecisions(os.Args[2:])
-	case "director":
-		cmdDirector(os.Args[2:])
-	case "jobprobe":
-		cmdJobProbe(os.Args[2:])
-	case "runtime":
-		cmdRuntime(os.Args[2:])
-	case "projection":
-		cmdProjection(os.Args[2:])
-	case "system":
-		cmdSystem(os.Args[2:])
-	case "product":
-		cmdProduct(os.Args[2:])
-	case "source":
-		cmdSource(os.Args[2:])
-	case "console":
-		cmdConsole(os.Args[2:])
-	case "event":
-		cmdEvent(os.Args[2:])
-	case "event-store":
-		cmdEventStore(os.Args[2:])
-	case "writeback":
-		cmdWriteback(os.Args[2:])
-	case "home":
-		cmdHome(os.Args[2:])
-	case "envelope":
-		cmdEnvelope(os.Args[2:])
-	case "schema":
-		cmdSchema(os.Args[2:])
-	case "contract":
-		cmdContract(os.Args[2:])
-	case "orient":
-		cmdOrient(os.Args[2:])
-	case "work":
-		cmdWork(os.Args[2:])
-	case "packets":
-		cmdPackets(os.Args[2:])
-	case "workbench":
-		cmdWorkbench(os.Args[2:])
-	case "coordination":
-		cmdCoordination(os.Args[2:])
-	case "attention":
-		cmdAttention(os.Args[2:])
-	case "activity":
-		cmdActivity(os.Args[2:])
-	case "narrate":
-		cmdNarrate(os.Args[2:])
-	case "stream":
-		cmdStream(os.Args[2:])
-	case "executors":
-		cmdExecutors(os.Args[2:])
-	case "proof-check":
-		cmdProofCheck(os.Args[2:])
-	case "doctor":
-		cmdDoctor(os.Args[2:])
-	case "retention":
-		cmdRetention(os.Args[2:])
-	case "run-attempt":
-		cmdRunAttempt(os.Args[2:])
-	case "experiential-smoke":
-		cmdExperientialSmoke(os.Args[2:])
-	case "release":
-		cmdRelease(os.Args[2:])
-	case "reviews":
-		cmdReviews(os.Args[2:])
-	case "finding":
-		cmdFinding(os.Args[2:])
-	case "policy":
-		cmdPolicy(os.Args[2:])
-	case "placement":
-		cmdPlacement(os.Args[2:])
-	case "hook":
-		cmdHook(os.Args[2:])
-	case "harness":
-		cmdHarness(os.Args[2:])
-	case "transition":
-		cmdTransition(os.Args[2:])
-	case "route":
-		cmdRoute(os.Args[2:])
-	case "profiles":
-		cmdProfiles(os.Args[2:])
-	case "memory":
-		cmdMemory(os.Args[2:])
-	case "corpus":
-		cmdCorpus(os.Args[2:])
-	case "synthesis":
-		cmdSynthesis(os.Args[2:])
-	case "knowledge":
-		cmdKnowledge(os.Args[2:])
-	case "sessions":
-		cmdSessions(os.Args[2:])
-	case "distiller":
-		cmdDistiller(os.Args[2:])
-	case "capability":
-		cmdCapability(os.Args[2:])
-	case "bench":
-		cmdBench(os.Args[2:])
-	case "latent-tax":
-		cmdLatentTax(os.Args[2:])
-	case "behavioral-lens":
-		cmdBehavioralLens(os.Args[2:])
-	case "executor-lens":
-		cmdExecutorLens(os.Args[2:])
-	case "lens-modulate":
-		cmdLensModulate(os.Args[2:])
-	case "act":
-		cmdAct(os.Args[2:])
-	case "actuator":
-		cmdActuator(os.Args[2:])
-	case "capture":
-		cmdCapture(os.Args[2:])
-	case "intent":
-		cmdIntent(os.Args[2:])
-	case "land-lease":
-		cmdLandLease(os.Args[2:])
-	case "panel":
-		cmdPanel(os.Args[2:])
-	case "local-models":
-		cmdLocalModels(os.Args[2:])
-	case "lanebeliefs":
-		cmdLaneBeliefs(os.Args[2:])
-	case "mcp-transport":
-		cmdMCPTransport(os.Args[2:])
-	case "negatives":
-		cmdNegatives(os.Args[2:])
-	case "architecture":
-		cmdArchitecture(os.Args[2:])
-	default:
+	command, ok := compoundCommandRegistry()[os.Args[1]]
+	if !ok {
 		usage()
 		os.Exit(2)
 	}
+	command.Run(os.Args[2:])
 }
 
 func sortedMapKeys(m map[string]int) []string {
@@ -364,7 +231,7 @@ compound proof-check [--json] [--dry-run] [--dev] [--repo P] [--out FILE] determ
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt> ActionIntent -> PolicyDecision; import policy authorities / mutate halt through its locked command
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
-  compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]|drift|generate|permission-mode|instruction-pack>
+  compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]|posture-plan --harness H|drift|generate|permission-mode|instruction-pack>
   compound transition show <id>                                 inspect a Transition or envelope
   compound route lane-projection [--harness H] [--json]          read-only executor lane input from Compound route authority
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
@@ -1303,6 +1170,12 @@ func cmdHarness(args []string) {
 		// before the capabilities registry load below for the same reason run and
 		// executors do: it reads the declaration itself, it is not a consumer of it.
 		cmdHarnessCapabilityDrift(args[1:])
+		return
+	}
+	if target == "posture-plan" {
+		if code := runHarnessPosturePlan(args[1:], os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
 		return
 	}
 	if target == "run" {

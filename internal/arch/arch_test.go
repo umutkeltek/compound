@@ -2834,8 +2834,8 @@ func TestEpistemicsDoctrineFailsForPhantomCommandVerb(t *testing.T) {
 	if len(findings) != 1 || findings[0].Severity != Fail {
 		t.Fatalf("findings = %+v, want phantom command failure", findings)
 	}
-	if !strings.Contains(findings[0].Message, "ghost-command") || !strings.Contains(findings[0].Message, "cmd/compound/main.go") {
-		t.Fatalf("failure should name missing command case: %+v", findings)
+	if !strings.Contains(findings[0].Message, "ghost-command") || !strings.Contains(findings[0].Message, "cmd/compound/command_registry.go") {
+		t.Fatalf("failure should name missing command registry row: %+v", findings)
 	}
 }
 
@@ -2863,20 +2863,20 @@ func writeEpistemicsFixtureRepo(t *testing.T, rows []string) string {
 			t.Fatal(err)
 		}
 	}
-	mainGo := `package main
-func main() {
-	switch "" {
-	case "architecture":
-	case "capability":
-	case "contract":
-	case "memory":
-	case "route":
-	case "synthesis":
-	case "workbench":
+	commandRegistryGo := `package main
+func compoundCommandRegistry() map[string]any {
+	return map[string]any{
+		"architecture": nil,
+		"capability":   nil,
+		"contract":     nil,
+		"memory":       nil,
+		"route":        nil,
+		"synthesis":    nil,
+		"workbench":    nil,
 	}
 }
 `
-	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "main.go"), []byte(mainGo), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "command_registry.go"), []byte(commandRegistryGo), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var b strings.Builder

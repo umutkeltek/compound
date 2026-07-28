@@ -47,6 +47,7 @@ type ToolActionRequest struct {
 	ToolSchemaRevision string
 	Sources            []envelope.SourceEnvelope
 	ClassifierRisk     string
+	FirstPartyCommands FirstPartyCommandCatalog
 }
 
 type ActionClassification struct {
@@ -171,12 +172,20 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 		classification.Domain = ActionDomainShell
 		classification.TargetKind = "session"
 		classification.RequiredSink = "shell"
-		classification = classifyPTYAction(classification, stringArgument(request.Arguments, "chars"))
+		classification = classifyPTYAction(
+			classification,
+			stringArgument(request.Arguments, "chars"),
+			request.FirstPartyCommands,
+		)
 	case isShellTool(tool):
 		classification.Domain = ActionDomainShell
 		classification.TargetKind = "command"
 		classification.RequiredSink = "shell"
-		classification = classifyShellAction(classification, stringArgument(request.Arguments, "command", "cmd"))
+		classification = classifyShellAction(
+			classification,
+			stringArgument(request.Arguments, "command", "cmd"),
+			request.FirstPartyCommands,
+		)
 	case isControlTool(tool):
 		classification = classifyControlAction(classification, tool)
 	default:
@@ -589,7 +598,11 @@ func isPTYTool(tool string) bool {
 	return tool == "write_stdin"
 }
 
-func classifyPTYAction(classification ActionClassification, chars string) ActionClassification {
+func classifyPTYAction(
+	classification ActionClassification,
+	chars string,
+	firstPartyCommands FirstPartyCommandCatalog,
+) ActionClassification {
 	switch chars {
 	case "":
 		classification.Operation = "session_poll"
@@ -602,7 +615,7 @@ func classifyPTYAction(classification ActionClassification, chars string) Action
 		classification.Reversibility = "easy"
 		classification.BlastRadius = "local"
 	default:
-		classification = classifyShellAction(classification, chars)
+		classification = classifyShellAction(classification, chars, firstPartyCommands)
 	}
 	return classification
 }

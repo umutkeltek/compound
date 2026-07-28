@@ -101,41 +101,6 @@ var shellNestedReadVerbs = map[string]map[string][]string{
 	},
 }
 
-// compoundReadSubcommands and compoundGovernedSubcommands classify the
-// first-party control CLI without treating every `compound` invocation as
-// trusted. The outer monitor recognizes only these exact command shapes; each
-// governed verb still performs its own ActionIntent/PolicyDecision checks.
-// Anything absent from both maps remains unknown and hits the security floor.
-var compoundReadSubcommands = map[string][]string{
-	"version":      nil,
-	"orient":       nil,
-	"status":       nil,
-	"executors":    nil,
-	"route":        nil,
-	"coordination": nil,
-	"workbench":    nil,
-	"attention":    nil,
-	"decisions":    {"show", "list"},
-	"work":         {"list", "show"},
-	"capability":   {"authority", "show", "list"},
-	"land-lease":   {"status"},
-	"authority":    {"git"},
-}
-
-var compoundGovernedSubcommands = map[string][]string{
-	"proof-check": nil,
-	"work": {
-		"create",
-		"claim",
-		"advance",
-		"close-plan",
-		"land-check",
-		"close",
-	},
-	"land-lease": {"acquire", "release"},
-	"authority":  {"dirty-plan", "dirty-review"},
-}
-
 var gitReadSubcommands = map[string]bool{
 	"status": true, "diff": true, "log": true, "show": true, "rev-parse": true,
 	"rev-list": true, "ls-files": true, "ls-tree": true, "merge-base": true,
@@ -175,7 +140,11 @@ var goReadSubcommands = map[string]bool{
 	"doc": true, "version": true,
 }
 
-func classifyShellAction(classification ActionClassification, command string) ActionClassification {
+func classifyShellAction(
+	classification ActionClassification,
+	command string,
+	firstPartyCommands FirstPartyCommandCatalog,
+) ActionClassification {
 	if strings.TrimSpace(command) == "" {
 		classification.Known = false
 		classification.Operation = "unknown"
@@ -210,7 +179,7 @@ func classifyShellAction(classification ActionClassification, command string) Ac
 	}
 	worst := shellClassRead
 	for _, segment := range segments {
-		class := shellSegmentClass(segment)
+		class := shellSegmentClass(segment, firstPartyCommands)
 		if shellClassSeverity[class] > shellClassSeverity[worst] {
 			worst = class
 		}
@@ -686,7 +655,7 @@ func shellAllDigits(value string) bool {
 	return value != ""
 }
 
-func shellSegmentClass(segment shellSegment) string {
+func shellSegmentClass(segment shellSegment, firstPartyCommands FirstPartyCommandCatalog) string {
 	if segment.writes || segment.obfuscated {
 		return shellClassUnknown
 	}
@@ -694,7 +663,7 @@ func shellSegmentClass(segment shellSegment) string {
 	if len(fields) == 0 {
 		return shellClassRead
 	}
-	return shellVerbClass(shellVerbName(fields[0]), fields[1:])
+	return shellVerbClass(shellVerbName(fields[0]), fields[1:], firstPartyCommands)
 }
 
 // shellStripCommandPrefixes drops environment assignments and the wrappers that
@@ -765,12 +734,12 @@ func shellVerbName(token string) string {
 	return strings.ToLower(token)
 }
 
-func shellVerbClass(verb string, args []string) string {
+func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCommandCatalog) string {
 	switch verb {
 	case "":
 		return shellClassUnknown
 	case "compound":
-		return shellCompoundClass(args)
+		return shellCompoundClass(args, firstPartyCommands)
 	case "git":
 		return shellGitClass(args)
 	case "go":
@@ -835,32 +804,20 @@ func shellVerbClass(verb string, args []string) string {
 	return shellClassUnknown
 }
 
-func shellCompoundClass(args []string) string {
-	sub, rest := shellFirstOperand(args, nil)
-	if shellNestedCommandAllowed(compoundReadSubcommands, sub, rest) {
-		return shellClassRead
-	}
-	if shellNestedCommandAllowed(compoundGovernedSubcommands, sub, rest) {
-		return shellClassGoverned
-	}
-	return shellClassUnknown
-}
-
-func shellNestedCommandAllowed(commands map[string][]string, sub string, rest []string) bool {
-	allowed, ok := commands[sub]
+func shellCompoundClass(args []string, firstPartyCommands FirstPartyCommandCatalog) string {
+	command, _ := shellFirstOperand(args, nil)
+	admission, ok := firstPartyCommands.Lookup(command)
 	if !ok {
-		return false
+		return shellClassUnknown
 	}
-	if allowed == nil {
-		return true
+	switch admission {
+	case FirstPartyCommandRead:
+		return shellClassRead
+	case FirstPartyCommandGoverned:
+		return shellClassGoverned
+	default:
+		return shellClassUnknown
 	}
-	next, _ := shellFirstOperand(rest, nil)
-	for _, candidate := range allowed {
-		if next == candidate {
-			return true
-		}
-	}
-	return false
 }
 
 func shellNestedClass(subcommands map[string][]string, args []string) string {

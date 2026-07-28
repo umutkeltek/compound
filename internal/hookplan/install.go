@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"compound/internal/harness"
 )
 
 // install.go is the WRITER half of the hook lifecycle. hookplan already models desired vs observed
@@ -133,9 +135,9 @@ func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []st
 		}
 		matcher := HarnessMatcher(harness)
 		command := HookCommand(binaryPath, harness)
-		bindings := []desiredHookBinding{{Event: "PreToolUse", Matcher: matcher, Command: command}}
-		if harness == claudeZaiHarness {
-			bindings = claudeZaiHookBindings(binaryPath)
+		bindings, _, err := compiledManagedHookBindings(binaryPath, harness, scope)
+		if err != nil {
+			return report, fmt.Errorf("%s: %w", harness, err)
 		}
 		action, err := mergeHookBindings(configPath, bindings, check)
 		if err != nil {
@@ -148,13 +150,38 @@ func InstallHooksWithConfigDir(baseDir, binaryPath, scope string, harnesses []st
 	return report, nil
 }
 
-func claudeZaiHookBindings(binaryPath string) []desiredHookBinding {
-	return []desiredHookBinding{
-		{Event: "SessionStart", Command: HookCommandForEvent(binaryPath, claudeZaiHarness, "SessionStart")},
-		{Event: "UserPromptSubmit", Command: HookCommandForEvent(binaryPath, claudeZaiHarness, "UserPromptSubmit")},
-		{Event: "PreToolUse", Matcher: HarnessMatcher(claudeZaiHarness), Command: HookCommandForEvent(binaryPath, claudeZaiHarness, "PreToolUse")},
-		{Event: "PostToolUse", Matcher: HarnessMatcher(claudeZaiHarness), Command: HookCommandForEvent(binaryPath, claudeZaiHarness, "PostToolUse")},
+func compiledManagedHookBindings(
+	binaryPath string,
+	harnessName string,
+	configScope string,
+) ([]desiredHookBinding, CompiledPosture, error) {
+	registry := harness.DefaultRegistry()
+	if harnessName == claudeZaiHarness {
+		configScope = "profile"
 	}
+	compiled, err := CompileDefaultPosture(DefaultPostureRequest{
+		Harness:         harnessName,
+		Registry:        registry,
+		HandlerRef:      "compound",
+		HandlerRevision: "binary:" + binaryPath,
+		ConfigScope:     configScope,
+	})
+	if err != nil {
+		return nil, CompiledPosture{}, err
+	}
+	if !compiled.MutationReady {
+		return nil, compiled, fmt.Errorf("compiled posture is not mutation-ready")
+	}
+
+	bindings := make([]desiredHookBinding, 0, len(compiled.HookPlan.Bindings))
+	for _, binding := range compiled.HookPlan.Bindings {
+		bindings = append(bindings, desiredHookBinding{
+			Event:   binding.Event,
+			Matcher: binding.Matcher,
+			Command: HookCommandForEvent(binaryPath, harnessName, binding.Event),
+		})
+	}
+	return bindings, compiled, nil
 }
 
 // mergePreToolUseBinding merges compound's PreToolUse binding into an existing harness config without

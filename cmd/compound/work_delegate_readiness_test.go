@@ -303,6 +303,60 @@ func TestDelegateDeclaredMutationBlockingBindingRequiresCanonicalAllToolMatcher(
 	}
 }
 
+func TestDelegateBlockingReadinessUsesSemanticIntentionNotClaudeEventName(t *testing.T) {
+	t.Parallel()
+
+	binding := hookplan.Binding{
+		ID:                  "hook://fixture/native-before-write",
+		Harness:             "fixture",
+		Event:               "native.before.write",
+		Matcher:             "native-mutation-scope",
+		HandlerRef:          "compound",
+		HandlerRevision:     "sha256:handler",
+		Blocking:            true,
+		Intention:           hookplan.IntentionGuardMutation,
+		Disposition:         hookplan.DispositionNative,
+		EnforcementStrength: "blocking",
+	}
+	plan := hookplan.HookPlan{
+		Intentions: []hookplan.CompiledIntention{{
+			Intention:           hookplan.IntentionGuardMutation,
+			Disposition:         hookplan.DispositionNative,
+			EnforcementStrength: "blocking",
+			NativeEvents:        []string{"native.before.write"},
+		}},
+		Bindings: []hookplan.Binding{binding},
+	}
+
+	got, detail := delegateDeclaredMutationBlockingBinding(plan, "fixture")
+	if detail != "" {
+		t.Fatalf("semantic blocking binding refused: %s", detail)
+	}
+	if got == nil || got.ID != binding.ID {
+		t.Fatalf("semantic blocking binding = %+v, want %s", got, binding.ID)
+	}
+}
+
+func TestDelegateBlockingReadinessExplainsUnsupportedSemanticGuard(t *testing.T) {
+	t.Parallel()
+
+	plan := hookplan.HookPlan{
+		Intentions: []hookplan.CompiledIntention{{
+			Intention:           hookplan.IntentionGuardMutation,
+			Disposition:         hookplan.DispositionUnsupported,
+			EnforcementStrength: "none",
+			Reason:              "native callback cannot deny",
+		}},
+	}
+	got, detail := delegateDeclaredMutationBlockingBinding(plan, "opencode")
+	if got != nil {
+		t.Fatalf("unsupported mutation guard returned binding: %+v", got)
+	}
+	if !strings.Contains(detail, "unsupported") || !strings.Contains(detail, "native callback cannot deny") {
+		t.Fatalf("unsupported mutation guard detail = %q", detail)
+	}
+}
+
 func TestEvaluateDelegateHarnessReadinessRejectsPermissionAuthorityRevisionChange(t *testing.T) {
 	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_permission_revision")
 	originalLoad := delegateLoadPermissionAuthority

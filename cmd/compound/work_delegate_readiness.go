@@ -270,6 +270,55 @@ func delegateActivationArgvReadiness(req work.DelegateHarnessReadinessRequest) (
 }
 
 func delegateDeclaredMutationBlockingBinding(plan hookplan.HookPlan, harnessName string) (*hookplan.Binding, string) {
+	if len(plan.Intentions) > 0 {
+		var guard *hookplan.CompiledIntention
+		for i := range plan.Intentions {
+			if plan.Intentions[i].Intention != hookplan.IntentionGuardMutation {
+				continue
+			}
+			if guard != nil {
+				return nil, "mutation guard intention is ambiguous"
+			}
+			guard = &plan.Intentions[i]
+		}
+		if guard == nil {
+			return nil, "mutation guard intention is absent"
+		}
+		if guard.Disposition != hookplan.DispositionNative &&
+			guard.Disposition != hookplan.DispositionFallback {
+			detail := "mutation guard disposition=" + string(guard.Disposition)
+			if strings.TrimSpace(guard.Reason) != "" {
+				detail += ": " + strings.TrimSpace(guard.Reason)
+			}
+			return nil, detail
+		}
+		if guard.EnforcementStrength != "blocking" {
+			return nil, "mutation guard enforcement=" + guard.EnforcementStrength
+		}
+
+		var match *hookplan.Binding
+		for i := range plan.Bindings {
+			binding := &plan.Bindings[i]
+			if normalizeDelegateReadinessHarness(binding.Harness) != harnessName ||
+				binding.Intention != hookplan.IntentionGuardMutation ||
+				!binding.Blocking ||
+				binding.EnforcementStrength != "blocking" {
+				continue
+			}
+			if match != nil {
+				return nil, "mutation-covering semantic binding is ambiguous"
+			}
+			match = binding
+		}
+		if match == nil {
+			return nil, "mutation-covering semantic binding is absent"
+		}
+		return match, ""
+	}
+
+	// Legacy imported plans carry only adapter-native fields. Keep this
+	// compatibility reader until installed-hook authority is regenerated from
+	// semantic posture; new compiled plans never reach this branch.
 	var match *hookplan.Binding
 	for i := range plan.Bindings {
 		binding := &plan.Bindings[i]
