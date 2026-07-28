@@ -99,6 +99,11 @@ var shellNestedReadVerbs = map[string]map[string][]string{
 	"mcporter": {
 		"list": nil,
 	},
+	"asc": {
+		"doctor":   nil,
+		"status":   nil,
+		"validate": nil,
+	},
 }
 
 var gitReadSubcommands = map[string]bool{
@@ -751,6 +756,10 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 			return shellClassRead
 		}
 		return shellClassUnknown
+	case "xcodebuild":
+		return shellXcodebuildClass(args)
+	case "xcrun":
+		return shellXcrunClass(args)
 	case "install.sh":
 		return shellClassInstall
 	case "make":
@@ -800,6 +809,117 @@ func shellVerbClass(verb string, args []string, firstPartyCommands FirstPartyCom
 	}
 	if shellReadVerbs[verb] {
 		return shellClassRead
+	}
+	return shellClassUnknown
+}
+
+func shellXcodebuildClass(args []string) string {
+	allowedActions := map[string]bool{
+		"build": true, "test": true, "analyze": true, "archive": true,
+		"build-for-testing": true, "test-without-building": true,
+	}
+	allowedFlags := map[string]bool{
+		"-help": true, "-usage": true, "-version": true, "-showsdks": true,
+		"-list": true, "-showbuildsettings": true, "-showdestinations": true,
+		"-quiet": true, "-verbose": true, "-dry-run": true,
+		"-skipunavailableactions": true, "-parallelizetargets": true,
+		"-exportarchive": true,
+	}
+	flagsWithValues := map[string]bool{
+		"-project": true, "-workspace": true, "-scheme": true, "-target": true,
+		"-configuration": true, "-sdk": true, "-arch": true, "-destination": true,
+		"-destination-timeout": true, "-jobs": true, "-parallel-testing-worker-count": true,
+		"-maximum-parallel-testing-workers": true, "-only-testing": true, "-skip-testing": true,
+		"-testplan": true, "-deriveddatapath": true, "-resultbundlepath": true,
+		"-resultstreampath": true, "-archivepath": true, "-exportpath": true,
+		"-exportoptionsplist": true, "-xcconfig": true, "-toolchain": true,
+		"-clonedsourcepackagesdirpath": true, "-packagecachepath": true,
+	}
+	held := map[string]bool{
+		"clean": true, "install": true, "installsrc": true,
+		"-allowprovisioningupdates": true, "-allowprovisioningdeviceregistration": true,
+		"-authenticationkeypath": true, "-authenticationkeyid": true,
+		"-authenticationkeyissuerid": true, "-downloadplatform": true,
+		"-downloadallplatforms": true, "-downloadcomponent": true,
+		"-resolvepackagedependencies": true, "-runfirstlaunch": true,
+		"-license": true, "-importlocalizations": true, "-exportlocalizations": true,
+		"-exportnotarizedapp": true,
+	}
+
+	for i := 0; i < len(args); i++ {
+		arg := strings.ToLower(strings.TrimSpace(args[i]))
+		if held[arg] {
+			return shellClassUnknown
+		}
+		if allowedActions[arg] || allowedFlags[arg] {
+			continue
+		}
+		if flagsWithValues[arg] {
+			if i+1 >= len(args) {
+				return shellClassUnknown
+			}
+			i++
+			continue
+		}
+		// Build-setting assignments can replace compilers or inject commands.
+		// Keep them outside the automatic lane until individually modeled.
+		return shellClassUnknown
+	}
+	return shellClassRead
+}
+
+func shellXcrunClass(args []string) string {
+	for len(args) > 0 {
+		switch strings.ToLower(args[0]) {
+		case "--sdk", "--toolchain":
+			if len(args) < 2 {
+				return shellClassUnknown
+			}
+			args = args[2:]
+		case "--verbose", "--no-cache", "--log":
+			args = args[1:]
+		default:
+			goto classified
+		}
+	}
+
+classified:
+	if len(args) == 0 {
+		return shellClassUnknown
+	}
+	switch strings.ToLower(args[0]) {
+	case "--find":
+		if len(args) == 2 {
+			return shellClassRead
+		}
+	case "--show-sdk-path", "--show-sdk-version", "--show-sdk-build-version",
+		"--show-sdk-platform-path", "--show-sdk-platform-version":
+		if len(args) == 1 {
+			return shellClassRead
+		}
+	case "simctl":
+		if len(args) >= 2 {
+			switch strings.ToLower(args[1]) {
+			case "list", "listapps", "getenv", "help":
+				return shellClassRead
+			}
+		}
+	case "xcdevice":
+		if len(args) >= 2 && strings.EqualFold(args[1], "list") {
+			return shellClassRead
+		}
+	case "xctrace":
+		if len(args) >= 2 && strings.EqualFold(args[1], "list") {
+			return shellClassRead
+		}
+	case "devicectl":
+		if len(args) >= 2 && strings.EqualFold(args[1], "list") {
+			return shellClassRead
+		}
+		if len(args) >= 3 && strings.EqualFold(args[1], "device") &&
+			strings.EqualFold(args[2], "info") {
+			return shellClassRead
+		}
 	}
 	return shellClassUnknown
 }

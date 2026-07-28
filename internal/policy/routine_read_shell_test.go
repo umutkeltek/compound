@@ -74,6 +74,62 @@ func TestRoutineReadShellCompositionsStayAutomatic(t *testing.T) {
 	}
 }
 
+// Release verification tools carry both harmless local/read operations and
+// consequential account/device mutations. Keep the automatic surface exact.
+func TestReleaseToolShellClassificationIsSubcommandAware(t *testing.T) {
+	automatic := []string{
+		"xcodebuild -scheme SampleGame -destination 'platform=iOS Simulator,id=fixture' build",
+		"xcodebuild -scheme SampleGame -destination 'platform=iOS Simulator,id=fixture' test",
+		"xcodebuild -scheme SampleGame -archivePath build/SampleGame.xcarchive archive",
+		"xcodebuild -exportArchive -archivePath build/SampleGame.xcarchive -exportPath build/export -exportOptionsPlist ExportOptions.plist",
+		"xcrun simctl list devices available",
+		"xcrun xcdevice list",
+		"xcrun xctrace list devices",
+		"xcrun --sdk iphonesimulator --show-sdk-path",
+		"asc doctor",
+		"asc status",
+		"asc validate --app com.example.samplegame",
+	}
+	for _, command := range automatic {
+		t.Run("automatic/"+command, func(t *testing.T) {
+			monitored := MonitorToolAction(
+				monitorRequest("Bash", map[string]any{"command": command}),
+				DefaultConfig(),
+				fixedNow,
+			)
+			if !monitored.Classification.Known || monitored.Classification.Operation != "local_command" {
+				t.Fatalf("release read/build became unknown or consequential: %q => %+v", command, monitored.Classification)
+			}
+			if !Allowed(monitored.Decision) {
+				t.Fatalf("release read/build should remain automatic: %q => %+v", command, monitored.Decision)
+			}
+		})
+	}
+
+	held := []string{
+		"xcodebuild clean",
+		"xcodebuild -allowProvisioningUpdates archive",
+		"xcodebuild -downloadPlatform iOS",
+		"xcrun simctl erase all",
+		"xcrun simctl install booted SampleGame.app",
+		"xcrun devicectl device install app --device fixture SampleGame.app",
+		"asc builds upload --path SampleGame.ipa",
+		"asc submit --app com.example.samplegame",
+	}
+	for _, command := range held {
+		t.Run("held/"+command, func(t *testing.T) {
+			monitored := MonitorToolAction(
+				monitorRequest("Bash", map[string]any{"command": command}),
+				DefaultConfig(),
+				fixedNow,
+			)
+			if Allowed(monitored.Decision) {
+				t.Fatalf("release mutation/network action became automatic: %q => %+v", command, monitored)
+			}
+		})
+	}
+}
+
 // The precision above must not buy itself a mutation or egress lane. Every
 // command here composes a read verb with something consequential; each must
 // leave the routine lane.

@@ -473,7 +473,7 @@ func livePublicDataSinks() []string {
 
 func liveInternalDataSinks() []string {
 	return []string{
-		"browser", "control", "filesystem", "memory_candidate", "network",
+		"browser", "connector", "control", "filesystem", "memory_candidate", "network",
 		"operator_display", "reader", "shell",
 	}
 }
@@ -783,24 +783,62 @@ func liveCapabilitySchemaRevision(homePath, toolName string) string {
 	if err != nil {
 		return ""
 	}
-	toolKey, serverKey := liveCapabilityToolKeys(toolName)
+	candidates := liveCapabilityToolCandidates(toolName)
 	var matched capgraph.Node
 	for _, node := range nodes {
 		if node.Retired {
 			continue
 		}
-		if node.Kind == "tool" &&
-			(liveCapabilityKey(node.Name) == toolKey ||
-				liveCapabilityKey(strings.TrimPrefix(node.ID, "tool:")) == toolKey) {
-			matched = node
+		if node.Kind != "tool" {
+			continue
+		}
+		nodeNameKey := liveCapabilityKey(node.Name)
+		nodeIDKey := liveCapabilityKey(strings.TrimPrefix(node.ID, "tool:"))
+		for _, candidate := range candidates {
+			if nodeNameKey == candidate.toolKey || nodeIDKey == candidate.toolKey {
+				matched = node
+				break
+			}
+		}
+		if matched.ID != "" {
 			break
 		}
 	}
-	if matched.ID == "" && serverKey != "" {
+	if matched.ID == "" {
 		for _, node := range nodes {
-			if !node.Retired && node.Kind == "mcp" &&
-				liveCapabilityKey(strings.TrimPrefix(node.ID, "mcp:")) == serverKey {
-				matched = node
+			if node.Retired || node.Kind != "mcp" {
+				continue
+			}
+			nodeKey := liveCapabilityKey(strings.TrimPrefix(node.ID, "mcp:"))
+			for _, candidate := range candidates {
+				if nodeKey == candidate.serverKey {
+					matched = node
+					break
+				}
+			}
+			if matched.ID != "" {
+				break
+			}
+		}
+	}
+	// Host-native plugin tools may be backed by a topology-owned local CLI
+	// family rather than an mcporter server. Falling back to that accepted
+	// family node preserves source revision provenance without inventing a
+	// schema revision at the hook boundary.
+	if matched.ID == "" {
+		for _, node := range nodes {
+			if node.Retired || node.Kind != "tool" {
+				continue
+			}
+			nodeNameKey := liveCapabilityKey(node.Name)
+			nodeIDKey := liveCapabilityKey(strings.TrimPrefix(node.ID, "tool:"))
+			for _, candidate := range candidates {
+				if nodeNameKey == candidate.serverKey || nodeIDKey == candidate.serverKey {
+					matched = node
+					break
+				}
+			}
+			if matched.ID != "" {
 				break
 			}
 		}
@@ -824,15 +862,36 @@ func liveCapabilitySchemaRevision(homePath, toolName string) string {
 	return "capgraph:" + matched.ID + "@" + sourceRevision
 }
 
-func liveCapabilityToolKeys(toolName string) (toolKey, serverKey string) {
+type liveCapabilityToolCandidate struct {
+	toolKey   string
+	serverKey string
+}
+
+func liveCapabilityToolCandidates(toolName string) []liveCapabilityToolCandidate {
 	normalized := strings.ToLower(strings.TrimSpace(toolName))
-	if strings.HasPrefix(normalized, "mcp__") {
-		parts := strings.SplitN(strings.TrimPrefix(normalized, "mcp__"), "__", 2)
-		if len(parts) == 2 {
-			return liveCapabilityKey(parts[0] + "." + parts[1]), liveCapabilityKey(parts[0])
-		}
+	if !strings.HasPrefix(normalized, "mcp__") {
+		return []liveCapabilityToolCandidate{{toolKey: liveCapabilityKey(normalized)}}
 	}
-	return liveCapabilityKey(normalized), ""
+	parts := strings.Split(strings.TrimPrefix(normalized, "mcp__"), "__")
+	serverIndex := 0
+	// Codex Apps is an enrolled connector aggregator, not the backing server.
+	// Only this exact wrapper may shift the server boundary; arbitrary nested
+	// namespaces must not borrow another family's accepted schema revision.
+	if len(parts) >= 3 && parts[0] == "codex_apps" {
+		serverIndex = 1
+	}
+	if serverIndex+1 >= len(parts) {
+		return []liveCapabilityToolCandidate{{toolKey: liveCapabilityKey(normalized)}}
+	}
+	serverKey := liveCapabilityKey(parts[serverIndex])
+	toolKey := liveCapabilityKey(parts[serverIndex] + "." + strings.Join(parts[serverIndex+1:], "__"))
+	if serverKey == "" || toolKey == "" {
+		return []liveCapabilityToolCandidate{{toolKey: liveCapabilityKey(normalized)}}
+	}
+	return []liveCapabilityToolCandidate{{
+		toolKey:   toolKey,
+		serverKey: serverKey,
+	}}
 }
 
 func liveCapabilityKey(value string) string {

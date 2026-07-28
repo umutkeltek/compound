@@ -668,6 +668,242 @@ func TestLiveActionIntentsResolveConnectorSchemaFromCapabilityAuthority(t *testi
 	}
 }
 
+func TestLiveActionIntentsResolvePluginConnectorFamiliesFromCapabilityAuthority(t *testing.T) {
+	tests := []struct {
+		name       string
+		node       capgraph.Node
+		toolName   string
+		toolInput  map[string]any
+		wantNodeID string
+	}{
+		{
+			name: "codegraph local tool family",
+			node: capgraph.Node{
+				ID:       "tool:codegraph",
+				Kind:     "tool",
+				Name:     "codegraph CLI",
+				Triggers: []string{"codegraph", "repo", "read"},
+			},
+			toolName:   "mcp__codegraph__codegraph_explore",
+			toolInput:  map[string]any{"query": "RateAppCoordinator"},
+			wantNodeID: "tool:codegraph",
+		},
+		{
+			name: "codex apps github namespace",
+			node: capgraph.Node{
+				ID:       "mcp:github",
+				Kind:     "mcp",
+				Name:     "github",
+				Triggers: []string{"github", "pull", "request"},
+			},
+			toolName:   "mcp__codex_apps__github__get_pr_info",
+			toolInput:  map[string]any{"repository_full_name": "example/repo", "pr_number": 11},
+			wantNodeID: "mcp:github",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+			store, err := capgraph.Open(homePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Add(tt.node); err != nil {
+				t.Fatal(err)
+			}
+			sourceRevision := "sha256:" + strings.Repeat("b", 64)
+			if _, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
+				SourcePath:     "fixture://accepted-tool-topology",
+				SourceKind:     "generated_view",
+				SourceOwner:    "tool-topology",
+				SourceClass:    "tool-topology",
+				SourceRevision: sourceRevision,
+				ImportedVia:    "test",
+				NodeIDs:        []string{tt.node.ID},
+			}, cliTestNow); err != nil {
+				t.Fatal(err)
+			}
+
+			actions, err := liveActionIntentsForHome(homePath, "codex", claudeLiveHookInput{
+				SessionID: "sess_plugin_schema_" + strings.ReplaceAll(tt.name, " ", "_"),
+				ToolName:  tt.toolName,
+				ToolInput: tt.toolInput,
+			}, cliTestNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(actions) != 1 {
+				t.Fatalf("actions = %d, want one: %+v", len(actions), actions)
+			}
+			if got := actions[0].SchemaRevision; !strings.Contains(got, tt.wantNodeID) ||
+				!strings.Contains(got, sourceRevision) {
+				t.Fatalf("schema revision = %q, want node %q and source revision %q", got, tt.wantNodeID, sourceRevision)
+			}
+			if strings.Contains(strings.Join(actions[0].SecurityReasons, " "), "missing tool schema revision") {
+				t.Fatalf("accepted plugin connector remained schema-blocked: %+v", actions[0])
+			}
+		})
+	}
+}
+
+func TestLiveActionIntentsDoNotTrustUnregisteredPluginWrappers(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := capgraph.Node{
+		ID:       "tool:codegraph",
+		Kind:     "tool",
+		Name:     "codegraph CLI",
+		Triggers: []string{"codegraph", "repo", "read"},
+	}
+	if err := store.Add(node); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
+		SourcePath:     "fixture://accepted-tool-topology",
+		SourceKind:     "generated_view",
+		SourceOwner:    "tool-topology",
+		SourceClass:    "tool-topology",
+		SourceRevision: "sha256:" + strings.Repeat("c", 64),
+		ImportedVia:    "test",
+		NodeIDs:        []string{node.ID},
+	}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	actions, err := liveActionIntentsForHome(homePath, "codex", claudeLiveHookInput{
+		SessionID: "sess_unregistered_plugin_wrapper",
+		ToolName:  "mcp__unregistered_wrapper__codegraph__get_secret",
+		ToolInput: map[string]any{"query": "fixture"},
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("actions = %d, want one: %+v", len(actions), actions)
+	}
+	if actions[0].SchemaRevision != "" {
+		t.Fatalf("unregistered wrapper borrowed accepted family schema: %+v", actions[0])
+	}
+	input := claudeLiveHookInput{
+		SessionID: "sess_unregistered_plugin_wrapper",
+		ToolName:  "mcp__unregistered_wrapper__codegraph__get_secret",
+		ToolInput: map[string]any{"query": "fixture"},
+	}
+	monitored := liveMonitoredAction(
+		"codex",
+		input,
+		"work_unregistered_plugin_wrapper",
+		"",
+		input.ToolInput,
+		cliTestNow,
+	)
+	if policy.Allowed(monitored.Decision) {
+		t.Fatalf("unregistered wrapper became automatic: %+v", monitored)
+	}
+}
+
+func TestLiveInternalSourcesPermitSchemaBoundConnectorReadsButSecretsDoNot(t *testing.T) {
+	internalSource := envelope.NewSourceEnvelope(
+		envelope.Header{
+			SchemaVersion: envelope.SVSourceEnvelope,
+			ID:            "src_internal_connector_read",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		envelope.SourceOrigin{Kind: "control"},
+		[]byte("current repository context"),
+		envelope.SourceTrustMixed,
+		envelope.ConfidentialityInternal,
+		liveInternalDataSinks(),
+	)
+	input := claudeLiveHookInput{
+		SessionID:       "sess_internal_connector_read",
+		ToolName:        "mcp__codegraph__codegraph_explore",
+		ToolInput:       map[string]any{"query": "RateAppCoordinator"},
+		SourceEnvelopes: []envelope.SourceEnvelope{internalSource},
+	}
+	monitored := liveMonitoredAction(
+		"codex",
+		input,
+		"work_internal_connector_read",
+		"capgraph:tool:codegraph@sha256:fixture",
+		input.ToolInput,
+		cliTestNow,
+	)
+	if monitored.Classification.Domain != policy.ActionDomainConnector ||
+		monitored.Classification.MutationClass != "read" {
+		t.Fatalf("codegraph read classification = %+v", monitored.Classification)
+	}
+	if !policy.Allowed(monitored.Decision) {
+		t.Fatalf("schema-bound connector read from internal context should be automatic: %+v", monitored)
+	}
+
+	input.ToolName = "mcp__github__create_issue"
+	input.ToolInput = map[string]any{"repo": "example/repo", "title": "fixture"}
+	mutationMonitored := liveMonitoredAction(
+		"codex",
+		input,
+		"work_internal_connector_mutation",
+		"capgraph:mcp:github@sha256:fixture",
+		input.ToolInput,
+		cliTestNow,
+	)
+	if policy.Allowed(mutationMonitored.Decision) {
+		t.Fatalf("connector mutation from internal context became automatic: %+v", mutationMonitored)
+	}
+
+	secretSource := envelope.NewSourceEnvelope(
+		envelope.Header{
+			SchemaVersion: envelope.SVSourceEnvelope,
+			ID:            "src_secret_connector_read",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier2",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		envelope.SourceOrigin{Kind: "secret"},
+		[]byte("synthetic secret"),
+		envelope.SourceTrustMixed,
+		envelope.ConfidentialitySecret,
+		[]string{"operator_display", "reader", "secrets"},
+	)
+	input.ToolName = "mcp__codegraph__codegraph_explore"
+	input.ToolInput = map[string]any{"query": "RateAppCoordinator"}
+	input.SourceEnvelopes = []envelope.SourceEnvelope{secretSource}
+	secretMonitored := liveMonitoredAction(
+		"codex",
+		input,
+		"work_secret_connector_read",
+		"capgraph:tool:codegraph@sha256:fixture",
+		input.ToolInput,
+		cliTestNow,
+	)
+	if policy.Allowed(secretMonitored.Decision) {
+		t.Fatalf("secret source flowed into connector read: %+v", secretMonitored)
+	}
+	if !strings.Contains(strings.Join(secretMonitored.Intent.SecurityReasons, " "), "does not allow sink connector") {
+		t.Fatalf("secret connector denial lost sink evidence: %+v", secretMonitored.Intent)
+	}
+}
+
 func TestHookLiveCodexPreToolUseKeepsRoutineShellAutomaticAndBlocksEgress(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

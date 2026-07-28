@@ -122,6 +122,12 @@ func TestUniversalMonitorKeepsBenignHarnessWorkAutomatic(t *testing.T) {
 		{"browser snapshot", "browser.snapshot", map[string]any{"page": "docs"}, ActionDomainBrowser, "snapshot"},
 		{"browser interaction", "browser.click", map[string]any{"target": "@submit"}, ActionDomainBrowser, "click"},
 		{"connector read", "mcp__github__get_issue", map[string]any{"repo": "example/repo", "issue_number": 1}, ActionDomainConnector, "get_issue"},
+		{"codegraph explore", "mcp__codegraph__codegraph_explore", map[string]any{"query": "RateAppCoordinator"}, ActionDomainConnector, "codegraph_explore"},
+		{"codegraph node", "mcp__codegraph__codegraph_node", map[string]any{"symbol": "RateAppCoordinator"}, ActionDomainConnector, "codegraph_node"},
+		{"codegraph impact", "mcp__codegraph__codegraph_impact", map[string]any{"symbol": "RateAppCoordinator"}, ActionDomainConnector, "codegraph_impact"},
+		{"codegraph files", "mcp__codegraph__codegraph_files", map[string]any{"projectPath": "/repo"}, ActionDomainConnector, "codegraph_files"},
+		{"codegraph callers", "mcp__codegraph__codegraph_callers", map[string]any{"symbol": "present"}, ActionDomainConnector, "codegraph_callers"},
+		{"codegraph callees", "mcp__codegraph__codegraph_callees", map[string]any{"symbol": "present"}, ActionDomainConnector, "codegraph_callees"},
 		{"subagent wait", "collaboration.wait_agent", map[string]any{"timeout_ms": 10000}, ActionDomainControl, "wait_agent"},
 		{"pty poll", "write_stdin", map[string]any{"session_id": 42, "chars": ""}, ActionDomainShell, "session_poll"},
 	}

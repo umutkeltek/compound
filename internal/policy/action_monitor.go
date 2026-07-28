@@ -491,7 +491,8 @@ func actionDestination(arguments map[string]any) string {
 	for _, key := range []string{
 		"recipient", "to", "url", "uri", "file_path", "path", "repo",
 		"repository", "project", "deployment", "package", "secret", "claim", "target", "id",
-		"session_id", "page", "query", "task_name", "server",
+		"session_id", "page", "query", "symbol", "projectPath", "project_path",
+		"task_name", "server",
 	} {
 		if value := stringArgument(arguments, key); value != "" {
 			return value
@@ -681,17 +682,30 @@ func classifyControlAction(classification ActionClassification, tool string) Act
 // decomposition every shell and PTY action is classified by.
 
 func connectorMutationClass(operation string) string {
-	if actionLooksReadOnly(operation) {
+	if connectorOperationIsReadOnly(operation) {
 		return "read"
 	}
 	return "external_side_effect"
 }
 
 func connectorReversibility(operation string) string {
-	if actionLooksReadOnly(operation) {
+	if connectorOperationIsReadOnly(operation) {
 		return "none"
 	}
 	return "manual"
+}
+
+func connectorOperationIsReadOnly(operation string) bool {
+	if actionLooksReadOnly(operation) {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(operation)) {
+	case "codegraph_explore", "codegraph_node", "codegraph_impact",
+		"codegraph_files", "codegraph_callers", "codegraph_callees":
+		return true
+	default:
+		return false
+	}
 }
 
 func actionLooksReadOnly(operation string) bool {
