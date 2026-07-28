@@ -128,6 +128,8 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 		classification.MutationClass = "security"
 		classification.Reversibility = "manual"
 		classification.BlastRadius = "host"
+	case isControlTool(tool):
+		classification = classifyControlAction(classification, tool)
 	case isMessagingTool(tool):
 		classification.Domain = ActionDomainMessaging
 		classification.TargetKind = "recipient"
@@ -186,8 +188,6 @@ func ClassifyToolAction(request ToolActionRequest) ActionClassification {
 			stringArgument(request.Arguments, "command", "cmd"),
 			request.FirstPartyCommands,
 		)
-	case isControlTool(tool):
-		classification = classifyControlAction(classification, tool)
 	default:
 		classification.Known = false
 		classification.Domain = ActionDomainUnknown
@@ -628,8 +628,10 @@ func isControlTool(tool string) bool {
 		tool == "tool_search" ||
 		tool == "skill" ||
 		isHarnessControlTool(tool) ||
-		strings.HasPrefix(tool, "collaboration.") ||
-		strings.HasPrefix(tool, "collaboration_") ||
+		// Codex flattens the collaboration namespace into names such as
+		// "collaborationspawn_agent"; classifyControlAction still validates
+		// the operation and leaves unknown neighbors fail-closed.
+		strings.HasPrefix(tool, "collaboration") ||
 		strings.HasPrefix(tool, "list_mcp_resource") ||
 		tool == "read_mcp_resource"
 }

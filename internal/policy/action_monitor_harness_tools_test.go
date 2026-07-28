@@ -10,6 +10,10 @@ func TestClassifyToolActionKnowsHarnessNativeTools(t *testing.T) {
 		wantMutation string
 	}{
 		{"agent fan-out", "Agent", ActionDomainControl, "local_reversible"},
+		{"flattened codex agent fan-out", "collaborationspawn_agent", ActionDomainControl, "local_reversible"},
+		{"flattened codex agent list", "collaborationlist_agents", ActionDomainControl, "read"},
+		{"flattened codex agent wait", "collaborationwait_agent", ActionDomainControl, "read"},
+		{"flattened codex agent message", "collaborationsend_message", ActionDomainControl, "local_reversible"},
 		{"deferred tool search", "ToolSearch", ActionDomainControl, "read"},
 		{"task create", "TaskCreate", ActionDomainControl, "local_reversible"},
 		{"task update", "TaskUpdate", ActionDomainControl, "local_reversible"},
@@ -50,7 +54,14 @@ func TestClassifyToolActionKeepsSideEffectHarnessToolsFailClosed(t *testing.T) {
 	// Scheduling, notification, and remote-trigger tools carry host or outbound
 	// side effects; they must stay unknown (fail closed) until each gets an
 	// explicit domain classification.
-	for _, tool := range []string{"CronCreate", "CronDelete", "PushNotification", "RemoteTrigger", "DesignSync"} {
+	for _, tool := range []string{
+		"CronCreate",
+		"CronDelete",
+		"PushNotification",
+		"RemoteTrigger",
+		"DesignSync",
+		"collaborationremote_trigger",
+	} {
 		got := ClassifyToolAction(ToolActionRequest{Tool: tool})
 		if got.Known {
 			t.Fatalf("%q unexpectedly known: %+v", tool, got)
