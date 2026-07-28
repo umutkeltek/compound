@@ -296,6 +296,7 @@ func newPublishedLandingProofFixture(t *testing.T, now time.Time) landingProofFi
 	}
 	activateLandingWork(t, store, w.ID, now)
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(3*time.Minute))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(3*time.Minute+time.Second))
 	proof, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate, Record: true}, now.Add(4*time.Minute))
 	if err != nil {
 		t.Fatal(err)

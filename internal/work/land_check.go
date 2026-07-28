@@ -368,6 +368,11 @@ func (s *Store) evaluateLandCheck(w envelope.WorkEnvelope, opts LandCheckOptions
 		if !report.CleanTarget {
 			report.NextAction = landingContainedDirtyDiagnostic(targetRef, dirtyStatusPaths(statusOutput), contract.PublicationMode)
 		}
+		if !proofFound {
+			report.Status = "missing_source_bound_proof"
+			report.NextAction = fmt.Sprintf("run fresh canonical certifying proof for attached candidate commit:%s, then rerun land-check", candidate)
+			return report, nil
+		}
 		report.Status = "landed"
 		return report, nil
 	}
@@ -725,7 +730,12 @@ func (s *Store) validateRecordedLandCheckProofResult(w envelope.WorkEnvelope, re
 		if report.ProofVerificationRef != "" || report.ProofHeadSHA != "" {
 			return fmt.Errorf("recorded land-check %s cites proof verification no longer attached to work %s", report.ID, w.ID)
 		}
-		return nil
+		return fmt.Errorf(
+			"recorded land-check %s lacks committed source-bound proof for work %s; run fresh canonical certifying proof for attached candidate commit:%s, then rerun land-check",
+			report.ID,
+			w.ID,
+			report.CandidateTipSHA,
+		)
 	}
 	if report.ProofVerificationRef != result.VerificationRef ||
 		report.ProofHeadSHA != result.SourceSnapshot.HeadSHA ||

@@ -242,6 +242,123 @@ func TestCompleteProofResourceStoresSealedSourceSnapshot(t *testing.T) {
 	}
 }
 
+func TestLandCheckRefusesSourceControlledCandidateWithoutCommittedProof(t *testing.T) {
+	now := time.Date(2026, 7, 28, 7, 30, 0, 0, time.UTC)
+	repo, base, candidate := sharedLandingLandedRepo(t)
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "source-controlled candidate requires certifying proof",
+		GitDelivery:      localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, item.ID, now)
+	attachLandingCommit(t, store, item.ID, candidate, now.Add(3*time.Minute))
+
+	report, err := store.LandCheck(item.ID, LandCheckOptions{
+		CandidateTipSHA: candidate,
+		Actor:           "codex",
+		Record:          true,
+	}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "missing_source_bound_proof" {
+		t.Fatalf("land-check without committed source proof status = %q, want missing_source_bound_proof: %+v", report.Status, report)
+	}
+	if !strings.Contains(report.NextAction, "fresh canonical certifying proof") {
+		t.Fatalf("land-check without committed source proof next action = %q", report.NextAction)
+	}
+	current, err := store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(current.EvidenceRefs, report.EvidenceRef) {
+		t.Fatalf("non-landed proof check attached as delivery evidence: %+v", current.EvidenceRefs)
+	}
+}
+
+func TestRecordedLandedReportWithoutSourceProofCannotClose(t *testing.T) {
+	now := time.Date(2026, 7, 28, 7, 40, 0, 0, time.UTC)
+	repo, base, candidate := sharedLandingLandedRepo(t)
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create(CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "legacy landed report cannot bypass source proof",
+		GitDelivery:      localGitDelivery(repo, base),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateLandingWork(t, store, item.ID, now)
+	attachLandingCommit(t, store, item.ID, candidate, now.Add(3*time.Minute))
+	current, err := store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := store.evaluateLandCheck(current, LandCheckOptions{
+		CandidateTipSHA: candidate,
+		Actor:           "codex",
+	}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Status = "landed"
+	legacy.NextAction = ""
+	legacy.CandidateExists = true
+	legacy.ExpectedBaseExists = true
+	legacy.ExpectedBaseAncestorOfCandidate = true
+	legacy.CandidateContainedInTarget = true
+	legacy.TargetAncestorOfCandidate = true
+	legacy.CandidateContainedInPublication = true
+	legacy.ProofVerificationRef = ""
+	legacy.ProofHeadSHA = ""
+	if err := sealLandCheckReport(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.recordLandCheck(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(item.ID, AdvanceInput{
+		To:           current.State,
+		Actor:        "codex",
+		EvidenceRefs: []string{legacy.EvidenceRef},
+	}, now.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := store.ClosePlan(item.ID, now.Add(5*time.Minute+30*time.Second), ClosePlanOptions{
+		Actor:    "codex",
+		Outcome:  "completed",
+		MoveType: "outward_delta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "not_closeable" || !strings.Contains(plan.NoAction, "fresh canonical certifying proof") {
+		t.Fatalf("close plan with landed report lacking source proof = %+v", plan)
+	}
+
+	_, err = store.Close(item.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Actor:     "codex",
+		Summary:   "legacy delivery report",
+		ProofRefs: []string{legacy.EvidenceRef},
+	}, now.Add(6*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "fresh canonical certifying proof") {
+		t.Fatalf("close with landed report lacking source proof err = %v", err)
+	}
+}
+
 func TestSHA256SourceBoundProofAndLandBinding(t *testing.T) {
 	store := newStore(t)
 	repo := initSHA256ProofSourceRepo(t)
@@ -607,6 +724,100 @@ func newSourceBoundProofCompletionFixture(t *testing.T, now time.Time) sourceBou
 		reportRef: reportRef,
 		now:       now,
 	}
+}
+
+func completeSourceBoundProofForWork(
+	t *testing.T,
+	store *Store,
+	workID string,
+	actor string,
+	repo string,
+	now time.Time,
+) ProofResourceCompleteResult {
+	t.Helper()
+	item, err := store.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.GitDelivery == nil {
+		t.Fatalf("work %s has no git delivery contract", workID)
+	}
+	if item.State == "ready" {
+		item, err = store.Claim(workID, actor, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	runProofSourceGit(t, repo, "update-index", "--refresh")
+	source, err := gitrepository.CaptureCleanSnapshot(repo, item.GitDelivery.ExpectedBaseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := NewProofResourceProfileWithSource(
+		ProofResourceProfileCanonicalFull,
+		repo,
+		source,
+		[]ProofResourceGateProfile{{
+			Name:     "synthetic-gate",
+			Command:  []string{"go", "test", "./internal/synthetic"},
+			ProofRef: "synthetic-proof",
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := store.ReserveProofResource(workID, ProofResourceReserveInput{
+		Actor:     actor,
+		TTL:       time.Minute,
+		Workspace: repo,
+		Command:   "compound proof-check --base " + source.BaseSHA + " --out /synthetic/source-bound.json",
+		Profile:   profile,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reserved.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reportBody, err := json.Marshal(map[string]any{
+		"schema_version":  "compound.proof_check_report.v0.3",
+		"profile_kind":    ProofResourceProfileCanonicalFull,
+		"status":          "ok",
+		"generated_at":    now.Add(time.Second).Format(time.RFC3339),
+		"repo":            repo,
+		"base_ref":        source.BaseSHA,
+		"source_snapshot": source,
+		"dry_run":         false,
+		"proof_refs":      []string{"synthetic-proof"},
+		"steps": []map[string]any{{
+			"name":      "synthetic-gate",
+			"command":   []string{"go", "test", "./internal/synthetic"},
+			"proof_ref": "synthetic-proof",
+			"status":    "ok",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(store.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(reportBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := store.CompleteProofResource(workID, ProofResourceCompleteInput{
+		Actor:             actor,
+		ReservationID:     reserved.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return completed
 }
 
 func TestRecordedLandCheckRejectsCallerShapedProofResult(t *testing.T) {

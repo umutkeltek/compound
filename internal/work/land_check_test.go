@@ -57,6 +57,7 @@ func TestLandCheckClassifiesReadyLandedAndStaleLineage(t *testing.T) {
 		}
 
 		landingGit(t, repo, "merge", "--ff-only", candidate)
+		completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(90*time.Second))
 		landed, err := store.LandCheck(w.ID, LandCheckOptions{
 			RepoPath:        repo,
 			CandidateTipSHA: candidate,
@@ -186,6 +187,7 @@ func TestCompletedCodeWorkRequiresCurrentLandedProof(t *testing.T) {
 	}
 
 	landingGit(t, repo, "merge", "--ff-only", candidate)
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(5*time.Minute+time.Second))
 	landed, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main", Record: true}, now.Add(6*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -229,6 +231,7 @@ func TestCompletedCodeWorkRevalidatesContainedLandingProofAtClose(t *testing.T) 
 		t.Fatal(err)
 	}
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(150*time.Second))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(150*time.Second+time.Second))
 	proof, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main", Record: true}, now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -275,6 +278,7 @@ func TestLandCheckReportsTruthfulContainmentUnderUnrelatedDirt(t *testing.T) {
 		t.Fatal(err)
 	}
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(30*time.Second+time.Second))
 
 	// Preserved unrelated WIP: the always-dirty repo / shared-checkout case.
 	writeLandingFile(t, filepath.Join(repo, "unrelated-wip.txt"), "neighbor lane WIP\n")
@@ -333,6 +337,7 @@ func TestLandCheckPublishedContainmentOutranksOwnedPathDirt(t *testing.T) {
 		t.Fatal(err)
 	}
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(30*time.Second+time.Second))
 
 	// A later lane is editing a path this candidate also changed. The local and
 	// publication refs already contain the exact candidate, so the worktree dirt
@@ -382,6 +387,7 @@ func TestCompletedRequiredPublicationWorkClosesOverLaterOwnedPathDirt(t *testing
 	}
 	activateLandingWork(t, store, w.ID, now)
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(150*time.Second))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(150*time.Second+time.Second))
 	proof, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate, Record: true}, now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -461,6 +467,7 @@ func TestLandCheckPublishedContainmentReportsForeignDirt(t *testing.T) {
 		t.Fatal(err)
 	}
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(30*time.Second+time.Second))
 
 	foreignPaths := []string{
 		"foreign-lane-wip-1.txt",
@@ -635,6 +642,7 @@ func TestLandCheckLocalOnlyPreservationNamesOnlyTargetAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(30*time.Second+time.Second))
 	writeLandingFile(t, filepath.Join(repo, "local-only-wip.txt"), "later local WIP\n")
 
 	report, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate}, now.Add(time.Minute))
@@ -670,6 +678,7 @@ func TestCompletedCodeWorkClosesOverPreservedUnrelatedDirt(t *testing.T) {
 	}
 	activateLandingWork(t, store, w.ID, now)
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(150*time.Second))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(150*time.Second+time.Second))
 	proof, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main", Record: true}, now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -1131,6 +1140,7 @@ func TestLandCheckRejectsSamePathRepositoryReplacement(t *testing.T) {
 	}
 	activateLandingWork(t, store, w.ID, now)
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(3*time.Minute))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(3*time.Minute+time.Second))
 	proof, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate, Record: true}, now.Add(4*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -1191,6 +1201,7 @@ func TestPublicationProofIsAttachedDiscoverableAndRequiredForDispatchClose(t *te
 		t.Fatal(err)
 	}
 	landingGit(t, repo, "merge", "--ff-only", candidate)
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(3*time.Minute+time.Second))
 
 	localOnly, err := store.LandCheck(w.ID, LandCheckOptions{CandidateTipSHA: candidate, Record: true, Actor: "codex"}, now.Add(4*time.Minute))
 	if err != nil {
@@ -1287,6 +1298,7 @@ func newLandingProofFixture(t *testing.T, now time.Time) landingProofFixture {
 	}
 	activateLandingWork(t, store, w.ID, now)
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(3*time.Minute))
+	completeSourceBoundProofForWork(t, store, w.ID, "codex", repo, now.Add(3*time.Minute+time.Second))
 	proof, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main", Record: true}, now.Add(4*time.Minute))
 	if err != nil {
 		t.Fatal(err)

@@ -8,189 +8,266 @@ import (
 	"testing"
 )
 
-var staleProofTerminalDoctrine = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\breal\s+(?:terminal|tty|pty)\b`),
-	regexp.MustCompile(`(?i)\b(?:proof-check|certifying proof|canonical full profile|full profile)\b[^\n]{0,100}\b(?:requires?|must use|must run|only from)\b[^\n]{0,60}\b(?:terminal|tty|pty)\b`),
-	regexp.MustCompile(`(?i)\b(?:terminal|tty|pty)\b[^\n]{0,60}\b(?:is required|required for)\b[^\n]{0,80}\b(?:proof-check|certifying proof|canonical full profile|full profile)\b`),
-	regexp.MustCompile(`(?i)\b(?:run|use)\b[^\n]{0,40}\b(?:terminal|tty|pty)\b[^\n]{0,80}\bstdout\s+direct\b`),
-	regexp.MustCompile(`(?i)\b(?:pipes?|redirections?)\b[^\n]{0,100}\b(?:refus|unsupported|admission fails?)`),
-	regexp.MustCompile(`(?i)\b(?:refus|unsupported|admission fails?)[^\n]{0,100}\b(?:pipes?|redirections?)\b`),
+var proofCeremonyCanonicalClauses = []string{
+	"a rebase, replay, or new head invalidates prior proof and requires a fresh battery.",
+	"for source-controlled work, a committed stored successful proof is required: land-check candidate tip, current attached commit candidate, and stored proof head must match; close refuses a missing, mismatched, or rebased proof.",
 }
 
-type proofCeremonySemanticRule struct {
-	name   string
-	groups [][]string
-}
-
-var proofCeremonySemanticRules = []proofCeremonySemanticRule{
-	{
-		name: "rebase or replay invalidates prior proof and requires a fresh battery",
-		groups: [][]string{
-			{"rebase", "replay", "new head", "new candidate tip", "changed head"},
-			{"invalidates", "requires", "needs", "must"},
-			{"fresh battery", "new battery", "new proof", "re-run", "rerun"},
-		},
-	},
-	{
-		name: "land-check candidate tip binds proof HEAD, attached commit, and close",
-		groups: [][]string{
-			{"land-check"},
-			{"candidate tip", "land tip", "landing tip"},
-			{"proof head", "proved head", "sealed head"},
-			{"attached commit", "commit candidate", "attached candidate"},
-			{"equal", "match", "identical", "bind", "same"},
-			{"close"},
-			{"refus", "reject", "block", "non-certifying", "cannot close"},
-		},
-	},
-}
+var (
+	fullProofBaseSHA = regexp.MustCompile(`^[0-9a-f]{40}(?:[0-9a-f]{24})?$`)
+	shellAssignment  = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+	baseArgument     = regexp.MustCompile(`(?:^|\s)--base(?:=|\s+)(\S+)`)
+	devArgument      = regexp.MustCompile(`(?:^|\s)--dev(?:\s|$)`)
+	proofTerm        = regexp.MustCompile(`(?i)\b(?:proof-check|certifying proof|canonical full profile|full profile)\b`)
+	terminalTerm     = regexp.MustCompile(`(?i)\b(?:terminal|tty|pty)\b`)
+	terminalRequired = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(?:proof-check|certifying proof|canonical full profile|full profile)\b[^.;\n]{0,100}\b(?:requires?|must use|must run|only from)\s+(?:a\s+)?(?:real\s+)?(?:terminal|tty|pty)\b`),
+		regexp.MustCompile(`(?i)\b(?:real\s+)?(?:terminal|tty|pty)\s+is required\b[^.;\n]{0,80}\b(?:proof-check|certifying proof|canonical full profile|full profile)\b`),
+	}
+	staleProofStreamDoctrine = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(?:run|use)\b[^\n]{0,40}\b(?:terminal|tty|pty)\b[^\n]{0,80}\bstdout\s+direct\b`),
+		regexp.MustCompile(`(?i)\b(?:pipes?|redirections?)\b[^\n]{0,100}\b(?:refus|unsupported|admission fails?)`),
+		regexp.MustCompile(`(?i)\b(?:refus|unsupported|admission fails?)[^\n]{0,100}\b(?:pipes?|redirections?)\b`),
+	}
+)
 
 func TestProofCeremonyDoctrineContract(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("resolve repository root: %v", err)
 	}
-
 	paths := []string{
 		"CONTRIBUTING.md",
 		"skills/compound-land/SKILL.md",
 		"skills/compound-verify/SKILL.md",
 	}
-	docs := make(map[string]string, len(paths))
 	for _, rel := range paths {
-		raw, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
-		if err != nil {
-			t.Fatalf("read served proof doctrine %s: %v", rel, err)
-		}
-		docs[rel] = string(raw)
-	}
-
-	for _, rel := range paths {
-		body := docs[rel]
 		t.Run(rel, func(t *testing.T) {
-			for _, stale := range staleProofTerminalDoctrine {
-				if stale.MatchString(body) {
-					t.Errorf("%s revives terminal-dependent proof admission with %q", rel, stale.FindString(body))
-				}
+			raw, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+			if err != nil {
+				t.Fatalf("read served proof doctrine %s: %v", rel, err)
 			}
-
-			commands := certifyingProofCommands(body)
-			if len(commands) == 0 {
-				t.Fatalf("%s must show at least one certifying local proof-check command", rel)
+			body := string(raw)
+			if missing := missingProofCeremonyCanonicalClauses(body); len(missing) > 0 {
+				t.Errorf("%s missing canonical proof clauses: %v", rel, missing)
 			}
-			for _, command := range commands {
-				if !strings.Contains(command, "--base ") {
-					t.Errorf("%s certifying proof-check command must bind an explicit immutable base: %q", rel, command)
-				}
+			for _, finding := range staleProofTerminalFindings(body) {
+				t.Errorf("%s: %s", rel, finding)
+			}
+			canonicalCount, findings := certifyingProofCommandFindings(body)
+			if canonicalCount == 0 {
+				t.Errorf("%s must show at least one canonical local proof-check command", rel)
+			}
+			for _, finding := range findings {
+				t.Errorf("%s: %s", rel, finding)
 			}
 		})
 	}
+}
 
-	for surface, findings := range proofCeremonySemanticFindings(docs) {
-		for _, finding := range findings {
-			t.Errorf("%s: %s", surface, finding)
+func TestProofCeremonySemanticGuardRejectsNegatedOppositeMeaning(t *testing.T) {
+	tests := []struct {
+		name        string
+		replacement string
+	}{
+		{
+			name:        "rebase does not invalidate",
+			replacement: "A rebase invalidates nothing; a fresh battery is not required.",
+		},
+		{
+			name:        "tips need not match",
+			replacement: "Tips need not match; close does not refuse a missing or mismatched proof.",
+		},
+	}
+	complete := strings.Join(proofCeremonyCanonicalClauses, "\n\n")
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			drifted := strings.Replace(complete, proofCeremonyCanonicalClauses[i], tc.replacement, 1)
+			missing := missingProofCeremonyCanonicalClauses(drifted)
+			if len(missing) != 1 || missing[0] != proofCeremonyCanonicalClauses[i] {
+				t.Fatalf("negated doctrine missing clauses = %v", missing)
+			}
+		})
+	}
+}
+
+func TestProofCeremonyCommandGuardRejectsMovingCanonicalBases(t *testing.T) {
+	for _, base := range []string{"main", "HEAD", "refs/heads/main"} {
+		t.Run(base, func(t *testing.T) {
+			body := "```bash\ncompound proof-check --base " + base + " --work work_example\n```"
+			count, findings := certifyingProofCommandFindings(body)
+			if count != 1 || len(findings) != 1 {
+				t.Fatalf("canonical moving base count=%d findings=%v", count, findings)
+			}
+		})
+	}
+}
+
+func TestProofCeremonyCommandGuardAcceptsImmutableBasesAndDevMain(t *testing.T) {
+	body := "```bash\n" +
+		"compound proof-check --dev --base main\n" +
+		"compound proof-check --base 0123456789abcdef0123456789abcdef01234567 --work work_sha1\n" +
+		"compound proof-check --base 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --work work_sha256\n" +
+		"BASE_SHA=$(git rev-parse --verify \"main^{commit}\")\n" +
+		"compound proof-check --base \"$BASE_SHA\" --work work_captured\n" +
+		"```"
+	count, findings := certifyingProofCommandFindings(body)
+	if count != 3 || len(findings) != 0 {
+		t.Fatalf("immutable canonical command count=%d findings=%v", count, findings)
+	}
+}
+
+func TestProofCeremonyTerminalGuardAllowsExplicitNonRequirement(t *testing.T) {
+	if findings := staleProofTerminalFindings("Certifying proof is agent-invocable; a real TTY is not required."); len(findings) != 0 {
+		t.Fatalf("explicit non-requirement findings = %v", findings)
+	}
+	for _, stale := range []string{
+		"Certifying proof requires a real TTY.",
+		"A real terminal is required for canonical full profile proof.",
+	} {
+		if findings := staleProofTerminalFindings(stale); len(findings) == 0 {
+			t.Fatalf("stale terminal doctrine accepted: %q", stale)
 		}
 	}
 }
 
-func TestProofCeremonySemanticGuardRejectsOneDriftedSurface(t *testing.T) {
-	const complete = `
-A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
-The land-check candidate tip must equal the stored proof HEAD and attached commit;
-close refuses a mismatch.
-`
-	docs := map[string]string{
-		"complete.md": complete,
-		"drifted.md":  "Certifying proof is important, but this surface omits its identity rules.",
-	}
-
-	findings := proofCeremonySemanticFindings(docs)
-	if got := len(findings["drifted.md"]); got != len(proofCeremonySemanticRules) {
-		t.Fatalf("drifted surface findings = %v, want all %d semantic rules; one complete document must not mask another", findings, len(proofCeremonySemanticRules))
-	}
-	if got := findings["complete.md"]; len(got) != 0 {
-		t.Fatalf("complete surface findings = %v, want none", got)
-	}
-}
-
-func TestProofCeremonySemanticGuardAllowsNaturalWordingVariants(t *testing.T) {
-	const variant = `
-After a replay, the new proof must be rerun before certification.
-
-The sealed HEAD, commit candidate, and landing tip in land-check bind to one identity;
-close is blocked when they diverge.
-`
-	if findings := missingProofCeremonySemantics(variant); len(findings) != 0 {
-		t.Fatalf("natural doctrine variant findings = %v, want none", findings)
-	}
-}
-
-func certifyingProofCommands(markdown string) []string {
-	var commands []string
-	lines := strings.Split(markdown, "\n")
-	inFence := false
-	for i := 0; i < len(lines); i++ {
-		trimmed := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(trimmed, "```") {
-			inFence = !inFence
-			continue
-		}
-		if !inFence || !strings.Contains(trimmed, "proof-check") {
-			continue
-		}
-
-		command := trimmed
-		for strings.HasSuffix(strings.TrimSpace(command), `\`) && i+1 < len(lines) {
-			i++
-			command += " " + strings.TrimSpace(lines[i])
-		}
-		if strings.Contains(command, "--work ") && !strings.Contains(command, "--dev") {
-			commands = append(commands, command)
-		}
-	}
-	return commands
-}
-
-func proofCeremonySemanticFindings(docs map[string]string) map[string][]string {
-	findings := make(map[string][]string)
-	for name, body := range docs {
-		if missing := missingProofCeremonySemantics(body); len(missing) > 0 {
-			findings[name] = missing
-		}
-	}
-	return findings
-}
-
-func missingProofCeremonySemantics(body string) []string {
+func missingProofCeremonyCanonicalClauses(body string) []string {
+	normalized := normalizeProofDoctrine(body)
 	var missing []string
-	for _, rule := range proofCeremonySemanticRules {
-		if !proofCeremonyParagraphMatches(body, rule.groups) {
-			missing = append(missing, rule.name)
+	for _, clause := range proofCeremonyCanonicalClauses {
+		if !strings.Contains(normalized, clause) {
+			missing = append(missing, clause)
 		}
 	}
 	return missing
 }
 
-func proofCeremonyParagraphMatches(body string, groups [][]string) bool {
-	for _, paragraph := range strings.Split(strings.ToLower(body), "\n\n") {
-		paragraph = strings.ReplaceAll(paragraph, "\n", " ")
-		matches := true
-		for _, alternatives := range groups {
-			found := false
-			for _, term := range alternatives {
-				if strings.Contains(paragraph, term) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				matches = false
+func normalizeProofDoctrine(body string) string {
+	body = strings.ToLower(strings.ReplaceAll(body, "`", ""))
+	return strings.Join(strings.Fields(body), " ")
+}
+
+func staleProofTerminalFindings(body string) []string {
+	var findings []string
+	for _, clause := range strings.FieldsFunc(body, func(r rune) bool {
+		return r == '\n' || r == '.' || r == ';'
+	}) {
+		lower := strings.ToLower(strings.Join(strings.Fields(clause), " "))
+		if !proofTerm.MatchString(lower) || !terminalTerm.MatchString(lower) {
+			continue
+		}
+		if strings.Contains(lower, "not required") ||
+			strings.Contains(lower, "does not require") ||
+			strings.Contains(lower, "do not require") {
+			continue
+		}
+		for _, stale := range terminalRequired {
+			if stale.MatchString(lower) {
+				findings = append(findings, "stale terminal-dependent proof doctrine: "+strings.TrimSpace(clause))
 				break
 			}
 		}
-		if matches {
-			return true
+	}
+	for _, stale := range staleProofStreamDoctrine {
+		if match := stale.FindString(body); match != "" {
+			findings = append(findings, "stale stream-dependent proof doctrine: "+match)
 		}
 	}
-	return false
+	return findings
+}
+
+func certifyingProofCommandFindings(markdown string) (int, []string) {
+	canonicalCount := 0
+	var findings []string
+	for _, block := range markdownCodeBlocks(markdown) {
+		assignments := make(map[string]bool)
+		for _, command := range shellLogicalLines(block) {
+			if match := shellAssignment.FindStringSubmatch(command); match != nil {
+				assignments[match[1]] = immutableProofBaseAssignment(match[2])
+				continue
+			}
+			if strings.HasPrefix(command, "#") || !strings.Contains(command, "proof-check") {
+				continue
+			}
+			if devArgument.MatchString(command) {
+				continue
+			}
+			canonicalCount++
+			match := baseArgument.FindStringSubmatch(command)
+			if match == nil {
+				findings = append(findings, "canonical proof-check command lacks --base: "+command)
+				continue
+			}
+			base := strings.Trim(match[1], "\"'")
+			if !immutableProofBaseArgument(base, assignments) {
+				findings = append(findings, "canonical proof-check --base must be a lowercase full SHA or a captured full-SHA variable: "+command)
+			}
+		}
+	}
+	return canonicalCount, findings
+}
+
+func markdownCodeBlocks(markdown string) [][]string {
+	var blocks [][]string
+	var current []string
+	inFence := false
+	for _, line := range strings.Split(markdown, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if inFence {
+				blocks = append(blocks, current)
+				current = nil
+			}
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			current = append(current, line)
+		}
+	}
+	return blocks
+}
+
+func shellLogicalLines(lines []string) []string {
+	var logical []string
+	for i := 0; i < len(lines); i++ {
+		command := strings.TrimSpace(lines[i])
+		for strings.HasSuffix(command, "\\") && i+1 < len(lines) {
+			command = strings.TrimSpace(strings.TrimSuffix(command, "\\")) + " " + strings.TrimSpace(lines[i+1])
+			i++
+		}
+		if command != "" {
+			logical = append(logical, command)
+		}
+	}
+	return logical
+}
+
+func immutableProofBaseAssignment(value string) bool {
+	value = strings.TrimSpace(strings.Trim(value, "\"'"))
+	if fullProofBaseSHA.MatchString(value) {
+		return true
+	}
+	if !strings.HasPrefix(value, "$(git rev-parse --verify ") || !strings.HasSuffix(value, ")") {
+		return false
+	}
+	ref := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "$(git rev-parse --verify "), ")"))
+	ref = strings.Trim(ref, "\"'")
+	return strings.HasSuffix(ref, "^{commit}") && len(strings.TrimSuffix(ref, "^{commit}")) > 0
+}
+
+func immutableProofBaseArgument(value string, assignments map[string]bool) bool {
+	if fullProofBaseSHA.MatchString(value) {
+		return true
+	}
+	var name string
+	switch {
+	case strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}"):
+		name = strings.TrimSuffix(strings.TrimPrefix(value, "${"), "}")
+	case strings.HasPrefix(value, "$"):
+		name = strings.TrimPrefix(value, "$")
+	default:
+		return false
+	}
+	return assignments[name]
 }

@@ -157,6 +157,11 @@ Two corollaries worth their own line:
    candidate, and stored successful proof HEAD must be identical. A rebased or mismatched tip
    is non-certifying and close refuses it until a fresh battery records the new HEAD.
 
+A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
+For source-controlled work, a committed stored successful proof is required:
+`land-check` candidate tip, current attached commit candidate, and stored proof HEAD
+must match; close refuses a missing, mismatched, or rebased proof.
+
 ## Verdict format (end every run with exactly one)
 
 - `ALIVE` — all four gaps closed; cite: proof-check result, consumer command + observed output,

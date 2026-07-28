@@ -340,6 +340,7 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
   hatch if a DIFFERENT lane needs to take over a lease this one abandoned without releasing.
 - Re-run on landed main (cheap insurance against rehearsal/main divergence):
   ```bash
+  BASE_SHA=$(git rev-parse --verify "main^{commit}")
   go run ./cmd/compound proof-check --json --base "$BASE_SHA" \
     --work <work_id> --actor "<harness>:<lane>" --out <absolute-report.json>
   ```
@@ -385,6 +386,11 @@ git merge --ff-only <your-branch>                    # or push with the SHA guar
 - Update `docs_private/plan/HANDOFF.md` (when present / operator lane) with what landed, its
   commit SHA, and any opened branch — the next session orients from it.
 - Run the `extract-approach` skill if the change solved a non-trivial problem.
+
+A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
+For source-controlled work, a committed stored successful proof is required:
+`land-check` candidate tip, current attached commit candidate, and stored proof HEAD
+must match; close refuses a missing, mismatched, or rebased proof.
 
 ## 5 · Push floor
 

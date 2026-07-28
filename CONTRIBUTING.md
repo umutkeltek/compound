@@ -156,6 +156,11 @@ skills/                   Agent ceremony definitions
 5. **CI runs automatically** on push/PR: `proof-check --ci` (Go gates) +
    `proof-check --ci-console` (TypeScript gates) + gitleaks (secret scan).
 
+A rebase, replay, or new HEAD invalidates prior proof and requires a fresh battery.
+For source-controlled work, a committed stored successful proof is required:
+`land-check` candidate tip, current attached commit candidate, and stored proof HEAD
+must match; close refuses a missing, mismatched, or rebased proof.
+
 ## What makes a good contribution
 
 - A test that catches a failure mode nobody had considered
