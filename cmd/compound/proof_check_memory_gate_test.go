@@ -28,17 +28,26 @@ func proofCheckMemoryGateStep(t *testing.T) (repo string, step proofCheckStep) {
 func TestProofCheckMemoryDoctorUsesCandidateRuntimeInsteadOfPATHCompound(t *testing.T) {
 	repo, _ := proofCheckMemoryGateStep(t)
 	homePath := proofCheckMemoryGateHome(t, false)
-	candidate, err := proofCheckRuntimeExecutable("compound")
+	resolver := proofCheckRuntimeExecutable
+	resolved, err := resolver("compound")
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCandidate, err := os.Executable()
+	wantRuntime, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidate != wantCandidate {
-		t.Fatalf("compound candidate = %q, want current runtime %q", candidate, wantCandidate)
+	if resolved != wantRuntime {
+		t.Fatalf("compound candidate = %q, want current runtime %q", resolved, wantRuntime)
 	}
+	candidate := compoundTestBinary(t)
+	proofCheckRuntimeExecutable = func(logical string) (string, error) {
+		if logical == "compound" {
+			return candidate, nil
+		}
+		return resolver(logical)
+	}
+	t.Cleanup(func() { proofCheckRuntimeExecutable = resolver })
 	marker := filepath.Join(t.TempDir(), "stale-compound-ran")
 	binDir := t.TempDir()
 	stale := filepath.Join(binDir, "compound")
@@ -48,9 +57,17 @@ func TestProofCheckMemoryDoctorUsesCandidateRuntimeInsteadOfPATHCompound(t *test
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("COMPOUND_STALE_MARKER", marker)
 
-	_, _ = runProofCheckMemoryDoctorInHomeContext(context.Background(), repo, homePath, proofCheckStep{
+	out, err := runProofCheckMemoryDoctorInHomeContext(context.Background(), repo, homePath, proofCheckStep{
 		Name: "memory-doctor", Command: []string{"compound", "memory", "doctor", "--json"},
 	})
+	if err != nil {
+		t.Fatalf("candidate runtime did not execute memory doctor successfully: %v\n%s", err, out)
+	}
+	for _, hop := range proofCheckMemoryDoctorRequiredHops {
+		if !strings.Contains(string(out), `"`+hop+`"`) {
+			t.Fatalf("candidate runtime output does not contain memory doctor hop %q:\n%s", hop, out)
+		}
+	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("stale PATH compound ran instead of the candidate runtime: %v", err)
 	}

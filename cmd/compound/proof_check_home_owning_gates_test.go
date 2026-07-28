@@ -77,6 +77,51 @@ func TestHomeOwningGateDispatchPassesCancelledContext(t *testing.T) {
 	}
 }
 
+// TestAgentsHomeOwningGateDoesNotRequirePATHCompound keeps the pre-dispatch availability
+// check aligned with the gate's real invocation: its runner provides COMPOUND_BIN from the
+// candidate runtime, so PATH never participates in its compound subprocess.
+func TestAgentsHomeOwningGateDoesNotRequirePATHCompound(t *testing.T) {
+	steps, err := proofCheckSteps("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var step proofCheckStep
+	for _, candidate := range steps {
+		if candidate.Name == "console-agents-consistency-smoke" {
+			step = candidate
+			break
+		}
+	}
+	if step.Name == "" {
+		t.Fatal("console-agents-consistency-smoke missing from proof steps")
+	}
+
+	original := proofCheckHomeOwningGates
+	t.Cleanup(func() { proofCheckHomeOwningGates = original })
+	runners := make(map[string]func(context.Context, string, proofCheckStep) ([]byte, error), len(original))
+	for name, runner := range original {
+		runners[name] = runner
+	}
+	called := false
+	runners[step.Name] = func(_ context.Context, _ string, _ proofCheckStep) ([]byte, error) {
+		called = true
+		return []byte("agents runner invoked\n"), nil
+	}
+	proofCheckHomeOwningGates = runners
+	t.Setenv("PATH", t.TempDir())
+
+	result := runProofCheckStepContext(context.Background(), t.TempDir(), step, "")
+	if result.Status == "skipped" {
+		t.Fatalf("agents home-owning gate was skipped before its candidate runtime could be injected: %s", result.SkipReason)
+	}
+	if !called {
+		t.Fatalf("agents home-owning gate runner was not invoked with compound absent from PATH: %+v", result)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("agents home-owning gate status = %q, want ok: %s", result.Status, result.OutputTail)
+	}
+}
+
 // TestHomeOwningGateProductionPathsAreContextOnly makes the process-control contract
 // mechanically visible: raw exec.Command cannot attach either the process group or the
 // inheritable execution-barrier descriptor, and contextless runners can silently evade a

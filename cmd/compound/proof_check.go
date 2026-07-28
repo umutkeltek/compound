@@ -672,9 +672,9 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-representation-falsifiers-smoke", Command: consoleBunSmokeCommand("scripts/representation-falsifiers-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-representation-falsifiers-smoke"},
 		{Name: "console-representation-cluster-guard-smoke", Command: consoleSmokeCommand("scripts/representation-cluster-guard-smoke.mjs"), Dir: "console", ProofRef: "console-representation-cluster-guard-smoke"},
 		// agents-consistency and projection-doors are pure node (no Bun-only API, no
-		// extensionless/TSX import), but both subprocess a `compound` binary (COMPOUND_BIN or the
-		// literal "compound" on PATH) — skip when that binary is unavailable rather than fail.
-		{Name: "console-agents-consistency-smoke", Command: consoleSmokeCommand("scripts/agents-consistency-smoke.mjs"), Dir: "console", SkipIfMissing: "compound", ProofRef: "console-agents-consistency-smoke"},
+		// extensionless/TSX import). The home-owning agents gate injects its candidate binary as
+		// COMPOUND_BIN, while projection-doors still runs its literal fallback from PATH.
+		{Name: "console-agents-consistency-smoke", Command: consoleSmokeCommand("scripts/agents-consistency-smoke.mjs"), Dir: "console", ProofRef: "console-agents-consistency-smoke"},
 		{Name: "console-projection-doors-smoke", Command: consoleSmokeCommand("scripts/projection-doors-smoke.mjs"), Dir: "console", SkipIfMissing: "compound", ProofRef: "console-projection-doors-smoke"},
 		// bun smokes: these import extensionless TS the node runner cannot resolve, so they run under bun.
 		{Name: "console-stream-tail-smoke", Command: consoleBunSmokeCommand("scripts/stream-tail-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-stream-tail-smoke"},
@@ -995,7 +995,9 @@ func proofCheckUsesGo(step proofCheckStep) bool {
 	return len(step.Command) > 0 && step.Command[0] == "go"
 }
 
-func proofCheckRuntimeExecutable(logical string) (string, error) {
+var proofCheckRuntimeExecutable = resolveProofCheckRuntimeExecutable
+
+func resolveProofCheckRuntimeExecutable(logical string) (string, error) {
 	if logical == "compound" {
 		return os.Executable()
 	}

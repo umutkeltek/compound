@@ -27,17 +27,26 @@ func proofCheckWorkbenchGateStep(t *testing.T) (repo string, step proofCheckStep
 func TestProofCheckWorkbenchUsesCandidateRuntimeInsteadOfPATHCompound(t *testing.T) {
 	repo, _ := proofCheckWorkbenchGateStep(t)
 	homePath := proofCheckWorkbenchGateHome(t, false)
-	candidate, err := proofCheckRuntimeExecutable("compound")
+	resolver := proofCheckRuntimeExecutable
+	resolved, err := resolver("compound")
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCandidate, err := os.Executable()
+	wantRuntime, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidate != wantCandidate {
-		t.Fatalf("compound candidate = %q, want current runtime %q", candidate, wantCandidate)
+	if resolved != wantRuntime {
+		t.Fatalf("compound candidate = %q, want current runtime %q", resolved, wantRuntime)
 	}
+	candidate := compoundTestBinary(t)
+	proofCheckRuntimeExecutable = func(logical string) (string, error) {
+		if logical == "compound" {
+			return candidate, nil
+		}
+		return resolver(logical)
+	}
+	t.Cleanup(func() { proofCheckRuntimeExecutable = resolver })
 	marker := filepath.Join(t.TempDir(), "stale-compound-ran")
 	binDir := t.TempDir()
 	stale := filepath.Join(binDir, "compound")
@@ -47,9 +56,15 @@ func TestProofCheckWorkbenchUsesCandidateRuntimeInsteadOfPATHCompound(t *testing
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("COMPOUND_STALE_MARKER", marker)
 
-	_, _ = runProofCheckWorkbenchInHomeContext(context.Background(), repo, homePath, proofCheckStep{
+	out, err := runProofCheckWorkbenchInHomeContext(context.Background(), repo, homePath, proofCheckStep{
 		Name: "workbench-projection", Command: []string{"compound", "workbench", "--json"},
 	})
+	if err != nil {
+		t.Fatalf("candidate runtime did not execute workbench successfully: %v\n%s", err, out)
+	}
+	if err := proofCheckAssertWorkbenchProjection(out); err != nil {
+		t.Fatalf("candidate runtime output does not carry the seeded workbench projection: %v\n%s", err, out)
+	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("stale PATH compound ran instead of the candidate runtime: %v", err)
 	}
