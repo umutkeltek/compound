@@ -21,14 +21,15 @@ import (
 )
 
 const (
-	ProofResourceReservationSchemaVersion         = "compound.work_proof_reservation.v0.2"
-	ProofResourceRefreshSchemaVersion             = "compound.work_proof_refresh.v0.1"
-	ProofResourceResultSchemaVersion              = "compound.work_proof_result.v0.1"
-	ProofResourceCompletionSchemaVersion          = "compound.work_proof_completion.v0.1"
-	ProofResourceLegacyRecoverySchemaVersion      = "compound.work_proof_legacy_recovery.v0.1"
-	ProofResourceTerminationSchemaVersion         = "compound.work_proof_termination.v0.1"
-	ProofResourceTerminationEvidenceSchemaVersion = "compound.work_proof_termination_evidence.v0.1"
-	ProofResourceName                             = "compound-proof-battery"
+	ProofResourceReservationSchemaVersion           = "compound.work_proof_reservation.v0.2"
+	ProofResourceRefreshSchemaVersion               = "compound.work_proof_refresh.v0.1"
+	ProofResourceResultSchemaVersion                = "compound.work_proof_result.v0.1"
+	ProofResourceCompletionSchemaVersion            = "compound.work_proof_completion.v0.1"
+	ProofResourceLegacyRecoverySchemaVersion        = "compound.work_proof_legacy_recovery.v0.1"
+	proofResourceLegacyRecoveryPendingSchemaVersion = "compound.work_proof_legacy_recovery_pending.v0.1"
+	ProofResourceTerminationSchemaVersion           = "compound.work_proof_termination.v0.1"
+	ProofResourceTerminationEvidenceSchemaVersion   = "compound.work_proof_termination_evidence.v0.1"
+	ProofResourceName                               = "compound-proof-battery"
 
 	ProofResourceAcquired = "acquired"
 	ProofResourceRefused  = "refused"
@@ -368,6 +369,29 @@ type ProofResourceLegacyRecoveryResult struct {
 	Work                 envelope.WorkEnvelope       `json:"work"`
 }
 
+type proofResourceLegacyRecoveryPending struct {
+	SchemaVersion      string                         `json:"schema_version"`
+	ID                 string                         `json:"id"`
+	WorkID             string                         `json:"work_id"`
+	ReservationID      string                         `json:"reservation_id"`
+	Holder             string                         `json:"holder"`
+	RunAttemptID       string                         `json:"run_attempt_id"`
+	InputDigest        string                         `json:"input_digest"`
+	CompletionDigest   string                         `json:"completion_digest"`
+	CreatedAt          string                         `json:"created_at"`
+	GovernanceSeal     string                         `json:"governance_seal"`
+	Action             envelope.ActionIntent          `json:"action"`
+	Decision           envelope.PolicyDecision        `json:"decision"`
+	Completion         proofResourceCompletionPending `json:"completion"`
+	Recovery           ProofResourceLegacyRecovery    `json:"recovery"`
+	WorkBefore         envelope.WorkEnvelope          `json:"work_before"`
+	WorkAfter          envelope.WorkEnvelope          `json:"work_after"`
+	LifecycleEvent     Event                          `json:"lifecycle_event"`
+	FreshBatteryReason string                         `json:"fresh_battery_reason"`
+	TerminalStatus     string                         `json:"terminal_status"`
+	TerminalReason     string                         `json:"terminal_reason"`
+}
+
 // ProofResourceReleasePendingError means the authoritative proof commit is visible, but the
 // scarce holder and exact recovery journal are intentionally retained. Callers must not present
 // this state as an ordinary green proof; retrying the exact completion releases idempotently.
@@ -444,6 +468,31 @@ var proofResourceTerminalizeRunAttempt = func(s *Store, id, status, reason strin
 
 var proofResourceAcquireWithExecutionBarrierPrepared = landlease.AcquireWithExecutionBarrierPrepared
 var proofResourceAfterScarceMutation = func(phase string) {}
+var proofResourceWriteLegacyRecoveryJournal = func(
+	s *Store,
+	path string,
+	pending proofResourceLegacyRecoveryPending,
+) error {
+	return s.writeProofResourceLegacyRecoveryPending(path, pending)
+}
+var proofResourceReleaseLegacyRecoveryAfter = landlease.ReleaseAfter
+var proofResourceAfterLegacyRecoveryRelease = func(proofResourceLegacyRecoveryPending) error {
+	return nil
+}
+var proofResourceClearLegacyCompletionPending = func(
+	s *Store,
+	path string,
+	pending proofResourceCompletionPending,
+) error {
+	return s.clearLegacyProofResourceCompletionPending(path, pending)
+}
+var proofResourceClearLegacyRecoveryJournal = func(
+	s *Store,
+	path string,
+	pending proofResourceLegacyRecoveryPending,
+) error {
+	return s.clearProofResourceLegacyRecoveryPending(path, pending)
+}
 
 // proofResourceAfterCompletionRetryMint is the deterministic hard-crash test boundary after a
 // retry is fully bound but before its pending journal or Work reachability may advance.
@@ -609,11 +658,22 @@ func (s *Store) RecoverLegacyProofResourceCompletion(
 			return fmt.Errorf("legacy proof recovery requires work, actor, workspace, and original command")
 		}
 
+		journal, journalPresent, journalPath, err := s.readProofResourceLegacyRecoveryPending(workID)
+		if err != nil {
+			return err
+		}
+		if journalPresent {
+			found = true
+			result, err = s.resumeLegacyProofResourceRecovery(journal, journalPath, in, now)
+			return err
+		}
+
 		status, err := landlease.Status(s.home, now)
 		if err != nil {
 			return err
 		}
-		if !status.Held {
+		expiredExact := !status.Held && status.IsExpired
+		if !status.Held && !expiredExact {
 			return nil
 		}
 		reservationID, runAttemptID, heldWorkID, proofHolder := parseProofResourceHolder(status.Holder)
@@ -626,7 +686,7 @@ func (s *Store) RecoverLegacyProofResourceCompletion(
 		if err := s.readEventJSON(reservationID, &reservation); err != nil {
 			return fmt.Errorf("read retained legacy proof reservation %s: %w", reservationID, err)
 		}
-		pending, present, pendingPath, err := s.readProofResourceCompletionPending(reservationID)
+		pending, present, _, err := s.readProofResourceCompletionPending(reservationID)
 		if err != nil {
 			return err
 		}
@@ -706,127 +766,59 @@ func (s *Store) RecoverLegacyProofResourceCompletion(
 			return fmt.Errorf("legacy proof recovery refuses unsealed completion governance")
 		}
 
-		if completeInput.ReportArtifactRef == "" ||
-			pending.Result.SourceSnapshot != nil ||
+		if pending.Result.SourceSnapshot != nil ||
 			oneOf(pending.VerificationRef, w.VerificationIDs) {
-			return fmt.Errorf("legacy proof recovery refuses missing, source-bound, or already-promoted report")
+			return fmt.Errorf("legacy proof recovery refuses source-bound or already-promoted proof")
 		}
-		artifacts, err := home.NewArtifactStore(s.home)
-		if err != nil {
-			return err
-		}
-		reportBody, err := artifacts.Get(completeInput.ReportArtifactRef)
-		if err != nil {
-			return fmt.Errorf("legacy proof report artifact: %w", err)
-		}
-		report, err := decodeOwnedProofReport(reportBody)
-		if err != nil {
-			return fmt.Errorf("legacy proof report decode: %w", err)
-		}
-		if report.SchemaVersion != "compound.proof_check_report.v0.1" &&
-			report.SchemaVersion != "compound.proof_check_report.v0.2" {
-			return fmt.Errorf("legacy proof recovery requires a pre-v0.3 owned report")
-		}
-		if report.SourceSnapshot != nil {
-			return fmt.Errorf("legacy proof recovery refuses a source-bound report")
+		if completeInput.ReportArtifactRef == "" {
+			if strings.TrimSpace(completeInput.FailureReason) == "" ||
+				expect.VerificationRef != "" ||
+				expect.ResultStatus != ProofResourceFailed ||
+				pending.Result.Status != ProofResourceFailed ||
+				pending.Result.ReportStatus != "" ||
+				pending.Result.OwnedReport ||
+				pending.Result.VerificationRef != "" ||
+				pending.TerminalStatus != runattempt.StatusFailed {
+				return fmt.Errorf("legacy proof recovery refuses reportless completion unless it is unequivocally failed and non-verifying")
+			}
+		} else {
+			artifacts, err := home.NewArtifactStore(s.home)
+			if err != nil {
+				return err
+			}
+			reportBody, err := artifacts.Get(completeInput.ReportArtifactRef)
+			if err != nil {
+				return fmt.Errorf("legacy proof report artifact: %w", err)
+			}
+			report, err := decodeOwnedProofReport(reportBody)
+			if err != nil {
+				return fmt.Errorf("legacy proof report decode: %w", err)
+			}
+			if report.SchemaVersion != "compound.proof_check_report.v0.1" &&
+				report.SchemaVersion != "compound.proof_check_report.v0.2" {
+				return fmt.Errorf("legacy proof recovery requires a pre-v0.3 owned report")
+			}
+			if report.SourceSnapshot != nil {
+				return fmt.Errorf("legacy proof recovery refuses a source-bound report")
+			}
 		}
 
-		action := s.proofResourceAction(
+		journal, err = s.newProofResourceLegacyRecoveryPending(
 			w,
-			reservation.ID,
-			in.Actor,
-			"legacy_recovery",
-			"",
-			"",
-			"",
-			"",
+			reservation,
+			pending,
+			attempt,
+			in,
 			now,
 		)
-		decision, err := s.evaluateProofResourceAction(action, now)
 		if err != nil {
 			return err
 		}
-		if !policy.Allowed(decision) {
-			return fmt.Errorf("legacy proof recovery policy %s", decision.Outcome)
+		if err := proofResourceWriteLegacyRecoveryJournal(s, journalPath, journal); err != nil {
+			return fmt.Errorf("seal legacy proof recovery journal: %w", err)
 		}
-		if err := s.persistProofScarceMutationPreparation(
-			&w,
-			action,
-			decision,
-			reservation,
-			attempt.ID,
-			"legacy_recovery",
-			now,
-		); err != nil {
-			return err
-		}
-
-		reason := "retained pre-v0.3 proof released without verification; fresh source-bound v0.3 battery required"
-		if !runattempt.IsTerminal(attempt.Status) {
-			if err := s.completeProofAttempt(attempt.ID, runattempt.StatusAbandoned, reason, now); err != nil {
-				return fmt.Errorf("terminalize retained legacy proof RunAttempt: %w", err)
-			}
-		}
-		if _, err := landlease.AttestExecutionTerminated(s.home, reservation.Holder); err != nil {
-			return fmt.Errorf("legacy proof recovery execution termination: %w", err)
-		}
-
-		recovery := ProofResourceLegacyRecovery{
-			SchemaVersion:        ProofResourceLegacyRecoverySchemaVersion,
-			ID:                   idFor("pflr_", workID, reservation.ID, pending.Result.ID),
-			Kind:                 "work.proof_resource.legacy_recovery",
-			Status:               "released_without_verification",
-			CreatedAt:            now.UTC().Format(time.RFC3339Nano),
-			WorkID:               workID,
-			Actor:                in.Actor,
-			Resource:             ProofResourceName,
-			ReservationID:        reservation.ID,
-			RunAttemptID:         attempt.ID,
-			ReportArtifactRef:    completeInput.ReportArtifactRef,
-			DiscardedProofRef:    pending.VerificationRef,
-			FreshBatteryRequired: true,
-			ActionIntentID:       action.ID,
-			PolicyDecisionID:     decision.ID,
-		}
-		release, err := landlease.ReleaseAfter(s.home, reservation.Holder, now, func() error {
-			if err := proofResourceWriteEventRecord(
-				s,
-				"legacy_recovery",
-				recovery.ID,
-				&recovery,
-			); err != nil {
-				return fmt.Errorf("persist legacy proof recovery: %w", err)
-			}
-			if err := proofResourceWriteWorkRecord(s, "legacy_recovery_work", &w); err != nil {
-				return fmt.Errorf("persist legacy proof recovery work: %w", err)
-			}
-			return proofResourceAppendLifecycleRecord(s, Event{
-				TS:       ts(now),
-				WorkID:   workID,
-				From:     w.State,
-				To:       w.State,
-				By:       in.Actor,
-				Note:     reason,
-				Attached: []string{action.ID, decision.ID, reservation.ID, attempt.ID, recovery.ID},
-			})
-		})
-		if err != nil {
-			return err
-		}
-		if !release.Freed {
-			return fmt.Errorf("legacy proof recovery did not release exact holder")
-		}
-		if err := s.clearProofResourceCompletionPending(pendingPath, pending); err != nil {
-			return fmt.Errorf("clear released legacy proof completion journal: %w", err)
-		}
-		result = ProofResourceLegacyRecoveryResult{
-			SchemaVersion:        ProofResourceLegacyRecoverySchemaVersion,
-			Recovery:             recovery,
-			ResourceReleased:     true,
-			FreshBatteryRequired: true,
-			Work:                 w,
-		}
-		return nil
+		result, err = s.resumeLegacyProofResourceRecovery(journal, journalPath, in, now)
+		return err
 	})
 	return result, found, err
 }
@@ -2456,6 +2448,606 @@ func (s *Store) clearProofResourceCompletionPending(path string, expected proofR
 		return err
 	}
 	return syncReceiptedActionDir(filepath.Dir(path))
+}
+
+func (s *Store) proofResourceLegacyRecoveryPendingPath(workID string) (string, error) {
+	if filepath.Base(workID) != workID || !strings.HasPrefix(workID, "work_") {
+		return "", fmt.Errorf("invalid proof legacy recovery work id %q", workID)
+	}
+	return filepath.Join(s.home, "work", "proof-resource-legacy-recoveries", workID+".json"), nil
+}
+
+func (s *Store) readProofResourceLegacyRecoveryPending(
+	workID string,
+) (proofResourceLegacyRecoveryPending, bool, string, error) {
+	var pending proofResourceLegacyRecoveryPending
+	path, err := s.proofResourceLegacyRecoveryPendingPath(workID)
+	if err != nil {
+		return pending, false, "", err
+	}
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return pending, false, path, nil
+	}
+	if err != nil {
+		return pending, false, path, err
+	}
+	if err := json.Unmarshal(body, &pending); err != nil {
+		return pending, false, path, fmt.Errorf("proof legacy recovery pending decode: %w", err)
+	}
+	if pending.SchemaVersion != proofResourceLegacyRecoveryPendingSchemaVersion ||
+		pending.ID == "" ||
+		pending.WorkID != workID ||
+		pending.ReservationID == "" ||
+		pending.Holder == "" ||
+		pending.RunAttemptID == "" ||
+		pending.InputDigest == "" ||
+		pending.CompletionDigest == "" ||
+		pending.CreatedAt == "" ||
+		pending.GovernanceSeal == "" ||
+		pending.Action.ID == "" ||
+		pending.Decision.ID == "" ||
+		pending.Recovery.ID == "" ||
+		pending.WorkBefore.ID != workID ||
+		pending.WorkAfter.ID != workID ||
+		pending.LifecycleEvent.WorkID != workID ||
+		pending.FreshBatteryReason == "" ||
+		pending.TerminalStatus == "" ||
+		pending.TerminalReason == "" {
+		return pending, false, path, fmt.Errorf("proof legacy recovery pending transaction is incomplete")
+	}
+	return pending, true, path, nil
+}
+
+func (s *Store) writeProofResourceLegacyRecoveryPending(
+	path string,
+	pending proofResourceLegacyRecoveryPending,
+) error {
+	actual, present, actualPath, err := s.readProofResourceLegacyRecoveryPending(pending.WorkID)
+	if err != nil {
+		return err
+	}
+	if present {
+		if actualPath == path && reflect.DeepEqual(actual, pending) {
+			return nil
+		}
+		return fmt.Errorf("proof legacy recovery pending identity conflict")
+	}
+	if actualPath != path {
+		return fmt.Errorf("proof legacy recovery pending path changed")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return s.writeJSON(path, &pending)
+}
+
+func (s *Store) clearProofResourceLegacyRecoveryPending(
+	path string,
+	expected proofResourceLegacyRecoveryPending,
+) error {
+	actual, present, actualPath, err := s.readProofResourceLegacyRecoveryPending(expected.WorkID)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	if actualPath != path || !reflect.DeepEqual(actual, expected) {
+		return fmt.Errorf("proof legacy recovery pending transaction changed before cleanup")
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncReceiptedActionDir(filepath.Dir(path))
+}
+
+func (s *Store) clearLegacyProofResourceCompletionPending(
+	path string,
+	expected proofResourceCompletionPending,
+) error {
+	actual, present, actualPath, err := s.readProofResourceCompletionPending(expected.ReservationID)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	if actualPath != path || !reflect.DeepEqual(actual, expected) {
+		return fmt.Errorf("legacy proof completion pending transaction changed before cleanup")
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncReceiptedActionDir(filepath.Dir(path))
+}
+
+func proofResourceLegacyCompletionDigest(pending proofResourceCompletionPending) (string, error) {
+	body, err := json.Marshal(pending)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func proofResourceLegacyRecoverySeal(pending proofResourceLegacyRecoveryPending) (string, error) {
+	pending.GovernanceSeal = ""
+	body, err := json.Marshal(pending)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func (s *Store) newProofResourceLegacyRecoveryPending(
+	w envelope.WorkEnvelope,
+	reservation ProofResourceReservation,
+	completion proofResourceCompletionPending,
+	attempt runattempt.RunAttempt,
+	in ProofResourceLegacyRecoveryInput,
+	now time.Time,
+) (proofResourceLegacyRecoveryPending, error) {
+	completionDigest, err := proofResourceLegacyCompletionDigest(completion)
+	if err != nil {
+		return proofResourceLegacyRecoveryPending{}, err
+	}
+	action := s.proofResourceAction(
+		w,
+		reservation.ID,
+		in.Actor,
+		"legacy_recovery",
+		"",
+		"",
+		"",
+		"",
+		now,
+	)
+	decision, err := s.evaluateProofResourceAction(action, now)
+	if err != nil {
+		return proofResourceLegacyRecoveryPending{}, err
+	}
+	if !policy.Allowed(decision) {
+		return proofResourceLegacyRecoveryPending{}, fmt.Errorf("legacy proof recovery policy %s", decision.Outcome)
+	}
+	reason := "retained pre-v0.3 proof released without verification; fresh source-bound v0.3 battery required"
+	terminalStatus := runattempt.StatusAbandoned
+	terminalReason := reason
+	if completion.Result.ReportArtifactRef == "" {
+		terminalStatus = runattempt.StatusFailed
+		terminalReason = strings.TrimSpace(completion.Result.FailureReason)
+	}
+	if terminalReason == "" {
+		return proofResourceLegacyRecoveryPending{}, fmt.Errorf("legacy proof recovery terminal reason is empty")
+	}
+	workBefore := w
+	workBefore.ActionIntentIDs = cloneProofStringSlice(w.ActionIntentIDs)
+	workBefore.RunAttemptIDs = cloneProofStringSlice(w.RunAttemptIDs)
+	workBefore.VerificationIDs = cloneProofStringSlice(w.VerificationIDs)
+	workAfter := workBefore
+	workAfter.ActionIntentIDs = cloneProofStringSlice(workBefore.ActionIntentIDs)
+	workAfter.RunAttemptIDs = cloneProofStringSlice(workBefore.RunAttemptIDs)
+	workAfter.VerificationIDs = cloneProofStringSlice(workBefore.VerificationIDs)
+	if !oneOf(action.ID, workAfter.ActionIntentIDs) {
+		workAfter.ActionIntentIDs = append(workAfter.ActionIntentIDs, action.ID)
+	}
+	if !oneOf(attempt.ID, workAfter.RunAttemptIDs) {
+		workAfter.RunAttemptIDs = append(workAfter.RunAttemptIDs, attempt.ID)
+	}
+	workAfter.PolicyDecisionID = decision.ID
+	recovery := ProofResourceLegacyRecovery{
+		SchemaVersion:        ProofResourceLegacyRecoverySchemaVersion,
+		ID:                   idFor("pflr_", w.ID, reservation.ID, completion.Result.ID),
+		Kind:                 "work.proof_resource.legacy_recovery",
+		Status:               "released_without_verification",
+		CreatedAt:            now.UTC().Format(time.RFC3339Nano),
+		WorkID:               w.ID,
+		Actor:                in.Actor,
+		Resource:             ProofResourceName,
+		ReservationID:        reservation.ID,
+		RunAttemptID:         attempt.ID,
+		ReportArtifactRef:    completion.Result.ReportArtifactRef,
+		DiscardedProofRef:    completion.VerificationRef,
+		FreshBatteryRequired: true,
+		ActionIntentID:       action.ID,
+		PolicyDecisionID:     decision.ID,
+	}
+	lifecycle := Event{
+		TS:       ts(now),
+		WorkID:   w.ID,
+		From:     workAfter.State,
+		To:       workAfter.State,
+		By:       in.Actor,
+		Note:     reason,
+		Attached: []string{action.ID, decision.ID, reservation.ID, attempt.ID, recovery.ID},
+	}
+	pending := proofResourceLegacyRecoveryPending{
+		SchemaVersion:      proofResourceLegacyRecoveryPendingSchemaVersion,
+		ID:                 idFor("pflj_", w.ID, reservation.ID, completionDigest),
+		WorkID:             w.ID,
+		ReservationID:      reservation.ID,
+		Holder:             reservation.Holder,
+		RunAttemptID:       attempt.ID,
+		InputDigest:        completion.InputDigest,
+		CompletionDigest:   completionDigest,
+		CreatedAt:          now.UTC().Format(time.RFC3339Nano),
+		Action:             action,
+		Decision:           decision,
+		Completion:         completion,
+		Recovery:           recovery,
+		WorkBefore:         workBefore,
+		WorkAfter:          workAfter,
+		LifecycleEvent:     lifecycle,
+		FreshBatteryReason: reason,
+		TerminalStatus:     terminalStatus,
+		TerminalReason:     terminalReason,
+	}
+	pending.GovernanceSeal, err = proofResourceLegacyRecoverySeal(pending)
+	if err != nil {
+		return proofResourceLegacyRecoveryPending{}, err
+	}
+	return pending, nil
+}
+
+func cloneProofStringSlice(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	return append([]string{}, in...)
+}
+
+func (s *Store) validateProofResourceLegacyRecoveryPending(
+	pending proofResourceLegacyRecoveryPending,
+	reservation ProofResourceReservation,
+	in ProofResourceLegacyRecoveryInput,
+) error {
+	createdAt, err := time.Parse(time.RFC3339Nano, pending.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("legacy proof recovery journal created_at: %w", err)
+	}
+	if reservation.SchemaVersion != ProofResourceReservationSchemaVersion ||
+		reservation.ID != pending.ReservationID ||
+		reservation.Kind != "work.proof_resource.reservation" ||
+		reservation.Status != ProofResourceAcquired ||
+		reservation.WorkID != pending.WorkID ||
+		reservation.Actor != in.Actor ||
+		reservation.Resource != ProofResourceName ||
+		reservation.Holder != pending.Holder ||
+		reservation.Workspace != in.Workspace ||
+		reservation.Command != in.Command ||
+		reservation.Profile.SourceSnapshot != nil {
+		return fmt.Errorf("legacy proof recovery journal reservation identity changed")
+	}
+	completionDigest, err := proofResourceLegacyCompletionDigest(pending.Completion)
+	if err != nil {
+		return err
+	}
+	if completionDigest != pending.CompletionDigest ||
+		pending.InputDigest != pending.Completion.InputDigest ||
+		pending.Completion.WorkID != pending.WorkID ||
+		pending.Completion.ReservationID != pending.ReservationID ||
+		pending.Completion.Result.RunAttemptID != pending.RunAttemptID {
+		return fmt.Errorf("legacy proof recovery journal completion identity changed")
+	}
+	attempt, err := s.runAttempts().Get(pending.RunAttemptID)
+	if err != nil {
+		return fmt.Errorf("legacy proof recovery journal RunAttempt: %w", err)
+	}
+	completeInput := ProofResourceCompleteInput{
+		Actor:             in.Actor,
+		ReservationID:     reservation.ID,
+		ReportArtifactRef: pending.Completion.Result.ReportArtifactRef,
+		ProducerExitKnown: pending.Completion.Result.ProducerExitKnown,
+		ProducerExitCode:  pending.Completion.Result.ProducerExitCode,
+		FailureReason:     pending.Completion.Result.FailureReason,
+	}
+	expect, err := s.deriveProofResourceCompletionExpectation(pending.WorkID, reservation, completeInput)
+	if err != nil {
+		return err
+	}
+	_, migrated, err := s.validateAndNormalizeProofResourceCompletionPending(
+		pending.WorkBefore,
+		reservation,
+		pending.Completion,
+		attempt,
+		completeInput,
+		expect,
+	)
+	if err != nil {
+		return err
+	}
+	if migrated {
+		return fmt.Errorf("legacy proof recovery journal embeds unsealed completion governance")
+	}
+	if pending.Completion.Result.SourceSnapshot != nil ||
+		oneOf(pending.Completion.VerificationRef, pending.WorkBefore.VerificationIDs) {
+		return fmt.Errorf("legacy proof recovery journal embeds source-bound or promoted proof")
+	}
+	if completeInput.ReportArtifactRef == "" {
+		if strings.TrimSpace(completeInput.FailureReason) == "" ||
+			expect.VerificationRef != "" ||
+			expect.ResultStatus != ProofResourceFailed ||
+			pending.Completion.Result.Status != ProofResourceFailed ||
+			pending.Completion.Result.ReportStatus != "" ||
+			pending.Completion.Result.OwnedReport ||
+			pending.Completion.Result.VerificationRef != "" ||
+			pending.Completion.TerminalStatus != runattempt.StatusFailed {
+			return fmt.Errorf("legacy proof recovery journal reportless completion is not unequivocally failed and non-verifying")
+		}
+	} else {
+		artifacts, err := home.NewArtifactStore(s.home)
+		if err != nil {
+			return err
+		}
+		reportBody, err := artifacts.Get(completeInput.ReportArtifactRef)
+		if err != nil {
+			return fmt.Errorf("legacy proof recovery journal report artifact: %w", err)
+		}
+		report, err := decodeOwnedProofReport(reportBody)
+		if err != nil {
+			return fmt.Errorf("legacy proof recovery journal report decode: %w", err)
+		}
+		if (report.SchemaVersion != "compound.proof_check_report.v0.1" &&
+			report.SchemaVersion != "compound.proof_check_report.v0.2") ||
+			report.SourceSnapshot != nil {
+			return fmt.Errorf("legacy proof recovery journal report is not retained pre-v0.3 evidence")
+		}
+	}
+	expected, err := s.newProofResourceLegacyRecoveryPending(
+		pending.WorkBefore,
+		reservation,
+		pending.Completion,
+		attempt,
+		in,
+		createdAt,
+	)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(expected, pending) {
+		return fmt.Errorf("legacy proof recovery journal differs canonical construction")
+	}
+	seal, err := proofResourceLegacyRecoverySeal(pending)
+	if err != nil {
+		return err
+	}
+	if seal != pending.GovernanceSeal {
+		return fmt.Errorf("legacy proof recovery governance seal changed")
+	}
+	if !reflect.DeepEqual(pending.WorkBefore.VerificationIDs, pending.WorkAfter.VerificationIDs) {
+		return fmt.Errorf("legacy proof recovery journal changes work verification ids")
+	}
+	return nil
+}
+
+func (s *Store) persistProofResourceLegacyRecovery(
+	pending proofResourceLegacyRecoveryPending,
+) error {
+	for _, item := range []struct {
+		stage string
+		id    string
+		value any
+	}{
+		{"legacy_recovery_prepare_action", pending.Action.ID, &pending.Action},
+		{"legacy_recovery_prepare_decision", pending.Decision.ID, &pending.Decision},
+		{"legacy_recovery", pending.Recovery.ID, &pending.Recovery},
+	} {
+		if err := proofResourceWriteEventRecord(s, item.stage, item.id, item.value); err != nil {
+			return fmt.Errorf("persist %s: %w", item.stage, err)
+		}
+	}
+	current, err := s.Get(pending.WorkID)
+	if err != nil {
+		return err
+	}
+	normalizedCurrent := current
+	if len(normalizedCurrent.VerificationIDs) == 0 {
+		normalizedCurrent.VerificationIDs = nil
+	}
+	switch {
+	case reflect.DeepEqual(normalizedCurrent, pending.WorkAfter):
+	case reflect.DeepEqual(normalizedCurrent, pending.WorkBefore):
+		if err := proofResourceWriteWorkRecord(s, "legacy_recovery_work", &pending.WorkAfter); err != nil {
+			return fmt.Errorf("persist legacy recovery work: %w", err)
+		}
+	default:
+		return fmt.Errorf("legacy proof recovery work differs sealed before/after images")
+	}
+	events, err := s.eventsFor(pending.WorkID)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if reflect.DeepEqual(event, pending.LifecycleEvent) {
+			return nil
+		}
+		if event.WorkID == pending.LifecycleEvent.WorkID &&
+			event.TS == pending.LifecycleEvent.TS &&
+			event.Note == pending.LifecycleEvent.Note {
+			return fmt.Errorf("legacy proof recovery lifecycle identity conflict")
+		}
+	}
+	if err := proofResourceAppendLifecycleRecord(s, pending.LifecycleEvent); err != nil {
+		return fmt.Errorf("persist legacy recovery lifecycle: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) proofResourceLegacyRecoveryEvidenceExact(
+	pending proofResourceLegacyRecoveryPending,
+) error {
+	for _, item := range []struct {
+		name  string
+		id    string
+		value any
+	}{
+		{"ActionIntent", pending.Action.ID, &envelope.ActionIntent{}},
+		{"PolicyDecision", pending.Decision.ID, &envelope.PolicyDecision{}},
+		{"recovery evidence", pending.Recovery.ID, &ProofResourceLegacyRecovery{}},
+	} {
+		if err := s.readEventJSON(item.id, item.value); err != nil {
+			return fmt.Errorf("read legacy proof recovery %s: %w", item.name, err)
+		}
+		switch value := item.value.(type) {
+		case *envelope.ActionIntent:
+			if !reflect.DeepEqual(*value, pending.Action) {
+				return fmt.Errorf("legacy proof recovery ActionIntent differs sealed journal")
+			}
+		case *envelope.PolicyDecision:
+			if !reflect.DeepEqual(*value, pending.Decision) {
+				return fmt.Errorf("legacy proof recovery PolicyDecision differs sealed journal")
+			}
+		case *ProofResourceLegacyRecovery:
+			if !reflect.DeepEqual(*value, pending.Recovery) {
+				return fmt.Errorf("legacy proof recovery evidence differs sealed journal")
+			}
+		}
+	}
+	current, err := s.Get(pending.WorkID)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(current, pending.WorkAfter) {
+		return fmt.Errorf("legacy proof recovery work is not sealed after image")
+	}
+	events, err := s.eventsFor(pending.WorkID)
+	if err != nil {
+		return err
+	}
+	count := 0
+	for _, event := range events {
+		if reflect.DeepEqual(event, pending.LifecycleEvent) {
+			count++
+		}
+	}
+	if count != 1 {
+		return fmt.Errorf("legacy proof recovery lifecycle count = %d, want 1", count)
+	}
+	attempt, err := s.runAttempts().Get(pending.RunAttemptID)
+	if err != nil {
+		return err
+	}
+	if !runattempt.IsTerminal(attempt.Status) {
+		return fmt.Errorf("legacy proof recovery RunAttempt %s is not terminal", attempt.ID)
+	}
+	if pending.Completion.Result.ReportArtifactRef == "" &&
+		attempt.Status != runattempt.StatusFailed {
+		return fmt.Errorf("reportless legacy proof recovery RunAttempt status = %s, want failed", attempt.Status)
+	}
+	return nil
+}
+
+func (s *Store) resumeLegacyProofResourceRecovery(
+	pending proofResourceLegacyRecoveryPending,
+	journalPath string,
+	in ProofResourceLegacyRecoveryInput,
+	now time.Time,
+) (ProofResourceLegacyRecoveryResult, error) {
+	var reservation ProofResourceReservation
+	if err := s.readEventJSON(pending.ReservationID, &reservation); err != nil {
+		return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("read legacy proof recovery reservation: %w", err)
+	}
+	if err := s.validateProofResourceLegacyRecoveryPending(pending, reservation, in); err != nil {
+		return ProofResourceLegacyRecoveryResult{}, err
+	}
+	claim, err := s.readLease(pending.WorkID)
+	if err != nil || claim.By != in.Actor {
+		return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery requires work lease held by %q", in.Actor)
+	}
+	completion, completionPresent, completionPath, err := s.readProofResourceCompletionPending(pending.ReservationID)
+	if err != nil {
+		return ProofResourceLegacyRecoveryResult{}, err
+	}
+	if completionPresent && !reflect.DeepEqual(completion, pending.Completion) {
+		return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery completion differs sealed journal")
+	}
+	status, err := landlease.Status(s.home, now)
+	if err != nil {
+		return ProofResourceLegacyRecoveryResult{}, err
+	}
+	exactHolder := status.Holder == pending.Holder
+	released := false
+	if exactHolder {
+		if !completionPresent {
+			return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery completion was removed before exact holder release")
+		}
+		if !status.Held {
+			if !status.IsExpired {
+				return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery exact holder is neither held nor expired")
+			}
+			if _, err := landlease.RearmExpiredExact(s.home, status, now); err != nil {
+				return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("rearm exact expired legacy proof holder: %w", err)
+			}
+			proofResourceAfterScarceMutation("legacy_recovery_rearm")
+		}
+		attempt, err := s.runAttempts().Get(pending.RunAttemptID)
+		if err != nil {
+			return ProofResourceLegacyRecoveryResult{}, err
+		}
+		createdAt, err := time.Parse(time.RFC3339Nano, pending.CreatedAt)
+		if err != nil {
+			return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery created_at: %w", err)
+		}
+		if !runattempt.IsTerminal(attempt.Status) {
+			if err := s.completeProofAttempt(
+				attempt.ID,
+				pending.TerminalStatus,
+				pending.TerminalReason,
+				createdAt,
+			); err != nil {
+				return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("terminalize retained legacy proof RunAttempt: %w", err)
+			}
+		}
+		if _, err := landlease.AttestExecutionTerminated(s.home, pending.Holder); err != nil {
+			return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery execution termination: %w", err)
+		}
+		release, err := proofResourceReleaseLegacyRecoveryAfter(
+			s.home,
+			pending.Holder,
+			now,
+			func() error {
+				return s.persistProofResourceLegacyRecovery(pending)
+			},
+		)
+		if err != nil {
+			return ProofResourceLegacyRecoveryResult{}, err
+		}
+		if !release.Freed {
+			return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery did not release exact holder")
+		}
+		released = true
+		if err := proofResourceAfterLegacyRecoveryRelease(pending); err != nil {
+			return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("legacy proof recovery post-release boundary: %w", err)
+		}
+	} else {
+		if err := s.proofResourceLegacyRecoveryEvidenceExact(pending); err != nil {
+			return ProofResourceLegacyRecoveryResult{}, fmt.Errorf(
+				"legacy proof holder disappeared without exact durable recovery evidence: %w",
+				err,
+			)
+		}
+		released = true
+	}
+	if completionPresent {
+		if err := proofResourceClearLegacyCompletionPending(s, completionPath, pending.Completion); err != nil {
+			return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("clear retained legacy proof completion: %w", err)
+		}
+	}
+	if err := proofResourceClearLegacyRecoveryJournal(s, journalPath, pending); err != nil {
+		return ProofResourceLegacyRecoveryResult{}, fmt.Errorf("clear legacy proof recovery journal: %w", err)
+	}
+	current, err := s.Get(pending.WorkID)
+	if err != nil {
+		return ProofResourceLegacyRecoveryResult{}, err
+	}
+	return ProofResourceLegacyRecoveryResult{
+		SchemaVersion:        ProofResourceLegacyRecoverySchemaVersion,
+		Recovery:             pending.Recovery,
+		ResourceReleased:     released,
+		FreshBatteryRequired: true,
+		Work:                 current,
+	}, nil
 }
 
 func (s *Store) validateAndNormalizeProofResourceCompletionPending(

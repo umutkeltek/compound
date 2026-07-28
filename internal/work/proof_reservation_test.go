@@ -3239,6 +3239,734 @@ func TestRecoverLegacyProofResourceCompletionReleasesWithoutVerification(t *test
 	}
 }
 
+func TestRecoverLegacyProofResourceCompletionRearmsExpiredExactHolder(t *testing.T) {
+	s, w, acquired, _, _, _ := proofCompletionPendingFixture(
+		t,
+		"expired exact legacy recovery-only release",
+	)
+	expiredAt := fixedNow.Add(2*time.Second + time.Minute)
+	recovered, found, err := s.RecoverLegacyProofResourceCompletion(
+		w.ID,
+		ProofResourceLegacyRecoveryInput{
+			Actor:     proofActorAlpha,
+			Workspace: acquired.Reservation.Workspace,
+			Command:   acquired.Reservation.Command,
+		},
+		expiredAt.Add(time.Second),
+	)
+	if err != nil || !found {
+		t.Fatalf("expired exact legacy recovery: found=%t result=%+v err=%v", found, recovered, err)
+	}
+	if !recovered.ResourceReleased ||
+		!recovered.FreshBatteryRequired ||
+		recovered.VerificationRef != "" {
+		t.Fatalf("expired exact legacy recovery promoted old proof: %+v", recovered)
+	}
+	status, err := landlease.Status(s.home, expiredAt.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Held || status.Holder != "" {
+		t.Fatalf("expired exact legacy recovery retained holder: %+v", status)
+	}
+	current, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.VerificationIDs) != 0 {
+		t.Fatalf("expired exact legacy recovery emitted verification: %v", current.VerificationIDs)
+	}
+}
+
+func TestRecoverLegacyProofResourceCompletionReusesGovernanceAfterActionPersistenceCrash(t *testing.T) {
+	s, w, acquired, _, _, _ := proofCompletionPendingFixture(
+		t,
+		"legacy recovery action persistence crash",
+	)
+	in := ProofResourceLegacyRecoveryInput{
+		Actor:     proofActorAlpha,
+		Workspace: acquired.Reservation.Workspace,
+		Command:   acquired.Reservation.Command,
+	}
+	originalWrite := proofResourceWriteEventRecord
+	t.Cleanup(func() {
+		proofResourceWriteEventRecord = originalWrite
+	})
+	var actions []envelope.ActionIntent
+	failed := false
+	proofResourceWriteEventRecord = func(store *Store, stage, id string, value any) error {
+		if stage == "legacy_recovery_prepare_action" {
+			action, ok := value.(*envelope.ActionIntent)
+			if !ok {
+				t.Fatalf("legacy recovery action value = %T", value)
+			}
+			actions = append(actions, *action)
+			if !failed {
+				failed = true
+				return errors.New("synthetic legacy recovery action persistence crash")
+			}
+		}
+		return originalWrite(store, stage, id, value)
+	}
+
+	_, found, err := s.RecoverLegacyProofResourceCompletion(
+		w.ID,
+		in,
+		fixedNow.Add(4*time.Second),
+	)
+	if err == nil || !found {
+		t.Fatalf("first recovery = found=%t err=%v, want injected failure", found, err)
+	}
+	recovered, found, err := s.RecoverLegacyProofResourceCompletion(
+		w.ID,
+		in,
+		fixedNow.Add(9*time.Second),
+	)
+	if err != nil || !found || !recovered.ResourceReleased {
+		t.Fatalf("retry recovery: found=%t result=%+v err=%v", found, recovered, err)
+	}
+	if len(actions) != 2 || !reflect.DeepEqual(actions[0], actions[1]) {
+		t.Fatalf("recovery regenerated ActionIntent after crash: %+v", actions)
+	}
+}
+
+func TestRecoverLegacyProofResourceCompletionJournalFailurePrecedesEveryMutation(t *testing.T) {
+	s, w, acquired, _, pending, completionPath := proofCompletionPendingFixture(
+		t,
+		"legacy recovery journal pre-mutation boundary",
+	)
+	beforeWork, err := os.ReadFile(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCompletion, err := os.ReadFile(completionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeAttempt, err := s.runAttempts().Get(pending.Result.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalWriteJournal := proofResourceWriteLegacyRecoveryJournal
+	t.Cleanup(func() {
+		proofResourceWriteLegacyRecoveryJournal = originalWriteJournal
+	})
+	proofResourceWriteLegacyRecoveryJournal = func(
+		_ *Store,
+		_ string,
+		_ proofResourceLegacyRecoveryPending,
+	) error {
+		return errors.New("synthetic legacy recovery journal persistence failure")
+	}
+	_, found, err := s.RecoverLegacyProofResourceCompletion(
+		w.ID,
+		ProofResourceLegacyRecoveryInput{
+			Actor:     proofActorAlpha,
+			Workspace: acquired.Reservation.Workspace,
+			Command:   acquired.Reservation.Command,
+		},
+		fixedNow.Add(4*time.Second),
+	)
+	if err == nil || !found {
+		t.Fatalf("journal persistence failure: found=%t err=%v", found, err)
+	}
+	if _, present, _, err := s.readProofResourceLegacyRecoveryPending(w.ID); err != nil || present {
+		t.Fatalf("failed journal write became visible: present=%t err=%v", present, err)
+	}
+	afterWork, err := os.ReadFile(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterCompletion, err := os.ReadFile(completionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterAttempt, err := s.runAttempts().Get(pending.Result.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeWork, afterWork) ||
+		!bytes.Equal(beforeCompletion, afterCompletion) ||
+		!reflect.DeepEqual(beforeAttempt, afterAttempt) {
+		t.Fatal("legacy recovery mutated work, completion, or RunAttempt before journal commit")
+	}
+	status, err := landlease.Status(s.home, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Held || status.Holder != acquired.Reservation.Holder {
+		t.Fatalf("legacy recovery mutated holder before journal commit: %+v", status)
+	}
+}
+
+func TestRecoverLegacyProofResourceCompletionConvergesAcrossCrashBoundaries(t *testing.T) {
+	stages := []string{
+		"action persistence",
+		"decision persistence",
+		"recovery persistence",
+		"work persistence",
+		"lifecycle persistence",
+		"release",
+		"after release",
+		"completion cleanup",
+		"recovery journal cleanup",
+	}
+	for _, stage := range stages {
+		t.Run(stage, func(t *testing.T) {
+			s, w, acquired, _, _, _ := proofCompletionPendingFixture(
+				t,
+				"legacy recovery crash "+stage,
+			)
+			in := ProofResourceLegacyRecoveryInput{
+				Actor:     proofActorAlpha,
+				Workspace: acquired.Reservation.Workspace,
+				Command:   acquired.Reservation.Command,
+			}
+			originalWriteEvent := proofResourceWriteEventRecord
+			originalWriteWork := proofResourceWriteWorkRecord
+			originalAppendLifecycle := proofResourceAppendLifecycleRecord
+			originalRelease := proofResourceReleaseLegacyRecoveryAfter
+			originalAfterRelease := proofResourceAfterLegacyRecoveryRelease
+			originalClearCompletion := proofResourceClearLegacyCompletionPending
+			originalClearRecovery := proofResourceClearLegacyRecoveryJournal
+			t.Cleanup(func() {
+				proofResourceWriteEventRecord = originalWriteEvent
+				proofResourceWriteWorkRecord = originalWriteWork
+				proofResourceAppendLifecycleRecord = originalAppendLifecycle
+				proofResourceReleaseLegacyRecoveryAfter = originalRelease
+				proofResourceAfterLegacyRecoveryRelease = originalAfterRelease
+				proofResourceClearLegacyCompletionPending = originalClearCompletion
+				proofResourceClearLegacyRecoveryJournal = originalClearRecovery
+			})
+
+			injected := false
+			inject := func() error {
+				if injected {
+					return nil
+				}
+				injected = true
+				return errors.New("synthetic legacy recovery " + stage + " crash")
+			}
+			freedCount := 0
+			switch stage {
+			case "action persistence", "decision persistence", "recovery persistence":
+				target := map[string]string{
+					"action persistence":   "legacy_recovery_prepare_action",
+					"decision persistence": "legacy_recovery_prepare_decision",
+					"recovery persistence": "legacy_recovery",
+				}[stage]
+				proofResourceWriteEventRecord = func(store *Store, gotStage, id string, value any) error {
+					if gotStage == target {
+						if err := inject(); err != nil {
+							return err
+						}
+					}
+					return originalWriteEvent(store, gotStage, id, value)
+				}
+			case "work persistence":
+				proofResourceWriteWorkRecord = func(store *Store, gotStage string, work *envelope.WorkEnvelope) error {
+					if gotStage == "legacy_recovery_work" {
+						if err := inject(); err != nil {
+							return err
+						}
+					}
+					return originalWriteWork(store, gotStage, work)
+				}
+			case "lifecycle persistence":
+				proofResourceAppendLifecycleRecord = func(store *Store, event Event) error {
+					if strings.Contains(event.Note, "fresh source-bound v0.3 battery required") {
+						if err := inject(); err != nil {
+							return err
+						}
+					}
+					return originalAppendLifecycle(store, event)
+				}
+			case "release":
+				proofResourceReleaseLegacyRecoveryAfter = func(
+					homePath string,
+					holder string,
+					at time.Time,
+					finalize func() error,
+				) (landlease.ReleaseResult, error) {
+					if err := inject(); err != nil {
+						return landlease.ReleaseResult{}, err
+					}
+					release, err := originalRelease(homePath, holder, at, finalize)
+					if release.Freed {
+						freedCount++
+					}
+					return release, err
+				}
+			case "after release":
+				proofResourceAfterLegacyRecoveryRelease = func(proofResourceLegacyRecoveryPending) error {
+					return inject()
+				}
+			case "completion cleanup":
+				proofResourceClearLegacyCompletionPending = func(
+					store *Store,
+					path string,
+					pending proofResourceCompletionPending,
+				) error {
+					if err := inject(); err != nil {
+						return err
+					}
+					return originalClearCompletion(store, path, pending)
+				}
+			case "recovery journal cleanup":
+				proofResourceClearLegacyRecoveryJournal = func(
+					store *Store,
+					path string,
+					pending proofResourceLegacyRecoveryPending,
+				) error {
+					if err := inject(); err != nil {
+						return err
+					}
+					return originalClearRecovery(store, path, pending)
+				}
+			}
+			if stage != "release" {
+				wrappedRelease := proofResourceReleaseLegacyRecoveryAfter
+				proofResourceReleaseLegacyRecoveryAfter = func(
+					homePath string,
+					holder string,
+					at time.Time,
+					finalize func() error,
+				) (landlease.ReleaseResult, error) {
+					release, err := wrappedRelease(homePath, holder, at, finalize)
+					if release.Freed {
+						freedCount++
+					}
+					return release, err
+				}
+			}
+
+			_, found, err := s.RecoverLegacyProofResourceCompletion(
+				w.ID,
+				in,
+				fixedNow.Add(4*time.Second),
+			)
+			if err == nil || !found || !injected {
+				t.Fatalf("first recovery = found=%t injected=%t err=%v, want injected crash", found, injected, err)
+			}
+			journal, present, journalPath, err := s.readProofResourceLegacyRecoveryPending(w.ID)
+			if err != nil || !present {
+				t.Fatalf("retained recovery journal: present=%t err=%v", present, err)
+			}
+			journalBytes, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retryClearRecovery := proofResourceClearLegacyRecoveryJournal
+			proofResourceClearLegacyRecoveryJournal = func(
+				store *Store,
+				path string,
+				pending proofResourceLegacyRecoveryPending,
+			) error {
+				retryBytes, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(retryBytes, journalBytes) {
+					return errors.New("legacy recovery journal bytes changed across retry")
+				}
+				return retryClearRecovery(store, path, pending)
+			}
+			current, err := s.Get(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(current.VerificationIDs) != 0 {
+				t.Fatalf("crash stage %q emitted verification: %v", stage, current.VerificationIDs)
+			}
+			statusAfterCrash, err := landlease.Status(s.home, fixedNow.Add(4*time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, completionPresent, _, err := s.readProofResourceCompletionPending(acquired.Reservation.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if statusAfterCrash.Holder == acquired.Reservation.Holder && !completionPresent {
+				t.Fatalf("crash stage %q removed completion before exact holder release", stage)
+			}
+
+			recovered, found, err := s.RecoverLegacyProofResourceCompletion(
+				w.ID,
+				in,
+				fixedNow.Add(9*time.Second),
+			)
+			if err != nil || !found || !recovered.ResourceReleased {
+				t.Fatalf("retry recovery: found=%t result=%+v err=%v", found, recovered, err)
+			}
+			if recovered.Recovery.ID != journal.Recovery.ID ||
+				recovered.Recovery.ActionIntentID != journal.Action.ID ||
+				recovered.Recovery.PolicyDecisionID != journal.Decision.ID {
+				t.Fatalf("retry changed sealed recovery identity: journal=%+v result=%+v", journal, recovered)
+			}
+			if len(journalBytes) == 0 {
+				t.Fatal("sealed recovery journal was empty")
+			}
+			if _, present, _, err := s.readProofResourceLegacyRecoveryPending(w.ID); err != nil || present {
+				t.Fatalf("recovery journal cleanup: present=%t err=%v", present, err)
+			}
+			if _, present, _, err := s.readProofResourceCompletionPending(acquired.Reservation.ID); err != nil || present {
+				t.Fatalf("completion journal cleanup: present=%t err=%v", present, err)
+			}
+			status, err := landlease.Status(s.home, fixedNow.Add(9*time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Holder == acquired.Reservation.Holder {
+				t.Fatalf("retry retained exact proof holder: %+v", status)
+			}
+			if freedCount != 1 {
+				t.Fatalf("release freed count = %d, want 1", freedCount)
+			}
+			events, err := s.eventsFor(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lifecycleCount := 0
+			for _, event := range events {
+				if reflect.DeepEqual(event, journal.LifecycleEvent) {
+					lifecycleCount++
+				}
+			}
+			if lifecycleCount != 1 {
+				t.Fatalf("recovery lifecycle count = %d, want 1", lifecycleCount)
+			}
+			current, err = s.Get(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(current.VerificationIDs) != 0 {
+				t.Fatalf("retry stage %q emitted verification: %v", stage, current.VerificationIDs)
+			}
+		})
+	}
+}
+
+func TestRecoverLegacyProofResourceCompletionReleasesReportlessInfrastructureFailure(t *testing.T) {
+	s, w, acquired, _, pending, _ := proofReportlessCompletionPendingFixture(
+		t,
+		"reportless retained infrastructure failure",
+	)
+	recovered, found, err := s.RecoverLegacyProofResourceCompletion(
+		w.ID,
+		ProofResourceLegacyRecoveryInput{
+			Actor:     proofActorAlpha,
+			Workspace: acquired.Reservation.Workspace,
+			Command:   acquired.Reservation.Command,
+		},
+		fixedNow.Add(4*time.Second),
+	)
+	if err != nil || !found {
+		t.Fatalf("reportless legacy recovery: found=%t result=%+v err=%v", found, recovered, err)
+	}
+	if !recovered.ResourceReleased ||
+		!recovered.FreshBatteryRequired ||
+		recovered.VerificationRef != "" ||
+		recovered.Recovery.ReportArtifactRef != "" {
+		t.Fatalf("reportless legacy recovery certified failure: %+v", recovered)
+	}
+	attempt, err := s.runAttempts().Get(pending.Result.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != runattempt.StatusFailed {
+		t.Fatalf("reportless legacy recovery RunAttempt = %s, want failed", attempt.Status)
+	}
+	status, err := landlease.Status(s.home, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Holder == acquired.Reservation.Holder {
+		t.Fatalf("reportless legacy recovery retained holder: %+v", status)
+	}
+	current, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.VerificationIDs) != 0 {
+		t.Fatalf("reportless legacy recovery emitted verification: %v", current.VerificationIDs)
+	}
+}
+
+func TestRecoverLegacyProofResourceCompletionReconcilesReleasedReportlessFailure(t *testing.T) {
+	s, w, acquired, _, pending, _ := proofReportlessCompletionPendingFixture(
+		t,
+		"reportless released reconciliation",
+	)
+	in := ProofResourceLegacyRecoveryInput{
+		Actor:     proofActorAlpha,
+		Workspace: acquired.Reservation.Workspace,
+		Command:   acquired.Reservation.Command,
+	}
+	originalAfterRelease := proofResourceAfterLegacyRecoveryRelease
+	t.Cleanup(func() {
+		proofResourceAfterLegacyRecoveryRelease = originalAfterRelease
+	})
+	failed := false
+	proofResourceAfterLegacyRecoveryRelease = func(proofResourceLegacyRecoveryPending) error {
+		if !failed {
+			failed = true
+			return errors.New("synthetic reportless post-release crash")
+		}
+		return nil
+	}
+	_, found, err := s.RecoverLegacyProofResourceCompletion(
+		w.ID,
+		in,
+		fixedNow.Add(4*time.Second),
+	)
+	if err == nil || !found || !failed {
+		t.Fatalf("reportless post-release crash: found=%t failed=%t err=%v", found, failed, err)
+	}
+	status, err := landlease.Status(s.home, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Holder == acquired.Reservation.Holder {
+		t.Fatalf("reportless post-release crash retained holder: %+v", status)
+	}
+	recovered, found, err := s.RecoverLegacyProofResourceCompletion(
+		w.ID,
+		in,
+		fixedNow.Add(9*time.Second),
+	)
+	if err != nil || !found || !recovered.ResourceReleased {
+		t.Fatalf("reportless released reconciliation: found=%t result=%+v err=%v", found, recovered, err)
+	}
+	attempt, err := s.runAttempts().Get(pending.Result.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != runattempt.StatusFailed {
+		t.Fatalf("reconciled reportless RunAttempt = %s, want failed", attempt.Status)
+	}
+	if len(recovered.Work.VerificationIDs) != 0 || recovered.VerificationRef != "" {
+		t.Fatalf("reconciled reportless recovery emitted verification: %+v", recovered)
+	}
+}
+
+func TestRecoverLegacyProofResourceCompletionRefusesUnsafeReportlessShapesByteIdentical(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*proofResourceCompletionPending)
+	}{
+		{
+			name: "empty failure reason",
+			mutate: func(pending *proofResourceCompletionPending) {
+				pending.Result.FailureReason = ""
+				pending.TerminalReason = ""
+			},
+		},
+		{
+			name: "verification shaped",
+			mutate: func(pending *proofResourceCompletionPending) {
+				pending.VerificationRef = "proof-check:" + pending.Result.ID
+				pending.Result.VerificationRef = pending.VerificationRef
+				pending.Completion.VerificationRef = pending.VerificationRef
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, w, acquired, _, pending, pendingPath := proofReportlessCompletionPendingFixture(
+				t,
+				"unsafe reportless "+tc.name,
+			)
+			tc.mutate(&pending)
+			if err := s.writeProofResourceCompletionPending(pendingPath, pending); err != nil {
+				t.Fatal(err)
+			}
+			beforeJournal, err := os.ReadFile(pendingPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeWork, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, found, err := s.RecoverLegacyProofResourceCompletion(
+				w.ID,
+				ProofResourceLegacyRecoveryInput{
+					Actor:     proofActorAlpha,
+					Workspace: acquired.Reservation.Workspace,
+					Command:   acquired.Reservation.Command,
+				},
+				fixedNow.Add(4*time.Second),
+			)
+			if err == nil || !found {
+				t.Fatalf("unsafe reportless recovery: found=%t err=%v", found, err)
+			}
+			afterJournal, err := os.ReadFile(pendingPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterWork, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(beforeJournal, afterJournal) || !bytes.Equal(beforeWork, afterWork) {
+				t.Fatal("unsafe reportless recovery mutated completion journal or work")
+			}
+			if _, present, _, err := s.readProofResourceLegacyRecoveryPending(w.ID); err != nil || present {
+				t.Fatalf("unsafe reportless recovery created recovery journal: present=%t err=%v", present, err)
+			}
+			status, err := landlease.Status(s.home, fixedNow.Add(4*time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !status.Held || status.Holder != acquired.Reservation.Holder {
+				t.Fatalf("unsafe reportless recovery released holder: %+v", status)
+			}
+		})
+	}
+}
+
+func TestRecoverLegacyProofResourceCompletionRefusesCorruptRetainedRecoveryJournalByteIdentical(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(
+			t *testing.T,
+			s *Store,
+			journal *proofResourceLegacyRecoveryPending,
+			journalPath string,
+			completionPath string,
+			in *ProofResourceLegacyRecoveryInput,
+		)
+	}{
+		{
+			name: "wrong actor",
+			mutate: func(
+				_ *testing.T,
+				_ *Store,
+				_ *proofResourceLegacyRecoveryPending,
+				_ string,
+				_ string,
+				in *ProofResourceLegacyRecoveryInput,
+			) {
+				in.Actor = proofActorBeta
+			},
+		},
+		{
+			name: "wrong command",
+			mutate: func(
+				_ *testing.T,
+				_ *Store,
+				_ *proofResourceLegacyRecoveryPending,
+				_ string,
+				_ string,
+				in *ProofResourceLegacyRecoveryInput,
+			) {
+				in.Command += " --changed"
+			},
+		},
+		{
+			name: "corrupt governance seal",
+			mutate: func(
+				t *testing.T,
+				s *Store,
+				journal *proofResourceLegacyRecoveryPending,
+				journalPath string,
+				_ string,
+				_ *ProofResourceLegacyRecoveryInput,
+			) {
+				journal.GovernanceSeal = strings.Repeat("0", 64)
+				if err := s.writeJSON(journalPath, journal); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "completion differs sealed journal",
+			mutate: func(
+				t *testing.T,
+				s *Store,
+				journal *proofResourceLegacyRecoveryPending,
+				_ string,
+				completionPath string,
+				_ *ProofResourceLegacyRecoveryInput,
+			) {
+				changed := journal.Completion
+				changed.Result.FailureReason = "changed after recovery seal"
+				if err := s.writeProofResourceCompletionPending(completionPath, changed); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, w, acquired, _, _, completionPath := proofCompletionPendingFixture(
+				t,
+				"retained recovery journal "+tc.name,
+			)
+			in := ProofResourceLegacyRecoveryInput{
+				Actor:     proofActorAlpha,
+				Workspace: acquired.Reservation.Workspace,
+				Command:   acquired.Reservation.Command,
+			}
+			originalWrite := proofResourceWriteEventRecord
+			failed := false
+			proofResourceWriteEventRecord = func(store *Store, stage, id string, value any) error {
+				if stage == "legacy_recovery_prepare_action" && !failed {
+					failed = true
+					return errors.New("synthetic retained recovery action crash")
+				}
+				return originalWrite(store, stage, id, value)
+			}
+			_, found, err := s.RecoverLegacyProofResourceCompletion(
+				w.ID,
+				in,
+				fixedNow.Add(4*time.Second),
+			)
+			proofResourceWriteEventRecord = originalWrite
+			if err == nil || !found || !failed {
+				t.Fatalf("seed retained recovery journal: found=%t failed=%t err=%v", found, failed, err)
+			}
+			journal, present, journalPath, err := s.readProofResourceLegacyRecoveryPending(w.ID)
+			if err != nil || !present {
+				t.Fatalf("read retained recovery journal: present=%t err=%v", present, err)
+			}
+			tc.mutate(t, s, &journal, journalPath, completionPath, &in)
+			beforeJournal, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeWork, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, found, err = s.RecoverLegacyProofResourceCompletion(
+				w.ID,
+				in,
+				fixedNow.Add(9*time.Second),
+			)
+			if err == nil || !found {
+				t.Fatalf("corrupt retained recovery: found=%t err=%v", found, err)
+			}
+			afterJournal, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterWork, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(beforeJournal, afterJournal) || !bytes.Equal(beforeWork, afterWork) {
+				t.Fatal("corrupt retained recovery mutated journal or work")
+			}
+			status, err := landlease.Status(s.home, fixedNow.Add(9*time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !status.Held || status.Holder != acquired.Reservation.Holder {
+				t.Fatalf("corrupt retained recovery released holder: %+v", status)
+			}
+		})
+	}
+}
+
 func TestRecoverLegacyProofResourceCompletionRefusesForeignOrCorruptIdentityByteIdentical(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -3401,6 +4129,50 @@ func proofCompletionPendingFixture(
 	}
 	if pending.GovernanceSeal == "" {
 		t.Fatal("new completion journal omitted governance seal")
+	}
+	return s, w, acquired, input, pending, pendingPath
+}
+
+func proofReportlessCompletionPendingFixture(
+	t *testing.T,
+	title string,
+) (*Store, envelope.WorkEnvelope, ProofResourceReserveResult, ProofResourceCompleteInput, proofResourceCompletionPending, string) {
+	t.Helper()
+	s := newStore(t)
+	w := claimedProofWork(t, s, title, proofActorAlpha, fixedNow)
+	acquired, err := reserveProofResource(t, s, w.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       time.Minute,
+		Workspace: "/synthetic/repo-alpha",
+		Command:   "compound proof-check --out /synthetic/report-alpha.json",
+	}, fixedNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     acquired.Reservation.ID,
+		ProducerExitKnown: false,
+		FailureReason:     "proof runner infrastructure failed before report publication",
+	}
+	originalWrite := proofResourceWriteEventRecord
+	proofResourceWriteEventRecord = func(store *Store, stage, id string, value any) error {
+		if stage == "result" {
+			return errors.New("synthetic reportless prepared-completion persistence fault")
+		}
+		return originalWrite(store, stage, id, value)
+	}
+	_, firstErr := s.CompleteProofResource(w.ID, input, fixedNow.Add(3*time.Second))
+	proofResourceWriteEventRecord = originalWrite
+	if firstErr == nil {
+		t.Fatal("reportless fixture completion did not retain pending journal")
+	}
+	pending, present, pendingPath, err := s.readProofResourceCompletionPending(acquired.Reservation.ID)
+	if err != nil || !present {
+		t.Fatalf("reportless fixture pending journal: present=%t err=%v", present, err)
+	}
+	if pending.GovernanceSeal == "" {
+		t.Fatal("reportless completion journal omitted governance seal")
 	}
 	return s, w, acquired, input, pending, pendingPath
 }

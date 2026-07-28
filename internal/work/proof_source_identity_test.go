@@ -242,6 +242,133 @@ func TestCompleteProofResourceStoresSealedSourceSnapshot(t *testing.T) {
 	}
 }
 
+func TestSHA256SourceBoundProofAndLandBinding(t *testing.T) {
+	store := newStore(t)
+	repo := initSHA256ProofSourceRepo(t)
+	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.BaseSHA) != 64 || len(source.HeadSHA) != 64 || len(source.TreeSHA) != 64 {
+		t.Fatalf("sha256 source snapshot truncated object ids: %+v", source)
+	}
+	now := time.Date(2026, 7, 28, 5, 20, 0, 0, time.UTC)
+	item, err := store.Create(CreateInput{
+		Owner:            "proof-source-sha256-test",
+		Actor:            proofActorAlpha,
+		SuccessPredicate: "sha256 proof source remains bound through land check",
+		GitDelivery: &envelope.GitDeliveryContract{
+			TargetWorktreeRoot:    repo,
+			RepositoryFingerprint: source.RepositoryFingerprint,
+			TargetLocalRef:        "refs/heads/main",
+			ExpectedBaseSHA:       source.BaseSHA,
+			PublicationMode:       "local_only",
+		},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err = store.Claim(item.ID, proofActorAlpha, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gates := []ProofResourceGateProfile{{
+		Name:     "synthetic-gate",
+		Command:  []string{"go", "test", "./internal/synthetic"},
+		ProofRef: "synthetic-proof",
+	}}
+	profile, err := NewProofResourceProfileWithSource(
+		ProofResourceProfileCanonicalFull,
+		repo,
+		source,
+		gates,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := store.ReserveProofResource(item.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       time.Minute,
+		Workspace: repo,
+		Command:   "compound proof-check --base refs/heads/main --out /synthetic/proof.json",
+		Profile:   profile,
+	}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserved.ExecutionBarrier == nil {
+		t.Fatal("sha256 proof reservation omitted execution barrier")
+	}
+	if err := reserved.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reportBody, err := json.Marshal(map[string]any{
+		"schema_version":  "compound.proof_check_report.v0.3",
+		"profile_kind":    ProofResourceProfileCanonicalFull,
+		"status":          "ok",
+		"generated_at":    now.Add(3 * time.Second).Format(time.RFC3339),
+		"repo":            repo,
+		"base_ref":        source.BaseSHA,
+		"source_snapshot": source,
+		"dry_run":         false,
+		"proof_refs":      []string{"synthetic-proof"},
+		"steps": []map[string]any{{
+			"name":      "synthetic-gate",
+			"command":   []string{"go", "test", "./internal/synthetic"},
+			"proof_ref": "synthetic-proof",
+			"status":    "ok",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(store.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(reportBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := store.CompleteProofResource(item.ID, ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     reserved.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Result.SourceSnapshot == nil ||
+		*completed.Result.SourceSnapshot != source ||
+		len(completed.Result.SourceSnapshot.HeadSHA) != 64 {
+		t.Fatalf("sha256 proof completion source mismatch: %+v", completed.Result.SourceSnapshot)
+	}
+	item, err = store.Advance(item.ID, AdvanceInput{
+		To:         item.State,
+		Actor:      proofActorAlpha,
+		ArtifactID: "commit:" + source.HeadSHA,
+	}, now.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	landed, err := store.LandCheck(item.ID, LandCheckOptions{
+		CandidateTipSHA: source.HeadSHA,
+		Actor:           proofActorAlpha,
+		Record:          true,
+	}, now.Add(6*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landed.Status != "landed" ||
+		landed.CandidateTipSHA != source.HeadSHA ||
+		landed.ProofHeadSHA != source.HeadSHA ||
+		landed.ProofVerificationRef != completed.VerificationRef {
+		t.Fatalf("sha256 source-bound land check = %+v", landed)
+	}
+}
+
 func TestLandCheckRejectsPreparedProofBeforeFinalizerCommit(t *testing.T) {
 	fixture := newSourceBoundProofCompletionFixture(t, time.Date(2026, 7, 28, 5, 20, 0, 0, time.UTC))
 	originalTerminalize := proofResourceTerminalizeRunAttempt
@@ -610,6 +737,32 @@ func initProofSourceRepo(t *testing.T, origin string) string {
 	runProofSourceGit(t, repo, "config", "user.name", "Compound Test")
 	runProofSourceGit(t, repo, "remote", "add", "origin", origin)
 	if err := os.WriteFile(filepath.Join(repo, "seed.txt"), []byte(origin+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runProofSourceGit(t, repo, "add", "seed.txt")
+	runProofSourceGit(t, repo, "commit", "-m", "seed")
+	return repo
+}
+
+func initSHA256ProofSourceRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	cmd := exec.Command("git", "-C", repo, "init", "--object-format=sha256", "-b", "main")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		lower := strings.ToLower(string(out))
+		if strings.Contains(lower, "sha256") &&
+			(strings.Contains(lower, "not supported") ||
+				strings.Contains(lower, "unsupported") ||
+				strings.Contains(lower, "unknown object format")) {
+			t.Skipf("git explicitly reports SHA-256 object format unsupported: %s", out)
+		}
+		t.Fatalf("git init --object-format=sha256: %v\n%s", err, out)
+	}
+	runProofSourceGit(t, repo, "config", "user.email", "test@example.invalid")
+	runProofSourceGit(t, repo, "config", "user.name", "Compound Test")
+	runProofSourceGit(t, repo, "remote", "add", "origin", "https://example.invalid/compound/sha256-proof.git")
+	if err := os.WriteFile(filepath.Join(repo, "seed.txt"), []byte("sha256 seed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runProofSourceGit(t, repo, "add", "seed.txt")

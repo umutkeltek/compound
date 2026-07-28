@@ -36,6 +36,7 @@ const proofCheckSignalForwardSubEnv = "COMPOUND_PROOF_SIGNAL_FORWARD_SUB"
 const proofCheckMissingBaseSubEnv = "COMPOUND_PROOF_MISSING_BASE_SUB"
 const proofCheckLegacyRecoverySubEnv = "COMPOUND_PROOF_LEGACY_RECOVERY_SUB"
 const proofCheckLegacyRecoveryRealSubEnv = "COMPOUND_PROOF_LEGACY_RECOVERY_REAL_SUB"
+const proofCheckLegacyRecoveryReportlessSubEnv = "COMPOUND_PROOF_LEGACY_RECOVERY_REPORTLESS_SUB"
 
 func TestProofCheckCommandMissingBaseFailsBeforeReportOrRunner(t *testing.T) {
 	if os.Getenv(proofCheckMissingBaseSubEnv) == "1" {
@@ -391,6 +392,162 @@ func TestProofCheckCommandLegacyRecoveryReleasesRealRetainedHolderWithoutVerific
 	}
 	if string(afterOut) != prior {
 		t.Fatalf("real legacy recovery rewrote report bytes: %q", afterOut)
+	}
+}
+
+func TestProofCheckCommandLegacyRecoveryReleasesReportlessFailureWithoutRunningBattery(t *testing.T) {
+	if os.Getenv(proofCheckLegacyRecoveryReportlessSubEnv) == "1" {
+		proofCheckCanonicalRunner = func(
+			context.Context,
+			string,
+			bool,
+			gitrepository.Snapshot,
+			bool,
+			bool,
+			time.Time,
+		) (proofCheckReport, error) {
+			_ = os.WriteFile(
+				os.Getenv("COMPOUND_PROOF_LEGACY_REPORTLESS_RUNNER"),
+				[]byte("runner-started"),
+				0o644,
+			)
+			return proofCheckReport{}, errors.New("reportless legacy recovery must not run battery")
+		}
+		cmdProofCheck([]string{
+			"--recover-legacy-retained",
+			"--repo", os.Getenv("COMPOUND_PROOF_LEGACY_REPORTLESS_REPO"),
+			"--work", os.Getenv("COMPOUND_PROOF_LEGACY_REPORTLESS_WORK"),
+			"--actor", "codex:legacy-reportless",
+			"--out", os.Getenv("COMPOUND_PROOF_LEGACY_REPORTLESS_OUT"),
+		})
+		os.Exit(0)
+	}
+
+	homePath := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := home.Init(homePath, "proof-legacy-reportless-test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const actor = "codex:legacy-reportless"
+	w := createClaimedProofWork(t, store, "real reportless legacy recovery", actor, now)
+	repoPath := initCompoundCommandGitRepo(t)
+	outPath := filepath.Join(t.TempDir(), "legacy-reportless.json")
+	const prior = "no report was published\n"
+	if err := os.WriteFile(outPath, []byte(prior), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolvedOut, err := filepath.Abs(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandIdentity, err := proofCheckInvocationIdentity([]string{
+		"--repo", repoPath,
+		"--work", w.ID,
+		"--actor", actor,
+		"--out", resolvedOut,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := store.ReserveProofResource(w.ID, work.ProofResourceReserveInput{
+		Actor:     actor,
+		TTL:       10 * time.Minute,
+		Workspace: repoPath,
+		Command:   commandIdentity,
+		Profile:   syntheticAdmissionProfile(t, repoPath),
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserved.ExecutionBarrier == nil {
+		t.Fatal("reportless legacy setup omitted execution barrier")
+	}
+	if err := reserved.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(homePath, "state")
+	if err := os.Chmod(stateDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	_, completionErr := store.CompleteProofResource(w.ID, work.ProofResourceCompleteInput{
+		Actor:             actor,
+		ReservationID:     reserved.Reservation.ID,
+		ProducerExitKnown: false,
+		FailureReason:     "proof runner infrastructure failed before report publication",
+	}, now.Add(3*time.Second))
+	if err := os.Chmod(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if completionErr == nil {
+		t.Fatal("reportless legacy setup did not retain completion journal")
+	}
+	legacyWork, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyWork.VerificationIDs = nil
+	legacyWorkBody, err := json.MarshalIndent(legacyWork, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyWorkBody = append(legacyWorkBody, '\n')
+	if err := os.WriteFile(
+		filepath.Join(homePath, "work", "work", w.ID+".json"),
+		legacyWorkBody,
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	runnerMarker := filepath.Join(t.TempDir(), "runner-started")
+	cmd := exec.Command(
+		os.Args[0],
+		"-test.run=^TestProofCheckCommandLegacyRecoveryReleasesReportlessFailureWithoutRunningBattery$",
+	)
+	cmd.Env = append(
+		os.Environ(),
+		proofCheckLegacyRecoveryReportlessSubEnv+"=1",
+		"COMPOUND_HOME="+homePath,
+		"COMPOUND_PROOF_LEGACY_REPORTLESS_REPO="+repoPath,
+		"COMPOUND_PROOF_LEGACY_REPORTLESS_WORK="+w.ID,
+		"COMPOUND_PROOF_LEGACY_REPORTLESS_OUT="+outPath,
+		"COMPOUND_PROOF_LEGACY_REPORTLESS_RUNNER="+runnerMarker,
+	)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+		t.Fatalf("reportless legacy recovery exit = %v, want 2; output=%s", err, out)
+	}
+	if !strings.Contains(string(out), "fresh source-bound v0.3 battery required") {
+		t.Fatalf("reportless legacy recovery output = %q", out)
+	}
+	if _, err := os.Stat(runnerMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reportless legacy recovery started battery runner: %v", err)
+	}
+	status, err := landlease.Status(homePath, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Held || status.Holder != "" {
+		t.Fatalf("reportless legacy recovery retained holder: %+v", status)
+	}
+	current, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.VerificationIDs) != 0 {
+		t.Fatalf("reportless legacy recovery emitted verification: %v", current.VerificationIDs)
+	}
+	afterOut, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterOut) != prior {
+		t.Fatalf("reportless legacy recovery rewrote output bytes: %q", afterOut)
 	}
 }
 

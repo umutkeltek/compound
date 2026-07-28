@@ -42,6 +42,34 @@ func TestCaptureCleanSnapshotResolvesSymbolicBaseOnce(t *testing.T) {
 	}
 }
 
+func TestCaptureAndRevalidateSnapshotSupportsSHA256Repository(t *testing.T) {
+	repo := initSHA256SnapshotRepo(t)
+	baseSHA := snapshotGitOutput(t, repo, "rev-parse", "HEAD")
+	snapshotRunGit(t, repo, "switch", "-c", "candidate")
+	writeSnapshotFile(t, repo, "candidate.txt", "candidate\n")
+	snapshotRunGit(t, repo, "add", "candidate.txt")
+	snapshotRunGit(t, repo, "commit", "-m", "candidate")
+
+	got, err := CaptureCleanSnapshot(repo, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(baseSHA) != 64 ||
+		len(got.BaseSHA) != 64 ||
+		len(got.HeadSHA) != 64 ||
+		len(got.TreeSHA) != 64 {
+		t.Fatalf("sha256 snapshot did not retain full object ids: base=%q snapshot=%+v", baseSHA, got)
+	}
+	if got.BaseSHA != baseSHA ||
+		got.HeadSHA != snapshotGitOutput(t, repo, "rev-parse", "HEAD") ||
+		got.TreeSHA != snapshotGitOutput(t, repo, "rev-parse", "HEAD^{tree}") {
+		t.Fatalf("sha256 snapshot identity mismatch: %+v", got)
+	}
+	if err := RevalidateSnapshot(repo, got); err != nil {
+		t.Fatalf("revalidate sha256 snapshot: %v", err)
+	}
+}
+
 func TestCaptureCleanSnapshotRejectsDirtyCandidate(t *testing.T) {
 	repo := initSnapshotRepo(t)
 	writeSnapshotFile(t, repo, "uncommitted.txt", "not committed\n")
@@ -145,6 +173,30 @@ func initSnapshotRepo(t *testing.T) string {
 	snapshotRunGit(t, repo, "config", "user.email", "test@example.invalid")
 	snapshotRunGit(t, repo, "config", "user.name", "Compound Test")
 	snapshotRunGit(t, repo, "remote", "add", "origin", "https://example.invalid/compound/synthetic.git")
+	writeSnapshotFile(t, repo, "seed.txt", "seed\n")
+	snapshotRunGit(t, repo, "add", "seed.txt")
+	snapshotRunGit(t, repo, "commit", "-m", "seed")
+	return repo
+}
+
+func initSHA256SnapshotRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	cmd := exec.Command("git", "-C", repo, "init", "--object-format=sha256", "-b", "main")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		lower := strings.ToLower(string(out))
+		if strings.Contains(lower, "sha256") &&
+			(strings.Contains(lower, "not supported") ||
+				strings.Contains(lower, "unsupported") ||
+				strings.Contains(lower, "unknown object format")) {
+			t.Skipf("git explicitly reports SHA-256 object format unsupported: %s", out)
+		}
+		t.Fatalf("git init --object-format=sha256: %v\n%s", err, out)
+	}
+	snapshotRunGit(t, repo, "config", "user.email", "test@example.invalid")
+	snapshotRunGit(t, repo, "config", "user.name", "Compound Test")
+	snapshotRunGit(t, repo, "remote", "add", "origin", "https://example.invalid/compound/sha256-synthetic.git")
 	writeSnapshotFile(t, repo, "seed.txt", "seed\n")
 	snapshotRunGit(t, repo, "add", "seed.txt")
 	snapshotRunGit(t, repo, "commit", "-m", "seed")
