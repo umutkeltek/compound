@@ -222,6 +222,12 @@ type mcpToolCallParams struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
+type mcpModernToolCallParams struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Meta      json.RawMessage `json:"_meta,omitempty"`
+}
+
 // mcpToolCallResult uses the CallToolResult shape shared by both supported MCP
 // revisions. The typed acknowledgement is encoded in content[0].text; this
 // server does not advertise an outputSchema and therefore does not emit the
@@ -229,6 +235,13 @@ type mcpToolCallParams struct {
 type mcpToolCallResult struct {
 	Content []mcpToolContent `json:"content"`
 	IsError bool             `json:"isError,omitempty"`
+}
+
+type mcpModernToolCallResult struct {
+	ResultType string                `json:"resultType"`
+	Content    []mcpToolContent      `json:"content"`
+	IsError    bool                  `json:"isError"`
+	Meta       mcpModernResponseMeta `json:"_meta"`
 }
 
 type mcpToolContent struct {
@@ -556,6 +569,8 @@ func dispatchModernJSONRPC(req jsonRPCRequest) interface{} {
 			CacheScope: "public",
 			Meta:       mcpModernServerMeta(),
 		}
+	case "tools/call":
+		return mcpHandleModernToolsCall(req.Params)
 	default:
 		return &jsonRPCError{Code: rpcMethodNotFound, Message: "method not found"}
 	}
@@ -660,6 +675,38 @@ func mcpHandleToolsCall(rawParams json.RawMessage) interface{} {
 		return mcpCallOrientRecall(params.Arguments)
 	default:
 		return &jsonRPCError{Code: rpcToolUnavailable, Message: "tool dispatch unreachable"}
+	}
+}
+
+func mcpHandleModernToolsCall(rawParams json.RawMessage) interface{} {
+	if len(rawParams) == 0 {
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "tools/call params required"}
+	}
+	var params mcpModernToolCallParams
+	if err := strictDecodeArgs(rawParams, &params); err != nil {
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid tools/call params"}
+	}
+	if _, ok := toolSet[params.Name]; !ok {
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid tools/call params"}
+	}
+	var rawResult interface{}
+	switch params.Name {
+	case mcpFindingToolName:
+		rawResult = mcpCallFindingRecord(params.Arguments)
+	case mcpOrientToolName:
+		rawResult = mcpCallOrientRecall(params.Arguments)
+	default:
+		return &jsonRPCError{Code: rpcInternalError, Message: "internal error"}
+	}
+	result, ok := rawResult.(mcpToolCallResult)
+	if !ok {
+		return &jsonRPCError{Code: rpcInternalError, Message: "internal error"}
+	}
+	return mcpModernToolCallResult{
+		ResultType: "complete",
+		Content:    result.Content,
+		IsError:    result.IsError,
+		Meta:       mcpModernServerMeta(),
 	}
 }
 
