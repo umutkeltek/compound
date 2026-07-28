@@ -73,6 +73,53 @@ func TestFirstPartyCommandAdmissionPreservesNestedInstallSecurityFloor(t *testin
 	}
 }
 
+func TestFirstPartyCommandAdmissionDistinguishesMutatingSubcommands(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		command       string
+		wantOperation string
+	}{
+		{
+			command:       "compound orient --harness codex --task release-audit",
+			wantOperation: "governed_command",
+		},
+		{
+			command:       "compound route import route-evidence.json",
+			wantOperation: "governed_command",
+		},
+		{
+			command:       "compound route evidence-authority --json",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound route experiment-plan --profiles-root profiles --json",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound coordination --json",
+			wantOperation: "local_command",
+		},
+		{
+			command:       "compound coordination measure --report drep_example",
+			wantOperation: "governed_command",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.command, func(t *testing.T) {
+			got := policy.ClassifyToolAction(policy.ToolActionRequest{
+				Tool:               "Bash",
+				Arguments:          map[string]any{"command": tc.command},
+				FirstPartyCommands: firstPartyCommandCatalog(),
+			})
+			if !got.Known || got.Operation != tc.wantOperation {
+				t.Fatalf("%q classification = %+v, want operation=%q", tc.command, got, tc.wantOperation)
+			}
+		})
+	}
+}
+
 func TestFirstPartyCommandCatalogMatchesEveryRuntimeCommand(t *testing.T) {
 	t.Parallel()
 
