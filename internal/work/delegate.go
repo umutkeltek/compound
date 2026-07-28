@@ -97,17 +97,18 @@ type SessionRunner interface {
 }
 
 type DelegateOptions struct {
-	WorkID          string
-	Harness         string
-	Session         string // optional override; default = delegateSessionName(WorkID)
-	Actor           string
-	Command         string
-	Args            []string
-	Workspace       string
-	ExpectedMinutes int
-	Confirm         bool
-	DryRun          bool
-	Now             time.Time
+	WorkID           string
+	Harness          string
+	ExecutionProfile DelegateExecutionProfileIntent
+	Session          string // optional override; default = delegateSessionName(WorkID)
+	Actor            string
+	Command          string
+	Args             []string
+	Workspace        string
+	ExpectedMinutes  int
+	Confirm          bool
+	DryRun           bool
+	Now              time.Time
 }
 
 type DelegateHarnessResolveRequest struct {
@@ -134,6 +135,62 @@ type DelegateHarnessResolverFunc func(DelegateHarnessResolveRequest) (DelegateHa
 // Compound model-router authority. Injection avoids a work↔routeevidence
 // import cycle while keeping a single tuple resolver.
 var DelegateHarnessResolver DelegateHarnessResolverFunc
+
+// DelegateExecutionProfileIntent is the narrow selector DTO accepted by the
+// work orchestrator. routeevidence owns validation and semantic resolution;
+// this package intentionally does not import it.
+type DelegateExecutionProfileIntent struct {
+	ProfileID           string `json:"profile_id"`
+	Role                string `json:"role,omitempty"`
+	CapabilityClass     string `json:"capability_class,omitempty"`
+	ClientHarnessID     string `json:"client_harness_id,omitempty"`
+	TransportID         string `json:"transport_id,omitempty"`
+	RouteAlias          string `json:"route_alias,omitempty"`
+	ModelConstraint     string `json:"model_constraint,omitempty"`
+	SemanticEffort      string `json:"semantic_effort,omitempty"`
+	NativeEffort        string `json:"native_effort,omitempty"`
+	OrchestrationPolicy string `json:"orchestration_policy,omitempty"`
+	PrivacyCeiling      string `json:"privacy_ceiling,omitempty"`
+}
+
+// DelegateExecutionProfilePlan is an audit projection of the canonical
+// routeevidence.ExecutionProfilePlan. Snapshot carries the complete canonical
+// plan without duplicating its semantic types in internal/work.
+type DelegateExecutionProfilePlan struct {
+	SchemaVersion           string          `json:"schema_version"`
+	ID                      string          `json:"id"`
+	ProfileID               string          `json:"profile_id"`
+	Role                    string          `json:"role"`
+	CapabilityClass         string          `json:"capability_class"`
+	ClientHarnessID         string          `json:"client_harness_id"`
+	TransportID             string          `json:"transport_id"`
+	RouteAlias              string          `json:"route_alias,omitempty"`
+	ModelConstraint         string          `json:"model_constraint,omitempty"`
+	SemanticEffort          string          `json:"semantic_effort"`
+	RequestedNativeEffort   string          `json:"requested_native_effort"`
+	NativeEffortDisposition string          `json:"native_effort_disposition"`
+	NativeEffortReason      string          `json:"native_effort_reason"`
+	OrchestrationPolicy     string          `json:"orchestration_policy"`
+	PrivacyCeiling          string          `json:"privacy_ceiling"`
+	Budget                  json.RawMessage `json:"budget,omitempty"`
+	Checkpoint              json.RawMessage `json:"checkpoint,omitempty"`
+	ParentPlanID            string          `json:"parent_plan_id,omitempty"`
+	RemainingBudget         json.RawMessage `json:"remaining_budget,omitempty"`
+	InheritedCeilings       []string        `json:"inherited_ceilings,omitempty"`
+	Warnings                []string        `json:"warnings,omitempty"`
+	Snapshot                json.RawMessage `json:"snapshot,omitempty"`
+}
+
+type DelegateExecutionProfileResolveRequest struct {
+	Intent DelegateExecutionProfileIntent
+}
+
+type DelegateExecutionProfileResolverFunc func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfilePlan, error)
+
+// DelegateExecutionProfileResolver is installed by routeevidence, the owner of
+// ExecutionProfile definitions and resolution. The seam avoids an import
+// cycle and prevents a parallel profile registry in internal/work.
+var DelegateExecutionProfileResolver DelegateExecutionProfileResolverFunc
 
 type DelegateHarnessReadinessRequest struct {
 	HomePath               string
@@ -173,14 +230,15 @@ type DelegateHarnessReadinessFunc func(DelegateHarnessReadinessRequest) (Delegat
 var DelegateHarnessReadiness DelegateHarnessReadinessFunc
 
 type DelegateResult struct {
-	SchemaVersion string                          `json:"schema_version"`
-	WorkID        string                          `json:"work_id"`
-	Lane          string                          `json:"lane,omitempty"`
-	Status        string                          `json:"status"` // spawned|refused|preview
-	Binding       *DelegateBinding                `json:"binding,omitempty"`
-	Refusal       *DelegateRefusal                `json:"refusal,omitempty"`
-	Readiness     *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
-	Decision      *LaneCapacityGuardResult        `json:"decision,omitempty"`
+	SchemaVersion    string                          `json:"schema_version"`
+	WorkID           string                          `json:"work_id"`
+	Lane             string                          `json:"lane,omitempty"`
+	Status           string                          `json:"status"` // spawned|refused|preview
+	Binding          *DelegateBinding                `json:"binding,omitempty"`
+	Refusal          *DelegateRefusal                `json:"refusal,omitempty"`
+	Readiness        *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
+	Decision         *LaneCapacityGuardResult        `json:"decision,omitempty"`
+	ExecutionProfile *DelegateExecutionProfilePlan   `json:"execution_profile,omitempty"`
 	// RunAttemptID is the ratt_<UTC>_<hex> that was minted before Create
 	// and marked running after the supervised spawn succeeded. Always
 	// populated on Status="spawned"; older callers that recover a
@@ -195,15 +253,16 @@ type DelegateResult struct {
 // from a sidecar file). The orchestrator returns it to the verb layer so
 // the operator can print a single "session: <name>" hint.
 type DelegateBinding struct {
-	WorkID        string                          `json:"work_id"`
-	Session       string                          `json:"session"`
-	Harness       string                          `json:"harness"`
-	Lane          string                          `json:"lane,omitempty"`
-	Holder        string                          `json:"holder,omitempty"`
-	CapacityState string                          `json:"capacity_state,omitempty"`
-	RecordedAt    string                          `json:"recorded_at,omitempty"`
-	WorkSHA256    string                          `json:"work_sha256,omitempty"`
-	Readiness     *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
+	WorkID           string                          `json:"work_id"`
+	Session          string                          `json:"session"`
+	Harness          string                          `json:"harness"`
+	Lane             string                          `json:"lane,omitempty"`
+	Holder           string                          `json:"holder,omitempty"`
+	CapacityState    string                          `json:"capacity_state,omitempty"`
+	RecordedAt       string                          `json:"recorded_at,omitempty"`
+	WorkSHA256       string                          `json:"work_sha256,omitempty"`
+	Readiness        *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
+	ExecutionProfile *DelegateExecutionProfilePlan   `json:"execution_profile,omitempty"`
 	// RunAttemptID is the ratt_<UTC>_<hex> the orchestrator minted BEFORE
 	// the supervised spawn. Older bindings (pre-slice) leave it empty
 	// and remain backward-compatible: recovery still returns the
@@ -241,25 +300,26 @@ func resolveDelegateSessionName(workID, override string) string {
 // work.delegate.exited event. Older exited events (no fields) still
 // serialize cleanly: the orchestrator accepts either shape.
 type delegateEvent struct {
-	SchemaVersion string                          `json:"schema_version"`
-	ID            string                          `json:"id"`
-	Kind          string                          `json:"kind"`
-	TS            string                          `json:"ts"`
-	WorkID        string                          `json:"work_id"`
-	Harness       string                          `json:"harness"`
-	Lane          string                          `json:"lane,omitempty"`
-	Holder        string                          `json:"holder,omitempty"`
-	CapacityState string                          `json:"capacity_state,omitempty"`
-	Reason        string                          `json:"reason,omitempty"`
-	Message       string                          `json:"message,omitempty"`
-	Confirm       bool                            `json:"confirm,omitempty"`
-	Session       string                          `json:"session,omitempty"`
-	WorkSHA256    string                          `json:"work_sha256,omitempty"`
-	RunAttemptID  string                          `json:"run_attempt_id,omitempty"`
-	Readiness     *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
-	ExitCode      *int                            `json:"exit_code,omitempty"`
-	Signal        string                          `json:"signal,omitempty"`
-	ObservedExit  bool                            `json:"observed_exit,omitempty"`
+	SchemaVersion    string                          `json:"schema_version"`
+	ID               string                          `json:"id"`
+	Kind             string                          `json:"kind"`
+	TS               string                          `json:"ts"`
+	WorkID           string                          `json:"work_id"`
+	Harness          string                          `json:"harness"`
+	Lane             string                          `json:"lane,omitempty"`
+	Holder           string                          `json:"holder,omitempty"`
+	CapacityState    string                          `json:"capacity_state,omitempty"`
+	Reason           string                          `json:"reason,omitempty"`
+	Message          string                          `json:"message,omitempty"`
+	Confirm          bool                            `json:"confirm,omitempty"`
+	Session          string                          `json:"session,omitempty"`
+	WorkSHA256       string                          `json:"work_sha256,omitempty"`
+	RunAttemptID     string                          `json:"run_attempt_id,omitempty"`
+	Readiness        *DelegateHarnessReadinessResult `json:"readiness,omitempty"`
+	ExecutionProfile *DelegateExecutionProfilePlan   `json:"execution_profile,omitempty"`
+	ExitCode         *int                            `json:"exit_code,omitempty"`
+	Signal           string                          `json:"signal,omitempty"`
+	ObservedExit     bool                            `json:"observed_exit,omitempty"`
 }
 
 func delegateEventID(kind, workID string, now time.Time) string {
@@ -311,15 +371,16 @@ func (s *Store) latestDelegateBinding(workID string) (*DelegateBinding, bool, er
 			switch dev.Kind {
 			case "work.delegate.spawned":
 				binding = &DelegateBinding{
-					WorkID:        dev.WorkID,
-					Session:       dev.Session,
-					Harness:       dev.Harness,
-					Lane:          dev.Lane,
-					Holder:        dev.Holder,
-					CapacityState: dev.CapacityState,
-					RecordedAt:    dev.TS,
-					WorkSHA256:    dev.WorkSHA256,
-					Readiness:     dev.Readiness,
+					WorkID:           dev.WorkID,
+					Session:          dev.Session,
+					Harness:          dev.Harness,
+					Lane:             dev.Lane,
+					Holder:           dev.Holder,
+					CapacityState:    dev.CapacityState,
+					RecordedAt:       dev.TS,
+					WorkSHA256:       dev.WorkSHA256,
+					Readiness:        dev.Readiness,
+					ExecutionProfile: cloneDelegateExecutionProfilePlan(dev.ExecutionProfile),
 					// Older spawned events (pre-slice) decode with empty
 					// RunAttemptID; the rest of the orchestrator treats
 					// empty as "no exact attempt" and stays backward-
@@ -496,6 +557,70 @@ func completeDelegateReadinessSnapshot(readiness DelegateHarnessReadinessResult,
 // records a work.delegate.spawned eventstore record + a work lifecycle
 // event that attaches it. Dry-run runs the gate without spawning and
 // writes no event.
+func delegateExecutionProfileSelected(intent DelegateExecutionProfileIntent) bool {
+	return strings.TrimSpace(intent.ProfileID) != "" ||
+		strings.TrimSpace(intent.Role) != "" ||
+		strings.TrimSpace(intent.CapabilityClass) != "" ||
+		strings.TrimSpace(intent.ClientHarnessID) != "" ||
+		strings.TrimSpace(intent.TransportID) != "" ||
+		strings.TrimSpace(intent.RouteAlias) != "" ||
+		strings.TrimSpace(intent.ModelConstraint) != "" ||
+		strings.TrimSpace(intent.SemanticEffort) != "" ||
+		strings.TrimSpace(intent.NativeEffort) != "" ||
+		strings.TrimSpace(intent.OrchestrationPolicy) != "" ||
+		strings.TrimSpace(intent.PrivacyCeiling) != ""
+}
+
+func cloneDelegateExecutionProfilePlan(plan *DelegateExecutionProfilePlan) *DelegateExecutionProfilePlan {
+	if plan == nil {
+		return nil
+	}
+	cloned := *plan
+	cloned.Budget = append(json.RawMessage(nil), plan.Budget...)
+	cloned.Checkpoint = append(json.RawMessage(nil), plan.Checkpoint...)
+	cloned.RemainingBudget = append(json.RawMessage(nil), plan.RemainingBudget...)
+	cloned.InheritedCeilings = append([]string(nil), plan.InheritedCeilings...)
+	cloned.Warnings = append([]string(nil), plan.Warnings...)
+	cloned.Snapshot = append(json.RawMessage(nil), plan.Snapshot...)
+	return &cloned
+}
+
+func addDelegateExecutionProfileReadinessEvidence(readiness DelegateHarnessReadinessResult, plan *DelegateExecutionProfilePlan) (DelegateHarnessReadinessResult, error) {
+	if plan == nil {
+		return readiness, nil
+	}
+	material := plan.Snapshot
+	if len(material) == 0 {
+		var err error
+		material, err = json.Marshal(plan)
+		if err != nil {
+			return DelegateHarnessReadinessResult{}, fmt.Errorf("delegate: encode execution profile readiness: %w", err)
+		}
+	}
+	sum := sha256.Sum256(material)
+	readiness.Evidence = append(append([]DelegateHarnessReadinessEvidence(nil), readiness.Evidence...), DelegateHarnessReadinessEvidence{
+		Kind:     "execution_profile",
+		Ref:      "execution-profile://" + strings.TrimSpace(plan.ID),
+		Revision: "sha256:" + hex.EncodeToString(sum[:]),
+	})
+	return readiness, nil
+}
+
+func delegateHarnessFamily(harness string) string {
+	normalized := strings.ToLower(strings.TrimSpace(harness))
+	switch normalized {
+	case "claude_code", "claude_zai", "claude_minimax", "claude_qwen", "claude_zai_full":
+		return "claude-code"
+	case "worker":
+		return "worker"
+	default:
+		if strings.HasPrefix(normalized, "codex") {
+			return "codex"
+		}
+		return ""
+	}
+}
+
 func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateResult, error) {
 	out := DelegateResult{
 		SchemaVersion: delegateEventSchemaVersion,
@@ -540,6 +665,56 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			Message: fmt.Sprintf("harness %q did not resolve a complete executable tuple", opts.Harness),
 		}
 		return out, nil
+	}
+	executionProfileResolver := DelegateExecutionProfileResolver
+	var executionProfile *DelegateExecutionProfilePlan
+	if delegateExecutionProfileSelected(opts.ExecutionProfile) {
+		if strings.TrimSpace(opts.ExecutionProfile.ProfileID) == "" {
+			out.Refusal = &DelegateRefusal{
+				Reason:  "execution_profile_unresolved",
+				Message: "execution profile selectors require a profile_id",
+			}
+			return out, nil
+		}
+		if executionProfileResolver == nil {
+			out.Refusal = &DelegateRefusal{
+				Reason:  "execution_profile_unresolved",
+				Message: "no execution profile resolver installed",
+			}
+			return out, nil
+		}
+		resolvedProfile, profileErr := executionProfileResolver(DelegateExecutionProfileResolveRequest{
+			Intent: opts.ExecutionProfile,
+		})
+		if profileErr != nil {
+			out.Refusal = &DelegateRefusal{
+				Reason:  "execution_profile_unresolved",
+				Message: profileErr.Error(),
+			}
+			return out, nil
+		}
+		executionProfile = cloneDelegateExecutionProfilePlan(resolvedProfile)
+		if executionProfile == nil || strings.TrimSpace(executionProfile.ID) == "" {
+			out.Refusal = &DelegateRefusal{
+				Reason:  "execution_profile_unresolved",
+				Message: "execution profile resolver returned an empty plan",
+			}
+			return out, nil
+		}
+		selectedFamily := delegateHarnessFamily(resolvedHarness)
+		if selectedFamily == "" || selectedFamily != strings.TrimSpace(executionProfile.ClientHarnessID) {
+			out.Refusal = &DelegateRefusal{
+				Reason: "execution_profile_incompatible",
+				Message: fmt.Sprintf(
+					"selected Compound lane harness %q resolves to client family %q, execution profile requires %q",
+					resolvedHarness,
+					selectedFamily,
+					executionProfile.ClientHarnessID,
+				),
+			}
+			return out, nil
+		}
+		out.ExecutionProfile = executionProfile
 	}
 	out.Lane = strings.TrimSpace(resolution.LaneID)
 	if out.Lane == "" {
@@ -665,6 +840,10 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		return out, fmt.Errorf("delegate: guard lane capacity: %w", err)
 	}
 	out.Decision = &decision
+	readiness, err = addDelegateExecutionProfileReadinessEvidence(readiness, executionProfile)
+	if err != nil {
+		return out, err
+	}
 	readiness, err = completeDelegateReadinessSnapshot(readiness, laneForGuard, decision)
 	if err != nil {
 		return out, err
@@ -806,6 +985,22 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		if currentLease != authorizedLease || strings.TrimSpace(currentLease.By) != holder {
 			return &delegateAuthorityChangedError{detail: "work lease changed"}
 		}
+		revalidatedExecutionProfile := executionProfile
+		if executionProfile != nil {
+			currentProfile, profileErr := executionProfileResolver(DelegateExecutionProfileResolveRequest{
+				Intent: opts.ExecutionProfile,
+			})
+			if profileErr != nil {
+				return &delegateAuthorityChangedError{detail: "execution profile revalidation failed"}
+			}
+			revalidatedExecutionProfile = cloneDelegateExecutionProfilePlan(currentProfile)
+			if revalidatedExecutionProfile == nil || strings.TrimSpace(revalidatedExecutionProfile.ID) == "" {
+				return &delegateAuthorityChangedError{detail: "execution profile revalidation returned an empty plan"}
+			}
+			if delegateHarnessFamily(resolvedHarness) != strings.TrimSpace(revalidatedExecutionProfile.ClientHarnessID) {
+				return &delegateAuthorityChangedError{detail: "execution profile harness family changed"}
+			}
+		}
 		revalidatedReadiness, err := readinessGuard(readinessRequest)
 		if err != nil {
 			return &delegateAuthorityChangedError{detail: "harness readiness revalidation failed"}
@@ -821,6 +1016,10 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		revalidatedCapacity, err := runLaneCapacityGuard(capacityGuard, recheckCapacity)
 		if err != nil {
 			return &delegateAuthorityChangedError{detail: "lane capacity revalidation failed"}
+		}
+		revalidatedReadiness, err = addDelegateExecutionProfileReadinessEvidence(revalidatedReadiness, revalidatedExecutionProfile)
+		if err != nil {
+			return err
 		}
 		revalidatedSnapshot, err := completeDelegateReadinessSnapshot(revalidatedReadiness, laneForGuard, revalidatedCapacity)
 		if err != nil {
@@ -890,6 +1089,17 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	if _, settErr := raStore.SetDispatchIntent(runAttemptID, resolution.LaneID, resolution.RequestedModelID, resolution.RequestedProviderRoute); settErr != nil {
 		return stamp("attribution", "RunAttempt attribution stamp failed")
 	}
+	if executionProfile != nil {
+		if _, settErr := raStore.SetExecutionProfileIntent(
+			runAttemptID,
+			executionProfile.ID,
+			executionProfile.ClientHarnessID,
+			executionProfile.TransportID,
+			executionProfile.RequestedNativeEffort,
+		); settErr != nil {
+			return stamp("execution_profile", "RunAttempt execution profile stamp failed")
+		}
+	}
 
 	if err := runner.Create(sessionName, workspace, command, activationArgs); err != nil {
 		// Create failed. Probe to detect partial / ambiguous: if the
@@ -923,16 +1133,17 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 	}
 
 	binding := &DelegateBinding{
-		WorkID:        out.WorkID,
-		Session:       sessionName,
-		Harness:       resolvedHarness,
-		Lane:          laneForGuard,
-		Holder:        holder,
-		CapacityState: decision.Capacity.State,
-		RecordedAt:    ts(opts.Now),
-		WorkSHA256:    authorizedWorkSHA,
-		Readiness:     out.Readiness,
-		RunAttemptID:  runAttemptID,
+		WorkID:           out.WorkID,
+		Session:          sessionName,
+		Harness:          resolvedHarness,
+		Lane:             laneForGuard,
+		Holder:           holder,
+		CapacityState:    decision.Capacity.State,
+		RecordedAt:       ts(opts.Now),
+		WorkSHA256:       authorizedWorkSHA,
+		Readiness:        out.Readiness,
+		ExecutionProfile: cloneDelegateExecutionProfilePlan(executionProfile),
+		RunAttemptID:     runAttemptID,
 	}
 	// APPROVED ORDER: Create success -> record+attach spawned binding ->
 	// MarkRunning. Any failure AFTER the spawn + binding is a
@@ -1055,20 +1266,21 @@ func (s *Store) finalizeSpawnFailureAfterBinding(runner SessionRunner, workID st
 func (s *Store) recordDelegateSpawned(workID string, b *DelegateBinding, confirm bool, runAttemptID string, now time.Time) (string, error) {
 	id := delegateBindingEventID("work.delegate.spawned", workID, b, now)
 	if err := s.writeEventJSON(id, delegateEvent{
-		SchemaVersion: delegateEventSchemaVersion,
-		ID:            id,
-		Kind:          "work.delegate.spawned",
-		TS:            ts(now),
-		WorkID:        workID,
-		Harness:       b.Harness,
-		Lane:          b.Lane,
-		Holder:        b.Holder,
-		CapacityState: b.CapacityState,
-		Confirm:       confirm,
-		Session:       b.Session,
-		WorkSHA256:    b.WorkSHA256,
-		RunAttemptID:  runAttemptID,
-		Readiness:     b.Readiness,
+		SchemaVersion:    delegateEventSchemaVersion,
+		ID:               id,
+		Kind:             "work.delegate.spawned",
+		TS:               ts(now),
+		WorkID:           workID,
+		Harness:          b.Harness,
+		Lane:             b.Lane,
+		Holder:           b.Holder,
+		CapacityState:    b.CapacityState,
+		Confirm:          confirm,
+		Session:          b.Session,
+		WorkSHA256:       b.WorkSHA256,
+		RunAttemptID:     runAttemptID,
+		Readiness:        b.Readiness,
+		ExecutionProfile: cloneDelegateExecutionProfilePlan(b.ExecutionProfile),
 	}); err != nil {
 		return "", err
 	}

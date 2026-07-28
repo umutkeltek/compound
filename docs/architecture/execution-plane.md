@@ -44,6 +44,15 @@ permissions, and request/token/time/cost ceilings. It is a plan, not evidence th
 `compound route execution-profile` resolver proves profile coherence without contacting a provider or changing
 gateway/harness configuration.
 
+Governed `compound work delegate` can select an existing profile with `--execution-profile`. Optional
+role/capability/harness/transport/route/model/effort/orchestration/privacy selectors narrow that profile and are
+refused when no profile is selected. The existing `--harness` flag still selects the exact Compound model-router
+`LaneTuple`; admission verifies that tuple's harness family matches the resolved profile before readiness,
+capacity, event persistence, RunAttempt mint, or process creation. The resolved plan is stored on the delegate
+binding and in its canonical readiness snapshot. The exact RunAttempt stores the requested plan, client harness,
+transport, and native effort before spawn; observed model/provider fields remain empty until route evidence
+attests them. Gateway client-profile/account/credential selection remains gateway-owned and is not stored here.
+
 Harness and transport are independent selectors: for example, Claude Code may run over native transport or an
 observed gateway transport without becoming a different harness. Selecting a transport does not let Compound
 claim the provider/model that actually ran; those remain `unknown_until_receipt`.

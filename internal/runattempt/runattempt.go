@@ -158,6 +158,14 @@ type RunAttempt struct {
 	// a concrete provider/model consumed the run.
 	RequestedModelID       string `json:"requested_model_id,omitempty"`
 	RequestedProviderRoute string `json:"requested_provider_route,omitempty"`
+	// ExecutionProfilePlanID and the requested client/transport/effort fields
+	// identify the exact semantic execution plan selected before launch. They
+	// are intent, not observed route evidence, and therefore never populate
+	// ModelID or ProviderRoute.
+	ExecutionProfilePlanID   string `json:"execution_profile_plan_id,omitempty"`
+	RequestedClientHarnessID string `json:"requested_client_harness_id,omitempty"`
+	RequestedTransportID     string `json:"requested_transport_id,omitempty"`
+	RequestedNativeEffort    string `json:"requested_native_effort,omitempty"`
 	// ModelID is the concrete model the run consumed (e.g. "model-x"). Empty
 	// when the dispatching context does not know the model -- never guessed.
 	ModelID string `json:"model_id,omitempty"`
@@ -635,6 +643,21 @@ func (s *Store) SetDispatchIntent(id, laneID, requestedModelID, requestedProvide
 	ra.LaneID = strings.TrimSpace(laneID)
 	ra.RequestedModelID = strings.TrimSpace(requestedModelID)
 	ra.RequestedProviderRoute = strings.TrimSpace(requestedProviderRoute)
+	return ra, s.write(ra)
+}
+
+// SetExecutionProfileIntent records the exact requested semantic execution
+// identity before the harness is spawned. It deliberately leaves observed
+// ModelID and ProviderRoute empty; those fields require route evidence.
+func (s *Store) SetExecutionProfileIntent(id, planID, clientHarnessID, transportID, nativeEffort string) (RunAttempt, error) {
+	ra, err := s.requireMutable(id)
+	if err != nil {
+		return RunAttempt{}, err
+	}
+	ra.ExecutionProfilePlanID = strings.TrimSpace(planID)
+	ra.RequestedClientHarnessID = strings.TrimSpace(clientHarnessID)
+	ra.RequestedTransportID = strings.TrimSpace(transportID)
+	ra.RequestedNativeEffort = strings.TrimSpace(nativeEffort)
 	return ra, s.write(ra)
 }
 

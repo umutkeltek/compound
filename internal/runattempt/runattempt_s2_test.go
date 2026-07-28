@@ -26,7 +26,19 @@ func TestRunAttemptHashNeutralityForPreS2Records(t *testing.T) {
 	// for every field addition (pinned alongside TestEmptyRunAttemptIDsIsHashNeutral).
 	// The sweep below fails RED if any new field loses its omitempty tag, which
 	// is the teeth proof the byte-identical compare alone cannot give.
-	attributionKeys := []string{`"lane_id"`, `"requested_model_id"`, `"requested_provider_route"`, `"model_id"`, `"provider_route"`, `"tokens_in"`, `"tokens_out"`}
+	attributionKeys := []string{
+		`"lane_id"`,
+		`"requested_model_id"`,
+		`"requested_provider_route"`,
+		`"execution_profile_plan_id"`,
+		`"requested_client_harness_id"`,
+		`"requested_transport_id"`,
+		`"requested_native_effort"`,
+		`"model_id"`,
+		`"provider_route"`,
+		`"tokens_in"`,
+		`"tokens_out"`,
+	}
 
 	assertNeutral := func(t *testing.T, label string, fixture []byte) {
 		t.Helper()

@@ -16,6 +16,7 @@ import (
 )
 
 type delegateCLIOptions struct {
+	executionProfile                                   work.DelegateExecutionProfileIntent
 	workID, harness, actor, session, prompt, workspace string
 	command                                            string
 	args                                               []string
@@ -251,17 +252,18 @@ func runWorkDelegateCLI(sub string, args []string, store *work.Store, runner wor
 			return delegateCLIUsageError(stderr, "delegate", err)
 		}
 		result, err := store.Delegate(work.DelegateOptions{
-			WorkID:          opts.workID,
-			Harness:         opts.harness,
-			Session:         opts.session,
-			Actor:           opts.actor,
-			Command:         opts.command,
-			Args:            opts.args,
-			Workspace:       opts.workspace,
-			ExpectedMinutes: opts.expectedMinutes,
-			Confirm:         opts.confirm,
-			DryRun:          opts.dryRun,
-			Now:             now,
+			WorkID:           opts.workID,
+			Harness:          opts.harness,
+			ExecutionProfile: opts.executionProfile,
+			Session:          opts.session,
+			Actor:            opts.actor,
+			Command:          opts.command,
+			Args:             opts.args,
+			Workspace:        opts.workspace,
+			ExpectedMinutes:  opts.expectedMinutes,
+			Confirm:          opts.confirm,
+			DryRun:           opts.dryRun,
+			Now:              now,
 		}, runner)
 		if err != nil {
 			fmt.Fprintln(stderr, "error:", err)
@@ -345,7 +347,10 @@ func parseDelegateCLI(args []string) (delegateCLIOptions, error) {
 			return flagArgs[i], nil
 		}
 		switch arg {
-		case "--harness", "--actor", "--session", "--prompt", "--workspace", "--expected-minutes":
+		case "--harness", "--actor", "--session", "--prompt", "--workspace", "--expected-minutes",
+			"--execution-profile", "--role", "--capability-class", "--client-harness",
+			"--transport", "--route-alias", "--model", "--semantic-effort", "--effort",
+			"--orchestration", "--privacy-ceiling":
 			value, err := readValue()
 			if err != nil {
 				return out, err
@@ -361,6 +366,28 @@ func parseDelegateCLI(args []string) (delegateCLIOptions, error) {
 				out.prompt, seenPrompt = value, true
 			case "--workspace":
 				out.workspace = value
+			case "--execution-profile":
+				out.executionProfile.ProfileID = value
+			case "--role":
+				out.executionProfile.Role = value
+			case "--capability-class":
+				out.executionProfile.CapabilityClass = value
+			case "--client-harness":
+				out.executionProfile.ClientHarnessID = value
+			case "--transport":
+				out.executionProfile.TransportID = value
+			case "--route-alias":
+				out.executionProfile.RouteAlias = value
+			case "--model":
+				out.executionProfile.ModelConstraint = value
+			case "--semantic-effort":
+				out.executionProfile.SemanticEffort = value
+			case "--effort":
+				out.executionProfile.NativeEffort = value
+			case "--orchestration":
+				out.executionProfile.OrchestrationPolicy = value
+			case "--privacy-ceiling":
+				out.executionProfile.PrivacyCeiling = value
 			case "--expected-minutes":
 				minutes, parseErr := strconv.Atoi(value)
 				if parseErr != nil || minutes <= 0 {
@@ -387,6 +414,19 @@ func parseDelegateCLI(args []string) (delegateCLIOptions, error) {
 	out.workID = positionals[0]
 	if strings.TrimSpace(out.harness) == "" {
 		return out, errors.New("delegate requires --harness")
+	}
+	if strings.TrimSpace(out.executionProfile.ProfileID) == "" &&
+		(strings.TrimSpace(out.executionProfile.Role) != "" ||
+			strings.TrimSpace(out.executionProfile.CapabilityClass) != "" ||
+			strings.TrimSpace(out.executionProfile.ClientHarnessID) != "" ||
+			strings.TrimSpace(out.executionProfile.TransportID) != "" ||
+			strings.TrimSpace(out.executionProfile.RouteAlias) != "" ||
+			strings.TrimSpace(out.executionProfile.ModelConstraint) != "" ||
+			strings.TrimSpace(out.executionProfile.SemanticEffort) != "" ||
+			strings.TrimSpace(out.executionProfile.NativeEffort) != "" ||
+			strings.TrimSpace(out.executionProfile.OrchestrationPolicy) != "" ||
+			strings.TrimSpace(out.executionProfile.PrivacyCeiling) != "") {
+		return out, errors.New("execution selectors require --execution-profile")
 	}
 	if seenPrompt && strings.TrimSpace(out.prompt) == "" {
 		return out, errors.New("--prompt requires non-empty text")
