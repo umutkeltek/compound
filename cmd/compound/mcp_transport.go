@@ -43,11 +43,14 @@ const (
 	mcpFindingAckSchema = "compound.finding.record-ack.v1"
 	mcpOrientAckSchema  = "compound.mcp.orient-recall-ack.v1"
 	mcpServerName       = "compound-mcp-transport"
-	mcpServerVersion    = "0.2.0"
-	// mcpProtocolVersion is the newest revision this server supports. Initialize
-	// negotiates an exact member of mcpSupportedProtocolVersions.
+	mcpServerVersion    = "0.3.0"
+	// mcpProtocolVersion is the newest handshake-era revision this server
+	// supports. Initialize negotiates an exact member of
+	// mcpSupportedProtocolVersions.
 	mcpProtocolVersion       = "2025-06-18"
 	mcpLegacyProtocolVersion = "2024-11-05"
+	mcpModernProtocolVersion = "2026-07-28"
+	mcpModernCacheTTLMillis  = 3600000
 	mcpFindingToolName       = "compound_finding_record"
 	mcpOrientToolName        = "compound_orient_recall"
 	// mcpMaxLineBytes is the request-line byte budget enforced at the framing
@@ -157,6 +160,23 @@ type mcpInitializeResult struct {
 	ProtocolVersion string                `json:"protocolVersion"`
 	Capabilities    mcpServerCapabilities `json:"capabilities"`
 	ServerInfo      mcpImplementation     `json:"serverInfo"`
+}
+
+type mcpModernMetaParams struct {
+	Meta json.RawMessage `json:"_meta,omitempty"`
+}
+
+type mcpModernResponseMeta struct {
+	ServerInfo mcpImplementation `json:"io.modelcontextprotocol/serverInfo"`
+}
+
+type mcpDiscoverResult struct {
+	ResultType        string                `json:"resultType"`
+	SupportedVersions []string              `json:"supportedVersions"`
+	Capabilities      mcpServerCapabilities `json:"capabilities"`
+	TTLMillis         int                   `json:"ttlMs"`
+	CacheScope        string                `json:"cacheScope"`
+	Meta              mcpModernResponseMeta `json:"_meta"`
 }
 
 // mcpToolDescriptor is one entry in `tools/list`. The JSON Schema field is
@@ -380,6 +400,8 @@ func dispatchJSONRPC(session *mcpSession, raw []byte) []byte {
 	switch req.Method {
 	case "initialize":
 		return respondToID(req.ID, session.handleInitialize(req.Params))
+	case "server/discover":
+		return respondToID(req.ID, mcpHandleServerDiscover(req.Params))
 	case "ping":
 		return respondToID(req.ID, struct{}{})
 	case "tools/list":
@@ -394,6 +416,29 @@ func dispatchJSONRPC(session *mcpSession, raw []byte) []byte {
 		return respondToID(req.ID, mcpHandleToolsCall(req.Params))
 	default:
 		return respondToID(req.ID, &jsonRPCError{Code: rpcMethodNotFound, Message: "method not found"})
+	}
+}
+
+func mcpHandleServerDiscover(rawParams json.RawMessage) interface{} {
+	if len(rawParams) > 0 {
+		var params mcpModernMetaParams
+		if err := strictDecodeArgs(rawParams, &params); err != nil {
+			return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid server/discover params"}
+		}
+	}
+	return mcpDiscoverResult{
+		ResultType:        "complete",
+		SupportedVersions: []string{mcpModernProtocolVersion},
+		Capabilities:      mcpServerCapabilities{Tools: mcpToolsCapability{}},
+		TTLMillis:         mcpModernCacheTTLMillis,
+		CacheScope:        "public",
+		Meta:              mcpModernServerMeta(),
+	}
+}
+
+func mcpModernServerMeta() mcpModernResponseMeta {
+	return mcpModernResponseMeta{
+		ServerInfo: mcpImplementation{Name: mcpServerName, Version: mcpServerVersion},
 	}
 }
 

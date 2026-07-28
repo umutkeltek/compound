@@ -20,6 +20,8 @@ import (
 	"compound/internal/home"
 )
 
+const mcpTestModernProtocolVersion = "2026-07-28"
+
 // runMCPTransport drives the MCP transport with the given input lines (raw
 // JSON-RPC bytes, one envelope per line) and returns the captured stdout lines.
 // It also wires ioIn/ioOut around a temp dir so the test never touches the
@@ -66,6 +68,22 @@ func runReadyMCPTransport(t *testing.T, init func(homePath string), stdinLines [
 	return runMCPTransport(t, init, handshake, homePath)
 }
 
+func modernMeta(version string) map[string]any {
+	return map[string]any{
+		"io.modelcontextprotocol/protocolVersion":    version,
+		"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+		"io.modelcontextprotocol/clientInfo": map[string]any{
+			"name":    "compound-test",
+			"version": "1",
+		},
+	}
+}
+
+func runModernMCPTransport(t *testing.T, init func(homePath string), stdinLines []string, homePath string) []string {
+	t.Helper()
+	return runMCPTransport(t, init, stdinLines, homePath)
+}
+
 func rawResp(t *testing.T, lines []string, id interface{}) map[string]interface{} {
 	t.Helper()
 	for _, line := range lines {
@@ -96,6 +114,52 @@ func initMCPTestHome(t *testing.T) string {
 		t.Fatalf("home.Init: %v", err)
 	}
 	return homePath
+}
+
+func assertMCPDiscoverResult(t *testing.T, env map[string]interface{}) {
+	t.Helper()
+	if env["error"] != nil {
+		t.Fatalf("server/discover returned error: %+v", env["error"])
+	}
+	result, ok := env["result"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("server/discover missing result: %+v", env)
+	}
+	if len(result) != 6 {
+		t.Fatalf("server/discover result keys = %v, want exact six-field result", result)
+	}
+	if result["resultType"] != "complete" {
+		t.Fatalf("resultType = %v, want complete", result["resultType"])
+	}
+	versions, ok := result["supportedVersions"].([]interface{})
+	if !ok || len(versions) != 1 || versions[0] != mcpTestModernProtocolVersion {
+		t.Fatalf("supportedVersions = %v, want [%q]", result["supportedVersions"], mcpTestModernProtocolVersion)
+	}
+	capabilities, ok := result["capabilities"].(map[string]interface{})
+	if !ok || len(capabilities) != 1 {
+		t.Fatalf("capabilities = %v, want tools-only object", result["capabilities"])
+	}
+	tools, ok := capabilities["tools"].(map[string]interface{})
+	if !ok || len(tools) != 0 {
+		t.Fatalf("capabilities.tools = %v, want empty object", capabilities["tools"])
+	}
+	if ttl, ok := result["ttlMs"].(float64); !ok || ttl != 3600000 {
+		t.Fatalf("ttlMs = %v, want 3600000", result["ttlMs"])
+	}
+	if result["cacheScope"] != "public" {
+		t.Fatalf("cacheScope = %v, want public", result["cacheScope"])
+	}
+	meta, ok := result["_meta"].(map[string]interface{})
+	if !ok || len(meta) != 1 {
+		t.Fatalf("_meta = %v, want serverInfo-only object", result["_meta"])
+	}
+	serverInfo, ok := meta["io.modelcontextprotocol/serverInfo"].(map[string]interface{})
+	if !ok || len(serverInfo) != 2 {
+		t.Fatalf("serverInfo = %v, want exact name/version object", meta["io.modelcontextprotocol/serverInfo"])
+	}
+	if serverInfo["name"] != mcpServerName || serverInfo["version"] != mcpServerVersion {
+		t.Fatalf("serverInfo = %v, want %s@%s", serverInfo, mcpServerName, mcpServerVersion)
+	}
 }
 
 // ---------- Protocol-level tests (no tool) ----------
@@ -144,6 +208,34 @@ func TestMCPTransportInitializeReturnsServerInfoAndCapabilities(t *testing.T) {
 	if _, ok := caps["prompts"]; ok {
 		t.Fatalf("transport must not advertise prompts: %+v", caps)
 	}
+}
+
+func TestMCPTransportDiscover_AnswersPreInitializeWithFullResult(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	request := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "discover-modern",
+		"method":  "server/discover",
+		"params":  map[string]any{"_meta": modernMeta(mcpTestModernProtocolVersion)},
+	}
+	lines := runModernMCPTransport(t, nil, []string{string(mustJSON(t, request))}, homePath)
+	assertMCPDiscoverResult(t, rawResp(t, lines, "discover-modern"))
+}
+
+func TestMCPTransportDiscover_ToleratesAbsentParams(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	lines := runModernMCPTransport(t, nil, []string{
+		`{"jsonrpc":"2.0","id":"discover-no-params","method":"server/discover"}`,
+	}, homePath)
+	assertMCPDiscoverResult(t, rawResp(t, lines, "discover-no-params"))
+}
+
+func TestMCPTransportDiscover_WorksAfterLegacyHandshake(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	lines := runReadyMCPTransport(t, nil, []string{
+		`{"jsonrpc":"2.0","id":"discover-ready","method":"server/discover"}`,
+	}, homePath)
+	assertMCPDiscoverResult(t, rawResp(t, lines, "discover-ready"))
 }
 
 func TestMCPTransportInitializeRejectsNonTwenty(t *testing.T) {
