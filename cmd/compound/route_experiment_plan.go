@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"strings"
 
 	"compound/internal/routeevidence"
 )
@@ -31,7 +31,7 @@ func runRouteExperimentPlanCommand(args []string, stdout, stderr io.Writer) int 
 	fs := flag.NewFlagSet("route experiment-plan", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	role := fs.String("role", "opus", "Claude role alias: default|opus|sonnet|haiku|subagent")
-	root := fs.String("profiles-root", filepath.Join(os.Getenv("HOME"), "Projects/systems/switchback/.switchback/state/profile-conformance"), "Switchback non-secret conformance projection root")
+	root := fs.String("profiles-root", "", "Switchback non-secret conformance projection root (required)")
 	jsonOut := fs.Bool("json", false, "emit JSON")
 	var profiles stringListFlag
 	fs.Var(&profiles, "profile", "launch profile id (repeat at least twice)")
@@ -40,6 +40,10 @@ func runRouteExperimentPlanCommand(args []string, stdout, stderr io.Writer) int 
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(stderr, "route experiment-plan: unexpected arguments: %v\n", fs.Args())
+		return 2
+	}
+	if strings.TrimSpace(*root) == "" {
+		fmt.Fprintln(stderr, "route experiment-plan: --profiles-root is required")
 		return 2
 	}
 	plan, err := routeevidence.PlanRouteExperiment(*root, *role, profiles)

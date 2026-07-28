@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,5 +29,20 @@ func TestRouteExperimentPlanCLI(t *testing.T) {
 	}
 	if got["verdict"] != "plan_only_not_execution_evidence" {
 		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestRouteExperimentPlanRequiresProfilesRoot(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := runRouteExperimentPlanCommand(
+		[]string{"--profile", "claude-gpt", "--profile", "claude-minimax"},
+		&out,
+		&errOut,
+	)
+	if code != 2 {
+		t.Fatalf("code=%d, want 2; stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "--profiles-root is required") {
+		t.Fatalf("missing required-flag refusal: %s", errOut.String())
 	}
 }
