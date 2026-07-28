@@ -52,6 +52,58 @@ func TestCaptureCleanSnapshotRejectsDirtyCandidate(t *testing.T) {
 	}
 }
 
+func TestCaptureCleanSnapshotRejectsHiddenTrackedMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		flag    string
+		wantErr string
+	}{
+		{name: "assume unchanged", flag: "--assume-unchanged", wantErr: "assume-unchanged"},
+		{name: "skip worktree", flag: "--skip-worktree", wantErr: "skip-worktree"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initSnapshotRepo(t)
+			snapshotRunGit(t, repo, "update-index", tc.flag, "seed.txt")
+			writeSnapshotFile(t, repo, "seed.txt", "hidden mutation\n")
+
+			_, err := CaptureCleanSnapshot(repo, "refs/heads/main")
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("hidden tracked mutation error = %v, want %s refusal", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestCaptureCleanSnapshotRejectsDirtySubmoduleDespiteIgnoreConfig(t *testing.T) {
+	submodule := t.TempDir()
+	snapshotRunGit(t, submodule, "init", "-b", "main")
+	snapshotRunGit(t, submodule, "config", "user.email", "test@example.invalid")
+	snapshotRunGit(t, submodule, "config", "user.name", "Compound Test")
+	writeSnapshotFile(t, submodule, "tracked.txt", "committed\n")
+	snapshotRunGit(t, submodule, "add", "tracked.txt")
+	snapshotRunGit(t, submodule, "commit", "-m", "submodule seed")
+
+	repo := initSnapshotRepo(t)
+	snapshotRunGit(
+		t,
+		repo,
+		"-c",
+		"protocol.file.allow=always",
+		"submodule",
+		"add",
+		submodule,
+		"modules/child",
+	)
+	snapshotRunGit(t, repo, "commit", "-am", "add submodule")
+	snapshotRunGit(t, repo, "config", "submodule.modules/child.ignore", "all")
+	writeSnapshotFile(t, filepath.Join(repo, "modules/child"), "tracked.txt", "dirty\n")
+
+	_, err := CaptureCleanSnapshot(repo, "refs/heads/main")
+	if err == nil || !strings.Contains(err.Error(), "submodule") {
+		t.Fatalf("ignored dirty submodule error = %v, want explicit submodule refusal", err)
+	}
+}
+
 func TestRevalidateSnapshotRejectsHeadTreeAndDirtyMutation(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

@@ -2,6 +2,7 @@ package work
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/landlease"
+	"compound/internal/runattempt"
 )
 
 func TestReserveProofResourceRejectsWorkRepositoryFingerprintMismatchBeforeMutation(t *testing.T) {
@@ -195,6 +197,7 @@ func TestCompleteProofResourceStoresSealedSourceSnapshot(t *testing.T) {
 	matching, err := store.LandCheck(item.ID, LandCheckOptions{
 		CandidateTipSHA: source.HeadSHA,
 		Actor:           proofActorAlpha,
+		Record:          true,
 	}, now.Add(6*time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -203,6 +206,13 @@ func TestCompleteProofResourceStoresSealedSourceSnapshot(t *testing.T) {
 		matching.ProofVerificationRef != completed.VerificationRef ||
 		matching.ProofHeadSHA != source.HeadSHA {
 		t.Fatalf("matching proof land-check = %+v", matching)
+	}
+	current, err := store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.recordedLandedProofForClose(current, []string{matching.EvidenceRef}); err != nil {
+		t.Fatalf("committed proof finalizer chain did not satisfy close: %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(repo, "replayed.txt"), []byte("replayed\n"), 0o644); err != nil {
@@ -232,15 +242,256 @@ func TestCompleteProofResourceStoresSealedSourceSnapshot(t *testing.T) {
 	}
 }
 
-func TestRecordedLandCheckBindsCloseToStoredProofTip(t *testing.T) {
+func TestLandCheckRejectsPreparedProofBeforeFinalizerCommit(t *testing.T) {
+	fixture := newSourceBoundProofCompletionFixture(t, time.Date(2026, 7, 28, 5, 20, 0, 0, time.UTC))
+	originalTerminalize := proofResourceTerminalizeRunAttempt
+	proofResourceTerminalizeRunAttempt = func(
+		_ *Store,
+		_, _, _ string,
+		_ time.Time,
+	) (runattempt.RunAttempt, error) {
+		return runattempt.RunAttempt{}, errors.New("synthetic crash before terminal RunAttempt")
+	}
+	t.Cleanup(func() {
+		proofResourceTerminalizeRunAttempt = originalTerminalize
+	})
+
+	_, err := fixture.store.CompleteProofResource(
+		fixture.item.ID,
+		ProofResourceCompleteInput{
+			Actor:             proofActorAlpha,
+			ReservationID:     fixture.reserved.Reservation.ID,
+			ReportArtifactRef: fixture.reportRef,
+			ProducerExitKnown: true,
+			ProducerExitCode:  0,
+		},
+		fixture.now.Add(4*time.Second),
+	)
+	if err == nil || !strings.Contains(err.Error(), "synthetic crash") {
+		t.Fatalf("prepared completion err = %v, want crash before finalizer commitment", err)
+	}
+	pending, present, _, err := fixture.store.readProofResourceCompletionPending(fixture.reserved.Reservation.ID)
+	if err != nil || !present {
+		t.Fatalf("prepared completion journal: present=%t err=%v", present, err)
+	}
+	var preparedResult ProofResourceResult
+	if err := fixture.store.readEventJSON(pending.Result.ID, &preparedResult); err != nil {
+		t.Fatalf("prepared result not persisted: %v", err)
+	}
+	attempt, err := fixture.store.runAttempts().Get(pending.Result.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status == runattempt.StatusSucceeded {
+		t.Fatalf("crash-window RunAttempt unexpectedly succeeded: %+v", attempt)
+	}
+
+	current, err := fixture.store.Get(fixture.item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err = fixture.store.Advance(fixture.item.ID, AdvanceInput{
+		To:             current.State,
+		Actor:          proofActorAlpha,
+		ArtifactID:     "commit:" + fixture.source.HeadSHA,
+		VerificationID: pending.VerificationRef,
+	}, fixture.now.Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("attach prepared proof ref: %v", err)
+	}
+	if !oneOf(pending.VerificationRef, current.VerificationIDs) {
+		t.Fatal("prepared proof ref was not attached for crash-window falsifier")
+	}
+
+	_, err = fixture.store.LandCheck(fixture.item.ID, LandCheckOptions{
+		CandidateTipSHA: fixture.source.HeadSHA,
+		Actor:           proofActorAlpha,
+	}, fixture.now.Add(6*time.Second))
+	if err == nil || !strings.Contains(err.Error(), "proof finalizer chain") {
+		t.Fatalf("land-check accepted prepared-only proof: %v", err)
+	}
+}
+
+func TestLandCheckAcceptsFinalizerCommittedRetryChain(t *testing.T) {
+	fixture := newSourceBoundProofCompletionFixture(t, time.Date(2026, 7, 28, 5, 40, 0, 0, time.UTC))
+	originalTerminalize := proofResourceTerminalizeRunAttempt
+	proofResourceTerminalizeRunAttempt = func(
+		_ *Store,
+		_, _, _ string,
+		_ time.Time,
+	) (runattempt.RunAttempt, error) {
+		return runattempt.RunAttempt{}, errors.New("synthetic first-attempt finalizer fault")
+	}
+	t.Cleanup(func() {
+		proofResourceTerminalizeRunAttempt = originalTerminalize
+	})
+	input := ProofResourceCompleteInput{
+		Actor:             proofActorAlpha,
+		ReservationID:     fixture.reserved.Reservation.ID,
+		ReportArtifactRef: fixture.reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}
+	if _, err := fixture.store.CompleteProofResource(
+		fixture.item.ID,
+		input,
+		fixture.now.Add(4*time.Second),
+	); err == nil || !strings.Contains(err.Error(), "synthetic first-attempt") {
+		t.Fatalf("first completion err = %v, want injected finalizer fault", err)
+	}
+	proofResourceTerminalizeRunAttempt = originalTerminalize
+
+	completed, err := fixture.store.CompleteProofResource(
+		fixture.item.ID,
+		input,
+		fixture.now.Add(5*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("retry completion: %v", err)
+	}
+	if completed.Result.RunAttemptID == fixture.reserved.Reservation.RunAttemptID {
+		t.Fatalf("completion did not mint retry RunAttempt: %+v", completed.Result)
+	}
+	if !completed.ResourceReleased || completed.VerificationRef == "" {
+		t.Fatalf("retry completion did not commit and release: %+v", completed)
+	}
+	current, err := fixture.store.Get(fixture.item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.Advance(fixture.item.ID, AdvanceInput{
+		To:         current.State,
+		Actor:      proofActorAlpha,
+		ArtifactID: "commit:" + fixture.source.HeadSHA,
+	}, fixture.now.Add(5*time.Second+time.Millisecond)); err != nil {
+		t.Fatalf("attach retry candidate tip: %v", err)
+	}
+
+	checked, err := fixture.store.LandCheck(fixture.item.ID, LandCheckOptions{
+		CandidateTipSHA: fixture.source.HeadSHA,
+		Actor:           proofActorAlpha,
+	}, fixture.now.Add(6*time.Second))
+	if err != nil {
+		t.Fatalf("finalizer-committed retry proof rejected: %v", err)
+	}
+	if checked.ProofVerificationRef != completed.VerificationRef ||
+		checked.ProofHeadSHA != fixture.source.HeadSHA {
+		t.Fatalf("land-check retry chain = %+v, want verification=%s head=%s", checked, completed.VerificationRef, fixture.source.HeadSHA)
+	}
+}
+
+type sourceBoundProofCompletionFixture struct {
+	store     *Store
+	item      envelope.WorkEnvelope
+	repo      string
+	source    gitrepository.Snapshot
+	reserved  ProofResourceReserveResult
+	reportRef string
+	now       time.Time
+}
+
+func newSourceBoundProofCompletionFixture(t *testing.T, now time.Time) sourceBoundProofCompletionFixture {
+	t.Helper()
+	store := newStore(t)
+	repo := initProofSourceRepo(t, "https://example.invalid/compound/repo-finalizer.git")
+	source, err := gitrepository.CaptureCleanSnapshot(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create(CreateInput{
+		Owner:            "proof-finalizer-test",
+		Actor:            proofActorAlpha,
+		SuccessPredicate: "only finalizer-committed proof may land",
+		GitDelivery: &envelope.GitDeliveryContract{
+			TargetWorktreeRoot:    repo,
+			RepositoryFingerprint: source.RepositoryFingerprint,
+			TargetLocalRef:        "refs/heads/main",
+			ExpectedBaseSHA:       source.BaseSHA,
+			PublicationMode:       "local_only",
+		},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err = store.Claim(item.ID, proofActorAlpha, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := NewProofResourceProfileWithSource(
+		ProofResourceProfileCanonicalFull,
+		repo,
+		source,
+		[]ProofResourceGateProfile{{
+			Name:     "synthetic-gate",
+			Command:  []string{"go", "test", "./internal/synthetic"},
+			ProofRef: "synthetic-proof",
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := store.ReserveProofResource(item.ID, ProofResourceReserveInput{
+		Actor:     proofActorAlpha,
+		TTL:       time.Minute,
+		Workspace: repo,
+		Command:   "compound proof-check --base refs/heads/main --out /synthetic/finalizer.json",
+		Profile:   profile,
+	}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reserved.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reportBody, err := json.Marshal(map[string]any{
+		"schema_version":  "compound.proof_check_report.v0.3",
+		"profile_kind":    ProofResourceProfileCanonicalFull,
+		"status":          "ok",
+		"generated_at":    now.Add(3 * time.Second).Format(time.RFC3339),
+		"repo":            repo,
+		"base_ref":        source.BaseSHA,
+		"source_snapshot": source,
+		"dry_run":         false,
+		"proof_refs":      []string{"synthetic-proof"},
+		"steps": []map[string]any{{
+			"name":      "synthetic-gate",
+			"command":   []string{"go", "test", "./internal/synthetic"},
+			"proof_ref": "synthetic-proof",
+			"status":    "ok",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := home.NewArtifactStore(store.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(reportBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sourceBoundProofCompletionFixture{
+		store:     store,
+		item:      item,
+		repo:      repo,
+		source:    source,
+		reserved:  reserved,
+		reportRef: reportRef,
+		now:       now,
+	}
+}
+
+func TestRecordedLandCheckRejectsCallerShapedProofResult(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		proofHead     func(f landingProofFixture) string
 		wantCloseFail bool
 	}{
 		{
-			name:      "matching",
-			proofHead: func(f landingProofFixture) string { return f.candidate },
+			name:          "matching",
+			proofHead:     func(f landingProofFixture) string { return f.candidate },
+			wantCloseFail: true,
 		},
 		{
 			name: "mismatch",
@@ -339,8 +590,8 @@ func TestRecordedLandCheckBindsCloseToStoredProofTip(t *testing.T) {
 			}
 			_, err = fixture.store.recordedLandedProofForClose(item, []string{proof.EvidenceRef})
 			if tc.wantCloseFail {
-				if err == nil || !strings.Contains(err.Error(), "proof tip") {
-					t.Fatalf("mismatched stored proof close error = %v", err)
+				if err == nil || !strings.Contains(err.Error(), "proof finalizer chain") {
+					t.Fatalf("caller-shaped stored proof close error = %v", err)
 				}
 				return
 			}

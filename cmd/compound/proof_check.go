@@ -76,7 +76,13 @@ func cmdProofCheck(args []string) {
 		fmt.Println("  --steal --reason TEXT     exceptional audited transfer of a live proof/land resource")
 		fmt.Println("  --terminated-run RATT_ID --termination-evidence ARTIFACT_REF")
 		fmt.Println("                governed proof that the oldest stopped predecessor was terminated and waited")
+		fmt.Println("  --recover-legacy-retained release exact pre-v0.3 journal without verification;")
+		fmt.Println("                never runs gates and exits 2 because fresh source-bound v0.3 battery is required")
 		return
+	}
+	if err := proofCheckLegacyRecoveryModeError(args); err != nil {
+		fmt.Fprintln(os.Stderr, "proof-check:", err)
+		os.Exit(2)
 	}
 	if hasFlag(args, "--timings") {
 		cmdProofCheckTimings(args)
@@ -90,6 +96,7 @@ func cmdProofCheck(args []string) {
 	dryRun := hasFlag(args, "--dry-run")
 	ciOnly := hasFlag(args, "--ci")
 	ciConsole := hasFlag(args, "--ci-console")
+	recoverLegacy := hasFlag(args, "--recover-legacy-retained")
 	if ciOnly && ciConsole {
 		fmt.Fprintln(os.Stderr, "proof-check: --ci and --ci-console are mutually exclusive")
 		os.Exit(2)
@@ -104,7 +111,7 @@ func cmdProofCheck(args []string) {
 	terminatedRunAttemptID := strings.TrimSpace(flagValue(args, "--terminated-run"))
 	terminationEvidenceRef := strings.TrimSpace(flagValue(args, "--termination-evidence"))
 	governedFullProof := proofCheckNeedsAdmission(dryRun, ciOnly, ciConsole)
-	if governedFullProof && strings.TrimSpace(baseRef) == "" {
+	if governedFullProof && !recoverLegacy && strings.TrimSpace(baseRef) == "" {
 		fmt.Fprintln(os.Stderr, "proof-check: certifying proof-check requires explicit --base")
 		os.Exit(2)
 	}
@@ -117,10 +124,68 @@ func cmdProofCheck(args []string) {
 		}
 		// Fail-closed BEFORE the battery runs, without truncating an existing report: a
 		// conflicting request must not damage the active holder's --out bytes before admission.
-		if err := proofCheckValidateOutPath(outPath); err != nil {
-			fmt.Fprintln(os.Stderr, "proof-check: --out path not writable:", err)
+		if !recoverLegacy {
+			if err := proofCheckValidateOutPath(outPath); err != nil {
+				fmt.Fprintln(os.Stderr, "proof-check: --out path not writable:", err)
+				os.Exit(2)
+			}
+		}
+	}
+	if recoverLegacy {
+		if !governedFullProof {
+			fmt.Fprintln(os.Stderr, "proof-check: --recover-legacy-retained is only valid for the full local proof lane")
 			os.Exit(2)
 		}
+		if workID == "" || actor == "" {
+			fmt.Fprintln(os.Stderr, "proof-check: legacy retained recovery requires --work ID and --actor ACTOR")
+			os.Exit(2)
+		}
+		resolvedRepo, err := resolveProofCheckRepo(repoPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		commandIdentity, err := proofCheckInvocationIdentity(
+			proofCheckArgsWithResolvedOut(
+				proofCheckArgsWithoutLegacyRecovery(args),
+				outPath,
+			),
+		)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check:", err)
+			os.Exit(2)
+		}
+		recovered, found, err := proofCheckLegacyRecoverer(
+			homePath,
+			workID,
+			work.ProofResourceLegacyRecoveryInput{
+				Actor:     actor,
+				Workspace: resolvedRepo,
+				Command:   commandIdentity,
+			},
+			time.Now(),
+		)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "proof-check: legacy retained recovery:", err)
+			os.Exit(2)
+		}
+		if !found {
+			fmt.Fprintln(os.Stderr, "proof-check: no exact retained legacy proof completion found")
+			os.Exit(2)
+		}
+		if !recovered.ResourceReleased ||
+			!recovered.FreshBatteryRequired ||
+			recovered.VerificationRef != "" {
+			fmt.Fprintln(os.Stderr, "proof-check: legacy retained recovery returned an invalid release-only result")
+			os.Exit(2)
+		}
+		fmt.Println("battery: FAILED recovery-only release complete; fresh source-bound v0.3 battery required")
+		os.Exit(2)
 	}
 	started := time.Now()
 
@@ -270,6 +335,20 @@ func cmdProofCheck(args []string) {
 //
 // Kept as a pure predicate so the rule can be falsified by a table test in microseconds instead of
 // by running a multi-minute battery — the decision is separable from the write it authorizes.
+func proofCheckLegacyRecoveryModeError(args []string) error {
+	if !hasFlag(args, "--recover-legacy-retained") {
+		return nil
+	}
+	if hasFlag(args, "--timings") ||
+		proofCheckDevelopmentRequested(args) ||
+		hasFlag(args, "--dry-run") ||
+		hasFlag(args, "--ci") ||
+		hasFlag(args, "--ci-console") {
+		return fmt.Errorf("--recover-legacy-retained cannot be combined with any proof runner mode")
+	}
+	return nil
+}
+
 func proofCheckShouldRecordArtifact(dryRun bool, status string, ciOnly, ciConsole bool) bool {
 	return !dryRun && status == "ok" && !ciOnly && !ciConsole
 }
@@ -299,6 +378,17 @@ func proofCheckInvocationIdentity(args []string) (string, error) {
 		return "", err
 	}
 	return "argv-json:" + string(body), nil
+}
+
+func proofCheckArgsWithoutLegacyRecovery(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--recover-legacy-retained" {
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 func proofCheckArgsWithResolvedOut(args []string, resolvedOut string) []string {

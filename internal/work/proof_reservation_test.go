@@ -1,11 +1,13 @@
 package work
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -3179,6 +3181,172 @@ func TestProofResourceCompletionLegacyGovernanceMutationRejectedByteIdentical(t 
 			}
 			if string(after) != string(before) {
 				t.Fatal("governance rejection mutated pending journal")
+			}
+		})
+	}
+}
+
+func TestRecoverLegacyProofResourceCompletionReleasesWithoutVerification(t *testing.T) {
+	s, w, acquired, _, _, _ := proofCompletionPendingFixture(
+		t,
+		"legacy recovery-only release",
+	)
+	beforeVerification := append([]string(nil), w.VerificationIDs...)
+	recovered, found, err := s.RecoverLegacyProofResourceCompletion(
+		w.ID,
+		ProofResourceLegacyRecoveryInput{
+			Actor:     proofActorAlpha,
+			Workspace: acquired.Reservation.Workspace,
+			Command:   acquired.Reservation.Command,
+		},
+		fixedNow.Add(4*time.Second),
+	)
+	if err != nil || !found {
+		t.Fatalf("legacy recovery: found=%t result=%+v err=%v", found, recovered, err)
+	}
+	if !recovered.ResourceReleased ||
+		!recovered.FreshBatteryRequired ||
+		recovered.VerificationRef != "" {
+		t.Fatalf("legacy recovery promoted old proof: %+v", recovered)
+	}
+	status, err := landlease.Status(s.home, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Held || status.Holder != "" {
+		t.Fatalf("legacy recovery retained shared proof holder: %+v", status)
+	}
+	current, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(current.VerificationIDs, beforeVerification) {
+		t.Fatalf("legacy recovery emitted verification: before=%v after=%v", beforeVerification, current.VerificationIDs)
+	}
+	_, present, _, err := s.readProofResourceCompletionPending(acquired.Reservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if present {
+		t.Fatal("legacy recovery retained completion journal after release")
+	}
+	attempt, err := s.runAttempts().Get(acquired.Reservation.RunAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runattempt.IsTerminal(attempt.Status) {
+		t.Fatalf("legacy recovery left RunAttempt active: %+v", attempt)
+	}
+}
+
+func TestRecoverLegacyProofResourceCompletionRefusesForeignOrCorruptIdentityByteIdentical(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(
+			t *testing.T,
+			s *Store,
+			acquired ProofResourceReserveResult,
+			pending proofResourceCompletionPending,
+			path string,
+			in *ProofResourceLegacyRecoveryInput,
+		)
+	}{
+		{
+			name: "wrong actor",
+			mutate: func(
+				_ *testing.T,
+				_ *Store,
+				_ ProofResourceReserveResult,
+				_ proofResourceCompletionPending,
+				_ string,
+				in *ProofResourceLegacyRecoveryInput,
+			) {
+				in.Actor = proofActorBeta
+			},
+		},
+		{
+			name: "wrong command",
+			mutate: func(
+				_ *testing.T,
+				_ *Store,
+				_ ProofResourceReserveResult,
+				_ proofResourceCompletionPending,
+				_ string,
+				in *ProofResourceLegacyRecoveryInput,
+			) {
+				in.Command += " --changed"
+			},
+		},
+		{
+			name: "wrong report",
+			mutate: func(
+				t *testing.T,
+				s *Store,
+				_ ProofResourceReserveResult,
+				pending proofResourceCompletionPending,
+				path string,
+				_ *ProofResourceLegacyRecoveryInput,
+			) {
+				artifacts, err := home.NewArtifactStore(s.home)
+				if err != nil {
+					t.Fatal(err)
+				}
+				otherRef, err := artifacts.Put(validOwnedProofReportJSON("failed"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				pending.Result.ReportArtifactRef = otherRef
+				if err := s.writeProofResourceCompletionPending(path, pending); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, w, acquired, _, pending, path := proofCompletionPendingFixture(
+				t,
+				"legacy recovery refusal "+tc.name,
+			)
+			in := ProofResourceLegacyRecoveryInput{
+				Actor:     proofActorAlpha,
+				Workspace: acquired.Reservation.Workspace,
+				Command:   acquired.Reservation.Command,
+			}
+			tc.mutate(t, s, acquired, pending, path, &in)
+			beforeJournal, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeWork, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, found, err := s.RecoverLegacyProofResourceCompletion(
+				w.ID,
+				in,
+				fixedNow.Add(4*time.Second),
+			)
+			if err == nil || !found {
+				t.Fatalf("foreign/corrupt recovery: found=%t err=%v", found, err)
+			}
+			afterJournal, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterWork, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(beforeJournal, afterJournal) || !bytes.Equal(beforeWork, afterWork) {
+				t.Fatal("foreign/corrupt legacy recovery mutated journal or work")
+			}
+			status, err := landlease.Status(s.home, fixedNow.Add(4*time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !status.Held || status.Holder != acquired.Reservation.Holder {
+				t.Fatalf("foreign/corrupt legacy recovery released holder: %+v", status)
 			}
 		})
 	}

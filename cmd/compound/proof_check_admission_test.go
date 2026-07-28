@@ -34,6 +34,8 @@ const proofCheckBarrierChildSubEnv = "COMPOUND_PROOF_BARRIER_CHILD_SUB"
 const proofCheckArtifactPublishFailureSubEnv = "COMPOUND_PROOF_ARTIFACT_PUBLISH_FAILURE_SUB"
 const proofCheckSignalForwardSubEnv = "COMPOUND_PROOF_SIGNAL_FORWARD_SUB"
 const proofCheckMissingBaseSubEnv = "COMPOUND_PROOF_MISSING_BASE_SUB"
+const proofCheckLegacyRecoverySubEnv = "COMPOUND_PROOF_LEGACY_RECOVERY_SUB"
+const proofCheckLegacyRecoveryRealSubEnv = "COMPOUND_PROOF_LEGACY_RECOVERY_REAL_SUB"
 
 func TestProofCheckCommandMissingBaseFailsBeforeReportOrRunner(t *testing.T) {
 	if os.Getenv(proofCheckMissingBaseSubEnv) == "1" {
@@ -91,6 +93,304 @@ func TestProofCheckCommandMissingBaseFailsBeforeReportOrRunner(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing-base command started runner: %v", err)
+	}
+}
+
+func TestProofCheckCommandLegacyRecoveryBypassesBaseWithoutRunningBattery(t *testing.T) {
+	if os.Getenv(proofCheckLegacyRecoverySubEnv) == "1" {
+		proofCheckLegacyRecoverer = func(
+			_ string,
+			_ string,
+			in work.ProofResourceLegacyRecoveryInput,
+			_ time.Time,
+		) (work.ProofResourceLegacyRecoveryResult, bool, error) {
+			body, err := json.Marshal(in)
+			if err != nil {
+				return work.ProofResourceLegacyRecoveryResult{}, true, err
+			}
+			if err := os.WriteFile(os.Getenv("COMPOUND_PROOF_LEGACY_RECOVERY_MARKER"), body, 0o644); err != nil {
+				return work.ProofResourceLegacyRecoveryResult{}, true, err
+			}
+			return work.ProofResourceLegacyRecoveryResult{
+				SchemaVersion:        work.ProofResourceLegacyRecoverySchemaVersion,
+				ResourceReleased:     true,
+				FreshBatteryRequired: true,
+			}, true, nil
+		}
+		proofCheckCanonicalRunner = func(
+			context.Context,
+			string,
+			bool,
+			gitrepository.Snapshot,
+			bool,
+			bool,
+			time.Time,
+		) (proofCheckReport, error) {
+			_ = os.WriteFile(os.Getenv("COMPOUND_PROOF_LEGACY_RUNNER_MARKER"), []byte("runner-started"), 0o644)
+			return proofCheckReport{}, errors.New("legacy recovery must not run battery")
+		}
+		cmdProofCheck([]string{
+			"--recover-legacy-retained",
+			"--repo", os.Getenv("COMPOUND_PROOF_LEGACY_REPO"),
+			"--work", "work_legacy_recovery",
+			"--actor", "codex:legacy-recovery",
+			"--out", os.Getenv("COMPOUND_PROOF_LEGACY_OUT"),
+		})
+		os.Exit(0)
+	}
+
+	repoPath := initCompoundCommandGitRepo(t)
+	outPath := filepath.Join(t.TempDir(), "legacy-proof.json")
+	const prior = "legacy report remains untouched\n"
+	if err := os.WriteFile(outPath, []byte(prior), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recoveryMarker := filepath.Join(t.TempDir(), "recovery.json")
+	runnerMarker := filepath.Join(t.TempDir(), "runner-started")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProofCheckCommandLegacyRecoveryBypassesBaseWithoutRunningBattery$")
+	cmd.Env = append(
+		os.Environ(),
+		proofCheckLegacyRecoverySubEnv+"=1",
+		"COMPOUND_HOME="+t.TempDir(),
+		"COMPOUND_PROOF_LEGACY_REPO="+repoPath,
+		"COMPOUND_PROOF_LEGACY_OUT="+outPath,
+		"COMPOUND_PROOF_LEGACY_RECOVERY_MARKER="+recoveryMarker,
+		"COMPOUND_PROOF_LEGACY_RUNNER_MARKER="+runnerMarker,
+	)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+		t.Fatalf("legacy recovery exit = %v, want 2; output=%s", err, out)
+	}
+	if !strings.Contains(string(out), "fresh source-bound v0.3 battery required") {
+		t.Fatalf("legacy recovery output = %q", out)
+	}
+	if _, err := os.Stat(runnerMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy recovery started battery runner: %v", err)
+	}
+	body, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != prior {
+		t.Fatalf("legacy recovery rewrote retained report: %q", body)
+	}
+	markerBody, err := os.ReadFile(recoveryMarker)
+	if err != nil {
+		t.Fatalf("legacy recovery was not called: %v; output=%s", err, out)
+	}
+	var got work.ProofResourceLegacyRecoveryInput
+	if err := json.Unmarshal(markerBody, &got); err != nil {
+		t.Fatal(err)
+	}
+	resolvedRepo, err := filepath.Abs(repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedOut, err := filepath.Abs(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCommand, err := proofCheckInvocationIdentity([]string{
+		"--repo", repoPath,
+		"--work", "work_legacy_recovery",
+		"--actor", "codex:legacy-recovery",
+		"--out", resolvedOut,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Actor != "codex:legacy-recovery" ||
+		got.Workspace != resolvedRepo ||
+		got.Command != wantCommand {
+		t.Fatalf("legacy recovery identity = %+v, want workspace=%q command=%q", got, resolvedRepo, wantCommand)
+	}
+}
+
+func TestProofCheckLegacyRecoveryRejectsAllRunnerModes(t *testing.T) {
+	for _, flag := range []string{"--dev", "--timings", "--dry-run", "--ci", "--ci-console"} {
+		t.Run(flag, func(t *testing.T) {
+			err := proofCheckLegacyRecoveryModeError([]string{
+				"--recover-legacy-retained",
+				flag,
+			})
+			if err == nil {
+				t.Fatalf("legacy recovery accepted runner mode %s", flag)
+			}
+		})
+	}
+	if err := proofCheckLegacyRecoveryModeError([]string{"--recover-legacy-retained"}); err != nil {
+		t.Fatalf("legacy recovery-only mode rejected: %v", err)
+	}
+}
+
+func TestProofCheckCommandLegacyRecoveryReleasesRealRetainedHolderWithoutVerification(t *testing.T) {
+	if os.Getenv(proofCheckLegacyRecoveryRealSubEnv) == "1" {
+		proofCheckCanonicalRunner = func(
+			context.Context,
+			string,
+			bool,
+			gitrepository.Snapshot,
+			bool,
+			bool,
+			time.Time,
+		) (proofCheckReport, error) {
+			_ = os.WriteFile(os.Getenv("COMPOUND_PROOF_LEGACY_REAL_RUNNER"), []byte("runner-started"), 0o644)
+			return proofCheckReport{}, errors.New("legacy recovery must not run battery")
+		}
+		cmdProofCheck([]string{
+			"--recover-legacy-retained",
+			"--repo", os.Getenv("COMPOUND_PROOF_LEGACY_REAL_REPO"),
+			"--work", os.Getenv("COMPOUND_PROOF_LEGACY_REAL_WORK"),
+			"--actor", "codex:legacy-real",
+			"--out", os.Getenv("COMPOUND_PROOF_LEGACY_REAL_OUT"),
+		})
+		os.Exit(0)
+	}
+
+	homePath := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := home.Init(homePath, "proof-legacy-recovery-real-test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const actor = "codex:legacy-real"
+	w := createClaimedProofWork(t, store, "real legacy recovery-only release", actor, now)
+	repoPath := initCompoundCommandGitRepo(t)
+	outPath := filepath.Join(t.TempDir(), "legacy-real.json")
+	const prior = "retained legacy report bytes\n"
+	if err := os.WriteFile(outPath, []byte(prior), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolvedOut, err := filepath.Abs(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandIdentity, err := proofCheckInvocationIdentity([]string{
+		"--repo", repoPath,
+		"--work", w.ID,
+		"--actor", actor,
+		"--out", resolvedOut,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := store.ReserveProofResource(w.ID, work.ProofResourceReserveInput{
+		Actor:     actor,
+		TTL:       10 * time.Minute,
+		Workspace: repoPath,
+		Command:   commandIdentity,
+		Profile:   syntheticAdmissionProfile(t, repoPath),
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserved.ExecutionBarrier == nil {
+		t.Fatal("legacy setup did not return execution barrier")
+	}
+	if err := reserved.ExecutionBarrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+	report := successfulProofCheckReport()
+	report.SchemaVersion = "compound.proof_check_report.v0.2"
+	report.GeneratedAt = now.Add(2 * time.Second).Format(time.RFC3339)
+	report.Repo = repoPath
+	report.SourceSnapshot = nil
+	body, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = append(body, '\n')
+	artifacts, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportRef, err := artifacts.Put(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(homePath, "state")
+	if err := os.Chmod(stateDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	_, completionErr := store.CompleteProofResource(w.ID, work.ProofResourceCompleteInput{
+		Actor:             actor,
+		ReservationID:     reserved.Reservation.ID,
+		ReportArtifactRef: reportRef,
+		ProducerExitKnown: true,
+		ProducerExitCode:  0,
+	}, now.Add(3*time.Second))
+	if err := os.Chmod(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if completionErr == nil {
+		t.Fatal("legacy setup did not retain completion journal")
+	}
+	// The recovery target is the pre-v0.3 crash window: the journal and holder
+	// survived, but no verification was promoted to the work envelope.
+	legacyWork, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyWork.VerificationIDs = nil
+	legacyWorkBody, err := json.MarshalIndent(legacyWork, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyWorkBody = append(legacyWorkBody, '\n')
+	if err := os.WriteFile(
+		filepath.Join(homePath, "work", "work", w.ID+".json"),
+		legacyWorkBody,
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	runnerMarker := filepath.Join(t.TempDir(), "runner-started")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProofCheckCommandLegacyRecoveryReleasesRealRetainedHolderWithoutVerification$")
+	cmd.Env = append(
+		os.Environ(),
+		proofCheckLegacyRecoveryRealSubEnv+"=1",
+		"COMPOUND_HOME="+homePath,
+		"COMPOUND_PROOF_LEGACY_REAL_REPO="+repoPath,
+		"COMPOUND_PROOF_LEGACY_REAL_WORK="+w.ID,
+		"COMPOUND_PROOF_LEGACY_REAL_OUT="+outPath,
+		"COMPOUND_PROOF_LEGACY_REAL_RUNNER="+runnerMarker,
+	)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+		t.Fatalf("real legacy recovery exit = %v, want 2; output=%s", err, out)
+	}
+	if !strings.Contains(string(out), "fresh source-bound v0.3 battery required") {
+		t.Fatalf("real legacy recovery output = %q", out)
+	}
+	if _, err := os.Stat(runnerMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("real legacy recovery started battery runner: %v", err)
+	}
+	status, err := landlease.Status(homePath, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Held || status.Holder != "" {
+		t.Fatalf("real legacy recovery retained holder: %+v", status)
+	}
+	current, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.VerificationIDs) != 0 {
+		t.Fatalf("real legacy recovery emitted verification: %v", current.VerificationIDs)
+	}
+	afterOut, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterOut) != prior {
+		t.Fatalf("real legacy recovery rewrote report bytes: %q", afterOut)
 	}
 }
 

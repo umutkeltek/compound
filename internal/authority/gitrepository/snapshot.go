@@ -95,7 +95,18 @@ func readSnapshot(repo, baseRef string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read repository identity: %w", err)
 	}
-	status, err := gitOutput(ctx, repo, "status", "--porcelain=v1", "-z", "--untracked-files=normal")
+	if err := verifyTrackedSourceClean(ctx, repo); err != nil {
+		return Snapshot{}, err
+	}
+	status, err := gitOutput(
+		ctx,
+		repo,
+		"status",
+		"--porcelain=v1",
+		"-z",
+		"--untracked-files=normal",
+		"--ignore-submodules=none",
+	)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("inspect Git worktree status: %w", err)
 	}
@@ -110,6 +121,51 @@ func readSnapshot(repo, baseRef string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+// verifyTrackedSourceClean refuses index flags and submodule configuration that
+// can hide tracked bytes from ordinary status output.
+func verifyTrackedSourceClean(ctx context.Context, repo string) error {
+	tagged, err := gitOutput(ctx, repo, "ls-files", "-v", "-z")
+	if err != nil {
+		return fmt.Errorf("inspect tracked Git index flags: %w", err)
+	}
+	for _, entry := range strings.Split(tagged, "\x00") {
+		if len(entry) < 3 || entry[1] != ' ' {
+			continue
+		}
+		tag := entry[0]
+		path := entry[2:]
+		switch {
+		case tag == 'S':
+			return fmt.Errorf("certifying proof rejects skip-worktree tracked path %q", path)
+		case tag >= 'a' && tag <= 'z':
+			return fmt.Errorf("certifying proof rejects assume-unchanged tracked path %q", path)
+		}
+	}
+	if _, err := gitOutput(
+		ctx,
+		repo,
+		"diff-index",
+		"--quiet",
+		"--cached",
+		"--ignore-submodules=none",
+		"HEAD",
+		"--",
+	); err != nil {
+		return fmt.Errorf("tracked Git index differs from HEAD: %w", err)
+	}
+	if _, err := gitOutput(
+		ctx,
+		repo,
+		"diff-files",
+		"--quiet",
+		"--ignore-submodules=none",
+		"--",
+	); err != nil {
+		return fmt.Errorf("tracked Git worktree or submodule differs from index: %w", err)
+	}
+	return nil
 }
 
 // ValidateSnapshotShape validates the sealed identity without reading a

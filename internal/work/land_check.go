@@ -512,6 +512,9 @@ func (s *Store) latestSourceBoundProofResult(w envelope.WorkEnvelope) (ProofReso
 		if err != nil {
 			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s report: %w", ref, err)
 		}
+		if err := s.validateCommittedProofResourceChain(w, result, report); err != nil {
+			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s proof finalizer chain: %w", ref, err)
+		}
 		if result.SourceSnapshot == nil {
 			return ProofResourceResult{}, true, fmt.Errorf("proof verification %s predates sealed source identity; run a new battery", ref)
 		}

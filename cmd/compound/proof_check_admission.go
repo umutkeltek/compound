@@ -45,6 +45,19 @@ type proofCheckAdmissionInput struct {
 type proofCheckRunner func() (proofCheckReport, error)
 type proofCheckContextRunner func(context.Context) (proofCheckReport, error)
 
+var proofCheckLegacyRecoverer = func(
+	homePath string,
+	workID string,
+	in work.ProofResourceLegacyRecoveryInput,
+	now time.Time,
+) (work.ProofResourceLegacyRecoveryResult, bool, error) {
+	store, err := work.Open(homePath)
+	if err != nil {
+		return work.ProofResourceLegacyRecoveryResult{}, false, err
+	}
+	return store.RecoverLegacyProofResourceCompletion(workID, in, now)
+}
+
 // proofCheckAfterRunnerContextCancel is a deterministic test boundary before barrier release.
 var proofCheckAfterRunnerContextCancel = func() {}
 
