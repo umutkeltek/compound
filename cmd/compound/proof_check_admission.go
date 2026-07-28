@@ -46,6 +46,10 @@ type proofCheckAdmissionInput struct {
 type proofCheckRunner func() (proofCheckReport, error)
 type proofCheckContextRunner func(context.Context) (proofCheckReport, error)
 
+// proofCheckBeforeRetainedOutMatch is a deterministic race-test boundary after
+// initial custody validation and before the no-write recovery shortcut.
+var proofCheckBeforeRetainedOutMatch = func(string) {}
+
 var proofCheckLegacyRecoverer = func(
 	homePath string,
 	workID string,
@@ -363,13 +367,24 @@ func restoreOwnedProofCheckReport(
 	if err := custody.revalidate(reportPath); err != nil {
 		return proofCheckReport{}, err
 	}
-	if custody.existed && bytes.Equal(custody.targetData, body) {
-		return report, nil
+	proofCheckBeforeRetainedOutMatch(reportPath)
+	restoreCustody := *custody
+	if custody.existed {
+		currentCustody, err := custody.snapshotCurrentTarget(reportPath)
+		if err != nil {
+			return report, fmt.Errorf("verify retained --out before recovery: %w", err)
+		}
+		if bytes.Equal(currentCustody.targetData, body) {
+			return report, nil
+		}
+		// The exact-match shortcut compared the fresh bytes before this snapshot
+		// becomes the expected CAS preimage for a safe restoration.
+		restoreCustody = currentCustody
 	}
-	if err := custody.probeWriteCapability(); err != nil {
+	if err := restoreCustody.probeWriteCapability(); err != nil {
 		return report, fmt.Errorf("restore retained --out preflight: %w", err)
 	}
-	if err := proofCheckWriteReportBytesWithCustody(reportPath, body, *custody); err != nil {
+	if err := proofCheckWriteReportBytesWithCustody(reportPath, body, restoreCustody); err != nil {
 		return report, fmt.Errorf("restore retained --out: %w", err)
 	}
 	published, err := proofCheckReadPublishedReport(reportPath)

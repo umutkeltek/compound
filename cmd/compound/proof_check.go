@@ -594,14 +594,24 @@ func proofCheckReadRootPreimage(
 	if err != nil {
 		return nil, nil, err
 	}
-	if !after.Mode().IsRegular() ||
-		!os.SameFile(before, opened) ||
-		!os.SameFile(opened, openedAfter) ||
-		!os.SameFile(openedAfter, after) ||
+	if !proofCheckSameStableFileState(before, opened) ||
+		!proofCheckSameStableFileState(opened, openedAfter) ||
+		!proofCheckSameStableFileState(openedAfter, after) ||
 		int64(len(data)) != openedAfter.Size() {
 		return nil, nil, fmt.Errorf("--out target changed while capturing custody: %s", displayPath)
 	}
 	return data, openedAfter, nil
+}
+
+func proofCheckSameStableFileState(left, right os.FileInfo) bool {
+	return left != nil &&
+		right != nil &&
+		left.Mode().IsRegular() &&
+		right.Mode().IsRegular() &&
+		os.SameFile(left, right) &&
+		left.Mode() == right.Mode() &&
+		left.Size() == right.Size() &&
+		left.ModTime().Equal(right.ModTime())
 }
 
 func proofCheckReadPublishedReport(path string) ([]byte, error) {
@@ -657,19 +667,63 @@ func (custody proofCheckOutCustody) revalidate(path string) error {
 		}
 		return err
 	}
-	if special := targetInfo.Mode() & (os.ModeSetuid | os.ModeSetgid | os.ModeSticky); special != 0 {
+	return custody.validateExistingTargetInfo(targetInfo, path)
+}
+
+func (custody proofCheckOutCustody) validateExistingTargetInfo(info os.FileInfo, path string) error {
+	if info == nil {
+		return fmt.Errorf("--out target identity unavailable before publication: %s", path)
+	}
+	if special := info.Mode() & (os.ModeSetuid | os.ModeSetgid | os.ModeSticky); special != 0 {
 		return fmt.Errorf(
 			"--out target has unsupported special permission bits %s: %s",
 			special,
 			path,
 		)
 	}
-	if !targetInfo.Mode().IsRegular() ||
-		!os.SameFile(custody.targetInfo, targetInfo) ||
-		targetInfo.Mode().Perm() != custody.targetMode {
+	if !info.Mode().IsRegular() ||
+		custody.targetInfo == nil ||
+		!os.SameFile(custody.targetInfo, info) ||
+		info.Mode().Perm() != custody.targetMode {
 		return fmt.Errorf("--out target identity changed before publication: %s", path)
 	}
 	return nil
+}
+
+func (custody proofCheckOutCustody) snapshotCurrentTarget(path string) (proofCheckOutCustody, error) {
+	if !custody.existed {
+		return proofCheckOutCustody{}, fmt.Errorf("--out target was absent when custody was captured: %s", path)
+	}
+	if err := custody.revalidate(path); err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	before, err := custody.root.Lstat(custody.leaf)
+	if err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	if err := custody.validateExistingTargetInfo(before, path); err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	data, stableInfo, err := proofCheckReadRootPreimage(
+		custody.root,
+		custody.leaf,
+		path,
+		before,
+	)
+	if err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	if err := custody.validateExistingTargetInfo(stableInfo, path); err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	if err := custody.revalidate(path); err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	current := custody
+	current.targetInfo = stableInfo
+	current.targetData = append([]byte(nil), data...)
+	current.targetMode = stableInfo.Mode().Perm()
+	return current, nil
 }
 
 func (custody proofCheckOutCustody) revalidateVisibleParent() error {

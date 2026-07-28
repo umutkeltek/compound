@@ -26,6 +26,8 @@ import (
 
 const proofCheckTransportCLISubEnv = "COMPOUND_PROOF_TRANSPORT_CLI_SUB"
 const proofCheckReleasePendingCLISubEnv = "COMPOUND_PROOF_RELEASE_PENDING_CLI_SUB"
+const proofCheckReleasePendingTamperEnv = "COMPOUND_PROOF_RELEASE_PENDING_TAMPER_AFTER_CAPTURE"
+const proofCheckReleasePendingTamperBody = "tampered after capture\n"
 const proofCheckFailedCanonicalCLISubEnv = "COMPOUND_PROOF_FAILED_CANONICAL_CLI_SUB"
 const proofCheckFailedReleaseCLISubEnv = "COMPOUND_PROOF_FAILED_RELEASE_CLI_SUB"
 const proofCheckPostReportErrorCLISubEnv = "COMPOUND_PROOF_POST_REPORT_ERROR_CLI_SUB"
@@ -1457,6 +1459,13 @@ func TestProofCheckAdmissionSurfacesCommittedButRetainedLease(t *testing.T) {
 
 func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 	if os.Getenv(proofCheckReleasePendingCLISubEnv) == "1" {
+		if os.Getenv(proofCheckReleasePendingTamperEnv) == "1" {
+			proofCheckBeforeRetainedOutMatch = func(path string) {
+				if err := os.WriteFile(path, []byte(proofCheckReleasePendingTamperBody), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
 		realTimingRecorder := proofCheckTimingHistoryRecorder
 		proofCheckTimingHistoryRecorder = func(
 			homePath string,
@@ -1710,9 +1719,10 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 
 func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		mutate   func(t *testing.T, path string)
-		readOnly bool
+		name               string
+		mutate             func(t *testing.T, path string)
+		readOnly           bool
+		tamperAfterCapture bool
 	}{
 		{
 			name: "missing",
@@ -1752,6 +1762,17 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:               "same-inode tamper after capture",
+			tamperAfterCapture: true,
+			mutate:             func(*testing.T, string) {},
+		},
+		{
+			name:               "same-inode tamper after capture read-only parent",
+			readOnly:           true,
+			tamperAfterCapture: true,
+			mutate:             func(*testing.T, string) {},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			homePath := t.TempDir()
@@ -1771,6 +1792,10 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 			t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
 
 			runCommand := func() (stdout, stderr string, err error) {
+				tamperAfterCapture := "0"
+				if tc.tamperAfterCapture {
+					tamperAfterCapture = "1"
+				}
 				command := exec.Command(os.Args[0], "-test.run=^TestProofCheckCommandReleasePendingVerdictAndExactRecovery$")
 				command.Env = append(
 					os.Environ(),
@@ -1781,6 +1806,7 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 					"COMPOUND_PROOF_RELEASE_PENDING_WORK="+w.ID,
 					"COMPOUND_PROOF_RELEASE_PENDING_OUT="+outPath,
 					"COMPOUND_PROOF_RELEASE_PENDING_RUNS="+runnerMarker,
+					proofCheckReleasePendingTamperEnv+"="+tamperAfterCapture,
 				)
 				var stdoutBuf bytes.Buffer
 				var stderrBuf bytes.Buffer
@@ -1853,8 +1879,12 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 					if afterRetryErr != nil {
 						t.Fatal(afterRetryErr)
 					}
-					if !bytes.Equal(afterRetryOut, beforeRetryOut) {
-						t.Fatalf("read-only restore recovery rewrote tampered output: got=%q want=%q", afterRetryOut, beforeRetryOut)
+					wantAfterRetry := beforeRetryOut
+					if tc.tamperAfterCapture {
+						wantAfterRetry = []byte(proofCheckReleasePendingTamperBody)
+					}
+					if !bytes.Equal(afterRetryOut, wantAfterRetry) {
+						t.Fatalf("read-only restore recovery rewrote tampered output: got=%q want=%q", afterRetryOut, wantAfterRetry)
 					}
 				}
 				return
