@@ -121,7 +121,7 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   and clean state. Diff-check and redact both inspect the committed `base...HEAD`. A
   rebase, replay, or new HEAD invalidates the proof and requires a fresh battery.
 - Canonical gates execute in a detached temporary checkout of the sealed HEAD,
-  with only the four ceremony-owned ignored inputs copied as snapshots. The
+  with only the five ceremony-owned ignored inputs copied as snapshots. The
   caller worktree is revalidated but is never the gate execution surface.
 - Never "fix" a red gate by weakening
   the gate, deleting the test, or raising a budget — that is the one unforgivable move here.
@@ -160,13 +160,17 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   usual offender: a realistic-looking fixture is exactly where a real private product name gets
   typed. Use synthetic names in fixtures always.
 - **Worktree caveat (real failure):** fresh worktrees do not contain the gitignored
-  `docs_private/leak-tokens.txt`. The doctor's leak gate **fails closed** under `--strict` when
-  the token list is missing. Copy the file into the worktree before running the battery there.
-- **Fresh-worktree battery needs FOUR gitignored inputs, and never via symlink** (observed
-  2026-07-07, ESM land; fourth found 2026-07-09, home-backup land): `docs_private/plan/` (arch
-  doctor's adaptation-steering test red without it), `console/node_modules` (console gates),
-  `docs_private/profiles/` (the `profiles-check` gate compares generated agents against the
-  operator overlay — red with an empty detail string without it), plus the leak tokens above.
+  `docs_private/leak-tokens.txt` or `docs_private/source-leak-tokens.txt` overlays. The embedded
+  baseline keeps the generic leak gate armed without them, but omitting either operator overlay
+  silently removes its product/tool-specific scan. Copy both files into the worktree before
+  running the battery there.
+- **Fresh-worktree battery needs FIVE gitignored inputs, and never via symlink** (observed
+  2026-07-07, ESM land; fourth found 2026-07-09, home-backup land; fifth found 2026-07-28,
+  sealed source-token proof): `docs_private/plan/` (arch doctor's adaptation-steering test reds
+  without it), `console/node_modules` (console gates), `docs_private/profiles/` (the
+  `profiles-check` gate compares generated agents against the operator overlay — it reds with an
+  empty detail string without it), `docs_private/leak-tokens.txt`, and
+  `docs_private/source-leak-tokens.txt`.
   Copy with APFS clones (`cp -Rc`), NOT `ln -s` — a `node_modules/` ignore pattern matches
   directories only, so a symlink shows up as an untracked file and the redact gate EISDIRs
   trying to read it.
