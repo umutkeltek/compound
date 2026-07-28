@@ -23,7 +23,31 @@ const (
 	SourceControlReviewSchemaVersion       = "compound.source_control_review.v0.1"
 	SourceControlReviewReportSchemaVersion = "compound.source_control_review_report.v0.1"
 	SourceControlCleanupReviewArea         = "source-control-cleanup"
+
+	// SourceControlReviewSupersessionSchemaVersion names the system-written
+	// disposition that retires an older open dirty-plan for a repo path once a
+	// newer snapshot of that same path replaces it.
+	SourceControlReviewSupersessionSchemaVersion = "compound.source_control_review_supersession.v0.1"
 )
+
+// SourceControlReviewSupersession retires an older open dirty-plan when a newer
+// snapshot of the same repo path replaces it. It is written by the producer, not
+// by an operator: it carries no decision, no reviewer, and no authorization, so
+// it can never satisfy the mutation-authorization path — that still requires a
+// sealed `.reviewed.json` report. It exists so one repo path keeps exactly one
+// open review item instead of one per snapshot.
+type SourceControlReviewSupersession struct {
+	SchemaVersion string   `json:"schema_version"`
+	ID            string   `json:"id"`
+	CreatedAt     string   `json:"created_at"`
+	Status        string   `json:"status"`
+	PlanID        string   `json:"plan_id"`
+	RepoID        string   `json:"repo_id"`
+	GitRoot       string   `json:"git_root"`
+	SupersededBy  string   `json:"superseded_by"`
+	Reason        string   `json:"reason"`
+	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
+}
 
 // SourceControlReviewPlan turns a dirty source-control snapshot into an
 // owner-review artifact. It never stages, cleans, commits, resets, pushes, or
@@ -422,7 +446,115 @@ func RecordSourceControlReviewPlan(homePath string, plan SourceControlReviewPlan
 	if err != nil {
 		return SourceControlReviewPlanPaths{}, err
 	}
+	if err := supersedeStaleSourceControlReviewPlans(homePath, plan); err != nil {
+		return SourceControlReviewPlanPaths{}, err
+	}
 	return SourceControlReviewPlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath, ReviewYAMLPath: reviewYAMLPath}, nil
+}
+
+// supersedeStaleSourceControlReviewPlans keeps one open review item per repo
+// path. Plan identity digests the snapshot, so every changed HEAD or dirty-state
+// fingerprint minted a brand-new item for the same root and the same question;
+// the area grew monotonically and its counts stopped meaning anything.
+//
+// Retiring is narrow on purpose. It only touches an older plan that is still
+// open, describes the SAME repo path, and describes a DIFFERENT snapshot than
+// the plan replacing it:
+//   - a plan with a recorded disposition is immutable operator evidence (a
+//     sealed mutation authorization lives there) and is never rewritten;
+//   - a plan describing the same snapshot is a live sibling, not a stale one —
+//     a count-only plan and a mutation-bound plan share one snapshot under
+//     different ids, and retiring the live one would drop an authorization the
+//     operator still owes.
+func supersedeStaleSourceControlReviewPlans(homePath string, plan SourceControlReviewPlan) error {
+	dir := filepath.Join(homePath, "reviews", SourceControlCleanupReviewArea)
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(plan.CreatedAt))
+	if err != nil {
+		return nil
+	}
+	gitRoot := filepath.Clean(plan.GitRoot)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "scr_") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		stem := strings.TrimSuffix(name, ".json")
+		if stem == plan.ID || strings.Contains(stem, ".") {
+			continue
+		}
+		stale, err := loadSourceControlPlanFile(filepath.Join(dir, name))
+		if err != nil {
+			// Not a currently valid dirty-plan: foreign or legacy evidence the
+			// producer does not own. Leave it exactly as it is.
+			continue
+		}
+		if filepath.Clean(stale.GitRoot) != gitRoot {
+			continue
+		}
+		if stale.Head == plan.Head && stale.ChangedStateFingerprint == plan.ChangedStateFingerprint {
+			continue
+		}
+		staleAt, err := time.Parse(time.RFC3339, strings.TrimSpace(stale.CreatedAt))
+		if err != nil || staleAt.After(createdAt) {
+			continue
+		}
+		if sourceControlReviewPlanDisposed(dir, stale) {
+			continue
+		}
+		if err := writeSourceControlReviewSupersession(homePath, stale, plan); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sourceControlReviewPlanDisposed reports whether a plan already carries a
+// terminal disposition: an operator-recorded review on either the sidecar stem
+// or the pre-de-dupe doubled stem, or an earlier supersession.
+func sourceControlReviewPlanDisposed(dir string, plan SourceControlReviewPlan) bool {
+	names := []string{
+		sourceControlReviewReportName(plan.ID, plan.ReviewDraft.ReviewID),
+		sourceControlLegacyReviewReportName(plan.ID, plan.ReviewDraft.ReviewID),
+		sourceControlReviewSupersessionName(plan.ID),
+	}
+	for _, name := range names {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// sourceControlReviewSupersessionName owns the supersession file name. The
+// `<stem>.decision.json` suffix is the one internal/home already selects as a
+// terminal review sidecar, so a superseded plan drains with its own core item
+// and never becomes a second core item of its own.
+func sourceControlReviewSupersessionName(planID string) string {
+	return planID + ".decision.json"
+}
+
+func writeSourceControlReviewSupersession(homePath string, stale, successor SourceControlReviewPlan) error {
+	supersession := SourceControlReviewSupersession{
+		SchemaVersion: SourceControlReviewSupersessionSchemaVersion,
+		ID:            "scrs_" + reviewartifact.Digest12(stale.ID+"\x00"+successor.ID),
+		CreatedAt:     successor.CreatedAt,
+		Status:        "superseded",
+		PlanID:        stale.ID,
+		RepoID:        stale.RepoID,
+		GitRoot:       stale.GitRoot,
+		SupersededBy:  successor.ID,
+		Reason:        "a newer read-only snapshot of the same repo path replaced this dirty-plan before it was reviewed",
+		EvidenceRefs:  reviewartifact.Unique(append(append([]string{}, stale.EvidenceRefs...), successor.EvidenceRefs...)),
+	}
+	_, err := reviewartifact.WriteJSON(homePath, SourceControlCleanupReviewArea, sourceControlReviewSupersessionName(stale.ID), supersession, "  ")
+	return err
 }
 
 func RenderSourceControlReviewPlan(plan SourceControlReviewPlan) string {
@@ -1155,6 +1287,10 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 		}
 		return
 	}
+	if supersession, ok := sourceControlSupersession(*item); ok {
+		fileSupersededSourceControlPlan(item, plan, supersession)
+		return
+	}
 	currentSnapshot, snapshotErr := ReadGitSnapshot(plan.GitRoot)
 	if snapshotErr != nil {
 		blockSourceControlPlanCurrentState(
@@ -1251,6 +1387,46 @@ func fileHistoricalSourceControlPlan(item *reviewartifact.QueueItem, plan Source
 	annotateSourceControlOperatorCard(item, plan, reviewartifact.BandFiled)
 	item.OperatorSummary = "The repository is clean; this dirty source-control review is historical evidence."
 	item.OperatorUnlock = ""
+}
+
+// fileSupersededSourceControlPlan files a plan the producer retired because a
+// newer snapshot of the same repo path replaced it. Without this the retired
+// item keeps asking the operator to review a question its successor already
+// carries, which is exactly the pile the supersession exists to end.
+func fileSupersededSourceControlPlan(item *reviewartifact.QueueItem, plan SourceControlReviewPlan, supersession SourceControlReviewSupersession) {
+	item.Status = "resolved"
+	item.Readiness = "no_action"
+	item.BlockedReason = ""
+	item.NextAction = "superseded by a newer snapshot of the same repo path: " + supersession.SupersededBy
+	item.Actions = nil
+	annotateSourceControlOperatorCard(item, plan, reviewartifact.BandFiled)
+	item.OperatorSummary = "A newer dirty source-control review for this repository replaced this one; review " + supersession.SupersededBy + " instead."
+	item.OperatorUnlock = ""
+}
+
+func sourceControlSupersession(item reviewartifact.QueueItem) (SourceControlReviewSupersession, bool) {
+	want := sourceControlReviewSupersessionName(item.ID)
+	for _, path := range item.ExtraPaths {
+		if filepath.Base(path) != want {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return SourceControlReviewSupersession{}, false
+		}
+		var supersession SourceControlReviewSupersession
+		if err := json.Unmarshal(data, &supersession); err != nil {
+			return SourceControlReviewSupersession{}, false
+		}
+		if supersession.SchemaVersion != SourceControlReviewSupersessionSchemaVersion ||
+			supersession.Status != "superseded" ||
+			supersession.PlanID != item.ID ||
+			strings.TrimSpace(supersession.SupersededBy) == "" {
+			return SourceControlReviewSupersession{}, false
+		}
+		return supersession, true
+	}
+	return SourceControlReviewSupersession{}, false
 }
 
 func blockSourceControlPlanCurrentState(item *reviewartifact.QueueItem, plan SourceControlReviewPlan, reason, nextAction, summary string) {

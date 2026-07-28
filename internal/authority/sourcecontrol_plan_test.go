@@ -178,6 +178,150 @@ func TestRecordSourceControlReviewWritesSidecarStemDisposition(t *testing.T) {
 	}
 }
 
+// The producer minted a fresh scr_ item for every new snapshot of the same repo
+// path and never retired the previous one, so a single root accumulated hundreds
+// of open reviews that all describe the same question. A newer snapshot must
+// supersede the older open item for that path instead of stacking a second one,
+// and the superseded item must leave the operator queue.
+func TestRecordSourceControlReviewPlanSupersedesStaleOpenPlanForSameRepoPath(t *testing.T) {
+	repo := initGitRepo(t)
+	home := t.TempDir()
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	first, firstPaths := recordSourceControlPlanForRepo(t, home, repo, "work_supersede_same_path", fixedSourceControlReviewTime)
+
+	writeFile(t, filepath.Join(repo, "NOTES.md"), "a newer snapshot of the same repo path\n")
+	second, _ := recordSourceControlPlanForRepo(t, home, repo, "work_supersede_same_path", fixedSourceControlReviewTime.Add(time.Minute))
+	if second.ID == first.ID {
+		t.Fatalf("newer snapshot must mint a distinct plan id, got %q twice", first.ID)
+	}
+
+	dir := filepath.Dir(firstPaths.PlanPath)
+	// `<stem>.decision.json` is the sidecar suffix internal/home selects as a
+	// terminal review disposition, so the superseded group drains with its core.
+	supersessionPath := filepath.Join(dir, first.ID+".decision.json")
+	data, err := os.ReadFile(supersessionPath)
+	if err != nil {
+		t.Fatalf("older open plan was not superseded by the newer snapshot: %v", err)
+	}
+	var supersession SourceControlReviewSupersession
+	if err := json.Unmarshal(data, &supersession); err != nil {
+		t.Fatal(err)
+	}
+	if supersession.SchemaVersion != SourceControlReviewSupersessionSchemaVersion ||
+		supersession.Status != "superseded" ||
+		supersession.PlanID != first.ID ||
+		supersession.SupersededBy != second.ID ||
+		filepath.Clean(supersession.GitRoot) != filepath.Clean(first.GitRoot) {
+		t.Fatalf("supersession does not name its plan and successor: %+v", supersession)
+	}
+	if _, err := os.Stat(filepath.Join(dir, second.ID+".decision.json")); err == nil {
+		t.Fatalf("the newest plan must stay open, not supersede itself")
+	}
+	if _, err := os.Stat(firstPaths.PlanPath); err != nil {
+		t.Fatalf("superseding must keep the older plan as evidence: %v", err)
+	}
+
+	queue := sourceControlCleanupQueueItems(t, home, 2)
+	items := map[string]reviewartifact.QueueItem{}
+	for _, item := range queue.Items {
+		items[item.ID] = item
+	}
+	superseded := items[first.ID]
+	if superseded.Status != "resolved" || superseded.Readiness != "no_action" || len(superseded.Actions) != 0 {
+		t.Fatalf("superseded item still asks the operator: %+v", superseded)
+	}
+	if !strings.Contains(superseded.NextAction, second.ID) {
+		t.Fatalf("superseded item does not name its successor: %q", superseded.NextAction)
+	}
+	if current := items[second.ID]; current.Status != "review_required" {
+		t.Fatalf("newest item must stay open for review: %+v", current)
+	}
+	if queue.Counts.ReviewRequired != 1 || queue.Counts.OK != 1 {
+		t.Fatalf("one repo path must leave exactly one open item, counts = %+v", queue.Counts)
+	}
+}
+
+// Supersession must never overwrite a recorded disposition (immutable operator
+// evidence, including a sealed mutation authorization), and must never retire a
+// sibling describing the SAME snapshot — a count-only plan and a mutation-bound
+// plan share one snapshot under different ids, so retiring the live one would
+// silently drop an authorization the operator still owes.
+func TestRecordSourceControlReviewPlanKeepsRecordedAndSameSnapshotPlans(t *testing.T) {
+	repo := initGitRepo(t)
+	home := t.TempDir()
+	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
+	recorded, recordedPaths := recordSourceControlPlanForRepo(t, home, repo, "work_supersede_guard_recorded", fixedSourceControlReviewTime)
+	review := writeValidSourceControlReview(t, recordedPaths.ReviewYAMLPath, recorded)
+	if _, err := RecordSourceControlReview(home, review, recordedPaths.ReviewYAMLPath, fixedSourceControlReviewTime.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(repo, "NOTES.md"), "a newer snapshot of the same repo path\n")
+	open, openPaths := recordSourceControlPlanForRepo(t, home, repo, "work_supersede_guard_open", fixedSourceControlReviewTime.Add(2*time.Minute))
+	dir := filepath.Dir(openPaths.PlanPath)
+	if _, err := os.Stat(filepath.Join(dir, recorded.ID+".decision.json")); err == nil {
+		t.Fatalf("a recorded disposition must never be superseded by a later snapshot")
+	}
+	if _, err := os.Stat(filepath.Join(dir, recorded.ID+".reviewed.json")); err != nil {
+		t.Fatalf("recorded disposition evidence disappeared: %v", err)
+	}
+
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := SourceControlMutationBinding{
+		ActionWorkID:      "work_supersede_guard_open",
+		MutationInputHash: "mutation-input:sha256:" + strings.Repeat("d", 64),
+		Capability:        "filesystem.write",
+		Action:            "write_file",
+		MutationClass:     "local_reversible",
+		TargetPaths:       []string{"README.md"},
+		ActionIntentIDs:   []string{"act_supersede_guard_open"},
+	}
+	mutation, err := BuildSourceControlMutationReviewPlan(snapshot, binding.ActionWorkID, binding, fixedSourceControlReviewTime.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordSourceControlReviewPlan(home, mutation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, open.ID+".decision.json")); err == nil {
+		t.Fatalf("a sibling describing the same snapshot must stay open, not be superseded")
+	}
+}
+
+func recordSourceControlPlanForRepo(t *testing.T, home, repo, workID string, now time.Time) (SourceControlReviewPlan, SourceControlReviewPlanPaths) {
+	t.Helper()
+	snapshot, err := ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildSourceControlReviewPlan(snapshot, workID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := RecordSourceControlReviewPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan, paths
+}
+
+func sourceControlCleanupQueueItems(t *testing.T, home string, want int) reviewartifact.QueueReport {
+	t.Helper()
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: SourceControlCleanupReviewArea}, fixedSourceControlReviewTime.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateSourceControlCleanupQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if len(queue.Items) != want {
+		t.Fatalf("source-control cleanup queue items = %d, want %d: %+v", len(queue.Items), want, queue)
+	}
+	return queue
+}
+
 func TestSourceControlReviewQueueFilesCleanSupersededPlanWithoutDeletingEvidence(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "README.md"), "changed\n")
