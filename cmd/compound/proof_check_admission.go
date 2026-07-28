@@ -44,6 +44,9 @@ type proofCheckAdmissionInput struct {
 type proofCheckRunner func() (proofCheckReport, error)
 type proofCheckContextRunner func(context.Context) (proofCheckReport, error)
 
+// proofCheckAfterRunnerContextCancel is a deterministic test boundary before barrier release.
+var proofCheckAfterRunnerContextCancel = func() {}
+
 func proofCheckNeedsAdmission(dryRun, ciOnly, ciConsole bool) bool {
 	return !dryRun && !ciOnly && !ciConsole
 }
@@ -214,6 +217,12 @@ func runProofCheckWithAdmissionContext(
 			runErr = errors.Join(runErr, fmt.Errorf("proof resource heartbeat: %w", hbErr))
 		}
 	}
+	// Stop every context-bound gate start before dropping the supervisor's execution-barrier
+	// descriptor. A runner may have returned while one of its goroutines is still queued to spawn;
+	// cancellation makes exec.CommandContext refuse that late start instead of letting it escape
+	// after completion has attested the process tree clear.
+	cancelRunner()
+	proofCheckAfterRunnerContextCancel()
 	// The supervisor's descriptor must close before governed completion starts.
 	// Any background descendant that escaped its gate process still owns an
 	// inherited copy, so the Work finalizer can attest the whole process tree

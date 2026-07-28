@@ -328,6 +328,87 @@ func TestProofCheckGateProcessInheritsExecutionBarrier(t *testing.T) {
 	}
 }
 
+func TestProofCheckAdmissionCancelsLateAsyncCommandBeforeBarrierRelease(t *testing.T) {
+	homePath := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "proof-report.json")
+	markerPath := filepath.Join(t.TempDir(), "late-command-started")
+	now := time.Date(2026, 7, 24, 13, 30, 0, 0, time.UTC)
+	if err := home.Init(homePath, "proof-late-command-test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := createClaimedProofWork(t, store, "cancel late proof command before attestation", "codex:late-command", now)
+	input := proofCheckAdmissionInput{
+		HomePath:   homePath,
+		WorkID:     item.ID,
+		Actor:      "codex:late-command",
+		Workspace:  "/synthetic/repo-alpha",
+		Command:    "compound proof-check --out " + outPath,
+		Profile:    syntheticAdmissionProfile(t, "/synthetic/repo-alpha"),
+		ReportPath: outPath,
+		TTL:        time.Minute,
+		Now:        func() time.Time { return now.Add(time.Second) },
+	}
+
+	lateDone := make(chan error, 1)
+	var hookErr error
+	var heldBeforeBarrierClose bool
+	originalAfterCancel := proofCheckAfterRunnerContextCancel
+	t.Cleanup(func() { proofCheckAfterRunnerContextCancel = originalAfterCancel })
+	proofCheckAfterRunnerContextCancel = func() {
+		lateErr := <-lateDone
+		if !errors.Is(lateErr, context.Canceled) {
+			hookErr = fmt.Errorf("late command error = %v, want context cancellation", lateErr)
+			return
+		}
+		status, err := landlease.Status(homePath, input.Now())
+		if err != nil {
+			hookErr = err
+			return
+		}
+		heldBeforeBarrierClose = status.Held && status.Holder != ""
+	}
+
+	report, completed, err := runProofCheckWithAdmissionContext(input, func(ctx context.Context) (proofCheckReport, error) {
+		go func() {
+			<-ctx.Done()
+			cmd := proofCheckCommandContext(
+				ctx,
+				"sh",
+				"-c",
+				`printf started > "$1"`,
+				"proof-late-command",
+				markerPath,
+			)
+			lateDone <- cmd.Run()
+		}()
+		report := successfulProofCheckReport()
+		report.GeneratedAt = now.Add(2 * time.Second).Format(time.RFC3339)
+		if err := proofCheckWriteReportFile(outPath, report); err != nil {
+			return proofCheckReport{}, err
+		}
+		return report, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+	if !heldBeforeBarrierClose {
+		t.Fatal("completion released or stopped holding before the cancelled async command attempt completed")
+	}
+	if report.Status != "ok" || !completed.ResourceReleased || completed.VerificationRef == "" {
+		t.Fatalf("governed completion = report:%+v result:%+v", report, completed)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("late cancelled command created marker: %v", err)
+	}
+}
+
 func TestProofCheckAdmissionRejectsSecondBeforeRunnerStarts(t *testing.T) {
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
@@ -1942,6 +2023,10 @@ func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *test
 	if firstErr == nil {
 		t.Fatalf("proof completion released while descendant still held the execution barrier: completed=%+v report=%+v", completed, report)
 	}
+	var executionPending *landlease.ExecutionPendingError
+	if !errors.As(firstErr, &executionPending) {
+		t.Fatalf("first completion error = %v, want ExecutionPendingError", firstErr)
+	}
 	t.Logf("first completion retained holder: %v", firstErr)
 	status, err := landlease.Status(homePath, now.Add(2*time.Second))
 	if err != nil {
@@ -1954,7 +2039,20 @@ func TestProofCheckCompletionRetainsHolderUntilBackgroundDescendantExits(t *test
 		t.Fatal("runner did not start the gate process")
 	}
 	t.Cleanup(func() { _ = syscall.Kill(-gate.Process.Pid, syscall.SIGKILL) })
-	time.Sleep(time.Second)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		pending, err := landlease.ExecutionPending(homePath, status.Holder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background descendant did not release execution barrier before deadline")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	resumedReport, resumed, retryErr := runProofCheckWithAdmissionContext(input, func(context.Context) (proofCheckReport, error) {
 		runnerStarts.Add(1)
