@@ -8,6 +8,8 @@ package main
 // docs_private/plan/packets/2026-07-19-proofcheck-out-verdict.md (work_ad791a800a0c).
 
 import (
+	"bytes"
+	"compound/internal/home"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +24,32 @@ import (
 )
 
 const proofCheckOutCLISubEnv = "COMPOUND_PROOFCHECK_OUT_SUB"
+
+type injectedProofCheckCAS struct {
+	delegate  proofCheckRootedCASPublication
+	state     home.RootedFileCASState
+	commitErr error
+}
+
+func (publication *injectedProofCheckCAS) State() home.RootedFileCASState {
+	return publication.state
+}
+
+func (publication *injectedProofCheckCAS) Commit() error {
+	if publication.commitErr != nil {
+		publication.state = home.RootedFileCASAmbiguous
+		return publication.commitErr
+	}
+	err := publication.delegate.Commit()
+	publication.state = publication.delegate.State()
+	return err
+}
+
+func (publication *injectedProofCheckCAS) Rollback() error {
+	err := publication.delegate.Rollback()
+	publication.state = publication.delegate.State()
+	return err
+}
 
 func TestProofCheckGoRunInvocationsUseStableGateIdentity(t *testing.T) {
 	repoPath, err := filepath.Abs("../..")
@@ -187,7 +215,7 @@ func TestProofCheckWriteReportFileRoundTrips(t *testing.T) {
 }
 
 func TestProofCheckWriteReportFilePreservesExistingMode(t *testing.T) {
-	for _, mode := range []os.FileMode{0o600, 0o640, 0o400} {
+	for _, mode := range []os.FileMode{0o600, 0o640, 0o660, 0o400} {
 		t.Run(mode.String(), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "report.json")
 			if err := os.WriteFile(path, []byte("prior evidence\n"), mode); err != nil {
@@ -431,6 +459,261 @@ func TestProofCheckOutRefusesTargetRacesBeforePublish(t *testing.T) {
 	})
 }
 
+func TestProofCheckOutPreservesRecoveryPreimageOnAmbiguousCASFailures(t *testing.T) {
+	report := proofCheckReport{
+		SchemaVersion: proofCheckSchemaVersion,
+		Status:        "ok",
+		GeneratedAt:   cliTestNow.UTC().Format(time.RFC3339),
+		Repo:          "/repo",
+		ProofRefs:     []string{},
+		Steps:         []proofCheckStep{},
+	}
+	originalBegin := proofCheckBeginRootedFileCAS
+	t.Cleanup(func() { proofCheckBeginRootedFileCAS = originalBegin })
+
+	for _, tc := range []struct {
+		name      string
+		wrapBegin func(proofCheckRootedCASPublication) (proofCheckRootedCASPublication, error)
+	}{
+		{
+			name: "begin ambiguous after exchange",
+			wrapBegin: func(publication proofCheckRootedCASPublication) (proofCheckRootedCASPublication, error) {
+				return &injectedProofCheckCAS{
+					delegate: publication,
+					state:    home.RootedFileCASAmbiguous,
+				}, errors.New("injected ambiguous begin failure")
+			},
+		},
+		{
+			name: "commit ambiguous",
+			wrapBegin: func(publication proofCheckRootedCASPublication) (proofCheckRootedCASPublication, error) {
+				return &injectedProofCheckCAS{
+					delegate:  publication,
+					state:     publication.State(),
+					commitErr: errors.New("injected ambiguous commit failure"),
+				}, nil
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "report.json")
+			prior := []byte("prior complete report\n")
+			if err := os.WriteFile(path, prior, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			custody, err := proofCheckPrepareOutPath(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			proofCheckBeginRootedFileCAS = func(
+				root *os.Root,
+				canonicalName,
+				recoveryName string,
+				expectedData []byte,
+				expectedInfo os.FileInfo,
+				replacementData []byte,
+				replacementInfo os.FileInfo,
+			) (proofCheckRootedCASPublication, error) {
+				publication, err := originalBegin(
+					root,
+					canonicalName,
+					recoveryName,
+					expectedData,
+					expectedInfo,
+					replacementData,
+					replacementInfo,
+				)
+				if err != nil {
+					return publication, err
+				}
+				return tc.wrapBegin(publication)
+			}
+
+			if err := proofCheckWriteReportFileWithCustody(path, report, custody); err == nil {
+				t.Fatal("ambiguous rooted CAS failure returned success")
+			}
+			assertProofCheckRecoveryPreimage(t, dir, filepath.Base(path), prior)
+		})
+	}
+}
+
+func assertProofCheckRecoveryPreimage(t *testing.T, dir, base string, prior []byte) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "."+base+".*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, match := range matches {
+		body, err := os.ReadFile(match)
+		if err == nil && bytes.Equal(body, prior) {
+			return
+		}
+	}
+	t.Fatalf("ambiguous publication destroyed recovery preimage %q; candidates=%v", prior, matches)
+}
+
+func TestProofCheckOutParentSubstitutionCannotRedirectPublication(t *testing.T) {
+	container := t.TempDir()
+	parent := filepath.Join(container, "out")
+	movedParent := filepath.Join(container, "original-out")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "report.json")
+	prior := []byte("original report\n")
+	if err := os.WriteFile(path, prior, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	custody, err := proofCheckPrepareOutPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalHook := proofCheckBeforeOutPublish
+	t.Cleanup(func() { proofCheckBeforeOutPublish = originalHook })
+	raced := []byte("raced parent report\n")
+	proofCheckBeforeOutPublish = func(string) {
+		if err := os.Rename(parent, movedParent); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(parent, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raced, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	report := proofCheckReport{
+		SchemaVersion: proofCheckSchemaVersion,
+		Status:        "ok",
+		GeneratedAt:   cliTestNow.UTC().Format(time.RFC3339),
+		Repo:          "/repo",
+		ProofRefs:     []string{},
+		Steps:         []proofCheckStep{},
+	}
+	if err := proofCheckWriteReportFileWithCustody(path, report, custody); err == nil {
+		t.Fatal("publication followed substituted parent")
+	}
+	originalBody, err := os.ReadFile(filepath.Join(movedParent, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(originalBody, prior) {
+		t.Fatalf("original report changed: got %q want %q", originalBody, prior)
+	}
+	racedBody, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(racedBody, raced) {
+		t.Fatalf("raced report changed: got %q want %q", racedBody, raced)
+	}
+	temps, err := filepath.Glob(filepath.Join(movedParent, ".report.json.*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("parent substitution leaked rooted temp files: %v", temps)
+	}
+}
+
+func TestProofCheckOutRejectsSpecialPermissionBitsWithoutMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	prior := []byte("special-mode report\n")
+	if err := os.WriteFile(path, prior, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o700|os.ModeSetuid); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Mode()&os.ModeSetuid == 0 {
+		t.Skip("filesystem does not preserve setuid on regular files")
+	}
+	if err := proofCheckWriteReportFile(path, proofCheckReport{
+		SchemaVersion: proofCheckSchemaVersion,
+		Status:        "ok",
+		GeneratedAt:   cliTestNow.UTC().Format(time.RFC3339),
+		Repo:          "/repo",
+		ProofRefs:     []string{},
+		Steps:         []proofCheckStep{},
+	}); err == nil {
+		t.Fatal("special permission bits were silently stripped")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, prior) {
+		t.Fatalf("special-mode report bytes changed: got %q want %q", body, prior)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Mode()&os.ModeSetuid == 0 || after.Mode().Perm() != before.Mode().Perm() {
+		t.Fatalf("special-mode report mode changed: before=%s after=%s", before.Mode(), after.Mode())
+	}
+}
+
+func TestProofCheckOutRejectsSpecialPermissionBitsAddedBeforePublishWithoutMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	prior := []byte("ordinary-mode report\n")
+	if err := os.WriteFile(path, prior, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	custody, err := proofCheckPrepareOutPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalBeforePublish := proofCheckBeforeOutPublish
+	t.Cleanup(func() { proofCheckBeforeOutPublish = originalBeforePublish })
+	proofCheckBeforeOutPublish = func(string) {
+		if err := os.Chmod(path, 0o700|os.ModeSetuid); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSetuid == 0 {
+			t.Skip("filesystem does not retain setuid on regular files")
+		}
+	}
+
+	if err := proofCheckWriteReportFileWithCustody(path, proofCheckReport{
+		SchemaVersion: proofCheckSchemaVersion,
+		Status:        "ok",
+		GeneratedAt:   cliTestNow.UTC().Format(time.RFC3339),
+		Repo:          "/repo",
+		ProofRefs:     []string{},
+		Steps:         []proofCheckStep{},
+	}, custody); err == nil {
+		t.Fatal("publication silently stripped special permission bits added after custody capture")
+	}
+	afterBody, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterBody, prior) {
+		t.Fatalf("special-mode race changed report bytes: got=%q want=%q", afterBody, prior)
+	}
+	afterInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterInfo.Mode()&os.ModeSetuid == 0 {
+		t.Fatalf("special-mode race stripped setuid bit: mode=%s", afterInfo.Mode())
+	}
+}
+
 func TestProofCheckWriteReportFilePreservesExistingOnPublicationFailure(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "report.json")
@@ -462,7 +745,7 @@ func TestProofCheckWriteReportFilePreservesExistingOnPublicationFailure(t *testi
 	if !reflect.DeepEqual(got, previous) {
 		t.Fatalf("failed report publication changed prior bytes: got=%q want=%q", got, previous)
 	}
-	matches, globErr := filepath.Glob(filepath.Join(dir, ".report.json.tmp-*"))
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".report.json.*.tmp"))
 	if globErr != nil {
 		t.Fatal(globErr)
 	}

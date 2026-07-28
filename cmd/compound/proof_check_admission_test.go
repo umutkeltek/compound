@@ -1464,20 +1464,22 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 			wall time.Duration,
 			now time.Time,
 		) (string, error) {
-			marker, err := os.OpenFile(
-				os.Getenv("COMPOUND_PROOF_RELEASE_PENDING_TIMINGS"),
-				os.O_CREATE|os.O_APPEND|os.O_WRONLY,
-				0o600,
-			)
-			if err != nil {
-				return "", err
-			}
-			if _, err := marker.WriteString("timing-recorded\n"); err != nil {
-				_ = marker.Close()
-				return "", err
-			}
-			if err := marker.Close(); err != nil {
-				return "", err
+			if markerPath := os.Getenv("COMPOUND_PROOF_RELEASE_PENDING_TIMINGS"); markerPath != "" {
+				marker, err := os.OpenFile(
+					markerPath,
+					os.O_CREATE|os.O_APPEND|os.O_WRONLY,
+					0o600,
+				)
+				if err != nil {
+					return "", err
+				}
+				if _, err := marker.WriteString("timing-recorded\n"); err != nil {
+					_ = marker.Close()
+					return "", err
+				}
+				if err := marker.Close(); err != nil {
+					return "", err
+				}
 			}
 			return realTimingRecorder(homePath, report, wall, now)
 		}
@@ -1621,7 +1623,15 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 		t.Fatal("moved proof base rewrote retained owned report")
 	}
 	runCommandGit(t, repo, "branch", "-f", "proof-base", proofBaseSHA)
+	outParent := filepath.Dir(outPath)
+	if err := os.Chmod(outParent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(outParent, 0o700) })
 	secondStdout, secondStderr, secondErr := runCommand()
+	if err := os.Chmod(outParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if secondErr != nil {
 		t.Fatalf("exact CLI recovery failed: %v; stdout=%q stderr=%q", secondErr, secondStdout, secondStderr)
 	}
@@ -1700,8 +1710,9 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 
 func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		mutate func(t *testing.T, path string)
+		name     string
+		mutate   func(t *testing.T, path string)
+		readOnly bool
 	}{
 		{
 			name: "missing",
@@ -1714,6 +1725,26 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 		},
 		{
 			name: "tampered",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("tampered proof output\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:     "missing read-only parent",
+			readOnly: true,
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:     "tampered read-only parent",
+			readOnly: true,
 			mutate: func(t *testing.T, path string) {
 				t.Helper()
 				if err := os.WriteFile(path, []byte("tampered proof output\n"), 0o644); err != nil {
@@ -1773,7 +1804,61 @@ func TestProofCheckCommandReleasePendingRecoveryRestoresOwnedOut(t *testing.T) {
 			}
 			tc.mutate(t, outPath)
 
+			var beforeRetryOut []byte
+			var beforeRetryErr error
+			outParent := filepath.Dir(outPath)
+			if tc.readOnly {
+				beforeRetryOut, beforeRetryErr = os.ReadFile(outPath)
+				if beforeRetryErr != nil && !errors.Is(beforeRetryErr, os.ErrNotExist) {
+					t.Fatal(beforeRetryErr)
+				}
+				if err := os.Chmod(outParent, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(outParent, 0o700) })
+			}
+
 			secondStdout, secondStderr, secondErr := runCommand()
+			if tc.readOnly {
+				if err := os.Chmod(outParent, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				var secondExit *exec.ExitError
+				if !errors.As(secondErr, &secondExit) || secondExit.ExitCode() != 2 {
+					t.Fatalf("read-only restore recovery exit = %v, want 2; stdout=%q stderr=%q", secondErr, secondStdout, secondStderr)
+				}
+				if strings.Contains(secondStdout, "battery: ok") {
+					t.Fatalf("read-only restore recovery printed a green verdict:\n%s", secondStdout)
+				}
+				runnerRuns, err := os.ReadFile(runnerMarker)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := strings.Count(string(runnerRuns), "runner-started"); got != 1 {
+					t.Fatalf("read-only restore recovery runner starts = %d, want one total", got)
+				}
+				status, err := landlease.Status(homePath, time.Now().UTC())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !status.Held || status.Holder == "" {
+					t.Fatalf("read-only restore recovery released the pending holder: %+v", status)
+				}
+				afterRetryOut, afterRetryErr := os.ReadFile(outPath)
+				if errors.Is(beforeRetryErr, os.ErrNotExist) {
+					if !errors.Is(afterRetryErr, os.ErrNotExist) {
+						t.Fatalf("read-only restore recovery rewrote missing output: err=%v bytes=%q", afterRetryErr, afterRetryOut)
+					}
+				} else {
+					if afterRetryErr != nil {
+						t.Fatal(afterRetryErr)
+					}
+					if !bytes.Equal(afterRetryOut, beforeRetryOut) {
+						t.Fatalf("read-only restore recovery rewrote tampered output: got=%q want=%q", afterRetryOut, beforeRetryOut)
+					}
+				}
+				return
+			}
 			if secondErr != nil {
 				t.Fatalf("exact restore recovery failed: %v; stdout=%q stderr=%q", secondErr, secondStdout, secondStderr)
 			}

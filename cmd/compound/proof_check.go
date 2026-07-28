@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -128,10 +129,17 @@ func cmdProofCheck(args []string) {
 		// Fail-closed BEFORE the battery runs, without truncating an existing report: a
 		// conflicting request must not damage the active holder's --out bytes before admission.
 		if !recoverLegacy {
-			custody, err := proofCheckPrepareOutPath(outPath)
+			custody, err := proofCheckCaptureOutPath(outPath)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "proof-check: --out path not writable:", err)
 				os.Exit(2)
+			}
+			if !governedFullProof {
+				if err := custody.probeWriteCapability(); err != nil {
+					_ = custody.close()
+					fmt.Fprintln(os.Stderr, "proof-check: --out path not writable:", err)
+					os.Exit(2)
+				}
 			}
 			outCustody = &custody
 		}
@@ -418,6 +426,9 @@ func proofCheckArgsWithResolvedOut(args []string, resolvedOut string) []string {
 
 type proofCheckOutCustody struct {
 	path       string
+	dir        string
+	leaf       string
+	root       *os.Root
 	parentInfo os.FileInfo
 	targetInfo os.FileInfo
 	targetData []byte
@@ -425,14 +436,42 @@ type proofCheckOutCustody struct {
 	existed    bool
 }
 
-var proofCheckBeforeOutPublish = func(string) {}
+type proofCheckRootedCASPublication interface {
+	State() home.RootedFileCASState
+	Commit() error
+	Rollback() error
+}
 
-// proofCheckPrepareOutPath captures the regular target (or its absence) without
-// opening it for write or following a leaf symlink, then proves publication can
-// create a sibling. The captured identity is revalidated before atomic publication.
-func proofCheckPrepareOutPath(path string) (proofCheckOutCustody, error) {
+var proofCheckBeginRootedFileCAS = func(
+	root *os.Root,
+	canonicalName,
+	recoveryName string,
+	expectedData []byte,
+	expectedInfo os.FileInfo,
+	replacementData []byte,
+	replacementInfo os.FileInfo,
+) (proofCheckRootedCASPublication, error) {
+	return home.BeginRootedFileCAS(
+		root,
+		canonicalName,
+		recoveryName,
+		expectedData,
+		expectedInfo,
+		replacementData,
+		replacementInfo,
+	)
+}
+
+var proofCheckBeforeOutPublish = func(string) {}
+var proofCheckOutTempCounter atomic.Uint64
+
+// proofCheckCaptureOutPath takes non-mutating custody of the parent directory and
+// regular leaf (or its absence). The retained root descriptor is the only leaf
+// authority used by later probe, publication, and cleanup.
+func proofCheckCaptureOutPath(path string) (proofCheckOutCustody, error) {
 	path = filepath.Clean(path)
 	dir := filepath.Dir(path)
+	leaf := filepath.Base(path)
 	parentInfo, err := os.Stat(dir)
 	if err != nil {
 		return proofCheckOutCustody{}, err
@@ -440,20 +479,46 @@ func proofCheckPrepareOutPath(path string) (proofCheckOutCustody, error) {
 	if !parentInfo.IsDir() {
 		return proofCheckOutCustody{}, fmt.Errorf("--out parent is not a directory: %s", dir)
 	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	openedParent, err := proofCheckRootDirectoryInfo(root)
+	if err != nil {
+		_ = root.Close()
+		return proofCheckOutCustody{}, err
+	}
+	if !os.SameFile(parentInfo, openedParent) {
+		_ = root.Close()
+		return proofCheckOutCustody{}, fmt.Errorf("--out parent changed while taking custody: %s", dir)
+	}
 
 	custody := proofCheckOutCustody{
 		path:       path,
-		parentInfo: parentInfo,
+		dir:        dir,
+		leaf:       leaf,
+		root:       root,
+		parentInfo: openedParent,
 		targetMode: 0o600,
 	}
-	targetInfo, err := os.Lstat(path)
+	targetInfo, err := root.Lstat(leaf)
 	switch {
 	case err == nil:
 		if !targetInfo.Mode().IsRegular() {
+			_ = root.Close()
 			return proofCheckOutCustody{}, fmt.Errorf("--out target is not a regular file: %s", path)
 		}
-		targetData, stableInfo, readErr := proofCheckReadOutPreimage(path, targetInfo)
+		if special := targetInfo.Mode() & (os.ModeSetuid | os.ModeSetgid | os.ModeSticky); special != 0 {
+			_ = root.Close()
+			return proofCheckOutCustody{}, fmt.Errorf(
+				"--out target has unsupported special permission bits %s: %s",
+				special,
+				path,
+			)
+		}
+		targetData, stableInfo, readErr := proofCheckReadRootPreimage(root, leaf, path, targetInfo)
 		if readErr != nil {
+			_ = root.Close()
 			return proofCheckOutCustody{}, readErr
 		}
 		custody.targetInfo = stableInfo
@@ -463,36 +528,53 @@ func proofCheckPrepareOutPath(path string) (proofCheckOutCustody, error) {
 	case errors.Is(err, os.ErrNotExist):
 		// A new evidence file remains private by default.
 	default:
-		return proofCheckOutCustody{}, err
-	}
-
-	probe, err := os.CreateTemp(dir, "."+filepath.Base(path)+".preflight-*")
-	if err != nil {
-		return proofCheckOutCustody{}, err
-	}
-	probePath := probe.Name()
-	if closeErr := probe.Close(); closeErr != nil {
-		_ = os.Remove(probePath)
-		return proofCheckOutCustody{}, closeErr
-	}
-	if err := os.Remove(probePath); err != nil {
-		return proofCheckOutCustody{}, err
-	}
-	if err := proofCheckSyncDirectory(dir); err != nil {
+		_ = root.Close()
 		return proofCheckOutCustody{}, err
 	}
 	return custody, nil
 }
 
-func proofCheckReadOutPreimage(path string, before os.FileInfo) ([]byte, os.FileInfo, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+func proofCheckRootDirectoryInfo(root *os.Root) (os.FileInfo, error) {
+	dir, err := root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	info, err := dir.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("--out rooted parent is not a directory")
+	}
+	return info, nil
+}
+
+func proofCheckPrepareOutPath(path string) (proofCheckOutCustody, error) {
+	custody, err := proofCheckCaptureOutPath(path)
+	if err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	if err := custody.probeWriteCapability(); err != nil {
+		_ = custody.close()
+		return proofCheckOutCustody{}, err
+	}
+	return custody, nil
+}
+
+func proofCheckReadRootPreimage(
+	root *os.Root,
+	leaf,
+	displayPath string,
+	before os.FileInfo,
+) ([]byte, os.FileInfo, error) {
+	file, err := root.OpenFile(
+		leaf,
+		os.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW,
+		0,
+	)
 	if err != nil {
 		return nil, nil, err
-	}
-	file := os.NewFile(uintptr(fd), path)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, nil, fmt.Errorf("open --out preimage: invalid descriptor")
 	}
 	defer file.Close()
 
@@ -508,7 +590,7 @@ func proofCheckReadOutPreimage(path string, before os.FileInfo) ([]byte, os.File
 	if err != nil {
 		return nil, nil, err
 	}
-	after, err := os.Lstat(path)
+	after, err := root.Lstat(leaf)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -517,28 +599,31 @@ func proofCheckReadOutPreimage(path string, before os.FileInfo) ([]byte, os.File
 		!os.SameFile(opened, openedAfter) ||
 		!os.SameFile(openedAfter, after) ||
 		int64(len(data)) != openedAfter.Size() {
-		return nil, nil, fmt.Errorf("--out target changed while capturing custody: %s", path)
+		return nil, nil, fmt.Errorf("--out target changed while capturing custody: %s", displayPath)
 	}
 	return data, openedAfter, nil
 }
 
 func proofCheckReadPublishedReport(path string) ([]byte, error) {
-	info, err := os.Lstat(path)
+	custody, err := proofCheckCaptureOutPath(path)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("--out target is not a regular file: %s", path)
+	defer custody.close()
+	if !custody.existed {
+		return nil, os.ErrNotExist
 	}
-	body, _, err := proofCheckReadOutPreimage(path, info)
-	return body, err
+	return append([]byte(nil), custody.targetData...), nil
 }
 
 // proofCheckValidateOutPath proves --out is a regular file (or absent) and its
 // parent supports atomic sibling publication without touching prior evidence.
 func proofCheckValidateOutPath(path string) error {
-	_, err := proofCheckPrepareOutPath(path)
-	return err
+	custody, err := proofCheckPrepareOutPath(path)
+	if err != nil {
+		return err
+	}
+	return custody.close()
 }
 
 func (custody proofCheckOutCustody) revalidate(path string) error {
@@ -546,14 +631,17 @@ func (custody proofCheckOutCustody) revalidate(path string) error {
 	if path != custody.path {
 		return fmt.Errorf("--out custody path changed from %s to %s", custody.path, path)
 	}
-	parentInfo, err := os.Stat(filepath.Dir(path))
+	if err := custody.revalidateVisibleParent(); err != nil {
+		return err
+	}
+	openedParent, err := proofCheckRootDirectoryInfo(custody.root)
 	if err != nil {
 		return err
 	}
-	if !parentInfo.IsDir() || !os.SameFile(custody.parentInfo, parentInfo) {
-		return fmt.Errorf("--out parent identity changed before publication: %s", filepath.Dir(path))
+	if !os.SameFile(custody.parentInfo, openedParent) {
+		return fmt.Errorf("--out rooted parent identity changed before publication: %s", custody.dir)
 	}
-	targetInfo, err := os.Lstat(path)
+	targetInfo, err := custody.root.Lstat(custody.leaf)
 	if !custody.existed {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -569,12 +657,94 @@ func (custody proofCheckOutCustody) revalidate(path string) error {
 		}
 		return err
 	}
+	if special := targetInfo.Mode() & (os.ModeSetuid | os.ModeSetgid | os.ModeSticky); special != 0 {
+		return fmt.Errorf(
+			"--out target has unsupported special permission bits %s: %s",
+			special,
+			path,
+		)
+	}
 	if !targetInfo.Mode().IsRegular() ||
 		!os.SameFile(custody.targetInfo, targetInfo) ||
 		targetInfo.Mode().Perm() != custody.targetMode {
 		return fmt.Errorf("--out target identity changed before publication: %s", path)
 	}
 	return nil
+}
+
+func (custody proofCheckOutCustody) revalidateVisibleParent() error {
+	parentInfo, err := os.Stat(custody.dir)
+	if err != nil {
+		return err
+	}
+	if !parentInfo.IsDir() || !os.SameFile(custody.parentInfo, parentInfo) {
+		return fmt.Errorf("--out parent identity changed before publication: %s", custody.dir)
+	}
+	return nil
+}
+
+func (custody proofCheckOutCustody) probeWriteCapability() error {
+	if err := custody.revalidate(custody.path); err != nil {
+		return err
+	}
+	probe, probeName, err := custody.createRootedTemp("preflight", 0o600)
+	if err != nil {
+		return err
+	}
+	if err := probe.Close(); err != nil {
+		_ = custody.root.Remove(probeName)
+		return err
+	}
+	if err := custody.root.Remove(probeName); err != nil {
+		return err
+	}
+	return proofCheckSyncRootDirectory(custody.root)
+}
+
+func (custody proofCheckOutCustody) createRootedTemp(
+	purpose string,
+	mode os.FileMode,
+) (*os.File, string, error) {
+	for attempt := 0; attempt < 100; attempt++ {
+		counter := proofCheckOutTempCounter.Add(1)
+		name := fmt.Sprintf(
+			".%s.%d.%d.%s.tmp",
+			custody.leaf,
+			os.Getpid(),
+			counter,
+			purpose,
+		)
+		file, err := custody.root.OpenFile(
+			name,
+			os.O_CREATE|os.O_EXCL|os.O_WRONLY,
+			mode,
+		)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		return file, name, err
+	}
+	return nil, "", fmt.Errorf("--out could not allocate unique rooted sibling")
+}
+
+func (custody proofCheckOutCustody) close() error {
+	if custody.root == nil {
+		return nil
+	}
+	return custody.root.Close()
+}
+
+func proofCheckSyncRootDirectory(root *os.Root) error {
+	dir, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
+		return syncErr
+	}
+	return closeErr
 }
 
 // proofCheckWriteReportFile writes the full report as indented JSON to path — the same
@@ -590,6 +760,7 @@ func proofCheckWriteReportFile(path string, report proofCheckReport) error {
 }
 
 func proofCheckWriteReportFileWithCustody(path string, report proofCheckReport, custody proofCheckOutCustody) error {
+	defer custody.close()
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err
@@ -607,15 +778,20 @@ func proofCheckWriteReportBytes(path string, data []byte) error {
 }
 
 func proofCheckWriteReportBytesWithCustody(path string, data []byte, custody proofCheckOutCustody) error {
-	dir := filepath.Dir(path)
-	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	defer custody.close()
+	if err := custody.revalidate(path); err != nil {
+		return err
+	}
+	temp, tempName, err := custody.createRootedTemp("publish", custody.targetMode)
 	if err != nil {
 		return err
 	}
-	tempPath := temp.Name()
+	var publication proofCheckRootedCASPublication
 	defer func() {
 		_ = temp.Close()
-		_ = os.Remove(tempPath)
+		if publication == nil || publication.State() == home.RootedFileCASNotPublished {
+			_ = custody.root.Remove(tempName)
+		}
 	}()
 	if err := temp.Chmod(custody.targetMode); err != nil {
 		return err
@@ -636,7 +812,7 @@ func proofCheckWriteReportBytesWithCustody(path string, data []byte, custody pro
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	replacementInfo, err := os.Lstat(tempPath)
+	replacementInfo, err := custody.root.Lstat(tempName)
 	if err != nil {
 		return err
 	}
@@ -644,15 +820,10 @@ func proofCheckWriteReportBytesWithCustody(path string, data []byte, custody pro
 	if err := custody.revalidate(path); err != nil {
 		return err
 	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return err
-	}
-	defer root.Close()
-	publication, err := home.BeginRootedFileCAS(
-		root,
-		filepath.Base(path),
-		filepath.Base(tempPath),
+	publication, err = proofCheckBeginRootedFileCAS(
+		custody.root,
+		custody.leaf,
+		tempName,
 		custody.targetData,
 		custody.targetInfo,
 		data,
@@ -662,18 +833,6 @@ func proofCheckWriteReportBytesWithCustody(path string, data []byte, custody pro
 		return err
 	}
 	return publication.Commit()
-}
-
-func proofCheckSyncDirectory(dir string) error {
-	f, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := f.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
-		return err
-	}
-	return nil
 }
 
 // proofCheckVerdictLine renders the single final stdout line printed when --out is

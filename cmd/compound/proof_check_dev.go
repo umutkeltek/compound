@@ -181,8 +181,11 @@ func runDevelopmentProofCheck(repoPath string, dryRun bool, baseRef string, now 
 }
 
 func proofCheckValidateDevelopmentOutPath(path string) error {
-	_, _, err := proofCheckPrepareDevelopmentOutPath(path)
-	return err
+	_, custody, err := proofCheckPrepareDevelopmentOutPath(path)
+	if err != nil {
+		return err
+	}
+	return custody.close()
 }
 
 func proofCheckPrepareDevelopmentOutPath(path string) (string, proofCheckOutCustody, error) {

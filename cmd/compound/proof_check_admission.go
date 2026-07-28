@@ -124,11 +124,14 @@ func runProofCheckWithAdmissionContext(
 	in.Command = strings.TrimSpace(in.Command)
 	in.ReportPath = strings.TrimSpace(in.ReportPath)
 	if in.ReportPath != "" && in.ReportCustody == nil {
-		custody, err := proofCheckPrepareOutPath(in.ReportPath)
+		custody, err := proofCheckCaptureOutPath(in.ReportPath)
 		if err != nil {
 			return proofCheckReport{}, work.ProofResourceCompleteResult{}, err
 		}
 		in.ReportCustody = &custody
+	}
+	if in.ReportCustody != nil {
+		defer in.ReportCustody.close()
 	}
 	if in.Now == nil {
 		in.Now = time.Now
@@ -202,6 +205,11 @@ func runProofCheckWithAdmissionContext(
 	}
 	if resumeErr != nil {
 		return proofCheckReport{}, work.ProofResourceCompleteResult{}, resumeErr
+	}
+	if in.ReportCustody != nil {
+		if err := in.ReportCustody.probeWriteCapability(); err != nil {
+			return proofCheckReport{}, work.ProofResourceCompleteResult{}, err
+		}
 	}
 	reserved, err := store.ReserveProofResource(in.WorkID, work.ProofResourceReserveInput{
 		Actor:                  in.Actor,
@@ -357,6 +365,9 @@ func restoreOwnedProofCheckReport(
 	}
 	if custody.existed && bytes.Equal(custody.targetData, body) {
 		return report, nil
+	}
+	if err := custody.probeWriteCapability(); err != nil {
+		return report, fmt.Errorf("restore retained --out preflight: %w", err)
 	}
 	if err := proofCheckWriteReportBytesWithCustody(reportPath, body, *custody); err != nil {
 		return report, fmt.Errorf("restore retained --out: %w", err)
