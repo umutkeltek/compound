@@ -2,7 +2,6 @@ package main
 
 import (
 	"compound/internal/home"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -96,11 +95,16 @@ func cmdProofCheckDevelopment(args []string) {
 	repoPath := flagValue(args, "--repo")
 	baseRef := flagValue(args, "--base")
 	outPath := strings.TrimSpace(flagValue(args, "--out"))
+	var outTarget string
+	var outCustody *proofCheckOutCustody
 	if outPath != "" {
-		if err := proofCheckValidateDevelopmentOutPath(outPath); err != nil {
+		target, custody, err := proofCheckPrepareDevelopmentOutPath(outPath)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check: --out path not writable:", err)
 			os.Exit(2)
 		}
+		outTarget = target
+		outCustody = &custody
 	}
 
 	started := time.Now()
@@ -113,14 +117,11 @@ func cmdProofCheckDevelopment(args []string) {
 	// the operator gets drift visibility on the fast lane too while its cached `-short` runs stay
 	// structurally unable to contaminate the certifying lane's baseline.
 	if !dryRun {
-		if homePath, homeErr := home.Resolve(""); homeErr == nil {
-			if warning, timingErr := recordProofCheckTimingHistory(homePath, report, time.Since(started), time.Now()); timingErr == nil && warning != "" {
-				report.Warnings = append(report.Warnings, warning)
-			}
-		}
+		homePath, homeErr := home.Resolve("")
+		proofCheckAppendTimingWarnings(&report, homePath, homeErr, time.Since(started), time.Now())
 	}
 	if outPath != "" {
-		if err := proofCheckWriteDevelopmentReportFile(outPath, report); err != nil {
+		if err := proofCheckWriteReportFileWithCustody(outTarget, report, *outCustody); err != nil {
 			fmt.Fprintln(os.Stderr, "proof-check: writing --out file:", err)
 			os.Exit(2)
 		}
@@ -180,20 +181,20 @@ func runDevelopmentProofCheck(repoPath string, dryRun bool, baseRef string, now 
 }
 
 func proofCheckValidateDevelopmentOutPath(path string) error {
+	_, _, err := proofCheckPrepareDevelopmentOutPath(path)
+	return err
+}
+
+func proofCheckPrepareDevelopmentOutPath(path string) (string, proofCheckOutCustody, error) {
 	target, err := proofCheckDevelopmentResolvedOutPath(path)
 	if err != nil {
-		return err
+		return "", proofCheckOutCustody{}, err
 	}
-	probe, err := os.CreateTemp(filepath.Dir(target), ".compound-dev-report-check-*")
+	custody, err := proofCheckPrepareOutPath(target)
 	if err != nil {
-		return err
+		return "", proofCheckOutCustody{}, err
 	}
-	probePath := probe.Name()
-	if err := probe.Close(); err != nil {
-		_ = os.Remove(probePath)
-		return err
-	}
-	return os.Remove(probePath)
+	return target, custody, nil
 }
 
 func proofCheckDevelopmentResolvedOutPath(path string) (string, error) {
@@ -246,42 +247,7 @@ func proofCheckWriteDevelopmentReportFile(path string, report proofCheckReport) 
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	f, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := f.Name()
-	keep := false
-	defer func() {
-		if !keep {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if err := f.Chmod(0o644); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, target); err != nil {
-		return err
-	}
-	keep = true
-	return nil
+	return proofCheckWriteReportFile(target, report)
 }
 
 func proofCheckDevelopmentSteps(repo, baseRef string) ([]proofCheckStep, error) {

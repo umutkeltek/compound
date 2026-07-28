@@ -318,6 +318,49 @@ func TestProofCheckDevelopmentOutAtomicallyReplacesHardlinkWithoutMutatingSource
 	}
 }
 
+func TestProofCheckDevelopmentOutUsesPrivateModeCustody(t *testing.T) {
+	report := proofCheckReport{
+		SchemaVersion: proofCheckDevelopmentSchemaVersion,
+		ProfileKind:   proofCheckProfileDevelopment,
+		Status:        "ok",
+		GeneratedAt:   time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		Repo:          "/tmp/development-repo",
+		ProofRefs:     []string{},
+		Steps:         []proofCheckStep{},
+	}
+	for _, tc := range []struct {
+		name     string
+		existing bool
+		mode     os.FileMode
+	}{
+		{name: "new report", mode: 0o600},
+		{name: "existing private report", existing: true, mode: 0o600},
+		{name: "existing group-readable report", existing: true, mode: 0o640},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "report.json")
+			if tc.existing {
+				if err := os.WriteFile(path, []byte("prior evidence\n"), tc.mode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, tc.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := proofCheckWriteDevelopmentReportFile(path, report); err != nil {
+				t.Fatalf("write development report: %v", err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != tc.mode {
+				t.Fatalf("published mode = %04o, want %04o", got, tc.mode)
+			}
+		})
+	}
+}
+
 func TestProofCheckDevelopmentConsoleTSCRunsWhenFileRenamedOut(t *testing.T) {
 	repo, _ := newProofCheckDevelopmentRepo(t)
 	steps, err := proofCheckDevelopmentSteps(repo, "")

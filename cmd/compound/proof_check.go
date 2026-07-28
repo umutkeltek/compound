@@ -19,6 +19,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const proofCheckSchemaVersion = "compound.proof_check_report.v0.3"
@@ -111,6 +113,7 @@ func cmdProofCheck(args []string) {
 	terminatedRunAttemptID := strings.TrimSpace(flagValue(args, "--terminated-run"))
 	terminationEvidenceRef := strings.TrimSpace(flagValue(args, "--termination-evidence"))
 	governedFullProof := proofCheckNeedsAdmission(dryRun, ciOnly, ciConsole)
+	var outCustody *proofCheckOutCustody
 	if governedFullProof && !recoverLegacy && strings.TrimSpace(baseRef) == "" {
 		fmt.Fprintln(os.Stderr, "proof-check: certifying proof-check requires explicit --base")
 		os.Exit(2)
@@ -125,10 +128,12 @@ func cmdProofCheck(args []string) {
 		// Fail-closed BEFORE the battery runs, without truncating an existing report: a
 		// conflicting request must not damage the active holder's --out bytes before admission.
 		if !recoverLegacy {
-			if err := proofCheckValidateOutPath(outPath); err != nil {
+			custody, err := proofCheckPrepareOutPath(outPath)
+			if err != nil {
 				fmt.Fprintln(os.Stderr, "proof-check: --out path not writable:", err)
 				os.Exit(2)
 			}
+			outCustody = &custody
 		}
 	}
 	if recoverLegacy {
@@ -241,6 +246,7 @@ func cmdProofCheck(args []string) {
 			Command:                commandIdentity,
 			Profile:                profile,
 			ReportPath:             outPath,
+			ReportCustody:          outCustody,
 			TTL:                    ttl,
 			Steal:                  steal,
 			StealReason:            stealReason,
@@ -252,8 +258,15 @@ func cmdProofCheck(args []string) {
 			if runErr != nil {
 				return produced, runErr
 			}
+			proofCheckAppendTimingWarnings(
+				&produced,
+				homePath,
+				nil,
+				time.Since(started),
+				time.Now(),
+			)
 			// The authoritative report file is durable before completion can attach verification.
-			if writeErr := proofCheckWriteReportFile(outPath, produced); writeErr != nil {
+			if writeErr := proofCheckWriteReportFileWithCustody(outPath, produced, *outCustody); writeErr != nil {
 				return produced, fmt.Errorf("writing --out file: %w", writeErr)
 			}
 			return produced, nil
@@ -284,29 +297,26 @@ func cmdProofCheck(args []string) {
 			fmt.Fprintln(os.Stderr, "proof-check:", err)
 			os.Exit(2)
 		}
+		if !dryRun {
+			timingHomePath, timingHomeErr := home.Resolve("")
+			proofCheckAppendTimingWarnings(
+				&report,
+				timingHomePath,
+				timingHomeErr,
+				time.Since(started),
+				time.Now(),
+			)
+		}
 		if outPath != "" {
 			// A battery whose evidence file failed to write is not green, even if every gate
 			// passed: this exit-2 must win over the normal ok/failed (0/1) exit below.
-			if err := proofCheckWriteReportFile(outPath, report); err != nil {
+			if err := proofCheckWriteReportFileWithCustody(outPath, report, *outCustody); err != nil {
 				fmt.Fprintln(os.Stderr, "proof-check: writing --out file:", err)
 				os.Exit(2)
 			}
 		}
 	}
-	if !dryRun {
-		// Recorded for EVERY executed run, red included, on the governed and the ci path
-		// alike. A failing battery's gate durations are as real as a passing one's, and
-		// folding only green runs into the baseline would bias it toward whatever happens to
-		// pass — precisely the blind spot that let the go-test budget drift 10m -> 20m -> 40m
-		// without anyone holding a distribution.
-		if homePath, homeErr := home.Resolve(""); homeErr != nil {
-			report.Warnings = append(report.Warnings, "COMPOUND_HOME unresolved; proof-check timing history not recorded: "+homeErr.Error())
-		} else if warning, timingErr := recordProofCheckTimingHistory(homePath, report, time.Since(started), time.Now()); timingErr != nil {
-			report.Warnings = append(report.Warnings, "proof-check timing history not recorded: "+timingErr.Error())
-		} else if warning != "" {
-			report.Warnings = append(report.Warnings, warning)
-		}
-	}
+	// Timing history was finalized before report custody above.
 	if jsonOut {
 		printJSON(report)
 	} else {
@@ -406,33 +416,165 @@ func proofCheckArgsWithResolvedOut(args []string, resolvedOut string) []string {
 	return out
 }
 
-// proofCheckValidateOutPath proves --out's path is writable without creating or changing
-// the target before admission. A sibling probe validates a nonexistent target's parent.
-func proofCheckValidateOutPath(path string) error {
-	if _, err := os.Lstat(path); err == nil {
-		f, openErr := os.OpenFile(path, os.O_WRONLY, 0)
-		if openErr != nil {
-			return openErr
-		}
-		return f.Close()
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+type proofCheckOutCustody struct {
+	path       string
+	parentInfo os.FileInfo
+	targetInfo os.FileInfo
+	targetData []byte
+	targetMode os.FileMode
+	existed    bool
+}
+
+var proofCheckBeforeOutPublish = func(string) {}
+
+// proofCheckPrepareOutPath captures the regular target (or its absence) without
+// opening it for write or following a leaf symlink, then proves publication can
+// create a sibling. The captured identity is revalidated before atomic publication.
+func proofCheckPrepareOutPath(path string) (proofCheckOutCustody, error) {
+	path = filepath.Clean(path)
+	dir := filepath.Dir(path)
+	parentInfo, err := os.Stat(dir)
+	if err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	if !parentInfo.IsDir() {
+		return proofCheckOutCustody{}, fmt.Errorf("--out parent is not a directory: %s", dir)
 	}
 
-	dir := filepath.Dir(path)
+	custody := proofCheckOutCustody{
+		path:       path,
+		parentInfo: parentInfo,
+		targetMode: 0o600,
+	}
+	targetInfo, err := os.Lstat(path)
+	switch {
+	case err == nil:
+		if !targetInfo.Mode().IsRegular() {
+			return proofCheckOutCustody{}, fmt.Errorf("--out target is not a regular file: %s", path)
+		}
+		targetData, stableInfo, readErr := proofCheckReadOutPreimage(path, targetInfo)
+		if readErr != nil {
+			return proofCheckOutCustody{}, readErr
+		}
+		custody.targetInfo = stableInfo
+		custody.targetData = targetData
+		custody.targetMode = targetInfo.Mode().Perm()
+		custody.existed = true
+	case errors.Is(err, os.ErrNotExist):
+		// A new evidence file remains private by default.
+	default:
+		return proofCheckOutCustody{}, err
+	}
+
 	probe, err := os.CreateTemp(dir, "."+filepath.Base(path)+".preflight-*")
 	if err != nil {
-		return err
+		return proofCheckOutCustody{}, err
 	}
 	probePath := probe.Name()
 	if closeErr := probe.Close(); closeErr != nil {
 		_ = os.Remove(probePath)
-		return closeErr
+		return proofCheckOutCustody{}, closeErr
 	}
 	if err := os.Remove(probePath); err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	if err := proofCheckSyncDirectory(dir); err != nil {
+		return proofCheckOutCustody{}, err
+	}
+	return custody, nil
+}
+
+func proofCheckReadOutPreimage(path string, before os.FileInfo) ([]byte, os.FileInfo, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, nil, fmt.Errorf("open --out preimage: invalid descriptor")
+	}
+	defer file.Close()
+
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	openedAfter, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !after.Mode().IsRegular() ||
+		!os.SameFile(before, opened) ||
+		!os.SameFile(opened, openedAfter) ||
+		!os.SameFile(openedAfter, after) ||
+		int64(len(data)) != openedAfter.Size() {
+		return nil, nil, fmt.Errorf("--out target changed while capturing custody: %s", path)
+	}
+	return data, openedAfter, nil
+}
+
+func proofCheckReadPublishedReport(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("--out target is not a regular file: %s", path)
+	}
+	body, _, err := proofCheckReadOutPreimage(path, info)
+	return body, err
+}
+
+// proofCheckValidateOutPath proves --out is a regular file (or absent) and its
+// parent supports atomic sibling publication without touching prior evidence.
+func proofCheckValidateOutPath(path string) error {
+	_, err := proofCheckPrepareOutPath(path)
+	return err
+}
+
+func (custody proofCheckOutCustody) revalidate(path string) error {
+	path = filepath.Clean(path)
+	if path != custody.path {
+		return fmt.Errorf("--out custody path changed from %s to %s", custody.path, path)
+	}
+	parentInfo, err := os.Stat(filepath.Dir(path))
+	if err != nil {
 		return err
 	}
-	return proofCheckSyncDirectory(dir)
+	if !parentInfo.IsDir() || !os.SameFile(custody.parentInfo, parentInfo) {
+		return fmt.Errorf("--out parent identity changed before publication: %s", filepath.Dir(path))
+	}
+	targetInfo, err := os.Lstat(path)
+	if !custody.existed {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("--out target appeared before publication: %s", path)
+	}
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("--out target disappeared before publication: %s", path)
+		}
+		return err
+	}
+	if !targetInfo.Mode().IsRegular() ||
+		!os.SameFile(custody.targetInfo, targetInfo) ||
+		targetInfo.Mode().Perm() != custody.targetMode {
+		return fmt.Errorf("--out target identity changed before publication: %s", path)
+	}
+	return nil
 }
 
 // proofCheckWriteReportFile writes the full report as indented JSON to path — the same
@@ -440,15 +582,31 @@ func proofCheckValidateOutPath(path string) error {
 // synced sibling temp and atomic rename, so a failed preparation never truncates the
 // previous complete report.
 func proofCheckWriteReportFile(path string, report proofCheckReport) error {
+	custody, err := proofCheckPrepareOutPath(path)
+	if err != nil {
+		return err
+	}
+	return proofCheckWriteReportFileWithCustody(path, report, custody)
+}
+
+func proofCheckWriteReportFileWithCustody(path string, report proofCheckReport, custody proofCheckOutCustody) error {
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	return proofCheckWriteReportBytes(path, data)
+	return proofCheckWriteReportBytesWithCustody(path, data, custody)
 }
 
 func proofCheckWriteReportBytes(path string, data []byte) error {
+	custody, err := proofCheckPrepareOutPath(path)
+	if err != nil {
+		return err
+	}
+	return proofCheckWriteReportBytesWithCustody(path, data, custody)
+}
+
+func proofCheckWriteReportBytesWithCustody(path string, data []byte, custody proofCheckOutCustody) error {
 	dir := filepath.Dir(path)
 	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -459,7 +617,7 @@ func proofCheckWriteReportBytes(path string, data []byte) error {
 		_ = temp.Close()
 		_ = os.Remove(tempPath)
 	}()
-	if err := temp.Chmod(0o644); err != nil {
+	if err := temp.Chmod(custody.targetMode); err != nil {
 		return err
 	}
 	for remaining := data; len(remaining) > 0; {
@@ -478,10 +636,32 @@ func proofCheckWriteReportBytes(path string, data []byte) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	replacementInfo, err := os.Lstat(tempPath)
+	if err != nil {
 		return err
 	}
-	return proofCheckSyncDirectory(dir)
+	proofCheckBeforeOutPublish(path)
+	if err := custody.revalidate(path); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	publication, err := home.BeginRootedFileCAS(
+		root,
+		filepath.Base(path),
+		filepath.Base(tempPath),
+		custody.targetData,
+		custody.targetInfo,
+		data,
+		replacementInfo,
+	)
+	if err != nil {
+		return err
+	}
+	return publication.Commit()
 }
 
 func proofCheckSyncDirectory(dir string) error {
@@ -570,7 +750,7 @@ func proofCheckPostReportErrorVerdict(report proofCheckReport, path string, caus
 	if report.SchemaVersion == "" || strings.TrimSpace(path) == "" {
 		return "", false
 	}
-	body, err := os.ReadFile(path)
+	body, err := proofCheckReadPublishedReport(path)
 	if err != nil {
 		return "", false
 	}

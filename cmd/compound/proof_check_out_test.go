@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -185,6 +186,251 @@ func TestProofCheckWriteReportFileRoundTrips(t *testing.T) {
 	}
 }
 
+func TestProofCheckWriteReportFilePreservesExistingMode(t *testing.T) {
+	for _, mode := range []os.FileMode{0o600, 0o640, 0o400} {
+		t.Run(mode.String(), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "report.json")
+			if err := os.WriteFile(path, []byte("prior evidence\n"), mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := proofCheckWriteReportFile(path, proofCheckReport{
+				SchemaVersion: proofCheckSchemaVersion,
+				Status:        "ok",
+				GeneratedAt:   cliTestNow.UTC().Format(time.RFC3339),
+				Repo:          "/repo",
+				ProofRefs:     []string{},
+				Steps:         []proofCheckStep{},
+			}); err != nil {
+				t.Fatalf("write report file: %v", err)
+			}
+
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != mode {
+				t.Fatalf("published mode = %04o, want preserved %04o", got, mode)
+			}
+		})
+	}
+}
+
+func TestProofCheckWriteReportFileCreatesPrivateReport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	if err := proofCheckWriteReportFile(path, proofCheckReport{
+		SchemaVersion: proofCheckSchemaVersion,
+		Status:        "ok",
+		GeneratedAt:   cliTestNow.UTC().Format(time.RFC3339),
+		Repo:          "/repo",
+		ProofRefs:     []string{},
+		Steps:         []proofCheckStep{},
+	}); err != nil {
+		t.Fatalf("write report file: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("new report mode = %04o, want 0600", got)
+	}
+}
+
+func TestProofCheckOutRefusesLeafSymlinkWithoutTouchingDestination(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "destination.json")
+	link := filepath.Join(dir, "report.json")
+	prior := []byte("owned destination evidence\n")
+	if err := os.WriteFile(destination, prior, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(destination, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(destination, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := proofCheckValidateOutPath(link); err == nil {
+		t.Fatal("leaf symlink passed --out preflight")
+	}
+	if err := proofCheckWriteReportFile(link, proofCheckReport{
+		SchemaVersion: proofCheckSchemaVersion,
+		Status:        "ok",
+		GeneratedAt:   cliTestNow.UTC().Format(time.RFC3339),
+		Repo:          "/repo",
+		ProofRefs:     []string{},
+		Steps:         []proofCheckStep{},
+	}); err == nil {
+		t.Fatal("leaf symlink accepted as report target")
+	}
+
+	linkInfo, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("report target mode = %s, want symlink preserved", linkInfo.Mode())
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, prior) {
+		t.Fatalf("symlink destination bytes changed: got %q want %q", got, prior)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMode := info.Mode().Perm(); gotMode != 0o640 {
+		t.Fatalf("symlink destination mode = %04o, want 0640", gotMode)
+	}
+}
+
+func TestProofCheckOutRefusesExistingNonRegularTargets(t *testing.T) {
+	dir := t.TempDir()
+	targets := map[string]string{
+		"directory": filepath.Join(dir, "directory"),
+		"fifo":      filepath.Join(dir, "fifo"),
+	}
+	if err := os.Mkdir(targets["directory"], 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(targets["fifo"], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, path := range targets {
+		t.Run(name, func(t *testing.T) {
+			if err := proofCheckValidateOutPath(path); err == nil {
+				t.Fatalf("%s passed --out preflight", name)
+			}
+		})
+	}
+}
+
+func TestProofCheckOutRefusesTargetRacesBeforePublish(t *testing.T) {
+	originalHook := proofCheckBeforeOutPublish
+	t.Cleanup(func() { proofCheckBeforeOutPublish = originalHook })
+
+	report := proofCheckReport{
+		SchemaVersion: proofCheckSchemaVersion,
+		Status:        "ok",
+		GeneratedAt:   cliTestNow.UTC().Format(time.RFC3339),
+		Repo:          "/repo",
+		ProofRefs:     []string{},
+		Steps:         []proofCheckStep{},
+	}
+
+	t.Run("absent target appears", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "report.json")
+		custody, err := proofCheckPrepareOutPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raced := []byte("new unrelated target\n")
+		proofCheckBeforeOutPublish = func(gotPath string) {
+			if gotPath != path {
+				t.Fatalf("publish hook path = %q, want %q", gotPath, path)
+			}
+			if err := os.WriteFile(path, raced, 0o640); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if err := proofCheckWriteReportFileWithCustody(path, report, custody); err == nil {
+			t.Fatal("publication overwrote target created after preflight")
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, raced) {
+			t.Fatalf("raced target bytes changed: got %q want %q", got, raced)
+		}
+	})
+
+	t.Run("existing target replaced", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "report.json")
+		if err := os.WriteFile(path, []byte("prior evidence\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		custody, err := proofCheckPrepareOutPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raced := []byte("replacement target\n")
+		proofCheckBeforeOutPublish = func(string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raced, 0o640); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if err := proofCheckWriteReportFileWithCustody(path, report, custody); err == nil {
+			t.Fatal("publication overwrote replacement target")
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, raced) {
+			t.Fatalf("replacement target bytes changed: got %q want %q", got, raced)
+		}
+	})
+
+	t.Run("existing target becomes symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "report.json")
+		destination := filepath.Join(dir, "destination.json")
+		if err := os.WriteFile(path, []byte("prior evidence\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		destinationBytes := []byte("symlink destination\n")
+		if err := os.WriteFile(destination, destinationBytes, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		custody, err := proofCheckPrepareOutPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proofCheckBeforeOutPublish = func(string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(destination, path); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if err := proofCheckWriteReportFileWithCustody(path, report, custody); err == nil {
+			t.Fatal("publication replaced raced symlink")
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("raced target mode = %s, want symlink preserved", info.Mode())
+		}
+		got, err := os.ReadFile(destination)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, destinationBytes) {
+			t.Fatalf("symlink destination bytes changed: got %q want %q", got, destinationBytes)
+		}
+	})
+}
+
 func TestProofCheckWriteReportFilePreservesExistingOnPublicationFailure(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "report.json")
@@ -266,6 +512,14 @@ func TestProofCheckOutUnwritablePathFailsClosedBeforeGates(t *testing.T) {
 // self-exec-recursion risk).
 func TestProofCheckOutDryRunExitsZeroWithOkVerdict(t *testing.T) {
 	if os.Getenv(proofCheckOutCLISubEnv) == "dry-run" {
+		proofCheckTimingHistoryRecorder = func(string, proofCheckReport, time.Duration, time.Time) (string, error) {
+			err := os.WriteFile(
+				os.Getenv("COMPOUND_PROOFCHECK_TIMING_MARKER"),
+				[]byte("timing-recorded\n"),
+				0o600,
+			)
+			return "", err
+		}
 		cmdProofCheck([]string{"--dry-run", "--repo", os.Getenv("COMPOUND_PROOFCHECK_OUT_REPO"), "--out", os.Getenv("COMPOUND_PROOFCHECK_OUT_PATH")})
 		// cmdProofCheck does not call os.Exit on the ok path (a real top-level main()
 		// would simply return, exiting 0) — exit explicitly here so the parent observes
@@ -275,11 +529,13 @@ func TestProofCheckOutDryRunExitsZeroWithOkVerdict(t *testing.T) {
 	}
 	repo := t.TempDir()
 	outPath := filepath.Join(t.TempDir(), "dryrun-report.json")
+	timingMarker := filepath.Join(t.TempDir(), "timing-recorded")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestProofCheckOutDryRunExitsZeroWithOkVerdict$")
 	cmd.Env = append(os.Environ(),
 		proofCheckOutCLISubEnv+"=dry-run",
 		"COMPOUND_PROOFCHECK_OUT_REPO="+repo,
 		"COMPOUND_PROOFCHECK_OUT_PATH="+outPath,
+		"COMPOUND_PROOFCHECK_TIMING_MARKER="+timingMarker,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -295,6 +551,9 @@ func TestProofCheckOutDryRunExitsZeroWithOkVerdict(t *testing.T) {
 	}
 	if report.Status != "ok" || !report.DryRun {
 		t.Fatalf("dry-run --out report = %+v, want status ok dry_run true", report)
+	}
+	if _, err := os.Stat(timingMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run recorded timing history: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(string(output), "\n"), "\n")
 	last := lines[len(lines)-1]

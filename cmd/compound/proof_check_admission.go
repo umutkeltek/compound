@@ -34,6 +34,7 @@ type proofCheckAdmissionInput struct {
 	Command                string
 	Profile                work.ProofResourceProfile
 	ReportPath             string
+	ReportCustody          *proofCheckOutCustody
 	TTL                    time.Duration
 	Steal                  bool
 	StealReason            string
@@ -122,6 +123,13 @@ func runProofCheckWithAdmissionContext(
 	in.Workspace = strings.TrimSpace(in.Workspace)
 	in.Command = strings.TrimSpace(in.Command)
 	in.ReportPath = strings.TrimSpace(in.ReportPath)
+	if in.ReportPath != "" && in.ReportCustody == nil {
+		custody, err := proofCheckPrepareOutPath(in.ReportPath)
+		if err != nil {
+			return proofCheckReport{}, work.ProofResourceCompleteResult{}, err
+		}
+		in.ReportCustody = &custody
+	}
 	if in.Now == nil {
 		in.Now = time.Now
 	}
@@ -155,6 +163,7 @@ func runProofCheckWithAdmissionContext(
 				in.HomePath,
 				result.ReportArtifactRef,
 				in.ReportPath,
+				in.ReportCustody,
 			)
 			preparedReport = report
 			return prepareErr
@@ -281,7 +290,7 @@ func runProofCheckWithAdmissionContext(
 	}
 	body = append(body, '\n')
 	if in.ReportPath != "" {
-		ownedBytes, readErr := os.ReadFile(in.ReportPath)
+		ownedBytes, readErr := proofCheckReadPublishedReport(in.ReportPath)
 		if readErr != nil {
 			failed, failErr := failProofCheckAdmission(store, in, reserved.Reservation.ID, readErr)
 			return report, failed, failErr
@@ -317,7 +326,12 @@ func runProofCheckWithAdmissionContext(
 	return report, completed, err
 }
 
-func restoreOwnedProofCheckReport(homePath, artifactRef, reportPath string) (proofCheckReport, error) {
+func restoreOwnedProofCheckReport(
+	homePath,
+	artifactRef,
+	reportPath string,
+	custody *proofCheckOutCustody,
+) (proofCheckReport, error) {
 	artifactRef = strings.TrimSpace(artifactRef)
 	reportPath = strings.TrimSpace(reportPath)
 	if artifactRef == "" || reportPath == "" {
@@ -335,17 +349,19 @@ func restoreOwnedProofCheckReport(homePath, artifactRef, reportPath string) (pro
 	if err != nil {
 		return proofCheckReport{}, err
 	}
-	published, readErr := os.ReadFile(reportPath)
-	if readErr == nil && bytes.Equal(published, body) {
+	if custody == nil {
+		return proofCheckReport{}, fmt.Errorf("owned proof --out custody required")
+	}
+	if err := custody.revalidate(reportPath); err != nil {
+		return proofCheckReport{}, err
+	}
+	if custody.existed && bytes.Equal(custody.targetData, body) {
 		return report, nil
 	}
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		return report, readErr
-	}
-	if err := proofCheckWriteReportBytes(reportPath, body); err != nil {
+	if err := proofCheckWriteReportBytesWithCustody(reportPath, body, *custody); err != nil {
 		return report, fmt.Errorf("restore retained --out: %w", err)
 	}
-	published, err = os.ReadFile(reportPath)
+	published, err := proofCheckReadPublishedReport(reportPath)
 	if err != nil {
 		return report, fmt.Errorf("verify restored --out: %w", err)
 	}

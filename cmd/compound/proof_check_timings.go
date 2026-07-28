@@ -120,6 +120,41 @@ type proofCheckTimingStep struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
+var proofCheckTimingHistoryRecorder = recordProofCheckTimingHistory
+
+// proofCheckAppendTimingWarnings is the single pre-custody timing finalizer.
+// Timing state is advisory: failures become report evidence, never gate failures,
+// and callers invoke it only for a battery that actually executed.
+func proofCheckAppendTimingWarnings(
+	report *proofCheckReport,
+	homePath string,
+	homeErr error,
+	wall time.Duration,
+	now time.Time,
+) {
+	if report == nil {
+		return
+	}
+	if homeErr != nil {
+		report.Warnings = append(
+			report.Warnings,
+			"COMPOUND_HOME unresolved; proof-check timing history not recorded: "+homeErr.Error(),
+		)
+		return
+	}
+	warning, err := proofCheckTimingHistoryRecorder(homePath, *report, wall, now)
+	if err != nil {
+		report.Warnings = append(
+			report.Warnings,
+			"proof-check timing history not recorded: "+err.Error(),
+		)
+		return
+	}
+	if warning != "" {
+		report.Warnings = append(report.Warnings, warning)
+	}
+}
+
 // recordProofCheckTimingHistory appends one run to the rolling history.
 //
 // Returns (warning, error): a non-empty warning means the run WAS recorded but something the

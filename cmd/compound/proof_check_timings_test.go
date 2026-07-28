@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,60 @@ import (
 	"testing"
 	"time"
 )
+
+func TestProofCheckAppendTimingWarningsKeepsTimingStateAdvisory(t *testing.T) {
+	originalRecorder := proofCheckTimingHistoryRecorder
+	t.Cleanup(func() { proofCheckTimingHistoryRecorder = originalRecorder })
+
+	t.Run("unresolved home", func(t *testing.T) {
+		called := false
+		proofCheckTimingHistoryRecorder = func(string, proofCheckReport, time.Duration, time.Time) (string, error) {
+			called = true
+			return "", nil
+		}
+		report := timingFixtureReport("certifying-full", map[string]int64{"go-test": 10})
+		proofCheckAppendTimingWarnings(
+			&report,
+			"",
+			errors.New("synthetic home failure"),
+			time.Second,
+			time.Now(),
+		)
+		if called {
+			t.Fatal("timing recorder called without a resolved home")
+		}
+		if got := report.Warnings; len(got) != 1 ||
+			got[0] != "COMPOUND_HOME unresolved; proof-check timing history not recorded: synthetic home failure" {
+			t.Fatalf("warnings = %v", got)
+		}
+	})
+
+	t.Run("record error", func(t *testing.T) {
+		proofCheckTimingHistoryRecorder = func(string, proofCheckReport, time.Duration, time.Time) (string, error) {
+			return "", errors.New("synthetic timing write failure")
+		}
+		report := timingFixtureReport("certifying-full", map[string]int64{"go-test": 10})
+		proofCheckAppendTimingWarnings(&report, "/synthetic/home", nil, time.Second, time.Now())
+		if got := report.Warnings; len(got) != 1 ||
+			got[0] != "proof-check timing history not recorded: synthetic timing write failure" {
+			t.Fatalf("warnings = %v", got)
+		}
+		if report.Status != "ok" {
+			t.Fatalf("timing failure changed proof status to %q", report.Status)
+		}
+	})
+
+	t.Run("record warning", func(t *testing.T) {
+		proofCheckTimingHistoryRecorder = func(string, proofCheckReport, time.Duration, time.Time) (string, error) {
+			return "synthetic timing history reset", nil
+		}
+		report := timingFixtureReport("certifying-full", map[string]int64{"go-test": 10})
+		proofCheckAppendTimingWarnings(&report, "/synthetic/home", nil, time.Second, time.Now())
+		if got := report.Warnings; len(got) != 1 || got[0] != "synthetic timing history reset" {
+			t.Fatalf("warnings = %v", got)
+		}
+	})
+}
 
 func timingFixtureReport(profileKind string, durations map[string]int64) proofCheckReport {
 	report := proofCheckReport{Status: "ok", ProfileKind: profileKind}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1456,6 +1457,30 @@ func TestProofCheckAdmissionSurfacesCommittedButRetainedLease(t *testing.T) {
 
 func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 	if os.Getenv(proofCheckReleasePendingCLISubEnv) == "1" {
+		realTimingRecorder := proofCheckTimingHistoryRecorder
+		proofCheckTimingHistoryRecorder = func(
+			homePath string,
+			report proofCheckReport,
+			wall time.Duration,
+			now time.Time,
+		) (string, error) {
+			marker, err := os.OpenFile(
+				os.Getenv("COMPOUND_PROOF_RELEASE_PENDING_TIMINGS"),
+				os.O_CREATE|os.O_APPEND|os.O_WRONLY,
+				0o600,
+			)
+			if err != nil {
+				return "", err
+			}
+			if _, err := marker.WriteString("timing-recorded\n"); err != nil {
+				_ = marker.Close()
+				return "", err
+			}
+			if err := marker.Close(); err != nil {
+				return "", err
+			}
+			return realTimingRecorder(homePath, report, wall, now)
+		}
 		proofCheckCanonicalRunner = func(_ context.Context, repoPath string, _ bool, source gitrepository.Snapshot, _ bool, _ bool, now time.Time) (proofCheckReport, error) {
 			marker, err := os.OpenFile(os.Getenv("COMPOUND_PROOF_RELEASE_PENDING_RUNS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 			if err != nil {
@@ -1509,6 +1534,7 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 	runCommandGit(t, repo, "commit", "-m", "candidate")
 	outPath := filepath.Join(t.TempDir(), "proof.json")
 	runnerMarker := filepath.Join(t.TempDir(), "runner.log")
+	timingMarker := filepath.Join(t.TempDir(), "timings.log")
 	stateDir := filepath.Join(homePath, "state")
 	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
 
@@ -1522,6 +1548,7 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 			"COMPOUND_PROOF_RELEASE_PENDING_WORK="+w.ID,
 			"COMPOUND_PROOF_RELEASE_PENDING_OUT="+outPath,
 			"COMPOUND_PROOF_RELEASE_PENDING_RUNS="+runnerMarker,
+			"COMPOUND_PROOF_RELEASE_PENDING_TIMINGS="+timingMarker,
 		)
 		var stdoutBuf bytes.Buffer
 		var stderrBuf bytes.Buffer
@@ -1615,6 +1642,13 @@ func TestProofCheckCommandReleasePendingVerdictAndExactRecovery(t *testing.T) {
 	}
 	if got := strings.Count(string(runnerRuns), "runner-started"); got != 1 {
 		t.Fatalf("exact CLI recovery runner starts = %d, want one total; marker=%q", got, runnerRuns)
+	}
+	timingRuns, err := os.ReadFile(timingMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(timingRuns), "timing-recorded"); got != 1 {
+		t.Fatalf("exact CLI recovery fabricated timing sample; records=%d marker=%q", got, timingRuns)
 	}
 	secondOut, err := os.ReadFile(outPath)
 	if err != nil {
@@ -2546,6 +2580,121 @@ func TestProofCheckAdmissionAdmitsNonTerminalStdoutForAgentInvocation(t *testing
 	}
 	if completed.VerificationRef == "" {
 		t.Fatal("completed verification ref is empty; custody is the proof and must be recorded")
+	}
+}
+
+func TestProofCheckTimingWarningOwnedBeforeGovernedRedCompletion(t *testing.T) {
+	homePath := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "proof-report.json")
+	now := time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "proof-timing-custody-test", now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := createClaimedProofWork(t, store, "timing warning must precede custody", "codex:timing-custody", now)
+	custody, err := proofCheckPrepareOutPath(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalRecorder := proofCheckTimingHistoryRecorder
+	t.Cleanup(func() { proofCheckTimingHistoryRecorder = originalRecorder })
+	const timingWarning = "proof-check timing history was corrupt and has been reset"
+	proofCheckTimingHistoryRecorder = func(
+		string,
+		proofCheckReport,
+		time.Duration,
+		time.Time,
+	) (string, error) {
+		return timingWarning, nil
+	}
+
+	report, completed, err := runProofCheckWithAdmission(proofCheckAdmissionInput{
+		HomePath:      homePath,
+		WorkID:        item.ID,
+		Actor:         "codex:timing-custody",
+		Workspace:     "/synthetic/repo-alpha",
+		Command:       "compound proof-check --json --out " + outPath,
+		Profile:       syntheticAdmissionProfile(t, "/synthetic/repo-alpha"),
+		ReportPath:    outPath,
+		ReportCustody: &custody,
+		TTL:           time.Minute,
+		Now:           func() time.Time { return now.Add(time.Second) },
+	}, func() (proofCheckReport, error) {
+		produced := successfulProofCheckReport()
+		produced.GeneratedAt = now.Add(2 * time.Second).Format(time.RFC3339)
+		produced.Status = "failed"
+		produced.Steps[0].Status = "failed"
+		produced.Steps[0].ExitCode = 1
+		produced.ProofRefs = produced.ProofRefs[1:]
+		proofCheckAppendTimingWarnings(
+			&produced,
+			homePath,
+			nil,
+			time.Minute,
+			now.Add(time.Minute),
+		)
+		if err := proofCheckWriteReportFileWithCustody(outPath, produced, custody); err != nil {
+			return proofCheckReport{}, err
+		}
+		return produced, nil
+	})
+	if err != nil {
+		t.Fatalf("governed red completion: %v", err)
+	}
+	if report.Status != "failed" || completed.Result.ProducerExitCode != 1 {
+		t.Fatalf("red completion = report:%+v result:%+v", report, completed.Result)
+	}
+	if !reflect.DeepEqual(report.Warnings, []string{timingWarning}) {
+		t.Fatalf("in-memory warnings = %v, want %q", report.Warnings, timingWarning)
+	}
+
+	decode := func(label string, body []byte) proofCheckReport {
+		t.Helper()
+		var got proofCheckReport
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode %s: %v\n%s", label, err, body)
+		}
+		return got
+	}
+	outBody, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decode("--out", outBody); !reflect.DeepEqual(got, report) {
+		t.Fatalf("--out report diverged:\ngot:  %+v\nwant: %+v", got, report)
+	}
+	artifacts, err := home.NewArtifactStore(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactBody, err := artifacts.Get(completed.Result.ReportArtifactRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decode("stored artifact", artifactBody); !reflect.DeepEqual(got, report) {
+		t.Fatalf("stored artifact diverged:\ngot:  %+v\nwant: %+v", got, report)
+	}
+
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	realStdout := os.Stdout
+	os.Stdout = writeEnd
+	printJSON(report)
+	_ = writeEnd.Close()
+	os.Stdout = realStdout
+	jsonStdout, err := io.ReadAll(readEnd)
+	_ = readEnd.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decode("--json stdout", jsonStdout); !reflect.DeepEqual(got, report) {
+		t.Fatalf("--json stdout diverged:\ngot:  %+v\nwant: %+v", got, report)
 	}
 }
 
