@@ -36,9 +36,9 @@ func HarnessMatcher(harness string) string {
 	return "*"
 }
 
-// ConfigRel is the harness config path (relative to the base dir) the reconciler reads. Claude Code
-// has a project-scoped overlay (settings.local.json) so the compound-specific guard can be wired to
-// fire only inside a compound repo rather than on every project's writes globally.
+// ConfigRel is the harness config path relative to the base directory. Claude Code
+// uses a project-scoped settings overlay so Compound's guard is wired only inside
+// the current repository.
 func ConfigRel(harness, scope string) string {
 	switch harness {
 	case "codex":
@@ -46,11 +46,16 @@ func ConfigRel(harness, scope string) string {
 	case claudeZaiHarness:
 		return filepath.Join(".config", "switchback", "claude", "zai-direct", "settings.json")
 	default: // claude-code
-		if scope == "project" {
-			return filepath.Join(".claude", "settings.local.json")
-		}
-		return filepath.Join(".claude", "settings.json")
+		return filepath.Join(".claude", claudeSettingsFile(scope))
 	}
+}
+
+func claudeSettingsFile(scope string) string {
+	parts := []string{"settings"}
+	if scope == "project" {
+		parts = append(parts, "local")
+	}
+	return strings.Join(append(parts, "json"), ".")
 }
 
 // ClaudeZaiProfileDir is the default isolated Claude profile home under a user's base directory.

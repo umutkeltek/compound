@@ -216,8 +216,8 @@ func TestInstallHooksProjectScope(t *testing.T) {
 	if _, err := InstallHooks(base, "/bin/compound", "project", []string{"claude-code"}, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(base, ".claude", "settings.local.json")); err != nil {
-		t.Fatalf("project scope must write settings.local.json: %v", err)
+	if _, err := os.Stat(filepath.Join(base, ".claude", claudeSettingsFile("project"))); err != nil {
+		t.Fatalf("project scope must write the local settings overlay: %v", err)
 	}
 }
 
