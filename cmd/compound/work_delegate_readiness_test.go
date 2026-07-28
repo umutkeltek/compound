@@ -175,9 +175,7 @@ func TestEvaluateDelegateHarnessReadinessRejectsUnrelatedEffectiveContract(t *te
 	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_wrong_contract")
 	effective := fixture.effective
 	effective.Harness = "codex"
-	if _, err := contract.RecordEffectiveContract(fixture.compoundHome, effective); err != nil {
-		t.Fatal(err)
-	}
+	recordDelegateRuntimeForTest(t, fixture.compoundHome, effective, fixture.workID, fixture.workspace, fixture.now.Add(time.Minute))
 	if _, err := harness.RenderInstructionPack(fixture.compoundHome, fixture.harness, fixture.now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -211,9 +209,7 @@ func TestEvaluateDelegateHarnessReadinessUsesWorkBoundImmutableContract(t *testi
 	other.IDs.WorkID = "work_delegate_immutable_contract_b"
 	other.Scope.Surface = otherWorkspace
 	other.CreatedAt = fixture.now.Add(time.Minute).Format(time.RFC3339)
-	if _, err := contract.RecordEffectiveContract(fixture.compoundHome, other); err != nil {
-		t.Fatal(err)
-	}
+	recordDelegateRuntimeForTest(t, fixture.compoundHome, other, other.IDs.WorkID, otherWorkspace, fixture.now.Add(time.Minute))
 
 	result, err := evaluateDelegateHarnessReadiness(work.DelegateHarnessReadinessRequest{
 		HomePath:               fixture.compoundHome,
@@ -651,9 +647,6 @@ func buildReadyDelegateHarnessFixture(t *testing.T, workID string) readyDelegate
 		Unknowns:           []string{},
 		Conflicts:          []string{},
 	}
-	if _, err := contract.RecordEffectiveContract(compoundHome, effective); err != nil {
-		t.Fatal(err)
-	}
 	contextPackID := "ctx_" + strings.TrimPrefix(workID, "work_")
 	contextPack := validCLIContextPack()
 	contextPack.ID = contextPackID
@@ -661,12 +654,21 @@ func buildReadyDelegateHarnessFixture(t *testing.T, workID string) readyDelegate
 	contextPack.Scope = envelope.Scope{Surface: workspace}
 	contextPack.TaskContract = taskContract
 	contextPack.CreatedAt = now.Format(time.RFC3339)
-	if _, err := contract.RecordContextPack(compoundHome, contextPack); err != nil {
+	runtime, err := contract.SealRuntimeMaterialization(contract.RuntimeMaterialization{
+		EffectiveContract: effective,
+		ContextPack:       contextPack,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := contract.RecordRuntimeMaterialization(compoundHome, runtime); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := harness.RenderInstructionPack(compoundHome, harnessName, now); err != nil {
 		t.Fatal(err)
 	}
+	effective = runtime.EffectiveContract
+	contextPackID = runtime.ContextPack.ID
 	return readyDelegateHarnessFixture{
 		compoundHome:  compoundHome,
 		harnessHome:   harnessHome,
@@ -679,6 +681,34 @@ func buildReadyDelegateHarnessFixture(t *testing.T, workID string) readyDelegate
 		now:           now,
 		effective:     effective,
 	}
+}
+
+func recordDelegateRuntimeForTest(
+	t *testing.T,
+	compoundHome string,
+	effective envelope.EffectiveContract,
+	workID string,
+	workspace string,
+	now time.Time,
+) contract.RuntimeMaterialization {
+	t.Helper()
+	contextPack := validCLIContextPack()
+	contextPack.ID = "ctx_" + strings.TrimPrefix(workID, "work_") + "_latest"
+	contextPack.IDs = envelope.IDs{WorkID: workID, ContractID: effective.ID}
+	contextPack.Scope = envelope.Scope{Surface: workspace}
+	contextPack.TaskContract = effective.TaskContract
+	contextPack.CreatedAt = now.UTC().Format(time.RFC3339)
+	runtime, err := contract.SealRuntimeMaterialization(contract.RuntimeMaterialization{
+		EffectiveContract: effective,
+		ContextPack:       contextPack,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := contract.RecordRuntimeMaterialization(compoundHome, runtime); err != nil {
+		t.Fatal(err)
+	}
+	return runtime
 }
 
 func delegateReadinessHeader(schemaVersion, id, workID, workspace string, now time.Time) envelope.Header {
