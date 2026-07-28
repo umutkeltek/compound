@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"compound/internal/hookplan"
@@ -45,6 +46,21 @@ func TestHarnessPosturePlanCompilesAdapterNativeConfigurationWithoutVendorFlags(
 				t.Fatalf("guard disposition = %q, want %q", guard.Disposition, tc.wantGuard)
 			}
 		})
+	}
+}
+
+func TestHarnessPosturePlanRejectsUnknownFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runHarnessPosturePlan(
+		[]string{"--harness", "codex", "--jsno"},
+		&stdout,
+		&stderr,
+	)
+	if code != 2 {
+		t.Fatalf("posture-plan exit=%d, want 2; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "unknown flag") {
+		t.Fatalf("posture-plan did not explain unknown flag: %s", stderr.String())
 	}
 }
 
