@@ -7,7 +7,7 @@ import (
 	"compound/internal/work"
 )
 
-func resolveDelegateExecutionProfile(req work.DelegateExecutionProfileResolveRequest) (*work.DelegateExecutionProfilePlan, error) {
+func resolveDelegateExecutionProfile(req work.DelegateExecutionProfileResolveRequest) (*work.DelegateExecutionProfileResolution, error) {
 	plan, err := ResolveExecutionProfile(ExecutionProfileIntent{
 		ProfileID:           req.Intent.ProfileID,
 		Role:                req.Intent.Role,
@@ -28,44 +28,21 @@ func resolveDelegateExecutionProfile(req work.DelegateExecutionProfileResolveReq
 	if err != nil {
 		return nil, fmt.Errorf("marshal execution profile plan snapshot: %w", err)
 	}
-	budget, err := json.Marshal(plan.Budget)
-	if err != nil {
-		return nil, fmt.Errorf("marshal execution profile budget: %w", err)
+	disposition := work.DelegateExecutionProfileIncompatible
+	if normalizeModelCapabilitySelector(req.SelectedHarness) == normalizeModelCapabilitySelector(plan.ClientHarnessID) {
+		disposition = work.DelegateExecutionProfileCompatible
 	}
-	checkpoint, err := json.Marshal(plan.Checkpoint)
-	if err != nil {
-		return nil, fmt.Errorf("marshal execution profile checkpoint: %w", err)
-	}
-	var remainingBudget json.RawMessage
-	if plan.RemainingBudget != nil {
-		remainingBudget, err = json.Marshal(plan.RemainingBudget)
-		if err != nil {
-			return nil, fmt.Errorf("marshal execution profile remaining budget: %w", err)
-		}
-	}
-	return &work.DelegateExecutionProfilePlan{
-		SchemaVersion:           plan.SchemaVersion,
-		ID:                      plan.ID,
-		ProfileID:               plan.ProfileID,
-		Role:                    plan.Role,
-		CapabilityClass:         plan.CapabilityClass,
-		ClientHarnessID:         plan.ClientHarnessID,
-		TransportID:             plan.TransportID,
-		RouteAlias:              plan.RouteAlias,
-		ModelConstraint:         plan.ModelConstraint,
-		SemanticEffort:          plan.SemanticEffort,
-		RequestedNativeEffort:   plan.NativeEffort.Requested,
-		NativeEffortDisposition: plan.NativeEffort.Disposition,
-		NativeEffortReason:      plan.NativeEffort.Reason,
-		OrchestrationPolicy:     plan.OrchestrationPolicy,
-		PrivacyCeiling:          plan.PrivacyCeiling,
-		Budget:                  budget,
-		Checkpoint:              checkpoint,
-		ParentPlanID:            plan.ParentPlanID,
-		RemainingBudget:         remainingBudget,
-		InheritedCeilings:       append([]string(nil), plan.InheritedCeilings...),
-		Warnings:                append([]string(nil), plan.Warnings...),
-		Snapshot:                snapshot,
+	return &work.DelegateExecutionProfileResolution{
+		Snapshot: snapshot,
+		Compatibility: work.DelegateExecutionProfileCompatibility{
+			Disposition:           disposition,
+			SelectedHarness:       req.SelectedHarness,
+			SelectedLaneID:        req.SelectedLaneID,
+			PlanID:                plan.ID,
+			ClientHarnessID:       plan.ClientHarnessID,
+			TransportID:           plan.TransportID,
+			RequestedNativeEffort: plan.NativeEffort.Requested,
+		},
 	}, nil
 }
 

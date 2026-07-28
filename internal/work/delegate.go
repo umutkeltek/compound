@@ -35,12 +35,14 @@
 package work
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -61,6 +63,14 @@ type delegateAuthorityChangedError struct {
 
 func (e *delegateAuthorityChangedError) Error() string {
 	return "delegate authority changed during admission: " + e.detail
+}
+
+type delegateExecutionProfileIncompatibleError struct {
+	detail string
+}
+
+func (e *delegateExecutionProfileIncompatibleError) Error() string {
+	return "delegate execution profile is incompatible: " + e.detail
 }
 
 // SessionStatus captures the supervised pane's liveness and (when
@@ -153,9 +163,18 @@ type DelegateExecutionProfileIntent struct {
 	PrivacyCeiling      string `json:"privacy_ceiling,omitempty"`
 }
 
-// DelegateExecutionProfilePlan is an audit projection of the canonical
-// routeevidence.ExecutionProfilePlan. Snapshot carries the complete canonical
-// plan without duplicating its semantic types in internal/work.
+const (
+	delegateExecutionProfilePlanSchema       = "compound.execution_profile_plan.v0.1"
+	delegateExecutionProfileSnapshotMaxBytes = 256 << 10
+
+	DelegateExecutionProfileCompatible   = "compatible"
+	DelegateExecutionProfileIncompatible = "incompatible"
+)
+
+// DelegateExecutionProfilePlan is derived from the validated canonical
+// routeevidence snapshot. Its flattened fields are the bounded requested
+// identity projection used for bindings and RunAttempt stamping; callers may
+// not supply them independently from Snapshot.
 type DelegateExecutionProfilePlan struct {
 	SchemaVersion           string          `json:"schema_version"`
 	ID                      string          `json:"id"`
@@ -178,14 +197,31 @@ type DelegateExecutionProfilePlan struct {
 	RemainingBudget         json.RawMessage `json:"remaining_budget,omitempty"`
 	InheritedCeilings       []string        `json:"inherited_ceilings,omitempty"`
 	Warnings                []string        `json:"warnings,omitempty"`
-	Snapshot                json.RawMessage `json:"snapshot,omitempty"`
+	Snapshot                json.RawMessage `json:"snapshot"`
 }
 
 type DelegateExecutionProfileResolveRequest struct {
-	Intent DelegateExecutionProfileIntent
+	Intent          DelegateExecutionProfileIntent
+	SelectedHarness string
+	SelectedLaneID  string
 }
 
-type DelegateExecutionProfileResolverFunc func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfilePlan, error)
+type DelegateExecutionProfileCompatibility struct {
+	Disposition           string `json:"disposition"`
+	SelectedHarness       string `json:"selected_harness"`
+	SelectedLaneID        string `json:"selected_lane_id"`
+	PlanID                string `json:"plan_id"`
+	ClientHarnessID       string `json:"client_harness_id"`
+	TransportID           string `json:"transport_id"`
+	RequestedNativeEffort string `json:"requested_native_effort"`
+}
+
+type DelegateExecutionProfileResolution struct {
+	Snapshot      json.RawMessage                       `json:"snapshot"`
+	Compatibility DelegateExecutionProfileCompatibility `json:"compatibility"`
+}
+
+type DelegateExecutionProfileResolverFunc func(DelegateExecutionProfileResolveRequest) (*DelegateExecutionProfileResolution, error)
 
 // DelegateExecutionProfileResolver is installed by routeevidence, the owner of
 // ExecutionProfile definitions and resolution. The seam avoids an import
@@ -209,10 +245,15 @@ type DelegateHarnessReadinessRequest struct {
 }
 
 type DelegateHarnessReadinessEvidence struct {
-	Kind     string          `json:"kind"`
+	Kind     string `json:"kind"`
+	Ref      string `json:"ref"`
+	Revision string `json:"revision,omitempty"`
+}
+
+type DelegateExecutionProfileReadiness struct {
 	Ref      string          `json:"ref"`
-	Revision string          `json:"revision,omitempty"`
-	Body     json.RawMessage `json:"body,omitempty"`
+	Revision string          `json:"revision"`
+	Snapshot json.RawMessage `json:"snapshot"`
 }
 
 type DelegateHarnessReadinessResult struct {
@@ -220,6 +261,7 @@ type DelegateHarnessReadinessResult struct {
 	SnapshotRevision string                             `json:"snapshot_revision,omitempty"`
 	Details          []string                           `json:"details,omitempty"`
 	Evidence         []DelegateHarnessReadinessEvidence `json:"evidence,omitempty"`
+	ExecutionProfile *DelegateExecutionProfileReadiness `json:"execution_profile,omitempty"`
 }
 
 type DelegateHarnessReadinessFunc func(DelegateHarnessReadinessRequest) (DelegateHarnessReadinessResult, error)
@@ -459,6 +501,9 @@ func validateAttachedDelegateEvent(eventID, workID string, event delegateEvent) 
 		if strings.TrimSpace(event.Session) == "" || strings.TrimSpace(event.Harness) == "" {
 			return errors.New("spawned delegate event requires session and harness")
 		}
+		if err := validateDelegateExecutionProfileBinding(event.ExecutionProfile, event.Readiness); err != nil {
+			return fmt.Errorf("invalid execution profile proof: %w", err)
+		}
 	case "work.delegate.exited", "work.delegate.steered":
 		if strings.TrimSpace(event.Session) == "" {
 			return fmt.Errorf("%s delegate event requires session", event.Kind)
@@ -522,6 +567,12 @@ func completeDelegateReadinessSnapshot(readiness DelegateHarnessReadinessResult,
 		Ref:      "lane-capacity://" + strings.TrimSpace(lane) + "/" + strings.TrimSpace(decision.Capacity.State),
 		Revision: "sha256:" + hex.EncodeToString(capacitySum[:]),
 	})
+	readiness.Evidence = evidence
+	return finalizeDelegateReadinessSnapshot(readiness)
+}
+
+func finalizeDelegateReadinessSnapshot(readiness DelegateHarnessReadinessResult) (DelegateHarnessReadinessResult, error) {
+	evidence := append([]DelegateHarnessReadinessEvidence(nil), readiness.Evidence...)
 	sort.Slice(evidence, func(i, j int) bool {
 		if evidence[i].Kind != evidence[j].Kind {
 			return evidence[i].Kind < evidence[j].Kind
@@ -533,14 +584,22 @@ func completeDelegateReadinessSnapshot(readiness DelegateHarnessReadinessResult,
 	})
 	details := append([]string(nil), readiness.Details...)
 	sort.Strings(details)
+	var executionProfile *DelegateExecutionProfileReadiness
+	if readiness.ExecutionProfile != nil {
+		copied := *readiness.ExecutionProfile
+		copied.Snapshot = append(json.RawMessage(nil), readiness.ExecutionProfile.Snapshot...)
+		executionProfile = &copied
+	}
 	snapshotMaterial, err := json.Marshal(struct {
-		Ready    bool                               `json:"ready"`
-		Details  []string                           `json:"details,omitempty"`
-		Evidence []DelegateHarnessReadinessEvidence `json:"evidence"`
+		Ready            bool                               `json:"ready"`
+		Details          []string                           `json:"details,omitempty"`
+		Evidence         []DelegateHarnessReadinessEvidence `json:"evidence"`
+		ExecutionProfile *DelegateExecutionProfileReadiness `json:"execution_profile,omitempty"`
 	}{
-		Ready:    readiness.Ready,
-		Details:  details,
-		Evidence: evidence,
+		Ready:            readiness.Ready,
+		Details:          details,
+		Evidence:         evidence,
+		ExecutionProfile: executionProfile,
 	})
 	if err != nil {
 		return DelegateHarnessReadinessResult{}, fmt.Errorf("delegate: encode readiness snapshot: %w", err)
@@ -548,6 +607,7 @@ func completeDelegateReadinessSnapshot(readiness DelegateHarnessReadinessResult,
 	snapshotSum := sha256.Sum256(snapshotMaterial)
 	readiness.Details = details
 	readiness.Evidence = evidence
+	readiness.ExecutionProfile = executionProfile
 	readiness.SnapshotRevision = "sha256:" + hex.EncodeToString(snapshotSum[:])
 	return readiness, nil
 }
@@ -586,41 +646,202 @@ func cloneDelegateExecutionProfilePlan(plan *DelegateExecutionProfilePlan) *Dele
 	return &cloned
 }
 
+type delegateExecutionProfileCanonicalBody struct {
+	SchemaVersion       string                                        `json:"schema_version"`
+	ID                  string                                        `json:"id"`
+	ProfileID           string                                        `json:"profile_id"`
+	Role                string                                        `json:"role"`
+	CapabilityClass     string                                        `json:"capability_class"`
+	ClientHarnessID     string                                        `json:"client_harness_id"`
+	TransportID         string                                        `json:"transport_id"`
+	RouteAlias          string                                        `json:"route_alias,omitempty"`
+	ModelConstraint     string                                        `json:"model_constraint,omitempty"`
+	SemanticEffort      string                                        `json:"semantic_effort"`
+	NativeEffort        delegateExecutionProfileCanonicalNativeEffort `json:"native_effort"`
+	OrchestrationPolicy string                                        `json:"orchestration_policy"`
+	PrivacyCeiling      string                                        `json:"privacy_ceiling"`
+	Budget              json.RawMessage                               `json:"budget,omitempty"`
+	Checkpoint          json.RawMessage                               `json:"checkpoint,omitempty"`
+	ParentPlanID        string                                        `json:"parent_plan_id,omitempty"`
+	RemainingBudget     json.RawMessage                               `json:"remaining_budget,omitempty"`
+	InheritedCeilings   []string                                      `json:"inherited_ceilings,omitempty"`
+	Warnings            []string                                      `json:"warnings,omitempty"`
+}
+
+type delegateExecutionProfileCanonicalNativeEffort struct {
+	Requested   string `json:"requested"`
+	Disposition string `json:"disposition"`
+	Reason      string `json:"reason"`
+}
+
+func delegateExecutionProfilePlanFromSnapshot(snapshot json.RawMessage) (*DelegateExecutionProfilePlan, error) {
+	if len(snapshot) == 0 {
+		return nil, errors.New("canonical execution profile snapshot is required")
+	}
+	if len(snapshot) > delegateExecutionProfileSnapshotMaxBytes {
+		return nil, fmt.Errorf("canonical execution profile snapshot exceeds %d bytes", delegateExecutionProfileSnapshotMaxBytes)
+	}
+	if !json.Valid(snapshot) {
+		return nil, errors.New("canonical execution profile snapshot is invalid JSON")
+	}
+	var canonical delegateExecutionProfileCanonicalBody
+	if err := json.Unmarshal(snapshot, &canonical); err != nil {
+		return nil, fmt.Errorf("decode canonical execution profile snapshot: %w", err)
+	}
+	if canonical.SchemaVersion != delegateExecutionProfilePlanSchema {
+		return nil, fmt.Errorf("canonical execution profile schema_version = %q, want %q", canonical.SchemaVersion, delegateExecutionProfilePlanSchema)
+	}
+	for name, value := range map[string]string{
+		"id":                      canonical.ID,
+		"profile_id":              canonical.ProfileID,
+		"client_harness_id":       canonical.ClientHarnessID,
+		"transport_id":            canonical.TransportID,
+		"native_effort.requested": canonical.NativeEffort.Requested,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("canonical execution profile %s is required", name)
+		}
+	}
+	return &DelegateExecutionProfilePlan{
+		SchemaVersion:           canonical.SchemaVersion,
+		ID:                      canonical.ID,
+		ProfileID:               canonical.ProfileID,
+		Role:                    canonical.Role,
+		CapabilityClass:         canonical.CapabilityClass,
+		ClientHarnessID:         canonical.ClientHarnessID,
+		TransportID:             canonical.TransportID,
+		RouteAlias:              canonical.RouteAlias,
+		ModelConstraint:         canonical.ModelConstraint,
+		SemanticEffort:          canonical.SemanticEffort,
+		RequestedNativeEffort:   canonical.NativeEffort.Requested,
+		NativeEffortDisposition: canonical.NativeEffort.Disposition,
+		NativeEffortReason:      canonical.NativeEffort.Reason,
+		OrchestrationPolicy:     canonical.OrchestrationPolicy,
+		PrivacyCeiling:          canonical.PrivacyCeiling,
+		Budget:                  append(json.RawMessage(nil), canonical.Budget...),
+		Checkpoint:              append(json.RawMessage(nil), canonical.Checkpoint...),
+		ParentPlanID:            canonical.ParentPlanID,
+		RemainingBudget:         append(json.RawMessage(nil), canonical.RemainingBudget...),
+		InheritedCeilings:       append([]string(nil), canonical.InheritedCeilings...),
+		Warnings:                append([]string(nil), canonical.Warnings...),
+		Snapshot:                append(json.RawMessage(nil), snapshot...),
+	}, nil
+}
+
+func validateDelegateExecutionProfileResolution(
+	resolution *DelegateExecutionProfileResolution,
+	selectedHarness string,
+	selectedLaneID string,
+) (*DelegateExecutionProfilePlan, error) {
+	if resolution == nil {
+		return nil, errors.New("execution profile resolver returned no resolution")
+	}
+	plan, err := delegateExecutionProfilePlanFromSnapshot(resolution.Snapshot)
+	if err != nil {
+		return nil, err
+	}
+	compatibility := resolution.Compatibility
+	if compatibility.SelectedHarness != selectedHarness {
+		return nil, fmt.Errorf("compatibility selected_harness = %q, want %q", compatibility.SelectedHarness, selectedHarness)
+	}
+	if compatibility.SelectedLaneID != selectedLaneID {
+		return nil, fmt.Errorf("compatibility selected_lane_id = %q, want %q", compatibility.SelectedLaneID, selectedLaneID)
+	}
+	for _, field := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "plan_id", got: compatibility.PlanID, want: plan.ID},
+		{name: "client_harness_id", got: compatibility.ClientHarnessID, want: plan.ClientHarnessID},
+		{name: "transport_id", got: compatibility.TransportID, want: plan.TransportID},
+		{name: "requested_native_effort", got: compatibility.RequestedNativeEffort, want: plan.RequestedNativeEffort},
+	} {
+		if field.got != field.want {
+			return nil, fmt.Errorf("compatibility %s = %q, canonical snapshot has %q", field.name, field.got, field.want)
+		}
+	}
+	switch compatibility.Disposition {
+	case DelegateExecutionProfileCompatible:
+		return plan, nil
+	case DelegateExecutionProfileIncompatible:
+		return nil, &delegateExecutionProfileIncompatibleError{
+			detail: fmt.Sprintf("selected harness %q is not compatible with requested client harness %q", selectedHarness, plan.ClientHarnessID),
+		}
+	default:
+		return nil, fmt.Errorf("compatibility disposition = %q", compatibility.Disposition)
+	}
+}
+
 func addDelegateExecutionProfileReadinessEvidence(readiness DelegateHarnessReadinessResult, plan *DelegateExecutionProfilePlan) (DelegateHarnessReadinessResult, error) {
 	if plan == nil {
 		return readiness, nil
 	}
-	material := plan.Snapshot
-	if len(material) == 0 {
-		var err error
-		material, err = json.Marshal(plan)
-		if err != nil {
-			return DelegateHarnessReadinessResult{}, fmt.Errorf("delegate: encode execution profile readiness: %w", err)
-		}
+	validated, err := delegateExecutionProfilePlanFromSnapshot(plan.Snapshot)
+	if err != nil {
+		return DelegateHarnessReadinessResult{}, err
 	}
-	sum := sha256.Sum256(material)
-	readiness.Evidence = append(append([]DelegateHarnessReadinessEvidence(nil), readiness.Evidence...), DelegateHarnessReadinessEvidence{
-		Kind:     "execution_profile",
+	if !reflect.DeepEqual(plan, validated) {
+		return DelegateHarnessReadinessResult{}, errors.New("execution profile projection disagrees with canonical snapshot")
+	}
+	sum := sha256.Sum256(plan.Snapshot)
+	readiness.ExecutionProfile = &DelegateExecutionProfileReadiness{
 		Ref:      "execution-profile://" + strings.TrimSpace(plan.ID),
 		Revision: "sha256:" + hex.EncodeToString(sum[:]),
-		Body:     append(json.RawMessage(nil), material...),
-	})
+		Snapshot: append(json.RawMessage(nil), plan.Snapshot...),
+	}
 	return readiness, nil
 }
 
-func delegateHarnessFamily(harness string) string {
-	normalized := strings.ToLower(strings.TrimSpace(harness))
-	switch normalized {
-	case "claude_code", "claude_zai", "claude_minimax", "claude_qwen", "claude_zai_full":
-		return "claude-code"
-	case "worker":
-		return "worker"
-	default:
-		if strings.HasPrefix(normalized, "codex") {
-			return "codex"
+func validateDelegateExecutionProfileBinding(plan *DelegateExecutionProfilePlan, readiness *DelegateHarnessReadinessResult) error {
+	var proof *DelegateExecutionProfileReadiness
+	if readiness != nil {
+		proof = readiness.ExecutionProfile
+		for _, evidence := range readiness.Evidence {
+			if evidence.Kind == "execution_profile" {
+				return errors.New("execution profile proof must use the typed readiness field")
+			}
 		}
-		return ""
 	}
+	if plan == nil {
+		if proof != nil {
+			return errors.New("execution profile readiness proof has no bound plan")
+		}
+		return nil
+	}
+	if proof == nil {
+		return errors.New("bound execution profile has no typed readiness proof")
+	}
+	validated, err := delegateExecutionProfilePlanFromSnapshot(plan.Snapshot)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(plan, validated) {
+		return errors.New("bound execution profile projection disagrees with canonical snapshot")
+	}
+	if !bytes.Equal(proof.Snapshot, plan.Snapshot) {
+		return errors.New("execution profile readiness snapshot disagrees with bound plan")
+	}
+	if _, err := delegateExecutionProfilePlanFromSnapshot(proof.Snapshot); err != nil {
+		return fmt.Errorf("execution profile readiness snapshot: %w", err)
+	}
+	wantRef := "execution-profile://" + strings.TrimSpace(plan.ID)
+	if proof.Ref != wantRef {
+		return fmt.Errorf("execution profile readiness ref = %q, want %q", proof.Ref, wantRef)
+	}
+	sum := sha256.Sum256(proof.Snapshot)
+	wantRevision := "sha256:" + hex.EncodeToString(sum[:])
+	if proof.Revision != wantRevision {
+		return fmt.Errorf("execution profile readiness revision = %q, want %q", proof.Revision, wantRevision)
+	}
+	canonicalReadiness, err := finalizeDelegateReadinessSnapshot(*readiness)
+	if err != nil {
+		return err
+	}
+	if readiness.SnapshotRevision != canonicalReadiness.SnapshotRevision {
+		return fmt.Errorf("execution profile readiness snapshot_revision = %q, want %q", readiness.SnapshotRevision, canonicalReadiness.SnapshotRevision)
+	}
+	return nil
 }
 
 func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateResult, error) {
@@ -668,6 +889,10 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		}
 		return out, nil
 	}
+	out.Lane = strings.TrimSpace(resolution.LaneID)
+	if out.Lane == "" {
+		out.Lane = laneForGuard
+	}
 	executionProfileResolver := DelegateExecutionProfileResolver
 	var executionProfile *DelegateExecutionProfilePlan
 	if delegateExecutionProfileSelected(opts.ExecutionProfile) {
@@ -686,7 +911,9 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			return out, nil
 		}
 		resolvedProfile, profileErr := executionProfileResolver(DelegateExecutionProfileResolveRequest{
-			Intent: opts.ExecutionProfile,
+			Intent:          opts.ExecutionProfile,
+			SelectedHarness: resolvedHarness,
+			SelectedLaneID:  out.Lane,
 		})
 		if profileErr != nil {
 			out.Refusal = &DelegateRefusal{
@@ -695,32 +922,24 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 			}
 			return out, nil
 		}
-		executionProfile = cloneDelegateExecutionProfilePlan(resolvedProfile)
-		if executionProfile == nil || strings.TrimSpace(executionProfile.ID) == "" {
+		executionProfile, profileErr = validateDelegateExecutionProfileResolution(resolvedProfile, resolvedHarness, out.Lane)
+		var incompatible *delegateExecutionProfileIncompatibleError
+		if errors.As(profileErr, &incompatible) {
+			out.Refusal = &DelegateRefusal{
+				Reason:  "execution_profile_incompatible",
+				Message: incompatible.Error(),
+			}
+			return out, nil
+		}
+		if profileErr != nil {
 			out.Refusal = &DelegateRefusal{
 				Reason:  "execution_profile_unresolved",
-				Message: "execution profile resolver returned an empty plan",
+				Message: profileErr.Error(),
 			}
 			return out, nil
 		}
-		selectedFamily := delegateHarnessFamily(resolvedHarness)
-		if selectedFamily == "" || selectedFamily != strings.TrimSpace(executionProfile.ClientHarnessID) {
-			out.Refusal = &DelegateRefusal{
-				Reason: "execution_profile_incompatible",
-				Message: fmt.Sprintf(
-					"selected Compound lane harness %q resolves to client family %q, execution profile requires %q",
-					resolvedHarness,
-					selectedFamily,
-					executionProfile.ClientHarnessID,
-				),
-			}
-			return out, nil
-		}
-		out.ExecutionProfile = executionProfile
-	}
-	out.Lane = strings.TrimSpace(resolution.LaneID)
-	if out.Lane == "" {
-		out.Lane = laneForGuard
+		executionProfile = cloneDelegateExecutionProfilePlan(executionProfile)
+		out.ExecutionProfile = cloneDelegateExecutionProfilePlan(executionProfile)
 	}
 
 	w, err := s.Get(out.WorkID)
@@ -990,17 +1209,16 @@ func (s *Store) Delegate(opts DelegateOptions, runner SessionRunner) (DelegateRe
 		revalidatedExecutionProfile := executionProfile
 		if executionProfile != nil {
 			currentProfile, profileErr := executionProfileResolver(DelegateExecutionProfileResolveRequest{
-				Intent: opts.ExecutionProfile,
+				Intent:          opts.ExecutionProfile,
+				SelectedHarness: resolvedHarness,
+				SelectedLaneID:  out.Lane,
 			})
 			if profileErr != nil {
 				return &delegateAuthorityChangedError{detail: "execution profile revalidation failed"}
 			}
-			revalidatedExecutionProfile = cloneDelegateExecutionProfilePlan(currentProfile)
-			if revalidatedExecutionProfile == nil || strings.TrimSpace(revalidatedExecutionProfile.ID) == "" {
-				return &delegateAuthorityChangedError{detail: "execution profile revalidation returned an empty plan"}
-			}
-			if delegateHarnessFamily(resolvedHarness) != strings.TrimSpace(revalidatedExecutionProfile.ClientHarnessID) {
-				return &delegateAuthorityChangedError{detail: "execution profile harness family changed"}
+			revalidatedExecutionProfile, profileErr = validateDelegateExecutionProfileResolution(currentProfile, resolvedHarness, out.Lane)
+			if profileErr != nil {
+				return &delegateAuthorityChangedError{detail: "execution profile revalidation failed: " + profileErr.Error()}
 			}
 		}
 		revalidatedReadiness, err := readinessGuard(readinessRequest)
