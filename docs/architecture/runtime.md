@@ -196,6 +196,11 @@ authoritative ≠ current*.
 
 Current source-delivery close rule (superseding the earlier v0.4 migration wording above): only a revalidated `landed` `compound.work_land_check.v0.5` report is current close evidence. It binds the candidate tip to the latest attached, owned, content-addressed `proof-check:pfrs_*` source snapshot when one exists. Historical v0.3 and v0.4 reports remain readable stale evidence and require a fresh v0.5 check; v0.3 predates repository identity and v0.4 predates sealed proof source identity.
 
+Canonical source proof executes every gate in a detached temporary checkout of
+the sealed HEAD. Only the ceremony-owned ignored inputs are copied as snapshots;
+the original worktree remains the canonical locator and revalidation target, not
+the subprocess execution surface.
+
 ### Universal header (every envelope begins with this)
 ```json
 { "schema_version":"compound.<kind>.v0.1", "id":"kind_...", "created_at":"...",

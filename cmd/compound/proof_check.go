@@ -60,7 +60,7 @@ type proofCheckStep struct {
 	CIPortable bool `json:"-"`
 }
 
-var proofCheckCanonicalRunner = runProofCheckSnapshotContext
+var proofCheckCanonicalRunner = runProofCheckSealedSnapshotContext
 var proofCheckRuntimeArtifactRecorder = recordProofCheckRuntimeArtifact
 
 func cmdProofCheck(args []string) {

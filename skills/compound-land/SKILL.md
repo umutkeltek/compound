@@ -118,6 +118,9 @@ go run ./cmd/compound proof-check --json --base "$PRE_LAND_BASE_SHA" \
   uncommitted candidates and seals repository fingerprint, base SHA, HEAD SHA, tree SHA,
   and clean state. Diff-check and redact both inspect the committed `base...HEAD`. A
   rebase, replay, or new HEAD invalidates the proof and requires a fresh battery.
+- Canonical gates execute in a detached temporary checkout of the sealed HEAD,
+  with only the four ceremony-owned ignored inputs copied as snapshots. The
+  caller worktree is revalidated but is never the gate execution surface.
 - Never "fix" a red gate by weakening
   the gate, deleting the test, or raising a budget — that is the one unforgivable move here.
 - **Remove executor build caches (`.gocache/`, `.cache/`) from the worktree before the battery** —

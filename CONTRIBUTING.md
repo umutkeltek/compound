@@ -144,6 +144,11 @@ skills/                   Agent ceremony definitions
    same committed `base...HEAD`; a rebase, replay, or new HEAD invalidates the prior
    proof and requires a fresh battery.
 
+   Canonical gates run from a detached temporary checkout of that sealed HEAD,
+   with only the four ceremony-owned ignored inputs copied as snapshots. The
+   mutable caller worktree is only revalidated; its bytes are never the gate
+   execution surface.
+
    `--out` is the authoritative report. A new report is private; an ordinary
    existing file keeps its mode. Symlink, non-regular, or raced targets are refused,
    publication is atomic within the captured parent, and timing warnings are sealed

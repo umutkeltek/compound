@@ -118,6 +118,10 @@ Two corollaries worth their own line:
    publication is atomic within the captured parent, and timing warnings are sealed before the
    file, installed artifact, and JSON agree.
 
+   Canonical gates execute from a detached temporary checkout of the sealed HEAD,
+   with only the four ceremony-owned ignored inputs copied as snapshots; the
+   mutable caller worktree is never the gate execution surface.
+
    Since `fc4cd8e3` the home-reading gates (`memory doctor`, workbench projection, the attention
    and agents console smokes) each seed and own a temp `COMPOUND_HOME` and assert its content, so
    their verdict is about the diff rather than about your dev home's size — and they no longer get
