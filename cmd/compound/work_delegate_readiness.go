@@ -128,21 +128,21 @@ func evaluateDelegateHarnessReadiness(req work.DelegateHarnessReadinessRequest) 
 		if reconcileErr != nil {
 			details = append(details, "blocking_hook_live: "+reconcileErr.Error())
 		} else {
-			binding, bindingDetail := delegateDeclaredWriteBlockingBinding(reconciled.Plan, harnessName)
+			binding, bindingDetail := delegateDeclaredMutationBlockingBinding(reconciled.Plan, harnessName)
 			delta := delegateBindingReconciliation(reconciled.Reconciliation, binding)
 			switch {
 			case bindingDetail != "":
 				details = append(details, "blocking_hook_live: "+bindingDetail)
 			case delta == nil:
-				details = append(details, "blocking_hook_live: write-scoped binding has no exact reconciliation")
+				details = append(details, "blocking_hook_live: mutation-covering binding has no exact reconciliation")
 			case delta.State != hookplan.StateReady:
-				details = append(details, "blocking_hook_live: write-scoped binding status="+delta.State)
+				details = append(details, "blocking_hook_live: mutation-covering binding status="+delta.State)
 			case delta.BindingID != binding.ID ||
 				delta.Matcher != binding.Matcher ||
 				delta.DesiredHandlerRef != binding.HandlerRef ||
 				delta.DesiredInvocationRevision != binding.InvocationRevision ||
 				delta.DesiredHandlerRevision != binding.HandlerRevision:
-				details = append(details, "blocking_hook_live: write-scoped reconciliation identity does not match declared binding")
+				details = append(details, "blocking_hook_live: mutation-covering reconciliation identity does not match declared binding")
 			default:
 				evidence = append(evidence,
 					work.DelegateHarnessReadinessEvidence{
@@ -269,33 +269,25 @@ func delegateActivationArgvReadiness(req work.DelegateHarnessReadinessRequest) (
 	}
 }
 
-func delegateDeclaredWriteBlockingBinding(plan hookplan.HookPlan, harnessName string) (*hookplan.Binding, string) {
+func delegateDeclaredMutationBlockingBinding(plan hookplan.HookPlan, harnessName string) (*hookplan.Binding, string) {
 	var match *hookplan.Binding
 	for i := range plan.Bindings {
 		binding := &plan.Bindings[i]
 		if normalizeDelegateReadinessHarness(binding.Harness) != harnessName ||
 			binding.Event != "PreToolUse" ||
 			!binding.Blocking ||
-			!delegateWriteScopedMatcher(binding.Matcher) {
+			binding.Matcher != hookplan.HarnessMatcher(harnessName) {
 			continue
 		}
 		if match != nil {
-			return nil, "write-scoped blocking PreToolUse declaration is ambiguous"
+			return nil, "mutation-covering blocking PreToolUse declaration is ambiguous"
 		}
 		match = binding
 	}
 	if match == nil {
-		return nil, "write-scoped blocking PreToolUse declaration is absent"
+		return nil, "mutation-covering blocking PreToolUse declaration is absent"
 	}
 	return match, ""
-}
-
-func delegateWriteScopedMatcher(matcher string) bool {
-	matcher = strings.ToLower(strings.TrimSpace(matcher))
-	return matcher == "" ||
-		strings.Contains(matcher, "write") ||
-		strings.Contains(matcher, "edit") ||
-		strings.Contains(matcher, "multiedit")
 }
 
 func delegateBindingReconciliation(reconciliation hookplan.Reconciliation, binding *hookplan.Binding) *hookplan.Delta {

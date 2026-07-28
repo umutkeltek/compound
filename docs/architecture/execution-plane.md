@@ -166,9 +166,12 @@ harness-readiness check at that boundary. Permission authority and applied postu
 permission owner hashes the exact target bytes it validated, and the authority revision is re-read
 after posture validation so neither unvalidated replacement bytes nor a mixed-generation check can
 be attested.
-The installed-hooks declaration must expose one exact native-blocking, write-scoped `PreToolUse`
-binding, and read-only live reconciliation must match that binding's id, matcher, invocation, and
-handler bytes—not merely some ready `PreToolUse` row. The current, non-degraded InstructionPack must
+The installed-hooks declaration must expose one exact native-blocking, all-tool/mutation-covering
+`PreToolUse` binding whose matcher equals the current canonical harness matcher (`*` today), keeping
+every shell, browser, connector, messaging, secret, install, deploy, and newly added tool behind the
+action monitor. Read-only live reconciliation must still match that binding's id, matcher, invocation
+revision, and handler revision—not merely some ready `PreToolUse` row. The current, non-degraded
+InstructionPack must
 agree with current policy/hook authorities, while the WorkEnvelope's ContextPack selects its
 immutable owned EffectiveContract artifact by `contract_id`; rotation of the unrelated
 `contracts/effective/latest.json` projection cannot invalidate older work.

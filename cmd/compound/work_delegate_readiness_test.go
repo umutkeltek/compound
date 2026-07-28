@@ -117,7 +117,7 @@ func TestEvaluateDelegateHarnessReadinessBindsExecutableLiveHookAndWorkContext(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if liveDrift.Ready || !strings.Contains(strings.Join(liveDrift.Details, "\n"), "blocking_hook_live: write-scoped binding status=missing") {
+	if liveDrift.Ready || !strings.Contains(strings.Join(liveDrift.Details, "\n"), "blocking_hook_live: mutation-covering binding status=missing") {
 		t.Fatalf("missing live profile hook admitted: %+v", liveDrift)
 	}
 }
@@ -175,7 +175,7 @@ func TestEvaluateDelegateHarnessReadinessRejectsUnrelatedEffectiveContract(t *te
 	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_wrong_contract")
 	effective := fixture.effective
 	effective.Harness = "codex"
-	recordDelegateRuntimeForTest(t, fixture.compoundHome, effective, fixture.workID, fixture.workspace, fixture.now.Add(time.Minute))
+	runtime := recordDelegateRuntimeForTest(t, fixture.compoundHome, effective, fixture.workID, fixture.workspace, fixture.now.Add(time.Minute))
 	if _, err := harness.RenderInstructionPack(fixture.compoundHome, fixture.harness, fixture.now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestEvaluateDelegateHarnessReadinessRejectsUnrelatedEffectiveContract(t *te
 		HomePath:               fixture.compoundHome,
 		HarnessHome:            fixture.harnessHome,
 		WorkID:                 fixture.workID,
-		ContextPackID:          fixture.contextPackID,
+		ContextPackID:          runtime.ContextPack.ID,
 		Workspace:              fixture.workspace,
 		Harness:                fixture.harness,
 		LaneID:                 fixture.harness,
@@ -243,9 +243,9 @@ func TestEvaluateDelegateHarnessReadinessUsesWorkBoundImmutableContract(t *testi
 	}
 }
 
-func TestEvaluateDelegateHarnessReadinessRequiresExactDeclaredWriteHookBinding(t *testing.T) {
-	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_exact_write_hook")
-	installReadyReadButMissingWriteHook(t, fixture)
+func TestEvaluateDelegateHarnessReadinessRequiresExactDeclaredMutationCoveringHookBinding(t *testing.T) {
+	fixture := buildReadyDelegateHarnessFixture(t, "work_delegate_exact_mutation_hook")
+	installReadyReadButMissingMutationHook(t, fixture)
 
 	result, err := evaluateDelegateHarnessReadiness(work.DelegateHarnessReadinessRequest{
 		HomePath:               fixture.compoundHome,
@@ -263,8 +263,43 @@ func TestEvaluateDelegateHarnessReadinessRequiresExactDeclaredWriteHookBinding(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Ready || !strings.Contains(strings.Join(result.Details, "\n"), "blocking_hook_live: write-scoped") {
-		t.Fatalf("unrelated ready PreToolUse binding substituted for missing write gate: %+v", result)
+	if result.Ready || !strings.Contains(strings.Join(result.Details, "\n"), "blocking_hook_live: mutation-covering") {
+		t.Fatalf("unrelated ready PreToolUse binding substituted for missing mutation-covering gate: %+v", result)
+	}
+}
+
+func TestDelegateDeclaredMutationBlockingBindingRequiresCanonicalAllToolMatcher(t *testing.T) {
+	const harnessName = "claude_zai"
+	binding := hookplan.Binding{
+		ID:       "hook_fixture",
+		Harness:  "claude-zai",
+		Event:    "PreToolUse",
+		Blocking: true,
+	}
+
+	binding.Matcher = hookplan.HarnessMatcher(harnessName)
+	got, detail := delegateDeclaredMutationBlockingBinding(hookplan.HookPlan{Bindings: []hookplan.Binding{binding}}, harnessName)
+	if got == nil || detail != "" {
+		t.Fatalf("canonical all-tool matcher rejected: binding=%+v detail=%q", got, detail)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		matcher string
+	}{
+		{name: "empty", matcher: ""},
+		{name: "read only", matcher: "Read"},
+		{name: "substring lookalike", matcher: "ReadEditMetadata"},
+		{name: "legacy write tools", matcher: "Write|Edit|MultiEdit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binding.Matcher = tc.matcher
+			got, detail := delegateDeclaredMutationBlockingBinding(hookplan.HookPlan{Bindings: []hookplan.Binding{binding}}, harnessName)
+			if got != nil || !strings.Contains(detail, "is absent") {
+				t.Fatalf("non-canonical matcher %q substituted for canonical %q: binding=%+v detail=%q",
+					tc.matcher, hookplan.HarnessMatcher(harnessName), got, detail)
+			}
+		})
 	}
 }
 
@@ -736,25 +771,8 @@ func removeDelegateFixturePreToolUse(t *testing.T, profilePath string) {
 	writeDelegateReadinessJSON(t, profilePath, settings)
 }
 
-func installReadyReadButMissingWriteHook(t *testing.T, fixture readyDelegateHarnessFixture) {
+func installReadyReadButMissingMutationHook(t *testing.T, fixture readyDelegateHarnessFixture) {
 	t.Helper()
-	source := filepath.Join(t.TempDir(), "hook-registration.ts")
-	const registration = `const HOME = "${HOME}"
-export const HOOK_REGISTRATIONS = [
-  { harness: "claude-zai", event: "PreToolUse", matcher: "Read", file: "compound", command: ` + "`${HOME}/.local/bin/compound hook pre-tool-use --live --harness claude-zai`" + ` },
-  { harness: "claude-zai", event: "PreToolUse", matcher: "Write|Edit|MultiEdit", file: "compound", command: ` + "`${HOME}/.local/bin/compound hook pre-tool-use --live --harness claude-zai`" + ` },
-]
-`
-	if err := os.WriteFile(source, []byte(registration), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := contract.StageSyntheticHookHandlers(fixture.harnessHome, source); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := contract.ImportHookRegistrationTS(fixture.compoundHome, source, fixture.now.Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-
 	var settings map[string]any
 	readDelegateReadinessJSONForTest(t, fixture.profilePath, &settings)
 	hooks, ok := settings["hooks"].(map[string]any)
@@ -768,13 +786,13 @@ export const HOOK_REGISTRATIONS = [
 	var commandHooks []any
 	for _, raw := range groups {
 		group, _ := raw.(map[string]any)
-		if group["matcher"] == "Write|Edit|MultiEdit" {
+		if group["matcher"] == "*" {
 			commandHooks, _ = group["hooks"].([]any)
 			break
 		}
 	}
 	if len(commandHooks) == 0 {
-		t.Fatalf("profile missing baseline write hook: %#v", groups)
+		t.Fatalf("profile missing baseline mutation-covering hook: %#v", groups)
 	}
 	hooks["PreToolUse"] = []any{map[string]any{
 		"matcher": "Read",
