@@ -29,7 +29,7 @@ func resolveDelegateExecutionProfile(req work.DelegateExecutionProfileResolveReq
 		return nil, fmt.Errorf("marshal execution profile plan snapshot: %w", err)
 	}
 	disposition := work.DelegateExecutionProfileIncompatible
-	if normalizeModelCapabilitySelector(req.SelectedHarness) == normalizeModelCapabilitySelector(plan.ClientHarnessID) {
+	if delegateExecutionProfileHarnessesCompatible(req.SelectedHarness, req.SelectedLaneID, plan.ClientHarnessID) {
 		disposition = work.DelegateExecutionProfileCompatible
 	}
 	return &work.DelegateExecutionProfileResolution{
@@ -44,6 +44,31 @@ func resolveDelegateExecutionProfile(req work.DelegateExecutionProfileResolveReq
 			RequestedNativeEffort: plan.NativeEffort.Requested,
 		},
 	}, nil
+}
+
+// delegateExecutionProfileHarnessesCompatible keeps client-family ownership
+// beside the routeevidence tuple resolver. The accepted delegate identities
+// are the exact Claude/Codex harnesses currently enrolled by Compound's
+// HarnessRegistry; normalization only makes their declared hyphen/underscore
+// spellings equivalent. Unknown prefix lookalikes remain unregistered.
+func delegateExecutionProfileHarnessesCompatible(selectedHarness, selectedLaneID, clientHarnessID string) bool {
+	selectedFamily, selectedRegistered := registeredDelegateClientHarnessFamily(selectedHarness)
+	laneFamily, laneRegistered := registeredDelegateClientHarnessFamily(selectedLaneID)
+	return selectedRegistered &&
+		laneRegistered &&
+		selectedFamily == laneFamily &&
+		selectedFamily == normalizeModelCapabilitySelector(clientHarnessID)
+}
+
+func registeredDelegateClientHarnessFamily(harness string) (string, bool) {
+	switch normalizeModelCapabilitySelector(harness) {
+	case "claude_code", "claude_zai", "claude_minimax", "claude_qwen", "claude_zai_full":
+		return "claude_code", true
+	case "codex":
+		return "codex", true
+	default:
+		return "", false
+	}
 }
 
 func init() {

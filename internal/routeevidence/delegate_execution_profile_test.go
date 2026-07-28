@@ -46,18 +46,29 @@ func TestResolveDelegateExecutionProfileAttestsOnlyExactRegisteredHarnessFamilie
 	for _, tc := range []struct {
 		name          string
 		selected      string
+		lane          string
 		clientHarness string
 		want          string
 	}{
-		{name: "registered Claude family", selected: "claude-code", clientHarness: "claude-code", want: work.DelegateExecutionProfileCompatible},
-		{name: "registered Codex family", selected: "codex", clientHarness: "codex", want: work.DelegateExecutionProfileCompatible},
-		{name: "unknown Claude lookalike", selected: "claude-code-preview", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
-		{name: "unknown Codex lookalike", selected: "codex-preview", clientHarness: "codex", want: work.DelegateExecutionProfileIncompatible},
+		{name: "registered Claude Code hyphen", selected: "claude-code", lane: "claude-code", clientHarness: "claude-code", want: work.DelegateExecutionProfileCompatible},
+		{name: "registered Claude Code underscore", selected: "claude_code", lane: "claude_code", clientHarness: "claude-code", want: work.DelegateExecutionProfileCompatible},
+		{name: "registered Claude ZAI hyphen", selected: "claude-zai", lane: "claude-zai", clientHarness: "claude-code", want: work.DelegateExecutionProfileCompatible},
+		{name: "registered Claude ZAI underscore", selected: "claude_zai", lane: "claude_zai", clientHarness: "claude-code", want: work.DelegateExecutionProfileCompatible},
+		{name: "registered Claude MiniMax", selected: "claude_minimax", lane: "claude_minimax", clientHarness: "claude-code", want: work.DelegateExecutionProfileCompatible},
+		{name: "registered Claude Qwen", selected: "claude_qwen", lane: "claude_qwen", clientHarness: "claude-code", want: work.DelegateExecutionProfileCompatible},
+		{name: "registered Claude ZAI full", selected: "claude_zai_full", lane: "claude_zai_full", clientHarness: "claude-code", want: work.DelegateExecutionProfileCompatible},
+		{name: "registered Codex", selected: "codex", lane: "codex", clientHarness: "codex", want: work.DelegateExecutionProfileCompatible},
+		{name: "unknown Claude lookalike", selected: "claude_preview", lane: "claude_preview", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
+		{name: "unknown Claude suffix", selected: "claude_zai_preview", lane: "claude_zai_preview", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
+		{name: "unknown Codex lookalike", selected: "codex-preview", lane: "codex-preview", clientHarness: "codex", want: work.DelegateExecutionProfileIncompatible},
+		{name: "Claude lane with Codex client", selected: "claude_qwen", lane: "claude_qwen", clientHarness: "codex", want: work.DelegateExecutionProfileIncompatible},
+		{name: "Codex lane with Claude client", selected: "codex", lane: "codex", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
+		{name: "mixed selected harness and lane families", selected: "claude_code", lane: "codex", clientHarness: "claude-code", want: work.DelegateExecutionProfileIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resolved, err := resolveDelegateExecutionProfile(work.DelegateExecutionProfileResolveRequest{
 				SelectedHarness: tc.selected,
-				SelectedLaneID:  tc.selected,
+				SelectedLaneID:  tc.lane,
 				Intent: work.DelegateExecutionProfileIntent{
 					ProfileID:       "coding-implementation",
 					ClientHarnessID: tc.clientHarness,
