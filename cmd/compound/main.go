@@ -896,6 +896,9 @@ func cmdRoute(args []string) {
 	if tryRouteExecutionProfileCommand(args) {
 		return
 	}
+	if tryRouteExperimentPlanCommand(args) {
+		return
+	}
 	homePath, err := home.Resolve("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
