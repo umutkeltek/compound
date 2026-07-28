@@ -51,6 +51,10 @@ const (
 	mcpLegacyProtocolVersion = "2024-11-05"
 	mcpModernProtocolVersion = "2026-07-28"
 	mcpModernCacheTTLMillis  = 3600000
+	mcpModernProtocolMetaKey = "io.modelcontextprotocol/protocolVersion"
+	mcpModernClientCapsKey   = "io.modelcontextprotocol/clientCapabilities"
+	mcpModernClientInfoKey   = "io.modelcontextprotocol/clientInfo"
+	mcpMaxVersionEchoChars   = 64
 	mcpFindingToolName       = "compound_finding_record"
 	mcpOrientToolName        = "compound_orient_recall"
 	// mcpMaxLineBytes is the request-line byte budget enforced at the framing
@@ -130,8 +134,9 @@ type jsonRPCRequest struct {
 // body bytes, no private paths, no internal stack frames) so the transport
 // cannot accidentally become a leak channel.
 type jsonRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
 }
 
 // mcpInitializeResult is the result of an MCP `initialize` request.
@@ -177,6 +182,28 @@ type mcpDiscoverResult struct {
 	TTLMillis         int                   `json:"ttlMs"`
 	CacheScope        string                `json:"cacheScope"`
 	Meta              mcpModernResponseMeta `json:"_meta"`
+}
+
+type mcpModernToolsListResult struct {
+	ResultType string                `json:"resultType"`
+	Tools      []mcpToolDescriptor   `json:"tools"`
+	TTLMillis  int                   `json:"ttlMs"`
+	CacheScope string                `json:"cacheScope"`
+	Meta       mcpModernResponseMeta `json:"_meta"`
+}
+
+type mcpModernCompleteResult struct {
+	ResultType string `json:"resultType"`
+}
+
+type mcpModernRequestContext struct {
+	ProtocolVersion string
+	Meta            map[string]json.RawMessage
+}
+
+type mcpUnsupportedProtocolVersionData struct {
+	Supported []string `json:"supported"`
+	Requested string   `json:"requested"`
 }
 
 // mcpToolDescriptor is one entry in `tools/list`. The JSON Schema field is
@@ -275,13 +302,14 @@ type mcpOrientPersistedArtifacts struct {
 // JSON-RPC 2.0 standard error codes (spec §5.1) plus MCP-specific extension
 // codes for bounded domain errors.
 const (
-	rpcParseError           = -32700
-	rpcInvalidRequest       = -32600
-	rpcMethodNotFound       = -32601
-	rpcInvalidParams        = -32602
-	rpcInternalError        = -32603
-	rpcToolUnavailable      = -32001
-	rpcServerNotInitialized = -32002
+	rpcParseError                 = -32700
+	rpcInvalidRequest             = -32600
+	rpcMethodNotFound             = -32601
+	rpcInvalidParams              = -32602
+	rpcInternalError              = -32603
+	rpcUnsupportedProtocolVersion = -32022
+	rpcToolUnavailable            = -32001
+	rpcServerNotInitialized       = -32002
 )
 
 type mcpLifecycle uint8
@@ -388,7 +416,8 @@ func dispatchJSONRPC(session *mcpSession, raw []byte) []byte {
 	if isNotification {
 		switch req.Method {
 		case "notifications/initialized":
-			if session.lifecycle == mcpLifecycleAwaitingInitialized {
+			modern, metadataError := mcpModernRequest(req.Params)
+			if metadataError == nil && modern == nil && session.lifecycle == mcpLifecycleAwaitingInitialized {
 				session.lifecycle = mcpLifecycleReady
 			}
 		case "notifications/cancelled":
@@ -397,11 +426,26 @@ func dispatchJSONRPC(session *mcpSession, raw []byte) []byte {
 		return nil
 	}
 
+	if req.Method == "server/discover" {
+		return respondToID(req.ID, mcpHandleServerDiscover(req.Params))
+	}
+	modern, metadataError := mcpModernRequest(req.Params)
+	if metadataError != nil {
+		return respondToID(req.ID, metadataError)
+	}
+	if modern != nil {
+		if modern.ProtocolVersion != mcpModernProtocolVersion {
+			return respondToID(req.ID, mcpUnsupportedVersionError(modern.ProtocolVersion))
+		}
+		if err := validateMCPModernMetadata(modern.Meta); err != nil {
+			return respondToID(req.ID, err)
+		}
+		return respondToID(req.ID, dispatchModernJSONRPC(req))
+	}
+
 	switch req.Method {
 	case "initialize":
 		return respondToID(req.ID, session.handleInitialize(req.Params))
-	case "server/discover":
-		return respondToID(req.ID, mcpHandleServerDiscover(req.Params))
 	case "ping":
 		return respondToID(req.ID, struct{}{})
 	case "tools/list":
@@ -417,6 +461,112 @@ func dispatchJSONRPC(session *mcpSession, raw []byte) []byte {
 	default:
 		return respondToID(req.ID, &jsonRPCError{Code: rpcMethodNotFound, Message: "method not found"})
 	}
+}
+
+func mcpModernRequest(rawParams json.RawMessage) (*mcpModernRequestContext, *jsonRPCError) {
+	if len(rawParams) == 0 {
+		return nil, nil
+	}
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(rawParams, &params); err != nil || params == nil {
+		return nil, nil
+	}
+	rawMeta, hasMeta := params["_meta"]
+	if !hasMeta {
+		return nil, nil
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(rawMeta, &meta); err != nil || meta == nil {
+		return nil, &jsonRPCError{Code: rpcInvalidParams, Message: "invalid request metadata"}
+	}
+	rawVersion, hasVersion := meta[mcpModernProtocolMetaKey]
+	if !hasVersion {
+		return nil, nil
+	}
+	var version string
+	if err := json.Unmarshal(rawVersion, &version); err != nil {
+		return nil, &jsonRPCError{Code: rpcInvalidParams, Message: "invalid request metadata"}
+	}
+	return &mcpModernRequestContext{ProtocolVersion: version, Meta: meta}, nil
+}
+
+func mcpUnsupportedVersionError(requested string) *jsonRPCError {
+	return &jsonRPCError{
+		Code:    rpcUnsupportedProtocolVersion,
+		Message: "Unsupported protocol version",
+		Data: mcpUnsupportedProtocolVersionData{
+			Supported: []string{mcpModernProtocolVersion},
+			Requested: boundedProtocolVersionEcho(requested),
+		},
+	}
+}
+
+func validateMCPModernMetadata(meta map[string]json.RawMessage) *jsonRPCError {
+	capabilities, ok := meta[mcpModernClientCapsKey]
+	if !ok || !validJSONObject(capabilities) {
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid request metadata"}
+	}
+	rawClientInfo, hasClientInfo := meta[mcpModernClientInfoKey]
+	if !hasClientInfo {
+		return nil
+	}
+	var clientInfo map[string]json.RawMessage
+	if err := json.Unmarshal(rawClientInfo, &clientInfo); err != nil || clientInfo == nil {
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid request metadata"}
+	}
+	for _, field := range []struct {
+		name     string
+		maxChars int
+	}{
+		{name: "name", maxChars: mcpMaxClientNameChars},
+		{name: "version", maxChars: mcpMaxClientVersionChars},
+		{name: "title", maxChars: mcpMaxClientTitleChars},
+	} {
+		rawValue, present := clientInfo[field.name]
+		if !present {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(rawValue, &value); err != nil ||
+			!validBoundedNonBlank(value, field.maxChars, nil) {
+			return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid request metadata"}
+		}
+	}
+	return nil
+}
+
+func dispatchModernJSONRPC(req jsonRPCRequest) interface{} {
+	switch req.Method {
+	case "ping":
+		if err := validateMCPModernMetaOnlyParams(req.Params); err != nil {
+			return err
+		}
+		return mcpModernCompleteResult{ResultType: "complete"}
+	case "tools/list":
+		if err := validateMCPModernMetaOnlyParams(req.Params); err != nil {
+			return err
+		}
+		return mcpModernToolsListResult{
+			ResultType: "complete",
+			Tools: []mcpToolDescriptor{
+				mcpFindingRecordDescriptor(),
+				mcpOrientRecallDescriptor(),
+			},
+			TTLMillis:  mcpModernCacheTTLMillis,
+			CacheScope: "public",
+			Meta:       mcpModernServerMeta(),
+		}
+	default:
+		return &jsonRPCError{Code: rpcMethodNotFound, Message: "method not found"}
+	}
+}
+
+func validateMCPModernMetaOnlyParams(rawParams json.RawMessage) *jsonRPCError {
+	var params mcpModernMetaParams
+	if err := strictDecodeArgs(rawParams, &params); err != nil {
+		return &jsonRPCError{Code: rpcInvalidParams, Message: "invalid params"}
+	}
+	return nil
 }
 
 func mcpHandleServerDiscover(rawParams json.RawMessage) interface{} {
@@ -770,6 +920,14 @@ func validBoundedNonBlank(value string, maxChars int, pattern *regexp.Regexp) bo
 		return false
 	}
 	return pattern == nil || pattern.MatchString(value)
+}
+
+func boundedProtocolVersionEcho(value string) string {
+	runes := []rune(value)
+	if len(runes) <= mcpMaxVersionEchoChars {
+		return value
+	}
+	return string(runes[:mcpMaxVersionEchoChars])
 }
 
 // boundedRecallRefs caps count and bytes, and rejects refs containing local

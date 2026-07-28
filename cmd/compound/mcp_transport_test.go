@@ -352,6 +352,204 @@ func TestMCPTransportToolsListReturnsExactlyTwoTools(t *testing.T) {
 	}
 }
 
+func TestMCPTransportModern_ToolsListStatelessWithCachingHints(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	request := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "modern-list",
+		"method":  "tools/list",
+		"params":  map[string]any{"_meta": modernMeta(mcpTestModernProtocolVersion)},
+	}
+	env := rawResp(t, runModernMCPTransport(t, nil, []string{string(mustJSON(t, request))}, homePath), "modern-list")
+	if env["error"] != nil {
+		t.Fatalf("modern tools/list returned error: %+v", env["error"])
+	}
+	result, ok := env["result"].(map[string]interface{})
+	if !ok || len(result) != 5 {
+		t.Fatalf("modern tools/list result = %v, want exact five-field result", env["result"])
+	}
+	if result["resultType"] != "complete" {
+		t.Fatalf("resultType = %v, want complete", result["resultType"])
+	}
+	tools, ok := result["tools"].([]interface{})
+	if !ok || len(tools) != 2 {
+		t.Fatalf("tools = %v, want exactly two descriptors", result["tools"])
+	}
+	if got := tools[0].(map[string]interface{})["name"]; got != mcpFindingToolName {
+		t.Fatalf("first tool = %v, want %q", got, mcpFindingToolName)
+	}
+	if got := tools[1].(map[string]interface{})["name"]; got != mcpOrientToolName {
+		t.Fatalf("second tool = %v, want %q", got, mcpOrientToolName)
+	}
+	if result["ttlMs"] != float64(3600000) || result["cacheScope"] != "public" {
+		t.Fatalf("caching hints = ttlMs:%v cacheScope:%v", result["ttlMs"], result["cacheScope"])
+	}
+	assertMCPModernServerInfo(t, result)
+}
+
+func TestMCPTransportModern_UnsupportedVersionReturns32022(t *testing.T) {
+	for index, version := range []string{"2025-06-18", "1900-01-01"} {
+		t.Run(version, func(t *testing.T) {
+			homePath := initMCPTestHome(t)
+			request := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      index + 1,
+				"method":  "tools/list",
+				"params":  map[string]any{"_meta": modernMeta(version)},
+			}
+			errObject := rawResp(t, runModernMCPTransport(t, nil, []string{string(mustJSON(t, request))}, homePath), index+1)["error"].(map[string]interface{})
+			if errObject["code"] != float64(-32022) {
+				t.Fatalf("code = %v, want -32022", errObject["code"])
+			}
+			if errObject["message"] != "Unsupported protocol version" {
+				t.Fatalf("message = %v, want bounded protocol error", errObject["message"])
+			}
+			data, ok := errObject["data"].(map[string]interface{})
+			if !ok || len(data) != 2 {
+				t.Fatalf("data = %v, want supported/requested only", errObject["data"])
+			}
+			supported, ok := data["supported"].([]interface{})
+			if !ok || len(supported) != 1 || supported[0] != mcpTestModernProtocolVersion {
+				t.Fatalf("supported = %v, want [%q]", data["supported"], mcpTestModernProtocolVersion)
+			}
+			if data["requested"] != version {
+				t.Fatalf("requested = %v, want %q", data["requested"], version)
+			}
+		})
+	}
+}
+
+func TestMCPTransportModern_MissingClientCapabilitiesReturns32602(t *testing.T) {
+	validVersion := map[string]any{
+		"io.modelcontextprotocol/protocolVersion": mcpTestModernProtocolVersion,
+	}
+	tooLongName := strings.Repeat("n", mcpMaxClientNameChars+1)
+	tooLongVersion := strings.Repeat("v", mcpMaxClientVersionChars+1)
+	tests := []struct {
+		name string
+		meta any
+	}{
+		{name: "missing capabilities", meta: validVersion},
+		{name: "meta not object", meta: []any{mcpTestModernProtocolVersion}},
+		{name: "protocol version not string", meta: map[string]any{
+			"io.modelcontextprotocol/protocolVersion":    20260728,
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+		}},
+		{name: "capabilities not object", meta: map[string]any{
+			"io.modelcontextprotocol/protocolVersion":    mcpTestModernProtocolVersion,
+			"io.modelcontextprotocol/clientCapabilities": []any{},
+		}},
+		{name: "client info not object", meta: map[string]any{
+			"io.modelcontextprotocol/protocolVersion":    mcpTestModernProtocolVersion,
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+			"io.modelcontextprotocol/clientInfo":         "invalid",
+		}},
+		{name: "client name over cap", meta: map[string]any{
+			"io.modelcontextprotocol/protocolVersion":    mcpTestModernProtocolVersion,
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+			"io.modelcontextprotocol/clientInfo":         map[string]any{"name": tooLongName},
+		}},
+		{name: "client version over cap", meta: map[string]any{
+			"io.modelcontextprotocol/protocolVersion":    mcpTestModernProtocolVersion,
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+			"io.modelcontextprotocol/clientInfo":         map[string]any{"version": tooLongVersion},
+		}},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			homePath := initMCPTestHome(t)
+			request := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      index + 1,
+				"method":  "tools/list",
+				"params":  map[string]any{"_meta": test.meta},
+			}
+			errObject := rawResp(t, runModernMCPTransport(t, nil, []string{string(mustJSON(t, request))}, homePath), index+1)["error"].(map[string]interface{})
+			if errObject["code"] != float64(rpcInvalidParams) {
+				t.Fatalf("code = %v, want %d", errObject["code"], rpcInvalidParams)
+			}
+		})
+	}
+}
+
+func TestMCPTransportModern_ErrorsNeverLeakPathsOrInternalText(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	sentinel := homePath + ": synthetic modern raw body sentinel"
+	unsupportedMeta := modernMeta("2025-06-18")
+	unsupportedMeta["undocumented"] = sentinel
+	requests := []string{
+		string(mustJSON(t, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      "unsupported",
+			"method":  "tools/list",
+			"params":  map[string]any{"_meta": unsupportedMeta, "rawBody": sentinel},
+		})),
+		string(mustJSON(t, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      "invalid",
+			"method":  "tools/list",
+			"params": map[string]any{"_meta": map[string]any{
+				"io.modelcontextprotocol/protocolVersion": mcpTestModernProtocolVersion,
+				"io.modelcontextprotocol/clientInfo":      map[string]any{"note": sentinel},
+			}},
+		})),
+	}
+	lines := runModernMCPTransport(t, nil, requests, homePath)
+	wire := strings.Join(lines, "\n")
+	if strings.Contains(wire, homePath) || strings.Contains(wire, "synthetic modern raw body sentinel") {
+		t.Fatalf("modern errors leaked request or path bytes: %s", wire)
+	}
+	unsupportedError := rawResp(t, lines, "unsupported")["error"].(map[string]interface{})
+	data, ok := unsupportedError["data"].(map[string]interface{})
+	if !ok || len(data) != 2 {
+		t.Fatalf("unsupported-version data = %v, want exactly supported/requested", unsupportedError["data"])
+	}
+	if _, ok := data["supported"]; !ok {
+		t.Fatalf("unsupported-version data missing supported: %v", data)
+	}
+	if _, ok := data["requested"]; !ok {
+		t.Fatalf("unsupported-version data missing requested: %v", data)
+	}
+}
+
+func TestMCPTransportModern_OversizedDeclaredVersionEchoBounded(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	version := strings.Repeat("v", 300)
+	request := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "oversized-version",
+		"method":  "tools/list",
+		"params":  map[string]any{"_meta": modernMeta(version)},
+	}
+	errObject := rawResp(t, runModernMCPTransport(t, nil, []string{string(mustJSON(t, request))}, homePath), "oversized-version")["error"].(map[string]interface{})
+	if errObject["code"] != float64(-32022) {
+		t.Fatalf("code = %v, want -32022", errObject["code"])
+	}
+	data, ok := errObject["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing error data: %+v", errObject)
+	}
+	requested, ok := data["requested"].(string)
+	if !ok || len(requested) > 64 {
+		t.Fatalf("requested echo length = %d, want <= 64", len(requested))
+	}
+}
+
+func assertMCPModernServerInfo(t *testing.T, result map[string]interface{}) {
+	t.Helper()
+	meta, ok := result["_meta"].(map[string]interface{})
+	if !ok || len(meta) != 1 {
+		t.Fatalf("_meta = %v, want serverInfo-only object", result["_meta"])
+	}
+	serverInfo, ok := meta["io.modelcontextprotocol/serverInfo"].(map[string]interface{})
+	if !ok || len(serverInfo) != 2 {
+		t.Fatalf("serverInfo = %v, want exact name/version", meta["io.modelcontextprotocol/serverInfo"])
+	}
+	if serverInfo["name"] != mcpServerName || serverInfo["version"] != mcpServerVersion {
+		t.Fatalf("serverInfo = %v, want %s@%s", serverInfo, mcpServerName, mcpServerVersion)
+	}
+}
+
 // ---------- tools/call · finding_record ----------
 
 func TestMCPTransportFindingRecordWritesToObservedFindingsAndReturnsBodyFreeAck(t *testing.T) {
