@@ -66,6 +66,57 @@ func TestExecutionBarrierBlocksExpiredAcquireAndStealUntilAllHoldersExit(t *test
 	}
 }
 
+func TestReleaseAfterRefusesActiveInheritedExecutionBarrierBeforeFinalizer(t *testing.T) {
+	homePath := t.TempDir()
+	holder := "proof:pfr_release_after:ratt_20260102T030405Z_abababab:work_release_after:codex-release-after"
+	_, barrier, err := AcquireWithExecutionBarrierPrepared(
+		homePath,
+		holder,
+		time.Minute,
+		baseNow,
+		func(AcquireOutcome) error { return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = barrier.Close() })
+
+	inherited, err := barrier.DuplicateForChild()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = inherited.Close() })
+	if err := barrier.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	finalizerCalled := false
+	released, err := ReleaseAfter(homePath, holder, baseNow.Add(time.Second), func() error {
+		finalizerCalled = true
+		return nil
+	})
+	if err == nil {
+		t.Fatalf("ReleaseAfter bypassed active inherited execution barrier: %+v", released)
+	}
+	var pending *ExecutionPendingError
+	if !errors.As(err, &pending) {
+		t.Fatalf("ReleaseAfter error = %v, want ExecutionPendingError", err)
+	}
+	if finalizerCalled {
+		t.Fatal("ReleaseAfter invoked finalizer while inherited execution barrier was pending")
+	}
+	if released.Freed {
+		t.Fatalf("refused ReleaseAfter reported Freed: %+v", released)
+	}
+	status, err := Status(homePath, baseNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Held || status.Holder != holder {
+		t.Fatalf("refused ReleaseAfter released or transferred lease: %+v", status)
+	}
+}
+
 func TestReleaseRefusesProofHolderUntilExecutionTerminationIsAttested(t *testing.T) {
 	t.Run("active execution barrier keeps lease held", func(t *testing.T) {
 		homePath := t.TempDir()

@@ -623,6 +623,13 @@ func ReleaseAfter(home, holder string, now time.Time, finalize func() error) (Re
 		if !current.live(now) {
 			return fmt.Errorf("land-lease for %q expired at %s; refusing late finalized release", holder, current.ExpiresAt)
 		}
+		pending, err := executionBarrierPending(home, current.Holder)
+		if err != nil {
+			return err
+		}
+		if pending {
+			return &ExecutionPendingError{Holder: current.Holder}
+		}
 		if err := finalize(); err != nil {
 			return err
 		}
