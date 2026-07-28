@@ -1090,6 +1090,27 @@ func TestMCPTransportModern_WorksAfterLegacyHandshakeAndViceVersa(t *testing.T) 
 	assertMCPModernServerInfo(t, modernCallResult)
 }
 
+func TestMCPTransportModernLegacy_ResponsesCarryNoModernFields(t *testing.T) {
+	homePath := initMCPTestHome(t)
+	lines := runMCPTransport(t, nil, []string{
+		`{"jsonrpc":"2.0","id":"legacy-initialize","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"legacy-shape-test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":"legacy-list","method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":"legacy-call","method":"tools/call","params":{"name":"compound_finding_record","arguments":{"topic":"legacy-shape","body":"legacy-shape body"}}}`,
+	}, homePath)
+	for _, id := range []string{"legacy-initialize", "legacy-list", "legacy-call"} {
+		result, ok := rawResp(t, lines, id)["result"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("%s missing result", id)
+		}
+		for _, modernField := range []string{"resultType", "ttlMs", "cacheScope", "_meta"} {
+			if _, present := result[modernField]; present {
+				t.Fatalf("%s legacy result gained modern field %q: %+v", id, modernField, result)
+			}
+		}
+	}
+}
+
 func TestMCPTransportToolCallMissingArgsReturnsToolError(t *testing.T) {
 	homePath := initMCPTestHome(t)
 	call := map[string]any{
